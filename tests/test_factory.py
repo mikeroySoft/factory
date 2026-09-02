@@ -5,6 +5,7 @@ Run: python -m unittest discover -s tests
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -151,6 +152,54 @@ class GateTest(unittest.TestCase):
             self.assertEqual(code, 1, out)
             self.assertIn("- slow: FAIL", report)
             self.assertIn("timed out", report)
+
+    def test_timeout_kills_the_whole_process_tree(self) -> None:
+        # A check that spawns a grandchild which outlives its parent: the gate
+        # must FAIL and the grandchild must be gone (it held the GPU lock once).
+        toml = (
+            '[gate]\ntimeout = 1\n[[gate.check]]\nname = "slow"\n'
+            'run = ["sh", "-c", "sleep 30 & echo $! > gc.pid; sleep 30"]\n'
+        )
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), toml)
+            code, out, report = gate(repo)
+            self.assertEqual(code, 1, out)
+            self.assertIn("- slow: FAIL", report)
+            self.assertIn("timed out", report)
+            pid = int((repo / "gc.pid").read_text())
+            import time
+            time.sleep(0.2)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
+
+
+class DispatchTest(unittest.TestCase):
+    def test_prompt_carries_handoff_and_events_append(self) -> None:
+        from unittest import mock
+
+        from agent_factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            dispatch.configure(config.load(repo))
+            wt = dispatch.FACTORY / "wt-7"
+            (wt / ".factory").mkdir(parents=True)
+            (wt / ".factory" / "handoff-7.md").write_text("left the migration unverified")
+            issue = {"title": "t", "body": "b", "comments": []}
+            with mock.patch.object(dispatch, "gh_json", return_value=issue):
+                prompt = dispatch.build_prompt(7, wt, "## extra")
+            self.assertIn("## Handoff from the previous attempt", prompt)
+            self.assertIn("left the migration unverified", prompt)
+            self.assertIn("handoff-7.md", prompt)
+            self.assertIn("git commit -s", prompt)
+            self.assertTrue(prompt.rstrip().endswith("## extra"))
+
+            dispatch.record("claimed", ticket=7)
+            dispatch.record("attempt", ticket=7, attempt=1, gate="FAIL")
+            rows = [json.loads(line) for line in dispatch.EVENTS.read_text().splitlines()]
+            self.assertEqual([r["event"] for r in rows], ["claimed", "attempt"])
+            self.assertEqual(rows[1]["gate"], "FAIL")
+            self.assertTrue(all("at" in r for r in rows))
 
 
 if __name__ == "__main__":

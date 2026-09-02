@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import os
 import re
+import signal
 import subprocess
 from pathlib import Path
 
@@ -36,19 +38,18 @@ def timed(cmd: list[str]) -> subprocess.CompletedProcess:
     """Run a command with the per-check timeout.
 
     A wedged check must FAIL, not sit on the GPU lock (ticket #5's gate hung
-    for 2h). On timeout the direct child is killed and a synthetic failing
-    result is returned.
+    for 2h). The check runs in its own session so a timeout kills the whole
+    tree (cargo/test grandchildren included), not just the direct child.
     """
-    # ponytail: timeout kills the direct child only; cargo grandchildren may
-    # linger. Switch to start_new_session + killpg if orphans become a problem.
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True
+    )
     try:
-        return subprocess.run(
-            cmd, capture_output=True, text=True, timeout=CHECK_TIMEOUT
-        )
-    except subprocess.TimeoutExpired as exc:
-        out = exc.stdout or ""
-        if isinstance(out, bytes):
-            out = out.decode(errors="replace")
+        out, _ = proc.communicate(timeout=CHECK_TIMEOUT)
+        return subprocess.CompletedProcess(cmd, proc.returncode, out, "")
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        out, _ = proc.communicate()
         return subprocess.CompletedProcess(
             cmd, 124, f"{out}\ncheck timed out after {CHECK_TIMEOUT}s", ""
         )

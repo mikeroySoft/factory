@@ -38,12 +38,13 @@ UPSTREAM_REPO: str | None  # GitHub "owner/name" of UPSTREAM, or None
 FACTORY: Path
 LOGS: Path
 SYNC_LOG: Path
+EVENTS: Path
 MAX_ACTIVE: int
 MAX_ATTEMPTS: int
 
 
 def configure(c: Config) -> None:
-    global cfg, ROOT, REPO, UPSTREAM, UPSTREAM_REPO, FACTORY, LOGS, SYNC_LOG
+    global cfg, ROOT, REPO, UPSTREAM, UPSTREAM_REPO, FACTORY, LOGS, SYNC_LOG, EVENTS
     global MAX_ACTIVE, MAX_ATTEMPTS
     cfg = c
     ROOT = cfg.root
@@ -53,6 +54,7 @@ def configure(c: Config) -> None:
     FACTORY = cfg.factory
     LOGS = FACTORY / "logs"
     SYNC_LOG = FACTORY / "upstream-sync.jsonl"
+    EVENTS = FACTORY / "events.jsonl"
     MAX_ACTIVE = cfg.max_active
     MAX_ATTEMPTS = cfg.max_attempts
 
@@ -71,6 +73,9 @@ STANDING_INSTRUCTIONS = """
   stage lands it after review and CI.
 - Finish by running `{python} -m agent_factory gate --report .factory/gate-report-{n}.md`
   and fixing any failures it reports.
+- Last, write `.factory/handoff-{n}.md` (gitignored): what you changed, what is
+  still unverified, and what you would do next. The next attempt and the human
+  who inherits this ticket read it.
 """
 
 
@@ -170,7 +175,7 @@ def frontier() -> list[dict]:
     return ready
 
 
-def build_prompt(n: int, extra: str = "") -> str:
+def build_prompt(n: int, wt: Path, extra: str = "") -> str:
     issue = gh_json(
         ["issue", "view", str(n), "--repo", REPO, "--json", "title,body,comments"]
     )
@@ -184,17 +189,34 @@ def build_prompt(n: int, extra: str = "") -> str:
             n=n, commit_flag=commit_flag, main=cfg.main, python=sys.executable
         )
     )
+    handoff = wt / ".factory" / f"handoff-{n}.md"
+    if handoff.exists():
+        parts += ["", "## Handoff from the previous attempt", "", handoff.read_text()]
     if extra:
         parts += ["", extra]
     return "\n".join(parts) + "\n"
 
 
+def record(event: str, **fields: object) -> None:
+    """Append one row to .factory/events.jsonl: the factory's audit trail.
+
+    Every stage transition lands here with its evidence pointers, so a ticket's
+    history is readable without GitHub round trips, and `stats`/the dashboard
+    can be computed from traces rather than reconstructed.
+    """
+    FACTORY.mkdir(exist_ok=True)
+    row = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "event": event, **fields}
+    with EVENTS.open("a") as f:
+        f.write(json.dumps(row) + "\n")
+
+
 def run_worker(cmd: list[str], wt: Path, logfile: Path) -> int:
     log(f"worker: {' '.join(cmd)} -> {logfile}")
+    started = time.monotonic()
     with logfile.open("a") as out:
-        return subprocess.run(
-            cmd, cwd=wt, stdout=out, stderr=subprocess.STDOUT
-        ).returncode
+        code = subprocess.run(cmd, cwd=wt, stdout=out, stderr=subprocess.STDOUT).returncode
+    log(f"worker exited {code} after {int(time.monotonic() - started)}s")
+    return code
 
 
 def ensure_worktree(n: int) -> Path:
@@ -262,6 +284,7 @@ def run_gate(wt: Path, n: int | str, skip: str = "") -> tuple[bool, str]:
 
 def escalate(n: int, reason: str, log_path: Path | None) -> None:
     log(f"#{n}: escalating to human ({reason})")
+    record("escalate", ticket=n, reason=reason, log=str(log_path) if log_path else None)
     run(
         [
             "gh",
@@ -282,6 +305,9 @@ def escalate(n: int, reason: str, log_path: Path | None) -> None:
     body = f"Factory dispatcher escalating: {reason}."
     if log_path:
         body += f"\n\nWorker logs: `{log_path}`"
+    handoff = FACTORY / f"wt-{n}" / ".factory" / f"handoff-{n}.md"
+    if handoff.exists():
+        body += f"\n\nWorker handoff notes:\n\n{handoff.read_text().strip()[-4000:]}"
     run(["gh", "issue", "comment", str(n), "--repo", REPO, "--body", body], check=False)
 
 
@@ -298,6 +324,11 @@ def review(wt: Path, n: int, gate_report: str) -> tuple[str, str]:
         f"deterministic gate already ran on the target host; its report is "
         f"authoritative for build/test/scan status:\n\n"
         f"```\n{gate_report}\n```\n\n"
+        f"Every finding MUST cite evidence as `path:line` from the diff; a "
+        f"finding without a citation does not count. Do not report style "
+        f"preferences, hypothetical extensibility, or anything the gate already "
+        f"covers. REVISE only for findings that would fail the issue's acceptance "
+        f"criteria or this repo's documented conventions.\n"
         f"Output findings as markdown. End with exactly one line: "
         f"`VERDICT: APPROVE` or `VERDICT: REVISE`."
     )
@@ -307,6 +338,7 @@ def review(wt: Path, n: int, gate_report: str) -> tuple[str, str]:
     findings = proc.stdout.strip() or proc.stderr.strip()
     m = re.search(r"VERDICT:\s*(APPROVE|REVISE)", findings)
     verdict = m.group(1) if m else "REVISE"
+    record("review", ticket=n, verdict=verdict, parsed=bool(m))
     return verdict, findings
 
 
@@ -341,6 +373,7 @@ def push_and_pr(wt: Path, n: int, title: str, gate_report: str) -> bool:
             str(body_file),
         ]
     )
+    record("pr-opened", ticket=n)
     return True
 
 
@@ -370,6 +403,7 @@ SYNC_TITLE = "upstream sync: "
 
 
 def sync_record(**rec: object) -> None:
+    record("upstream-sync", **rec)
     FACTORY.mkdir(exist_ok=True)
     row = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **rec}
     with SYNC_LOG.open("a") as f:
@@ -522,6 +556,7 @@ FACTORY_APPROVED = LABEL_APPROVED
 
 def approve_pr(n: int) -> None:
     """Record the codex APPROVE durably on the PR (merge-stage precondition)."""
+    record("approved", ticket=n)
     run(
         [
             "gh",
@@ -578,6 +613,7 @@ def refresh_pr_branch(n: int, pr: int) -> None:
         escalate(n, f"PR #{pr}: gate failed after rebase onto moved main", None)
         return
     run(["git", "push", "--force-with-lease", "origin", f"agent/{n}"], cwd=wt)
+    record("refreshed", ticket=n, pr=pr)
     log(f"#{n}: PR #{pr} rebased onto current main and re-gated; merge next pass")
 
 
@@ -731,6 +767,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 body,
             ]
         )
+        record("merged", ticket=n, pr=pr_num, method=method[2:])
         log(f"PR #{pr_num}: merged into {cfg.main} ({method[2:]}, ticket #{n})")
         cleanup_after_merge(n)
         return
@@ -747,13 +784,19 @@ def worker_round(
 ) -> tuple[bool, str, Path]:
     """One worker + gate cycle. Returns (gate_ok, report, logfile)."""
     promptfile = wt / ".factory-prompt.md"
-    promptfile.write_text(build_prompt(n, extra))
+    promptfile.write_text(build_prompt(n, wt, extra))
     logfile = LOGS / f"{n}-attempt-{attempt}.log"
-    run_worker(cfg.worker(labels, promptfile, wt), wt, logfile)
+    started = time.monotonic()
+    code = run_worker(cfg.worker(labels, promptfile, wt), wt, logfile)
     commit_leftovers(wt, n, title)
     if time.monotonic() > deadline:
+        record("attempt", ticket=n, attempt=attempt, worker_exit=code, gate=None, log=str(logfile))
         return False, "budget exceeded before gate", logfile
     ok, report = run_gate(wt, n)
+    record(
+        "attempt", ticket=n, attempt=attempt, worker_exit=code, gate="PASS" if ok else "FAIL",
+        seconds=int(time.monotonic() - started), log=str(logfile),
+    )
     return ok, report, logfile
 
 
@@ -809,6 +852,7 @@ def process_ticket(
             return
 
     run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-assignee", "@me"])
+    record("claimed", ticket=n, title=title, labels=sorted(labels))
     wt = ensure_worktree(n)
     LOGS.mkdir(parents=True, exist_ok=True)
 

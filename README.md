@@ -146,10 +146,18 @@ conventions; `factory init` creates the labels.
 - **Dashboard** (`factory dashboard`): the *actions* list is the inbox —
   escalations, `needs-info` questions, wontfix proposals, parked upstream
   syncs, a dead timer — each with the exact command or a button.
+- **Audit trail**: `.factory/events.jsonl` — one row per stage transition
+  (`claimed`, `attempt` with worker exit/gate result/seconds, `pr-opened`,
+  `review` verdict, `approved`, `refreshed`, `merged`, `escalate` with reason,
+  `upstream-sync`). `jq 'select(.ticket==42)' .factory/events.jsonl` is a
+  ticket's whole history without a GitHub call.
+- **Handoff notes**: each worker attempt ends by writing
+  `.factory/wt-<n>/.factory/handoff-<n>.md` (what changed, what is unverified,
+  what next). The next attempt gets it in its prompt; an escalation quotes it
+  in the issue comment.
 - **Logs**: `.factory/logs/<n>-attempt-<k>.log` per worker round;
   `.factory/wt-<n>/.factory/gate-report-<n>.md` per gate;
-  `journalctl --user -u factory-<repo>.service` for dispatcher passes;
-  `.factory/upstream-sync.jsonl` for sync outcomes.
+  `journalctl --user -u factory-<repo>.service` for dispatcher passes.
 - **Re-run one ticket by hand**: `factory dispatch --ticket N` (bypasses the
   frontier and its label checks; respects the in-flight lock).
 - **Stop everything**: `systemctl --user disable --now factory-<repo>.timer`.

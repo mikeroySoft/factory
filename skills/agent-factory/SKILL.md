@@ -59,17 +59,20 @@ Done when the issue carries `needs-triage` (or `ready-for-agent`) and every sect
 
 Evidence, in order of authority:
 
-1. The issue's last factory comment: `Factory dispatcher escalating: <reason>` names
-   the terminal cause (budget exceeded, gate failed N times, second REVISE, nothing to
-   PR, rebase conflict, CI failed with check names) and the worker log path.
-2. The gate report: `.factory/wt-<n>/.factory/gate-report-<n>.md` — PASS/FAIL per
+1. `.factory/events.jsonl` filtered to the ticket: the ordered trail of `claimed`,
+   `attempt` (worker exit, gate PASS/FAIL, seconds, log path), `review` verdicts,
+   `approved`, `merged`, `escalate` with the terminal reason.
+2. The issue's last factory comment: `Factory dispatcher escalating: <reason>` plus
+   the worker's handoff notes (what it changed, what it left unverified).
+3. The gate report: `.factory/wt-<n>/.factory/gate-report-<n>.md` — PASS/FAIL per
    check with the failing tail. On the PR, the same report is in the body.
-3. The reviewer's findings: PR comments ending in `VERDICT: …`.
-4. The worker log: `.factory/logs/<n>-attempt-<k>.log` (attempt 4 is the review
-   bounce).
-5. The dispatcher pass: `journalctl --user -u factory-<repo>.service -n 200`, or the
+4. The reviewer's findings: PR comments ending in `VERDICT: …`; each finding cites
+   `path:line`.
+5. The worker log: `.factory/logs/<n>-attempt-<k>.log` (attempt 4 is the review
+   bounce), and `.factory/wt-<n>/.factory/handoff-<n>.md`.
+6. The dispatcher pass: `journalctl --user -u factory-<repo>.service -n 200`, or the
    dashboard's journal heartbeat.
-6. `factory dashboard --json` for the whole state in one document; `factory stats`
+7. `factory dashboard --json` for the whole state in one document; `factory stats`
    for attempts/rounds/hours per ticket.
 
 Then act at the cause: a gate failure that is the ticket's fault → fix the ticket
