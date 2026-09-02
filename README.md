@@ -20,7 +20,17 @@ directory; the dispatcher itself is stateless and safe to re-run.
 
 ## Install
 
-Linux, Python ≥ 3.11, `git`, `gh` (authenticated with push access), and:
+Two ways in; both end with the same `factory` CLI on your machine.
+
+**Have your coding agent do it:** install the skill and ask the agent to set up
+the factory in your repo. The skill installs the CLI if it is missing, writes
+the config from your CI, and runs the doctor.
+
+```sh
+npx skills add mikeroysoft/agent-factory
+```
+
+**Or by hand.** Linux, Python ≥ 3.11, `git`, `gh` (authenticated with push access), and:
 
 - a **worker** agent CLI that accepts a prompt file and works in a directory
   (default `omp -p`; `droid`, `codex exec`, `claude -p`, … work the same way)
