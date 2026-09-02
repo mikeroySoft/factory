@@ -1,0 +1,1149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Factory — Ops</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #05070c; --bg2: #090d16; --panel: #0b1019; --panel2: #10172400;
+    --line: #1a2436; --line2: #26344d;
+    --ink: #dbe7f3; --muted: #8a9cb3; --dim: #56667c;
+    --cyan: #00e5ff; --mag: #ff2a6d; --yel: #ffd60a; --grn: #39ff14;
+    --pur: #b26bff; --org: #ff8a00; --blu: #5b8cff; --red: #ff3b3b;
+    --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --hud: 'Orbitron', var(--mono);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg) radial-gradient(ellipse at 20% -10%, rgba(0,229,255,.07), transparent 55%);
+    color: var(--ink); font: 13px/1.5 var(--mono); -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+  }
+  .scan { position: fixed; inset: 0; pointer-events: none; z-index: 50; opacity: .28;
+    background: repeating-linear-gradient(0deg, rgba(0,0,0,.35) 0 1px, transparent 1px 3px); }
+  .vignette { position: fixed; inset: 0; pointer-events: none; z-index: 49;
+    background: radial-gradient(ellipse at center, transparent 60%, rgba(0,0,0,.55)); }
+  a { color: var(--cyan); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  button, input { font: inherit; color: inherit; }
+  button { background: transparent; border: 1px solid var(--line2); padding: 5px 10px; cursor: pointer;
+    letter-spacing: .08em; text-transform: uppercase; font-size: 10px; color: var(--muted);
+    transition: color .15s, border-color .15s, box-shadow .15s; }
+  button:hover, button:focus-visible { color: var(--cyan); border-color: var(--cyan); box-shadow: 0 0 8px rgba(0,229,255,.35); outline: none; }
+  :focus-visible { outline: 1px solid var(--cyan); outline-offset: 2px; }
+  ::selection { background: rgba(0,229,255,.25); }
+
+  /* ---------- header ---------- */
+  .top { position: sticky; top: 0; z-index: 40; display: flex; align-items: center; gap: 24px;
+    padding: 14px 24px; background: rgba(5,7,12,.92); backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--line); }
+  .eyebrow { font-size: 10px; letter-spacing: .22em; text-transform: uppercase; color: var(--dim); }
+  h1 { font: 900 22px/1 var(--hud); letter-spacing: .12em; color: var(--cyan); white-space: nowrap;
+    text-shadow: 0 0 10px rgba(0,229,255,.6), 0 0 28px rgba(0,229,255,.25); position: relative; margin-top: 4px; }
+  h1.glitch::before, h1.glitch::after { content: attr(data-text); position: absolute; left: 0; top: 0; width: 100%; opacity: .8; }
+  h1.glitch::before { color: var(--mag); clip-path: inset(20% 0 60% 0); animation: gl1 1.4s steps(2) 3; }
+  h1.glitch::after { color: var(--yel); clip-path: inset(65% 0 10% 0); animation: gl2 1.4s steps(2) 3; }
+  @keyframes gl1 { 0%{transform:translate(-2px,0)} 50%{transform:translate(2px,-1px)} 100%{transform:none} }
+  @keyframes gl2 { 0%{transform:translate(2px,0)} 50%{transform:translate(-2px,1px)} 100%{transform:none} }
+  .status { display: flex; gap: 18px; flex-wrap: wrap; margin-left: auto; font-size: 11px; color: var(--muted); }
+  .status b { color: var(--ink); font-weight: 500; }
+  .led { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 1px;
+    background: var(--dim); }
+  .led.on { background: var(--grn); box-shadow: 0 0 8px var(--grn); }
+  .led.warn { background: var(--yel); box-shadow: 0 0 8px var(--yel); animation: pulse 1.2s infinite; }
+  .led.bad { background: var(--mag); box-shadow: 0 0 8px var(--mag); }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .controls { display: flex; gap: 8px; align-items: center; }
+  .controls input { background: var(--bg2); border: 1px solid var(--line2); padding: 5px 10px; width: 210px; font-size: 12px; }
+  .controls input:focus { border-color: var(--cyan); outline: none; box-shadow: 0 0 8px rgba(0,229,255,.3); }
+  .controls label { font-size: 10px; color: var(--muted); letter-spacing: .08em; text-transform: uppercase; display: flex; gap: 6px; align-items: center; cursor: pointer; white-space: nowrap; }
+  .controls select, .panel select { background: var(--bg2); border: 1px solid var(--line2); color: var(--muted); font: 10px var(--mono); padding: 3px 6px; letter-spacing: .08em; text-transform: uppercase; }
+
+  /* ---------- layout ---------- */
+  main { max-width: 1600px; margin: 0 auto; padding: 20px 24px 60px; display: grid; gap: 18px; }
+  main > *, .row2 > * { min-width: 0; }
+  main[hidden] { display: none; }
+  .row2 { display: grid; grid-template-columns: 1.2fr 1fr; gap: 18px; }
+  @media (max-width: 1100px) { .row2 { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); position: relative; }
+  .panel::before { content: ""; position: absolute; left: -1px; top: -1px; width: 14px; height: 14px;
+    border-top: 2px solid var(--cyan); border-left: 2px solid var(--cyan); }
+  .panel::after { content: ""; position: absolute; right: -1px; bottom: -1px; width: 14px; height: 14px;
+    border-bottom: 2px solid var(--line2); border-right: 2px solid var(--line2); }
+  .panel > header { display: flex; align-items: baseline; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line);
+    font-size: 10px; letter-spacing: .2em; text-transform: uppercase; color: var(--muted); }
+  .panel > header b { color: var(--cyan); font-weight: 600; }
+  .panel > header .note { margin-left: auto; letter-spacing: .04em; text-transform: none; color: var(--dim); }
+  .panel > .body { padding: 14px 16px; }
+
+  /* ---------- kpis ---------- */
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(136px, 1fr)); gap: 12px; }
+  .kpi { background: var(--panel); border: 1px solid var(--line); padding: 12px 14px; cursor: pointer; position: relative;
+    transition: border-color .15s, box-shadow .15s; }
+  .kpi:hover, .kpi.active { border-color: var(--c, var(--cyan)); box-shadow: 0 0 12px color-mix(in srgb, var(--c, var(--cyan)) 35%, transparent); }
+  .kpi.static { cursor: default; }
+  .kpi .l { font-size: 10px; letter-spacing: .18em; text-transform: uppercase; color: var(--muted); }
+  .kpi .v { font: 700 26px/1.2 var(--hud); color: var(--c, var(--ink)); margin-top: 6px;
+    text-shadow: 0 0 10px color-mix(in srgb, var(--c, var(--ink)) 45%, transparent); }
+  .kpi .v small { font: 500 12px var(--mono); color: var(--dim); margin-left: 4px; }
+  .kpi .s { font-size: 10px; color: var(--dim); margin-top: 2px; }
+
+  /* stage colors */
+  .st-triage { --c: var(--pur); } .st-needs-info { --c: var(--org); } .st-queued { --c: var(--cyan); }
+  .st-in-flight { --c: var(--yel); } .st-pr-open { --c: var(--blu); } .st-escalated { --c: var(--mag); }
+  .st-merged { --c: var(--grn); } .st-closed, .st-wontfix, .st-other { --c: var(--dim); }
+
+  /* ---------- pipeline svg ---------- */
+  svg { display: block; width: 100%; height: auto; }
+  svg text { font-family: var(--mono); }
+  .node { cursor: pointer; }
+  .node rect { fill: rgba(255,255,255,.02); stroke: var(--c); stroke-width: 1; transition: fill .15s; }
+  .node:hover rect, .node.active rect { fill: color-mix(in srgb, var(--c) 14%, transparent); }
+  .node.active rect { stroke-width: 2; filter: drop-shadow(0 0 6px var(--c)); }
+  .node .cnt { font: 700 22px var(--hud); fill: var(--c); }
+  .node.zero .cnt { fill: var(--dim); }
+  .node .lbl { font-size: 10px; letter-spacing: .18em; fill: var(--ink); }
+  .node .sub { font-size: 9px; fill: var(--muted); }
+  .node.live rect { animation: nodepulse 1.6s infinite; }
+  @keyframes nodepulse { 50% { stroke-opacity: .4; } }
+  .edge { fill: none; stroke: var(--line2); stroke-width: 1.2; }
+  .edge.flow { stroke: var(--cyan); stroke-dasharray: 4 6; animation: dash 1.2s linear infinite; }
+  .edge.flow.mag { stroke: var(--mag); }
+  .edge.flow.grn { stroke: var(--grn); }
+  .edge.flow.org { stroke: var(--org); }
+  @keyframes dash { to { stroke-dashoffset: -20; } }
+  .elbl { font-size: 8px; letter-spacing: .12em; fill: var(--dim); }
+  .cell rect { fill: transparent; stroke: var(--line2); stroke-dasharray: 2 3; }
+  .cell.on rect { stroke: var(--yel); stroke-dasharray: none; fill: rgba(255,214,10,.08); }
+  .cell text { font-size: 9px; letter-spacing: .14em; fill: var(--muted); }
+  .cell.on text { fill: var(--yel); }
+
+  /* ---------- board ---------- */
+  .board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(200px, 1fr); gap: 12px; overflow-x: auto; padding: 14px 16px; }
+  .col { min-width: 0; }
+  .col > h3 { font-size: 10px; letter-spacing: .2em; text-transform: uppercase; color: var(--c); padding-bottom: 6px; margin-bottom: 8px;
+    border-bottom: 1px solid color-mix(in srgb, var(--c) 45%, transparent); display: flex; justify-content: space-between; }
+  .col > h3 span { color: var(--muted); }
+  .col.empty > h3 { opacity: .45; }
+  .card { border: 1px solid var(--line); background: var(--bg2); padding: 10px 12px; margin-bottom: 8px; cursor: pointer;
+    border-left: 3px solid var(--c); transition: border-color .15s, box-shadow .15s, transform .15s; }
+  .card:hover, .card:focus-visible, .card.sel { border-color: var(--c); box-shadow: 0 0 12px color-mix(in srgb, var(--c) 30%, transparent); outline: none; }
+  .card.sel { transform: translateX(2px); }
+  .card .ct { display: flex; gap: 8px; align-items: center; font-size: 11px; }
+  .card .num { color: var(--c); font-weight: 700; }
+  .card .wk { color: var(--dim); font-size: 10px; }
+  .card .chip { margin-left: auto; }
+  .card .title { margin: 4px 0 8px; font-size: 12px; line-height: 1.4; color: var(--ink);
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .pips { display: flex; gap: 12px; flex-wrap: wrap; font-size: 10px; color: var(--dim); }
+  .pips span.k { letter-spacing: .1em; }
+  .dot { display: inline-block; width: 8px; height: 8px; margin-right: 2px; border: 1px solid var(--dim); vertical-align: -1px; }
+  .dot.on { background: var(--yel); border-color: var(--yel); }
+  .dot.b { transform: rotate(45deg) scale(.8); }
+  .dot.b.on { background: var(--pur); border-color: var(--pur); }
+  .sq { display: inline-block; width: 8px; height: 8px; margin-right: 2px; background: var(--line2); vertical-align: -1px; }
+  .sq.PASS { background: var(--grn); } .sq.FAIL { background: var(--mag); } .sq.SKIP { background: var(--dim); }
+  .vd { font-weight: 700; margin-right: 2px; } .vd.APPROVE { color: var(--grn); } .vd.REVISE { color: var(--mag); }
+  .ci { } .ci b { font-weight: 600; } .ci .ok { color: var(--grn); } .ci .bad { color: var(--mag); } .ci .pend { color: var(--yel); }
+  .card .meta { margin-top: 8px; font-size: 10px; color: var(--dim); display: flex; gap: 10px; flex-wrap: wrap; }
+  .chip { display: inline-block; font-size: 9px; letter-spacing: .14em; text-transform: uppercase; padding: 1px 6px;
+    border: 1px solid var(--c, var(--line2)); color: var(--c, var(--muted)); white-space: nowrap; }
+  .chip.live { animation: pulse 1.2s infinite; }
+  .lab { display: inline-block; font-size: 9px; padding: 0 5px; border: 1px solid var(--line2); color: var(--muted); margin-right: 4px; }
+
+  /* ---------- feed / runs ---------- */
+  ol { list-style: none; }
+  .feed, .runs { max-height: 560px; overflow-y: auto; }
+  .feed li, .runs li { display: grid; grid-template-columns: 72px 44px 90px 1fr; gap: 10px; padding: 5px 16px; border-bottom: 1px solid rgba(26,36,54,.6);
+    font-size: 11px; cursor: pointer; align-items: baseline; }
+  .feed li:hover, .runs li:hover { background: rgba(0,229,255,.04); }
+  .feed .t, .runs .t { color: var(--dim); font-size: 10px; }
+  .feed .n { color: var(--cyan); font-weight: 600; }
+  .feed .d, .runs .d { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ev { font-size: 9px; letter-spacing: .12em; text-transform: uppercase; color: var(--c, var(--muted)); }
+  .ev-labeled, .ev-unlabeled { --c: var(--pur); } .ev-assigned, .ev-unassigned { --c: var(--cyan); }
+  .ev-attempt { --c: var(--yel); } .ev-gate { --c: var(--org); } .ev-pr-opened { --c: var(--blu); }
+  .ev-verdict { --c: var(--pur); } .ev-merged { --c: var(--grn); } .ev-escalated { --c: var(--mag); }
+  .ev-triaged { --c: var(--pur); } .ev-closed, .ev-pr-closed { --c: var(--dim); } .ev-comment, .ev-referenced, .ev-reopened { --c: var(--muted); }
+  .runs li { grid-template-columns: 72px 48px 70px 1fr; }
+  .runs .r { font-size: 9px; letter-spacing: .12em; text-transform: uppercase; }
+  .runs .r.idle { color: var(--dim); } .runs .r.claimed { color: var(--cyan); } .runs .r.capacity { color: var(--yel); }
+  .runs .r.escalated { color: var(--mag); } .runs .r.approved { color: var(--grn); } .runs .r.failed { color: var(--red); } .runs .r.running { color: var(--yel); }
+  .runs pre { grid-column: 1 / -1; font-size: 10px; color: var(--muted); white-space: pre-wrap; padding: 6px 0 4px 8px; border-left: 1px solid var(--line2); }
+  .heartbeat { display: flex; gap: 3px; padding: 12px 16px 4px; flex-wrap: wrap; }
+  .hb { width: 10px; height: 16px; background: var(--line); cursor: pointer; }
+  .hb.idle { background: #172032; } .hb.claimed { background: var(--cyan); } .hb.capacity { background: var(--yel); }
+  .hb.escalated { background: var(--mag); } .hb.approved { background: var(--grn); } .hb.failed { background: var(--red); } .hb.running { background: var(--yel); animation: pulse 1s infinite; }
+  .hb:hover { outline: 1px solid var(--ink); }
+  .legend { display: flex; gap: 14px; padding: 6px 16px 10px; font-size: 9px; letter-spacing: .12em; text-transform: uppercase; color: var(--dim); flex-wrap: wrap; }
+  .legend i { display: inline-block; width: 8px; height: 8px; margin-right: 5px; vertical-align: -1px; background: var(--c); }
+  .upstream { display: grid; grid-template-columns: 1.2fr 1fr; }
+  @media (max-width: 1100px) { .upstream { grid-template-columns: 1fr; } }
+  .upstream > div { min-width: 0; }
+  .upstream .section-h { padding: 8px 16px 2px; }
+  .upstream .feed li { grid-template-columns: 72px 70px 1fr; }
+  .upstream .feed .sha { color: var(--dim); }
+  .upstream .feed li.pending .sha { color: var(--org); font-weight: 600; }
+  .upstream .feed li.pending .d { color: var(--ink); }
+  .runs .r.synced { color: var(--grn); } .runs .r.conflict, .runs .r.gate-failed { color: var(--mag); } .runs .r.push-rejected { color: var(--yel); }
+
+  /* ---------- lanes ---------- */
+  .lane-row { cursor: pointer; }
+  .lane-row:hover .lane-bg { fill: rgba(0,229,255,.05); }
+  .lane-bg { fill: transparent; }
+  .seg { stroke: var(--bg); stroke-width: 1; }
+  .lane-lbl { font-size: 10px; fill: var(--muted); font-weight: 600; }
+  .lane-row.sel .lane-lbl { fill: var(--cyan); }
+  .axis { font-size: 9px; fill: var(--dim); }
+  .grid { stroke: var(--line); stroke-width: .6; }
+  .nowline { stroke: var(--cyan); stroke-width: 1; stroke-dasharray: 3 3; }
+  .mk-attempt { fill: var(--bg); stroke: var(--yel); stroke-width: 1.2; }
+  .mk-gate { fill: var(--org); }
+  .mk-APPROVE { fill: var(--grn); } .mk-REVISE { fill: var(--mag); }
+  .bar { opacity: .9; } .bar:hover { opacity: 1; filter: drop-shadow(0 0 4px currentColor); }
+
+  /* ---------- config cards ---------- */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; padding: 14px 16px; }
+  .cardc h4 { font-size: 10px; letter-spacing: .18em; text-transform: uppercase; color: var(--cyan); margin-bottom: 8px; }
+  .cardc dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 11px; }
+  .cardc dt { color: var(--dim); } .cardc dd { color: var(--ink); word-break: break-all; }
+  .cardc code { color: var(--muted); }
+
+  /* ---------- drawer ---------- */
+  .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(640px, 100vw); z-index: 60; background: var(--bg2);
+    border-left: 1px solid var(--line2); box-shadow: -20px 0 50px rgba(0,0,0,.6); display: flex; flex-direction: column;
+    transform: translateX(100%); transition: transform .22s ease-out; }
+  .drawer.open { transform: none; }
+  .drawer > header { padding: 14px 18px 10px; border-bottom: 1px solid var(--line); }
+  .drawer .hd { display: flex; align-items: center; gap: 10px; }
+  .drawer .hd .num { font: 700 20px var(--hud); color: var(--c); text-shadow: 0 0 10px color-mix(in srgb, var(--c) 45%, transparent); }
+  .drawer .hd .x { margin-left: auto; }
+  .drawer h2 { font-size: 13px; font-weight: 500; margin: 6px 0 8px; line-height: 1.45; }
+  .drawer .links { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: var(--muted); align-items: center; }
+  .tabs { display: flex; border-bottom: 1px solid var(--line); overflow-x: auto; }
+  .tabs button { border: 0; border-bottom: 2px solid transparent; padding: 8px 12px; white-space: nowrap; }
+  .tabs button.on { color: var(--cyan); border-bottom-color: var(--cyan); box-shadow: none; }
+  .drawer .content { flex: 1; overflow: auto; padding: 14px 18px 40px; }
+  pre { font: 11px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; color: var(--muted); background: var(--bg);
+    border: 1px solid var(--line); padding: 10px 12px; max-height: 60vh; overflow: auto; }
+  details { margin: 4px 0; } summary { cursor: pointer; color: var(--muted); font-size: 11px; } summary:hover { color: var(--ink); }
+  .tl li { display: grid; grid-template-columns: 120px 90px 1fr; gap: 10px; padding: 5px 0; border-bottom: 1px solid rgba(26,36,54,.6); font-size: 11px; align-items: baseline; }
+  .tl .t { color: var(--dim); font-size: 10px; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 11px; margin-bottom: 12px; }
+  .kv dt { color: var(--dim); } .kv dd { color: var(--ink); word-break: break-all; }
+  .section-h { font-size: 10px; letter-spacing: .18em; text-transform: uppercase; color: var(--cyan); margin: 14px 0 6px; }
+  .checks { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .chk { font-size: 10px; padding: 3px 8px; border: 1px solid var(--line2); letter-spacing: .08em; }
+  .chk.PASS, .chk.SUCCESS { border-color: var(--grn); color: var(--grn); } .chk.FAIL, .chk.FAILURE, .chk.ERROR { border-color: var(--mag); color: var(--mag); }
+  .chk.SKIP, .chk.SKIPPED, .chk.NEUTRAL, .chk.CANCELLED { color: var(--dim); } .chk.QUEUED, .chk.IN_PROGRESS, .chk.PENDING { border-color: var(--yel); color: var(--yel); }
+  .attempt { border: 1px solid var(--line); padding: 8px 10px; margin-bottom: 8px; }
+  .attempt .ah { display: flex; gap: 12px; align-items: center; font-size: 11px; }
+  .attempt .ah button { margin-left: auto; }
+  .empty { color: var(--dim); font-size: 11px; padding: 14px 16px; }
+  .err { background: rgba(255,42,109,.1); border: 1px solid var(--mag); color: var(--mag); padding: 8px 14px; font-size: 11px; }
+
+  /* tooltip */
+  .tip { position: fixed; z-index: 70; pointer-events: none; background: rgba(5,7,12,.95); border: 1px solid var(--cyan);
+    padding: 6px 10px; font-size: 11px; color: var(--ink); max-width: 360px; box-shadow: 0 0 12px rgba(0,229,255,.25); display: none; }
+  .tip b { color: var(--cyan); }
+  .tip .m { color: var(--muted); font-size: 10px; }
+
+  kbd { font: 10px var(--mono); border: 1px solid var(--line2); padding: 0 4px; color: var(--muted); }
+  .hint { font-size: 10px; color: var(--dim); letter-spacing: .04em; }
+  .views { display: flex; gap: 4px; }
+  .views button { padding: 7px 14px; font-size: 11px; }
+  .views button.on { color: var(--cyan); border-color: var(--cyan); background: rgba(0,229,255,.06); }
+  .views .navlink { display: inline-flex; align-items: center; padding: 7px 14px; border: 1px solid var(--line2); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  .views .navlink:hover { color: var(--cyan); border-color: var(--cyan); text-decoration: none; }
+  .badge { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 6px; border: 1px solid var(--line2); border-radius: 9px; font-size: 10px; text-align: center; color: var(--muted); }
+  .badge.hot { color: var(--bg); background: var(--mag); border-color: var(--mag); box-shadow: 0 0 10px var(--mag); }
+  .inbox-top { display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap; }
+  .inbox-top h2 { font: 700 18px var(--hud); letter-spacing: .08em; color: var(--ink); }
+  .inbox-top code { color: var(--muted); }
+  .inbox-list { display: grid; gap: 10px; }
+  .inbox-h { font-size: 10px; letter-spacing: .2em; text-transform: uppercase; color: var(--c); margin-top: 14px; display: flex; gap: 12px; align-items: baseline; }
+  .inbox-h span { color: var(--dim); letter-spacing: .08em; }
+  .inbox-item { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--c); padding: 12px 16px; display: grid; gap: 8px; }
+  .inbox-item.info { opacity: .85; }
+  .inbox-item .ih { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+  .inbox-item .num { font: 700 15px var(--hud); color: var(--c); }
+  .inbox-item .ititle { font-size: 13px; color: var(--ink); }
+  .inbox-item .links { margin-left: auto; display: flex; gap: 10px; font-size: 11px; }
+  .inbox-item .why { font-size: 12px; color: var(--muted); border-left: 2px solid var(--line2); padding-left: 10px; white-space: pre-wrap; }
+  .act { display: grid; gap: 8px; margin-top: 4px; }
+  .act textarea { width: 100%; background: var(--bg); border: 1px solid var(--line2); color: var(--ink); font: 12px/1.5 var(--mono); padding: 8px 10px; resize: vertical; }
+  .act textarea:focus { border-color: var(--cyan); outline: none; box-shadow: 0 0 8px rgba(0,229,255,.25); }
+  .act-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .act button.primary { color: var(--cyan); border-color: var(--cyan); }
+  .act button.danger { color: var(--mag); border-color: rgba(255,42,109,.5); }
+  .act button.danger:hover { border-color: var(--mag); box-shadow: 0 0 8px rgba(255,42,109,.35); }
+  .act button:disabled { opacity: .4; cursor: wait; box-shadow: none; }
+  .act-out { font-size: 11px; color: var(--muted); }
+  .act-out.bad { color: var(--mag); }
+  .act-out:empty { display: none; }
+  .toasts { position: fixed; left: 24px; bottom: 24px; z-index: 80; display: grid; gap: 6px; }
+  .toast { background: var(--bg2); border: 1px solid var(--grn); color: var(--grn); padding: 8px 14px; font-size: 11px; box-shadow: 0 0 12px rgba(57,255,20,.3); }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+    .scan { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="scan" aria-hidden="true"></div>
+<div class="vignette" aria-hidden="true"></div>
+<div class="tip" id="tip" role="tooltip"></div>
+
+<header class="top">
+  <div>
+    <div class="eyebrow" id="eyebrow">agent-factory</div>
+    <h1 class="glitch" id="title" data-text="FACTORY">FACTORY</h1>
+  </div>
+  <div class="status" id="status"></div>
+  <nav class="views"><button id="nav-ops" class="on">Ops</button><button id="nav-inbox">Inbox</button><a class="navlink" href="/atlas" title="Static architecture diagrams">Atlas ↗</a></nav>
+  <div class="controls">
+    <input id="search" type="search" placeholder="/ filter  #n · title · label · stage" aria-label="Filter tickets" title="Filters the board, lanes, activity feed, and inbox">
+    <button id="refresh" title="r">Refresh</button>
+    <label><input type="checkbox" id="auto" checked> auto 30s</label>
+  </div>
+</header>
+
+<main id="ops">
+  <div id="errors"></div>
+  <section class="kpis" id="kpis" aria-label="Key metrics"></section>
+
+  <section class="panel">
+    <header><b>Pipeline</b> live · click a node to filter the board and lanes <span class="note hint">hover a node for its tickets</span></header>
+    <div class="body" style="padding:6px 10px 2px"><svg id="pipe" viewBox="0 0 1200 250" role="img" aria-label="Factory pipeline with live counts"></svg></div>
+  </section>
+
+  <section class="panel">
+    <header><b>Tickets</b> <span id="filterchip"></span> <span class="note hint"><kbd>j</kbd>/<kbd>k</kbd> move · <kbd>enter</kbd> open · <kbd>esc</kbd> clear</span></header>
+    <div class="board" id="board"></div>
+  </section>
+
+  <div class="row2">
+    <section class="panel">
+      <header><b>Activity</b> newest first · GitHub + .factory/ <span class="note" id="feedcount"></span></header>
+      <ol class="feed" id="feed"></ol>
+    </section>
+    <section class="panel">
+      <header><b>Dispatcher</b> systemd journal · <span id="journal-unit"></span> <span class="note" id="runcount"></span></header>
+      <div class="heartbeat" id="heartbeat"></div>
+      <div class="legend">
+        <span><i style="--c:#172032"></i>idle</span><span><i style="--c:var(--yel)"></i>at capacity</span>
+        <span><i style="--c:var(--cyan)"></i>claimed</span><span><i style="--c:var(--grn)"></i>approved</span>
+        <span><i style="--c:var(--mag)"></i>escalated</span><span><i style="--c:var(--red)"></i>failed</span>
+      </div>
+      <ol class="runs" id="runs"></ol>
+    </section>
+  </div>
+
+  <section class="panel" id="up-panel">
+    <header><b>Upstream</b> <span id="up-head"></span> <span class="note" id="up-note"></span></header>
+    <div class="upstream">
+      <div><div class="section-h" id="up-commits-h">upstream main · newest first</div><ol class="feed" id="up-commits"></ol></div>
+      <div><div class="section-h">sync history · .factory/upstream-sync.jsonl</div><ol class="runs" id="up-syncs"></ol></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <header><b>History</b> one lane per ticket · stage over time · markers: attempt ◇ gate ▪ verdict ▲▼
+      <select id="window" aria-label="History window"><option value="24">last 24h</option><option value="72" selected>last 3d</option><option value="168">last 7d</option><option value="0">all</option></select>
+      <span class="note hint">hover a segment · click a lane</span></header>
+    <div class="body" style="padding:8px 10px"><svg id="lanes" role="img" aria-label="Ticket stage history"></svg></div>
+  </section>
+
+  <section class="panel">
+    <header><b>Throughput</b> per day · last 14 days</header>
+    <div class="body" style="padding:8px 10px"><svg id="thru" viewBox="0 0 1200 170" role="img" aria-label="Daily throughput"></svg></div>
+    <div class="legend">
+      <span><i style="--c:var(--pur)"></i>triaged</span><span><i style="--c:var(--yel)"></i>attempts</span>
+      <span><i style="--c:var(--blu)"></i>PRs opened</span><span><i style="--c:var(--grn)"></i>merged</span><span><i style="--c:var(--mag)"></i>escalations</span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <header><b>Machinery</b> what the factory is made of · live values</header>
+    <div class="cards" id="config"></div>
+  </section>
+</main>
+
+<main id="inbox" hidden>
+  <div class="inbox-top"><h2 id="inbox-sum"></h2><span class="hint">Answers post through <code>gh</code> as the dispatcher would: comments land in the worker prompt, labels move the ticket, nothing merges from here.</span></div>
+  <div id="inbox-list" class="inbox-list"></div>
+</main>
+<div id="toasts" class="toasts" aria-live="polite"></div>
+
+<aside class="drawer" id="drawer" aria-label="Ticket detail" aria-hidden="true">
+  <header>
+    <div class="hd"><span class="num" id="d-num"></span><span class="chip" id="d-stage"></span><span id="d-live"></span><button class="x" id="d-close" title="esc">Close</button></div>
+    <h2 id="d-title"></h2>
+    <div class="links" id="d-links"></div>
+  </header>
+  <div class="tabs" id="d-tabs"></div>
+  <div class="content" id="d-content"></div>
+</aside>
+
+<script>
+'use strict';
+const STAGES = [
+  ['triage', 'TRIAGE', 'needs-triage · awaiting LLM triage'],
+  ['needs-info', 'NEEDS INFO', 'back to reporter'],
+  ['queued', 'QUEUED', 'ready-for-agent · unclaimed'],
+  ['in-flight', 'IN FLIGHT', 'lock held · worker ⇄ gate ⇄ review'],
+  ['pr-open', 'PR OPEN', 'awaiting human merge'],
+  ['escalated', 'ESCALATED', 'ready-for-human'],
+  ['merged', 'MERGED', 'done'],
+  ['closed', 'CLOSED', 'closed without merge'],
+  ['wontfix', 'WONTFIX', ''],
+  ['other', 'OTHER', 'no factory label'],
+];
+const STAGE_NAME = Object.fromEntries(STAGES.map(s => [s[0], s[1]]));
+const ALWAYS_COLS = ['triage', 'queued', 'in-flight', 'pr-open', 'escalated', 'merged'];
+const FEED_KINDS = new Set(['labeled', 'assigned', 'attempt', 'gate', 'pr-opened', 'verdict', 'merged', 'escalated', 'triaged', 'closed', 'pr-closed', 'reopened']);
+const TABS = ['timeline', 'attempts', 'gate', 'review', 'branch', 'prompt', 'issue'];
+
+const S = { snap: null, filter: null, q: '', sel: null, tab: 'timeline', okAt: 0, failed: false, files: {}, view: 'ops', drafts: {}, inboxDirty: false };
+const $ = id => document.getElementById(id);
+
+// ---------------------------------------------------------------- utils
+function h(tag, attrs, ...kids) {
+  const ns = tag.startsWith('svg:');
+  const el = ns ? document.createElementNS('http://www.w3.org/2000/svg', tag.slice(4)) : document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === 'class') el.setAttribute('class', v);
+    else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else if (k === 'style' && typeof v === 'object') for (const [p, val] of Object.entries(v)) p.startsWith('--') ? el.style.setProperty(p, val) : (el.style[p] = val);
+    else if (k === 'dataset') Object.assign(el.dataset, v);
+    else el.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  return el;
+}
+const ms = iso => iso ? new Date(iso).getTime() : NaN;
+function ago(iso) {
+  if (!iso) return '—';
+  const s = Math.max(0, (Date.now() - ms(iso)) / 1000);
+  if (s < 60) return `${Math.round(s)}s ago`;
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  if (s < 86400) return `${(s / 3600).toFixed(1)}h ago`;
+  return `${(s / 86400).toFixed(1)}d ago`;
+}
+function dur(a, b) {
+  const s = (ms(b) - ms(a)) / 1000;
+  if (!isFinite(s) || s < 0) return '—';
+  if (s < 90) return `${Math.round(s)}s`;
+  if (s < 5400) return `${Math.round(s / 60)}m`;
+  if (s < 172800) return `${(s / 3600).toFixed(1)}h`;
+  return `${(s / 86400).toFixed(1)}d`;
+}
+const fmt = iso => iso ? new Date(iso).toLocaleString(undefined, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }) : '—';
+const hm = iso => iso ? new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false }) : '—';
+const median = xs => { const a = xs.filter(Number.isFinite).sort((p, q) => p - q); return a.length ? a[(a.length - 1) >> 1] : NaN; };
+const pct = (n, d) => d ? `${Math.round(100 * n / d)}%` : '—';
+const kb = n => n < 1024 ? `${n}B` : n < 1048576 ? `${(n / 1024).toFixed(1)}K` : `${(n / 1048576).toFixed(1)}M`;
+const stageClass = st => `st-${st}`;
+const isBounce = a => a.attempt > S.snap.config.max_attempts;
+
+function tipShow(e, node) { const t = $('tip'); t.replaceChildren(node); t.style.display = 'block'; tipMove(e); }
+function tipMove(e) { const t = $('tip'); const x = Math.min(e.clientX + 14, innerWidth - t.offsetWidth - 10); const y = Math.min(e.clientY + 14, innerHeight - t.offsetHeight - 10); t.style.left = x + 'px'; t.style.top = y + 'px'; }
+function tipHide() { $('tip').style.display = 'none'; }
+function hoverable(el, make) { el.addEventListener('mouseenter', e => tipShow(e, make())); el.addEventListener('mousemove', tipMove); el.addEventListener('mouseleave', tipHide); }
+
+// ---------------------------------------------------------------- data
+async function load(fresh) {
+  $('refresh').disabled = true;
+  try {
+    const r = await fetch('/api/snapshot' + (fresh ? '?fresh=1' : ''));
+    if (!r.ok) throw new Error(r.status);
+    S.snap = await r.json();
+    S.okAt = Date.now(); S.failed = false;
+  } catch (e) {
+    S.failed = true;
+  } finally { $('refresh').disabled = false; }
+  render();
+}
+async function file(path) {
+  if (S.files[path]) return S.files[path];
+  const r = await fetch('/api/file?path=' + encodeURIComponent(path));
+  return (S.files[path] = r.ok ? await r.text() : `[unavailable: ${r.status}]`);
+}
+function matches(t) {
+  const q = S.q.trim().toLowerCase();
+  return !q || `#${t.number} ${t.title} ${t.labels.join(' ')} ${t.stage} ${t.worker} ${t.pr ? '#' + t.pr.number : ''}`.toLowerCase().includes(q);
+}
+function visible() {
+  return S.snap.tickets.filter(t => (!S.filter || t.stage === S.filter) && matches(t));
+}
+function counts() {
+  const c = Object.fromEntries(STAGES.map(s => [s[0], 0]));
+  for (const t of S.snap.tickets) c[t.stage] = (c[t.stage] || 0) + 1;
+  return c;
+}
+function phaseCell(t) {
+  const a = t.phase && t.phase.artifact;
+  return a === 'worker' ? 'worker' : a === 'gate' ? 'gate' : a ? 'review' : 'worker';
+}
+function metrics() {
+  const T = S.snap.tickets, cfg = S.snap.config;
+  const ran = T.filter(t => t.attempts.length);
+  const gateRounds = t => t.attempts.filter(a => !isBounce(a)).length;
+  const reachedPr = T.filter(t => t.pr);
+  const firstPass = reachedPr.filter(t => gateRounds(t) === 1).length;
+  const bounced = reachedPr.filter(t => t.attempts.some(isBounce)).length;
+  const escalations = T.flatMap(t => t.events.filter(e => e.kind === 'escalated')).length;
+  return {
+    firstPass: pct(firstPass, reachedPr.length), bounceRate: pct(bounced, reachedPr.length),
+    medAttempts: median(ran.map(gateRounds)), escalations,
+    issueToPr: median(reachedPr.map(t => (ms(t.pr.created_at) - ms(t.created_at)) / 36e5)),
+    prToMerge: median(T.filter(t => t.pr && t.pr.merged_at).map(t => (ms(t.pr.merged_at) - ms(t.pr.created_at)) / 36e5)),
+    verdicts: T.flatMap(t => t.pr ? t.pr.verdicts : []),
+    maxActive: cfg.max_active,
+  };
+}
+function runSummary(run) {
+  const L = run.lines;
+  if (run.result === 'failed') return ['failed', L.at(-1) || 'exit-code'];
+  if (run.result === 'running') return ['running', L.at(-1) || 'started'];
+  const pick = re => L.filter(l => re.test(l)).map(l => l.match(/#(\d+)/)?.[0]).filter(Boolean);
+  const esc = pick(/escalating/), ok = pick(/done \(approved/), cl = pick(/claimable:/);
+  if (esc.length) return ['escalated', `escalated ${esc.join(' ')}${ok.length ? ' · approved ' + ok.join(' ') : ''}`];
+  if (ok.length) return ['approved', `approved ${ok.join(' ')}`];
+  if (cl.length) return ['claimed', `claimed ${cl.join(' ')}`];
+  if (L.some(l => /at capacity/.test(l))) return ['capacity', 'at capacity'];
+  if (L.some(l => /frontier empty/.test(l))) return ['idle', 'frontier empty'];
+  return ['idle', L.at(-1) || 'no output'];
+}
+// Reconstruct stage over time from the event stream. Assignment while queued
+// is the dispatcher's claim; a human self-assign would read the same way.
+function stageTimeline(t) {
+  const segs = []; let cur = 'other', start = t.created_at;
+  const to = (at, next) => { if (next !== cur) { segs.push({ stage: cur, from: start, to: at }); cur = next; start = at; } };
+  const LAB = { 'needs-triage': 'triage', 'needs-info': 'needs-info', 'ready-for-agent': 'queued', 'ready-for-human': 'escalated', 'wontfix': 'wontfix' };
+  for (const e of t.events) {
+    if (e.kind === 'labeled' && LAB[e.detail]) { if (!(LAB[e.detail] === 'queued' && (cur === 'in-flight' || cur === 'pr-open'))) to(e.at, LAB[e.detail]); }
+    else if (e.kind === 'assigned' && ['queued', 'triage', 'other', 'escalated'].includes(cur)) to(e.at, 'in-flight');
+    else if (e.kind === 'attempt' && !['in-flight', 'pr-open', 'escalated', 'merged'].includes(cur)) to(e.at, 'in-flight');
+    else if (e.kind === 'pr-opened') to(e.at, 'pr-open');
+    else if (e.kind === 'merged') to(e.at, 'merged');
+    else if (e.kind === 'closed' && cur !== 'merged') to(e.at, 'closed');
+    else if (e.kind === 'reopened') to(e.at, 'triage');
+  }
+  const end = t.pr && t.pr.merged_at ? t.pr.merged_at : (t.closed_at || new Date().toISOString());
+  if (t.state === 'OPEN' && cur !== t.stage) to(t.updated_at > start ? t.updated_at : start, t.stage);
+  to(end, null);
+  return segs.filter(s => ms(s.to) > ms(s.from));
+}
+
+// ---------------------------------------------------------------- render
+function render() {
+  if (!S.snap) { $('errors').replaceChildren(h('div', { class: 'err' }, 'no snapshot yet — is the server reachable?')); return; }
+  renderStatus(); renderErrors(); renderKpis(); renderPipeline(); renderBoard(); renderFeed(); renderRuns(); renderUpstream(); renderLanes(); renderThroughput(); renderConfig();
+  if ($('inbox').contains(document.activeElement)) S.inboxDirty = true; else renderInbox();
+  applyView();
+  if (S.sel != null) renderDrawer();
+}
+function renderStatus() {
+  const d = S.snap.dispatcher, stale = S.failed || Date.now() - S.okAt > 180000;
+  $('eyebrow').textContent = `${S.snap.repo} · agent-factory`;
+  const title = `${S.snap.config.name.toUpperCase()} FACTORY`;
+  $('title').textContent = title; $('title').dataset.text = title;
+  $('journal-unit').textContent = `${S.snap.config.unit}.service`;
+  const led = d.service_active ? 'warn' : d.timer.active ? 'on' : 'bad';
+  $('status').replaceChildren(
+    h('span', {}, h('i', { class: `led ${led}` }), 'dispatcher ', h('b', {}, d.service_active ? 'RUNNING' : d.timer.active ? 'ARMED' : 'TIMER OFF')),
+    h('span', {}, 'next ', h('b', {}, d.timer.next ? `${hm(d.timer.next)} (${dur(new Date().toISOString(), d.timer.next)})` : '—')),
+    h('span', {}, 'last ', h('b', {}, d.timer.last ? ago(d.timer.last) : '—')),
+    h('span', {}, h('i', { class: `led ${S.snap.active ? 'warn' : ''}` }), 'capacity ', h('b', {}, `${S.snap.active}/${S.snap.config.max_active}`)),
+    h('span', {}, h('i', { class: `led ${S.snap.gpu_lock_held ? 'warn' : ''}` }), 'gpu lock ', h('b', {}, S.snap.gpu_lock_held ? 'HELD' : 'free')),
+    h('span', {}, h('i', { class: `led ${S.snap.config.triage.online ? 'on' : 'bad'}` }), 'triage llm ', h('b', {}, S.snap.config.triage.online ? 'online' : 'offline')),
+    ...(S.snap.config.upstream ? [h('span', {}, h('i', { class: `led ${upstreamLed()}` }), 'upstream ', h('b', {}, upstreamWord()))] : []),
+    h('span', { style: stale ? { color: 'var(--mag)' } : {} }, stale ? 'STALE · ' : 'snapshot ', h('b', {}, ago(S.snap.generated_at))),
+  );
+}
+function renderErrors() {
+  $('errors').replaceChildren(...S.snap.errors.map(e => h('div', { class: 'err' }, e)));
+}
+function kpi(label, value, sub, opts = {}) {
+  const el = h('div', { class: `kpi ${opts.stage ? stageClass(opts.stage) : ''} ${opts.stage ? '' : 'static'} ${S.filter && S.filter === opts.stage ? 'active' : ''}`, tabindex: opts.stage ? 0 : null, role: opts.stage ? 'button' : null },
+    h('div', { class: 'l' }, label), h('div', { class: 'v' }, value), h('div', { class: 's' }, sub));
+  if (opts.stage) { el.onclick = () => setFilter(opts.stage); el.onkeydown = e => { if (e.key === 'Enter') setFilter(opts.stage); }; }
+  return el;
+}
+function renderKpis() {
+  const c = counts(), m = metrics();
+  $('kpis').replaceChildren(
+    kpi('In flight', h('span', {}, c['in-flight'], h('small', {}, `/${m.maxActive}`)), S.snap.active ? 'locks held now' : 'idle', { stage: 'in-flight' }),
+    kpi('Queued', c.queued, 'ready-for-agent, unclaimed', { stage: 'queued' }),
+    kpi('Awaiting triage', c.triage, `+${c['needs-info']} needs-info`, { stage: 'triage' }),
+    kpi('PR open', c['pr-open'], 'human merge pending', { stage: 'pr-open' }),
+    kpi('Escalated', c.escalated, `${m.escalations} escalations all-time`, { stage: 'escalated' }),
+    kpi('Merged', c.merged, 'all-time', { stage: 'merged' }),
+    kpi('First-gate pass', m.firstPass, `bounce rate ${m.bounceRate}`),
+    ...(S.snap.config.upstream ? [kpi('Upstream', upstreamWord(), S.snap.upstream.blocker ? `sync parked on #${S.snap.upstream.blocker.number}` : `fork +${S.snap.upstream.ahead ?? '?'} · last sync ${S.snap.upstream.syncs.length ? ago(S.snap.upstream.syncs.at(-1).at) : 'never'}`)] : []),
+    kpi('Issue → PR', Number.isFinite(m.issueToPr) ? `${m.issueToPr.toFixed(1)}h` : '—', `PR → merge ${Number.isFinite(m.prToMerge) ? m.prToMerge.toFixed(1) + 'h' : '—'} (median)`),
+    kpi('Verdicts', m.verdicts.length, `${m.verdicts.filter(v => v.verdict === 'APPROVE').length} approve · ${m.verdicts.filter(v => v.verdict === 'REVISE').length} revise`),
+  );
+}
+function upstreamPending() { return S.snap.upstream.commits.filter(c => !c.synced); }
+function upstreamLed() { const u = S.snap.upstream; return u.blocker ? 'bad' : upstreamPending().length ? 'warn' : u.commits.length ? 'on' : ''; }
+function upstreamWord() { const u = S.snap.upstream, p = upstreamPending().length; return u.blocker ? 'BLOCKED' : p ? `${p}${p === u.commits.length ? '+' : ''} BEHIND` : u.commits.length ? 'in sync' : '—'; }
+function setFilter(stage) {
+  S.filter = S.filter === stage ? null : stage;
+  history.replaceState(null, '', S.filter ? `#s=${S.filter}` : location.pathname);
+  render();
+}
+function ticketsIn(stage) { return S.snap.tickets.filter(t => t.stage === stage); }
+function ticketList(ts) {
+  return h('div', {}, ts.length ? ts.map(t => h('div', {}, h('b', {}, `#${t.number}`), ` ${t.title.slice(0, 60)}`)) : h('span', { class: 'm' }, 'none'));
+}
+
+function renderPipeline() {
+  const c = counts(), svg = $('pipe'); svg.replaceChildren();
+  const g = (attrs, ...k) => h('svg:g', attrs, ...k);
+  const N = {}; // id -> {x,y,w,h}
+  const node = (id, x, y, w, sub) => {
+    N[id] = { x, y, w, h: 74 };
+    const ts = ticketsIn(id), live = id === 'in-flight' && ts.length;
+    const el = g({ class: `node ${stageClass(id)} ${ts.length ? '' : 'zero'} ${S.filter === id ? 'active' : ''} ${live ? 'live' : ''}`, tabindex: 0, role: 'button', 'aria-label': `${STAGE_NAME[id]} ${ts.length}` },
+      h('svg:rect', { x, y, width: w, height: 74, rx: 3 }),
+      h('svg:text', { x: x + 14, y: y + 34, class: 'cnt' }, c[id]),
+      h('svg:text', { x: x + 14 + (c[id] >= 10 ? 44 : 30), y: y + 30, class: 'lbl' }, STAGE_NAME[id]),
+      h('svg:text', { x: x + 14, y: y + 56, class: 'sub' }, sub));
+    el.onclick = () => setFilter(id); el.onkeydown = e => { if (e.key === 'Enter') setFilter(id); };
+    hoverable(el, () => h('div', {}, h('b', {}, `${STAGE_NAME[id]} · ${ts.length}`), h('div', { class: 'm' }, STAGES.find(s => s[0] === id)[2]), ticketList(ts)));
+    svg.append(el);
+  };
+  const edge = (d, cls, label, lx, ly) => {
+    svg.append(h('svg:path', { d, class: `edge ${cls}` }));
+    if (label) svg.append(h('svg:text', { x: lx, y: ly, class: 'elbl' }, label));
+  };
+  const flow = (n, extra = '') => (n ? `flow ${extra}` : '');
+  // main row
+  node('triage', 20, 40, 190, 'needs-triage · local LLM');
+  node('queued', 260, 40, 190, 'ready-for-agent · frontier');
+  node('in-flight', 500, 40, 330, '');
+  node('pr-open', 880, 40, 150, 'factory-approved · CI green');
+  node('merged', 1050, 40, 130, 'merge stage · squash');
+  // branches
+  node('needs-info', 20, 160, 190, 'question posted · waits');
+  node('escalated', 880, 160, 150, 'ready-for-human');
+  node('closed', 1050, 160, 130, 'closed · not merged');
+  // in-flight sub-cells
+  const cells = ['worker', 'gate', 'review'];
+  const inflight = ticketsIn('in-flight');
+  cells.forEach((cell, i) => {
+    const n = inflight.filter(t => phaseCell(t) === cell).length;
+    const x = 514 + i * 104;
+    svg.append(g({ class: `cell ${n ? 'on' : ''}` },
+      h('svg:rect', { x, y: 88, width: 96, height: 18 }),
+      h('svg:text', { x: x + 8, y: 101 }, `${cell.toUpperCase()}${n ? ' · ' + n : ''}`)));
+  });
+  // edges
+  edge('M210,77 H260', flow(c.triage), 'READY', 218, 70);
+  edge('M450,77 H500', flow(c.queued), 'CLAIM', 458, 70);
+  edge('M830,77 H880', flow(c['in-flight'], 'grn'), 'APPROVE', 834, 70);
+  edge('M1030,77 H1050', flow(c['pr-open'], 'grn'), '', 0, 0);
+  edge('M115,114 V160', flow(c.triage, 'org'), 'NEEDS-INFO', 122, 140);
+  edge('M665,114 V197 H880', flow(c['in-flight'], 'mag'), '3 FAILS · 90 MIN · 2ND REVISE', 690, 190);
+  edge('M955,114 V160', flow(c['pr-open'], 'mag'), '', 0, 0);
+  edge('M1030,197 H1050', '', '', 0, 0);
+  edge('M355,114 V232 H1115 V234', '', 'WONTFIX / CLOSE', 700, 226);
+  svg.append(h('svg:text', { x: 20, y: 245, class: 'elbl' }, `MAX_ACTIVE=${S.snap.config.max_active} · MAX_ATTEMPTS=${S.snap.config.max_attempts} · BUDGET ${S.snap.config.budget_min} MIN · 1 REVIEW BOUNCE · NO AUTO-MERGE`));
+}
+
+function card(t) {
+  const cfg = S.snap.config;
+  const dots = [];
+  for (let i = 1; i <= cfg.max_attempts; i++) dots.push(h('i', { class: `dot ${t.attempts.some(a => a.attempt === i) ? 'on' : ''}`, title: `gate round ${i}` }));
+  dots.push(h('i', { class: `dot b ${t.attempts.some(isBounce) ? 'on' : ''}`, title: 'review bounce' }));
+  const gate = t.gate ? t.gate.checks : (t.pr && t.pr.gate_text ? Object.fromEntries([...t.pr.gate_text.matchAll(/- ([\w-]+): (PASS|FAIL|SKIP)/g)].map(m => [m[1], m[2]])) : null);
+  const sq = cfg.gate_checks.map(n => h('i', { class: `sq ${gate ? gate[n] || '' : ''}`, title: `${n}: ${gate ? gate[n] || '?' : 'no report'}` }));
+  const verdicts = t.pr ? t.pr.verdicts.map(v => h('span', { class: `vd ${v.verdict}`, title: fmt(v.at) }, v.verdict[0])) : (t.review && t.review.verdict ? [h('span', { class: `vd ${t.review.verdict}` }, t.review.verdict[0])] : []);
+  const ci = t.pr ? t.pr.checks.counts : null;
+  const ciNode = ci ? h('span', { class: 'ci', title: 'CI on PR head' }, h('span', { class: 'k' }, 'ci '),
+    h('b', { class: 'ok' }, `✓${(ci.SUCCESS || 0)}`), ' ', ci.FAILURE || ci.ERROR ? h('b', { class: 'bad' }, `✗${(ci.FAILURE || 0) + (ci.ERROR || 0)}`) : null, ' ',
+    ci.QUEUED || ci.IN_PROGRESS || ci.PENDING ? h('b', { class: 'pend' }, `…${(ci.QUEUED || 0) + (ci.IN_PROGRESS || 0) + (ci.PENDING || 0)}`) : null) : null;
+  const el = h('article', { class: `card ${stageClass(t.stage)} ${S.sel === t.number ? 'sel' : ''}`, tabindex: 0, dataset: { n: t.number }, 'aria-label': `#${t.number} ${t.title}` },
+    h('div', { class: 'ct' }, h('span', { class: 'num' }, `#${t.number}`), h('span', { class: 'wk' }, t.worker),
+      t.lock_held ? h('span', { class: 'chip live', style: { '--c': 'var(--yel)' } }, t.phase ? `${phaseCell(t)}${t.phase.attempt ? ' #' + t.phase.attempt : ''}` : 'live') : null,
+      t.pr && t.pr.approved && t.pr.state === 'OPEN' ? h('span', { class: 'chip', style: { '--c': 'var(--grn)' }, title: 'factory-approved: merge stage will land it' }, 'approved') : null,
+      t.stage === 'escalated' && t.assignees.length ? h('span', { class: 'chip', style: { '--c': 'var(--cyan)' } }, 'in human hands') : null,
+      h('span', { class: 'chip' }, STAGE_NAME[t.stage])),
+    h('div', { class: 'title' }, t.title),
+    h('div', { class: 'pips' },
+      h('span', {}, h('span', { class: 'k' }, 'att '), ...dots),
+      h('span', {}, h('span', { class: 'k' }, 'gate '), ...sq),
+      verdicts.length ? h('span', {}, h('span', { class: 'k' }, 'rev '), ...verdicts) : null,
+      ciNode),
+    h('div', { class: 'meta' },
+      t.pr ? h('span', {}, `PR #${t.pr.number} ${t.pr.state.toLowerCase()}`) : null,
+      t.worktree ? h('span', {}, `${t.worktree.commits.length} commit${t.worktree.commits.length === 1 ? '' : 's'}`) : null,
+      t.assignees.length ? h('span', {}, `@${t.assignees.join(' @')}`) : null,
+      h('span', { title: fmt(t.updated_at) }, `upd ${ago(t.updated_at)}`)));
+  el.onclick = () => openTicket(t.number);
+  el.onkeydown = e => { if (e.key === 'Enter') openTicket(t.number); };
+  return el;
+}
+function renderBoard() {
+  const c = counts(), vis = visible(), board = $('board'); board.replaceChildren();
+  const stages = STAGES.map(s => s[0]).filter(id => ALWAYS_COLS.includes(id) || c[id]);
+  const shown = S.filter ? stages.filter(s => s === S.filter) : stages;
+  for (const id of shown) {
+    const ts = vis.filter(t => t.stage === id);
+    board.append(h('div', { class: `col ${stageClass(id)} ${ts.length ? '' : 'empty'}` },
+      h('h3', {}, STAGE_NAME[id], h('span', {}, ts.length)), ...ts.map(card)));
+  }
+  $('filterchip').replaceChildren(S.filter ? h('span', { class: `chip ${stageClass(S.filter)}` }, `${STAGE_NAME[S.filter]} ×`) : '', S.q ? h('span', { class: 'chip' }, `“${S.q}”`) : '');
+  $('filterchip').onclick = () => { S.filter = null; render(); };
+}
+function renderFeed() {
+  const evs = visible().flatMap(t => t.events.filter(e => FEED_KINDS.has(e.kind)).map(e => ({ ...e, n: t.number })))
+    .sort((a, b) => ms(b.at) - ms(a.at)).slice(0, 80);
+  $('feedcount').textContent = `${evs.length} events${S.filter || S.q.trim() ? ' (filtered)' : ''}`;
+  $('feed').replaceChildren(...evs.map(e => h('li', { onclick: () => openTicket(e.n, 'timeline'), title: fmt(e.at) },
+    h('span', { class: 't' }, hm(e.at) + ' ' + ago(e.at).replace(' ago', '')), h('span', { class: 'n' }, `#${e.n}`),
+    h('span', { class: `ev ev-${e.kind}` }, e.kind), h('span', { class: 'd' }, e.detail))));
+  if (!evs.length) $('feed').replaceChildren(h('li', { class: 'empty' }, 'no events'));
+}
+function renderRuns() {
+  const runs = S.snap.dispatcher.runs.slice().reverse();
+  $('runcount').textContent = `${runs.length} runs`;
+  $('heartbeat').replaceChildren(...runs.slice(0, 96).reverse().map(r => {
+    const [cls, sum] = runSummary(r);
+    const el = h('div', { class: `hb ${cls}` });
+    hoverable(el, () => h('div', {}, h('b', {}, fmt(r.started)), h('div', { class: 'm' }, `${sum} · ${dur(r.started, r.finished || new Date().toISOString())}`)));
+    return el;
+  }));
+  $('runs').replaceChildren(...runs.slice(0, 40).map(r => {
+    const [cls, sum] = runSummary(r);
+    const li = h('li', {}, h('span', { class: 't', title: fmt(r.started) }, hm(r.started) + ' ' + ago(r.started).replace(' ago', '')),
+      h('span', { class: 't' }, dur(r.started, r.finished || new Date().toISOString())), h('span', { class: `r ${cls}` }, cls), h('span', { class: 'd' }, sum));
+    li.onclick = () => { const p = li.querySelector('pre'); p ? p.remove() : li.append(h('pre', {}, r.lines.join('\n') || '(no output)')); };
+    return li;
+  }));
+  if (!runs.length) $('runs').replaceChildren(h('li', { class: 'empty' }, `no journal entries — is ${S.snap.config.unit}.timer linked?`));
+}
+function renderUpstream() {
+  const u = S.snap.upstream, pending = upstreamPending(), main = S.snap.config.main;
+  $('up-panel').hidden = !S.snap.config.upstream;
+  if (!S.snap.config.upstream) return;
+  $('up-head').textContent = `${u.repo} ${u.branch || main} → ${S.snap.repo} ${main}`;
+  $('up-note').replaceChildren(u.blocker
+    ? h('a', { href: u.blocker.url, target: '_blank', rel: 'noopener', style: { color: 'var(--mag)' } }, `parked on #${u.blocker.number} ↗`)
+    : `fork ${main} ${u.fork_main.slice(0, 12)} · +${u.ahead ?? '?'} ahead · ${pending.length ? pending.length + ' to merge' : 'in sync'} · merged by the dispatcher under the host gate`);
+  $('up-commits-h').textContent = `upstream ${u.branch || main} · newest first · ${pending.length} pending${pending.length === u.commits.length && pending.length ? ' (at least)' : ''}`;
+  $('up-commits').replaceChildren(...u.commits.map(c => h('li', { class: c.synced ? '' : 'pending', title: `${c.author || ''} · ${fmt(c.at)}`, onclick: () => open(c.url, '_blank') },
+    h('span', { class: 't' }, hm(c.at) + ' ' + ago(c.at).replace(' ago', '')), h('span', { class: 'sha' }, `${c.synced ? '✓' : '·'} ${c.sha.slice(0, 8)}`), h('span', { class: 'd' }, c.subject))));
+  if (!u.commits.length) $('up-commits').replaceChildren(h('li', { class: 'empty' }, 'no upstream data — GitHub unreachable?'));
+  const syncs = u.syncs.slice().reverse();
+  $('up-syncs').replaceChildren(...syncs.map(s => {
+    const detail = s.result === 'synced' ? `${s.commits} commit(s) → ${(s.merge || '').slice(0, 12)}` : s.issue || s.detail || '';
+    const li = h('li', {}, h('span', { class: 't', title: fmt(s.at) }, hm(s.at) + ' ' + ago(s.at).replace(' ago', '')),
+      h('span', { class: 't' }, s.upstream.slice(0, 8)), h('span', { class: `r ${s.result}` }, s.result), h('span', { class: 'd' }, detail));
+    li.onclick = () => { const p = li.querySelector('pre'); p ? p.remove() : li.append(h('pre', {}, JSON.stringify(s, null, 1))); };
+    return li;
+  }));
+  if (!syncs.length) $('up-syncs').replaceChildren(h('li', { class: 'empty' }, 'no syncs recorded yet'));
+}
+
+function renderLanes() {
+  const svg = $('lanes'); svg.replaceChildren();
+  const ts = visible().slice().sort((a, b) => a.number - b.number);
+  if (!ts.length) { svg.setAttribute('viewBox', '0 0 1200 40'); svg.append(h('svg:text', { x: 12, y: 24, class: 'axis' }, 'no tickets match')); return; }
+  const W = 1200, L = 60, R = 20, TOP = 22, RH = 22, H = TOP + ts.length * RH + 24;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  const now = Date.now();
+  const win = +$('window').value * 3600e3;
+  const t0 = Math.max(Math.min(...ts.map(t => ms(t.created_at))), win ? now - win : 0), span = Math.max(now - t0, 3600e3);
+  const X = iso => L + Math.max(0, ms(iso) - t0) / span * (W - L - R);
+  // grid: pick a tick step
+  const steps = [3600e3, 6 * 3600e3, 12 * 3600e3, 86400e3, 7 * 86400e3];
+  const step = steps.find(s => span / s <= 14) || steps.at(-1);
+  for (let x = Math.ceil(t0 / step) * step; x <= now; x += step) {
+    svg.append(h('svg:line', { x1: X(new Date(x).toISOString()), x2: X(new Date(x).toISOString()), y1: TOP - 4, y2: H - 20, class: 'grid' }));
+    svg.append(h('svg:text', { x: X(new Date(x).toISOString()) + 3, y: 12, class: 'axis' }, fmt(new Date(x).toISOString())));
+  }
+  ts.forEach((t, i) => {
+    const y = TOP + i * RH;
+    const row = h('svg:g', { class: `lane-row ${S.sel === t.number ? 'sel' : ''}`, onclick: () => openTicket(t.number) });
+    row.append(h('svg:rect', { x: 0, y, width: W, height: RH, class: 'lane-bg' }));
+    row.append(h('svg:text', { x: 8, y: y + 15, class: 'lane-lbl' }, `#${t.number}`));
+    for (const s of stageTimeline(t)) {
+      if (ms(s.to) < t0) continue;
+      const x1 = X(s.from), x2 = X(s.to);
+      const seg = h('svg:rect', { x: x1, y: y + 5, width: Math.max(x2 - x1, 1.5), height: 12, class: `seg ${stageClass(s.stage)}`, style: { fill: 'var(--c)' } });
+      hoverable(seg, () => h('div', {}, h('b', {}, `#${t.number} ${STAGE_NAME[s.stage]}`), h('div', { class: 'm' }, `${fmt(s.from)} → ${fmt(s.to)} · ${dur(s.from, s.to)}`)));
+      row.append(seg);
+    }
+    for (const e of t.events) {
+      if (ms(e.at) < t0) continue;
+      const x = X(e.at);
+      if (e.kind === 'attempt') row.append(h('svg:rect', { x: x - 3, y: y + 8, width: 6, height: 6, class: 'mk-attempt', transform: `rotate(45 ${x} ${y + 11})` }, h('svg:title', {}, `${e.detail} · ${fmt(e.at)}`)));
+      else if (e.kind === 'gate') row.append(h('svg:rect', { x: x - 2.5, y: y + 8.5, width: 5, height: 5, class: 'mk-gate' }, h('svg:title', {}, `gate ${e.detail} · ${fmt(e.at)}`)));
+      else if (e.kind === 'verdict') row.append(h('svg:path', { d: e.detail === 'APPROVE' ? `M${x - 4},${y + 19} l4,-6 l4,6 z` : `M${x - 4},${y + 3} l4,6 l4,-6 z`, class: `mk-${e.detail}` }, h('svg:title', {}, `${e.detail} · ${fmt(e.at)}`)));
+    }
+    svg.append(row);
+  });
+  svg.append(h('svg:line', { x1: X(new Date(now).toISOString()), x2: X(new Date(now).toISOString()), y1: TOP - 4, y2: H - 20, class: 'nowline' }));
+  svg.append(h('svg:text', { x: X(new Date(now).toISOString()) - 22, y: H - 6, class: 'axis', style: { fill: 'var(--cyan)' } }, 'now'));
+}
+
+function renderThroughput() {
+  const svg = $('thru'); svg.replaceChildren();
+  const days = []; const d0 = new Date(); d0.setHours(0, 0, 0, 0);
+  for (let i = 13; i >= 0; i--) days.push(new Date(d0.getTime() - i * 86400e3));
+  const key = iso => { const d = new Date(iso); d.setHours(0, 0, 0, 0); return d.getTime(); };
+  const series = { triaged: 'var(--pur)', attempt: 'var(--yel)', 'pr-opened': 'var(--blu)', merged: 'var(--grn)', escalated: 'var(--mag)' };
+  const counts = Object.fromEntries(Object.keys(series).map(k => [k, Object.fromEntries(days.map(d => [d.getTime(), 0]))]));
+  for (const t of S.snap.tickets) for (const e of t.events) if (counts[e.kind] && counts[e.kind][key(e.at)] != null) counts[e.kind][key(e.at)]++;
+  const max = Math.max(1, ...Object.values(counts).flatMap(c => Object.values(c)));
+  const W = 1200, L = 30, B = 140, TOP = 12, colW = (W - L - 10) / days.length, bw = Math.min(14, colW / 6);
+  [0, Math.ceil(max / 2), max].forEach(v => { const y = B - (B - TOP) * v / max; svg.append(h('svg:line', { x1: L, x2: W - 10, y1: y, y2: y, class: 'grid' })); svg.append(h('svg:text', { x: 4, y: y + 3, class: 'axis' }, v)); });
+  days.forEach((d, i) => {
+    const x0 = L + i * colW + colW / 2 - (Object.keys(series).length * bw) / 2;
+    svg.append(h('svg:text', { x: L + i * colW + colW / 2, y: B + 14, class: 'axis', 'text-anchor': 'middle' }, `${d.getMonth() + 1}/${d.getDate()}`));
+    Object.entries(series).forEach(([k, color], j) => {
+      const v = counts[k][d.getTime()]; if (!v) return;
+      const hgt = (B - TOP) * v / max;
+      const bar = h('svg:rect', { x: x0 + j * bw, y: B - hgt, width: bw - 2, height: hgt, class: 'bar', style: { fill: color, color } });
+      hoverable(bar, () => h('div', {}, h('b', {}, `${k} · ${v}`), h('div', { class: 'm' }, d.toDateString())));
+      svg.append(bar);
+    });
+  });
+}
+
+function renderConfig() {
+  const cfg = S.snap.config, d = S.snap.dispatcher, T = S.snap.tickets;
+  const dl = pairs => h('dl', {}, ...pairs.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]));
+  const inflight = ticketsIn('in-flight');
+  $('config').replaceChildren(
+    h('div', { class: 'cardc' }, h('h4', {}, 'factory dispatch'), dl([
+      ['timer', d.timer.active ? `active · every ${cfg.timer_interval}` : 'inactive'], ['next pass', d.timer.next ? fmt(d.timer.next) : '—'], ['last pass', d.timer.last ? fmt(d.timer.last) : '—'],
+      ['service', d.service_active ? 'running now' : 'idle (oneshot)'], ['MAX_ACTIVE', `${cfg.max_active} · ${S.snap.active} held`], ['MAX_ATTEMPTS', `${cfg.max_attempts} gate rounds + 1 review bounce`],
+      ['budget', `${cfg.budget_min} min wall clock / ticket`], ['escalation', 'unassign · ready-for-human · comment with log path · CI failure pulls factory-approved'], ['merge stage', `squash, ≤1 PR per pass · needs ${cfg.approved_label} + green CI + head contains ${cfg.main} tip`],
+      ['upstream sync', cfg.upstream ? `${S.snap.upstream.repo} ${cfg.main} → ${cfg.main} · merge commit under host gate (leak scan skipped) · conflict/gate fail opens a ready-for-human issue` : 'disabled']])),
+    h('div', { class: 'cardc' }, h('h4', {}, 'factory gate'), dl([
+      ['checks', h('span', {}, ...cfg.gate_checks.map(c => h('span', { class: 'lab' }, c)))], ['gpu lock', h('code', {}, cfg.gpu_lock)], ['held now', S.snap.gpu_lock_held ? h('span', { style: { color: 'var(--yel)' } }, 'yes') : 'no'],
+      ['serialized', cfg.exclusive_checks.join(' · ') || 'none'], ['timeout', `${cfg.check_timeout} s per check`], ['leak scan', cfg.leak_pattern ? `origin/${cfg.main}..HEAD, added lines` : 'disabled']])),
+    h('div', { class: 'cardc' }, h('h4', {}, 'workers · reviewer · triage'), dl([
+      ...Object.entries(cfg.workers).map(([label, cmd]) => [label === 'default' ? 'default' : `${label} label`, h('code', {}, cmd)]), ['reviewer', h('code', {}, cfg.reviewer)],
+      ['triage llm', h('span', {}, h('i', { class: `led ${cfg.triage.online ? 'on' : 'bad'}` }), cfg.triage.online ? 'online' : 'offline')], ['endpoint', h('code', {}, cfg.triage.url)], ['model', h('code', {}, cfg.triage.model)]])),
+    h('div', { class: 'cardc' }, h('h4', {}, '.factory/ · state on disk'), dl([
+      ['dir', h('code', {}, cfg.state_dir)], ['worktrees', `${T.filter(t => t.worktree).length} (${T.filter(t => t.worktree && t.worktree.dirty).length} dirty)`],
+      ['attempt logs', T.reduce((n, t) => n + t.attempts.length, 0)], ['gate reports', T.filter(t => t.gate).length], ['reviews', T.filter(t => t.review).length],
+      ['in flight', inflight.length ? inflight.map(t => `#${t.number}`).join(' ') : 'none']])),
+  );
+}
+
+// ---------------------------------------------------------------- drawer
+function openTicket(n, tab) {
+  S.sel = n; if (tab) S.tab = tab;
+  syncHash();
+  render();
+}
+function closeDrawer() { S.sel = null; syncHash(); render(); $('drawer').classList.remove('open'); $('drawer').setAttribute('aria-hidden', 'true'); }
+function renderDrawer() {
+  const t = S.snap.tickets.find(x => x.number === S.sel);
+  const dr = $('drawer');
+  if (!t) { closeDrawer(); return; }
+  dr.classList.add('open'); dr.setAttribute('aria-hidden', 'false'); dr.className = `drawer open ${stageClass(t.stage)}`;
+  $('d-num').textContent = `#${t.number}`;
+  $('d-stage').textContent = STAGE_NAME[t.stage];
+  $('d-live').replaceChildren(t.lock_held ? h('span', { class: 'chip live', style: { '--c': 'var(--yel)' } }, t.phase ? `${phaseCell(t)} · ${t.phase.artifact} ${ago(t.phase.at)}` : 'lock held') : '');
+  $('d-title').textContent = t.title;
+  $('d-links').replaceChildren(
+    h('a', { href: t.url, target: '_blank', rel: 'noopener' }, 'issue ↗'),
+    t.pr ? h('a', { href: t.pr.url, target: '_blank', rel: 'noopener' }, `PR #${t.pr.number} ↗`) : null,
+    h('span', {}, `${t.worker} worker`), h('span', {}, t.assignees.length ? `@${t.assignees.join(' @')}` : 'unassigned'),
+    h('span', { title: fmt(t.created_at) }, `opened ${ago(t.created_at)}`),
+    h('span', {}, ...t.labels.map(l => h('span', { class: 'lab' }, l))));
+  $('d-tabs').replaceChildren(...TABS.map(tab => h('button', { class: S.tab === tab ? 'on' : '', onclick: () => { S.tab = tab; renderDrawer(); } }, tab)));
+  const c = $('d-content'); c.replaceChildren();
+  ({ timeline: tabTimeline, attempts: tabAttempts, gate: tabGate, review: tabReview, branch: tabBranch, prompt: tabPrompt, issue: tabIssue })[S.tab](t, c);
+  $('d-close').onclick = closeDrawer;
+}
+const pre = text => h('pre', {}, text || '(empty)');
+async function preFile(path, into) { const p = pre('loading…'); into.append(p); p.textContent = await file(path); }
+function tabTimeline(t, c) {
+  const ol = h('ol', { class: 'tl' });
+  t.events.slice().reverse().forEach((e, i, arr) => {
+    const prev = arr[i + 1];
+    const li = h('li', {}, h('span', { class: 't', title: fmt(e.at) }, `${fmt(e.at)} ${prev ? '+' + dur(prev.at, e.at) : ''}`), h('span', { class: `ev ev-${e.kind}` }, e.kind),
+      h('span', {}, e.detail, e.body ? h('details', {}, h('summary', {}, 'full text'), pre(e.body)) : null,
+        e.path ? h('details', { ontoggle: ev => { if (ev.target.open && !ev.target.dataset.l) { ev.target.dataset.l = 1; preFile(e.path, ev.target); } } }, h('summary', {}, e.path)) : null));
+    ol.append(li);
+  });
+  c.append(h('div', { class: 'kv' }, h('dt', {}, 'created'), h('dd', {}, fmt(t.created_at)), h('dt', {}, 'updated'), h('dd', {}, fmt(t.updated_at)),
+    t.closed_at ? h('dt', {}, 'closed') : null, t.closed_at ? h('dd', {}, fmt(t.closed_at)) : null,
+    h('dt', {}, 'elapsed'), h('dd', {}, dur(t.created_at, t.pr && t.pr.merged_at ? t.pr.merged_at : t.closed_at || new Date().toISOString()))), ol);
+}
+function tabAttempts(t, c) {
+  if (!t.attempts.length) { c.append(h('div', { class: 'empty' }, 'no worker attempts on disk')); return; }
+  const claim = t.events.find(e => e.kind === 'assigned');
+  t.attempts.forEach((a, i) => {
+    const startAt = i ? t.attempts[i - 1].mtime : (claim ? claim.at : null);
+    const box = h('div', { class: 'attempt' });
+    const body = h('div');
+    const btn = h('button', { onclick: async () => { if (body.childElementCount) { body.replaceChildren(); btn.textContent = 'view log'; } else { btn.textContent = 'hide'; await preFile(a.path, body); } } }, 'view log');
+    box.append(h('div', { class: 'ah' }, h('b', {}, isBounce(a) ? `review bounce (attempt ${a.attempt})` : `gate round ${a.attempt}`),
+      h('span', { class: 'hint' }, `${kb(a.size)} · finished ${fmt(a.mtime)}${startAt ? ' · ~' + dur(startAt, a.mtime) : ''}`), btn), body);
+    c.append(box);
+  });
+  c.append(h('div', { class: 'hint' }, 'duration ≈ gap between the claim (or previous log) and this log’s last write; the gate runs inside that window.'));
+}
+function tabGate(t, c) {
+  const checks = t.gate ? t.gate.checks : {};
+  const text = t.gate ? t.gate.text : t.pr && t.pr.gate_text;
+  const parsed = t.gate ? checks : Object.fromEntries([...(text || '').matchAll(/- ([\w-]+): (PASS|FAIL|SKIP)/g)].map(m => [m[1], m[2]]));
+  c.append(h('div', { class: 'section-h' }, t.gate ? `latest report on disk · ${ago(t.gate.mtime)}` : t.pr && t.pr.gate_text ? 'from PR body (worktree gone)' : 'no gate report'));
+  c.append(h('div', { class: 'checks' }, ...S.snap.config.gate_checks.map(n => h('span', { class: `chk ${parsed[n] || ''}` }, `${n} ${parsed[n] || '?'}`))));
+  if (text) c.append(pre(text));
+  if (t.gate && t.pr && t.pr.gate_text && t.pr.gate_text !== t.gate.text.trim()) { c.append(h('div', { class: 'section-h' }, 'report attached to the PR at open'), pre(t.pr.gate_text)); }
+}
+function tabReview(t, c) {
+  const vs = t.pr ? t.pr.verdicts : [];
+  const last = vs.at(-1);
+  c.append(h('div', { class: 'section-h' }, last ? `latest verdict: ${last.verdict} · ${ago(last.at)}` : 'no reviewer verdict on the PR'));
+  if (last) c.append(h('div', { class: 'checks' }, ...vs.map(v => h('span', { class: `chk ${v.verdict === 'APPROVE' ? 'PASS' : 'FAIL'}`, title: fmt(v.at) }, `${v.verdict} ${hm(v.at)}`))));
+  vs.slice().reverse().forEach((v, i) => c.append(h('details', { open: i === 0 }, h('summary', {}, `${v.verdict} · ${fmt(v.at)}`), pre(v.body))));
+  if (t.review) c.append(h('div', { class: 'section-h' }, `local review-${t.number}.md · ${t.review.verdict || '?'} · ${ago(t.review.mtime)}`), h('details', {}, h('summary', {}, t.review.path), pre(t.review.text)));
+}
+function tabBranch(t, c) {
+  const w = t.worktree, p = t.pr;
+  c.append(h('div', { class: 'section-h' }, 'worktree'));
+  c.append(w ? h('dl', { class: 'kv' }, h('dt', {}, 'path'), h('dd', {}, w.path), h('dt', {}, 'head'), h('dd', {}, `${w.head}${w.dirty ? ' · dirty' : ''}`), h('dt', {}, `vs origin/${S.snap.config.main}`), h('dd', {}, w.diffstat || 'no diff'))
+    : h('div', { class: 'empty' }, 'no worktree on disk'));
+  if (w && w.commits.length) c.append(h('ol', { class: 'tl' }, ...w.commits.map(k => h('li', {}, h('span', { class: 't' }, fmt(k.at)), h('span', { class: 'ev' }, k.sha), h('span', {}, k.subject)))));
+  c.append(h('div', { class: 'section-h' }, 'pull request'));
+  if (!p) { c.append(h('div', { class: 'empty' }, 'no agent PR')); return; }
+  c.append(h('dl', { class: 'kv' }, h('dt', {}, 'PR'), h('dd', {}, h('a', { href: p.url, target: '_blank', rel: 'noopener' }, `#${p.number} ↗`), ` ${p.state.toLowerCase()}${p.draft ? ' · draft' : ''}`),
+    h('dt', {}, 'opened'), h('dd', {}, fmt(p.created_at)), p.merged_at ? h('dt', {}, 'merged') : null, p.merged_at ? h('dd', {}, `${fmt(p.merged_at)} · ${dur(p.created_at, p.merged_at)} after open`) : null,
+    h('dt', {}, 'size'), h('dd', {}, `+${p.additions} −${p.deletions} · ${p.changed_files} files`), h('dt', {}, 'ci rollup'), h('dd', {}, p.checks.state || '—')));
+  const groups = {};
+  for (const ch of p.checks.list) (groups[ch.result] ||= []).push(ch.name);
+  for (const [res, names] of Object.entries(groups).sort()) c.append(h('div', { class: 'checks' }, h('span', { class: `chk ${res}` }, `${res} · ${names.length}`), ...names.map(n => h('span', { class: 'chk' }, n))));
+}
+function tabPrompt(t, c) {
+  if (!t.prompt) { c.append(h('div', { class: 'empty' }, 'no .factory-prompt.md (worktree gone or never claimed)')); return; }
+  c.append(h('div', { class: 'section-h' }, `${t.prompt.path} · ${kb(t.prompt.size)} · ${ago(t.prompt.mtime)}`));
+  preFile(t.prompt.path, c);
+}
+function tabIssue(t, c) {
+  c.append(h('div', { class: 'section-h' }, `${t.state.toLowerCase()} · ${t.labels.join(', ') || 'no labels'}`), pre(t.body));
+}
+
+// ---------------------------------------------------------------- inbox
+// What is waiting on a human, derived from the same snapshot. Ordered by
+// urgency; each item carries the forms that answer it via /api/act.
+function lastEvent(t, kind) { return t.events.filter(e => e.kind === kind).at(-1); }
+function inboxItems() {
+  const items = [], d = S.snap.dispatcher, cfg = S.snap.config;
+  if (!d.timer.active) items.push({ pri: 0, kind: 'system', title: 'Dispatcher timer is not active', why: 'Nothing will be triaged, claimed, gated, or merged until it runs.', cmd: `systemctl --user enable --now ${cfg.unit}.timer` });
+  const lastRun = d.runs.at(-1);
+  if (lastRun && lastRun.result === 'failed') items.push({ pri: 0, kind: 'system', title: `Last dispatcher pass failed (${fmt(lastRun.started)})`, why: lastRun.lines.slice(-3).join(' · ') || 'no output', cmd: `journalctl --user -u ${cfg.unit}.service -n 200` });
+  if (!cfg.triage.online) items.push({ pri: 0, kind: 'system', title: 'Triage LLM endpoint is offline', why: `${cfg.triage.url} did not answer; needs-triage issues will not be triaged.`, cmd: `# expected model: ${cfg.triage.model}` });
+  if (cfg.upstream && S.snap.upstream.blocker) items.push({ pri: 0, kind: 'system', title: `Upstream sync parked: ${S.snap.upstream.blocker.title}`, why: `${upstreamPending().length} upstream commit(s) will not be merged until #${S.snap.upstream.blocker.number} is closed.`, cmd: `git fetch ${cfg.upstream} && git merge --no-ff --signoff ${cfg.upstream}/${cfg.main} && git push origin ${cfg.main}  # then close #${S.snap.upstream.blocker.number}` });
+  for (const t of S.snap.tickets) {
+    const triaged = lastEvent(t, 'triaged');
+    const humanHands = t.assignees.length > 0;
+    if (t.stage === 'escalated' && !humanHands) {
+      const esc = lastEvent(t, 'escalated');
+      items.push({ pri: 1, kind: 'escalated', t, title: t.title, why: esc ? esc.detail : 'labelled ready-for-human', at: esc && esc.at });
+    } else if (t.stage === 'needs-info') {
+      const q = triaged && (triaged.body.split(/\n\s*Question:\s*/)[1] || '').trim();
+      items.push({ pri: 2, kind: 'needs-info', t, title: t.title, why: q || 'triage asked for more information (see comments)', at: triaged && triaged.at });
+    } else if (t.stage === 'triage' && triaged && /^Triage proposal: wontfix/.test(triaged.body)) {
+      items.push({ pri: 3, kind: 'wontfix', t, title: t.title, why: triaged.body.replace(/^Triage proposal: wontfix\s*[—-]\s*/, ''), at: triaged.at });
+    } else if (t.stage === 'queued' && humanHands && !t.lock_held) {
+      items.push({ pri: 4, kind: 'stuck', t, title: t.title, why: `assigned to @${t.assignees.join(', @')} with no live pipeline — the dispatcher skips assigned tickets`, at: t.updated_at });
+    } else if (t.stage === 'triage') {
+      items.push({ pri: 5, kind: 'triage', t, title: t.title, why: triaged ? `triage commented but left the label: ${triaged.detail}` : 'no triage decision yet', at: t.created_at });
+    } else if (t.stage === 'pr-open') {
+      items.push({ pri: 6, kind: 'pr', t, title: t.title, why: t.pr.approved ? 'factory-approved · merge stage lands it when CI is green and the branch is current' : `not factory-approved · merge stage will not touch PR #${t.pr.number}`, at: t.pr.created_at });
+    }
+    if (t.worktree && (t.stage === 'merged' || t.stage === 'closed')) items.push({ pri: 7, kind: 'stale', t, title: t.title, why: `${t.worktree.path} still on disk after ${t.stage}`, at: t.updated_at });
+  }
+  return items.sort((a, b) => a.pri - b.pri || (b.t ? b.t.number : 0) - (a.t ? a.t.number : 0));
+}
+const INBOX_KINDS = {
+  system: ['SYSTEM', 'var(--red)'], escalated: ['ESCALATED · NEEDS YOUR CALL', 'var(--mag)'], 'needs-info': ['QUESTION FOR YOU', 'var(--org)'],
+  wontfix: ['WONTFIX PROPOSAL', 'var(--pur)'], stuck: ['STUCK CLAIM', 'var(--yel)'], triage: ['UNTRIAGED', 'var(--pur)'], pr: ['IN THE MERGE QUEUE', 'var(--blu)'], stale: ['HOUSEKEEPING', 'var(--dim)'],
+};
+const WAITING = new Set(['system', 'escalated', 'needs-info', 'wontfix', 'stuck', 'triage']);
+function inboxCount() { return S.snap ? inboxItems().filter(i => WAITING.has(i.kind)).length : 0; }
+
+async function act(form, payloads, label) {
+  const btns = [...form.querySelectorAll('button')]; btns.forEach(b => b.disabled = true);
+  const out = form.querySelector('.act-out'); out.className = 'act-out'; out.textContent = `${label}…`;
+  try {
+    for (const payload of [].concat(payloads)) {
+      const r = await fetch('/api/act', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Factory-Act': '1' }, body: JSON.stringify(payload) });
+      const res = await r.json();
+      if (!res.ok) {
+        out.classList.add('bad');
+        out.replaceChildren(`${label} failed`, ...(res.error ? [h('pre', {}, res.error)] : []), ...res.steps.filter(s => !s.ok).map(s => h('pre', {}, `${s.cmd}\n${s.output}`)));
+        btns.forEach(b => b.disabled = false);
+        return;
+      }
+    }
+    const n = [].concat(payloads)[0].number; if (n != null) delete S.drafts[n];
+    toast(`${label} — done`);
+    await load(true);
+  } catch (e) { out.classList.add('bad'); out.textContent = `${label} failed: ${e.message}`; btns.forEach(b => b.disabled = false); }
+}
+function toast(msg) { const el = h('div', { class: 'toast' }, msg); $('toasts').append(el); setTimeout(() => el.remove(), 4000); }
+function confirmBtn(label, fn, opts = {}) {
+  const b = h('button', { class: opts.danger ? 'danger' : opts.primary ? 'primary' : '' }, label);
+  b.onclick = () => { if (!opts.confirm || b.dataset.armed) { delete b.dataset.armed; b.textContent = label; fn(); } else { b.dataset.armed = 1; b.textContent = `${label}? click again`; setTimeout(() => { delete b.dataset.armed; b.textContent = label; }, 4000); } };
+  return b;
+}
+function inboxForm(item) {
+  const t = item.t, form = h('div', { class: 'act' });
+  const ta = h('textarea', { rows: 3, placeholder: '', dataset: { n: t ? t.number : '' } });
+  if (t && S.drafts[t.number]) ta.value = S.drafts[t.number];
+  const out = h('div', { class: 'act-out' });
+  const issue = (label, extra, opts) => confirmBtn(label, () => act(form, { op: 'issue', number: t.number, comment: ta.value, ...extra }, `#${t.number} ${label}`), opts);
+  const pr = (label, extra, opts) => confirmBtn(label, () => act(form, { op: 'pr', number: t.pr.number, ...extra }, `PR #${t.pr.number} ${label}`), opts);
+  const row = (...b) => h('div', { class: 'act-row' }, ...b);
+  switch (item.kind) {
+    case 'escalated': {
+      ta.placeholder = 'Guidance for the next attempt (posted as an issue comment; the worker prompt includes it)';
+      const ci = t.pr && (t.pr.checks.counts.FAILURE || t.pr.checks.counts.ERROR);
+      form.append(ta, row(
+        issue('Re-queue agent', { add: ['ready-for-agent'], remove: ['ready-for-human'], unassign: true }, { primary: true }),
+        issue('I will take it', { assign: true }),
+        t.pr && !t.pr.approved ? confirmBtn('Re-approve PR for merge', () => act(form, [{ op: 'pr', number: t.pr.number, add: [S.snap.config.approved_label] }, { op: 'issue', number: t.number, remove: ['ready-for-human'] }], `PR #${t.pr.number} re-approve`), { confirm: true }) : null,
+        issue('Close · not planned', { close: 'not planned' }, { danger: true, confirm: true })),
+        ...(ci ? [h('div', { class: 'hint' }, `CI failing on PR #${t.pr.number}: ${t.pr.checks.list.filter(c => c.result === 'FAILURE' || c.result === 'ERROR').map(c => c.name).join(', ')}`)] : []));
+      break;
+    }
+    case 'needs-info':
+      ta.placeholder = 'Your answer (posted as an issue comment)';
+      form.append(ta, row(
+        issue('Answer → re-triage', { add: ['needs-triage'], remove: ['needs-info'] }, { primary: true }),
+        issue('Answer → queue agent', { add: ['ready-for-agent'], remove: ['needs-info'] }),
+        issue('Answer → human', { add: ['ready-for-human'], remove: ['needs-info'] }),
+        issue('Close · not planned', { close: 'not planned' }, { danger: true, confirm: true })));
+      break;
+    case 'wontfix':
+      ta.placeholder = 'Optional note';
+      form.append(ta, row(
+        issue('Accept · close wontfix', { add: ['wontfix'], remove: ['needs-triage'], close: 'not planned' }, { danger: true, confirm: true }),
+        issue('Reject → queue agent', { add: ['ready-for-agent'], remove: ['needs-triage'] }, { primary: true }),
+        issue('Reject → human', { add: ['ready-for-human'], remove: ['needs-triage'] })));
+      break;
+    case 'stuck':
+      form.append(row(issue('Release claim', { unassign: true }, { primary: true }), issue('Send to human', { add: ['ready-for-human'], remove: ['ready-for-agent'] })));
+      break;
+    case 'triage':
+      ta.placeholder = 'Optional note or question for the reporter';
+      form.append(ta, row(
+        confirmBtn('Run LLM triage', () => act(form, { op: 'triage', number: t.number }, `#${t.number} triage`), { primary: true }),
+        issue('Queue agent', { add: ['ready-for-agent'], remove: ['needs-triage'] }),
+        issue('Needs human', { add: ['ready-for-human'], remove: ['needs-triage'] }),
+        issue('Needs info', { add: ['needs-info'], remove: ['needs-triage'] }),
+        issue('Close · not planned', { close: 'not planned' }, { danger: true, confirm: true })));
+      break;
+    case 'pr':
+      ta.placeholder = 'Guidance if sending it back (posted as an issue comment)';
+      form.append(ta, row(t.pr.approved
+        ? pr('Hold merge', { remove: [S.snap.config.approved_label] }, { confirm: true })
+        : pr('Approve for merge', { add: [S.snap.config.approved_label] }, { primary: true, confirm: true }),
+        issue('Send back to agent', { add: ['ready-for-agent'], unassign: true })),
+        h('div', { class: 'hint' }, `ci ${t.pr.checks.state || '—'} · ${Object.entries(t.pr.checks.counts).map(([k, v]) => `${k.toLowerCase()} ${v}`).join(' · ')}`));
+      break;
+    case 'stale':
+      form.append(row(confirmBtn('Remove worktree + branch', () => act(form, { op: 'cleanup', number: t.number }, `#${t.number} cleanup`), { danger: true, confirm: true })));
+      break;
+  }
+  form.append(out);
+  return form;
+}
+function renderInbox() {
+  const all = inboxItems(), n = all.filter(i => WAITING.has(i.kind)).length;
+  const items = all.filter(i => !i.t || matches(i.t));
+  $('nav-inbox').replaceChildren('Inbox ', h('span', { class: `badge ${n ? 'hot' : ''}` }, n));
+  $('inbox-sum').textContent = (n ? `${n} item${n === 1 ? '' : 's'} waiting on you` : 'nothing waiting on you') + (S.q.trim() ? ` · showing ${items.length} matching “${S.q.trim()}”` : '');
+  const list = $('inbox-list'); list.replaceChildren();
+  if (!items.length) { list.append(h('div', { class: 'empty' }, all.length ? 'no inbox item matches the filter' : 'Inbox zero. The factory has nothing for you.')); return; }
+  let lastKind = null;
+  for (const item of items) {
+    const [label, color] = INBOX_KINDS[item.kind];
+    if (item.kind !== lastKind) { list.append(h('h3', { class: 'inbox-h', style: { '--c': color } }, label, h('span', {}, WAITING.has(item.kind) ? 'waiting on you' : 'informational'))); lastKind = item.kind; }
+    const t = item.t;
+    const card = h('article', { class: `inbox-item ${WAITING.has(item.kind) ? '' : 'info'}`, style: { '--c': color } },
+      h('div', { class: 'ih' },
+        t ? h('a', { class: 'num', href: `#t=${t.number}`, onclick: e => { e.preventDefault(); openTicket(t.number); } }, `#${t.number}`) : h('span', { class: 'num' }, '⚠'),
+        h('span', { class: 'ititle' }, item.title),
+        item.at ? h('span', { class: 'hint', title: fmt(item.at) }, ago(item.at)) : null,
+        t ? h('span', { class: 'links' }, h('a', { href: t.url, target: '_blank', rel: 'noopener' }, 'issue ↗'), t.pr ? h('a', { href: t.pr.url, target: '_blank', rel: 'noopener' }, `PR #${t.pr.number} ↗`) : null) : null),
+      h('div', { class: 'why' }, item.why),
+      item.cmd ? h('pre', {}, item.cmd) : null);
+    if (t) {
+      const ctx = [];
+      const v = t.pr && t.pr.verdicts.at(-1);
+      if (v && v.verdict === 'REVISE') ctx.push(h('details', {}, h('summary', {}, `last reviewer findings · REVISE · ${fmt(v.at)}`), h('pre', {}, v.body)));
+      const gate = t.gate && Object.entries(t.gate.checks).filter(([, s]) => s === 'FAIL');
+      if (gate && gate.length) ctx.push(h('details', {}, h('summary', {}, `gate failed: ${gate.map(g => g[0]).join(', ')}`), h('pre', {}, t.gate.text)));
+      if (item.kind === 'needs-info' || item.kind === 'wontfix' || item.kind === 'triage') ctx.push(h('details', {}, h('summary', {}, 'issue body'), h('pre', {}, t.body)));
+      const attempts = t.attempts.length ? `${t.attempts.length} attempt log${t.attempts.length === 1 ? '' : 's'}` : null;
+      const meta = [attempts, t.pr ? `PR #${t.pr.number} ${t.pr.state.toLowerCase()}${t.pr.approved ? ' · factory-approved' : ''}` : null, t.worker + ' worker'].filter(Boolean).join(' · ');
+      card.append(h('div', { class: 'hint' }, meta), ...ctx, inboxForm(item));
+    }
+    list.append(card);
+  }
+}
+function syncHash() {
+  history.replaceState(null, '', S.view === 'inbox' ? '#inbox' : S.sel != null ? `#t=${S.sel}` : S.filter ? `#s=${S.filter}` : location.pathname);
+}
+function applyView() {
+  $('ops').hidden = S.view !== 'ops'; $('inbox').hidden = S.view !== 'inbox';
+  $('nav-ops').classList.toggle('on', S.view === 'ops'); $('nav-inbox').classList.toggle('on', S.view === 'inbox');
+}
+function setView(view) { S.view = view; syncHash(); applyView(); window.scrollTo(0, 0); }
+// A refresh must not eat a half-typed answer: keep drafts per ticket and defer
+// the inbox re-render while the user is inside it.
+$('inbox').addEventListener('input', e => { if (e.target.tagName === 'TEXTAREA') S.drafts[e.target.dataset.n] = e.target.value; });
+$('inbox').addEventListener('focusout', () => { if (S.inboxDirty) setTimeout(() => { if (!$('inbox').contains(document.activeElement)) { S.inboxDirty = false; renderInbox(); } }, 100); });
+
+// ---------------------------------------------------------------- input
+document.addEventListener('keydown', e => {
+  const typing = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA';
+  if (e.key === '/' && !typing) { e.preventDefault(); $('search').focus(); return; }
+  if (e.key === 'Escape') { if (typing) { e.target.blur(); return; } if (S.sel != null) closeDrawer(); else if (S.filter || S.q) { S.filter = null; S.q = ''; $('search').value = ''; render(); } return; }
+  if (typing) return;
+  if (e.key === 'r') { load(true); return; }
+  if (e.key === 'j' || e.key === 'k') {
+    const cards = [...document.querySelectorAll('.card')]; if (!cards.length) return;
+    const i = cards.findIndex(c => +c.dataset.n === S.sel);
+    const next = cards[Math.min(cards.length - 1, Math.max(0, i + (e.key === 'j' ? 1 : -1)))];
+    openTicket(+next.dataset.n); next.focus(); next.scrollIntoView({ block: 'nearest' });
+  }
+});
+$('search').addEventListener('input', e => { S.q = e.target.value; render(); });
+$('window').onchange = renderLanes;
+$('refresh').onclick = () => load(true);
+let timer = null;
+function schedule() { clearInterval(timer); if ($('auto').checked) timer = setInterval(() => { if (!document.hidden) load(false); }, 30000); }
+$('auto').onchange = schedule;
+document.addEventListener('visibilitychange', () => { if (!document.hidden && $('auto').checked) load(false); });
+setInterval(() => { if (S.snap) renderStatus(); }, 10000);
+(function initFromHash() {
+  if (location.hash === '#inbox') S.view = 'inbox';
+  const m = location.hash.match(/#(t|s)=([\w-]+)/);
+  if (m && m[1] === 't') S.sel = +m[2]; else if (m) S.filter = m[2];
+})();
+$('nav-ops').onclick = () => setView('ops');
+$('nav-inbox').onclick = () => setView('inbox');
+schedule();
+load(false);
+</script>
+</body>
+</html>

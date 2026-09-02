@@ -1,0 +1,179 @@
+# agent-factory
+
+A label-driven autonomous ticket pipeline for any GitHub repository. Issues
+labelled `ready-for-agent` are claimed by a coding agent in a git worktree,
+gated by your own deterministic checks, reviewed by a second model, opened as a
+PR, and landed on `main` once the gate, the reviewer, GitHub CI, and freshness
+against `main` all agree. Anything the pipeline cannot resolve is handed back
+with a `ready-for-human` label and the evidence attached.
+
+It runs on your machine, on a systemd timer, with the agent CLIs you already
+have. State is GitHub (labels, comments, PRs) plus a gitignored `.factory/`
+directory; the dispatcher itself is stateless and safe to re-run.
+
+```
+ needs-triage ──factory triage──▶ ready-for-agent ──factory dispatch──▶ agent/<n> PR ──merge stage──▶ main
+                    │                                     │                  │
+                    ▼                                     ▼                  ▼
+                needs-info                          ready-for-human      factory-approved
+```
+
+## Install
+
+Linux, Python ≥ 3.11, `git`, `gh` (authenticated with push access), and:
+
+- a **worker** agent CLI that accepts a prompt file and works in a directory
+  (default `omp -p`; `droid`, `codex exec`, `claude -p`, … work the same way)
+- a **reviewer** CLI that answers a prompt on stdout (default `codex exec`)
+- optionally, an OpenAI-compatible local model for triage (Ollama, vLLM,
+  llama.cpp, LM Studio)
+
+```sh
+uv tool install git+https://github.com/mikeroySoft/agent-factory   # or: pipx install ...
+```
+
+No Python dependencies.
+
+## Set up a repository
+
+```sh
+cd your-repo
+factory init            # .factory.toml, .gitignore, issue template, labels
+$EDITOR .factory.toml   # put your real test/lint commands in [[gate.check]]
+git add .factory.toml .gitignore .github/ISSUE_TEMPLATE/agent_task.md && git commit
+factory doctor          # tools, auth, remotes, model endpoint
+factory install --dashboard   # systemd user timer every 10 min + dashboard on :8765
+```
+
+Then file an issue with the **Agent task** template (Scope / Touches / Exit
+gate / Out of scope). It gets `needs-triage`; the next pass triages it; if it is
+fully specified it becomes `ready-for-agent` and is picked up.
+
+For a fork that tracks an upstream, set `[repo].upstream = "upstream"` and the
+dispatcher merges new upstream commits into your `main` (gated) before each
+merge stage.
+
+## Commands
+
+| Command | What one invocation does |
+|---|---|
+| `factory triage` | Labels every `needs-triage` issue via the local model: `ready-for-agent` (with an agent brief), `needs-info` (with the question), `ready-for-human`, or a `wontfix` proposal comment. `--dry-run`, `--issue N`, `--replay a,b,c`. |
+| `factory dispatch` | One stateless pass: upstream sync → merge stage (at most one PR) → claim up to `max_active` tickets → worker → gate → PR → review → one bounce. `--ticket N` forces one issue; `--dry-run` prints the plan. |
+| `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
+| `factory stats` | Ticket table: attempts, review rounds, hours to merge. `--json`. |
+| `factory dashboard` | Local ops UI: tickets by stage, in-flight phase, gate reports, worker logs, journal heartbeat, upstream drift, and an action list with one-click answers. `--host 0.0.0.0` exposes it (and its mutating `/api/act`) to your network. |
+| `factory doctor` / `init` / `install` | Onboarding, above. |
+
+Every command reads `.factory.toml` from the main checkout, even when run
+inside one of its worktrees.
+
+## How a ticket moves
+
+1. **Triage.** A deterministic lint rejects bodies under 80 characters or
+   without acceptance criteria (`needs-info` with a specific question). The
+   model then decides between the four labels; `wontfix` is only ever proposed.
+2. **Claim.** The dispatcher re-reads the issue (search-backed listings lag),
+   assigns itself, takes a per-ticket `flock`, and creates the worktree
+   `.factory/wt-<n>` on branch `agent/<n>`.
+3. **Work.** The worker gets the issue, its comments, standing instructions
+   (commit incrementally, never touch `main`, never `git stash`, finish with
+   `factory gate`), and — on retries — the previous gate report or the
+   reviewer's findings. Up to `max_attempts` rounds within `budget_min`.
+4. **Gate.** `conflict-markers`, your `[[gate.check]]` list in order, then a
+   `leak-scan` of added lines against a regex. Checks marked `exclusive`
+   serialise on a host-wide lock (one GPU, many worktrees). Every check has a
+   timeout; a wedged check fails instead of holding the lock.
+5. **Review.** The reviewer sees the diff, the issue, and the gate report and
+   must end with `VERDICT: APPROVE` or `VERDICT: REVISE`. One bounce back to
+   the worker; a second `REVISE` escalates. `APPROVE` adds the
+   `factory-approved` label — durable evidence on the PR, not in memory.
+6. **Merge stage** (start of the next pass). One PR per pass, requiring all
+   four: gate PASS in the PR body, `factory-approved`, green GitHub checks
+   (fail-closed on missing or unparsable checks), and a head that already
+   contains the current `main` tip. Behind `main` → rebase, re-gate on this
+   host, force-push, merge next pass. Red CI → label removed, escalated once
+   with the failing check names. A human blocks any merge by requesting
+   changes on the PR.
+7. **Escalation.** Budget exceeded, gate failed thrice, second `REVISE`,
+   nothing to PR, rebase conflict, red CI: the issue gets `ready-for-human`,
+   loses the assignee and `ready-for-agent`, and receives a comment with the
+   reason and the worker log path. The worktree is kept for forensics.
+
+## Configuration
+
+`.factory.toml` at the repository root; every key is optional. The template
+written by `factory init` documents them all. The ones you will actually set:
+
+```toml
+[repo]
+# upstream = "upstream"          # fork workflow: sync upstream main each pass
+
+[workers]                        # ticket label -> argv; {prompt} file, {cwd} worktree
+default = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]
+chore   = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
+
+[review]
+command = ["codex", "exec", "{prompt}"]   # {prompt} = review prompt text
+
+[gate]
+timeout = 1200
+lock = "/tmp/agent-factory.lock"
+
+[[gate.check]]
+name = "lint"
+run = ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]
+exclusive = true
+
+[[gate.check]]
+name = "tests"
+run = ["cargo", "test", "--workspace"]
+exclusive = true
+
+[leak_scan]
+pattern = "internal|confidential|proprietary|private|jira|confluence|\\.corp|\\.internal"
+
+[triage]
+url = "http://127.0.0.1:11434/v1/chat/completions"
+model = "qwen3:30b"
+```
+
+Labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`,
+`factory-approved`, `chore`) and the `agent/<n>` branch scheme are fixed
+conventions; `factory init` creates the labels.
+
+## Operating it
+
+- **Dashboard** (`factory dashboard`): the *actions* list is the inbox —
+  escalations, `needs-info` questions, wontfix proposals, parked upstream
+  syncs, a dead timer — each with the exact command or a button.
+- **Logs**: `.factory/logs/<n>-attempt-<k>.log` per worker round;
+  `.factory/wt-<n>/.factory/gate-report-<n>.md` per gate;
+  `journalctl --user -u factory-<repo>.service` for dispatcher passes;
+  `.factory/upstream-sync.jsonl` for sync outcomes.
+- **Re-run one ticket by hand**: `factory dispatch --ticket N` (bypasses the
+  frontier and its label checks; respects the in-flight lock).
+- **Stop everything**: `systemctl --user disable --now factory-<repo>.timer`.
+  In-flight tickets finish their current pass; nothing new is claimed.
+- **Tear down a ticket**: remove the worktree (`git worktree remove --force
+  .factory/wt-<n>`), delete `agent/<n>`, and re-label the issue.
+
+## Agent skill
+
+`skills/agent-factory/SKILL.md` teaches a coding agent to install the factory
+in a repo, write tickets it can actually work, and diagnose escalations:
+
+```sh
+npx skills add mikeroysoft/agent-factory
+```
+
+## Architecture
+
+`agent_factory/architecture.html` (served by the dashboard at `/atlas`) shows
+the system and the ticket lifecycle. Modules map 1:1 to commands:
+`triage.py`, `dispatch.py`, `gate.py`, `stats.py`, `dashboard.py`,
+`onboard.py`, with `config.py` as the single source of every repo-specific
+value.
+
+## License
+
+MIT

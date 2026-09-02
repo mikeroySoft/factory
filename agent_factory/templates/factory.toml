@@ -1,0 +1,61 @@
+# agent-factory configuration for this repository. Commit it: worker
+# worktrees and the gate read it. Every key is optional; defaults are shown
+# commented out. Docs: https://github.com/mikeroySoft/agent-factory
+
+[repo]
+# GitHub "owner/name". Default: parsed from the `origin` remote.
+# slug = "owner/name"
+# Fork workflow: name of the remote whose `main` is merged into ours every
+# pass (gated, one merge per pass; conflicts open a ready-for-human issue).
+# Leave unset if this repository is not a fork.
+# upstream = "upstream"
+# main = "main"
+
+[dispatch]
+# max_active = 2       # tickets in flight at once
+# max_attempts = 3     # worker+gate rounds before escalating
+# budget_min = 90      # wall-clock budget per ticket
+# signoff = true       # `git commit -s`; Signed-off-by trailer on merges (DCO)
+
+[workers]
+# argv templates. {prompt} = path to the ticket prompt file, {cwd} = worktree.
+# The key is a ticket label; `default` is required. First matching label wins.
+# default = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]
+# chore   = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
+# Other agents work the same way, e.g.
+# default = ["claude", "-p", "--dangerously-skip-permissions", "{prompt}"]  # reads the path as text: use a wrapper
+# default = ["codex", "exec", "--full-auto", "-C", "{cwd}", "@{prompt}"]
+
+[review]
+# {prompt} = review prompt text. Output must end with `VERDICT: APPROVE` or `VERDICT: REVISE`.
+# command = ["codex", "exec", "{prompt}"]
+
+[gate]
+# timeout = 1200                      # seconds per check; a wedged check FAILs
+# lock = "/tmp/agent-factory.lock"    # host-wide lock held by `exclusive` checks
+
+# Checks run in order inside the worktree; nonzero exit = FAIL. Built-ins
+# `conflict-markers` (first) and `leak-scan` (last) are always on. Mark
+# checks that need the GPU or other single-tenant hardware `exclusive`.
+[[gate.check]]
+name = "tests"
+run = ["true"]  # replace with your test command, e.g. ["cargo", "test", "--workspace"]
+exclusive = false
+
+# [[gate.check]]
+# name = "lint"
+# run = ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]
+
+[leak_scan]
+# Added lines in `origin/main..HEAD` matching this regex FAIL the gate.
+# Set to "" to disable.
+# pattern = "internal|confidential|proprietary|private|jira|confluence|\\.corp|\\.internal"
+# exclude = ["skills", "skills-lock.json"]   # pathspecs excluded from the scan
+
+[triage]
+# Any OpenAI-compatible chat endpoint (Ollama, vLLM, llama.cpp, LM Studio, ...).
+# url = "http://127.0.0.1:11434/v1/chat/completions"
+# model = "qwen3:30b"
+
+[dashboard]
+# port = 8765

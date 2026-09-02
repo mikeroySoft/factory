@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<!-- Static companion to `factory dashboard` (served there at /atlas). -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>agent-factory · architecture</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #0b1019;
+    --paper2: #0f1522;
+    --ink: #dbe7f3;
+    --muted: #8a9cb3;
+    --soft: #56667c;
+    --rule: #26344d;
+    --accent: #00e5ff;
+    --accent-tint: rgba(0,229,255,0.10);
+    --link: #ff2a6d;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: 'JetBrains Mono', monospace;
+    -webkit-font-smoothing: antialiased;
+  }
+  .container { max-width: 1220px; margin: 0 auto; padding: 56px 32px 40px; }
+
+  .header { margin-bottom: 48px; }
+  .header-eyebrow {
+    font-size: 10px; font-weight: 500; letter-spacing: 0.22em;
+    text-transform: uppercase; color: var(--muted); margin-bottom: 16px;
+  }
+  h1 {
+    font-size: 28px; font-weight: 700; letter-spacing: -0.01em;
+    display: inline-block;
+    background: linear-gradient(180deg,#dbe7f3,#9ff3ff 30%,#00e5ff 55%,#5b8cff 80%,#b26bff);
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; color: #00e5ff;
+    margin-bottom: 12px;
+  }
+  .subtitle { font-size: 13px; line-height: 1.7; color: var(--muted); max-width: 860px; }
+  .subtitle strong { color: var(--ink); font-weight: 500; }
+
+  .section { margin: 40px 0 8px; }
+  .section-eyebrow {
+    font-size: 10px; font-weight: 500; letter-spacing: 0.2em;
+    text-transform: uppercase; color: var(--soft); margin-bottom: 4px;
+  }
+  .section-eyebrow b { color: var(--accent); font-weight: 600; }
+  .section-note { font-size: 11px; color: var(--muted); margin-bottom: 12px; }
+
+  svg { width: 100%; height: auto; display: block; }
+  svg text { font-family: 'JetBrains Mono', monospace; }
+  .nn { font-size: 12px; font-weight: 600; fill: var(--ink); }
+  .nn-mut { fill: var(--muted); }
+  .nn-acc { fill: var(--accent); }
+  .ns { font-size: 8px; fill: var(--muted); letter-spacing: 0.03em; }
+  .ns-soft { fill: var(--soft); }
+  .al { font-size: 8px; fill: var(--muted); letter-spacing: 0.06em; }
+  .al-link { fill: var(--link); }
+  .zl { font-size: 8px; fill: rgba(219,231,243,0.38); letter-spacing: 0.16em; }
+  .lg { font-size: 8px; fill: var(--muted); letter-spacing: 0.08em; }
+  .lgh { font-size: 8px; fill: var(--soft); letter-spacing: 0.18em; }
+
+  .cards { display: grid; grid-template-columns: 1.1fr 1fr 0.9fr; gap: 16px; margin-top: 40px; }
+  @media (max-width: 900px) { .cards { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--paper2);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 1.25rem;
+    box-shadow: none;
+  }
+  .card-eyebrow {
+    font-size: 9px; font-weight: 500; letter-spacing: 0.18em;
+    text-transform: uppercase; color: var(--soft); margin-bottom: 10px;
+  }
+  .card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .card-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .dot-accent { background: var(--accent); }
+  .dot-ink { background: var(--ink); }
+  .dot-muted { background: var(--muted); }
+  .card h3 { font-size: 12px; font-weight: 600; color: var(--ink); letter-spacing: 0.02em; }
+  .card ul { list-style: none; }
+  .card li {
+    font-size: 11px; line-height: 1.65; color: var(--muted);
+    padding: 3px 0 3px 14px; position: relative;
+  }
+  .card li::before { content: "·"; position: absolute; left: 2px; color: var(--soft); }
+  .card li code { font-family: inherit; color: var(--ink); font-weight: 500; }
+
+  .footer {
+    margin-top: 48px; padding-top: 16px;
+    border-top: 1px solid var(--rule);
+    font-size: 10px; color: var(--muted); letter-spacing: 0.04em;
+    display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- ============ Header ============ -->
+  <div class="header">
+    <p class="header-eyebrow">agent-factory · factory &lt;cmd&gt;</p>
+    <h1>The Agent Factory</h1>
+    <p class="subtitle">A label-driven autonomous pipeline that triages GitHub issues, dispatches
+    coding agents into git worktrees, gates their work deterministically, publishes reviewed
+    pull requests, and lands them through a serialized merge stage — <strong>a human can hold
+    any merge by pulling the <code>factory-approved</code> label</strong>.</p>
+  </div>
+
+  <!-- ============ Diagram A — system architecture ============ -->
+  <div class="section">
+    <p class="section-eyebrow"><b>Diagram A</b> — system architecture</p>
+    <p class="section-note">Nine components, twelve directed edges. GitHub on the left, the controller in the center, the per-ticket workbench on the right.</p>
+  </div>
+
+  <svg viewBox="0 0 1160 640" xmlns="http://www.w3.org/2000/svg" role="img"
+       aria-labelledby="factory-arch-title factory-arch-desc">
+    <title id="factory-arch-title">agent factory — system architecture</title>
+    <desc id="factory-arch-desc">GitHub issues labeled needs-triage are triaged by a local LLM;
+    a systemd timer runs factory dispatch, which claims ready-for-agent issues into
+    .factory git worktrees, runs omp or droid workers, gates each diff with factory gate,
+    requests a codex review, opens a pull request, and on a later pass squash-merges it once it is
+    factory-approved, green on CI, and current with main.</desc>
+    <defs>
+      <marker id="a-mut" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#8a9cb3"/>
+      </marker>
+      <marker id="a-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#ff2a6d"/>
+      </marker>
+      <marker id="a-acc" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#00e5ff"/>
+      </marker>
+    </defs>
+
+    <rect width="100%" height="100%" fill="#0b1019"/>
+
+    <!-- ===== zones (painted first) ===== -->
+    <rect x="32" y="72" width="212" height="456" rx="8"
+          fill="rgba(219,231,243,0.03)" stroke="rgba(219,231,243,0.10)" stroke-width="0.8"/>
+    <rect x="112" y="76" width="52" height="12" rx="2" fill="#0b1019"/>
+    <text x="138" y="85" class="zl" text-anchor="middle">GITHUB</text>
+
+    <rect x="304" y="64" width="288" height="328" rx="8"
+          fill="rgba(219,231,243,0.03)" stroke="rgba(219,231,243,0.10)" stroke-width="0.8"/>
+    <rect x="408" y="68" width="80" height="12" rx="2" fill="#0b1019"/>
+    <text x="448" y="77" class="zl" text-anchor="middle">CONTROLLER</text>
+
+    <rect x="768" y="88" width="304" height="440" rx="8"
+          fill="rgba(219,231,243,0.03)" stroke="rgba(219,231,243,0.10)" stroke-width="0.8"/>
+    <rect x="828" y="92" width="184" height="12" rx="2" fill="#0b1019"/>
+    <text x="920" y="101" class="zl" text-anchor="middle">WORKBENCH · .FACTORY/WT-&lt;N&gt;</text>
+
+    <!-- ===== arrows (before boxes) ===== -->
+    <!-- 1 Issues -> Triage -->
+    <path d="M 228,120 H 336" fill="none" stroke="#ff2a6d" stroke-width="1.2" marker-end="url(#a-link)"/>
+    <rect x="248" y="100" width="68" height="12" rx="2" fill="#0b1019"/>
+    <text x="282" y="109" class="al al-link" text-anchor="middle">NEEDS-TRIAGE</text>
+
+    <!-- 2 Triage -> Issues (dashed return, offset) -->
+    <path d="M 336,156 H 228" fill="none" stroke="#ff2a6d" stroke-width="1"
+          stroke-dasharray="5 4" marker-end="url(#a-link)"/>
+    <rect x="240" y="136" width="80" height="12" rx="2" fill="#0b1019"/>
+    <text x="280" y="145" class="al al-link" text-anchor="middle">LABEL+COMMENT</text>
+
+    <!-- 3 Timer -> Dispatch -->
+    <path d="M 448,256 V 280" fill="none" stroke="#8a9cb3" stroke-width="1.2" marker-end="url(#a-mut)"/>
+    <rect x="456" y="260" width="72" height="12" rx="2" fill="#0b1019"/>
+    <text x="460" y="269" class="al">EVERY 10 MIN</text>
+
+    <!-- 4 Issues -> Dispatch -->
+    <path d="M 140,168 V 304 Q 140,312 148,312 H 336" fill="none" stroke="#ff2a6d"
+          stroke-width="1.2" marker-end="url(#a-link)"/>
+    <rect x="216" y="292" width="52" height="12" rx="2" fill="#0b1019"/>
+    <text x="242" y="301" class="al al-link" text-anchor="middle">FRONTIER</text>
+
+    <!-- 5 Dispatch -> Worktree -->
+    <path d="M 560,300 H 608 Q 616,300 616,292 V 160 Q 616,152 624,152 H 800"
+          fill="none" stroke="#8a9cb3" stroke-width="1.2" marker-end="url(#a-mut)"/>
+    <rect x="624" y="220" width="72" height="12" rx="2" fill="#0b1019"/>
+    <text x="628" y="229" class="al">WORKTREE ADD</text>
+
+    <!-- 6 Dispatch -> Worker -->
+    <path d="M 560,324 H 800" fill="none" stroke="#8a9cb3" stroke-width="1.2" marker-end="url(#a-mut)"/>
+    <rect x="660" y="304" width="40" height="12" rx="2" fill="#0b1019"/>
+    <text x="680" y="313" class="al" text-anchor="middle">PROMPT</text>
+
+    <!-- 7 Dispatch -> Gate -->
+    <path d="M 560,348 H 664 Q 672,348 672,356 V 456 Q 672,464 680,464 H 800"
+          fill="none" stroke="#8a9cb3" stroke-width="1.2" marker-end="url(#a-mut)"/>
+    <rect x="680" y="400" width="48" height="12" rx="2" fill="#0b1019"/>
+    <text x="684" y="409" class="al">RUN ≤3×</text>
+
+    <!-- 8 Worker -> Worktree -->
+    <path d="M 880,292 V 184" fill="none" stroke="#8a9cb3" stroke-width="1.2" marker-end="url(#a-mut)"/>
+    <rect x="888" y="232" width="84" height="12" rx="2" fill="#0b1019"/>
+    <text x="892" y="241" class="al">SIGNED COMMITS</text>
+
+    <!-- 9 Gate -> Worker (dashed retry feedback) -->
+    <path d="M 952,432 V 356" fill="none" stroke="#8a9cb3" stroke-width="1"
+          stroke-dasharray="5 4" marker-end="url(#a-mut)"/>
+    <rect x="960" y="388" width="64" height="12" rx="2" fill="#0b1019"/>
+    <text x="964" y="397" class="al">FAIL REPORT</text>
+
+    <!-- 10 Dispatch -> PR -->
+    <path d="M 408,368 V 448 Q 408,456 400,456 H 228" fill="none" stroke="#ff2a6d"
+          stroke-width="1.2" marker-end="url(#a-link)"/>
+    <rect x="288" y="436" width="56" height="12" rx="2" fill="#0b1019"/>
+    <text x="316" y="445" class="al al-link" text-anchor="middle">PUSH + PR</text>
+
+    <!-- 11 Dispatch -> Codex -->
+    <path d="M 488,368 V 472" fill="none" stroke="#8a9cb3" stroke-width="1.2" marker-end="url(#a-mut)"/>
+    <rect x="496" y="412" width="64" height="12" rx="2" fill="#0b1019"/>
+    <text x="500" y="421" class="al">DIFF REVIEW</text>
+
+    <!-- 12 Codex -> PR -->
+    <path d="M 368,488 H 228" fill="none" stroke="#ff2a6d" stroke-width="1.2" marker-end="url(#a-link)"/>
+    <rect x="272" y="468" width="52" height="12" rx="2" fill="#0b1019"/>
+    <text x="298" y="477" class="al al-link" text-anchor="middle">FINDINGS</text>
+
+    <!-- ===== nodes (after arrows) ===== -->
+    <!-- GitHub Issues — external -->
+    <rect x="48" y="104" width="180" height="64" rx="6" fill="#0b1019"/>
+    <rect x="48" y="104" width="180" height="64" rx="6"
+          fill="rgba(219,231,243,0.03)" stroke="rgba(219,231,243,0.30)" stroke-width="1"/>
+    <text x="138" y="128" class="nn" text-anchor="middle">GitHub Issues</text>
+    <text x="138" y="144" class="ns" text-anchor="middle">labels: needs-triage</text>
+    <text x="138" y="156" class="ns" text-anchor="middle">ready-for-agent</text>
+
+    <!-- factory triage — backend -->
+    <rect x="336" y="96" width="224" height="80" rx="6" fill="#0b1019"/>
+    <rect x="336" y="96" width="224" height="80" rx="6"
+          fill="rgba(219,231,243,0.07)" stroke="rgba(219,231,243,0.80)" stroke-width="1"/>
+    <text x="448" y="132" class="nn" text-anchor="middle">factory triage</text>
+    <text x="448" y="150" class="ns" text-anchor="middle">289 loc · local LLM (FACTORY_LLM_URL)</text>
+
+    <!-- systemd timer — input -->
+    <rect x="368" y="200" width="160" height="56" rx="6" fill="#0b1019"/>
+    <rect x="368" y="200" width="160" height="56" rx="6"
+          fill="rgba(138,156,179,0.12)" stroke="#56667c" stroke-width="1"/>
+    <text x="448" y="220" class="nn" text-anchor="middle">systemd timer</text>
+    <text x="448" y="236" class="ns" text-anchor="middle">factory-&lt;repo&gt;.timer</text>
+    <text x="448" y="248" class="ns" text-anchor="middle">boot +5m · every 10m</text>
+
+    <!-- factory dispatch — FOCAL -->
+    <rect x="336" y="280" width="224" height="88" rx="6" fill="#0b1019"/>
+    <rect x="336" y="280" width="224" height="88" rx="6"
+          fill="rgba(0,229,255,0.10)" stroke="#00e5ff" stroke-width="1.2"/>
+    <text x="448" y="308" class="nn nn-acc" text-anchor="middle">factory dispatch</text>
+    <text x="448" y="328" class="ns" text-anchor="middle">720 loc · MAX_ACTIVE=2 · 90 min budget</text>
+    <text x="448" y="344" class="ns ns-soft" text-anchor="middle">claim · lock · worker/gate/review loop</text>
+
+    <!-- .factory/wt-<n> — store -->
+    <rect x="800" y="120" width="240" height="64" rx="6" fill="#0b1019"/>
+    <rect x="800" y="120" width="240" height="64" rx="6"
+          fill="rgba(219,231,243,0.04)" stroke="#8a9cb3" stroke-width="1"/>
+    <text x="920" y="148" class="nn" text-anchor="middle">.factory/wt-&lt;n&gt;</text>
+    <text x="920" y="166" class="ns" text-anchor="middle">git worktree · branch agent/&lt;n&gt; · .lock</text>
+
+    <!-- worker — backend -->
+    <rect x="800" y="292" width="240" height="64" rx="6" fill="#0b1019"/>
+    <rect x="800" y="292" width="240" height="64" rx="6"
+          fill="rgba(219,231,243,0.07)" stroke="rgba(219,231,243,0.80)" stroke-width="1"/>
+    <text x="920" y="320" class="nn" text-anchor="middle">worker</text>
+    <text x="920" y="338" class="ns" text-anchor="middle">omp -p · droid exec (chore)</text>
+
+    <!-- factory gate — boundary -->
+    <rect x="800" y="432" width="240" height="64" rx="6" fill="#0b1019"/>
+    <rect x="800" y="432" width="240" height="64" rx="6"
+          fill="rgba(0,229,255,0.05)" stroke="rgba(0,229,255,0.50)" stroke-width="1"
+          stroke-dasharray="4 4"/>
+    <text x="920" y="460" class="nn" text-anchor="middle">factory gate</text>
+    <text x="920" y="478" class="ns" text-anchor="middle">conflict markers · configured checks · leak scan</text>
+
+    <!-- codex review — external, un-zoned -->
+    <rect x="368" y="472" width="192" height="64" rx="6" fill="#0b1019"/>
+    <rect x="368" y="472" width="192" height="64" rx="6"
+          fill="rgba(219,231,243,0.03)" stroke="rgba(219,231,243,0.30)" stroke-width="1"/>
+    <text x="464" y="500" class="nn" text-anchor="middle">codex review</text>
+    <text x="464" y="518" class="ns" text-anchor="middle">codex exec · APPROVE / REVISE</text>
+
+    <!-- GitHub PR — external -->
+    <rect x="48" y="440" width="180" height="64" rx="6" fill="#0b1019"/>
+    <rect x="48" y="440" width="180" height="64" rx="6"
+          fill="rgba(219,231,243,0.03)" stroke="rgba(219,231,243,0.30)" stroke-width="1"/>
+    <text x="138" y="464" class="nn" text-anchor="middle">GitHub PR</text>
+    <text x="138" y="480" class="ns" text-anchor="middle">agent/&lt;n&gt; · Closes #n</text>
+    <text x="138" y="492" class="ns" text-anchor="middle">factory-approved → squash merge</text>
+
+    <!-- ===== legend strip ===== -->
+    <line x1="32" y1="576" x2="1128" y2="576" stroke="rgba(219,231,243,0.08)" stroke-width="0.8"/>
+    <text x="32" y="601" class="lgh">LEGEND</text>
+
+    <rect x="120" y="592" width="12" height="12" rx="3"
+          fill="rgba(0,229,255,0.10)" stroke="#00e5ff" stroke-width="1"/>
+    <text x="138" y="601" class="lg">FOCAL</text>
+    <rect x="216" y="592" width="12" height="12" rx="3"
+          fill="rgba(219,231,243,0.07)" stroke="rgba(219,231,243,0.80)" stroke-width="1"/>
+    <text x="234" y="601" class="lg">PROCESS</text>
+    <rect x="332" y="592" width="12" height="12" rx="3"
+          fill="rgba(219,231,243,0.04)" stroke="#8a9cb3" stroke-width="1"/>
+    <text x="350" y="601" class="lg">STORE</text>
+    <rect x="432" y="592" width="12" height="12" rx="3"
+          fill="rgba(219,231,243,0.03)" stroke="rgba(219,231,243,0.30)" stroke-width="1"/>
+    <text x="450" y="601" class="lg">EXTERNAL</text>
+    <rect x="552" y="592" width="12" height="12" rx="3"
+          fill="rgba(138,156,179,0.12)" stroke="#56667c" stroke-width="1"/>
+    <text x="570" y="601" class="lg">INPUT</text>
+    <rect x="648" y="592" width="12" height="12" rx="3"
+          fill="rgba(0,229,255,0.05)" stroke="rgba(0,229,255,0.50)" stroke-width="1"
+          stroke-dasharray="3 2"/>
+    <text x="666" y="601" class="lg">GATE</text>
+    <line x1="744" y1="598" x2="768" y2="598" stroke="#ff2a6d" stroke-width="1.2" marker-end="url(#a-link)"/>
+    <text x="776" y="601" class="lg">GITHUB CALL</text>
+    <line x1="884" y1="598" x2="908" y2="598" stroke="#8a9cb3" stroke-width="1.2" marker-end="url(#a-mut)"/>
+    <text x="916" y="601" class="lg">PIPELINE</text>
+    <line x1="996" y1="598" x2="1020" y2="598" stroke="#8a9cb3" stroke-width="1"
+          stroke-dasharray="5 4" marker-end="url(#a-mut)"/>
+    <text x="1028" y="601" class="lg">RETURN/RETRY</text>
+  </svg>
+
+  <!-- ============ Diagram B — ticket lifecycle ============ -->
+  <div class="section">
+    <p class="section-eyebrow"><b>Diagram B</b> — ticket lifecycle</p>
+    <p class="section-note">One ticket, start to terminal: triage decision, worker attempts under the gate, one codex bounce, then the merge stage or escalation.</p>
+  </div>
+
+  <svg viewBox="0 0 1160 640" xmlns="http://www.w3.org/2000/svg" role="img"
+       aria-labelledby="factory-flow-title factory-flow-desc">
+    <title id="factory-flow-title">agent factory — ticket lifecycle</title>
+    <desc id="factory-flow-desc">Flowchart of one ticket: a triage decision routes agent-ready
+    issues into a claimed worktree; a worker is gated up to three times with one codex review
+    bounce, ending in a factory-approved pull request the merge stage lands, or escalation to ready-for-human.</desc>
+    <defs>
+      <marker id="b-mut" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#8a9cb3"/>
+      </marker>
+      <marker id="b-acc" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#00e5ff"/>
+      </marker>
+      <marker id="b-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#ff2a6d"/>
+      </marker>
+    </defs>
+
+    <rect width="100%" height="100%" fill="#0b1019"/>
+
+    <!-- ===== arrows (before boxes) ===== -->
+    <!-- 1 start -> triage -->
+    <path d="M 184,112 H 208" fill="none" stroke="#8a9cb3" stroke-width="1.2" marker-end="url(#b-mut)"/>
+
+    <!-- 2 triage -> claim -->
+    <path d="M 352,112 H 424" fill="none" stroke="#8a9cb3" stroke-width="1.2" marker-end="url(#b-mut)"/>
+    <rect x="348" y="92" width="68" height="12" rx="2" fill="#0b1019"/>
+    <text x="382" y="101" class="al" text-anchor="middle">AGENT-READY</text>
+
+    <!-- 3 triage -> escalate (dashed handoff: needs-info / ready-for-human / wontfix) -->
+    <path d="M 280,156 V 548 Q 280,556 288,556 H 1056 Q 1064,556 1064,548 V 492"
+          fill="none" stroke="#8a9cb3" stroke-width="1" stroke-dasharray="5 4" marker-end="url(#b-mut)"/>
+    <rect x="572" y="536" width="56" height="12" rx="2" fill="#0b1019"/>
+    <text x="600" y="545" class="al" text-anchor="middle">NOT READY</text>
+
+    <!-- 4 claim -> worker -->
+    <path d="M 568,112 H 608" fill="none" stroke="#8a9cb3" stroke-width="1.2" marker-end="url(#b-mut)"/>
+
+    <!-- 5 worker -> gate -->
+    <path d="M 752,112 H 776" fill="none" stroke="#8a9cb3" stroke-width="1.2" marker-end="url(#b-mut)"/>
+
+    <!-- 6 gate PASS -> codex -->
+    <path d="M 848,156 V 276" fill="none" stroke="#8a9cb3" stroke-width="1.2" marker-end="url(#b-mut)"/>
+    <rect x="856" y="208" width="32" height="12" rx="2" fill="#0b1019"/>
+    <text x="860" y="217" class="al">PASS</text>
+
+    <!-- 7 gate FAIL -> worker (dashed loop over the top) -->
+    <path d="M 848,68 V 48 Q 848,40 840,40 H 704 Q 696,40 696,48 V 80"
+          fill="none" stroke="#8a9cb3" stroke-width="1" stroke-dasharray="5 4" marker-end="url(#b-mut)"/>
+    <rect x="732" y="20" width="72" height="12" rx="2" fill="#0b1019"/>
+    <text x="768" y="29" class="al" text-anchor="middle">≤3 ATTEMPTS</text>
+
+    <!-- 8 gate exhausted -> escalate -->
+    <path d="M 920,112 H 1072 Q 1080,112 1080,120 V 428"
+          fill="none" stroke="#8a9cb3" stroke-width="1.2" marker-end="url(#b-mut)"/>
+    <rect x="956" y="92" width="80" height="12" rx="2" fill="#0b1019"/>
+    <text x="996" y="101" class="al" text-anchor="middle">3 FAILS/90 MIN</text>
+
+    <!-- 9 codex APPROVE -> PR -->
+    <path d="M 848,364 V 428" fill="none" stroke="#8a9cb3" stroke-width="1.2" marker-end="url(#b-mut)"/>
+    <rect x="856" y="388" width="48" height="12" rx="2" fill="#0b1019"/>
+    <text x="860" y="397" class="al">APPROVE</text>
+
+    <!-- 10 codex REVISE -> worker (dashed loop) -->
+    <path d="M 776,320 H 696 Q 688,320 688,312 V 144"
+          fill="none" stroke="#8a9cb3" stroke-width="1" stroke-dasharray="5 4" marker-end="url(#b-mut)"/>
+    <rect x="696" y="220" width="52" height="12" rx="2" fill="#0b1019"/>
+    <text x="700" y="229" class="al">1 BOUNCE</text>
+
+    <!-- 11 codex 2nd REVISE -> escalate -->
+    <path d="M 920,320 H 952 Q 960,320 960,328 V 444 Q 960,452 968,452 H 976"
+          fill="none" stroke="#8a9cb3" stroke-width="1.2" marker-end="url(#b-mut)"/>
+    <rect x="968" y="384" width="64" height="12" rx="2" fill="#0b1019"/>
+    <text x="972" y="393" class="al">2ND REVISE</text>
+
+    <!-- ===== nodes (after arrows) ===== -->
+    <!-- start oval -->
+    <rect x="24" y="84" width="160" height="56" rx="20" fill="#0b1019"/>
+    <rect x="24" y="84" width="160" height="56" rx="20"
+          fill="rgba(138,156,179,0.12)" stroke="#56667c" stroke-width="1"/>
+    <text x="104" y="108" class="nn" text-anchor="middle">needs-triage issue</text>
+    <text x="104" y="124" class="ns" text-anchor="middle">open on GitHub</text>
+
+    <!-- triage diamond -->
+    <polygon points="280,68 352,112 280,156 208,112" fill="#0b1019"/>
+    <polygon points="280,68 352,112 280,156 208,112"
+             fill="rgba(219,231,243,0.04)" stroke="rgba(219,231,243,0.55)" stroke-width="1"/>
+    <text x="280" y="110" class="nn" text-anchor="middle">triage</text>
+    <text x="280" y="126" class="ns" text-anchor="middle">local LLM</text>
+
+    <!-- claim + worktree -->
+    <rect x="424" y="80" width="144" height="64" rx="6" fill="#0b1019"/>
+    <rect x="424" y="80" width="144" height="64" rx="6"
+          fill="rgba(219,231,243,0.07)" stroke="rgba(219,231,243,0.80)" stroke-width="1"/>
+    <text x="496" y="108" class="nn" text-anchor="middle">claim + worktree</text>
+    <text x="496" y="124" class="ns" text-anchor="middle">assign @me · agent/&lt;n&gt;</text>
+
+    <!-- worker attempt -->
+    <rect x="608" y="80" width="144" height="64" rx="6" fill="#0b1019"/>
+    <rect x="608" y="80" width="144" height="64" rx="6"
+          fill="rgba(219,231,243,0.07)" stroke="rgba(219,231,243,0.80)" stroke-width="1"/>
+    <text x="680" y="108" class="nn" text-anchor="middle">worker attempt</text>
+    <text x="680" y="124" class="ns" text-anchor="middle">omp -p / droid exec</text>
+
+    <!-- gate diamond -->
+    <polygon points="848,68 920,112 848,156 776,112" fill="#0b1019"/>
+    <polygon points="848,68 920,112 848,156 776,112"
+             fill="rgba(219,231,243,0.04)" stroke="rgba(219,231,243,0.55)" stroke-width="1"/>
+    <text x="848" y="110" class="nn" text-anchor="middle">gate</text>
+    <text x="848" y="126" class="ns" text-anchor="middle">5 checks</text>
+
+    <!-- codex diamond -->
+    <polygon points="848,276 920,320 848,364 776,320" fill="#0b1019"/>
+    <polygon points="848,276 920,320 848,364 776,320"
+             fill="rgba(219,231,243,0.04)" stroke="rgba(219,231,243,0.55)" stroke-width="1"/>
+    <text x="848" y="318" class="nn" text-anchor="middle">codex</text>
+    <text x="848" y="334" class="ns" text-anchor="middle">diff review</text>
+
+    <!-- PR terminal — accent (happy end) -->
+    <rect x="744" y="428" width="208" height="64" rx="20" fill="#0b1019"/>
+    <rect x="744" y="428" width="208" height="64" rx="20"
+          fill="rgba(0,229,255,0.10)" stroke="#00e5ff" stroke-width="1.2"/>
+    <text x="848" y="456" class="nn nn-acc" text-anchor="middle">PR → merge stage</text>
+    <text x="848" y="472" class="ns" text-anchor="middle">factory-approved · CI green · squash</text>
+
+    <!-- escalate terminal — muted -->
+    <rect x="976" y="428" width="176" height="64" rx="20" fill="#0b1019"/>
+    <rect x="976" y="428" width="176" height="64" rx="20"
+          fill="rgba(138,156,179,0.08)" stroke="#56667c" stroke-width="1"/>
+    <text x="1064" y="452" class="nn nn-mut" text-anchor="middle">escalate</text>
+    <text x="1064" y="468" class="ns ns-soft" text-anchor="middle">ready-for-human · unassign</text>
+    <text x="1064" y="480" class="ns ns-soft" text-anchor="middle">comment + log path</text>
+
+    <!-- ===== legend strip ===== -->
+    <line x1="32" y1="584" x2="1128" y2="584" stroke="rgba(219,231,243,0.08)" stroke-width="0.8"/>
+    <text x="32" y="609" class="lgh">LEGEND</text>
+
+    <rect x="120" y="600" width="28" height="12" rx="6"
+          fill="rgba(138,156,179,0.10)" stroke="rgba(219,231,243,0.55)" stroke-width="1"/>
+    <text x="156" y="609" class="lg">START / END</text>
+    <rect x="280" y="600" width="24" height="12" rx="2"
+          fill="rgba(219,231,243,0.07)" stroke="rgba(219,231,243,0.80)" stroke-width="1"/>
+    <text x="312" y="609" class="lg">STEP</text>
+    <polygon points="420,598 432,606 420,614 408,606"
+             fill="rgba(219,231,243,0.04)" stroke="rgba(219,231,243,0.55)" stroke-width="1"/>
+    <text x="440" y="609" class="lg">DECISION</text>
+    <rect x="540" y="600" width="28" height="12" rx="6"
+          fill="rgba(0,229,255,0.10)" stroke="#00e5ff" stroke-width="1"/>
+    <text x="576" y="609" class="lg">HAPPY TERMINAL</text>
+    <line x1="700" y1="606" x2="724" y2="606" stroke="#8a9cb3" stroke-width="1.2" marker-end="url(#b-mut)"/>
+    <text x="732" y="609" class="lg">FORWARD</text>
+    <line x1="820" y1="606" x2="844" y2="606" stroke="#8a9cb3" stroke-width="1"
+          stroke-dasharray="5 4" marker-end="url(#b-mut)"/>
+    <text x="852" y="609" class="lg">LOOP / HANDOFF</text>
+  </svg>
+
+  <!-- ============ Summary cards ============ -->
+  <div class="cards">
+    <div class="card">
+      <p class="card-eyebrow">factory gate</p>
+      <div class="card-header">
+        <span class="card-dot dot-accent"></span>
+        <h3>The gate's checks</h3>
+      </div>
+      <ul>
+        <li>conflict markers — <code>git grep</code> for the seven-char markers</li>
+        <li>every <code>[[gate.check]]</code> from <code>.factory.toml</code>, in order (e.g. lint, tests, smoke)</li>
+        <li>leak scan of <code>base..HEAD</code> — internal / confidential / Jira-style terms</li>
+        <li>checks marked <code>exclusive</code> run under the host lock; every check has a <code>[gate].timeout</code> (default 1200 s)</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <p class="card-eyebrow">factory dispatch</p>
+      <div class="card-header">
+        <span class="card-dot dot-ink"></span>
+        <h3>Budgets, escalation &amp; the merge stage</h3>
+      </div>
+      <ul>
+        <li><code>MAX_ACTIVE=2</code> lock-held worktrees · <code>MAX_ATTEMPTS=3</code> worker+gate rounds</li>
+        <li>90-minute wall clock per ticket · 1 codex review bounce, then escalate</li>
+        <li>escalation = unassign + <code>ready-for-human</code> + comment with log path</li>
+        <li>codex APPROVE → <code>factory-approved</code> label on the PR</li>
+        <li>merge stage runs first each pass: squash-merges at most one PR that is <code>factory-approved</code>, green on CI, and whose head contains the current main tip</li>
+        <li>stale-but-approved PRs are rebased, re-gated on the host, force-pushed; a red CI run pulls the label and escalates once</li>
+        <li>a human holds any merge by removing <code>factory-approved</code></li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <p class="card-eyebrow">.factory/ · gitignored</p>
+      <div class="card-header">
+        <span class="card-dot dot-muted"></span>
+        <h3>State on disk</h3>
+      </div>
+      <ul>
+        <li><code>wt-&lt;n&gt;/</code> + <code>.factory-prompt.md</code> + <code>.factory/gate-report-&lt;n&gt;.md</code></li>
+        <li><code>locks/&lt;n&gt;.lock</code> — outside the worktree, so a wiped worktree cannot erase the evidence a pipeline is alive</li>
+        <li><code>locks/merge.lock</code> — serializes the merge stage across timer and manual runs</li>
+        <li><code>logs/&lt;n&gt;-attempt-&lt;a&gt;.log</code> · <code>pr-body-&lt;n&gt;.md</code> · <code>review-&lt;n&gt;.md</code></li>
+        <li><code>/tmp/agent-factory.lock</code> — one gate on the GPU at a time (host-wide, <code>[gate].lock</code>)</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============ Footer ============ -->
+  <div class="footer">
+    <span>derived from factory dispatch, factory triage, factory gate, factory stats, the systemd units · live view: factory dashboard</span>
+    <span>2026-09-02</span>
+  </div>
+
+</div>
+</body>
+</html>
