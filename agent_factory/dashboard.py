@@ -427,6 +427,24 @@ def disk_ticket_numbers() -> set[int]:
     return numbers
 
 
+def spend_by_ticket() -> dict[int, dict]:
+    """Per-ticket spend from events.jsonl `attempt` rows: seconds, dollars, rounds."""
+    spend: dict[int, dict] = {}
+    for line in read_text(dispatch.EVENTS).splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if row.get("event") != "attempt" or "ticket" not in row:
+            continue
+        s = spend.setdefault(row["ticket"], {"seconds": 0, "cost": None, "rounds": 0})
+        s["seconds"] += row.get("seconds") or 0
+        s["rounds"] += 1
+        if row.get("cost") is not None:
+            s["cost"] = round((s["cost"] or 0) + row["cost"], 4)
+    return spend
+
+
 # ---------------------------------------------------------------- upstream
 
 
@@ -619,7 +637,7 @@ def worker_name(labels: set[str]) -> str:
     return Path(argv[0]).name
 
 
-def build_ticket(issue: dict, pr: dict | None, disk: dict) -> dict:
+def build_ticket(issue: dict, pr: dict | None, disk: dict, spend: dict | None = None) -> dict:
     labels = {lab["name"] for lab in issue.get("labels", {}).get("nodes") or []}
     events = issue_events(issue)
     if pr:
@@ -685,6 +703,7 @@ def build_ticket(issue: dict, pr: dict | None, disk: dict) -> dict:
         "stage": stage_of(labels, issue["state"], pr, lock),
         "phase": phase_of(disk) if lock else None,
         "pr": pr,
+        "spend": spend or {"seconds": 0, "cost": None, "rounds": 0},
         "events": events,
         **disk,
     }
@@ -712,13 +731,14 @@ def snapshot() -> dict:
         errors.append(f"github: {exc}")
 
     on_disk = disk_ticket_numbers()
+    spend = spend_by_ticket()
     tickets = []
     for issue in issues:
         n = issue["number"]
         labels = {lab["name"] for lab in issue.get("labels", {}).get("nodes") or []}
         if not (labels & FACTORY_LABELS or n in prs or n in on_disk):
             continue
-        tickets.append(build_ticket(issue, prs.get(n), disk_state(n)))
+        tickets.append(build_ticket(issue, prs.get(n), disk_state(n), spend.get(n)))
     tickets.sort(key=lambda t: t["number"], reverse=True)
 
     return {
@@ -734,6 +754,8 @@ def snapshot() -> dict:
             "max_active": MAX_ACTIVE,
             "max_attempts": MAX_ATTEMPTS,
             "budget_min": cfg.budget_min,
+            "review_rounds": cfg.review_rounds,
+            "cost_pattern": cfg.cost_pattern,
             "timer_interval": "10min",
             "gate_checks": GATE_CHECKS,
             "exclusive_checks": [c.name for c in cfg.checks if c.exclusive],
@@ -752,6 +774,12 @@ def snapshot() -> dict:
         },
         "gpu_lock_held": lock_held(GPU_LOCK),
         "active": sum(1 for t in tickets if t["lock_held"]),
+        "spend": {
+            "seconds": sum(s["seconds"] for s in spend.values()),
+            "cost": round(sum(s["cost"] for s in spend.values() if s["cost"] is not None), 2)
+            if any(s["cost"] is not None for s in spend.values()) else None,
+            "tickets": len(spend),
+        },
         "dispatcher": dispatcher(),
         "upstream": upstream_state(gh_upstream, issues),
         "tickets": tickets,

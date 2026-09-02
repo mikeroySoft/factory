@@ -81,7 +81,9 @@ wrong check command → fix `.factory.toml`; reviewer disagreement → read the
 findings and either amend the ticket or take the branch over by hand
 (`git worktree` at `.factory/wt-<n>`, branch `agent/<n>`); red CI → the label
 `factory-approved` was removed on purpose; re-add it after the fix to re-enter the
-merge stage. A human blocks any merge by requesting changes on the PR.
+merge stage. A human blocks any merge by requesting changes on the PR. When the same
+cause shows up across tickets, run `factory learn --dry-run`, check the proposed
+lessons against the evidence, then `factory learn` and commit `.factory-lessons.md`.
 
 Done when the ticket is re-labelled with a stated reason, or handed to the user with
 the cause and the evidence path.

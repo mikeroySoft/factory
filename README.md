@@ -58,9 +58,10 @@ merge stage.
 | Command | What one invocation does |
 |---|---|
 | `factory triage` | Labels every `needs-triage` issue via the local model: `ready-for-agent` (with an agent brief), `needs-info` (with the question), `ready-for-human`, or a `wontfix` proposal comment. `--dry-run`, `--issue N`, `--replay a,b,c`. |
-| `factory dispatch` | One stateless pass: upstream sync → merge stage (at most one PR) → claim up to `max_active` tickets → worker → gate → PR → review → one bounce. `--ticket N` forces one issue; `--dry-run` prints the plan. |
+| `factory dispatch` | One stateless pass: upstream sync → merge stage (at most one PR) → claim up to `max_active` tickets → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan. |
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
 | `factory stats` | Ticket table: attempts, review rounds, hours to merge. `--json`. |
+| `factory learn` | Reads the last N finished tickets' event trail, failing-attempt log tails, reviewer findings, and escalation reasons; asks the local model for ≤10 repo-specific lessons; writes `.factory-lessons.md` (you commit it). Every worker prompt carries it. `--dry-run`, `--last N`. |
 | `factory dashboard` | Local ops UI: tickets by stage, in-flight phase, gate reports, worker logs, journal heartbeat, upstream drift, and an action list with one-click answers. `--host 0.0.0.0` exposes it (and its mutating `/api/act`) to your network. |
 | `factory doctor` / `init` / `install` | Onboarding, above. |
 
@@ -83,10 +84,12 @@ inside one of its worktrees.
    `leak-scan` of added lines against a regex. Checks marked `exclusive`
    serialise on a host-wide lock (one GPU, many worktrees). Every check has a
    timeout; a wedged check fails instead of holding the lock.
-5. **Review.** The reviewer sees the diff, the issue, and the gate report and
-   must end with `VERDICT: APPROVE` or `VERDICT: REVISE`. One bounce back to
-   the worker; a second `REVISE` escalates. `APPROVE` adds the
-   `factory-approved` label — durable evidence on the PR, not in memory.
+5. **Review.** The reviewer sees the diff, the issue, and the gate report;
+   every finding must cite `path:line`; it ends with `VERDICT: APPROVE` or
+   `VERDICT: REVISE`. Each `REVISE` goes back to the worker with the findings
+   (re-gate, push, re-review), up to `review_rounds` times; then it escalates.
+   `APPROVE` adds the `factory-approved` label — durable evidence on the PR,
+   not in memory.
 6. **Merge stage** (start of the next pass). One PR per pass, requiring all
    four: gate PASS in the PR body, `factory-approved`, green GitHub checks
    (fail-closed on missing or unparsable checks), and a head that already
@@ -107,6 +110,10 @@ written by `factory init` documents them all. The ones you will actually set:
 ```toml
 [repo]
 # upstream = "upstream"          # fork workflow: sync upstream main each pass
+
+[dispatch]
+review_rounds = 1                # REVISE -> worker -> re-review cycles
+# cost_pattern = 'Total cost:\s*\$([0-9.]+)'   # $ from the worker log (Claude Code prints this)
 
 [workers]                        # ticket label -> argv; {prompt} file, {cwd} worktree
 default = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]
@@ -146,6 +153,14 @@ conventions; `factory init` creates the labels.
 - **Dashboard** (`factory dashboard`): the *actions* list is the inbox —
   escalations, `needs-info` questions, wontfix proposals, parked upstream
   syncs, a dead timer — each with the exact command or a button.
+- **Spend**: the *Spend* KPI and each ticket's attempts tab total worker+gate
+  wall clock from `events.jsonl`, plus dollars when `cost_pattern` matches
+  your worker's log.
+- **Learning loop**: after a batch of tickets, `factory learn --dry-run`,
+  read the proposed lessons, then `factory learn` and commit
+  `.factory-lessons.md`. Workers see it on every ticket. The eval signal is the
+  dashboard's *first-gate pass* and *bounce rate* KPIs moving after the change;
+  edit or delete lessons that don't earn their keep.
 - **Audit trail**: `.factory/events.jsonl` — one row per stage transition
   (`claimed`, `attempt` with worker exit/gate result/seconds, `pr-opened`,
   `review` verdict, `approved`, `refreshed`, `merged`, `escalate` with reason,

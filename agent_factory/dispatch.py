@@ -27,6 +27,7 @@ from agent_factory.config import (
     LABEL_APPROVED,
     LABEL_CHORE,
     LABEL_HUMAN,
+    LESSONS_NAME,
     Config,
 )
 
@@ -189,6 +190,9 @@ def build_prompt(n: int, wt: Path, extra: str = "") -> str:
             n=n, commit_flag=commit_flag, main=cfg.main, python=sys.executable
         )
     )
+    lessons = ROOT / LESSONS_NAME
+    if lessons.exists():
+        parts += ["", "## Lessons from previous tickets in this repository", "", lessons.read_text()]
     handoff = wt / ".factory" / f"handoff-{n}.md"
     if handoff.exists():
         parts += ["", "## Handoff from the previous attempt", "", handoff.read_text()]
@@ -795,9 +799,17 @@ def worker_round(
     ok, report = run_gate(wt, n)
     record(
         "attempt", ticket=n, attempt=attempt, worker_exit=code, gate="PASS" if ok else "FAIL",
-        seconds=int(time.monotonic() - started), log=str(logfile),
+        seconds=int(time.monotonic() - started), cost=log_cost(logfile), log=str(logfile),
     )
     return ok, report, logfile
+
+
+def log_cost(logfile: Path) -> float | None:
+    """Sum of `cost_pattern` captures in the worker log; None when unset/absent."""
+    if not cfg.cost_pattern:
+        return None
+    hits = re.findall(cfg.cost_pattern, logfile.read_text(errors="replace"))
+    return round(sum(float(h) for h in hits), 4) if hits else None
 
 
 def process_ticket(
@@ -880,36 +892,35 @@ def process_ticket(
             return
         verdict, findings = review(wt, n, report)
         pr_comment(n, findings)
-        if verdict == "APPROVE":
-            approve_pr(n)
-            log(f"#{n}: done (approved)")
-            return
-
-        # One review bounce.
-        if time.monotonic() > deadline:
-            escalate(
-                n,
-                f"wall-clock budget ({budget_min} min) exceeded before bounce",
-                logfile,
+        # Review rounds: each REVISE goes back to the worker with the findings,
+        # then re-gate, push, re-review. `review_rounds` bounces max.
+        for bounce in range(1, cfg.review_rounds + 1):
+            if verdict == "APPROVE":
+                break
+            if time.monotonic() > deadline:
+                escalate(
+                    n,
+                    f"wall-clock budget ({budget_min} min) exceeded before bounce {bounce}",
+                    logfile,
+                )
+                return
+            extra = f"## Reviewer findings, round {bounce} (address these)\n\n{findings}"
+            ok, report, logfile = worker_round(
+                n, wt, labels, title, extra, MAX_ATTEMPTS + bounce, deadline
             )
-            return
-        extra = f"## Reviewer findings (address these)\n\n{findings}"
-        ok, report, logfile = worker_round(
-            n, wt, labels, title, extra, MAX_ATTEMPTS + 1, deadline
-        )
-        if not ok:
-            escalate(
-                n, f"gate failed after review bounce; worktree kept at {wt}", logfile
-            )
-            return
-        run(["git", "push", "origin", f"agent/{n}"], cwd=wt)
-        verdict, findings = review(wt, n, report)
-        pr_comment(n, findings)
+            if not ok:
+                escalate(
+                    n, f"gate failed after review bounce {bounce}; worktree kept at {wt}", logfile
+                )
+                return
+            run(["git", "push", "origin", f"agent/{n}"], cwd=wt)
+            verdict, findings = review(wt, n, report)
+            pr_comment(n, findings)
         if verdict != "APPROVE":
-            escalate(n, "second REVISE verdict from reviewer", logfile)
+            escalate(n, f"REVISE verdict after {cfg.review_rounds} review round(s)", logfile)
         else:
             approve_pr(n)
-            log(f"#{n}: done (approved after bounce)")
+            log(f"#{n}: done (approved)")
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         lock_fd.close()

@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 CONFIG_NAME = ".factory.toml"
+LESSONS_NAME = ".factory-lessons.md"  # committed; `factory learn` writes, every worker prompt reads
 
 # Triage roles -> label strings. Fixed by convention; `factory init` creates them.
 LABEL_TRIAGE = "needs-triage"
@@ -66,7 +67,9 @@ class Config:
     max_active: int = 2
     max_attempts: int = 3
     budget_min: int = 90
+    review_rounds: int = 1  # REVISE -> worker -> re-review cycles before escalating
     signoff: bool = True  # `git commit -s`; Signed-off-by trailer on merges
+    cost_pattern: str | None = None  # regex with one capture: dollars in the worker log
     workers: dict[str, list[str]] = field(
         default_factory=lambda: {"default": DEFAULT_WORKER, LABEL_CHORE: DEFAULT_CHORE_WORKER}
     )
@@ -153,6 +156,8 @@ def load(start: Path | None = None) -> Config:
     cfg.max_active = int(dispatch.get("max_active", cfg.max_active))
     cfg.max_attempts = int(dispatch.get("max_attempts", cfg.max_attempts))
     cfg.budget_min = int(dispatch.get("budget_min", cfg.budget_min))
+    cfg.review_rounds = int(dispatch.get("review_rounds", cfg.review_rounds))
+    cfg.cost_pattern = dispatch.get("cost_pattern") or None
     cfg.signoff = bool(dispatch.get("signoff", cfg.signoff))
     if workers:
         if "default" not in workers:

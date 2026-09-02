@@ -589,6 +589,7 @@ function renderKpis() {
     ...(S.snap.config.upstream ? [kpi('Upstream', upstreamWord(), S.snap.upstream.blocker ? `sync parked on #${S.snap.upstream.blocker.number}` : `fork +${S.snap.upstream.ahead ?? '?'} · last sync ${S.snap.upstream.syncs.length ? ago(S.snap.upstream.syncs.at(-1).at) : 'never'}`)] : []),
     kpi('Issue → PR', Number.isFinite(m.issueToPr) ? `${m.issueToPr.toFixed(1)}h` : '—', `PR → merge ${Number.isFinite(m.prToMerge) ? m.prToMerge.toFixed(1) + 'h' : '—'} (median)`),
     kpi('Verdicts', m.verdicts.length, `${m.verdicts.filter(v => v.verdict === 'APPROVE').length} approve · ${m.verdicts.filter(v => v.verdict === 'REVISE').length} revise`),
+    kpi('Spend', spendText(S.snap.spend), S.snap.spend.cost == null && S.snap.config.cost_pattern == null ? `worker+gate wall clock · ${S.snap.spend.tickets} tickets · set cost_pattern for $` : `worker+gate wall clock · ${S.snap.spend.tickets} tickets`),
   );
 }
 function upstreamPending() { return S.snap.upstream.commits.filter(c => !c.synced); }
@@ -826,7 +827,7 @@ function renderConfig() {
   $('config').replaceChildren(
     h('div', { class: 'cardc' }, h('h4', {}, 'factory dispatch'), dl([
       ['timer', d.timer.active ? `active · every ${cfg.timer_interval}` : 'inactive'], ['next pass', d.timer.next ? fmt(d.timer.next) : '—'], ['last pass', d.timer.last ? fmt(d.timer.last) : '—'],
-      ['service', d.service_active ? 'running now' : 'idle (oneshot)'], ['MAX_ACTIVE', `${cfg.max_active} · ${S.snap.active} held`], ['MAX_ATTEMPTS', `${cfg.max_attempts} gate rounds + 1 review bounce`],
+      ['service', d.service_active ? 'running now' : 'idle (oneshot)'], ['MAX_ACTIVE', `${cfg.max_active} · ${S.snap.active} held`], ['MAX_ATTEMPTS', `${cfg.max_attempts} gate rounds + ${cfg.review_rounds} review bounce${cfg.review_rounds === 1 ? '' : 's'}`],
       ['budget', `${cfg.budget_min} min wall clock / ticket`], ['escalation', 'unassign · ready-for-human · comment with log path · CI failure pulls factory-approved'], ['merge stage', `squash, ≤1 PR per pass · needs ${cfg.approved_label} + green CI + head contains ${cfg.main} tip`],
       ['upstream sync', cfg.upstream ? `${S.snap.upstream.repo} ${cfg.main} → ${cfg.main} · merge commit under host gate (leak scan skipped) · conflict/gate fail opens a ready-for-human issue` : 'disabled']])),
     h('div', { class: 'cardc' }, h('h4', {}, 'factory gate'), dl([
@@ -896,7 +897,14 @@ function tabAttempts(t, c) {
       h('span', { class: 'hint' }, `${kb(a.size)} · finished ${fmt(a.mtime)}${startAt ? ' · ~' + dur(startAt, a.mtime) : ''}`), btn), body);
     c.append(box);
   });
+  const sp = t.spend || {};
+  if (sp.rounds) c.append(h('div', { class: 'hint' }, `spend (events.jsonl): ${spendText(sp)} over ${sp.rounds} round${sp.rounds === 1 ? '' : 's'}`));
   c.append(h('div', { class: 'hint' }, 'duration ≈ gap between the claim (or previous log) and this log’s last write; the gate runs inside that window.'));
+}
+function spendText(sp) {
+  const hrs = (sp.seconds || 0) / 3600;
+  const t = hrs >= 1 ? `${hrs.toFixed(1)}h` : `${Math.round((sp.seconds || 0) / 60)}m`;
+  return sp.cost != null ? `${t} · $${sp.cost.toFixed(2)}` : t;
 }
 function tabGate(t, c) {
   const checks = t.gate ? t.gate.checks : {};

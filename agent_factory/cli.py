@@ -13,6 +13,7 @@ COMMANDS = {
     "dispatch": ("dispatch", "main", "one pass: sync, merge stage, claim and work tickets"),
     "gate": ("gate", "main", "run the deterministic quality gate in this worktree"),
     "stats": ("stats", "main", "ticket metrics from GitHub"),
+    "learn": ("learn", "main", "distil recent ticket outcomes into .factory-lessons.md"),
     "dashboard": ("dashboard", "main", "serve the local ops dashboard"),
 }
 

@@ -14,9 +14,12 @@
 [dispatch]
 # max_active = 2       # tickets in flight at once
 # max_attempts = 3     # worker+gate rounds before escalating
+# review_rounds = 1    # REVISE -> worker -> re-review cycles before escalating
 # budget_min = 90      # wall-clock budget per ticket
 # signoff = true       # `git commit -s`; Signed-off-by trailer on merges (DCO)
-
+# Regex with one capture group: dollars spent, read from the worker log after
+# each attempt and summed into .factory/events.jsonl and the dashboard.
+# cost_pattern = 'Total cost:\s*\$([0-9.]+)'      # Claude Code
 [workers]
 # argv templates. {prompt} = path to the ticket prompt file, {cwd} = worktree.
 # The key is a ticket label; `default` is required. First matching label wins.

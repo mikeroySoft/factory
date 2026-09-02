@@ -201,6 +201,48 @@ class DispatchTest(unittest.TestCase):
             self.assertEqual(rows[1]["gate"], "FAIL")
             self.assertTrue(all("at" in r for r in rows))
 
+    def test_learn_writes_lessons_from_events(self) -> None:
+        from unittest import mock
+
+        from agent_factory import dispatch, learn, triage
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            cfg = config.load(repo)
+            dispatch.configure(cfg)
+            triage.configure(cfg)
+            dispatch.record("claimed", ticket=3, title="fix parser")
+            dispatch.record("attempt", ticket=3, attempt=1, gate="FAIL", seconds=5, log=str(repo / "nope.log"))
+            dispatch.record("escalate", ticket=3, reason="gate failed 3 times")
+            dispatch.record("claimed", ticket=4, title="in flight")  # unfinished: excluded
+            tickets, ev = learn.evidence(10)
+            self.assertEqual(tickets, [3])
+            self.assertIn("gate failed 3 times", ev)
+            reply = json.dumps({"lessons": ["Run `make test` before the gate."]})
+            with mock.patch.object(triage, "call_llm", return_value=reply), \
+                 mock.patch.object(config, "load", return_value=cfg):
+                self.assertEqual(learn.main([]), 0)
+            lessons = (repo / config.LESSONS_NAME).read_text()
+            self.assertIn("- Run `make test` before the gate.", lessons)
+            # The next worker prompt carries the lessons.
+            wt = dispatch.FACTORY / "wt-3"
+            wt.mkdir(parents=True, exist_ok=True)
+            with mock.patch.object(dispatch, "gh_json", return_value={"title": "t", "body": "b", "comments": []}):
+                self.assertIn("## Lessons from previous tickets", dispatch.build_prompt(3, wt))
+
+    def test_cost_pattern_sums_worker_log(self) -> None:
+        from agent_factory import dispatch
+
+        toml = "[dispatch]\ncost_pattern = 'Total cost:\\s*\\$([0-9.]+)'\nreview_rounds = 3\n"
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), toml)
+            cfg = config.load(repo)
+            self.assertEqual(cfg.review_rounds, 3)
+            dispatch.configure(cfg)
+            log = Path(d) / "w.log"
+            log.write_text("... Total cost: $0.25\nmore\nTotal cost: $1.00\n")
+            self.assertEqual(dispatch.log_cost(log), 1.25)
+
 
 if __name__ == "__main__":
     unittest.main()
