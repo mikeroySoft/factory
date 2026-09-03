@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A label-driven autonomous ticket pipeline for any GitHub repository.">
+  <title>agent-factory — A label-driven autonomous ticket pipeline for any GitHub repository.</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root{--paper:#0b1019;--paper-2:#0f1522;--paper-3:#121b2b;--ink:#dbe7f3;--muted:#8a9cb3;--rule:#26344d;--rule-strong:#3b4d6b;--accent:#00e5ff;--accent-ink:#061016;--accent-tint:rgba(0,229,255,0.07);--accent-tint-strong:rgba(0,229,255,0.15);--link:#ff2a6d;--success:#55e6a5;--headline:linear-gradient(105deg,#dbe7f3 6%,#00e5ff 40%,#5b8cff 70%,#b26bff 96%);--space-1:0.25rem;--space-2:0.5rem;--space-3:0.75rem;--space-4:1rem;--space-5:1.5rem;--space-6:2rem;--space-7:3rem;--space-8:4rem;--space-9:6rem;--radius:0.35rem;--page:75rem;}*,*::before,*::after{box-sizing:border-box;}html{color-scheme:dark;scroll-behavior:smooth;}body{margin:0;min-width:20rem;background:var(--paper);color:var(--ink);font-family:"JetBrains Mono",monospace;font-size:1rem;line-height:1.6;-webkit-font-smoothing:antialiased;}a{color:inherit;}a:focus-visible{outline:2px solid var(--accent);outline-offset:4px;}code,pre,button{font:inherit;}.shell{width:min(100% - 2rem,var(--page));margin-inline:auto;}.site-header{border-bottom:1px solid var(--rule);}.nav{min-height:4.5rem;display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);}.wordmark{display:inline-flex;align-items:center;gap:var(--space-3);color:var(--ink);font-size:0.92rem;font-weight:700;letter-spacing:-0.02em;text-decoration:none;}.wordmark-mark{width:0.7rem;height:0.7rem;border:1px solid var(--accent);background:var(--accent-tint-strong);transform:rotate(45deg);}.nav-link{min-height:2.75rem;display:inline-flex;align-items:center;gap:var(--space-2);padding-inline:var(--space-3);color:var(--muted);font-size:0.78rem;font-weight:600;letter-spacing:0.08em;text-decoration:none;text-transform:uppercase;transition:color 160ms ease;}.nav-link:hover{color:var(--accent);}.nav-link svg{width:1.1rem;height:1.1rem;}.hero{position:relative;isolation:isolate;padding-block:clamp(4.5rem,10vw,8rem);border-bottom:1px solid var(--rule);}.hero::before{position:absolute;z-index:-1;inset:0 0 auto;height:34rem;background:radial-gradient(circle at 70% 25%,var(--accent-tint),transparent 52%);content:"";pointer-events:none;}.hero-grid{display:grid;grid-template-columns:minmax(0,1.02fr) minmax(28rem,0.98fr);align-items:center;gap:clamp(3rem,7vw,6rem);}.eyebrow{margin:0 0 var(--space-5);color:var(--accent);font-size:0.72rem;font-weight:700;letter-spacing:0.2em;text-transform:uppercase;}.eyebrow::before{content:"// ";color:var(--link);}h1,h2,h3,p{overflow-wrap:anywhere;}h1{max-width:13ch;margin:0;background:var(--headline);background-clip:text;color:transparent;font-size:clamp(2.8rem,6.5vw,5.8rem);font-weight:800;letter-spacing:-0.075em;line-height:0.98;}.lede{max-width:39rem;margin:var(--space-6) 0 0;color:var(--muted);font-size:clamp(1rem,1.5vw,1.16rem);}.install-grid{display:grid;gap:var(--space-3);margin-top:var(--space-6);}.install-line{display:grid;grid-template-columns:4.6rem minmax(0,1fr);align-items:stretch;border:1px solid var(--rule);border-radius:var(--radius);background:var(--paper-2);}.install-label{display:grid;place-items:center;border-right:1px solid var(--rule);color:var(--muted);font-size:0.68rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;}.install-line pre{min-width:0;margin:0;padding:var(--space-3) var(--space-4);overflow-x:auto;color:var(--ink);font-size:0.78rem;white-space:pre;}.install-line code::before{content:"$ ";color:var(--accent);}.hero-actions{display:flex;flex-wrap:wrap;gap:var(--space-3);margin-top:var(--space-5);}.button{min-height:2.75rem;display:inline-flex;align-items:center;justify-content:center;gap:var(--space-2);padding:var(--space-2) var(--space-5);border:1px solid var(--accent);border-radius:var(--radius);background:var(--accent);color:var(--accent-ink);font-size:0.78rem;font-weight:800;letter-spacing:0.07em;text-decoration:none;text-transform:uppercase;transition:background-color 160ms ease,color 160ms ease;}.button:hover{background:var(--ink);color:var(--accent-ink);}.button svg{width:1rem;height:1rem;}.terminal{border:1px solid var(--rule-strong);border-radius:var(--radius);background:var(--paper-2);}.terminal-bar{display:flex;align-items:center;justify-content:space-between;min-height:2.75rem;padding-inline:var(--space-4);border-bottom:1px solid var(--rule);color:var(--muted);font-size:0.68rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;}.terminal-status{color:var(--success);}.terminal pre{margin:0;padding:clamp(1.25rem,4vw,2rem);overflow-x:auto;color:var(--muted);font-size:clamp(0.72rem,1.4vw,0.84rem);line-height:1.9;white-space:pre;}.prompt{color:var(--accent);}.log-key{color:var(--ink);}.log-pass{color:var(--success);font-weight:700;}.log-review{color:var(--link);font-weight:700;}.section{padding-block:clamp(4.5rem,9vw,7.5rem);border-bottom:1px solid var(--rule);}.section-head{display:grid;grid-template-columns:1fr minmax(18rem,0.75fr);align-items:end;gap:var(--space-6);margin-bottom:var(--space-7);}.section-head h2{max-width:17ch;margin:0;font-size:clamp(1.8rem,4vw,3rem);line-height:1.15;letter-spacing:-0.05em;}.section-head p{margin:0;color:var(--muted);font-size:0.92rem;}.pipeline-board{padding:clamp(1.25rem,3vw,2rem);border:1px solid var(--rule-strong);border-radius:var(--radius);background:var(--paper-2);}.pipeline{display:grid;grid-template-columns:minmax(8.8rem,1fr) minmax(8rem,0.75fr) minmax(8.8rem,1fr) minmax(8rem,0.75fr) minmax(8.8rem,1fr) minmax(7rem,0.65fr) minmax(5rem,0.7fr);align-items:start;gap:0;}.stage{display:flex;justify-content:center;padding-top:1.85rem;}.chip{display:inline-flex;align-items:center;min-height:1.75rem;padding:0.24rem 0.58rem;border:1px solid var(--rule-strong);border-radius:999px;background:var(--paper-3);color:var(--ink);font-size:0.68rem;font-weight:600;line-height:1.15;text-align:center;white-space:nowrap;}.chip-cyan{border-color:var(--accent);color:var(--accent);}.chip-magenta{border-color:var(--link);color:var(--link);}.chip-success{border-color:var(--success);color:var(--success);}.connector{min-width:0;text-align:center;}.connector-name{display:block;min-height:1.85rem;color:var(--muted);font-size:0.6rem;letter-spacing:0.03em;white-space:nowrap;}.connector-line{position:relative;display:block;height:1px;margin-top:0.86rem;background:var(--rule-strong);}.connector-line::after{position:absolute;top:50%;right:-1px;width:0.42rem;height:0.42rem;border-top:1px solid var(--accent);border-right:1px solid var(--accent);content:"";transform:translateY(-50%) rotate(45deg);}.branch{display:flex;flex-direction:column;align-items:center;gap:var(--space-2);margin-top:var(--space-5);}.branch-line{width:1px;height:1.5rem;background:var(--rule-strong);}.branch-line::after{display:block;width:0.38rem;height:0.38rem;margin:1.1rem 0 0 -0.19rem;border-right:1px solid var(--link);border-bottom:1px solid var(--link);content:"";transform:rotate(45deg);}.features{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-top:1px solid var(--rule);border-left:1px solid var(--rule);}.feature{min-height:14rem;padding:var(--space-6);border-right:1px solid var(--rule);border-bottom:1px solid var(--rule);}.feature-top{display:flex;align-items:center;gap:var(--space-3);margin-bottom:var(--space-7);color:var(--muted);font-size:0.66rem;font-weight:700;letter-spacing:0.16em;text-transform:uppercase;}.status-dot{width:7px;height:7px;flex:0 0 7px;border-radius:50%;background:var(--accent);}.feature:nth-child(2n) .status-dot{background:var(--link);}.feature:nth-child(3n) .status-dot{background:var(--success);}.feature h3{margin:0 0 var(--space-3);font-size:1rem;line-height:1.35;}.feature p{margin:0;color:var(--muted);font-size:0.84rem;}.steps{margin:0;padding:0;list-style:none;border-top:1px solid var(--rule);}.step{display:grid;grid-template-columns:5rem 9rem minmax(0,1fr);gap:var(--space-5);padding-block:var(--space-5);border-bottom:1px solid var(--rule);}.step-number{color:var(--accent);font-size:1.2rem;font-weight:800;letter-spacing:-0.05em;}.step h3{margin:0;font-size:0.9rem;text-transform:uppercase;}.step p{margin:0;color:var(--muted);font-size:0.83rem;}.code-panel{border:1px solid var(--rule-strong);border-radius:var(--radius);background:var(--paper-2);}.code-title{min-height:2.75rem;display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);padding-inline:var(--space-4);border-bottom:1px solid var(--rule);color:var(--muted);font-size:0.68rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;}.code-title span:last-child{color:var(--accent);}.code-panel pre{margin:0;padding:clamp(1.25rem,4vw,2rem);overflow-x:auto;color:var(--ink);font-size:clamp(0.72rem,1.5vw,0.86rem);line-height:1.75;}.commands{margin-top:var(--space-7);border-top:1px solid var(--rule);}.command{display:grid;grid-template-columns:minmax(15rem,0.55fr) minmax(0,1fr);gap:var(--space-6);padding-block:var(--space-4);border-bottom:1px solid var(--rule);}.command code{color:var(--accent);font-size:0.82rem;}.command p{margin:0;color:var(--muted);font-size:0.82rem;}.site-footer{padding-block:var(--space-6);}.footer-inner{display:flex;align-items:center;justify-content:space-between;gap:var(--space-5);color:var(--muted);font-size:0.75rem;}.footer-inner p{margin:0;}.footer-inner a{color:var(--ink);text-underline-offset:0.25em;}.footer-inner a:hover{color:var(--accent);}@media (max-width:64rem){.hero-grid{grid-template-columns:1fr;}.terminal{max-width:46rem;}.pipeline-board{overflow-x:auto;}.pipeline{min-width:58rem;}.features{grid-template-columns:repeat(2,minmax(0,1fr));}}@media (max-width:48rem){.shell{width:min(100% - 1.5rem,var(--page));}.hero{padding-block:var(--space-8);}.section{padding-block:var(--space-8);}.section-head{grid-template-columns:1fr;margin-bottom:var(--space-6);}.pipeline-board{overflow:visible;}.pipeline{min-width:0;grid-template-columns:1fr;}.stage{padding-top:0;padding-block:var(--space-3);}.connector{display:flex;flex-direction:column;align-items:center;}.connector-name{min-height:0;order:2;margin:var(--space-2) 0;}.connector-line{width:1px;height:2rem;margin:0;background:var(--rule-strong);}.connector-line::after{top:auto;right:auto;bottom:0;left:50%;transform:translateX(-50%) rotate(135deg);}.branch{order:3;width:100%;margin:var(--space-2) 0 var(--space-5);}.branch-line{height:1rem;}.branch-line::after{margin-top:0.6rem;}.features{grid-template-columns:1fr;}.feature{min-height:0;}.step{grid-template-columns:3.2rem minmax(0,1fr);}.step p{grid-column:2;}.command{grid-template-columns:1fr;gap:var(--space-2);}}@media (max-width:30rem){h1{font-size:clamp(2.55rem,14vw,3.8rem);}.nav-link span{display:none;}.install-line{grid-template-columns:1fr;}.install-label{min-height:2rem;border-right:0;border-bottom:1px solid var(--rule);}.terminal pre{font-size:0.68rem;}.step{grid-template-columns:2.6rem minmax(0,1fr);gap:var(--space-3);}.footer-inner{align-items:flex-start;flex-direction:column;}}@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto;}*,*::before,*::after{transition-duration:0.01ms !important;}}
+  </style>
+  <style>
+    @media (max-width: 48rem) {
+      .pipeline .connector {
+        position: relative;
+        display: block;
+        min-height: 6rem;
+      }
+      .pipeline .connector-name {
+        position: absolute;
+        top: 1.8rem;
+        right: calc(50% + var(--space-3));
+        width: calc(50% - var(--space-3));
+        min-height: 0;
+        margin: 0;
+        text-align: right;
+      }
+      .pipeline .connector-line {
+        position: absolute;
+        top: 0;
+        left: 50%;
+        width: 1px;
+        height: 6rem;
+      }
+      .pipeline .connector > .branch,
+      .pipeline .stage-branch .branch {
+        position: absolute;
+        top: 2.8rem;
+        left: 50%;
+        width: 50%;
+        flex-direction: row;
+        gap: var(--space-2);
+        margin: 0;
+      }
+      .pipeline .connector > .branch .branch-line,
+      .pipeline .stage-branch .branch-line {
+        width: 1rem;
+        height: 1px;
+      }
+      .pipeline .connector > .branch .branch-line::after,
+      .pipeline .stage-branch .branch-line::after {
+        margin: -0.19rem 0 0 0.55rem;
+        transform: rotate(-45deg);
+      }
+      .pipeline .stage-branch {
+        position: relative;
+        display: block;
+        min-height: 6rem;
+        padding-block: var(--space-3);
+        text-align: center;
+      }
+      .pipeline .stage-branch .branch { top: 3.2rem; }
+    }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <nav class="nav shell" aria-label="Primary navigation">
+      <a class="wordmark" href="#top" aria-label="agent-factory home">
+        <span class="wordmark-mark" aria-hidden="true"></span>
+        <span>agent-factory</span>
+      </a>
+      <a class="nav-link" href="https://github.com/mikeroySoft/agent-factory">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3.3-.4 6.8-1.6 6.8-7A5.4 5.4 0 0 0 19.4 4 5 5 0 0 0 19.3.5S18.2.1 15 1.8a12.3 12.3 0 0 0-6 0C5.8.1 4.7.5 4.7.5A5 5 0 0 0 4.6 4a5.4 5.4 0 0 0-1.4 3.7c0 5.4 3.5 6.6 6.8 7A4.8 4.8 0 0 0 9 18v4"></path>
+          <path d="M9 19c-3 .9-3-1.5-4-2"></path>
+        </svg>
+        <span>GitHub</span>
+      </a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-grid shell">
+        <div>
+          <p class="eyebrow">label-driven autonomy</p>
+          <h1 id="hero-title">Issues in. Merged PRs out.</h1>
+          <p class="lede">A label-driven autonomous ticket pipeline for any GitHub repository.</p>
+
+          <div class="install-grid" aria-label="Install commands">
+            <div class="install-line">
+              <span class="install-label">skill</span>
+              <pre><code>npx skills add mikeroysoft/agent-factory</code></pre>
+            </div>
+            <div class="install-line">
+              <span class="install-label">CLI</span>
+              <pre><code>uv tool install git+https://github.com/mikeroySoft/agent-factory</code></pre>
+            </div>
+          </div>
+
+          <div class="hero-actions">
+            <a class="button" href="https://github.com/mikeroySoft/agent-factory">
+              View on GitHub
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M5 12h14"></path><path d="m13 6 6 6-6 6"></path>
+              </svg>
+            </a>
+          </div>
+        </div>
+
+        <div class="terminal" aria-label="factory dispatch pass log">
+          <div class="terminal-bar">
+            <span>factory dispatch</span>
+            <span class="terminal-status">PASS</span>
+          </div>
+          <pre><code><span class="prompt">$</span> factory dispatch
+
+<span class="log-key">claimed</span>       ready-for-agent → agent/&lt;n&gt;
+<span class="log-key">attempt</span>       worker → factory gate
+<span class="log-key">gate</span>          <span class="log-pass">PASS</span>
+<span class="log-key">pr-opened</span>     agent/&lt;n&gt;
+<span class="log-key">review</span>        <span class="log-review">APPROVE</span>
+<span class="log-key">merged</span>        main</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="pipeline-title">
+      <div class="shell">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">pipeline</p>
+            <h2 id="pipeline-title">State lives where the work does.</h2>
+          </div>
+          <p>GitHub labels, comments, and PRs plus a gitignored <code>.factory/</code> directory. The dispatcher is stateless and safe to re-run.</p>
+        </div>
+
+        <div class="pipeline-board" aria-label="agent-factory label pipeline">
+          <div class="pipeline">
+            <div class="stage"><span class="chip">needs-triage</span></div>
+            <div class="connector">
+              <span class="connector-name">factory triage</span>
+              <span class="connector-line" aria-hidden="true"></span>
+              <div class="branch">
+                <span class="branch-line" aria-hidden="true"></span>
+                <span class="chip chip-magenta">needs-info</span>
+              </div>
+            </div>
+            <div class="stage"><span class="chip chip-cyan">ready-for-agent</span></div>
+            <div class="connector">
+              <span class="connector-name">factory dispatch</span>
+              <span class="connector-line" aria-hidden="true"></span>
+              <div class="branch">
+                <span class="branch-line" aria-hidden="true"></span>
+                <span class="chip chip-magenta">ready-for-human</span>
+              </div>
+            </div>
+            <div class="stage stage-branch">
+              <div>
+                <span class="chip">agent/&lt;n&gt; PR</span>
+                <div class="branch">
+                  <span class="branch-line" aria-hidden="true"></span>
+                  <span class="chip chip-success">factory-approved</span>
+                </div>
+              </div>
+            </div>
+            <div class="connector">
+              <span class="connector-name">merge stage</span>
+              <span class="connector-line" aria-hidden="true"></span>
+            </div>
+            <div class="stage"><span class="chip chip-success">main</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="features-title">
+      <div class="shell">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">control surfaces</p>
+            <h2 id="features-title">Deterministic where it matters.</h2>
+          </div>
+          <p>Runs on your machine, on a systemd timer, with the agent CLIs you already have. No SaaS, no runner fleet.</p>
+        </div>
+
+        <div class="features">
+          <article class="feature">
+            <div class="feature-top"><span class="status-dot"></span>Isolation</div>
+            <h3>Worktree per ticket</h3>
+            <p>Main is never touched by an agent.</p>
+          </article>
+          <article class="feature">
+            <div class="feature-top"><span class="status-dot"></span>Gate</div>
+            <h3>Your gate, not ours</h3>
+            <p>Any <code>[[gate.check]]</code> commands, exclusive lock for GPU or serial checks, and per-check timeouts.</p>
+          </article>
+          <article class="feature">
+            <div class="feature-top"><span class="status-dot"></span>Review</div>
+            <h3>Second-model review</h3>
+            <p>Path:line citations and a hard <code>VERDICT</code>.</p>
+          </article>
+          <article class="feature">
+            <div class="feature-top"><span class="status-dot"></span>Merge</div>
+            <h3>Four-way condition</h3>
+            <p>Gate, reviewer, GitHub CI, and freshness. Fail-closed.</p>
+          </article>
+          <article class="feature">
+            <div class="feature-top"><span class="status-dot"></span>Handoff</div>
+            <h3>Evidence-bound escalation</h3>
+            <p><code>ready-for-human</code> with the reason, log path, and handoff note.</p>
+          </article>
+          <article class="feature">
+            <div class="feature-top"><span class="status-dot"></span>State</div>
+            <h3>Stateless dispatcher</h3>
+            <p>State is GitHub plus a gitignored <code>.factory/</code> directory. Safe to re-run.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="steps-title">
+      <div class="shell">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">how a ticket moves</p>
+            <h2 id="steps-title">Seven stages. Evidence at every handoff.</h2>
+          </div>
+          <p>Issues labelled <code>ready-for-agent</code> move through a worktree, your deterministic checks, a second model, GitHub CI, and freshness against <code>main</code>.</p>
+        </div>
+
+        <ol class="steps">
+          <li class="step">
+            <span class="step-number">01</span>
+            <h3>Triage</h3>
+            <p>Deterministic lint rejects bodies under 80 chars or without acceptance criteria; the model then picks one of four labels. <code>wontfix</code> is only ever proposed.</p>
+          </li>
+          <li class="step">
+            <span class="step-number">02</span>
+            <h3>Claim</h3>
+            <p>The dispatcher re-reads the issue, assigns itself, takes a per-ticket flock, and creates <code>.factory/wt-&lt;n&gt;</code> on <code>agent/&lt;n&gt;</code>.</p>
+          </li>
+          <li class="step">
+            <span class="step-number">03</span>
+            <h3>Work</h3>
+            <p>The worker gets the issue, comments, standing instructions, and on retries the previous gate report or reviewer findings.</p>
+          </li>
+          <li class="step">
+            <span class="step-number">04</span>
+            <h3>Gate</h3>
+            <p>Conflict markers, your <code>[[gate.check]]</code> list in order, then a leak-scan of added lines. Exclusive checks serialise on a host-wide lock.</p>
+          </li>
+          <li class="step">
+            <span class="step-number">05</span>
+            <h3>Review</h3>
+            <p>The reviewer sees the diff, issue, and gate report. <code>REVISE</code> returns to the worker; <code>APPROVE</code> adds <code>factory-approved</code>.</p>
+          </li>
+          <li class="step">
+            <span class="step-number">06</span>
+            <h3>Merge stage</h3>
+            <p>One PR per pass, requiring gate PASS, <code>factory-approved</code>, green GitHub checks, and a head containing the current <code>main</code> tip.</p>
+          </li>
+          <li class="step">
+            <span class="step-number">07</span>
+            <h3>Escalation</h3>
+            <p>Unresolved work gets <code>ready-for-human</code>, loses its assignee, and gets a comment with the reason and worker log path. The worktree stays for forensics.</p>
+          </li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="quick-start-title">
+      <div class="shell">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">quick start</p>
+            <h2 id="quick-start-title">Bring your own checks. Keep your own machine.</h2>
+          </div>
+          <p>Linux, Python &gt;= 3.11, git, and gh. No Python dependencies.</p>
+        </div>
+
+        <div class="code-panel">
+          <div class="code-title"><span>shell</span><span>quick start</span></div>
+          <pre><code>cd your-repo
+factory init            # .factory.toml, .gitignore, issue template, labels
+$EDITOR .factory.toml   # put your real test/lint commands in [[gate.check]]
+factory doctor          # tools, auth, remotes, model endpoint
+factory install --dashboard   # systemd user timer every 10 min + dashboard on :8765</code></pre>
+        </div>
+
+        <div class="commands" aria-label="agent-factory commands">
+          <div class="command"><code>factory triage</code><p>Label <code>needs-triage</code> issues via the local model.</p></div>
+          <div class="command"><code>factory dispatch</code><p>One stateless pass: sync → merge stage → claim → work → gate → PR → review.</p></div>
+          <div class="command"><code>factory gate</code><p>Run the deterministic gate in the current worktree and write a Markdown report.</p></div>
+          <div class="command"><code>factory stats</code><p>Ticket table: attempts, review rounds, hours to merge; <code>--json</code>.</p></div>
+          <div class="command"><code>factory learn</code><p>Distill lessons from finished tickets into <code>.factory-lessons.md</code>.</p></div>
+          <div class="command"><code>factory dashboard</code><p>Local ops UI.</p></div>
+          <div class="command"><code>factory doctor / init / install</code><p>Onboarding.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="config-title">
+      <div class="shell">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">configuration</p>
+            <h2 id="config-title">Agent CLIs you already have.</h2>
+          </div>
+          <p>Bring your own reviewer model and, optionally, a local OpenAI-compatible model for triage.</p>
+        </div>
+
+        <div class="code-panel">
+          <div class="code-title"><span>.factory.toml</span><span>config sample</span></div>
+          <pre><code>[workers]                        # ticket label -&gt; argv
+default = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]
+chore   = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
+
+[review]
+command = ["codex", "exec", "{prompt}"]
+
+[[gate.check]]
+name = "tests"
+run = ["cargo", "test", "--workspace"]
+exclusive = true
+
+[triage]
+url = "http://127.0.0.1:11434/v1/chat/completions"
+model = "qwen3:30b"</code></pre>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner shell">
+      <p>agent-factory · MIT</p>
+      <a href="https://github.com/mikeroySoft/agent-factory">github.com/mikeroySoft/agent-factory</a>
+    </div>
+  </footer>
+</body>
+</html>
