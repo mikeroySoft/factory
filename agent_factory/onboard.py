@@ -168,11 +168,17 @@ def doctor(argv: list[str]) -> int:
 # ---------------------------------------------------------------- install
 
 
+def unit_dir() -> Path:
+    return config.host_config_path().parents[1] / "systemd" / "user"
+
+
 def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
     exe = f"{sys.executable} -m agent_factory"
     # At boot the user manager's PATH is the systemd default (no ~/.local/bin),
     # so gh/omp/codex vanish; carry the installing shell's PATH into the units.
+    # [install].env (host config) adds one line each: policy such as UV_EXCLUDE_NEWER.
     env = f"Environment=PATH={os.environ['PATH']}\n"
+    env += "".join(f"Environment={k}={v}\n" for k, v in cfg.install["env"].items())
     return {
         f"{cfg.unit}.service": (
             f"[Unit]\nDescription=agent-factory dispatcher for {cfg.repo} (one pass)\n\n"
@@ -191,42 +197,67 @@ def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
     }
 
 
+def systemctl(*args: str) -> None:
+    proc = sh(["systemctl", "--user", *args])
+    if proc.returncode != 0:
+        raise ConfigError(f"systemctl --user {' '.join(args)}: {proc.stderr.strip() or proc.returncode}")
+
+
 def install(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="factory install",
-        description="Install systemd user units: a dispatcher timer and, optionally, the dashboard.",
+        description="Install systemd user units: a dispatcher timer and, optionally, the dashboard. "
+        "Defaults come from [install] in the host config; re-running converges the unit set.",
     )
-    parser.add_argument("--every", default="10min", help="dispatcher interval, systemd time span (default 10min)")
-    parser.add_argument("--dashboard", action="store_true", help="also install and start the dashboard service")
+    parser.add_argument("--every", help="dispatcher interval, systemd time span (default 10min)")
     parser.add_argument(
-        "--host", default="127.0.0.1",
+        "--dashboard", action=argparse.BooleanOptionalAction, help="install and start the dashboard service",
+    )
+    parser.add_argument(
+        "--host",
         help="dashboard bind address; 0.0.0.0 exposes /api/act (mutates GitHub with your gh credentials) to the LAN",
     )
     parser.add_argument("--print", action="store_true", help="print the units instead of installing them")
-    args = parser.parse_args(argv)
     cfg = config.load()
-    if shutil.which("systemctl") is None:
-        raise ConfigError("systemctl not found; run `factory dispatch` from cron or by hand instead")
+    parser.set_defaults(**{k: cfg.install[k] for k in ("every", "dashboard", "host")})
+    args = parser.parse_args(argv)
 
     wanted = units(cfg, args.every, args.host)
+    dash_unit = f"{cfg.unit}-dashboard.service"
     if not args.dashboard:
-        wanted.pop(f"{cfg.unit}-dashboard.service")
+        wanted.pop(dash_unit)
     if args.print:
         for name, body in wanted.items():
             print(f"# {name}\n{body}")
         return 0
+    if shutil.which("systemctl") is None:
+        raise ConfigError("systemctl not found; run `factory dispatch` from cron or by hand instead")
 
-    unit_dir = Path.home() / ".config" / "systemd" / "user"
-    unit_dir.mkdir(parents=True, exist_ok=True)
+    udir = unit_dir()
+    udir.mkdir(parents=True, exist_ok=True)
+    changed = set()
     for name, body in wanted.items():
-        (unit_dir / name).write_text(body)
-        print(f"wrote {unit_dir / name}")
-    sh(["systemctl", "--user", "daemon-reload"])
-    to_start = [f"{cfg.unit}.timer"] + ([f"{cfg.unit}-dashboard.service"] if args.dashboard else [])
-    for unit in to_start:
-        proc = sh(["systemctl", "--user", "enable", "--now", unit])
-        print(f"{'started' if proc.returncode == 0 else 'FAILED'} {unit}{'' if proc.returncode == 0 else ': ' + proc.stderr.strip()}")
+        path = udir / name
+        if not path.exists() or path.read_text() != body:
+            path.write_text(body)
+            changed.add(name)
+            print(f"wrote {path}")
+    if not args.dashboard and (udir / dash_unit).exists():
+        systemctl("disable", "--now", dash_unit)
+        (udir / dash_unit).unlink()
+        print(f"removed {udir / dash_unit}")
+    systemctl("daemon-reload")
+    timer = f"{cfg.unit}.timer"
+    systemctl("enable", "--now", timer)
+    if timer in changed:
+        systemctl("restart", timer)
+    print(f"{'restarted' if timer in changed else 'started'} {timer}")
+    if args.dashboard:
+        systemctl("enable", "--now", dash_unit)
+        if dash_unit in changed:
+            systemctl("restart", dash_unit)
+        print(f"{'restarted' if dash_unit in changed else 'started'} {dash_unit}")
     if sh(["loginctl", "show-user", "--property=Linger", "--value", Path.home().name]).stdout.strip() != "yes":
         print("hint: `loginctl enable-linger` keeps user timers running after logout and at boot")
-    print(f"stop with: systemctl --user disable --now {' '.join(to_start)}")
+    print(f"stop with: systemctl --user disable --now {cfg.unit}.timer{f' {dash_unit}' if args.dashboard else ''}")
     return 0

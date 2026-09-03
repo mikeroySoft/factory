@@ -756,7 +756,7 @@ def snapshot() -> dict:
             "budget_min": cfg.budget_min,
             "review_rounds": cfg.review_rounds,
             "cost_pattern": cfg.cost_pattern,
-            "timer_interval": "10min",
+            "timer_interval": cfg.install["every"],
             "gate_checks": GATE_CHECKS,
             "exclusive_checks": [c.name for c in cfg.checks if c.exclusive],
             "check_timeout": cfg.check_timeout,

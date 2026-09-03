@@ -52,6 +52,15 @@ def make_repo(tmp: Path, toml: str = "") -> Path:
     return repo
 
 
+def factory(cwd: Path, *argv: str, path: str | None = None) -> subprocess.CompletedProcess:
+    env = {**os.environ, "PYTHONPATH": str(ROOT)}
+    if path:
+        env["PATH"] = f"{path}:{env['PATH']}"
+    return subprocess.run(
+        [sys.executable, "-m", "agent_factory", *argv], cwd=cwd, capture_output=True, text=True, env=env, check=False,
+    )
+
+
 def gate(cwd: Path, *args: str) -> tuple[int, str, str]:
     env = {**os.environ, "PYTHONPATH": str(ROOT)}
     proc = subprocess.run(
@@ -170,6 +179,19 @@ class HostConfigTest(unittest.TestCase):
     def test_unknown_keys(self) -> None:
         raw = {"triage": {"mdoel": "x"}, "gate": {"check": [{"name": "a", "run": [], "exclusiv": True}]}, "bogus": {}}
         self.assertEqual(config.unknown_keys(raw), ["triage.mdoel", "gate.check[0].exclusiv", "bogus"])
+
+    def test_install_print_uses_host_defaults_and_env(self) -> None:
+        host_file('[defaults.install]\nevery = "5min"\ndashboard = true\n[defaults.install.env]\nUV_EXCLUDE_NEWER = "2026-01-01T00:00:00Z"\n')
+        with tempfile.TemporaryDirectory() as d:
+            proc = factory(make_repo(Path(d)), "install", "--print")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("OnUnitActiveSec=5min", proc.stdout)
+            self.assertIn("Environment=UV_EXCLUDE_NEWER=2026-01-01T00:00:00Z", proc.stdout)
+            self.assertIn("# factory-widgets-dashboard.service", proc.stdout)
+            self.assertIn("--host 127.0.0.1", proc.stdout)
+            (Path(d) / "b").mkdir()
+            proc = factory(make_repo(Path(d) / "b"), "install", "--print", "--no-dashboard")
+            self.assertNotIn("dashboard.service", proc.stdout)
 
 
 class GateTest(unittest.TestCase):
