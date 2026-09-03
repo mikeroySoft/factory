@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import shutil
 import subprocess
@@ -169,10 +170,13 @@ def doctor(argv: list[str]) -> int:
 
 def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
     exe = f"{sys.executable} -m agent_factory"
+    # At boot the user manager's PATH is the systemd default (no ~/.local/bin),
+    # so gh/omp/codex vanish; carry the installing shell's PATH into the units.
+    env = f"Environment=PATH={os.environ['PATH']}\n"
     return {
         f"{cfg.unit}.service": (
             f"[Unit]\nDescription=agent-factory dispatcher for {cfg.repo} (one pass)\n\n"
-            f"[Service]\nType=oneshot\nWorkingDirectory={cfg.root}\nExecStart={exe} dispatch\n"
+            f"[Service]\nType=oneshot\nWorkingDirectory={cfg.root}\n{env}ExecStart={exe} dispatch\n"
         ),
         f"{cfg.unit}.timer": (
             f"[Unit]\nDescription=Run the agent-factory dispatcher for {cfg.repo} every {every}\n\n"
@@ -180,7 +184,7 @@ def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
         ),
         f"{cfg.unit}-dashboard.service": (
             f"[Unit]\nDescription=agent-factory dashboard for {cfg.repo}\nAfter=network.target\n\n"
-            f"[Service]\nWorkingDirectory={cfg.root}\n"
+            f"[Service]\nWorkingDirectory={cfg.root}\n{env}"
             f"ExecStart={exe} dashboard --host {host} --port {cfg.dashboard_port} --no-open\n"
             f"Restart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n"
         ),

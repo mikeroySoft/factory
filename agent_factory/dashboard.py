@@ -893,6 +893,8 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(url.query)
         if url.path == "/":
             self._send(200, "text/html; charset=utf-8", HTML.read_bytes())
+        elif url.path == "/theme.css":
+            self._send(200, "text/css", cfg.dashboard_theme.read_bytes() if cfg.dashboard_theme else b"")
         elif url.path == "/atlas":
             self._send(200, "text/html; charset=utf-8", ATLAS.read_bytes())
         elif url.path == "/api/snapshot":

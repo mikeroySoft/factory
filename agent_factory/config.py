@@ -82,6 +82,7 @@ class Config:
     llm_url: str = DEFAULT_LLM_URL
     llm_model: str = DEFAULT_LLM_MODEL
     dashboard_port: int = 8765
+    dashboard_theme: Path | None = None  # CSS file served after the built-in stylesheet
 
     @property
     def name(self) -> str:
@@ -179,4 +180,5 @@ def load(start: Path | None = None) -> Config:
     cfg.llm_url = triage.get("url", cfg.llm_url)
     cfg.llm_model = triage.get("model", cfg.llm_model)
     cfg.dashboard_port = int(dash.get("port", cfg.dashboard_port))
+    cfg.dashboard_theme = root / dash["theme"] if dash.get("theme") else None
     return cfg

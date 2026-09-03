@@ -62,3 +62,4 @@ exclusive = false
 
 [dashboard]
 # port = 8765
+# theme = ".factory-dashboard.css"   # repo-relative CSS loaded after the built-in stylesheet
