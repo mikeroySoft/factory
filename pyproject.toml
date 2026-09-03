@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-factory"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Label-driven autonomous ticket pipeline: triage, worker agents in git worktrees, a deterministic gate, LLM review, and a serialized merge stage — for any GitHub repo."
 readme = "README.md"
 license = "MIT"
@@ -23,6 +23,9 @@ Homepage = "https://github.com/mikeroySoft/agent-factory"
 
 [project.scripts]
 factory = "agent_factory.cli:main"
+
+[tool.hatch.version]
+path = "agent_factory/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["agent_factory"]

@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from agent_factory import config, dispatch
+from agent_factory import __version__, config, dispatch
 from agent_factory.config import (
     LABEL_AGENT,
     LABEL_APPROVED,
@@ -516,19 +516,12 @@ def upstream_state(gh: dict | None, issues: list[dict]) -> dict:
 
 
 def journal_runs() -> list[dict]:
-    out = sh(
-        [
-            "journalctl",
-            "--user",
-            "-u",
-            f"{cfg.unit}.service",
-            "-o",
-            "json",
-            "-n",
-            "3000",
-            "--no-pager",
-        ]
-    )
+    out = sh(["journalctl", "--user", "-u", f"{cfg.unit}.service", "-o", "json", "-n", "3000", "--no-pager"])
+    return parse_journal(out)[-100:]
+
+
+def parse_journal(out: str) -> list[dict]:
+    """One run per systemd Starting…Finished/Failed bracket; app lines in between."""
     runs: list[dict] = []
     cur = None
     for line in out.splitlines():
@@ -551,11 +544,23 @@ def journal_runs() -> list[dict]:
                 runs.append(cur)
             elif cur and msg.startswith("Finished"):
                 cur["finished"], cur["result"], cur = iso(at), "done", None
-            elif cur and msg.startswith("Failed"):
+            elif cur and (msg.startswith("Failed") or "Failed with result" in msg):
                 cur["finished"], cur["result"], cur = iso(at), "failed", None
         elif cur is not None:
             cur["lines"].append(msg)
-    return runs[-100:]
+    return runs
+
+
+def consecutive_failures(runs: list[dict]) -> int:
+    """Trailing unit runs that failed (a pass still running is skipped)."""
+    n = 0
+    for run in reversed(runs):
+        if run["result"] == "running":
+            continue
+        if run["result"] != "failed":
+            break
+        n += 1
+    return n
 
 
 def dispatcher() -> dict:
@@ -578,7 +583,28 @@ def dispatcher() -> dict:
         sh(["systemctl", "--user", "is-active", f"{cfg.unit}.service"]).strip()
         == "active"
     )
-    return {"timer": timer, "service_active": service_active, "runs": journal_runs()}
+    runs = journal_runs()
+    return {
+        "timer": timer,
+        "service_active": service_active,
+        "consecutive_failures": consecutive_failures(runs),
+        "runs": runs,
+    }
+
+
+def metrics(tickets: list[dict]) -> dict:
+    """Fleet KPIs (same definitions as dashboard.html): fractions, None when undefined."""
+    bounce = lambda a: a["attempt"] > MAX_ATTEMPTS  # noqa: E731
+    rounds = lambda t: sum(1 for a in t["attempts"] if not bounce(a))  # noqa: E731
+    reached = [t for t in tickets if t["pr"]]
+    ran = sorted(rounds(t) for t in tickets if t["attempts"])
+    frac = lambda n: round(n / len(reached), 3) if reached else None  # noqa: E731
+    return {
+        "first_pass": frac(sum(1 for t in reached if rounds(t) == 1)),
+        "bounce_rate": frac(sum(1 for t in reached if any(bounce(a) for a in t["attempts"]))),
+        "escalations": sum(1 for t in tickets for e in t["events"] if e["kind"] == "escalated"),
+        "med_attempts": ran[(len(ran) - 1) // 2] if ran else None,
+    }
 
 
 def triage_llm_online() -> bool:
@@ -743,6 +769,7 @@ def snapshot() -> dict:
 
     return {
         "generated_at": iso(time.time()),
+        "version": __version__,
         "repo": REPO,
         "root": str(ROOT),
         "errors": errors,
@@ -782,6 +809,7 @@ def snapshot() -> dict:
         },
         "dispatcher": dispatcher(),
         "upstream": upstream_state(gh_upstream, issues),
+        "metrics": metrics(tickets),
         "tickets": tickets,
     }
 

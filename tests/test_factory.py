@@ -244,6 +244,44 @@ class HostConfigTest(unittest.TestCase):
             self.assertEqual(out["ok"], proc.returncode == 0)
 
 
+class DashboardTest(unittest.TestCase):
+    def test_metrics_from_synthetic_tickets(self) -> None:
+        from agent_factory import dashboard
+
+        dashboard.MAX_ATTEMPTS = 3
+        att = lambda *ns: [{"attempt": n} for n in ns]  # noqa: E731
+        tickets = [
+            {"pr": {"number": 1}, "attempts": att(1), "events": []},  # first-gate pass
+            {"pr": {"number": 2}, "attempts": att(1, 2, 4), "events": [{"kind": "escalated"}]},  # 2 gate rounds + review bounce
+            {"pr": None, "attempts": att(1, 2, 3), "events": [{"kind": "escalated"}, {"kind": "comment"}]},
+            {"pr": None, "attempts": [], "events": []},
+        ]
+        m = dashboard.metrics(tickets)
+        self.assertEqual(m, {"first_pass": 0.5, "bounce_rate": 0.5, "escalations": 2, "med_attempts": 2})
+        self.assertEqual(dashboard.metrics([]), {"first_pass": None, "bounce_rate": None, "escalations": 0, "med_attempts": None})
+
+    def test_consecutive_failures_from_journal(self) -> None:
+        from agent_factory import dashboard
+
+        def entry(msg: str, ident: str = "systemd") -> str:
+            return json.dumps({"MESSAGE": msg, "SYSLOG_IDENTIFIER": ident, "__REALTIME_TIMESTAMP": "1700000000000000"})
+
+        unit = "factory-widgets.service"
+        seq = [
+            ("Starting agent-factory dispatcher...", "systemd"), ("Finished agent-factory dispatcher.", "systemd"),
+            ("Starting agent-factory dispatcher...", "systemd"), ("Failed to start agent-factory dispatcher.", "systemd"),
+            ("Starting agent-factory dispatcher...", "systemd"), ("Traceback", "python"), (f"{unit}: Failed with result 'exit-code'.", "systemd"),
+            ("Starting agent-factory dispatcher...", "systemd"), ("Failed to start agent-factory dispatcher.", "systemd"),
+            ("Starting agent-factory dispatcher...", "systemd"),  # still running: not counted either way
+        ]
+        runs = dashboard.parse_journal("\n".join(entry(m, i) for m, i in seq) + "\nnot json\n")
+        self.assertEqual([r["result"] for r in runs], ["done", "failed", "failed", "failed", "running"])
+        self.assertEqual(runs[2]["lines"], ["Traceback"])
+        self.assertEqual(dashboard.consecutive_failures(runs), 3)
+        self.assertEqual(dashboard.consecutive_failures(runs[:1]), 0)
+        self.assertEqual(dashboard.consecutive_failures([]), 0)
+
+
 class GateTest(unittest.TestCase):
     def test_pass_fail_skip_and_leak(self) -> None:
         toml = (
