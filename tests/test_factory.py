@@ -15,8 +15,20 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+# Never read the operator's real host config; HostConfigTest writes its own here.
+XDG = Path(tempfile.mkdtemp())
+os.environ["XDG_CONFIG_HOME"] = str(XDG)
 
 from agent_factory import config  # noqa: E402
+
+
+def host_file(text: str) -> None:
+    path = XDG / "agent-factory" / "config.toml"
+    if text:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    elif path.exists():
+        path.unlink()
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -112,6 +124,52 @@ port = 1
             repo = make_repo(Path(d), toml)
             with self.assertRaises(SystemExit):
                 config.load(repo)
+
+
+class HostConfigTest(unittest.TestCase):
+    """`$XDG_CONFIG_HOME/agent-factory/config.toml` layers under the repo file."""
+
+    def tearDown(self) -> None:
+        host_file("")
+
+    def test_precedence_and_filter(self) -> None:
+        host_file(
+            '[defaults.triage]\nurl = "http://h/v1/chat/completions"\nmodel = "d"\n'
+            '[defaults.dashboard]\nport = 9000\ntheme = "host.css"\n'
+            '[defaults.gate]\nlock = "/tmp/host.lock"\n[[defaults.gate.check]]\nname = "evil"\nrun = ["true"]\n'
+            '[defaults.leak_scan]\npattern = ""\n[defaults.repo]\nupstream = "evil"\n'
+            '[defaults.install]\nevery = "5min"\ndashboard = true\n[defaults.install.env]\nA = "1"\n'
+            '[repo."acme/widgets"]\npath = "/x"\n[repo."acme/widgets".triage]\nmodel = "r"\n'
+            '[repo."acme/widgets".dashboard]\nport = 9001\n'
+        )
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), '[triage]\nmodel = "f"\n')
+            cfg = config.load(repo)
+            # defaults < per-repo < repo file
+            self.assertEqual((cfg.llm_url, cfg.llm_model, cfg.dashboard_port), ("http://h/v1/chat/completions", "f", 9001))
+            self.assertEqual(cfg.lock, Path("/tmp/host.lock"))
+            self.assertEqual(cfg.install, {"every": "5min", "dashboard": True, "host": "127.0.0.1", "env": {"A": "1"}})
+            # repo-owned keys never come from the host
+            self.assertEqual(cfg.checks, [])
+            self.assertEqual(cfg.leak_pattern, config.DEFAULT_LEAK_PATTERN)
+            self.assertIsNone(cfg.upstream)
+            self.assertIsNone(cfg.dashboard_theme)
+            self.assertEqual(cfg.raw_repo, {"triage": {"model": "f"}})
+
+    def test_missing_host_file_is_current_behaviour(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            cfg = config.load(make_repo(Path(d)))
+            self.assertEqual((cfg.llm_url, cfg.dashboard_port, cfg.install), (config.DEFAULT_LLM_URL, 8765, config.DEFAULT_INSTALL))
+
+    def test_repo_table_matched_by_resolved_slug(self) -> None:
+        host_file('[repo."other/name".dashboard]\nport = 7\n[repo."acme/widgets".dashboard]\nport = 8\n')
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), '[repo]\nslug = "other/name"\n')
+            self.assertEqual(config.load(repo).dashboard_port, 7)
+
+    def test_unknown_keys(self) -> None:
+        raw = {"triage": {"mdoel": "x"}, "gate": {"check": [{"name": "a", "run": [], "exclusiv": True}]}, "bogus": {}}
+        self.assertEqual(config.unknown_keys(raw), ["triage.mdoel", "gate.check[0].exclusiv", "bogus"])
 
 
 class GateTest(unittest.TestCase):

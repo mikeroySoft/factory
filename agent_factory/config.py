@@ -8,6 +8,7 @@ conventions, not configuration.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import tomllib
 from dataclasses import dataclass, field
@@ -38,6 +39,30 @@ DEFAULT_CHORE_WORKER = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "
 DEFAULT_REVIEWER = ["codex", "exec", "{prompt}"]
 DEFAULT_LLM_URL = "http://127.0.0.1:11434/v1/chat/completions"
 DEFAULT_LLM_MODEL = "qwen3:30b"
+DEFAULT_INSTALL = {"every": "10min", "dashboard": False, "host": "127.0.0.1", "env": {}}
+
+# Host-side layer: `$XDG_CONFIG_HOME/agent-factory/config.toml`, same table shapes
+# as `.factory.toml`. `[defaults.*]` < `[repo."owner/name".*]` < the repo file.
+# Only these tables/keys are taken from the host: a clone on another machine
+# must run the same gate, so gate checks, leak scan and upstream never come
+# from here. Everything else in the host file is left for other tools (District).
+HOST_TABLES = frozenset({"triage", "workers", "review", "install"})
+HOST_KEYS = {"dashboard": ("port",), "gate": ("lock",)}
+
+# Every key the loader reads, by table; `factory doctor` reports anything else.
+# `workers` is label-keyed, `gate.check` is a list of {name, run, exclusive}.
+KNOWN_KEYS = {
+    "repo": ("slug", "upstream", "main"),
+    "dispatch": ("max_active", "max_attempts", "budget_min", "review_rounds", "cost_pattern", "signoff"),
+    "workers": None,
+    "review": ("command",),
+    "gate": ("timeout", "lock", "check"),
+    "leak_scan": ("pattern", "exclude"),
+    "triage": ("url", "model"),
+    "dashboard": ("port", "theme"),
+    "install": ("every", "dashboard", "host", "env"),
+}
+CHECK_KEYS = ("name", "run", "exclusive")
 
 
 class ConfigError(SystemExit):
@@ -83,6 +108,8 @@ class Config:
     llm_model: str = DEFAULT_LLM_MODEL
     dashboard_port: int = 8765
     dashboard_theme: Path | None = None  # CSS file served after the built-in stylesheet
+    install: dict = field(default_factory=lambda: dict(DEFAULT_INSTALL))  # `factory install` defaults
+    raw_repo: dict = field(default_factory=dict)  # the committed file alone, before host layering
 
     @property
     def name(self) -> str:
@@ -138,8 +165,58 @@ def remote_slug(root: Path, remote: str) -> str:
     return url.rsplit("github.com", 1)[-1].strip(":/").removesuffix(".git")
 
 
+def host_config_path() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config"
+    return Path(base) / "agent-factory" / "config.toml"
+
+
+def host_config() -> dict:
+    path = host_config_path()
+    if not path.exists():
+        return {}
+    try:
+        return tomllib.loads(path.read_text())
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"{path}: {exc}") from exc
+
+
+def host_filter(table: dict) -> dict:
+    """Keep only the host-owned tables/keys of one host section."""
+    out = {k: table[k] for k in HOST_TABLES if isinstance(table.get(k), dict)}
+    for name, keys in HOST_KEYS.items():
+        sub = table.get(name)
+        if isinstance(sub, dict) and (kept := {k: sub[k] for k in keys if k in sub}):
+            out[name] = kept
+    return out
+
+
+def merge(base: dict, over: dict) -> dict:
+    """Recursive on dicts; scalars and lists in `over` replace."""
+    out = dict(base)
+    for k, v in over.items():
+        out[k] = merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
+    return out
+
+
+def unknown_keys(raw: dict) -> list[str]:
+    """Dotted paths in a `.factory.toml`-shaped dict the loader does not read."""
+    out = []
+    for table, val in raw.items():
+        if table not in KNOWN_KEYS:
+            out.append(table)
+            continue
+        known = KNOWN_KEYS[table]
+        if known is None or not isinstance(val, dict):
+            continue
+        out += [f"{table}.{k}" for k in val if k not in known]
+        if table == "gate":
+            for i, c in enumerate(val.get("check", [])):
+                out += [f"gate.check[{i}].{k}" for k in c if k not in CHECK_KEYS]
+    return out
+
+
 def load(start: Path | None = None) -> Config:
-    """Load `<root>/.factory.toml`; every key optional except a resolvable repo slug."""
+    """Load `<root>/.factory.toml` over the host layer; every key optional except a resolvable repo slug."""
     root = repo_root(start)
     path = root / CONFIG_NAME
     raw: dict = {}
@@ -148,10 +225,13 @@ def load(start: Path | None = None) -> Config:
             raw = tomllib.loads(path.read_text())
         except tomllib.TOMLDecodeError as exc:
             raise ConfigError(f"{path}: {exc}") from exc
+    slug = raw.get("repo", {}).get("slug") or remote_slug(root, "origin")
+    host = host_config()
+    layered = merge(host_filter(host.get("defaults", {})), host_filter(host.get("repo", {}).get(slug, {})))
+    raw, raw_repo = merge(layered, raw), raw
     repo_t, dispatch, workers = raw.get("repo", {}), raw.get("dispatch", {}), raw.get("workers", {})
     gate, leak, triage, dash = raw.get("gate", {}), raw.get("leak_scan", {}), raw.get("triage", {}), raw.get("dashboard", {})
-    slug = repo_t.get("slug") or remote_slug(root, "origin")
-    cfg = Config(root=root, repo=slug)
+    cfg = Config(root=root, repo=slug, raw_repo=raw_repo)
     cfg.upstream = repo_t.get("upstream") or None
     cfg.main = repo_t.get("main", cfg.main)
     cfg.max_active = int(dispatch.get("max_active", cfg.max_active))
@@ -181,4 +261,7 @@ def load(start: Path | None = None) -> Config:
     cfg.llm_model = triage.get("model", cfg.llm_model)
     cfg.dashboard_port = int(dash.get("port", cfg.dashboard_port))
     cfg.dashboard_theme = root / dash["theme"] if dash.get("theme") else None
+    cfg.install = merge(DEFAULT_INSTALL, raw.get("install", {}))
+    cfg.install["dashboard"] = bool(cfg.install["dashboard"])
+    cfg.install["env"] = {k: str(v) for k, v in cfg.install["env"].items()}
     return cfg
