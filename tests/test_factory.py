@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT))
 XDG = Path(tempfile.mkdtemp())
 os.environ["XDG_CONFIG_HOME"] = str(XDG)
 
-from agent_factory import config  # noqa: E402
+from agent_factory import __version__, config  # noqa: E402
 
 
 def host_file(text: str) -> None:
@@ -61,7 +61,6 @@ def factory(cwd: Path, *argv: str, path: str | None = None) -> subprocess.Comple
     )
 
 
-
 def stub_bin(tmp: Path, **scripts: str) -> str:
     """Fake executables first on PATH: name -> sh body; each appends its argv to <bin>/<name>.log."""
     bindir = tmp / "bin"
@@ -71,6 +70,7 @@ def stub_bin(tmp: Path, **scripts: str) -> str:
         exe.write_text(f'#!/bin/sh\necho "$@" >> "{bindir / name}.log"\n{body}\n')
         exe.chmod(0o755)
     return str(bindir)
+
 
 def gate(cwd: Path, *args: str) -> tuple[int, str, str]:
     env = {**os.environ, "PYTHONPATH": str(ROOT)}
@@ -216,6 +216,32 @@ class HostConfigTest(unittest.TestCase):
             proc = factory(repo, "init", "--labels-only", path=stub_bin(Path(d), gh="echo nope >&2; exit 1"))
             self.assertEqual(proc.returncode, 1)
             self.assertIn("nope", proc.stdout)
+
+    def test_doctor_json_reports_drift(self) -> None:
+        host_file('[defaults.triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n[defaults.leak_scan]\npattern = ""\n[repo."acme/widgets"]\npath = "/x"\n[repo."acme/widgets".dashboard]\nport = 1\ntheme = "no"\n')
+        gh = 'case "$1 $2" in "repo view") echo ADMIN;; "label list") echo "[]";; esac\nexit 0'
+        toml = '[triage]\nmodel = "m"\n[dashboard]\ntheme = "t.css"\n[gate]\nlock = "/tmp/l"\ntimeout = 5\n[dispatch]\nmax_atempts = 2\n'
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), toml)
+            (repo / ".github/ISSUE_TEMPLATE").mkdir(parents=True)
+            (repo / ".github/ISSUE_TEMPLATE/agent_task.md").write_text("custom\n")
+            proc = factory(repo, "doctor", "--json", path=stub_bin(Path(d), gh=gh, systemctl="echo inactive"))
+            out = json.loads(proc.stdout)
+            self.assertEqual((out["repo"], out["root"], out["version"]), ("acme/widgets", str(repo), __version__))
+            rows = {r["label"]: r for r in out["rows"]}
+            self.assertEqual(rows[".factory.toml keys"]["status"], "WARN")
+            self.assertIn("dispatch.max_atempts", rows[".factory.toml keys"]["detail"])
+            self.assertEqual(rows["host settings committed"]["status"], "WARN")
+            self.assertIn("triage, gate.lock", rows["host settings committed"]["detail"])
+            self.assertNotIn("dashboard", rows["host settings committed"]["detail"])  # theme is repo-owned
+            self.assertEqual(rows["defaults in effect"]["status"], "INFO")
+            self.assertIn("dispatch.review_rounds", rows["defaults in effect"]["detail"])
+            self.assertNotIn("gate.timeout", rows["defaults in effect"]["detail"])
+            self.assertEqual(rows[".github/ISSUE_TEMPLATE/agent_task.md"]["status"], "WARN")
+            self.assertEqual(rows["host config"]["status"], "WARN")
+            self.assertIn('defaults.leak_scan, repo."acme/widgets".dashboard.theme', rows["host config"]["detail"])
+            self.assertEqual(rows["push access to acme/widgets"]["status"], "PASS")
+            self.assertEqual(out["ok"], proc.returncode == 0)
 
 
 class GateTest(unittest.TestCase):

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import argparse
-import os
+import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -12,7 +13,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from agent_factory import config
+from agent_factory import __version__, config
 from agent_factory.config import CONFIG_NAME, LABELS, ConfigError
 
 TEMPLATES = Path(__file__).with_name("templates")
@@ -110,37 +111,85 @@ def init(argv: list[str]) -> int:
 # ---------------------------------------------------------------- doctor
 
 
+def committed_host_keys(raw: dict) -> list[str]:
+    """Host-owned tables/keys present in a repo file: the District adopt signal."""
+    out = [t for t in sorted(config.HOST_TABLES) if raw.get(t)]
+    out += [f"{t}.{k}" for t, keys in config.HOST_KEYS.items() for k in keys if k in raw.get(t, {})]
+    return out
+
+
+def unset_repo_keys(raw: dict) -> list[str]:
+    """Loader-known, repo-owned keys the file leaves at their defaults."""
+    out = []
+    for table, keys in config.KNOWN_KEYS.items():
+        if table in config.HOST_TABLES or keys is None:
+            continue
+        skip = {"slug", "check", *config.HOST_KEYS.get(table, ())}
+        out += [f"{table}.{k}" for k in keys if k not in skip and k not in raw.get(table, {})]
+    return out
+
+
+def foreign_host_keys(section: dict) -> list[str]:
+    """Tables/keys in one host section the loader ignores (repo-owned or unknown)."""
+    out = [k for k, v in section.items() if isinstance(v, dict) and k not in config.HOST_TABLES and k not in config.HOST_KEYS]
+    out += [f"{t}.{k}" for t, keys in config.HOST_KEYS.items() for k in section.get(t, {}) if k not in keys]
+    return out + config.unknown_keys(config.host_filter(section))
+
+
+def sha256(path: Path) -> str | None:
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+
+
 def doctor(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
-        prog="factory doctor", description="Check tools, auth, remotes, and the triage model."
+        prog="factory doctor", description="Check tools, auth, remotes, config drift, and the triage model."
     )
-    parser.parse_args(argv)
+    parser.add_argument("--json", action="store_true", help="emit {ok, version, repo, root, rows} instead of text")
+    args = parser.parse_args(argv)
     cfg = config.load()
-    fails = 0
+    rows: list[dict] = []
 
-    def report(status: bool | None, label: str, detail: str = "") -> None:
-        nonlocal fails
-        tag = "PASS" if status else ("WARN" if status is None else "FAIL")
-        fails += status is False
-        print(f"  {tag}  {label}{f': {detail}' if detail else ''}")
-
-    print(f"factory doctor: {cfg.repo} at {cfg.root}")
+    def report(status: bool | None, label: str, detail: str = "", *, info: bool = False) -> None:
+        tag = "INFO" if info else "PASS" if status else ("WARN" if status is None else "FAIL")
+        rows.append({"status": tag, "label": label, "detail": detail})
 
     present = (cfg.root / CONFIG_NAME).exists()
     report(present, f"{CONFIG_NAME} present", "" if present else "run `factory init`")
     tracked = sh(["git", "ls-files", "--error-unmatch", CONFIG_NAME], cwd=cfg.root).returncode == 0
     report(True if tracked else None, f"{CONFIG_NAME} committed", "" if tracked else "commit it so clones see it")
 
+    unknown = config.unknown_keys(cfg.raw_repo)
+    report(None if unknown else True, f"{CONFIG_NAME} keys", f"unknown (ignored): {', '.join(unknown)}" if unknown else "all known")
+    hosted = committed_host_keys(cfg.raw_repo)
+    report(None if hosted else True, "host settings committed", f"move to {config.host_config_path()}: {', '.join(hosted)}" if hosted else "none")
+    unset = unset_repo_keys(cfg.raw_repo)
+    if unset:
+        report(None, "defaults in effect", ", ".join(unset), info=True)
+
+    shipped, ours = sha256(TEMPLATES / "agent_task.md"), sha256(cfg.root / ISSUE_TEMPLATE)
+    report(
+        True if ours == shipped else None, f"{ISSUE_TEMPLATE}",
+        "matches shipped template" if ours == shipped else ("missing (factory init)" if ours is None else "differs from shipped template"),
+    )
+    host = config.host_config()
+    if host:
+        sections = [("defaults", host.get("defaults", {}))] + [(f'repo."{s}"', t) for s, t in host.get("repo", {}).items()]
+        foreign = [f"{name}.{k}" for name, sec in sections if isinstance(sec, dict) for k in foreign_host_keys(sec)]
+        report(None if foreign else True, "host config", f"ignored (not host-owned): {', '.join(foreign)}" if foreign else str(config.host_config_path()))
+
     for tool in ("git", "gh"):
         report(shutil.which(tool) is not None, f"{tool} on PATH")
     auth = sh(["gh", "auth", "status"])
-    report(auth.returncode == 0, "gh authenticated", "" if auth.returncode == 0 else auth.stderr.strip().splitlines()[-1])
+    report(auth.returncode == 0, "gh authenticated", "" if auth.returncode == 0 else (auth.stderr.strip().splitlines() or ["?"])[-1])
     perm = sh(["gh", "repo", "view", cfg.repo, "--json", "viewerPermission", "--jq", ".viewerPermission"])
     level = perm.stdout.strip()
     report(level in ("WRITE", "MAINTAIN", "ADMIN"), f"push access to {cfg.repo}", level or perm.stderr.strip())
 
     labels = sh(["gh", "label", "list", "--repo", cfg.repo, "--limit", "200", "--json", "name", "--jq", "[.[].name]"])
-    have = set(json.loads(labels.stdout or "[]"))
+    try:
+        have = set(json.loads(labels.stdout or "[]"))
+    except ValueError:
+        have = set()
     missing = sorted(set(LABELS) - have)
     report(None if missing else True, "factory labels", f"missing {', '.join(missing)} (factory init)" if missing else "all present")
 
@@ -174,6 +223,14 @@ def doctor(argv: list[str]) -> int:
     timer = sh(["systemctl", "--user", "is-active", f"{cfg.unit}.timer"]).stdout.strip()
     report(True if timer == "active" else None, f"systemd timer {cfg.unit}.timer", timer or "not installed (factory install)")
 
+    fails = sum(r["status"] == "FAIL" for r in rows)
+    if args.json:
+        print(json.dumps({"ok": not fails, "version": __version__, "repo": cfg.repo, "root": str(cfg.root), "rows": rows}, indent=2))
+        return 1 if fails else 0
+    print(f"factory doctor: {cfg.repo} at {cfg.root}")
+    for r in rows:
+        detail = f": {r['detail']}" if r["detail"] else ""
+        print(f"  {r['status']}  {r['label']}{detail}")
     print(f"\n{'FAIL' if fails else 'OK'}: {fails} blocking problem(s)")
     return 1 if fails else 0
 
