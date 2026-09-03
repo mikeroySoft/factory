@@ -61,6 +61,17 @@ def factory(cwd: Path, *argv: str, path: str | None = None) -> subprocess.Comple
     )
 
 
+
+def stub_bin(tmp: Path, **scripts: str) -> str:
+    """Fake executables first on PATH: name -> sh body; each appends its argv to <bin>/<name>.log."""
+    bindir = tmp / "bin"
+    bindir.mkdir(exist_ok=True)
+    for name, body in scripts.items():
+        exe = bindir / name
+        exe.write_text(f'#!/bin/sh\necho "$@" >> "{bindir / name}.log"\n{body}\n')
+        exe.chmod(0o755)
+    return str(bindir)
+
 def gate(cwd: Path, *args: str) -> tuple[int, str, str]:
     env = {**os.environ, "PYTHONPATH": str(ROOT)}
     proc = subprocess.run(
@@ -192,6 +203,19 @@ class HostConfigTest(unittest.TestCase):
             (Path(d) / "b").mkdir()
             proc = factory(make_repo(Path(d) / "b"), "install", "--print", "--no-dashboard")
             self.assertNotIn("dashboard.service", proc.stdout)
+
+    def test_init_labels_only_touches_nothing_and_fails_on_gh(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            proc = factory(repo, "init", "--labels-only", path=stub_bin(Path(d), gh="exit 0"))
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertEqual(git(repo, "status", "--porcelain"), "")
+            calls = (Path(d) / "bin" / "gh.log").read_text().splitlines()
+            self.assertEqual(len(calls), len(config.LABELS))
+            self.assertTrue(all(c.startswith("label create ") and "--repo acme/widgets" in c for c in calls))
+            proc = factory(repo, "init", "--labels-only", path=stub_bin(Path(d), gh="echo nope >&2; exit 1"))
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("nope", proc.stdout)
 
 
 class GateTest(unittest.TestCase):

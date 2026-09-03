@@ -36,13 +36,33 @@ def ensure_line(path: Path, line: str) -> bool:
 # ---------------------------------------------------------------- init
 
 
+def ensure_labels(slug: str) -> list[str]:
+    """Create or update the six factory labels; returns one line per failure."""
+    failed = []
+    for name, (color, desc) in LABELS.items():
+        proc = sh(["gh", "label", "create", name, "--repo", slug, "--color", color, "--description", desc, "--force"])
+        if proc.returncode != 0:
+            failed.append(f"{name}: {proc.stderr.strip()}")
+    return failed
+
+
 def init(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="factory init",
         description="Prepare this repository: .factory.toml, .gitignore, issue template, labels.",
     )
-    parser.add_argument("--no-labels", action="store_true", help="skip creating GitHub labels")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--no-labels", action="store_true", help="skip creating GitHub labels")
+    group.add_argument("--labels-only", action="store_true", help="only ensure the labels; touch no files")
     args = parser.parse_args(argv)
+
+    if args.labels_only:
+        slug = config.load().repo
+        failed = ensure_labels(slug)
+        print(f"factory init: {'label creation FAILED on' if failed else f'ensured {len(LABELS)} labels on'} {slug}")
+        for line in failed:
+            print(f"  - {line}")
+        return 1 if failed else 0
 
     root = config.repo_root()
     slug = config.remote_slug(root, "origin")
@@ -68,14 +88,7 @@ def init(argv: list[str]) -> int:
         done.append(f"wrote {ISSUE_TEMPLATE}")
 
     if not args.no_labels:
-        failed = []
-        for name, (color, desc) in LABELS.items():
-            proc = sh(
-                ["gh", "label", "create", name, "--repo", slug, "--color", color,
-                 "--description", desc, "--force"],
-            )
-            if proc.returncode != 0:
-                failed.append(f"{name}: {proc.stderr.strip()}")
+        failed = ensure_labels(slug)
         if failed:
             done.append("label creation FAILED:\n    " + "\n    ".join(failed))
         else:
