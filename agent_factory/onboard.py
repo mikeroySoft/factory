@@ -305,13 +305,15 @@ def install(argv: list[str]) -> int:
 
     udir = unit_dir()
     udir.mkdir(parents=True, exist_ok=True)
-    changed = set()
+    changed = set()  # existing units whose content differs: these get restarted
     for name, body in wanted.items():
         path = udir / name
-        if not path.exists() or path.read_text() != body:
-            path.write_text(body)
+        if path.exists() and path.read_text() == body:
+            continue
+        if path.exists():
             changed.add(name)
-            print(f"wrote {path}")
+        path.write_text(body)
+        print(f"wrote {path}")
     if not args.dashboard and (udir / dash_unit).exists():
         systemctl("disable", "--now", dash_unit)
         (udir / dash_unit).unlink()
