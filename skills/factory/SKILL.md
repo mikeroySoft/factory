@@ -30,13 +30,21 @@ continuing. Then pick the branch:
    CI config (`.github/workflows/*.yml`), `Makefile`, `package.json` scripts, or
    `justfile`; do not invent commands. Mark checks that need a GPU or other
    single-tenant hardware `exclusive = true`.
-2. If the repo is a fork that must track upstream, set `[repo].upstream` to the
+2. The merge stage refuses to land a PR with no passing GitHub check. If the repo had
+   no workflow, `init` wrote `.github/workflows/ci.yml` with a placeholder step:
+   ask the user to confirm, then make that step run the same commands as
+   `[[gate.check]]` (with whatever toolchain setup the runner needs). If the repo
+   already has CI, confirm it runs on `pull_request`; if it does not, ask before
+   adding a trigger.
+3. If the repo is a fork that must track upstream, set `[repo].upstream` to the
    remote name and confirm the remote exists.
-3. Commit `.factory.toml`, `.gitignore`, and `.github/ISSUE_TEMPLATE/agent_task.md`.
-4. `factory doctor` must print `OK: 0 blocking problem(s)`. Fix every FAIL; report
+4. Commit `.factory.toml`, `.gitignore`, `.github/ISSUE_TEMPLATE/agent_task.md`,
+   and `.github/workflows/`.
+5. `factory doctor` must print `OK: 0 blocking problem(s)`. Fix every FAIL; report
    each WARN to the user with what it disables (triage endpoint offline → no
-   triage; timer missing → nothing runs unattended).
-5. `factory install --dashboard` when the user wants it unattended; otherwise
+   triage; timer missing → nothing runs unattended; `github workflow` WARN → the
+   merge stage will never land a PR).
+6. `factory install --dashboard` when the user wants it unattended; otherwise
    tell them `factory dispatch` runs one pass by hand.
 
 Done when `factory dispatch --dry-run` runs without error and prints the frontier.

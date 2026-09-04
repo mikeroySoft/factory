@@ -217,6 +217,26 @@ class HostConfigTest(unittest.TestCase):
             self.assertEqual(proc.returncode, 1)
             self.assertIn("nope", proc.stdout)
 
+    def test_init_writes_ci_workflow_and_doctor_warns_on_placeholder(self) -> None:
+        gh = 'case "$1 $2" in "repo view") echo ADMIN;; "label list") echo "[]";; esac\nexit 0'
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            stubs = stub_bin(Path(d), gh=gh, systemctl="echo inactive")
+            doctor = lambda: {r["label"]: r for r in json.loads(factory(repo, "doctor", "--json", path=stubs).stdout)["rows"]}  # noqa: E731
+            proc = factory(repo, "init", "--no-labels")
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            ci = repo / ".github/workflows/ci.yml"
+            self.assertIn('run: "true"', ci.read_text())
+            self.assertIn("wrote .github/workflows/ci.yml", proc.stdout)
+            row = doctor()["github workflow"]
+            self.assertEqual((row["status"], "placeholder" in row["detail"]), ("WARN", True))
+            ci.write_text(ci.read_text().replace('run: "true"', "run: make test"))
+            self.assertEqual(doctor()["github workflow"]["status"], "PASS")
+            self.assertIn("kept existing .github/workflows", factory(repo, "init", "--no-labels").stdout)
+            ci.unlink()
+            row = doctor()["github workflow"]
+            self.assertEqual((row["status"], row["detail"].startswith("none")), ("WARN", True))
+
     def test_doctor_json_reports_drift(self) -> None:
         host_file('[defaults.triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n[defaults.leak_scan]\npattern = ""\n[repo."acme/widgets"]\npath = "/x"\n[repo."acme/widgets".dashboard]\nport = 1\ntheme = "no"\n')
         gh = 'case "$1 $2" in "repo view") echo ADMIN;; "label list") echo "[]";; esac\nexit 0'

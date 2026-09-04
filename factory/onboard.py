@@ -19,6 +19,12 @@ from factory.config import CONFIG_NAME, LABELS, ConfigError
 TEMPLATES = Path(__file__).with_name("templates")
 GITIGNORE_LINES = ("/.factory/", ".factory-prompt.md")
 ISSUE_TEMPLATE = Path(".github/ISSUE_TEMPLATE/agent_task.md")
+WORKFLOWS = Path(".github/workflows")
+CI_WORKFLOW = WORKFLOWS / "ci.yml"
+
+
+def workflows(root: Path) -> list[Path]:
+    return sorted(p for p in (root / WORKFLOWS).glob("*.y*ml") if p.suffix in (".yml", ".yaml"))
 
 
 def sh(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
@@ -88,6 +94,14 @@ def init(argv: list[str]) -> int:
         shutil.copyfile(TEMPLATES / "agent_task.md", tmpl)
         done.append(f"wrote {ISSUE_TEMPLATE}")
 
+    # The merge stage refuses a PR with no passing GitHub check; give every repo one.
+    if workflows(root):
+        done.append(f"kept existing {WORKFLOWS}/*.yml")
+    else:
+        (root / WORKFLOWS).mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(TEMPLATES / "ci.yml", root / CI_WORKFLOW)
+        done.append(f"wrote {CI_WORKFLOW}")
+
     if not args.no_labels:
         failed = ensure_labels(slug)
         if failed:
@@ -100,8 +114,9 @@ def init(argv: list[str]) -> int:
         print(f"  - {item}")
     print(
         "\nnext:\n"
-        f"  1. edit {CONFIG_NAME}: put your real test/lint commands in [[gate.check]]\n"
-        f"  2. git add {CONFIG_NAME} .gitignore {ISSUE_TEMPLATE} && git commit\n"
+        f"  1. edit {CONFIG_NAME}: put your real test/lint commands in [[gate.check]],\n"
+        f"     and the same commands in {CI_WORKFLOW} (the merge stage needs a passing check)\n"
+        f"  2. git add {CONFIG_NAME} .gitignore {ISSUE_TEMPLATE} {WORKFLOWS} && git commit\n"
         "  3. factory doctor\n"
         "  4. factory install --dashboard   # systemd user timer, every 10 min"
     )
@@ -192,6 +207,14 @@ def doctor(argv: list[str]) -> int:
         have = set()
     missing = sorted(set(LABELS) - have)
     report(None if missing else True, "factory labels", f"missing {', '.join(missing)} (factory init)" if missing else "all present")
+
+    flows = workflows(cfg.root)
+    placeholder = any('run: "true"' in p.read_text() for p in flows)
+    report(
+        None if not flows or placeholder else True, "github workflow",
+        "none: the merge stage refuses PRs with no passing check (factory init writes one)" if not flows
+        else (f"{CI_WORKFLOW} still runs the placeholder step; make it run the gate commands" if placeholder else ", ".join(p.name for p in flows)),
+    )
 
     if cfg.upstream:
         ok = sh(["git", "remote", "get-url", cfg.upstream], cwd=cfg.root).returncode == 0
