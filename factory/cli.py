@@ -31,7 +31,7 @@ def main(argv: list[str] | None = None) -> int:
         print(usage())
         return 0 if argv else 2
     if argv[0] in ("-V", "--version"):
-        from agent_factory import __version__
+        from factory import __version__
 
         print(__version__)
         return 0
@@ -40,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"factory: unknown command `{argv[0]}`\n\n{usage()}", file=sys.stderr)
         return 2
     module, func, _ = entry
-    return import_module(f"agent_factory.{module}").__dict__[func](argv[1:])
+    return import_module(f"factory.{module}").__dict__[func](argv[1:])
 
 
 if __name__ == "__main__":

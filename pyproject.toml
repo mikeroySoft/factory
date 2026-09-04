@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "agent-factory"
+name = "factory"
 dynamic = ["version"]
 description = "Label-driven autonomous ticket pipeline: triage, worker agents in git worktrees, a deterministic gate, LLM review, and a serialized merge stage — for any GitHub repo."
 readme = "README.md"
@@ -22,13 +22,13 @@ classifiers = [
 Homepage = "https://github.com/mikeroySoft/factory"
 
 [project.scripts]
-factory = "agent_factory.cli:main"
+factory = "factory.cli:main"
 
 [tool.hatch.version]
-path = "agent_factory/__init__.py"
+path = "factory/__init__.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["agent_factory"]
+packages = ["factory"]
 
 [tool.ruff]
 line-length = 100

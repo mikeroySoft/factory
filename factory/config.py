@@ -41,7 +41,7 @@ DEFAULT_LLM_URL = "http://127.0.0.1:11434/v1/chat/completions"
 DEFAULT_LLM_MODEL = "qwen3:30b"
 DEFAULT_INSTALL = {"every": "10min", "dashboard": False, "host": "127.0.0.1", "env": {}}
 
-# Host-side layer: `$XDG_CONFIG_HOME/agent-factory/config.toml`, same table shapes
+# Host-side layer: `$XDG_CONFIG_HOME/factory/config.toml`, same table shapes
 # as `.factory.toml`. `[defaults.*]` < `[repo."owner/name".*]` < the repo file.
 # Only these tables/keys are taken from the host: a clone on another machine
 # must run the same gate, so gate checks, leak scan and upstream never come
@@ -101,7 +101,7 @@ class Config:
     reviewer: list[str] = field(default_factory=lambda: list(DEFAULT_REVIEWER))
     checks: list[Check] = field(default_factory=list)
     check_timeout: int = 1200
-    lock: Path = Path("/tmp/agent-factory.lock")  # host-wide: one GPU, many repos
+    lock: Path = Path("/tmp/factory.lock")  # host-wide: one GPU, many repos
     leak_pattern: str | None = DEFAULT_LEAK_PATTERN
     leak_exclude: list[str] = field(default_factory=list)
     llm_url: str = DEFAULT_LLM_URL
@@ -167,7 +167,7 @@ def remote_slug(root: Path, remote: str) -> str:
 
 def host_config_path() -> Path:
     base = os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config"
-    return Path(base) / "agent-factory" / "config.toml"
+    return Path(base) / "factory" / "config.toml"
 
 
 def host_config() -> dict:

@@ -1,4 +1,4 @@
-# agent-factory
+# factory
 
 A label-driven autonomous ticket pipeline for any GitHub repository. Issues
 labelled `ready-for-agent` are claimed by a coding agent in a git worktree,
@@ -134,7 +134,7 @@ command = ["codex", "exec", "{prompt}"]   # {prompt} = review prompt text
 
 [gate]
 timeout = 1200
-lock = "/tmp/agent-factory.lock"
+lock = "/tmp/factory.lock"
 
 [[gate.check]]
 name = "lint"
@@ -192,7 +192,7 @@ conventions; `factory init` creates the labels.
 
 ## Agent skill
 
-`skills/agent-factory/SKILL.md` teaches a coding agent to install the factory
+`skills/factory/SKILL.md` teaches a coding agent to install the factory
 in a repo, write tickets it can actually work, and diagnose escalations:
 
 ```sh
@@ -201,7 +201,7 @@ npx skills add mikeroysoft/factory
 
 ## Architecture
 
-`agent_factory/architecture.html` (served by the dashboard at `/atlas`) shows
+`factory/architecture.html` (served by the dashboard at `/atlas`) shows
 the system and the ticket lifecycle. Modules map 1:1 to commands:
 `triage.py`, `dispatch.py`, `gate.py`, `stats.py`, `dashboard.py`,
 `onboard.py`, with `config.py` as the single source of every repo-specific

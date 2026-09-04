@@ -4,7 +4,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>agent-factory · architecture</title>
+<title>factory · architecture</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   :root {
@@ -104,8 +104,8 @@
 
   <!-- ============ Header ============ -->
   <div class="header">
-    <p class="header-eyebrow">agent-factory · factory &lt;cmd&gt;</p>
-    <h1>The Agent Factory</h1>
+    <p class="header-eyebrow">factory · CLI &lt;cmd&gt;</p>
+    <h1>Factory</h1>
     <p class="subtitle">A label-driven autonomous pipeline that triages GitHub issues, dispatches
     coding agents into git worktrees, gates their work deterministically, publishes reviewed
     pull requests, and lands them through a serialized merge stage — <strong>a human can hold
@@ -530,7 +530,7 @@
         <li><code>locks/&lt;n&gt;.lock</code> — outside the worktree, so a wiped worktree cannot erase the evidence a pipeline is alive</li>
         <li><code>locks/merge.lock</code> — serializes the merge stage across timer and manual runs</li>
         <li><code>logs/&lt;n&gt;-attempt-&lt;a&gt;.log</code> · <code>pr-body-&lt;n&gt;.md</code> · <code>review-&lt;n&gt;.md</code></li>
-        <li><code>/tmp/agent-factory.lock</code> — one gate on the GPU at a time (host-wide, <code>[gate].lock</code>)</li>
+        <li><code>/tmp/factory.lock</code> — one gate on the GPU at a time (host-wide, <code>[gate].lock</code>)</li>
       </ul>
     </div>
   </div>

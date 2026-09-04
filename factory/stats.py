@@ -10,8 +10,8 @@ import sys
 from datetime import datetime
 from typing import Any
 
-from agent_factory import config
-from agent_factory.config import LABEL_AGENT, LABEL_HUMAN, Config
+from factory import config
+from factory.config import LABEL_AGENT, LABEL_HUMAN, Config
 
 cfg: Config
 REPOSITORY = ""

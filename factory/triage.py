@@ -15,8 +15,8 @@ import sys
 import urllib.error
 import urllib.request
 
-from agent_factory import config
-from agent_factory.config import (
+from factory import config
+from factory.config import (
     LABEL_AGENT,
     LABEL_APPROVED,
     LABEL_CHORE,

@@ -21,8 +21,8 @@ import sys
 import time
 from pathlib import Path
 
-from agent_factory import config
-from agent_factory.config import (
+from factory import config
+from factory.config import (
     LABEL_AGENT,
     LABEL_APPROVED,
     LABEL_CHORE,
@@ -72,7 +72,7 @@ STANDING_INSTRUCTIONS = """
 - Only push `agent/{n}`. NEVER push, merge into, or fast-forward `{main}`, and
   never close the ticket yourself: the dispatcher opens the PR and the merge
   stage lands it after review and CI.
-- Finish by running `{python} -m agent_factory gate --report .factory/gate-report-{n}.md`
+- Finish by running `{python} -m factory gate --report .factory/gate-report-{n}.md`
   and fixing any failures it reports.
 - Last, write `.factory/handoff-{n}.md` (gitignored): what you changed, what is
   still unverified, and what you would do next. The next attempt and the human
@@ -271,7 +271,7 @@ def run_gate(wt: Path, n: int | str, skip: str = "") -> tuple[bool, str]:
     cmd = [
         sys.executable,
         "-m",
-        "agent_factory",
+        "factory",
         "gate",
         "--base",
         f"origin/{cfg.main}",

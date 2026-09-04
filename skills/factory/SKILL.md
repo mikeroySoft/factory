@@ -1,9 +1,9 @@
 ---
-name: agent-factory
-description: Operate the agent-factory pipeline (label-driven GitHub issues → worker agents in worktrees → deterministic gate → reviewer → merge stage). Use when the user asks to set up the factory in a repository, write or split a ticket for the factory, check why a ticket escalated to ready-for-human or stalled, read the factory dashboard, or change gate checks, workers, or the reviewer in .factory.toml.
+name: factory
+description: Operate the factory pipeline (label-driven GitHub issues → worker agents in worktrees → deterministic gate → reviewer → merge stage). Use when the user asks to set up the factory in a repository, write or split a ticket for the factory, check why a ticket escalated to ready-for-human or stalled, read the factory dashboard, or change gate checks, workers, or the reviewer in .factory.toml.
 ---
 
-# agent-factory
+# factory
 
 The `factory` CLI runs a ticket pipeline for one GitHub repository, configured by
 `.factory.toml` at its root. State lives in GitHub labels/comments/PRs and a

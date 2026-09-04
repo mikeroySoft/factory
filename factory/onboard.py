@@ -13,8 +13,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from agent_factory import __version__, config
-from agent_factory.config import CONFIG_NAME, LABELS, ConfigError
+from factory import __version__, config
+from factory.config import CONFIG_NAME, LABELS, ConfigError
 
 TEMPLATES = Path(__file__).with_name("templates")
 GITIGNORE_LINES = ("/.factory/", ".factory-prompt.md")
@@ -243,7 +243,7 @@ def unit_dir() -> Path:
 
 
 def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
-    exe = f"{sys.executable} -m agent_factory"
+    exe = f"{sys.executable} -m factory"
     # At boot the user manager's PATH is the systemd default (no ~/.local/bin),
     # so gh/omp/codex vanish; carry the installing shell's PATH into the units.
     # [install].env (host config) adds one line each: policy such as UV_EXCLUDE_NEWER.
@@ -251,15 +251,15 @@ def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
     env += "".join(f"Environment={k}={v}\n" for k, v in cfg.install["env"].items())
     return {
         f"{cfg.unit}.service": (
-            f"[Unit]\nDescription=agent-factory dispatcher for {cfg.repo} (one pass)\n\n"
+            f"[Unit]\nDescription=factory dispatcher for {cfg.repo} (one pass)\n\n"
             f"[Service]\nType=oneshot\nWorkingDirectory={cfg.root}\n{env}ExecStart={exe} dispatch\n"
         ),
         f"{cfg.unit}.timer": (
-            f"[Unit]\nDescription=Run the agent-factory dispatcher for {cfg.repo} every {every}\n\n"
+            f"[Unit]\nDescription=Run the factory dispatcher for {cfg.repo} every {every}\n\n"
             f"[Timer]\nOnBootSec=5min\nOnUnitActiveSec={every}\n\n[Install]\nWantedBy=timers.target\n"
         ),
         f"{cfg.unit}-dashboard.service": (
-            f"[Unit]\nDescription=agent-factory dashboard for {cfg.repo}\nAfter=network.target\n\n"
+            f"[Unit]\nDescription=factory dashboard for {cfg.repo}\nAfter=network.target\n\n"
             f"[Service]\nWorkingDirectory={cfg.root}\n{env}"
             f"ExecStart={exe} dashboard --host {host} --port {cfg.dashboard_port} --no-open\n"
             f"Restart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n"

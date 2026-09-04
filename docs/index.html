@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="A label-driven autonomous ticket pipeline for any GitHub repository.">
-  <title>agent-factory — A label-driven autonomous ticket pipeline for any GitHub repository.</title>
+  <title>factory — A label-driven autonomous ticket pipeline for any GitHub repository.</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -68,9 +68,9 @@
 <body>
   <header class="site-header">
     <nav class="nav shell" aria-label="Primary navigation">
-      <a class="wordmark" href="#top" aria-label="agent-factory home">
+      <a class="wordmark" href="#top" aria-label="factory home">
         <span class="wordmark-mark" aria-hidden="true"></span>
-        <span>agent-factory</span>
+        <span>factory</span>
       </a>
       <a class="nav-link" href="https://github.com/mikeroySoft/factory">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -138,7 +138,7 @@
           <p>GitHub labels, comments, and PRs plus a gitignored <code>.factory/</code> directory. The dispatcher is stateless and safe to re-run.</p>
         </div>
 
-        <div class="pipeline-board" aria-label="agent-factory label pipeline">
+        <div class="pipeline-board" aria-label="factory label pipeline">
           <div class="pipeline">
             <div class="stage"><span class="chip">needs-triage</span></div>
             <div class="connector">
@@ -291,7 +291,7 @@ factory doctor          # tools, auth, remotes, model endpoint
 factory install --dashboard   # systemd user timer every 10 min + dashboard on :8765</code></pre>
         </div>
 
-        <div class="commands" aria-label="agent-factory commands">
+        <div class="commands" aria-label="factory commands">
           <div class="command"><code>factory triage</code><p>Label <code>needs-triage</code> issues via the local model.</p></div>
           <div class="command"><code>factory dispatch</code><p>One stateless pass: sync → merge stage → claim → work → gate → PR → review.</p></div>
           <div class="command"><code>factory gate</code><p>Run the deterministic gate in the current worktree and write a Markdown report.</p></div>
@@ -337,7 +337,7 @@ model = "qwen3:30b"</code></pre>
 
   <footer class="site-footer">
     <div class="footer-inner shell">
-      <p>agent-factory · MIT</p>
+      <p>factory · MIT</p>
       <a href="https://github.com/mikeroySoft/factory">github.com/mikeroySoft/factory</a>
     </div>
   </footer>

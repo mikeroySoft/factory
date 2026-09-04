@@ -26,8 +26,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from agent_factory import __version__, config, dispatch
-from agent_factory.config import (
+from factory import __version__, config, dispatch
+from factory.config import (
     LABEL_AGENT,
     LABEL_APPROVED,
     LABEL_HUMAN,
@@ -55,7 +55,7 @@ cleanup_after_merge = dispatch.cleanup_after_merge
 lock_held = dispatch.lock_held
 ticket_lock = dispatch.ticket_lock
 
-TRIAGE = [sys.executable, "-m", "agent_factory", "triage"]
+TRIAGE = [sys.executable, "-m", "factory", "triage"]
 ACT_LABELS = {
     LABEL_TRIAGE,
     LABEL_INFO,

@@ -1,4 +1,4 @@
-# agent-factory configuration for this repository. Commit it: worker
+# factory configuration for this repository. Commit it: worker
 # worktrees and the gate read it. Every key is optional; defaults are shown
 # commented out. Docs: https://github.com/mikeroySoft/factory
 
@@ -35,7 +35,7 @@
 
 [gate]
 # timeout = 1200                      # seconds per check; a wedged check FAILs
-# lock = "/tmp/agent-factory.lock"    # host-wide lock held by `exclusive` checks
+# lock = "/tmp/factory.lock"          # host-wide lock held by `exclusive` checks
 
 # Checks run in order inside the worktree; nonzero exit = FAIL. Built-ins
 # `conflict-markers` (first) and `leak-scan` (last) are always on. Mark

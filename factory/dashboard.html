@@ -301,7 +301,7 @@
 
 <header class="top">
   <div>
-    <div class="eyebrow" id="eyebrow">agent-factory</div>
+    <div class="eyebrow" id="eyebrow">factory</div>
     <h1 class="glitch" id="title" data-text="FACTORY">FACTORY</h1>
   </div>
   <div class="status" id="status"></div>
@@ -552,7 +552,7 @@ function render() {
 }
 function renderStatus() {
   const d = S.snap.dispatcher, stale = S.failed || Date.now() - S.okAt > 180000;
-  $('eyebrow').textContent = `${S.snap.repo} · agent-factory`;
+  $('eyebrow').textContent = `${S.snap.repo} · factory`;
   const title = `${S.snap.config.name.toUpperCase()} FACTORY`;
   $('title').textContent = title; $('title').dataset.text = title;
   $('journal-unit').textContent = `${S.snap.config.unit}.service`;

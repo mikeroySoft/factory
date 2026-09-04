@@ -13,8 +13,8 @@ import argparse
 import json
 from pathlib import Path
 
-from agent_factory import config, dispatch, triage
-from agent_factory.config import LESSONS_NAME
+from factory import config, dispatch, triage
+from factory.config import LESSONS_NAME
 
 MAX_LESSONS = 10
 LOG_TAIL = 40  # lines of a failing attempt log shown to the model

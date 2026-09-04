@@ -14,8 +14,8 @@ import signal
 import subprocess
 from pathlib import Path
 
-from agent_factory import config
-from agent_factory.config import CONFIG_NAME, Config
+from factory import config
+from factory.config import CONFIG_NAME, Config
 
 cfg: Config
 GPU_LOCK: Path

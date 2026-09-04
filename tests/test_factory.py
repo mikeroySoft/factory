@@ -19,11 +19,11 @@ sys.path.insert(0, str(ROOT))
 XDG = Path(tempfile.mkdtemp())
 os.environ["XDG_CONFIG_HOME"] = str(XDG)
 
-from agent_factory import __version__, config  # noqa: E402
+from factory import __version__, config  # noqa: E402
 
 
 def host_file(text: str) -> None:
-    path = XDG / "agent-factory" / "config.toml"
+    path = XDG / "factory" / "config.toml"
     if text:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
@@ -57,7 +57,7 @@ def factory(cwd: Path, *argv: str, path: str | None = None) -> subprocess.Comple
     if path:
         env["PATH"] = f"{path}:{env['PATH']}"
     return subprocess.run(
-        [sys.executable, "-m", "agent_factory", *argv], cwd=cwd, capture_output=True, text=True, env=env, check=False,
+        [sys.executable, "-m", "factory", *argv], cwd=cwd, capture_output=True, text=True, env=env, check=False,
     )
 
 
@@ -75,7 +75,7 @@ def stub_bin(tmp: Path, **scripts: str) -> str:
 def gate(cwd: Path, *args: str) -> tuple[int, str, str]:
     env = {**os.environ, "PYTHONPATH": str(ROOT)}
     proc = subprocess.run(
-        [sys.executable, "-m", "agent_factory", "gate", *args],
+        [sys.executable, "-m", "factory", "gate", *args],
         cwd=cwd, capture_output=True, text=True, env=env, check=False,
     )
     report = cwd / ".factory" / "gate-report.md"
@@ -147,7 +147,7 @@ port = 1
 
 
 class HostConfigTest(unittest.TestCase):
-    """`$XDG_CONFIG_HOME/agent-factory/config.toml` layers under the repo file."""
+    """`$XDG_CONFIG_HOME/factory/config.toml` layers under the repo file."""
 
     def tearDown(self) -> None:
         host_file("")
@@ -246,7 +246,7 @@ class HostConfigTest(unittest.TestCase):
 
 class DashboardTest(unittest.TestCase):
     def test_metrics_from_synthetic_tickets(self) -> None:
-        from agent_factory import dashboard
+        from factory import dashboard
 
         dashboard.MAX_ATTEMPTS = 3
         att = lambda *ns: [{"attempt": n} for n in ns]  # noqa: E731
@@ -261,18 +261,18 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual(dashboard.metrics([]), {"first_pass": None, "bounce_rate": None, "escalations": 0, "med_attempts": None})
 
     def test_consecutive_failures_from_journal(self) -> None:
-        from agent_factory import dashboard
+        from factory import dashboard
 
         def entry(msg: str, ident: str = "systemd") -> str:
             return json.dumps({"MESSAGE": msg, "SYSLOG_IDENTIFIER": ident, "__REALTIME_TIMESTAMP": "1700000000000000"})
 
         unit = "factory-widgets.service"
         seq = [
-            ("Starting agent-factory dispatcher...", "systemd"), ("Finished agent-factory dispatcher.", "systemd"),
-            ("Starting agent-factory dispatcher...", "systemd"), ("Failed to start agent-factory dispatcher.", "systemd"),
-            ("Starting agent-factory dispatcher...", "systemd"), ("Traceback", "python"), (f"{unit}: Failed with result 'exit-code'.", "systemd"),
-            ("Starting agent-factory dispatcher...", "systemd"), ("Failed to start agent-factory dispatcher.", "systemd"),
-            ("Starting agent-factory dispatcher...", "systemd"),  # still running: not counted either way
+            ("Starting factory dispatcher...", "systemd"), ("Finished factory dispatcher.", "systemd"),
+            ("Starting factory dispatcher...", "systemd"), ("Failed to start factory dispatcher.", "systemd"),
+            ("Starting factory dispatcher...", "systemd"), ("Traceback", "python"), (f"{unit}: Failed with result 'exit-code'.", "systemd"),
+            ("Starting factory dispatcher...", "systemd"), ("Failed to start factory dispatcher.", "systemd"),
+            ("Starting factory dispatcher...", "systemd"),  # still running: not counted either way
         ]
         runs = dashboard.parse_journal("\n".join(entry(m, i) for m, i in seq) + "\nnot json\n")
         self.assertEqual([r["result"] for r in runs], ["done", "failed", "failed", "failed", "running"])
@@ -345,7 +345,7 @@ class DispatchTest(unittest.TestCase):
     def test_prompt_carries_handoff_and_events_append(self) -> None:
         from unittest import mock
 
-        from agent_factory import dispatch
+        from factory import dispatch
 
         with tempfile.TemporaryDirectory() as d:
             repo = make_repo(Path(d))
@@ -372,7 +372,7 @@ class DispatchTest(unittest.TestCase):
     def test_learn_writes_lessons_from_events(self) -> None:
         from unittest import mock
 
-        from agent_factory import dispatch, learn, triage
+        from factory import dispatch, learn, triage
 
         with tempfile.TemporaryDirectory() as d:
             repo = make_repo(Path(d))
@@ -399,7 +399,7 @@ class DispatchTest(unittest.TestCase):
                 self.assertIn("## Lessons from previous tickets", dispatch.build_prompt(3, wt))
 
     def test_cost_pattern_sums_worker_log(self) -> None:
-        from agent_factory import dispatch
+        from factory import dispatch
 
         toml = "[dispatch]\ncost_pattern = 'Total cost:\\s*\\$([0-9.]+)'\nreview_rounds = 3\n"
         with tempfile.TemporaryDirectory() as d:
