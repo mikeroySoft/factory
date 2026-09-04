@@ -19,7 +19,7 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/mikeroySoft/agent-factory"
+Homepage = "https://github.com/mikeroySoft/factory"
 
 [project.scripts]
 factory = "agent_factory.cli:main"

@@ -11,9 +11,9 @@ gitignored `.factory/`. `factory --help` lists commands; `factory <cmd> --help` 
 options.
 
 First, ensure the tool is installed: `factory --version`. If absent, install it with
-the first available of `uv tool install git+https://github.com/mikeroySoft/agent-factory`,
-`pipx install git+https://github.com/mikeroySoft/agent-factory`, or
-`python3 -m pip install --user git+https://github.com/mikeroySoft/agent-factory`
+the first available of `uv tool install git+https://github.com/mikeroySoft/factory`,
+`pipx install git+https://github.com/mikeroySoft/factory`, or
+`python3 -m pip install --user git+https://github.com/mikeroySoft/factory`
 (Linux, Python ≥ 3.11; no dependencies). Confirm with `factory --version` before
 continuing. Then pick the branch:
 

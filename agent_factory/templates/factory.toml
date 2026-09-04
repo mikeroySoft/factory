@@ -1,6 +1,6 @@
 # agent-factory configuration for this repository. Commit it: worker
 # worktrees and the gate read it. Every key is optional; defaults are shown
-# commented out. Docs: https://github.com/mikeroySoft/agent-factory
+# commented out. Docs: https://github.com/mikeroySoft/factory
 
 [repo]
 # GitHub "owner/name". Default: parsed from the `origin` remote.

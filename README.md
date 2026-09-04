@@ -27,7 +27,7 @@ the factory in your repo. The skill installs the CLI if it is missing, writes
 the config from your CI, and runs the doctor.
 
 ```sh
-npx skills add mikeroysoft/agent-factory
+npx skills add mikeroysoft/factory
 ```
 
 **Or by hand.** Linux, Python ≥ 3.11, `git`, `gh` (authenticated with push access), and:
@@ -39,7 +39,7 @@ npx skills add mikeroysoft/agent-factory
   llama.cpp, LM Studio)
 
 ```sh
-uv tool install git+https://github.com/mikeroySoft/agent-factory   # or: pipx install ...
+uv tool install git+https://github.com/mikeroySoft/factory   # or: pipx install ...
 ```
 
 No Python dependencies.
@@ -196,7 +196,7 @@ conventions; `factory init` creates the labels.
 in a repo, write tickets it can actually work, and diagnose escalations:
 
 ```sh
-npx skills add mikeroysoft/agent-factory
+npx skills add mikeroysoft/factory
 ```
 
 ## Architecture
