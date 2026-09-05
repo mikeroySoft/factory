@@ -35,6 +35,13 @@
 # command = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1", "{prompt}"]
 # command = ["codex", "exec", "{prompt}"]
 
+[manager]
+# Host-side frontier manager. Unset command disables it.
+# {prompt} = manager prompt text; {cwd} = kept worktree or repository root.
+# command = ["omp", "-p", "--model", "openai-codex/gpt-6-astra", "--cwd", "{cwd}", "{prompt}"]
+# rounds = 1
+# review = "escalated"  # "all" also reviews non-escalated factory PRs
+
 [gate]
 # timeout = 1200                      # seconds per check; a wedged check FAILs
 # lock = "/tmp/factory.lock"          # host-wide lock held by `exclusive` checks
