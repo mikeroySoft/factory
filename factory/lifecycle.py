@@ -17,6 +17,7 @@ from pathlib import Path
 
 CONTEXT_ENV = "FACTORY_LIFECYCLE_CONTEXT"
 _CURRENT = contextvars.ContextVar("factory_execution", default=None)
+_UNKNOWN_HOST = str(uuid.uuid4())
 _IDENTITY_FIELDS = (
     "dispatcher_run_id", "root_execution_id", "execution_id", "parent_execution_id",
     "ticket", "attempt", "review_round", "stage",
@@ -164,6 +165,58 @@ def _lock_state(lock: dict) -> str:
         return "unknown"
 
 
+def _host_id() -> str | None:
+    try:
+        machine = Path("/etc/machine-id").read_text().strip()
+    except OSError:
+        machine = ""
+    # Without a machine ID, identity is deliberately limited to this boot.
+    value = machine or _boot_id()
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, "factory:host:" + value)) if value else None
+
+
+def _resource_id(host: str, repository: str | None, path: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, "factory:resource:" + json.dumps([host, repository, path])))
+
+
+def _resource(journal: Path, path: str | Path, scope: str) -> dict:
+    if scope not in {"repository", "host"}:
+        raise ValueError("resource scope must be repository or host")
+    canonical = str(Path(path).resolve())
+    repository = str(Path(journal).resolve().parent) if scope == "repository" else None
+    host = _host_id() or _UNKNOWN_HOST
+    return {"id": _resource_id(host, repository, canonical), "scope": scope,
+            "host_id": host, "repository": repository, "lock": _lock(canonical)}
+
+
+def _lock_holders(lock: dict) -> list[int] | None:
+    """Kernel FLOCK owners, not waiters; None means attribution unavailable."""
+    if lock["device"] is None or lock["inode"] is None:
+        return None
+    try:
+        lines = Path("/proc/locks").read_text().splitlines()
+    except OSError:
+        return None
+    holders = []
+    try:
+        for line in lines:
+            fields = line.split()
+            if len(fields) < 8 or fields[1] != "FLOCK":
+                continue  # Blocked lines have "->" here; POSIX locks are not our flock.
+            major, minor, inode = fields[5].split(":")
+            if (int(major, 16), int(minor, 16), int(inode)) == (
+                    os.major(lock["device"]), os.minor(lock["device"]), lock["inode"]):
+                holders.append(int(fields[4]))
+    except (ValueError, IndexError):
+        return None
+    return sorted(set(holders))
+
+
+def _owner(event: dict) -> dict:
+    return {**{key: event[key] for key in _IDENTITY_FIELDS}, "process": event["process"],
+            "acquisition_id": event["acquisition_id"], "acquired_at": event["at"]}
+
+
 def _inherited() -> dict:
     try:
         value = json.loads(os.environ.get(CONTEXT_ENV, "null"))
@@ -203,6 +256,8 @@ class Execution:
         self._terminal = False
         self._handoffs = []
         self._children = {}
+        self._resources = {}
+        self._wait = None
 
     def _context(self) -> dict:
         return {
@@ -246,6 +301,43 @@ class Execution:
             self._sequence = row["sequence"]
             self._terminal = kind == "exit"
         return row
+
+    def wait(self, reason: str, *, mode="blocking", resource=None, **details) -> dict:
+        """Record an observed wait, separately from execution stage and outcome."""
+        value = {"reason": reason, "mode": mode, "resource": resource, "details": details}
+        if not _valid_wait(value):
+            raise ValueError("invalid lifecycle wait")
+        row = self.emit("wait", wait=value)
+        self._wait = row["event_id"]
+        return row
+
+    def wait_end(self) -> dict | None:
+        if self._wait is None:
+            return None
+        row = self.emit("wait_end", wait_event_id=self._wait)
+        self._wait = None
+        return row
+
+    def resource(self, kind: str, path: str | Path, *, scope: str, blocking=False) -> dict:
+        """Observe existing flock operations; this method never acquires their lock."""
+        if kind not in {"requested", "acquired", "released"} or type(blocking) is not bool:
+            raise ValueError("invalid resource operation")
+        resource = _resource(self.path, path, scope)
+        acquisition = self._resources.get(resource["id"])
+        if kind == "acquired":
+            acquisition = {"resource": resource, "acquisition_id": str(uuid.uuid4())}
+            self._resources[resource["id"]] = acquisition
+        elif kind == "released" and acquisition:
+            resource = acquisition["resource"]
+            self._resources.pop(resource["id"])
+        fields = {
+            "resource": resource, "blocking": blocking,
+            "acquisition_id": acquisition["acquisition_id"] if acquisition and kind != "requested" else None,
+        }
+        if kind != "requested":
+            fields["lock"] = resource["lock"]["path"]
+        return self.emit({"requested": "resource_requested", "acquired": "lock_acquired",
+                          "released": "lock_released"}[kind], **fields)
 
     def env(self) -> dict[str, str]:
         """Persist launch intent before handing context to Popen; return a full env."""
@@ -308,6 +400,30 @@ def _valid_process(value) -> bool:
                     for key in ("start_ticks", "uid", "ppid")))
 
 
+def _valid_lock(value) -> bool:
+    return (isinstance(value, dict) and isinstance(value.get("path"), str) and bool(value["path"])
+            and all(key in value and (value[key] is None or type(value[key]) is int and value[key] >= 0)
+                    for key in ("device", "inode")))
+
+
+def _valid_resource(value) -> bool:
+    return (isinstance(value, dict)
+            and all(isinstance(value.get(key), str) and bool(value[key]) for key in ("id", "host_id"))
+            and isinstance(value.get("scope"), str) and value["scope"] in {"repository", "host"}
+            and (isinstance(value.get("repository"), str) and bool(value["repository"])
+                 if value.get("scope") == "repository" else value.get("repository") is None)
+            and _valid_lock(value.get("lock"))
+            and value["id"] == _resource_id(value["host_id"], value.get("repository"), value["lock"]["path"]))
+
+
+def _valid_wait(value) -> bool:
+    return (isinstance(value, dict) and isinstance(value.get("reason"), str) and bool(value["reason"])
+            and isinstance(value.get("mode"), str)
+            and value["mode"] in {"blocking", "retry_next_pass", "eligibility", "admission"}
+            and "resource" in value and (value["resource"] is None or _valid_resource(value["resource"]))
+            and isinstance(value.get("details"), dict))
+
+
 def _lifecycle(row: dict) -> bool:
     required = {*_IDENTITY_FIELDS, "event", "schema_version", "event_id", "sequence",
                 "kind", "at", "outcome", "reason", "process", "locks"}
@@ -328,7 +444,17 @@ def _lifecycle(row: dict) -> bool:
                             for key in ("device", "inode")) for lock in row["locks"])
             and ("child_process" not in row or
                  (isinstance(row["child_process"], dict) and _valid_process(row["child_process"])))
-            and (row.get("handoff_id") is None or isinstance(row.get("handoff_id"), str)))
+            and (row.get("handoff_id") is None or isinstance(row.get("handoff_id"), str))
+            and ("resource" not in row or _valid_resource(row["resource"]))
+            and (row["kind"] != "wait" or _valid_wait(row.get("wait")))
+            and (row["kind"] != "wait_end" or isinstance(row.get("wait_event_id"), str))
+            and (row["kind"] != "resource_requested" or
+                 ("resource" in row and type(row.get("blocking")) is bool and row.get("acquisition_id") is None))
+            and (row["kind"] not in {"lock_acquired", "lock_released"} or "resource" not in row or
+                 (isinstance(row.get("lock"), str) and row["lock"] == row["resource"]["lock"]["path"]
+                  and type(row.get("blocking")) is bool
+                  and (isinstance(row.get("acquisition_id"), str) and bool(row["acquisition_id"])
+                       or row["kind"] == "lock_released" and row.get("acquisition_id") is None))))
 
 
 def _descendants(executions: list[dict]) -> dict[str, dict]:
@@ -494,12 +620,154 @@ def observe(path: Path) -> list[dict]:
                 outcome = terminal.get("outcome")
                 state = {"interrupted": "interrupted", "mechanism_failure": "failed", "unknown": "unknown", None: "unknown"}.get(outcome, "completed")
                 evidence = terminal.get("evidence", evidence)
+            pending_wait = None
+            if terminal is None and state == "active" and evidence["process"] == "alive":
+                for event in events:
+                    if event["kind"] == "wait":
+                        pending_wait = {**event["wait"], "event_id": event["event_id"], "at": event["at"]}
+                    elif event["kind"] == "wait_end" and pending_wait is not None:
+                        if event["wait_event_id"] == pending_wait["event_id"]:
+                            pending_wait = None
             result.append({
                 **{key: events[-1].get(key) for key in _IDENTITY_FIELDS},
                 "state": state, "entered_at": entry.get("at"),
                 "ended_at": terminal.get("at") if terminal else None,
                 "outcome": terminal.get("outcome") if terminal else None,
                 "reason": terminal.get("reason") if terminal else None,
+                "wait": pending_wait,
                 "events": events, "evidence": evidence,
             })
         return result
+
+
+def _observation_row(path: Path, stage: str, key: str, previous: dict | None, at: str, **fields) -> dict:
+    """Observation scopes have no enter/exit and never manufacture stage occupancy."""
+    execution_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"factory:{stage}:{Path(path).resolve()}:{key}"))
+    return {
+        **dict.fromkeys(_IDENTITY_FIELDS), **fields,
+        "execution_id": execution_id, "root_execution_id": execution_id, "stage": stage,
+        "event": "lifecycle", "schema_version": 1, "event_id": str(uuid.uuid4()),
+        "sequence": previous["sequence"] + 1 if previous else 1,
+        "kind": stage.replace("-", "_"), "at": at, "outcome": None, "reason": None,
+        "process": _identity(os.getpid()), "locks": [], "reconciled": True,
+    }
+
+
+def resources(path: Path, paths=()) -> list[dict]:
+    """Reconcile resources under the existing journal lock, never infer an owner.
+
+    `paths` contains (lock path, repository|host scope) pairs, so an external
+    holder is observable even if no Factory acquisition has ever been recorded.
+    Observation at is when a change was seen, not an inferred unlock/death time.
+    """
+    path = Path(path)
+    supplied = [_resource(path, lock, scope) for lock, scope in paths]
+    if not path.exists() and not supplied:
+        return []
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        rows = [row for row in _rows(handle) if _lifecycle(row)]
+        descriptors = {}
+        acquisitions = {}
+        requests = {}
+        observations = {}
+        terminal = {row["execution_id"] for row in rows if row["kind"] == "exit"}
+        entered = {row["execution_id"] for row in rows if row["kind"] == "enter"}
+        for row in rows:
+            resource = row.get("resource")
+            if resource is None:
+                continue
+            key = resource["id"]
+            descriptors[key] = resource
+            if row["kind"] == "resource_observation":
+                observations[key] = row
+                continue
+            execution = row["execution_id"]
+            if execution not in entered:
+                continue
+            if row["kind"] == "resource_requested":
+                requests[(key, execution)] = row
+            elif row["kind"] == "lock_acquired":
+                acquisitions[(key, row["acquisition_id"])] = row
+                requests.pop((key, execution), None)
+            elif row["kind"] == "lock_released":
+                acquisition = acquisitions.get((key, row["acquisition_id"]))
+                if acquisition and acquisition["execution_id"] == execution:
+                    acquisitions.pop((key, row["acquisition_id"]))
+                requests.pop((key, execution), None)
+        descriptors.update((value["id"], value) for value in supplied)
+        result = []
+        host = _host_id()
+        for key, descriptor in descriptors.items():
+            local = descriptor["host_id"] == host
+            resource = {**descriptor, "lock": _lock(descriptor["lock"]["path"])} if local else descriptor
+            lock_state = _lock_state(resource["lock"]) if local else "unknown"
+            holders = _lock_holders(resource["lock"]) if local and lock_state == "held" else None
+            owner = None
+            # Reduce matching acquisition/release facts; journal append order is
+            # not a causal order across executions. Kernel attribution is required.
+            candidates = []
+            for (resource_id, _), event in acquisitions.items():
+                if (resource_id != key or lock_state != "held" or holders is None
+                        or event["execution_id"] in terminal):
+                    continue
+                recorded = event["resource"]["lock"]
+                identity = event["process"]
+                if (isinstance(identity, dict) and holders == [identity["pid"]]
+                        and recorded["device"] is not None and recorded["inode"] is not None
+                        and (recorded["device"], recorded["inode"]) ==
+                            (resource["lock"]["device"], resource["lock"]["inode"])
+                        and _process_state(identity) == "alive"):
+                    candidates.append(event)
+            if len(candidates) == 1:
+                owner = _owner(candidates[0])
+            pending = [
+                {**{field: event[field] for field in _IDENTITY_FIELDS},
+                 "process": event["process"], "event_id": event["event_id"],
+                 "requested_at": event["at"], "blocking": event["blocking"]}
+                for (resource_id, execution), event in requests.items()
+                if resource_id == key and execution not in terminal and _process_state(event["process"]) == "alive"
+            ]
+            state = {
+                "resource": resource, "state": lock_state,
+                "ownership": "confirmed" if owner else "none" if lock_state == "free" else "unknown",
+                "owner": owner, "requests": pending,
+                "evidence": {"lock_state": lock_state, "attribution": "proc_locks" if holders is not None else "unavailable",
+                             "holder_pids": holders},
+            }
+            previous = observations.get(key)
+            observed_at = _now()
+            if previous is None or any(previous.get(field) != value for field, value in state.items()):
+                previous = _observation_row(path, "resource-observation", key, previous, observed_at, **state)
+                _write(handle, previous)
+            result.append({**state, "event_id": previous["event_id"], "at": previous["at"],
+                           "observed_at": observed_at})
+        return result
+
+
+def observe_schedule(path: Path, *, next_at: str | None, timer_active: bool | None,
+                     service_active: bool | None, observed_at: str) -> dict:
+    """Persist only changes in an existing timer probe, without creating a run."""
+    wait = None
+    try:
+        following = datetime.fromisoformat(next_at.replace("Z", "+00:00")) if isinstance(next_at, str) else None
+        observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        if (timer_active is True and service_active is False and following is not None
+                and following.utcoffset() is not None and observed.utcoffset() is not None and following > observed):
+            wait = {"reason": "scheduled_next_pass", "mode": "retry_next_pass",
+                    "resource": None, "details": {"next_at": next_at}}
+    except (ValueError, TypeError, OverflowError):
+        pass
+    state = {"wait": wait, "timer_active": timer_active if type(timer_active) is bool else None,
+             "service_active": service_active if type(service_active) is bool else None}
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        previous = next((row for row in reversed(_rows(handle))
+                         if _lifecycle(row) and row["kind"] == "scheduling_observation"), None)
+        if previous is None or any(previous.get(key) != value for key, value in state.items()):
+            previous = _observation_row(path, "scheduling-observation", "timer", previous, observed_at, **state)
+            _write(handle, previous)
+        return {**state, "event_id": previous["event_id"], "at": previous["at"], "observed_at": observed_at}
