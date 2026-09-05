@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -65,6 +67,35 @@ class LifecycleConsumersTest(unittest.TestCase):
         gate.update(state="unknown", ended_at="2026-01-01T00:00:01Z")
         self.assertEqual(dashboard.phase_of([ticket, worker, gate, review])["artifact"], "review")
         self.assertEqual(dashboard.phase_of([execution("merge", "merge")])["artifact"], "merge")
+        review["wait"] = {"reason": "exclusive_resource", "mode": "blocking"}
+        self.assertIsNone(dashboard.phase_of([ticket, worker, gate, review]))
+
+    def test_schedule_requires_confirmed_idle_timer_and_reuses_transition(self) -> None:
+        with tempfile.TemporaryDirectory() as d, patch.dict(dashboard.__dict__), patch.dict(dispatch.__dict__), \
+             patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}):
+            dashboard.configure(config.Config(Path(d), "acme/widgets"))
+            next_at = 4102444800000000
+            def systemctl(cmd, **kwargs):
+                if "list-timers" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, json.dumps([{"next": next_at}]), "")
+                status = "active" if cmd[-1].endswith(".timer") else "inactive"
+                return subprocess.CompletedProcess(cmd, 0 if status == "active" else 3, status, "")
+            with patch.object(dashboard.subprocess, "run", side_effect=systemctl), \
+                 patch.object(dashboard, "journal_runs", return_value=[]):
+                first = dashboard.dispatcher()
+                rows = lifecycle.read_events(dispatch.EVENTS)
+                second = dashboard.dispatcher()
+            self.assertEqual(first["schedule"]["wait"]["reason"], "scheduled_next_pass")
+            self.assertFalse(first["service_active"])
+            self.assertEqual(first["schedule"]["event_id"], second["schedule"]["event_id"])
+            self.assertEqual(rows, lifecycle.read_events(dispatch.EVENTS))
+            with patch.object(dashboard.subprocess, "run", side_effect=FileNotFoundError), \
+                 patch.object(dashboard, "journal_runs", return_value=[]):
+                unknown = dashboard.dispatcher()
+            self.assertIsNone(unknown["service_active"])
+            self.assertIsNone(unknown["timer"]["active"])
+            self.assertIsNone(unknown["schedule"]["wait"])
+            self.assertFalse(any(row["dispatcher_run_id"] for row in lifecycle.read_events(dispatch.EVENTS)))
 
     def test_held_lock_and_artifacts_do_not_invent_a_phase(self) -> None:
         issue = {
@@ -98,8 +129,14 @@ class LifecycleConsumersTest(unittest.TestCase):
             with patch.object(dashboard, "github", side_effect=RuntimeError("offline")), \
                  patch.object(dashboard, "dispatcher", return_value={}), \
                  patch.object(dashboard, "upstream_state", return_value={}), \
-                 patch.object(dashboard, "triage_llm_online", return_value=False):
+                 patch.object(dashboard, "triage_llm_online", return_value=False), \
+                 dispatch.ticket_lock(9).open("w") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
                 snap = dashboard.snapshot()
+            held = [resource for resource in snap["resources"] if resource["state"] == "held"]
+            self.assertEqual(len(held), 1)
+            self.assertEqual(held[0]["ownership"], "unknown")
+            self.assertIsNone(held[0]["owner"])
             self.assertEqual(snap["errors"], ["github: offline"])
             self.assertEqual(snap["tickets"], [])
             self.assertEqual(

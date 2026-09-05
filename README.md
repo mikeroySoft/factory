@@ -252,13 +252,15 @@ versions are not interpreted as version 1 by the existing observer.
 |---|---|
 | `dispatcher` | One real dispatcher pass, including passes with no ticket. Completion means the pass ended, not that any ticket merged. |
 | `scheduling` | Frontier/capacity evaluation and scheduling; separate from ticket execution and merge eligibility. |
-| `ticket` | A lock-owning ticket invocation, including admission re-read. Admission refusal is not worker time. Later PR passes have separate `merge-eligibility` executions. |
+| `landing` | The existing nonblocking merge-lock request and, when acquired, upstream sync/merge pass through actual unlock. |
+| `ticket` | A ticket admission/invocation, including nonblocking lock request and admission re-read. Admission refusal is not worker time. Later PR passes have separate `merge-eligibility` executions. |
 | `triage`, `triage-ticket` | Whole triage invocation and each actual ticket decision. Standalone triage retains its own root identity and null dispatcher association. |
 | `worker` | One worker subprocess attempt. |
 | `gate`, `gate-check` | An invoked gate and each actually executed check. Skipped checks and a disabled leak scan do not enter a check scope. |
 | `review` | One reviewer invocation, attributed to its review round. |
 | `merge-eligibility` | Assessment/refresh of one candidate in this dispatcher pass; not a merge. |
 | `merge` | Actual PR merge or upstream integration (which may contain a gate child). Only a successful PR merge or upstream push records `merged`. Approval alone does not. |
+| `resource-observation`, `scheduling-observation` | Change-only local evidence records, not pipeline invocations. They have stable observation-scope execution/root IDs, no `enter`/`exit`, and null parent/dispatcher/ticket/attempt/round fields; execution occupancy excludes them. |
 
 Evidence kinds retain the common keys above and add these kind-specific keys:
 
@@ -322,6 +324,10 @@ types above, plus:
   (process identities), `scan_complete` (boolean: process-scan readability),
   `descendant_absence_proven` (boolean: authoritative absence of surviving
   descendants), and `pending_handoffs` (UUID-string array).
+- `wait`: the current known wait object plus source `event_id` and `at`, or null. It is distinct from
+  execution liveness: a live waiting process can have `state: "active"` without
+  doing check/worker work. Unknown/dead/terminal executions do not retain a
+  current wait; their source wait rows remain historical evidence.
 
 Observation uses Linux `/proc`, boot identity, PID namespace, process start
 ticks, recorded children/causal descendant context, and existing lock inodes.
@@ -354,8 +360,8 @@ write reconciliation evidence locally, but does not mutate GitHub. The existing
 15-second HTTP snapshot cache remains; `?fresh=1` requests a fresh observation.
 No separate lifecycle CLI or additional network probe is introduced.
 
-The existing ticket `phase` is null unless there is one unambiguous active
-leaf among its unresolved executions. Active wrappers do not hide their child
+The existing ticket `phase` is null unless there is one unambiguous active,
+non-waiting leaf among its unresolved executions. Active wrappers do not hide their child
 stage; an unknown child or simultaneous independent stages prevents selecting
 one. When present, `phase` keeps `at` (source entry timestamp), `artifact`
 (legacy field name, now the authoritative stage string), and `attempt`
@@ -381,6 +387,127 @@ attempt, review, or outcome counts. `dispatch --dry-run` and
 Dispatcher dry-run does not create claim/merge lock files or fetch remote refs.
 With an upstream configured, it reports that a real pass would fetch and
 evaluate upstream rather than claiming a fresh behind/ahead count.
+
+### F02 waits and evidenced resource ownership
+
+F02 adds evidence to the version 1 lifecycle journal, not a second telemetry
+stream, controller, resource broker, or lock. All rows retain the identities,
+sequence, source timestamps, and interruption rules above. F03's runtime-only
+CLI remains separate future work.
+
+Known waits use `kind: "wait"` with a `wait` object:
+
+| Key | Type and meaning |
+|---|---|
+| `reason` | Nonempty string for a known reason; absent knowledge is represented by no current wait, never guessed from elapsed duration. |
+| `mode` | `"blocking"` (an actual acquisition can block), `"retry_next_pass"` (this pass skips), `"admission"` (capacity decision), or `"eligibility"` (observed merge prerequisite). |
+| `resource` | Resource descriptor below, or null for non-resource waits. |
+| `details` | Object containing only decision evidence available at that point. |
+
+`wait_end` ends a blocking wait when acquisition succeeds; a request itself is
+not acquisition. A terminal scope ends its current wait without claiming the
+underlying prerequisite became satisfied. Nonblocking skips, capacity decisions,
+and merge eligibility remain historical decision facts after their scope exits,
+not indefinitely active stages.
+
+| Reason | Existing observation point / details |
+|---|---|
+| `capacity_reached` | Admission count reached `max_active`; `active` and `max_active` integers. Demand does not prove dispatcher liveness. |
+| `ticket_lock_contended` | Ticket preflight found the lock held or its nonblocking acquisition lost the race; retry next pass. |
+| `merge_lock_contended` | Nonblocking landing lock miss; skip this pass, retry next pass, never convert to a blocking wait. |
+| `exclusive_resource` | Gate observed its exclusive lock held before the unchanged blocking acquisition. |
+| `ci_pending` | Existing `pr_checks` result contained pending checks; `pr` integer. No extra CI query or polling loop. |
+| `no_passing_ci` | Existing result had no passing check; `pr` integer. The cause is unknown, not an inferred CI outage. |
+| `scheduled_next_pass` | Local timer explicitly active, service explicitly idle, and a future `next_at` timestamp reported by the existing systemctl seam. |
+
+Review revision, escalation, eligibility, execution-stage occupancy, and waits
+are separate facts. None of these reasons, a held resource, or elapsed time
+alone creates a machinery incident. Gate outcomes and CI/human-veto prerequisites
+are unchanged.
+
+Resource events distinguish `resource_requested`, enriched `lock_acquired`, and
+enriched `lock_released`. Each includes a `resource` descriptor. Only an actual
+successful flock acquisition supplies confirmed holder evidence. Acquired and
+released rows share an `acquisition_id`, so delayed evidence for an older holder
+cannot clear a newer acquisition. Inherited F01 `locks` support liveness only:
+children and dispatcher parents do not thereby become resource owners.
+
+The gate subprocess acquires its exclusive lock once, immediately before the
+first non-skipped exclusive check, and retains it through all remaining checks.
+Ticket locks span the pipeline; the landing lock spans upstream sync and merge.
+There are no new exclusion locks, changes to acquisition order, retry policy,
+capacity accounting, check execution, or scheduling.
+
+
+Resource descriptors and observations have this serialized contract:
+
+| Descriptor key | Type and supported scope |
+|---|---|
+| `id` | Opaque UUID string, stable for the canonical lock pathname and supported scope; not a ticket number or dependency name. |
+| `scope` | `"repository"` for ticket/merge exclusion, or `"host"` for the configured exclusive gate lock. |
+| `host_id` | Opaque host identity string derived from machine identity; without machine identity, limited to the current boot. If neither authority exists, a process-local opaque fallback prevents cross-host grouping and observations remain unknown. |
+| `repository` | Canonical journal-directory string for repository scope; null for host scope. Different repository journals do not imply shared ticket/merge exclusion. |
+| `lock` | F01-style `path`, `device`, `inode` evidence for the canonical pathname. Missing inode/device is unknown authority. |
+
+Host-scoped IDs permit grouping only observations of the same configured lock
+on the same supported host identity. Different lock paths are not the same
+GPU or dependency merely because their check names match. Canonical symlink
+paths coincide; hard-link aliases and independently configured paths are not
+automatically unified. Identity names a lock pathname, not every past inode
+unlinked from it. A replaced inode cannot confirm an old acquisition. A single
+repository's observation does not prove every factory is affected; no journal
+from another repository is read to guess its holder.
+
+All three resource operation kinds add `blocking` (boolean: acquisition mode)
+and `acquisition_id` (UUID string for acquired/matched released; null on
+requested or an unmatched release, which cannot clear a holder).
+The F01 `lock` path remains on acquired/released rows. The common execution,
+root, parent, dispatcher, ticket, attempt, review-round, and process fields
+identify the actual requester/holder; request identity is never substituted for
+holder identity. `wait_end.wait_event_id` names the ended wait's event UUID.
+
+| Resource observation key | Type and meaning |
+|---|---|
+| `resource` | Descriptor above. |
+| `state`, `ownership` | Independent string enums described above. `none` is supported only by observed free state. |
+| `owner` | Null or object with all common execution identity fields, recorded `process`, `acquisition_id`, and source `acquired_at` timestamp. |
+| `requests` | Array of currently live, unterminated requesters not yet acquired/released: common execution identity fields, `process`, source `event_id`, `requested_at`, and `blocking`. A pending request is not ownership. |
+| `evidence` | Object: `lock_state` (`held`/`free`/`unknown`), `attribution` (`proc_locks`/`unavailable`), `holder_pids` (integer array or null). Kernel PIDs alone are not confirmed execution identity. |
+| `event_id`, `at` | Stable identity and source time of the last distinct local resource observation. |
+| `observed_at` | UTC time of this local evidence collection, distinct from transition time. |
+
+Changes are persisted as `kind: "resource_observation"` in the same lifecycle
+journal, carrying `resource`, `state`, `ownership`, `owner`, `requests`, and
+`evidence`. Observer rows have `reconciled: true` and the observer's `process`.
+Acquisition/release history remains separate from current attribution.
+
+`dispatcher.schedule` contains `wait` (the wait object above or null),
+`timer_active` and `service_active` (boolean or null), `event_id`, `at`, and
+`observed_at` with the same transition-versus-collection distinction.
+Change-only `kind: "scheduling_observation"` rows carry `wait`, `timer_active`,
+and `service_active`; scheduled wait details include `next_at` (UTC timestamp).
+
+The full dashboard JSON adds `resources`. Each resource observation separates
+`state` (`held`, `free`, `unknown`) from `ownership` (`confirmed`, `unknown`,
+`none`). A held lock is not proof of ownership. Confirmation requires both a
+live recorded process identity and matching kernel lock attribution; missing
+authority, external processes, old F01-only lock rows, and attribution gaps
+remain unknown. A dead recorded execution is never retained as a confirmed
+current holder, even if its old lock remains held.
+
+Resource observation timestamps describe when evidence was collected. A
+reconciled ownership change or free observation does not invent the exact time
+an unobserved process died or released its lock. Repeated unchanged observations
+reuse transition identity/time rather than producing repeated release/wait events.
+
+`dispatcher.timer.active` and `dispatcher.service_active` now accept null when
+local authority is unavailable. False means explicitly inactive/failed, not a
+missing command, inaccessible service manager, or absent output. The additive
+`dispatcher.schedule` records timer/service evidence and a known scheduled wait
+only when confirmed; otherwise its `wait` is null. Timer interval configuration
+and an empty frontier do not establish next-pass intention or deliberate pause.
+Dashboard status/configuration display unknown and suppress unsupported
+countdowns. Schedule observations never create a dispatcher-run identity.
 
 Because the journal may contain a torn row, a tolerant local ticket query is:
 

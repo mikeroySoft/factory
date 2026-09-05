@@ -692,19 +692,25 @@ def land_pass(dry_run: bool) -> None:
         merge_pass_locked(True)
         return
     (FACTORY / "locks").mkdir(parents=True, exist_ok=True)
-    lock_fd = (FACTORY / "locks" / "merge.lock").open("w")
-    try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        log("sync + merge stage: skipped (another dispatcher holds the merge lock)")
-        lock_fd.close()
-        return
-    try:
-        sync_pass(dry_run)
-        merge_pass_locked(dry_run)
-    finally:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        lock_fd.close()
+    lock_path = FACTORY / "locks" / "merge.lock"
+    with lifecycle.scope(EVENTS, "landing") as execution:
+        lock_fd = lock_path.open("w")
+        request = execution.resource("requested", lock_path, scope="repository")
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            execution.wait("merge_lock_contended", mode="retry_next_pass", resource=request["resource"])
+            log("sync + merge stage: skipped (another dispatcher holds the merge lock)")
+            lock_fd.close()
+            return
+        try:
+            execution.resource("acquired", lock_path, scope="repository")
+            sync_pass(dry_run)
+            merge_pass_locked(dry_run)
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
+            execution.resource("released", lock_path, scope="repository")
 
 
 def merge_pass_locked(dry_run: bool) -> None:
@@ -771,11 +777,13 @@ def merge_pass_locked(dry_run: bool) -> None:
                 log(f"PR #{pr_num}: CI pending {buckets}; waiting")
                 if execution:
                     execution.outcome, execution.reason = "not_eligible", "ci_pending"
+                    execution.wait("ci_pending", mode="eligibility", pr=pr_num)
                 continue
             if not buckets.get("pass"):
                 log(f"PR #{pr_num}: no passing CI checks reported; refusing to merge")
                 if execution:
                     execution.outcome, execution.reason = "not_eligible", "no_passing_ci"
+                    execution.wait("no_passing_ci", mode="eligibility", pr=pr_num)
                 continue
             behind = gh_json(["api", f"repos/{REPO}/compare/{cfg.main}...agent/{n}"])[
                 "behind_by"
@@ -883,6 +891,10 @@ def process_ticket(
     lock_path = FACTORY / "locks" / f"{n}.lock"
     if lock_held(lock_path):
         log(f"#{n}: skipped (in flight, lock held on {lock_path})")
+        if not dry_run:
+            with lifecycle.scope(EVENTS, "ticket", ticket=n) as execution:
+                request = execution.resource("requested", lock_path, scope="repository")
+                execution.wait("ticket_lock_contended", mode="retry_next_pass", resource=request["resource"])
         return
     if dry_run:
         log(
@@ -891,17 +903,20 @@ def process_ticket(
         )
         return
 
-    deadline = time.monotonic() + budget_min * 60
-    lock_fd = ticket_lock(n).open("w")  # held for the life of this pipeline
-    try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        log(f"#{n}: skipped (lost lock race)")
-        lock_fd.close()
-        return
+    with lifecycle.scope(EVENTS, "ticket", ticket=n) as execution:
+        deadline = time.monotonic() + budget_min * 60
+        lock_fd = ticket_lock(n).open("w")  # held for the life of this pipeline
+        request = execution.resource("requested", lock_path, scope="repository")
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            execution.wait("ticket_lock_contended", mode="retry_next_pass", resource=request["resource"])
+            log(f"#{n}: skipped (lost lock race)")
+            lock_fd.close()
+            return
 
-    try:
-        with lifecycle.scope(EVENTS, "ticket", ticket=n, lock=ticket_lock(n)) as execution:
+        try:
+            execution.resource("acquired", lock_path, scope="repository")
             # Strong re-read before claiming: `issue list` is search-backed and lags
             # label/assignee edits, which re-claimed #16/#17 seconds after escalation.
             if not forced:
@@ -985,9 +1000,10 @@ def process_ticket(
             else:
                 approve_pr(n)
                 log(f"#{n}: done (approved)")
-    finally:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        lock_fd.close()
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
+            execution.resource("released", lock_path, scope="repository")
 
 
 def main(argv: list[str]) -> int:
@@ -1029,12 +1045,14 @@ def main(argv: list[str]) -> int:
             return 0
 
         land_pass(args.dry_run)
-        with nullcontext() if args.dry_run else lifecycle.scope(EVENTS, "scheduling"):
+        with nullcontext() if args.dry_run else lifecycle.scope(EVENTS, "scheduling") as execution:
             active = active_ticket_count()
             capacity = MAX_ACTIVE - active
             log(f"active tickets: {active}, capacity: {max(capacity, 0)}")
             if capacity <= 0:
                 log("at capacity, nothing to do")
+                if execution:
+                    execution.wait("capacity_reached", mode="admission", active=active, max_active=MAX_ACTIVE)
                 return 0
             ready = frontier()
             if not ready:

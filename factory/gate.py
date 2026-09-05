@@ -172,6 +172,7 @@ def execute(args: argparse.Namespace, execution) -> int:
     results: list[tuple[str, str, str]] = []  # (name, status, output)
     outcome, reason = "completed", None
     gpu_lock = None
+    gpu_acquired = False
     try:
         for name, fn in checks:
             if name in skip:
@@ -179,8 +180,13 @@ def execute(args: argparse.Namespace, execution) -> int:
                 continue
             if name in GPU_CHECKS and gpu_lock is None:
                 gpu_lock = open(GPU_LOCK, "w")  # noqa: SIM115 — lock must outlive the loop
+                requested = execution.resource("requested", GPU_LOCK, scope="host", blocking=True)
+                if lifecycle._lock_state(lifecycle._lock(GPU_LOCK)) == "held":
+                    execution.wait("exclusive_resource", mode="blocking", resource=requested["resource"])
                 fcntl.flock(gpu_lock, fcntl.LOCK_EX)
-                execution.emit("lock_acquired", lock=str(GPU_LOCK))
+                gpu_acquired = True
+                execution.resource("acquired", GPU_LOCK, scope="host", blocking=True)
+                execution.wait_end()
             with lifecycle.scope(
                 cfg.factory / "events.jsonl", "gate-check", lock=GPU_LOCK if gpu_lock else None
             ) as check:
@@ -197,7 +203,8 @@ def execute(args: argparse.Namespace, execution) -> int:
         if gpu_lock is not None:
             fcntl.flock(gpu_lock, fcntl.LOCK_UN)
             gpu_lock.close()
-            execution.emit("lock_released", lock=str(GPU_LOCK))
+            if gpu_acquired:
+                execution.resource("released", GPU_LOCK, scope="host", blocking=True)
 
     lines = ["# Gate report", ""]
     for name, status, _ in results:
