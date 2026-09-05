@@ -522,8 +522,7 @@ function counts() {
   return c;
 }
 function phaseCell(t) {
-  const a = t.phase && t.phase.artifact;
-  return a === 'worker' ? 'worker' : a === 'gate' ? 'gate' : a ? 'review' : 'worker';
+  return t.phase?.artifact || 'unknown';
 }
 function metrics() {
   const T = S.snap.tickets, cfg = S.snap.config;
@@ -716,7 +715,7 @@ function card(t) {
     ci.QUEUED || ci.IN_PROGRESS || ci.PENDING ? h('b', { class: 'pend' }, `…${(ci.QUEUED || 0) + (ci.IN_PROGRESS || 0) + (ci.PENDING || 0)}`) : null) : null;
   const el = h('article', { class: `card ${stageClass(t.stage)} ${S.sel === t.number ? 'sel' : ''}`, tabindex: 0, dataset: { n: t.number }, 'aria-label': `#${t.number} ${t.title}` },
     h('div', { class: 'ct' }, h('span', { class: 'num' }, `#${t.number}`), h('span', { class: 'wk' }, t.worker),
-      t.lock_held ? h('span', { class: 'chip live', style: { '--c': 'var(--yel)' } }, t.phase ? `${phaseCell(t)}${t.phase.attempt ? ' #' + t.phase.attempt : ''}` : 'live') : null,
+      t.lock_held ? h('span', { class: `chip${t.phase ? ' live' : ''}`, style: { '--c': 'var(--yel)' } }, t.phase ? `${phaseCell(t)}${t.phase.attempt ? ' #' + t.phase.attempt : ''}` : 'phase unknown') : null,
       t.pr && t.pr.approved && t.pr.state === 'OPEN' ? h('span', { class: 'chip', style: { '--c': 'var(--grn)' }, title: 'factory-approved: merge stage will land it' }, 'approved') : null,
       t.stage === 'escalated' && t.assignees.length ? h('span', { class: 'chip', style: { '--c': 'var(--cyan)' } }, 'in human hands') : null,
       h('span', { class: 'chip' }, STAGE_NAME[t.stage])),

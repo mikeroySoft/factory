@@ -13,7 +13,7 @@ import argparse
 import json
 from pathlib import Path
 
-from factory import config, dispatch, triage
+from factory import config, dispatch, lifecycle, triage
 from factory.config import LESSONS_NAME
 
 MAX_LESSONS = 10
@@ -23,16 +23,16 @@ MAX_EVIDENCE = 24_000  # chars; keeps the prompt inside a local model's window
 
 def evidence(last: int) -> tuple[list[int], str]:
     """Evidence per ticket from events.jsonl, newest `last` tickets that finished."""
-    rows = []
-    for line in dispatch.EVENTS.read_text().splitlines() if dispatch.EVENTS.exists() else []:
-        try:
-            rows.append(json.loads(line))
-        except ValueError:
-            continue
     by_ticket: dict[int, list[dict]] = {}
-    for row in rows:
-        if "ticket" in row:
-            by_ticket.setdefault(row["ticket"], []).append(row)
+    for row in lifecycle.read_events(dispatch.EVENTS):
+        if (
+            row.get("event") == "lifecycle"
+            or not isinstance(row.get("event"), str)
+            or type(row.get("ticket")) is not int
+            or not isinstance(row.get("at"), str)
+        ):
+            continue
+        by_ticket.setdefault(row["ticket"], []).append(row)
     finished = [n for n, evs in by_ticket.items() if any(e["event"] in ("merged", "escalate") for e in evs)]
     chosen = sorted(finished, key=lambda n: by_ticket[n][-1]["at"])[-last:]
     parts = []
@@ -44,10 +44,10 @@ def evidence(last: int) -> tuple[list[int], str]:
             fields = {k: v for k, v in e.items() if k not in ("ticket", "title", "log")}
             parts.append(f"- {json.dumps(fields)}")
         for e in evs:
-            if e["event"] == "attempt" and e.get("gate") == "FAIL" and e.get("log"):
+            if e["event"] == "attempt" and e.get("gate") == "FAIL" and isinstance(e.get("log"), str) and e["log"]:
                 tail = "\n".join(Path(e["log"]).read_text(errors="replace").splitlines()[-LOG_TAIL:]) if Path(e["log"]).exists() else ""
                 if tail:
-                    parts.append(f"\nAttempt {e['attempt']} log tail (gate FAILED after it):\n```\n{tail}\n```")
+                    parts.append(f"\nAttempt {e.get('attempt', '?')} log tail (gate FAILED after it):\n```\n{tail}\n```")
         review = dispatch.FACTORY / f"review-{n}.md"
         if review.exists():
             parts.append(f"\nLatest reviewer findings:\n```\n{review.read_text()[-3000:]}\n```")
