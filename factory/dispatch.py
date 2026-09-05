@@ -4,7 +4,7 @@ One pass per invocation: first the upstream sync merges any new upstream main
 commits into the fork's main (host gate, no CI), then the merge stage lands
 at most one approved, green, up-to-date factory PR on main; then pick
 claimable issues (or --ticket N), run a worker agent in a git worktree, gate,
-open a PR, review with codex, bounce once. A codex APPROVE marks the PR
+open a PR, review with the reviewer model, bounce once. A reviewer APPROVE marks the PR
 `factory-approved`; the merge stage requires that label, green GitHub CI, and
 a head containing the current main tip before squash-merging.
 All state lives in GitHub and .factory/ on disk.
@@ -316,7 +316,7 @@ def escalate(n: int, reason: str, log_path: Path | None) -> None:
 
 
 def review(wt: Path, n: int, gate_report: str) -> tuple[str, str]:
-    """Run codex two-axis review. Returns (verdict, findings markdown)."""
+    """Run the two-axis diff review. Returns (verdict, findings markdown)."""
     prompt = (
         f"Review `git diff origin/{cfg.main}..HEAD` in this repository on two axes:\n"
         f"1. Standards: does the code follow this repo's documented conventions "
@@ -559,7 +559,7 @@ FACTORY_APPROVED = LABEL_APPROVED
 
 
 def approve_pr(n: int) -> None:
-    """Record the codex APPROVE durably on the PR (merge-stage precondition)."""
+    """Record the reviewer APPROVE durably on the PR (merge-stage precondition)."""
     record("approved", ticket=n)
     run(
         [
@@ -634,7 +634,7 @@ def land_pass(dry_run: bool) -> None:
     merge stage (at most ONE approved, green, up-to-date factory PR per pass).
 
     A merge requires all four independently produced pieces of evidence:
-    host gate PASS (in the PR body), codex APPROVE (`factory-approved`
+    host gate PASS (in the PR body), reviewer APPROVE (`factory-approved`
     label), green GitHub CI, and a head that already contains the current
     main tip — so the evidence was produced against what it merges into.
     One merge per pass is the merge queue: landing one PR makes the others
@@ -826,7 +826,7 @@ def process_ticket(
     if dry_run:
         log(
             f"#{n}: would claim (assign @me), create worktree {wt} on branch agent/{n}, "
-            f"run {worker} worker, gate, push, open PR, codex-review"
+            f"run {worker} worker, gate, push, open PR, review"
         )
         return
 
