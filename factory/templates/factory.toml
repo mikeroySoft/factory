@@ -35,6 +35,11 @@
 # command = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1", "{prompt}"]
 # command = ["codex", "exec", "{prompt}"]
 
+[manager]
+# Dashboard briefings and contextual Ask FM use a bounded, no-tools OMP process.
+# Only the model is configurable here; generated advice cannot execute actions.
+# model = "openai-codex/gpt-6-astra"  # unset: existing manager.command --model, then OMP default
+
 [gate]
 # timeout = 1200                      # seconds per check; a wedged check FAILs
 # lock = "/tmp/factory.lock"          # host-wide lock held by `exclusive` checks

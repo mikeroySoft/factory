@@ -1,0 +1,139 @@
+/* Human decision briefing. Keep decision-making context visible; nest only evidence. */
+@font-face {
+  font-family: 'Factory Newsreader';
+  src: url('/fonts/Newsreader.ttf') format('truetype');
+  font-weight: 200 800;
+  font-display: swap;
+}
+#inbox, .briefing-dialog {
+  --brief-muted: #b5a589;
+  --brief-accent: var(--accent, #9dc26b);
+  --brief-warning: #f0cf8e;
+  --brief-danger: #efa18f;
+  color: var(--ink);
+  font: 14px/1.8 var(--mono);
+  overflow-wrap: anywhere;
+}
+#inbox { max-width: 1120px; padding: 32px 32px 80px; gap: 24px; }
+#inbox[hidden] { display: none; }
+#inbox p, .briefing-dialog p { margin: 0; max-width: 78ch; }
+#inbox h2, #inbox h3, #inbox h4, .briefing-dialog h2, .briefing-dialog h3 { margin: 0; line-height: 1.5; letter-spacing: 0; text-transform: none; }
+#inbox h3, .briefing-dialog h3 { font: 500 17px/1.5 var(--mono); }
+#inbox h4 { font: 500 15px/1.5 var(--mono); }
+#inbox .hint, #inbox .empty, #inbox .note, #inbox .briefing-muted, .briefing-dialog .hint, .briefing-dialog .briefing-muted { color: var(--brief-muted); font-size: 12px; line-height: 1.8; letter-spacing: 0; }
+#inbox button, .briefing-dialog button {
+  min-height: 44px;
+  padding: 10px 14px;
+  color: var(--ink);
+  background: var(--bg2);
+  border: 1px solid var(--line2);
+  border-radius: 5px;
+  font: 13px/1.5 var(--mono);
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: normal;
+  cursor: pointer;
+}
+#inbox button:hover, .briefing-dialog button:hover { border-color: var(--brief-accent); }
+#inbox :focus-visible, .briefing-dialog :focus-visible { outline: 2px solid var(--brief-accent); outline-offset: 4px; box-shadow: none; }
+#inbox button:disabled, .briefing-dialog button:disabled { opacity: .5; cursor: not-allowed; }
+#inbox .briefing-primary, .briefing-dialog .briefing-primary { color: #11140c; background: var(--brief-accent); border-color: var(--brief-accent); font-weight: 600; }
+#inbox button.danger, .briefing-dialog button.danger { color: var(--brief-danger); border-color: var(--brief-danger); }
+#inbox textarea, #inbox select, #inbox input, .briefing-dialog textarea, .briefing-dialog select, .briefing-dialog input {
+  color: var(--ink);
+  background: var(--bg2);
+  border: 1px solid var(--line2);
+  border-radius: 5px;
+  font: 14px/1.65 var(--mono);
+  width: 100%;
+  min-width: 0;
+  padding: 12px;
+}
+#inbox select, .briefing-dialog select { min-height: 48px; }
+#inbox textarea, .briefing-dialog textarea { min-height: 110px; resize: vertical; }
+#inbox label, .briefing-dialog label { display: block; margin-bottom: 8px; font-size: 13px; }
+#inbox .inbox-top { align-items: center; justify-content: space-between; gap: 16px; }
+#inbox .inbox-top h2 { font-size: 16px; font-weight: 500; }
+#inbox .inbox-list { gap: 0; }
+.briefing-nav { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: end; gap: 12px; padding: 8px 0 24px; border-bottom: 1px solid var(--line); }
+.briefing-nav > label { grid-column: 1 / -1; margin: 0; }
+.briefing-nav button { min-width: 80px; }
+.briefing-intro { padding: 48px 0 38px; display: grid; gap: 20px; }
+#inbox .briefing-question { font: 400 clamp(36px, 5vw, 64px)/1.09 'Factory Newsreader', Georgia, serif; letter-spacing: -.025em; max-width: 960px; text-wrap: balance; color: var(--ink); background: none; -webkit-text-fill-color: currentColor; }
+.briefing-deck { font-size: 16px; color: var(--brief-muted); line-height: 1.85; }
+.briefing-label { font: 500 12px/1.6 var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--brief-muted); }
+.briefing-section { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 32px; border-top: 1px solid var(--line); padding: 32px 0; }
+.briefing-step { display: flex; gap: 12px; align-items: baseline; }
+.briefing-step span { color: var(--brief-accent); font-size: 12px; }
+.briefing-body { display: grid; gap: 24px; min-width: 0; }
+.briefing-body > div { min-width: 0; }
+.briefing-body .briefing-label { margin-bottom: 8px; }
+.briefing-recommendation { display: grid; gap: 12px; border-left: 3px solid var(--brief-accent); padding: 22px 24px; background: var(--bg2); }
+.briefing-unknown { display: grid; gap: 8px; border-left: 2px solid var(--line2); padding-left: 18px; }
+.briefing-options { display: grid; gap: 20px; }
+.briefing-option { padding: 22px 24px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg2); display: grid; gap: 16px; }
+.briefing-option > button { justify-self: start; }
+.briefing-consequences { display: grid; grid-template-columns: 114px minmax(0, 1fr); gap: 10px 18px; margin: 0; font-size: 13px; }
+.briefing-consequences dt { color: var(--brief-muted); }
+.briefing-consequences dd { margin: 0; }
+.briefing-history { display: grid; gap: 18px; padding: 0; list-style: none; }
+.briefing-history li { display: grid; gap: 6px; padding-left: 18px; border-left: 2px solid var(--line2); }
+.briefing-sources { display: grid; gap: 12px; }
+#inbox details, .briefing-dialog details { margin: 0; border-bottom: 1px solid var(--line); }
+#inbox summary, .briefing-dialog summary { min-height: 48px; padding: 12px 0; font: 13px/1.75 var(--mono); color: var(--brief-muted); cursor: pointer; }
+#inbox details[open] > summary, .briefing-dialog details[open] > summary { color: var(--ink); }
+#inbox details > :not(summary), .briefing-dialog details > :not(summary) { margin-bottom: 18px; }
+#inbox pre, .briefing-dialog pre { font: 12px/1.8 var(--mono); color: var(--brief-muted); white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; max-height: 440px; overflow: auto; }
+.briefing-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.briefing-status { display: grid; gap: 12px; padding: 18px 20px; color: var(--brief-muted); background: var(--bg2); border-left: 2px solid var(--line2); }
+#inbox-health:empty { display: none; }
+.briefing-status[role=alert] { color: var(--brief-danger); border-left-color: var(--brief-danger); }
+.briefing-receipt { display: grid; gap: 12px; background: var(--bg2); border: 1px solid var(--brief-accent); padding: 24px; border-radius: 6px; }
+.briefing-receipt.bad { border-color: var(--brief-danger); }
+.briefing-dialog { width: min(820px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); margin: auto; padding: 0; background: var(--bg2); border: 1px solid var(--line2); border-radius: 8px; box-shadow: 0 25px 100px #0008; }
+.briefing-dialog::backdrop { background: #000b; backdrop-filter: blur(3px); }
+.briefing-dialog-head { display: flex; justify-content: space-between; align-items: start; gap: 20px; padding: 24px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg2); z-index: 1; }
+.briefing-dialog-head h2 { font: 500 20px/1.5 var(--mono); }
+.briefing-dialog-head button { flex-shrink: 0; }
+.briefing-dialog-body { display: grid; gap: 22px; padding: 24px; }
+.fm-context { display: grid; gap: 10px; padding: 16px; background: var(--bg); border: 1px solid var(--line); border-radius: 5px; font-size: 12px; color: var(--brief-muted); }
+.fm-messages { display: grid; gap: 16px; }
+.fm-message { display: grid; gap: 12px; padding: 18px; border-left: 2px solid var(--brief-accent); background: var(--bg); white-space: pre-wrap; }
+.fm-message.user { border-left-color: var(--line2); }
+.fm-citations { display: flex; flex-wrap: wrap; gap: 8px; }
+.fm-citations button { font-size: 12px; color: var(--brief-accent); text-align: left; }
+.fm-question-form { display: grid; gap: 12px; }
+html { scroll-padding-top: 110px; }
+@media (max-width: 760px) {
+  #inbox { padding: 20px 18px 60px; }
+  .briefing-nav { grid-template-columns: 1fr 1fr; }
+  .briefing-nav > select { grid-column: 1 / -1; }
+  .briefing-intro { padding: 30px 0; }
+  #inbox .briefing-question { font-size: 38px; }
+  .briefing-section { grid-template-columns: minmax(0, 1fr); gap: 18px; padding: 26px 0; }
+  .briefing-body { gap: 20px; }
+  .briefing-consequences { grid-template-columns: minmax(0, 1fr); gap: 5px; }
+  .briefing-consequences dd { margin-bottom: 10px; }
+  .briefing-option, .briefing-recommendation { padding: 18px; }
+  .briefing-dialog-head, .briefing-dialog-body { padding: 18px; }
+  .briefing-deck { font-size: 15px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #inbox *, .briefing-dialog * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+/* Operator telemetry belongs to Ops, not the human's decision briefing. */
+body:has(#inbox:not([hidden])) #status { display: none; }
+body:has(#inbox:not([hidden])) .top { flex-wrap: wrap; }
+body:has(#inbox:not([hidden])) .top .controls { margin-left: auto; }
+body:has(#inbox:not([hidden])) .top .controls input[type=checkbox] { width: auto; padding: 0; }
+@media (max-width: 760px) {
+  body:has(#inbox:not([hidden])) .top { gap: 12px; padding: 14px 18px; }
+  body:has(#inbox:not([hidden])) .top .controls { flex-wrap: wrap; margin-left: 0; width: 100%; }
+  body:has(#inbox:not([hidden])) .top .controls input[type=search] { flex: 1; min-width: 120px; width: auto; }
+}
+#inbox fieldset.briefing-options { margin: 0; padding: 0; border: 0; min-width: 0; }
+#inbox .briefing-option label { display: flex; align-items: baseline; gap: 12px; font-size: 15px; cursor: pointer; }
+#inbox input[type=radio], #inbox input[type=checkbox] { width: auto; flex-shrink: 0; accent-color: var(--brief-accent); }
+.briefing-info { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 24px; display: grid; gap: 16px; }
+.briefing-info > article { border-left: 2px solid var(--line2); padding: 0 0 0 18px; }
+#inbox .fm-citation, .briefing-dialog .fm-citation { font-size: 12px; color: var(--brief-accent); padding: 6px 8px; margin: 0 4px; vertical-align: baseline; }
