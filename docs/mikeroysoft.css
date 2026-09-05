@@ -1,0 +1,458 @@
+/*! mikeroySoft design system — flattened tokens + base, v1
+ *  Drop-in for a GitHub Pages site. Copy this file and ./fonts/ into your docs/
+ *  directory, then:  <link rel="stylesheet" href="mikeroysoft.css">
+ *  Set the product palette on the body:  <body data-product="district">
+ *  Fonts: JetBrains Mono + Newsreader, both SIL OFL 1.1 (licences in ./fonts/).
+ */
+
+/* ---------- fonts.css ---------- */
+/* Webfonts, self-hosted. Both faces are SIL Open Font License 1.1 — vendored
+   from google/fonts as variable TTFs so the system has no CDN dependency.
+   Licences: assets/fonts/JetBrainsMono-OFL.txt, assets/fonts/Newsreader-OFL.txt */
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./fonts/JetBrainsMono[wght].ttf") format("truetype-variations");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./fonts/JetBrainsMono-Italic[wght].ttf") format("truetype-variations");
+  font-weight: 100 800;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Newsreader";
+  src: url("./fonts/Newsreader[opsz,wght].ttf") format("truetype-variations");
+  font-weight: 200 800;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Newsreader";
+  src: url("./fonts/Newsreader-Italic[opsz,wght].ttf") format("truetype-variations");
+  font-weight: 200 800;
+  font-style: italic;
+  font-display: swap;
+}
+
+/* ---------- colors.css ---------- */
+/* mikeroySoft colors — the gpuflo "buffalo" amber palette, extended with the
+   stage colors from the factory dashboard theme. Every base hex below is
+   lifted verbatim from source (gpuflo/site/index.html, gpuflo/src/ui/theme.rs,
+   gpuflo/.factory-dashboard.css). */
+:root {
+  /* --- warm neutrals: ash (surfaces) --- */
+  --ash-950: #0a0908; /* terminal well */
+  --ash-900: #0d0c0a; /* page */
+  --ash-850: #141413; /* TUI buffalo bg */
+  --ash-800: #151310; /* sunken */
+  --ash-750: #1a1712; /* panel */
+  --ash-700: #221c14; /* inset / idle cell */
+
+  /* --- warm neutrals: bark (lines + faint ink) --- */
+  --bark-700: #3a2f1e;
+  --bark-600: #4a3d28;
+  --bark-500: #5a4f3c;
+  --bark-400: #66594a;
+  --bark-300: #725b40;
+
+  /* --- warm neutrals: sand + cream (ink) --- */
+  --sand-400: #8a7a5e;
+  --sand-300: #a69278;
+  --cream-200: #f4e1c0;
+  --cream-100: #f0e2c8;
+  --cream-50: #f6ead0;
+
+  /* --- accents --- */
+  --amber-500: #f5a623;
+  --amber-600: #f59e0b;
+  --wheat-300: #f0cf8e;
+  --olive-400: #c9b458;
+  --orange-500: #e07b39;
+  --rust-600: #c05a2a;
+  --ember-700: #be4c25;
+  --sage-400: #9dc26b;
+  --grove-500: #7fb069;
+  --clay-500: #d64545;
+  --clay-600: #ef4444;
+  --signal-500: #ff3b3b;
+  --iris-400: #b89bd6;
+
+  /* --- tints + washes (transparent, for hovers and fills) --- */
+  --tint-amber-05: rgba(245, 166, 35, 0.05);
+  --tint-amber-08: rgba(245, 166, 35, 0.08);
+  --tint-amber-14: rgba(245, 166, 35, 0.14);
+  --tint-amber-25: rgba(245, 166, 35, 0.25);
+  --tint-wheat-08: rgba(240, 207, 142, 0.08);
+  --tint-clay-10: rgba(214, 69, 69, 0.1);
+  --tint-white-02: rgba(255, 255, 255, 0.02);
+
+  /* --- semantic: text --- */
+  --text-primary: var(--cream-100);
+  --text-secondary: var(--sand-300);
+  --text-muted: var(--sand-400);
+  --text-faint: var(--bark-500);
+  --text-accent: var(--amber-500);
+  --text-on-accent: var(--ash-900);
+  --link: var(--amber-500);
+  --link-hover: var(--wheat-300);
+
+  /* --- semantic: surface --- */
+  --surface-page: var(--ash-900);
+  --surface-sunken: var(--ash-800);
+  --surface-panel: var(--ash-750);
+  --surface-inset: var(--ash-700);
+  --surface-terminal: var(--ash-950);
+  --surface-scrim: rgba(13, 12, 10, 0.94);
+
+  /* --- semantic: border --- */
+  --border-hairline: var(--bark-700);
+  --border-strong: var(--bark-600);
+  --border-accent: var(--amber-500);
+
+  /* --- semantic: status --- */
+  --status-ok: var(--sage-400);
+  --status-warn: var(--wheat-300);
+  --status-danger: var(--clay-500);
+  --status-fault: var(--signal-500);
+  --status-info: var(--iris-400);
+  --status-idle: var(--bark-500);
+  --status-throttle: var(--ember-700);
+
+  /* --- semantic: pipeline stages (factory) --- */
+  --stage-triage: var(--iris-400);
+  --stage-needs-info: var(--orange-500);
+  --stage-queued: var(--amber-500);
+  --stage-in-flight: var(--wheat-300);
+  --stage-pr-open: var(--olive-400);
+  --stage-escalated: var(--clay-500);
+  --stage-merged: var(--sage-400);
+  --stage-closed: var(--bark-500);
+
+  /* --- semantic: telemetry graph ramp (gpuflo activity dots) --- */
+  --graph-low: #a8642f;
+  --graph-mid: var(--orange-500);
+  --graph-high: var(--amber-500);
+  --graph-memory: var(--rust-600);
+
+  /* --- gradients --- */
+  --gradient-wordmark: linear-gradient(
+    180deg,
+    #f6ead0 0%,
+    #f0cf8e 30%,
+    #f5a623 55%,
+    #e07b39 80%,
+    #c05a2a 100%
+  ); /* @kind other */
+  --gradient-hero-wash: radial-gradient(circle at 70% 25%, var(--tint-amber-08), transparent 52%); /* @kind other */
+}
+
+/* ---------- products.css ---------- */
+/* Per-product palettes. The neutrals, type, spacing, radii and frames never
+   change between products — only the accent family and the mark shape do.
+   Apply a scope with `data-product` on <body> or any wrapper:
+
+     <body data-product="factory">
+
+   Defaults below are gpuflo's amber, so an unscoped page still looks right. */
+:root {
+  --accent: var(--amber-500);
+  --accent-deep: var(--rust-600);
+  --accent-soft: var(--wheat-300);
+  --accent-tint: var(--tint-amber-08);
+  --accent-tint-strong: var(--tint-amber-14);
+  --accent-wash: rgba(245, 166, 35, 0.05);
+  --accent-glow: rgba(245, 166, 35, 0.25);
+  --mark-shape: "circle"; /* @kind other */
+}
+
+/* gpuflo — amber. Golden, hot, telemetry under load. Mark: circle. */
+[data-product="gpuflo"] {
+  --accent: var(--amber-500);
+  --accent-deep: var(--rust-600);
+  --accent-soft: var(--wheat-300);
+  --accent-tint: var(--tint-amber-08);
+  --accent-tint-strong: var(--tint-amber-14);
+  --accent-wash: rgba(245, 166, 35, 0.05);
+  --accent-glow: rgba(245, 166, 35, 0.25);
+  --mark-shape: "circle"; /* @kind other */
+  --gradient-wordmark: linear-gradient(180deg, #f6ead0 0%, #f0cf8e 30%, #f5a623 55%, #e07b39 80%, #c05a2a 100%); /* @kind other */
+}
+
+/* factory — sage. Green means pass and merged, which is the whole product. Mark: diamond. */
+[data-product="factory"] {
+  --accent: var(--sage-400);
+  --accent-deep: var(--grove-500);
+  --accent-soft: #c4dca0;
+  --accent-tint: rgba(157, 194, 107, 0.09);
+  --accent-tint-strong: rgba(157, 194, 107, 0.16);
+  --accent-wash: rgba(157, 194, 107, 0.05);
+  --accent-glow: rgba(157, 194, 107, 0.24);
+  --mark-shape: "diamond"; /* @kind other */
+  --gradient-wordmark: linear-gradient(180deg, #f6ead0 0%, #e2ecc8 26%, #9dc26b 56%, #7fb069 78%, #4f7a46 100%); /* @kind other */
+}
+
+/* district — terracotta. Ember and clay for the host layer under everything. Mark: square. */
+[data-product="district"] {
+  --accent: #d9662f;
+  --accent-deep: var(--ember-700);
+  --accent-soft: #eda06a;
+  --accent-tint: rgba(217, 102, 47, 0.09);
+  --accent-tint-strong: rgba(217, 102, 47, 0.16);
+  --accent-wash: rgba(217, 102, 47, 0.05);
+  --accent-glow: rgba(217, 102, 47, 0.24);
+  --mark-shape: "square"; /* @kind other */
+  --gradient-wordmark: linear-gradient(180deg, #f6ead0 0%, #f0c4a0 28%, #d9662f 58%, #be4c25 80%, #8f3418 100%); /* @kind other */
+}
+
+/* Semantic aliases follow the active accent, so every component re-tints with
+   no code change. Status colors deliberately do NOT: sage always means pass,
+   clay always means danger, whatever product you are in. */
+:root,
+[data-product] {
+  --text-accent: var(--accent);
+  --link: var(--accent);
+  --link-hover: var(--accent-soft);
+  --border-accent: var(--accent);
+}
+
+/* ---------- typography.css ---------- */
+/* Type. Mono is the working voice of the brand (all product surfaces, all data);
+   the Newsreader serif is reserved for editorial display lines. */
+:root {
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-display: "Newsreader", Georgia, "Times New Roman", serif;
+  --font-core: var(--font-mono);
+
+  /* sizes, exactly as they appear in source */
+  --text-9: 9px;
+  --text-10: 10px;
+  --text-11: 11px;
+  --text-12: 12px;
+  --text-12-5: 12.5px;
+  --text-13: 13px;
+  --text-13-5: 13.5px;
+  --text-14: 14px;
+  --text-15: 15px;
+  --text-16: 16px;
+  --text-17: 17px;
+  --text-18: 18px;
+  --text-20: 20px;
+  --text-22: 22px;
+  --text-26: 26px;
+  --text-32: 32px;
+  --text-display: clamp(34px, 5vw, 58px);
+  --text-hero: clamp(52px, 9vw, 96px);
+
+  /* weights */
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  --weight-black: 800;
+
+  /* line heights */
+  --leading-flat: 1;
+  --leading-tight: 1.2;
+  --leading-snug: 1.4;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.6;
+  --leading-loose: 1.9;
+
+  /* tracking */
+  --tracking-eyebrow: 0.22em;
+  --tracking-panel: 0.2em;
+  --tracking-label: 0.18em;
+  --tracking-chip: 0.14em;
+  --tracking-micro: 0.12em;
+  --tracking-control: 0.08em;
+  --tracking-brand: 0.04em;
+  --tracking-display: -0.02em;
+
+  /* composed roles */
+  --type-eyebrow: var(--weight-bold) var(--text-10) / var(--leading-normal) var(--font-mono);
+  --type-panel-header: var(--weight-regular) var(--text-10) / var(--leading-normal) var(--font-mono);
+  --type-label: var(--weight-medium) var(--text-10) / var(--leading-normal) var(--font-mono);
+  --type-body: var(--weight-regular) var(--text-13) / var(--leading-relaxed) var(--font-mono);
+  --type-body-sm: var(--weight-regular) var(--text-11) / var(--leading-normal) var(--font-mono);
+  --type-data: var(--weight-bold) var(--text-26) / var(--leading-tight) var(--font-mono);
+  --type-lead: var(--weight-regular) var(--text-20) / var(--leading-relaxed) var(--font-mono);
+  --type-brand: var(--weight-bold) var(--text-22) / var(--leading-flat) var(--font-mono);
+  --type-display: var(--weight-regular) var(--text-display) / 1.05 var(--font-display);
+}
+
+/* ---------- spacing.css ---------- */
+/* Spacing. Product surfaces work on a 2px-resolution scale (the dashboard uses
+   5/6/8/10/12/14/16/18/24); marketing uses the rem ladder from factory/docs. */
+:root {
+  --space-0-5: 2px;
+  --space-1: 4px;
+  --space-1-5: 6px;
+  --space-2: 8px;
+  --space-2-5: 10px;
+  --space-3: 12px;
+  --space-3-5: 14px;
+  --space-4: 16px;
+  --space-4-5: 18px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-18: 72px;
+  --space-20: 80px;
+  --space-25: 100px;
+
+  /* marketing rhythm */
+  --rhythm-1: 0.25rem;
+  --rhythm-2: 0.5rem;
+  --rhythm-3: 0.75rem;
+  --rhythm-4: 1rem;
+  --rhythm-5: 1.5rem;
+  --rhythm-6: 2rem;
+  --rhythm-7: 3rem;
+  --rhythm-8: 4rem;
+  --rhythm-9: 6rem;
+  --section-pad: clamp(4.5rem, 9vw, 7.5rem);
+
+  /* measures */
+  --measure-page: 1600px;
+  --measure-doc: 980px;
+  --measure-prose: 760px;
+  --measure-terminal: 860px;
+  --measure-drawer: min(640px, 100vw); /* @kind spacing */
+
+  /* densities */
+  --pad-panel: var(--space-3-5) var(--space-4);
+  --pad-panel-header: var(--space-2-5) var(--space-4);
+  --pad-card: var(--space-2-5) var(--space-3);
+  --pad-control: 5px 10px;
+  --pad-chip: 1px 6px;
+  --gap-grid: var(--space-4-5);
+  --gap-tight: var(--space-2);
+}
+
+/* ---------- borders.css ---------- */
+:root {
+  --radius-xs: 3px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-pill: 999px;
+
+  --hairline: 1px solid var(--border-hairline); /* @kind other */
+  --hairline-strong: 1px solid var(--border-strong); /* @kind other */
+  --hairline-accent: 1px solid var(--border-accent); /* @kind other */
+  --hairline-soft: 1px solid rgba(58, 47, 30, 0.6); /* @kind other */
+  --rule-dashed: 1px dashed var(--border-strong); /* @kind other */
+
+  /* the one exception to square-ish geometry: stage-coded card spines */
+  --spine: 3px;
+}
+
+/* ---------- elevation.css ---------- */
+/* Elevation is carried by border + surface value first. Shadows appear only on
+   things that genuinely float: the terminal window, the drawer, tooltips. */
+:root {
+  --shadow-none: none;
+  --shadow-terminal: 0 30px 80px rgba(0, 0, 0, 0.6);
+  --shadow-drawer: -20px 0 50px rgba(0, 0, 0, 0.6);
+  --glow-amber: 0 0 60px rgba(245, 166, 35, 0.06);
+  --glow-wordmark: drop-shadow(0 0 24px rgba(245, 166, 35, 0.25)); /* @kind other */
+  --blur-scrim: blur(10px); /* @kind other */
+}
+
+/* ---------- motion.css ---------- */
+:root {
+  --dur-fast: 150ms; /* @kind other */
+  --dur-med: 220ms; /* @kind other */
+  --dur-slow: 400ms; /* @kind other */
+  --ease-out: ease-out; /* @kind other */
+  --ease-linear: linear; /* @kind other */
+  --transition-control: color var(--dur-fast), border-color var(--dur-fast); /* @kind other */
+  --transition-panel: transform var(--dur-med) var(--ease-out); /* @kind other */
+
+  /* signature loops, lifted from the factory dashboard */
+  --pulse-period: 1.2s; /* @kind other */
+  --dash-period: 1.2s; /* @kind other */
+  --node-pulse-period: 1.6s; /* @kind other */
+  --sample-cadence: 250ms; /* @kind other */
+}
+@keyframes mrs-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+@keyframes mrs-dash {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
+@keyframes mrs-node-pulse {
+  50% {
+    stroke-opacity: 0.4;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* ---------- base.css ---------- */
+/* Minimal element defaults. Consumers get the brand's baseline typography and
+   link colors without any component classes. */
+* {
+  box-sizing: border-box;
+}
+html {
+  scroll-behavior: smooth;
+  color-scheme: dark;
+}
+body {
+  margin: 0;
+  background: var(--surface-page);
+  color: var(--text-primary);
+  font: var(--type-body);
+  -webkit-font-smoothing: antialiased;
+}
+a {
+  color: var(--link);
+  text-decoration: none;
+}
+a:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
+  text-underline-offset: 0.25em;
+}
+::selection {
+  background: var(--tint-amber-25);
+}
+:focus-visible {
+  outline: 1px solid var(--border-accent);
+  outline-offset: 2px;
+}
+code,
+kbd,
+pre,
+samp {
+  font-family: var(--font-mono);
+}
+
+/* ---------- product marks (plain-CSS twin of the Mark component) ---------- */
+.mrs-mark{position:relative;display:inline-grid;place-items:center;width:14px;height:14px;flex:0 0 14px;border:1px solid var(--accent);background:var(--accent-tint-strong);vertical-align:-2px}
+.mrs-mark::after{content:"";display:block;width:34%;height:34%;background:var(--accent)}
+.mrs-mark-circle,.mrs-mark-circle::after{border-radius:50%}
+.mrs-mark-square,.mrs-mark-square::after{border-radius:1px}
+.mrs-mark-diamond{transform:rotate(45deg)}
+.mrs-mark-hollow::after{content:none}
+.mrs-mark-glow{box-shadow:0 0 12px var(--accent-glow)}
+.mrs-mark-lg{width:44px;height:44px;flex-basis:44px}
