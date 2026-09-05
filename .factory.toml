@@ -1,0 +1,17 @@
+# agent-factory configuration. Docs: https://github.com/mikeroySoft/factory
+# Gate checks proposed by District from: --check
+
+[[gate.check]]
+name = "test"
+run = [
+    "python",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "tests",
+]
+exclusive = false
+
+[dashboard]
+theme = ".factory-dashboard.css"
