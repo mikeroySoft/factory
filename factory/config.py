@@ -46,7 +46,7 @@ DEFAULT_INSTALL = {"every": "10min", "dashboard": False, "host": "127.0.0.1", "e
 # Only these tables/keys are taken from the host: a clone on another machine
 # must run the same gate, so gate checks, leak scan and upstream never come
 # from here. Everything else in the host file is left for other tools (District).
-HOST_TABLES = frozenset({"triage", "workers", "review", "install"})
+HOST_TABLES = frozenset({"triage", "workers", "review", "manager", "install"})
 HOST_KEYS = {"dashboard": ("port",), "gate": ("lock",)}
 
 # Every key the loader reads, by table; `factory doctor` reports anything else.
@@ -56,6 +56,7 @@ KNOWN_KEYS = {
     "dispatch": ("max_active", "max_attempts", "budget_min", "review_rounds", "cost_pattern", "signoff"),
     "workers": None,
     "review": ("command",),
+    "manager": ("command", "rounds", "review"),
     "gate": ("timeout", "lock", "check"),
     "leak_scan": ("pattern", "exclude"),
     "triage": ("url", "model"),
@@ -99,6 +100,9 @@ class Config:
         default_factory=lambda: {"default": DEFAULT_WORKER, LABEL_CHORE: DEFAULT_CHORE_WORKER}
     )
     reviewer: list[str] = field(default_factory=lambda: list(DEFAULT_REVIEWER))
+    manager: list[str] | None = None
+    manager_rounds: int = 1
+    manager_review: str = "escalated"
     checks: list[Check] = field(default_factory=list)
     check_timeout: int = 1200
     lock: Path = Path("/tmp/factory.lock")  # host-wide: one GPU, many repos
@@ -231,6 +235,7 @@ def load(start: Path | None = None) -> Config:
     raw, raw_repo = merge(layered, raw), raw
     repo_t, dispatch, workers = raw.get("repo", {}), raw.get("dispatch", {}), raw.get("workers", {})
     gate, leak, triage, dash = raw.get("gate", {}), raw.get("leak_scan", {}), raw.get("triage", {}), raw.get("dashboard", {})
+    manager = raw.get("manager", {})
     cfg = Config(root=root, repo=slug, raw_repo=raw_repo)
     cfg.upstream = repo_t.get("upstream") or None
     cfg.main = repo_t.get("main", cfg.main)
@@ -246,6 +251,10 @@ def load(start: Path | None = None) -> Config:
         cfg.workers = {k: list(v) for k, v in workers.items()}
     if "command" in raw.get("review", {}):
         cfg.reviewer = list(raw["review"]["command"])
+    if "command" in manager:
+        cfg.manager = list(manager["command"])
+    cfg.manager_rounds = int(manager.get("rounds", cfg.manager_rounds))
+    cfg.manager_review = manager.get("review", cfg.manager_review)
     cfg.check_timeout = int(gate.get("timeout", cfg.check_timeout))
     cfg.lock = Path(gate.get("lock", cfg.lock))
     cfg.checks = [
