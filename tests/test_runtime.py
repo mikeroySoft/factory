@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from factory import lifecycle
 
@@ -53,6 +54,9 @@ raise SystemExit(result)
 
 class RuntimeCliTest(unittest.TestCase):
     def setUp(self):
+        context = patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""})
+        context.start()
+        self.addCleanup(context.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
