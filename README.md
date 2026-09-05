@@ -160,9 +160,23 @@ conventions; `factory init` creates the labels.
 
 ## Operating it
 
-- **Dashboard** (`factory dashboard`): the *actions* list is the inbox —
-  escalations, `needs-info` questions, wontfix proposals, parked upstream
-  syncs, a dead timer — each with the exact command or a button.
+- **Dashboard** (`factory dashboard`): **Inbox** opens a full **Understand →
+  Compare → Decide** briefing for each case needing human judgment. The question,
+  situation, FM recommendation, relevant earlier decisions, uncertainty, options,
+  consequences, and next owner stay visible; raw evidence is expandable. **Ops**
+  retains the board, telemetry, dispatcher runs, and task drawers.
+  **Ask FM** works on a whole task or a specific source/log and returns cited
+  answers. It requires an authenticated `omp` installation; `[manager].model`
+  chooses the model (host-wide: `[defaults.manager]`). If unset, an existing
+  `manager.command` supplies only its `--model` value, otherwise OMP's default
+  model is used. The dashboard never executes that command: questions run a
+  bounded, read-only, no-tools OMP process against server-collected evidence.
+  Evidence is sent to the selected model provider; questions are not posted to
+  GitHub. Errors remain visible and retryable, never replaced with canned advice.
+  Decisions require rationale and an exact mutation preview; stale or incomplete
+  snapshots block execution. Confirmed decisions leave GitHub rationale comments
+  and a local `human-decision` audit event with success, partial, or failed outcome.
+  Drafts and conversations survive refresh within the same browser session.
 - **Spend**: the *Spend* KPI and each ticket's attempts tab total worker+gate
   wall clock from `events.jsonl`, plus dollars when `cost_pattern` matches
   your worker's log.
