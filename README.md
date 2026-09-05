@@ -73,6 +73,7 @@ merge stage.
 | `factory stats` | Ticket table: attempts, review rounds, hours to merge. `--json`. |
 | `factory learn` | Reads the last N finished tickets' event trail, failing-attempt log tails, reviewer findings, and escalation reasons; asks the local model for ≤10 repo-specific lessons; writes `.factory-lessons.md` (you commit it). Every worker prompt carries it. `--dry-run`, `--last N`. |
 | `factory dashboard` | Local ops UI: tickets by stage, authoritative in-flight phase when known, gate reports, worker logs, journal heartbeat, upstream drift, and an action list with one-click answers. `--json` prints the existing snapshot, including independent executions and local interruption reconciliation. `--host 0.0.0.0` exposes it (and its mutating `/api/act`) to your network. |
+| `factory dashboard --runtime-json` | One bounded schema 1 runtime observation using only local read-only evidence; no GitHub, model probe, journal append, lock acquisition, or state creation. Partial source failures remain structured JSON. See [runtime contract](#bounded-runtime-json-schema-1). |
 | `factory doctor` / `init` / `install` | Onboarding, above. |
 
 Every command reads `.factory.toml` from the main checkout, even when run
@@ -392,8 +393,8 @@ evaluate upstream rather than claiming a fresh behind/ahead count.
 
 F02 adds evidence to the version 1 lifecycle journal, not a second telemetry
 stream, controller, resource broker, or lock. All rows retain the identities,
-sequence, source timestamps, and interruption rules above. F03's runtime-only
-CLI remains separate future work.
+sequence, source timestamps, and interruption rules above. The bounded F03
+runtime CLI below reads these same producer records without persisting observations.
 
 Known waits use `kind: "wait"` with a `wait` object:
 
@@ -521,6 +522,296 @@ for row in read_events(Path(".factory/events.jsonl")):
         print(json.dumps(row))
 PY
 ```
+
+## Bounded runtime JSON (schema 1)
+
+`factory dashboard --runtime-json` prints one JSON object and exits. It is a
+separate local read path, **not** a filtered full snapshot. `--json`, HTTP
+`/api/snapshot`, and the normal dashboard retain their existing slower GitHub,
+triage-probe, and writable reconciliation behavior described above.
+
+The runtime command accepts no server options (`--host`, `--port`, `--no-open`)
+and cannot be combined with `--json`. Argument errors exit 2. Fatal repository
+discovery/configuration errors exit nonzero with a sanitized diagnostic on stderr
+and no runtime JSON. A usable projection, including partial or wholly unavailable
+runtime sources, exits 0: inspect `errors` and observation quality, not just exit
+status. Missing GitHub credentials are irrelevant; this command never invokes
+`gh`, remote Git operations, model probes, or network APIs.
+
+### Consumer contract
+
+All listed keys are required unless explicitly described as kind-specific.
+Nullable values mean unknown/not applicable, never zero, stopped, or a newly
+observed transition. Times are UTC ISO 8601 strings. Source times remain unchanged
+on repeated reads; `generated_at` and `observed_at` are collection times, not
+event freshness. Consumers must ignore additive keys and reject unsupported
+schema versions rather than interpreting them as version 1.
+
+| Top-level key | Type / meaning |
+|---|---|
+| `schema_version` | Integer, exactly `1`; implemented runtime contract, independent of package version. |
+| `generated_at` | UTC string, generation time of this projection. |
+| `repo` | Configured `owner/repository` string from the main checkout. |
+| `dispatcher` | Local service/timer/admission evidence object below. |
+| `executions` | Independent execution objects below; overlapping stages are retained. |
+| `resources` | Current resource evidence objects below. |
+| `events` | Bounded deduplicated supported lifecycle records; never synthetic poll events. |
+| `history` | Explicit retained-window coverage object below. |
+| `errors` | At most 32 structured partial-error objects, `{source, scope, code}` strings. No exception text, credentials, configuration dumps, or log excerpts. |
+
+`dispatcher` has nullable booleans `service_active`, `timer_active`, and `paused`;
+nullable UTC `next_at`; UTC `observed_at`; string `observation`; `capacity`;
+`run_ids` (sorted dispatcher-run identity strings); and `latest_transition`
+(null or `{event_id, at, execution_id, kind}` from a returned `enter`/`exit`).
+Latest means the last retained observed transition in journal order, not an
+artifact modification. `capacity` has `configured` (integer), `active` (integer
+or null, actual held ticket admission locks), and `complete` (boolean).
+Stage count is not admission count. An unavailable service query is null,
+not false; inactive service evidence alone does not establish unexpected stop.
+`paused` is null because the current producer has no recorded pause intention.
+No scheduled intention is inferred from a configured interval.
+
+Each execution has the eight common F01 identity fields (`dispatcher_run_id`,
+`root_execution_id`, `execution_id`, `parent_execution_id`, `ticket`, `attempt`,
+`review_round`, `stage`) with their types above, plus `state` (`active`,
+`completed`, `failed`, `interrupted`, `unknown`), nullable `entered_at`,
+`ended_at`, `outcome`, `reason`, and `wait`; `latest_event_id`, `latest_at`;
+`observation` and `observed_at`. `wait` uses the F02 object plus source `event_id`
+and `at`. The events live only in the top-level array, not duplicated per scope.
+An entry outside the bounded window has null `entered_at` and explicit partial
+coverage. A missing stage is never reconstructed from logs or artifacts.
+Resource/scheduling observation scopes do not become executions.
+
+Recorded exits retain their actual source times and ordinary outcome semantics.
+A locally proven interruption without a stored exit changes only the current
+execution state: no event is appended, no completion UUID is manufactured, and
+`ended_at` stays null. Direct process identity and registered children can prove
+liveness. The runtime path does not scan every process environment; missing
+descendant evidence remains partial/unknown, not a fabricated completion.
+A known boot change can still prove interruption. Unsupported older records
+never establish current execution activity.
+
+Resources retain the F02 descriptor, `state`, `ownership`, `owner`, `requests`,
+and kernel `evidence` types documented above, plus `observation` and UTC
+`observed_at`. `event_id` and `at` are nullable: they identify a retained,
+matching persisted observation, not the latest request or this poll. A current
+kernel observation without such a record has no invented transition identity
+or onset. Confirmation requires matching acquisition identity, inode, kernel
+holder PID, and live process identity. A request, inherited lock, replaced inode,
+or external holder never becomes a confirmed owner. Released/terminal holders
+are removed; source request/acquisition/release events remain in `events`.
+
+### Bounds and partial sources
+
+Repository discovery runs local `git --no-optional-locks rev-parse`; only when a
+slug is absent does it run local `git remote get-url origin`. These do not fetch
+or contact remotes. The normal main-checkout lookup and host/repository
+`merge`/`host_filter` precedence are retained. Only runtime configuration fields
+are interpreted: slug, nonnegative integer `dispatch.max_active`, and gate lock.
+Each repository/host TOML read is capped at 256 KiB. Invalid runtime configuration
+produces `factory: runtime configuration unavailable or invalid`, without echoing
+the input. Unrelated worker/model/check settings are not evaluated.
+
+Three allowlisted `systemctl --user` queries read service state, timer state,
+and JSON timers. Each local command has a 0.5-second deadline, stdout strictly
+below 64 KiB, discarded stderr, and at most another 0.5 seconds for reap after
+kill. At most five commands run (four with an explicit slug). The D-Bus address
+is forced to a local Unix socket, never an inherited TCP address. Missing tools,
+unavailable units, invalid output, overflow and timeouts yield partial errors.
+Only explicit `ActiveState=active` is true; transitional states remain unknown.
+`next_at` requires an active timer and an explicitly returned future timestamp.
+Admission scans at most 1024 directory entries and a 256 KiB kernel lock window;
+unreadable/incomplete evidence returns null capacity, not a false zero.
+
+System query errors use source `systemctl`, scope `service`, `timer`, or
+`schedule`, and codes `invalid_unit`, `timeout`, `output_limit`, `command_failed`,
+`command_unavailable`, `unit_unavailable`, `transitioning`, `unit_failed`,
+`invalid_state`, or `invalid_schedule`. Admission errors use source `admission`,
+scope `repository`, with `missing`, `unreadable`, `unsupported_file`, `byte_limit`,
+`entry_limit`, `changed`, or `invalid_kernel_locks`. Errors contain fixed codes
+only; raw stderr and arbitrary stored diagnostic text are never returned.
+
+The journal reader performs one `pread` of at most **1,048,576 bytes** at the
+end of the regular file, with no journal lock. It drops the first clipped line,
+accepts only newline-terminated UTF-8 JSON objects of at most **16,384 bytes**
+(including newline), rejects nonfinite numbers/depth over 32, and returns at most
+**512 newest supported unique event identities**. Both bounds clip the beginning,
+never promote an uncommitted last line. No logs or full lifetime journal scan.
+Concurrent size/mtime changes mark the read partial; it is not an atomic snapshot
+across files, processes, or service queries. Ordinary local filesystem reads are
+assumed responsive; byte limits do not promise recovery from a kernel-stalled
+filesystem.
+
+`history` has these required fields:
+
+| Key | Type / semantics |
+|---|---|
+| `source` | String, `events.jsonl`. |
+| `status` | `empty` for an existing zero-byte journal; `available` for a readable nonempty journal (even with no usable records); `missing`; or `unreadable`. |
+| `start_at`, `end_at` | Nullable UTC strings: minimum/maximum **returned supported** source timestamps, not file age or an inferred lifetime interval. Both null when none survive. |
+| `complete` | Boolean: the present file was fully covered without detected gaps; never a promise of exhaustive lifetime history or producer instrumentation. An empty existing file is complete with a null interval. Missing/unreadable storage is incomplete. |
+| `truncated` | Boolean: a byte/event bound clipped the beginning. Corruption is a gap, not necessarily truncation. |
+| `gaps` | Deduplicated fixed code strings in deterministic discovery order. |
+| `bytes_read`, `byte_limit`, `event_limit`, `retained_events` | Nonnegative integers; actual journal bytes read, 1048576, 512, and returned unique event count. |
+
+Truncation makes the execution census partial: entire still-open scopes can be
+outside this window. Do not interpret an empty returned execution array as proof
+of no work when history is partial. Retained mid-execution scopes have unknown
+state and null entry time unless the entry is actually retained. A corrupt or
+unsupported suffix may hide an exit: affected open executions become unknown,
+while unaffected recorded terminal facts survive. No intermediate transition,
+entry time, completion, or lifetime interval is inferred.
+
+Events are returned in retained physical journal order. Within an execution,
+reduce by `sequence`; wall clocks and append order do not impose causality across
+independent scopes. Exact duplicate identities are returned once, using the first
+copy in the selected window. Conflicting copies of an identity, or different
+identities reusing one execution sequence, keep the first copy and mark
+`duplicate_conflict`; consumers must not replay the conflicting copy. Execution
+identity inconsistencies and missing sequences are gaps. Executions/resources
+use first-retained-appearance order (configured resource descriptors are appended
+when absent); requests use execution reduction order. All are deterministic for
+unchanged storage/evidence. `latest_event_id`/`latest_at` use the greatest retained
+execution sequence; `dispatcher.latest_transition` uses physical order.
+
+Event common keys/types are F01 above. Supported kinds are `enter`, `exit`,
+`handoff`, `child_start`, `child_exit`, `check`, `result`, `timeout`,
+`lock_acquired`, `lock_released`, `resource_requested`, `wait`, `wait_end`,
+`resource_observation`, and `scheduling_observation`. Kind-specific optional
+fields are `handoff_id`, `wait_event_id`, `acquisition_id` (identity strings,
+nullable where F01/F02 permits); `blocking`, `parsed`, `timed_out`, `reconciled`,
+`passed` (booleans); `returncode`, `timeout_seconds` (integers); `check` (bounded
+string); `verdict` (`APPROVE`/`REVISE`); and the documented `child_process`,
+`resource`, `lock`, and `wait`. Resource observations retain their sanitized F02
+state/owner/request/evidence fields. Scheduling observations retain nullable
+`timer_active`, `service_active`, and `wait`.
+
+Supported outcomes are `completed`, `mechanism_failure`, `interrupted`,
+`unknown`, `product_feedback`, `project_escalation`, `approved`, `merged`,
+`refreshed`, `not_admitted`, and `not_eligible`; unknown outcome strings become
+null. Only known producer reason codes (including numeric worker/review/merge/push
+exit reasons) survive. Arbitrary diagnostic reasons become null, including
+`wait.reason` when unsupported. Wait details retain only nonnegative integer
+`active`, `max_active`, `pr`, and valid UTC `next_at` when present. Raw commands,
+exception messages, arbitrary details, and unknown extra fields are omitted.
+Identity/stage strings are at most 256 characters; paths at most 4096; each event
+has at most 64 recorded locks. Invalid authority is a gap, not confirmed activity.
+
+Execution `evidence` is required and nullable. When present it has `process`
+(`alive`/`dead`/`unknown`), `children` (process/state objects), `locks` (F01
+descriptors plus held/free/unknown state), `descendants` (empty array: no whole
+process scan), `scan_complete` and `descendant_absence_proven` (booleans), and
+`pending_handoffs` (identity-string array). These flags do not prove absent
+descendants across missing history. Observation quality is `fresh`, `partial`,
+or `unavailable`; fresh describes current evidence collection, not a recent
+source event. No age-based stale threshold is invented by Factory.
+
+Direct identity checks are cached for at most 128 PIDs, with 4096-byte `/proc`
+stat reads, a 64 KiB mounts read, 128-byte boot/machine identity reads, and at
+most 512 cached lock stats. Resource attribution reads `/proc/locks` once, under
+1 MiB; at most 128 current holder PIDs are returned per resource. Hitting these
+bounds yields unknown/partial evidence. The separate admission query has its
+own smaller kernel bound above. No flock is acquired, no ownership file is
+rewritten, no lock/state directory is created, and no reconciliation is persisted.
+Without host identity, configured descriptors are omitted with an error rather
+than assigning unrelated hosts a fabricated shared identity.
+
+History errors use source `events.jsonl`, scope `history` or `executions`:
+`missing`, `unreadable`, `not_regular`, `changed_during_read`, `byte_limit`,
+`event_limit`, `row_limit`, `unterminated_tail`, `invalid_json`, `invalid_record`,
+`unsupported_record`, `unsupported_version`, `unsupported_kind`,
+`invalid_lifecycle`, `duplicate_conflict`, `identity_conflict`, `sequence_gap`,
+`missing_enter`, `sequence_conflict`. Legacy/unversioned records are explicitly
+unsupported for lifecycle coverage, not an empty valid lifecycle history.
+Known legacy rows cannot hide a lifecycle exit, so they do not independently
+invalidate supported open scopes.
+
+Other source/scope pairs are `proc`/`identity` (`boot_unavailable`,
+`namespace_unavailable`, `process_limit`, `process_unavailable`,
+`absence_unavailable`), `proc`/`executions` (`descendants_not_scanned`),
+`proc/locks`/`resources` (`locks_unavailable`, `holder_limit`),
+`filesystem`/`resources` (`lock_limit`, `not_regular`, `lock_unavailable`,
+`canonical_path_unavailable`), and `configuration`/`resources`
+(`lock_limit`, `invalid_scope`, `host_identity_unavailable`).
+Errors are deduplicated by source/scope/code; the first 32 are retained in
+deterministic discovery order, lifecycle/resource errors before service errors.
+Per-source quality/history flags remain authoritative even if the error cap is
+reached. Resources report unavailable authority through their own quality flags;
+independent service failures do not erase them.
+
+### Observed schema 1 example
+
+Actual guarded CLI output from a disposable repository on the development host,
+with a valid empty journal and no installed matching timer/service. Only whitespace
+is condensed below. Resource paths/IDs are evidence from that disposable run,
+not deployment configuration. Empty history is distinct from unavailable services
+and resource authority.
+
+```json
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-05T23:15:55.985407Z",
+  "repo": "example/runtime",
+  "dispatcher": {
+    "service_active": null, "timer_active": null, "next_at": null, "paused": null,
+    "observed_at": "2026-09-05T23:15:55.985384Z", "observation": "partial",
+    "capacity": {"configured": 2, "active": 0, "complete": true},
+    "run_ids": [], "latest_transition": null
+  },
+  "executions": [],
+  "resources": [
+    {
+      "resource": {
+        "id": "a3a6cc28-abfe-5d28-b451-def8735bd090", "scope": "host",
+        "host_id": "96359d9e-9be6-5980-985b-650f726a8115", "repository": null,
+        "lock": {"path": "/tmp/tmp531zga_5/gpu.lock", "device": null, "inode": null}
+      },
+      "state": "unknown", "ownership": "unknown", "owner": null, "requests": [],
+      "evidence": {"lock_state": "unknown", "attribution": "unavailable", "holder_pids": null},
+      "event_id": null, "at": null,
+      "observed_at": "2026-09-05T23:15:55.975966Z", "observation": "unavailable"
+    },
+    {
+      "resource": {
+        "id": "8d670505-a426-515c-bd0f-5869cb68f3e4", "scope": "repository",
+        "host_id": "96359d9e-9be6-5980-985b-650f726a8115",
+        "repository": "/tmp/tmp531zga_5/.factory",
+        "lock": {"path": "/tmp/tmp531zga_5/.factory/locks/merge.lock", "device": null, "inode": null}
+      },
+      "state": "unknown", "ownership": "unknown", "owner": null, "requests": [],
+      "evidence": {"lock_state": "unknown", "attribution": "unavailable", "holder_pids": null},
+      "event_id": null, "at": null,
+      "observed_at": "2026-09-05T23:15:55.975966Z", "observation": "unavailable"
+    }
+  ],
+  "events": [],
+  "history": {
+    "source": "events.jsonl", "status": "empty", "start_at": null, "end_at": null,
+    "complete": true, "truncated": false, "gaps": [], "bytes_read": 0,
+    "byte_limit": 1048576, "event_limit": 512, "retained_events": 0
+  },
+  "errors": [
+    {"source": "filesystem", "scope": "resources", "code": "lock_unavailable"},
+    {"source": "systemctl", "scope": "service", "code": "unit_unavailable"},
+    {"source": "systemctl", "scope": "timer", "code": "unit_unavailable"}
+  ]
+}
+```
+
+### Release checkpoint
+
+Support is introduced by signed-off Factory F03 issue #28 implementation revision
+`2e9678551ad5600498bc02ae26ad5e5aacc7a05e`. The package remains `0.2.0`; support is
+**not** implied by that package version, F03 acceptance, or merge alone.
+On older installations an unrecognized `--runtime-json` option exits nonzero;
+District treats that, invalid JSON, a missing schema, or an unsupported schema
+as unsupported/unknown. Factory supplies no full-snapshot fallback.
+
+Deployment and installed-host schema verification require the separately
+authorized operator checkpoint. District D02 remains held until that verification
+and its District prerequisites pass. The approximately-five-second ten-factory
+shared-collector measurement belongs to D02; this endpoint makes no fleet
+cadence or installed-host compatibility claim.
 
 ## Agent skill
 
