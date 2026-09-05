@@ -576,29 +576,45 @@ def consecutive_failures(runs: list[dict]) -> int:
 
 
 def dispatcher() -> dict:
-    timer = {}
-    raw = sh(
-        ["systemctl", "--user", "list-timers", f"{cfg.unit}.timer", "--output=json"]
-    )
-    if raw:
-        rows = json.loads(raw)
-        if rows:
-            timer = {
-                "next": iso(rows[0]["next"] / 1e6) if rows[0].get("next") else None,
-                "last": iso(rows[0]["last"] / 1e6) if rows[0].get("last") else None,
-            }
-    timer["active"] = (
-        sh(["systemctl", "--user", "is-active", f"{cfg.unit}.timer"]).strip()
-        == "active"
-    )
-    service_active = (
-        sh(["systemctl", "--user", "is-active", f"{cfg.unit}.service"]).strip()
-        == "active"
+    def active(unit: str) -> bool | None:
+        try:
+            proc = subprocess.run(
+                ["systemctl", "--user", "is-active", unit],
+                capture_output=True, text=True, check=False,
+            )
+        except OSError:
+            return None
+        status = proc.stdout.strip()
+        if status == "active" and proc.returncode == 0:
+            return True
+        if status in {"inactive", "failed"} and proc.returncode == 3:
+            return False
+        return None
+
+    timer = {"next": None, "last": None}
+    try:
+        raw = sh(
+            ["systemctl", "--user", "list-timers", f"{cfg.unit}.timer", "--output=json"]
+        )
+        rows = json.loads(raw) if raw else []
+        if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+            timer.update(
+                next=iso(rows[0]["next"] / 1e6) if rows[0].get("next") else None,
+                last=iso(rows[0]["last"] / 1e6) if rows[0].get("last") else None,
+            )
+    except (OSError, ValueError, TypeError, KeyError, IndexError, OverflowError):
+        pass
+    timer["active"] = active(f"{cfg.unit}.timer")
+    service_active = active(f"{cfg.unit}.service")
+    schedule = lifecycle.observe_schedule(
+        dispatch.EVENTS, next_at=timer["next"], timer_active=timer["active"],
+        service_active=service_active, observed_at=lifecycle._now(),
     )
     runs = journal_runs()
     return {
         "timer": timer,
         "service_active": service_active,
+        "schedule": schedule,
         "consecutive_failures": consecutive_failures(runs),
         "runs": runs,
     }
@@ -664,7 +680,7 @@ def phase_of(executions: list[dict]) -> dict | None:
             ancestors.add(parent)
             parent = by_id.get(parent, {}).get("parent_execution_id")
     leaves = [e for e in unresolved if e["execution_id"] not in ancestors]
-    if len(leaves) != 1 or leaves[0]["state"] != "active":
+    if len(leaves) != 1 or leaves[0]["state"] != "active" or leaves[0].get("wait"):
         return None
     execution = leaves[0]
     return {
@@ -783,6 +799,7 @@ def snapshot() -> dict:
     on_disk = disk_ticket_numbers()
     spend = spend_by_ticket()
     tickets = []
+    dispatcher_state = dispatcher()
     executions = lifecycle.observe(dispatch.EVENTS)
     by_ticket: dict[int, list[dict]] = {}
     for execution in executions:
@@ -836,10 +853,16 @@ def snapshot() -> dict:
             if any(s["cost"] is not None for s in spend.values()) else None,
             "tickets": len(spend),
         },
-        "dispatcher": dispatcher(),
+        "dispatcher": dispatcher_state,
         "upstream": upstream_state(gh_upstream, issues),
         "metrics": metrics(tickets),
         "executions": executions,
+        "resources": lifecycle.resources(
+            dispatch.EVENTS,
+            paths=[(GPU_LOCK, "host"), (FACTORY / "locks" / "merge.lock", "repository"),
+                   *((path, "repository") for path in (FACTORY / "locks").glob("*.lock")
+                     if path.stem.isdecimal())],
+        ),
         "tickets": tickets,
     }
 

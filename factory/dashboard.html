@@ -597,10 +597,12 @@ function renderStatus() {
   const title = `${S.snap.config.name.toUpperCase()} FACTORY`;
   $('title').textContent = title; $('title').dataset.text = title;
   $('journal-unit').textContent = `${S.snap.config.unit}.service`;
-  const led = d.service_active ? 'warn' : d.timer.active ? 'on' : 'bad';
+  const unknown = d.service_active == null || d.timer.active == null;
+  const led = d.service_active ? 'warn' : unknown ? '' : d.timer.active ? 'on' : 'bad';
+  const next = d.schedule?.wait?.details?.next_at;
   $('status').replaceChildren(
-    h('span', {}, h('i', { class: `led ${led}` }), 'dispatcher ', h('b', {}, d.service_active ? 'RUNNING' : d.timer.active ? 'ARMED' : 'TIMER OFF')),
-    h('span', {}, 'next ', h('b', {}, d.timer.next ? `${hm(d.timer.next)} (${dur(new Date().toISOString(), d.timer.next)})` : '—')),
+    h('span', {}, h('i', { class: `led ${led}` }), 'dispatcher ', h('b', {}, d.service_active ? 'RUNNING' : unknown ? 'UNKNOWN' : d.timer.active ? 'ARMED' : 'TIMER OFF')),
+    h('span', {}, 'next ', h('b', {}, next ? `${hm(next)} (${dur(new Date().toISOString(), next)})` : '—')),
     h('span', {}, 'last ', h('b', {}, d.timer.last ? ago(d.timer.last) : '—')),
     h('span', {}, h('i', { class: `led ${S.snap.active ? 'warn' : ''}` }), 'capacity ', h('b', {}, `${S.snap.active}/${S.snap.config.max_active}`)),
     h('span', {}, h('i', { class: `led ${S.snap.gpu_lock_held ? 'warn' : ''}` }), 'gpu lock ', h('b', {}, S.snap.gpu_lock_held ? 'HELD' : 'free')),
@@ -872,8 +874,8 @@ function renderConfig() {
   const inflight = ticketsIn('in-flight');
   $('config').replaceChildren(
     h('div', { class: 'cardc' }, h('h4', {}, 'factory dispatch'), dl([
-      ['timer', d.timer.active ? `active · every ${cfg.timer_interval}` : 'inactive'], ['next pass', d.timer.next ? fmt(d.timer.next) : '—'], ['last pass', d.timer.last ? fmt(d.timer.last) : '—'],
-      ['service', d.service_active ? 'running now' : 'idle (oneshot)'], ['MAX_ACTIVE', `${cfg.max_active} · ${S.snap.active} held`], ['MAX_ATTEMPTS', `${cfg.max_attempts} gate rounds + ${cfg.review_rounds} review bounce${cfg.review_rounds === 1 ? '' : 's'}`],
+      ['timer', d.timer.active == null ? 'unknown' : d.timer.active ? `active · every ${cfg.timer_interval}` : 'inactive'], ['next pass', d.schedule?.wait?.details?.next_at ? fmt(d.schedule.wait.details.next_at) : '—'], ['last pass', d.timer.last ? fmt(d.timer.last) : '—'],
+      ['service', d.service_active == null ? 'unknown' : d.service_active ? 'running now' : 'idle (oneshot)'], ['MAX_ACTIVE', `${cfg.max_active} · ${S.snap.active} held`], ['MAX_ATTEMPTS', `${cfg.max_attempts} gate rounds + ${cfg.review_rounds} review bounce${cfg.review_rounds === 1 ? '' : 's'}`],
       ['budget', `${cfg.budget_min} min wall clock / ticket`], ['escalation', 'unassign · ready-for-human · comment with log path · CI failure pulls factory-approved'], ['merge stage', `squash, ≤1 PR per pass · needs ${cfg.approved_label} + green CI + head contains ${cfg.main} tip`],
       ['upstream sync', cfg.upstream ? `${S.snap.upstream.repo} ${cfg.main} → ${cfg.main} · merge commit under host gate (leak scan skipped) · conflict/gate fail opens a ready-for-human issue` : 'disabled']])),
     h('div', { class: 'cardc' }, h('h4', {}, 'factory gate'), dl([
