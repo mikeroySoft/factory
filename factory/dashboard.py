@@ -1077,10 +1077,36 @@ def main(argv: list[str]) -> int:
         "(which mutates GitHub with your gh credentials) to the whole network",
     )
     parser.add_argument("--no-open", action="store_true", help="do not open a browser")
-    parser.add_argument(
-        "--json", action="store_true", help="print one snapshot and exit"
-    )
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument("--json", action="store_true", help="print one full snapshot and exit")
+    output.add_argument("--runtime-json", action="store_true",
+                        help="print one bounded read-only local runtime observation and exit")
     args = parser.parse_args(argv)
+    if args.runtime_json:
+        if any(arg == "--no-open" or arg.split("=")[0] in {"--host", "--port"} for arg in argv):
+            parser.error("--runtime-json cannot be combined with server options")
+        from factory import runtime_events, runtime_local
+
+        runtime_cfg = runtime_local.load()
+        data = runtime_events.project(
+            runtime_cfg.factory / "events.jsonl",
+            [(runtime_cfg.lock, "host"), (runtime_cfg.factory / "locks" / "merge.lock", "repository")],
+        )
+        dispatcher_data, errors = runtime_local.dispatcher(
+            runtime_cfg, data["executions"], data["history"],
+        )
+        transition = next((row for row in reversed(data["events"])
+                           if row["kind"] in {"enter", "exit"}), None)
+        dispatcher_data["latest_transition"] = (
+            {key: transition[key] for key in ("event_id", "at", "execution_id", "kind")}
+            if transition else None
+        )
+        data["errors"] = (data["errors"] + errors)[:32]
+        print(json.dumps({
+            "schema_version": 1, "generated_at": lifecycle._now(), "repo": runtime_cfg.repo,
+            "dispatcher": dispatcher_data, **data,
+        }, separators=(",", ":"), allow_nan=False))
+        return 0
     configure(config.load())
     port = cfg.dashboard_port if args.port is None else args.port
 
