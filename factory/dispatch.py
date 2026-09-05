@@ -286,9 +286,69 @@ def run_gate(wt: Path, n: int | str, skip: str = "") -> tuple[bool, str]:
     return proc.returncode == 0, text
 
 
+def escalation_packet(
+    n: int,
+    reason: str,
+    log_path: Path | None,
+    wt: Path,
+    gate_detail: str = "",
+    artifact: str | None = None,
+) -> tuple[Path, int]:
+    events = [
+        json.loads(line)
+        for line in EVENTS.read_text().splitlines()
+        if line.strip()
+    ] if EVENTS.exists() else []
+    ticket_events = [event for event in events if event.get("ticket") == n]
+    attempts = [event for event in ticket_events if event.get("event") == "attempt"]
+    rows = [
+        f"| {event.get('attempt', '')} | {event.get('gate') or 'not run'} | "
+        f"{event.get('worker_exit', '')} | {event.get('seconds', '')} | "
+        f"`{event.get('log') or ''}` |"
+        for event in attempts
+    ] or ["| — | — | — | — | none recorded |"]
+    artifact = artifact or str(n)
+    gate = wt / ".factory" / f"gate-report-{artifact}.md"
+    review = FACTORY / f"review-{artifact}.md"
+    handoff = wt / ".factory" / f"handoff-{artifact}.md"
+    logs = list(dict.fromkeys(
+        str(event["log"]) for event in attempts if event.get("log")
+    ))
+    if log_path and str(log_path) not in logs:
+        logs.append(str(log_path))
+    packet = FACTORY / "escalations" / f"{n}.md"
+    packet.parent.mkdir(parents=True, exist_ok=True)
+    packet.write_text(
+        f"# Escalation #{n}\n\n"
+        f"## Reason\n\n{reason}\n\n"
+        "## Attempts\n\n"
+        "| Attempt | Gate | Worker exit | Seconds | Log |\n"
+        "|---:|---|---:|---:|---|\n"
+        + "\n".join(rows)
+        + "\n\n## Last gate report\n\n"
+        + ((gate.read_text() if gate.exists() else gate_detail).strip()[-6000:] or "(none recorded)")
+        + "\n\n## Latest review findings\n\n"
+        + (review.read_text().strip()[-6000:] if review.exists() else "(none recorded)")
+        + "\n\n## Handoff\n\n"
+        + (handoff.read_text().strip()[-4000:] if handoff.exists() else "(none recorded)")
+        + "\n\n## Log paths\n\n"
+        + ("\n".join(f"- `{path}`" for path in logs) or "- none recorded")
+        + f"\n\n## Worktree path\n\n`{wt}`\n"
+    )
+    round_number = 1 + sum(
+        event.get("event") == "escalate" for event in ticket_events
+    )
+    return packet, round_number
+
+
 def escalate(n: int, reason: str, log_path: Path | None) -> None:
     log(f"#{n}: escalating to human ({reason})")
-    record("escalate", ticket=n, reason=reason, log=str(log_path) if log_path else None)
+    wt = FACTORY / f"wt-{n}"
+    packet, round_number = escalation_packet(n, reason, log_path, wt)
+    record(
+        "escalate", ticket=n, reason=reason, log=str(log_path) if log_path else None,
+        packet=str(packet), round=round_number,
+    )
     run(
         [
             "gh",
@@ -306,10 +366,10 @@ def escalate(n: int, reason: str, log_path: Path | None) -> None:
         ],
         check=False,
     )
-    body = f"Factory dispatcher escalating: {reason}."
+    body = f"Factory dispatcher escalating: {reason}.\n\nEscalation packet: `{packet}`"
     if log_path:
         body += f"\n\nWorker logs: `{log_path}`"
-    handoff = FACTORY / f"wt-{n}" / ".factory" / f"handoff-{n}.md"
+    handoff = wt / ".factory" / f"handoff-{n}.md"
     if handoff.exists():
         body += f"\n\nWorker handoff notes:\n\n{handoff.read_text().strip()[-4000:]}"
     run(["gh", "issue", "comment", str(n), "--repo", REPO, "--body", body], check=False)
@@ -463,7 +523,16 @@ def sync_escalate(tip: str, reason: str, detail: str) -> str:
             str(body_file),
         ]
     ).stdout
-    return out.strip().splitlines()[-1]
+    url = out.strip().splitlines()[-1]
+    n = int(url.rstrip("/").rsplit("/", 1)[-1])
+    packet, round_number = escalation_packet(
+        n, reason, None, FACTORY / "wt-upstream", detail, "upstream"
+    )
+    record(
+        "escalate", ticket=n, upstream=tip, reason=reason, packet=str(packet),
+        round=round_number,
+    )
+    return url
 
 
 def sync_pass(dry_run: bool) -> None:

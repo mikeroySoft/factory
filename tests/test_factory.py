@@ -413,6 +413,10 @@ class DispatchTest(unittest.TestCase):
             escalation = json.loads(dispatch.EVENTS.read_text().splitlines()[-1])
             self.assertEqual(escalation["packet"], str(packet))
             self.assertEqual(escalation["round"], 1)
+            with mock.patch.object(dispatch, "run"):
+                dispatch.escalate(7, "gate failed again", worker_log)
+            escalation = json.loads(dispatch.EVENTS.read_text().splitlines()[-1])
+            self.assertEqual(escalation["round"], 2)
 
     def test_sync_escalation_writes_same_packet_shape(self) -> None:
         from unittest import mock
