@@ -19,9 +19,10 @@ import re
 import subprocess
 import sys
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
-from factory import config
+from factory import config, lifecycle
 from factory.config import (
     LABEL_AGENT,
     LABEL_APPROVED,
@@ -85,9 +86,29 @@ def log(msg: str) -> None:
 
 
 def run(
-    cmd: list[str], cwd: Path | None = None, check: bool = True
+    cmd: list[str], cwd: Path | None = None, check: bool = True,
+    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
 ) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, cwd=cwd, check=check, capture_output=True, text=True)
+    execution = lifecycle.current()
+    if execution is None:
+        return subprocess.run(cmd, cwd=cwd, check=check, stdout=stdout, stderr=stderr, text=True)
+    with subprocess.Popen(cmd, cwd=cwd, stdout=stdout, stderr=stderr,
+                          text=True, env=execution.env()) as proc:
+        try:
+            execution.child(proc.pid)
+            out, err = proc.communicate()
+        except BaseException:
+            # Preserve subprocess.run's kill/reap behavior on normal exceptions.
+            proc.kill()
+            proc.wait()
+            raise
+        finally:
+            if proc.poll() is not None:
+                execution.child_done(proc.pid)
+    result = subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+    if check:
+        result.check_returncode()
+    return result
 
 
 def gh_json(args: list[str]) -> object:
@@ -208,17 +229,26 @@ def record(event: str, **fields: object) -> None:
     history is readable without GitHub round trips, and `stats`/the dashboard
     can be computed from traces rather than reconstructed.
     """
-    FACTORY.mkdir(exist_ok=True)
     row = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "event": event, **fields}
-    with EVENTS.open("a") as f:
-        f.write(json.dumps(row) + "\n")
+    execution = lifecycle.current()
+    if execution is not None:
+        row.update(execution_id=execution.execution_id,
+                   dispatcher_run_id=execution.dispatcher_run_id)
+        if event in {"escalate", "approved", "merged"}:
+            execution.outcome = {"escalate": "project_escalation",
+                                 "approved": "approved", "merged": "merged"}[event]
+            execution.reason = fields.get("reason")
+    lifecycle.append(EVENTS, row)
 
 
 def run_worker(cmd: list[str], wt: Path, logfile: Path) -> int:
     log(f"worker: {' '.join(cmd)} -> {logfile}")
     started = time.monotonic()
-    with logfile.open("a") as out:
-        code = subprocess.run(cmd, cwd=wt, stdout=out, stderr=subprocess.STDOUT).returncode
+    with lifecycle.scope(EVENTS, "worker") as execution, logfile.open("a") as out:
+        code = run(cmd, cwd=wt, check=False, stdout=out, stderr=subprocess.STDOUT).returncode
+        execution.emit("result", returncode=code)
+        execution.outcome = "completed" if code == 0 else "unknown"
+        execution.reason = None if code == 0 else f"worker_exit:{code}"
     log(f"worker exited {code} after {int(time.monotonic() - started)}s")
     return code
 
@@ -280,7 +310,8 @@ def run_gate(wt: Path, n: int | str, skip: str = "") -> tuple[bool, str]:
     ]
     if skip:
         cmd += ["--skip", skip]
-    proc = subprocess.run(cmd, cwd=wt, capture_output=True, text=True)
+    # The gate process records its own stage and check boundaries.
+    proc = run(cmd, cwd=wt, check=False)
     report = wt / report_rel
     text = report.read_text() if report.exists() else proc.stdout + proc.stderr
     return proc.returncode == 0, text
@@ -336,13 +367,19 @@ def review(wt: Path, n: int, gate_report: str) -> tuple[str, str]:
         f"Output findings as markdown. End with exactly one line: "
         f"`VERDICT: APPROVE` or `VERDICT: REVISE`."
     )
-    proc = subprocess.run(
-        cfg.review_cmd(prompt), cwd=wt, capture_output=True, text=True
-    )
-    findings = proc.stdout.strip() or proc.stderr.strip()
-    m = re.search(r"VERDICT:\s*(APPROVE|REVISE)", findings)
-    verdict = m.group(1) if m else "REVISE"
-    record("review", ticket=n, verdict=verdict, parsed=bool(m))
+    with lifecycle.scope(EVENTS, "review", ticket=n) as execution:
+        proc = run(cfg.review_cmd(prompt), cwd=wt, check=False)
+        findings = proc.stdout.strip() or proc.stderr.strip()
+        m = re.search(r"VERDICT:\s*(APPROVE|REVISE)", findings)
+        verdict = m.group(1) if m else "REVISE"
+        execution.emit("result", returncode=proc.returncode, verdict=verdict, parsed=bool(m))
+        if m and proc.returncode == 0:
+            execution.outcome = "approved" if verdict == "APPROVE" else "product_feedback"
+            execution.reason = verdict
+        else:
+            execution.outcome = "unknown"
+            execution.reason = f"review_exit:{proc.returncode}" if proc.returncode else "unparsed_verdict"
+        record("review", ticket=n, verdict=verdict, parsed=bool(m))
     return verdict, findings
 
 
@@ -476,6 +513,9 @@ def sync_pass(dry_run: bool) -> None:
     """
     if UPSTREAM is None:
         return
+    if dry_run:
+        log(f"upstream sync: would fetch and evaluate {UPSTREAM}/{cfg.main} (dry-run does not update refs)")
+        return
     run(["git", "fetch", "origin", cfg.main], cwd=ROOT)
     run(["git", "fetch", UPSTREAM, cfg.main], cwd=ROOT)
     tip = run(["git", "rev-parse", f"{UPSTREAM}/{cfg.main}"], cwd=ROOT).stdout.strip()
@@ -495,9 +535,6 @@ def sync_pass(dry_run: bool) -> None:
     if issue:
         log(f"upstream sync: {count} commit(s) behind; waiting on human (#{issue})")
         return
-    if dry_run:
-        log(f"upstream sync: would merge {count} upstream commit(s) at {tip[:12]}")
-        return
     wt = FACTORY / "wt-upstream"
     if wt.is_dir():
         run(["git", "worktree", "remove", "--force", str(wt)], cwd=ROOT, check=False)
@@ -505,48 +542,54 @@ def sync_pass(dry_run: bool) -> None:
         ["git", "worktree", "add", "--detach", str(wt), f"origin/{cfg.main}"], cwd=ROOT
     )
     try:
-        merge = run(
-            [
-                "git",
-                "merge",
-                "--no-ff",
-                *(["--signoff"] if cfg.signoff else []),
-                "-m",
-                f"Merge upstream {cfg.main} at {tip[:12]} ({count} commits)",
-                f"{UPSTREAM}/{cfg.main}",
-            ],
-            cwd=wt,
-            check=False,
-        )
-        if merge.returncode != 0:
-            conflicts = run(
-                ["git", "diff", "--name-only", "--diff-filter=U"], cwd=wt, check=False
-            ).stdout
-            run(["git", "merge", "--abort"], cwd=wt, check=False)
-            url = sync_escalate(tip, "merge conflict", conflicts or merge.stderr)
-            sync_record(upstream=tip, commits=count, result="conflict", issue=url)
-            log(f"upstream sync: merge conflict at {tip[:12]}; escalated {url}")
-            return
-        ok, report = run_gate(wt, "upstream", skip="leak-scan")
-        if not ok:
-            url = sync_escalate(tip, "gate failed", report)
-            sync_record(upstream=tip, commits=count, result="gate-failed", issue=url)
-            log(f"upstream sync: gate failed at {tip[:12]}; escalated {url}")
-            return
-        merged = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
-        push = run(["git", "push", "origin", f"HEAD:{cfg.main}"], cwd=wt, check=False)
-        if push.returncode != 0:
-            # main moved under us; the next pass retries from the new tip.
-            sync_record(
-                upstream=tip,
-                commits=count,
-                result="push-rejected",
-                detail=push.stderr[-500:],
+        with lifecycle.scope(EVENTS, "merge", lock=FACTORY / "locks" / "merge.lock") as execution:
+            merge = run(
+                [
+                    "git",
+                    "merge",
+                    "--no-ff",
+                    *(["--signoff"] if cfg.signoff else []),
+                    "-m",
+                    f"Merge upstream {cfg.main} at {tip[:12]} ({count} commits)",
+                    f"{UPSTREAM}/{cfg.main}",
+                ],
+                cwd=wt,
+                check=False,
             )
-            log(f"upstream sync: push rejected; retry next pass\n{push.stderr}")
-            return
-        sync_record(upstream=tip, commits=count, result="synced", merge=merged)
-        log(f"upstream sync: merged {count} commit(s) at {tip[:12]} -> {merged[:12]}")
+            if merge.returncode != 0:
+                conflicts = run(
+                    ["git", "diff", "--name-only", "--diff-filter=U"], cwd=wt, check=False
+                ).stdout
+                run(["git", "merge", "--abort"], cwd=wt, check=False)
+                execution.outcome = "product_feedback" if conflicts.strip() else "unknown"
+                execution.reason = "merge_conflict" if conflicts.strip() else f"merge_exit:{merge.returncode}"
+                url = sync_escalate(tip, "merge conflict", conflicts or merge.stderr)
+                sync_record(upstream=tip, commits=count, result="conflict", issue=url)
+                log(f"upstream sync: merge conflict at {tip[:12]}; escalated {url}")
+                return
+            ok, report = run_gate(wt, "upstream", skip="leak-scan")
+            if not ok:
+                execution.outcome, execution.reason = "project_escalation", "upstream_gate_failed"
+                url = sync_escalate(tip, "gate failed", report)
+                sync_record(upstream=tip, commits=count, result="gate-failed", issue=url)
+                log(f"upstream sync: gate failed at {tip[:12]}; escalated {url}")
+                return
+            merged = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+            push = run(["git", "push", "origin", f"HEAD:{cfg.main}"], cwd=wt, check=False)
+            if push.returncode != 0:
+                execution.outcome, execution.reason = "unknown", f"push_exit:{push.returncode}"
+                # main moved under us; the next pass retries from the new tip.
+                sync_record(
+                    upstream=tip,
+                    commits=count,
+                    result="push-rejected",
+                    detail=push.stderr[-500:],
+                )
+                log(f"upstream sync: push rejected; retry next pass\n{push.stderr}")
+                return
+            execution.outcome, execution.reason = "merged", "upstream_sync"
+            sync_record(upstream=tip, commits=count, result="synced", merge=merged)
+            log(f"upstream sync: merged {count} commit(s) at {tip[:12]} -> {merged[:12]}")
     finally:
         run(["git", "worktree", "remove", "--force", str(wt)], cwd=ROOT, check=False)
 
@@ -644,6 +687,10 @@ def land_pass(dry_run: bool) -> None:
     # Serialize against concurrent dispatcher runs (timer + manual): two merge
     # stages rebasing the same worktree would corrupt it. Skip, don't wait —
     # the next timer pass retries.
+    if dry_run:
+        sync_pass(True)
+        merge_pass_locked(True)
+        return
     (FACTORY / "locks").mkdir(parents=True, exist_ok=True)
     lock_fd = (FACTORY / "locks" / "merge.lock").open("w")
     try:
@@ -685,96 +732,107 @@ def merge_pass_locked(dry_run: bool) -> None:
             continue
         candidates.append((pr["number"], int(m.group(1))))
     for pr_num, n in sorted(candidates):
-        checks = pr_checks(pr_num)
-        buckets: dict[str, int] = {}
-        for c in checks:
-            buckets[c["bucket"]] = buckets.get(c["bucket"], 0) + 1
-        failed = [c["name"] for c in checks if c["bucket"] in ("fail", "cancel")]
-        if failed:
-            # A finished red run is deterministic evidence, not a flake guess.
-            # Pull the PR from candidacy so this escalates once, not every pass;
-            # a human (or a re-run pipeline) re-adds the label after the fix.
-            if dry_run:
-                log(f"PR #{pr_num}: would escalate (CI failed: {', '.join(failed)})")
-                continue
-            run(
-                [
-                    "gh",
-                    "pr",
-                    "edit",
-                    str(pr_num),
-                    "--repo",
-                    REPO,
-                    "--remove-label",
-                    FACTORY_APPROVED,
-                ],
-                check=False,
-            )
-            escalate(
-                n,
-                f"PR #{pr_num}: CI failed ({', '.join(failed)}); "
-                f"`{FACTORY_APPROVED}` label removed",
-                None,
-            )
-            continue
-        if buckets.get("pending"):
-            log(f"PR #{pr_num}: CI pending {buckets}; waiting")
-            continue
-        if not buckets.get("pass"):
-            log(f"PR #{pr_num}: no passing CI checks reported; refusing to merge")
-            continue
-        behind = gh_json(["api", f"repos/{REPO}/compare/{cfg.main}...agent/{n}"])[
-            "behind_by"
-        ]
-        if dry_run:
-            log(f"PR #{pr_num}: would {'refresh (behind main)' if behind else 'merge'}")
-            return
-        if behind:
-            refresh_pr_branch(n, pr_num)
-            return
-        title = gh_json(["pr", "view", str(pr_num), "--repo", REPO, "--json", "title"])[
-            "title"
-        ]
-        # A PR that carries new upstream commits (a human/agent-resolved sync)
-        # must keep them as ancestors of main, or the sync stage never sees
-        # main contain the upstream tip. Squash everything else.
-        run(["git", "fetch", "origin", cfg.main, f"agent/{n}"], cwd=ROOT)
-        if UPSTREAM is None:
-            carries_upstream = False
-        else:
-            run(["git", "fetch", UPSTREAM, cfg.main], cwd=ROOT)
-            contains = lambda ref: (  # noqa: E731
+        with nullcontext() if dry_run else lifecycle.scope(
+            EVENTS, "merge-eligibility", ticket=n, lock=FACTORY / "locks" / "merge.lock"
+        ) as execution:
+            checks = pr_checks(pr_num)
+            buckets: dict[str, int] = {}
+            for c in checks:
+                buckets[c["bucket"]] = buckets.get(c["bucket"], 0) + 1
+            failed = [c["name"] for c in checks if c["bucket"] in ("fail", "cancel")]
+            if failed:
+                # A finished red run is deterministic evidence, not a flake guess.
+                # Pull the PR from candidacy so this escalates once, not every pass;
+                # a human (or a re-run pipeline) re-adds the label after the fix.
+                if dry_run:
+                    log(f"PR #{pr_num}: would escalate (CI failed: {', '.join(failed)})")
+                    continue
                 run(
-                    ["git", "merge-base", "--is-ancestor", f"{UPSTREAM}/{cfg.main}", ref],
-                    cwd=ROOT,
+                    [
+                        "gh",
+                        "pr",
+                        "edit",
+                        str(pr_num),
+                        "--repo",
+                        REPO,
+                        "--remove-label",
+                        FACTORY_APPROVED,
+                    ],
                     check=False,
-                ).returncode
-                == 0
-            )
-            carries_upstream = contains(f"origin/agent/{n}") and not contains(
-                f"origin/{cfg.main}"
-            )
-        method = "--merge" if carries_upstream else "--squash"
-        body = f"Closes #{n}\n\n{signoff()}" if cfg.signoff else f"Closes #{n}"
-        run(
-            [
-                "gh",
-                "pr",
-                "merge",
-                str(pr_num),
-                "--repo",
-                REPO,
-                method,
-                "--subject",
-                title,
-                "--body",
-                body,
+                )
+                escalate(
+                    n,
+                    f"PR #{pr_num}: CI failed ({', '.join(failed)}); "
+                    f"`{FACTORY_APPROVED}` label removed",
+                    None,
+                )
+                continue
+            if buckets.get("pending"):
+                log(f"PR #{pr_num}: CI pending {buckets}; waiting")
+                if execution:
+                    execution.outcome, execution.reason = "not_eligible", "ci_pending"
+                continue
+            if not buckets.get("pass"):
+                log(f"PR #{pr_num}: no passing CI checks reported; refusing to merge")
+                if execution:
+                    execution.outcome, execution.reason = "not_eligible", "no_passing_ci"
+                continue
+            behind = gh_json(["api", f"repos/{REPO}/compare/{cfg.main}...agent/{n}"])[
+                "behind_by"
             ]
-        )
-        record("merged", ticket=n, pr=pr_num, method=method[2:])
-        log(f"PR #{pr_num}: merged into {cfg.main} ({method[2:]}, ticket #{n})")
-        cleanup_after_merge(n)
-        return
+            if dry_run:
+                log(f"PR #{pr_num}: would {'refresh (behind main)' if behind else 'merge'}")
+                return
+            if behind:
+                refresh_pr_branch(n, pr_num)
+                if execution.outcome == "completed":
+                    execution.outcome = "refreshed"
+                return
+            title = gh_json(["pr", "view", str(pr_num), "--repo", REPO, "--json", "title"])[
+                "title"
+            ]
+            # A PR that carries new upstream commits (a human/agent-resolved sync)
+            # must keep them as ancestors of main, or the sync stage never sees
+            # main contain the upstream tip. Squash everything else.
+            run(["git", "fetch", "origin", cfg.main, f"agent/{n}"], cwd=ROOT)
+            if UPSTREAM is None:
+                carries_upstream = False
+            else:
+                run(["git", "fetch", UPSTREAM, cfg.main], cwd=ROOT)
+                contains = lambda ref: (  # noqa: E731
+                    run(
+                        ["git", "merge-base", "--is-ancestor", f"{UPSTREAM}/{cfg.main}", ref],
+                        cwd=ROOT,
+                        check=False,
+                    ).returncode
+                    == 0
+                )
+                carries_upstream = contains(f"origin/agent/{n}") and not contains(
+                    f"origin/{cfg.main}"
+                )
+            method = "--merge" if carries_upstream else "--squash"
+            body = f"Closes #{n}\n\n{signoff()}" if cfg.signoff else f"Closes #{n}"
+            with lifecycle.scope(EVENTS, "merge", ticket=n):
+                run(
+                    [
+                        "gh",
+                        "pr",
+                        "merge",
+                        str(pr_num),
+                        "--repo",
+                        REPO,
+                        method,
+                        "--subject",
+                        title,
+                        "--body",
+                        body,
+                    ]
+                )
+                record("merged", ticket=n, pr=pr_num, method=method[2:])
+            execution.outcome = "merged"
+            log(f"PR #{pr_num}: merged into {cfg.main} ({method[2:]}, ticket #{n})")
+            cleanup_after_merge(n)
+            return
 
 
 def worker_round(
@@ -787,6 +845,8 @@ def worker_round(
     deadline: float,
 ) -> tuple[bool, str, Path]:
     """One worker + gate cycle. Returns (gate_ok, report, logfile)."""
+    if lifecycle.current() is not None:
+        lifecycle.current().attempt = attempt
     promptfile = wt / ".factory-prompt.md"
     promptfile.write_text(build_prompt(n, wt, extra))
     logfile = LOGS / f"{n}-attempt-{attempt}.log"
@@ -820,8 +880,9 @@ def process_ticket(
     wt = FACTORY / f"wt-{n}"
     worker = cfg.worker(labels, wt / ".factory-prompt.md", wt)[0]
 
-    if lock_held(ticket_lock(n)):
-        log(f"#{n}: skipped (in flight, lock held on {ticket_lock(n)})")
+    lock_path = FACTORY / "locks" / f"{n}.lock"
+    if lock_held(lock_path):
+        log(f"#{n}: skipped (in flight, lock held on {lock_path})")
         return
     if dry_run:
         log(
@@ -839,88 +900,91 @@ def process_ticket(
         lock_fd.close()
         return
 
-    # Strong re-read before claiming: `issue list` is search-backed and lags
-    # label/assignee edits, which re-claimed #16/#17 seconds after escalation.
-    if not forced:
-        fresh = gh_json(
-            [
-                "issue",
-                "view",
-                str(n),
-                "--repo",
-                REPO,
-                "--json",
-                "state,labels,assignees",
-            ]
-        )
-        if (
-            fresh["state"].upper() != "OPEN"
-            or fresh["assignees"]
-            or LABEL_AGENT not in {label["name"] for label in fresh["labels"]}
-        ):
-            log(f"#{n}: skipped (state changed since frontier query)")
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            lock_fd.close()
-            return
-
-    run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-assignee", "@me"])
-    record("claimed", ticket=n, title=title, labels=sorted(labels))
-    wt = ensure_worktree(n)
-    LOGS.mkdir(parents=True, exist_ok=True)
-
     try:
-        # Attempts 1..MAX_ATTEMPTS: worker + gate, feeding the failed report back.
-        extra, logfile, report = "", None, ""
-        for attempt in range(1, MAX_ATTEMPTS + 1):
-            ok, report, logfile = worker_round(
-                n, wt, labels, title, extra, attempt, deadline
-            )
-            if ok:
-                break
-            if time.monotonic() > deadline:
-                escalate(n, f"wall-clock budget ({budget_min} min) exceeded", logfile)
-                return
-            extra = f"## Previous gate report (attempt {attempt} failed)\n\n{report}"
-        else:
-            escalate(
-                n, f"gate failed {MAX_ATTEMPTS} times; worktree kept at {wt}", logfile
-            )
-            return
+        with lifecycle.scope(EVENTS, "ticket", ticket=n, lock=ticket_lock(n)) as execution:
+            # Strong re-read before claiming: `issue list` is search-backed and lags
+            # label/assignee edits, which re-claimed #16/#17 seconds after escalation.
+            if not forced:
+                fresh = gh_json(
+                    [
+                        "issue",
+                        "view",
+                        str(n),
+                        "--repo",
+                        REPO,
+                        "--json",
+                        "state,labels,assignees",
+                    ]
+                )
+                if (
+                    fresh["state"].upper() != "OPEN"
+                    or fresh["assignees"]
+                    or LABEL_AGENT not in {label["name"] for label in fresh["labels"]}
+                ):
+                    log(f"#{n}: skipped (state changed since frontier query)")
+                    execution.outcome = "not_admitted"
+                    execution.reason = "state_changed"
+                    return
 
-        if not push_and_pr(wt, n, title, report):
-            escalate(n, f"agent/{n} has no commits over main; nothing to PR", logfile)
-            return
-        verdict, findings = review(wt, n, report)
-        pr_comment(n, findings)
-        # Review rounds: each REVISE goes back to the worker with the findings,
-        # then re-gate, push, re-review. `review_rounds` bounces max.
-        for bounce in range(1, cfg.review_rounds + 1):
-            if verdict == "APPROVE":
-                break
-            if time.monotonic() > deadline:
+            run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-assignee", "@me"])
+            record("claimed", ticket=n, title=title, labels=sorted(labels))
+            wt = ensure_worktree(n)
+            LOGS.mkdir(parents=True, exist_ok=True)
+
+            # Attempts 1..MAX_ATTEMPTS: worker + gate, feeding the failed report back.
+            extra, logfile, report = "", None, ""
+            for attempt in range(1, MAX_ATTEMPTS + 1):
+                ok, report, logfile = worker_round(
+                    n, wt, labels, title, extra, attempt, deadline
+                )
+                if ok:
+                    break
+                if time.monotonic() > deadline:
+                    escalate(n, f"wall-clock budget ({budget_min} min) exceeded", logfile)
+                    return
+                extra = f"## Previous gate report (attempt {attempt} failed)\n\n{report}"
+            else:
                 escalate(
-                    n,
-                    f"wall-clock budget ({budget_min} min) exceeded before bounce {bounce}",
-                    logfile,
+                    n, f"gate failed {MAX_ATTEMPTS} times; worktree kept at {wt}", logfile
                 )
                 return
-            extra = f"## Reviewer findings, round {bounce} (address these)\n\n{findings}"
-            ok, report, logfile = worker_round(
-                n, wt, labels, title, extra, MAX_ATTEMPTS + bounce, deadline
-            )
-            if not ok:
-                escalate(
-                    n, f"gate failed after review bounce {bounce}; worktree kept at {wt}", logfile
-                )
+
+            if not push_and_pr(wt, n, title, report):
+                escalate(n, f"agent/{n} has no commits over main; nothing to PR", logfile)
                 return
-            run(["git", "push", "origin", f"agent/{n}"], cwd=wt)
+            execution.review_round = 1
             verdict, findings = review(wt, n, report)
             pr_comment(n, findings)
-        if verdict != "APPROVE":
-            escalate(n, f"REVISE verdict after {cfg.review_rounds} review round(s)", logfile)
-        else:
-            approve_pr(n)
-            log(f"#{n}: done (approved)")
+            # Review rounds: each REVISE goes back to the worker with the findings,
+            # then re-gate, push, re-review. `review_rounds` bounces max.
+            for bounce in range(1, cfg.review_rounds + 1):
+                if verdict == "APPROVE":
+                    break
+                if time.monotonic() > deadline:
+                    escalate(
+                        n,
+                        f"wall-clock budget ({budget_min} min) exceeded before bounce {bounce}",
+                        logfile,
+                    )
+                    return
+                execution.review_round = bounce + 1
+                extra = f"## Reviewer findings, round {bounce} (address these)\n\n{findings}"
+                ok, report, logfile = worker_round(
+                    n, wt, labels, title, extra, MAX_ATTEMPTS + bounce, deadline
+                )
+                if not ok:
+                    escalate(
+                        n, f"gate failed after review bounce {bounce}; worktree kept at {wt}", logfile
+                    )
+                    return
+                run(["git", "push", "origin", f"agent/{n}"], cwd=wt)
+                verdict, findings = review(wt, n, report)
+                pr_comment(n, findings)
+            if verdict != "APPROVE":
+                escalate(n, f"REVISE verdict after {cfg.review_rounds} review round(s)", logfile)
+            else:
+                approve_pr(n)
+                log(f"#{n}: done (approved)")
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         lock_fd.close()
@@ -945,37 +1009,39 @@ def main(argv: list[str]) -> int:
     if args.budget_min is None:
         args.budget_min = cfg.budget_min
 
-    if args.ticket:
-        if not issue_is_open(args.ticket):
-            log(f"#{args.ticket}: not open, nothing to do")
-            return 1
-        issue = gh_json(
-            [
-                "issue",
-                "view",
-                str(args.ticket),
-                "--repo",
-                REPO,
-                "--json",
-                "number,title,body,labels,assignees",
-            ]
-        )
-        process_ticket(issue, args.budget_min, args.dry_run, forced=True)
-        return 0
+    with nullcontext() if args.dry_run else lifecycle.scope(EVENTS, "dispatcher", dispatcher=True):
+        if args.ticket:
+            if not issue_is_open(args.ticket):
+                log(f"#{args.ticket}: not open, nothing to do")
+                return 1
+            issue = gh_json(
+                [
+                    "issue",
+                    "view",
+                    str(args.ticket),
+                    "--repo",
+                    REPO,
+                    "--json",
+                    "number,title,body,labels,assignees",
+                ]
+            )
+            process_ticket(issue, args.budget_min, args.dry_run, forced=True)
+            return 0
 
-    land_pass(args.dry_run)
-    active = active_ticket_count()
-    capacity = MAX_ACTIVE - active
-    log(f"active tickets: {active}, capacity: {max(capacity, 0)}")
-    if capacity <= 0:
-        log("at capacity, nothing to do")
+        land_pass(args.dry_run)
+        with nullcontext() if args.dry_run else lifecycle.scope(EVENTS, "scheduling"):
+            active = active_ticket_count()
+            capacity = MAX_ACTIVE - active
+            log(f"active tickets: {active}, capacity: {max(capacity, 0)}")
+            if capacity <= 0:
+                log("at capacity, nothing to do")
+                return 0
+            ready = frontier()
+            if not ready:
+                log("frontier empty, nothing to do")
+                return 0
+            for issue in ready[:capacity]:
+                log(f"claimable: #{issue['number']} {issue['title']}")
+        for issue in ready[:capacity]:
+            process_ticket(issue, args.budget_min, args.dry_run)
         return 0
-    ready = frontier()
-    if not ready:
-        log("frontier empty, nothing to do")
-        return 0
-    for issue in ready[:capacity]:
-        log(f"claimable: #{issue['number']} {issue['title']}")
-    for issue in ready[:capacity]:
-        process_ticket(issue, args.budget_min, args.dry_run)
-    return 0

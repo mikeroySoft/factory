@@ -27,7 +27,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
-from factory import __version__, briefing, config, dispatch
+from factory import __version__, briefing, config, dispatch, lifecycle
 from factory.config import (
     LABEL_AGENT,
     LABEL_APPROVED,
@@ -442,12 +442,12 @@ def disk_ticket_numbers() -> set[int]:
 def spend_by_ticket() -> dict[int, dict]:
     """Per-ticket spend from events.jsonl `attempt` rows: seconds, dollars, rounds."""
     spend: dict[int, dict] = {}
-    for line in read_text(dispatch.EVENTS).splitlines():
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if row.get("event") != "attempt" or "ticket" not in row:
+    for row in lifecycle.read_events(dispatch.EVENTS):
+        if (
+            row.get("event") != "attempt"
+            or type(row.get("ticket")) is not int
+            or any(row.get(key) is not None and type(row[key]) not in (int, float) for key in ("seconds", "cost"))
+        ):
             continue
         s = spend.setdefault(row["ticket"], {"seconds": 0, "cost": None, "rounds": 0})
         s["seconds"] += row.get("seconds") or 0
@@ -653,19 +653,26 @@ def stage_of(labels: set[str], state: str, pr: dict | None, lock: bool) -> str:
     return "other"
 
 
-def phase_of(disk: dict) -> dict | None:
-    """Newest local artifact tells where an in-flight pipeline is."""
-    candidates = []
-    if disk["attempts"]:
-        last = disk["attempts"][-1]
-        candidates.append((last["mtime"], "worker", last["attempt"]))
-    for name in ("gate", "pr_body", "review"):
-        if disk.get(name):
-            candidates.append((disk[name]["mtime"], name, None))
-    if not candidates:
+def phase_of(executions: list[dict]) -> dict | None:
+    """Project one authoritative stage, never artifacts or ambiguous activity."""
+    by_id = {e["execution_id"]: e for e in executions}
+    unresolved = [e for e in executions if e["state"] in ("active", "unknown") and e.get("ended_at") is None]
+    ancestors = set()
+    for execution in unresolved:
+        parent = execution["parent_execution_id"]
+        while parent and parent not in ancestors:
+            ancestors.add(parent)
+            parent = by_id.get(parent, {}).get("parent_execution_id")
+    leaves = [e for e in unresolved if e["execution_id"] not in ancestors]
+    if len(leaves) != 1 or leaves[0]["state"] != "active":
         return None
-    at, artifact, attempt = max(candidates)
-    return {"at": at, "artifact": artifact, "attempt": attempt}
+    execution = leaves[0]
+    return {
+        "at": execution["entered_at"],
+        "artifact": execution["stage"],
+        "attempt": execution["attempt"],
+        "execution_id": execution["execution_id"],
+    }
 
 
 def worker_name(labels: set[str]) -> str:
@@ -675,7 +682,10 @@ def worker_name(labels: set[str]) -> str:
     return Path(argv[0]).name
 
 
-def build_ticket(issue: dict, pr: dict | None, disk: dict, spend: dict | None = None) -> dict:
+def build_ticket(
+    issue: dict, pr: dict | None, disk: dict, spend: dict | None = None,
+    executions: list[dict] | None = None,
+) -> dict:
     labels = {lab["name"] for lab in issue.get("labels", {}).get("nodes") or []}
     events = issue_events(issue)
     if pr:
@@ -740,7 +750,7 @@ def build_ticket(issue: dict, pr: dict | None, disk: dict, spend: dict | None = 
         "closed_at": issue["closedAt"],
         "worker": worker_name(labels),
         "stage": stage_of(labels, issue["state"], pr, lock),
-        "phase": phase_of(disk) if lock else None,
+        "phase": phase_of(executions or []),
         "pr": pr,
         "spend": spend or {"seconds": 0, "cost": None, "rounds": 0},
         "events": events,
@@ -773,12 +783,17 @@ def snapshot() -> dict:
     on_disk = disk_ticket_numbers()
     spend = spend_by_ticket()
     tickets = []
+    executions = lifecycle.observe(dispatch.EVENTS)
+    by_ticket: dict[int, list[dict]] = {}
+    for execution in executions:
+        if execution["ticket"] is not None:
+            by_ticket.setdefault(execution["ticket"], []).append(execution)
     for issue in issues:
         n = issue["number"]
         labels = {lab["name"] for lab in issue.get("labels", {}).get("nodes") or []}
-        if not (labels & FACTORY_LABELS or n in prs or n in on_disk):
+        if not (labels & FACTORY_LABELS or n in prs or n in on_disk or n in by_ticket):
             continue
-        tickets.append(build_ticket(issue, prs.get(n), disk_state(n), spend.get(n)))
+        tickets.append(build_ticket(issue, prs.get(n), disk_state(n), spend.get(n), by_ticket.get(n)))
     tickets.sort(key=lambda t: t["number"], reverse=True)
 
     return {
@@ -824,6 +839,7 @@ def snapshot() -> dict:
         "dispatcher": dispatcher(),
         "upstream": upstream_state(gh_upstream, issues),
         "metrics": metrics(tickets),
+        "executions": executions,
         "tickets": tickets,
     }
 
