@@ -267,6 +267,86 @@ class HostConfigTest(unittest.TestCase):
             self.assertEqual(out["ok"], proc.returncode == 0)
 
 
+class StatsTest(unittest.TestCase):
+    def test_timeline_actor_attribution_in_stats(self) -> None:
+        from unittest import mock
+
+        from factory import stats
+
+        def label(event: str, minute: int, name: str, actor: dict | None) -> dict:
+            return {"event": event, "created_at": f"2026-09-01T00:{minute:02}:00Z",
+                    "label": {"name": name}, "actor": actor}
+
+        human = {"login": "maintainer", "type": "User"}
+        bot = {"login": "factory[bot]", "type": "Bot"}
+        timeline = [
+            label("labeled", 0, config.LABEL_AGENT, human),
+            label("labeled", 1, config.LABEL_HUMAN, bot),
+            label("unlabeled", 11, config.LABEL_HUMAN, human),
+            label("labeled", 11, config.LABEL_AGENT, human),
+            label("labeled", 12, config.LABEL_HUMAN, human),
+            label("unlabeled", 32, config.LABEL_HUMAN, bot),
+            label("labeled", 32, config.LABEL_AGENT, bot),
+            label("labeled", 33, config.LABEL_HUMAN, bot),
+            label("unlabeled", 38, config.LABEL_HUMAN, None),
+        ]
+        details = {"number": 7, "title": "fixed", "createdAt": "2026-09-01T00:00:00Z",
+                   "closedAt": "2026-09-01T01:00:00Z", "state": "CLOSED", "comments": []}
+
+        def github(*args: str):
+            if args[:2] == ("pr", "list"):
+                return []
+            if args[:2] == ("issue", "list"):
+                return []
+            if args[:2] == ("issue", "view"):
+                return details
+            if args[0] == "api":
+                return [timeline[:4], timeline[4:]]
+            self.fail(f"unexpected gh call: {args}")
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            stats.configure(config.load(repo))
+            stats.cfg.factory.mkdir()
+            audit = [
+                {"at": "2026-09-01T00:00:00Z", "event": "claimed", "ticket": 7},
+                *({"at": f"2026-09-01T00:{m:02}:00Z", "event": "escalate", "ticket": 7} for m in (1, 12, 33)),
+                {"at": "2026-09-01T01:00:00Z", "event": "merged", "ticket": 7},
+            ]
+            (stats.cfg.factory / "events.jsonl").write_text("\n".join(map(json.dumps, audit)) + "\npartial")
+            with mock.patch.object(stats, "gh", side_effect=github):
+                row, = stats.collect_rows()
+            self.assertEqual(row["escalation_count"], 3)
+            self.assertEqual(row["resolutions"], [
+                {"actor": "maintainer", "resolved_by": "human"},
+                {"actor": "factory[bot]", "resolved_by": "factory"},
+                {"actor": None, "resolved_by": "unknown"},
+            ])
+            self.assertEqual(row["ready_for_human_minutes"], 35)
+            self.assertEqual(row["requeue_count"], 2)
+            from datetime import datetime, timezone
+            from factory import dashboard
+
+            totals = stats.human_touch_metrics([row], datetime(2026, 9, 8, 0, 12, tzinfo=timezone.utc))
+            self.assertEqual(totals, {"escalations_per_week": 2, "human_resolved_pct": 50.0})
+            dashboard.configure(stats.cfg)
+            ticket_issue = {
+                **details, "url": "", "updatedAt": details["closedAt"],
+                "timelineItems": {"nodes": [
+                    {"__typename": "LabeledEvent" if e["event"] == "labeled" else "UnlabeledEvent",
+                     "createdAt": e["created_at"], "label": e["label"],
+                     "actor": {"login": (e["actor"] or {}).get("login"),
+                               "__typename": (e["actor"] or {}).get("type")}}
+                    for e in timeline
+                ]},
+            }
+            ticket = dashboard.build_ticket(ticket_issue, None, {
+                "attempts": [], "gate": None, "lock_held": False,
+            }, audit=audit)
+            self.assertEqual(ticket["human_touch"]["ready_for_human_minutes"], 35)
+            self.assertEqual(dashboard.metrics([ticket])["human_resolved_pct"], 50.0)
+
+
 class DashboardTest(unittest.TestCase):
     def test_metrics_from_synthetic_tickets(self) -> None:
         from factory import dashboard
@@ -280,8 +360,10 @@ class DashboardTest(unittest.TestCase):
             {"pr": None, "attempts": [], "events": []},
         ]
         m = dashboard.metrics(tickets)
-        self.assertEqual(m, {"first_pass": 0.5, "bounce_rate": 0.5, "escalations": 2, "med_attempts": 2})
-        self.assertEqual(dashboard.metrics([]), {"first_pass": None, "bounce_rate": None, "escalations": 0, "med_attempts": None})
+        self.assertEqual(m, {"first_pass": 0.5, "bounce_rate": 0.5, "escalations": 2, "med_attempts": 2,
+                             "escalations_per_week": 0, "human_resolved_pct": None})
+        self.assertEqual(dashboard.metrics([]), {"first_pass": None, "bounce_rate": None, "escalations": 0,
+                                               "med_attempts": None, "escalations_per_week": 0, "human_resolved_pct": None})
 
     def test_consecutive_failures_from_journal(self) -> None:
         from factory import dashboard

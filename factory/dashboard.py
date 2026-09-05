@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from factory import __version__, config, dispatch
+from factory import __version__, config, dispatch, stats
 from factory.config import (
     LABEL_AGENT,
     LABEL_APPROVED,
@@ -125,8 +125,8 @@ query($owner:String!,$name:String!{UVARS}){
           CLOSED_EVENT,REOPENED_EVENT]){
           nodes{
             __typename
-            ... on LabeledEvent{createdAt label{name} actor{login}}
-            ... on UnlabeledEvent{createdAt label{name} actor{login}}
+            ... on LabeledEvent{createdAt label{name} actor{login __typename}}
+            ... on UnlabeledEvent{createdAt label{name} actor{login __typename}}
             ... on AssignedEvent{createdAt assignee{... on User{login}}}
             ... on UnassignedEvent{createdAt assignee{... on User{login}}}
             ... on IssueComment{createdAt author{login} body}
@@ -593,7 +593,7 @@ def dispatcher() -> dict:
 
 
 def metrics(tickets: list[dict]) -> dict:
-    """Fleet KPIs (same definitions as dashboard.html): fractions, None when undefined."""
+    """Fleet KPIs: fractions except human_resolved_pct (0–100); None when undefined."""
     bounce = lambda a: a["attempt"] > MAX_ATTEMPTS  # noqa: E731
     rounds = lambda t: sum(1 for a in t["attempts"] if not bounce(a))  # noqa: E731
     reached = [t for t in tickets if t["pr"]]
@@ -604,6 +604,7 @@ def metrics(tickets: list[dict]) -> dict:
         "bounce_rate": frac(sum(1 for t in reached if any(bounce(a) for a in t["attempts"]))),
         "escalations": sum(1 for t in tickets for e in t["events"] if e["kind"] == "escalated"),
         "med_attempts": ran[(len(ran) - 1) // 2] if ran else None,
+        **stats.human_touch_metrics([t.get("human_touch", {}) for t in tickets]),
     }
 
 
@@ -663,7 +664,10 @@ def worker_name(labels: set[str]) -> str:
     return Path(argv[0]).name
 
 
-def build_ticket(issue: dict, pr: dict | None, disk: dict, spend: dict | None = None) -> dict:
+def build_ticket(
+    issue: dict, pr: dict | None, disk: dict, spend: dict | None = None,
+    *, audit: list[dict] | None = None,
+) -> dict:
     labels = {lab["name"] for lab in issue.get("labels", {}).get("nodes") or []}
     events = issue_events(issue)
     if pr:
@@ -730,6 +734,10 @@ def build_ticket(issue: dict, pr: dict | None, disk: dict, spend: dict | None = 
         "phase": phase_of(disk) if lock else None,
         "pr": pr,
         "spend": spend or {"seconds": 0, "cost": None, "rounds": 0},
+        "human_touch": stats.human_touch(
+            issue.get("timelineItems", {}).get("nodes") or [], audit or [],
+            (pr or {}).get("merged_at") or issue.get("closedAt"),
+        ),
         "events": events,
         **disk,
     }
@@ -758,13 +766,14 @@ def snapshot() -> dict:
 
     on_disk = disk_ticket_numbers()
     spend = spend_by_ticket()
+    audit = stats.audit_by_ticket(FACTORY / "events.jsonl")
     tickets = []
     for issue in issues:
         n = issue["number"]
         labels = {lab["name"] for lab in issue.get("labels", {}).get("nodes") or []}
-        if not (labels & FACTORY_LABELS or n in prs or n in on_disk):
+        if not (labels & FACTORY_LABELS or n in prs or n in on_disk or n in audit):
             continue
-        tickets.append(build_ticket(issue, prs.get(n), disk_state(n), spend.get(n)))
+        tickets.append(build_ticket(issue, prs.get(n), disk_state(n), spend.get(n), audit=audit.get(n)))
     tickets.sort(key=lambda t: t["number"], reverse=True)
 
     return {

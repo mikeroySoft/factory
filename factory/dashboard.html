@@ -587,6 +587,8 @@ function renderKpis() {
     kpi('Escalated', c.escalated, `${m.escalations} escalations all-time`, { stage: 'escalated' }),
     kpi('Merged', c.merged, 'all-time', { stage: 'merged' }),
     kpi('First-gate pass', m.firstPass, `bounce rate ${m.bounceRate}`),
+    kpi('Escalations/week', S.snap.metrics.escalations_per_week, 'last 7 days'),
+    kpi('Human-resolved', S.snap.metrics.human_resolved_pct == null ? '—' : `${S.snap.metrics.human_resolved_pct}%`, 'of attributed resolutions'),
     ...(S.snap.config.upstream ? [kpi('Upstream', upstreamWord(), S.snap.upstream.blocker ? `sync parked on #${S.snap.upstream.blocker.number}` : `fork +${S.snap.upstream.ahead ?? '?'} · last sync ${S.snap.upstream.syncs.length ? ago(S.snap.upstream.syncs.at(-1).at) : 'never'}`)] : []),
     kpi('Issue → PR', Number.isFinite(m.issueToPr) ? `${m.issueToPr.toFixed(1)}h` : '—', `PR → merge ${Number.isFinite(m.prToMerge) ? m.prToMerge.toFixed(1) + 'h' : '—'} (median)`),
     kpi('Verdicts', m.verdicts.length, `${m.verdicts.filter(v => v.verdict === 'APPROVE').length} approve · ${m.verdicts.filter(v => v.verdict === 'REVISE').length} revise`),
