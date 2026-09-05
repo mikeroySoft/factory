@@ -274,12 +274,15 @@ def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
     env += "".join(f"Environment={k}={v}\n" for k, v in cfg.install["env"].items())
     return {
         f"{cfg.unit}.service": (
-            f"[Unit]\nDescription=factory dispatcher for {cfg.repo} (one pass)\n\n"
-            f"[Service]\nType=oneshot\nWorkingDirectory={cfg.root}\n{env}ExecStart={exe} dispatch\n"
+            f"[Unit]\nDescription=factory triage + dispatcher for {cfg.repo} (one pass)\n\n"
+            # `-` prefix: an offline triage model must not stop the dispatch pass.
+            f"[Service]\nType=oneshot\nWorkingDirectory={cfg.root}\n{env}"
+            f"ExecStart=-{exe} triage\nExecStart={exe} dispatch\n"
         ),
         f"{cfg.unit}.timer": (
-            f"[Unit]\nDescription=Run the factory dispatcher for {cfg.repo} every {every}\n\n"
-            f"[Timer]\nOnBootSec=5min\nOnUnitActiveSec={every}\n\n[Install]\nWantedBy=timers.target\n"
+            f"[Unit]\nDescription=Run the factory pass for {cfg.repo} every {every}\n\n"
+            f"[Timer]\nOnBootSec=5min\nOnUnitActiveSec={every}\nRandomizedDelaySec=90\n\n"
+            f"[Install]\nWantedBy=timers.target\n"
         ),
         f"{cfg.unit}-dashboard.service": (
             f"[Unit]\nDescription=factory dashboard for {cfg.repo}\nAfter=network.target\n\n"

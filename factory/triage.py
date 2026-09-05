@@ -7,6 +7,7 @@ applies labels/comments via gh. wontfix is only ever proposed, never applied.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -272,18 +273,22 @@ def main(argv: list[str]) -> int:
         return 0
 
     exit_code = 0
-    for number in numbers:
-        issue = fetch_issue(number)
-        decision = triage_issue(issue)
-        if decision is None:
-            print(
-                f"#{number}: model returned unparseable JSON twice; skipping",
-                file=sys.stderr,
-            )
-            exit_code = 1
-            continue
-        if replay:
-            print(f"#{number}: {json.dumps(decision)}")
-        else:
-            apply_decision(number, decision, args.dry_run)
+    # One local model serves every repo on this host; hold the host lock so
+    # simultaneous timer passes queue on it instead of hammering the endpoint.
+    with open(cfg.lock, "w") as host_lock:  # noqa: SIM115
+        fcntl.flock(host_lock, fcntl.LOCK_EX)
+        for number in numbers:
+            issue = fetch_issue(number)
+            decision = triage_issue(issue)
+            if decision is None:
+                print(
+                    f"#{number}: model returned unparseable JSON twice; skipping",
+                    file=sys.stderr,
+                )
+                exit_code = 1
+                continue
+            if replay:
+                print(f"#{number}: {json.dumps(decision)}")
+            else:
+                apply_decision(number, decision, args.dry_run)
     return exit_code
