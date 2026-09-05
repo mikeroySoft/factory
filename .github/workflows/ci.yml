@@ -1,0 +1,11 @@
+# Written by `factory init`. The merge stage refuses to land a PR that has no
+# passing GitHub check, so this workflow must exist and must pass. Make the
+# step below run the same commands as [[gate.check]] in .factory.toml.
+name: ci
+on: [push, pull_request]
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python -m unittest discover -s tests
