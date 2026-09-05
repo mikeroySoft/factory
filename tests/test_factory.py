@@ -391,6 +391,62 @@ class DispatchTest(unittest.TestCase):
             self.assertEqual([r["event"] for r in rows], ["claimed", "attempt"])
             self.assertEqual(rows[1]["gate"], "FAIL")
             self.assertTrue(all("at" in r for r in rows))
+            gate_report = wt / ".factory" / "gate-report-7.md"
+            gate_report.write_text("gate detail\n")
+            review = dispatch.FACTORY / "review-7.md"
+            review.write_text("review detail\n")
+            worker_log = dispatch.LOGS / "7-attempt-1.log"
+            worker_log.parent.mkdir()
+            worker_log.write_text("worker detail\n")
+            with mock.patch.object(dispatch, "run"):
+                dispatch.escalate(7, "gate failed", worker_log)
+
+            packet = dispatch.FACTORY / "escalations" / "7.md"
+            text = packet.read_text()
+            self.assertIn("## Reason\n\ngate failed", text)
+            self.assertIn("| 1 | FAIL |", text)
+            self.assertIn("## Last gate report\n\ngate detail", text)
+            self.assertIn("## Latest review findings\n\nreview detail", text)
+            self.assertIn("## Handoff\n\nleft the migration unverified", text)
+            self.assertIn(f"## Log paths\n\n- `{worker_log}`", text)
+            self.assertIn(f"## Worktree path\n\n`{wt}`", text)
+            escalation = json.loads(dispatch.EVENTS.read_text().splitlines()[-1])
+            self.assertEqual(escalation["packet"], str(packet))
+            self.assertEqual(escalation["round"], 1)
+            with mock.patch.object(dispatch, "run"):
+                dispatch.escalate(7, "gate failed again", worker_log)
+            escalation = json.loads(dispatch.EVENTS.read_text().splitlines()[-1])
+            self.assertEqual(escalation["round"], 2)
+
+    def test_sync_escalation_writes_same_packet_shape(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            dispatch.configure(config.load(repo))
+            wt = dispatch.FACTORY / "wt-upstream"
+            (wt / ".factory").mkdir(parents=True)
+            response = subprocess.CompletedProcess([], 0, "https://github.com/acme/widgets/issues/42\n", "")
+            with mock.patch.object(dispatch, "run", return_value=response):
+                url = dispatch.sync_escalate("abc123", "gate failed", "upstream gate detail")
+
+            self.assertEqual(url, "https://github.com/acme/widgets/issues/42")
+            packet = dispatch.FACTORY / "escalations" / "42.md"
+            text = packet.read_text()
+            self.assertIn("## Reason\n\ngate failed", text)
+            self.assertIn("## Attempts", text)
+            self.assertIn("## Last gate report\n\nupstream gate detail", text)
+            self.assertIn("## Latest review findings\n\n(none recorded)", text)
+            self.assertIn("## Handoff\n\n(none recorded)", text)
+            self.assertIn("## Log paths\n\n- none recorded", text)
+            self.assertIn(f"## Worktree path\n\n`{wt}`", text)
+            escalation = json.loads(dispatch.EVENTS.read_text().splitlines()[-1])
+            self.assertEqual(escalation["ticket"], 42)
+            self.assertEqual(escalation["upstream"], "abc123")
+            self.assertEqual(escalation["packet"], str(packet))
+            self.assertEqual(escalation["round"], 1)
 
     def test_learn_writes_lessons_from_events(self) -> None:
         from unittest import mock
