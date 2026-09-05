@@ -602,9 +602,9 @@ def metrics(tickets: list[dict]) -> dict:
     return {
         "first_pass": frac(sum(1 for t in reached if rounds(t) == 1)),
         "bounce_rate": frac(sum(1 for t in reached if any(bounce(a) for a in t["attempts"]))),
-        "escalations": sum(1 for t in tickets for e in t["events"] if e["kind"] == "escalated"),
+        "escalations": sum(t["human_touch"]["escalation_count"] for t in tickets),
         "med_attempts": ran[(len(ran) - 1) // 2] if ran else None,
-        **stats.human_touch_metrics([t.get("human_touch", {}) for t in tickets]),
+        **stats.human_touch_metrics([t["human_touch"] for t in tickets]),
     }
 
 

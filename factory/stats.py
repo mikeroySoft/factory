@@ -283,5 +283,5 @@ def main(argv: list[str]) -> int:
         totals = human_touch_metrics(rows)
         human = totals["human_resolved_pct"]
         print(f"\nEscalations/week (last 7 days): {totals['escalations_per_week']}")
-        print(f"Human-resolved: {human if human is not None else 'n/a'}% (attributed resolutions)")
+        print(f"Human-resolved: {str(human) + '%' if human is not None else 'n/a'} (attributed resolutions)")
     return 0

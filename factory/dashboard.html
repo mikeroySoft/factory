@@ -498,7 +498,7 @@ function metrics() {
   const reachedPr = T.filter(t => t.pr);
   const firstPass = reachedPr.filter(t => gateRounds(t) === 1).length;
   const bounced = reachedPr.filter(t => t.attempts.some(isBounce)).length;
-  const escalations = T.flatMap(t => t.events.filter(e => e.kind === 'escalated')).length;
+  const escalations = S.snap.metrics.escalations;
   return {
     firstPass: pct(firstPass, reachedPr.length), bounceRate: pct(bounced, reachedPr.length),
     medAttempts: median(ran.map(gateRounds)), escalations,

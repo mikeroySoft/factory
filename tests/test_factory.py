@@ -359,6 +359,8 @@ class DashboardTest(unittest.TestCase):
             {"pr": None, "attempts": att(1, 2, 3), "events": [{"kind": "escalated"}, {"kind": "comment"}]},
             {"pr": None, "attempts": [], "events": []},
         ]
+        for ticket, count in zip(tickets, (0, 1, 1, 0)):
+            ticket["human_touch"] = {"escalation_count": count}
         m = dashboard.metrics(tickets)
         self.assertEqual(m, {"first_pass": 0.5, "bounce_rate": 0.5, "escalations": 2, "med_attempts": 2,
                              "escalations_per_week": 0, "human_resolved_pct": None})
