@@ -35,6 +35,18 @@
 # command = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1", "{prompt}"]
 # command = ["codex", "exec", "{prompt}"]
 
+[manager]
+# Dashboard briefings and contextual Ask FM use a bounded, no-tools OMP process.
+# Only the model controls those briefings; generated advice cannot execute actions.
+# model = "openai-codex/gpt-6-astra"  # unset: manager.command --model, then OMP default
+#
+# Host-side frontier manager configuration; running it is a separate feature.
+# Unset command disables the frontier manager, not read-only dashboard briefings.
+# {prompt} = manager prompt text; {cwd} = kept worktree or repository root.
+# command = ["omp", "-p", "--model", "openai-codex/gpt-6-astra", "--cwd", "{cwd}", "{prompt}"]
+# rounds = 1
+# review = "escalated"  # "all" also reviews non-escalated factory PRs
+
 [gate]
 # timeout = 1200                      # seconds per check; a wedged check FAILs
 # lock = "/tmp/factory.lock"          # host-wide lock held by `exclusive` checks

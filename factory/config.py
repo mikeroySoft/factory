@@ -9,6 +9,7 @@ conventions, not configuration.
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import tomllib
 from dataclasses import dataclass, field
@@ -46,7 +47,7 @@ DEFAULT_INSTALL = {"every": "10min", "dashboard": False, "host": "127.0.0.1", "e
 # Only these tables/keys are taken from the host: a clone on another machine
 # must run the same gate, so gate checks, leak scan and upstream never come
 # from here. Everything else in the host file is left for other tools (District).
-HOST_TABLES = frozenset({"triage", "workers", "review", "install"})
+HOST_TABLES = frozenset({"triage", "workers", "review", "manager", "install"})
 HOST_KEYS = {"dashboard": ("port",), "gate": ("lock",)}
 
 # Every key the loader reads, by table; `factory doctor` reports anything else.
@@ -56,6 +57,7 @@ KNOWN_KEYS = {
     "dispatch": ("max_active", "max_attempts", "budget_min", "review_rounds", "cost_pattern", "signoff"),
     "workers": None,
     "review": ("command",),
+    "manager": ("model", "command", "rounds", "review"),
     "gate": ("timeout", "lock", "check"),
     "leak_scan": ("pattern", "exclude"),
     "triage": ("url", "model"),
@@ -99,6 +101,9 @@ class Config:
         default_factory=lambda: {"default": DEFAULT_WORKER, LABEL_CHORE: DEFAULT_CHORE_WORKER}
     )
     reviewer: list[str] = field(default_factory=lambda: list(DEFAULT_REVIEWER))
+    manager: list[str] | None = None
+    manager_rounds: int = 1
+    manager_review: str = "escalated"
     checks: list[Check] = field(default_factory=list)
     check_timeout: int = 1200
     lock: Path = Path("/tmp/factory.lock")  # host-wide: one GPU, many repos
@@ -106,6 +111,7 @@ class Config:
     leak_exclude: list[str] = field(default_factory=list)
     llm_url: str = DEFAULT_LLM_URL
     llm_model: str = DEFAULT_LLM_MODEL
+    manager_model: str | None = None  # dashboard's no-tools OMP briefing; never a command
     dashboard_port: int = 8765
     dashboard_theme: Path | None = None  # CSS file served after the built-in stylesheet
     install: dict = field(default_factory=lambda: dict(DEFAULT_INSTALL))  # `factory install` defaults
@@ -215,6 +221,37 @@ def unknown_keys(raw: dict) -> list[str]:
     return out
 
 
+def manager_settings(table: dict) -> tuple[list[str] | None, str | None]:
+    """Normalize manager argv and select the read-only briefing model; never execute."""
+    if not isinstance(table, dict):
+        raise ConfigError("[manager] must be a table")
+    model = table.get("model")
+    command = None
+    if "command" in table:
+        command = table["command"]
+        if isinstance(command, str):
+            try:
+                command = shlex.split(command)
+            except ValueError as exc:
+                raise ConfigError(f"manager.command: {exc}") from exc
+        if not isinstance(command, list) or not all(isinstance(arg, str) for arg in command):
+            raise ConfigError("manager.command must be an argv array or command string")
+    if model is None and command:
+        for i, arg in enumerate(command):
+            if arg == "--model":
+                if i + 1 == len(command):
+                    raise ConfigError("manager.command: --model needs a value")
+                model = command[i + 1]
+            elif arg.startswith("--model="):
+                model = arg.split("=", 1)[1]
+    if model is not None and (
+        not isinstance(model, str) or not model or len(model) > 200
+        or model.startswith("-") or any(c.isspace() or ord(c) < 32 for c in model)
+    ):
+        raise ConfigError("manager.model must be a nonempty model selector (≤ 200 chars, no whitespace)")
+    return command, model
+
+
 def load(start: Path | None = None) -> Config:
     """Load `<root>/.factory.toml` over the host layer; every key optional except a resolvable repo slug."""
     root = repo_root(start)
@@ -231,6 +268,7 @@ def load(start: Path | None = None) -> Config:
     raw, raw_repo = merge(layered, raw), raw
     repo_t, dispatch, workers = raw.get("repo", {}), raw.get("dispatch", {}), raw.get("workers", {})
     gate, leak, triage, dash = raw.get("gate", {}), raw.get("leak_scan", {}), raw.get("triage", {}), raw.get("dashboard", {})
+    manager = raw.get("manager", {})
     cfg = Config(root=root, repo=slug, raw_repo=raw_repo)
     cfg.upstream = repo_t.get("upstream") or None
     cfg.main = repo_t.get("main", cfg.main)
@@ -246,6 +284,11 @@ def load(start: Path | None = None) -> Config:
         cfg.workers = {k: list(v) for k, v in workers.items()}
     if "command" in raw.get("review", {}):
         cfg.reviewer = list(raw["review"]["command"])
+    cfg.manager, cfg.manager_model = manager_settings(manager)
+    cfg.manager_rounds = int(manager.get("rounds", cfg.manager_rounds))
+    cfg.manager_review = manager.get("review", cfg.manager_review)
+    if cfg.manager_review not in ("escalated", "all"):
+        raise ConfigError("manager.review must be escalated or all")
     cfg.check_timeout = int(gate.get("timeout", cfg.check_timeout))
     cfg.lock = Path(gate.get("lock", cfg.lock))
     cfg.checks = [

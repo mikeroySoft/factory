@@ -2,9 +2,6 @@ version = 1
 revision = 3
 requires-python = ">=3.11"
 
-[options]
-exclude-newer = "2026-09-04T00:46:07Z"
-
 [[package]]
 name = "factory"
 source = { editable = "." }
