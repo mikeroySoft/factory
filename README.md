@@ -68,7 +68,8 @@ merge stage.
 | Command | What one invocation does |
 |---|---|
 | `factory triage` | Labels every `needs-triage` issue via the local model: `ready-for-agent` (with an agent brief), `needs-info` (with the question), `ready-for-human`, or a `wontfix` proposal comment. `--dry-run`, `--issue N`, `--replay a,b,c`. |
-| `factory dispatch` | One stateless pass: upstream sync → merge stage (at most one PR) → claim up to `max_active` tickets → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan. |
+| `factory dispatch` | One stateless pass: upstream sync → merge stage (at most one PR) → manager → claim up to `max_active` tickets → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan. |
+| `factory manage` | Resolves untouched `ready-for-human` escalation packets, once per escalation and within `[manager].rounds`. Disabled unless `manager.command` is configured. `--dry-run` lists eligible tickets. |
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
 | `factory stats` | Ticket table: attempts, review rounds, hours to merge. `--json`. |
 | `factory learn` | Reads the last N finished tickets' event trail, failing-attempt log tails, reviewer findings, and escalation reasons; asks the local model for ≤10 repo-specific lessons; writes `.factory-lessons.md` (you commit it). Every worker prompt carries it. `--dry-run`, `--last N`. |
@@ -78,6 +79,20 @@ merge stage.
 
 Every command reads `.factory.toml` from the main checkout, even when run
 inside one of its worktrees.
+
+The manager command receives `{prompt}` as inline text and `{cwd}` as the kept
+worktree (or repository root). Configure the agent CLI in read-only/no-tools mode:
+the prompt prohibits file edits, but an arbitrary configured executable is trusted,
+not sandboxed by factory. It reads the packet, `.factory-lessons.md`, and optional
+`.factory/manager/notes.md`; it does not write notes. Its last `DECISION:` header
+selects `RETRY`, `REWRITE`, `SPLIT`, `ROUTE`, or `HUMAN`, followed by the decision
+body. RETRY/HUMAN use plain text; REWRITE uses the complete replacement issue body.
+SPLIT uses a JSON array of `{title, body, blocked_by}` children, with `blocked_by`
+containing 1-based indexes of earlier children. ROUTE uses `{add, remove, guidance}`,
+with label arrays restricted to configured worker labels (not `default`).
+Code validates the output, records a `manage` event before GitHub mutations, and
+leaves malformed decisions with a prefixed HUMAN diagnosis. Split children enter
+`needs-triage`; the parent keeps `ready-for-human` with child blocker lines.
 
 ## How a ticket moves
 

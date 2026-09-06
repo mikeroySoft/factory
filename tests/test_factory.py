@@ -399,6 +399,99 @@ class GateTest(unittest.TestCase):
                 os.kill(pid, 0)
 
 
+class ManageTest(unittest.TestCase):
+    def setUp(self) -> None:
+        host_file("")
+
+    def scenario(self, round_number: int = 1, activity: list | None = None) -> tuple:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        repo = make_repo(root, '[manager]\ncommand = ["printf", "DECISION: RETRY\\nUse the existing helper"]\n')
+        state = repo / ".factory"
+        (state / "escalations").mkdir(parents=True)
+        packet = state / "escalations/7.md"
+        packet.write_text("gate failed")
+        event = {"event": "escalate", "ticket": 7, "at": "2026-01-01T00:00:00Z",
+                 "round": round_number, "packet": str(packet)}
+        (state / "events.jsonl").write_text(json.dumps(event) + "\n")
+        timeline = json.dumps(activity or [])
+        stubs = stub_bin(root, gh=f'''
+case "$1 $2" in
+  "issue list") echo '[{{"number":7,"title":"Fix gate","body":"Original body","labels":[{{"name":"ready-for-human"}}]}}]';;
+  "api repos/acme/widgets/issues/7/timeline") echo '{timeline}';;
+  "issue create") echo "https://github.com/acme/widgets/issues/8";;
+  "issue comment"|"issue edit")
+    python3 -c 'import json; from pathlib import Path; assert json.loads(Path("{state}/events.jsonl").read_text().splitlines()[-1])["event"] == "manage"' || exit 1;;
+esac
+''')
+        return repo, stubs, packet
+
+    def test_manage_retry_records_before_comment_and_relabels(self) -> None:
+        repo, stubs, packet = self.scenario()
+        result = factory(repo, "manage", path=stubs)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = (Path(stubs) / "gh.log").read_text()
+        self.assertIn("Factory manager: Use the existing helper", calls)
+        self.assertIn("--remove-label ready-for-human --add-label ready-for-agent", calls)
+        event = json.loads((repo / ".factory/events.jsonl").read_text().splitlines()[-1])
+        self.assertEqual((event["event"], event["decision"], event["round"], event["packet"]),
+                         ("manage", "RETRY", 1, str(packet)))
+        before = calls
+        self.assertEqual(factory(repo, "manage", path=stubs).returncode, 0)
+        self.assertNotIn("issue comment", (Path(stubs) / "gh.log").read_text()[len(before):])
+
+    def test_manage_skips_second_escalation_when_rounds_exhausted(self) -> None:
+        repo, stubs, _ = self.scenario(round_number=2)
+        result = factory(repo, "manage", path=stubs)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("issue edit", (Path(stubs) / "gh.log").read_text())
+        self.assertEqual(len((repo / ".factory/events.jsonl").read_text().splitlines()), 1)
+
+    def test_manage_skips_human_comment_after_escalation(self) -> None:
+        repo, stubs, _ = self.scenario(activity=[{
+            "event": "commented", "created_at": "2026-01-01T00:00:01Z",
+            "actor": {"login": "maintainer", "type": "User"}, "body": "I will handle this",
+        }])
+        result = factory(repo, "manage", path=stubs)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("issue comment", (Path(stubs) / "gh.log").read_text())
+        self.assertEqual(len((repo / ".factory/events.jsonl").read_text().splitlines()), 1)
+
+    def test_manage_applies_closed_menu_and_rejects_unknown_route(self) -> None:
+        cases = [
+            ("REWRITE", "Replacement acceptance criteria", "issue edit 7 --repo acme/widgets --body Replacement acceptance criteria"),
+            ("SPLIT", '[{"title":"Child","body":"Child acceptance criteria","blocked_by":[]}]', "Blocked by: #8"),
+            ("ROUTE", '{"add":["chore"],"remove":[],"guidance":"Mechanical work"}', "--add-label chore"),
+            ("HUMAN", "Requires a maintainer decision", "Factory manager: Requires a maintainer decision"),
+            ("ROUTE", '{"add":["factory-approved"]}', "Factory manager: Unparseable manager output:"),
+        ]
+        for decision, body, expected in cases:
+            with self.subTest(decision=decision, body=body):
+                repo, stubs, _ = self.scenario()
+                command = ["printf", "%s", f"DECISION: {decision}\n{body}"]
+                (repo / config.CONFIG_NAME).write_text("[manager]\ncommand = " + json.dumps(command) + "\n")
+                result = factory(repo, "manage", path=stubs)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                calls = (Path(stubs) / "gh.log").read_text()
+                self.assertIn(expected, calls)
+                if decision == "REWRITE":
+                    self.assertLess(calls.index("Previous body:\n\nOriginal body"), calls.index("--body Replacement"))
+                if decision in {"HUMAN", "SPLIT"} or "factory-approved" in body:
+                    self.assertNotIn("--add-label ready-for-agent", calls)
+                if "factory-approved" in body:
+                    self.assertNotIn("--add-label factory-approved", calls)
+
+    def test_manage_skips_human_label_change(self) -> None:
+        repo, stubs, _ = self.scenario(activity=[{
+            "event": "labeled", "created_at": "2026-01-01T00:00:01Z",
+            "actor": {"login": "maintainer"}, "label": {"name": "chore"},
+        }])
+        result = factory(repo, "manage", path=stubs)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("issue edit", (Path(stubs) / "gh.log").read_text())
+
+
 class DispatchTest(unittest.TestCase):
     def test_prompt_carries_handoff_and_events_append(self) -> None:
         from unittest import mock
