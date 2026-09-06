@@ -57,7 +57,7 @@ KNOWN_KEYS = {
     "dispatch": ("max_active", "max_attempts", "budget_min", "review_rounds", "cost_pattern", "signoff"),
     "workers": None,
     "review": ("command",),
-    "manager": ("model", "command"),
+    "manager": ("model", "command", "rounds", "review"),
     "gate": ("timeout", "lock", "check"),
     "leak_scan": ("pattern", "exclude"),
     "triage": ("url", "model"),
@@ -101,6 +101,9 @@ class Config:
         default_factory=lambda: {"default": DEFAULT_WORKER, LABEL_CHORE: DEFAULT_CHORE_WORKER}
     )
     reviewer: list[str] = field(default_factory=lambda: list(DEFAULT_REVIEWER))
+    manager: list[str] | None = None
+    manager_rounds: int = 1
+    manager_review: str = "escalated"
     checks: list[Check] = field(default_factory=list)
     check_timeout: int = 1200
     lock: Path = Path("/tmp/factory.lock")  # host-wide: one GPU, many repos
@@ -218,12 +221,13 @@ def unknown_keys(raw: dict) -> list[str]:
     return out
 
 
-def manager_model(table: dict) -> str | None:
-    """Read only a model selector from legacy manager argv; never execute it."""
+def manager_settings(table: dict) -> tuple[list[str] | None, str | None]:
+    """Normalize manager argv and select the read-only briefing model; never execute."""
     if not isinstance(table, dict):
         raise ConfigError("[manager] must be a table")
     model = table.get("model")
-    if model is None and "command" in table:
+    command = None
+    if "command" in table:
         command = table["command"]
         if isinstance(command, str):
             try:
@@ -232,6 +236,7 @@ def manager_model(table: dict) -> str | None:
                 raise ConfigError(f"manager.command: {exc}") from exc
         if not isinstance(command, list) or not all(isinstance(arg, str) for arg in command):
             raise ConfigError("manager.command must be an argv array or command string")
+    if model is None and command:
         for i, arg in enumerate(command):
             if arg == "--model":
                 if i + 1 == len(command):
@@ -244,7 +249,7 @@ def manager_model(table: dict) -> str | None:
         or model.startswith("-") or any(c.isspace() or ord(c) < 32 for c in model)
     ):
         raise ConfigError("manager.model must be a nonempty model selector (≤ 200 chars, no whitespace)")
-    return model
+    return command, model
 
 
 def load(start: Path | None = None) -> Config:
@@ -263,6 +268,7 @@ def load(start: Path | None = None) -> Config:
     raw, raw_repo = merge(layered, raw), raw
     repo_t, dispatch, workers = raw.get("repo", {}), raw.get("dispatch", {}), raw.get("workers", {})
     gate, leak, triage, dash = raw.get("gate", {}), raw.get("leak_scan", {}), raw.get("triage", {}), raw.get("dashboard", {})
+    manager = raw.get("manager", {})
     cfg = Config(root=root, repo=slug, raw_repo=raw_repo)
     cfg.upstream = repo_t.get("upstream") or None
     cfg.main = repo_t.get("main", cfg.main)
@@ -278,6 +284,11 @@ def load(start: Path | None = None) -> Config:
         cfg.workers = {k: list(v) for k, v in workers.items()}
     if "command" in raw.get("review", {}):
         cfg.reviewer = list(raw["review"]["command"])
+    cfg.manager, cfg.manager_model = manager_settings(manager)
+    cfg.manager_rounds = int(manager.get("rounds", cfg.manager_rounds))
+    cfg.manager_review = manager.get("review", cfg.manager_review)
+    if cfg.manager_review not in ("escalated", "all"):
+        raise ConfigError("manager.review must be escalated or all")
     cfg.check_timeout = int(gate.get("timeout", cfg.check_timeout))
     cfg.lock = Path(gate.get("lock", cfg.lock))
     cfg.checks = [
@@ -291,7 +302,6 @@ def load(start: Path | None = None) -> Config:
     cfg.leak_exclude = list(leak.get("exclude", []))
     cfg.llm_url = triage.get("url", cfg.llm_url)
     cfg.llm_model = triage.get("model", cfg.llm_model)
-    cfg.manager_model = manager_model(raw.get("manager", {}))
     cfg.dashboard_port = int(dash.get("port", cfg.dashboard_port))
     cfg.dashboard_theme = root / dash["theme"] if dash.get("theme") else None
     cfg.install = merge(DEFAULT_INSTALL, raw.get("install", {}))

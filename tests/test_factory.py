@@ -109,6 +109,10 @@ signoff = false
 default = ["agent", "{prompt}"]
 [review]
 command = ["rev", "--ask", "{prompt}"]
+[manager]
+command = ["manage", "--prompt", "{prompt}", "--cwd", "{cwd}"]
+rounds = 2
+review = "all"
 [gate]
 timeout = 7
 lock = "/tmp/x.lock"
@@ -130,6 +134,8 @@ port = 1
             self.assertEqual((cfg.repo, cfg.upstream, cfg.main), ("other/name", "up", "trunk"))
             self.assertEqual((cfg.max_active, cfg.signoff, cfg.check_timeout), (5, False, 7))
             self.assertEqual(cfg.review_cmd("hi {x}"), ["rev", "--ask", "hi {x}"])
+            self.assertEqual(cfg.manager, ["manage", "--prompt", "{prompt}", "--cwd", "{cwd}"])
+            self.assertEqual((cfg.manager_rounds, cfg.manager_review), (2, "all"))
             self.assertEqual([(c.name, c.exclusive) for c in cfg.checks], [("unit", True)])
             self.assertIsNone(cfg.leak_pattern)
             self.assertEqual((cfg.leak_exclude, cfg.llm_model, cfg.dashboard_port), (["vendor"], "m", 1))
@@ -243,7 +249,7 @@ class HostConfigTest(unittest.TestCase):
     def test_doctor_json_reports_drift(self) -> None:
         host_file('[defaults.triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n[defaults.leak_scan]\npattern = ""\n[repo."acme/widgets"]\npath = "/x"\n[repo."acme/widgets".dashboard]\nport = 1\ntheme = "no"\n')
         gh = 'case "$1 $2" in "repo view") echo ADMIN;; "label list") echo "[]";; esac\nexit 0'
-        toml = '[triage]\nmodel = "m"\n[dashboard]\ntheme = "t.css"\n[gate]\nlock = "/tmp/l"\ntimeout = 5\n[dispatch]\nmax_atempts = 2\n'
+        toml = '[triage]\nmodel = "m"\n[dashboard]\ntheme = "t.css"\n[gate]\nlock = "/tmp/l"\ntimeout = 5\n[dispatch]\nmax_atempts = 2\n[manager]\nunknown = true\n'
         with tempfile.TemporaryDirectory() as d:
             repo = make_repo(Path(d), toml)
             (repo / ".github/ISSUE_TEMPLATE").mkdir(parents=True)
@@ -254,6 +260,7 @@ class HostConfigTest(unittest.TestCase):
             rows = {r["label"]: r for r in out["rows"]}
             self.assertEqual(rows[".factory.toml keys"]["status"], "WARN")
             self.assertIn("dispatch.max_atempts", rows[".factory.toml keys"]["detail"])
+            self.assertIn("manager.unknown", rows[".factory.toml keys"]["detail"])
             self.assertEqual(rows["host settings committed"]["status"], "WARN")
             self.assertIn("triage, gate.lock", rows["host settings committed"]["detail"])
             self.assertNotIn("dashboard", rows["host settings committed"]["detail"])  # theme is repo-owned
@@ -265,6 +272,34 @@ class HostConfigTest(unittest.TestCase):
             self.assertIn('defaults.leak_scan, repo."acme/widgets".dashboard.theme', rows["host config"]["detail"])
             self.assertEqual(rows["push access to acme/widgets"]["status"], "PASS")
             self.assertEqual(out["ok"], proc.returncode == 0)
+
+    def test_manager_legacy_command_and_invalid_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            host_file('[defaults.manager]\ncommand = \'manage --model fallback/model "{prompt} with spaces"\'\nmodel = "preferred/model"\n')
+            cfg = config.load(repo)
+            self.assertEqual(cfg.manager, ["manage", "--model", "fallback/model", "{prompt} with spaces"])
+            self.assertEqual(cfg.manager_model, "preferred/model")
+            for settings in (
+                '[manager]\ncommand = 5\n',
+                '[manager]\ncommand = [5]\n',
+                'manager = 5\n',
+                '[manager]\nreview = "typo"\n',
+            ):
+                with self.subTest(settings=settings):
+                    (repo / ".factory.toml").write_text(settings)
+                    with self.assertRaises(config.ConfigError):
+                        config.load(repo)
+
+    def test_doctor_reports_manager_only_when_configured(self) -> None:
+        gh = 'case "$1 $2" in "repo view") echo ADMIN;; "label list") echo "[]";; esac\nexit 0'
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            stubs = stub_bin(Path(d), gh=gh, systemctl="echo inactive", manage="exit 0")
+            rows = lambda: {r["label"]: r for r in json.loads(factory(repo, "doctor", "--json", path=stubs).stdout)["rows"]}  # noqa: E731
+            self.assertNotIn("manager: manage", rows())
+            (repo / ".factory.toml").write_text('[manager]\ncommand = ["manage", "{prompt}"]\n')
+            self.assertEqual(rows()["manager: manage"]["status"], "PASS")
 
 
 class DashboardTest(unittest.TestCase):

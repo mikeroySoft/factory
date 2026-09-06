@@ -223,6 +223,8 @@ def doctor(argv: list[str]) -> int:
     for label, argv_t in cfg.workers.items():
         report(shutil.which(argv_t[0]) is not None, f"worker `{label}`: {argv_t[0]}")
     report(shutil.which(cfg.reviewer[0]) is not None, f"reviewer: {cfg.reviewer[0]}")
+    if cfg.manager:
+        report(shutil.which(cfg.manager[0]) is not None, f"manager: {cfg.manager[0]}")
 
     if cfg.checks:
         for check in cfg.checks:

@@ -837,6 +837,11 @@ def snapshot() -> dict:
             "gpu_lock": str(cfg.lock),
             "workers": {label: " ".join(argv) for label, argv in cfg.workers.items()},
             "reviewer": " ".join(cfg.reviewer),
+            "manager": {
+                "command": " ".join(cfg.manager) if cfg.manager else None,
+                "rounds": cfg.manager_rounds,
+                "review": cfg.manager_review,
+            },
             "approved_label": FACTORY_APPROVED,
             "triage": {
                 "url": LLM_URL,
