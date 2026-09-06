@@ -113,15 +113,15 @@ class BriefingBoundaryTest(unittest.TestCase):
         self.assertNotIn("OTHER RUN SECRET", text)
         self.assertNotIn("OTHER TICKET SECRET", text)
 
-    def test_manager_command_is_only_a_model_selector(self) -> None:
+    def test_manager_settings_never_execute_the_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             marker = Path(directory) / "should-not-exist"
-            selector = config.manager_model({"command": ["sh", "-c", f"touch {marker}", "--model", "openai-codex/gpt-6-astra"]})
+            _, selector = config.manager_settings({"command": ["sh", "-c", f"touch {marker}", "--model", "openai-codex/gpt-6-astra"]})
             self.assertEqual(selector, "openai-codex/gpt-6-astra")
             self.assertFalse(marker.exists())
-            self.assertEqual(config.manager_model({"model": "preferred/model", "command": ["omp", "--model", "ignored/model"]}), "preferred/model")
+            self.assertEqual(config.manager_settings({"model": "preferred/model", "command": ["omp", "--model", "ignored/model"]})[1], "preferred/model")
             with self.assertRaises(config.ConfigError):
-                config.manager_model({"command": ["omp", "--model", "--tools=bash"]})
+                config.manager_settings({"command": ["omp", "--model", "--tools=bash"]})
 
 
 class HumanDecisionTest(unittest.TestCase):

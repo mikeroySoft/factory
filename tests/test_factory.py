@@ -273,6 +273,24 @@ class HostConfigTest(unittest.TestCase):
             self.assertEqual(rows["push access to acme/widgets"]["status"], "PASS")
             self.assertEqual(out["ok"], proc.returncode == 0)
 
+    def test_manager_legacy_command_and_invalid_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            host_file('[defaults.manager]\ncommand = \'manage --model fallback/model "{prompt} with spaces"\'\nmodel = "preferred/model"\n')
+            cfg = config.load(repo)
+            self.assertEqual(cfg.manager, ["manage", "--model", "fallback/model", "{prompt} with spaces"])
+            self.assertEqual(cfg.manager_model, "preferred/model")
+            for settings in (
+                '[manager]\ncommand = 5\n',
+                '[manager]\ncommand = [5]\n',
+                'manager = 5\n',
+                '[manager]\nreview = "typo"\n',
+            ):
+                with self.subTest(settings=settings):
+                    (repo / ".factory.toml").write_text(settings)
+                    with self.assertRaises(config.ConfigError):
+                        config.load(repo)
+
     def test_doctor_reports_manager_only_when_configured(self) -> None:
         gh = 'case "$1 $2" in "repo view") echo ADMIN;; "label list") echo "[]";; esac\nexit 0'
         with tempfile.TemporaryDirectory() as d:
