@@ -869,6 +869,7 @@ def snapshot() -> dict:
         "dispatcher": dispatcher_state,
         "upstream": upstream_state(gh_upstream, issues),
         "metrics": metrics(tickets),
+        "workers": stats.worker_metrics(audit, cfg.workers),
         "executions": executions,
         "resources": lifecycle.resources(
             dispatch.EVENTS,

@@ -68,6 +68,43 @@ def audit_by_ticket(path: Path) -> dict[int, list[dict]]:
     return result
 
 
+def worker_metrics(audit: dict[int, list[dict]], workers: dict[str, list[str]]) -> list[dict]:
+    """Claim-label attribution, using Config.worker's first-match precedence.
+
+    First-pass denominators are attempt-1 gate outcomes per claim. All attempts
+    (including review bounces) and reported costs count; unclaimed history does not.
+    """
+    rows = {key: {"worker": key, "first_pass": None, "attempts": 0, "cost": None} for key in workers}
+    outcomes: dict[str, list[bool]] = {key: [] for key in workers}
+    for events in audit.values():
+        worker = None
+        for event in events:
+            if event.get("event") == "claimed":
+                labels = event.get("labels", [])
+                worker = next((key for key in workers if key in labels), "default")
+            elif event.get("event") == "attempt" and worker is not None:
+                row = rows[worker]
+                row["attempts"] += 1
+                cost = event.get("cost")
+                if type(cost) in (int, float):
+                    row["cost"] = round((row["cost"] or 0) + cost, 4)
+                if event.get("attempt") == 1 and event.get("gate") in ("PASS", "FAIL"):
+                    outcomes[worker].append(event["gate"] == "PASS")
+    for worker, gates in outcomes.items():
+        if gates:
+            rows[worker]["first_pass"] = sum(gates) / len(gates)
+    return list(rows.values())
+
+
+def print_workers(rows: list[dict]) -> None:
+    width = max(len("worker"), *(len(row["worker"]) for row in rows))
+    print(f"{'worker':<{width}}  first-gate pass  attempts  cost")
+    for row in rows:
+        rate = "n/a" if row["first_pass"] is None else f"{row['first_pass']:.1%}"
+        cost = "n/a" if row["cost"] is None else f"${row['cost']:.2f}"
+        print(f"{row['worker']:<{width}}  {rate:>15}  {row['attempts']:>8}  {cost}")
+
+
 def timeline(number: int) -> list[dict]:
     pages = gh("api", f"repos/{REPOSITORY}/issues/{number}/timeline",
                "--paginate", "--slurp")
@@ -273,11 +310,14 @@ def print_table(rows: list[dict[str, Any]]) -> None:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="factory stats", description=__doc__)
     parser.add_argument("--json", action="store_true", help="print metric rows as JSON")
+    parser.add_argument("--by-worker", action="store_true", help="split gate pass rate, attempts and known cost by claim label")
     args = parser.parse_args(argv)
     configure(config.load())
-    rows = collect_rows()
+    rows = worker_metrics(audit_by_ticket(cfg.factory / "events.jsonl"), cfg.workers) if args.by_worker else collect_rows()
     if args.json:
         print(json.dumps(rows, indent=2))
+    elif args.by_worker:
+        print_workers(rows)
     else:
         print_table(rows)
         totals = human_touch_metrics(rows)
