@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Factory — Ops</title>
+<title>Factory — Inbox</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
 <style>
   :root {
@@ -293,6 +293,7 @@
   }
 </style>
 <link rel="stylesheet" href="/theme.css">
+<link rel="stylesheet" href="/briefing.css">
 </head>
 <body>
 <div class="scan" aria-hidden="true"></div>
@@ -305,7 +306,7 @@
     <h1 class="glitch" id="title" data-text="FACTORY">FACTORY</h1>
   </div>
   <div class="status" id="status"></div>
-  <nav class="views"><button id="nav-ops" class="on">Ops</button><button id="nav-inbox">Inbox</button><a class="navlink" href="/atlas" title="Static architecture diagrams">Atlas ↗</a></nav>
+  <nav class="views" aria-label="Factory views"><button id="nav-inbox" class="on">Inbox</button><button id="nav-ops">Ops</button><a class="navlink" href="/atlas" title="Static architecture diagrams">Atlas ↗</a></nav>
   <div class="controls">
     <input id="search" type="search" placeholder="/ filter  #n · title · label · stage" aria-label="Filter tickets" title="Filters the board, lanes, activity feed, and inbox">
     <button id="refresh" title="r">Refresh</button>
@@ -313,7 +314,7 @@
   </div>
 </header>
 
-<main id="ops">
+<main id="ops" hidden>
   <div id="errors"></div>
   <section class="kpis" id="kpis" aria-label="Key metrics"></section>
 
@@ -374,9 +375,10 @@
   </section>
 </main>
 
-<main id="inbox" hidden>
-  <div class="inbox-top"><h2 id="inbox-sum"></h2><span class="hint">Answers post through <code>gh</code> as the dispatcher would: comments land in the worker prompt, labels move the ticket, nothing merges from here.</span></div>
-  <div id="inbox-list" class="inbox-list"></div>
+<main id="inbox">
+  <div class="inbox-top"><h2 id="inbox-sum">Loading your Inbox…</h2><p class="briefing-muted">Understand the case. Compare the consequences. Make the call.</p></div>
+  <div id="inbox-health" class="briefing-status" role="status"></div>
+  <div id="inbox-list"></div>
 </main>
 <div id="toasts" class="toasts" aria-live="polite"></div>
 
@@ -389,6 +391,29 @@
   <div class="tabs" id="d-tabs"></div>
   <div class="content" id="d-content"></div>
 </aside>
+
+<dialog id="fm-dialog" class="briefing-dialog" aria-labelledby="fm-title">
+  <header class="briefing-dialog-head"><h2 id="fm-title">Ask Factory Manager</h2><button id="fm-close" type="button" autofocus>Close</button></header>
+  <div class="briefing-dialog-body">
+    <div id="fm-context" class="fm-context"></div>
+    <div id="fm-messages" class="fm-messages" role="log" aria-live="polite" aria-label="Factory Manager conversation"></div>
+    <form id="fm-form" class="fm-question-form">
+      <label for="fm-question">Your question</label>
+      <textarea id="fm-question" rows="3" maxlength="4000" required></textarea>
+      <p class="briefing-muted">Read-only advice from the configured Factory Manager. Answers never run commands or change GitHub.</p>
+      <div id="fm-status" class="briefing-status" role="status"></div>
+      <div class="briefing-actions"><button id="fm-send" class="briefing-primary" type="submit">Ask FM</button><button id="fm-retry" type="button" hidden>Retry question</button></div>
+    </form>
+  </div>
+</dialog>
+<dialog id="decision-dialog" class="briefing-dialog" aria-labelledby="decision-title">
+  <header class="briefing-dialog-head"><h2 id="decision-title">Confirm human decision</h2><button id="decision-close" type="button" autofocus>Cancel</button></header>
+  <div class="briefing-dialog-body">
+    <div id="decision-preview"></div>
+    <div id="decision-status" class="briefing-status" role="status"></div>
+    <div class="briefing-actions"><button id="decision-confirm" class="briefing-primary" type="button">Confirm and apply</button></div>
+  </div>
+</dialog>
 
 <script>
 'use strict';
@@ -409,10 +434,12 @@ const ALWAYS_COLS = ['triage', 'queued', 'in-flight', 'pr-open', 'escalated', 'm
 const FEED_KINDS = new Set(['labeled', 'assigned', 'attempt', 'gate', 'pr-opened', 'verdict', 'merged', 'escalated', 'triaged', 'closed', 'pr-closed', 'reopened']);
 const TABS = ['timeline', 'attempts', 'gate', 'review', 'branch', 'prompt', 'issue'];
 
-const S = { snap: null, filter: null, q: '', sel: null, tab: 'timeline', okAt: 0, failed: false, files: {}, view: 'ops', drafts: {}, inboxDirty: false };
+const S = { snap: null, filter: null, q: '', sel: null, tab: 'timeline', okAt: 0, failed: false, files: {}, view: 'inbox', drafts: {}, inboxDirty: false, inboxKey: null, choices: {}, briefings: {}, chats: {}, receipts: {}, fm: null, preview: null, restored: false, loading: null };
 const $ = id => document.getElementById(id);
 
 // ---------------------------------------------------------------- utils
+const domChildren = kids => kids.flat(Infinity).filter(kid => kid != null && kid !== false);
+function replaceChildren(el, ...kids) { el.replaceChildren(...domChildren(kids)); }
 function h(tag, attrs, ...kids) {
   const ns = tag.startsWith('svg:');
   const el = ns ? document.createElementNS('http://www.w3.org/2000/svg', tag.slice(4)) : document.createElement(tag);
@@ -424,7 +451,7 @@ function h(tag, attrs, ...kids) {
     else if (k === 'dataset') Object.assign(el.dataset, v);
     else el.setAttribute(k, v);
   }
-  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  for (const kid of domChildren(kids)) el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
   return el;
 }
 const ms = iso => iso ? new Date(iso).getTime() : NaN;
@@ -459,21 +486,28 @@ function hoverable(el, make) { el.addEventListener('mouseenter', e => tipShow(e,
 
 // ---------------------------------------------------------------- data
 async function load(fresh) {
+  if (S.loading) return S.loading;
   $('refresh').disabled = true;
-  try {
-    const r = await fetch('/api/snapshot' + (fresh ? '?fresh=1' : ''));
-    if (!r.ok) throw new Error(r.status);
-    S.snap = await r.json();
-    S.okAt = Date.now(); S.failed = false;
-  } catch (e) {
-    S.failed = true;
-  } finally { $('refresh').disabled = false; }
-  render();
+  S.loading = (async () => {
+    try {
+      const r = await fetch('/api/snapshot' + (fresh ? '?fresh=1' : ''));
+      if (!r.ok) throw new Error(`Snapshot unavailable (${r.status})`);
+      S.snap = await r.json();
+      S.okAt = Date.now(); S.failed = false;
+      S.files = {};
+      restoreInboxState();
+    } catch (e) {
+      S.failed = true;
+    } finally { $('refresh').disabled = false; }
+    render();
+  })();
+  try { await S.loading; } finally { S.loading = null; }
 }
 async function file(path) {
   if (S.files[path]) return S.files[path];
   const r = await fetch('/api/file?path=' + encodeURIComponent(path));
-  return (S.files[path] = r.ok ? await r.text() : `[unavailable: ${r.status}]`);
+  if (!r.ok) throw new Error(`Artifact unavailable (${r.status})`);
+  return (S.files[path] = await r.text());
 }
 function matches(t) {
   const q = S.q.trim().toLowerCase();
@@ -488,8 +522,7 @@ function counts() {
   return c;
 }
 function phaseCell(t) {
-  const a = t.phase && t.phase.artifact;
-  return a === 'worker' ? 'worker' : a === 'gate' ? 'gate' : a ? 'review' : 'worker';
+  return t.phase?.artifact || 'unknown';
 }
 function metrics() {
   const T = S.snap.tickets, cfg = S.snap.config;
@@ -544,11 +577,19 @@ function stageTimeline(t) {
 
 // ---------------------------------------------------------------- render
 function render() {
-  if (!S.snap) { $('errors').replaceChildren(h('div', { class: 'err' }, 'no snapshot yet — is the server reachable?')); return; }
-  renderStatus(); renderErrors(); renderKpis(); renderPipeline(); renderBoard(); renderFeed(); renderRuns(); renderUpstream(); renderLanes(); renderThroughput(); renderConfig();
-  if ($('inbox').contains(document.activeElement)) S.inboxDirty = true; else renderInbox();
   applyView();
-  if (S.sel != null) renderDrawer();
+  if (!S.snap) {
+    const message = 'No snapshot is available. Check the dashboard connection, then retry.';
+    $('errors').replaceChildren(h('div', { class: 'err' }, message));
+    $('inbox-sum').textContent = 'Inbox unavailable';
+    $('inbox-health').replaceChildren(message, h('button', { onclick: () => load(true) }, 'Retry snapshot'));
+    return;
+  }
+  renderStatus(); renderErrors(); renderKpis(); renderPipeline(); renderBoard(); renderFeed(); renderRuns(); renderUpstream(); renderLanes(); renderThroughput(); renderConfig();
+  renderInboxHealth();
+  updateInbox();
+  applyView();
+  if (S.sel != null && !$('drawer').contains(document.activeElement) && !$('fm-dialog').open) renderDrawer();
 }
 function renderStatus() {
   const d = S.snap.dispatcher, stale = S.failed || Date.now() - S.okAt > 180000;
@@ -556,10 +597,12 @@ function renderStatus() {
   const title = `${S.snap.config.name.toUpperCase()} FACTORY`;
   $('title').textContent = title; $('title').dataset.text = title;
   $('journal-unit').textContent = `${S.snap.config.unit}.service`;
-  const led = d.service_active ? 'warn' : d.timer.active ? 'on' : 'bad';
+  const unknown = d.service_active == null || d.timer.active == null;
+  const led = d.service_active ? 'warn' : unknown ? '' : d.timer.active ? 'on' : 'bad';
+  const next = d.schedule?.wait?.details?.next_at;
   $('status').replaceChildren(
-    h('span', {}, h('i', { class: `led ${led}` }), 'dispatcher ', h('b', {}, d.service_active ? 'RUNNING' : d.timer.active ? 'ARMED' : 'TIMER OFF')),
-    h('span', {}, 'next ', h('b', {}, d.timer.next ? `${hm(d.timer.next)} (${dur(new Date().toISOString(), d.timer.next)})` : '—')),
+    h('span', {}, h('i', { class: `led ${led}` }), 'dispatcher ', h('b', {}, d.service_active ? 'RUNNING' : unknown ? 'UNKNOWN' : d.timer.active ? 'ARMED' : 'TIMER OFF')),
+    h('span', {}, 'next ', h('b', {}, next ? `${hm(next)} (${dur(new Date().toISOString(), next)})` : '—')),
     h('span', {}, 'last ', h('b', {}, d.timer.last ? ago(d.timer.last) : '—')),
     h('span', {}, h('i', { class: `led ${S.snap.active ? 'warn' : ''}` }), 'capacity ', h('b', {}, `${S.snap.active}/${S.snap.config.max_active}`)),
     h('span', {}, h('i', { class: `led ${S.snap.gpu_lock_held ? 'warn' : ''}` }), 'gpu lock ', h('b', {}, S.snap.gpu_lock_held ? 'HELD' : 'free')),
@@ -598,7 +641,7 @@ function upstreamLed() { const u = S.snap.upstream; return u.blocker ? 'bad' : u
 function upstreamWord() { const u = S.snap.upstream, p = upstreamPending().length; return u.blocker ? 'BLOCKED' : p ? `${p}${p === u.commits.length ? '+' : ''} BEHIND` : u.commits.length ? 'in sync' : '—'; }
 function setFilter(stage) {
   S.filter = S.filter === stage ? null : stage;
-  history.replaceState(null, '', S.filter ? `#s=${S.filter}` : location.pathname);
+  syncHash();
   render();
 }
 function ticketsIn(stage) { return S.snap.tickets.filter(t => t.stage === stage); }
@@ -674,7 +717,7 @@ function card(t) {
     ci.QUEUED || ci.IN_PROGRESS || ci.PENDING ? h('b', { class: 'pend' }, `…${(ci.QUEUED || 0) + (ci.IN_PROGRESS || 0) + (ci.PENDING || 0)}`) : null) : null;
   const el = h('article', { class: `card ${stageClass(t.stage)} ${S.sel === t.number ? 'sel' : ''}`, tabindex: 0, dataset: { n: t.number }, 'aria-label': `#${t.number} ${t.title}` },
     h('div', { class: 'ct' }, h('span', { class: 'num' }, `#${t.number}`), h('span', { class: 'wk' }, t.worker),
-      t.lock_held ? h('span', { class: 'chip live', style: { '--c': 'var(--yel)' } }, t.phase ? `${phaseCell(t)}${t.phase.attempt ? ' #' + t.phase.attempt : ''}` : 'live') : null,
+      t.lock_held ? h('span', { class: `chip${t.phase ? ' live' : ''}`, style: { '--c': 'var(--yel)' } }, t.phase ? `${phaseCell(t)}${t.phase.attempt ? ' #' + t.phase.attempt : ''}` : 'phase unknown') : null,
       t.pr && t.pr.approved && t.pr.state === 'OPEN' ? h('span', { class: 'chip', style: { '--c': 'var(--grn)' }, title: 'factory-approved: merge stage will land it' }, 'approved') : null,
       t.stage === 'escalated' && t.assignees.length ? h('span', { class: 'chip', style: { '--c': 'var(--cyan)' } }, 'in human hands') : null,
       h('span', { class: 'chip' }, STAGE_NAME[t.stage])),
@@ -726,8 +769,12 @@ function renderRuns() {
   $('runs').replaceChildren(...runs.slice(0, 40).map(r => {
     const [cls, sum] = runSummary(r);
     const li = h('li', {}, h('span', { class: 't', title: fmt(r.started) }, hm(r.started) + ' ' + ago(r.started).replace(' ago', '')),
-      h('span', { class: 't' }, dur(r.started, r.finished || new Date().toISOString())), h('span', { class: `r ${cls}` }, cls), h('span', { class: 'd' }, sum));
-    li.onclick = () => { const p = li.querySelector('pre'); p ? p.remove() : li.append(h('pre', {}, r.lines.join('\n') || '(no output)')); };
+      h('span', { class: 't' }, dur(r.started, r.finished || new Date().toISOString())), h('span', { class: `r ${cls}` }, cls), h('span', { class: 'd' }, sum),
+      h('button', { type: 'button', onclick: e => { e.stopPropagation(); openFM(null, { run: r.started, label: `Dispatcher run · ${fmt(r.started)}` }); } }, 'Ask FM about this run'));
+    const toggle = () => { const p = li.querySelector('pre'); p ? p.remove() : li.append(h('pre', {}, r.lines.join('\n') || '(no output)')); };
+    li.tabIndex = 0;
+    li.onclick = toggle;
+    li.onkeydown = e => { if (e.target === li && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggle(); } };
     return li;
   }));
   if (!runs.length) $('runs').replaceChildren(h('li', { class: 'empty' }, `no journal entries — is ${S.snap.config.unit}.timer linked?`));
@@ -827,8 +874,8 @@ function renderConfig() {
   const inflight = ticketsIn('in-flight');
   $('config').replaceChildren(
     h('div', { class: 'cardc' }, h('h4', {}, 'factory dispatch'), dl([
-      ['timer', d.timer.active ? `active · every ${cfg.timer_interval}` : 'inactive'], ['next pass', d.timer.next ? fmt(d.timer.next) : '—'], ['last pass', d.timer.last ? fmt(d.timer.last) : '—'],
-      ['service', d.service_active ? 'running now' : 'idle (oneshot)'], ['MAX_ACTIVE', `${cfg.max_active} · ${S.snap.active} held`], ['MAX_ATTEMPTS', `${cfg.max_attempts} gate rounds + ${cfg.review_rounds} review bounce${cfg.review_rounds === 1 ? '' : 's'}`],
+      ['timer', d.timer.active == null ? 'unknown' : d.timer.active ? `active · every ${cfg.timer_interval}` : 'inactive'], ['next pass', d.schedule?.wait?.details?.next_at ? fmt(d.schedule.wait.details.next_at) : '—'], ['last pass', d.timer.last ? fmt(d.timer.last) : '—'],
+      ['service', d.service_active == null ? 'unknown' : d.service_active ? 'running now' : 'idle (oneshot)'], ['MAX_ACTIVE', `${cfg.max_active} · ${S.snap.active} held`], ['MAX_ATTEMPTS', `${cfg.max_attempts} gate rounds + ${cfg.review_rounds} review bounce${cfg.review_rounds === 1 ? '' : 's'}`],
       ['budget', `${cfg.budget_min} min wall clock / ticket`], ['escalation', 'unassign · ready-for-human · comment with log path · CI failure pulls factory-approved'], ['merge stage', `squash, ≤1 PR per pass · needs ${cfg.approved_label} + green CI + head contains ${cfg.main} tip`],
       ['upstream sync', cfg.upstream ? `${S.snap.upstream.repo} ${cfg.main} → ${cfg.main} · merge commit under host gate (leak scan skipped) · conflict/gate fail opens a ready-for-human issue` : 'disabled']])),
     h('div', { class: 'cardc' }, h('h4', {}, 'factory gate'), dl([
@@ -847,6 +894,7 @@ function renderConfig() {
 // ---------------------------------------------------------------- drawer
 function openTicket(n, tab) {
   S.sel = n; if (tab) S.tab = tab;
+  if (S.view === 'inbox') S.inboxKey = String(n);
   syncHash();
   render();
 }
@@ -860,8 +908,9 @@ function renderDrawer() {
   $('d-stage').textContent = STAGE_NAME[t.stage];
   $('d-live').replaceChildren(t.lock_held ? h('span', { class: 'chip live', style: { '--c': 'var(--yel)' } }, t.phase ? `${phaseCell(t)} · ${t.phase.artifact} ${ago(t.phase.at)}` : 'lock held') : '');
   $('d-title').textContent = t.title;
-  $('d-links').replaceChildren(
+  replaceChildren($('d-links'),
     h('a', { href: t.url, target: '_blank', rel: 'noopener' }, 'issue ↗'),
+    h('button', { onclick: () => openFM(t.number) }, 'Ask FM about this task'),
     t.pr ? h('a', { href: t.pr.url, target: '_blank', rel: 'noopener' }, `PR #${t.pr.number} ↗`) : null,
     h('span', {}, `${t.worker} worker`), h('span', {}, t.assignees.length ? `@${t.assignees.join(' @')}` : 'unassigned'),
     h('span', { title: fmt(t.created_at) }, `opened ${ago(t.created_at)}`),
@@ -872,14 +921,22 @@ function renderDrawer() {
   $('d-close').onclick = closeDrawer;
 }
 const pre = text => h('pre', {}, text || '(empty)');
-async function preFile(path, into) { const p = pre('loading…'); into.append(p); p.textContent = await file(path); }
+async function preFile(path, into) {
+  const p = pre('Loading artifact…'); into.append(p);
+  try { p.textContent = await file(path); }
+  catch (e) {
+    p.textContent = e.message;
+    const retry = h('button', { type: 'button', onclick: () => { p.remove(); retry.remove(); preFile(path, into); } }, 'Retry artifact');
+    into.append(retry);
+  }
+}
 function tabTimeline(t, c) {
   const ol = h('ol', { class: 'tl' });
   t.events.slice().reverse().forEach((e, i, arr) => {
     const prev = arr[i + 1];
     const li = h('li', {}, h('span', { class: 't', title: fmt(e.at) }, `${fmt(e.at)} ${prev ? '+' + dur(prev.at, e.at) : ''}`), h('span', { class: `ev ev-${e.kind}` }, e.kind),
       h('span', {}, e.detail, e.body ? h('details', {}, h('summary', {}, 'full text'), pre(e.body)) : null,
-        e.path ? h('details', { ontoggle: ev => { if (ev.target.open && !ev.target.dataset.l) { ev.target.dataset.l = 1; preFile(e.path, ev.target); } } }, h('summary', {}, e.path)) : null));
+        e.path ? h('details', { ontoggle: ev => { if (ev.target.open && !ev.target.dataset.l) { ev.target.dataset.l = 1; preFile(e.path, ev.target); } } }, h('summary', {}, e.path), h('button', { onclick: () => openFM(t.number, { path: e.path, label: e.path }) }, 'Ask FM about this artifact')) : null));
     ol.append(li);
   });
   c.append(h('div', { class: 'kv' }, h('dt', {}, 'created'), h('dd', {}, fmt(t.created_at)), h('dt', {}, 'updated'), h('dd', {}, fmt(t.updated_at)),
@@ -895,7 +952,8 @@ function tabAttempts(t, c) {
     const body = h('div');
     const btn = h('button', { onclick: async () => { if (body.childElementCount) { body.replaceChildren(); btn.textContent = 'view log'; } else { btn.textContent = 'hide'; await preFile(a.path, body); } } }, 'view log');
     box.append(h('div', { class: 'ah' }, h('b', {}, isBounce(a) ? `review bounce (attempt ${a.attempt})` : `gate round ${a.attempt}`),
-      h('span', { class: 'hint' }, `${kb(a.size)} · finished ${fmt(a.mtime)}${startAt ? ' · ~' + dur(startAt, a.mtime) : ''}`), btn), body);
+      h('span', { class: 'hint' }, `${kb(a.size)} · finished ${fmt(a.mtime)}${startAt ? ' · ~' + dur(startAt, a.mtime) : ''}`), btn,
+      h('button', { onclick: () => openFM(t.number, { path: a.path, label: `Attempt ${a.attempt} log` }) }, 'Ask FM about this log')), body);
     c.append(box);
   });
   const sp = t.spend || {};
@@ -912,6 +970,7 @@ function tabGate(t, c) {
   const text = t.gate ? t.gate.text : t.pr && t.pr.gate_text;
   const parsed = t.gate ? checks : Object.fromEntries([...(text || '').matchAll(/- ([\w-]+): (PASS|FAIL|SKIP)/g)].map(m => [m[1], m[2]]));
   c.append(h('div', { class: 'section-h' }, t.gate ? `latest report on disk · ${ago(t.gate.mtime)}` : t.pr && t.pr.gate_text ? 'from PR body (worktree gone)' : 'no gate report'));
+  if (text) c.append(h('button', { onclick: () => openFM(t.number, t.gate ? { path: t.gate.path, label: 'Gate report' } : { match: 'gate', label: 'PR gate report' }) }, 'Ask FM about this gate'));
   c.append(h('div', { class: 'checks' }, ...S.snap.config.gate_checks.map(n => h('span', { class: `chk ${parsed[n] || ''}` }, `${n} ${parsed[n] || '?'}`))));
   if (text) c.append(pre(text));
   if (t.gate && t.pr && t.pr.gate_text && t.pr.gate_text !== t.gate.text.trim()) { c.append(h('div', { class: 'section-h' }, 'report attached to the PR at open'), pre(t.pr.gate_text)); }
@@ -920,6 +979,7 @@ function tabReview(t, c) {
   const vs = t.pr ? t.pr.verdicts : [];
   const last = vs.at(-1);
   c.append(h('div', { class: 'section-h' }, last ? `latest verdict: ${last.verdict} · ${ago(last.at)}` : 'no reviewer verdict on the PR'));
+  if (last || t.review) c.append(h('button', { onclick: () => openFM(t.number, t.review ? { path: t.review.path, label: 'Local review' } : { match: 'verdict|review', label: 'PR review verdict' }) }, 'Ask FM about this review'));
   if (last) c.append(h('div', { class: 'checks' }, ...vs.map(v => h('span', { class: `chk ${v.verdict === 'APPROVE' ? 'PASS' : 'FAIL'}`, title: fmt(v.at) }, `${v.verdict} ${hm(v.at)}`))));
   vs.slice().reverse().forEach((v, i) => c.append(h('details', { open: i === 0 }, h('summary', {}, `${v.verdict} · ${fmt(v.at)}`), pre(v.body))));
   if (t.review) c.append(h('div', { class: 'section-h' }, `local review-${t.number}.md · ${t.review.verdict || '?'} · ${ago(t.review.mtime)}`), h('details', {}, h('summary', {}, t.review.path), pre(t.review.text)));
@@ -942,194 +1002,520 @@ function tabBranch(t, c) {
 function tabPrompt(t, c) {
   if (!t.prompt) { c.append(h('div', { class: 'empty' }, 'no .factory-prompt.md (worktree gone or never claimed)')); return; }
   c.append(h('div', { class: 'section-h' }, `${t.prompt.path} · ${kb(t.prompt.size)} · ${ago(t.prompt.mtime)}`));
+  c.append(h('button', { onclick: () => openFM(t.number, { path: t.prompt.path, label: 'Worker prompt' }) }, 'Ask FM about this prompt'));
   preFile(t.prompt.path, c);
 }
 function tabIssue(t, c) {
   c.append(h('div', { class: 'section-h' }, `${t.state.toLowerCase()} · ${t.labels.join(', ') || 'no labels'}`), pre(t.body));
+  c.append(h('button', { onclick: () => openFM(t.number, { match: 'issue', label: 'Issue body and discussion' }) }, 'Ask FM about this source'));
 }
 
 // ---------------------------------------------------------------- inbox
-// What is waiting on a human, derived from the same snapshot. Ordered by
-// urgency; each item carries the forms that answer it via /api/act.
 function lastEvent(t, kind) { return t.events.filter(e => e.kind === kind).at(-1); }
+const WAITING = new Set(['system', 'escalated', 'needs-info', 'wontfix', 'stuck', 'triage']);
+const INBOX_KINDS = { system: 'System attention', escalated: 'Human decision', 'needs-info': 'Question for you', wontfix: 'Wontfix proposal', stuck: 'Stuck claim', triage: 'Untriaged', pr: 'Merge queue', stale: 'Housekeeping', assigned: 'In human hands', active: 'Current task' };
 function inboxItems() {
   const items = [], d = S.snap.dispatcher, cfg = S.snap.config;
-  if (!d.timer.active) items.push({ pri: 0, kind: 'system', title: 'Dispatcher timer is not active', why: 'Nothing will be triaged, claimed, gated, or merged until it runs.', cmd: `systemctl --user enable --now ${cfg.unit}.timer` });
+  if (!d.timer.active) items.push({ key: 'system-timer', pri: 0, kind: 'system', title: 'Dispatcher timer is not active', why: 'Automatic triage, claims, gates, and merges will not run on schedule.', cmd: `systemctl --user enable --now ${cfg.unit}.timer`, next: 'The host operator must inspect the timer and enable it if intended.' });
   const lastRun = d.runs.at(-1);
-  if (lastRun && lastRun.result === 'failed') items.push({ pri: 0, kind: 'system', title: `Last dispatcher pass failed (${fmt(lastRun.started)})`, why: lastRun.lines.slice(-3).join(' · ') || 'no output', cmd: `journalctl --user -u ${cfg.unit}.service -n 200` });
-  if (!cfg.triage.online) items.push({ pri: 0, kind: 'system', title: 'Triage LLM endpoint is offline', why: `${cfg.triage.url} did not answer; needs-triage issues will not be triaged.`, cmd: `# expected model: ${cfg.triage.model}` });
-  if (cfg.upstream && S.snap.upstream.blocker) items.push({ pri: 0, kind: 'system', title: `Upstream sync parked: ${S.snap.upstream.blocker.title}`, why: `${upstreamPending().length} upstream commit(s) will not be merged until #${S.snap.upstream.blocker.number} is closed.`, cmd: `git fetch ${cfg.upstream} && git merge --no-ff --signoff ${cfg.upstream}/${cfg.main} && git push origin ${cfg.main}  # then close #${S.snap.upstream.blocker.number}` });
-  for (const t of S.snap.tickets) {
-    const triaged = lastEvent(t, 'triaged');
-    const humanHands = t.assignees.length > 0;
-    if (t.stage === 'escalated' && !humanHands) {
-      const esc = lastEvent(t, 'escalated');
-      items.push({ pri: 1, kind: 'escalated', t, title: t.title, why: esc ? esc.detail : 'labelled ready-for-human', at: esc && esc.at });
-    } else if (t.stage === 'needs-info') {
-      const q = triaged && (triaged.body.split(/\n\s*Question:\s*/)[1] || '').trim();
-      items.push({ pri: 2, kind: 'needs-info', t, title: t.title, why: q || 'triage asked for more information (see comments)', at: triaged && triaged.at });
-    } else if (t.stage === 'triage' && triaged && /^Triage proposal: wontfix/.test(triaged.body)) {
-      items.push({ pri: 3, kind: 'wontfix', t, title: t.title, why: triaged.body.replace(/^Triage proposal: wontfix\s*[—-]\s*/, ''), at: triaged.at });
-    } else if (t.stage === 'queued' && humanHands && !t.lock_held) {
-      items.push({ pri: 4, kind: 'stuck', t, title: t.title, why: `assigned to @${t.assignees.join(', @')} with no live pipeline — the dispatcher skips assigned tickets`, at: t.updated_at });
-    } else if (t.stage === 'triage') {
-      items.push({ pri: 5, kind: 'triage', t, title: t.title, why: triaged ? `triage commented but left the label: ${triaged.detail}` : 'no triage decision yet', at: t.created_at });
-    } else if (t.stage === 'pr-open') {
-      items.push({ pri: 6, kind: 'pr', t, title: t.title, why: t.pr.approved ? 'factory-approved · merge stage lands it when CI is green and the branch is current' : `not factory-approved · merge stage will not touch PR #${t.pr.number}`, at: t.pr.created_at });
-    }
-    if (t.worktree && (t.stage === 'merged' || t.stage === 'closed')) items.push({ pri: 7, kind: 'stale', t, title: t.title, why: `${t.worktree.path} still on disk after ${t.stage}`, at: t.updated_at });
+  if (lastRun && lastRun.result === 'failed') items.push({ key: 'system-dispatch', pri: 0, kind: 'system', title: 'The last dispatcher pass failed', why: lastRun.lines.slice(-3).join(' · ') || 'The journal contains no failure detail.', cmd: `journalctl --user -u ${cfg.unit}.service -n 200`, next: 'The host operator must diagnose the journal before restarting the pipeline.' });
+  if (!cfg.triage.online) items.push({ key: 'system-triage', pri: 0, kind: 'system', title: 'The triage endpoint is offline', why: `${cfg.triage.url} did not answer. Issues needing triage will wait.`, cmd: `Expected model: ${cfg.triage.model}`, next: 'The host operator must restore the configured triage service. This is separate from Factory Manager.' });
+  if (cfg.upstream && S.snap.upstream.blocker) {
+    const b = S.snap.upstream.blocker;
+    items.push({ key: 'system-upstream', pri: 0, kind: 'system', title: `Upstream sync is parked: ${b.title}`, why: `${upstreamPending().length} upstream commit(s) are waiting on issue #${b.number}.`, url: b.url, cmd: `git fetch ${cfg.upstream}\ngit merge --no-ff --signoff ${cfg.upstream}/${cfg.main}`, next: `The maintainer must inspect and resolve issue #${b.number}, validate the merge, then explicitly push and close the blocker. These commands are reference only.` });
   }
-  return items.sort((a, b) => a.pri - b.pri || (b.t ? b.t.number : 0) - (a.t ? a.t.number : 0));
+  for (const t of S.snap.tickets) {
+    const triaged = lastEvent(t, 'triaged'), humanHands = t.assignees.length > 0;
+    let item;
+    if (t.stage === 'escalated') {
+      const esc = lastEvent(t, 'escalated');
+      item = { pri: humanHands ? 6 : 1, kind: humanHands ? 'assigned' : 'escalated', why: esc ? esc.detail : 'Labelled ready-for-human.', at: esc && esc.at };
+    } else if (t.stage === 'needs-info') {
+      const question = triaged && ((triaged.body || '').split(/\n\s*Question:\s*/)[1] || '').trim();
+      item = { pri: 2, kind: 'needs-info', why: question || 'Triage asked for more information; inspect the issue discussion.', at: triaged && triaged.at };
+    } else if (t.stage === 'triage' && triaged && /^Triage proposal: wontfix/.test(triaged.body || '')) {
+      item = { pri: 3, kind: 'wontfix', why: triaged.body.replace(/^Triage proposal: wontfix\s*[—-]\s*/, ''), at: triaged.at };
+    } else if (t.stage === 'queued' && humanHands && !t.lock_held) {
+      item = { pri: 4, kind: 'stuck', why: `Assigned to @${t.assignees.join(', @')} with no live pipeline. The dispatcher skips assigned tickets.`, at: t.updated_at };
+    } else if (t.stage === 'triage') {
+      item = { pri: 5, kind: 'triage', why: triaged ? `Triage commented but left the label: ${triaged.detail}` : 'No triage decision has been recorded.', at: t.created_at };
+    } else if (t.stage === 'pr-open' && t.pr) {
+      item = { pri: 6, kind: 'pr', why: t.pr.approved ? 'Factory-approved. The merge stage waits for green CI and a branch containing the current main tip.' : `Not factory-approved. The merge stage will not touch PR #${t.pr.number}.`, at: t.pr.created_at };
+    } else if (t.worktree && ['merged', 'closed'].includes(t.stage)) {
+      item = { pri: 7, kind: 'stale', why: `${t.worktree.path} remains on disk after the ticket was ${t.stage}.`, at: t.updated_at };
+    }
+    if (item) items.push({ ...item, key: String(t.number), t, title: t.title });
+  }
+  return items.sort((a, b) => a.pri - b.pri || (b.t?.number || 0) - (a.t?.number || 0));
 }
-const INBOX_KINDS = {
-  system: ['SYSTEM', 'var(--red)'], escalated: ['ESCALATED · NEEDS YOUR CALL', 'var(--mag)'], 'needs-info': ['QUESTION FOR YOU', 'var(--org)'],
-  wontfix: ['WONTFIX PROPOSAL', 'var(--pur)'], stuck: ['STUCK CLAIM', 'var(--yel)'], triage: ['UNTRIAGED', 'var(--pur)'], pr: ['IN THE MERGE QUEUE', 'var(--blu)'], stale: ['HOUSEKEEPING', 'var(--dim)'],
-};
-const WAITING = new Set(['system', 'escalated', 'needs-info', 'wontfix', 'stuck', 'triage']);
 function inboxCount() { return S.snap ? inboxItems().filter(i => WAITING.has(i.kind)).length : 0; }
-
-async function act(form, payloads, label) {
-  const btns = [...form.querySelectorAll('button')]; btns.forEach(b => b.disabled = true);
-  const out = form.querySelector('.act-out'); out.className = 'act-out'; out.textContent = `${label}…`;
+function selectedItem() {
+  const item = inboxItems().find(i => i.key === S.inboxKey);
+  if (item) return item;
+  const t = S.snap.tickets.find(t => String(t.number) === S.inboxKey);
+  return t ? { key: String(t.number), t, kind: 'active', title: t.title, why: `Current state: ${STAGE_NAME[t.stage] || t.stage}. This task is not awaiting an Inbox decision.` } : null;
+}
+function ticketFingerprint(t, snap = S.snap) {
+  return JSON.stringify({ ticket: t, approved: snap.config.approved_label, repo: snap.repo });
+}
+function saveInboxState() {
+  if (!S.snap) return;
+  try { sessionStorage.setItem(`factory-inbox:${S.snap.repo}`, JSON.stringify({ drafts: S.drafts, choices: S.choices, inboxKey: S.inboxKey, chats: S.chats, receipts: S.receipts })); } catch (_) { /* Browser storage may be unavailable; in-memory drafts still survive polling. */ }
+}
+function restoreInboxState() {
+  if (S.restored) return;
+  S.restored = true;
   try {
-    for (const payload of [].concat(payloads)) {
-      const r = await fetch('/api/act', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Factory-Act': '1' }, body: JSON.stringify(payload) });
-      const res = await r.json();
-      if (!res.ok) {
-        out.classList.add('bad');
-        out.replaceChildren(`${label} failed`, ...(res.error ? [h('pre', {}, res.error)] : []), ...res.steps.filter(s => !s.ok).map(s => h('pre', {}, `${s.cmd}\n${s.output}`)));
-        btns.forEach(b => b.disabled = false);
-        return;
-      }
-    }
-    const n = [].concat(payloads)[0].number; if (n != null) delete S.drafts[n];
-    toast(`${label} — done`);
-    await load(true);
-  } catch (e) { out.classList.add('bad'); out.textContent = `${label} failed: ${e.message}`; btns.forEach(b => b.disabled = false); }
+    const saved = JSON.parse(sessionStorage.getItem(`factory-inbox:${S.snap.repo}`) || 'null');
+    if (!saved || typeof saved !== 'object') return;
+    for (const key of ['drafts', 'choices', 'chats', 'receipts']) if (saved[key] && typeof saved[key] === 'object' && !Array.isArray(saved[key])) S[key] = saved[key];
+    for (const chat of Object.values(S.chats)) if (chat.pending) { chat.pending = false; chat.error = 'The page was reloaded before the FM answer arrived. Your question is retained; retry when ready.'; }
+    if (!S.inboxKey && typeof saved.inboxKey === 'string') S.inboxKey = saved.inboxKey;
+  } catch (_) { /* A corrupt or unavailable session must not prevent opening the dashboard. */ }
 }
-function toast(msg) { const el = h('div', { class: 'toast' }, msg); $('toasts').append(el); setTimeout(() => el.remove(), 4000); }
-function confirmBtn(label, fn, opts = {}) {
-  const b = h('button', { class: opts.danger ? 'danger' : opts.primary ? 'primary' : '' }, label);
-  b.onclick = () => { if (!opts.confirm || b.dataset.armed) { delete b.dataset.armed; b.textContent = label; fn(); } else { b.dataset.armed = 1; b.textContent = `${label}? click again`; setTimeout(() => { delete b.dataset.armed; b.textContent = label; }, 4000); } };
-  return b;
+async function fmRequest(path, payload) {
+  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Factory-Act': '1' }, body: JSON.stringify(payload) });
+  const result = await r.json();
+  if (!r.ok || !result.ok) throw new Error(result.error || `Request failed (${r.status})`);
+  return result;
 }
-function inboxForm(item) {
-  const t = item.t, form = h('div', { class: 'act' });
-  const ta = h('textarea', { rows: 3, placeholder: '', dataset: { n: t ? t.number : '' } });
-  if (t && S.drafts[t.number]) ta.value = S.drafts[t.number];
-  const out = h('div', { class: 'act-out' });
-  const issue = (label, extra, opts) => confirmBtn(label, () => act(form, { op: 'issue', number: t.number, comment: ta.value, ...extra }, `#${t.number} ${label}`), opts);
-  const pr = (label, extra, opts) => confirmBtn(label, () => act(form, { op: 'pr', number: t.pr.number, ...extra }, `PR #${t.pr.number} ${label}`), opts);
-  const row = (...b) => h('div', { class: 'act-row' }, ...b);
+function updateInbox(force = false, preserveFocus = false) {
+  if (!S.snap) return;
+  if ($('fm-dialog').open || $('decision-dialog').open || (!force && $('inbox').contains(document.activeElement))) { S.inboxDirty = true; return; }
+  const active = preserveFocus && $('inbox').contains(document.activeElement) ? document.activeElement : null;
+  const selection = active?.tagName === 'TEXTAREA' ? [active.selectionStart, active.selectionEnd] : null;
+  const expanded = preserveFocus ? [...$('inbox').querySelectorAll('details[open]')].map(el => el.querySelector('summary')?.textContent) : [];
+  S.inboxDirty = false;
+  renderInbox();
+  for (const el of $('inbox').querySelectorAll('details')) if (expanded.includes(el.querySelector('summary')?.textContent)) el.open = true;
+  const replacement = active && (active.id ? $(active.id) : [...$('inbox').querySelectorAll('button, a, summary')].find(el => el.tagName === active.tagName && el.textContent === active.textContent));
+  if (replacement) { replacement.focus({ preventScroll: true }); if (selection) replacement.setSelectionRange(...selection); }
+}
+function renderInboxHealth() {
+  if ($('inbox-health').contains(document.activeElement)) return;
+  const stale = S.failed || Date.now() - S.okAt > 180000;
+  replaceChildren($('inbox-health'),
+    stale ? h('p', {}, 'Snapshot is stale or the last refresh failed. Decisions are blocked until fresh state is available.') : null,
+    ...S.snap.errors.map(error => h('p', {}, error)),
+    stale || S.snap.errors.length ? h('button', { onclick: () => load(true) }, 'Retry snapshot') : null);
+}
+async function ensureBriefing(number, retry = false) {
+  const t = S.snap.tickets.find(t => t.number === number);
+  if (!t) return null;
+  let entry = S.briefings[number];
+  if (entry?.loading) return entry.promise;
+  if (entry && !retry) return entry.data || null;
+  entry = S.briefings[number] = { fingerprint: ticketFingerprint(t), loading: true, data: null, error: '' };
+  entry.promise = (async () => {
+    try { entry.data = await fmRequest('/api/briefing', { number }); }
+    catch (e) { entry.error = e.message; }
+    finally { entry.loading = false; if (S.inboxKey === String(number)) updateInbox(true, true); }
+    return entry.data;
+  })();
+  if (S.inboxKey === String(number)) updateInbox(true, true);
+  return entry.promise;
+}
+function safeSourceURL(url) {
+  try { const u = new URL(url); return ['https:', 'http:'].includes(u.protocol) ? u.href : null; } catch (_) { return null; }
+}
+function sourceScope(number, source, run) {
+  const path = !run && S.fm?.number === number && S.fm.scope?.path === source.path ? source.path : null;
+  return { source, ...(run ? { run } : path ? { path } : {}) };
+}
+function cited(text, sources, number, run = null) {
+  const node = h('span');
+  for (const part of String(text || '').split(/(\[S\d+\])/g)) {
+    const index = sources.findIndex(s => `[${s.id}]` === part), source = sources[index];
+    node.append(source ? h('button', { type: 'button', class: 'fm-citation', title: `${source.label} · ${source.id}`, dataset: { source: source.id }, 'aria-label': `Inspect source ${index + 1}: ${source.label}`, onclick: () => openFM(number, sourceScope(number, source, run)) }, `[${index + 1}]`) : document.createTextNode(part));
+  }
+  return node;
+}
+function sourceDetails(number, source, expanded = false, run = null) {
+  const url = safeSourceURL(source.url);
+  return h('details', { open: expanded, dataset: { source: source.id } }, h('summary', { title: source.id }, `${source.label}${source.truncated ? ' · truncated context' : ''}`),
+    source.path ? h('p', { class: 'briefing-muted' }, source.path) : null,
+    source.truncated ? h('p', { class: 'briefing-status' }, 'This source was shortened to fit the evidence limit. FM has not seen omitted material.') : null,
+    pre(source.text), url ? h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, 'Open original source') : null,
+    h('button', { type: 'button', onclick: () => openFM(number, sourceScope(number, source, run)) }, 'Ask FM about this source'));
+}
+function briefingSection(step, title, ...content) {
+  return h('section', { class: 'briefing-section', 'aria-label': title }, h('h3', { class: 'briefing-step' }, h('span', {}, step), title), h('div', { class: 'briefing-body' }, ...content));
+}
+function taskFacts(item) {
+  const t = item.t, facts = [];
+  if (t.lock_held) facts.push('A live pipeline holds this task’s lock. Inbox mutations are blocked until it releases the task.');
+  facts.push(t.assignees.length ? `Currently assigned to @${t.assignees.join(', @')}. Routing labels alone do not release an assignment.` : 'Currently unassigned.');
+  if (t.gate) {
+    const failures = Object.entries(t.gate.checks).filter(([, value]) => value === 'FAIL').map(([name]) => name);
+    facts.push(failures.length ? `Gate failures: ${failures.join(', ')}.` : `Latest gate: ${Object.entries(t.gate.checks).map(([name, value]) => `${name} ${value}`).join(' · ') || 'no check results recorded'}.`);
+  } else facts.push('No local gate report is available.');
+  if (t.pr) {
+    facts.push(`PR #${t.pr.number}: ${t.pr.state.toLowerCase()}, ${t.pr.approved ? 'factory-approved' : 'not approved'}, CI ${t.pr.checks.state || 'unknown'}.`);
+    const failed = t.pr.checks.list.filter(c => ['FAILURE', 'ERROR'].includes(c.result)).map(c => c.name);
+    if (failed.length) facts.push(`Failing CI checks: ${failed.join(', ')}. Approval does not bypass CI.`);
+    const verdict = t.pr.verdicts.at(-1);
+    if (verdict) facts.push(`Latest reviewer verdict: ${verdict.verdict} (${fmt(verdict.at)}).`);
+  }
+  return h('ul', {}, ...facts.map(fact => h('li', {}, fact)));
+}
+function actionOptions(item) {
+  const t = item.t, options = [];
+  if (!t) return options;
+  const assigned = t.assignees.length ? ` Current assignment stays with @${t.assignees.join(', @')}; the dispatcher skips assigned tickets.` : '';
+  const reversible = 'Labels and assignment can be changed again on GitHub; any work already started and the decision comment remain.';
+  const add = (id, label, effect, next, payloads, reversal = reversible, danger = false) => options.push({ id, label, effect, next, payloads, reversal, danger });
+  const issue = extra => ({ op: 'issue', number: t.number, ...extra });
+  const pr = extra => ({ op: 'pr', number: t.pr.number, ...extra });
+  const close = () => add('close', 'Close · not planned', 'Close this issue as not planned. This does not close an associated PR, remove its merge approval, or delete local work.', 'No issue worker. The maintainer must separately resolve any open PR.', [issue({ close: 'not planned' })], 'The issue can be reopened on GitHub; its comments and any completed work remain.', true);
   switch (item.kind) {
-    case 'escalated': {
-      ta.placeholder = 'Guidance for the next attempt (posted as an issue comment; the worker prompt includes it)';
-      const ci = t.pr && (t.pr.checks.counts.FAILURE || t.pr.checks.counts.ERROR);
-      form.append(ta, row(
-        issue('Re-queue agent', { add: ['ready-for-agent'], remove: ['ready-for-human'], unassign: true }, { primary: true }),
-        issue('I will take it', { assign: true }),
-        t.pr && !t.pr.approved ? confirmBtn('Re-approve PR for merge', () => act(form, [{ op: 'pr', number: t.pr.number, add: [S.snap.config.approved_label] }, { op: 'issue', number: t.number, remove: ['ready-for-human'] }], `PR #${t.pr.number} re-approve`), { confirm: true }) : null,
-        issue('Close · not planned', { close: 'not planned' }, { danger: true, confirm: true })),
-        ...(ci ? [h('div', { class: 'hint' }, `CI failing on PR #${t.pr.number}: ${t.pr.checks.list.filter(c => c.result === 'FAILURE' || c.result === 'ERROR').map(c => c.name).join(', ')}`)] : []));
+    case 'assigned':
+    case 'escalated':
+      add('requeue', 'Re-queue agent', 'Post your guidance, add ready-for-agent, remove ready-for-human, and remove your own assignment if present. Other assignees remain. An existing PR is not closed or unapproved.', 'The dispatcher may claim it on its next pass once no assignees remain, subject to capacity and dependencies.', [issue({ add: ['ready-for-agent'], remove: ['ready-for-human'], unassign: true })]);
+      add('take', 'I will take it', 'Assign the authenticated GitHub user to the issue. Keep its labels and any other assignees.', 'You, as the signed-in GitHub user. Automatic claiming stops while assigned.', [issue({ assign: true })]);
+      if (t.pr && !t.pr.approved) add('reapprove', 'Re-approve PR for merge', `Add ${S.snap.config.approved_label} to PR #${t.pr.number}, then remove ready-for-human from the issue. No new gate or review is run.`, 'The merge stage may squash and land the PR once CI is green and the branch is current.', [pr({ add: [S.snap.config.approved_label] }), issue({ remove: ['ready-for-human'] })], 'Approval can be removed before merge. After merge, reverting needs a separate change.');
+      close();
       break;
-    }
     case 'needs-info':
-      ta.placeholder = 'Your answer (posted as an issue comment)';
-      form.append(ta, row(
-        issue('Answer → re-triage', { add: ['needs-triage'], remove: ['needs-info'] }, { primary: true }),
-        issue('Answer → queue agent', { add: ['ready-for-agent'], remove: ['needs-info'] }),
-        issue('Answer → human', { add: ['ready-for-human'], remove: ['needs-info'] }),
-        issue('Close · not planned', { close: 'not planned' }, { danger: true, confirm: true })));
+      add('retriage', 'Answer → re-triage', 'Post your answer, replace needs-info with needs-triage.', `The triage service on a later dispatch pass.${assigned}`, [issue({ add: ['needs-triage'], remove: ['needs-info'] })]);
+      add('queue', 'Answer → queue agent', 'Post your answer, replace needs-info with ready-for-agent.', `The dispatcher when the issue is claimable.${assigned}`, [issue({ add: ['ready-for-agent'], remove: ['needs-info'] })]);
+      add('human', 'Answer → human', 'Post your answer, replace needs-info with ready-for-human. This does not assign anyone.', `A human maintainer.${assigned}`, [issue({ add: ['ready-for-human'], remove: ['needs-info'] })]);
+      close();
       break;
     case 'wontfix':
-      ta.placeholder = 'Optional note';
-      form.append(ta, row(
-        issue('Accept · close wontfix', { add: ['wontfix'], remove: ['needs-triage'], close: 'not planned' }, { danger: true, confirm: true }),
-        issue('Reject → queue agent', { add: ['ready-for-agent'], remove: ['needs-triage'] }, { primary: true }),
-        issue('Reject → human', { add: ['ready-for-human'], remove: ['needs-triage'] })));
+      add('wontfix', 'Accept · close wontfix', 'Add wontfix, remove needs-triage, and close the issue as not planned. An associated PR is unchanged.', 'No issue worker. The maintainer owns any remaining PR or worktree.', [issue({ add: ['wontfix'], remove: ['needs-triage'], close: 'not planned' })], 'Reopen and change labels on GitHub if the decision changes; the comment remains.', true);
+      add('queue', 'Reject → queue agent', 'Replace needs-triage with ready-for-agent; keep the issue open.', `The dispatcher when the issue is claimable.${assigned}`, [issue({ add: ['ready-for-agent'], remove: ['needs-triage'] })]);
+      add('human', 'Reject → human', 'Replace needs-triage with ready-for-human. No one is newly assigned.', `A human maintainer.${assigned}`, [issue({ add: ['ready-for-human'], remove: ['needs-triage'] })]);
       break;
     case 'stuck':
-      form.append(row(issue('Release claim', { unassign: true }, { primary: true }), issue('Send to human', { add: ['ready-for-human'], remove: ['ready-for-agent'] })));
+      add('release', 'Release my claim', 'Remove your own assignment if present. Keep other assignees, ready-for-agent, and all other labels unchanged.', 'Once no assignees remain, the dispatcher can claim this queued issue on its next eligible pass.', [issue({ unassign: true })]);
+      add('human', 'Send to human', 'Replace ready-for-agent with ready-for-human. Preserve the current assignees.', `The current assignee: @${t.assignees.join(', @')}.`, [issue({ add: ['ready-for-human'], remove: ['ready-for-agent'] })]);
       break;
     case 'triage':
-      ta.placeholder = 'Optional note or question for the reporter';
-      form.append(ta, row(
-        confirmBtn('Run LLM triage', () => act(form, { op: 'triage', number: t.number }, `#${t.number} triage`), { primary: true }),
-        issue('Queue agent', { add: ['ready-for-agent'], remove: ['needs-triage'] }),
-        issue('Needs human', { add: ['ready-for-human'], remove: ['needs-triage'] }),
-        issue('Needs info', { add: ['needs-info'], remove: ['needs-triage'] }),
-        issue('Close · not planned', { close: 'not planned' }, { danger: true, confirm: true })));
+      add('triage', 'Run LLM triage', 'Record your decision, then invoke the existing triage service for this issue. Its result may post a comment and change routing labels.', 'The configured triage service, then the owner selected by its result. This is not an FM question.', [{ op: 'triage', number: t.number }]);
+      add('queue', 'Queue agent', 'Replace needs-triage with ready-for-agent.', `The dispatcher when the issue is claimable.${assigned}`, [issue({ add: ['ready-for-agent'], remove: ['needs-triage'] })]);
+      add('human', 'Needs human', 'Replace needs-triage with ready-for-human. No one is newly assigned.', `A human maintainer.${assigned}`, [issue({ add: ['ready-for-human'], remove: ['needs-triage'] })]);
+      add('info', 'Needs info', 'Post your question and replace needs-triage with needs-info.', 'The issue reporter must supply more information; Factory waits.', [issue({ add: ['needs-info'], remove: ['needs-triage'] })]);
+      close();
       break;
     case 'pr':
-      ta.placeholder = 'Guidance if sending it back (posted as an issue comment)';
-      form.append(ta, row(t.pr.approved
-        ? pr('Hold merge', { remove: [S.snap.config.approved_label] }, { confirm: true })
-        : pr('Approve for merge', { add: [S.snap.config.approved_label] }, { primary: true, confirm: true }),
-        issue('Send back to agent', { add: ['ready-for-agent'], unassign: true })),
-        h('div', { class: 'hint' }, `ci ${t.pr.checks.state || '—'} · ${Object.entries(t.pr.checks.counts).map(([k, v]) => `${k.toLowerCase()} ${v}`).join(' · ')}`));
+      if (t.pr.approved) add('hold', 'Hold merge', `Remove ${S.snap.config.approved_label} from PR #${t.pr.number}. The issue and its assignees remain unchanged.`, 'A maintainer must re-approve the PR before the merge stage can land it.', [pr({ remove: [S.snap.config.approved_label] })], 'Can be re-approved later. A merge already in progress may finish before the hold arrives.');
+      else add('approve', 'Approve for merge', `Add ${S.snap.config.approved_label} to PR #${t.pr.number}. This does not run a gate or reviewer and does not bypass CI.`, 'The merge stage may squash and land the PR once CI is green and the branch is current.', [pr({ add: [S.snap.config.approved_label] })], 'Approval can be removed before merge. After merge, reverting needs a separate change.');
+      add('back', 'Send back to agent', 'Add ready-for-agent and remove your own issue assignment if present. Other assignees and existing PR approval remain: hold merge first if you do not want it to land.', 'The dispatcher when no assignees remain and the issue becomes claimable; an open approved PR may still merge.', [issue({ add: ['ready-for-agent'], unassign: true })]);
       break;
     case 'stale':
-      form.append(row(confirmBtn('Remove worktree + branch', () => act(form, { op: 'cleanup', number: t.number }, `#${t.number} cleanup`), { danger: true, confirm: true })));
+      add('cleanup', 'Remove worktree + branch', `Delete the local worktree ${t.worktree.path} and the factory branch for issue #${t.number}. ${t.worktree.dirty ? 'The worktree has uncommitted changes which will be lost.' : 'Any unpushed local-only work will be lost.'} GitHub issues and PRs remain unchanged.`, 'No worker. The host retains only remote history and remaining Factory artifacts.', [{ op: 'cleanup', number: t.number }], 'Not reversible for uncommitted or local-only work. Preserve anything needed before confirming.', true);
       break;
   }
-  form.append(out);
+  return options;
+}
+function decisionPayloads(item, option, rationale) {
+  const comment = `Factory human decision: ${option.label}\n\nRationale: ${rationale}\n\nNext: ${option.next}`;
+  const payloads = option.payloads.map(p => ({ ...p }));
+  if (payloads[0].op === 'issue') payloads[0].comment = comment;
+  else payloads.unshift({ op: 'issue', number: item.t.number, comment });
+  for (const payload of payloads) if (payload.op === 'pr') payload.comment = comment;
+  return payloads;
+}
+function actionBlocked(item) {
+  if (S.failed || Date.now() - S.okAt > 180000 || S.snap.errors.length) return 'Fresh, complete snapshot data is required before applying a decision.';
+  if (item.t?.lock_held) return 'A live pipeline holds this task’s lock. Wait for it to finish before changing ownership or routing.';
+  return '';
+}
+function receiptNode(receipt) {
+  return h('div', { class: `briefing-receipt${receipt.status === 'applied' ? '' : ' bad'}`, role: 'status' }, h('h4', {}, `${receipt.label} · ${receipt.status}`),
+    h('p', {}, receipt.message), h('p', {}, `Next: ${receipt.next}`),
+    receipt.detail ? h('details', {}, h('summary', {}, 'Action receipt and exact results'), pre(receipt.detail)) : null);
+}
+function decisionForm(item) {
+  const options = actionOptions(item);
+  if (!options.length) return [
+    briefingSection('02', 'Compare', h('p', {}, 'No Inbox mutation is available for this state. Use the task drawer to inspect its live evidence.')),
+    briefingSection('03', 'Decide', h('p', {}, item.t.lock_held ? 'The running pipeline is the next owner. Wait for the lock to release.' : 'No human action is required by the current routing state.'), S.receipts[item.key] ? receiptNode(S.receipts[item.key]) : null)];
+  const form = h('form'), blocked = actionBlocked(item), fingerprint = ticketFingerprint(item.t);
+  const comparison = h('fieldset', { class: 'briefing-options', disabled: !!blocked }, h('legend', { class: 'briefing-label' }, 'Choose one option · nothing is sent until you confirm'));
+  const choiceText = h('p', { id: 'decision-choice', class: 'briefing-status' });
+  const describeChoice = () => {
+    const choice = options.find(option => option.id === S.choices[item.key]);
+    choiceText.textContent = choice ? `Your choice: ${choice.label}. Next: ${choice.next}` : 'Choose an option above. FM advice does not select or authorize an action.';
+  };
+  for (const option of options) {
+    const radio = h('input', { id: `decision-${option.id}`, type: 'radio', name: 'decision', value: option.id, required: true, checked: S.choices[item.key] === option.id, onchange: () => { S.choices[item.key] = option.id; saveInboxState(); describeChoice(); } });
+    comparison.append(h('article', { class: 'briefing-option' },
+      h('label', {}, radio, h('strong', {}, option.label)),
+      h('dl', { class: 'briefing-consequences' }, h('dt', {}, 'What changes'), h('dd', {}, option.effect), h('dt', {}, 'Next owner'), h('dd', {}, option.next), h('dt', {}, 'Can I undo it?'), h('dd', {}, option.reversal))));
+  }
+  const rationale = h('textarea', { id: 'decision-rationale', rows: 4, maxlength: '12000', required: true, disabled: !!blocked, oninput: e => { S.drafts[item.key] = e.target.value; saveInboxState(); } });
+  rationale.value = S.drafts[item.key] || '';
+  describeChoice();
+  form.append(briefingSection('02', 'Compare', comparison),
+    briefingSection('03', 'Decide', choiceText, h('label', { for: 'decision-rationale', class: 'briefing-label' }, item.kind === 'needs-info' ? 'Your answer and rationale' : 'Decision rationale / guidance for the next owner'), rationale,
+      h('p', { class: 'briefing-muted' }, 'Your decision label, rationale, and next owner will be posted as a durable issue comment and included in future worker context. PR decisions also post on the PR.'),
+      blocked ? h('p', { class: 'briefing-status' }, blocked) : null,
+      h('div', { class: 'briefing-actions' }, h('button', { type: 'submit', class: 'briefing-primary', disabled: !!blocked }, 'Preview decision'), h('button', { type: 'button', onclick: () => openFM(item.t.number) }, 'Ask FM before deciding')),
+      S.receipts[item.key] ? receiptNode(S.receipts[item.key]) : null));
+  form.onsubmit = e => {
+    e.preventDefault();
+    const option = options.find(option => option.id === S.choices[item.key]);
+    if (!option || !rationale.value.trim()) { rationale.setCustomValidity('Choose an option and explain your decision.'); rationale.reportValidity(); return; }
+    rationale.setCustomValidity('');
+    previewDecision(item, option, rationale.value.trim(), fingerprint);
+  };
+  rationale.addEventListener('input', () => rationale.setCustomValidity(''));
   return form;
 }
-function renderInbox() {
-  const all = inboxItems(), n = all.filter(i => WAITING.has(i.kind)).length;
-  const items = all.filter(i => !i.t || matches(i.t));
-  $('nav-inbox').replaceChildren('Inbox ', h('span', { class: `badge ${n ? 'hot' : ''}` }, n));
-  $('inbox-sum').textContent = (n ? `${n} item${n === 1 ? '' : 's'} waiting on you` : 'nothing waiting on you') + (S.q.trim() ? ` · showing ${items.length} matching “${S.q.trim()}”` : '');
-  const list = $('inbox-list'); list.replaceChildren();
-  if (!items.length) { list.append(h('div', { class: 'empty' }, all.length ? 'no inbox item matches the filter' : 'Inbox zero. The factory has nothing for you.')); return; }
-  let lastKind = null;
-  for (const item of items) {
-    const [label, color] = INBOX_KINDS[item.kind];
-    if (item.kind !== lastKind) { list.append(h('h3', { class: 'inbox-h', style: { '--c': color } }, label, h('span', {}, WAITING.has(item.kind) ? 'waiting on you' : 'informational'))); lastKind = item.kind; }
-    const t = item.t;
-    const card = h('article', { class: `inbox-item ${WAITING.has(item.kind) ? '' : 'info'}`, style: { '--c': color } },
-      h('div', { class: 'ih' },
-        t ? h('a', { class: 'num', href: `#t=${t.number}`, onclick: e => { e.preventDefault(); openTicket(t.number); } }, `#${t.number}`) : h('span', { class: 'num' }, '⚠'),
-        h('span', { class: 'ititle' }, item.title),
-        item.at ? h('span', { class: 'hint', title: fmt(item.at) }, ago(item.at)) : null,
-        t ? h('span', { class: 'links' }, h('a', { href: t.url, target: '_blank', rel: 'noopener' }, 'issue ↗'), t.pr ? h('a', { href: t.pr.url, target: '_blank', rel: 'noopener' }, `PR #${t.pr.number} ↗`) : null) : null),
-      h('div', { class: 'why' }, item.why),
-      item.cmd ? h('pre', {}, item.cmd) : null);
-    if (t) {
-      const ctx = [];
-      const v = t.pr && t.pr.verdicts.at(-1);
-      if (v && v.verdict === 'REVISE') ctx.push(h('details', {}, h('summary', {}, `last reviewer findings · REVISE · ${fmt(v.at)}`), h('pre', {}, v.body)));
-      const gate = t.gate && Object.entries(t.gate.checks).filter(([, s]) => s === 'FAIL');
-      if (gate && gate.length) ctx.push(h('details', {}, h('summary', {}, `gate failed: ${gate.map(g => g[0]).join(', ')}`), h('pre', {}, t.gate.text)));
-      if (item.kind === 'needs-info' || item.kind === 'wontfix' || item.kind === 'triage') ctx.push(h('details', {}, h('summary', {}, 'issue body'), h('pre', {}, t.body)));
-      const attempts = t.attempts.length ? `${t.attempts.length} attempt log${t.attempts.length === 1 ? '' : 's'}` : null;
-      const meta = [attempts, t.pr ? `PR #${t.pr.number} ${t.pr.state.toLowerCase()}${t.pr.approved ? ' · factory-approved' : ''}` : null, t.worker + ' worker'].filter(Boolean).join(' · ');
-      card.append(h('div', { class: 'hint' }, meta), ...ctx, inboxForm(item));
+function previewDecision(item, option, rationale, fingerprint) {
+  const current = selectedItem();
+  if (!current || current.key !== item.key || ticketFingerprint(current.t) !== fingerprint || actionBlocked(current)) {
+    S.receipts[item.key] = { label: option.label, status: 'not sent', message: 'This case changed or fresh data is unavailable. Review the updated briefing and choose again.', next: 'You. No action request was sent.' };
+    saveInboxState(); updateInbox(true); return;
+  }
+  const payloads = decisionPayloads(item, option, rationale);
+  S.preview = { item, option, payloads, fingerprint, busy: false };
+  $('decision-preview').replaceChildren(
+    h('p', { class: 'briefing-label' }, `${S.snap.repo} · issue #${item.t.number}${item.t.pr ? ` · PR #${item.t.pr.number}` : ''}`),
+    h('h3', {}, option.label), h('p', {}, item.title), h('p', {}, option.effect),
+    h('p', {}, `Next owner: ${option.next}`), h('p', {}, `Reversibility: ${option.reversal}`),
+    h('h4', {}, 'Exact requests, in order'), pre(JSON.stringify(payloads, null, 2)),
+    h('p', { class: 'briefing-muted' }, 'Confirming sends these requests as the server’s authenticated GitHub user. Fresh target state is checked first. Requests stop at the first failure; earlier successful steps cannot be rolled back automatically.'));
+  $('decision-status').textContent = 'Nothing has been sent.';
+  $('decision-confirm').disabled = false;
+  $('decision-confirm').textContent = option.danger ? 'Confirm destructive decision' : 'Confirm and apply';
+  $('decision-close').textContent = 'Cancel';
+  $('decision-dialog').showModal();
+}
+async function applyDecision() {
+  const preview = S.preview;
+  if (!preview || preview.busy || preview.finished) return;
+  preview.busy = true;
+  $('decision-confirm').disabled = true;
+  $('decision-status').textContent = 'Checking fresh target state…';
+  let completed = 0, successfulSteps = 0, sent = false;
+  const results = [];
+  let receipt;
+  try {
+    if (S.loading) await S.loading;
+    const r = await fetch('/api/snapshot?fresh=1');
+    if (!r.ok) throw new Error(`Fresh snapshot unavailable (${r.status})`);
+    const snapshot = await r.json(), current = snapshot.tickets.find(t => t.number === preview.item.t.number);
+    S.snap = snapshot; S.okAt = Date.now(); S.failed = false;
+    if (!current || snapshot.errors.length || current.lock_held || ticketFingerprint(current, snapshot) !== preview.fingerprint || S.inboxKey !== preview.item.key) {
+      receipt = { label: preview.option.label, status: 'not sent', message: 'Target state changed after the preview. Close this dialog, review the updated case, and preview again.', next: 'You. No action request was sent.' };
+    } else {
+      for (const payload of preview.payloads) {
+        $('decision-status').textContent = `Applying confirmed request ${completed + 1} of ${preview.payloads.length}…`;
+        sent = true;
+        const response = await fetch('/api/act', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Factory-Act': '1' }, body: JSON.stringify(payload) });
+        const result = await response.json();
+        results.push({ request: payload, response: result });
+        successfulSteps += (result.steps || []).filter(step => step.ok).length;
+        if (!response.ok || !result.ok) {
+          receipt = { label: preview.option.label, status: completed || successfulSteps ? 'partially applied' : 'failed', message: `${completed} of ${preview.payloads.length} requests completed. ${result.error || 'A command failed.'} Remaining requests were not sent.`, next: 'You. Inspect the receipt and current GitHub state before making another decision.' };
+          break;
+        }
+        completed++;
+      }
+      if (!receipt) receipt = { label: preview.option.label, status: 'applied', message: `All ${completed} confirmed requests completed. This records and routes the decision; it does not prove the next worker or merge has run.`, next: preview.option.next };
     }
-    list.append(card);
+  } catch (e) {
+    receipt = { label: preview.option.label, status: sent ? 'outcome unconfirmed' : 'not sent', message: sent ? `${completed} requests were confirmed before the connection failed: ${e.message}. The last request may have applied. No further requests were sent.` : `No action was sent: ${e.message}`, next: sent ? 'You. Check current GitHub state before retrying to avoid duplicate comments or actions.' : 'You. Restore the connection and preview again.' };
+  }
+  receipt.detail = JSON.stringify(results, null, 2);
+  S.receipts[preview.item.key] = receipt;
+  saveInboxState();
+  $('decision-status').replaceChildren(receiptNode(receipt));
+  $('decision-close').textContent = 'Close receipt';
+  preview.busy = false;
+  preview.finished = true;
+  renderInboxHealth();
+  await load(true);
+}
+function renderSystemBriefing(item) {
+  return h('article', {},
+    h('header', { class: 'briefing-intro' }, h('p', { class: 'briefing-label' }, 'System attention · host operator'), h('h2', { class: 'briefing-question', tabindex: -1 }, item.title), h('p', { class: 'briefing-deck' }, item.why)),
+    briefingSection('01', 'Understand', h('p', {}, 'This is a host-level incident, not an issue-scoped FM briefing. No recommendation has been generated.'), h('p', {}, item.next)),
+    briefingSection('02', 'Compare', h('article', { class: 'briefing-option' }, h('h4', {}, 'Investigate and restore service'), h('dl', { class: 'briefing-consequences' }, h('dt', {}, 'What changes'), h('dd', {}, 'Nothing from this dashboard. Inspect the host and decide whether service changes are appropriate.'), h('dt', {}, 'Next owner'), h('dd', {}, 'The host operator or repository maintainer.'), h('dt', {}, 'If you wait'), h('dd', {}, 'The affected automation remains unavailable; unrelated work may continue.')))),
+    briefingSection('03', 'Decide', h('p', {}, 'No host commands run from Inbox. Use the reference below on the host only after reviewing the incident.'),
+      item.url ? h('a', { href: safeSourceURL(item.url), target: '_blank', rel: 'noopener noreferrer' }, 'Open blocker issue') : null,
+      h('details', { class: 'briefing-sources' }, h('summary', {}, 'Host command / configuration reference'), pre(item.cmd)),
+      h('button', { onclick: () => setView('ops') }, 'Inspect operations')));
+}
+function renderTaskBriefing(item) {
+  const t = item.t, entry = S.briefings[t.number], fresh = entry && entry.fingerprint === ticketFingerprint(t);
+  const result = fresh ? entry.data : null, briefing = result?.briefing, sources = result?.sources || [];
+  const state = h('div', { id: 'briefing-fm-status', class: 'briefing-status', role: 'status' });
+  const retry = label => h('button', { id: 'briefing-refresh', onclick: () => ensureBriefing(t.number, true) }, label);
+  if (entry?.loading) state.append(h('p', {}, 'Factory Manager is reading the recorded task evidence. The full briefing may take a moment; all current action consequences remain available below.'), h('button', { id: 'briefing-refresh', disabled: true }, 'Generating briefing…'));
+  else if (entry?.error) state.append(h('p', {}, `Factory Manager could not generate this briefing: ${entry.error}`), retry('Retry briefing'));
+  else if (entry && !fresh) state.append(h('p', {}, 'Task evidence changed. The previous recommendation is not shown as current.'), retry('Generate updated briefing'));
+  else if (briefing) state.append(h('p', {}, `FM briefing generated ${fmt(result.generated_at)} · advisory, not an authorization`), retry('Refresh briefing'));
+  else state.append(h('p', {}, 'No FM briefing has been generated yet.'));
+  const history = h('div', { class: 'briefing-history' }, h('h4', { class: 'briefing-label' }, 'Earlier decisions & constraints that still matter'));
+  if (briefing?.history?.length) history.append(h('ul', {}, ...briefing.history.map(entry => h('li', {}, cited(entry.text, sources, t.number), h('span', { class: 'fm-citations' }, ...entry.sources.filter(id => !entry.text.includes(`[${id}]`)).map(id => cited(` [${id}]`, sources, t.number)))))));
+  else history.append(h('p', {}, briefing ? 'FM did not identify a relevant earlier decision in the available evidence. This does not prove none exists; inspect the source record or ask about missing context.' : 'Earlier decisions are not summarized until FM returns a grounded briefing. The raw issue and task evidence remain available below.'));
+  const raw = h('details', { class: 'briefing-sources' }, h('summary', {}, `Inspect raw evidence${sources.length ? ` · ${sources.length} sources` : ''}`));
+  if (sources.length) raw.append(...sources.map(source => sourceDetails(t.number, source)));
+  else raw.append(h('details', {}, h('summary', {}, 'Issue body'), pre(t.body)), h('button', { onclick: () => openTicket(t.number, 'timeline') }, 'Open task timeline and artifacts'));
+  return h('article', {},
+    h('header', { class: 'briefing-intro' }, h('p', { class: 'briefing-label' }, `${INBOX_KINDS[item.kind]} · #${t.number} · ${t.title}`),
+      h('h2', { id: 'briefing-question', class: 'briefing-question', tabindex: -1 }, briefing ? cited(briefing.question, sources, t.number) : item.kind === 'needs-info' ? item.why : `What should happen next for #${t.number}?`),
+      h('p', { class: 'briefing-deck' }, cited(briefing ? briefing.why : item.why, sources, t.number)),
+      h('div', { class: 'briefing-actions' }, h('button', { onclick: () => openFM(t.number) }, 'Ask FM about this task'), h('button', { onclick: () => openTicket(t.number) }, 'Open task details'), h('a', { href: t.url, target: '_blank', rel: 'noopener noreferrer' }, 'Issue on GitHub'), t.pr ? h('a', { href: t.pr.url, target: '_blank', rel: 'noopener noreferrer' }, `PR #${t.pr.number}`) : null)),
+    briefingSection('01', 'Understand', state,
+      h('div', {}, h('h4', { class: 'briefing-label' }, 'The situation'), h('p', {}, briefing ? cited(briefing.summary, sources, t.number) : item.why), taskFacts(item)),
+      h('div', { class: 'briefing-recommendation' }, h('h4', { class: 'briefing-label' }, 'Factory Manager’s recommendation'), h('p', {}, briefing ? cited(briefing.recommendation, sources, t.number) : 'No recommendation is available. Do not treat the ordering of options as advice.')),
+      history,
+      h('div', { class: 'briefing-unknown' }, h('h4', { class: 'briefing-label' }, 'What is still uncertain'), h('p', {}, briefing ? cited(briefing.unknown, sources, t.number) : 'FM has not yet identified uncertainties. Missing logs, earlier discussion, or recent changes may affect this decision.')),
+      raw),
+    decisionForm(item));
+}
+function selectCase(key) {
+  S.inboxKey = key; S.sel = null;
+  $('drawer').classList.remove('open'); $('drawer').setAttribute('aria-hidden', 'true');
+  syncHash(); saveInboxState(); updateInbox(true);
+  $('inbox-list').querySelector('.briefing-question')?.focus({ preventScroll: true });
+}
+function renderInbox() {
+  const all = inboxItems(), waiting = all.filter(i => WAITING.has(i.kind)), matching = waiting.filter(i => !i.t || matches(i.t));
+  $('nav-inbox').replaceChildren('Inbox ', h('span', { class: `badge ${waiting.length ? 'hot' : ''}` }, waiting.length));
+  $('inbox-sum').textContent = waiting.length ? `${waiting.length} case${waiting.length === 1 ? '' : 's'} waiting on you` : 'Nothing waiting on you';
+  if (!S.inboxKey && matching.length) { S.inboxKey = matching[0].key; syncHash(); saveInboxState(); }
+  const item = selectedItem(), list = $('inbox-list');
+  list.replaceChildren();
+  const selector = h('select', { id: 'briefing-case', onchange: e => selectCase(e.target.value) });
+  const navItems = matching.slice();
+  if (item && !navItems.some(i => i.key === item.key)) navItems.unshift(item);
+  selector.append(h('option', { value: '', disabled: true, selected: !item }, 'Choose a case'));
+  selector.append(...navItems.map(i => h('option', { value: i.key, selected: i.key === S.inboxKey }, `${i.t ? '#' + i.t.number : 'System'} · ${i.title}`)));
+  const index = navItems.findIndex(i => i.key === S.inboxKey);
+  list.append(h('nav', { class: 'briefing-nav', 'aria-label': 'Inbox cases' }, h('label', { for: 'briefing-case' }, 'Case to consider'), selector,
+    h('button', { disabled: index <= 0, onclick: () => selectCase(navItems[index - 1].key) }, 'Previous'),
+    h('button', { disabled: index < 0 || index >= navItems.length - 1, onclick: () => selectCase(navItems[index + 1].key) }, 'Next')));
+  if (S.q.trim()) list.append(h('p', { class: 'briefing-muted' }, `${matching.length} waiting case(s) match “${S.q.trim()}”. Your selected case stays visible even if it does not match.`));
+  if (item) list.append(item.t ? renderTaskBriefing(item) : renderSystemBriefing(item));
+  else {
+    list.append(h('div', { class: 'briefing-status' }, h('h3', {}, S.inboxKey ? 'The selected case is no longer in this snapshot' : 'Inbox clear'),
+      h('p', {}, S.inboxKey ? 'Your selection and draft are retained. Choose another case, or refresh to check whether the task is available again.' : 'No human-required cases match this view. Informational work is listed separately below.'),
+      S.inboxKey && S.receipts[S.inboxKey] ? receiptNode(S.receipts[S.inboxKey]) : null));
+  }
+  const informational = all.filter(i => !WAITING.has(i.kind) && (!i.t || matches(i.t)));
+  list.append(h('section', { class: 'briefing-info', 'aria-label': 'Informational items' }, h('h3', {}, 'For awareness'), h('p', { class: 'briefing-muted' }, 'Merge queue, assigned human work, and housekeeping are not included in the waiting-on-you count.'),
+    informational.length ? informational.map(i => h('article', { class: 'briefing-option' }, h('h4', {}, `${INBOX_KINDS[i.kind]} · #${i.t.number} · ${i.title}`), h('p', {}, i.why), h('button', { onclick: () => selectCase(i.key) }, 'Open full briefing & options'))) : h('p', {}, 'No informational items.')));
+  if (S.view === 'inbox' && item?.t && !S.briefings[item.t.number]) queueMicrotask(() => ensureBriefing(item.t.number));
+}
+function chatFor(number, scope) {
+  const key = `${scope?.run ? 'run:' + scope.run : number}:${scope?.source?.id || (scope ? scope.path || scope.match || scope.label : 'task')}`;
+  const chat = S.chats[key] ||= { messages: [], draft: '', error: '', pending: false };
+  return { key, chat };
+}
+async function openFM(number, scope = null) {
+  const t = S.snap.tickets.find(t => t.number === number);
+  if (!t && !scope?.run) return;
+  const context = { number, scope, run: scope?.run || null, ...chatFor(number, scope), resolving: !!scope && !scope.source && !scope.run && !scope.path };
+  S.fm = context;
+  renderFM();
+  if (!$('fm-dialog').open) $('fm-dialog').showModal();
+  if (!context.resolving) { $('fm-question').focus(); return; }
+  const entry = S.briefings[number];
+  const result = await ensureBriefing(number, !entry?.data || entry.fingerprint !== ticketFingerprint(t));
+  if (S.fm !== context) return;
+  const source = result?.sources.find(source => scope.path ? source.path === scope.path : scope.match ? new RegExp(scope.match, 'i').test(source.label) : false);
+  context.resolving = false;
+  if (source) {
+    context.scope = { source };
+    const previous = context.chat;
+    Object.assign(context, chatFor(number, context.scope));
+    if (!context.chat.draft) context.chat.draft = previous.draft;
+  } else context.scopeError = S.briefings[number]?.error || `This ${scope.label || 'source'} is not present in the current FM evidence. No question will be sent with an ambiguous scope.`;
+  renderFM();
+}
+function renderFM() {
+  const context = S.fm;
+  if (!context) return;
+  const { number, run, scope, chat } = context, t = S.snap.tickets.find(t => t.number === number);
+  const selectedRun = run && S.snap.dispatcher.runs.find(record => record.started === run);
+  $('fm-title').textContent = run ? 'Ask Factory Manager · dispatcher log' : `Ask Factory Manager · #${number}`;
+  replaceChildren($('fm-context'), h('p', { class: 'briefing-label' }, run ? `Dispatcher run: ${fmt(run)} · ${run}` : `Task: #${number} · ${t?.title || 'not in current snapshot'}`),
+    h('p', {}, scope?.source ? `Question scope: ${scope.source.label}` : run ? 'Question scope: this exact server-owned dispatcher run, plus dispatcher configuration and status. No ticket context is implied.' : scope ? `Question scope: ${scope.label}` : 'Question scope: whole task — issue discussion, PR, and available local evidence.'),
+    scope?.source ? sourceDetails(number, scope.source, true, run) : null,
+    scope?.path ? h('p', { class: 'briefing-muted' }, `Selected artifact: ${scope.path}. FM rereads this exact server-allowlisted task artifact on each question.`) : null,
+    scope?.path && !scope.source ? h('details', { ontoggle: e => { if (e.target.open && !e.target.dataset.loaded) { e.target.dataset.loaded = '1'; preFile(scope.path, e.target); } } }, h('summary', {}, 'Inspect selected artifact')) : null,
+    run && !scope.source ? h('details', {}, h('summary', {}, 'Selected dispatcher log'), pre(selectedRun ? selectedRun.lines.join('\n') : 'The selected run is not in the latest snapshot. FM will reject unavailable run context.')) : null,
+    context.resolving ? h('p', { role: 'status' }, 'Loading the current evidence and resolving this exact source…') : null,
+    context.scopeError ? h('p', { role: 'alert' }, context.scopeError) : null,
+    context.scopeError ? h('button', { type: 'button', onclick: () => openFM(number, scope) }, 'Retry source context') : null,
+    scope && !run ? h('button', { type: 'button', onclick: () => openFM(number) }, 'Switch to whole-task questions') : null,
+    run && scope.source ? h('button', { type: 'button', onclick: () => openFM(null, { run, label: `Dispatcher run · ${fmt(run)}` }) }, 'Switch to whole-run questions') : null);
+  $('fm-question').value = chat.draft || '';
+  renderFMMessages();
+}
+function renderFMMessages() {
+  const context = S.fm;
+  if (!context) return;
+  const { chat, number, run } = context;
+  $('fm-messages').replaceChildren(...chat.messages.map(message => h('article', { class: `fm-message ${message.role}` }, h('h3', { class: 'briefing-label' }, message.role === 'user' ? 'You' : 'Factory Manager'), h('p', {}, cited(message.content, message.sources || [], number, run)),
+    message.sources?.length ? h('details', { class: 'fm-citations' }, h('summary', {}, `Inspect answer evidence · ${message.sources.length} sources`), ...message.sources.map(source => sourceDetails(number, source, false, run))) : null)));
+  $('fm-status').textContent = context.resolving ? 'Resolving the selected source before a question can be sent.' : context.scopeError ? 'Source unavailable. Retry it or explicitly switch to the whole task.' : chat.pending ? 'FM is reading the evidence and answering… You can close this dialog; your conversation is retained.' : chat.error || 'Questions stay in this browser session. They are not posted as GitHub comments.';
+  $('fm-send').disabled = !!(context.resolving || context.scopeError || chat.pending);
+  $('fm-question').disabled = !!chat.pending;
+  $('fm-retry').hidden = !chat.error || !chat.lastQuestion;
+  $('fm-retry').disabled = !!(context.resolving || context.scopeError || chat.pending);
+}
+async function askFM(retry = false) {
+  const context = S.fm;
+  if (!context || context.resolving || context.scopeError || context.chat.pending) return;
+  const { chat, number, run, scope } = context, question = (retry ? chat.lastQuestion : $('fm-question').value).trim();
+  if (!question) { $('fm-question').focus(); return; }
+  const history = [];
+  let chars = 0;
+  for (const message of chat.messages.slice(0, retry ? -1 : undefined).slice(-12).reverse()) {
+    if (chars + message.content.length > 16000) break;
+    chars += message.content.length;
+    history.unshift({ role: message.role, content: message.content });
+  }
+  if (!retry) chat.messages.push({ role: 'user', content: question });
+  chat.lastQuestion = question; chat.error = ''; chat.pending = true; chat.draft = question;
+  saveInboxState(); renderFMMessages();
+  try {
+    const result = await fmRequest('/api/ask', { ...(run ? { run } : { number }), question, ...(scope?.path ? { path: scope.path } : scope?.source ? { source: scope.source.id } : {}), history });
+    chat.messages.push({ role: 'assistant', content: result.answer, sources: result.sources, generated_at: result.generated_at });
+    chat.draft = ''; chat.lastQuestion = '';
+    if (S.fm?.chat === chat) $('fm-question').value = '';
+  } catch (e) { chat.error = `FM could not answer: ${e.message}`; }
+  finally {
+    chat.pending = false; saveInboxState();
+    if (S.fm?.chat === chat) renderFMMessages();
   }
 }
+$('fm-form').onsubmit = e => { e.preventDefault(); askFM(); };
+$('fm-question').oninput = e => { if (S.fm) { S.fm.chat.draft = e.target.value; saveInboxState(); } };
+$('fm-retry').onclick = () => askFM(true);
+$('fm-close').onclick = () => $('fm-dialog').close();
+$('decision-confirm').onclick = applyDecision;
+$('decision-close').onclick = () => { if (!S.preview?.busy) $('decision-dialog').close(); };
+$('decision-dialog').addEventListener('cancel', e => { if (S.preview?.busy) e.preventDefault(); });
+for (const id of ['fm-dialog', 'decision-dialog']) $(id).addEventListener('close', () => { if (id === 'decision-dialog') S.preview = null; updateInbox(true, true); });
 function syncHash() {
-  history.replaceState(null, '', S.view === 'inbox' ? '#inbox' : S.sel != null ? `#t=${S.sel}` : S.filter ? `#s=${S.filter}` : location.pathname);
+  const hash = S.view === 'inbox' ? `#inbox${S.inboxKey ? '/' + encodeURIComponent(S.inboxKey) : ''}` : S.sel != null ? `#t=${S.sel}` : S.filter ? `#s=${S.filter}` : '#ops';
+  history.replaceState(null, '', hash);
 }
 function applyView() {
   $('ops').hidden = S.view !== 'ops'; $('inbox').hidden = S.view !== 'inbox';
   $('nav-ops').classList.toggle('on', S.view === 'ops'); $('nav-inbox').classList.toggle('on', S.view === 'inbox');
+  $('nav-ops').setAttribute('aria-current', S.view === 'ops' ? 'page' : 'false'); $('nav-inbox').setAttribute('aria-current', S.view === 'inbox' ? 'page' : 'false');
+  document.title = `Factory — ${S.view === 'inbox' ? 'Inbox' : 'Ops'}`;
 }
-function setView(view) { S.view = view; syncHash(); applyView(); window.scrollTo(0, 0); }
-// A refresh must not eat a half-typed answer: keep drafts per ticket and defer
-// the inbox re-render while the user is inside it.
-$('inbox').addEventListener('input', e => { if (e.target.tagName === 'TEXTAREA') S.drafts[e.target.dataset.n] = e.target.value; });
-$('inbox').addEventListener('focusout', () => { if (S.inboxDirty) setTimeout(() => { if (!$('inbox').contains(document.activeElement)) { S.inboxDirty = false; renderInbox(); } }, 100); });
+function setView(view) { S.view = view; S.sel = null; $('drawer').classList.remove('open'); $('drawer').setAttribute('aria-hidden', 'true'); syncHash(); applyView(); updateInbox(true); window.scrollTo(0, 0); }
+$('inbox').addEventListener('focusout', () => { if (S.inboxDirty) setTimeout(() => updateInbox(), 100); });
 
 // ---------------------------------------------------------------- input
 document.addEventListener('keydown', e => {
-  const typing = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA';
+  if ($('fm-dialog').open || $('decision-dialog').open) return;
+  const typing = ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'SUMMARY', 'A'].includes(e.target.tagName);
   if (e.key === '/' && !typing) { e.preventDefault(); $('search').focus(); return; }
   if (e.key === 'Escape') { if (typing) { e.target.blur(); return; } if (S.sel != null) closeDrawer(); else if (S.filter || S.q) { S.filter = null; S.q = ''; $('search').value = ''; render(); } return; }
   if (typing) return;
   if (e.key === 'r') { load(true); return; }
-  if (e.key === 'j' || e.key === 'k') {
+  if (S.view === 'ops' && (e.key === 'j' || e.key === 'k')) {
     const cards = [...document.querySelectorAll('.card')]; if (!cards.length) return;
     const i = cards.findIndex(c => +c.dataset.n === S.sel);
     const next = cards[Math.min(cards.length - 1, Math.max(0, i + (e.key === 'j' ? 1 : -1)))];
@@ -1143,12 +1529,16 @@ let timer = null;
 function schedule() { clearInterval(timer); if ($('auto').checked) timer = setInterval(() => { if (!document.hidden) load(false); }, 30000); }
 $('auto').onchange = schedule;
 document.addEventListener('visibilitychange', () => { if (!document.hidden && $('auto').checked) load(false); });
-setInterval(() => { if (S.snap) renderStatus(); }, 10000);
-(function initFromHash() {
-  if (location.hash === '#inbox') S.view = 'inbox';
-  const m = location.hash.match(/#(t|s)=([\w-]+)/);
-  if (m && m[1] === 't') S.sel = +m[2]; else if (m) S.filter = m[2];
-})();
+setInterval(() => { if (S.snap) { renderStatus(); renderInboxHealth(); } }, 10000);
+function initFromHash() {
+  const inbox = location.hash.match(/^#inbox(?:\/([\w-]+))?$/);
+  if (inbox) { S.view = 'inbox'; if (inbox[1]) S.inboxKey = inbox[1]; S.sel = null; return; }
+  if (location.hash === '#ops') { S.view = 'ops'; S.sel = null; return; }
+  const m = location.hash.match(/^#(t|s)=([\w-]+)$/);
+  if (m) { S.view = 'ops'; if (m[1] === 't') S.sel = +m[2]; else { S.filter = m[2]; S.sel = null; } }
+}
+initFromHash();
+window.addEventListener('hashchange', () => { initFromHash(); applyView(); if (S.snap) { updateInbox(true); render(); } });
 $('nav-ops').onclick = () => setView('ops');
 $('nav-inbox').onclick = () => setView('inbox');
 schedule();

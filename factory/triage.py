@@ -15,8 +15,9 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+from contextlib import nullcontext
 
-from factory import config
+from factory import config, lifecycle
 from factory.config import (
     LABEL_AGENT,
     LABEL_APPROVED,
@@ -77,16 +78,34 @@ def deterministic_needs_info(body: str, comments: str) -> str | None:
     return None
 
 
-def gh(*args: str) -> str:
-    result = subprocess.run(
-        ["gh", *args, "--repo", cfg.repo],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        print(f"gh {' '.join(args)} failed: {result.stderr.strip()}", file=sys.stderr)
+def gh(*args: str, execution=None) -> str:
+    command = ["gh", *args, "--repo", cfg.repo]
+    if execution:
+        with subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=execution.env()
+        ) as proc:
+            try:
+                execution.child(proc.pid)
+                out, err = proc.communicate()
+            except BaseException:
+                proc.kill()
+                proc.wait()
+                raise
+            finally:
+                if proc.poll() is not None:
+                    execution.child_done(proc.pid)
+    else:
+        proc = subprocess.run(command, capture_output=True, text=True)
+        out, err = proc.stdout, proc.stderr
+    if execution:
+        execution.emit("result", command="gh", returncode=proc.returncode)
+    if proc.returncode != 0:
+        if execution:
+            execution.outcome = "unknown"
+            execution.reason = "github_command_failed"
+        print(f"gh {' '.join(args)} failed: {err.strip()}", file=sys.stderr)
         raise SystemExit(1)
-    return result.stdout
+    return out
 
 
 def system_prompt() -> str:
@@ -106,7 +125,7 @@ Respond with strict JSON only, no markdown, no prose outside the JSON:
 {{"decision": "<one of ready-for-agent|needs-info|ready-for-human|wontfix-proposal>", "rationale": "<one short paragraph>", "question": "<the question for the reporter, or empty string if decision is not needs-info>", "brief": "<agent brief for ready-for-agent, else empty string>"}}"""
 
 
-def call_llm(messages: list[dict]) -> str:
+def call_llm(messages: list[dict], execution=None) -> str:
     payload = json.dumps(
         {
             "model": LLM_MODEL,
@@ -123,6 +142,13 @@ def call_llm(messages: list[dict]) -> str:
         with urllib.request.urlopen(req, timeout=60) as resp:
             body = json.load(resp)
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        if execution:
+            timed_out = isinstance(exc, TimeoutError) or (
+                isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError)
+            )
+            execution.outcome = "unknown" if timed_out else "mechanism_failure"
+            execution.reason = "triage_endpoint_timeout" if timed_out else "triage_endpoint_unavailable"
+            execution.emit("result", timed_out=timed_out, timeout_seconds=60)
         print(
             f"cannot reach local model at {LLM_URL}: {exc}\n"
             "Is the model server running? Set [triage].url in .factory.toml if the endpoint differs.",
@@ -149,18 +175,19 @@ def parse_decision(text: str) -> dict | None:
     return obj
 
 
-def fetch_issue(number: int) -> dict:
+def fetch_issue(number: int, execution=None) -> dict:
     raw = gh(
         "issue",
         "view",
         str(number),
         "--json",
         "number,title,body,comments,labels,state",
+        execution=execution,
     )
     return json.loads(raw)
 
 
-def triage_issue(issue: dict) -> dict | None:
+def triage_issue(issue: dict, execution=None) -> dict | None:
     """Ask the model for a decision. One retry on bad JSON, then None."""
     comments = "\n\n".join(
         f"Comment by {c.get('author', {}).get('login', '?')}:\n{c.get('body', '')}"
@@ -185,7 +212,7 @@ def triage_issue(issue: dict) -> dict | None:
         {"role": "user", "content": user_msg},
     ]
     for _attempt in range(2):
-        reply = call_llm(messages)
+        reply = call_llm(messages, execution=execution)
         decision = parse_decision(reply)
         if decision is not None:
             return decision
@@ -200,7 +227,7 @@ def triage_issue(issue: dict) -> dict | None:
     return None
 
 
-def apply_decision(number: int, decision: dict, dry_run: bool) -> None:
+def apply_decision(number: int, decision: dict, dry_run: bool, execution=None) -> None:
     label = decision["decision"]
     rationale = decision["rationale"]
     if label == LABEL_INFO and decision["question"]:
@@ -217,7 +244,7 @@ def apply_decision(number: int, decision: dict, dry_run: bool) -> None:
         print(f"#{number} [dry-run] comment: {comment}")
         return
 
-    gh("issue", "comment", str(number), "--body", comment)
+    gh("issue", "comment", str(number), "--body", comment, execution=execution)
     if label == "wontfix-proposal":
         return  # never apply wontfix; leave needs-triage for a human
     gh(
@@ -228,10 +255,11 @@ def apply_decision(number: int, decision: dict, dry_run: bool) -> None:
         LABEL_TRIAGE,
         "--add-label",
         label,
+        execution=execution,
     )
 
 
-def list_needs_triage() -> list[int]:
+def list_needs_triage(execution=None) -> list[int]:
     raw = gh(
         "issue",
         "list",
@@ -241,6 +269,7 @@ def list_needs_triage() -> list[int]:
         "open",
         "--json",
         "number",
+        execution=execution,
     )
     return [item["number"] for item in json.loads(raw)]
 
@@ -260,35 +289,78 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     configure(config.load())
 
+    recording = not (args.replay or args.dry_run)
+    with (
+        lifecycle.scope(cfg.factory / "events.jsonl", "triage") if recording else nullcontext()
+    ) as execution:
+        return execute(args, execution)
+
+
+def execute(args: argparse.Namespace, execution) -> int:
     replay = bool(args.replay)
     if replay:
         numbers = [int(n) for n in args.replay.split(",")]
     elif args.issue:
         numbers = [args.issue]
     else:
-        numbers = list_needs_triage()
+        numbers = list_needs_triage(execution=execution)
 
     if not numbers:
+        if execution:
+            execution.reason = "no_tickets"
         print("no needs-triage issues")
         return 0
 
     exit_code = 0
+    outcome, reason = "completed", None
     # One local model serves every repo on this host; hold the host lock so
     # simultaneous timer passes queue on it instead of hammering the endpoint.
     with open(cfg.lock, "w") as host_lock:  # noqa: SIM115
         fcntl.flock(host_lock, fcntl.LOCK_EX)
-        for number in numbers:
-            issue = fetch_issue(number)
-            decision = triage_issue(issue)
-            if decision is None:
-                print(
-                    f"#{number}: model returned unparseable JSON twice; skipping",
-                    file=sys.stderr,
-                )
-                exit_code = 1
-                continue
-            if replay:
-                print(f"#{number}: {json.dumps(decision)}")
-            else:
-                apply_decision(number, decision, args.dry_run)
+        if execution:
+            execution.emit("lock_acquired", lock=str(cfg.lock))
+        try:
+            for number in numbers:
+                ticket_execution = None
+                try:
+                    with (
+                        lifecycle.scope(
+                            cfg.factory / "events.jsonl", "triage-ticket", ticket=number, lock=cfg.lock
+                        ) if execution else nullcontext()
+                    ) as ticket_execution:
+                        issue = fetch_issue(number, execution=ticket_execution)
+                        decision = triage_issue(issue, execution=ticket_execution)
+                        if decision is None:
+                            if ticket_execution:
+                                ticket_execution.outcome = "unknown"
+                                ticket_execution.reason = "unparseable_decision"
+                            outcome, reason = "unknown", "unparseable_decision"
+                            print(
+                                f"#{number}: model returned unparseable JSON twice; skipping",
+                                file=sys.stderr,
+                            )
+                            exit_code = 1
+                            continue
+                        if replay:
+                            print(f"#{number}: {json.dumps(decision)}")
+                        else:
+                            apply_decision(number, decision, args.dry_run, execution=ticket_execution)
+                        if ticket_execution:
+                            ticket_execution.reason = decision["decision"]
+                            if decision["decision"] != LABEL_AGENT:
+                                ticket_execution.outcome = "product_feedback"
+                                if outcome == "completed":
+                                    outcome, reason = "product_feedback", "triage_feedback"
+                except BaseException:
+                    if execution and ticket_execution:
+                        execution.outcome = ticket_execution.outcome
+                        execution.reason = ticket_execution.reason
+                    raise
+        finally:
+            # Closing the existing host lock still releases it on every exit.
+            host_lock.close()
+            if execution:
+                execution.emit("lock_released", lock=str(cfg.lock))
+    if execution:
+        execution.outcome, execution.reason = outcome, reason
     return exit_code

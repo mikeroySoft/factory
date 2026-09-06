@@ -9,6 +9,7 @@ conventions, not configuration.
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import tomllib
 from dataclasses import dataclass, field
@@ -56,7 +57,7 @@ KNOWN_KEYS = {
     "dispatch": ("max_active", "max_attempts", "budget_min", "review_rounds", "cost_pattern", "signoff"),
     "workers": None,
     "review": ("command",),
-    "manager": ("command", "rounds", "review"),
+    "manager": ("model", "command", "rounds", "review"),
     "gate": ("timeout", "lock", "check"),
     "leak_scan": ("pattern", "exclude"),
     "triage": ("url", "model"),
@@ -110,6 +111,7 @@ class Config:
     leak_exclude: list[str] = field(default_factory=list)
     llm_url: str = DEFAULT_LLM_URL
     llm_model: str = DEFAULT_LLM_MODEL
+    manager_model: str | None = None  # dashboard's no-tools OMP briefing; never a command
     dashboard_port: int = 8765
     dashboard_theme: Path | None = None  # CSS file served after the built-in stylesheet
     install: dict = field(default_factory=lambda: dict(DEFAULT_INSTALL))  # `factory install` defaults
@@ -219,6 +221,35 @@ def unknown_keys(raw: dict) -> list[str]:
     return out
 
 
+def manager_model(table: dict) -> str | None:
+    """Read only a model selector from legacy manager argv; never execute it."""
+    if not isinstance(table, dict):
+        raise ConfigError("[manager] must be a table")
+    model = table.get("model")
+    if model is None and "command" in table:
+        command = table["command"]
+        if isinstance(command, str):
+            try:
+                command = shlex.split(command)
+            except ValueError as exc:
+                raise ConfigError(f"manager.command: {exc}") from exc
+        if not isinstance(command, list) or not all(isinstance(arg, str) for arg in command):
+            raise ConfigError("manager.command must be an argv array or command string")
+        for i, arg in enumerate(command):
+            if arg == "--model":
+                if i + 1 == len(command):
+                    raise ConfigError("manager.command: --model needs a value")
+                model = command[i + 1]
+            elif arg.startswith("--model="):
+                model = arg.split("=", 1)[1]
+    if model is not None and (
+        not isinstance(model, str) or not model or len(model) > 200
+        or model.startswith("-") or any(c.isspace() or ord(c) < 32 for c in model)
+    ):
+        raise ConfigError("manager.model must be a nonempty model selector (≤ 200 chars, no whitespace)")
+    return model
+
+
 def load(start: Path | None = None) -> Config:
     """Load `<root>/.factory.toml` over the host layer; every key optional except a resolvable repo slug."""
     root = repo_root(start)
@@ -268,6 +299,7 @@ def load(start: Path | None = None) -> Config:
     cfg.leak_exclude = list(leak.get("exclude", []))
     cfg.llm_url = triage.get("url", cfg.llm_url)
     cfg.llm_model = triage.get("model", cfg.llm_model)
+    cfg.manager_model = manager_model(raw.get("manager", {}))
     cfg.dashboard_port = int(dash.get("port", cfg.dashboard_port))
     cfg.dashboard_theme = root / dash["theme"] if dash.get("theme") else None
     cfg.install = merge(DEFAULT_INSTALL, raw.get("install", {}))

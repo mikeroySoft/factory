@@ -36,7 +36,12 @@
 # command = ["codex", "exec", "{prompt}"]
 
 [manager]
-# Host-side frontier manager. Unset command disables it.
+# Dashboard briefings and contextual Ask FM use a bounded, no-tools OMP process.
+# Only the model controls those briefings; generated advice cannot execute actions.
+# model = "openai-codex/gpt-6-astra"  # unset: manager.command --model, then OMP default
+#
+# Host-side frontier manager configuration; running it is a separate feature.
+# Unset command disables the frontier manager, not read-only dashboard briefings.
 # {prompt} = manager prompt text; {cwd} = kept worktree or repository root.
 # command = ["omp", "-p", "--model", "openai-codex/gpt-6-astra", "--cwd", "{cwd}", "{prompt}"]
 # rounds = 1
