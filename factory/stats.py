@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from factory import config
+from factory import config, lifecycle
 from factory.config import LABEL_AGENT, LABEL_HUMAN, Config
 
 cfg: Config
@@ -53,17 +53,11 @@ def issue(number: int) -> dict[str, Any]:
     )
 
 
-def audit_by_ticket(path: Path) -> dict[int, list[dict]]:
-    """Read existing traces, tolerating a partially written final record."""
+def audit_by_ticket(path: Path, rows: list[dict] | None = None) -> dict[int, list[dict]]:
+    """Group committed traces, reusing a caller's coherent journal snapshot."""
     result: dict[int, list[dict]] = {}
-    if not path.exists():
-        return result
-    for line in path.read_text().splitlines():
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(row, dict) and isinstance(row.get("ticket"), int):
+    for row in lifecycle.read_events(path) if rows is None else rows:
+        if isinstance(row.get("ticket"), int):
             result.setdefault(row["ticket"], []).append(row)
     return result
 

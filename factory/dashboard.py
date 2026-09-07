@@ -439,10 +439,11 @@ def disk_ticket_numbers() -> set[int]:
     return numbers
 
 
-def spend_by_ticket() -> dict[int, dict]:
+def spend_by_ticket(rows: list[dict] | None = None) -> dict[int, dict]:
     """Per-ticket spend from events.jsonl `attempt` rows: seconds, dollars, rounds."""
+    rows = lifecycle.read_events(dispatch.EVENTS) if rows is None else rows
     spend: dict[int, dict] = {}
-    for row in lifecycle.read_events(dispatch.EVENTS):
+    for row in rows:
         if (
             row.get("event") != "attempt"
             or type(row.get("ticket")) is not int
@@ -575,7 +576,7 @@ def consecutive_failures(runs: list[dict]) -> int:
     return n
 
 
-def dispatcher() -> dict:
+def dispatcher(*, rows: list[dict] | None = None, handle=None) -> dict:
     def active(unit: str) -> bool | None:
         try:
             proc = subprocess.run(
@@ -596,11 +597,11 @@ def dispatcher() -> dict:
         raw = sh(
             ["systemctl", "--user", "list-timers", f"{cfg.unit}.timer", "--output=json"]
         )
-        rows = json.loads(raw) if raw else []
-        if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+        timers = json.loads(raw) if raw else []
+        if isinstance(timers, list) and timers and isinstance(timers[0], dict):
             timer.update(
-                next=iso(rows[0]["next"] / 1e6) if rows[0].get("next") else None,
-                last=iso(rows[0]["last"] / 1e6) if rows[0].get("last") else None,
+                next=iso(timers[0]["next"] / 1e6) if timers[0].get("next") else None,
+                last=iso(timers[0]["last"] / 1e6) if timers[0].get("last") else None,
             )
     except (OSError, ValueError, TypeError, KeyError, IndexError, OverflowError):
         pass
@@ -609,6 +610,7 @@ def dispatcher() -> dict:
     schedule = lifecycle.observe_schedule(
         dispatch.EVENTS, next_at=timer["next"], timer_active=timer["active"],
         service_active=service_active, observed_at=lifecycle._now(),
+        rows=rows, handle=handle,
     )
     runs = journal_runs()
     return {
@@ -816,11 +818,20 @@ def snapshot() -> dict:
         errors.append(f"github: {exc}")
 
     on_disk = disk_ticket_numbers()
-    spend = spend_by_ticket()
-    audit = stats.audit_by_ticket(FACTORY / "events.jsonl")
+    resource_paths = [
+        (GPU_LOCK, "host"), (FACTORY / "locks" / "merge.lock", "repository"),
+        *((path, "repository") for path in (FACTORY / "locks").glob("*.lock")
+          if path.stem.isdecimal()),
+    ]
+    with lifecycle.journal_snapshot(dispatch.EVENTS) as (rows, handle):
+        audit = stats.audit_by_ticket(FACTORY / "events.jsonl", rows)
+        spend = spend_by_ticket(rows)
+        dispatcher_state = dispatcher(rows=rows, handle=handle)
+        executions = lifecycle.observe(dispatch.EVENTS, rows=rows, handle=handle)
+        resources = lifecycle.resources(
+            dispatch.EVENTS, paths=resource_paths, rows=rows, handle=handle,
+        )
     tickets = []
-    dispatcher_state = dispatcher()
-    executions = lifecycle.observe(dispatch.EVENTS)
     by_ticket: dict[int, list[dict]] = {}
     for execution in executions:
         if execution["ticket"] is not None:
@@ -885,12 +896,7 @@ def snapshot() -> dict:
         "metrics": metrics(tickets),
         "workers": stats.worker_metrics(audit, cfg.workers),
         "executions": executions,
-        "resources": lifecycle.resources(
-            dispatch.EVENTS,
-            paths=[(GPU_LOCK, "host"), (FACTORY / "locks" / "merge.lock", "repository"),
-                   *((path, "repository") for path in (FACTORY / "locks").glob("*.lock")
-                     if path.stem.isdecimal())],
-        ),
+        "resources": resources,
         "tickets": tickets,
     }
 
