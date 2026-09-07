@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT))
 XDG = Path(tempfile.mkdtemp())
 os.environ["XDG_CONFIG_HOME"] = str(XDG)
 
-from factory import __version__, config  # noqa: E402
+from factory import __version__, config, manage  # noqa: E402
 
 
 def host_file(text: str) -> None:
@@ -765,6 +765,48 @@ esac
         self.assertFalse((repo / ".factory/locks/7.lock").exists())
         self.assertEqual((repo / ".factory/events.jsonl").read_bytes(), before)
         self.assertNotIn("issue comment", (Path(stubs) / "gh.log").read_text())
+
+    def test_manager_notes_round_trip_and_refused_replacements(self) -> None:
+        repo, stubs, _ = self.scenario()
+        events_path = repo / ".factory/events.jsonl"
+        escalation = json.loads(events_path.read_text())
+        prompt = repo / ".factory/manager-prompt.txt"
+        notes = repo / ".factory/manager/notes.md"
+        first = "2026-01-01: `unit` flakes on a cold cache; RETRY re-run cleared it.\n"
+
+        def run_manager(round_number: int, output: str) -> str:
+            with events_path.open("a") as events:
+                events.write(json.dumps({**escalation, "round": round_number}) + "\n")
+            command = [sys.executable, "-c",
+                       "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2]); sys.stdout.write(sys.argv[3])",
+                       str(prompt), "{prompt}", output]
+            (repo / config.CONFIG_NAME).write_text(
+                "[manager]\nrounds = 3\ncommand = " + json.dumps(command) + "\n")
+            result = factory(repo, "manage", path=stubs)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return prompt.read_text()
+
+        def status(round_number: int) -> object:
+            events = map(json.loads, events_path.read_text().splitlines())
+            return next(e["notes"] for e in events if e.get("event") == "manage" and e["round"] == round_number)
+
+        sent = run_manager(1, f"DECISION: RETRY\nUse the existing helper\n\n```notes\n{first}```\n")
+        self.assertNotIn(first, sent)  # nothing to carry on the first run
+        self.assertEqual(notes.read_text(), first)
+        self.assertEqual(status(1), "written")
+        calls = (Path(stubs) / "gh.log").read_text()
+        self.assertIn("Factory manager: Use the existing helper", calls)
+        self.assertNotIn("notes", calls)  # the block is not part of the guidance comment
+
+        sent = run_manager(2, "DECISION: HUMAN\nStill stuck\n\n```notes\n\n```\n")
+        self.assertIn(first, sent)  # the second prompt carries the first run's notes
+        self.assertEqual(notes.read_text(), first)
+        self.assertEqual(status(2), "empty_rejected")
+
+        oversize = "2026-01-02: " + "x" * manage.NOTES_CAP + "\n"
+        run_manager(3, f"DECISION: HUMAN\nStill stuck\n\n```notes\n{oversize}```\n")
+        self.assertEqual(notes.read_text(), first)
+        self.assertEqual(status(3), "oversize_rejected")
 
     def test_failed_rewrite_is_not_requeued_or_replayed_and_next_ticket_runs(self) -> None:
         repo, stubs, packet = self.scenario()

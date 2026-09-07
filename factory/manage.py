@@ -27,10 +27,42 @@ FIX: JSON object {"worker": "label", "guidance": "..."}.
 Dispatch exactly one round of that listed worker in the kept agent worktree for its open PR.
 Code re-gates, pushes and re-reviews; approval requires a passing gate and fresh APPROVE.
 HUMAN: plain-text diagnosis; leave the ticket with the human.
-No other decisions are allowed. Do not write notes or create PRs.
+No other decisions are allowed. Do not create PRs.
+Optionally end your output with a fenced notes block; it replaces your notes file
+verbatim (16 KB cap; an oversize block is rejected):
+```notes
+2026-01-01: `unit` flakes on a cold cache; RETRY "re-run the check first" cleared it.
+```
+Date every note; keep only evidence-backed, recurring items (flaky check names,
+ticket-author patterns, which RETRY guidance worked); drop stale ones. Omit the
+block to leave the notes unchanged; an empty block never truncates them.
 """
 
+NOTES_NAME = "manager/notes.md"
+NOTES_CAP = 16 * 1024
+NOTES_BLOCK = re.compile(r"(?ms)^```notes[ \t]*$\n(.*?)^```[ \t]*$\n?")
+
 RESERVED_LABELS = {"default", LABEL_AGENT, LABEL_HUMAN, LABEL_TRIAGE}
+
+
+def split_notes(output: str) -> tuple[str, str | None]:
+    """Peel the manager's fenced notes block off its decision output."""
+    matches = list(NOTES_BLOCK.finditer(output))
+    if not matches:
+        return output, None
+    last = matches[-1]
+    return output[:last.start()] + output[last.end():], last[1]
+
+
+def write_notes(path: Path, notes: str) -> str:
+    """Replace the notes file, refusing a replacement that loses what is there."""
+    if len(notes.encode()) > NOTES_CAP:
+        return "oversize_rejected"
+    if not notes.strip():
+        return "empty_rejected"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(notes if notes.endswith("\n") else notes + "\n")
+    return "written"
 
 
 def parse(output: str, workers: dict) -> tuple[str, str, object]:
@@ -200,23 +232,30 @@ def manage_pass(dry_run: bool = False) -> None:
                     parts = [MENU, "Worker labels:\n" + "\n".join(
                         f"- {k}: {cfg.worker_when.get(k) or '(no when rule)'}" for k in workers),
                              f"Issue #{n}: {issue['title']}\n\n{issue.get('body') or ''}", packet.read_text()]
-                    for path in (cfg.root / LESSONS_NAME, cfg.factory / "manager/notes.md"):
+                    notes_path = cfg.factory / NOTES_NAME
+                    for path in (cfg.root / LESSONS_NAME, notes_path):
                         if path.is_file():
                             parts.append(f"## {path.name}\n\n{path.read_text()}")
                     wt = cfg.factory / f"wt-{n}"
                     cwd = wt if wt.is_dir() else cfg.root
+                    notes = None
                     try:
                         proc = dispatch.run(cfg.manager_cmd("\n\n".join(parts), cwd), cwd=cwd, check=False)
                         if proc.returncode:
                             decision, body, data = "HUMAN", f"Manager command failed ({proc.returncode}):\n{proc.stderr or proc.stdout}", None
                         else:
-                            decision, body, data = parse(proc.stdout, workers)
+                            output, notes = split_notes(proc.stdout)
+                            decision, body, data = parse(output, workers)
                     except OSError as exc:
                         decision, body, data = "HUMAN", f"Manager command failed: {exc}", None
                     # A human may have taken over while the model was thinking.
                     if human_activity(n, escalation):
                         continue
-                    dispatch.record("manage", ticket=n, decision=decision, round=round_number, packet=str(packet))
+                    status = write_notes(notes_path, notes) if notes is not None else None
+                    if status is not None and status != "written":
+                        dispatch.log(f"#{n}: manager notes {status}; keeping the existing file")
+                    dispatch.record("manage", ticket=n, decision=decision, round=round_number,
+                                    packet=str(packet), notes=status)
                     try:
                         apply(n, issue, decision, body, data, packet)
                     except (CalledProcessError, OSError, ValueError) as exc:
