@@ -139,6 +139,9 @@ class Config:
     def review_cmd(self, prompt: str) -> list[str]:
         return expand(self.reviewer, prompt=prompt)
 
+    def manager_cmd(self, prompt: str, cwd: Path) -> list[str]:
+        return expand(self.manager or [], prompt=prompt, cwd=str(cwd))
+
 
 def expand(argv: list[str], **values: str) -> list[str]:
     """Substitute `{name}` placeholders; literal braces elsewhere are left alone."""

@@ -11,6 +11,7 @@ COMMANDS = {
     "install": ("onboard", "install", "install the systemd user timer (and dashboard)"),
     "triage": ("triage", "main", "label needs-triage issues with the local model"),
     "dispatch": ("dispatch", "main", "one pass: sync, merge stage, claim and work tickets"),
+    "manage": ("manage", "main", "resolve untouched escalation packets with the manager"),
     "gate": ("gate", "main", "run the deterministic quality gate in this worktree"),
     "stats": ("stats", "main", "ticket metrics from GitHub"),
     "learn": ("learn", "main", "distil recent ticket outcomes into .factory-lessons.md"),

@@ -1114,6 +1114,9 @@ def main(argv: list[str]) -> int:
             return 0
 
         land_pass(args.dry_run)
+        from factory.manage import manage_pass
+
+        manage_pass(args.dry_run)
         with nullcontext() if args.dry_run else lifecycle.scope(EVENTS, "scheduling") as execution:
             active = active_ticket_count()
             capacity = MAX_ACTIVE - active
