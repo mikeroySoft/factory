@@ -803,6 +803,43 @@ p.write_text(json.dumps(s))
         self.assertEqual(self.github()["pr"]["state"], "OPEN")
         self.assertFalse(any(a[:2] == ["pr", "comment"] for a in self.github()["calls"]))
 
+    def test_all_mode_refresh_preserves_manager_approval_without_fix(self) -> None:
+        from unittest.mock import patch
+        from factory import dispatch
+
+        self.configure(decision="APPROVE", mode="all")
+        wt = self.repo / ".factory/wt-7"
+        (wt / "fixed").write_text("yes")
+        git(wt, "add", "fixed")
+        git(wt, "commit", "-qm", "passing branch")
+        git(wt, "push", "origin", "agent/7")
+        reviewed = git(wt, "rev-parse", "HEAD")
+        dispatch.configure(config.load(self.repo))
+        with patch.dict(os.environ, {"PATH": self.stubs + os.pathsep + os.environ["PATH"]}):
+            dispatch.approve_pr(7)
+        state = self.github(ci="pass", behind=1)
+        state["pr"].update(labels=[], headRefOid=reviewed)
+        self.github(pr=state["pr"])
+        (self.repo / "main-change").write_text("new base")
+        git(self.repo, "add", "main-change")
+        git(self.repo, "commit", "-qm", "advance main")
+        git(self.repo, "push", "origin", "main")
+        self.cli("manage")
+        refreshed = git(self.repo, "rev-parse", "origin/agent/7")
+        self.assertNotEqual(refreshed, reviewed)
+        self.assertEqual(git(self.repo, "show", "origin/agent/7:main-change"), "new base")
+        state = self.github(behind=0)
+        self.assertNotIn({"name": "factory-approved"}, state["pr"]["labels"])
+        state["pr"]["headRefOid"] = refreshed
+        self.github(pr=state["pr"])
+        self.cli("manage")
+        state = self.github()
+        self.assertIn({"name": "factory-approved"}, state["pr"]["labels"])
+        self.assertNotIn({"name": "ready-for-human"}, state["issue"]["labels"])
+        self.assertEqual(git(wt, "rev-parse", "HEAD"), refreshed)
+        self.cli("dispatch")
+        self.assertEqual(self.github()["pr"]["state"], "MERGED")
+
     def test_manager_dry_run_preserves_pr_issue_events_and_worktree(self) -> None:
         before = (self.repo / ".factory/events.jsonl").read_bytes()
         state = self.github()

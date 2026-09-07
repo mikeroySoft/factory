@@ -730,6 +730,11 @@ def refresh_pr_branch(n: int, pr: int) -> None:
     """
     wt = ensure_worktree(n)
     run(["git", "fetch", "origin"], cwd=wt)
+    head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    approval = next(
+        (e for e in reversed(lifecycle.read_events(EVENTS))
+         if e.get("ticket") == n and e.get("event") in
+         {"approval-pending", "approved", "escalate"}), {})
     if run(["git", "rebase", f"origin/{cfg.main}"], cwd=wt, check=False).returncode != 0:
         run(["git", "rebase", "--abort"], cwd=wt, check=False)
         run(["gh", "pr", "edit", str(pr), "--repo", REPO, "--remove-label", FACTORY_APPROVED])
@@ -743,6 +748,9 @@ def refresh_pr_branch(n: int, pr: int) -> None:
         return
     run(["git", "push", "--force-with-lease", "origin", f"agent/{n}"], cwd=wt)
     record("refreshed", ticket=n, pr=pr)
+    if approval.get("event") == "approval-pending" and approval.get("head") == head:
+        record("approval-pending", ticket=n,
+               head=run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip())
     log(f"#{n}: PR #{pr} rebased onto current main and re-gated; merge next pass")
 
 
