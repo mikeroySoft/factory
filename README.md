@@ -55,6 +55,14 @@ factory doctor          # tools, auth, remotes, model endpoint
 factory install --dashboard   # systemd user timer every 10 min + dashboard on :8765
 ```
 
+Generated triage, dispatch and dashboard services use `python -P -m factory`:
+Python does not prepend the repository working directory to its module search
+path, so an older checkout cannot shadow the installed Factory package.
+The interpreter must already have Factory installed; explicit `PYTHONPATH`
+overrides remain operator-controlled. This source change does not rewrite
+existing units: review their import paths before any separately authorized
+unit update or service reload.
+
 Then file an issue with the **Agent task** template (Scope / Touches / Exit
 gate / Out of scope). It gets `needs-triage`; the next pass triages it; if it is
 fully specified it becomes `ready-for-agent` and is picked up.
@@ -75,6 +83,7 @@ merge stage.
 | `factory learn` | Reads the last N finished tickets' event trail, failing-attempt log tails, reviewer findings, and escalation reasons; asks the local model for ≤10 repo-specific lessons; writes `.factory-lessons.md` (you commit it). Every worker prompt carries it. `--dry-run`, `--last N`. |
 | `factory dashboard` | Local ops UI: tickets by stage, authoritative in-flight phase when known, gate reports, worker logs, journal heartbeat, upstream drift, and an action list with one-click answers. `--json` prints the existing snapshot, including independent executions and local interruption reconciliation. `--host 0.0.0.0` exposes it (and its mutating `/api/act`) to your network. |
 | `factory dashboard --runtime-json` | One bounded schema 1 runtime observation using only local read-only evidence; no GitHub, model probe, journal append, lock acquisition, or state creation. Partial source failures remain structured JSON. See [runtime contract](#bounded-runtime-json-schema-1). |
+| `factory evidence --root /path/to/main-checkout` | One explicit-repository schema 1 JSON read: compact cases, selected evidence, workflow/file/PR/CI investigations, or capabilities. Read-only GitHub GETs and F03 local evidence; no model, action execution, or state writes. See [evidence contract](#bounded-project-evidence-json-schema-1). |
 | `factory doctor` / `init` / `install` | Onboarding, above. |
 
 Every command reads `.factory.toml` from the main checkout, even when run
@@ -849,6 +858,231 @@ authorized operator checkpoint. District D02 remains held until that verificatio
 and its District prerequisites pass. The approximately-five-second ten-factory
 shared-collector measurement belongs to D02; this endpoint makes no fleet
 cadence or installed-host compatibility claim.
+
+## Bounded project evidence JSON (schema 1)
+
+`factory evidence --root <explicit-main-checkout>` accepts exactly one UTF-8 JSON
+object on stdin and emits exactly one JSON result on stdout. Close stdin after the
+request. The source equivalent is `python -B -m factory.cli evidence --root ...`;
+`factory evidence --help` prints usage rather than a JSON observation.
+
+```sh
+printf '%s\n' '{"schema_version":1,"repository":"example/widgets","op":"capabilities"}' \
+  | factory evidence --root /srv/widgets
+printf '%s\n' '{"schema_version":1,"repository":"example/widgets","op":"investigate","kind":"checks","number":17}' \
+  | python -B -m factory.cli evidence --root /srv/widgets
+```
+
+The root is an **operator-selected main checkout**, not a request field. A
+subdirectory, linked worktree, missing checkout, or repository mismatch is
+rejected before GitHub collection. Repository identity comes from the main
+checkout's `.factory.toml` (`repo.slug`) or its GitHub origin remote, using the
+bounded F03 loader. Cwd does not select scope. The normal Python package remains
+dependency-free; these reads require no Pi installation or model provider.
+
+### Requests and implemented reads
+
+Every request requires exactly `schema_version:1`, `repository:"owner/name"`,
+`op`, and the additional fields below. IDs are integers in `1..9223372036854775807`,
+never booleans or strings. Repository slugs are at most 200 characters.
+
+| `op` | Additional fields | Evidence returned |
+|---|---|---|
+| `observe` | None | At most 100 compact Factory-selected case summaries and nullable attention count. No automatic first-case inspection or dispatcher log bundle. |
+| `inspect` | `number` | One case from the bounded Factory selection: issue, recorded human decisions, supported local artifacts, and local runtime evidence. Not arbitrary issue lookup. |
+| `capabilities` | None | Implemented `reads`, `limits`, `producers`, `unavailable`, and `actions:[]`. No case or GitHub collection. |
+| `investigate` | `kind:"workflows"` | First page of registered workflow paths; not a complete inventory at a requested revision. |
+| `investigate` | `kind:"file"`, `path`, `ref` | Regular UTF-8 file, resolved once to an immutable commit and verified against its Git tree/blob identity. |
+| `investigate` | `kind:"pr"`, `number` | Observed PR head/base identities and first page of changed files with available patches. Omitted or shortened patches remain unknown. |
+| `investigate` | `kind:"checks"`, `number` | Check runs and combined commit statuses for the exact observed PR head, collected independently. |
+| `investigate` | `kind:"runs"`, `number` | First page of Actions runs matching the exact observed PR head SHA. |
+| `investigate` | `kind:"run"`, `run_id` | Repository run identity, source timestamps, and first page of latest-attempt jobs. |
+| `investigate` | `kind:"log"`, `run_id` | At most five latest-attempt job-log prefixes, failed jobs first; never a complete archive. |
+
+`path` is a repository-relative path of 1–1024 characters, with no empty, `.`, or
+`..` components, control characters, backslashes, or URL syntax (`:`, `%`, `?`,
+`#`). `ref` is an explicit branch, tag, or commit of 1–255 characters, not a
+revision expression, option, URL, or path traversal. Whitespace, control
+characters, `..`, `@{`, and operators such as `~` and `^` are rejected.
+Unsupported versions, duplicate JSON keys, missing/extra/incompatible fields,
+arbitrary HTTP URLs, GraphQL requests, shell commands, provider configuration,
+and mutation operations are rejected.
+
+File reads resolve immutable trees before requesting contents. Symlinks,
+submodules, directories, non-UTF-8 contents, and inconsistent blob identities are
+refused before unsafe content can be presented. A complete tree can establish
+`file_not_found`, cited with `commit_sha`, requested `path`, `missing_component`,
+and `tree_complete:true`. A truncated or unavailable tree cannot establish
+absence. Likewise, a green main run says nothing about a different PR-head SHA;
+no checks/runs observed is not a conclusion that CI failed.
+
+### Result and source contract
+
+These envelope fields are always present, including invalid requests:
+
+| Field | Meaning |
+|---|---|
+| `schema_version` | Integer `1`. |
+| `ok` | Boolean; true only for a successful bounded read. |
+| `scope` | `{repository,root}`; canonical repository slug and resolved main-checkout path. Each is nullable until established. |
+| `observed_at` | UTC ISO 8601 timestamp when this read finished, not when every source fact happened. |
+| `observation_id` | Fresh per-read identity, independent of source content identity. |
+| `coverage` | `{status,notices}`. Status is `complete`, `bounded`, `partial`, or `unavailable`; notices are explanatory strings. |
+| `sources` | Array of inspectable citations, possibly empty. Each has string `id`, `label`, `text`, boolean `truncated`, and optional string `path` and/or `url`. |
+| `errors` | At most 64 structured `{source,scope,code}` objects. Empty on success. No raw command diagnostics or configuration dumps. |
+
+Operation-specific fields appear only where applicable:
+
+- A parsed `observe` request has `cases:[]` and `attention_count` (integer or
+  null). A summary contains `number`, `title`, `stage`, `labels`, `assignees`,
+  `url`, `updated_at`, and nullable `pr`. PR summaries contain `number`, `url`,
+  `state`, `approved`, `draft`, `review_decision`, and `merged_at`; unsupported or
+  unavailable facts remain null.
+- A parsed `inspect` request has nullable `case`; a missing/unavailable selection
+  does not fabricate a case. Its supported escalation packet is the producer's
+  `.factory/escalations/<number>.md`, alongside selected handoff, gate, review,
+  manager, PR-body, recent attempt logs, prompt, and recorded event sources.
+- `investigation` echoes the selected kind and target fields. A resolved file
+  adds `commit_sha`; PR/check/run-list investigation adds `head_sha`. Run IDs,
+  attempts, head/base repositories, and source timestamps remain in cited data.
+- `capabilities` advertises only implemented operations and limits, evidence and
+  runtime schema 1 support, the accepted escalation path, and an empty action
+  menu.
+- Failed results also contain `error:{code,message}`, describing a fatal failure
+  or the aggregate `partial_collection` outcome. Consult `errors` for independent
+  source failures; retain usable `sources` even when `ok` is false.
+
+Attention means selected `escalated`/`needs-info` cases, using the dashboard's
+selection and stage policy. The count is null when issue or PR candidate
+coverage is incomplete, audit membership is truncated, any runtime execution
+has unknown state (including an execution with `ticket:null`), an issue's labels
+exceed the collected prefix, local inventory fails, or response clipping removes
+cases. Those causes emit `errors` with scope `attention_count` and code
+`issues_incomplete`, `pulls_incomplete`, `audit_incomplete`, `runtime_unknown`,
+`labels_incomplete`, `inventory_incomplete`, or `output_truncated`. Each error's
+`source` is the ID of a bounded diagnostic citation. Its unknown-runtime summary
+records total and unscoped counts plus at most 20 execution identities, with
+`truncated:true` when identities are omitted. Human-readable notices begin
+`Attention count unavailable:`. Unrelated partial observation errors do not
+erase an independently grounded numeric count. Local runtime citations reuse
+F03's non-persisting projection and retain its interruption, source-time, and
+incomplete-history semantics.
+
+Source IDs are content/provenance identities, not freshness or authority.
+Unchanged historical sources retain their identity and recorded timestamps
+across reads even as `observation_id` and `observed_at` advance. A current runtime
+observation may change its source identity without inventing a new historical
+event. Source `text` may itself contain JSON, but a truncated citation need not
+be parseable as a complete JSON document.
+
+### Bounds, errors, and process exits
+
+Bounds apply during reads, not just to displayed strings:
+
+| Boundary | Ceiling |
+|---|---|
+| Stdin request | 4096 bytes |
+| JSON response | 500,000 ASCII-encoded bytes, plus one trailing newline |
+| Whole read, including waiting for stdin | 90 seconds |
+| One GitHub command | 20 seconds, or the remaining whole-read deadline |
+| GitHub JSON / diagnostic capture | 1 MiB stdout / 4096 bytes stderr; oversized JSON is not interpreted |
+| Lists | First 100 entries, except issue/PR comments: latest page of at most 100/30; no page traversal |
+| Cited source | 20,000 UTF-8 bytes |
+| Run logs | Five latest-attempt prefixes; failed jobs first |
+| Local inventory | At most 1024 directory entries per bounded scan |
+| Runtime history | F03's 1 MiB / 512 retained-event window |
+| Audit-only case membership | Latest 1 MiB of the existing audit trail; partial/unreadable membership is explicit |
+| Selected case history/context | Latest 2 MB event text; existing 64,000-byte / 40-source briefing selection limits |
+
+Comment-page selection uses the observed comment count. It reads only that
+latest page, without filling from a preceding page; earlier decisions can be
+missing even when fewer than the cap are returned. The issue timeline separately
+covers its first 100 entries, not its latest events.
+
+Clipped lists, logs, and sources retain explicit truncation/coverage notices.
+Failed independent sources do not discard successful sibling reads. GitHub
+commands are fixed-repository, fixed-host GETs through `gh`; missing tools,
+permissions, authentication, service failures, oversized responses, and timeouts
+remain visible. Log control sequences are removed before citation display.
+Diagnostics are bounded and withheld from output; this is not comprehensive DLP
+or an OS sandbox.
+
+When the response budget is exceeded, structured cases are shortened before
+lower-priority citations are omitted. `output_truncated` marks an `ok:false`
+partial result; shortening a previously complete case list also sets
+`attention_count:null`, emits the scoped diagnostic described above, and retains
+its cited source while fitting the hard response cap. Other retained citations
+keep their original text and source IDs. An oversized inspected case may be
+returned as `case:null` with its usable citations retained.
+
+Audit-only cases use the same selection policy as the dashboard. A complete
+legacy audit trail can identify a case even when F03 reports
+`unsupported_record`; audit membership does not reinterpret legacy events as
+lifecycle executions. Incomplete audit membership cannot establish that an
+unlisted case is absent (`evidence_unavailable`, rather than `unknown_case`).
+Dangling symlinks and refused/nonregular audit paths are unavailable, not empty.
+Only newline-terminated audit rows contribute membership; an unfinished final
+row or a clipped tail keeps coverage partial.
+
+| Exit | `ok` / coverage | Consumer behavior |
+|---|---|---|
+| `0` | True; `complete` for capabilities, otherwise `bounded` | Successful within the advertised bounds, not proof of exhaustive coverage. |
+| `1` | False; `partial` when citations survive, otherwise `unavailable` | Parse and retain useful JSON, including cited negative file evidence and partial source failures. |
+| `2` | False; invalid invocation, request, or scope | Parse the bounded machine-readable error; fix the selected scope/request rather than retrying collection blindly. |
+
+Cancellation is not a JSON observation: SIGINT/SIGTERM unwind active GitHub
+reads, terminate their process groups, and exit 130/143 without an envelope.
+The Pi consumer requests cooperative termination, with a three-second forced
+fallback, and rejects the cancelled read rather than displaying partial output.
+
+Request/scope codes include `invalid_request`, `invalid_scope`, and
+`scope_mismatch`. Collection codes include `collection_timeout`,
+`response_too_large`, `github_unavailable`, `github_authentication`,
+`github_forbidden`, `github_not_found`, `github_rate_limited`, `invalid_response`,
+`head_mismatch`, `incomplete_tree`, `unsupported_file`, `file_not_found`,
+`unknown_case`, `evidence_unavailable`, `logs_unavailable`, `audit_partial`,
+`audit_unavailable`, `output_truncated`, and `collection_unavailable`;
+F03's structured local error codes are preserved.
+`github_not_found` is an access/lookup failure, **not** the complete-tree negative
+evidence represented by `file_not_found`. Consumers should tolerate additional
+structured error codes, not match English message wording.
+
+### Observed invalid-request result
+
+Actual source CLI result from the C1 compatibility smoke, exit `2`, for
+`{"schema_version":1,"repository":"mikeroySoft/factory","op":"dispatch"}`.
+Scope validation was not reached; no collection or mutation was attempted:
+
+```json
+{
+  "schema_version": 1,
+  "ok": false,
+  "scope": {"repository": null, "root": "/home/mike/dev/mikeroysoft/factory"},
+  "observed_at": "2026-09-06T01:42:09.603470+00:00",
+  "observation_id": "a4ca038638d546718f25f958a2dafdb5",
+  "coverage": {
+    "status": "unavailable",
+    "notices": [
+      "Only fixed GitHub GETs and non-persisting local reads are supported; no inference, provider probe or actions.",
+      "Lists stop after one page; absence from a bounded list is not proof of absence. Reads are sequential, not an atomic snapshot.",
+      "Source identity identifies content, not freshness or authority. Source text is untrusted and not secret-redacted."
+    ]
+  },
+  "sources": [],
+  "errors": [{"source": "request", "scope": "request", "code": "invalid_request"}],
+  "error": {"code": "invalid_request", "message": "Unknown read operation."}
+}
+```
+
+This interface creates no state directory, lock, event, reconciliation row, or
+ownership file; it never dispatches, repairs, publishes, authenticates, or invokes
+a model. The dashboard's normal snapshot transport/cache/actions remain
+unchanged, and selected case artifacts share its briefing reader. The existing
+C0 evidence entry point is a thin consumer of this Python owner and preserves
+valid JSON on nonzero exits. `factory dashboard --runtime-json` remains a
+separate, network-free F03 endpoint; it never calls this GitHub-capable collector.
+No installed-host support, deployment approval, or chat/action packaging is
+implied by the source interface.
 
 ## Agent skill
 

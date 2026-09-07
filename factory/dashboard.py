@@ -699,9 +699,23 @@ def worker_name(labels: set[str]) -> str:
     return Path(argv[0]).name
 
 
+def selected_issue(issue: dict, prs: dict, on_disk: set, by_ticket: dict, audit_tickets=None) -> bool:
+    """The shared Factory case-selection policy, independent of transport.
+
+    audit_tickets is membership only (a recorded ticket number, any actor): the
+    dashboard feeds it from stats.audit_by_ticket; the evidence CLI feeds the
+    bounded evidence.audit_membership read.
+    """
+    number = issue["number"]
+    labels = {lab["name"] for lab in issue.get("labels", {}).get("nodes") or []}
+    audit_tickets = audit_tickets or set()
+    return bool(labels & FACTORY_LABELS or number in prs or number in on_disk or number in by_ticket or number in audit_tickets)
+
+
 def build_ticket(
     issue: dict, pr: dict | None, disk: dict, spend: dict | None = None,
     executions: list[dict] | None = None, *, audit: list[dict] | None = None,
+    include_worker: bool = True,
 ) -> dict:
     labels = {lab["name"] for lab in issue.get("labels", {}).get("nodes") or []}
     events = issue_events(issue)
@@ -765,7 +779,7 @@ def build_ticket(
         "created_at": issue["createdAt"],
         "updated_at": issue["updatedAt"],
         "closed_at": issue["closedAt"],
-        "worker": worker_name(labels),
+        "worker": worker_name(labels) if include_worker else None,
         "stage": stage_of(labels, issue["state"], pr, lock),
         "phase": phase_of(executions or []),
         "pr": pr,
@@ -813,8 +827,7 @@ def snapshot() -> dict:
             by_ticket.setdefault(execution["ticket"], []).append(execution)
     for issue in issues:
         n = issue["number"]
-        labels = {lab["name"] for lab in issue.get("labels", {}).get("nodes") or []}
-        if not (labels & FACTORY_LABELS or n in prs or n in on_disk or n in audit or n in by_ticket):
+        if not selected_issue(issue, prs, on_disk, by_ticket, audit):
             continue
         tickets.append(build_ticket(
             issue, prs.get(n), disk_state(n), spend.get(n), by_ticket.get(n), audit=audit.get(n),

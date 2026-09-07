@@ -151,7 +151,7 @@ def bounded_file(root: Path, rel: str, cap: int = SOURCE_CAP, tail: bool = False
     if path.is_absolute() or not path.parts or ".." in path.parts:
         return None
     try:
-        directory = os.open(root.resolve(), os.O_RDONLY | os.O_DIRECTORY)
+        directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             # Walk below the trusted state root by descriptor: neither a selected
             # file nor any parent may redirect evidence to a different ticket.
@@ -177,9 +177,22 @@ def bounded_file(root: Path, rel: str, cap: int = SOURCE_CAP, tail: bool = False
     return data[:cap].decode("utf-8", errors="replace"), size > cap
 
 
-def sources_for(cfg: Config, ticket: dict, errors: list[str], selected_path: str | None = None) -> list[dict]:
+def sources_for(
+    cfg: Config, ticket: dict, errors: list[str], selected_path: str | None = None,
+    *, read_errors: list[dict] | None = None,
+) -> list[dict]:
     """Select bounded evidence, giving recorded human constraints first claim."""
     candidates: list[dict] = []
+
+    def read_file(rel: str, cap: int = SOURCE_CAP, tail: bool = False):
+        try:
+            return bounded_file(cfg.factory, rel, cap, tail)
+        except OSError:
+            # One unreadable artifact must not discard independently usable evidence.
+            errors.append(f"Evidence file unavailable: {rel}")
+            if read_errors is not None:
+                read_errors.append({"source": rel, "scope": f"ticket:{ticket['number']}", "code": "unreadable"})
+            return None
 
     def add(label: str, text: str, **meta: object) -> None:
         if text:
@@ -189,8 +202,7 @@ def sources_for(cfg: Config, ticket: dict, errors: list[str], selected_path: str
     # Fixed paths only; never follow a filename supplied by an HTTP client or log.
     artifacts = [
         (f"wt-{number}/.factory/handoff-{number}.md", "Worker handoff"),
-        (f"escalation-{number}.json", "Escalation packet"),
-        (f"escalation-{number}.md", "Escalation notes"),
+        (f"escalations/{number}.md", "Escalation packet"),
         (f"manager-{number}.md", "Manager notes"),
         (f"wt-{number}/.factory/gate-report-{number}.md", "Gate report"),
         (f"review-{number}.md", "Review verdict"),
@@ -208,7 +220,7 @@ def sources_for(cfg: Config, ticket: dict, errors: list[str], selected_path: str
                     known[rel] = f"Attempt {index} log (latest output)"
         if selected_path not in known:
             raise ValueError("Unknown artifact for this ticket; select a recorded task source")
-        found = bounded_file(cfg.factory, selected_path, tail=selected_path.startswith("logs/"))
+        found = read_file(selected_path, tail=selected_path.startswith("logs/"))
         if found is None or not found[0]:
             raise ValueError("Selected artifact is missing, empty or unsafe to read; refresh the task evidence")
         add(known[selected_path], found[0], path=selected_path, truncated=found[1])
@@ -224,7 +236,7 @@ def sources_for(cfg: Config, ticket: dict, errors: list[str], selected_path: str
     for e in decisions:
         add(f"Earlier human decision · {e.get('at', '')}", e["body"], url=e.get("url") or ticket["url"])
 
-    ledger = bounded_file(cfg.factory, "events.jsonl", EVENT_READ_CAP, tail=True)
+    ledger = read_file("events.jsonl", EVENT_READ_CAP, tail=True)
     if ledger:
         text, cut = ledger
         rows = []
@@ -246,7 +258,7 @@ def sources_for(cfg: Config, ticket: dict, errors: list[str], selected_path: str
             add("Factory event history", "\n".join(json.dumps(r, ensure_ascii=False) for r in pipeline), path="events.jsonl", truncated=cut)
 
     for rel, label in artifacts:
-        if rel != selected_path and (found := bounded_file(cfg.factory, rel)):
+        if rel != selected_path and (found := read_file(rel)):
             add(label, found[0], path=rel, truncated=found[1])
     if pr.get("gate_text"):
         add(f"PR #{pr['number']} gate report", pr["gate_text"], url=pr.get("url", ticket["url"]))
@@ -260,10 +272,10 @@ def sources_for(cfg: Config, ticket: dict, errors: list[str], selected_path: str
         index = attempt.get("attempt")
         if type(index) is int and index > 0:
             rel = f"logs/{number}-attempt-{index}.log"
-            if rel != selected_path and (found := bounded_file(cfg.factory, rel, tail=True)):
+            if rel != selected_path and (found := read_file(rel, tail=True)):
                 add(f"Attempt {index} log (latest output)", found[0], path=rel, truncated=found[1])
     rel = f"wt-{number}/.factory-prompt.md"
-    if rel != selected_path and (found := bounded_file(cfg.factory, rel)):
+    if rel != selected_path and (found := read_file(rel)):
         add("Worker prompt", found[0], path=rel, truncated=found[1])
     if errors:
         add("Snapshot collection errors", "\n".join(errors))
@@ -291,7 +303,7 @@ def sources_for(cfg: Config, ticket: dict, errors: list[str], selected_path: str
     if ledger and ledger[1]:
         notices.append("Factory event history reads only the latest 2 MB; older recorded decisions may be missing.")
     if ticket.get("timeline_truncated"):
-        notices.append("GitHub issue timeline contains only the latest 100 events; earlier decisions may be missing.")
+        notices.append(ticket.get("timeline_coverage") or "GitHub issue timeline contains only the latest 100 events; earlier decisions may be missing.")
     if pr.get("comments_truncated"):
         notices.append("PR comments contain only the latest 30 entries; earlier decisions may be missing.")
     if notices:
