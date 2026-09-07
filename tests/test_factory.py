@@ -303,6 +303,65 @@ class HostConfigTest(unittest.TestCase):
 
 
 class StatsTest(unittest.TestCase):
+    def test_stats_by_worker_uses_claim_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), toml='''[workers]
+default = ["agent"]
+chore = ["agent"]
+special = ["agent"]
+unused = ["agent"]
+''')
+            state = repo / ".factory"
+            state.mkdir()
+            events = [
+                {"event": "attempt", "ticket": 9, "attempt": 1, "gate": "PASS", "cost": 99},
+                {"event": "claimed", "ticket": 1, "labels": ["special", "chore"]},
+                {"event": "attempt", "ticket": 1, "attempt": 1, "gate": "FAIL", "cost": 1.25},
+                {"event": "attempt", "ticket": 1, "attempt": 2, "gate": "PASS", "cost": 2},
+                {"event": "claimed", "ticket": 2, "labels": ["chore"]},
+                {"event": "attempt", "ticket": 2, "attempt": 1, "gate": "PASS", "cost": 0},
+                {"event": "attempt", "ticket": 2, "attempt": 4, "gate": "FAIL"},
+                {"event": "claimed", "ticket": 1, "labels": ["special"]},
+                {"event": "attempt", "ticket": 1, "attempt": 1, "gate": "PASS", "cost": 4},
+                {"event": "claimed", "ticket": 3, "labels": ["unmatched"]},
+                {"event": "attempt", "ticket": 3, "attempt": 1, "gate": "FAIL"},
+                {"event": "claimed", "ticket": 4, "labels": ["unused"]},
+            ]
+            (state / "events.jsonl").write_text("\n".join(map(json.dumps, events)) + "\npartial")
+            result = factory(repo, "stats", "--by-worker", "--json")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), [
+                {"worker": "default", "first_pass": 0.0, "attempts": 1, "cost": None},
+                {"worker": "chore", "first_pass": 0.5, "attempts": 4, "cost": 3.25},
+                {"worker": "special", "first_pass": 1.0, "attempts": 1, "cost": 4},
+                {"worker": "unused", "first_pass": None, "attempts": 0, "cost": None},
+            ])
+            result = factory(repo, "stats", "--by-worker")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual([line.split() for line in result.stdout.splitlines()[1:]], [
+                ["default", "0.0%", "1", "n/a"],
+                ["chore", "50.0%", "4", "$3.25"],
+                ["special", "100.0%", "1", "$4.00"],
+                ["unused", "n/a", "0", "n/a"],
+            ])
+            from unittest import mock
+
+            from factory import dashboard, dispatch
+
+            with mock.patch.dict(dashboard.__dict__), mock.patch.dict(dispatch.__dict__):
+                dashboard.configure(config.load(repo))
+                with mock.patch.object(dashboard, "github", side_effect=RuntimeError("offline")), \
+                     mock.patch.object(dashboard, "dispatcher", return_value={}), \
+                     mock.patch.object(dashboard, "upstream_state", return_value={}), \
+                     mock.patch.object(dashboard, "triage_llm_online", return_value=False):
+                    snapshot = dashboard.snapshot()
+            self.assertEqual(snapshot["workers"], [
+                {"worker": "default", "first_pass": 0.0, "attempts": 1, "cost": None},
+                {"worker": "chore", "first_pass": 0.5, "attempts": 4, "cost": 3.25},
+                {"worker": "special", "first_pass": 1.0, "attempts": 1, "cost": 4},
+                {"worker": "unused", "first_pass": None, "attempts": 0, "cost": None},
+            ])
+
     def test_timeline_actor_attribution_in_stats(self) -> None:
         from unittest import mock
 
