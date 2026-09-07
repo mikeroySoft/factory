@@ -422,17 +422,30 @@ def review(wt: Path, n: int, gate_report: str) -> tuple[str, str]:
         f"(AGENTS.md, CONTRIBUTING.md, docs/)?\n"
         f"2. Spec: does the diff satisfy the text and acceptance criteria of "
         f"GitHub issue #{n} in {REPO}?\n"
+        f"Read the issue comments for the agent brief and approved scope changes.\n"
         f"Review the DIFF only. Do NOT execute builds or tests: your sandbox "
         f"differs from the target host, so your results are not evidence. The "
         f"deterministic gate already ran on the target host; its report is "
         f"authoritative for build/test/scan status:\n\n"
         f"```\n{gate_report}\n```\n\n"
-        f"Every finding MUST cite evidence as `path:line` from the diff; a "
-        f"finding without a citation does not count. Do not report style "
-        f"preferences, hypothetical extensibility, or anything the gate already "
-        f"covers. REVISE only for findings that would fail the issue's acceptance "
-        f"criteria or this repo's documented conventions.\n"
-        f"Output findings as markdown. End with exactly one line: "
+        f"Every finding MUST cite evidence as `path:line` from the diff. Separate "
+        f"Required fixes (blocking) from Optional suggestions (non-blocking). "
+        f"For each required fix, cite the specific issue acceptance criterion or "
+        f"documented rule (source and rule), or explain a concrete correctness/"
+        f"security defect with its trigger and impact. A preference is not a rule.\n"
+        f"Do not report style preferences, hypothetical extensibility, or repeat "
+        f"failures already established by the gate. A passing gate does not "
+        f"exclude concrete defects it did not detect.\n"
+        f"Discourage unrequested abstractions. For any net-new abstraction beyond "
+        f"the brief, whether introduced by the diff or requested in your review, "
+        f"explicitly justify why it is needed for an acceptance criterion, "
+        f"documented rule, or concrete correctness/security defect and why a "
+        f"simpler change is insufficient. Missing justification alone is not a "
+        f"blocking defect; requests to add or remove abstractions must meet the "
+        f"same required-fix standard. Do not turn optional suggestions into "
+        f"requirements or demand speculative refactoring.\n"
+        f"Output findings as markdown. REVISE only when required fixes remain; "
+        f"optional suggestions alone mean APPROVE. End with exactly one line: "
         f"`VERDICT: APPROVE` or `VERDICT: REVISE`."
     )
     with lifecycle.scope(EVENTS, "review", ticket=n) as execution:
@@ -1075,7 +1088,11 @@ def process_ticket(
                     )
                     return
                 execution.review_round = bounce + 1
-                extra = f"## Reviewer findings, round {bounce} (address these)\n\n{findings}"
+                extra = (
+                    f"## Reviewer findings, round {bounce}\n\n"
+                    f"Address required fixes only; optional suggestions are not requirements.\n\n"
+                    f"{findings}"
+                )
                 ok, report, logfile = worker_round(
                     n, wt, labels, title, extra, MAX_ATTEMPTS + bounce, deadline
                 )
