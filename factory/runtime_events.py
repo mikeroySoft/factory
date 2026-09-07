@@ -552,7 +552,7 @@ def _executions(retained: list, history: dict, gaps: list, observation: _Observa
         uncertain = inconsistent or causal_gap or entry is None or entry["sequence"] != 1
         # A corrupt/unsupported suffix could contain an exit even while its process lives.
         uncertain = uncertain or any(position >= min(position for position, _ in rows) for position in gaps)
-        quality = "partial" if uncertain or not history["complete"] else "fresh"
+        quality = "partial" if uncertain else "fresh"
         evidence = None
         pending = None
         state = "unknown"

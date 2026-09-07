@@ -181,6 +181,7 @@ class RuntimeCliTest(unittest.TestCase):
         self.assertTrue(data["history"]["gaps"])
         self.assertGreaterEqual(len({row["code"] for row in data["errors"]}), 3)
         self.assertEqual(data["executions"][0]["ended_at"], terminal["at"])
+        self.assertEqual(data["executions"][0]["observation"], "partial")
         self.assertEqual(data["history"]["start_at"], entry["at"])
         self.assertEqual(data["history"]["end_at"], terminal["at"])
 
@@ -215,6 +216,54 @@ class RuntimeCliTest(unittest.TestCase):
         self.assertFalse(data["history"]["complete"])
         self.assertIsNone(data["executions"][0]["entered_at"])
         self.assertEqual(data["events"][0]["event_id"], waiting["event_id"])
+
+    def test_truncated_old_history_does_not_poison_current_observations(self):
+        import shutil
+
+        tools = self.root / "bin"
+        tools.mkdir()
+        (tools / "git").symlink_to(shutil.which("git"))
+        command = tools / "systemctl"
+        command.write_text(
+            "#!" + sys.executable + "\nimport json, sys\n"
+            "if 'list-timers' in sys.argv:\n"
+            " print(json.dumps([{'unit':'factory-runtime.timer','next':2**64-1}]))\n"
+            "else:\n print('LoadState=loaded\\nActiveState=active')\n"
+        )
+        command.chmod(0o755)
+        self.env["PATH"] = str(tools)
+        self.journal.parent.mkdir()
+        (self.journal.parent / "locks").mkdir()
+        (self.journal.parent / "locks/merge.lock").touch()
+        self.journal.write_bytes(b" " * (2 * 1024 * 1024) + b"\n")
+        old = lifecycle.Execution(self.journal, "gate-check")
+        entry = old.emit("enter")
+        with self.journal.open("ab") as handle:
+            handle.writelines(
+                json.dumps({**entry, "event_id": f"old-{index}", "sequence": index + 2,
+                            "kind": "check", "check": "old"}).encode() + b"\n"
+                for index in range(513)
+            )
+        with open(self.root / "gpu.lock", "w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            execution = lifecycle.Execution(self.journal, "dispatcher", dispatcher=True)
+            execution.emit("enter")
+            acquisition = execution.resource("acquired", self.root / "gpu.lock", scope="host")
+            data = self.invoke()
+        self.assertTrue(data["history"]["truncated"])
+        self.assertFalse(data["history"]["complete"])
+        self.assertIn("byte_limit", data["history"]["gaps"])
+        self.assertIn("event_limit", data["history"]["gaps"])
+        projected = next(row for row in data["executions"]
+                         if row["execution_id"] == execution.execution_id)
+        self.assertEqual(projected["state"], "active")
+        self.assertEqual(projected["observation"], "fresh")
+        self.assertEqual(data["dispatcher"]["observation"], "fresh")
+        self.assertIn(execution.dispatcher_run_id, data["dispatcher"]["run_ids"])
+        resource = next(row for row in data["resources"]
+                        if row["resource"]["lock"]["path"] == str(self.root / "gpu.lock"))
+        self.assertEqual(resource["observation"], "fresh")
+        self.assertEqual(resource["owner"]["acquisition_id"], acquisition["acquisition_id"])
 
     def test_hung_service_queries_are_bounded_and_local_facts_survive(self):
         import shutil
@@ -278,6 +327,7 @@ class RuntimeCliTest(unittest.TestCase):
         data = self.invoke()
         self.assertEqual([row["event_id"] for row in data["events"]], [row["event_id"]])
         self.assertEqual(data["executions"][0]["state"], "unknown")
+        self.assertEqual(data["executions"][0]["observation"], "partial")
         self.assertIn("duplicate_conflict", data["history"]["gaps"])
 
     def test_accepted_check_and_admission_outcomes_remain_supported(self):

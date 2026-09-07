@@ -279,7 +279,7 @@ def dispatcher(cfg: Config, executions: list[dict], history: dict) -> tuple[dict
                       if execution.get("stage") == "dispatcher" and execution.get("state") == "active"
                       and isinstance(execution.get("dispatcher_run_id"), str)
                       and execution["dispatcher_run_id"]})
-    observation = "partial" if errors or not history.get("complete", False) else "fresh"
+    observation = "partial" if errors else "fresh"
     if service_active is None and timer_active is None and active_count is None:
         observation = "unavailable"
     return {

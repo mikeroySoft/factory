@@ -74,6 +74,31 @@ def read_events(path: Path) -> list[dict]:
     except FileNotFoundError:
         return []
 
+@contextmanager
+def journal_snapshot(
+    path: Path, *, rows: list[dict] | None = None, handle=None, create: bool = True,
+):
+    """Hold one coherent, committed journal view across related projections."""
+    if (rows is None) != (handle is None):
+        raise ValueError("rows and handle must be supplied together")
+    if rows is not None:
+        yield rows, handle
+        return
+    path = Path(path)
+    if create:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        owned = path.open("a+b" if create else "r+b")
+    except FileNotFoundError:
+        if create:
+            raise
+        yield [], None
+        return
+    with owned:
+        fcntl.flock(owned, fcntl.LOCK_EX)
+        yield _rows(owned), owned
+
+
 
 def _boot_id() -> str | None:
     try:
@@ -560,20 +585,15 @@ def _evidence(events: list[dict], descendants: dict) -> tuple[str, dict]:
     return "interrupted", evidence
 
 
-def observe(path: Path) -> list[dict]:
+def observe(path: Path, *, rows: list[dict] | None = None, handle=None) -> list[dict]:
     """Project independent executions and persist each proven interruption once.
 
     Ordinary product outcomes (check failure, revision, escalation) are completed
     mechanisms, not runtime failures. Only mechanism_failure yields failed.
     """
-    try:
-        handle = Path(path).open("r+b")
-    except FileNotFoundError:
-        return []
-    with handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+    with journal_snapshot(path, rows=rows, handle=handle, create=False) as (rows, handle):
         groups = {}
-        for row in _rows(handle):
+        for row in rows:
             if _lifecycle(row):
                 groups.setdefault(row["execution_id"], []).append(row)
         groups = {key: sorted(events, key=lambda row: row["sequence"])
@@ -615,6 +635,7 @@ def observe(path: Path) -> list[dict]:
                         "reconciled": True, "observer_process": _identity(os.getpid()), "evidence": evidence,
                     }
                     _write(handle, terminal)
+                    rows.append(terminal)
                     events.append(terminal)
             if terminal is not None:
                 outcome = terminal.get("outcome")
@@ -653,7 +674,7 @@ def _observation_row(path: Path, stage: str, key: str, previous: dict | None, at
     }
 
 
-def resources(path: Path, paths=()) -> list[dict]:
+def resources(path: Path, paths=(), *, rows: list[dict] | None = None, handle=None) -> list[dict]:
     """Reconcile resources under the existing journal lock, never infer an owner.
 
     `paths` contains (lock path, repository|host scope) pairs, so an external
@@ -662,12 +683,11 @@ def resources(path: Path, paths=()) -> list[dict]:
     """
     path = Path(path)
     supplied = [_resource(path, lock, scope) for lock, scope in paths]
-    if not path.exists() and not supplied:
+    if rows is None and not path.exists() and not supplied:
         return []
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+b") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        rows = [row for row in _rows(handle) if _lifecycle(row)]
+    with journal_snapshot(path, rows=rows, handle=handle) as (rows, handle):
+        journal_rows = rows
+        rows = [row for row in rows if _lifecycle(row)]
         descriptors = {}
         acquisitions = {}
         requests = {}
@@ -741,13 +761,15 @@ def resources(path: Path, paths=()) -> list[dict]:
             if previous is None or any(previous.get(field) != value for field, value in state.items()):
                 previous = _observation_row(path, "resource-observation", key, previous, observed_at, **state)
                 _write(handle, previous)
+                journal_rows.append(previous)
             result.append({**state, "event_id": previous["event_id"], "at": previous["at"],
                            "observed_at": observed_at})
         return result
 
 
 def observe_schedule(path: Path, *, next_at: str | None, timer_active: bool | None,
-                     service_active: bool | None, observed_at: str) -> dict:
+                     service_active: bool | None, observed_at: str,
+                     rows: list[dict] | None = None, handle=None) -> dict:
     """Persist only changes in an existing timer probe, without creating a run."""
     wait = None
     try:
@@ -762,12 +784,11 @@ def observe_schedule(path: Path, *, next_at: str | None, timer_active: bool | No
     state = {"wait": wait, "timer_active": timer_active if type(timer_active) is bool else None,
              "service_active": service_active if type(service_active) is bool else None}
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+b") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        previous = next((row for row in reversed(_rows(handle))
+    with journal_snapshot(path, rows=rows, handle=handle) as (rows, handle):
+        previous = next((row for row in reversed(rows)
                          if _lifecycle(row) and row["kind"] == "scheduling_observation"), None)
         if previous is None or any(previous.get(key) != value for key, value in state.items()):
             previous = _observation_row(path, "scheduling-observation", "timer", previous, observed_at, **state)
             _write(handle, previous)
+            rows.append(previous)
         return {**state, "event_id": previous["event_id"], "at": previous["at"], "observed_at": observed_at}

@@ -347,7 +347,10 @@ unused = ["agent"]
                 {"event": "attempt", "ticket": 3, "attempt": 1, "gate": "FAIL"},
                 {"event": "claimed", "ticket": 4, "labels": ["unused"]},
             ]
-            (state / "events.jsonl").write_text("\n".join(map(json.dumps, events)) + "\npartial")
+            tail = {"event": "attempt", "ticket": 4, "attempt": 1, "gate": "PASS", "cost": 100}
+            (state / "events.jsonl").write_text(
+                "\n".join(map(json.dumps, events)) + "\n" + json.dumps(tail)
+            )
             result = factory(repo, "stats", "--by-worker", "--json")
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout), [
@@ -373,7 +376,9 @@ unused = ["agent"]
                 with mock.patch.object(dashboard, "github", side_effect=RuntimeError("offline")), \
                      mock.patch.object(dashboard, "dispatcher", return_value={}), \
                      mock.patch.object(dashboard, "upstream_state", return_value={}), \
-                     mock.patch.object(dashboard, "triage_llm_online", return_value=False):
+                     mock.patch.object(dashboard, "triage_llm_online", return_value=False), \
+                     mock.patch.object(dashboard.lifecycle, "_rows",
+                                       wraps=dashboard.lifecycle._rows) as journal_reads:
                     snapshot = dashboard.snapshot()
             self.assertEqual(snapshot["workers"], [
                 {"worker": "default", "first_pass": 0.0, "attempts": 1, "cost": None},
@@ -381,6 +386,8 @@ unused = ["agent"]
                 {"worker": "special", "first_pass": 1.0, "attempts": 1, "cost": 4},
                 {"worker": "unused", "first_pass": None, "attempts": 0, "cost": None},
             ])
+            self.assertEqual(snapshot["spend"], {"seconds": 0, "cost": 106.25, "tickets": 4})
+            self.assertEqual(journal_reads.call_count, 1)
 
     def test_timeline_actor_attribution_in_stats(self) -> None:
         from unittest import mock

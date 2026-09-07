@@ -766,6 +766,12 @@ process scan), `scan_complete` and `descendant_absence_proven` (booleans), and
 descendants across missing history. Observation quality is `fresh`, `partial`,
 or `unavailable`; fresh describes current evidence collection, not a recent
 source event. No age-based stale threshold is invented by Factory.
+History-window completeness and current observation quality are independent:
+older byte/event truncation does not degrade a fully retained later execution,
+current dispatcher probes or confirmed lock ownership. A clipped execution's
+missing entry, conflicting identity/sequence, ambiguous suffix or unavailable
+live evidence still makes that record partial/unknown; history gaps remain
+reported even when independent current observations are fresh.
 
 Direct identity checks are cached for at most 128 PIDs, with 4096-byte `/proc`
 stat reads, a 64 KiB mounts read, 128-byte boot/machine identity reads, and at
