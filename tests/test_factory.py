@@ -1080,6 +1080,44 @@ class DispatchTest(unittest.TestCase):
             with mock.patch.object(dispatch, "gh_json", return_value={"title": "t", "body": "b", "comments": []}):
                 self.assertIn("## Lessons from previous tickets", dispatch.build_prompt(3, wt))
 
+    def test_learn_with_manager_opens_chore_pr(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            repo = make_repo(root)
+            bare = root / "origin.git"
+            git(root, "init", "-q", "--bare", str(bare))
+            git(repo, "remote", "set-url", "origin", str(bare))
+            prompt = root / "prompt.txt"
+            reply = json.dumps({"lessons": ["Run `make test` before the gate."]})
+            command = [sys.executable, "-c",
+                       "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2]); sys.stdout.write(sys.argv[3])",
+                       str(prompt), "{prompt}", reply]
+            (repo / config.CONFIG_NAME).write_text(
+                '[repo]\nslug = "acme/widgets"\n[manager]\ncommand = ' + json.dumps(command) + "\n")
+            git(repo, "add", "-A")
+            git(repo, "commit", "-q", "-m", "cfg")
+            git(repo, "push", "-q", "origin", "main")
+            state = repo / ".factory"
+            notes = state / "manager/notes.md"
+            notes.parent.mkdir(parents=True)
+            notes.write_text("2026-01-01: `unit` flakes on a cold cache.\n")
+            (state / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in [
+                {"event": "claimed", "ticket": 3, "title": "fix parser", "at": "2026-01-01T00:00:00Z"},
+                {"event": "escalate", "ticket": 3, "reason": "gate failed 3 times", "at": "2026-01-01T00:01:00Z"},
+            ]))
+            stubs = stub_bin(root, gh='case "$1 $2" in "pr list") echo "[]";; esac')
+            result = factory(repo, "learn", path=stubs)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("`unit` flakes on a cold cache", prompt.read_text())  # notes.md is evidence
+            self.assertFalse((repo / config.LESSONS_NAME).exists())  # nothing written in ROOT
+            calls = (Path(stubs) / "gh.log").read_text()
+            self.assertIn("pr create --repo acme/widgets --head agent/lessons-", calls)
+            self.assertIn("--label chore", calls)
+            branch = git(bare, "branch", "--list", "agent/lessons-*").lstrip("* ")
+            self.assertTrue(branch.startswith("agent/lessons-"), branch)
+            self.assertEqual(git(bare, "diff", "--name-only", "main", branch), config.LESSONS_NAME)
+            self.assertIn("- Run `make test` before the gate.", git(bare, "show", f"{branch}:{config.LESSONS_NAME}"))
+
     def test_cost_pattern_sums_worker_log(self) -> None:
         from factory import dispatch
 
