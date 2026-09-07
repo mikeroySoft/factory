@@ -109,17 +109,25 @@ and no safety check was bypassed. Every run records `prompt_sha256`, `packet_sha
 `input_sha256`, exit code and wall time in `runs/main/results.json`.
 
 Confirmed identical prompt text for `1947fc4e…` and the final #36 head
-`07861b1dd0f04c0c5b8d5d6ba5f9bad1fadbe061` ("docs(review): describe the review stage as
-implemented", README accuracy only), so the comparison holds for either head. Distinct
-prompt hashes per arm: baseline `9112ef9d76`/`4e986562f8`, issue36
-`aee3991863`/`7f47ef8e87` (the pair differs only by issue number).
+`07861b1dd0f04c0c5b8d5d6ba5f9bad1fadbe061`, which is two commits over `cadb998…`:
+`1947fc4` (reviewer prompt and worker bounce guidance) and `07861b1` (README accuracy
+only). The comparison therefore holds for either head. Distinct prompt hashes per arm:
+baseline `9112ef9d76`/`4e986562f8`, issue36 `aee3991863`/`7f47ef8e87` (the pair differs
+only by issue number).
 
-Independently of this experiment, the #36 owner reports production gate PASS at
-`07861b1…`, prompt capture through the real `dispatch.review()`, and one live
-**tool-enabled** reviewer run (`DEFAULT_REVIEWER` model, 79s) that produced the
-Required/Optional split with criterion citations on a clean worktree, with zero blocking
-findings from two-axis independent review. That is the production-path evidence this
-harness deliberately does not cover (§5, no-tools packet).
+Independently of this experiment, the #36 owner reports, at `07861b1…`: production gate
+PASS (`conflict-markers`, `test`, `leak-scan`, from a real `factory gate` execution with
+an isolated events root); prompt capture through the real `dispatch.review()`; zero
+blocking findings from an independent two-axis review (Standards and Spec both clean);
+and one live **tool-enabled** reviewer run (`DEFAULT_REVIEWER` model, 79s) that produced
+the Required/Optional split with criterion citations and left the worktree clean. That
+run returned `VERDICT: REVISE`, not a clean verdict: its single required fix was the
+then-unrecorded diff-size clause of the #36 issue body — correct behaviour against the
+issue text at the time, and the reason the narrowing was recorded on the issue
+(`mikeroySoft/factory#36`, comment `5576198823`). This is the production-path evidence
+this harness deliberately does not cover (§5, no-tools packet), and it is a live instance
+of the reviewer blocking on a real spec-vs-diff gap that the packet harness cannot
+observe, since the packets carry no unrecorded scope drift.
 
 Reproduce: `python experiments/reviewer-calibration/run_calibration.py runs/<name> 2`.
 
