@@ -65,7 +65,16 @@ def manager_llm(cfg: config.Config) -> Callable[[list[dict]], str]:
     return ask
 
 
-def propose(existing: str, evidence_md: str, repo: str, ask: Callable[[list[dict]], str]) -> list[str]:
+CURATE_OFFER = (
+    "Optionally, after the JSON, add a line `DECISION: CURATE` followed by a unified diff "
+    "(`git apply` format, against the current main branch) that improves the harness context: "
+    f"only {', '.join(manage.CURATE_PREFIXES)}. Any other path (tests, CI, `.factory.toml`) "
+    "rejects the whole diff. It is opened as a separate chore PR citing the evidence."
+)
+
+
+def propose(existing: str, evidence_md: str, repo: str, ask: Callable[[list[dict]], str],
+            curate: bool = False) -> tuple[list[str], str | None]:
     system = (
         f"You maintain a short list of lessons for coding agents working tickets in the {repo} "
         f"repository. From the evidence, extract only lessons that would have prevented a gate "
@@ -76,23 +85,73 @@ def propose(existing: str, evidence_md: str, repo: str, ask: Callable[[list[dict
         f"list: keep lessons still supported, drop ones the evidence contradicts, never exceed "
         f"{MAX_LESSONS}. Respond with strict JSON only: {{\"lessons\": [\"...\"]}}"
     )
+    if curate:
+        system += " " + CURATE_OFFER
     user = f"Existing lessons:\n{existing or '(none)'}\n\nEvidence:\n{evidence_md}"
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     for _ in range(2):
         reply = ask(messages)
-        text = reply.strip()
+        text, diff = manage.split_curate(reply) if curate else (reply, None)
+        text = text.strip()
         if text.startswith("```"):
             text = text.strip("`").removeprefix("json").strip()
         try:
             obj = json.loads(text)
             lessons = [str(x).strip() for x in obj["lessons"] if str(x).strip()]
-            return lessons[:MAX_LESSONS]
+            return lessons[:MAX_LESSONS], diff
         except (ValueError, KeyError, TypeError):
             messages += [
                 {"role": "assistant", "content": reply},
                 {"role": "user", "content": "That was not valid JSON of the form {\"lessons\": [...]}. Reply with ONLY that JSON."},
             ]
     raise SystemExit("factory learn: model returned unparseable JSON twice")
+
+
+def chore_pr(cfg: config.Config, branch: str, edit: Callable[[Path], list[str]], title: str, pr_body: str) -> None:
+    """Branch from origin/main in a throwaway worktree, let `edit` return the paths it changed, commit, open the PR."""
+    wt = cfg.factory / f"wt-{branch.removeprefix('agent/')}"
+    dispatch.run(["git", "fetch", "origin", cfg.main], cwd=cfg.root)
+    dispatch.run(["git", "worktree", "add", "--force", "-B", branch, str(wt), f"origin/{cfg.main}"], cwd=cfg.root)
+    try:
+        paths = edit(wt)
+        dispatch.run(["git", "add", "--", *paths], cwd=wt)
+        flags = ["-s"] if cfg.signoff else []
+        dispatch.run(["git", "commit", *flags, "-m", title], cwd=wt)
+        dispatch.push_and_pr(wt, branch, title, pr_body, label=LABEL_CHORE)
+    finally:
+        dispatch.run(["git", "worktree", "remove", "--force", str(wt)], cwd=cfg.root, check=False)
+
+
+def curate(cfg: config.Config, diff: str, tickets: list[int], notes: str) -> str:
+    """Apply the manager's CURATE diff on `agent/curate-<date>` and open its chore PR.
+
+    Returns the branch, or `rejected: <reason>` when the diff does not apply or leaves the allowlist."""
+    branch = f"agent/curate-{date.today().isoformat()}"
+    patch = cfg.factory / f"{branch.removeprefix('agent/')}.patch"
+    patch.write_text(diff if diff.endswith("\n") else diff + "\n")
+
+    def edit(wt: Path) -> list[str]:
+        applied = dispatch.run(["git", "apply", str(patch)], cwd=wt, check=False)
+        if applied.returncode:
+            raise ValueError(f"diff does not apply: {applied.stderr.strip()}")
+        # Checked after applying so a rename's source counts too; `-z` keeps odd names verbatim.
+        status = dispatch.run(["git", "status", "--porcelain", "-z", "--untracked-files=all"], cwd=wt).stdout
+        paths = [entry[3:] for entry in status.split("\0") if entry]
+        bad = [p for p in paths if not manage.curate_allowed(p)]
+        if bad:
+            raise ValueError(", ".join(bad) + " outside " + ", ".join(manage.CURATE_PREFIXES))
+        if not paths:
+            raise ValueError("empty diff")
+        return paths
+
+    cited = ", ".join(f"#{n}" for n in tickets)
+    pr_body = (f"`factory learn` CURATE proposed by the manager from tickets {cited}.\n\n"
+               f"## Manager notes\n\n{notes or '(none)'}")
+    try:
+        chore_pr(cfg, branch, edit, f"{branch}: curate harness context", pr_body)
+    except ValueError as exc:
+        return f"rejected: {exc}"
+    return branch
 
 
 def main(argv: list[str]) -> int:
@@ -111,16 +170,20 @@ def main(argv: list[str]) -> int:
     if not tickets:
         print("factory learn: no finished tickets in .factory/events.jsonl yet")
         return 0
+    notes_md = ""
     if cfg.manager:
         notes = cfg.factory / manage.NOTES_NAME
         if notes.is_file():
-            evidence_md += f"\n## {notes.name}\n\n{notes.read_text()}"
+            notes_md = notes.read_text()
+            evidence_md += f"\n## {notes.name}\n\n{notes_md}"
     path = cfg.root / LESSONS_NAME
     existing = path.read_text() if path.exists() else ""
     ask = manager_llm(cfg) if cfg.manager else triage.call_llm
-    lessons = propose(existing, evidence_md, cfg.repo, ask)
+    lessons, diff = propose(existing, evidence_md, cfg.repo, ask, curate=bool(cfg.manager))
     body = "".join(f"- {lesson}\n" for lesson in lessons)
     print(f"learned from tickets {', '.join(f'#{n}' for n in tickets)}:\n{body}", end="")
+    if diff:
+        print(f"manager CURATE diff:\n{diff}", end="")
     if args.dry_run:
         return 0
     content = f"<!-- Written by `factory learn` from {len(tickets)} finished tickets; edit freely and commit. -->\n{body}"
@@ -130,18 +193,16 @@ def main(argv: list[str]) -> int:
         print(f"wrote {path}; review and commit it")
         return 0
     branch = f"agent/lessons-{date.today().isoformat()}"
-    wt = cfg.factory / f"wt-{branch.removeprefix('agent/')}"
-    dispatch.run(["git", "fetch", "origin", cfg.main], cwd=cfg.root)
-    dispatch.run(["git", "worktree", "add", "--force", "-B", branch, str(wt), f"origin/{cfg.main}"], cwd=cfg.root)
-    try:
+
+    def edit(wt: Path) -> list[str]:
         (wt / LESSONS_NAME).write_text(content)
-        dispatch.run(["git", "add", LESSONS_NAME], cwd=wt)
-        flags = ["-s"] if cfg.signoff else []
-        dispatch.run(["git", "commit", *flags, "-m", f"{branch}: update {LESSONS_NAME}"], cwd=wt)
-        pr_body = f"`factory learn` distilled tickets {', '.join(f'#{n}' for n in tickets)} via the manager.\n\n{body}"
-        dispatch.push_and_pr(wt, branch, f"{branch}: update {LESSONS_NAME}", pr_body, label=LABEL_CHORE)
-    finally:
-        dispatch.run(["git", "worktree", "remove", "--force", str(wt)], cwd=cfg.root, check=False)
-    dispatch.record("learn", tickets=tickets, lessons=len(lessons), branch=branch)
+        return [LESSONS_NAME]
+
+    pr_body = f"`factory learn` distilled tickets {', '.join(f'#{n}' for n in tickets)} via the manager.\n\n{body}"
+    chore_pr(cfg, branch, edit, f"{branch}: update {LESSONS_NAME}", pr_body)
     print(f"opened a {LABEL_CHORE} PR from {branch}")
+    curated = curate(cfg, diff, tickets, notes_md) if diff else None
+    if curated:
+        print(f"CURATE {curated}" if curated.startswith("rejected") else f"opened a {LABEL_CHORE} PR from {curated}")
+    dispatch.record("learn", tickets=tickets, lessons=len(lessons), branch=branch, curate=curated)
     return 0

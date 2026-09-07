@@ -52,6 +52,14 @@ def make_repo(tmp: Path, toml: str = "") -> Path:
     return repo
 
 
+def curate_diff(*paths: str) -> str:
+    """A unified diff creating each path with one line, as a manager's CURATE body."""
+    return "".join(
+        f"diff --git a/{p} b/{p}\nnew file mode 100644\n--- /dev/null\n+++ b/{p}\n@@ -0,0 +1 @@\n+Run `make test` first.\n"
+        for p in paths
+    )
+
+
 def build_fork(tmp: Path) -> tuple[Path, Path, Path]:
     """upstream (one commit, u0), origin forked from it, and root cloned from
     origin with an `upstream` remote. Callers add commits/branches on top."""
@@ -931,6 +939,21 @@ esac
         self.assertEqual(factory(repo, "manage", path=stubs).returncode, 0)
         self.assertNotIn("issue edit", (Path(stubs) / "gh.log").read_text()[len(calls):])
 
+    def test_manage_rejects_curate_from_escalation_packet(self) -> None:
+        repo, stubs, _ = self.scenario()
+        command = ["printf", "%s", "DECISION: CURATE\n" + curate_diff("AGENTS.md")]
+        (repo / config.CONFIG_NAME).write_text("[manager]\ncommand = " + json.dumps(command) + "\n")
+        result = factory(repo, "manage", path=stubs)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = (Path(stubs) / "gh.log").read_text()
+        self.assertIn("Factory manager: Rejected CURATE", calls)
+        self.assertNotIn("--add-label ready-for-agent", calls)
+        self.assertNotIn("pr create", calls)
+        events = list(map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines()))
+        manage = next(e for e in events if e.get("event") == "manage")
+        self.assertEqual(manage["decision"], "HUMAN")
+        self.assertEqual(manage["rejected"], "CURATE")
+
 
 class DispatchTest(unittest.TestCase):
     def test_prompt_carries_handoff_and_events_append(self) -> None:
@@ -1080,32 +1103,39 @@ class DispatchTest(unittest.TestCase):
             with mock.patch.object(dispatch, "gh_json", return_value={"title": "t", "body": "b", "comments": []}):
                 self.assertIn("## Lessons from previous tickets", dispatch.build_prompt(3, wt))
 
+    def learn_scenario(self, root: Path, reply: str) -> tuple[Path, Path, str, Path]:
+        """Repo with a bare origin and a fake manager that records its prompt and prints `root/reply.txt`."""
+        repo = make_repo(root)
+        bare = root / "origin.git"
+        git(root, "init", "-q", "--bare", str(bare))
+        git(repo, "remote", "set-url", "origin", str(bare))
+        prompt = root / "prompt.txt"
+        (root / "reply.txt").write_text(reply)
+        command = [sys.executable, "-c",
+                   "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2]); "
+                   "sys.stdout.write(pathlib.Path(sys.argv[3]).read_text())",
+                   str(prompt), "{prompt}", str(root / "reply.txt")]
+        (repo / config.CONFIG_NAME).write_text(
+            '[repo]\nslug = "acme/widgets"\n[manager]\ncommand = ' + json.dumps(command) + "\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "cfg")
+        git(repo, "push", "-q", "origin", "main")
+        state = repo / ".factory"
+        notes = state / "manager/notes.md"
+        notes.parent.mkdir(parents=True)
+        notes.write_text("2026-01-01: `unit` flakes on a cold cache.\n")
+        (state / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in [
+            {"event": "claimed", "ticket": 3, "title": "fix parser", "at": "2026-01-01T00:00:00Z"},
+            {"event": "escalate", "ticket": 3, "reason": "gate failed 3 times", "at": "2026-01-01T00:01:00Z"},
+        ]))
+        stubs = stub_bin(root, gh='case "$1 $2" in "pr list") echo "[]";; esac')
+        return repo, bare, stubs, prompt
+
     def test_learn_with_manager_opens_chore_pr(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
-            repo = make_repo(root)
-            bare = root / "origin.git"
-            git(root, "init", "-q", "--bare", str(bare))
-            git(repo, "remote", "set-url", "origin", str(bare))
-            prompt = root / "prompt.txt"
             reply = json.dumps({"lessons": ["Run `make test` before the gate."]})
-            command = [sys.executable, "-c",
-                       "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2]); sys.stdout.write(sys.argv[3])",
-                       str(prompt), "{prompt}", reply]
-            (repo / config.CONFIG_NAME).write_text(
-                '[repo]\nslug = "acme/widgets"\n[manager]\ncommand = ' + json.dumps(command) + "\n")
-            git(repo, "add", "-A")
-            git(repo, "commit", "-q", "-m", "cfg")
-            git(repo, "push", "-q", "origin", "main")
-            state = repo / ".factory"
-            notes = state / "manager/notes.md"
-            notes.parent.mkdir(parents=True)
-            notes.write_text("2026-01-01: `unit` flakes on a cold cache.\n")
-            (state / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in [
-                {"event": "claimed", "ticket": 3, "title": "fix parser", "at": "2026-01-01T00:00:00Z"},
-                {"event": "escalate", "ticket": 3, "reason": "gate failed 3 times", "at": "2026-01-01T00:01:00Z"},
-            ]))
-            stubs = stub_bin(root, gh='case "$1 $2" in "pr list") echo "[]";; esac')
+            repo, bare, stubs, prompt = self.learn_scenario(root, reply)
             result = factory(repo, "learn", path=stubs)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("`unit` flakes on a cold cache", prompt.read_text())  # notes.md is evidence
@@ -1117,6 +1147,56 @@ class DispatchTest(unittest.TestCase):
             self.assertTrue(branch.startswith("agent/lessons-"), branch)
             self.assertEqual(git(bare, "diff", "--name-only", "main", branch), config.LESSONS_NAME)
             self.assertIn("- Run `make test` before the gate.", git(bare, "show", f"{branch}:{config.LESSONS_NAME}"))
+            self.assertNotIn("agent/curate-", calls)
+
+    def test_learn_curate_opens_chore_pr_touching_only_context_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            diff = curate_diff("AGENTS.md", ".omp/skills/testing/SKILL.md")
+            reply = json.dumps({"lessons": ["Run `make test` before the gate."]}) + "\nDECISION: CURATE\n" + diff
+            repo, bare, stubs, prompt = self.learn_scenario(root, reply)
+            result = factory(repo, "learn", path=stubs)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("DECISION: CURATE", prompt.read_text())  # the prompt offers the decision
+            calls = (Path(stubs) / "gh.log").read_text()
+            self.assertIn("pr create --repo acme/widgets --head agent/lessons-", calls)
+            self.assertIn("pr create --repo acme/widgets --head agent/curate-", calls)
+            self.assertEqual(calls.count("--label chore"), 2)
+            branch = git(bare, "branch", "--list", "agent/curate-*").lstrip("* ")
+            self.assertTrue(branch.startswith("agent/curate-"), branch)
+            self.assertEqual(git(bare, "diff", "--name-only", "main", branch).split(),
+                             [".omp/skills/testing/SKILL.md", "AGENTS.md"])
+            self.assertEqual(git(bare, "show", f"{branch}:AGENTS.md"), "Run `make test` first.")
+            body = (repo / ".factory" / f"pr-body-{branch.removeprefix('agent/')}.md").read_text()
+            self.assertIn("#3", body)  # cites the tickets
+            self.assertIn("`unit` flakes on a cold cache", body)  # and the manager notes
+            events = list(map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines()))
+            self.assertEqual(next(e for e in events if e.get("event") == "learn")["curate"], branch)
+
+    def test_learn_curate_rejects_verification_paths(self) -> None:
+        for bad in (".github/workflows/ci.yml", ".factory.toml", "src/main.py"):
+            with self.subTest(path=bad), tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                repo, bare, stubs, _ = self.learn_scenario(root, "")
+                if bad == config.CONFIG_NAME:  # a real edit to the committed gate config
+                    with (repo / bad).open("a") as f:
+                        f.write('[[gate.check]]\nname = "skip"\nrun = ["true"]\n')
+                    diff = curate_diff("AGENTS.md") + git(repo, "diff") + "\n"
+                    git(repo, "checkout", "--", bad)
+                else:
+                    diff = curate_diff("AGENTS.md", bad)
+                (root / "reply.txt").write_text(
+                    json.dumps({"lessons": ["Run `make test` before the gate."]}) + "\nDECISION: CURATE\n" + diff)
+                result = factory(repo, "learn", path=stubs)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f"CURATE rejected: {bad}", result.stdout)
+                calls = (Path(stubs) / "gh.log").read_text()
+                self.assertIn("--head agent/lessons-", calls)  # lessons PR still opens
+                self.assertNotIn("agent/curate-", calls)
+                self.assertEqual(git(bare, "branch", "--list", "agent/curate-*"), "")
+                self.assertFalse(list((repo / ".factory").glob("wt-curate-*")))
+                events = list(map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines()))
+                self.assertIn(bad, next(e for e in events if e.get("event") == "learn")["curate"])
 
     def test_cost_pattern_sums_worker_log(self) -> None:
         from factory import dispatch

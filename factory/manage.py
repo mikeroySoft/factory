@@ -27,7 +27,8 @@ FIX: JSON object {"worker": "label", "guidance": "..."}.
 Dispatch exactly one round of that listed worker in the kept agent worktree for its open PR.
 Code re-gates, pushes and re-reviews; approval requires a passing gate and fresh APPROVE.
 HUMAN: plain-text diagnosis; leave the ticket with the human.
-No other decisions are allowed. Do not create PRs.
+No other decisions are allowed. Do not create PRs. CURATE (harness-context edits) is
+accepted only from `factory learn`, never here.
 Optionally end your output with a fenced notes block; it replaces your notes file
 verbatim (16 KB cap; an oversize block is rejected):
 ```notes
@@ -43,6 +44,23 @@ NOTES_CAP = 16 * 1024
 NOTES_BLOCK = re.compile(r"(?ms)^```notes[ \t]*$\n(.*?)^```[ \t]*$\n?")
 
 RESERVED_LABELS = {"default", LABEL_AGENT, LABEL_HUMAN, LABEL_TRIAGE}
+
+CURATE_BLOCK = re.compile(r"(?ms)^DECISION: CURATE[ \t]*$\n(.*)")
+CURATE_REJECTED = "Rejected CURATE: harness-context edits are accepted only from `factory learn`, never for an escalation."
+CURATE_PREFIXES = ("AGENTS.md", "CONTRIBUTING.md", ".omp/skills/")
+
+
+def split_curate(output: str) -> tuple[str, str | None]:
+    """Peel a trailing `DECISION: CURATE` block (a unified diff) off manager output."""
+    match = CURATE_BLOCK.search(output)
+    if not match:
+        return output, None
+    return output[:match.start()], match[1]
+
+
+def curate_allowed(path: str) -> bool:
+    """Only harness context; verification config (`.factory.toml`, workflows) is human-only."""
+    return any(path == p or path.startswith(p) for p in CURATE_PREFIXES) and ".." not in path.split("/")
 
 
 def split_notes(output: str) -> tuple[str, str | None]:
@@ -238,14 +256,15 @@ def manage_pass(dry_run: bool = False) -> None:
                             parts.append(f"## {path.name}\n\n{path.read_text()}")
                     wt = cfg.factory / f"wt-{n}"
                     cwd = wt if wt.is_dir() else cfg.root
-                    notes = None
+                    notes = rejected = None
                     try:
                         proc = dispatch.run(cfg.manager_cmd("\n\n".join(parts), cwd), cwd=cwd, check=False)
                         if proc.returncode:
                             decision, body, data = "HUMAN", f"Manager command failed ({proc.returncode}):\n{proc.stderr or proc.stdout}", None
                         else:
                             output, notes = split_notes(proc.stdout)
-                            decision, body, data = parse(output, workers)
+                            rejected = "CURATE" if split_curate(output)[1] is not None else None
+                            decision, body, data = ("HUMAN", CURATE_REJECTED, None) if rejected else parse(output, workers)
                     except OSError as exc:
                         decision, body, data = "HUMAN", f"Manager command failed: {exc}", None
                     # A human may have taken over while the model was thinking.
@@ -255,7 +274,7 @@ def manage_pass(dry_run: bool = False) -> None:
                     if status is not None and status != "written":
                         dispatch.log(f"#{n}: manager notes {status}; keeping the existing file")
                     dispatch.record("manage", ticket=n, decision=decision, round=round_number,
-                                    packet=str(packet), notes=status)
+                                    packet=str(packet), notes=status, rejected=rejected)
                     try:
                         apply(n, issue, decision, body, data, packet)
                     except (CalledProcessError, OSError, ValueError) as exc:
