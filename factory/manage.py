@@ -6,7 +6,9 @@ import argparse
 import fcntl
 import json
 import re
+from contextlib import nullcontext
 from pathlib import Path
+from subprocess import CalledProcessError
 
 from factory import config, dispatch, lifecycle
 from factory.config import LABEL_AGENT, LABEL_HUMAN, LABEL_TRIAGE, LESSONS_NAME
@@ -123,46 +125,65 @@ def manage_pass(dry_run: bool = False) -> None:
                                "--json", "number,title,body,labels", "--limit", "1000"])
     for issue in issues:
         n = issue["number"]
-        with dispatch.ticket_lock(n).open("w") as lock:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                continue
-            events = [e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("ticket") == n]
-            escalation = next((e for e in reversed(events) if e.get("event") == "escalate"), None)
-            if not escalation or escalation.get("upstream") or not escalation.get("packet"):
-                continue
-            round_number = escalation.get("round", 0)
-            if not 1 <= round_number <= cfg.manager_rounds or any(
-                e.get("event") == "manage" and e.get("round") == round_number for e in events
-            ):
-                continue
-            packet = Path(escalation["packet"])
-            if not packet.is_file() or human_activity(n, escalation):
-                continue
-            if dry_run:
-                dispatch.log(f"#{n}: would manage escalation round {round_number}")
-                continue
-            parts = [MENU, "Worker labels: " + ", ".join(k for k in cfg.workers if k != "default"),
-                     f"Issue #{n}: {issue['title']}\n\n{issue.get('body') or ''}", packet.read_text()]
-            for path in (cfg.root / LESSONS_NAME, cfg.factory / "manager/notes.md"):
-                if path.is_file():
-                    parts.append(f"## {path.name}\n\n{path.read_text()}")
-            wt = cfg.factory / f"wt-{n}"
-            cwd = wt if wt.is_dir() else cfg.root
-            try:
-                proc = dispatch.run(cfg.manager_cmd("\n\n".join(parts), cwd), cwd=cwd, check=False)
-                if proc.returncode:
-                    decision, body, data = "HUMAN", f"Manager command failed ({proc.returncode}):\n{proc.stderr or proc.stdout}", None
-                else:
-                    decision, body, data = parse(proc.stdout, cfg.workers)
-            except OSError as exc:
-                decision, body, data = "HUMAN", f"Manager command failed: {exc}", None
-            # A human may have taken over while the model was thinking.
-            if human_activity(n, escalation):
-                continue
-            dispatch.record("manage", ticket=n, decision=decision, round=round_number, packet=str(packet))
-            apply(n, issue, decision, body, data)
+        lock_path = cfg.factory / "locks" / f"{n}.lock"
+        if dry_run and dispatch.lock_held(lock_path):
+            continue
+        with nullcontext() if dry_run else lifecycle.scope(dispatch.EVENTS, "manage", ticket=n) as execution:
+            with nullcontext() if dry_run else dispatch.ticket_lock(n).open("w") as lock:
+                if not dry_run:
+                    request = execution.resource("requested", lock_path, scope="repository")
+                    try:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        execution.wait("ticket_lock_contended", mode="retry_next_pass", resource=request["resource"])
+                        continue
+                    execution.resource("acquired", lock_path, scope="repository")
+                try:
+                    events = [e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("ticket") == n]
+                    escalation = next((e for e in reversed(events) if e.get("event") == "escalate"), None)
+                    if not escalation or escalation.get("upstream") or not escalation.get("packet"):
+                        continue
+                    round_number = escalation.get("round", 0)
+                    if not 1 <= round_number <= cfg.manager_rounds or any(
+                        e.get("event") == "manage" and e.get("round") == round_number for e in events
+                    ):
+                        continue
+                    packet = Path(escalation["packet"])
+                    if not packet.is_file() or human_activity(n, escalation):
+                        continue
+                    if dry_run:
+                        dispatch.log(f"#{n}: would manage escalation round {round_number}")
+                        continue
+                    parts = [MENU, "Worker labels: " + ", ".join(k for k in cfg.workers if k != "default"),
+                             f"Issue #{n}: {issue['title']}\n\n{issue.get('body') or ''}", packet.read_text()]
+                    for path in (cfg.root / LESSONS_NAME, cfg.factory / "manager/notes.md"):
+                        if path.is_file():
+                            parts.append(f"## {path.name}\n\n{path.read_text()}")
+                    wt = cfg.factory / f"wt-{n}"
+                    cwd = wt if wt.is_dir() else cfg.root
+                    try:
+                        proc = dispatch.run(cfg.manager_cmd("\n\n".join(parts), cwd), cwd=cwd, check=False)
+                        if proc.returncode:
+                            decision, body, data = "HUMAN", f"Manager command failed ({proc.returncode}):\n{proc.stderr or proc.stdout}", None
+                        else:
+                            decision, body, data = parse(proc.stdout, cfg.workers)
+                    except OSError as exc:
+                        decision, body, data = "HUMAN", f"Manager command failed: {exc}", None
+                    # A human may have taken over while the model was thinking.
+                    if human_activity(n, escalation):
+                        continue
+                    dispatch.record("manage", ticket=n, decision=decision, round=round_number, packet=str(packet))
+                    try:
+                        apply(n, issue, decision, body, data)
+                    except (CalledProcessError, OSError, ValueError) as exc:
+                        # A partial SPLIT or REWRITE must not be replayed automatically.
+                        execution.outcome = "mechanism_failure"
+                        execution.reason = "github_command_failed"
+                        dispatch.log(f"#{n}: manager decision application failed: {exc}; leaving for human")
+                finally:
+                    if not dry_run:
+                        lock.close()
+                        execution.resource("released", lock_path, scope="repository")
 
 
 def main(argv: list[str]) -> int:

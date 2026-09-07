@@ -71,7 +71,7 @@ merge stage.
 | `factory dispatch` | One stateless pass: upstream sync → merge stage (at most one PR) → manager → claim up to `max_active` tickets → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan. |
 | `factory manage` | Resolves untouched `ready-for-human` escalation packets, once per escalation and within `[manager].rounds`. Disabled unless `manager.command` is configured. `--dry-run` lists eligible tickets. |
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
-| `factory stats` | Ticket table: attempts, review rounds, hours to merge. `--json`. |
+| `factory stats` | Ticket table: attempts, review rounds, hours to merge, escalation count, resolver attribution, minutes in `ready-for-human`, and re-queues. Reads GitHub plus existing `events.jsonl`. `--json`. |
 | `factory learn` | Reads the last N finished tickets' event trail, failing-attempt log tails, reviewer findings, and escalation reasons; asks the local model for ≤10 repo-specific lessons; writes `.factory-lessons.md` (you commit it). Every worker prompt carries it. `--dry-run`, `--last N`. |
 | `factory dashboard` | Local ops UI: tickets by stage, authoritative in-flight phase when known, gate reports, worker logs, journal heartbeat, upstream drift, and an action list with one-click answers. `--json` prints the existing snapshot, including independent executions and local interruption reconciliation. `--host 0.0.0.0` exposes it (and its mutating `/api/act`) to your network. |
 | `factory dashboard --runtime-json` | One bounded schema 1 runtime observation using only local read-only evidence; no GitHub, model probe, journal append, lock acquisition, or state creation. Partial source failures remain structured JSON. See [runtime contract](#bounded-runtime-json-schema-1). |
@@ -93,6 +93,28 @@ with label arrays restricted to configured worker labels (not `default`).
 Code validates the output, records a `manage` event before GitHub mutations, and
 leaves malformed decisions with a prefixed HUMAN diagnosis. Split children enter
 `needs-triage`; the parent keeps `ready-for-human` with child blocker lines.
+Manager executions and ticket-lock waits use the lifecycle journal. If a GitHub
+mutation fails, the execution records a terminal failure and the ticket remains
+with the human; other tickets can proceed. The consumed round is not replayed,
+because a partial rewrite or split may already have changed GitHub.
+
+Human-touch metrics are read-only; no manager behavior is required. A
+`ready-for-human` label addition starts an escalation interval; removal ends it
+and attributes the resolution to that removal's actor (`User` → human, `Bot` →
+factory, absent/other → unknown). Resolver logins are retained. Automation using
+a human account is indistinguishable from manual activity under that account.
+Open intervals accrue until now, or until closure/merge for finished tickets.
+Re-queues count `ready-for-agent` additions after the initial queue entry, with
+repeated `claimed` trace records as a fallback. Trace escalation counts likewise
+supplement timeline counts without adding the two counts together.
+
+The stats footer and dashboard KPIs show escalations in the trailing seven days
+and the percentage of attributed resolutions performed by humans; unresolved
+and unknown resolutions are excluded from that denominator (`n/a`/`null` when
+none are attributed). `factory dashboard --json` exposes
+`metrics.escalations_per_week`, `metrics.human_resolved_pct` (0–100), and each
+ticket's `human_touch` details. The dashboard retains its existing 100-issue,
+100-PR, and 100-timeline-item query limits; stats paginates label timelines.
 
 ## How a ticket moves
 

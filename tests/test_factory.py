@@ -302,6 +302,86 @@ class HostConfigTest(unittest.TestCase):
             self.assertEqual(rows()["manager: manage"]["status"], "PASS")
 
 
+class StatsTest(unittest.TestCase):
+    def test_timeline_actor_attribution_in_stats(self) -> None:
+        from unittest import mock
+
+        from factory import stats
+
+        def label(event: str, minute: int, name: str, actor: dict | None) -> dict:
+            return {"event": event, "created_at": f"2026-09-01T00:{minute:02}:00Z",
+                    "label": {"name": name}, "actor": actor}
+
+        human = {"login": "maintainer", "type": "User"}
+        bot = {"login": "factory[bot]", "type": "Bot"}
+        timeline = [
+            label("labeled", 0, config.LABEL_AGENT, human),
+            label("labeled", 1, config.LABEL_HUMAN, bot),
+            label("unlabeled", 11, config.LABEL_HUMAN, human),
+            label("labeled", 11, config.LABEL_AGENT, human),
+            label("labeled", 12, config.LABEL_HUMAN, human),
+            label("unlabeled", 32, config.LABEL_HUMAN, bot),
+            label("labeled", 32, config.LABEL_AGENT, bot),
+            label("labeled", 33, config.LABEL_HUMAN, bot),
+            label("unlabeled", 38, config.LABEL_HUMAN, None),
+        ]
+        details = {"number": 7, "title": "fixed", "createdAt": "2026-09-01T00:00:00Z",
+                   "closedAt": "2026-09-01T01:00:00Z", "state": "CLOSED", "comments": []}
+
+        def github(*args: str):
+            if args[:2] == ("pr", "list"):
+                return []
+            if args[:2] == ("issue", "list"):
+                return []
+            if args[:2] == ("issue", "view"):
+                return details
+            if args[0] == "api":
+                return [timeline[:4], timeline[4:]]
+            self.fail(f"unexpected gh call: {args}")
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            stats.configure(config.load(repo))
+            stats.cfg.factory.mkdir()
+            audit = [
+                {"at": "2026-09-01T00:00:00Z", "event": "claimed", "ticket": 7},
+                *({"at": f"2026-09-01T00:{m:02}:00Z", "event": "escalate", "ticket": 7} for m in (1, 12, 33)),
+                {"at": "2026-09-01T01:00:00Z", "event": "merged", "ticket": 7},
+            ]
+            (stats.cfg.factory / "events.jsonl").write_text("\n".join(map(json.dumps, audit)) + "\npartial")
+            with mock.patch.object(stats, "gh", side_effect=github):
+                row, = stats.collect_rows()
+            self.assertEqual(row["escalation_count"], 3)
+            self.assertEqual(row["resolutions"], [
+                {"actor": "maintainer", "resolved_by": "human"},
+                {"actor": "factory[bot]", "resolved_by": "factory"},
+                {"actor": None, "resolved_by": "unknown"},
+            ])
+            self.assertEqual(row["ready_for_human_minutes"], 35)
+            self.assertEqual(row["requeue_count"], 2)
+            from datetime import datetime, timezone
+            from factory import dashboard
+
+            totals = stats.human_touch_metrics([row], datetime(2026, 9, 8, 0, 12, tzinfo=timezone.utc))
+            self.assertEqual(totals, {"escalations_per_week": 2, "human_resolved_pct": 50.0})
+            dashboard.configure(stats.cfg)
+            ticket_issue = {
+                **details, "url": "", "updatedAt": details["closedAt"],
+                "timelineItems": {"nodes": [
+                    {"__typename": "LabeledEvent" if e["event"] == "labeled" else "UnlabeledEvent",
+                     "createdAt": e["created_at"], "label": e["label"],
+                     "actor": {"login": (e["actor"] or {}).get("login"),
+                               "__typename": (e["actor"] or {}).get("type")}}
+                    for e in timeline
+                ]},
+            }
+            ticket = dashboard.build_ticket(ticket_issue, None, {
+                "attempts": [], "gate": None, "lock_held": False,
+            }, audit=audit)
+            self.assertEqual(ticket["human_touch"]["ready_for_human_minutes"], 35)
+            self.assertEqual(dashboard.metrics([ticket])["human_resolved_pct"], 50.0)
+
+
 class DashboardTest(unittest.TestCase):
     def test_metrics_from_synthetic_tickets(self) -> None:
         from factory import dashboard
@@ -314,9 +394,13 @@ class DashboardTest(unittest.TestCase):
             {"pr": None, "attempts": att(1, 2, 3), "events": [{"kind": "escalated"}, {"kind": "comment"}]},
             {"pr": None, "attempts": [], "events": []},
         ]
+        for ticket, count in zip(tickets, (0, 1, 1, 0)):
+            ticket["human_touch"] = {"escalation_count": count}
         m = dashboard.metrics(tickets)
-        self.assertEqual(m, {"first_pass": 0.5, "bounce_rate": 0.5, "escalations": 2, "med_attempts": 2})
-        self.assertEqual(dashboard.metrics([]), {"first_pass": None, "bounce_rate": None, "escalations": 0, "med_attempts": None})
+        self.assertEqual(m, {"first_pass": 0.5, "bounce_rate": 0.5, "escalations": 2, "med_attempts": 2,
+                             "escalations_per_week": 0, "human_resolved_pct": None})
+        self.assertEqual(dashboard.metrics([]), {"first_pass": None, "bounce_rate": None, "escalations": 0,
+                                               "med_attempts": None, "escalations_per_week": 0, "human_resolved_pct": None})
 
     def test_consecutive_failures_from_journal(self) -> None:
         from factory import dashboard
@@ -401,6 +485,10 @@ class GateTest(unittest.TestCase):
 
 class ManageTest(unittest.TestCase):
     def setUp(self) -> None:
+        from unittest.mock import patch
+        from factory import lifecycle
+
+        self.enterContext(patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
         host_file("")
 
     def scenario(self, round_number: int = 1, activity: list | None = None) -> tuple:
@@ -422,7 +510,7 @@ case "$1 $2" in
   "api repos/acme/widgets/issues/7/timeline") echo '{timeline}';;
   "issue create") echo "https://github.com/acme/widgets/issues/8";;
   "issue comment"|"issue edit")
-    python3 -c 'import json; from pathlib import Path; assert json.loads(Path("{state}/events.jsonl").read_text().splitlines()[-1])["event"] == "manage"' || exit 1;;
+    python3 -c 'import json; from pathlib import Path; assert any(json.loads(line).get("event") == "manage" for line in Path("{state}/events.jsonl").read_text().splitlines())' || exit 1;;
 esac
 ''')
         return repo, stubs, packet
@@ -434,7 +522,7 @@ esac
         calls = (Path(stubs) / "gh.log").read_text()
         self.assertIn("Factory manager: Use the existing helper", calls)
         self.assertIn("--remove-label ready-for-human --add-label ready-for-agent", calls)
-        event = json.loads((repo / ".factory/events.jsonl").read_text().splitlines()[-1])
+        event = next(e for e in map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines()) if e.get("event") == "manage")
         self.assertEqual((event["event"], event["decision"], event["round"], event["packet"]),
                          ("manage", "RETRY", 1, str(packet)))
         before = calls
@@ -446,7 +534,7 @@ esac
         result = factory(repo, "manage", path=stubs)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("issue edit", (Path(stubs) / "gh.log").read_text())
-        self.assertEqual(len((repo / ".factory/events.jsonl").read_text().splitlines()), 1)
+        self.assertFalse(any(e.get("event") == "manage" for e in map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines())))
 
     def test_manage_skips_human_comment_after_escalation(self) -> None:
         repo, stubs, _ = self.scenario(activity=[{
@@ -456,7 +544,7 @@ esac
         result = factory(repo, "manage", path=stubs)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("issue comment", (Path(stubs) / "gh.log").read_text())
-        self.assertEqual(len((repo / ".factory/events.jsonl").read_text().splitlines()), 1)
+        self.assertFalse(any(e.get("event") == "manage" for e in map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines())))
 
     def test_manage_applies_closed_menu_and_rejects_unknown_route(self) -> None:
         cases = [
@@ -490,6 +578,49 @@ esac
         result = factory(repo, "manage", path=stubs)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("issue edit", (Path(stubs) / "gh.log").read_text())
+
+    def test_manage_dry_run_does_not_create_ticket_lock_or_record_decision(self) -> None:
+        repo, stubs, _ = self.scenario()
+        before = (repo / ".factory/events.jsonl").read_bytes()
+        result = factory(repo, "manage", "--dry-run", path=stubs)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("would manage escalation round 1", result.stdout)
+        self.assertFalse((repo / ".factory/locks/7.lock").exists())
+        self.assertEqual((repo / ".factory/events.jsonl").read_bytes(), before)
+        self.assertNotIn("issue comment", (Path(stubs) / "gh.log").read_text())
+
+    def test_failed_rewrite_is_not_requeued_or_replayed_and_next_ticket_runs(self) -> None:
+        repo, stubs, packet = self.scenario()
+        events_path = repo / ".factory/events.jsonl"
+        escalation = json.loads(events_path.read_text())
+        escalation["ticket"] = 8
+        with events_path.open("a") as events:
+            events.write(json.dumps(escalation) + "\n")
+        command = ["printf", "%s", "DECISION: REWRITE\nReplacement body"]
+        (repo / config.CONFIG_NAME).write_text("[manager]\ncommand = " + json.dumps(command) + "\n")
+        stub_bin(Path(stubs).parent, gh='''
+case "$1 $2 $3" in
+  "issue list --repo") echo '[{"number":7,"title":"First","body":"Old"},{"number":8,"title":"Next","body":"Old"}]';;
+  "api repos/acme/widgets/issues/"*) echo '[]';;
+  "issue edit 7") echo 'GitHub rejected body edit' >&2; exit 1;;
+esac
+''')
+        result = factory(repo, "manage", path=stubs)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = (Path(stubs) / "gh.log").read_text()
+        self.assertIn("issue edit 7 --repo acme/widgets --body Replacement body", calls)
+        self.assertNotIn("issue edit 7 --repo acme/widgets --remove-label", calls)
+        self.assertIn("issue edit 8 --repo acme/widgets --remove-label ready-for-human --add-label ready-for-agent", calls)
+        events = list(map(json.loads, events_path.read_text().splitlines()))
+        terminal = next(e for e in events if e.get("kind") == "exit" and e.get("stage") == "manage" and e.get("ticket") == 7)
+        self.assertEqual(terminal["outcome"], "mechanism_failure")
+        self.assertEqual(terminal["reason"], "github_command_failed")
+        runtime = factory(repo, "dashboard", "--runtime-json", path=stubs)
+        self.assertEqual(runtime.returncode, 0, runtime.stderr)
+        observed = next(e for e in json.loads(runtime.stdout)["executions"] if e["execution_id"] == terminal["execution_id"])
+        self.assertEqual((observed["state"], observed["reason"]), ("failed", "github_command_failed"))
+        self.assertEqual(factory(repo, "manage", path=stubs).returncode, 0)
+        self.assertNotIn("issue edit", (Path(stubs) / "gh.log").read_text()[len(calls):])
 
 
 class DispatchTest(unittest.TestCase):
