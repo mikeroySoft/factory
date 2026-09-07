@@ -137,7 +137,8 @@ ticket's `human_touch` details. The dashboard retains its existing 100-issue,
    `VERDICT: REVISE`. Each `REVISE` goes back to the worker with the findings
    (re-gate, push, re-review), up to `review_rounds` times; then it escalates.
    `APPROVE` adds the `factory-approved` label — durable evidence on the PR,
-   not in memory.
+   not in memory. With `manager.review = "all"`, the label waits for a manager
+   decision on that reviewed head.
 6. **Merge stage** (start of the next pass). One PR per pass, requiring all
    four: gate PASS in the PR body, `factory-approved`, green GitHub checks
    (fail-closed on missing or unparsable checks), and a head that already
@@ -149,6 +150,24 @@ ticket's `human_touch` details. The dashboard retains its existing 100-issue,
    nothing to PR, rebase conflict, red CI: the issue gets `ready-for-human`,
    loses the assignee and `ready-for-agent`, and receives a comment with the
    reason and the worker log path. The worktree is kept for forensics.
+8. **Manager PR frontier** (when `manager.command` is configured). The manager
+   revisits open same-repository `agent/<ticket>` PRs targeting `main`, including
+   those whose approval label was removed. Factory `pr-opened` audit events
+   establish ownership; human-authored PRs, forks, and `release/*` are excluded.
+   Pending CI waits; a behind-main branch is refreshed. Red CI, rebase/gate
+   failures, exhausted reviewer revisions, and inactivity beyond
+   `manager.stale_days` (default 7) produce escalation packets.
+   `FIX` runs one worker round with the diagnosis, gates, pushes, and independently
+   reviews again; only a fresh `APPROVE` restores `factory-approved`.
+   `CLOSE` comments the diagnosis and closes the PR, but only proposes
+   `wontfix-proposal` on a human's issue. A child recorded as factory-created by
+   `SPLIT` may be closed instead. `HUMAN` stops automation.
+   Decisions are recorded before mutations and limited by `manager.rounds` per
+   PR (default 1); exhaustion leaves the issue `ready-for-human`. Human takeover
+   or a changed PR/issue while the manager is thinking prevents application.
+   `manager.review = "all"` also requests manager approval before granting the
+   label on a non-escalated PR; manager approval never substitutes for the gate
+   or independent reviewer.
 
 ## Configuration
 

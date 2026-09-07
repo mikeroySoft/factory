@@ -290,6 +290,8 @@ def manage_pr(pr: dict, dry_run: bool) -> None:
 
 def manage_prs(prs: list[dict], dry_run: bool) -> None:
     # Reuse the landing lock: no manager FIX may race a rebase or merge.
+    if not prs:
+        return
     if dry_run:
         for pr in prs:
             n = int(pr["headRefName"].split("/")[1])
@@ -346,6 +348,9 @@ def manage_pass(dry_run: bool = False) -> None:
                     execution.resource("acquired", lock_path, scope="repository")
                 try:
                     events = [e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("ticket") == n]
+                    if any(e.get("event") == "manage" and e.get("pr")
+                           and e.get("decision") in {"CLOSE", "HUMAN"} for e in events):
+                        continue
                     escalation = next((e for e in reversed(events) if e.get("event") == "escalate"), None)
                     if not escalation or escalation.get("upstream") or not escalation.get("packet"):
                         continue

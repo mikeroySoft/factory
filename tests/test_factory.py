@@ -570,6 +570,7 @@ class PRManageTest(unittest.TestCase):
         github.write_text('''import json, sys
 from pathlib import Path
 p = Path(sys.argv[1])
+from datetime import datetime, timezone
 s = json.loads(p.read_text())
 a = sys.argv[2:]
 s["calls"].append(a)
@@ -590,7 +591,7 @@ elif a[0] == "api":
 elif a[:2] in (["pr", "edit"], ["issue", "edit"]):
     obj = pr if a[0] == "pr" else issue
     if a[0] == "pr":
-        pr["updatedAt"] = f"2099-01-01T00:00:{len(s['calls']):02d}Z"
+        pr["updatedAt"] = datetime.fromtimestamp(4070908800 + len(s["calls"]), timezone.utc).isoformat().replace("+00:00", "Z")
     for flag in ("--remove-label", "--add-label"):
         if flag in a:
             label = a[a.index(flag) + 1]
@@ -624,11 +625,11 @@ p.write_text(json.dumps(s))
         (self.repo / ".factory/events.jsonl").write_text(
             json.dumps({"event": "pr-opened", "ticket": 7, "pr": 70}) + "\n")
 
-    def configure(self, decision="FIX", review="APPROVE", mode="escalated", rounds=1) -> None:
+    def configure(self, decision="FIX", review="APPROVE", mode="escalated", rounds=1, stale_days=7) -> None:
         (self.repo / config.CONFIG_NAME).write_text(
             '[repo]\nslug = "acme/widgets"\n[manager]\ncommand = '
             + json.dumps(["printf", "%s", f"DECISION: {decision}\nRepair the failing check"])
-            + f'\nrounds = {rounds}\nreview = "{mode}"\n[workers]\ndefault = '
+            + f'\nrounds = {rounds}\nreview = "{mode}"\nstale_days = {stale_days}\n[workers]\ndefault = '
             + json.dumps([sys.executable, "-c", "from pathlib import Path; Path('fixed').write_text('yes')"])
             + '\n[review]\ncommand = ' + json.dumps(["printf", "%s", f"VERDICT: {review}"])
             + '\n[leak_scan]\npattern = ""\n[[gate.check]]\nname = "fixed"\nrun = '
@@ -725,6 +726,117 @@ p.write_text(json.dumps(s))
         self.cli("manage")
         self.assertIn({"name": "factory-approved"}, self.github()["pr"]["labels"])
 
+    def test_stale_pr_is_escalated_using_configured_days(self) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        self.configure(decision="CLOSE", stale_days=2)
+        state = self.github(ci="pass")
+        state["pr"]["updatedAt"] = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+        self.github(pr=state["pr"])
+        self.cli("manage")
+        self.assertEqual(self.github()["pr"]["state"], "CLOSED")
+        packet = (self.repo / ".factory/escalations/7.md").read_text()
+        self.assertIn("no activity for more than 2 days", packet)
+
+    def test_gate_failure_after_refresh_goes_to_manager(self) -> None:
+        self.github(ci="pass", behind=1)
+        self.cli("manage")
+        self.assertNotIn({"name": "factory-approved"}, self.github()["pr"]["labels"])
+        self.assertIn("gate failed after rebase", (self.repo / ".factory/escalations/7.md").read_text())
+        self.configure(decision="CLOSE")
+        self.cli("manage")
+        self.assertEqual(self.github()["pr"]["state"], "CLOSED")
+
+    def test_escalated_pr_cannot_skip_fix_with_manager_approve(self) -> None:
+        self.configure(decision="APPROVE")
+        self.cli("manage")
+        self.cli("manage")
+        state = self.github()
+        self.assertNotIn({"name": "factory-approved"}, state["pr"]["labels"])
+        self.assertEqual(state["pr"]["state"], "OPEN")
+        self.assertIn({"name": "ready-for-human"}, state["issue"]["labels"])
+
+    def test_manager_approval_is_bound_to_reviewed_head(self) -> None:
+        from unittest.mock import patch
+        from factory import dispatch
+
+        self.configure(decision="APPROVE", mode="all")
+        dispatch.configure(config.load(self.repo))
+        with patch.dict(os.environ, {"PATH": self.stubs + os.pathsep + os.environ["PATH"]}):
+            dispatch.approve_pr(7)
+        state = self.github(ci="pass")
+        state["pr"].update(labels=[], headRefOid="different-commit")
+        self.github(pr=state["pr"])
+        self.cli("manage")
+        self.assertNotIn({"name": "factory-approved"}, self.github()["pr"]["labels"])
+        self.assertIn({"name": "ready-for-human"}, self.github()["issue"]["labels"])
+
+    def test_conflicting_rebase_revokes_approval_and_reaches_manager(self) -> None:
+        wt = self.repo / ".factory/wt-7"
+        for path, text in ((wt, "branch"), (self.repo, "main")):
+            (path / "shared.txt").write_text(text)
+            git(path, "add", "shared.txt")
+            git(path, "commit", "-qm", text)
+        git(self.repo, "push", "origin", "main")
+        git(wt, "push", "origin", "agent/7")
+        self.github(ci="pass", behind=1)
+        self.cli("manage")
+        self.assertNotIn({"name": "factory-approved"}, self.github()["pr"]["labels"])
+        self.assertEqual(git(wt, "show", "HEAD:shared.txt"), "branch")
+        self.configure(decision="CLOSE")
+        self.cli("manage")
+        self.assertEqual(self.github()["pr"]["state"], "CLOSED")
+
+    def test_green_refresh_publishes_head_containing_main_without_manager(self) -> None:
+        wt = self.repo / ".factory/wt-7"
+        (wt / "fixed").write_text("yes")
+        git(wt, "add", "fixed")
+        git(wt, "commit", "-qm", "passing branch")
+        git(wt, "push", "origin", "agent/7")
+        (self.repo / "main-change").write_text("new base")
+        git(self.repo, "add", "main-change")
+        git(self.repo, "commit", "-qm", "advance main")
+        git(self.repo, "push", "origin", "main")
+        self.github(ci="pass", behind=1)
+        self.cli("manage")
+        self.assertEqual(git(self.repo, "show", "origin/agent/7:main-change"), "new base")
+        self.assertEqual(self.github()["pr"]["state"], "OPEN")
+        self.assertFalse(any(a[:2] == ["pr", "comment"] for a in self.github()["calls"]))
+
+    def test_manager_dry_run_preserves_pr_issue_events_and_worktree(self) -> None:
+        before = (self.repo / ".factory/events.jsonl").read_bytes()
+        state = self.github()
+        self.cli("manage", "--dry-run")
+        self.assertEqual((self.repo / ".factory/events.jsonl").read_bytes(), before)
+        self.assertEqual(self.github()["pr"], state["pr"])
+        self.assertEqual(self.github()["issue"], state["issue"])
+        self.assertFalse((self.repo / ".factory/wt-7/fixed").exists())
+
+    def test_failed_reviewer_cannot_restore_approval(self) -> None:
+        path = self.repo / config.CONFIG_NAME
+        path.write_text(path.read_text().replace(
+            json.dumps(["printf", "%s", "VERDICT: APPROVE"]),
+            json.dumps(["sh", "-c", "printf 'VERDICT: APPROVE'; exit 1"])))
+        self.cli("manage")
+        self.assertNotIn({"name": "factory-approved"}, self.github()["pr"]["labels"])
+        self.assertIn({"name": "ready-for-human"}, self.github()["issue"]["labels"])
+
+    def test_head_change_during_manager_execution_prevents_fix(self) -> None:
+        model = self.root / "manager.py"
+        model.write_text(
+            "import json\nfrom pathlib import Path\n"
+            f"p = Path({str(self.state)!r})\ns = json.loads(p.read_text())\n"
+            "s['pr']['headRefOid'] = 'human-push'\np.write_text(json.dumps(s))\n"
+            "print('DECISION: FIX\\nRepair the failing check')\n")
+        path = self.repo / config.CONFIG_NAME
+        path.write_text(path.read_text().replace(
+            json.dumps(["printf", "%s", "DECISION: FIX\nRepair the failing check"]),
+            json.dumps([sys.executable, str(model)])))
+        self.cli("manage")
+        self.assertFalse((self.repo / ".factory/wt-7/fixed").exists())
+        self.assertNotIn({"name": "factory-approved"}, self.github()["pr"]["labels"])
+        events = [json.loads(line) for line in (self.repo / ".factory/events.jsonl").read_text().splitlines()]
+        self.assertFalse(any(e.get("event") == "manage" for e in events))
 
 
 class ManageTest(unittest.TestCase):

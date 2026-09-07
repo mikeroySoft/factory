@@ -40,12 +40,13 @@
 # Only the model controls those briefings; generated advice cannot execute actions.
 # model = "openai-codex/gpt-6-astra"  # unset: manager.command --model, then OMP default
 #
-# Host-side frontier manager configuration; running it is a separate feature.
+# Host-side frontier manager; runs after landing and before ticket scheduling.
 # Unset command disables the frontier manager, not read-only dashboard briefings.
 # {prompt} = manager prompt text; {cwd} = kept worktree or repository root.
 # command = ["omp", "-p", "--model", "openai-codex/gpt-6-astra", "--cwd", "{cwd}", "{prompt}"]
-# rounds = 1
+# rounds = 1           # decisions per ticket escalation / per PR; exhausted -> human
 # review = "escalated"  # "all" also reviews non-escalated factory PRs
+# stale_days = 7       # positive integer; inactive PRs escalate after this many days
 
 [gate]
 # timeout = 1200                      # seconds per check; a wedged check FAILs
