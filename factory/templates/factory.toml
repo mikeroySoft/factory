@@ -63,6 +63,11 @@
 # command = ["omp", "-p", "--model", "openai-codex/gpt-6-astra", "--cwd", "{cwd}", "{prompt}"]
 # rounds = 1
 # review = "escalated"  # "all" also reviews non-escalated factory PRs
+#
+# Ceilings for the fleet manager (`district manage`) raising dispatch.max_active /
+# dispatch.budget_min per repo. Host-wide under [defaults.manager]; unset = no cap.
+# max_active_cap = 4
+# budget_min_cap = 240
 
 [gate]
 # timeout = 1200                      # seconds per check; a wedged check FAILs

@@ -367,6 +367,21 @@ class HostConfigTest(unittest.TestCase):
                     with self.assertRaises(config.ConfigError):
                         config.load(repo)
 
+    def test_manager_caps_from_host_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            cfg = config.load(repo)
+            self.assertEqual((cfg.manager_max_active_cap, cfg.manager_budget_min_cap), (None, None))
+            host_file('[defaults.manager]\nmax_active_cap = 4\nbudget_min_cap = 240\n')
+            cfg = config.load(repo)
+            self.assertEqual((cfg.manager_max_active_cap, cfg.manager_budget_min_cap), (4, 240))
+            self.assertNotIn("manager.max_active_cap", config.unknown_keys({"manager": {"max_active_cap": 4, "budget_min_cap": 1}}))
+            for bad in ('max_active_cap = 0\n', 'budget_min_cap = -5\n', 'max_active_cap = "many"\n'):
+                with self.subTest(bad=bad):
+                    host_file("[defaults.manager]\n" + bad)
+                    with self.assertRaises(config.ConfigError):
+                        config.load(repo)
+
     def test_doctor_reports_manager_only_when_configured(self) -> None:
         gh = 'case "$1 $2" in "repo view") echo ADMIN;; "label list") echo "[]";; esac\nexit 0'
         with tempfile.TemporaryDirectory() as d:

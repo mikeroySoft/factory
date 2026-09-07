@@ -874,6 +874,8 @@ def snapshot() -> dict:
                 "command": " ".join(cfg.manager) if cfg.manager else None,
                 "rounds": cfg.manager_rounds,
                 "review": cfg.manager_review,
+                "max_active_cap": cfg.manager_max_active_cap,
+                "budget_min_cap": cfg.manager_budget_min_cap,
             },
             "approved_label": FACTORY_APPROVED,
             "triage": {
