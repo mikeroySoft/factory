@@ -1,0 +1,57 @@
+{
+  "case_id": "20-before",
+  "issue": 20,
+  "review_base": "07913b4276be9d6013cafa025aeb489d6304a99a",
+  "head": "8dd65882d58341e749e64481dae0acaa3c5ad031",
+  "head_blobs": {
+    "README.md": "d36d9296ff86751cdf6ae0e40c9be0a25709e33d",
+    "factory/config.py": "58d239674590ae7b716dcf61d3bd92721227bbc6",
+    "factory/dashboard.py": "653ccf486564e08a4e7a161784aa1bde9e4093c8",
+    "factory/manage.py": "1e5f84b55f689994f79c2ec7dfcf923b90764405",
+    "factory/templates/factory.toml": "910d69fd22385083ee9686634044610b44e20679",
+    "tests/test_factory.py": "1f48035536d8aa152cf54860c5adcb7bcbb91ec5"
+  },
+  "issue_url": "https://github.com/mikeroySoft/factory/issues/20",
+  "gate_evidence": "real `factory gate` run at this head in a throwaway --shared clone with refs/remotes/origin/main set to review_base; only a [repo].slug line was prepended to .factory.toml for slug resolution, committed gate checks unmodified",
+  "expected_verdict": "REVISE",
+  "findings": [
+    {
+      "id": "D1",
+      "severity": "primary",
+      "obligation": "issue #20 Scope: ship a `conflict` default profile that resolves the rebase; the same commit's FIX path re-gates, pushes and re-reviews the kept `agent/<n>` worktree",
+      "defect": "The FIX round pushes with `dispatch.run(['git','push','origin',f'agent/{n}'], cwd=wt)`. `dispatch.run` defaults to `check=True`, so when the shipped `conflict` worker resolves/restarts the rebase \u2014 rewriting `agent/<n>` \u2014 the push is a non-fast-forward, git exits nonzero and `apply()` raises `CalledProcessError` after a PASSING gate: the fix is never pushed, the PR is never updated, no re-review happens and no escalation is recorded.",
+      "evidence": [
+        "factory/manage.py:+        dispatch.run([\"git\", \"push\", \"origin\", f\"agent/{n}\"], cwd=wt)",
+        "factory/templates/factory.toml:+# [workers.conflict] \u2026 \"Resolve the rebase conflicts \u2026 If the rebase was aborted, restart it against the configured main before resolving.\"",
+        "factory/manage.py:+Dispatch exactly one round of that listed worker in the kept agent worktree for its open PR."
+      ],
+      "rationale": "The profile the ticket requires to ship cannot complete through the FIX path added in the same diff. Corroboration (not oracle): follow-up ce5568e changes exactly this line to `--force-with-lease` and adds a rebase case to the FIX test."
+    }
+  ],
+  "unnecessary_demand_rule": "Any finding beyond D1 that does not cite a README/docs convention or an issue #20 acceptance criterion.",
+  "adjudication": "independent read of the frozen source by the calibration owner; historical model verdicts were used only to discover candidates, never as truth",
+  "gate_report": "# Gate report\n\n- conflict-markers: PASS\n- test: PASS\n- leak-scan: PASS",
+  "provenance": [
+    {
+      "path": "sources/README.md",
+      "sha256": "0ac60324432ab2d0ea9b7028c23d229bc04c47da927c99cdf016ee67bef135a9",
+      "bytes": 57678
+    },
+    {
+      "path": "sources/diff.patch",
+      "sha256": "8044d023df31b68c6816dc8909ecead4ddfcee837070286ee9919d125bb1a97a",
+      "bytes": 21293
+    },
+    {
+      "path": "sources/gate-report.md",
+      "sha256": "fb756e34975585daa9c8c20f5e2edafecb5c7059f6f568dbba3a78f066873efd",
+      "bytes": 71
+    },
+    {
+      "path": "sources/issue.md",
+      "sha256": "4c65d2fc8dd75b188f03e1a56ad7c9ddf36a8abc4e1432c0dec7c54366d3842e",
+      "bytes": 2627
+    }
+  ],
+  "packet_sha256": "b21e152498e536d65a5773d0c2ab090d7628e980b55fab35d8ae97ab5d8683c3"
+}
