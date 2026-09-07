@@ -711,26 +711,34 @@ def pr_checks(pr: int) -> list[dict]:
         return []
 
 
-def refresh_pr_branch(n: int, pr: int) -> None:
-    """Rebase agent/n onto current main, re-gate on this host, force-push.
+def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> None:
+    """Bring agent/n up to date with current main, re-gate on this host, force-push.
 
     Re-earns the evidence against what the PR will actually merge into; CI
-    re-runs on the push and the merge happens on a later pass.
+    re-runs on the push and the merge happens on a later pass. Sync PRs
+    (`carries_upstream`) merge main in rather than rebase: a rebase would
+    replay the upstream commits onto new SHAs, dropping the ancestry the
+    sync exists to preserve. Everything else rebases to keep history linear.
     """
     wt = ensure_worktree(n)
     run(["git", "fetch", "origin"], cwd=wt)
-    if run(["git", "rebase", f"origin/{cfg.main}"], cwd=wt, check=False).returncode != 0:
-        run(["git", "rebase", "--abort"], cwd=wt, check=False)
-        escalate(n, f"PR #{pr}: rebase onto moved main conflicts; worktree {wt}", None)
+    verb, cmd = (
+        ("merge", ["git", "merge", f"origin/{cfg.main}", "--no-edit"])
+        if carries_upstream
+        else ("rebase", ["git", "rebase", f"origin/{cfg.main}"])
+    )
+    if run(cmd, cwd=wt, check=False).returncode != 0:
+        run(["git", verb, "--abort"], cwd=wt, check=False)
+        escalate(n, f"PR #{pr}: {verb} onto moved main conflicts; worktree {wt}", None)
         return
     ok, report = run_gate(wt, n)
     if not ok:
-        pr_comment(n, f"Gate failed after rebase onto current main:\n\n{report}")
-        escalate(n, f"PR #{pr}: gate failed after rebase onto moved main", None)
+        pr_comment(n, f"Gate failed after {verb} onto current main:\n\n{report}")
+        escalate(n, f"PR #{pr}: gate failed after {verb} onto moved main", None)
         return
     run(["git", "push", "--force-with-lease", "origin", f"agent/{n}"], cwd=wt)
     record("refreshed", ticket=n, pr=pr)
-    log(f"#{n}: PR #{pr} rebased onto current main and re-gated; merge next pass")
+    log(f"#{n}: PR #{pr} {verb}d onto current main and re-gated; merge next pass")
 
 
 def cleanup_after_merge(n: int) -> None:
@@ -860,33 +868,36 @@ def merge_pass_locked(dry_run: bool) -> None:
             if dry_run:
                 log(f"PR #{pr_num}: would {'refresh (behind main)' if behind else 'merge'}")
                 return
+            # A PR that carries new upstream commits (a human/agent-resolved sync)
+            # must keep them as ancestors of main, or the sync stage never sees
+            # main contain the upstream tip. Squash everything else. Judge this
+            # by the PR's merge-base with upstream, not upstream's current tip:
+            # upstream moving on after the PR opened must not flip the method.
+            run(["git", "fetch", "origin", cfg.main, f"agent/{n}"], cwd=ROOT)
+            if UPSTREAM is None:
+                carries_upstream = False
+            else:
+                run(["git", "fetch", UPSTREAM, cfg.main], cwd=ROOT)
+                mb = run(
+                    ["git", "merge-base", f"origin/agent/{n}", f"{UPSTREAM}/{cfg.main}"],
+                    cwd=ROOT,
+                ).stdout.strip()
+                carries_upstream = (
+                    run(
+                        ["git", "merge-base", "--is-ancestor", mb, f"origin/{cfg.main}"],
+                        cwd=ROOT,
+                        check=False,
+                    ).returncode
+                    != 0
+                )
             if behind:
-                refresh_pr_branch(n, pr_num)
+                refresh_pr_branch(n, pr_num, carries_upstream)
                 if execution.outcome == "completed":
                     execution.outcome = "refreshed"
                 return
             title = gh_json(["pr", "view", str(pr_num), "--repo", REPO, "--json", "title"])[
                 "title"
             ]
-            # A PR that carries new upstream commits (a human/agent-resolved sync)
-            # must keep them as ancestors of main, or the sync stage never sees
-            # main contain the upstream tip. Squash everything else.
-            run(["git", "fetch", "origin", cfg.main, f"agent/{n}"], cwd=ROOT)
-            if UPSTREAM is None:
-                carries_upstream = False
-            else:
-                run(["git", "fetch", UPSTREAM, cfg.main], cwd=ROOT)
-                contains = lambda ref: (  # noqa: E731
-                    run(
-                        ["git", "merge-base", "--is-ancestor", f"{UPSTREAM}/{cfg.main}", ref],
-                        cwd=ROOT,
-                        check=False,
-                    ).returncode
-                    == 0
-                )
-                carries_upstream = contains(f"origin/agent/{n}") and not contains(
-                    f"origin/{cfg.main}"
-                )
             method = "--merge" if carries_upstream else "--squash"
             body = f"Closes #{n}\n\n{signoff()}" if cfg.signoff else f"Closes #{n}"
             with lifecycle.scope(EVENTS, "merge", ticket=n):
