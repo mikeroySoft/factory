@@ -52,6 +52,62 @@ def make_repo(tmp: Path, toml: str = "") -> Path:
     return repo
 
 
+def build_fork(tmp: Path) -> tuple[Path, Path, Path]:
+    """upstream (one commit, u0), origin forked from it, and root cloned from
+    origin with an `upstream` remote. Callers add commits/branches on top."""
+    upstream = tmp / "upstream"
+    upstream.mkdir()
+    git(upstream, "init", "-q", "-b", "main")
+    git(upstream, "config", "user.email", "u@example.com")
+    git(upstream, "config", "user.name", "U")
+    (upstream / "u0.txt").write_text("u0")
+    git(upstream, "add", "-A")
+    git(upstream, "commit", "-q", "-m", "u0")
+
+    origin = tmp / "origin"
+    git(tmp, "clone", "-q", str(upstream), str(origin))
+    git(origin, "remote", "remove", "origin")
+    git(origin, "config", "user.email", "a@example.com")
+    git(origin, "config", "user.name", "A")
+
+    root = tmp / "root"
+    git(tmp, "clone", "-q", str(origin), str(root))
+    git(root, "config", "user.email", "t@example.com")
+    git(root, "config", "user.name", "T")
+    git(root, "remote", "add", "upstream", str(upstream))
+    return root, origin, upstream
+
+
+def merge_stage_mocks(origin: Path, pr_number: int, branch: str, title: str, original_run):
+    """gh_json/run fakes for merge_pass_locked: PR list/checks/compare/view are
+    canned; `gh pr merge` is simulated as the equivalent local git operation on
+    `origin` (what GitHub would do), everything else runs for real."""
+
+    def fake_gh_json(args):
+        if args[:2] == ["pr", "list"]:
+            return [{"number": pr_number, "headRefName": branch, "isDraft": False,
+                      "labels": [{"name": config.LABEL_APPROVED}], "reviewDecision": "APPROVED"}]
+        if args[0] == "api":
+            return {"behind_by": 0}
+        if args[:2] == ["pr", "view"]:
+            return {"title": title}
+        raise AssertionError(args)
+
+    def fake_run(cmd, *a, **kw):
+        if cmd[:3] == ["gh", "pr", "merge"]:
+            method = "merge" if "--merge" in cmd else "squash"
+            git(origin, "checkout", "-q", "main")
+            if method == "merge":
+                git(origin, "merge", "-q", "--no-ff", "-m", "Merge PR", branch)
+            else:
+                git(origin, "merge", "-q", "--squash", branch)
+                git(origin, "commit", "-q", "-m", "Squash PR")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return original_run(cmd, *a, **kw)
+
+    return fake_gh_json, fake_run
+
+
 def factory(cwd: Path, *argv: str, path: str | None = None) -> subprocess.CompletedProcess:
     env = {**os.environ, "PYTHONPATH": str(ROOT)}
     if path:
@@ -974,6 +1030,131 @@ class DispatchTest(unittest.TestCase):
             log = Path(d) / "w.log"
             log.write_text("... Total cost: $0.25\nmore\nTotal cost: $1.00\n")
             self.assertEqual(dispatch.log_cost(log), 1.25)
+
+    def test_merge_stage_merges_sync_pr_despite_upstream_advancing_past_tip(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            root, origin, upstream = build_fork(tmp)
+
+            (upstream / "u1.txt").write_text("u1")
+            git(upstream, "add", "-A")
+            git(upstream, "commit", "-q", "-m", "u1")
+            u1 = git(upstream, "rev-parse", "HEAD")
+
+            git(origin, "checkout", "-q", "-b", "agent/31")
+            git(origin, "remote", "add", "up", str(upstream))
+            git(origin, "fetch", "-q", "up")
+            git(origin, "merge", "-q", "--no-ff", "-m", "merge upstream", u1)
+            git(origin, "remote", "remove", "up")
+            git(origin, "checkout", "-q", "main")
+
+            # Upstream advances past the tip the PR actually carries.
+            (upstream / "u2.txt").write_text("u2")
+            git(upstream, "add", "-A")
+            git(upstream, "commit", "-q", "-m", "u2")
+
+            cfg = config.Config(root=root, repo="acme/widgets", upstream="upstream", main="main")
+            with mock.patch.object(config, "remote_slug", return_value="acme/upstream-widgets"):
+                dispatch.configure(cfg)
+
+            fake_gh_json, fake_run = merge_stage_mocks(
+                origin, 100, "agent/31", "upstream sync: pick up u1", dispatch.run
+            )
+            with mock.patch.object(dispatch, "gh_json", side_effect=fake_gh_json), \
+                 mock.patch.object(dispatch, "pr_checks", return_value=[{"name": "ci", "bucket": "pass"}]), \
+                 mock.patch.object(dispatch, "run", side_effect=fake_run):
+                dispatch.merge_pass_locked(False)
+
+            self.assertEqual(
+                subprocess.run(["git", "-C", str(origin), "merge-base", "--is-ancestor", u1, "main"]).returncode,
+                0,
+            )
+            parents = git(origin, "log", "-1", "--pretty=%P", "main").split()
+            self.assertEqual(len(parents), 2, "expected a merge commit, not a squash")
+
+    def test_merge_stage_squashes_ordinary_pr_with_no_upstream_commits(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            root, origin, upstream = build_fork(tmp)
+
+            git(origin, "checkout", "-q", "-b", "agent/99")
+            (origin / "feature.txt").write_text("feature")
+            git(origin, "add", "-A")
+            git(origin, "commit", "-q", "-m", "feature")
+            git(origin, "checkout", "-q", "main")
+
+            cfg = config.Config(root=root, repo="acme/widgets", upstream="upstream", main="main")
+            with mock.patch.object(config, "remote_slug", return_value="acme/upstream-widgets"):
+                dispatch.configure(cfg)
+
+            fake_gh_json, fake_run = merge_stage_mocks(
+                origin, 200, "agent/99", "add feature", dispatch.run
+            )
+            with mock.patch.object(dispatch, "gh_json", side_effect=fake_gh_json), \
+                 mock.patch.object(dispatch, "pr_checks", return_value=[{"name": "ci", "bucket": "pass"}]), \
+                 mock.patch.object(dispatch, "run", side_effect=fake_run):
+                dispatch.merge_pass_locked(False)
+
+            parents = git(origin, "log", "-1", "--pretty=%P", "main").split()
+            self.assertEqual(len(parents), 1, "expected a squash commit, not a merge")
+
+    def test_refresh_merges_main_into_sync_pr_instead_of_rebasing(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            root, origin, upstream = build_fork(tmp)
+
+            (upstream / "u1.txt").write_text("u1")
+            git(upstream, "add", "-A")
+            git(upstream, "commit", "-q", "-m", "u1")
+            u1 = git(upstream, "rev-parse", "HEAD")
+
+            git(origin, "checkout", "-q", "-b", "agent/31")
+            git(origin, "remote", "add", "up", str(upstream))
+            git(origin, "fetch", "-q", "up")
+            git(origin, "merge", "-q", "--no-ff", "-m", "merge upstream", u1)
+            git(origin, "remote", "remove", "up")
+            git(origin, "checkout", "-q", "main")
+
+            # main moves (another PR lands) before the sync PR is merged.
+            (origin / "other.txt").write_text("other pr")
+            git(origin, "add", "-A")
+            git(origin, "commit", "-q", "-m", "other pr landed")
+
+            cfg = config.Config(root=root, repo="acme/widgets", upstream="upstream", main="main")
+            with mock.patch.object(config, "remote_slug", return_value="acme/upstream-widgets"):
+                dispatch.configure(cfg)
+
+            # A worktree already exists from the original attempt.
+            git(root, "fetch", "origin")
+            git(root, "branch", "agent/31", "origin/agent/31")
+            wt = dispatch.FACTORY / "wt-31"
+            git(root, "worktree", "add", str(wt), "agent/31")
+
+            with mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")):
+                dispatch.refresh_pr_branch(31, 100, True)
+
+            self.assertEqual(
+                subprocess.run(["git", "-C", str(wt), "merge-base", "--is-ancestor", u1, "HEAD"]).returncode,
+                0,
+            )
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "-C", str(origin), "merge-base", "--is-ancestor", u1, "agent/31"]
+                ).returncode,
+                0,
+            )
 
 
 if __name__ == "__main__":
