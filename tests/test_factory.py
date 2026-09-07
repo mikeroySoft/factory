@@ -542,6 +542,191 @@ class GateTest(unittest.TestCase):
                 os.kill(pid, 0)
 
 
+class PRManageTest(unittest.TestCase):
+    """Run the PR loop with real git, gate, worker and reviewer; only GitHub is fake."""
+
+    def setUp(self) -> None:
+        from unittest.mock import patch
+        from factory import lifecycle
+
+        self.enterContext(patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
+        host_file("")
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.repo = make_repo(self.root)
+        self.state = self.root / "github.json"
+        self.state.write_text(json.dumps({
+            "pr": {"number": 70, "headRefName": "agent/7", "baseRefName": "main",
+                   "isCrossRepository": False, "isDraft": False, "state": "OPEN",
+                   "title": "agent/7: Fix CI", "body": "Closes #7",
+                   "labels": [{"name": "factory-approved"}], "reviewDecision": "",
+                   "updatedAt": "2099-01-01T00:00:00Z", "headRefOid": "initial"},
+            "issue": {"number": 7, "title": "Fix CI", "body": "Make CI pass",
+                      "state": "OPEN", "labels": [], "comments": []},
+            "ci": "fail", "calls": [], "behind": 0,
+        }))
+        github = self.root / "github.py"
+        github.write_text('''import json, sys
+from pathlib import Path
+p = Path(sys.argv[1])
+s = json.loads(p.read_text())
+a = sys.argv[2:]
+s["calls"].append(a)
+pr, issue = s["pr"], s["issue"]
+if a[:2] == ["pr", "list"]:
+    print(json.dumps(([pr] if pr["state"] == "OPEN" else []) + s.get("other_prs", [])))
+elif a[:2] == ["pr", "view"]:
+    print(json.dumps(pr))
+elif a[:2] == ["issue", "list"]:
+    label = a[a.index("--label") + 1]
+    print(json.dumps([issue] if any(x["name"] == label for x in issue["labels"]) else []))
+elif a[:2] == ["issue", "view"]:
+    print(json.dumps(issue))
+elif a[:2] == ["pr", "checks"]:
+    print(json.dumps([{"name": "ci", "bucket": s["ci"]}]))
+elif a[0] == "api":
+    print(json.dumps({"behind_by": s["behind"]} if "/compare/" in a[1] else s.get("timeline", [])))
+elif a[:2] in (["pr", "edit"], ["issue", "edit"]):
+    obj = pr if a[0] == "pr" else issue
+    if a[0] == "pr":
+        pr["updatedAt"] = f"2099-01-01T00:00:{len(s['calls']):02d}Z"
+    for flag in ("--remove-label", "--add-label"):
+        if flag in a:
+            label = a[a.index(flag) + 1]
+            obj["labels"] = [x for x in obj["labels"] if x["name"] != label]
+            if flag == "--add-label":
+                obj["labels"].append({"name": label})
+elif a[:2] in (["pr", "close"], ["issue", "close"]):
+    (pr if a[0] == "pr" else issue)["state"] = "CLOSED"
+elif a[:2] == ["pr", "merge"]:
+    assert any(x["name"] == "factory-approved" for x in pr["labels"])
+    assert s["ci"] == "pass"
+    pr["state"] = "MERGED"
+elif a[:2] not in (["pr", "comment"], ["issue", "comment"]):
+    raise SystemExit("Unexpected GitHub operation: " + repr(a))
+p.write_text(json.dumps(s))
+''')
+        self.stubs = stub_bin(self.root, gh=f'exec "{sys.executable}" "{github}" "{self.state}" "$@"')
+        self.configure()
+        (self.repo / ".gitignore").write_text(".factory/\n.factory-prompt.md\n")
+        git(self.repo, "add", ".factory.toml", ".gitignore")
+        git(self.repo, "commit", "-qm", "fixture config")
+        origin = self.root / "origin.git"
+        git(self.repo, "clone", "--bare", str(self.repo), str(origin))
+        git(self.repo, "remote", "set-url", "origin", str(origin))
+        wt = self.repo / ".factory/wt-7"
+        git(self.repo, "worktree", "add", "-b", "agent/7", str(wt))
+        git(wt, "push", "-u", "origin", "agent/7")
+        pr = self.github()["pr"]
+        pr["headRefOid"] = git(wt, "rev-parse", "HEAD")
+        self.github(pr=pr)
+        (self.repo / ".factory/events.jsonl").write_text(
+            json.dumps({"event": "pr-opened", "ticket": 7, "pr": 70}) + "\n")
+
+    def configure(self, decision="FIX", review="APPROVE", mode="escalated", rounds=1) -> None:
+        (self.repo / config.CONFIG_NAME).write_text(
+            '[repo]\nslug = "acme/widgets"\n[manager]\ncommand = '
+            + json.dumps(["printf", "%s", f"DECISION: {decision}\nRepair the failing check"])
+            + f'\nrounds = {rounds}\nreview = "{mode}"\n[workers]\ndefault = '
+            + json.dumps([sys.executable, "-c", "from pathlib import Path; Path('fixed').write_text('yes')"])
+            + '\n[review]\ncommand = ' + json.dumps(["printf", "%s", f"VERDICT: {review}"])
+            + '\n[leak_scan]\npattern = ""\n[[gate.check]]\nname = "fixed"\nrun = '
+            + json.dumps([sys.executable, "-c", "from pathlib import Path; assert Path('fixed').read_text() == 'yes'"])
+            + "\n")
+
+    def cli(self, *args) -> subprocess.CompletedProcess:
+        result = factory(self.repo, *args, path=self.stubs)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result
+
+    def github(self, **changes) -> dict:
+        state = json.loads(self.state.read_text())
+        state.update(changes)
+        self.state.write_text(json.dumps(state))
+        return state
+
+    def test_red_ci_fix_is_freshly_approved_and_merged_next_pass(self) -> None:
+        self.cli("dispatch")
+        state = self.github()
+        self.assertIn({"name": "factory-approved"}, state["pr"]["labels"])
+        self.assertEqual(state["pr"]["state"], "OPEN")
+        edits = [a for a in state["calls"] if a[:2] == ["pr", "edit"]]
+        self.assertIn("--remove-label", edits[0])
+        self.assertIn("--add-label", edits[-1])
+        self.assertEqual(git(self.repo, "show", "origin/agent/7:fixed"), "yes")
+        self.github(ci="pass")
+        self.cli("dispatch")
+        self.assertEqual(self.github()["pr"]["state"], "MERGED")
+
+    def test_close_proposes_wontfix_without_closing_human_issue(self) -> None:
+        self.configure(decision="CLOSE")
+        self.cli("manage")
+        state = self.github()
+        self.assertEqual(state["pr"]["state"], "CLOSED")
+        self.assertEqual(state["issue"]["state"], "OPEN")
+        self.assertIn({"name": "wontfix-proposal"}, state["issue"]["labels"])
+        self.assertTrue(any(a[:2] == ["pr", "comment"] and "Repair the failing check" in a[-1] for a in state["calls"]))
+
+    def test_close_can_close_factory_created_child(self) -> None:
+        self.configure(decision="CLOSE")
+        with (self.repo / ".factory/events.jsonl").open("a") as events:
+            events.write(json.dumps({"event": "issue-created", "ticket": 7, "parent": 1}) + "\n")
+        self.cli("manage")
+        state = self.github()
+        self.assertEqual((state["pr"]["state"], state["issue"]["state"]), ("CLOSED", "CLOSED"))
+        self.assertNotIn({"name": "wontfix-proposal"}, state["issue"]["labels"])
+
+    def test_frontier_excludes_human_and_release_prs(self) -> None:
+        from unittest.mock import patch
+        from factory import dispatch, manage
+
+        dispatch.configure(config.load(self.repo))
+        pr = self.github()["pr"]
+        human = {**pr, "number": 71, "headRefName": "agent/8"}
+        replacement = {**pr, "number": 72}
+        release = {**pr, "headRefName": "release/1"}
+        release_target = {**pr, "baseRefName": "release/1"}
+        fork = {**pr, "isCrossRepository": True}
+        with patch.object(dispatch, "gh_json", return_value=[pr, human, replacement, release, release_target, fork]):
+            self.assertEqual([p["number"] for p in manage.pr_frontier()], [70])
+
+    def test_pending_ci_waits_without_manager_or_refresh(self) -> None:
+        self.github(ci="pending", behind=1)
+        self.cli("manage")
+        state = self.github()
+        self.assertFalse(any(a[:2] in (["pr", "comment"], ["pr", "edit"]) for a in state["calls"]))
+        self.assertNotIn("/compare/", "\n".join(" ".join(a) for a in state["calls"]))
+        self.assertFalse((self.repo / ".factory/wt-7/fixed").exists())
+
+    def test_failed_fix_is_not_approved_or_retried_beyond_round_cap(self) -> None:
+        self.configure(review="REVISE")
+        self.cli("manage")
+        self.cli("manage")
+        state = self.github()
+        self.assertNotIn({"name": "factory-approved"}, state["pr"]["labels"])
+        events = [json.loads(line) for line in (self.repo / ".factory/events.jsonl").read_text().splitlines()]
+        self.assertEqual([e["decision"] for e in events if e.get("event") == "manage"], ["FIX"])
+        self.assertEqual(len([e for e in events if e.get("event") == "attempt"]), 1)
+        self.assertIn({"name": "ready-for-human"}, state["issue"]["labels"])
+
+    def test_all_mode_waits_for_manager_before_granting_approval(self) -> None:
+        from unittest.mock import patch
+        from factory import dispatch
+
+        self.configure(decision="APPROVE", mode="all")
+        state = self.github(ci="pass")
+        state["pr"]["labels"] = []
+        self.github(pr=state["pr"])
+        dispatch.configure(config.load(self.repo))
+        with patch.dict(os.environ, {"PATH": self.stubs + os.pathsep + os.environ["PATH"]}):
+            dispatch.approve_pr(7)
+        self.assertNotIn({"name": "factory-approved"}, self.github()["pr"]["labels"])
+        self.cli("manage")
+        self.assertIn({"name": "factory-approved"}, self.github()["pr"]["labels"])
+
+
+
 class ManageTest(unittest.TestCase):
     def setUp(self) -> None:
         from unittest.mock import patch
@@ -565,6 +750,7 @@ class ManageTest(unittest.TestCase):
         timeline = json.dumps(activity or [])
         stubs = stub_bin(root, gh=f'''
 case "$1 $2" in
+  "pr list") echo '[]';;
   "issue list") echo '[{{"number":7,"title":"Fix gate","body":"Original body","labels":[{{"name":"ready-for-human"}}]}}]';;
   "api repos/acme/widgets/issues/7/timeline") echo '{timeline}';;
   "issue create") echo "https://github.com/acme/widgets/issues/8";;
@@ -659,6 +845,7 @@ esac
         (repo / config.CONFIG_NAME).write_text("[manager]\ncommand = " + json.dumps(command) + "\n")
         stub_bin(Path(stubs).parent, gh='''
 case "$1 $2 $3" in
+  "pr list --repo") echo '[]';;
   "issue list --repo") echo '[{"number":7,"title":"First","body":"Old"},{"number":8,"title":"Next","body":"Old"}]';;
   "api repos/acme/widgets/issues/"*) echo '[]';;
   "issue edit 7") echo 'GitHub rejected body edit' >&2; exit 1;;

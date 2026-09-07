@@ -57,7 +57,7 @@ KNOWN_KEYS = {
     "dispatch": ("max_active", "max_attempts", "budget_min", "review_rounds", "cost_pattern", "signoff"),
     "workers": None,
     "review": ("command",),
-    "manager": ("model", "command", "rounds", "review"),
+    "manager": ("model", "command", "rounds", "review", "stale_days"),
     "gate": ("timeout", "lock", "check"),
     "leak_scan": ("pattern", "exclude"),
     "triage": ("url", "model"),
@@ -104,6 +104,7 @@ class Config:
     manager: list[str] | None = None
     manager_rounds: int = 1
     manager_review: str = "escalated"
+    manager_stale_days: int = 7
     checks: list[Check] = field(default_factory=list)
     check_timeout: int = 1200
     lock: Path = Path("/tmp/factory.lock")  # host-wide: one GPU, many repos
@@ -292,6 +293,9 @@ def load(start: Path | None = None) -> Config:
     cfg.manager_review = manager.get("review", cfg.manager_review)
     if cfg.manager_review not in ("escalated", "all"):
         raise ConfigError("manager.review must be escalated or all")
+    cfg.manager_stale_days = manager.get("stale_days", cfg.manager_stale_days)
+    if type(cfg.manager_stale_days) is not int or cfg.manager_stale_days <= 0:
+        raise ConfigError("manager.stale_days must be a positive integer")
     cfg.check_timeout = int(gate.get("timeout", cfg.check_timeout))
     cfg.lock = Path(gate.get("lock", cfg.lock))
     cfg.checks = [

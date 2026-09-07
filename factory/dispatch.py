@@ -376,9 +376,15 @@ def escalate(n: int, reason: str, log_path: Path | None) -> None:
     log(f"#{n}: escalating to human ({reason})")
     wt = FACTORY / f"wt-{n}"
     packet, round_number = escalation_packet(n, reason, log_path, wt)
+    opened = next((e for e in reversed(lifecycle.read_events(EVENTS))
+                   if e.get("event") == "pr-opened" and e.get("ticket") == n), None)
+    pr_state = {}
+    if opened and opened.get("pr"):
+        snapshot = gh_json(["pr", "view", str(opened["pr"]), "--repo", REPO, "--json", "updatedAt"])
+        pr_state = {"pr": opened["pr"], "pr_updated_at": snapshot["updatedAt"]}
     record(
         "escalate", ticket=n, reason=reason, log=str(log_path) if log_path else None,
-        packet=str(packet), round=round_number,
+        packet=str(packet), round=round_number, **pr_state,
     )
     run(
         [
@@ -431,7 +437,7 @@ def review(wt: Path, n: int, gate_report: str) -> tuple[str, str]:
         proc = run(cfg.review_cmd(prompt), cwd=wt, check=False)
         findings = proc.stdout.strip() or proc.stderr.strip()
         m = re.search(r"VERDICT:\s*(APPROVE|REVISE)", findings)
-        verdict = m.group(1) if m else "REVISE"
+        verdict = m.group(1) if m and proc.returncode == 0 else "REVISE"
         execution.emit("result", returncode=proc.returncode, verdict=verdict, parsed=bool(m))
         if m and proc.returncode == 0:
             execution.outcome = "approved" if verdict == "APPROVE" else "product_feedback"
@@ -459,7 +465,7 @@ def push_and_pr(wt: Path, n: int, title: str, gate_report: str) -> bool:
         return True
     body_file = FACTORY / f"pr-body-{n}.md"
     body_file.write_text(f"Closes #{n}\n\n## Gate report\n\n{gate_report}\n")
-    run(
+    created = run(
         [
             "gh",
             "pr",
@@ -474,7 +480,7 @@ def push_and_pr(wt: Path, n: int, title: str, gate_report: str) -> bool:
             str(body_file),
         ]
     )
-    record("pr-opened", ticket=n)
+    record("pr-opened", ticket=n, pr=int(created.stdout.strip().rstrip("/").rsplit("/", 1)[-1]))
     return True
 
 
@@ -670,8 +676,13 @@ def sync_pass(dry_run: bool) -> None:
 FACTORY_APPROVED = LABEL_APPROVED
 
 
-def approve_pr(n: int) -> None:
-    """Record the reviewer APPROVE durably on the PR (merge-stage precondition)."""
+def approve_pr(n: int, *, managed: bool = False) -> None:
+    """Grant approval only after the configured manager review has also completed."""
+    if cfg.manager and cfg.manager_review == "all" and not managed:
+        head = run(["git", "rev-parse", "HEAD"], cwd=FACTORY / f"wt-{n}").stdout.strip()
+        record("approval-pending", ticket=n, head=head)
+        log(f"#{n}: independent review approved; waiting for manager review")
+        return
     record("approved", ticket=n)
     run(
         [
@@ -721,10 +732,12 @@ def refresh_pr_branch(n: int, pr: int) -> None:
     run(["git", "fetch", "origin"], cwd=wt)
     if run(["git", "rebase", f"origin/{cfg.main}"], cwd=wt, check=False).returncode != 0:
         run(["git", "rebase", "--abort"], cwd=wt, check=False)
+        run(["gh", "pr", "edit", str(pr), "--repo", REPO, "--remove-label", FACTORY_APPROVED])
         escalate(n, f"PR #{pr}: rebase onto moved main conflicts; worktree {wt}", None)
         return
     ok, report = run_gate(wt, n)
     if not ok:
+        run(["gh", "pr", "edit", str(pr), "--repo", REPO, "--remove-label", FACTORY_APPROVED])
         pr_comment(n, f"Gate failed after rebase onto current main:\n\n{report}")
         escalate(n, f"PR #{pr}: gate failed after rebase onto moved main", None)
         return
@@ -1068,7 +1081,7 @@ def process_ticket(
                 escalate(n, f"REVISE verdict after {cfg.review_rounds} review round(s)", logfile)
             else:
                 approve_pr(n)
-                log(f"#{n}: done (approved)")
+                log(f"#{n}: review complete")
         finally:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             lock_fd.close()
