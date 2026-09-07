@@ -1337,6 +1337,67 @@ class DispatchTest(unittest.TestCase):
                 0,
             )
 
+    def test_refresh_starts_from_remote_branch_when_no_local_copy(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            root, origin, upstream = build_fork(tmp)
+
+            git(origin, "checkout", "-q", "-b", "agent/7")
+            (origin / "feature.txt").write_text("feature")
+            git(origin, "add", "-A")
+            git(origin, "commit", "-q", "-m", "feature")
+            feature = git(origin, "rev-parse", "HEAD")
+            git(origin, "checkout", "-q", "main")
+            main_tip = git(origin, "rev-parse", "main")
+
+            cfg = config.Config(root=root, repo="acme/widgets", upstream="upstream", main="main")
+            with mock.patch.object(config, "remote_slug", return_value="acme/upstream-widgets"):
+                dispatch.configure(cfg)
+
+            # No local agent/7 and no worktree: the PR was pushed from elsewhere.
+            with mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
+                 mock.patch.object(dispatch, "escalate") as esc:
+                dispatch.refresh_pr_branch(7, 100, False)
+
+            esc.assert_not_called()
+            self.assertEqual(git(origin, "rev-parse", "agent/7"), feature)
+            self.assertNotEqual(git(origin, "rev-parse", "agent/7"), main_tip)
+
+    def test_refresh_with_nothing_ahead_of_main_escalates_instead_of_pushing(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            root, origin, upstream = build_fork(tmp)
+
+            # agent/8 adds one commit, then main lands the same change (squash).
+            git(origin, "checkout", "-q", "-b", "agent/8")
+            (origin / "feature.txt").write_text("feature")
+            git(origin, "add", "-A")
+            git(origin, "commit", "-q", "-m", "feature")
+            before = git(origin, "rev-parse", "HEAD")
+            git(origin, "checkout", "-q", "main")
+            (origin / "feature.txt").write_text("feature")
+            git(origin, "add", "-A")
+            git(origin, "commit", "-q", "-m", "feature landed")
+
+            cfg = config.Config(root=root, repo="acme/widgets", upstream="upstream", main="main")
+            with mock.patch.object(config, "remote_slug", return_value="acme/upstream-widgets"):
+                dispatch.configure(cfg)
+
+            with mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
+                 mock.patch.object(dispatch, "escalate") as esc:
+                dispatch.refresh_pr_branch(8, 101, False)
+
+            esc.assert_called_once()
+            self.assertEqual(git(origin, "rev-parse", "agent/8"), before)
+
 
 if __name__ == "__main__":
     unittest.main()
