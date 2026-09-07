@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import date
 from pathlib import Path
+from typing import Callable
 
-from factory import config, dispatch, lifecycle, triage
-from factory.config import LESSONS_NAME
+from factory import config, dispatch, lifecycle, manage, triage
+from factory.config import LABEL_CHORE, LESSONS_NAME
 
 MAX_LESSONS = 10
 LOG_TAIL = 40  # lines of a failing attempt log shown to the model
@@ -55,7 +57,15 @@ def evidence(last: int) -> tuple[list[int], str]:
     return chosen, "\n".join(parts)[-MAX_EVIDENCE:]
 
 
-def propose(existing: str, evidence_md: str, repo: str) -> list[str]:
+def manager_llm(cfg: config.Config) -> Callable[[list[dict]], str]:
+    """Chat-shaped adapter over `manager.command`: the transcript is flattened into one prompt."""
+    def ask(messages: list[dict]) -> str:
+        prompt = "\n\n".join(m["content"] for m in messages)
+        return dispatch.run(cfg.manager_cmd(prompt, cfg.root), cwd=cfg.root).stdout
+    return ask
+
+
+def propose(existing: str, evidence_md: str, repo: str, ask: Callable[[list[dict]], str]) -> list[str]:
     system = (
         f"You maintain a short list of lessons for coding agents working tickets in the {repo} "
         f"repository. From the evidence, extract only lessons that would have prevented a gate "
@@ -69,7 +79,7 @@ def propose(existing: str, evidence_md: str, repo: str) -> list[str]:
     user = f"Existing lessons:\n{existing or '(none)'}\n\nEvidence:\n{evidence_md}"
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     for _ in range(2):
-        reply = triage.call_llm(messages)
+        reply = ask(messages)
         text = reply.strip()
         if text.startswith("```"):
             text = text.strip("`").removeprefix("json").strip()
@@ -101,16 +111,37 @@ def main(argv: list[str]) -> int:
     if not tickets:
         print("factory learn: no finished tickets in .factory/events.jsonl yet")
         return 0
+    if cfg.manager:
+        notes = cfg.factory / manage.NOTES_NAME
+        if notes.is_file():
+            evidence_md += f"\n## {notes.name}\n\n{notes.read_text()}"
     path = cfg.root / LESSONS_NAME
     existing = path.read_text() if path.exists() else ""
-    lessons = propose(existing, evidence_md, cfg.repo)
+    ask = manager_llm(cfg) if cfg.manager else triage.call_llm
+    lessons = propose(existing, evidence_md, cfg.repo, ask)
     body = "".join(f"- {lesson}\n" for lesson in lessons)
     print(f"learned from tickets {', '.join(f'#{n}' for n in tickets)}:\n{body}", end="")
     if args.dry_run:
         return 0
-    path.write_text(
-        f"<!-- Written by `factory learn` from {len(tickets)} finished tickets; edit freely and commit. -->\n{body}"
-    )
-    dispatch.record("learn", tickets=tickets, lessons=len(lessons))
-    print(f"wrote {path}; review and commit it")
+    content = f"<!-- Written by `factory learn` from {len(tickets)} finished tickets; edit freely and commit. -->\n{body}"
+    if not cfg.manager:
+        path.write_text(content)
+        dispatch.record("learn", tickets=tickets, lessons=len(lessons))
+        print(f"wrote {path}; review and commit it")
+        return 0
+    branch = f"agent/lessons-{date.today().isoformat()}"
+    wt = cfg.factory / f"wt-{branch.removeprefix('agent/')}"
+    dispatch.run(["git", "fetch", "origin", cfg.main], cwd=cfg.root)
+    dispatch.run(["git", "worktree", "add", "--force", "-B", branch, str(wt), f"origin/{cfg.main}"], cwd=cfg.root)
+    try:
+        (wt / LESSONS_NAME).write_text(content)
+        dispatch.run(["git", "add", LESSONS_NAME], cwd=wt)
+        flags = ["-s"] if cfg.signoff else []
+        dispatch.run(["git", "commit", *flags, "-m", f"{branch}: update {LESSONS_NAME}"], cwd=wt)
+        pr_body = f"`factory learn` distilled tickets {', '.join(f'#{n}' for n in tickets)} via the manager.\n\n{body}"
+        dispatch.push_and_pr(wt, branch, f"{branch}: update {LESSONS_NAME}", pr_body, label=LABEL_CHORE)
+    finally:
+        dispatch.run(["git", "worktree", "remove", "--force", str(wt)], cwd=cfg.root, check=False)
+    dispatch.record("learn", tickets=tickets, lessons=len(lessons), branch=branch)
+    print(f"opened a {LABEL_CHORE} PR from {branch}")
     return 0

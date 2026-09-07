@@ -451,22 +451,22 @@ def review(wt: Path, n: int, gate_report: str) -> tuple[str, str]:
     return verdict, findings
 
 
-def push_and_pr(wt: Path, n: int, title: str, gate_report: str) -> bool:
-    """Push agent/n and open its PR. False if the branch adds nothing over
+def push_and_pr(wt: Path, branch: str, title: str, body: str, label: str = "", ticket: int | None = None) -> bool:
+    """Push `branch` and open its PR. False if the branch adds nothing over
     main (nothing to review; a worker that landed its work elsewhere)."""
     run(["git", "fetch", "origin", cfg.main], cwd=wt)
     ahead = run(["git", "rev-list", "--count", f"origin/{cfg.main}..HEAD"], cwd=wt).stdout
     if int(ahead) == 0:
         return False
-    run(["git", "push", "-u", "origin", f"agent/{n}"], cwd=wt)
+    run(["git", "push", "-u", "origin", branch], cwd=wt)
     existing = gh_json(
-        ["pr", "list", "--repo", REPO, "--head", f"agent/{n}", "--json", "number"]
+        ["pr", "list", "--repo", REPO, "--head", branch, "--json", "number"]
     )
     if existing:
-        log(f"#{n}: PR already exists (#{existing[0]['number']})")
+        log(f"{branch}: PR already exists (#{existing[0]['number']})")
         return True
-    body_file = FACTORY / f"pr-body-{n}.md"
-    body_file.write_text(f"Closes #{n}\n\n## Gate report\n\n{gate_report}\n")
+    body_file = FACTORY / f"pr-body-{branch.removeprefix('agent/')}.md"
+    body_file.write_text(body)
     run(
         [
             "gh",
@@ -475,14 +475,16 @@ def push_and_pr(wt: Path, n: int, title: str, gate_report: str) -> bool:
             "--repo",
             REPO,
             "--head",
-            f"agent/{n}",
+            branch,
             "--title",
-            f"agent/{n}: {title}",
+            title,
             "--body-file",
             str(body_file),
+            *(["--label", label] if label else []),
         ]
     )
-    record("pr-opened", ticket=n)
+    if ticket is not None:
+        record("pr-opened", ticket=ticket)
     return True
 
 
@@ -1053,7 +1055,8 @@ def process_ticket(
                 )
                 return
 
-            if not push_and_pr(wt, n, title, report):
+            body = f"Closes #{n}\n\n## Gate report\n\n{report}\n"
+            if not push_and_pr(wt, f"agent/{n}", f"agent/{n}: {title}", body, ticket=n):
                 escalate(n, f"agent/{n} has no commits over main; nothing to PR", logfile)
                 return
             execution.review_round = 1
