@@ -156,19 +156,18 @@ ticket's `human_touch` details. The dashboard retains its existing 100-issue,
    `leak-scan` of added lines against a regex. Checks marked `exclusive`
    serialise on a host-wide lock (one GPU, many worktrees). Every check has a
    timeout; a wedged check fails instead of holding the lock.
-5. **Review.** The reviewer sees the diff, the issue and comments (including the
-   brief and approved scope changes), and the gate report. Every finding cites
-   `path:line`; required fixes also cite an acceptance criterion, a documented
-   rule with its source, or a concrete correctness/security defect with its
-   trigger and impact. Required fixes are separate from optional suggestions;
-   preferences and speculative extensibility are not requirements. Net-new
-   abstractions beyond the brief, introduced or requested by the reviewer, need
-   an explicit justification tied to those grounds and why a simpler change is
-   insufficient. Missing justification alone does not block; requests to add or
-   remove abstractions must meet the same required-fix standard. A passing gate
-   does not exclude concrete defects it missed. Reviews end with `VERDICT: APPROVE`
-   or `VERDICT: REVISE`; optional suggestions alone mean APPROVE. Each `REVISE`
-   sends the required fixes back to the worker (re-gate, push, re-review), up to
+5. **Review.** The reviewer gets the diff and the gate report inline, and is told
+   to read issue #N's comments (the triage brief, approved scope changes) itself.
+   Every finding cites `path:line`; a required fix also cites an acceptance
+   criterion, a documented rule with its source, or a concrete correctness/security
+   defect with its trigger and impact — preferences and hypothetical extensibility
+   are optional suggestions, never requirements, and a passing gate does not
+   excuse a defect it did not detect. Net-new abstractions beyond the brief,
+   whether the diff introduced them or the review asks for them, need that same
+   justification, but a missing justification alone does not block. Reviews end
+   with `VERDICT: APPROVE` or `VERDICT: REVISE`; optional suggestions alone mean
+   APPROVE. Each `REVISE` sends the findings back to the worker, flagged so only
+   the required fixes are binding (re-gate, push, re-review), up to
    `review_rounds` times; then it escalates.
    `APPROVE` adds the `factory-approved` label — durable evidence on the PR,
    not in memory.
