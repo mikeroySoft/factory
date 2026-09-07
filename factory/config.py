@@ -57,7 +57,7 @@ KNOWN_KEYS = {
     "dispatch": ("max_active", "max_attempts", "budget_min", "review_rounds", "cost_pattern", "signoff"),
     "workers": None,
     "review": ("command",),
-    "manager": ("model", "command", "rounds", "review"),
+    "manager": ("model", "command", "rounds", "review", "max_active_cap", "budget_min_cap"),
     "gate": ("timeout", "lock", "check"),
     "leak_scan": ("pattern", "exclude"),
     "triage": ("url", "model"),
@@ -105,6 +105,9 @@ class Config:
     manager: list[str] | None = None
     manager_rounds: int = 1
     manager_review: str = "escalated"
+    # Ceilings for the fleet manager (`district manage`) raising `max_active`/`budget_min`; None = no cap.
+    manager_max_active_cap: int | None = None
+    manager_budget_min_cap: int | None = None
     checks: list[Check] = field(default_factory=list)
     check_timeout: int = 1200
     lock: Path = Path("/tmp/factory.lock")  # host-wide: one GPU, many repos
@@ -303,6 +306,11 @@ def load(start: Path | None = None) -> Config:
     cfg.manager_review = manager.get("review", cfg.manager_review)
     if cfg.manager_review not in ("escalated", "all"):
         raise ConfigError("manager.review must be escalated or all")
+    for key in ("max_active_cap", "budget_min_cap"):
+        cap = manager.get(key)
+        if cap is not None and (isinstance(cap, bool) or not isinstance(cap, int) or cap < 1):
+            raise ConfigError(f"manager.{key} must be a positive integer")
+        setattr(cfg, f"manager_{key}", cap)
     cfg.check_timeout = int(gate.get("timeout", cfg.check_timeout))
     cfg.lock = Path(gate.get("lock", cfg.lock))
     cfg.checks = [
