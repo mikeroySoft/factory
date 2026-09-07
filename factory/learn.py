@@ -134,7 +134,7 @@ def curate(cfg: config.Config, diff: str, tickets: list[int], notes: str) -> str
         applied = dispatch.run(["git", "apply", str(patch)], cwd=wt, check=False)
         if applied.returncode:
             raise ValueError(f"diff does not apply: {applied.stderr.strip()}")
-        # Checked after applying so a rename's source counts too; `-z` keeps odd names verbatim.
+        # Worktree-only apply (no --index): every touched path shows as ` M`/`??`, never `R`.
         status = dispatch.run(["git", "status", "--porcelain", "-z", "--untracked-files=all"], cwd=wt).stdout
         paths = [entry[3:] for entry in status.split("\0") if entry]
         bad = [p for p in paths if not manage.curate_allowed(p)]
@@ -151,6 +151,8 @@ def curate(cfg: config.Config, diff: str, tickets: list[int], notes: str) -> str
         chore_pr(cfg, branch, edit, f"{branch}: curate harness context", pr_body)
     except ValueError as exc:
         return f"rejected: {exc}"
+    finally:
+        patch.unlink(missing_ok=True)
     return branch
 
 

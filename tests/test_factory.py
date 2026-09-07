@@ -1174,7 +1174,7 @@ class DispatchTest(unittest.TestCase):
             self.assertEqual(next(e for e in events if e.get("event") == "learn")["curate"], branch)
 
     def test_learn_curate_rejects_verification_paths(self) -> None:
-        for bad in (".github/workflows/ci.yml", ".factory.toml", "src/main.py"):
+        for bad in (".github/workflows/ci.yml", ".factory.toml", "src/main.py", "AGENTS.mdx"):
             with self.subTest(path=bad), tempfile.TemporaryDirectory() as d:
                 root = Path(d)
                 repo, bare, stubs, _ = self.learn_scenario(root, "")
@@ -1195,6 +1195,7 @@ class DispatchTest(unittest.TestCase):
                 self.assertNotIn("agent/curate-", calls)
                 self.assertEqual(git(bare, "branch", "--list", "agent/curate-*"), "")
                 self.assertFalse(list((repo / ".factory").glob("wt-curate-*")))
+                self.assertFalse(list((repo / ".factory").glob("curate-*.patch")))
                 events = list(map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines()))
                 self.assertIn(bad, next(e for e in events if e.get("event") == "learn")["curate"])
 

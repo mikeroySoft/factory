@@ -60,7 +60,9 @@ def split_curate(output: str) -> tuple[str, str | None]:
 
 def curate_allowed(path: str) -> bool:
     """Only harness context; verification config (`.factory.toml`, workflows) is human-only."""
-    return any(path == p or path.startswith(p) for p in CURATE_PREFIXES) and ".." not in path.split("/")
+    if ".." in path.split("/"):
+        return False
+    return any(path.startswith(p) if p.endswith("/") else path == p for p in CURATE_PREFIXES)
 
 
 def split_notes(output: str) -> tuple[str, str | None]:
