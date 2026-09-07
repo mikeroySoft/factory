@@ -857,6 +857,7 @@ def snapshot() -> dict:
             "leak_pattern": cfg.leak_pattern,
             "gpu_lock": str(cfg.lock),
             "workers": {label: " ".join(argv) for label, argv in cfg.workers.items()},
+            "worker_when": cfg.worker_when,
             "reviewer": " ".join(cfg.reviewer),
             "manager": {
                 "command": " ".join(cfg.manager) if cfg.manager else None,

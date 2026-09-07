@@ -28,6 +28,23 @@
 # Other agents work the same way, e.g.
 # default = ["claude", "-p", "--dangerously-skip-permissions", "{prompt}"]  # reads the path as text: use a wrapper
 # default = ["codex", "exec", "--full-auto", "-C", "{cwd}", "@{prompt}"]
+#
+# A worker may also be a table with `command` argv and an optional natural-language
+# `when` rule. Array and table forms can coexist; do not define a label twice.
+# The manager lists configured labels and their rules; ROUTE and FIX cannot invent
+# profiles or write host config. FIX uses {"worker": "ci-fix", "guidance": "..."}.
+#
+# Human-applied host profiles: copy these into the host config under
+# [defaults.workers.<label>] or [repo."owner/name".workers.<label>].
+# Keep a default worker in that layer when configuring workers there.
+#
+# [workers.ci-fix]
+# when = "CI is red: read the failing job log, fix the cause or declare a flake with evidence."
+# command = ["omp", "-p", "--cwd", "{cwd}", "Read the ticket prompt at {prompt}. Read the failing CI job log. Fix the cause, or declare a flake in the handoff with concrete log and run evidence. Do not claim a flake without evidence."]
+#
+# [workers.conflict]
+# when = "A rebase conflicts: resolve the rebase, keep both intents, make no semantic changes."
+# command = ["omp", "-p", "--cwd", "{cwd}", "Read the ticket prompt at {prompt}. Resolve the rebase conflicts, preserving both sides' intents with no semantic changes. If the rebase was aborted, restart it against the configured main before resolving. If the intents cannot be preserved without semantic changes, stop and explain in the handoff."]
 
 [review]
 # {prompt} = review prompt text. Output must end with `VERDICT: APPROVE` or `VERDICT: REVISE`.

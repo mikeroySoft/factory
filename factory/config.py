@@ -100,6 +100,7 @@ class Config:
     workers: dict[str, list[str]] = field(
         default_factory=lambda: {"default": DEFAULT_WORKER, LABEL_CHORE: DEFAULT_CHORE_WORKER}
     )
+    worker_when: dict[str, str] = field(default_factory=dict)
     reviewer: list[str] = field(default_factory=lambda: list(DEFAULT_REVIEWER))
     manager: list[str] | None = None
     manager_rounds: int = 1
@@ -284,7 +285,17 @@ def load(start: Path | None = None) -> Config:
     if workers:
         if "default" not in workers:
             raise ConfigError(f"{path}: [workers] needs a `default` command")
-        cfg.workers = {k: list(v) for k, v in workers.items()}
+        cfg.workers = {}
+        for label, entry in workers.items():
+            command = entry.get("command") if isinstance(entry, dict) else entry
+            when = entry.get("when", "") if isinstance(entry, dict) else ""
+            if not isinstance(command, list) or not command or any(not isinstance(arg, str) for arg in command) or not command[0]:
+                raise ConfigError(f"{path}: workers.{label} needs a non-empty command argv")
+            if not isinstance(when, str):
+                raise ConfigError(f"{path}: workers.{label}.when must be text")
+            cfg.workers[label] = command
+            if when:
+                cfg.worker_when[label] = when
     if "command" in raw.get("review", {}):
         cfg.reviewer = list(raw["review"]["command"])
     cfg.manager, cfg.manager_model = manager_settings(manager)
