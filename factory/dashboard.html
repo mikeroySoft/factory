@@ -317,6 +317,10 @@
 <main id="ops" hidden>
   <div id="errors"></div>
   <section class="kpis" id="kpis" aria-label="Key metrics"></section>
+  <section class="panel" aria-label="Worker metrics">
+    <header><b>Workers</b> claim labels · first-attempt gate outcomes · all attempts · known cost</header>
+    <div class="kpis" id="worker-metrics"></div>
+  </section>
 
   <section class="panel">
     <header><b>Pipeline</b> live · click a node to filter the board and lanes <span class="note hint">hover a node for its tickets</span></header>
@@ -637,6 +641,9 @@ function renderKpis() {
     kpi('Verdicts', m.verdicts.length, `${m.verdicts.filter(v => v.verdict === 'APPROVE').length} approve · ${m.verdicts.filter(v => v.verdict === 'REVISE').length} revise`),
     kpi('Spend', spendText(S.snap.spend), S.snap.spend.cost == null && S.snap.config.cost_pattern == null ? `worker+gate wall clock · ${S.snap.spend.tickets} tickets · set cost_pattern for $` : `worker+gate wall clock · ${S.snap.spend.tickets} tickets`),
   );
+  $('worker-metrics').replaceChildren(...S.snap.workers.map(w =>
+    kpi(w.worker, w.first_pass == null ? 'n/a' : `${(100 * w.first_pass).toFixed(1)}%`,
+      `first-gate pass · ${w.attempts} attempts · ${w.cost == null ? 'n/a cost' : '$' + w.cost.toFixed(2)}`)));
 }
 function upstreamPending() { return S.snap.upstream.commits.filter(c => !c.synced); }
 function upstreamLed() { const u = S.snap.upstream; return u.blocker ? 'bad' : upstreamPending().length ? 'warn' : u.commits.length ? 'on' : ''; }
