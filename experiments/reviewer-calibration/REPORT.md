@@ -7,7 +7,10 @@ line remains **deferred** (see [Why the coverage line stays deferred](#why-the-c
 
 - Frozen repository baseline: `cadb9981524ab5506693e27f56ff8ac4ef911da6`
 - Worktree/branch: `factory-calibration-34` / `calibration-34`
-- Contract arms compared: `baseline` = `cadb998…` vs `issue36` = `1947fc4e3de23e71f64342f2c9cd2570d845db5e`
+- Contract arms compared: `baseline` = `cadb998…` vs `issue36` = `1947fc4e3de23e71f64342f2c9cd2570d845db5e`,
+  whose prompt text is byte-identical to the final #36 head
+  `07861b1dd0f04c0c5b8d5d6ba5f9bad1fadbe061` (§3), so the `issue36` results stand for the
+  final head with no rerun.
 
 ## 1. Research claims, verified against primary sources
 
@@ -105,10 +108,18 @@ anthropic/claude-fable-5-1` — the repository's own configured reviewer model
 and no safety check was bypassed. Every run records `prompt_sha256`, `packet_sha256`,
 `input_sha256`, exit code and wall time in `runs/main/results.json`.
 
-Confirmed identical prompt text for `1947fc4e…` and the newer `07861b1dd0f04c0c5b8d5d6ba5f9bad1fadbe061`
-("docs(review): describe the review stage as implemented"), so the comparison holds for
-either #36 head. Distinct prompt hashes per arm: baseline `9112ef9d76`/`4e986562f8`,
-issue36 `aee3991863`/`7f47ef8e87` (the pair differs only by issue number).
+Confirmed identical prompt text for `1947fc4e…` and the final #36 head
+`07861b1dd0f04c0c5b8d5d6ba5f9bad1fadbe061` ("docs(review): describe the review stage as
+implemented", README accuracy only), so the comparison holds for either head. Distinct
+prompt hashes per arm: baseline `9112ef9d76`/`4e986562f8`, issue36
+`aee3991863`/`7f47ef8e87` (the pair differs only by issue number).
+
+Independently of this experiment, the #36 owner reports production gate PASS at
+`07861b1…`, prompt capture through the real `dispatch.review()`, and one live
+**tool-enabled** reviewer run (`DEFAULT_REVIEWER` model, 79s) that produced the
+Required/Optional split with criterion citations on a clean worktree, with zero blocking
+findings from two-axis independent review. That is the production-path evidence this
+harness deliberately does not cover (§5, no-tools packet).
 
 Reproduce: `python experiments/reviewer-calibration/run_calibration.py runs/<name> 2`.
 
@@ -119,7 +130,7 @@ All 16 runs exited 0 with a parsed verdict.
 | Arm | Verdict match | Primary defect missed (defect-bearing runs) | REVISE on clean cases | Required/Optional split | Median `path:line` citations |
 |---|---|---|---|---|---|
 | `baseline` `cadb998…` | 4/8 | **4/4** | 0/4 | 0/8 | 18 |
-| `issue36` `1947fc4…` | 4/8 | **4/4** | 0/4 | 8/8 | 20 |
+| `issue36` `1947fc4…` (= `07861b1…` prompt) | 4/8 | **4/4** | 0/4 | 8/8 | 20 |
 
 Per-run detail in `runs/main/adjudication.json`.
 
