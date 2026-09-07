@@ -121,7 +121,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         if not ok:
             dispatch.escalate(n, "gate failed after manager FIX", logfile)
             return
-        dispatch.run(["git", "push", "origin", f"agent/{n}"], cwd=wt)
+        dispatch.run(["git", "push", "--force-with-lease", "origin", f"agent/{n}"], cwd=wt)
         verdict, findings = dispatch.review(wt, n, report)
         dispatch.pr_comment(n, findings)
         if verdict == "APPROVE":

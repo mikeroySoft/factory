@@ -675,23 +675,37 @@ esac
                     self.assertNotIn("issue edit", calls)
 
     def test_fix_runs_selected_worker_on_red_ci_and_requires_gate_and_review(self) -> None:
-        import shutil
-
-        for gate_ok, verdict in ((False, "APPROVE"), (True, "REVISE"), (True, "APPROVE")):
-            with self.subTest(gate_ok=gate_ok, verdict=verdict):
+        cases = ((False, "APPROVE", False), (True, "REVISE", False),
+                 (True, "APPROVE", False), (True, "APPROVE", True))
+        for gate_ok, verdict, rebase in cases:
+            with self.subTest(gate_ok=gate_ok, verdict=verdict, rebase=rebase):
                 repo, stubs, packet = self.scenario()
                 packet.write_text("PR #9: CI failed (unit); factory-approved label removed")
-                command = ["printf", "%s", 'DECISION: FIX\n{"worker":"ci-fix","guidance":"Read the failing unit job log"}']
+                worker = "conflict" if rebase else "ci-fix"
+                command = ["printf", "%s", "DECISION: FIX\n" + json.dumps(
+                    {"worker": worker, "guidance": "Read the failing unit job log"})]
                 (repo / config.CONFIG_NAME).write_text(
                     "[manager]\ncommand = " + json.dumps(command)
                     + '\n[workers]\ndefault = ["false"]\nchore = ["false"]'
-                    + '\n[workers.ci-fix]\ncommand = ["fix-worker", "{prompt}"]\nwhen = "Red CI"'
+                    + f'\n[workers.{worker}]\ncommand = ["fix-worker", "{{prompt}}"]\nwhen = "Red CI"'
                     + '\n[review]\ncommand = ["printf", "VERDICT: ' + verdict + '"]'
                     + '\n[[gate.check]]\nname = "unit"\nrun = ["' + ("true" if gate_ok else "false") + '"]\n'
+                    + '\n[repo]\nslug = "acme/widgets"\n'
                 )
                 wt = repo / ".factory/wt-7"
                 git(repo, "worktree", "add", "-q", str(wt), "-b", "agent/7")
-                real_git = shutil.which("git")
+                remote = repo.parent / "origin.git"
+                git(repo, "init", "--bare", str(remote))
+                git(repo, "remote", "set-url", "origin", str(remote))
+                (wt / "README.md").write_text("branch intent\n")
+                git(wt, "add", "README.md")
+                git(wt, "commit", "-qm", "Branch intent")
+                git(wt, "push", "-u", "origin", "agent/7")
+                original = git(remote, "rev-parse", "agent/7")
+                (repo / "main.txt").write_text("main intent\n")
+                git(repo, "add", "main.txt")
+                git(repo, "commit", "-qm", "Main intent")
+                git(repo, "push", "origin", "main")
                 stub_bin(Path(stubs).parent, **{
                     "gh": '''
 case "$1 $2" in
@@ -702,8 +716,8 @@ case "$1 $2" in
   "pr checks") echo '[{"name":"unit","bucket":"fail"}]';;
 esac
 ''',
-                    "git": f'if [ "$1" = push ]; then exit 0; fi\nexec "{real_git}" "$@"',
-                    "fix-worker": 'mkdir -p .factory\ncat "$1" > .factory/worker-input\nprintf "fixed\\n" > README.md',
+                    "fix-worker": ('git rebase origin/main || exit 1\n' if rebase else "")
+                    + 'mkdir -p .factory\ncat "$1" > .factory/worker-input\nprintf "fixed\\n" > README.md',
                 })
                 result = factory(repo, "manage", path=stubs)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -716,7 +730,10 @@ esac
                 calls = (Path(stubs) / "gh.log").read_text()
                 self.assertEqual("--add-label factory-approved" in calls, gate_ok and verdict == "APPROVE")
                 self.assertNotIn("--add-label ready-for-agent", calls)
-                self.assertEqual("push origin agent/7" in (Path(stubs) / "git.log").read_text(), gate_ok)
+                self.assertEqual(git(remote, "rev-parse", "agent/7"),
+                                 git(wt, "rev-parse", "HEAD") if gate_ok else original)
+                if rebase:
+                    self.assertEqual(git(remote, "show", "agent/7:main.txt"), "main intent")
 
     def test_fix_rejects_unlisted_workers(self) -> None:
         for worker in ("ci-fix", "default", "ready-for-agent", ["chore"]):
