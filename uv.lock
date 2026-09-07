@@ -3,7 +3,7 @@ revision = 3
 requires-python = ">=3.11"
 
 [options]
-exclude-newer = "2026-09-05T01:06:04Z"
+exclude-newer = "2026-09-05T03:24:37Z"
 
 [[package]]
 name = "factory"
