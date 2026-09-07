@@ -22,7 +22,7 @@ import time
 from contextlib import nullcontext
 from pathlib import Path
 
-from factory import config, lifecycle
+from factory import brief, config, lifecycle
 from factory.config import (
     LABEL_AGENT,
     LABEL_APPROVED,
@@ -212,14 +212,22 @@ def build_prompt(n: int, wt: Path, extra: str = "") -> str:
         )
     )
     lessons = ROOT / LESSONS_NAME
-    if lessons.exists():
-        parts += ["", "## Lessons from previous tickets in this repository", "", lessons.read_text()]
+    lessons_text = lessons.read_text() if lessons.exists() else ""
+    if lessons_text:
+        parts += ["", "## Lessons from previous tickets in this repository", "", lessons_text]
     handoff = wt / ".factory" / f"handoff-{n}.md"
     if handoff.exists():
         parts += ["", "## Handoff from the previous attempt", "", handoff.read_text()]
+    brief_text = brief.ensure(brief_path(wt, n), wt, issue, lessons_text)
+    if brief_text:
+        parts += ["", "## Brief", "", brief_text]
     if extra:
         parts += ["", extra]
     return "\n".join(parts) + "\n"
+
+
+def brief_path(wt: Path, n: int) -> Path:
+    return wt / ".factory" / f"brief-{n}.md"
 
 
 def record(event: str, **fields: object) -> None:
@@ -948,6 +956,7 @@ def worker_round(
     record(
         "attempt", ticket=n, attempt=attempt, worker_exit=code, gate="PASS" if ok else "FAIL",
         seconds=int(time.monotonic() - started), cost=log_cost(logfile), log=str(logfile),
+        brief=brief_path(wt, n).exists(),
     )
     return ok, report, logfile
 

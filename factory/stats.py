@@ -99,6 +99,24 @@ def print_workers(rows: list[dict]) -> None:
         print(f"{row['worker']:<{width}}  {rate:>15}  {row['attempts']:>8}  {cost}")
 
 
+def brief_metrics(audit: dict[int, list[dict]]) -> list[dict]:
+    """First-gate pass rate split by whether attempt 1 carried a brief."""
+    outcomes: dict[str, list[bool]] = {"with brief": [], "without brief": []}
+    for events in audit.values():
+        for event in events:
+            if event.get("event") == "attempt" and event.get("attempt") == 1 and event.get("gate") in ("PASS", "FAIL"):
+                outcomes["with brief" if event.get("brief") else "without brief"].append(event["gate"] == "PASS")
+    return [{"tickets": key, "first_pass": sum(gates) / len(gates) if gates else None, "attempts": len(gates)}
+            for key, gates in outcomes.items()]
+
+
+def print_briefs(rows: list[dict]) -> None:
+    print("tickets        first-gate pass  attempts")
+    for row in rows:
+        rate = "n/a" if row["first_pass"] is None else f"{row['first_pass']:.1%}"
+        print(f"{row['tickets']:<13}  {rate:>15}  {row['attempts']:>8}")
+
+
 def timeline(number: int) -> list[dict]:
     pages = gh("api", f"repos/{REPOSITORY}/issues/{number}/timeline",
                "--paginate", "--slurp")
@@ -305,13 +323,20 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="factory stats", description=__doc__)
     parser.add_argument("--json", action="store_true", help="print metric rows as JSON")
     parser.add_argument("--by-worker", action="store_true", help="split gate pass rate, attempts and known cost by claim label")
+    parser.add_argument("--by-brief", action="store_true", help="split first-gate pass rate by tickets with/without a brief")
     args = parser.parse_args(argv)
     configure(config.load())
-    rows = worker_metrics(audit_by_ticket(cfg.factory / "events.jsonl"), cfg.workers) if args.by_worker else collect_rows()
+    if args.by_worker or args.by_brief:
+        audit = audit_by_ticket(cfg.factory / "events.jsonl")
+        rows = worker_metrics(audit, cfg.workers) if args.by_worker else brief_metrics(audit)
+    else:
+        rows = collect_rows()
     if args.json:
         print(json.dumps(rows, indent=2))
     elif args.by_worker:
         print_workers(rows)
+    elif args.by_brief:
+        print_briefs(rows)
     else:
         print_table(rows)
         totals = human_touch_metrics(rows)

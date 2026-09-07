@@ -407,10 +407,10 @@ unused = ["agent"]
             events = [
                 {"event": "attempt", "ticket": 9, "attempt": 1, "gate": "PASS", "cost": 99},
                 {"event": "claimed", "ticket": 1, "labels": ["special", "chore"]},
-                {"event": "attempt", "ticket": 1, "attempt": 1, "gate": "FAIL", "cost": 1.25},
+                {"event": "attempt", "ticket": 1, "attempt": 1, "gate": "FAIL", "cost": 1.25, "brief": True},
                 {"event": "attempt", "ticket": 1, "attempt": 2, "gate": "PASS", "cost": 2},
                 {"event": "claimed", "ticket": 2, "labels": ["chore"]},
-                {"event": "attempt", "ticket": 2, "attempt": 1, "gate": "PASS", "cost": 0},
+                {"event": "attempt", "ticket": 2, "attempt": 1, "gate": "PASS", "cost": 0, "brief": True},
                 {"event": "attempt", "ticket": 2, "attempt": 4, "gate": "FAIL"},
                 {"event": "claimed", "ticket": 1, "labels": ["special"]},
                 {"event": "attempt", "ticket": 1, "attempt": 1, "gate": "PASS", "cost": 4},
@@ -437,6 +437,18 @@ unused = ["agent"]
                 ["chore", "50.0%", "4", "$3.25"],
                 ["special", "100.0%", "1", "$4.00"],
                 ["unused", "n/a", "0", "n/a"],
+            ])
+            result = factory(repo, "stats", "--by-brief", "--json")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), [
+                {"tickets": "with brief", "first_pass": 0.5, "attempts": 2},
+                {"tickets": "without brief", "first_pass": 2 / 3, "attempts": 3},
+            ])
+            result = factory(repo, "stats", "--by-brief")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual([line.split() for line in result.stdout.splitlines()[1:]], [
+                ["with", "brief", "50.0%", "2"],
+                ["without", "brief", "66.7%", "3"],
             ])
             from unittest import mock
 
@@ -973,6 +985,41 @@ class DispatchTest(unittest.TestCase):
                 dispatch.escalate(7, "gate failed again", worker_log)
             escalation = json.loads(dispatch.EVENTS.read_text().splitlines()[-1])
             self.assertEqual(escalation["round"], 2)
+
+    def test_brief_names_defining_file_and_last_pr(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            (repo / "pkg").mkdir()
+            (repo / "pkg" / "mod.py").write_text("def frobnicate():\n    return 1\n")
+            (repo / "pkg" / "other.py").write_text("x = 1\n")
+            git(repo, "add", "-A")
+            git(repo, "commit", "-q", "-m", "feat: add frobnicate (#12)")
+            (repo / "pkg" / "mod.py").write_text("def frobnicate():\n    return 2\n")
+            git(repo, "commit", "-q", "-am", "Merge pull request #15 from acme/fix-frobnicate")
+            (repo / config.LESSONS_NAME).write_text("- Run `make test` first.\n- frobnicate must stay pure.\n")
+            dispatch.configure(config.load(repo))
+            issue = {"title": "frobnicate returns the wrong value", "body": "`frobnicate` should return 1.",
+                     "comments": [{"author": {"login": "bot"}, "body": "Triage: ok\n\nAgent brief: keep it pure."}]}
+            with mock.patch.object(dispatch, "gh_json", return_value=issue):
+                prompt = dispatch.build_prompt(7, repo)
+            brief = prompt.split("## Brief", 1)[1]
+            self.assertIn("- pkg/mod.py", brief)
+            self.assertNotIn("other.py", brief)
+            self.assertIn("- #15 Merge pull request #15", brief)
+            self.assertIn("- #12 feat: add frobnicate (#12)", brief)
+            self.assertIn("keep it pure.", brief)
+            self.assertIn("- frobnicate must stay pure.", brief)
+            self.assertNotIn("make test", brief)
+            self.assertEqual((repo / ".factory" / "brief-7.md").read_text(), brief.strip())
+            # No matches: no file, no section.
+            empty = {"title": "nothing here", "body": "", "comments": []}
+            with mock.patch.object(dispatch, "gh_json", return_value=empty):
+                self.assertNotIn("## Brief", dispatch.build_prompt(8, repo))
+            self.assertFalse((repo / ".factory" / "brief-8.md").exists())
 
     def test_sync_escalation_writes_same_packet_shape(self) -> None:
         from unittest import mock
