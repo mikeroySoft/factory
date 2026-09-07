@@ -14,6 +14,8 @@ const REPO = process.env.FM_C0_REPOSITORY!;
 const PROVIDER = process.env.FM_C0_PROVIDER!;
 const MODEL = process.env.FM_C0_MODEL!;
 const ENDPOINT = process.env.FM_C0_ENDPOINT!;
+const RESPONSE_CAP = 500000;
+// ASCII JSON body bytes on stdout; this consumer accepts the body plus one newline.
 const TOOLS = ["fm_observe", "fm_inspect", "fm_investigate", "fm_capabilities", "fm_source", "fm_resource", "fm_sample_preview"];
 const ScopeFields = { schema_version: Type.Literal(1), repository: Type.Literal(REPO) };
 const PositiveInteger = Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER });
@@ -134,21 +136,52 @@ export default function (pi: ExtensionAPI) {
         const child = spawn(process.env.FM_C0_PYTHON!, ["-B", resolve(HERE, "evidence.py"), "--root", ROOT], {
           detached: true, stdio: ["pipe", "pipe", "ignore"], env: process.env,
         });
-        let out = "";
-        const stop = () => { try { process.kill(-child.pid!, "SIGKILL"); } catch {} };
-        const timer = setTimeout(stop, 95000);
-        control.signal.addEventListener("abort", stop, { once: true });
+        let buffer = Buffer.alloc(0);
+        let forceStop = false;
+        let grace: NodeJS.Timeout | undefined;
+        // Cooperative cancellation: SIGTERM lets the Python bridge unwind through its own
+        // read cleanup and kill/reap each isolated gh session it started; the SIGKILL fallback
+        // after grace targets only the bridge session (-child.pid), never the caller group.
+        // The 95s deadline is a cancel, like /fm cancel: both give the bridge 3 seconds to
+        // reap its gh descent before the group-kill fallback, and close cancels the fallback
+        // so a finished or already-terminated bridge never leaves a pending kill for a reused PID.
+        const stop = () => {
+          if (forceStop) return;
+          forceStop = true;
+          try { child.kill("SIGTERM"); } catch {}
+          try { process.kill(-child.pid!, "SIGTERM"); } catch {}
+          grace = setTimeout(() => {
+            try { process.kill(-child.pid!, "SIGKILL"); } catch {}
+            try { child.kill("SIGKILL"); } catch {}
+          }, 3000).unref();
+        };
+        const timer = setTimeout(() => stop(), 95000);
+        const onAbort = () => stop();
+        control.signal.addEventListener("abort", onAbort, { once: true });
         if (control.signal.aborted) stop();
-        child.stdout.on("data", chunk => { out += chunk; if (out.length > 500000) stop(); });
+        child.stdout.on("data", chunk => {
+          // A stopped read (cancel, deadline or cap overflow) is in its 3s grace drain:
+          // discard further producer output instead of buffering it, so memory stays
+          // bounded while the bridge reaps its gh descent.
+          if (forceStop) return;
+          buffer = Buffer.concat([buffer, chunk]);
+          if (buffer.length > RESPONSE_CAP + 1) stop();
+        });
         child.stdin.on("error", () => {});
         child.on("error", () => fail(new Error("Evidence process could not start.")));
         child.on("close", code => {
           clearTimeout(timer);
-          control.signal.removeEventListener("abort", stop);
-          if (control.signal.aborted) return fail(new Error("Evidence read cancelled; prior evidence is historical. Refresh required."));
+          clearTimeout(grace);
+          control.signal.removeEventListener("abort", onAbort);
+          if (forceStop) {
+            return fail(control.signal.aborted
+              ? new Error("Evidence read cancelled; prior evidence is historical. Refresh required.")
+              : new Error("Evidence withheld: response exceeded bounded output."));
+          }
           if (code === null || ![0, 1, 2].includes(code)) return fail(new Error("Evidence process failed or exceeded its bounds; state unavailable."));
           try {
-            const data: unknown = safe(JSON.parse(out));
+            if (buffer.length > RESPONSE_CAP + 1 || buffer.at(-1) !== 0x0a || buffer.some(b => b === 0x00 || b > 0x7f)) throw new Error("Unbounded output.");
+            const data: unknown = safe(JSON.parse(buffer.toString("ascii")));
             Assert(EvidenceSchema, data);
             if ((code === 0) !== data.ok) throw new Error("Evidence exit status contradicts its result.");
             done(data);
@@ -289,13 +322,16 @@ export default function (pi: ExtensionAPI) {
       ["Browse only — send nothing", "Approve this provider/model disclosure"], { timeout: 120000 });
     disclosure = choice === "Approve this provider/model disclosure";
     const user = clean(process.env.USER || "there");
-    const count = observation?.ok ? observation.attention_count : undefined;
+    const count = observation?.attention_count;
     const greeting = count == null
       ? `Hi ${user}, I couldn't determine how many issues need your attention. What would you like to discuss?`
       : count === 0
         ? `Hi ${user}, no issues are flagged for your attention in the current snapshot. What would you like to discuss?`
         : `Hi ${user}, ${count} ${count === 1 ? "issue needs" : "issues need"} your attention in the current snapshot. What would you like to discuss?`;
-    show(`${greeting}\n\nRun /fm help for a list of commands.${disclosure ? "" : "\nBrowse-only mode; model disclosure was not approved."}`);
+    const availability = count == null
+      ? observation?.coverage.notices.filter(n => n.startsWith("Attention count unavailable:")).join("\n") || "Use /fm observe to inspect collection errors."
+      : observation && !observation.ok ? "Other evidence is partial; the attention count is available within its stated coverage." : "";
+    show(`${greeting}${availability ? `\n${availability}` : ""}\n\nRun /fm help for a list of commands.${disclosure ? "" : "\nBrowse-only mode; model disclosure was not approved."}`);
   });
   pi.registerCommand("fm", {
     description: "C0 read-only Factory controls; /fm help",

@@ -2,6 +2,38 @@
 
 Prepared 2026-09-05. Repository: `/home/mike/dev/mikeroysoft/factory` (`mikeroySoft/factory`).
 
+## C1 review repairs — 2026-09-07 UTC
+
+The repair candidate is local and uncommitted on `c1-read-interface` in
+`/home/mike/dev/mikeroysoft/factory-c1`, atop C1 commit
+`be7d4364fff3cc772790e09b431178796532f89c`. This supersedes the earlier
+uncommitted-source status below; no repair commit, push, merge, installation or
+deployment was performed.
+
+- Restored bounded audit-only case membership using the dashboard selection
+  policy. Refused paths and unfinished/clipped JSONL records cannot establish
+  absence or a known attention count.
+- Cancellation cooperatively unwinds the Python bridge and kills/reaps its
+  isolated GitHub process groups. The Pi consumer rejects cancelled reads and
+  retains a three-second forced fallback; this is not an OS sandbox.
+- Public output fits 500,000 ASCII bytes plus its newline, preserves usable
+  partial evidence and retained source identity, and reports omitted cases.
+  The redundant initial observation timestamp was removed; the small existing
+  source-hash duplication was deliberately left alone.
+- Final checks: **118 Python tests passed**; the actual extension transport
+  checker passed healthy/cancel/oversized-Unicode scenarios; the live bridge
+  smoke passed against the original main checkout. Original-baseline checks
+  failed for audit-only omission, orphaned cancellation and oversized output.
+  A later unterminated-audit-row regression also failed before its Astra fix.
+- Cerebras Qwen-3.8-27b authored the repair waves. Two fresh Cerebras reviewers
+  approved an intermediate candidate; Astra subsequently found boundary
+  defects. Cerebras then returned HTTP 402. The operator explicitly authorized
+  Astra to finish the remaining source/test corrections and final review.
+  The final candidate is **not** claimed to have fresh Cerebras approval.
+
+The existing harness link, authentication/session configuration and all
+C2–C6, action, deployment and fleet checkpoints remain unchanged.
+
 ## C1 source delivery — 2026-09-06 UTC
 
 F03/#28 is accepted through merged PR31, revision `6ec35460e4879b8278bc7feb680b7fbb5e84ce08`. C1 is implemented and verified locally on branch `c1-read-interface` in `/home/mike/dev/mikeroysoft/factory-c1`; no C1 commit, publication, push, merge, installation or deployment was performed. The original preparation sections below remain historical.

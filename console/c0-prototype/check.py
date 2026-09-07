@@ -56,7 +56,9 @@ def main():
     assert case["case"] and case["case"]["number"] == first["cases"][0]["number"]
     assert any(s.get("url") == case["case"]["url"] for s in case["sources"])
     assert case["sources"] and all(s["id"].startswith("S") and s["text"] for s in case["sources"])
-    assert bridge("inspect", number=2147483647)["error"]["code"] == "unknown_case"
+    missing = bridge("inspect", number=2147483647)
+    assert not missing["ok"] and missing["case"] is None
+    assert missing["error"]["code"] in ("unknown_case", "evidence_unavailable")
     assert bridge("capabilities", repository="mikeroySoft/district")["error"]["code"] == "scope_mismatch"
     invalid = [
         {"op": "observe", "approved": True}, {"op": "inspect", "number": True},

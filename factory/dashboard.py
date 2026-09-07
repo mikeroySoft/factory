@@ -699,11 +699,17 @@ def worker_name(labels: set[str]) -> str:
     return Path(argv[0]).name
 
 
-def selected_issue(issue: dict, prs: dict, on_disk: set, by_ticket: dict) -> bool:
-    """The shared Factory case-selection policy, independent of transport."""
+def selected_issue(issue: dict, prs: dict, on_disk: set, by_ticket: dict, audit_tickets=None) -> bool:
+    """The shared Factory case-selection policy, independent of transport.
+
+    audit_tickets is membership only (a recorded ticket number, any actor): the
+    dashboard feeds it from stats.audit_by_ticket; the evidence CLI feeds the
+    bounded evidence.audit_membership read.
+    """
     number = issue["number"]
     labels = {lab["name"] for lab in issue.get("labels", {}).get("nodes") or []}
-    return bool(labels & FACTORY_LABELS or number in prs or number in on_disk or number in by_ticket)
+    audit_tickets = audit_tickets or set()
+    return bool(labels & FACTORY_LABELS or number in prs or number in on_disk or number in by_ticket or number in audit_tickets)
 
 
 def build_ticket(
@@ -821,7 +827,7 @@ def snapshot() -> dict:
             by_ticket.setdefault(execution["ticket"], []).append(execution)
     for issue in issues:
         n = issue["number"]
-        if not (selected_issue(issue, prs, on_disk, by_ticket) or n in audit):
+        if not selected_issue(issue, prs, on_disk, by_ticket, audit):
             continue
         tickets.append(build_ticket(
             issue, prs.get(n), disk_state(n), spend.get(n), by_ticket.get(n), audit=audit.get(n),

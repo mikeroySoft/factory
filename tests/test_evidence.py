@@ -250,6 +250,19 @@ class EvidenceCliTest(unittest.TestCase):
     def error_codes(self, data):
         return {row["code"] for row in data["errors"]} | ({data["error"]["code"]} if "error" in data else set())
 
+    def count_diagnostic(self, data, *codes):
+        errors = [error for error in data["errors"] if error["scope"] == "attention_count"]
+        self.assertEqual({error["code"] for error in errors}, set(codes))
+        notices = [notice for notice in data["coverage"]["notices"]
+                   if notice.startswith("Attention count unavailable:")]
+        self.assertEqual(bool(notices), bool(codes))
+        if not errors:
+            return None, None
+        source_ids = {error["source"] for error in errors}
+        self.assertEqual(len(source_ids), 1)
+        citation = next(source for source in data["sources"] if source["id"] in source_ids)
+        return citation, json.loads(citation["text"])
+
     def test_capabilities_are_explicit_and_do_not_collect_cases(self):
         data = self.invoke()
         menu = {(row["op"], row.get("kind")) for row in data["capabilities"]["reads"]}
@@ -457,6 +470,9 @@ class EvidenceCliTest(unittest.TestCase):
         self.responses[PREFIX + "issues"] = {"exit": 1, "stderr": "PRIVATE_TOKEN denied"}
         data = self.invoke("observe", code=1)
         self.assertIsNone(data["attention_count"])
+        _, diagnostic = self.count_diagnostic(data, "issues_incomplete")
+        self.assertEqual(diagnostic["unknown_executions"],
+                         {"total": 0, "unscoped": 0, "identities": []})
         self.assertNotIn("PRIVATE_TOKEN", json.dumps(data))
         inspect = self.invoke("inspect", number=7, code=1)
         self.assertIsNone(inspect["case"])
@@ -474,13 +490,59 @@ class EvidenceCliTest(unittest.TestCase):
         self.assertEqual(runtime["executions"][0]["state"], "completed")
         self.assertEqual([row["event_id"] for row in runtime["events"]], [entered["event_id"], terminal["event_id"]])
 
-    def test_full_candidate_page_is_unknown_attention_not_a_zero(self):
-        self.response("issues", [{**self.issue, "number": number} for number in range(1, 102)])
+    def test_candidate_caps_report_which_count_coverage_is_incomplete(self):
+        for endpoint, values, code in (
+            ("issues", [{**self.issue, "number": number} for number in range(1, 102)],
+             "issues_incomplete"),
+            ("pulls", [{**self.pr, "number": number} for number in range(1, 101)],
+             "pulls_incomplete"),
+        ):
+            with self.subTest(endpoint=endpoint):
+                self.response(endpoint, values)
+                before = len([row for row in self.calls()
+                              if row["path"] == PREFIX + endpoint])
+                data = self.invoke("observe", code=1)
+                self.assertIsNone(data["attention_count"])
+                self.count_diagnostic(data, code)
+                after = len([row for row in self.calls()
+                             if row["path"] == PREFIX + endpoint])
+                self.assertEqual(after - before, 1)
+                self.response(endpoint, [self.issue] if endpoint == "issues" else [])
+
+    def test_clipped_labels_and_inventory_failures_explain_unknown_count(self):
+        self.issue["labels"] = [{"name": "ready-for-human"}] + [
+            {"name": f"label-{index}"} for index in range(20)
+        ]
         data = self.invoke("observe", code=1)
-        self.assertEqual(len(data["cases"]), 100)
         self.assertIsNone(data["attention_count"])
-        self.assertTrue(data["coverage"]["notices"])
-        self.assertEqual(len([row for row in self.calls() if row["path"] == PREFIX + "issues"]), 1)
+        self.count_diagnostic(data, "labels_incomplete")
+
+        self.issue["labels"] = [{"name": "ready-for-human"}]
+        factory = self.root / ".factory"
+        factory.mkdir()
+        (factory / "logs").symlink_to("missing-logs")
+        data = self.invoke("observe", code=1)
+        self.assertIsNone(data["attention_count"])
+        self.count_diagnostic(data, "inventory_incomplete")
+
+    def test_unknown_unscoped_executions_have_bounded_identity_diagnostics(self):
+        self.journal.parent.mkdir()
+        executions = []
+        for _ in range(22):
+            execution = lifecycle.Execution(self.journal, "dispatcher")
+            execution.process = None
+            execution.emit("enter")
+            executions.append(execution)
+        data = self.invoke("observe", code=1)
+        self.assertIsNone(data["attention_count"])
+        citation, diagnostic = self.count_diagnostic(data, "runtime_unknown")
+        unknown = diagnostic["unknown_executions"]
+        self.assertEqual(unknown["total"], 22)
+        self.assertEqual(unknown["unscoped"], 22)
+        self.assertEqual(len(unknown["identities"]), 20)
+        self.assertTrue(citation["truncated"])
+        expected = {execution.execution_id for execution in executions}
+        self.assertTrue({identity["execution_id"] for identity in unknown["identities"]} <= expected)
 
     def test_inspect_preserves_artifact_decisions_and_runtime_history_without_writes(self):
         self.journal.parent.mkdir()
@@ -528,6 +590,129 @@ class EvidenceCliTest(unittest.TestCase):
         selected = {row["path"]: row for row in dashboard_sources if row.get("path")}
         for path in ("escalations/7.md", "wt-7/.factory/handoff-7.md"):
             self.assertEqual(sources[path], selected[path])
+
+
+    def _gh_issue(self, number, **overrides):
+        issue = {"number": number, "title": f"Case {number}", "state": "open",
+                 "html_url": f"https://github.com/{REPO}/issues/{number}", "body": "",
+                 "labels": [], "assignees": [], "comments": 0,
+                 "created_at": AT, "updated_at": AT, "closed_at": None}
+        issue.update(overrides)
+        return issue
+
+    def _audit_line(self, **fields):
+        row = {"at": AT, "event": "escalate"}
+        row.update(fields)
+        return json.dumps(row) + "\n"
+
+
+    def test_audit_only_issue_without_label_is_observed_and_inspected(self):
+        # Issue 9 has no label, branch, worktree, log or runtime record: its
+        # membership comes from the audit trail alone. An oversized first row
+        # pushes the trail past its bounded read window, so membership stays
+        # honest (partial) and attention is never a false zero.
+        audit_only = self._gh_issue(9, title="Escalated by audit only", body="Recorded elsewhere.")
+        self.response("issues", [self.issue, audit_only])
+        self.response("issues/9/comments", [])
+        self.response("issues/9/timeline", [])
+        self.journal.parent.mkdir()
+        self.journal.write_text(
+            json.dumps({"ticket": 1, "pad": "x" * 1_500_000}) + "\n" + self._audit_line(ticket=9))
+        observed = self.invoke("observe", code=1)
+        self.assertEqual({case["number"] for case in observed["cases"]}, {7, 9})
+        self.assertIsNone(observed["attention_count"])
+        self.count_diagnostic(observed, "audit_incomplete")
+        self.assertIn("audit_partial", self.error_codes(observed))
+        audit = next(row for row in self.values(observed) if isinstance(row, dict) and "tickets" in row)
+        self.assertEqual(audit, {"status": "partial", "truncated": True, "tickets": [9]})
+        # The audit-only case is inspectable with recorded GitHub evidence.
+        inspected = self.invoke("inspect", number=9, code=1)
+        self.assertEqual(inspected["case"]["number"], 9)
+        self.assertEqual(inspected["case"]["stage"], "other")
+        self.assertIn("audit_partial", self.error_codes(inspected))
+        self.assertIn("Recorded elsewhere.", json.dumps(inspected["sources"]))
+        # An unlisted issue cannot be verified absent while membership is partial.
+        self.assertEqual(self.invoke("inspect", number=441, code=1)["error"]["code"], "evidence_unavailable")
+
+    def test_bounded_audit_membership_is_truthful_for_legacy_and_unreadable_trails(self):
+        # A legacy (non-lifecycle) journal is an unsupported F03 record: the
+        # exact membership row and grounded attention still stand, an unlisted
+        # number is verified absent, and the unsupported_record error is a
+        # documented reason for overall exit 1 with a complete audit claim.
+        self.response("issues", [self.issue, self._gh_issue(9)])
+        self.journal.parent.mkdir()
+        self.journal.write_text(self._audit_line(ticket=9))
+        observed = self.invoke("observe", code=1)
+        self.assertEqual({case["number"] for case in observed["cases"]}, {7, 9})
+        self.assertEqual(observed["attention_count"], 1)
+        self.count_diagnostic(observed)
+        self.assertNotIn("audit_partial", self.error_codes(observed))
+        self.assertIn("unsupported_record", self.error_codes(observed))
+        audit = next(row for row in self.values(observed) if isinstance(row, dict) and "tickets" in row)
+        self.assertEqual(audit, {"status": "complete", "truncated": False, "tickets": [9]})
+        self.assertEqual(self.invoke("inspect", number=441, code=1)["error"]["code"], "unknown_case")
+        # A non-regular journal file is unavailable, never fabricated: the
+        # audit-only case drops out of collection instead of being invented.
+        self.journal.unlink()
+        self.journal.mkdir()
+        observed = self.invoke("observe", code=1)
+        self.assertIsNone(observed["attention_count"])
+        self.count_diagnostic(observed, "audit_incomplete")
+        self.assertIn("audit_unavailable", self.error_codes(observed))
+        audit = next(row for row in self.values(observed) if isinstance(row, dict) and "tickets" in row)
+        self.assertEqual(audit, {"status": "unavailable", "truncated": True, "tickets": []})
+        self.assertEqual({case["number"] for case in observed["cases"]}, {7})
+
+    def test_audit_symlinks_and_incomplete_tail_are_unavailable_not_absent(self):
+        # A dangling .factory or events.jsonl symlink is a REFUSAL, not an empty
+        # trail: audit reports unavailable (not empty), public attention is null,
+        # and inspect cannot claim an audit-only issue is absent. The read-only
+        # boundary still holds (the symlink targets are never created).
+        self.response("issues", [self.issue, self._gh_issue(9)])
+        self.response("issues/9/comments", [])
+        self.response("issues/9/timeline", [])
+        for target in (self.root / ".factory", self.journal):
+            with self.subTest(linked=target):
+                if target == self.root / ".factory":
+                    target.symlink_to("no-such-state-directory")
+                else:
+                    target.parent.mkdir()
+                    target.symlink_to("no-such-events-file")
+                observed = self.invoke("observe", code=1)
+                self.assertIsNone(observed["attention_count"])
+                reasons = ("audit_incomplete", "inventory_incomplete") if target == self.root / ".factory" else ("audit_incomplete",)
+                self.count_diagnostic(observed, *reasons)
+                self.assertIn("audit_unavailable", self.error_codes(observed))
+                audit = next(row for row in self.values(observed) if isinstance(row, dict) and "tickets" in row)
+                self.assertEqual(audit, {"status": "unavailable", "truncated": True, "tickets": []})
+                # An audit-only issue cannot be verified absent: it is unreachable, not proved missing.
+                self.assertEqual(self.invoke("inspect", number=9, code=1)["error"]["code"], "evidence_unavailable")
+                # The refusal must not have fabricated the missing target.
+                self.assertFalse((self.root / "no-such-state-directory").exists())
+                self.assertFalse((self.root / "no-such-events-file").exists())
+                target.unlink()
+
+        # A genuinely empty trail (real .factory directory, no events yet) stays
+        # "empty" -- read-only, not fabricated, and not claimed unavailable.
+        self.journal.parent.mkdir(exist_ok=True)
+        observed = self.invoke("observe", code=1)
+        self.assertEqual(observed["attention_count"], 1)
+        self.count_diagnostic(observed)
+        self.assertNotIn("audit_unavailable", self.error_codes(observed))
+        audit = next(row for row in self.values(observed) if isinstance(row, dict) and "tickets" in row)
+        self.assertEqual(audit, {"status": "empty", "truncated": False, "tickets": []})
+
+        # An in-flight (unterminated) final row is not trusted as complete
+        # membership: its ticket is not claimed, membership is truthful-partial,
+        # attention stays null, and an unlisted issue cannot be called absent.
+        self.journal.write_text(self._audit_line(ticket=9) + json.dumps({"event": "enter", "ticket": 441, "at": AT}))
+        observed = self.invoke("observe", code=1)
+        self.assertIsNone(observed["attention_count"])
+        self.count_diagnostic(observed, "audit_incomplete")
+        self.assertIn("audit_partial", self.error_codes(observed))
+        audit = next(row for row in self.values(observed) if isinstance(row, dict) and "tickets" in row)
+        self.assertEqual(audit, {"status": "partial", "truncated": True, "tickets": [9]})
+        self.assertEqual(self.invoke("inspect", number=441, code=1)["error"]["code"], "evidence_unavailable")
 
 
 if __name__ == "__main__":

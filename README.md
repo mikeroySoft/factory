@@ -55,6 +55,14 @@ factory doctor          # tools, auth, remotes, model endpoint
 factory install --dashboard   # systemd user timer every 10 min + dashboard on :8765
 ```
 
+Generated triage, dispatch and dashboard services use `python -P -m factory`:
+Python does not prepend the repository working directory to its module search
+path, so an older checkout cannot shadow the installed Factory package.
+The interpreter must already have Factory installed; explicit `PYTHONPATH`
+overrides remain operator-controlled. This source change does not rewrite
+existing units: review their import paths before any separately authorized
+unit update or service reload.
+
 Then file an issue with the **Agent task** template (Scope / Touches / Exit
 gate / Out of scope). It gets `needs-triage`; the next pass triages it; if it is
 fully specified it becomes `ready-for-agent` and is picked up.
@@ -926,11 +934,20 @@ Operation-specific fields appear only where applicable:
   source failures; retain usable `sources` even when `ok` is false.
 
 Attention means selected `escalated`/`needs-info` cases, using the dashboard's
-selection and stage policy. Failed or full candidate pages and uncertain runtime
-activity make the total unknown (`null`), not zero. Missing local history can
-make the observation partial without erasing independently known GitHub cases.
-Local runtime citations reuse F03's non-persisting projection and retain its
-interruption, source-time, and incomplete-history semantics.
+selection and stage policy. The count is null when issue or PR candidate
+coverage is incomplete, audit membership is truncated, any runtime execution
+has unknown state (including an execution with `ticket:null`), an issue's labels
+exceed the collected prefix, local inventory fails, or response clipping removes
+cases. Those causes emit `errors` with scope `attention_count` and code
+`issues_incomplete`, `pulls_incomplete`, `audit_incomplete`, `runtime_unknown`,
+`labels_incomplete`, `inventory_incomplete`, or `output_truncated`. Each error's
+`source` is the ID of a bounded diagnostic citation. Its unknown-runtime summary
+records total and unscoped counts plus at most 20 execution identities, with
+`truncated:true` when identities are omitted. Human-readable notices begin
+`Attention count unavailable:`. Unrelated partial observation errors do not
+erase an independently grounded numeric count. Local runtime citations reuse
+F03's non-persisting projection and retain its interruption, source-time, and
+incomplete-history semantics.
 
 Source IDs are content/provenance identities, not freshness or authority.
 Unchanged historical sources retain their identity and recorded timestamps
@@ -946,6 +963,7 @@ Bounds apply during reads, not just to displayed strings:
 | Boundary | Ceiling |
 |---|---|
 | Stdin request | 4096 bytes |
+| JSON response | 500,000 ASCII-encoded bytes, plus one trailing newline |
 | Whole read, including waiting for stdin | 90 seconds |
 | One GitHub command | 20 seconds, or the remaining whole-read deadline |
 | GitHub JSON / diagnostic capture | 1 MiB stdout / 4096 bytes stderr; oversized JSON is not interpreted |
@@ -954,6 +972,7 @@ Bounds apply during reads, not just to displayed strings:
 | Run logs | Five latest-attempt prefixes; failed jobs first |
 | Local inventory | At most 1024 directory entries per bounded scan |
 | Runtime history | F03's 1 MiB / 512 retained-event window |
+| Audit-only case membership | Latest 1 MiB of the existing audit trail; partial/unreadable membership is explicit |
 | Selected case history/context | Latest 2 MB event text; existing 64,000-byte / 40-source briefing selection limits |
 
 Comment-page selection uses the observed comment count. It reads only that
@@ -969,19 +988,42 @@ remain visible. Log control sequences are removed before citation display.
 Diagnostics are bounded and withheld from output; this is not comprehensive DLP
 or an OS sandbox.
 
+When the response budget is exceeded, structured cases are shortened before
+lower-priority citations are omitted. `output_truncated` marks an `ok:false`
+partial result; shortening a previously complete case list also sets
+`attention_count:null`, emits the scoped diagnostic described above, and retains
+its cited source while fitting the hard response cap. Other retained citations
+keep their original text and source IDs. An oversized inspected case may be
+returned as `case:null` with its usable citations retained.
+
+Audit-only cases use the same selection policy as the dashboard. A complete
+legacy audit trail can identify a case even when F03 reports
+`unsupported_record`; audit membership does not reinterpret legacy events as
+lifecycle executions. Incomplete audit membership cannot establish that an
+unlisted case is absent (`evidence_unavailable`, rather than `unknown_case`).
+Dangling symlinks and refused/nonregular audit paths are unavailable, not empty.
+Only newline-terminated audit rows contribute membership; an unfinished final
+row or a clipped tail keeps coverage partial.
+
 | Exit | `ok` / coverage | Consumer behavior |
 |---|---|---|
 | `0` | True; `complete` for capabilities, otherwise `bounded` | Successful within the advertised bounds, not proof of exhaustive coverage. |
 | `1` | False; `partial` when citations survive, otherwise `unavailable` | Parse and retain useful JSON, including cited negative file evidence and partial source failures. |
 | `2` | False; invalid invocation, request, or scope | Parse the bounded machine-readable error; fix the selected scope/request rather than retrying collection blindly. |
 
+Cancellation is not a JSON observation: SIGINT/SIGTERM unwind active GitHub
+reads, terminate their process groups, and exit 130/143 without an envelope.
+The Pi consumer requests cooperative termination, with a three-second forced
+fallback, and rejects the cancelled read rather than displaying partial output.
+
 Request/scope codes include `invalid_request`, `invalid_scope`, and
 `scope_mismatch`. Collection codes include `collection_timeout`,
 `response_too_large`, `github_unavailable`, `github_authentication`,
 `github_forbidden`, `github_not_found`, `github_rate_limited`, `invalid_response`,
 `head_mismatch`, `incomplete_tree`, `unsupported_file`, `file_not_found`,
-`unknown_case`, `evidence_unavailable`, `logs_unavailable`, and
-`collection_unavailable`; F03's structured local error codes are preserved.
+`unknown_case`, `evidence_unavailable`, `logs_unavailable`, `audit_partial`,
+`audit_unavailable`, `output_truncated`, and `collection_unavailable`;
+F03's structured local error codes are preserved.
 `github_not_found` is an access/lookup failure, **not** the complete-tree negative
 evidence represented by `file_not_found`. Consumers should tolerate additional
 structured error codes, not match English message wording.

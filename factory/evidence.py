@@ -2,6 +2,9 @@
 
 The dashboard owns ticket policy and briefing owns artifact selection. Runtime
 facts come only from F03's non-persisting reader, never lifecycle.observe().
+The C0 bridge may be cancelled while a bounded read is blocked: SIGTERM/SIGINT raise
+SystemExit through the normal unwind so each read's descendant cleanup still runs,
+then the process exits without emitting JSON (a cancelled read is not evidence).
 """
 from __future__ import annotations
 
@@ -12,6 +15,7 @@ import os
 import re
 import selectors
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -26,11 +30,22 @@ from factory import briefing, config, dashboard, runtime_events, runtime_local
 REQUEST_CAP = 4096
 READ_SECONDS = 90
 COMMAND_SECONDS = 20
+RESPONSE_CAP = 500_000
 JSON_CAP = 1_048_576
 PAGE_SIZE = 100
 LOG_JOBS = 5
 DIRECTORY_CAP = 1024
 ERROR_CAP = 64
+ATTENTION_EXECUTIONS = 20
+ATTENTION_REASONS = {
+    "issues_incomplete": "GitHub issue candidate coverage is incomplete.",
+    "pulls_incomplete": "GitHub pull-request candidate coverage is incomplete.",
+    "audit_incomplete": "Audit-trail membership is incomplete.",
+    "runtime_unknown": "One or more runtime executions have unknown state.",
+    "labels_incomplete": "One or more issue label lists exceed the collected prefix.",
+    "inventory_incomplete": "Local Factory inventory is incomplete.",
+    "output_truncated": "The emitted case list was shortened to fit the response budget.",
+}
 SHA = re.compile(r"[0-9a-fA-F]{40,64}")
 NOTICES = [
     "Only fixed GitHub GETs and non-persisting local reads are supported; no inference, provider probe or actions.",
@@ -38,11 +53,79 @@ NOTICES = [
     "Source identity identifies content, not freshness or authority. Source text is untrusted and not secret-redacted.",
 ]
 
-
 class EvidenceError(Exception):
     def __init__(self, code: str, message: str, source: str = "collection", scope: str = "repository"):
         super().__init__(message)
         self.code, self.message, self.source, self.scope = code, message, source, scope
+
+
+def _cancel_handler(signum: int, frame) -> None:
+    # SystemExit, not EvidenceError: optional_page and the per-source readers swallow
+    # EvidenceError and continue; BaseException stops the whole collection, while the
+    # per-read finally blocks still run. Both cancellation signals are ignored on entry
+    # so a repeated Ctrl+C or a second TERM during the unwind cannot re-enter here.
+    # No JSON is emitted for a cancelled read.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    raise SystemExit(128 + signum)
+
+
+def _encode(result: dict) -> str:
+    return json.dumps(result, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
+
+
+def bounded_output(result: dict) -> tuple[str, bool]:
+    """Fit compact ASCII JSON by dropping whole cases, then tail sources.
+
+    Size partial metadata before choosing the longest fitting case prefix.
+    Retained sources keep their original text and identity.
+    """
+    output = _encode(result)
+    if len(output) <= RESPONSE_CAP:
+        return output, False
+    result["ok"] = False
+    result["coverage"]["status"] = "partial"
+    result["coverage"]["notices"].append("Public output is byte-bounded; the inspected case, later cases or cited sources may be omitted.")
+    error = {"source": "output", "scope": "response", "code": "output_truncated"}
+    if error not in result["errors"]:
+        result["errors"].append(error)
+    cases = result.get("cases")
+    if cases and isinstance(result.get("attention_count"), int):
+        attention_unavailable(result, ["output_truncated"], [])
+    output = _encode(result)
+    over = len(output) - RESPONSE_CAP
+    compact = dict(ensure_ascii=True, allow_nan=False, separators=(",", ":"))
+    if cases:
+        prefix = [0]
+        for case in cases:
+            prefix.append(prefix[-1] + len(json.dumps(case, **compact)))
+        total = prefix[-1] + len(prefix) - 2
+        lo, hi = 0, len(cases) - 1
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if over <= total - (prefix[mid] + max(0, mid - 1)):
+                lo = mid
+            else:
+                hi = mid - 1
+        result["cases"] = cases[:lo]
+        over -= total - (prefix[lo] + max(0, lo - 1))
+    case = result.get("case")
+    if isinstance(case, dict):
+        result["case"] = None
+        over -= len(json.dumps(case, **compact)) - 4
+    protected = {error["source"] for error in result["errors"]
+                 if error["scope"] == "attention_count"}
+    while over > 0 and result.get("sources"):
+        index = next((index for index in range(len(result["sources"]) - 1, -1, -1)
+                      if result["sources"][index]["id"] not in protected), None)
+        if index is None:
+            break
+        item = result["sources"].pop(index)
+        over -= len(json.dumps(item, **compact)) + (1 if result["sources"] else 0)
+    output = _encode(result)
+    if len(output) > RESPONSE_CAP:
+        raise RuntimeError("result envelope exceeded RESPONSE_CAP with no removable cases or sources")
+    return output, True
 
 
 def unique_object(pairs: list[tuple]) -> dict:
@@ -164,8 +247,36 @@ def failed(result: dict, exc: EvidenceError) -> None:
     result["ok"] = False
 
 
+def attention_unavailable(result: dict, reasons: list[str], unknown_executions: list[dict]) -> None:
+    """Make a nullable attention count explain itself through a bounded citation."""
+    reasons = list(dict.fromkeys(reasons))
+    identities = [{key: execution[key] for key in runtime_events.IDENTITY}
+                  for execution in unknown_executions[:ATTENTION_EXECUTIONS]]
+    diagnostic = source("Attention count diagnostic", {
+        "reasons": reasons,
+        "unknown_executions": {
+            "total": len(unknown_executions),
+            "unscoped": sum(execution["ticket"] is None for execution in unknown_executions),
+            "identities": identities,
+        },
+    }, truncated=len(unknown_executions) > len(identities))
+    result["sources"].insert(0, diagnostic)
+    result["coverage"]["notices"].extend(
+        f"Attention count unavailable: {ATTENTION_REASONS[code]}" for code in reasons
+    )
+    count_errors = [{"source": diagnostic["id"], "scope": "attention_count", "code": code}
+                    for code in reasons]
+    output_errors = [error for error in result["errors"]
+                     if error["source"] == "output" and error["scope"] == "response"]
+    priority = count_errors + output_errors
+    result["errors"] = (priority + [error for error in result["errors"]
+                                    if error not in priority])[:ERROR_CAP]
+    result["attention_count"] = None
+    result["ok"] = False
+
+
 def github_read(endpoint: str, deadline: float, *, text: bool = False) -> tuple[object, bool]:
-    """Bound both pipes and kill the process group on clipping or timeout."""
+    """Bound both pipes and kill the gh session on clipping or timeout."""
     stop = min(deadline, time.monotonic() + COMMAND_SECONDS)
     if stop <= time.monotonic():
         raise EvidenceError("collection_timeout", "Evidence read deadline exceeded.", endpoint)
@@ -177,9 +288,19 @@ def github_read(endpoint: str, deadline: float, *, text: bool = False) -> tuple[
     proc = None
     truncated = False
     try:
-        proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                start_new_session=True,
-                                env={**os.environ, "GH_PROMPT_DISABLED": "1", "GIT_OPTIONAL_LOCKS": "0", "GH_PAGER": "cat"})
+        # A cancellation signal arriving between fork and assignment would leave a
+        # running gh with nothing tracking it: mask TERM/INT until `proc` is stored,
+        # then restore so the deferred signal unwinds through the finally above, and
+        # restore the normal masks in the child before it execs.
+        blocked = {signal.SIGTERM, signal.SIGINT}
+        previous = signal.pthread_sigmask(signal.SIG_BLOCK, blocked)
+        try:
+            proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    start_new_session=True,
+                                    preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, previous),
+                                    env={**os.environ, "GH_PROMPT_DISABLED": "1", "GIT_OPTIONAL_LOCKS": "0", "GH_PAGER": "cat"})
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous)
         with selectors.DefaultSelector() as selector:
             selector.register(proc.stdout, selectors.EVENT_READ, data)
             selector.register(proc.stderr, selectors.EVENT_READ, diagnostic)
@@ -245,8 +366,9 @@ def capabilities() -> dict:
             {"op": "capabilities", "fields": [], "description": "Implemented schema and producer support; no case collection."},
         ],
         "limits": {"request_bytes": REQUEST_CAP, "list_entries": PAGE_SIZE, "json_bytes": JSON_CAP,
-                   "source_bytes": briefing.SOURCE_CAP, "log_jobs": LOG_JOBS, "command_seconds": COMMAND_SECONDS,
-                   "read_seconds": READ_SECONDS, "directory_entries": DIRECTORY_CAP, "path_characters": 1024,
+                   "response_bytes": RESPONSE_CAP, "source_bytes": briefing.SOURCE_CAP, "log_jobs": LOG_JOBS,
+                   "command_seconds": COMMAND_SECONDS, "read_seconds": READ_SECONDS,
+                   "directory_entries": DIRECTORY_CAP, "path_characters": 1024,
                    "ref_characters": 255, "repository_characters": 200, "id_exclusive_max": 2**63,
                    "runtime_bytes": runtime_events.BYTE_LIMIT, "runtime_events": runtime_events.EVENT_LIMIT},
         "producers": {"evidence_schema": 1, "runtime_schema": 1, "runtime_reader": "F03 non-persisting",
@@ -446,6 +568,75 @@ def local_inventory(cfg: config.Config, result: dict) -> tuple[set[int], dict[in
     return numbers, attempts
 
 
+def audit_membership(cfg: config.Config, result: dict) -> dict:
+    """Bounded, read-only audit-trail membership: which ticket numbers recorded
+    evidence in events.jsonl, and whether that claim is complete. The dashboard
+    keeps its unbounded stats.audit_by_ticket feed; C1 needs only membership,
+    read under briefing's safe parent-path traversal and 1 MiB tail window so a
+    partial journal never presents a complete case selection or a false zero
+    attention count. Never appends, locks, or scans processes.
+    """
+    def classify() -> str:
+        # Refusal (permission, symlink, nonregular, unreachable parent) vs genuine
+        # absence, found with lstat on the two fixed paths only. lstat never follows
+        # a link or reads content, so a dangling .factory or events.jsonl is refused,
+        # not mistaken for an empty trail.
+        try:
+            state = os.lstat(cfg.factory)
+        except FileNotFoundError:
+            return "empty"             # no .factory state at all: nothing recorded
+        except OSError:
+            return "refused"           # .factory present but unreachable
+        if not stat.S_ISDIR(state.st_mode):
+            return "refused"           # a link or nonregular entry masquerades as .factory
+        try:
+            trail = os.lstat(cfg.factory / "events.jsonl")
+        except FileNotFoundError:
+            return "empty"             # .factory present, no events yet: genuinely empty
+        except OSError:
+            return "refused"           # events.jsonl present but permission-denied
+        return "readable" if stat.S_ISREG(trail.st_mode) else "refused"
+
+    if classify() == "empty":
+        return {"status": "empty", "truncated": False, "tickets": set()}
+    try:
+        entry = briefing.bounded_file(cfg.factory, "events.jsonl", runtime_events.BYTE_LIMIT, tail=True)
+    except OSError:
+        entry = None
+    if entry is None:
+        failed(result, EvidenceError("audit_unavailable", "The audit trail is not a readable regular file.", "events.jsonl", "audit"))
+        return {"status": "unavailable", "truncated": True, "tickets": set()}
+    lines = entry[0].split("\n")
+    # Only newline-terminated JSONL rows are committed records.
+    in_flight = bool(lines.pop())
+    size_truncated = entry[1]
+    if size_truncated and lines:
+        # The bounded tail can begin mid-row; that first fragment is never a
+        # complete record, so it is dropped before any JSON is parsed.
+        lines = lines[1:]
+    corrupted = False
+    tickets: set[int] = set()
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except (ValueError, RecursionError):
+            corrupted = True
+            continue
+        if isinstance(row, dict) and type(t := row.get("ticket")) is int and t > 0:
+            tickets.add(t)
+    if corrupted:
+        failed(result, EvidenceError("audit_partial", "The audit trail contains unreadable rows; case selection may miss recorded evidence.", "events.jsonl", "audit"))
+        result["coverage"]["notices"].append("Unreadable audit rows keep membership incomplete; an unlisted issue may still have recorded evidence.")
+    if size_truncated:
+        failed(result, EvidenceError("audit_partial", "Audit trail membership is incomplete; case selection may miss recorded evidence.", "events.jsonl", "audit"))
+        result["coverage"]["notices"].append("Audit-trail membership is bounded by size; an unlisted issue may still have recorded evidence.")
+    if in_flight:
+        failed(result, EvidenceError("audit_partial", "The audit trail's final row is in-flight; case selection may miss recorded evidence.", "events.jsonl", "audit"))
+        result["coverage"]["notices"].append("An in-flight final audit row keeps membership incomplete; an unlisted issue may still have recorded evidence.")
+    truncated = size_truncated or corrupted or in_flight
+    return {"status": "partial" if truncated else "complete", "truncated": truncated, "tickets": tickets}
+
+
 def issue_record(value: dict) -> dict:
     return {"number": value["number"], "title": value["title"], "state": value["state"].upper(),
             "url": value["html_url"], "body": value.get("body") or "", "createdAt": value.get("created_at"),
@@ -470,6 +661,10 @@ def collect_cases(req: dict, result: dict, cfg: config.Config, deadline: float) 
     for error in runtime["errors"]:
         failed(result, EvidenceError(error["code"], "Runtime observation is incomplete.", error["source"], error["scope"]))
     on_disk, attempts = local_inventory(cfg, result)
+    audit = audit_membership(cfg, result)
+    result["sources"].append(source("Bounded audit-trail membership",
+                                    {"status": audit["status"], "truncated": audit["truncated"],
+                                     "tickets": sorted(audit["tickets"])}))
     by_ticket = {}
     for execution in runtime["executions"]:
         if execution["ticket"] is not None:
@@ -497,7 +692,7 @@ def collect_cases(req: dict, result: dict, cfg: config.Config, deadline: float) 
             number = issue["number"]
             if type(number) is not int or not 0 < number < 2**63:
                 raise ValueError
-            if not dashboard.selected_issue(issue, prs, on_disk, by_ticket):
+            if not dashboard.selected_issue(issue, prs, on_disk, by_ticket, audit["tickets"]):
                 continue
             count = value.get("comments", 0)
             comment_counts[number] = count if type(count) is int and count >= 0 else 0
@@ -514,21 +709,36 @@ def collect_cases(req: dict, result: dict, cfg: config.Config, deadline: float) 
             issues_cut = True
     tickets.sort(key=lambda ticket: ticket["number"], reverse=True)
     result["coverage"]["notices"].extend([
-        "Cases use the dashboard's Factory labels/agent-branch/local-evidence selection and stage policy; issue lists also contain PRs.",
+        "Cases use the dashboard's Factory labels/agent-branch/local-evidence/audit-trail selection and stage policy; issue lists also contain PRs.",
         "Label/assignee reads are bounded to 20/5 entries; configured worker attribution, spend totals and full dispatcher bundles are not collected.",
         "Runtime stage evidence is F03's non-persisting projection, not writable reconciliation or an artifact heuristic.",
     ])
     if req["op"] == "observe":
         cases = result["cases"] = [case_summary(ticket) for ticket in tickets[:PAGE_SIZE]]
-        unknown = (issues_cut or pulls_cut or any(e["state"] == "unknown" for e in runtime["executions"])
-                   or any(len(value.get("labels", [])) > 20 for value in issues)
-                   or any(error["scope"] == "inventory" for error in result["errors"]))
-        result["attention_count"] = None if unknown else sum(c["stage"] in ("escalated", "needs-info") for c in cases)
+        unknown_executions = [execution for execution in runtime["executions"]
+                              if execution["state"] == "unknown"]
+        reasons = []
+        if issues_cut:
+            reasons.append("issues_incomplete")
+        if pulls_cut:
+            reasons.append("pulls_incomplete")
+        if audit["truncated"]:
+            reasons.append("audit_incomplete")
+        if unknown_executions:
+            reasons.append("runtime_unknown")
+        if any(len(value.get("labels", [])) > 20 for value in issues):
+            reasons.append("labels_incomplete")
+        if any(error["scope"] == "inventory" for error in result["errors"]):
+            reasons.append("inventory_incomplete")
+        result["attention_count"] = sum(c["stage"] in ("escalated", "needs-info") for c in cases)
+        if reasons:
+            attention_unavailable(result, reasons, unknown_executions)
         result["sources"].insert(0, source("Current bounded Factory case summaries", cases))
         return
     ticket = next((ticket for ticket in tickets if ticket["number"] == req["number"]), None)
     if ticket is None:
-        raise EvidenceError("evidence_unavailable" if issues_cut else "unknown_case", "Case is not available in the current bounded Factory selection; no broader search was performed.", "cases", f"ticket:{req['number']}")
+        code = "unknown_case" if not (issues_cut or audit["truncated"]) else "evidence_unavailable"
+        raise EvidenceError(code, "Case is not available in the current bounded Factory selection; no broader search was performed.", "cases", f"ticket:{req['number']}")
     result["case"] = case_summary(ticket)
     number = ticket["number"]
     last_page = max(1, (comment_counts[number] + PAGE_SIZE - 1) // PAGE_SIZE)
@@ -570,66 +780,76 @@ def main(argv: list[str] | None = None) -> int:
     if argv in (["--help"], ["-h"]):
         print("usage: factory evidence --root <explicit-main-checkout>\n\nRead one schema_version:1 JSON object from stdin; emit one bounded JSON result.\nExit: 0 successful/bounded, 1 partial/unavailable, 2 invalid request/scope.")
         return 0
-    result = {"schema_version": 1, "ok": True, "scope": {"repository": None, "root": None},
-              "observed_at": datetime.now(UTC).isoformat(), "observation_id": uuid4().hex,
-              "coverage": {"status": "unavailable", "notices": list(NOTICES)}, "sources": [], "errors": []}
-    deadline = time.monotonic() + READ_SECONDS
-    exit_code = 0
+    # The completion timestamp below is authoritative; the start clock is never emitted.
+    # Cancellation unwinds descendant cleanup; original handlers are restored on exit.
+    original_handlers = {sig: signal.signal(sig, _cancel_handler) for sig in (signal.SIGTERM, signal.SIGINT)}
     try:
-        if len(argv) != 2 or argv[0] != "--root" or not argv[1]:
-            raise EvidenceError("invalid_scope", "Supply --root and one operator-selected main checkout.", "invocation", "scope")
+        result = {"schema_version": 1, "ok": True, "scope": {"repository": None, "root": None},
+                  "observation_id": uuid4().hex,
+                  "coverage": {"status": "unavailable", "notices": list(NOTICES)}, "sources": [], "errors": []}
+        deadline = time.monotonic() + READ_SECONDS
+        exit_code = 0
         try:
-            root = Path(argv[1]).resolve(strict=True)
-            if not root.is_dir():
-                raise ValueError
-        except (OSError, ValueError, RuntimeError):
-            raise EvidenceError("invalid_scope", "Selected root must be an existing directory.", "root", "scope") from None
-        result["scope"]["root"] = str(root)
-        req = request(deadline)
-        result["scope"]["repository"] = req["repository"]
-        if req["op"] == "observe":
-            result.update(cases=[], attention_count=None)
-        elif req["op"] == "inspect":
-            result["case"] = None
-        cfg = runtime_local.load(root)
-        if cfg.root.resolve() != root or not valid_repository(cfg.repo):
-            raise EvidenceError("invalid_scope", "Select the main checkout explicitly, not a subdirectory or worktree.", "root", "scope")
-        if cfg.repo != req["repository"]:
-            raise EvidenceError("scope_mismatch", "Requested repository does not match the selected repository configuration.", "repository", "scope")
-        result["coverage"]["status"] = "bounded"
-        if req["op"] == "capabilities":
-            result["capabilities"] = capabilities()
-            result["sources"].append(source("Implemented Factory read capabilities", result["capabilities"]))
-            result["coverage"]["status"] = "complete"
-        elif req["op"] == "investigate":
-            investigate(req, result, deadline)
-        else:
-            collect_cases(req, result, cfg, deadline)
-        if time.monotonic() >= deadline:
-            raise EvidenceError("collection_timeout", "Evidence collection exceeded its deadline.")
-    except EvidenceError as exc:
-        failed(result, exc)
-        result["error"] = {"code": exc.code, "message": exc.message}
-        exit_code = 2 if exc.code in ("invalid_request", "invalid_scope", "scope_mismatch") else 1
-    except config.ConfigError:
-        failed(result, EvidenceError("invalid_scope", "Repository configuration is unavailable.", "configuration", "scope"))
-        result["error"] = {"code": "invalid_scope", "message": "Repository configuration could not be loaded; raw diagnostics withheld."}
-        exit_code = 2
-    except Exception:
-        failed(result, EvidenceError("collection_unavailable", "Evidence collection failed."))
-        result["error"] = {"code": "collection_unavailable", "message": "Evidence collection failed; raw file, configuration and command errors withheld."}
-        exit_code = 1
-    if not result["ok"]:
-        exit_code = exit_code or 1
-        result["coverage"]["status"] = "partial" if result["sources"] else "unavailable"
-        result.setdefault("error", {"code": "partial_collection", "message": "Some sources were unavailable; usable evidence is retained. See errors for source and scope."})
-    if any(item["truncated"] for item in result["sources"]):
-        result["coverage"]["notices"].append("One or more cited sources are truncated; omission is not evidence of absence.")
-    result["observed_at"] = datetime.now(UTC).isoformat()
-    # Structured case labels/titles are also untrusted display text. JSON escaping
-    # keeps stdout a single record; per-source bytes were bounded before encoding.
-    print(json.dumps(result, ensure_ascii=True, allow_nan=False, separators=(",", ":")))
-    return exit_code
+            if len(argv) != 2 or argv[0] != "--root" or not argv[1]:
+                raise EvidenceError("invalid_scope", "Supply --root and one operator-selected main checkout.", "invocation", "scope")
+            try:
+                root = Path(argv[1]).resolve(strict=True)
+                if not root.is_dir():
+                    raise ValueError
+            except (OSError, ValueError, RuntimeError):
+                raise EvidenceError("invalid_scope", "Selected root must be an existing directory.", "root", "scope") from None
+            result["scope"]["root"] = str(root)
+            req = request(deadline)
+            result["scope"]["repository"] = req["repository"]
+            if req["op"] == "observe":
+                result.update(cases=[], attention_count=None)
+            elif req["op"] == "inspect":
+                result["case"] = None
+            cfg = runtime_local.load(root)
+            if cfg.root.resolve() != root or not valid_repository(cfg.repo):
+                raise EvidenceError("invalid_scope", "Select the main checkout explicitly, not a subdirectory or worktree.", "root", "scope")
+            if cfg.repo != req["repository"]:
+                raise EvidenceError("scope_mismatch", "Requested repository does not match the selected repository configuration.", "repository", "scope")
+            result["coverage"]["status"] = "bounded"
+            if req["op"] == "capabilities":
+                result["capabilities"] = capabilities()
+                result["sources"].append(source("Implemented Factory read capabilities", result["capabilities"]))
+                result["coverage"]["status"] = "complete"
+            elif req["op"] == "investigate":
+                investigate(req, result, deadline)
+            else:
+                collect_cases(req, result, cfg, deadline)
+            if time.monotonic() >= deadline:
+                raise EvidenceError("collection_timeout", "Evidence collection exceeded its deadline.")
+        except EvidenceError as exc:
+            failed(result, exc)
+            result["error"] = {"code": exc.code, "message": exc.message}
+            exit_code = 2 if exc.code in ("invalid_request", "invalid_scope", "scope_mismatch") else 1
+        except config.ConfigError:
+            failed(result, EvidenceError("invalid_scope", "Repository configuration is unavailable.", "configuration", "scope"))
+            result["error"] = {"code": "invalid_scope", "message": "Repository configuration could not be loaded; raw diagnostics withheld."}
+            exit_code = 2
+        except Exception:
+            failed(result, EvidenceError("collection_unavailable", "Evidence collection failed."))
+            result["error"] = {"code": "collection_unavailable", "message": "Evidence collection failed; raw file, configuration and command errors withheld."}
+            exit_code = 1
+        if not result["ok"]:
+            exit_code = exit_code or 1
+            result["coverage"]["status"] = "partial" if result["sources"] else "unavailable"
+            result.setdefault("error", {"code": "partial_collection", "message": "Some sources were unavailable; usable evidence is retained. See errors for source and scope."})
+        if any(item["truncated"] for item in result["sources"]):
+            result["coverage"]["notices"].append("One or more cited sources are truncated; omission is not evidence of absence.")
+        result["observed_at"] = datetime.now(UTC).isoformat()
+        # Structured case labels/titles are also untrusted display text. JSON escaping
+        # keeps stdout a single record; per-source bytes were bounded before encoding.
+        output, trimmed = bounded_output(result)
+        if trimmed:
+            exit_code = exit_code or 1
+        print(output)
+        return exit_code
+    finally:
+        for sig, handler in original_handlers.items():
+            signal.signal(sig, handler)
 
 
 if __name__ == "__main__":
