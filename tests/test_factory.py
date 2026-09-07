@@ -144,6 +144,26 @@ port = 1
             git(repo, "worktree", "add", "-q", str(wt), "-b", "agent/1")
             self.assertEqual(config.load(wt).root, repo)
 
+    def test_worker_tables_and_legacy_arrays(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), '''
+[workers]
+default = ["agent", "{prompt}"]
+[workers.chore]
+command = ["special", "{cwd}", "{prompt}"]
+when = "Mechanical edits"
+''')
+            cfg = config.load(repo)
+            self.assertEqual(cfg.worker({"chore"}, Path("/p"), Path("/w")), ["special", "/w", "/p"])
+            self.assertEqual(cfg.worker(set(), Path("/p"), Path("/w")), ["agent", "/p"])
+            self.assertEqual(cfg.worker_when, {"chore": "Mechanical edits"})
+            for entry in ('{command = "shell command"}', '{command = []}', '{command = [3]}',
+                          '{command = ["agent"], when = 3}', '{when = "missing command"}'):
+                with self.subTest(entry=entry):
+                    (repo / config.CONFIG_NAME).write_text("[workers]\ndefault = " + entry)
+                    with self.assertRaises(config.ConfigError):
+                        config.load(repo)
+
     def test_rejects_reserved_check_names(self) -> None:
         toml = '[[gate.check]]\nname = "leak-scan"\nrun = ["true"]\n'
         with tempfile.TemporaryDirectory() as d:
