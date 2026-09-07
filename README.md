@@ -85,11 +85,21 @@ worktree (or repository root). Configure the agent CLI in read-only/no-tools mod
 the prompt prohibits file edits, but an arbitrary configured executable is trusted,
 not sandboxed by factory. It reads the packet, `.factory-lessons.md`, and optional
 `.factory/manager/notes.md`; it does not write notes. Its last `DECISION:` header
-selects `RETRY`, `REWRITE`, `SPLIT`, `ROUTE`, or `HUMAN`, followed by the decision
+selects `RETRY`, `REWRITE`, `SPLIT`, `ROUTE`, `FIX`, or `HUMAN`, followed by the decision
 body. RETRY/HUMAN use plain text; REWRITE uses the complete replacement issue body.
 SPLIT uses a JSON array of `{title, body, blocked_by}` children, with `blocked_by`
 containing 1-based indexes of earlier children. ROUTE uses `{add, remove, guidance}`,
 with label arrays restricted to configured worker labels (not `default`).
+Workers can use either the legacy argv array or a `[workers.<label>]` table with
+`command = [...]` and optional `when = "..."`. The prompt lists routable labels
+with their `when` rules; neither ROUTE nor FIX accepts unlisted labels.
+FIX uses `{"worker":"ci-fix","guidance":"..."}` to run exactly one selected worker
+round in the kept `agent/<n>` worktree for its open PR, ignoring other ticket
+labels. It passes guidance and the escalation packet to the worker, re-gates,
+pushes only on gate PASS, and re-reviews. Only a fresh APPROVE restores
+`factory-approved`; failure stays with the human. FIX does not merge or requeue
+the issue. The template includes opt-in `ci-fix` and `conflict` profiles for a
+human to apply in host config; the manager cannot add profiles or edit config.
 Code validates the output, records a `manage` event before GitHub mutations, and
 leaves malformed decisions with a prefixed HUMAN diagnosis. Split children enter
 `needs-triage`; the parent keeps `ready-for-human` with child blocker lines.

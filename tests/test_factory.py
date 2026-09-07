@@ -649,6 +649,87 @@ esac
                 if "factory-approved" in body:
                     self.assertNotIn("--add-label factory-approved", calls)
 
+    def test_route_uses_only_listed_worker_labels_and_when_rules(self) -> None:
+        for configured in (False, True):
+            with self.subTest(configured=configured):
+                repo, stubs, _ = self.scenario()
+                prompt = repo / ".factory/manager-prompt.txt"
+                output = 'DECISION: ROUTE\n{"add":["chore"],"guidance":"Use the mechanical worker"}'
+                command = [sys.executable, "-c",
+                           "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2]); print(sys.argv[3])",
+                           str(prompt), "{prompt}", output]
+                settings = "[manager]\ncommand = " + json.dumps(command) + '\n[workers]\ndefault = ["false"]\n'
+                if configured:
+                    settings += '[workers.chore]\ncommand = ["true"]\nwhen = "Mechanical edits only"\n'
+                (repo / config.CONFIG_NAME).write_text(settings)
+                result = factory(repo, "manage", path=stubs)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                calls = (Path(stubs) / "gh.log").read_text()
+                events = list(map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines()))
+                decision = next(e["decision"] for e in events if e.get("event") == "manage")
+                self.assertEqual(decision, "ROUTE" if configured else "HUMAN")
+                if configured:
+                    self.assertIn("chore: Mechanical edits only", prompt.read_text())
+                    self.assertIn("--add-label chore", calls)
+                else:
+                    self.assertNotIn("issue edit", calls)
+
+    def test_fix_runs_selected_worker_on_red_ci_and_requires_gate_and_review(self) -> None:
+        import shutil
+
+        for gate_ok, verdict in ((False, "APPROVE"), (True, "REVISE"), (True, "APPROVE")):
+            with self.subTest(gate_ok=gate_ok, verdict=verdict):
+                repo, stubs, packet = self.scenario()
+                packet.write_text("PR #9: CI failed (unit); factory-approved label removed")
+                command = ["printf", "%s", 'DECISION: FIX\n{"worker":"ci-fix","guidance":"Read the failing unit job log"}']
+                (repo / config.CONFIG_NAME).write_text(
+                    "[manager]\ncommand = " + json.dumps(command)
+                    + '\n[workers]\ndefault = ["false"]\nchore = ["false"]'
+                    + '\n[workers.ci-fix]\ncommand = ["fix-worker", "{prompt}"]\nwhen = "Red CI"'
+                    + '\n[review]\ncommand = ["printf", "VERDICT: ' + verdict + '"]'
+                    + '\n[[gate.check]]\nname = "unit"\nrun = ["' + ("true" if gate_ok else "false") + '"]\n'
+                )
+                wt = repo / ".factory/wt-7"
+                git(repo, "worktree", "add", "-q", str(wt), "-b", "agent/7")
+                real_git = shutil.which("git")
+                stub_bin(Path(stubs).parent, **{
+                    "gh": '''
+case "$1 $2" in
+  "issue list") echo '[{"number":7,"title":"Fix CI","body":"Original","labels":[{"name":"chore"}]}]';;
+  "api repos/acme/widgets/issues/7/timeline") echo '[]';;
+  "issue view") echo '{"title":"Fix CI","body":"Original","comments":[]}';;
+  "pr view") echo '{"number":9,"state":"OPEN","headRefName":"agent/7","reviewDecision":""}';;
+  "pr checks") echo '[{"name":"unit","bucket":"fail"}]';;
+esac
+''',
+                    "git": f'if [ "$1" = push ]; then exit 0; fi\nexec "{real_git}" "$@"',
+                    "fix-worker": 'mkdir -p .factory\ncat "$1" > .factory/worker-input\nprintf "fixed\\n" > README.md',
+                })
+                result = factory(repo, "manage", path=stubs)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((wt / "README.md").read_text(), "fixed\n")
+                guidance = (wt / ".factory/worker-input").read_text()
+                self.assertIn("Read the failing unit job log", guidance)
+                self.assertIn("CI failed (unit)", guidance)
+                events = list(map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines()))
+                self.assertEqual(next(e["decision"] for e in events if e.get("event") == "manage"), "FIX")
+                calls = (Path(stubs) / "gh.log").read_text()
+                self.assertEqual("--add-label factory-approved" in calls, gate_ok and verdict == "APPROVE")
+                self.assertNotIn("--add-label ready-for-agent", calls)
+                self.assertEqual("push origin agent/7" in (Path(stubs) / "git.log").read_text(), gate_ok)
+
+    def test_fix_rejects_unlisted_workers(self) -> None:
+        for worker in ("ci-fix", "default", "ready-for-agent", ["chore"]):
+            with self.subTest(worker=worker):
+                repo, stubs, _ = self.scenario()
+                command = ["printf", "%s", "DECISION: FIX\n" + json.dumps({"worker": worker, "guidance": "Fix CI"})]
+                (repo / config.CONFIG_NAME).write_text("[manager]\ncommand = " + json.dumps(command))
+                result = factory(repo, "manage", path=stubs)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                events = list(map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines()))
+                self.assertEqual(next(e["decision"] for e in events if e.get("event") == "manage"), "HUMAN")
+                self.assertNotIn("issue edit", (Path(stubs) / "gh.log").read_text())
+
     def test_manage_skips_human_label_change(self) -> None:
         repo, stubs, _ = self.scenario(activity=[{
             "event": "labeled", "created_at": "2026-01-01T00:00:01Z",
