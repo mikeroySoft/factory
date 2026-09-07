@@ -93,7 +93,7 @@ The manager command receives `{prompt}` as inline text and `{cwd}` as the kept
 worktree (or repository root). Configure the agent CLI in read-only/no-tools mode:
 the prompt prohibits file edits, but an arbitrary configured executable is trusted,
 not sandboxed by factory. It reads the packet, `.factory-lessons.md`, and optional
-`.factory/manager/notes.md`; it does not write notes. Its last `DECISION:` header
+`.factory/manager/notes.md`. Its last `DECISION:` header
 selects `RETRY`, `REWRITE`, `SPLIT`, `ROUTE`, `FIX`, or `HUMAN`, followed by the decision
 body. RETRY/HUMAN use plain text; REWRITE uses the complete replacement issue body.
 SPLIT uses a JSON array of `{title, body, blocked_by}` children, with `blocked_by`
@@ -112,6 +112,11 @@ human to apply in host config; the manager cannot add profiles or edit config.
 Code validates the output, records a `manage` event before GitHub mutations, and
 leaves malformed decisions with a prefixed HUMAN diagnosis. Split children enter
 `needs-triage`; the parent keeps `ready-for-human` with child blocker lines.
+A trailing fenced `notes` block replaces `.factory/manager/notes.md`
+(gitignored, never committed, carried into every later manager prompt). The block
+is optional; code refuses an empty or over-16 KB replacement, keeps the existing
+file, and records the outcome in the `manage` event's `notes` field
+(`written`, `empty_rejected`, `oversize_rejected`, or null when no block was sent).
 Manager executions and ticket-lock waits use the lifecycle journal. If a GitHub
 mutation fails, the execution records a terminal failure and the ticket remains
 with the human; other tickets can proceed. The consumed round is not replayed,
