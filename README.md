@@ -156,10 +156,19 @@ ticket's `human_touch` details. The dashboard retains its existing 100-issue,
    `leak-scan` of added lines against a regex. Checks marked `exclusive`
    serialise on a host-wide lock (one GPU, many worktrees). Every check has a
    timeout; a wedged check fails instead of holding the lock.
-5. **Review.** The reviewer sees the diff, the issue, and the gate report;
-   every finding must cite `path:line`; it ends with `VERDICT: APPROVE` or
-   `VERDICT: REVISE`. Each `REVISE` goes back to the worker with the findings
-   (re-gate, push, re-review), up to `review_rounds` times; then it escalates.
+5. **Review.** The reviewer runs the diff itself, gets the gate report inline, and
+   is told to read issue #N's comments (the triage brief, approved scope changes).
+   Every finding cites `path:line`; a required fix also cites an acceptance
+   criterion, a documented rule with its source, or a concrete correctness/security
+   defect with its trigger and impact — preferences and hypothetical extensibility
+   are optional suggestions, never requirements, and a passing gate does not
+   excuse a defect it did not detect. Net-new abstractions beyond the brief,
+   whether the diff introduced them or the review asks for them, need that same
+   justification, but a missing justification alone does not block. Reviews end
+   with `VERDICT: APPROVE` or `VERDICT: REVISE`; optional suggestions alone mean
+   APPROVE. Each `REVISE` sends the findings back to the worker, flagged so only
+   the required fixes are binding (re-gate, push, re-review), up to
+   `review_rounds` times; then it escalates.
    `APPROVE` adds the `factory-approved` label — durable evidence on the PR,
    not in memory.
 6. **Merge stage** (start of the next pass). One PR per pass, requiring all
