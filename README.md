@@ -54,7 +54,7 @@ default branch is `stable`, which moves only on a tagged release; see
 cd your-repo
 factory init            # .factory.toml, .gitignore, issue template, labels
 $EDITOR .factory.toml   # put your real test/lint commands in [[gate.check]]
-git add .factory.toml .gitignore .github/ISSUE_TEMPLATE/agent_task.md && git commit
+git add .factory.toml .gitignore .github/ISSUE_TEMPLATE && git commit
 factory doctor          # tools, auth, remotes, model endpoint
 factory install --dashboard   # systemd user timer every 10 min + dashboard on :8765
 ```
@@ -70,6 +70,16 @@ unit update or service reload.
 Then file an issue with the **Agent task** template (Scope / Touches / Exit
 gate / Out of scope). It gets `needs-triage`; the next pass triages it; if it is
 fully specified it becomes `ready-for-agent` and is picked up.
+
+For shared, longer-lived plans, file an issue with the **Initiative** template
+(Status / Outcome / Owner / Areas / Boundaries / Plan / Open decisions /
+Success evidence / Implementation links). It gets only `initiative`, never
+`needs-triage`; discussion and edits on the issue are the collaboration
+surface, and `factory plan` reads it. Status (`proposed`, `shaping`, `ready`,
+`underway`, `delivered`) and Owner are declared facts, never inferred from
+child closure and not grants of permission. The `initiative` label is not yet
+an enforced dispatch guard: an initiative that is also labelled
+`ready-for-agent` is treated as an ordinary ticket.
 
 For a fork that tracks an upstream, set `[repo].upstream = "upstream"` and the
 dispatcher merges new upstream commits into your `main` (gated) before each
@@ -88,6 +98,7 @@ merge stage.
 | `factory dashboard` | Local ops UI: tickets by stage, authoritative in-flight phase when known, gate reports, worker logs, journal heartbeat, upstream drift, and an action list with one-click answers. `--json` prints the existing snapshot, including independent executions and local interruption reconciliation. `--host 0.0.0.0` exposes it (and its mutating `/api/act`) to your network. |
 | `factory dashboard --runtime-json` | One bounded schema 1 runtime observation using only local read-only evidence; no GitHub, model probe, journal append, lock acquisition, or state creation. Partial source failures remain structured JSON. See [runtime contract](#bounded-runtime-json-schema-1). |
 | `factory evidence --root /path/to/main-checkout` | One explicit-repository schema 1 JSON read: compact cases, selected evidence, workflow/file/PR/CI investigations, or capabilities. Read-only GitHub GETs and F03 local evidence; no model, action execution, or state writes. See [evidence contract](#bounded-project-evidence-json-schema-1). |
+| `factory plan list` / `factory plan inspect N` | Read-only schema 1 JSON over `initiative` issues: declared status/owner, parsed sections, `#N` implementation links (`inspect` also fetches each linked issue's title/state), per-issue `malformed` + `problems` (missing/invalid declared facts, sections cut at 4,000 characters, links beyond the first 20), cited sources with `observed_at`. `list` reads at most 3 pages of 100 and keeps malformed initiatives flagged per row (exit 0); a failed page, or a malformed initiative under `inspect`, yields `coverage.status: partial` and exit 1, never a mutation. |
 | `factory doctor` / `init` / `install` | Onboarding, above. |
 
 Every command reads `.factory.toml` from the main checkout, even when run
@@ -230,8 +241,8 @@ model = "qwen3:30b"
 ```
 
 Labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`,
-`factory-approved`, `chore`) and the `agent/<n>` branch scheme are fixed
-conventions; `factory init` creates the labels.
+`factory-approved`, `chore`, `initiative`) and the `agent/<n>` branch scheme are
+fixed conventions; `factory init` creates the labels.
 
 ## Operating it
 
