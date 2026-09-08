@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Initiative issue template (`.github/ISSUE_TEMPLATE/initiative.md`, label `initiative` only) installed by `factory init`; the `initiative` label is provisioned with the others. Read-only `factory plan list` / `factory plan inspect N` emit schema 1 JSON: declared status/owner, sections, implementation links and linked-issue state, with partial/malformed results explicit. The label is not yet a dispatch guard. (#53)
+- `factory plan route N --reason <requirements|implementation|ci|unknown> [--path P]...` and the optional `[collaboration]` section (`fallback`, `reasons.<reason>`, `components."<exact path prefix>"`) resolve the human decision owner of a ticket read-only, with status (`selected`/`candidates`/`unassigned`/`invalid`), source revision and step-by-step provenance. A `**Decision owner**` ticket section is a human override; `@org/team` is rejected on user-owned repositories; no section means unchanged behaviour. (#54)
 
 ## 0.3.0 — 2026-09-08
 

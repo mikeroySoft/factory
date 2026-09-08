@@ -53,7 +53,7 @@ class TemplateTest(unittest.TestCase):
                                               f"truncated links: only the first {plan.LINKS} of {plan.LINKS + 1} implementation links are followed"])
 
 
-class PlanCliTest(unittest.TestCase):
+class CliCase(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -97,11 +97,13 @@ class PlanCliTest(unittest.TestCase):
         self.assertEqual((data["schema_version"], data["ok"], data["scope"]["repository"]), (1, code == 0, None if code == 2 else REPO))
         self.assertIsInstance(data["observed_at"], str)
         for src in data["sources"]:
-            self.assertTrue(src["url"].startswith(f"https://api.github.com/{PREFIX}"))
+            self.assertTrue((src["url"] + "/").startswith(f"https://api.github.com/{PREFIX}"))
         calls = [json.loads(line) for line in self.calls_path.read_text().splitlines()] if self.calls_path.exists() else []
         self.assertTrue(all(call["method"] == "GET" for call in calls), calls)
         return data
 
+
+class PlanCliTest(CliCase):
     def test_list_reports_plans_partial_second_page_and_malformed(self):
         full = [self.initiative] + [self.ordinary] * (plan.PAGE_SIZE - 1)
         self.page(1, full)
@@ -148,6 +150,106 @@ class PlanCliTest(unittest.TestCase):
             data = self.run_plan("inspect", bad, code=2)
         self.assertEqual(data["error"]["code"], "invalid_request")
         self.assertFalse(self.calls_path.exists())
+
+
+COLLAB = '''
+[collaboration]
+fallback = "repo-owner"
+[collaboration.reasons]
+ci = "ci-owner"
+[collaboration.components]
+"src/auth/" = "auth-owner"
+"src/authentication" = "authn-owner"
+"docs" = "@example/docs"
+'''
+
+
+class RouteCliTest(CliCase):
+    def route(self, number, reason, *paths, code=0):
+        argv = ["route", str(number), "--reason", reason]
+        for path in paths:
+            argv += ["--path", path]
+        data = self.run_plan(*argv, code=code)
+        if code != 2:
+            self.assertEqual(data["scope"], {"repository": REPO, "issue": number, "reason": reason})
+            self.assertEqual(data["route"]["reason"], reason)
+            return data["route"]
+        return data
+
+    def configure(self, text=COLLAB):
+        (self.root / ".factory.toml").write_text(f'[repo]\nslug = "{REPO}"\n{text}')
+
+    def test_declared_decision_owner_wins_and_invalid_syntax_is_invalid_not_rerouted(self):
+        self.configure()
+        self.child["body"] += "\n\n**Decision owner**\n@lead"
+        route = self.route(53, "ci")
+        self.assertEqual((route["status"], route["owner"], route["source"]), ("selected", "lead", "decision_owner"))
+        self.assertEqual(route["revision"]["issue_updated_at"], "2026-01-02T03:04:05Z")
+        self.child["body"] = self.child["body"].replace("@lead", "not a login")
+        route = self.route(53, "ci")
+        self.assertEqual((route["status"], route["owner"], route["source"]), ("invalid", None, "decision_owner"))
+        self.assertEqual(route["provenance"][-1]["step"], "decision_owner")
+
+    def test_requirements_use_initiative_owner_then_fall_back(self):
+        self.configure()
+        route = self.route(53, "requirements")
+        self.assertEqual((route["status"], route["owner"], route["source"]), ("selected", "github-login", "initiative"))
+        self.assertEqual(route["revision"]["initiative_updated_at"], "2026-01-02T03:04:05Z")
+        route = self.route(7, "requirements")
+        self.assertEqual((route["owner"], route["source"]), ("repo-owner", "fallback"))
+        self.assertEqual([s["outcome"] for s in route["provenance"]], ["absent", "absent", "absent", "skipped", "selected"])
+        # initiative owner is a requirements source only
+        route = self.route(53, "ci")
+        self.assertEqual((route["owner"], route["source"]), ("ci-owner", "reason"))
+        self.assertEqual(route["provenance"][1], {"step": "initiative", "outcome": "skipped",
+                                                  "detail": "initiative owner only routes requirements, not ci"})
+
+    def test_component_prefixes_are_exact_and_ambiguity_yields_candidates(self):
+        self.configure()
+        route = self.route(7, "implementation", "src/auth/login.py", "src/auth/x/y.py")
+        self.assertEqual((route["status"], route["owner"], route["source"]), ("selected", "auth-owner", "component"))
+        route = self.route(7, "implementation", "src/authentication/x.py")
+        self.assertEqual(route["owner"], "authn-owner")
+        route = self.route(7, "implementation", "src/authx/x.py")
+        self.assertEqual((route["owner"], route["source"]), ("repo-owner", "fallback"))
+        route = self.route(7, "implementation", "src/auth/a.py", "src/authentication/b.py")
+        self.assertEqual((route["status"], route["owner"], route["candidates"]), ("candidates", None, ["auth-owner", "authn-owner"]))
+        self.assertEqual(route["paths"], ["src/auth/a.py", "src/authentication/b.py"])
+
+    def test_missing_paths_and_unknown_reason_do_not_guess(self):
+        self.configure()
+        route = self.route(7, "implementation")
+        self.assertEqual((route["status"], route["owner"], route["provenance"][-1]["step"]), ("unassigned", None, "component"))
+        route = self.route(7, "unknown")
+        self.assertEqual((route["status"], route["provenance"][-1]["outcome"]), ("unassigned", "skipped"))
+
+    def test_missing_configuration_leaves_only_ticket_sources(self):
+        route = self.route(7, "ci")
+        self.assertEqual((route["status"], route["provenance"][-1]["step"]), ("unassigned", "configuration"))
+        route = self.route(53, "requirements")
+        self.assertEqual(route["owner"], "github-login")
+
+    def test_team_destination_rejected_on_user_repo_and_unknown_when_unreadable(self):
+        self.configure()
+        data = self.run_plan("route", "7", "--reason", "implementation", "--path", "docs/a.md", code=1)
+        route = data["route"]
+        self.assertEqual((route["status"], route["owner"], route["verification"], data["coverage"]["status"]),
+                         ("selected", "@example/docs", "unknown", "partial"))
+        self.assertEqual(route["provenance"][-1]["outcome"], "unknown")
+        self.responses["repos/" + REPO] = {"json": {"owner": {"type": "User"}}}
+        route = self.route(7, "implementation", "docs/a.md")
+        self.assertEqual((route["status"], route["owner"], route["verification"]), ("invalid", None, "verified"))
+        self.responses["repos/" + REPO] = {"json": {"owner": {"type": "Organization"}}}
+        route = self.route(7, "implementation", "docs/a.md")
+        self.assertEqual((route["owner"], route["verification"]), ("@example/docs", "verified"))
+
+    def test_bad_configuration_and_usage_exit_two(self):
+        self.configure('[collaboration.reasons]\nrequirements = "@org/"\n')
+        self.assertEqual(self.route(7, "ci", code=2)["error"]["code"], "invalid_scope")
+        self.configure('[collaboration.components]\n"../x" = "a"\n')
+        self.assertEqual(self.route(7, "ci", code=2)["error"]["code"], "invalid_scope")
+        for argv in (["route", "7"], ["route", "7", "--reason", "docs"], ["route", "7", "--reason", "ci", "--path"]):
+            self.assertEqual(self.run_plan(*argv, code=2)["error"]["code"], "invalid_request")
 
 
 if __name__ == "__main__":

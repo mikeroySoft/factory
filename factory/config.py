@@ -9,6 +9,7 @@ conventions, not configuration.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 import tomllib
@@ -65,8 +66,12 @@ KNOWN_KEYS = {
     "triage": ("url", "model"),
     "dashboard": ("port", "theme"),
     "install": ("every", "dashboard", "host", "env"),
+    "collaboration": ("fallback", "reasons", "components"),
 }
 CHECK_KEYS = ("name", "run", "exclusive")
+ROUTE_REASONS = ("requirements", "implementation", "ci", "unknown")
+# GitHub login, or `@org/team`. Syntax only: never proof of membership or authorization.
+OWNER = re.compile(r"@?(?P<login>[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)|(?P<team>@[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9_.-]{1,100})")
 
 
 class ConfigError(SystemExit):
@@ -121,6 +126,8 @@ class Config:
     dashboard_port: int = 8765
     dashboard_theme: Path | None = None  # CSS file served after the built-in stylesheet
     install: dict = field(default_factory=lambda: dict(DEFAULT_INSTALL))  # `factory install` defaults
+    # `[collaboration]`: human decision owners for `factory plan route`; None = section absent (legacy behaviour).
+    collaboration: dict | None = None
     raw_repo: dict = field(default_factory=dict)  # the committed file alone, before host layering
 
     @property
@@ -230,6 +237,36 @@ def unknown_keys(raw: dict) -> list[str]:
     return out
 
 
+def owner(value: object, where: str) -> str:
+    """Normalize one configured owner: `login` or `@org/team`; syntactic invalidity is a ConfigError."""
+    match = OWNER.fullmatch(value) if isinstance(value, str) else None
+    if not match:
+        raise ConfigError(f"{where}: expected a GitHub login or @org/team, got {value!r}")
+    return match["login"] or match["team"]
+
+
+def collaboration_settings(table: object) -> dict:
+    """Validate `[collaboration]`: fallback owner, per-reason owners, exact path-prefix component owners."""
+    if not isinstance(table, dict):
+        raise ConfigError("[collaboration] must be a table")
+    out = {"fallback": None, "reasons": {}, "components": {}}
+    if "fallback" in table:
+        out["fallback"] = owner(table["fallback"], "collaboration.fallback")
+    reasons, components = table.get("reasons", {}), table.get("components", {})
+    if not isinstance(reasons, dict) or not isinstance(components, dict):
+        raise ConfigError("collaboration.reasons and collaboration.components must be tables")
+    for reason, value in reasons.items():
+        if reason not in ROUTE_REASONS:
+            raise ConfigError(f"collaboration.reasons.{reason}: expected one of {', '.join(ROUTE_REASONS)}")
+        out["reasons"][reason] = owner(value, f"collaboration.reasons.{reason}")
+    for prefix, value in components.items():
+        parts = prefix.strip("/").split("/")
+        if not prefix or prefix.startswith("/") or "\\" in prefix or any(p in ("", ".", "..") for p in parts):
+            raise ConfigError(f"collaboration.components: {prefix!r} is not a repo-relative path prefix")
+        out["components"]["/".join(parts)] = owner(value, f"collaboration.components.{prefix!r}")
+    return out
+
+
 def manager_settings(table: dict) -> tuple[list[str] | None, str | None]:
     """Normalize manager argv and select the read-only briefing model; never execute."""
     if not isinstance(table, dict):
@@ -313,6 +350,8 @@ def load(start: Path | None = None) -> Config:
         if cap is not None and (isinstance(cap, bool) or not isinstance(cap, int) or cap < 1):
             raise ConfigError(f"manager.{key} must be a positive integer")
         setattr(cfg, f"manager_{key}", cap)
+    if "collaboration" in raw:
+        cfg.collaboration = collaboration_settings(raw["collaboration"])
     cfg.check_timeout = int(gate.get("timeout", cfg.check_timeout))
     cfg.lock = Path(gate.get("lock", cfg.lock))
     cfg.checks = [
