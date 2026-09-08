@@ -41,7 +41,10 @@ def parse(body: str) -> dict:
         end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
         name = match[1].strip()
         if name in SECTIONS and name not in sections:
-            sections[name] = body[match.end():end].strip()[:SECTION_CAP]
+            text = body[match.end():end].strip()
+            sections[name] = text[:SECTION_CAP]
+            if len(text) > SECTION_CAP:
+                problems.append(f"truncated section: {name} cut to {SECTION_CAP} characters")
     problems += [f"missing section: {name}" for name in SECTIONS if name not in sections]
     status = sections.get("Status", "").lower()
     if status not in STATUSES:
@@ -50,7 +53,10 @@ def parse(body: str) -> dict:
     login = LOGIN.fullmatch(sections.get("Owner", ""))
     if not login:
         problems.append("invalid owner: expected exactly one GitHub login")
-    links = sorted({int(n) for n in LINK.findall(sections.get("Implementation links", ""))})[:LINKS]
+    found = sorted({int(n) for n in LINK.findall(sections.get("Implementation links", ""))})
+    links = found[:LINKS]
+    if len(found) > LINKS:
+        problems.append(f"truncated links: only the first {LINKS} of {len(found)} implementation links are followed")
     return {"status": status, "owner": login[1] if login else None, "sections": sections,
             "links": links, "problems": problems, "malformed": bool(problems)}
 
@@ -127,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if argv == ["list"]:
             result["plans"] = []
-        elif len(argv) == 2 and argv[0] == "inspect" and argv[1].isdigit() and int(argv[1]) > 0:
+        elif len(argv) == 2 and argv[0] == "inspect" and argv[1].isascii() and argv[1].isdigit() and int(argv[1]) > 0:
             result["plan"] = None
         else:
             raise EvidenceError("invalid_request", USAGE, "invocation", "scope")

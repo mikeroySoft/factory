@@ -44,6 +44,14 @@ class TemplateTest(unittest.TestCase):
                                                    f"invalid status: expected one of {', '.join(plan.STATUSES)}"})
         self.assertEqual(plan.parse(BODY.replace("- #N", "- #53 and #7, not #53"))["links"], [7, 53])
 
+    def test_reader_reports_section_and_link_truncation_explicitly(self):
+        links = " ".join(f"#{n}" for n in range(1, plan.LINKS + 2))
+        parsed = plan.parse(BODY.replace("- #N", links).replace("**Outcome**\n", "**Outcome**\n" + "x" * (plan.SECTION_CAP + 1) + "\n"))
+        self.assertEqual(parsed["links"], list(range(1, plan.LINKS + 1)))
+        self.assertEqual(len(parsed["sections"]["Outcome"]), plan.SECTION_CAP)
+        self.assertEqual(parsed["problems"], [f"truncated section: Outcome cut to {plan.SECTION_CAP} characters",
+                                              f"truncated links: only the first {plan.LINKS} of {plan.LINKS + 1} implementation links are followed"])
+
 
 class PlanCliTest(unittest.TestCase):
     def setUp(self):
@@ -136,7 +144,8 @@ class PlanCliTest(unittest.TestCase):
         self.assertEqual(data["plan"]["children"], [{"number": 53, "unavailable": "github_unavailable"}])
 
     def test_usage_errors_exit_two(self):
-        data = self.run_plan("inspect", "x", code=2)
+        for bad in ("x", "²", "0"):
+            data = self.run_plan("inspect", bad, code=2)
         self.assertEqual(data["error"]["code"], "invalid_request")
         self.assertFalse(self.calls_path.exists())
 
