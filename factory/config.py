@@ -25,6 +25,7 @@ LABEL_AGENT = "ready-for-agent"
 LABEL_HUMAN = "ready-for-human"
 LABEL_APPROVED = "factory-approved"
 LABEL_CHORE = "chore"
+LABEL_INITIATIVE = "initiative"
 LABELS = {
     LABEL_TRIAGE: ("FBCA04", "Maintainer needs to evaluate this issue"),
     LABEL_INFO: ("D4C5F9", "Waiting on reporter for more information"),
@@ -32,6 +33,7 @@ LABELS = {
     LABEL_HUMAN: ("B60205", "Requires human implementation"),
     LABEL_APPROVED: ("0E8A16", "Reviewer APPROVE recorded by the factory; merge-stage precondition"),
     LABEL_CHORE: ("C2E0C6", "Mechanical task; routed to the chore worker"),
+    LABEL_INITIATIVE: ("1D76DB", "Shared initiative plan read by `factory plan`; not a dispatch guard"),
 }
 
 DEFAULT_LEAK_PATTERN = r"internal|confidential|proprietary|private|jira|confluence|\.corp|\.internal"

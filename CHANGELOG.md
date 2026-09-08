@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Initiative issue template (`.github/ISSUE_TEMPLATE/initiative.md`, label `initiative` only) installed by `factory init`; the `initiative` label is provisioned with the others. Read-only `factory plan list` / `factory plan inspect N` emit schema 1 JSON: declared status/owner, sections, implementation links and linked-issue state, with partial/malformed results explicit. The label is not yet a dispatch guard. (#53)
+
 ## 0.3.0 — 2026-09-08
 
 Compared against 0.2.0 (`f9122cd`). Installed fleet-wide through District at `9478e9d`.
