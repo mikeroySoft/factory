@@ -267,17 +267,15 @@ def ensure_worktree(n: int) -> Path:
         return wt
     run(["git", "fetch", "origin"], cwd=ROOT)
     branch = f"agent/{n}"
-    exists = (
-        run(["git", "rev-parse", "--verify", branch], cwd=ROOT, check=False).returncode
-        == 0
-    )
-    if exists:
+    if run(["git", "rev-parse", "--verify", branch], cwd=ROOT, check=False).returncode == 0:
         run(["git", "worktree", "add", str(wt), branch], cwd=ROOT)
-    else:
-        run(
-            ["git", "worktree", "add", str(wt), "-b", branch, f"origin/{cfg.main}"],
-            cwd=ROOT,
-        )
+        return wt
+    # No local copy: the branch may have been pushed from another worktree,
+    # another host, or by a human. Start from the remote copy, never main.
+    start = f"origin/{branch}"
+    if run(["git", "rev-parse", "--verify", start], cwd=ROOT, check=False).returncode != 0:
+        start = f"origin/{cfg.main}"
+    run(["git", "worktree", "add", str(wt), "-b", branch, start], cwd=ROOT)
     return wt
 
 
@@ -753,6 +751,24 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> None:
     if run(cmd, cwd=wt, check=False).returncode != 0:
         run(["git", verb, "--abort"], cwd=wt, check=False)
         escalate(n, f"PR #{pr}: {verb} onto moved main conflicts; worktree {wt}", None)
+        return
+    empty = run(
+        ["git", "merge-base", "--is-ancestor", "HEAD", f"origin/{cfg.main}"], cwd=wt, check=False
+    ).returncode == 0
+    if empty:
+        # An empty refresh can never be a successful refresh: force-pushing it
+        # would erase the PR (GitHub auto-closes a branch with nothing ahead).
+        # Pull the PR from candidacy so this escalates once, not every pass.
+        run(
+            ["gh", "pr", "edit", str(pr), "--repo", REPO, "--remove-label", FACTORY_APPROVED],
+            check=False,
+        )
+        escalate(
+            n,
+            f"PR #{pr}: nothing ahead of {cfg.main} after {verb}; refusing to push; "
+            f"`{FACTORY_APPROVED}` label removed",
+            None,
+        )
         return
     ok, report = run_gate(wt, n)
     if not ok:
