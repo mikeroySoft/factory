@@ -1391,12 +1391,28 @@ class DispatchTest(unittest.TestCase):
             with mock.patch.object(config, "remote_slug", return_value="acme/upstream-widgets"):
                 dispatch.configure(cfg)
 
-            with mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
+            real_run = dispatch.run
+            gh_calls: list[list[str]] = []
+
+            def run_spy(cmd, **kw):
+                if cmd[0] == "gh":
+                    gh_calls.append(cmd)
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+                return real_run(cmd, **kw)
+
+            with mock.patch.object(dispatch, "run", side_effect=run_spy), \
+                 mock.patch.object(dispatch, "run_gate") as gate, \
                  mock.patch.object(dispatch, "escalate") as esc:
                 dispatch.refresh_pr_branch(8, 101, False)
 
             esc.assert_called_once()
+            gate.assert_not_called()  # diagnosed before burning a gate run
             self.assertEqual(git(origin, "rev-parse", "agent/8"), before)
+            # Pulled from merge candidacy so it escalates once, not every pass.
+            self.assertIn(
+                ["gh", "pr", "edit", "101", "--repo", "acme/widgets", "--remove-label", "factory-approved"],
+                gh_calls,
+            )
 
 
 if __name__ == "__main__":

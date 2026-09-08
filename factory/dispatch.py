@@ -752,18 +752,28 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> None:
         run(["git", verb, "--abort"], cwd=wt, check=False)
         escalate(n, f"PR #{pr}: {verb} onto moved main conflicts; worktree {wt}", None)
         return
-    ok, report = run_gate(wt, n)
-    if not ok:
-        pr_comment(n, f"Gate failed after {verb} onto current main:\n\n{report}")
-        escalate(n, f"PR #{pr}: gate failed after {verb} onto moved main", None)
-        return
     empty = run(
         ["git", "merge-base", "--is-ancestor", "HEAD", f"origin/{cfg.main}"], cwd=wt, check=False
     ).returncode == 0
     if empty:
         # An empty refresh can never be a successful refresh: force-pushing it
         # would erase the PR (GitHub auto-closes a branch with nothing ahead).
-        escalate(n, f"PR #{pr}: nothing ahead of {cfg.main} after {verb}; refusing to push", None)
+        # Pull the PR from candidacy so this escalates once, not every pass.
+        run(
+            ["gh", "pr", "edit", str(pr), "--repo", REPO, "--remove-label", FACTORY_APPROVED],
+            check=False,
+        )
+        escalate(
+            n,
+            f"PR #{pr}: nothing ahead of {cfg.main} after {verb}; refusing to push; "
+            f"`{FACTORY_APPROVED}` label removed",
+            None,
+        )
+        return
+    ok, report = run_gate(wt, n)
+    if not ok:
+        pr_comment(n, f"Gate failed after {verb} onto current main:\n\n{report}")
+        escalate(n, f"PR #{pr}: gate failed after {verb} onto moved main", None)
         return
     run(["git", "push", "--force-with-lease", "origin", f"agent/{n}"], cwd=wt)
     record("refreshed", ticket=n, pr=pr)
