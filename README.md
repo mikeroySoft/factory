@@ -39,10 +39,14 @@ npx skills add mikeroysoft/factory
   llama.cpp, LM Studio)
 
 ```sh
-uv tool install git+https://github.com/mikeroySoft/factory   # or: pipx install ...
+uv tool install git+https://github.com/mikeroySoft/factory          # stable: latest release
+uv tool install git+https://github.com/mikeroySoft/factory@main     # latest: tip of main
+uv tool install git+https://github.com/mikeroySoft/factory@v0.3.0   # a specific release
 ```
 
-No Python dependencies.
+`pipx install` and `pip install --user` take the same URLs. The repository's
+default branch is `stable`, which moves only on a tagged release; see
+[CHANGELOG.md](CHANGELOG.md). No Python dependencies.
 
 ## Set up a repository
 

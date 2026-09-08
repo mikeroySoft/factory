@@ -14,8 +14,9 @@ First, ensure the tool is installed: `factory --version`. If absent, install it 
 the first available of `uv tool install git+https://github.com/mikeroySoft/factory`,
 `pipx install git+https://github.com/mikeroySoft/factory`, or
 `python3 -m pip install --user git+https://github.com/mikeroySoft/factory`
-(Linux, Python ≥ 3.11; no dependencies). Confirm with `factory --version` before
-continuing. Then pick the branch:
+(Linux, Python ≥ 3.11; no dependencies). The bare URL installs the `stable` branch,
+which moves only on a tagged release; append `@main` for the tip of main or `@v0.3.0`
+for a specific release. Confirm with `factory --version` before continuing. Then pick the branch:
 
 - Repo has no `.factory.toml` → **Set up**.
 - User wants work done by the factory → **Write a ticket**.
