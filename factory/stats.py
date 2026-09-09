@@ -164,11 +164,14 @@ def human_touch(items: list[dict], audit: list[dict], end: str | None = None) ->
             opened = None
     if opened:
         minutes += merge_hours(opened, end or datetime.now(timezone.utc).isoformat()) * 60
-    escalated = [e["at"] for e in audit if e.get("event") == "escalate"]
+    escalated = [e["at"] for e in audit
+                 if e.get("event") == "escalate" and e.get("reason") != "manager_failed"]
     claims = sum(e.get("event") == "claimed" for e in audit)
     return {
         "escalation_count": max(len(starts), len(escalated)),
         "escalation_times": escalated if len(escalated) >= len(starts) else starts,
+        "manager_failures": sum(e.get("event") == "escalate" and e.get("reason") == "manager_failed"
+                                for e in audit),
         "resolutions": resolutions,
         "ready_for_human_minutes": round(minutes, 2),
         "requeue_count": max(0, queued - 1, claims - 1),
@@ -297,6 +300,7 @@ def print_table(rows: list[dict[str, Any]]) -> None:
         ("review rounds", lambda row: str(row["review_rounds"])),
         ("hours", lambda row: format_hours(row["merge_hours"])),
         ("escalations", lambda row: str(row["escalation_count"])),
+        ("manager failures", lambda row: str(row["manager_failures"])),
         ("resolved by (actor)", lambda row: ", ".join(
             f"{r['resolved_by']} ({r['actor'] or '?'})" for r in row["resolutions"])),
         ("human minutes", lambda row: f"{row['ready_for_human_minutes']:.1f}"),

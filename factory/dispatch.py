@@ -373,7 +373,8 @@ def escalation_packet(
         + f"\n\n## Worktree path\n\n`{wt}`\n"
     )
     round_number = 1 + sum(
-        event.get("event") == "escalate" for event in ticket_events
+        event.get("event") == "escalate" and event.get("reason") != "manager_failed"
+        for event in ticket_events
     )
     return packet, round_number
 

@@ -143,8 +143,12 @@ class Config:
     def review_cmd(self, prompt: str) -> list[str]:
         return expand(self.reviewer, prompt=prompt)
 
-    def manager_cmd(self, prompt: str, cwd: Path) -> list[str]:
-        return expand(self.manager or [], prompt=prompt, cwd=str(cwd))
+    def manager_cmd(self, prompt_path: Path, cwd: Path) -> list[str]:
+        """Expand the manager's prompt file, matching the worker transport."""
+        argv = self.manager or []
+        if argv and Path(argv[0]).name == "omp" and "{prompt}" in argv:
+            raise ConfigError('manager.command: use "@{prompt}" instead of bare "{prompt}" for omp')
+        return expand(argv, prompt=str(prompt_path), cwd=str(cwd))
 
 
 def expand(argv: list[str], **values: str) -> list[str]:

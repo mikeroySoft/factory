@@ -22,6 +22,7 @@
 # cost_pattern = 'Total cost:\s*\$([0-9.]+)'      # Claude Code
 [workers]
 # argv templates. {prompt} = path to the ticket prompt file, {cwd} = worktree.
+# OMP file prompts require `@{prompt}`; bare `{prompt}` passes the path as text.
 # The key is a ticket label; `default` is required. First matching label wins.
 # default = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]
 # chore   = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
@@ -47,7 +48,7 @@
 # command = ["omp", "-p", "--cwd", "{cwd}", "Read the ticket prompt at {prompt}. Resolve the rebase conflicts, preserving both sides' intents with no semantic changes. If the rebase was aborted, restart it against the configured main before resolving. If the intents cannot be preserved without semantic changes, stop and explain in the handoff."]
 
 [review]
-# {prompt} = review prompt text. Output must end with `VERDICT: APPROVE` or `VERDICT: REVISE`.
+# {prompt} = inline review prompt text. Output must end with `VERDICT: APPROVE` or `VERDICT: REVISE`.
 # Keep the reviewer on a different model family than [manager] so the two verdicts are independent.
 # command = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1", "{prompt}"]
 # command = ["codex", "exec", "{prompt}"]
@@ -59,8 +60,9 @@
 #
 # Host-side frontier manager configuration; running it is a separate feature.
 # Unset command disables the frontier manager, not read-only dashboard briefings.
-# {prompt} = manager prompt text; {cwd} = kept worktree or repository root.
-# command = ["omp", "-p", "--model", "openai-codex/gpt-6-astra", "--cwd", "{cwd}", "{prompt}"]
+# {prompt} = path to the manager prompt file; {cwd} = kept worktree or repository root.
+# OMP requires `@{prompt}`; bare `{prompt}` passes path text and is rejected.
+# command = ["omp", "-p", "--model", "openai-codex/gpt-6-astra", "--cwd", "{cwd}", "@{prompt}"]
 # rounds = 1
 # review = "escalated"  # "all" also reviews non-escalated factory PRs
 #

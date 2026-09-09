@@ -234,7 +234,8 @@ def manage_pass(dry_run: bool = False) -> None:
                     execution.resource("acquired", lock_path, scope="repository")
                 try:
                     events = [e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("ticket") == n]
-                    escalation = next((e for e in reversed(events) if e.get("event") == "escalate"), None)
+                    escalation = next((e for e in reversed(events) if e.get("event") == "escalate"
+                                       and e.get("reason") != "manager_failed"), None)
                     if not escalation or escalation.get("upstream") or not escalation.get("packet"):
                         continue
                     round_number = escalation.get("round", 0)
@@ -260,14 +261,22 @@ def manage_pass(dry_run: bool = False) -> None:
                     cwd = wt if wt.is_dir() else cfg.root
                     notes = rejected = None
                     try:
-                        proc = dispatch.run(cfg.manager_cmd("\n\n".join(parts), cwd), cwd=cwd, check=False)
+                        prompt_path = cfg.factory / f"manager-prompt-{n}.md"
+                        prompt_path.write_text("\n\n".join(parts))
+                        proc = dispatch.run(cfg.manager_cmd(prompt_path, cwd), cwd=cwd, check=False)
                         if proc.returncode:
-                            decision, body, data = "HUMAN", f"Manager command failed ({proc.returncode}):\n{proc.stderr or proc.stdout}", None
+                            body = f"Manager command exited {proc.returncode} (argv: {json.dumps(cfg.manager)})"
+                            tail = "\n".join(proc.stderr.splitlines()[-5:])
+                            if tail:
+                                body += "\n" + tail
+                            decision, data = "HUMAN", None
+                            dispatch.record("escalate", ticket=n, round=round_number,
+                                            packet=str(packet), reason="manager_failed")
                         else:
                             output, notes = split_notes(proc.stdout)
                             rejected = "CURATE" if split_curate(output)[1] is not None else None
                             decision, body, data = ("HUMAN", CURATE_REJECTED, None) if rejected else parse(output, workers)
-                    except OSError as exc:
+                    except (OSError, config.ConfigError) as exc:
                         decision, body, data = "HUMAN", f"Manager command failed: {exc}", None
                     # A human may have taken over while the model was thinking.
                     if human_activity(n, escalation):
