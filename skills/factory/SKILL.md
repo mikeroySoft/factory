@@ -94,9 +94,10 @@ Then act at the cause: a gate failure that is the ticket's fault → fix the tic
 (sharpen the exit gate) and re-label `ready-for-agent`; a gate failure from a
 wrong check command → fix `.factory.toml`; reviewer disagreement → read the
 findings and either amend the ticket or take the branch over by hand
-(`git worktree` at `.factory/wt-<n>`, branch `agent/<n>`); red CI → the label
-`factory-approved` was removed on purpose; re-add it after the fix to re-enter the
-merge stage. A human blocks any merge by requesting changes on the PR. When the same
+(`git worktree` at `.factory/wt-<n>`, branch `agent/<n>`); red CI or a failed
+refresh (rebase conflict, nothing ahead of main, gate failed after rebase) → the
+label `factory-approved` was removed on purpose; resolve, then re-add it to
+re-enter the merge stage. A human blocks any merge by requesting changes on the PR. When the same
 cause shows up across tickets, run `factory learn --dry-run`, check the proposed
 lessons against the evidence, then `factory learn` and commit `.factory-lessons.md`.
 
