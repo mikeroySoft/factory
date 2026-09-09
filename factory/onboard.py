@@ -144,9 +144,13 @@ def unset_repo_keys(raw: dict) -> list[str]:
     return out
 
 
-def foreign_host_keys(section: dict) -> list[str]:
-    """Tables/keys in one host section the loader ignores (repo-owned or unknown)."""
-    out = [k for k, v in section.items() if isinstance(v, dict) and k not in config.HOST_TABLES and k not in config.HOST_KEYS]
+def foreign_host_keys(section: dict, *, defaults: bool = False) -> list[str]:
+    """Report unsupported host tables/keys, excluding District's defaults.engine metadata."""
+    out = [
+        k for k, v in section.items()
+        if isinstance(v, dict) and k not in config.HOST_TABLES and k not in config.HOST_KEYS
+        and not (defaults and k == "engine")
+    ]
     out += [f"{t}.{k}" for t, keys in config.HOST_KEYS.items() for k in section.get(t, {}) if k not in keys]
     return out + config.unknown_keys(config.host_filter(section))
 
@@ -189,7 +193,7 @@ def doctor(argv: list[str]) -> int:
     host = config.host_config()
     if host:
         sections = [("defaults", host.get("defaults", {}))] + [(f'repo."{s}"', t) for s, t in host.get("repo", {}).items()]
-        foreign = [f"{name}.{k}" for name, sec in sections if isinstance(sec, dict) for k in foreign_host_keys(sec)]
+        foreign = [f"{name}.{k}" for name, sec in sections if isinstance(sec, dict) for k in foreign_host_keys(sec, defaults=name == "defaults")]
         report(None if foreign else True, "host config", f"ignored (not host-owned): {', '.join(foreign)}" if foreign else str(config.host_config_path()))
 
     for tool in ("git", "gh"):
