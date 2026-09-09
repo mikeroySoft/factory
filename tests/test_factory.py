@@ -750,7 +750,7 @@ PY
 
     def test_manager_failure_bounds_stderr_and_records_reason(self) -> None:
         from unittest.mock import patch
-        from factory import dispatch
+        from factory import dispatch, stats
 
         repo, _, packet = self.scenario()
         command = [sys.executable, "-c",
@@ -772,6 +772,11 @@ PY
         failed = [e for e in events if e.get("event") == "escalate" and e.get("reason") == "manager_failed"]
         self.assertEqual([(e["event"], e["ticket"], e["round"], e["packet"]) for e in failed],
                          [("escalate", 7, 1, str(packet))])
+        touch = stats.human_touch([], events)
+        self.assertEqual(touch["escalation_count"], 1)
+        self.assertEqual(touch["manager_failures"], 1)
+        now = stats.datetime.fromisoformat(events[0]["at"].replace("Z", "+00:00"))
+        self.assertEqual(stats.human_touch_metrics([touch], now)["escalations_per_week"], 1)
         packet, round_number = dispatch.escalation_packet(7, "gate_failed", None, repo / ".factory/wt-7")
         self.assertEqual(round_number, 2)
         dispatch.record("escalate", ticket=7, round=round_number, packet=str(packet), reason="gate_failed")

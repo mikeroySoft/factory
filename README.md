@@ -97,7 +97,8 @@ inside one of its worktrees.
 Worker and manager commands receive `{prompt}` as a prompt-file path and `{cwd}`
 as the worktree (or repository root); reviewers receive `{prompt}` as inline
 text. OMP loads a prompt file only when it is prefixed with `@`, so use
-`@{prompt}`: bare `omp {prompt}` passes the path as prompt text and is rejected.
+`@{prompt}`: bare `omp {prompt}` passes the path as prompt text. Factory rejects
+that bare argument for manager commands, not worker commands.
 Keep `{cwd}` in worker and manager commands, and configure the manager CLI in
 read-only/no-tools mode: the prompt prohibits file edits, but an arbitrary
 configured executable is trusted, not sandboxed by factory. The manager reads
@@ -140,6 +141,9 @@ Open intervals accrue until now, or until closure/merge for finished tickets.
 Re-queues count `ready-for-agent` additions after the initial queue entry, with
 repeated `claimed` trace records as a fallback. Trace escalation counts likewise
 supplement timeline counts without adding the two counts together.
+Manager command failures are counted separately as `manager_failures` in stats
+JSON and dashboard ticket `human_touch` data, and as `manager failures` in the
+stats table. They do not add an escalation or consume another manager round.
 
 The stats footer and dashboard KPIs show escalations in the trailing seven days
 and the percentage of attributed resolutions performed by humans; unresolved

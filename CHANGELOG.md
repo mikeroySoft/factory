@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fix manager prompt transport to use files, including `factory learn`; validate manager commands in doctor, bound nonzero-exit diagnostics, and count manager failures separately from escalation totals and rounds. (#62)
+
 ## 0.3.0 — 2026-09-08
 
 Compared against 0.2.0 (`f9122cd`). Installed fleet-wide through District at `9478e9d`.
