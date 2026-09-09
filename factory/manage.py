@@ -275,7 +275,7 @@ def manage_pass(dry_run: bool = False) -> None:
                             output, notes = split_notes(proc.stdout)
                             rejected = "CURATE" if split_curate(output)[1] is not None else None
                             decision, body, data = ("HUMAN", CURATE_REJECTED, None) if rejected else parse(output, workers)
-                    except OSError as exc:
+                    except (OSError, config.ConfigError) as exc:
                         decision, body, data = "HUMAN", f"Manager command failed: {exc}", None
                     # A human may have taken over while the model was thinking.
                     if human_activity(n, escalation):

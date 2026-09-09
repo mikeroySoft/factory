@@ -773,6 +773,20 @@ PY
         self.assertEqual([(e["event"], e["ticket"], e["round"], e["packet"]) for e in failed],
                          [("escalate", 7, 1, str(packet))])
 
+    def test_manager_config_error_leaves_diagnosis_without_replaying(self) -> None:
+        repo, stubs, _ = self.scenario()
+        (repo / config.CONFIG_NAME).write_text(
+            '[manager]\ncommand = ["omp", "-p", "{prompt}", "--cwd", "{cwd}"]\n')
+        result = factory(repo, "manage", path=stubs)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = (Path(stubs) / "gh.log").read_text()
+        self.assertIn('use "@{prompt}"', calls)
+        events = list(map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines()))
+        self.assertEqual([(e["decision"], e["round"]) for e in events if e.get("event") == "manage"],
+                         [("HUMAN", 1)])
+        self.assertEqual(factory(repo, "manage", path=stubs).returncode, 0)
+        self.assertNotIn("issue comment", (Path(stubs) / "gh.log").read_text()[len(calls):])
+
     def test_manage_retry_records_before_comment_and_relabels(self) -> None:
         repo, stubs, packet = self.scenario()
         result = factory(repo, "manage", path=stubs)
