@@ -832,6 +832,31 @@ PY
         self.assertNotIn("issue comment", (Path(stubs) / "gh.log").read_text())
         self.assertFalse(any(e.get("event") == "manage" for e in map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines())))
 
+    def test_manager_failure_preserves_human_takeover_on_next_pass(self) -> None:
+        from unittest.mock import patch
+        from factory import dispatch
+
+        repo, _, _ = self.scenario()
+        marker = repo / "human-takeover"
+        command = [sys.executable, "-c",
+                   "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('taken'); sys.exit(1)",
+                   str(marker)]
+        dispatch.configure(config.Config(repo, "acme/widgets", manager=command))
+
+        def github(args: list[str]) -> list[dict]:
+            if args[:2] == ["issue", "list"]:
+                return [{"number": 7, "title": "Fix gate", "body": "Original body"}]
+            return [{"event": "commented", "created_at": "2026-01-01T00:00:01Z",
+                     "body": "I will handle this"}] if marker.exists() else []
+
+        with patch.object(dispatch, "gh_json", side_effect=github), \
+             patch.object(dispatch.time, "strftime", return_value="2026-01-01T00:00:02Z"), \
+             patch.object(manage, "apply") as apply:
+            manage.manage_pass()
+            manage.manage_pass()
+        self.assertTrue(marker.exists())
+        apply.assert_not_called()
+
     def test_manage_applies_closed_menu_and_rejects_unknown_route(self) -> None:
         cases = [
             ("REWRITE", "Replacement acceptance criteria", "issue edit 7 --repo acme/widgets --body Replacement acceptance criteria"),
