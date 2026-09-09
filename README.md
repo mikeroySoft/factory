@@ -34,7 +34,8 @@ npx skills add mikeroysoft/factory
 
 - a **worker** agent CLI that accepts a prompt file and works in a directory
   (default `omp -p`; `droid`, `codex exec`, `claude -p`, … work the same way)
-- a **reviewer** CLI that answers a prompt on stdout (default `omp -p --model anthropic/claude-fable-5-1`; `codex exec` works the same way)
+- optionally, a **manager** agent CLI that accepts a prompt file and works in a directory
+- a **reviewer** CLI that answers an inline prompt on stdout (default `omp -p --model anthropic/claude-fable-5-1`; `codex exec` works the same way)
 - optionally, an OpenAI-compatible local model for triage (Ollama, vLLM,
   llama.cpp, LM Studio)
 
@@ -93,11 +94,15 @@ merge stage.
 Every command reads `.factory.toml` from the main checkout, even when run
 inside one of its worktrees.
 
-The manager command receives `{prompt}` as inline text and `{cwd}` as the kept
-worktree (or repository root). Configure the agent CLI in read-only/no-tools mode:
-the prompt prohibits file edits, but an arbitrary configured executable is trusted,
-not sandboxed by factory. It reads the packet, `.factory-lessons.md`, and optional
-`.factory/manager/notes.md`. Its last `DECISION:` header
+Worker and manager commands receive `{prompt}` as a prompt-file path and `{cwd}`
+as the worktree (or repository root); reviewers receive `{prompt}` as inline
+text. OMP loads a prompt file only when it is prefixed with `@`, so use
+`@{prompt}`: bare `omp {prompt}` passes the path as prompt text and is rejected.
+Keep `{cwd}` in worker and manager commands, and configure the manager CLI in
+read-only/no-tools mode: the prompt prohibits file edits, but an arbitrary
+configured executable is trusted, not sandboxed by factory. The manager reads
+the packet, `.factory-lessons.md`, and optional `.factory/manager/notes.md`.
+Its last `DECISION:` header
 selects `RETRY`, `REWRITE`, `SPLIT`, `ROUTE`, `FIX`, or `HUMAN`, followed by the decision
 body. RETRY/HUMAN use plain text; REWRITE uses the complete replacement issue body.
 SPLIT uses a JSON array of `{title, body, blocked_by}` children, with `blocked_by`
@@ -206,6 +211,9 @@ chore   = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd
 
 [review]
 command = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1", "{prompt}"]   # {prompt} = review prompt text
+
+[manager]                         # optional; unset command disables it
+command = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]   # {prompt} = manager prompt file
 
 [gate]
 timeout = 1200
