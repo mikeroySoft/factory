@@ -82,7 +82,7 @@ merge stage.
 |---|---|
 | `factory triage` | Labels every `needs-triage` issue via the local model: `ready-for-agent` (with an agent brief), `needs-info` (with the question), `ready-for-human`, or a `wontfix` proposal comment. `--dry-run`, `--issue N`, `--replay a,b,c`. |
 | `factory dispatch` | One stateless pass: upstream sync → merge stage (at most one PR) → manager → claim up to `max_active` tickets → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan. |
-| `factory manage` | Resolves untouched `ready-for-human` escalation packets, once per escalation and within `[manager].rounds`. Disabled unless `manager.command` is configured. `--dry-run` lists eligible tickets. |
+| `factory manage` | First recommends directions for `needs-review` PRs, then `needs-viability` issues; then resolves untouched `ready-for-human` escalation packets within `[manager].rounds`. Disabled unless `manager.command` is configured. `--dry-run` lists eligible requests without inference or writes. |
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
 | `factory stats` | Ticket table: attempts, review rounds, hours to merge, escalation count, resolver attribution, minutes in `ready-for-human`, and re-queues. Reads GitHub plus existing `events.jsonl`. `--by-worker` reads only events and shows every configured worker label: first-attempt gate pass rate, all attempts (including review bounces), and known cost. Attribution uses claim labels with current worker precedence; unclaimed attempts are excluded, missing rates/cost are `n/a`. The dashboard Ops view shows the same worker metrics. `--json`. |
 | `factory learn` | Reads the last N finished tickets' event trail, failing-attempt log tails, reviewer findings, and escalation reasons; asks the local model for ≤10 repo-specific lessons; writes `.factory-lessons.md` (you commit it). Every worker prompt carries it. `--dry-run`, `--last N`. |
@@ -131,6 +131,62 @@ Manager executions and ticket-lock waits use the lifecycle journal. If a GitHub
 mutation fails, the execution records a terminal failure and the ticket remains
 with the human; other tickets can proceed. The consumed round is not replayed,
 because a partial rewrite or split may already have changed GitHub.
+
+### Opt-in viability recommendations
+
+Viability asks **should we pursue this direction?**, before spending effort on
+specification or code review. With `[manager].command` configured, opt in explicitly:
+
+```bash
+factory init --labels-only  # provisions the vocabulary on an existing installation
+gh pr edit N --add-label needs-review
+gh issue edit N --add-label needs-viability
+factory manage --dry-run
+factory manage
+```
+
+The manager handles `needs-review` PRs **before** `needs-viability` issues, both
+before escalation management. The existing dispatch pass invokes the same stage;
+there is no unlabeled-backlog sweep, new service, or separate model transport.
+Held requests (`factory-held`), closed targets, targets with conflicting pipeline
+labels, and locked targets are skipped. An unconfigured manager leaves labels alone.
+
+Each recommendation is an issue/PR comment prefixed `Factory manager:`, with
+reasoning, source citations, and one final machine-readable line:
+`VERDICT: BUILD`, `VERDICT: DONT_BUILD`, or `VERDICT: DEFER`.
+
+| Target / verdict | Label transition and authority |
+|---|---|
+| Issue / BUILD | Remove `needs-viability`, add `needs-triage` for deeper investigation. Never directly queue implementation; a vague idea need not already pass triage's specification checks. |
+| Issue / DONT_BUILD or DEFER | Remove `needs-viability`; leave open, propose only. No `wontfix`, closure, or replacement workflow label. A human decides whether to close, defer, or overrule. |
+| PR / any verdict | Remove `needs-review`; recommend only. Even BUILD adds **no handoff label** until [#5](https://github.com/mikeroySoft/factory/issues/5) is implemented. The comment states this limit. No quality review, approval, requested changes, merge, or closure. |
+
+The model uses the existing evidence/briefing source helpers: bounded target
+description/comments, recent issues and PRs (not an exhaustive duplicate search),
+selected repository code and README/roadmap context, lessons and manager notes.
+The bundle caps source text at 64,000 bytes / 40 sources (20,000 per source),
+with smaller prefixes for target bodies, summaries, and files. It samples 12
+recent PRs and 12 issue-endpoint rows across all states, the target's latest
+comment page (at most 12 entries), up to three tracked documents and three
+code files, and at most 30 PR changed-file summaries without diff patches.
+Sources name their coverage limits; missing evidence is unknown, not absence.
+The prompt asks for value, overlap, roadmap fit, cost/risk estimates, and the
+smallest useful investigation, with citations separating facts from estimates.
+Malformed, uncited, unknown-citation, or failed model output becomes a diagnostic
+DEFER; it cannot queue work.
+
+Idempotency is per **label-add timeline event**, independent of escalation rounds.
+Under the existing per-ticket lock, the manager rechecks the target (including
+PR head) and timeline after inference; intervening human changes leave it untouched.
+It records the verdict and full proposed comment in `.factory/events.jsonl`
+(`event: viability`) **before** any GitHub mutation, then posts and consumes the
+trigger. A second pass never repeats that request, even after a partial/ambiguous
+GitHub failure. In that case inspect the recorded comment and live state before
+recovering manually; automatic replay could duplicate an already-posted comment.
+Keep the local journal: this is the same single-host at-most-once boundary as
+escalation management, not a distributed exactly-once service. To deliberately
+reconsider, remove and re-add the opt-in label; edits alone do not re-arm a consumed
+request.
 
 Human-touch metrics are read-only; no manager behavior is required. A
 `ready-for-human` label addition starts an escalation interval; removal ends it
@@ -248,9 +304,11 @@ snapshot. Factory leaves this metadata opaque and out of pipeline configuration;
 `doctor` accepts it only under `defaults`. Unknown tables and an `engine` table
 under a per-repository section still produce host-config warnings.
 
-Labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`,
-`factory-approved`, `chore`) and the `agent/<n>` branch scheme are fixed
-conventions; `factory init` creates the labels.
+Labels (`needs-review`, `needs-viability`, `needs-triage`, `needs-info`,
+`ready-for-agent`, `ready-for-human`, `factory-approved`, `chore`) and the
+`agent/<n>` branch scheme are fixed conventions; `factory init` creates the labels.
+`needs-review` opts a PR into direction viability, not code review;
+`needs-viability` opts an issue into viability before triage.
 
 ## Operating it
 
