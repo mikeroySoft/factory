@@ -743,6 +743,18 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> None:
     sync exists to preserve. Everything else rebases to keep history linear.
     """
     wt = ensure_worktree(n)
+
+    def withdraw(reason: str) -> None:
+        # A failed refresh must pull the PR from merge candidacy: the merge stage
+        # selects by `factory-approved`, so leaving the label re-runs this same
+        # failure (and posts the same escalation) every pass. A human re-adds
+        # the label after the fix.
+        run(
+            ["gh", "pr", "edit", str(pr), "--repo", REPO, "--remove-label", FACTORY_APPROVED],
+            check=False,
+        )
+        escalate(n, f"PR #{pr}: {reason}; `{FACTORY_APPROVED}` label removed", None)
+
     run(["git", "fetch", "origin"], cwd=wt)
     verb, cmd = (
         ("merge", ["git", "merge", f"origin/{cfg.main}", "--no-edit"])
@@ -751,7 +763,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> None:
     )
     if run(cmd, cwd=wt, check=False).returncode != 0:
         run(["git", verb, "--abort"], cwd=wt, check=False)
-        escalate(n, f"PR #{pr}: {verb} onto moved main conflicts; worktree {wt}", None)
+        withdraw(f"{verb} onto moved main conflicts; worktree {wt}")
         return
     empty = run(
         ["git", "merge-base", "--is-ancestor", "HEAD", f"origin/{cfg.main}"], cwd=wt, check=False
@@ -759,22 +771,12 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> None:
     if empty:
         # An empty refresh can never be a successful refresh: force-pushing it
         # would erase the PR (GitHub auto-closes a branch with nothing ahead).
-        # Pull the PR from candidacy so this escalates once, not every pass.
-        run(
-            ["gh", "pr", "edit", str(pr), "--repo", REPO, "--remove-label", FACTORY_APPROVED],
-            check=False,
-        )
-        escalate(
-            n,
-            f"PR #{pr}: nothing ahead of {cfg.main} after {verb}; refusing to push; "
-            f"`{FACTORY_APPROVED}` label removed",
-            None,
-        )
+        withdraw(f"nothing ahead of {cfg.main} after {verb}; refusing to push")
         return
     ok, report = run_gate(wt, n)
     if not ok:
         pr_comment(n, f"Gate failed after {verb} onto current main:\n\n{report}")
-        escalate(n, f"PR #{pr}: gate failed after {verb} onto moved main", None)
+        withdraw(f"gate failed after {verb} onto moved main")
         return
     run(["git", "push", "--force-with-lease", "origin", f"agent/{n}"], cwd=wt)
     record("refreshed", ticket=n, pr=pr)

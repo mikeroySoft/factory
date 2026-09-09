@@ -1576,6 +1576,56 @@ class DispatchTest(unittest.TestCase):
                 gh_calls,
             )
 
+    def test_refresh_conflict_withdraws_pr_from_candidacy(self) -> None:
+        # district#5: a rebase conflict escalated every pass (146 comments)
+        # because `factory-approved` stayed on the PR.
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            root, origin, upstream = build_fork(tmp)
+
+            git(origin, "checkout", "-q", "-b", "agent/9")
+            (origin / "shared.txt").write_text("agent version")
+            git(origin, "add", "-A")
+            git(origin, "commit", "-q", "-m", "agent change")
+            before = git(origin, "rev-parse", "HEAD")
+            git(origin, "checkout", "-q", "main")
+            (origin / "shared.txt").write_text("main version")
+            git(origin, "add", "-A")
+            git(origin, "commit", "-q", "-m", "conflicting main change")
+
+            cfg = config.Config(root=root, repo="acme/widgets", upstream="upstream", main="main")
+            with mock.patch.object(config, "remote_slug", return_value="acme/upstream-widgets"):
+                dispatch.configure(cfg)
+
+            real_run = dispatch.run
+            gh_calls: list[list[str]] = []
+
+            def run_spy(cmd, **kw):
+                if cmd[0] == "gh":
+                    gh_calls.append(cmd)
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+                return real_run(cmd, **kw)
+
+            with mock.patch.object(dispatch, "run", side_effect=run_spy), \
+                 mock.patch.object(dispatch, "run_gate") as gate, \
+                 mock.patch.object(dispatch, "escalate") as esc:
+                dispatch.refresh_pr_branch(9, 102, False)
+
+            esc.assert_called_once()
+            self.assertIn("conflicts", esc.call_args.args[1])
+            gate.assert_not_called()
+            self.assertEqual(git(origin, "rev-parse", "agent/9"), before)  # nothing pushed
+            wt = root / ".factory" / "wt-9"
+            self.assertFalse(Path(git(wt, "rev-parse", "--git-path", "rebase-merge")).exists())  # aborted
+            self.assertIn(
+                ["gh", "pr", "edit", "102", "--repo", "acme/widgets", "--remove-label", "factory-approved"],
+                gh_calls,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
