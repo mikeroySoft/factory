@@ -756,7 +756,7 @@ PY
         command = [sys.executable, "-c",
                    "import sys; sys.stderr.write(''.join(f'error-{i}\\n' for i in range(20))); sys.exit(1)",
                    "{prompt}", "{cwd}"]
-        cfg = config.Config(repo, "acme/widgets", manager=command)
+        cfg = config.Config(repo, "acme/widgets", manager=command, manager_rounds=2)
         dispatch.configure(cfg)
         with patch.object(dispatch, "gh_json", return_value=[
             {"number": 7, "title": "Fix gate", "body": "Original body"}
@@ -772,6 +772,15 @@ PY
         failed = [e for e in events if e.get("event") == "escalate" and e.get("reason") == "manager_failed"]
         self.assertEqual([(e["event"], e["ticket"], e["round"], e["packet"]) for e in failed],
                          [("escalate", 7, 1, str(packet))])
+        packet, round_number = dispatch.escalation_packet(7, "gate_failed", None, repo / ".factory/wt-7")
+        self.assertEqual(round_number, 2)
+        dispatch.record("escalate", ticket=7, round=round_number, packet=str(packet), reason="gate_failed")
+        command[:] = ["printf", "DECISION: RETRY\nTry again"]
+        with patch.object(dispatch, "gh_json", return_value=[
+            {"number": 7, "title": "Fix gate", "body": "Original body"}
+        ]), patch.object(manage, "human_activity", return_value=False), patch.object(manage, "apply") as apply:
+            manage.manage_pass()
+        self.assertEqual(apply.call_args.args[2:4], ("RETRY", "Try again"))
 
     def test_manager_config_error_leaves_diagnosis_without_replaying(self) -> None:
         repo, stubs, _ = self.scenario()
