@@ -347,6 +347,34 @@ class HostConfigTest(unittest.TestCase):
             row = doctor()["github workflow"]
             self.assertEqual((row["status"], row["detail"].startswith("none")), ("WARN", True))
 
+    def test_doctor_accepts_district_engine_metadata_without_loading_it(self) -> None:
+        metadata = (
+            '[defaults.triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n'
+            '[defaults.workers]\ndefault = ["worker", "{prompt}"]\n'
+            '[defaults.engine]\nref = "v0.3.0"\nsha = "abc"\nprevious = "def"\n'
+            'installed_at = "2026-09-09T00:00:00Z"\n'
+            '[defaults.engine.workers]\ndefault = ["not-a-worker"]\n'
+        )
+        host_file(metadata)
+        gh = 'case "$1 $2" in "repo view") echo ADMIN;; "label list") echo "[]";; esac\nexit 0'
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            stubs = stub_bin(Path(d), gh=gh, systemctl="echo inactive")
+            proc = factory(repo, "doctor", "--json", path=stubs)
+            rows = {r["label"]: r for r in json.loads(proc.stdout)["rows"]}
+            self.assertEqual(rows["host config"]["status"], "PASS", rows["host config"])
+            self.assertNotIn("engine", config.host_filter(config.host_config()["defaults"]))
+            self.assertEqual(config.load(repo).worker(set(), Path("/p"), repo), ["worker", "/p"])
+
+            # Only defaults.engine is metadata; typos and misplaced tables still warn.
+            host_file(metadata + '[defaults.engien]\nsha = "bad"\n[repo."acme/widgets".engine]\nsha = "bad"\n')
+            proc = factory(repo, "doctor", "--json", path=stubs)
+            rows = {r["label"]: r for r in json.loads(proc.stdout)["rows"]}
+            self.assertEqual(rows["host config"]["status"], "WARN")
+            self.assertIn("defaults.engien", rows["host config"]["detail"])
+            self.assertIn('repo."acme/widgets".engine', rows["host config"]["detail"])
+            self.assertNotIn("defaults.engine", rows["host config"]["detail"])
+
     def test_doctor_json_reports_drift(self) -> None:
         host_file('[defaults.triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n[defaults.leak_scan]\npattern = ""\n[repo."acme/widgets"]\npath = "/x"\n[repo."acme/widgets".dashboard]\nport = 1\ntheme = "no"\n')
         gh = 'case "$1 $2" in "repo view") echo ADMIN;; "label list") echo "[]";; esac\nexit 0'

@@ -241,6 +241,13 @@ url = "http://127.0.0.1:11434/v1/chat/completions"
 model = "qwen3:30b"
 ```
 
+The shared host file is `$XDG_CONFIG_HOME/factory/config.toml` (default
+`~/.config/factory/config.toml`). `[defaults.engine]` belongs to District:
+`ref`, `sha`, `previous`, and `installed_at` describe its installed engine
+snapshot. Factory leaves this metadata opaque and out of pipeline configuration;
+`doctor` accepts it only under `defaults`. Unknown tables and an `engine` table
+under a per-repository section still produce host-config warnings.
+
 Labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`,
 `factory-approved`, `chore`) and the `agent/<n>` branch scheme are fixed
 conventions; `factory init` creates the labels.
