@@ -13,6 +13,7 @@ import argparse
 import json
 from datetime import date
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Callable
 
 from factory import config, dispatch, lifecycle, manage, triage
@@ -60,8 +61,11 @@ def evidence(last: int) -> tuple[list[int], str]:
 def manager_llm(cfg: config.Config) -> Callable[[list[dict]], str]:
     """Chat-shaped adapter over `manager.command`: the transcript is flattened into one prompt."""
     def ask(messages: list[dict]) -> str:
-        prompt = "\n\n".join(m["content"] for m in messages)
-        return dispatch.run(cfg.manager_cmd(prompt, cfg.root), cwd=cfg.root).stdout
+        cfg.factory.mkdir(parents=True, exist_ok=True)
+        with NamedTemporaryFile(mode="w", dir=cfg.factory, prefix="manager-prompt-", suffix=".md") as prompt:
+            prompt.write("\n\n".join(m["content"] for m in messages))
+            prompt.flush()
+            return dispatch.run(cfg.manager_cmd(Path(prompt.name), cfg.root), cwd=cfg.root).stdout
     return ask
 
 

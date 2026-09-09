@@ -147,6 +147,23 @@ def gate(cwd: Path, *args: str) -> tuple[int, str, str]:
 
 
 class ConfigTest(unittest.TestCase):
+    def test_manager_prompt_file_and_omp_inline_rejection(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prompt = root / "manager-prompt-7.md"
+            text = "Issue body\n" + "packet " * 30_000
+            prompt.write_text(text)
+            cfg = config.Config(root, "acme/widgets", manager=[
+                "omp", "-p", "--no-session", "--model", "openai-codex/gpt-6-astra",
+                "--cwd", "{cwd}", "@{prompt}",
+            ])
+            argv = cfg.manager_cmd(prompt, root)
+            self.assertEqual(argv[-1], "@" + str(prompt))
+            self.assertEqual(Path(argv[-1][1:]).read_text(), text)
+            cfg.manager[-1] = "{prompt}"
+            with self.assertRaisesRegex(config.ConfigError, r'@\{prompt\}'):
+                cfg.manager_cmd(prompt, root)
+
     def test_defaults_from_origin(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             repo = make_repo(Path(d))
@@ -390,15 +407,33 @@ class HostConfigTest(unittest.TestCase):
                     with self.assertRaises(config.ConfigError):
                         config.load(repo)
 
-    def test_doctor_reports_manager_only_when_configured(self) -> None:
-        gh = 'case "$1 $2" in "repo view") echo ADMIN;; "label list") echo "[]";; esac\nexit 0'
-        with tempfile.TemporaryDirectory() as d:
-            repo = make_repo(Path(d))
-            stubs = stub_bin(Path(d), gh=gh, systemctl="echo inactive", manage="exit 0")
-            rows = lambda: {r["label"]: r for r in json.loads(factory(repo, "doctor", "--json", path=stubs).stdout)["rows"]}  # noqa: E731
-            self.assertNotIn("manager: manage", rows())
-            (repo / ".factory.toml").write_text('[manager]\ncommand = ["manage", "{prompt}"]\n')
-            self.assertEqual(rows()["manager: manage"]["status"], "PASS")
+    def test_doctor_manager_command(self) -> None:
+        cases = [
+            (None, "WARN", ["unset", "no automated diagnosis"]),
+            (["manage"], "FAIL", ["{prompt}", "{cwd}"]),
+            (["manage", "{prompt}"], "FAIL", ["{cwd}"]),
+            (["manage", "{cwd}"], "FAIL", ["{prompt}"]),
+            (["missing-manager-executable", "{prompt}", "{cwd}"], "FAIL", ["missing-manager-executable"]),
+            (["omp", "{prompt}", "--cwd", "{cwd}"], "FAIL", ['use "@{prompt}"']),
+            (["omp", "@{prompt}", "--cwd", "{cwd}"], "PASS", []),
+            (["manage", "{prompt}", "{cwd}"], "PASS", []),
+        ]
+        host_file("")
+        for command, status, details in cases:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as d:
+                settings = '[triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n'
+                if command is not None:
+                    settings += "[manager]\ncommand = " + json.dumps(command) + "\n"
+                repo = make_repo(Path(d), settings)
+                stubs = stub_bin(Path(d), gh='case "$1 $2" in "repo view") echo ADMIN;; "label list") echo "[]";; esac',
+                                 systemctl="echo inactive", manage="exit 0", omp="exit 0")
+                result = factory(repo, "doctor", "--json", path=stubs)
+                rows = {row["label"]: row for row in json.loads(result.stdout)["rows"]}
+                self.assertEqual(rows["manager command"]["status"], status)
+                for detail in details:
+                    self.assertIn(detail, rows["manager command"]["detail"])
+                text = factory(repo, "doctor", path=stubs)
+                self.assertIn(f"{status}  manager command", text.stdout)
 
 
 class StatsTest(unittest.TestCase):
@@ -692,6 +727,52 @@ esac
 ''')
         return repo, stubs, packet
 
+    def test_manager_reads_prompt_file_with_district_command(self) -> None:
+        repo, stubs, packet = self.scenario()
+        text = "Escalation evidence\n" + "packet " * 30_000
+        packet.write_text(text)
+        stub_bin(Path(stubs).parent, omp='''
+python3 - "$5" <<'PY'
+import pathlib, sys
+assert sys.argv[1].startswith("@"), sys.argv
+prompt = pathlib.Path(sys.argv[1][1:]).read_text()
+assert "Original body" in prompt
+assert "packet " * 30_000 in prompt
+print("DECISION: HUMAN\\nRead the complete prompt")
+PY
+''')
+        (repo / config.CONFIG_NAME).write_text(
+            '[manager]\ncommand = ["omp", "-p", "--cwd", "{cwd}", "--no-session", "@{prompt}"]\n')
+        result = factory(repo, "manage", path=stubs)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Factory manager: Read the complete prompt", (Path(stubs) / "gh.log").read_text())
+        self.assertIn(text, (repo / ".factory/manager-prompt-7.md").read_text())
+
+    def test_manager_failure_bounds_stderr_and_records_reason(self) -> None:
+        from unittest.mock import patch
+        from factory import dispatch
+
+        repo, _, packet = self.scenario()
+        command = [sys.executable, "-c",
+                   "import sys; sys.stderr.write(''.join(f'error-{i}\\n' for i in range(20))); sys.exit(1)",
+                   "{prompt}", "{cwd}"]
+        cfg = config.Config(repo, "acme/widgets", manager=command)
+        dispatch.configure(cfg)
+        with patch.object(dispatch, "gh_json", return_value=[
+            {"number": 7, "title": "Fix gate", "body": "Original body"}
+        ]), patch.object(manage, "human_activity", return_value=False), patch.object(manage, "apply") as apply:
+            manage.manage_pass()
+        _, _, decision, body, _, _ = apply.call_args.args
+        self.assertEqual(decision, "HUMAN")
+        self.assertTrue(body.startswith("Manager command exited 1 (argv: "), body)
+        self.assertIn("{prompt}", body.splitlines()[0])
+        self.assertIn("{cwd}", body.splitlines()[0])
+        self.assertEqual(body.splitlines()[1:], [f"error-{i}" for i in range(15, 20)])
+        events = list(map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines()))
+        failed = [e for e in events if e.get("event") == "escalate" and e.get("reason") == "manager_failed"]
+        self.assertEqual([(e["event"], e["ticket"], e["round"], e["packet"]) for e in failed],
+                         [("escalate", 7, 1, str(packet))])
+
     def test_manage_retry_records_before_comment_and_relabels(self) -> None:
         repo, stubs, packet = self.scenario()
         result = factory(repo, "manage", path=stubs)
@@ -754,7 +835,7 @@ esac
                 prompt = repo / ".factory/manager-prompt.txt"
                 output = 'DECISION: ROUTE\n{"add":["chore"],"guidance":"Use the mechanical worker"}'
                 command = [sys.executable, "-c",
-                           "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2]); print(sys.argv[3])",
+                           "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(pathlib.Path(sys.argv[2]).read_text()); print(sys.argv[3])",
                            str(prompt), "{prompt}", output]
                 settings = "[manager]\ncommand = " + json.dumps(command) + '\n[workers]\ndefault = ["false"]\n'
                 if configured:
@@ -876,7 +957,7 @@ esac
             with events_path.open("a") as events:
                 events.write(json.dumps({**escalation, "round": round_number}) + "\n")
             command = [sys.executable, "-c",
-                       "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2]); sys.stdout.write(sys.argv[3])",
+                       "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(pathlib.Path(sys.argv[2]).read_text()); sys.stdout.write(sys.argv[3])",
                        str(prompt), "{prompt}", output]
             (repo / config.CONFIG_NAME).write_text(
                 "[manager]\nrounds = 3\ncommand = " + json.dumps(command) + "\n")
@@ -1112,7 +1193,7 @@ class DispatchTest(unittest.TestCase):
         prompt = root / "prompt.txt"
         (root / "reply.txt").write_text(reply)
         command = [sys.executable, "-c",
-                   "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2]); "
+                   "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(pathlib.Path(sys.argv[2]).read_text()); "
                    "sys.stdout.write(pathlib.Path(sys.argv[3]).read_text())",
                    str(prompt), "{prompt}", str(root / "reply.txt")]
         (repo / config.CONFIG_NAME).write_text(

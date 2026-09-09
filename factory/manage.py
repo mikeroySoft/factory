@@ -260,9 +260,17 @@ def manage_pass(dry_run: bool = False) -> None:
                     cwd = wt if wt.is_dir() else cfg.root
                     notes = rejected = None
                     try:
-                        proc = dispatch.run(cfg.manager_cmd("\n\n".join(parts), cwd), cwd=cwd, check=False)
+                        prompt_path = cfg.factory / f"manager-prompt-{n}.md"
+                        prompt_path.write_text("\n\n".join(parts))
+                        proc = dispatch.run(cfg.manager_cmd(prompt_path, cwd), cwd=cwd, check=False)
                         if proc.returncode:
-                            decision, body, data = "HUMAN", f"Manager command failed ({proc.returncode}):\n{proc.stderr or proc.stdout}", None
+                            body = f"Manager command exited {proc.returncode} (argv: {json.dumps(cfg.manager)})"
+                            tail = "\n".join(proc.stderr.splitlines()[-5:])
+                            if tail:
+                                body += "\n" + tail
+                            decision, data = "HUMAN", None
+                            dispatch.record("escalate", ticket=n, round=round_number,
+                                            packet=str(packet), reason="manager_failed")
                         else:
                             output, notes = split_notes(proc.stdout)
                             rejected = "CURATE" if split_curate(output)[1] is not None else None

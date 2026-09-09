@@ -223,8 +223,19 @@ def doctor(argv: list[str]) -> int:
     for label, argv_t in cfg.workers.items():
         report(shutil.which(argv_t[0]) is not None, f"worker `{label}`: {argv_t[0]}")
     report(shutil.which(cfg.reviewer[0]) is not None, f"reviewer: {cfg.reviewer[0]}")
-    if cfg.manager:
-        report(shutil.which(cfg.manager[0]) is not None, f"manager: {cfg.manager[0]}")
+    if not cfg.manager:
+        report(None, "manager command", "[manager].command is unset; escalations get no automated diagnosis")
+    else:
+        problems = [
+            f"missing `{{{name}}}` placeholder"
+            for name in ("prompt", "cwd")
+            if not any(f"{{{name}}}" in arg for arg in cfg.manager)
+        ]
+        if Path(cfg.manager[0]).name == "omp" and "{prompt}" in cfg.manager:
+            problems.append('omp needs a prompt file; use "@{prompt}"')
+        if shutil.which(cfg.manager[0]) is None:
+            problems.append(f"executable not on PATH: {cfg.manager[0]}")
+        report(not problems, "manager command", "; ".join(problems) if problems else cfg.manager[0])
 
     if cfg.checks:
         for check in cfg.checks:
