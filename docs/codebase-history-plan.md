@@ -27,7 +27,7 @@ History schema 1:
 - `schema`, `extractor`, `repo` (GitHub owner/name), `ref`, `tip`, `generated_at` (ISO UTC), `truncated` (earlier commits omitted).
 - `snapshots`: oldest first, each `{sha, date, subject, parents, files, edges, warnings, unmapped}`. `unmapped` records stable identities of tracked paths excluded from the map; crossing an extraction boundary is a coverage change, not a file deletion.
 - Each file: `{id, path, blob, lines, group, symbols: [{name, line}]}`. IDs survive detected renames. Group is the stable original directory grouping; current path remains explicit. Files are present only in revisions where they exist.
-- Each edge: `{source, target, relation, confidence, path, line}`. Endpoints are file IDs; self-edges omitted. Evidence path and line are pinned to that snapshot. Only real resolved internal relationships; unresolved/excluded coverage is disclosed.
+- Each edge: `{source, target, relation, confidence, path, line}`. Endpoints are file IDs; self-edges omitted. Evidence path and line are pinned to that snapshot. Only real resolved in-repository relationships; unresolved/excluded coverage is disclosed.
 - `slots`: append-stable ordering `{id, group, order}` across snapshots. The page uses the union of slots, never independently relayouts a selected revision.
 
 ## Acceptance criteria
