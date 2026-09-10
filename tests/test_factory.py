@@ -2395,6 +2395,15 @@ class DispatchTest(unittest.TestCase):
 
 
 class FeedbackSnapshotTest(unittest.TestCase):
+    def test_github_failure_preserves_provider_diagnostic(self):
+        from unittest import mock
+        from factory import dashboard
+
+        proc = subprocess.CompletedProcess([], 1, "", "gh: run gh auth login\n")
+        with mock.patch.object(dashboard.subprocess, "run", return_value=proc):
+            with self.assertRaisesRegex(RuntimeError, "gh: run gh auth login"):
+                dashboard.github(query="query { viewer { login } }")
+
     def test_full_snapshot_preserves_legacy_contract_and_attaches_feedback(self):
         from unittest import mock
         from factory import dashboard, dispatch
