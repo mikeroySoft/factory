@@ -57,9 +57,15 @@ cd your-repo
 factory init            # .factory.toml, .gitignore, issue template, labels
 $EDITOR .factory.toml   # put your real test/lint commands in [[gate.check]]
 git add .factory.toml .gitignore .github/ISSUE_TEMPLATE/agent_task.md && git commit
-factory doctor          # tools, auth, remotes, model endpoint
+factory doctor          # tools, auth, remotes, model endpoint, dashboard port ownership
 factory install --dashboard   # systemd user timer every 10 min + dashboard on :8765
 ```
+
+`doctor` checks the configured dashboard bind address and port; `install --dashboard`
+refuses a foreign or unidentified holder before writing units. Each factory needs
+its own `[repo."owner/name".dashboard] port` in the host config. The preflight cannot
+reserve the port until systemd starts the service: a later bind failure exits 1
+with a one-line diagnostic, and the existing systemd restart policy still applies.
 
 Generated triage, dispatch and dashboard services use `python -P -m factory`:
 Python does not prepend the repository working directory to its module search
