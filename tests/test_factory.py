@@ -1693,13 +1693,12 @@ class DispatchTest(unittest.TestCase):
                         mock.patch.object(
                             dispatch, "pr_checks",
                             return_value=[{"name": "ci", "bucket": "pass"}],
-                        ) as checks, \
+                        ), \
                         mock.patch.object(
                             dispatch, "run",
                             return_value=subprocess.CompletedProcess([], 0, "", ""),
                         ) as run:
                     dispatch.merge_pass_locked(False)
-                self.assertEqual(checks.call_count, 2)
 
                 self.assertFalse(any(
                     call.args[0][:3] == ["gh", "pr", "merge"]

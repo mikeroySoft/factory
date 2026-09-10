@@ -4,13 +4,15 @@ Plan date: 2026-09-10. Source baseline: `428a03e3262b58b63e82b0c33f71123e510640f
 on branch `autonomy-safety`.
 
 This is an execution plan, not blanket authorization. **Only S0, the merge-safety tranche,
-is authorized now.** Every other unit is `PLANNED — HELD` until a human authorizes that unit
-or wave. This plan does not change issues, labels, holds, queues, services, providers, security
-policy, releases, installations, deployments, or GitHub settings.
+is authorized now.** Every other unit named here is `PLANNED — HELD` within this programme until
+a human authorizes that unit or wave. These statuses sequence this programme only: they do not
+pause or override live external work, or change issues, labels, queues, services, providers,
+security policy, releases, installations, deployments, or GitHub settings.
 
 The local IDs in this document (`S0`, `A1`, `I1`, `L01`–`L12`, and `B1`–`B5`) are planning
 handles, **not GitHub issue numbers**. A future runnable dependency may name only a real,
-verified same-repository issue number. No held work becomes runnable because it appears here.
+verified same-repository issue number. No unit held within this programme becomes runnable merely
+because it appears here.
 
 ## 1. Sources, baseline, and truth rules
 
@@ -38,10 +40,12 @@ Truth is recorded by boundary, not inferred:
   Re-read issue body, labels, assignees, PR head, checks, locks, and source before each release.
 
 The designated baseline contains the current dispatch, triage, manager, dashboard, evidence,
-lifecycle, runtime, stats, and learning modules. Live #53 is closed, but its `factory plan`
-implementation is not present in this baseline (`factory/plan.py` is absent). A future consumer
-must first integrate or otherwise verify the accepted #53 source revision; issue closure alone is
-not an implementation claim for this branch.
+lifecycle, runtime, stats, and learning modules. Live #53 closed through accepted
+[PR #60](https://github.com/mikeroySoft/factory/pull/60), whose merge commit `92cd1e8` landed on
+`stable`, not `main`. Its `factory plan` implementation is absent from this main-derived baseline
+(`factory/plan.py` is absent). A future consumer needs human authorization only for the integration
+method that brings that known revision onto the then-current branch; issue closure and the
+`stable` merge do not put the implementation on this branch.
 
 The repository gate of record is exactly:
 
@@ -90,8 +94,8 @@ merge boundaries; `factory/manage.py`; the accepted plan reader from #53; `facto
 action application; `factory/config.py`; focused tests and existing user documentation.
 
 **Dependencies/lane.** Direct. #55 remains blocked by #53 and #15 exactly as its live issue says.
-#53 source acceptance and the #15 ownership handoff are real checkpoints. A1 does not authorize
-removing #55's `factory-held` label.
+The accepted PR #60 merge must be integrated before this baseline consumes it; the #15 ownership
+handoff is a real checkpoint. A1 does not authorize removing #55's `factory-held` label.
 
 **Acceptance scenario.** In a disposable repository, attempt worker admission, manager action,
 manual-label approval, forced dispatch, refresh, and merge against: an initiative, a held issue,
@@ -135,8 +139,11 @@ and lock trail on success, denial, timeout, and termination. An unwrapped config
 as explicitly legacy/unisolated, not “safe.” Reviewer and gate behavior remain unchanged unless
 a separately approved policy says otherwise.
 
-**Status.** `PLANNED — HELD`; #3 remains open; no runtime, image, credential, network, service, or
-installation change authorized.
+**Status.** I1 is `PLANNED — HELD` within this programme. Live #3 is open `needs-triage`; its
+manager `BUILD` disposition queues deeper investigation, not implementation. This document neither
+holds nor relabels #3. An optional Human checkpoint may apply and verify an operational hold before
+this programme relies on #3 being paused; no such hold action, runtime, image, credential, network,
+service, or installation change is authorized here.
 
 ### 2.4 S0 — exact-head merge-safety tranche
 
@@ -277,14 +284,16 @@ question/answer/source IDs, and produces a complete revised acceptance contract 
 **Outcome.** Humans share one GitHub-native initiative plan, admit immutable executable slices,
 see real dependencies and drift, and declare delivery only from outcome evidence.
 
-**Existing vs gap.** #52 defines the product contract and remains open. #53 is live-closed, but its
-source is absent from this baseline and must be integrated/verified before use. #54 is open
-`ready-for-human`; its attempted read-only router has not been accepted into this baseline.
+**Existing vs gap.** #52 defines the product contract and remains open. #53 closed through accepted
+PR #60 merge `92cd1e8` on `stable`; that source is absent from this main-derived baseline and needs
+a human-authorized integration method before use. #54 is open `ready-for-human`; its attempted
+read-only router has not been accepted into this baseline.
 #55–#59 remain `factory-held`. No initiative stage may be inferred from child issue closure.
 
 **Owner/reuse.** Reuse the entire #52 family; do not open a rival initiative/roadmap store:
 
-- #53 — canonical initiative template and read-only plan reader; verify accepted source first;
+- #53 — canonical initiative template and read-only plan reader; accepted PR #60 merge `92cd1e8`
+  on `stable`, requiring authorized integration before this baseline consumes it;
 - #54 — deterministic read-only decision-owner routing; resume only through its human handoff;
 - #55 — enforced initiative exclusion from triage, dispatch, manager, and merge;
 - #56 — durable routed terminal human handoff;
@@ -498,9 +507,11 @@ or rollout authorized.
 **Outcome.** Public release notes and roadmap are deterministically generated from approved sources,
 reviewed as a normal content PR, and verified on the actually served Pages site after merge.
 
-**Existing vs gap.** `CHANGELOG.md` and `docs/index.html` are hand-maintained. Repository Pages
-already serves `main:/docs`; content generation and post-publication verification are missing. #58
-is the internal initiative/owner dashboard, not this public marketing surface.
+**Existing vs gap.** `CHANGELOG.md` and `docs/index.html` are hand-maintained. At plan observation,
+the repository Pages API reports canonical URL <https://mikeroysoft.github.io/factory/>, status
+`built`, and source `main:/docs`. Refresh these observed facts before execution with
+`gh api repos/mikeroySoft/factory/pages`. Content generation and post-publication verification are
+missing. #58 is the internal initiative/owner dashboard, not this public marketing surface.
 
 **Owner/reuse.** New content-generation ticket after policy approval; no GitHub number exists.
 Reuse `CHANGELOG.md`, live GitHub Releases/issues/initiatives, and accepted L04 outcome facts. Do not
@@ -513,15 +524,16 @@ not source-controlled authorization.
 
 **Dependencies/lane.** Factory for generator and content PR after L04 and release metadata contracts
 are accepted. Independent review checks wording/provenance. Main merge triggers the existing Pages
-publication, but the canonical Pages URL and expected content revision must be human-confirmed at
-execution. Changing Pages settings is a separate Human checkpoint.
+publication. The expected published revision is the merged content PR's merge commit, read from
+live PR state rather than supplied by a human. Changing Pages settings is a separate Human
+checkpoint.
 
 **Acceptance scenario.** From frozen approved changelog, release, and roadmap inputs, two runs
 produce byte-identical generated sections. Closed/held/unknown initiatives are represented without
 invented delivery; private paths and untrusted HTML are escaped. A stale generated file fails the
-checker. After the content PR merges, fetch the configured canonical Pages URL until the bounded
-publication deadline and verify the expected source/release revision and links; timeout or mismatch
-records publication unknown/failed, never success.
+checker. After the content PR merges, refresh the Pages API observation and fetch its canonical URL
+until the bounded publication deadline; verify the merged content PR revision and links. Timeout or
+mismatch records publication unknown/failed, never success.
 
 **Status.** `PLANNED — HELD`; no content PR, Pages setting, or publication action authorized.
 
@@ -593,12 +605,12 @@ thresholds are met. A failed or ambiguous evaluation leaves production unchanged
 
 | Work | Role in this programme | Current disposition |
 |---|---|---|
-| #3 | Worker wrapper seam for I1; not complete sandboxing | Open; held by this plan pending isolation policy; no label change |
+| #3 | Worker wrapper seam for I1; not complete sandboxing | Open `needs-triage`; manager `BUILD` queues deeper investigation, not implementation; this plan imposes no hold, and an optional hold action needs a separate Human checkpoint |
 | #5 → #6 → #7 → #8 → #9 | Opt-in external/human PR review-only lane: discover, publish review, re-review changed head, show CI readiness, render queue | Open; distinct and nonblocking for S0/B2/B3; never fix/push/merge/close external PRs |
 | #15 | Existing owner for B3 Factory-owned PR frontier and late remediation | Open `ready-for-human`; do not rewrite/requeue while owned; B2 amendment/handoff requires separate authorization |
 | #34 | Reviewer calibration experiment and remaining qualification work | Experiment landed; issue remains open; no production coverage claim/policy change |
 | #52 | Collaboration programme and authoritative product contract | Open documentation parent; child closure does not prove outcome |
-| #53 | Plan template/read-only reader prerequisite | Live issue closed; accepted source absent from baseline, so verify/integrate revision before consumption |
+| #53 | Plan template/read-only reader prerequisite | Closed through accepted PR #60 merge `92cd1e8` on `stable`; source absent from this main-derived baseline; integration method needs human authorization |
 | #54 | Read-only decision-owner routing | Open `ready-for-human`; resume only through explicit handoff |
 | #55 | Enforce initiative exclusion across execution paths | `factory-held`; depends on #53 and #15; Direct lane |
 | #56 | Durable routed terminal human handoffs | `factory-held`; depends on #54 and #55; Direct lane |
@@ -624,12 +636,13 @@ thresholds are met. A failed or ambiguous evaluation leaves production unchanged
 
 ### Future Wave 1 — prerequisites (separate authorization)
 
-- Reconcile the accepted #53 source into the then-current baseline without recreating it.
+- Integrate accepted PR #60 merge `92cd1e8` from `stable` into the then-current baseline without
+  recreating it, using the separately authorized method.
 - Decide A1 admission/authority policy and I1 isolation policy.
 - Implement #3's seam and qualify the selected sandbox only if separately authorized.
 - Publish/execute L01 and L03 authority work only after their human policy decisions.
 
-Parallelism: read-only #53 source reconciliation and isolation design may proceed independently.
+Parallelism: PR #60 integration and isolation design may proceed independently once authorized.
 Code touching `config.py`, `onboard.py`, README, or shared tests is serialized under one integration
 owner. No simultaneous direct writers to `dispatch.py`, `manage.py`, or `triage.py`.
 
@@ -644,8 +657,8 @@ disjoint read-only producers may run in parallel after their inputs and file own
 ### Future Wave 3 — bounded action and collaboration (separate authorization)
 
 - Accepted B2 + live #15 handoff → amended B3/#15.
-- Verified #53 + accepted #15 → #55.
-- #54 + #55 → #56; #53 + #55 → #57.
+- Integrated #53 accepted revision + accepted #15 → #55.
+- #54 + #55 → #56; integrated #53 accepted revision + #55 → #57.
 - Serialize #56/#57 shared dispatch/manage integration; then #58; then human pilot #59.
 - L05 validation binding and L08 recovery producers land before any widened autonomy claim.
 
@@ -698,7 +711,9 @@ Where a policy threshold is still open, §7 names it.
 | Review remediation | Zero duplicate delivery for an unchanged feedback revision across replay/race/restart; 100% of admitted fixes end in fresh gate/review evidence or a diagnosed handoff |
 | Integration | Zero merges from stale/missing/legacy evidence, failed reviewer exit, active veto, red/pending/missing CI, behind-main head, lock violation, or expected-head mismatch |
 | Recovery | Zero blind replays after ambiguous external effects; every injected crash ends at a proven boundary or explicit unknown/partial state; no torn row hides earlier valid evidence |
-| Release/rollout | 100% of releases record source SHA, version, tag/stable relationship, review/gate/CI result, installed revision, previous ref, and rollback verification; zero automatic release authority |
+| Release | 100% of releases record source SHA, version, tag/stable relationship, and review/gate/CI result; zero automatic release authority |
+| Installation | 100% of installations record release/source, rollout target, installed revision/schema, service health, and previous known-good ref; release alone never counts as installation |
+| Rollout recovery | 100% of rollback attempts record trigger, target, restored previous ref, and post-rollback verification; failed or unknown recovery remains explicit |
 | Public site | Generated sections are deterministic and checker-clean; post-merge Pages verification observes the expected revision/links within the approved bounded window or reports failure/unknown |
 | Outcome | 100% of initiatives marked delivered have owner-confirmed success evidence tied to a released/installed observation; merged-only work is never counted delivered |
 | Learning | Every promoted policy/model/prompt change has a pinned reproducible comparison and independent adjudication; no production change from a failed/ambiguous run |
@@ -706,8 +721,9 @@ Where a policy threshold is still open, §7 names it.
 Operational dashboards must also retain: escalation rate, human-resolved percentage, time in
 `ready-for-human`, re-queues, first-gate pass by worker, reviewer required-defect misses,
 unnecessary REVISE demands, duplicate-suppression counts, unknown/partial recovery counts, release
-lead time, rollout/rollback result, Pages publication lag, and outcome-evidence coverage. A metric
-without complete source coverage is reported with its denominator and gaps, not as a fleet rate.
+lead time, installation/rollout result, rollback verification, Pages publication lag, and
+outcome-evidence coverage. A metric without complete source coverage is reported with its
+denominator and gaps, not as a fleet rate.
 
 ## 7. Unresolved human decisions
 
@@ -720,8 +736,9 @@ No implementation may guess these:
    merely notify or can arm a confirmed re-entry, and the replay/cooldown rule.
 3. **Prioritization policy:** ranking inputs and weights, exhaustive-vs-bounded duplicate search,
    portfolio capacity, deferral expiry, and who may apply final disposition.
-4. **#53 integration:** the accepted source revision and clean way to bring it onto the then-current
-   branch before #54/#55/#57 consume it.
+4. **#53 integration:** whether and when to integrate accepted PR #60 merge `92cd1e8`, and the
+   clean method for bringing it from `stable` onto the then-current branch before #54/#55/#57
+   consume it.
 5. **#15 ownership:** whether to salvage the existing PR/handoff or replace its implementation on a
    Direct branch after B2; when its body may be amended; who accepts B2's producer handoff.
 6. **Late feedback policy:** source/page/body/time bounds, the stale-PR interval, which unresolved
@@ -737,8 +754,9 @@ No implementation may guess these:
    are warranted.
 10. **Rollout policy:** environments/rings, installed-revision proof, health window, rollback trigger,
     previous-ref retention, District/service authority, and who approves each production target.
-11. **Public content:** canonical Pages URL, source-of-truth fields for changelog/roadmap, generation
-    cadence, embargo/private-data rules, link policy, and publication verification timeout/owner.
+11. **Public content:** source-of-truth fields for changelog/roadmap, generation cadence,
+    embargo/private-data rules, link policy, publication verification timeout/owner, and whether
+    any Pages settings change is authorized.
 12. **Outcome evidence:** initiative owner, success window, acceptable evidence, privacy/retention,
     whether any telemetry is allowed, and who may declare/revoke delivered status.
 13. **Qualification thresholds:** corpus size/diversity, maximum missed required defects, maximum
