@@ -854,7 +854,8 @@ def snapshot() -> dict:
             if ledger is not None:
                 text, cut = ledger
                 lines = text.split("\n")
-                provenance_complete = not cut and not lines.pop()
+                unfinished = lines.pop()
+                provenance_complete = not cut and not unfinished
                 if cut and lines:
                     lines = lines[1:]
                 for line in lines:

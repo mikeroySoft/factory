@@ -2429,6 +2429,13 @@ class FeedbackSnapshotTest(unittest.TestCase):
                      mock.patch.object(dashboard, "upstream_state", return_value={}), \
                      mock.patch.object(dashboard, "triage_llm_online", return_value=False):
                     snapshot = dashboard.snapshot()
+                    provider.heads = [H, H]
+                    torn = "discarded prefix\n" + "\n".join(map(json.dumps, factory_events()))
+                    with mock.patch.object(dashboard.briefing, "bounded_file", return_value=(torn, True)):
+                        partial = dashboard.snapshot()
+                    partial_feedback = next(t for t in partial["tickets"] if t["number"] == 79)["pr"]["feedback"]
+                    self.assertNotIn("factory_review", {i["kind"] for i in partial_feedback["items"]})
+                    self.assertEqual(partial_feedback["coverage"]["reviews"]["status"], "partial")
             ticket = next(t for t in snapshot["tickets"] if t["number"] == 79)
             pr = ticket["pr"]
             self.assertEqual(pr["gate_text"], "- test: PASS")
