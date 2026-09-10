@@ -9,9 +9,11 @@ import json
 import os
 import subprocess
 import shlex
+import shutil
 import sys
 import tempfile
 import unittest
+import venv
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -318,7 +320,20 @@ class HostConfigTest(unittest.TestCase):
     def test_generated_services_ignore_a_shadowing_checkout_package(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repo = make_repo(Path(directory))
-            generated = factory(repo, "install", "--print", "--dashboard")
+            environment = Path(directory) / "venv"
+            venv.EnvBuilder(with_pip=False).create(environment)
+            python = environment / "bin" / "python"
+            env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONSAFEPATH", "PYTHONHOME")}
+            site = subprocess.run(
+                [str(python), "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+                env=env, capture_output=True, text=True, check=True,
+            )
+            # Install this snapshot without pip, network access, or optional dependencies.
+            shutil.copytree(ROOT / "factory", Path(site.stdout.strip()) / "factory", ignore=shutil.ignore_patterns("__pycache__"))
+            generated = subprocess.run(
+                [str(python), "-m", "factory", "install", "--print", "--dashboard"],
+                cwd=repo, env=env, capture_output=True, text=True, check=False,
+            )
             self.assertEqual(generated.returncode, 0, generated.stderr)
             shadow = repo / "factory"
             shadow.mkdir()
@@ -328,12 +343,12 @@ class HostConfigTest(unittest.TestCase):
                 "Path('checkout-executed').touch()\n"
                 "raise RuntimeError('checkout package executed')\n"
             )
-            env = {**os.environ, "PYTHONPATH": str(ROOT)}
-            env.pop("PYTHONSAFEPATH", None)
+            commands = []
             for line in generated.stdout.splitlines():
                 if not line.startswith("ExecStart="):
                     continue
                 command = shlex.split(line.removeprefix("ExecStart=").removeprefix("-"))
+                commands.append(command[command.index("factory") + 1])
                 with self.subTest(command=command):
                     result = subprocess.run(
                         [*command, "--help"], cwd=repo, env=env,
@@ -341,6 +356,7 @@ class HostConfigTest(unittest.TestCase):
                     )
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertFalse(marker.exists(), "service imported the checkout package")
+            self.assertEqual(commands, ["triage", "dispatch", "dashboard"])
 
     def test_init_labels_only_touches_nothing_and_fails_on_gh(self) -> None:
         with tempfile.TemporaryDirectory() as d:
