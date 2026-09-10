@@ -44,7 +44,7 @@ def ensure_line(path: Path, line: str) -> bool:
 
 
 def ensure_labels(slug: str) -> list[str]:
-    """Create or update the six factory labels; returns one line per failure."""
+    """Create or update the factory labels; returns one line per failure."""
     failed = []
     for name, (color, desc) in LABELS.items():
         proc = sh(["gh", "label", "create", name, "--repo", slug, "--color", color, "--description", desc, "--force"])

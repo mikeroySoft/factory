@@ -58,12 +58,12 @@
 # Only the model controls those briefings; generated advice cannot execute actions.
 # model = "openai-codex/gpt-6-astra"  # unset: manager.command --model, then OMP default
 #
-# Host-side frontier manager configuration; running it is a separate feature.
-# Unset command disables the frontier manager, not read-only dashboard briefings.
+# `factory manage`: opted-in needs-review PRs first, needs-viability issues next,
+# then escalations. Unset command disables these, not read-only dashboard briefings.
 # {prompt} = path to the manager prompt file; {cwd} = kept worktree or repository root.
 # OMP requires `@{prompt}`; bare `{prompt}` passes path text and is rejected.
 # command = ["omp", "-p", "--model", "openai-codex/gpt-6-astra", "--cwd", "{cwd}", "@{prompt}"]
-# rounds = 1
+# rounds = 1  # escalation rounds; viability runs once per explicit label-add event
 # review = "escalated"  # "all" also reviews non-escalated factory PRs
 #
 # Ceilings for the fleet manager (`district manage`) raising dispatch.max_active /

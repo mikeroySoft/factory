@@ -34,6 +34,7 @@ from factory.config import (
     LABEL_HUMAN,
     LABEL_INFO,
     LABEL_TRIAGE,
+    LABEL_VIABILITY,
     Config,
 )
 
@@ -72,6 +73,7 @@ BRIEFING_CSS = Path(__file__).with_name("briefing.css")
 NEWSREADER = Path(__file__).with_name("fonts") / "Newsreader.ttf"
 NEWSREADER_LICENSE = Path(__file__).with_name("fonts") / "Newsreader-OFL.txt"
 FACTORY_LABELS = {
+    LABEL_VIABILITY,
     LABEL_TRIAGE,
     LABEL_INFO,
     LABEL_AGENT,

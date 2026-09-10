@@ -19,6 +19,8 @@ CONFIG_NAME = ".factory.toml"
 LESSONS_NAME = ".factory-lessons.md"  # committed; `factory learn` writes, every worker prompt reads
 
 # Triage roles -> label strings. Fixed by convention; `factory init` creates them.
+LABEL_VIABILITY = "needs-viability"
+LABEL_REVIEW = "needs-review"
 LABEL_TRIAGE = "needs-triage"
 LABEL_INFO = "needs-info"
 LABEL_AGENT = "ready-for-agent"
@@ -26,6 +28,8 @@ LABEL_HUMAN = "ready-for-human"
 LABEL_APPROVED = "factory-approved"
 LABEL_CHORE = "chore"
 LABELS = {
+    LABEL_VIABILITY: ("D4C5F9", "Opt in to a manager build/defer recommendation before triage"),
+    LABEL_REVIEW: ("D4C5F9", "Opt in to a manager PR direction recommendation before review"),
     LABEL_TRIAGE: ("FBCA04", "Maintainer needs to evaluate this issue"),
     LABEL_INFO: ("D4C5F9", "Waiting on reporter for more information"),
     LABEL_AGENT: ("0E8A16", "Fully specified and ready for an AFK agent"),

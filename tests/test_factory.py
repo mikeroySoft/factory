@@ -746,6 +746,7 @@ class ManageTest(unittest.TestCase):
         timeline = json.dumps(activity or [])
         stubs = stub_bin(root, gh=f'''
 case "$1 $2" in
+  "pr list") echo '[]';;
   "issue list") echo '[{{"number":7,"title":"Fix gate","body":"Original body","labels":[{{"name":"ready-for-human"}}]}}]';;
   "api repos/acme/widgets/issues/7/timeline") echo '{timeline}';;
   "issue create") echo "https://github.com/acme/widgets/issues/8";;
@@ -969,6 +970,7 @@ PY
                 stub_bin(Path(stubs).parent, **{
                     "gh": '''
 case "$1 $2" in
+  "pr list") echo '[]';;
   "issue list") echo '[{"number":7,"title":"Fix CI","body":"Original","labels":[{"name":"chore"}]}]';;
   "api repos/acme/widgets/issues/7/timeline") echo '[]';;
   "issue view") echo '{"title":"Fix CI","body":"Original","comments":[]}';;
@@ -1079,6 +1081,7 @@ esac
         (repo / config.CONFIG_NAME).write_text("[manager]\ncommand = " + json.dumps(command) + "\n")
         stub_bin(Path(stubs).parent, gh='''
 case "$1 $2 $3" in
+  "pr list --repo") echo '[]';;
   "issue list --repo") echo '[{"number":7,"title":"First","body":"Old"},{"number":8,"title":"Next","body":"Old"}]';;
   "api repos/acme/widgets/issues/"*) echo '[]';;
   "issue edit 7") echo 'GitHub rejected body edit' >&2; exit 1;;
