@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import shlex
 import sys
 import tempfile
 import unittest
@@ -313,6 +314,33 @@ class HostConfigTest(unittest.TestCase):
             (Path(d) / "b").mkdir()
             proc = factory(make_repo(Path(d) / "b"), "install", "--print", "--no-dashboard")
             self.assertNotIn("dashboard.service", proc.stdout)
+
+    def test_generated_services_ignore_a_shadowing_checkout_package(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = make_repo(Path(directory))
+            generated = factory(repo, "install", "--print", "--dashboard")
+            self.assertEqual(generated.returncode, 0, generated.stderr)
+            shadow = repo / "factory"
+            shadow.mkdir()
+            marker = repo / "checkout-executed"
+            (shadow / "__init__.py").write_text(
+                "from pathlib import Path\n"
+                "Path('checkout-executed').touch()\n"
+                "raise RuntimeError('checkout package executed')\n"
+            )
+            env = {**os.environ, "PYTHONPATH": str(ROOT)}
+            env.pop("PYTHONSAFEPATH", None)
+            for line in generated.stdout.splitlines():
+                if not line.startswith("ExecStart="):
+                    continue
+                command = shlex.split(line.removeprefix("ExecStart=").removeprefix("-"))
+                with self.subTest(command=command):
+                    result = subprocess.run(
+                        [*command, "--help"], cwd=repo, env=env,
+                        capture_output=True, text=True, check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertFalse(marker.exists(), "service imported the checkout package")
 
     def test_init_labels_only_touches_nothing_and_fails_on_gh(self) -> None:
         with tempfile.TemporaryDirectory() as d:

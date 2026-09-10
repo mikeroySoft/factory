@@ -283,7 +283,7 @@ def unit_dir() -> Path:
 
 
 def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
-    exe = f"{sys.executable} -m factory"
+    exe = f"{sys.executable} -P -m factory"
     # At boot the user manager's PATH is the systemd default (no ~/.local/bin),
     # so gh/omp/codex vanish; carry the installing shell's PATH into the units.
     # [install].env (host config) adds one line each: policy such as UV_EXCLUDE_NEWER.
