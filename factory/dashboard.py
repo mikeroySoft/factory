@@ -874,7 +874,8 @@ def snapshot() -> dict:
         # Revision belongs to the imported source checkout, not the observed repository.
         source_root = Path(__file__).resolve().parent
         revision = sh(["git", "rev-parse", "HEAD"], cwd=source_root).strip()
-        if sh(["git", "status", "--porcelain", "--", "."], cwd=source_root).strip():
+        if (not sh(["git", "ls-files", "--error-unmatch", "--", "feedback.py"], cwd=source_root).strip()
+                or sh(["git", "status", "--porcelain", "--", "."], cwd=source_root).strip()):
             revision = None
     for issue in issues:
         n = issue["number"]
