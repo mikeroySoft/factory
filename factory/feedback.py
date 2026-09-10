@@ -21,6 +21,9 @@ BODY_LIMIT = 20_000
 ERROR_LIMIT = 32
 DETAIL_TIMEOUT = 30
 SOURCES = ('pr', 'reviews', 'threads', 'checks')
+NOT_COLLECTED = 'not_collected'
+NOT_COLLECTED_MESSAGE = ('Detail collection is limited to open pull requests; this source was not read. '
+                         'Intentional noncollection is unknown, not empty, resolved, or unsupported.')
 REVISION_FIELDS = ('kind', 'source_id', 'review_id', 'thread_id', 'check_run_id',
                    'run_attempt', 'source_head_sha', 'source_updated_at', 'author',
                    'body', 'truncated', 'location', 'disposition', 'summary')
@@ -29,6 +32,11 @@ HEAD_QUERY = '''query($owner:String!,$name:String!,$number:Int!){
  id number url headRefOid state isDraft
  closingIssuesReferences(first:100){nodes{id number url} pageInfo{hasNextPage}}
  }}}'''
+REVIEW_QUERY = '''query($owner:String!,$name:String!,$number:Int!,$cursor:String){
+ repository(owner:$owner,name:$name){pullRequest(number:$number){
+ reviews(first:50,after:$cursor){pageInfo{hasNextPage endCursor} nodes{
+ id url body state updatedAt author{login __typename} commit{oid}
+ }}}}}'''
 THREAD_QUERY = '''query($owner:String!,$name:String!,$number:Int!,$cursor:String){
  repository(owner:$owner,name:$name){pullRequest(number:$number){
  reviewThreads(first:50,after:$cursor){pageInfo{hasNextPage endCursor} nodes{
@@ -70,20 +78,25 @@ def utc(value: object) -> str | None:
 
 def collect(read, *, repository: dict, pr: dict, issue: dict | None = None,
             events: list[dict] = (), provenance_complete: bool = True,
-            producer_revision: str | None = None, observed_at: str | None = None) -> dict:
+            producer_revision: str | None = None, observed_at: str | None = None,
+            collect_details: bool = True) -> dict:
     """Collect one PR using read(endpoint=... | query=..., variables=..., timeout=...).
 
     The transport returns decoded REST JSON or GraphQL data and enforces timeout.
     All source failures become bounded, sanitized coverage; independent facts survive.
     events must be retained, committed rows from the repository's bounded journal read.
+    collect_details=False reads nothing: the caller's independently known identities
+    and state are retained and every source is unavailable, never complete-empty.
     """
     observed_at = utc(observed_at) or datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
     repository = {"id": identity(repository.get('id')), "slug": repository['slug'].strip().lower(),
                   "host": repository['host'].strip().lower()}
     result = {'schema_version': 1, 'producer': {'name': 'factory.pr-feedback', 'revision': sha(producer_revision)},
               'observed_at': observed_at, 'observation_id': None, 'repository': repository,
-              'pr': {'id': identity(pr.get('id')), 'number': pr['number'], 'url': pr['url'],
-                     'head_sha': None, 'state': 'unknown', 'draft': None},
+              'pr': {'id': identity(pr.get('id')), 'number': pr['number'], 'url': pr['url'], 'head_sha': None,
+                     'state': pr['state'].lower() if isinstance(pr.get('state'), str)
+                     and pr['state'].lower() in ('open', 'closed', 'merged') else 'unknown',
+                     'draft': pr['draft'] if type(pr.get('draft')) is bool else None},
               'owner': {'issue': None, 'relation': 'unverified', 'evidence': []},
               'coverage': {s: {'status': 'unavailable', 'observed_at': None, 'truncated': False, 'reason': None} for s in SOURCES},
               'items': [], 'errors': []}
@@ -112,6 +125,10 @@ def collect(read, *, repository: dict, pr: dict, issue: dict | None = None,
         c['status'] = 'partial' if reasons[source] else 'complete'
 
     def request(source, **kwargs):
+        # Historical PRs are never fanned out: noncollection is recorded, not read.
+        if not collect_details:
+            gap(source, NOT_COLLECTED, NOT_COLLECTED_MESSAGE)
+            return None
         try:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -165,9 +182,6 @@ def collect(read, *, repository: dict, pr: dict, issue: dict | None = None,
         except (KeyError, TypeError, ValueError, AttributeError):
             gap('pr', 'malformed_response', 'Provider PR response is malformed.')
             return None
-
-    initial = head()
-    initial_sha = sha((initial or {}).get('headRefOid'))
 
     def item(source, kind, source_id, *, body='', updated=None, source_sha=None, url=None,
              author=None, review_id=None, thread_id=None, check_run_id=None, attempt=None,
@@ -242,26 +256,40 @@ def collect(read, *, repository: dict, pr: dict, issue: dict | None = None,
         result['items'].append(value)
         counts[source] += 1
 
-    # REST reviews retain real review IDs and reviewed commit, not discussion verdicts.
-    for page in range(1, PAGE_LIMIT + 1):
-        values = request('reviews', endpoint=f'{prefix}/pulls/{pr["number"]}/reviews?per_page=50&page={page}')
+    # Real reviews retain native IDs, the reviewed commit, and the provider's own
+    # update time, which (unlike a submission time) moves when a review is edited.
+    initial = head()
+    initial_sha = sha((initial or {}).get('headRefOid'))
+    cursor = None
+    for page in range(PAGE_LIMIT):
+        values = request('reviews', query=REVIEW_QUERY, variables={**variables, 'cursor': cursor})
         if values is None:
             break
-        if not isinstance(values, list):
+        try:
+            connection = values['repository']['pullRequest']['reviews']
+            rows = connection['nodes']
+            page_info = connection['pageInfo']
+            if not isinstance(rows, list) or type(page_info['hasNextPage']) is not bool:
+                raise ValueError
+            success('reviews')
+            for row in rows[:ITEM_LIMIT]:
+                if not isinstance(row, dict):
+                    gap('reviews', 'malformed_response', 'Provider review record is malformed.')
+                    continue
+                item('reviews', 'review', row.get('id'), body=row.get('body') or '', updated=row.get('updatedAt'),
+                     source_sha=(row.get('commit') or {}).get('oid'), url=row.get('url'), author=row.get('author'),
+                     review_id=row.get('id'), disposition={'review_state': row.get('state')})
+            if not page_info['hasNextPage']:
+                break
+            if page + 1 == PAGE_LIMIT or counts['reviews'] >= ITEM_LIMIT:
+                gap('reviews', 'page_limit', 'Reviews stopped at two pages or 100 items; unseen evidence is unknown.', truncated=True)
+                break
+            cursor = identity(page_info.get('endCursor'))
+            if cursor is None:
+                raise ValueError
+        except (KeyError, TypeError, ValueError, AttributeError):
             gap('reviews', 'malformed_response', 'Provider reviews response is malformed.')
             break
-        success('reviews')
-        for row in values[:ITEM_LIMIT]:
-            if not isinstance(row, dict):
-                gap('reviews', 'malformed_response', 'Provider review record is malformed.')
-                continue
-            item('reviews', 'review', row.get('node_id'), body=row.get('body') or '', updated=row.get('updated_at'),
-                 source_sha=row.get('commit_id'), url=row.get('html_url'), author=row.get('user'),
-                 review_id=row.get('node_id'), disposition={'review_state': row.get('state')})
-        if len(values) < 50:
-            break
-        if page == PAGE_LIMIT:
-            gap('reviews', 'page_limit', 'Reviews stopped after two provider pages; unseen evidence is unknown.', truncated=True)
 
     cursor = None
     for page in range(PAGE_LIMIT):
@@ -333,8 +361,10 @@ def collect(read, *, repository: dict, pr: dict, issue: dict | None = None,
                     gap('checks', 'page_limit', 'Checks/statuses stop after one page each; unseen evidence is unknown.', truncated=True)
             except (KeyError, TypeError, ValueError, AttributeError):
                 gap('checks', 'malformed_response', 'Provider checks response is malformed.')
-    else:
+    elif collect_details:
         gap('checks', 'head_unavailable', 'Checks cannot be queried without an observed immutable commit.')
+    else:
+        gap('checks', NOT_COLLECTED, NOT_COLLECTED_MESSAGE)
 
     final = head()
     final_sha = sha((final or {}).get('headRefOid'))
@@ -343,7 +373,7 @@ def collect(read, *, repository: dict, pr: dict, issue: dict | None = None,
                             draft=final.get('isDraft') if type(final.get('isDraft')) is bool else None)
         if result['pr']['state'] not in ('open', 'closed', 'merged'):
             result['pr']['state'] = 'unknown'
-    raced = initial_sha != final_sha or initial_sha is None or final_sha is None
+    raced = collect_details and (initial_sha != final_sha or initial_sha is None or final_sha is None)
     if raced:
         for source in SOURCES:
             gap(source, 'head_race' if initial_sha and final_sha else 'head_unavailable',
@@ -364,9 +394,12 @@ def collect(read, *, repository: dict, pr: dict, issue: dict | None = None,
                                'evidence': ['Provider same-repository closing-issue link: ' + issue['url'], 'Retained Factory claimed event for issue #' + str(issue['number'])]}
         elif not candidates and not issue:
             result['owner']['relation'] = 'none'
-    if not provenance_complete:
+    elif not collect_details and claimed:
+        result['owner']['evidence'] = ['Retained Factory claimed event for issue #' + str(issue['number'])
+                                       + '; the provider issue link was not read, so ownership stays unverified.']
+    if collect_details and not provenance_complete:
         gap('reviews', 'provenance_partial', 'Bounded Factory event provenance is incomplete; unseen reviews are unknown.', truncated=True)
-    if result['owner']['relation'] != 'factory_issue':
+    if collect_details and result['owner']['relation'] != 'factory_issue':
         gap('pr', 'ownership_unverified', 'Factory issue ownership is missing, conflicting, or unverified.')
 
     # Accepted lifecycle result IDs are the source, never rendered VERDICT prose.

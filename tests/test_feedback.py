@@ -17,8 +17,9 @@ class Provider:
         self.heads = [H, H]
         self.calls = []
         self.fail = None
-        self.reviews = [{"node_id": "RV_1", "html_url": PR["url"] + "#pullrequestreview-1", "commit_id": H,
-                         "state": "CHANGES_REQUESTED", "body": "Fix boundary", "user": {"login": "shared", "type": "User"}}]
+        self.reviews = [{"id": "RV_1", "url": PR["url"] + "#pullrequestreview-1", "commit": {"oid": H},
+                         "state": "CHANGES_REQUESTED", "body": "Fix boundary", "updatedAt": AT,
+                         "author": {"login": "shared", "__typename": "User"}}]
         self.comments = [{"id": "RC_1", "url": PR["url"] + "#discussion_r1", "body": "<img onerror=alert(1)>",
                           "updatedAt": AT, "commit": {"oid": H}, "originalCommit": {"oid": OLD},
                           "path": "factory/example.py", "line": 7, "originalLine": 6, "diffSide": "RIGHT",
@@ -31,7 +32,8 @@ class Provider:
 
     def __call__(self, *, endpoint=None, query=None, variables=None, timeout=None):
         self.calls.append((endpoint, query, timeout))
-        source = 'threads' if query and 'reviewThreads' in query else 'pr' if query else 'reviews' if '/reviews?' in endpoint else 'checks'
+        source = ({feedback.HEAD_QUERY: 'pr', feedback.THREAD_QUERY: 'threads',
+                   feedback.REVIEW_QUERY: 'reviews'}.get(query, 'checks'))
         if self.fail == source:
             raise RuntimeError('token=SECRET provider config')
         if source == 'pr':
@@ -40,7 +42,13 @@ class Provider:
         if source == 'threads':
             return {"repository": {"pullRequest": {"reviewThreads": {"nodes": [self.thread], "pageInfo": {"hasNextPage": False}}}}}
         if source == 'reviews':
-            return self.reviews
+            if not isinstance(self.reviews, list):
+                return self.reviews
+            start = int((variables or {}).get('cursor') or 0)
+            nodes = self.reviews[start:start + 50]
+            more = start + len(nodes) < len(self.reviews)
+            return {"repository": {"pullRequest": {"reviews": {"nodes": nodes, "pageInfo": {
+                "hasNextPage": more, "endCursor": str(start + len(nodes)) if more else None}}}}}
         if '/check-runs?' in endpoint:
             return {"total_count": len(self.checks), "check_runs": self.checks}
         return self.statuses
@@ -93,7 +101,7 @@ class FeedbackTests(unittest.TestCase):
 
     def test_equivalent_polls_and_semantic_revisions(self):
         provider = Provider()
-        second = {**provider.reviews[0], 'node_id': 'RV_2', 'commit_id': OLD}
+        second = {**provider.reviews[0], 'id': 'RV_2', 'commit': {'oid': OLD}}
         provider.reviews.append(second)
         first = collect(provider)
         provider.heads = [H, H]
@@ -164,7 +172,7 @@ class FeedbackTests(unittest.TestCase):
 
     def test_unknown_source_head_and_outdated_thread_are_not_current(self):
         p = Provider()
-        p.reviews[0]['commit_id'] = None
+        p.reviews[0]['commit'] = None
         p.thread['isOutdated'] = True
         p.thread['isResolved'] = True
         result = collect(p)
@@ -184,17 +192,17 @@ class FeedbackTests(unittest.TestCase):
 
     def test_body_count_pagination_timeout_and_malformed_bounds(self):
         p = Provider()
-        p.reviews[0]['body'] = 'é' * 20000
+        p.reviews[0].update(body='é' * 20000, updatedAt=None)
         result = collect(p)
         review = next(i for i in result['items'] if i['kind'] == 'review')
         self.assertEqual(len(review['body'].encode()), 20000)
         self.assertTrue(review['truncated'])
         self.assertIn('change_detection_incomplete', result['coverage']['reviews']['reason'])
         p = Provider()
-        p.reviews = [{**p.reviews[0], 'node_id': f'RV_{n}'} for n in range(100)]
+        p.reviews = [{**p.reviews[0], 'id': f'RV_{n}'} for n in range(120)]
         result = collect(p)
-        self.assertLessEqual(len([i for i in result['items'] if i['kind'] == 'review']), 100)
-        self.assertEqual(sum('/reviews?' in (c[0] or '') for c in p.calls), 2)
+        self.assertEqual(len([i for i in result['items'] if i['kind'] == 'review']), 100)
+        self.assertEqual(sum(c[1] == feedback.REVIEW_QUERY for c in p.calls), 2)
         self.assertTrue(result['coverage']['reviews']['truncated'])
         p = Provider()
         p.thread['comments']['pageInfo']['hasNextPage'] = True
@@ -204,7 +212,7 @@ class FeedbackTests(unittest.TestCase):
         self.assertEqual(collect(p)['coverage']['reviews']['status'], 'unavailable')
         p = Provider()
         def timed(**kwargs):
-            if '/reviews?' in (kwargs.get('endpoint') or ''):
+            if kwargs.get('query') == feedback.REVIEW_QUERY:
                 raise TimeoutError('secret')
             return p(**kwargs)
         result = collect(timed)
@@ -253,6 +261,52 @@ class FeedbackTests(unittest.TestCase):
         self.assertIsNone(result['pr']['head_sha'])
         self.assertTrue(all(i['observed_head_sha'] is None and i['relevance'] == 'unknown' for i in result['items']))
 
+
+    def test_review_update_time_is_retained_and_signals_change_detection(self):
+        review = next(i for i in collect()['items'] if i['kind'] == 'review')
+        self.assertEqual(review['source_updated_at'], AT)
+        p = Provider()
+        p.reviews[0].update(body='Fix boundary, again', updatedAt='2026-09-11T09:00:00Z')
+        edited = collect(p)
+        revised = next(i for i in edited['items'] if i['kind'] == 'review')
+        self.assertEqual(revised['evidence_id'], review['evidence_id'])
+        self.assertEqual(revised['source_updated_at'], '2026-09-11T09:00:00Z')
+        self.assertNotEqual(revised['source_revision'], review['source_revision'])
+        p = Provider()
+        p.reviews[0]['body'] = 'x' * 20_001
+        signalled = collect(p)
+        self.assertTrue(next(i for i in signalled['items'] if i['kind'] == 'review')['truncated'])
+        self.assertNotIn('change_detection_incomplete', signalled['coverage']['reviews']['reason'])
+        p = Provider()
+        p.reviews[0].update(body='x' * 20_001, updatedAt=None)
+        self.assertIn('change_detection_incomplete', collect(p)['coverage']['reviews']['reason'])
+
+    def test_uncollected_details_are_schema_1_and_read_nothing(self):
+        p = Provider()
+        result = feedback.collect(p, repository=REPO, pr={**PR, 'state': 'MERGED', 'draft': False},
+                                  issue=ISSUE, events=factory_events(), observed_at=AT,
+                                  collect_details=False)
+        self.assertEqual(p.calls, [])
+        self.assertEqual(result['schema_version'], 1)
+        self.assertEqual(result['pr']['id'], PR['id'])
+        self.assertEqual(result['pr']['state'], 'merged')
+        self.assertIs(result['pr']['draft'], False)
+        self.assertIsNone(result['pr']['head_sha'])
+        self.assertEqual(result['items'], [])
+        self.assertTrue(result['observation_id'].startswith('sha256:'))
+        for source in feedback.SOURCES:
+            coverage = result['coverage'][source]
+            self.assertEqual(coverage['status'], 'unavailable')
+            self.assertIsNone(coverage['observed_at'])
+            self.assertIn(feedback.NOT_COLLECTED, coverage['reason'])
+        self.assertEqual({e['code'] for e in result['errors']}, {feedback.NOT_COLLECTED})
+        self.assertEqual({e['source'] for e in result['errors']}, set(feedback.SOURCES))
+        self.assertEqual(result['owner']['relation'], 'unverified')
+        self.assertTrue(any('claimed' in entry for entry in result['owner']['evidence']))
+        closed = feedback.collect(Provider(), repository=REPO, pr={**PR, 'state': 'nonsense'},
+                                  issue=ISSUE, collect_details=False)
+        self.assertEqual(closed['pr']['state'], 'unknown')
+        self.assertIsNone(closed['pr']['draft'])
 
     def test_malformed_pr_metadata_preserves_independent_sources(self):
         p = Provider()
