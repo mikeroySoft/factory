@@ -8,29 +8,53 @@ the raw reviewer output. Adjudication against cases/<id>/oracle.json is done sep
 usage: run_calibration.py <out-dir> <samples> [contract ...]
 """
 import concurrent.futures as cf
-import hashlib, json, pathlib, subprocess, sys, tempfile, time
+import hashlib, json, pathlib, subprocess, sys, tempfile, threading, time
 
 EXP = pathlib.Path(__file__).parent
+REPO = "/home/mike/dev/mikeroysoft/factory"
+CHECKOUT_ROOT = pathlib.Path("/tmp/cal-checkout")
 CONTRACTS = {"baseline": "cadb9981524ab5506693e27f56ff8ac4ef911da6",
              "issue36": "1947fc4e3de23e71f64342f2c9cd2570d845db5e"}
-CHECKOUTS = {"baseline": "/tmp/cal-checkout/baseline", "issue36": "/tmp/cal-checkout/issue36"}
 CASES = ["12-before", "12-after", "20-before", "20-after"]
 MODEL = "anthropic/claude-fable-5-1"          # the repo's configured reviewer model
 FLAGS = ["-p", "--mode", "text", "--no-session", "--no-tools", "--no-extensions",
          "--no-skills", "--no-rules", "--no-lsp", "--no-pty", "--no-title",
          "--thinking", "low", "--hide-thinking", "--max-time", "300"]
 TIMEOUT = 420
+CHECKOUT_LOCK = threading.Lock()
 
 
 def sha(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def checkout(commit: str) -> pathlib.Path:
+    """A pinned, content-addressed clone of the contract under test.
+
+    Provisioned on demand and keyed by commit, so a reaped /tmp or a moved branch
+    cannot silently change which contract a run measured. Serialized and idempotent:
+    concurrent runs share one clone per commit, and a clone already at that commit is
+    never checked out again.
+    """
+    dest = CHECKOUT_ROOT / commit[:12]
+    with CHECKOUT_LOCK:
+        if not (dest / ".git").exists():
+            subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout", REPO, str(dest)],
+                           check=True, capture_output=True)
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=dest,
+                              capture_output=True, text=True).stdout.strip()
+        if head != commit:
+            subprocess.run(["git", "checkout", "--quiet", "--detach", commit], cwd=dest,
+                           check=True, capture_output=True)
+    return dest
+
+
 def capture(contract: str, case: str) -> str:
     """The contract's own prompt text, built by its own dispatch.review()."""
     with tempfile.TemporaryDirectory(prefix="cal-capture-") as scratch:
         out = pathlib.Path(scratch) / "prompt.txt"
-        subprocess.run([sys.executable, str(EXP / "capture_contract.py"), CHECKOUTS[contract],
+        subprocess.run([sys.executable, str(EXP / "capture_contract.py"),
+                        str(checkout(CONTRACTS[contract])),
                         scratch, case.split("-")[0],
                         str(EXP / "cases" / case / "sources/gate-report.md"), str(out)],
                        check=True, capture_output=True, text=True, cwd=scratch)

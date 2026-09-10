@@ -170,12 +170,11 @@ These bound what the numbers above may be used for.
 - **Four packets from two tickets, two samples each.** Sufficient to demonstrate the
   failure mode; far too small for a rate. Do not publish "0%/100%" as a factory metric.
 - **No-tools packet ≠ production reviewer.** Production runs `omp -p --no-session --model …`
-  **with tools**, in the worktree, able to read any file and the live issue. Here the diff,
+  **with tools**, in the worktree, able to read any file and the live issue. In §4 the diff,
   issue and README are inlined and the process has no tools, for determinism and identical
-  input across arms. A tool-enabled reviewer could plausibly find D1 by reading
-  `dispatch.run`'s signature (not in either diff). This experiment therefore measures the
-  **contract**, not the deployed reviewer's ceiling. `20-before` D1 in particular requires
-  a default argument outside the packet.
+  input across arms, so §4 measures the **contract**, not the deployed reviewer's ceiling.
+  §8 runs the production path to separate the two, and finds this limitation is decisive
+  for one defect and irrelevant for the other.
 - **`docs/manager-plan.md` (111KB) is not in the packets** and is disclosed as omitted
   inside each envelope, so a "documented conventions" finding sourced there is impossible.
 - **One model, one thinking level.** No cross-model or effort sweep.
@@ -200,11 +199,60 @@ one, and SWE-Gate does not either (§1).
 
 ## 7. Comparison readiness
 
-Ready and already exercised against #36. To re-run against a corrected contract head:
-point `CONTRACTS`/`CHECKOUTS` in `run_calibration.py` at the new commit, then
+Ready and already exercised against #36, whose contract is byte-identical to `main` as
+deployed (§3). To re-run against a new contract head: add it to `CONTRACTS` in
+`run_calibration.py` — checkouts are provisioned on demand and keyed by commit — then
 `python run_calibration.py runs/<name> 2`. Packets, oracles, gate reports and the capture
 boundary are frozen and hashed, so a later run is comparable to this one by construction.
 
 The honest next step for a real rate is more cases, not more samples — and cases chosen to
 provoke **over**-strictness (heads that are correct but unfashionable), since these four
 produced none and that is the axis #36 is built to protect.
+
+## 8. Tools-enabled variant — why the misses happened
+
+§4's misses had two candidate explanations: the contract does not ask for enough, or the
+packet withheld evidence the defect needs. `run_tools.py` separates them by running the
+**production path** instead: the real reviewer argv with tools enabled, inside a throwaway
+clone checked out at the case head with `refs/remotes/origin/main` set to the review base,
+so `git diff origin/main..HEAD` resolves as it does in a worker worktree and the reviewer
+can read any file and the live issue. No packet envelope. Arms are the pre-#36 baseline
+`cadb998…` and the contract as deployed on `main` (`29d21d6…`). 8 runs: 2 defect-bearing
+cases × 2 contracts × 2 samples. Deliberate deviations, identical across runs: `--mode
+text`, `--no-title`, `--max-time 600`, and `--auto-approve` (a print-mode approval prompt
+would otherwise hang a run and confound the measurement).
+
+| Case | Arm | D1 detected | D1 blocking | Verdict |
+|---|---|---|---|---|
+| `12-before` | baseline | 2/2 | **1/2** | REVISE, APPROVE |
+| `12-before` | landed (`29d21d6…`) | 2/2 | **2/2** | REVISE, REVISE |
+| `20-before` | baseline | 0/2 | 0/2 | APPROVE, APPROVE |
+| `20-before` | landed (`29d21d6…`) | 0/2 | 0/2 | APPROVE, APPROVE |
+
+1. **The #12 miss was withheld evidence, not a weak contract.** Given repo access the
+   defect is found in 4/4 runs, both arms, and cited precisely — `config.py:286`
+   `list(manager["command"])` against `manager_model()`'s own string/`shlex` branch, with
+   the concrete trigger (`command = "omp -p --model …"`) and impact (`factory doctor`
+   prints `manager: o`). Neither `manager_model()` nor `README.md:171-172` is in the diff,
+   so the §4 packet could not support the finding. **The §4 result for this case measures
+   the packet, not the reviewer.**
+2. **The #20 miss survives full repo access.** Both arms missed it 4/4 even able to read
+   `dispatch.run`'s `check=True` default and the shipped `conflict` profile. Detecting it
+   requires composing three facts across two files (profile rewrites history → push is
+   non-fast-forward → `check=True` raises after a passing gate). That is a reasoning gap,
+   not an evidence gap, and no contract wording here closed it.
+3. **First measured benefit of the #36 contract beyond formatting.** On `12-before` both
+   arms *found* the defect, but the baseline demoted it in one of two runs to a
+   "Judgement call (non-blocking)" reasoning "Not a documented-convention breach; the
+   issue specifies the argv form only" — and returned APPROVE. The landed contract blocked
+   2/2, citing the exit-gate criterion "`factory doctor` reports the binary". The
+   Required/Optional discipline converted a found-but-demoted defect into a blocking one.
+   At n=2 per arm this is suggestive, not established.
+4. **Still zero unnecessary demands.** Every blocking finding in all three REVISE runs was
+   the adjudicated D1; no required fix outside the oracle appeared in any of the 8 runs.
+5. **No run mutated its worktree** (`worktree_dirty` empty in all 8), despite tools and
+   `--auto-approve`. Cost of realism: 113–585s per run versus 27–72s no-tools.
+
+Consequence for #34: a coverage line remains undefensible (§6), and the deployed
+reviewer's real weakness on this evidence is **multi-file compositional defects**, which
+neither more contract text nor a coverage counter addresses.
