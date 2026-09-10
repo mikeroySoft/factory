@@ -1343,6 +1343,55 @@ class DispatchTest(unittest.TestCase):
                 self.assertFalse(any(cmd[:2] == ["git", "push"] for cmd in commands))
                 self.assertFalse(any(cmd[:3] == ["gh", "pr", "create"] for cmd in commands))
 
+    def test_dispatch_intakes_opted_in_pr_heads_once(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        def pr(n, **fields):
+            return {"number": n, "state": "OPEN", "isDraft": False,
+                    "headRefName": "contributor/fix", "headRefOid": f"head-{n}",
+                    "labels": [], "reviewRequests": [], **fields}
+
+        label = [{"name": "needs-review"}]
+        prs = [
+            pr(1, labels=label),
+            pr(2, reviewRequests=[{"login": "FactoryBot"}]),
+            pr(3, labels=label, isDraft=True),
+            pr(4, labels=label, state="CLOSED"),
+            pr(5, reviewRequests=[{"login": "someone-else"}]),
+            pr(6, labels=label),
+            pr(7, reviewRequests=[{"name": "FactoryBot", "slug": "factorybot"}]),
+            pr(8, labels=[{"name": "factory-review"}]),
+            pr(9, labels=label, state="MERGED"),
+        ]
+
+        def github(args):
+            if args == ["api", "user"]:
+                return {"login": "factorybot"}
+            if args[:2] == ["pr", "list"]:
+                return prs
+            self.fail(f"Unexpected GitHub operation: {args}")
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            cfg = config.load(repo)
+            dispatch.configure(cfg)
+            with mock.patch.object(config, "load", return_value=cfg), \
+                    mock.patch.object(dispatch, "gh_json", side_effect=github), \
+                    mock.patch.object(dispatch, "land_pass"), \
+                    mock.patch.object(manage, "manage_pass"), \
+                    mock.patch.object(dispatch, "frontier", return_value=[]):
+                self.assertEqual(dispatch.main(["--dry-run"]), 0)
+                self.assertFalse(cfg.factory.exists())
+                dispatch.record("review-intake", pr=6, head="head-6")
+                self.assertEqual(dispatch.main([]), 0)
+                self.assertEqual(dispatch.main([]), 0)
+            rows = [e for e in lifecycle.read_events(dispatch.EVENTS)
+                    if e.get("event") == "review-intake"]
+            self.assertEqual([(e["pr"], e["head"]) for e in rows],
+                             [(6, "head-6"), (1, "head-1"), (2, "head-2")])
+
     def test_prompt_carries_handoff_and_events_append(self) -> None:
         from unittest import mock
 
