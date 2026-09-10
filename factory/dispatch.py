@@ -4,9 +4,9 @@ One pass per invocation: first the upstream sync merges any new upstream main
 commits into the fork's main (host gate, no CI), then the merge stage lands
 at most one approved, green, up-to-date factory PR on main; then pick
 claimable issues (or --ticket N), run a worker agent in a git worktree, gate,
-open a PR, review with the reviewer model, bounce once. A reviewer APPROVE marks the PR
-`factory-approved`; the merge stage requires that label, green GitHub CI, and
-a head containing the current main tip before squash-merging.
+open a PR, review with the reviewer model, and bounce once. Approval and merge
+require the gate, review, durable approval event, CI, and remote PR to agree on
+one immutable head containing the current main tip.
 All state lives in GitHub and .factory/ on disk.
 """
 
@@ -413,8 +413,8 @@ def escalate(n: int, reason: str, log_path: Path | None) -> None:
     run(["gh", "issue", "comment", str(n), "--repo", REPO, "--body", body], check=False)
 
 
-def review(wt: Path, n: int, gate_report: str) -> tuple[str, str]:
-    """Run the two-axis diff review. Returns (verdict, findings markdown)."""
+def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str, str]:
+    """Run the two-axis diff review against the exact head that passed the gate."""
     prompt = (
         f"Review `git diff origin/{cfg.main}..HEAD` in this repository on two axes:\n"
         f"1. Standards: does the code follow this repo's documented conventions "
@@ -448,18 +448,52 @@ def review(wt: Path, n: int, gate_report: str) -> tuple[str, str]:
         f"`VERDICT: APPROVE` or `VERDICT: REVISE`."
     )
     with lifecycle.scope(EVENTS, "review", ticket=n) as execution:
-        proc = run(cfg.review_cmd(prompt), cwd=wt, check=False)
-        findings = proc.stdout.strip() or proc.stderr.strip()
-        m = re.search(r"VERDICT:\s*(APPROVE|REVISE)", findings)
-        verdict = m.group(1) if m else "REVISE"
-        execution.emit("result", returncode=proc.returncode, verdict=verdict, parsed=bool(m))
-        if m and proc.returncode == 0:
+        before = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+        proc = None
+        findings = ""
+        parsed = False
+        matches = []
+        actual_head = before
+        if before == expected_head:
+            proc = run(cfg.review_cmd(prompt), cwd=wt, check=False)
+            findings = (proc.stdout.strip() or proc.stderr.strip())
+            matches = list(re.finditer(r"(?m)^VERDICT: (APPROVE|REVISE)[ \t]*$", findings))
+            verdict_lines = re.findall(r"(?m)^VERDICT:.*$", findings)
+            parsed = (
+                len(verdict_lines) == 1
+                and len(matches) == 1
+                and matches[0].end() == len(findings)
+            )
+            actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+        accepted = (
+            proc is not None
+            and proc.returncode == 0
+            and parsed
+            and actual_head == expected_head
+        )
+        model_verdict = matches[0].group(1) if parsed else "REVISE"
+        verdict = model_verdict if accepted else "REVISE"
+        if accepted:
             execution.outcome = "approved" if verdict == "APPROVE" else "product_feedback"
             execution.reason = verdict
         else:
             execution.outcome = "unknown"
-            execution.reason = f"review_exit:{proc.returncode}" if proc.returncode else "unparsed_verdict"
-        record("review", ticket=n, verdict=verdict, parsed=bool(m))
+            if before != expected_head or actual_head != expected_head:
+                execution.reason = "state_changed"
+            elif proc is not None and proc.returncode:
+                execution.reason = f"review_exit:{proc.returncode}"
+            else:
+                execution.reason = "unparsed_verdict"
+            diagnostic = f"Factory rejected reviewer evidence: {execution.reason}."
+            findings = f"{findings}\n\n{diagnostic}" if findings else diagnostic
+        execution.emit(
+            "result", returncode=proc.returncode if proc is not None else None,
+            verdict=verdict, parsed=parsed, head=expected_head, actual_head=actual_head,
+        )
+        record(
+            "review", ticket=n, verdict=verdict, parsed=parsed, accepted=accepted,
+            head=expected_head, actual_head=actual_head,
+        )
     return verdict, findings
 
 
@@ -692,15 +726,43 @@ def sync_pass(dry_run: bool) -> None:
 FACTORY_APPROVED = LABEL_APPROVED
 
 
-def approve_pr(n: int) -> None:
-    """Record the reviewer APPROVE durably on the PR (merge-stage precondition)."""
-    record("approved", ticket=n)
-    run(
+def _head_evidence_matches(events: list[dict], n: int, head: str) -> bool:
+    """True when the latest gate and review for this head both succeeded."""
+    gate = review_ok = None
+    for event in events:
+        if event.get("ticket") != n:
+            continue
+        if event.get("event") == "attempt" and event.get("head") == head:
+            gate = event.get("gate") == "PASS" and event.get("actual_head") == head
+        elif event.get("event") == "refreshed" and event.get("gate_head") == head:
+            gate = event.get("gate") == "PASS" and event.get("actual_head") == head
+        elif event.get("event") == "review" and event.get("head") == head:
+            review_ok = (
+                event.get("accepted") is True
+                and event.get("verdict") == "APPROVE"
+                and event.get("actual_head") == head
+            )
+    return gate is True and review_ok is True
+
+
+def approve_pr(n: int, head: str) -> bool:
+    """Label and record approval only for matching gate, review, and remote head evidence."""
+    if not _head_evidence_matches(lifecycle.read_events(EVENTS), n, head):
+        return False
+    fields = "number,state,headRefOid,reviewDecision"
+    pr = gh_json(["pr", "view", f"agent/{n}", "--repo", REPO, "--json", fields])
+    if (
+        pr.get("state") != "OPEN"
+        or pr.get("headRefOid") != head
+        or pr.get("reviewDecision") == "CHANGES_REQUESTED"
+    ):
+        return False
+    changed = run(
         [
             "gh",
             "pr",
             "edit",
-            f"agent/{n}",
+            str(pr["number"]),
             "--repo",
             REPO,
             "--add-label",
@@ -708,6 +770,25 @@ def approve_pr(n: int) -> None:
         ],
         check=False,
     )
+    if changed.returncode:
+        return False
+    fresh = gh_json(["pr", "view", str(pr["number"]), "--repo", REPO, "--json", fields])
+    if (
+        fresh.get("state") != "OPEN"
+        or fresh.get("headRefOid") != head
+        or fresh.get("reviewDecision") == "CHANGES_REQUESTED"
+    ):
+        run(
+            ["gh", "pr", "edit", str(pr["number"]), "--repo", REPO,
+             "--remove-label", FACTORY_APPROVED],
+            check=False,
+        )
+        return False
+    record(
+        "approved", ticket=n, pr=pr["number"], head=head,
+        gate_head=head, review_head=head,
+    )
+    return True
 
 
 def signoff() -> str:
@@ -733,29 +814,26 @@ def pr_checks(pr: int) -> list[dict]:
         return []
 
 
-def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> None:
-    """Bring agent/n up to date with current main, re-gate on this host, force-push.
-
-    Re-earns the evidence against what the PR will actually merge into; CI
-    re-runs on the push and the merge happens on a later pass. Sync PRs
-    (`carries_upstream`) merge main in rather than rebase: a rebase would
-    replay the upstream commits onto new SHAs, dropping the ancestry the
-    sync exists to preserve. Everything else rebases to keep history linear.
-    """
+def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
+    """Refresh, gate, push, and independently review the resulting immutable head."""
     wt = ensure_worktree(n)
 
     def withdraw(reason: str) -> None:
-        # A failed refresh must pull the PR from merge candidacy: the merge stage
-        # selects by `factory-approved`, so leaving the label re-runs this same
-        # failure (and posts the same escalation) every pass. A human re-adds
-        # the label after the fix.
-        run(
-            ["gh", "pr", "edit", str(pr), "--repo", REPO, "--remove-label", FACTORY_APPROVED],
-            check=False,
-        )
         escalate(n, f"PR #{pr}: {reason}; `{FACTORY_APPROVED}` label removed", None)
 
+    removed = run(
+        ["gh", "pr", "edit", str(pr), "--repo", REPO, "--remove-label", FACTORY_APPROVED],
+        check=False,
+    )
+    if removed.returncode:
+        escalate(n, f"PR #{pr}: could not remove stale `{FACTORY_APPROVED}` approval", None)
+        return False
     run(["git", "fetch", "origin"], cwd=wt)
+    local_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    remote_head = run(["git", "rev-parse", f"origin/agent/{n}"], cwd=wt).stdout.strip()
+    if local_head != remote_head:
+        withdraw(f"kept worktree head {local_head} differs from remote head {remote_head}")
+        return False
     verb, cmd = (
         ("merge", ["git", "merge", f"origin/{cfg.main}", "--no-edit"])
         if carries_upstream
@@ -764,23 +842,53 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> None:
     if run(cmd, cwd=wt, check=False).returncode != 0:
         run(["git", verb, "--abort"], cwd=wt, check=False)
         withdraw(f"{verb} onto moved main conflicts; worktree {wt}")
-        return
+        return False
     empty = run(
         ["git", "merge-base", "--is-ancestor", "HEAD", f"origin/{cfg.main}"], cwd=wt, check=False
     ).returncode == 0
     if empty:
-        # An empty refresh can never be a successful refresh: force-pushing it
-        # would erase the PR (GitHub auto-closes a branch with nothing ahead).
         withdraw(f"nothing ahead of {cfg.main} after {verb}; refusing to push")
-        return
+        return False
+    head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    status_cmd = [
+        "git", "status", "--porcelain", "--untracked-files=all", "--", ".",
+        ":(exclude).factory-prompt.md", ":(exclude).factory",
+    ]
+    before_status = run(status_cmd, cwd=wt).stdout.strip()
     ok, report = run_gate(wt, n)
+    actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    after_status = run(status_cmd, cwd=wt).stdout.strip()
+    if actual_head != head:
+        ok = False
+        report += f"\n\nGate evidence rejected: HEAD changed from {head} to {actual_head}."
+    if before_status or after_status:
+        ok = False
+        report += "\n\nGate evidence rejected: worktree was not clean for the gated commit."
     if not ok:
         pr_comment(n, f"Gate failed after {verb} onto current main:\n\n{report}")
         withdraw(f"gate failed after {verb} onto moved main")
-        return
-    run(["git", "push", "--force-with-lease", "origin", f"agent/{n}"], cwd=wt)
-    record("refreshed", ticket=n, pr=pr)
-    log(f"#{n}: PR #{pr} {verb}d onto current main and re-gated; merge next pass")
+        return False
+    pushed = run(
+        ["git", "push", "--force-with-lease", "origin", f"agent/{n}"],
+        cwd=wt, check=False,
+    )
+    if pushed.returncode:
+        withdraw("remote head changed while refreshed evidence was being produced")
+        return False
+    record(
+        "refreshed", ticket=n, pr=pr, head=head, gate="PASS",
+        gate_head=head, actual_head=head, clean=True,
+    )
+    verdict, findings = review(wt, n, report, head)
+    pr_comment(n, findings)
+    if verdict != "APPROVE":
+        withdraw(f"fresh review requested changes after {verb} onto moved main")
+        return False
+    if not approve_pr(n, head):
+        withdraw("approval evidence, head, or human review state changed before refreshed approval")
+        return False
+    log(f"#{n}: PR #{pr} {verb}d onto current main, re-gated, and re-approved at {head[:12]}")
+    return True
 
 
 def cleanup_after_merge(n: int) -> None:
@@ -795,13 +903,12 @@ def land_pass(dry_run: bool) -> None:
     """Everything that moves main, under one lock: upstream sync, then the
     merge stage (at most ONE approved, green, up-to-date factory PR per pass).
 
-    A merge requires all four independently produced pieces of evidence:
-    host gate PASS (in the PR body), reviewer APPROVE (`factory-approved`
-    label), green GitHub CI, and a head that already contains the current
-    main tip — so the evidence was produced against what it merges into.
-    One merge per pass is the merge queue: landing one PR makes the others
-    stale, and the refresh path re-earns their evidence before they land.
-    A human blocks any merge by requesting changes on the PR.
+    A merge requires independently produced gate and reviewer evidence bound
+    to the same head, a matching durable approval plus `factory-approved`,
+    green GitHub CI for that unchanged head, a head containing the current
+    main tip, and no human requested-changes veto. One merge per pass is the
+    merge queue: landing one PR makes the others stale, and the refresh path
+    re-earns gate and fresh review evidence before they land.
     """
     # Serialize against concurrent dispatcher runs (timer + manual): two merge
     # stages rebasing the same worktree would corrupt it. Skip, don't wait —
@@ -842,7 +949,7 @@ def merge_pass_locked(dry_run: bool) -> None:
             "--state",
             "open",
             "--json",
-            "number,headRefName,isDraft,labels,reviewDecision",
+            "number,headRefName,headRefOid,isDraft,labels,reviewDecision",
         ]
     )
     candidates = []
@@ -855,8 +962,8 @@ def merge_pass_locked(dry_run: bool) -> None:
         if pr["reviewDecision"] == "CHANGES_REQUESTED":
             log(f"PR #{pr['number']}: human requested changes; not merging")
             continue
-        candidates.append((pr["number"], int(m.group(1))))
-    for pr_num, n in sorted(candidates):
+        candidates.append((pr["number"], int(m.group(1)), pr.get("headRefOid")))
+    for pr_num, n, listed_head in sorted(candidates):
         with nullcontext() if dry_run else lifecycle.scope(
             EVENTS, "merge-eligibility", ticket=n, lock=FACTORY / "locks" / "merge.lock"
         ) as execution:
@@ -866,9 +973,6 @@ def merge_pass_locked(dry_run: bool) -> None:
                 buckets[c["bucket"]] = buckets.get(c["bucket"], 0) + 1
             failed = [c["name"] for c in checks if c["bucket"] in ("fail", "cancel")]
             if failed:
-                # A finished red run is deterministic evidence, not a flake guess.
-                # Pull the PR from candidacy so this escalates once, not every pass;
-                # a human (or a re-run pipeline) re-adds the label after the fix.
                 if dry_run:
                     log(f"PR #{pr_num}: would escalate (CI failed: {', '.join(failed)})")
                     continue
@@ -904,17 +1008,42 @@ def merge_pass_locked(dry_run: bool) -> None:
                     execution.outcome, execution.reason = "not_eligible", "no_passing_ci"
                     execution.wait("no_passing_ci", mode="eligibility", pr=pr_num)
                 continue
-            behind = gh_json(["api", f"repos/{REPO}/compare/{cfg.main}...agent/{n}"])[
-                "behind_by"
-            ]
+            fields = "number,state,headRefName,headRefOid,isDraft,labels,reviewDecision,title"
+            fresh = gh_json(["pr", "view", str(pr_num), "--repo", REPO, "--json", fields])
+            labels = {label["name"] for label in fresh.get("labels", [])}
+            head = fresh.get("headRefOid")
+            if (
+                fresh.get("state") != "OPEN"
+                or fresh.get("headRefName") != f"agent/{n}"
+                or fresh.get("isDraft")
+                or FACTORY_APPROVED not in labels
+                or fresh.get("reviewDecision") == "CHANGES_REQUESTED"
+            ):
+                log(f"PR #{pr_num}: state changed during eligibility check; not merging")
+                continue
+            if not head or head != listed_head:
+                log(f"PR #{pr_num}: head changed during CI check; retrying next pass")
+                continue
+            behind = gh_json(["api", f"repos/{REPO}/compare/{cfg.main}...{head}"])["behind_by"]
             if dry_run:
-                log(f"PR #{pr_num}: would {'refresh (behind main)' if behind else 'merge'}")
+                if behind:
+                    log(f"PR #{pr_num}: would refresh (behind main)")
+                else:
+                    events = lifecycle.read_events(EVENTS)
+                    approved = _head_evidence_matches(events, n, head) and any(
+                        e.get("event") == "approved"
+                        and e.get("ticket") == n
+                        and e.get("pr") == pr_num
+                        and e.get("head") == head
+                        and e.get("gate_head") == head
+                        and e.get("review_head") == head
+                        for e in events
+                    )
+                    log(
+                        f"PR #{pr_num}: would "
+                        f"{'merge' if approved else 'refuse (missing SHA-bound approval evidence)'}"
+                    )
                 return
-            # A PR that carries new upstream commits (a human/agent-resolved sync)
-            # must keep them as ancestors of main, or the sync stage never sees
-            # main contain the upstream tip. Squash everything else. Judge this
-            # by the PR's merge-base with upstream, not upstream's current tip:
-            # upstream moving on after the PR opened must not flip the method.
             run(["git", "fetch", "origin", cfg.main, f"agent/{n}"], cwd=ROOT)
             if UPSTREAM is None:
                 carries_upstream = False
@@ -933,13 +1062,74 @@ def merge_pass_locked(dry_run: bool) -> None:
                     != 0
                 )
             if behind:
-                refresh_pr_branch(n, pr_num, carries_upstream)
-                if execution.outcome == "completed":
+                if refresh_pr_branch(n, pr_num, carries_upstream):
                     execution.outcome = "refreshed"
                 return
-            title = gh_json(["pr", "view", str(pr_num), "--repo", REPO, "--json", "title"])[
-                "title"
+            events = lifecycle.read_events(EVENTS)
+            approved = _head_evidence_matches(events, n, head) and any(
+                e.get("event") == "approved"
+                and e.get("ticket") == n
+                and e.get("pr") == pr_num
+                and e.get("head") == head
+                and e.get("gate_head") == head
+                and e.get("review_head") == head
+                for e in events
+            )
+            if not approved:
+                run(
+                    ["gh", "pr", "edit", str(pr_num), "--repo", REPO,
+                     "--remove-label", FACTORY_APPROVED],
+                    check=False,
+                )
+                escalate(
+                    n,
+                    f"PR #{pr_num}: missing approval evidence bound to {head}; "
+                    f"`{FACTORY_APPROVED}` label removed",
+                    None,
+                )
+                execution.outcome, execution.reason = "project_escalation", "state_changed"
+                continue
+            latest_checks = pr_checks(pr_num)
+            latest_failed = [
+                c["name"] for c in latest_checks if c["bucket"] in ("fail", "cancel")
             ]
+            if latest_failed:
+                run(
+                    ["gh", "pr", "edit", str(pr_num), "--repo", REPO,
+                     "--remove-label", FACTORY_APPROVED],
+                    check=False,
+                )
+                escalate(
+                    n,
+                    f"PR #{pr_num}: CI failed ({', '.join(latest_failed)}); "
+                    f"`{FACTORY_APPROVED}` label removed",
+                    None,
+                )
+                continue
+            if any(c["bucket"] == "pending" for c in latest_checks):
+                execution.outcome, execution.reason = "not_eligible", "ci_pending"
+                execution.wait("ci_pending", mode="eligibility", pr=pr_num)
+                continue
+            if not any(c["bucket"] == "pass" for c in latest_checks):
+                execution.outcome, execution.reason = "not_eligible", "no_passing_ci"
+                execution.wait("no_passing_ci", mode="eligibility", pr=pr_num)
+                continue
+            if gh_json(["api", f"repos/{REPO}/compare/{cfg.main}...{head}"])["behind_by"]:
+                if refresh_pr_branch(n, pr_num, carries_upstream):
+                    execution.outcome = "refreshed"
+                return
+            final = gh_json(["pr", "view", str(pr_num), "--repo", REPO, "--json", fields])
+            final_labels = {label["name"] for label in final.get("labels", [])}
+            if (
+                final.get("state") != "OPEN"
+                or final.get("headRefName") != f"agent/{n}"
+                or final.get("headRefOid") != head
+                or final.get("isDraft")
+                or FACTORY_APPROVED not in final_labels
+                or final.get("reviewDecision") == "CHANGES_REQUESTED"
+            ):
+                log(f"PR #{pr_num}: head, label, or human review changed before merge; not merging")
+                continue
             method = "--merge" if carries_upstream else "--squash"
             body = f"Closes #{n}\n\n{signoff()}" if cfg.signoff else f"Closes #{n}"
             with lifecycle.scope(EVENTS, "merge", ticket=n):
@@ -952,13 +1142,15 @@ def merge_pass_locked(dry_run: bool) -> None:
                         "--repo",
                         REPO,
                         method,
+                        "--match-head-commit",
+                        head,
                         "--subject",
-                        title,
+                        final["title"],
                         "--body",
                         body,
                     ]
                 )
-                record("merged", ticket=n, pr=pr_num, method=method[2:])
+                record("merged", ticket=n, pr=pr_num, method=method[2:], head=head)
             execution.outcome = "merged"
             log(f"PR #{pr_num}: merged into {cfg.main} ({method[2:]}, ticket #{n})")
             cleanup_after_merge(n)
@@ -973,8 +1165,8 @@ def worker_round(
     extra: str,
     attempt: int,
     deadline: float,
-) -> tuple[bool, str, Path]:
-    """One worker + gate cycle. Returns (gate_ok, report, logfile)."""
+) -> tuple[bool, str, Path, str]:
+    """One worker + gate cycle, bound to one immutable head."""
     if lifecycle.current() is not None:
         lifecycle.current().attempt = attempt
     promptfile = wt / ".factory-prompt.md"
@@ -983,16 +1175,34 @@ def worker_round(
     started = time.monotonic()
     code = run_worker(cfg.worker(labels, promptfile, wt), wt, logfile)
     commit_leftovers(wt, n, title)
+    head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    status_cmd = [
+        "git", "status", "--porcelain", "--untracked-files=all", "--", ".",
+        ":(exclude).factory-prompt.md", ":(exclude).factory",
+    ]
+    before_status = run(status_cmd, cwd=wt).stdout.strip()
     if time.monotonic() > deadline:
-        record("attempt", ticket=n, attempt=attempt, worker_exit=code, gate=None, log=str(logfile))
-        return False, "budget exceeded before gate", logfile
+        record(
+            "attempt", ticket=n, attempt=attempt, worker_exit=code, gate=None,
+            log=str(logfile), head=head,
+        )
+        return False, "budget exceeded before gate", logfile, head
     ok, report = run_gate(wt, n)
+    actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    after_status = run(status_cmd, cwd=wt).stdout.strip()
+    if actual_head != head:
+        ok = False
+        report += f"\n\nGate evidence rejected: HEAD changed from {head} to {actual_head}."
+    if before_status or after_status:
+        ok = False
+        report += "\n\nGate evidence rejected: worktree was not clean for the gated commit."
     record(
         "attempt", ticket=n, attempt=attempt, worker_exit=code, gate="PASS" if ok else "FAIL",
         seconds=int(time.monotonic() - started), cost=log_cost(logfile), log=str(logfile),
-        brief=brief_path(wt, n).exists(),
+        brief=brief_path(wt, n).exists(), head=head, actual_head=actual_head,
+        clean=not before_status and not after_status,
     )
-    return ok, report, logfile
+    return ok, report, logfile, head
 
 
 def log_cost(logfile: Path) -> float | None:
@@ -1072,7 +1282,7 @@ def process_ticket(
             # Attempts 1..MAX_ATTEMPTS: worker + gate, feeding the failed report back.
             extra, logfile, report = "", None, ""
             for attempt in range(1, MAX_ATTEMPTS + 1):
-                ok, report, logfile = worker_round(
+                ok, report, logfile, gate_head = worker_round(
                     n, wt, labels, title, extra, attempt, deadline
                 )
                 if ok:
@@ -1092,7 +1302,7 @@ def process_ticket(
                 escalate(n, f"agent/{n} has no commits over main; nothing to PR", logfile)
                 return
             execution.review_round = 1
-            verdict, findings = review(wt, n, report)
+            verdict, findings = review(wt, n, report, gate_head)
             pr_comment(n, findings)
             # Review rounds: each REVISE goes back to the worker with the findings,
             # then re-gate, push, re-review. `review_rounds` bounces max.
@@ -1112,7 +1322,7 @@ def process_ticket(
                     f"Address required fixes only; optional suggestions are not requirements.\n\n"
                     f"{findings}"
                 )
-                ok, report, logfile = worker_round(
+                ok, report, logfile, gate_head = worker_round(
                     n, wt, labels, title, extra, MAX_ATTEMPTS + bounce, deadline
                 )
                 if not ok:
@@ -1121,13 +1331,14 @@ def process_ticket(
                     )
                     return
                 run(["git", "push", "origin", f"agent/{n}"], cwd=wt)
-                verdict, findings = review(wt, n, report)
+                verdict, findings = review(wt, n, report, gate_head)
                 pr_comment(n, findings)
             if verdict != "APPROVE":
                 escalate(n, f"REVISE verdict after {cfg.review_rounds} review round(s)", logfile)
+            elif approve_pr(n, gate_head):
+                log(f"#{n}: done (approved at {gate_head[:12]})")
             else:
-                approve_pr(n)
-                log(f"#{n}: done (approved)")
+                escalate(n, "approval evidence, head, or human review state changed before approval", logfile)
         finally:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             lock_fd.close()

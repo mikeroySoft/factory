@@ -8,6 +8,7 @@
 - Recognize District's `[defaults.engine]` snapshot metadata in `factory doctor` without loading it as pipeline configuration; keep warnings for unknown and misplaced host tables.
 - Keep generated services on the installed Factory snapshot even when their repository working directory contains a shadowing `factory` package. (#70)
 - Preserve package-less manifest inventory when Graphify labels valid empty output as a failed source; retain fatal parse errors and last-good history. (#72)
+- Bind gate, reviewer, durable approval, CI, and merge eligibility to one immutable PR head; fail closed on reviewer process/verdict errors and raced heads or vetoes, re-review refreshed branches, and pin merges with `--match-head-commit`. Legacy unbound approvals are withdrawn for re-earning through manager FIX.
 
 ## 0.3.0 — 2026-09-08
 
