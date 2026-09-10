@@ -531,16 +531,30 @@ def _extract_snapshot(
             raise TypeError(f"Graphify returned an invalid payload at {sha[:12]}")
         failed = extracted.get("failed_sources") or []
         if failed:
+            from graphify.manifest_ingest import extract_package_manifest, is_package_manifest_path
+
             names = []
             file_paths = {item["path"] for item in files}
             for value in failed:
-                names.append(
-                    _source_path(value, snapshot_root, file_paths) or Path(str(value)).name
+                path = _source_path(value, snapshot_root, file_paths)
+                if path:
+                    manifest = snapshot_root.joinpath(*PurePosixPath(path).parts)
+                    if is_package_manifest_path(manifest):
+                        result = extract_package_manifest(manifest)
+                        # Graphify also labels intentional, error-free empty manifests as failed.
+                        if (
+                            isinstance(result, dict)
+                            and result.get("nodes") == []
+                            and result.get("edges") == []
+                            and not result.get("error")
+                        ):
+                            continue
+                names.append(path or Path(str(value)).name)
+            if names:
+                raise RuntimeError(
+                    f"Graphify failed to extract {len(names)} tracked file(s) at {sha[:12]}: "
+                    f"{_examples(sorted(names))}"
                 )
-            raise RuntimeError(
-                f"Graphify failed to extract {len(failed)} tracked file(s) at {sha[:12]}: "
-                f"{_examples(sorted(names))}"
-            )
         files, edges, graph_warnings = _normalize_graph(extracted, files, snapshot_root, blocked)
 
     value = {

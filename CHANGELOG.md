@@ -7,6 +7,7 @@
 - Fix manager prompt transport to use files, including `factory learn`; validate manager commands in doctor, bound nonzero-exit diagnostics, and count manager failures separately from escalation totals and rounds without overriding human takeover. (#62)
 - Recognize District's `[defaults.engine]` snapshot metadata in `factory doctor` without loading it as pipeline configuration; keep warnings for unknown and misplaced host tables.
 - Keep generated services on the installed Factory snapshot even when their repository working directory contains a shadowing `factory` package. (#70)
+- Preserve package-less manifest inventory when Graphify labels valid empty output as a failed source; retain fatal parse errors and last-good history. (#72)
 
 ## 0.3.0 — 2026-09-08
 

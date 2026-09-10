@@ -1253,6 +1253,9 @@ rename identities even when the displayed history window is bounded.
 
 **Coverage is explicit, not a completeness guarantee.** Unsupported files remain
 inventory-only; unresolved/external relationships are omitted and counted.
+Valid manifests without a package identity (such as a Cargo workspace root)
+remain inventory-only with coverage warnings. Manifest parse errors still
+abort publication and preserve the last good history.
 Symlinks, submodules, unsafe paths and vendored/runtime directories are excluded.
 When a previously mapped file crosses a coverage boundary, comparison marks a
 **coverage change**, not a deletion; its baseline source remains inspectable.
