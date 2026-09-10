@@ -148,6 +148,27 @@ class BriefingBoundaryTest(unittest.TestCase):
         self.assertIn("head changed during collection", partial_text)
         self.assertIn('"status":"unavailable"', partial_text)
 
+    def test_uncollected_history_is_cited_apart_from_unsupported_feedback(self) -> None:
+        from factory import feedback as producer
+
+        cfg = config.Config(root=Path("/unused"), repo="acme/widgets")
+        uncollected = self.feedback(
+            coverage={source: {"status": "unavailable", "observed_at": None, "truncated": False,
+                               "reason": f"{producer.NOT_COLLECTED}: {producer.NOT_COLLECTED_MESSAGE}"}
+                      for source in ("pr", "reviews", "threads", "checks")},
+            items=[],
+        )
+        uncollected["errors"] = [{"source": source, "code": producer.NOT_COLLECTED,
+                                  "message": producer.NOT_COLLECTED_MESSAGE}
+                                 for source in ("pr", "reviews", "threads", "checks")]
+        notice = briefing.sources_for(cfg, self.ticket(uncollected), [])[-1]["text"]
+        self.assertIn("were not collected", notice)
+        self.assertIn(producer.NOT_COLLECTED, notice)
+        self.assertNotIn("unsupported/unknown", notice)
+        missing = briefing.sources_for(cfg, self.ticket(), [])[-1]["text"]
+        self.assertIn("unsupported/unknown", missing)
+        self.assertNotIn("were not collected", missing)
+
     def test_feedback_budget_omission_does_not_evict_human_constraints(self) -> None:
         cfg = config.Config(root=Path("/unused"), repo="acme/widgets")
         ticket = self.ticket(self.feedback())

@@ -1039,11 +1039,14 @@ function feedbackEvidence(t, expanded = false) {
           `${source} ${value(coverage?.status)} · observed ${value(coverage?.observed_at)} · truncated ${value(coverage?.truncated)}${coverage?.reason ? ` · ${coverage.reason}` : ''}`);
       })),
     h('div', { class: 'hint' }, 'Partial or unavailable coverage never means that no feedback exists.'),
-    h('div', { class: 'section-h' }, `simultaneous evidence · ${f.items?.length || 0} item${f.items?.length === 1 ? '' : 's'}`),
   );
+  const uncollected = (f.errors || []).filter(error => error?.code === 'not_collected').map(error => value(error.source));
+  if (uncollected.length) root.append(h('div', { class: 'err feedback-not-collected', role: 'status' },
+    `Detail sources ${uncollected.join(', ')} were not collected: detail reads are limited to open pull requests. Intentional noncollection is unknown, not empty, resolved, or unsupported evidence.`));
+  root.append(h('div', { class: 'section-h' }, `simultaneous evidence · ${f.items?.length || 0} item${f.items?.length === 1 ? '' : 's'}`));
   if (!f.items?.length) {
     const complete = ['reviews', 'threads', 'checks'].every(source => f.coverage?.[source]?.status === 'complete');
-    root.append(h('div', { class: 'empty feedback-empty' }, complete ? 'The observed feedback sources were complete and returned no items.' : 'No items were returned, but incomplete coverage makes absence unknown.'));
+    root.append(h('div', { class: 'empty feedback-empty' }, uncollected.length ? 'No items were returned because these sources were not read for this non-open pull request.' : complete ? 'The observed feedback sources were complete and returned no items.' : 'No items were returned, but incomplete coverage makes absence unknown.'));
   }
   for (const item of f.items || []) {
     const disposition = item.disposition || {}, location = item.location || {};
@@ -1273,6 +1276,8 @@ function taskFacts(item) {
       const counts = { current_head: 0, historical: 0, unknown: 0 };
       for (const evidence of feedback.items || []) counts[evidence.relevance] = (counts[evidence.relevance] || 0) + 1;
       facts.push(`Source-versioned feedback: ${feedback.items?.length || 0} items · ${counts.current_head} current head · ${counts.historical} historical · ${counts.unknown} unknown. Coverage: ${['pr', 'reviews', 'threads', 'checks'].map(source => `${source} ${feedback.coverage?.[source]?.status || 'unknown'}`).join(' · ')}.`);
+      const uncollected = (feedback.errors || []).filter(error => error?.code === 'not_collected').map(error => String(error.source));
+      if (uncollected.length) facts.push(`Feedback detail sources ${uncollected.join(', ')} were not collected: detail reads are limited to open pull requests. This is intentional noncollection, not empty, resolved, or unsupported evidence.`);
       facts.push('Feedback is read-only evidence and does not authorize delivery, resolution, readiness, or approval for merge.');
     }
   }

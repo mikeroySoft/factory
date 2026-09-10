@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from factory.config import Config
+from factory.feedback import NOT_COLLECTED
 
 REQUEST_CAP = 100_000
 QUESTION_CAP = 4_000
@@ -322,9 +323,17 @@ def sources_for(
                 **identity,
                 "errors": feedback["errors"],
             }
+            uncollected = [
+                error.get("source") for error in feedback["errors"] or []
+                if isinstance(error, dict) and error.get("code") == NOT_COLLECTED
+            ]
             feedback_notice = (
                 "PR feedback schema 1 coverage (read-only evidence; partial or unavailable "
                 "coverage is unknown, not empty):\n"
+                + (f"Sources {', '.join(sorted(filter(None, uncollected)))} were not collected "
+                   f"({NOT_COLLECTED}): detail reads are limited to open pull requests. "
+                   "Intentional noncollection is not an empty, resolved, or unsupported observation.\n"
+                   if uncollected else "")
                 + json.dumps(coverage, ensure_ascii=False, separators=(",", ":"))
             )
             for item in feedback["items"]:

@@ -883,13 +883,16 @@ def snapshot() -> dict:
             continue
         if n in raw_prs:
             raw = raw_prs[n]
+            # Detail reads stay bounded to open work: the snapshot lists up to 100
+            # PRs, and closed history must not multiply provider calls per refresh.
             prs[n]["feedback"] = feedback.collect(
                 github, repository={"id": repo.get("id"), "slug": REPO,
                                     "host": urlparse(raw["url"]).hostname or "github.com"},
-                pr={"id": raw.get("id"), "number": raw["number"], "url": raw["url"]},
+                pr={"id": raw.get("id"), "number": raw["number"], "url": raw["url"],
+                    "state": raw.get("state"), "draft": raw.get("isDraft")},
                 issue={"id": issue.get("id"), "number": n, "url": issue["url"]},
                 events=provenance, provenance_complete=provenance_complete,
-                producer_revision=revision,
+                producer_revision=revision, collect_details=raw.get("state") == "OPEN",
             )
         tickets.append(build_ticket(
             issue, prs.get(n), disk_state(n), spend.get(n), by_ticket.get(n), audit=audit.get(n),

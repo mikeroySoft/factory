@@ -705,13 +705,23 @@ fabricated feedback. `--runtime-json` does not invoke this collector
 and retains its network-free contract.
 
 `factory.feedback.collect(read, *, repository, pr, issue=None, events=(),
-provenance_complete=True, producer_revision=None, observed_at=None)` is the
-shared producer. `read` is the existing dashboard GitHub transport, accepting
-`endpoint` for fixed REST GETs or `query`/`variables` for GraphQL reads, plus a
-remaining `timeout`. Source exceptions become sanitized coverage/errors without
-discarding independently observed facts. There is no feedback cache, event
-append, model invocation, delivery, dispatch, readiness, or approval decision.
-The full dashboard's pre-existing lifecycle reconciliation remains unchanged.
+provenance_complete=True, producer_revision=None, observed_at=None,
+collect_details=True)` is the shared producer. `read` is the existing dashboard
+GitHub transport, accepting `endpoint` for fixed REST GETs or `query`/`variables`
+for GraphQL reads, plus a remaining `timeout`. Source exceptions become sanitized
+coverage/errors without discarding independently observed facts. There is no
+feedback cache, event append, model invocation, delivery, dispatch, readiness, or
+approval decision. The full dashboard's pre-existing lifecycle reconciliation
+remains unchanged.
+
+Detail reads are limited to open pull requests, so closed history never
+multiplies provider calls per refresh. `collect_details=False` reads nothing: the
+schema-1 envelope still carries the caller's independently known repository/PR
+identities and state, `head_sha` stays null, every source is `unavailable` with
+the `not_collected` reason/error code, and ownership stays `unverified`. Review,
+Inbox and briefing report that intentional noncollection explicitly; it is not an
+empty, resolved, or unsupported observation, and it is distinct from an older
+engine that has no `feedback` key at all.
 
 The required envelope is `schema_version`, `producer`, `observed_at`,
 `observation_id`, `repository`, `pr`, `owner`, `coverage`, `items`, and `errors`.
@@ -738,8 +748,10 @@ time or run attempt when the API does not supply them).
 Fixed bounds in `factory/feedback.py`: `ITEM_LIMIT=100` per reviews, threads/
 comments and checks/statuses; `PAGE_LIMIT=2`; `BODY_LIMIT=20000` UTF-8 bytes per
 body; `ERROR_LIMIT=32`; `DETAIL_TIMEOUT=30` seconds, with initial/final head reads.
-Reviews and thread lists use up to two pages; the combined checks source reserves
-one page for native check runs and one for commit statuses. Nested thread comment
+Reviews and review threads are read as bounded GraphQL connections carrying native
+IDs, links, the reviewed commit and the provider's own `updatedAt` (an edited review
+revises it; a submission time would not). Both use up to two pages; the combined
+checks source reserves one page for native check runs and one for commit statuses. Nested thread comment
 overflow is explicit rather than an unbounded fan-out. Provenance reuses the
 existing safe, bounded 2 MB committed-event tail reader. Every source (`pr`,
 `reviews`, `threads`, `checks`) reports `status` (`complete`, `partial`,

@@ -2476,6 +2476,67 @@ class FeedbackSnapshotTest(unittest.TestCase):
                              {"review", "review_comment", "check_run", "factory_review"})
             self.assertIsNone(next(t for t in snapshot["tickets"] if t["number"] == 81)["pr"])
 
+    def test_historical_prs_add_no_feedback_reads_but_keep_schema_1(self):
+        from unittest import mock
+        from factory import dashboard, dispatch, feedback
+        from tests.test_feedback import Provider, REPO, PR, ISSUE, H, AT
+
+        def issue_of(number):
+            return {"id": f"I_{number}", "number": number, "title": "Historical",
+                    "url": ISSUE["url"].replace("79", str(number)), "state": "OPEN", "body": "",
+                    "createdAt": AT, "updatedAt": AT, "closedAt": None,
+                    "labels": {"nodes": []}, "assignees": {"nodes": []}}
+
+        def pr_of(number, state):
+            return {"id": f"PR_{number}", "number": number, "url": PR["url"].replace("80", str(number)),
+                    "title": "Historical", "headRefName": f"agent/{number}", "headRefOid": H,
+                    "state": state, "isDraft": False, "createdAt": AT, "closedAt": None,
+                    "mergedAt": AT if state == "MERGED" else None, "additions": 1, "deletions": 0,
+                    "changedFiles": 1, "body": "", "reviewDecision": None, "labels": {"nodes": []},
+                    "comments": {"nodes": []}, "commits": {"nodes": []}}
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), '[repo]\nslug = "example/project"\n')
+            (repo / ".factory").mkdir()
+            issues = [issue_of(79), issue_of(81), issue_of(82)]
+            raw = [{**pr_of(79, "OPEN"), "id": PR["id"], "url": PR["url"]},
+                   pr_of(81, "MERGED"), pr_of(82, "CLOSED")]
+            provider = Provider()
+            def read(**kwargs):
+                if kwargs:
+                    return provider(**kwargs)
+                return {"repository": {"id": REPO["id"], "issues": {"nodes": issues},
+                                       "pullRequests": {"nodes": raw}}}
+            with mock.patch.dict(dashboard.__dict__), mock.patch.dict(dispatch.__dict__):
+                dashboard.configure(config.load(repo))
+                with mock.patch.object(dashboard, "github", side_effect=read), \
+                     mock.patch.object(dashboard, "dispatcher", return_value={}), \
+                     mock.patch.object(dashboard, "upstream_state", return_value={}), \
+                     mock.patch.object(dashboard, "triage_llm_online", return_value=False):
+                    mixed = dashboard.snapshot()
+                    with_history = len(provider.calls)
+                    provider.calls.clear()
+                    provider.heads = [H, H]
+                    raw[:] = raw[:1]
+                    issues[:] = issues[:1]
+                    only_open = dashboard.snapshot()
+            self.assertEqual(with_history, len(provider.calls))
+            open_feedback = next(t for t in mixed["tickets"] if t["number"] == 79)["pr"]["feedback"]
+            self.assertEqual(open_feedback["pr"]["state"], "open")
+            self.assertTrue(open_feedback["items"])
+            self.assertEqual(open_feedback["items"],
+                             next(t for t in only_open["tickets"] if t["number"] == 79)["pr"]["feedback"]["items"])
+            for number, state in ((81, "merged"), (82, "closed")):
+                observed = next(t for t in mixed["tickets"] if t["number"] == number)["pr"]["feedback"]
+                with self.subTest(pr=number):
+                    self.assertEqual(observed["schema_version"], 1)
+                    self.assertEqual(observed["pr"]["state"], state)
+                    self.assertEqual(observed["pr"]["id"], f"PR_{number}")
+                    self.assertIsNone(observed["pr"]["head_sha"])
+                    self.assertEqual(observed["items"], [])
+                    self.assertEqual({c["status"] for c in observed["coverage"].values()}, {"unavailable"})
+                    self.assertEqual({e["code"] for e in observed["errors"]}, {feedback.NOT_COLLECTED})
+
 
 if __name__ == "__main__":
     unittest.main()
