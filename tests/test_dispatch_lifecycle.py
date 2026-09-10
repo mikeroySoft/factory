@@ -26,7 +26,7 @@ elif a[:2] == ["issue", "list"]:
 elif a[:2] == ["pr", "list"]:
     if s.get("pr"):
         head = subprocess.run(["git", "-C", ".factory/wt-7", "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
-        print(json.dumps([{"number": 70, "headRefName": "agent/7", "headRefOid": head, "baseRefName": "main", "isDraft": False, "labels": [{"name": "factory-approved"}], "reviewDecision": "APPROVED"}]))
+        print(json.dumps([{"number": 70, "state": "OPEN", "headRefName": "agent/7", "headRefOid": head, "baseRefName": "main", "isDraft": False, "labels": [{"name": "factory-approved"}], "reviewRequests": [], "reviewDecision": "APPROVED"}]))
     else:
         print("[]")
 elif a[:2] == ["pr", "create"]:
