@@ -161,7 +161,9 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         cfg = dispatch.cfg
         wt = cfg.factory / f"wt-{n}"
         pr = dispatch.gh_json(["pr", "view", f"agent/{n}", "--repo", dispatch.REPO,
-                               "--json", "state,headRefName,headRefOid,reviewDecision"])
+                               "--json", "state,headRefName,headRefOid,baseRefName,reviewDecision"])
+        if pr.get("baseRefName") != cfg.main:
+            raise ValueError(f"FIX requires a PR targeting the configured target `{cfg.main}`")
         if not wt.is_dir() or pr["state"] != "OPEN" or pr["headRefName"] != f"agent/{n}" or pr["reviewDecision"] == "CHANGES_REQUESTED":
             raise ValueError("FIX requires a kept factory worktree and an open PR without requested changes")
         if dispatch.run(["git", "branch", "--show-current"], cwd=wt).stdout.strip() != f"agent/{n}":
@@ -179,6 +181,11 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         if not ok:
             dispatch.escalate(n, "gate failed after manager FIX", logfile)
             return
+        fresh = dispatch.gh_json(
+            ["pr", "view", str(pr["number"]), "--repo", dispatch.REPO, "--json", "baseRefName"]
+        )
+        if fresh.get("baseRefName") != cfg.main:
+            raise ValueError(f"FIX requires a PR targeting the configured target `{cfg.main}`")
         dispatch.run(["git", "push", "--force-with-lease", "origin", f"agent/{n}"], cwd=wt)
         verdict, findings = dispatch.review(wt, n, report, gate_head)
         dispatch.pr_comment(n, findings)

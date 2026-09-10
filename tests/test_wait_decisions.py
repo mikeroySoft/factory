@@ -149,8 +149,8 @@ class WaitDecisions(unittest.TestCase):
 
     def test_ci_waits_reuse_single_query_per_candidate_and_preserve_eligibility(self):
         prs = [{"number": n * 10, "headRefName": f"agent/{n}", "headRefOid": f"head-{n}",
-                "isDraft": False, "labels": [{"name": "factory-approved"}],
-                "reviewDecision": "APPROVED"}
+                "baseRefName": "main", "isDraft": False,
+                "labels": [{"name": "factory-approved"}], "reviewDecision": "APPROVED"}
                for n in (7, 8)]
         results = [subprocess.CompletedProcess([], 8, '[{"name":"ci","bucket":"pending"}]'),
                    subprocess.CompletedProcess([], 0, '[]')]

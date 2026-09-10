@@ -26,7 +26,7 @@ elif a[:2] == ["issue", "list"]:
 elif a[:2] == ["pr", "list"]:
     if s.get("pr"):
         head = subprocess.run(["git", "-C", ".factory/wt-7", "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
-        print(json.dumps([{"number": 70, "headRefName": "agent/7", "headRefOid": head, "isDraft": False, "labels": [{"name": "factory-approved"}], "reviewDecision": "APPROVED"}]))
+        print(json.dumps([{"number": 70, "headRefName": "agent/7", "headRefOid": head, "baseRefName": "main", "isDraft": False, "labels": [{"name": "factory-approved"}], "reviewDecision": "APPROVED"}]))
     else:
         print("[]")
 elif a[:2] == ["pr", "create"]:
@@ -35,7 +35,7 @@ elif a[:2] == ["pr", "create"]:
     print("https://example.invalid/pull/70")
 elif a[:2] == ["pr", "view"]:
     head = subprocess.run(["git", "-C", ".factory/wt-7", "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
-    print(json.dumps({"number": 70, "headRefName": "agent/7", "headRefOid": head, "state": "OPEN", "reviewDecision": ""}))
+    print(json.dumps({"number": 70, "headRefName": "agent/7", "headRefOid": head, "baseRefName": "main", "state": "OPEN", "reviewDecision": ""}))
 elif a[:2] == ["pr", "checks"]:
     print(json.dumps([{"name": "ci", "bucket": "pending"}]))
 elif a[:2] not in (["issue", "edit"], ["issue", "comment"], ["pr", "edit"], ["pr", "comment"]):
