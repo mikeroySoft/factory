@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from factory.config import Config
+from factory.feedback import NOT_COLLECTED
 
 REQUEST_CAP = 100_000
 QUESTION_CAP = 4_000
@@ -205,7 +206,7 @@ def sources_for(
         (f"escalations/{number}.md", "Escalation packet"),
         (f"manager-{number}.md", "Manager notes"),
         (f"wt-{number}/.factory/gate-report-{number}.md", "Gate report"),
-        (f"review-{number}.md", "Review verdict"),
+        (f"review-{number}.md", "Legacy review verdict · provenance unknown"),
         (f"pr-body-{number}.md", "PR body"),
     ]
     pr = ticket.get("pr") or {}
@@ -228,6 +229,10 @@ def sources_for(
     state = {k: ticket.get(k) for k in ("number", "title", "state", "stage", "labels", "assignees", "worker", "lock_held", "phase", "updated_at", "spend")}
     if pr:
         state["pull_request"] = {k: pr.get(k) for k in ("number", "state", "approved", "draft", "checks", "review_decision", "merged_at")}
+        state["pull_request_evidence_notice"] = (
+            "Legacy labels, check rollups and review decisions are context, not source-versioned "
+            "approval or delivery authority. Use the appended PR feedback and its coverage."
+        )
     add("Current ticket state", json.dumps(state, ensure_ascii=False, indent=2))
     events = sorted(ticket.get("events", []), key=lambda e: e.get("at") or "")
     comments = [e for e in events if e.get("body")]
@@ -264,7 +269,8 @@ def sources_for(
         add(f"PR #{pr['number']} gate report", pr["gate_text"], url=pr.get("url", ticket["url"]))
     for e in reversed(comments):
         if e not in decisions:
-            add(f"{e.get('kind', 'Comment').capitalize()} · {e.get('at', '')}", e["body"], url=e.get("url") or ticket["url"])
+            label = "Legacy verdict · provenance unknown" if e.get("kind") == "verdict" else e.get("kind", "Comment").capitalize()
+            add(f"{label} · {e.get('at', '')}", e["body"], url=e.get("url") or ticket["url"])
     timeline = [{k: e[k] for k in ("at", "kind", "detail") if k in e} for e in events]
     add("Issue timeline", json.dumps(timeline, ensure_ascii=False, indent=2), url=ticket["url"], truncated=ticket.get("timeline_truncated", False))
     attempts = sorted(ticket.get("attempts", []), key=lambda a: a.get("attempt", 0), reverse=True)
@@ -280,15 +286,81 @@ def sources_for(
     if errors:
         add("Snapshot collection errors", "\n".join(errors))
 
+    feedback_notice = ""
+    feedback_start = len(candidates)
+    if pr:
+        feedback = pr.get("feedback")
+        if not isinstance(feedback, dict) or "schema_version" not in feedback:
+            feedback_notice = (
+                "PR feedback is unsupported/unknown: this snapshot has no "
+                "schema-versioned feedback object. Absence is not a complete empty observation."
+            )
+        elif type(feedback["schema_version"]) is not int or feedback["schema_version"] != 1:
+            feedback_notice = (
+                f"PR feedback is unsupported/unknown: schema_version "
+                f"{feedback['schema_version']!r} is not supported. Its contents were not interpreted."
+            )
+        elif any(
+            key not in feedback
+            for key in ("producer", "observed_at", "observation_id", "repository", "pr", "owner", "coverage", "items", "errors")
+        ) or not isinstance(feedback["items"], list):
+            feedback_notice = (
+                "PR feedback is unsupported/unknown: the schema-1 snapshot is incomplete. "
+                "Its contents were not interpreted."
+            )
+        else:
+            identity = {
+                "schema_version": feedback["schema_version"],
+                "producer": feedback["producer"],
+                "observed_at": feedback["observed_at"],
+                "observation_id": feedback["observation_id"],
+                "repository": feedback["repository"],
+                "pr": feedback["pr"],
+                "owner": feedback["owner"],
+            }
+            coverage = {
+                "coverage": feedback["coverage"],
+                **identity,
+                "errors": feedback["errors"],
+            }
+            uncollected = [
+                error.get("source") for error in feedback["errors"] or []
+                if isinstance(error, dict) and error.get("code") == NOT_COLLECTED
+            ]
+            feedback_notice = (
+                "PR feedback schema 1 coverage (read-only evidence; partial or unavailable "
+                "coverage is unknown, not empty):\n"
+                + (f"Sources {', '.join(sorted(filter(None, uncollected)))} were not collected "
+                   f"({NOT_COLLECTED}): detail reads are limited to open pull requests. "
+                   "Intentional noncollection is not an empty, resolved, or unsupported observation.\n"
+                   if uncollected else "")
+                + json.dumps(coverage, ensure_ascii=False, separators=(",", ":"))
+            )
+            for item in feedback["items"]:
+                source_id = item.get("source_id") if isinstance(item, dict) else None
+                kind = item.get("kind") if isinstance(item, dict) else None
+                payload = {**identity, "item": item}
+                add(
+                    f"PR feedback · {kind or 'unknown'} · {source_id or 'unknown source'}",
+                    json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                    url=item.get("source_url") if isinstance(item, dict) else None,
+                    truncated=bool(item.get("truncated")) if isinstance(item, dict) else False,
+                )
+
     sources, remaining, omitted = [], CONTEXT_CAP - 1_000, 0
-    for candidate in candidates:
+    feedback_omitted = feedback_shortened = 0
+    for index, candidate in enumerate(candidates):
         if len(sources) >= SOURCE_COUNT - 1 or remaining < 256:
             omitted += 1
+            if index >= feedback_start:
+                feedback_omitted += 1
             continue
         source = dict(candidate)
         encoded = source["text"].encode("utf-8")
         cap = min(SOURCE_CAP, remaining)
         source["text"] = encoded[:cap].decode("utf-8", errors="ignore")
+        if index >= feedback_start and len(encoded) > cap:
+            feedback_shortened += 1
         source["truncated"] = bool(source.get("truncated") or len(encoded) > cap)
         if source["truncated"]:
             source["label"] += " · truncated"
@@ -298,6 +370,15 @@ def sources_for(
             sources.append(source)
             remaining -= len(source["text"].encode("utf-8"))
     notices = []
+    if feedback_omitted:
+        notices.append(
+            f"{feedback_omitted} PR feedback evidence item(s) omitted by the "
+            f"{CONTEXT_CAP}-byte / {SOURCE_COUNT}-source context limit."
+        )
+    if feedback_shortened:
+        notices.append(
+            f"{feedback_shortened} PR feedback evidence item(s) shortened by the context byte limit."
+        )
     if omitted:
         notices.append(f"{omitted} additional evidence source(s) omitted by the {CONTEXT_CAP}-byte / {SOURCE_COUNT}-source context limit.")
     if ledger and ledger[1]:
@@ -306,9 +387,25 @@ def sources_for(
         notices.append(ticket.get("timeline_coverage") or "GitHub issue timeline contains only the latest 100 events; earlier decisions may be missing.")
     if pr.get("comments_truncated"):
         notices.append("PR comments contain only the latest 30 entries; earlier decisions may be missing.")
+    if feedback_notice:
+        notices.append(feedback_notice)
     if notices:
         text = "\n".join(notices)
-        sources.append({"id": "S" + str(int.from_bytes(hashlib.sha256(text.encode()).digest()[:8], "big")), "label": "Evidence coverage · truncated", "text": text, "truncated": True})
+        data = text.encode("utf-8")
+        cap = min(SOURCE_CAP, CONTEXT_CAP - sum(len(source["text"].encode("utf-8")) for source in sources))
+        cut = len(data) > cap
+        suffix = "\nCoverage detail omitted by context byte limit." if cut else ""
+        text = data[:max(0, cap - len(suffix.encode("utf-8")))].decode("utf-8", errors="ignore") + suffix
+        incomplete = bool(
+            cut or omitted or ledger and ledger[1]
+            or ticket.get("timeline_truncated") or pr.get("comments_truncated")
+        )
+        sources.append({
+            "id": "S" + str(int.from_bytes(hashlib.sha256(text.encode()).digest()[:8], "big")),
+            "label": "Evidence coverage" + (" · truncated" if incomplete else ""),
+            "text": text,
+            "truncated": incomplete,
+        })
     return sources
 
 

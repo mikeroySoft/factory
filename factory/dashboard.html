@@ -244,6 +244,12 @@
   .attempt .ah button { margin-left: auto; }
   .empty { color: var(--dim); font-size: 11px; padding: 14px 16px; }
   .err { background: rgba(255,42,109,.1); border: 1px solid var(--mag); color: var(--mag); padding: 8px 14px; font-size: 11px; }
+  .feedback-evidence { display: grid; gap: 8px; }
+  .feedback-item { border: 1px solid var(--line); padding: 8px 10px; }
+  .feedback-item > summary { color: var(--ink); word-break: break-word; }
+  .feedback-item .kv { margin: 10px 0; }
+  .feedback-item pre { max-height: 24vh; }
+  .feedback-errors { display: grid; gap: 6px; }
 
   /* tooltip */
   .tip { position: fixed; z-index: 70; pointer-events: none; background: rgba(5,7,12,.95); border: 1px solid var(--cyan);
@@ -984,14 +990,109 @@ function tabGate(t, c) {
   if (text) c.append(pre(text));
   if (t.gate && t.pr && t.pr.gate_text && t.pr.gate_text !== t.gate.text.trim()) { c.append(h('div', { class: 'section-h' }, 'report attached to the PR at open'), pre(t.pr.gate_text)); }
 }
+function feedbackEvidence(t, expanded = false) {
+  const root = h('div', { class: 'feedback-evidence', dataset: { feedbackSchema: t.pr?.feedback?.schema_version ?? 'missing' } });
+  if (!t.pr) {
+    root.append(h('div', { class: 'empty feedback-unsupported' }, 'No pull request exists, so there is no PR feedback observation.'));
+    return root;
+  }
+  const f = t.pr.feedback;
+  if (!f || f.schema_version !== 1) {
+    root.append(h('div', { class: 'err feedback-unsupported', role: 'status' },
+      f ? `PR feedback schema ${String(f.schema_version ?? 'unknown')} is unsupported. This evidence is unknown and non-actionable.`
+        : 'This engine does not expose source-versioned PR feedback. Evidence is unsupported/unknown and non-actionable.'));
+    return root;
+  }
+  const value = v => v == null || v === '' ? 'unknown' : String(v);
+  const kvList = pairs => h('dl', { class: 'kv' }, ...pairs.flatMap(([label, content]) => [h('dt', {}, label), h('dd', {}, content)]));
+  const sourceLink = (url, label) => {
+    const safe = safeSourceURL(url);
+    return safe ? h('a', { href: safe, target: '_blank', rel: 'noopener noreferrer' }, label) : null;
+  };
+  const owner = f.owner || {};
+  const ownerIssue = owner.issue || null;
+  const ownerUnknown = owner.relation !== 'factory_issue' || !ownerIssue;
+  root.append(
+    h('div', { class: 'section-h' }, `source-versioned PR feedback · schema ${f.schema_version}`),
+    kvList([
+      ['repository', `${value(f.repository?.slug)} · host ${value(f.repository?.host)} · native id ${value(f.repository?.id)}`],
+      ['pull request', h('span', {}, sourceLink(f.pr?.url, `#${value(f.pr?.number)} ↗`) || `#${value(f.pr?.number)}`, ` · native id ${value(f.pr?.id)} · ${value(f.pr?.state)} · draft ${value(f.pr?.draft)}`)],
+      ['observed head', h('code', {}, value(f.pr?.head_sha))],
+      ['observed at', value(f.observed_at)],
+      ['observation', h('code', {}, value(f.observation_id))],
+      ['producer', `${value(f.producer?.name)} · revision ${value(f.producer?.revision)}`],
+    ]),
+    h('div', { class: `feedback-owner${ownerUnknown ? ' err' : ''}` },
+      h('div', { class: 'section-h' }, 'containing owner identity'),
+      kvList([
+        ['relation', `${value(owner.relation)}${ownerUnknown ? ' · unknown/non-actionable' : ''}`],
+        ['issue', ownerIssue ? h('span', {}, sourceLink(ownerIssue.url, `#${value(ownerIssue.number)} ↗`) || `#${value(ownerIssue.number)}`, ` · native id ${value(ownerIssue.id)}`) : 'unknown'],
+      ]),
+      h('div', { class: 'hint' }, 'Ownership is evidence, not readiness or approval authority.'),
+      owner.evidence?.length ? h('ul', {}, ...owner.evidence.map(entry => h('li', {}, entry))) : h('div', { class: 'empty' }, 'No ownership evidence recorded.')),
+    h('div', { class: 'section-h' }, 'source coverage'),
+    h('div', { class: 'checks feedback-coverage' },
+      ...['pr', 'reviews', 'threads', 'checks'].map(source => {
+        const coverage = f.coverage?.[source];
+        const state = coverage?.status === 'complete' ? 'SUCCESS' : coverage?.status === 'unavailable' ? 'ERROR' : 'PENDING';
+        return h('span', { class: `chk ${state}`, dataset: { feedbackSource: source }, title: coverage?.reason || 'No coverage reason recorded' },
+          `${source} ${value(coverage?.status)} · observed ${value(coverage?.observed_at)} · truncated ${value(coverage?.truncated)}${coverage?.reason ? ` · ${coverage.reason}` : ''}`);
+      })),
+    h('div', { class: 'hint' }, 'Partial or unavailable coverage never means that no feedback exists.'),
+  );
+  const uncollected = (f.errors || []).filter(error => error?.code === 'not_collected').map(error => value(error.source));
+  if (uncollected.length) root.append(h('div', { class: 'err feedback-not-collected', role: 'status' },
+    `Detail sources ${uncollected.join(', ')} were not collected: detail reads are limited to open pull requests. Intentional noncollection is unknown, not empty, resolved, or unsupported evidence.`));
+  root.append(h('div', { class: 'section-h' }, `simultaneous evidence · ${f.items?.length || 0} item${f.items?.length === 1 ? '' : 's'}`));
+  if (!f.items?.length) {
+    const complete = ['reviews', 'threads', 'checks'].every(source => f.coverage?.[source]?.status === 'complete');
+    root.append(h('div', { class: 'empty feedback-empty' }, uncollected.length ? 'No items were returned because these sources were not read for this non-open pull request.' : complete ? 'The observed feedback sources were complete and returned no items.' : 'No items were returned, but incomplete coverage makes absence unknown.'));
+  }
+  for (const item of f.items || []) {
+    const disposition = item.disposition || {}, location = item.location || {};
+    const detail = h('details', { class: 'feedback-item', open: expanded, dataset: { evidenceId: value(item.evidence_id), relevance: value(item.relevance), kind: value(item.kind) } },
+      h('summary', {}, `${value(item.kind)} · ${value(item.summary || item.source_id)} · relevance ${value(item.relevance)}`),
+      kvList([
+        ['evidence id', h('code', {}, value(item.evidence_id))],
+        ['source id', value(item.source_id)],
+        ['source revision', h('code', {}, value(item.source_revision))],
+        ['observed head', h('code', {}, value(item.observed_head_sha))],
+        ['source head', h('code', {}, value(item.source_head_sha))],
+        ['updated at', value(item.source_updated_at)],
+        ['author', `${value(item.author?.login)} · ${value(item.author?.kind)}`],
+        ['review/thread', `${value(item.review_id)} / ${value(item.thread_id)}`],
+        ['check run/attempt', `${value(item.check_run_id)} / ${value(item.run_attempt)}`],
+        ['relevance', value(item.relevance)],
+        ['review state', value(disposition.review_state)],
+        ['thread resolved', value(disposition.thread_resolved)],
+        ['thread outdated', value(disposition.thread_outdated)],
+        ['check status', value(disposition.check_status)],
+        ['check conclusion', value(disposition.check_conclusion)],
+        ['location', `${value(location.path)} · line ${value(location.line)} · side ${value(location.side)} · original line ${value(location.original_line)} · original commit ${value(location.original_commit_sha)}`],
+      ]),
+      item.truncated ? h('div', { class: 'err' }, 'Body truncated by the bounded collector; use the provider source for omitted text.') : null,
+      h('div', { class: 'section-h' }, 'source body'),
+      pre(item.body),
+      sourceLink(item.source_url, 'Open provider source ↗') || h('span', { class: 'hint feedback-source-unavailable' }, 'Provider source link unavailable.'));
+    root.append(detail);
+  }
+  root.append(h('div', { class: 'section-h' }, `collection errors · ${f.errors?.length || 0}`));
+  if (f.errors?.length) root.append(h('div', { class: 'feedback-errors' }, ...f.errors.map(error =>
+    h('div', { class: 'err feedback-error', dataset: { feedbackSource: value(error.source), feedbackCode: value(error.code) } }, `${value(error.source)} · ${value(error.code)} · ${value(error.message)}`))));
+  else root.append(h('div', { class: 'empty' }, 'No collection errors recorded.'));
+  root.append(h('div', { class: 'hint' }, 'Feedback is read-only evidence. It does not imply delivery, resolution, readiness, or approval for merge.'));
+  return root;
+}
 function tabReview(t, c) {
+  c.append(feedbackEvidence(t, true));
   const vs = t.pr ? t.pr.verdicts : [];
   const last = vs.at(-1);
-  c.append(h('div', { class: 'section-h' }, last ? `latest verdict: ${last.verdict} · ${ago(last.at)}` : 'no reviewer verdict on the PR'));
-  if (last || t.review) c.append(h('button', { onclick: () => openFM(t.number, t.review ? { path: t.review.path, label: 'Local review' } : { match: 'verdict|review', label: 'PR review verdict' }) }, 'Ask FM about this review'));
-  if (last) c.append(h('div', { class: 'checks' }, ...vs.map(v => h('span', { class: `chk ${v.verdict === 'APPROVE' ? 'PASS' : 'FAIL'}`, title: fmt(v.at) }, `${v.verdict} ${hm(v.at)}`))));
-  vs.slice().reverse().forEach((v, i) => c.append(h('details', { open: i === 0 }, h('summary', {}, `${v.verdict} · ${fmt(v.at)}`), pre(v.body))));
-  if (t.review) c.append(h('div', { class: 'section-h' }, `local review-${t.number}.md · ${t.review.verdict || '?'} · ${ago(t.review.mtime)}`), h('details', {}, h('summary', {}, t.review.path), pre(t.review.text)));
+  c.append(h('div', { class: 'section-h' }, 'legacy review context · not source-versioned authority'));
+  c.append(h('div', { class: 'hint' }, last ? `Latest legacy verdict record: ${last.verdict} · ${ago(last.at)}. This is not trusted source-versioned approval.` : 'No legacy reviewer verdict record on the PR.'));
+  if (last || t.review) c.append(h('button', { onclick: () => openFM(t.number, t.review ? { path: t.review.path, label: 'Local review' } : { match: 'verdict|review', label: 'Legacy PR review context' }) }, 'Ask FM about this legacy review context'));
+  if (last) c.append(h('div', { class: 'checks' }, ...vs.map(v => h('span', { class: 'chk', title: fmt(v.at) }, `legacy ${v.verdict} ${hm(v.at)}`))));
+  vs.slice().reverse().forEach((v, i) => c.append(h('details', { open: i === 0 }, h('summary', {}, `legacy ${v.verdict} · ${fmt(v.at)}`), pre(v.body))));
+  if (t.review) c.append(h('div', { class: 'section-h' }, `legacy local review-${t.number}.md · ${t.review.verdict || '?'} · ${ago(t.review.mtime)}`), h('details', {}, h('summary', {}, t.review.path), pre(t.review.text)));
 }
 function tabBranch(t, c) {
   const w = t.worktree, p = t.pr;
@@ -1156,14 +1257,29 @@ function taskFacts(item) {
   facts.push(t.assignees.length ? `Currently assigned to @${t.assignees.join(', @')}. Routing labels alone do not release an assignment.` : 'Currently unassigned.');
   if (t.gate) {
     const failures = Object.entries(t.gate.checks).filter(([, value]) => value === 'FAIL').map(([name]) => name);
-    facts.push(failures.length ? `Gate failures: ${failures.join(', ')}.` : `Latest gate: ${Object.entries(t.gate.checks).map(([name, value]) => `${name} ${value}`).join(' · ') || 'no check results recorded'}.`);
+    facts.push(failures.length ? `Legacy local gate failures: ${failures.join(', ')}.` : `Legacy local gate context: ${Object.entries(t.gate.checks).map(([name, value]) => `${name} ${value}`).join(' · ') || 'no check results recorded'}.`);
   } else facts.push('No local gate report is available.');
   if (t.pr) {
-    facts.push(`PR #${t.pr.number}: ${t.pr.state.toLowerCase()}, ${t.pr.approved ? 'factory-approved' : 'not approved'}, CI ${t.pr.checks.state || 'unknown'}.`);
+    facts.push(`PR #${t.pr.number}: ${t.pr.state.toLowerCase()}, ${t.pr.approved ? 'factory-approved label present' : 'factory-approved label absent'}, legacy CI rollup ${t.pr.checks.state || 'unknown'}. Labels and legacy rollups are not source-versioned feedback authority.`);
     const failed = t.pr.checks.list.filter(c => ['FAILURE', 'ERROR'].includes(c.result)).map(c => c.name);
-    if (failed.length) facts.push(`Failing CI checks: ${failed.join(', ')}. Approval does not bypass CI.`);
+    if (failed.length) facts.push(`Legacy failing CI check context: ${failed.join(', ')}. Approval does not bypass CI.`);
     const verdict = t.pr.verdicts.at(-1);
-    if (verdict) facts.push(`Latest reviewer verdict: ${verdict.verdict} (${fmt(verdict.at)}).`);
+    if (verdict) facts.push(`Latest legacy reviewer verdict record: ${verdict.verdict} (${fmt(verdict.at)}). It is not trusted source-versioned approval.`);
+    const feedback = t.pr.feedback;
+    if (!feedback || feedback.schema_version !== 1) {
+      facts.push(feedback ? `PR feedback schema ${String(feedback.schema_version ?? 'unknown')} is unsupported; feedback is unknown and non-actionable.` : 'This engine does not expose source-versioned PR feedback; feedback is unsupported/unknown and non-actionable.');
+    } else {
+      const owner = feedback.owner || {};
+      facts.push(owner.relation === 'factory_issue' && owner.issue
+        ? `Feedback owner identity: Factory issue #${owner.issue.number} (${owner.evidence?.length || 0} evidence record${owner.evidence?.length === 1 ? '' : 's'}).`
+        : `Feedback owner identity: ${owner.relation || 'unknown'}; ownership is unknown/non-actionable.`);
+      const counts = { current_head: 0, historical: 0, unknown: 0 };
+      for (const evidence of feedback.items || []) counts[evidence.relevance] = (counts[evidence.relevance] || 0) + 1;
+      facts.push(`Source-versioned feedback: ${feedback.items?.length || 0} items · ${counts.current_head} current head · ${counts.historical} historical · ${counts.unknown} unknown. Coverage: ${['pr', 'reviews', 'threads', 'checks'].map(source => `${source} ${feedback.coverage?.[source]?.status || 'unknown'}`).join(' · ')}.`);
+      const uncollected = (feedback.errors || []).filter(error => error?.code === 'not_collected').map(error => String(error.source));
+      if (uncollected.length) facts.push(`Feedback detail sources ${uncollected.join(', ')} were not collected: detail reads are limited to open pull requests. This is intentional noncollection, not empty, resolved, or unsupported evidence.`);
+      facts.push('Feedback is read-only evidence and does not authorize delivery, resolution, readiness, or approval for merge.');
+    }
   }
   return h('ul', {}, ...facts.map(fact => h('li', {}, fact)));
 }
@@ -1364,6 +1480,7 @@ function renderTaskBriefing(item) {
   const raw = h('details', { class: 'briefing-sources' }, h('summary', {}, `Inspect raw evidence${sources.length ? ` · ${sources.length} sources` : ''}`));
   if (sources.length) raw.append(...sources.map(source => sourceDetails(t.number, source)));
   else raw.append(h('details', {}, h('summary', {}, 'Issue body'), pre(t.body)), h('button', { onclick: () => openTicket(t.number, 'timeline') }, 'Open task timeline and artifacts'));
+  if (t.pr) raw.append(feedbackEvidence(t));
   return h('article', {},
     h('header', { class: 'briefing-intro' }, h('p', { class: 'briefing-label' }, `${INBOX_KINDS[item.kind]} · #${t.number} · ${t.title}`),
       h('h2', { id: 'briefing-question', class: 'briefing-question', tabindex: -1 }, briefing ? cited(briefing.question, sources, t.number) : item.kind === 'needs-info' ? item.why : `What should happen next for #${t.number}?`),

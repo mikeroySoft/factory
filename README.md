@@ -696,6 +696,92 @@ for row in read_events(Path(".factory/events.jsonl")):
 PY
 ```
 
+## Source-versioned PR feedback (schema 1)
+
+The full `factory dashboard --json` / `/api/snapshot` observation exposes
+`tickets[].pr.feedback`. The existing Review drawer, Inbox raw evidence, and
+`factory.briefing.sources_for` consume this same object. Non-PR tickets have no
+fabricated feedback. `--runtime-json` does not invoke this collector
+and retains its network-free contract.
+
+`factory.feedback.collect(read, *, repository, pr, issue=None, events=(),
+provenance_complete=True, producer_revision=None, observed_at=None,
+collect_details=True)` is the shared producer. `read` is the existing dashboard
+GitHub transport, accepting `endpoint` for fixed REST GETs or `query`/`variables`
+for GraphQL reads, plus a remaining `timeout`. Source exceptions become sanitized
+coverage/errors without discarding independently observed facts. There is no
+feedback cache, event append, model invocation, delivery, dispatch, readiness, or
+approval decision. The full dashboard's pre-existing lifecycle reconciliation
+remains unchanged.
+
+Detail reads are limited to open pull requests, so closed history never
+multiplies provider calls per refresh. `collect_details=False` reads nothing: the
+schema-1 envelope still carries the caller's independently known repository/PR
+identities and state, `head_sha` stays null, every source is `unavailable` with
+the `not_collected` reason/error code, and ownership stays `unverified`. Review,
+Inbox and briefing report that intentional noncollection explicitly; it is not an
+empty, resolved, or unsupported observation, and it is distinct from an older
+engine that has no `feedback` key at all.
+
+The required envelope is `schema_version`, `producer`, `observed_at`,
+`observation_id`, `repository`, `pr`, `owner`, `coverage`, `items`, and `errors`.
+Native repository/PR IDs are retained alongside host/slug, PR number/URL/head,
+state and nullable draft. Ownership needs an actual same-repository closing-issue
+link plus retained Factory claim provenance; branch text and shared credentials
+do not establish it. Relations are `factory_issue`, `unverified`, `ambiguous`,
+or `none`. A missing key or unsupported schema is unknown, not an empty success.
+
+Items retain native source IDs/links, source revision/update time, review/thread/
+check-run IDs, nullable run attempt, source versus observed head, disposition,
+author, body/truncation, location and provider name/title. Kinds are `review`,
+`review_comment`, `check_run`, `commit_status`, and `factory_review`; all can
+coexist. Review state, thread resolved/outdated state, and check status/conclusion
+remain independent. Missing source SHA is never filled with the current head.
+Relevance is `current_head`, `historical`, or `unknown`; outdated threads cannot
+become current through SHA equality. Provider User attribution remains unknown
+because shared credentials may belong to Factory. A Factory review requires a
+valid recorded review execution result, successful parse/exit and matching target
+SHA; ordinary discussion or `VERDICT` prose is legacy context, not that evidence.
+Unavailable provider fields remain explicit nulls (including check-run update
+time or run attempt when the API does not supply them).
+
+Fixed bounds in `factory/feedback.py`: `ITEM_LIMIT=100` per reviews, threads/
+comments and checks/statuses; `PAGE_LIMIT=2`; `BODY_LIMIT=20000` UTF-8 bytes per
+body; `ERROR_LIMIT=32`; `DETAIL_TIMEOUT=30` seconds, with initial/final head reads.
+Reviews and review threads are read as bounded GraphQL connections carrying native
+IDs, links, the reviewed commit and the provider's own `updatedAt` (an edited review
+revises it; a submission time would not). Both use up to two pages; the combined
+checks source reserves one page for native check runs and one for commit statuses. Nested thread comment
+overflow is explicit rather than an unbounded fan-out. Provenance reuses the
+existing safe, bounded 2 MB committed-event tail reader. Every source (`pr`,
+`reviews`, `threads`, `checks`) reports `status` (`complete`, `partial`,
+`unavailable`), nullable `observed_at`/`reason`, and `truncated`. A cap, malformed
+response, missing SHA, failed read, or head race never establishes disappearance
+or resolution. A failed final read exposes an unknown head; raced reads retain
+facts and both observed heads while making relevance unknown. Truncated text
+without a reliable provider update signal explicitly lacks byte-exact change
+detection beyond the retained body.
+
+Canonical JSON is UTF-8, sorted keys, compact separators and explicit nulls.
+Identity strings are stripped/NFC-normalized; host/slug and SHA hex are lowercase.
+Evidence IDs namespace provider, host, repository ID, PR ID, kind and source ID.
+`source_revision` is `sha256:` over exactly `kind`, `source_id`, `review_id`,
+`thread_id`, `check_run_id`, `run_attempt`, `source_head_sha`, `source_updated_at`,
+`author`, `body`, `truncated`, `location`, `disposition`, `summary`.
+`observation_id` hashes repository/PR native IDs, final observed head, sorted
+`(evidence_id, source_revision)` pairs, and coverage status/truncated/reason.
+Collection timestamps, URLs, relevance and presentation order are excluded.
+Unchanged polls keep identity; edits/resolution/dismissal/outcome changes revise
+the same source. The producer revision is a clean source-checkout Git revision,
+otherwise null, never a CLI version.
+
+Briefing appends feedback behind existing evidence and human constraints and
+reports omissions in its reserved coverage citation. Source text is quoted
+untrusted evidence, rendered through safe text helpers. No consumer may infer
+delivery, fixed status, merge approval or readiness from this read-only schema.
+B2 (#79) does not authorize #15 delivery or change its held status; acceptance
+requires the actual merged producer revision and a separately authorized handoff.
+
 ## Bounded runtime JSON (schema 1)
 
 `factory dashboard --runtime-json` prints one JSON object and exits. It is a
