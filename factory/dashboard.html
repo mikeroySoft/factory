@@ -63,6 +63,8 @@
   .controls select, .panel select { background: var(--bg2); border: 1px solid var(--line2); color: var(--muted); font: 10px var(--mono); padding: 3px 6px; letter-spacing: .08em; text-transform: uppercase; }
 
   /* ---------- layout ---------- */
+  .workspace { display: flex; align-items: flex-start; min-width: 0; }
+  .workspace > main { flex: 1 1 auto; width: 100%; min-width: 0; }
   main { max-width: 1600px; margin: 0 auto; padding: 20px 24px 60px; display: grid; gap: 18px; }
   main > *, .row2 > * { min-width: 0; }
   main[hidden] { display: none; }
@@ -213,10 +215,11 @@
   .cardc code { color: var(--muted); }
 
   /* ---------- drawer ---------- */
-  .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(640px, 100vw); z-index: 60; background: var(--bg2);
-    border-left: 1px solid var(--line2); box-shadow: -20px 0 50px rgba(0,0,0,.6); display: flex; flex-direction: column;
-    transform: translateX(100%); transition: transform .22s ease-out; }
-  .drawer.open { transform: none; }
+  .drawer { position: sticky; top: var(--factory-header-height, 70px); height: calc(100dvh - var(--factory-header-height, 70px)); width: 0; flex: 0 0 auto; z-index: 30;
+    background: var(--bg2); border-left: 0 solid var(--line2); display: flex; flex-direction: column; overflow: hidden; }
+  .drawer[hidden] { display: none; }
+  .drawer.open { border-left-width: 1px; }
+  .drawer > header, .drawer > .tabs, .drawer > .content { width: var(--drawer-width, min(640px, 42vw)); flex-shrink: 0; }
   .drawer > header { padding: 14px 18px 10px; border-bottom: 1px solid var(--line); }
   .drawer .hd { display: flex; align-items: center; gap: 10px; }
   .drawer .hd .num { font: 700 20px var(--hud); color: var(--c); text-shadow: 0 0 10px color-mix(in srgb, var(--c) 45%, transparent); }
@@ -226,7 +229,22 @@
   .tabs { display: flex; border-bottom: 1px solid var(--line); overflow-x: auto; }
   .tabs button { border: 0; border-bottom: 2px solid transparent; padding: 8px 12px; white-space: nowrap; }
   .tabs button.on { color: var(--cyan); border-bottom-color: var(--cyan); box-shadow: none; }
-  .drawer .content { flex: 1; overflow: auto; padding: 14px 18px 40px; }
+  .drawer .content { flex: 1; min-height: 0; overflow: auto; padding: 14px 18px 40px; }
+  .drawer-scrim { display: none; }
+  @media (max-width: 800px) {
+    html, body { overflow-x: clip; }
+    .top { flex-wrap: wrap; gap: 12px; padding: 14px 18px; }
+    .top .views { margin-left: auto; }
+    .top .controls { width: 100%; flex-wrap: wrap; }
+    .top .controls input[type=search] { flex: 1 1 150px; min-width: 0; width: auto; }
+    .top .status { order: 3; width: 100%; margin-left: 0; }
+    .workspace { display: block; }
+    .drawer { position: fixed; inset: 0 0 0 auto; height: 100dvh; max-width: 100vw; z-index: 60; border-left-width: 1px; box-shadow: -20px 0 50px rgba(0,0,0,.6); transform: translateX(100%); }
+    .drawer > header, .drawer > .tabs, .drawer > .content { width: var(--drawer-width, min(640px, 100vw)); }
+    .drawer button { min-height: 44px; }
+    .drawer .links a { display: inline-flex; align-items: center; min-height: 44px; }
+    .drawer-scrim:not([hidden]) { display: block; position: fixed; inset: 0; z-index: 55; background: rgba(5,7,12,.72); }
+  }
   pre { font: 11px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; color: var(--muted); background: var(--bg);
     border: 1px solid var(--line); padding: 10px 12px; max-height: 60vh; overflow: auto; }
   details { margin: 4px 0; } summary { cursor: pointer; color: var(--muted); font-size: 11px; } summary:hover { color: var(--ink); }
@@ -288,12 +306,14 @@
   .toast { background: var(--bg2); border: 1px solid var(--grn); color: var(--grn); padding: 8px 14px; font-size: 11px; box-shadow: 0 0 12px rgba(57,255,20,.3); }
 
   @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
     *, *::before, *::after { animation: none !important; transition: none !important; }
     .scan { display: none; }
   }
 </style>
 <link rel="stylesheet" href="/theme.css">
 <link rel="stylesheet" href="/briefing.css">
+<link rel="stylesheet" href="/docked.css">
 </head>
 <body>
 <div class="scan" aria-hidden="true"></div>
@@ -314,6 +334,7 @@
   </div>
 </header>
 
+<div class="workspace" id="workspace">
 <main id="ops" hidden>
   <div id="errors"></div>
   <section class="kpis" id="kpis" aria-label="Key metrics"></section>
@@ -384,17 +405,19 @@
   <div id="inbox-health" class="briefing-status" role="status"></div>
   <div id="inbox-list"></div>
 </main>
-<div id="toasts" class="toasts" aria-live="polite"></div>
+<div class="drawer-scrim" id="drawer-scrim" hidden></div>
 
-<aside class="drawer" id="drawer" aria-label="Ticket detail" aria-hidden="true">
+<aside class="drawer" id="drawer" aria-labelledby="d-title" aria-hidden="true" hidden>
   <header>
     <div class="hd"><span class="num" id="d-num"></span><span class="chip" id="d-stage"></span><span id="d-live"></span><button class="x" id="d-close" title="esc">Close</button></div>
     <h2 id="d-title"></h2>
     <div class="links" id="d-links"></div>
   </header>
-  <div class="tabs" id="d-tabs"></div>
-  <div class="content" id="d-content"></div>
+  <div class="tabs" id="d-tabs" role="tablist" aria-label="Ticket information"></div>
+  <div class="content" id="d-content" role="tabpanel" tabindex="0"></div>
 </aside>
+</div>
+<div id="toasts" class="toasts" aria-live="polite"></div>
 
 <dialog id="fm-dialog" class="briefing-dialog" aria-labelledby="fm-title">
   <header class="briefing-dialog-head"><h2 id="fm-title">Ask Factory Manager</h2><button id="fm-close" type="button" autofocus>Close</button></header>
@@ -419,8 +442,10 @@
   </div>
 </dialog>
 
+<script src="/motion.js"></script>
 <script>
 'use strict';
+const { animate } = Motion;
 const STAGES = [
   ['triage', 'TRIAGE', 'needs-triage · awaiting LLM triage'],
   ['needs-info', 'NEEDS INFO', 'back to reporter'],
@@ -440,6 +465,10 @@ const TABS = ['timeline', 'attempts', 'gate', 'review', 'branch', 'prompt', 'iss
 
 const S = { snap: null, filter: null, q: '', sel: null, tab: 'timeline', okAt: 0, failed: false, files: {}, view: 'inbox', drafts: {}, inboxDirty: false, inboxKey: null, choices: {}, briefings: {}, chats: {}, receipts: {}, fm: null, preview: null, restored: false, loading: null };
 const $ = id => document.getElementById(id);
+const narrowDrawer = matchMedia('(max-width: 800px)');
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+const drawerAnimations = new Map();
+let drawerOpener = null, drawerVersion = 0, renderedTicket = null, renderedTab = null, resizeFrame = 0;
 
 // ---------------------------------------------------------------- utils
 const domChildren = kids => kids.flat(Infinity).filter(kid => kid != null && kid !== false);
@@ -580,7 +609,7 @@ function stageTimeline(t) {
 }
 
 // ---------------------------------------------------------------- render
-function render() {
+function render(forceDrawer = false) {
   applyView();
   if (!S.snap) {
     const message = 'No snapshot is available. Check the dashboard connection, then retry.';
@@ -592,8 +621,7 @@ function render() {
   renderStatus(); renderErrors(); renderKpis(); renderPipeline(); renderBoard(); renderFeed(); renderRuns(); renderUpstream(); renderLanes(); renderThroughput(); renderConfig();
   renderInboxHealth();
   updateInbox();
-  applyView();
-  if (S.sel != null && !$('drawer').contains(document.activeElement) && !$('fm-dialog').open) renderDrawer();
+  if (S.sel != null && (forceDrawer || (!$('drawer').contains(document.activeElement) && !$('fm-dialog').open && !$('decision-dialog').open))) renderDrawer();
 }
 function renderStatus() {
   const d = S.snap.dispatcher, stale = S.failed || Date.now() - S.okAt > 180000;
@@ -724,7 +752,7 @@ function card(t) {
   const ciNode = ci ? h('span', { class: 'ci', title: 'CI on PR head' }, h('span', { class: 'k' }, 'ci '),
     h('b', { class: 'ok' }, `✓${(ci.SUCCESS || 0)}`), ' ', ci.FAILURE || ci.ERROR ? h('b', { class: 'bad' }, `✗${(ci.FAILURE || 0) + (ci.ERROR || 0)}`) : null, ' ',
     ci.QUEUED || ci.IN_PROGRESS || ci.PENDING ? h('b', { class: 'pend' }, `…${(ci.QUEUED || 0) + (ci.IN_PROGRESS || 0) + (ci.PENDING || 0)}`) : null) : null;
-  const el = h('article', { class: `card ${stageClass(t.stage)} ${S.sel === t.number ? 'sel' : ''}`, tabindex: 0, dataset: { n: t.number }, 'aria-label': `#${t.number} ${t.title}` },
+  const el = h('article', { class: `card ${stageClass(t.stage)} ${S.sel === t.number ? 'sel' : ''}`, tabindex: 0, role: 'button', 'aria-pressed': S.sel === t.number ? 'true' : 'false', 'aria-controls': 'drawer', dataset: { n: t.number }, 'aria-label': `#${t.number} ${t.title}` },
     h('div', { class: 'ct' }, h('span', { class: 'num' }, `#${t.number}`), h('span', { class: 'wk' }, t.worker),
       t.lock_held ? h('span', { class: `chip${t.phase ? ' live' : ''}`, style: { '--c': 'var(--yel)' } }, t.phase ? `${phaseCell(t)}${t.phase.attempt ? ' #' + t.phase.attempt : ''}` : 'phase unknown') : null,
       t.pr && t.pr.approved && t.pr.state === 'OPEN' ? h('span', { class: 'chip', style: { '--c': 'var(--grn)' }, title: 'factory-approved: merge stage will land it' }, 'approved') : null,
@@ -742,7 +770,7 @@ function card(t) {
       t.assignees.length ? h('span', {}, `@${t.assignees.join(' @')}`) : null,
       h('span', { title: fmt(t.updated_at) }, `upd ${ago(t.updated_at)}`)));
   el.onclick = () => openTicket(t.number);
-  el.onkeydown = e => { if (e.key === 'Enter') openTicket(t.number); };
+  el.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openTicket(t.number); } };
   return el;
 }
 function renderBoard() {
@@ -901,18 +929,127 @@ function renderConfig() {
 }
 
 // ---------------------------------------------------------------- drawer
+function runMotion(el, values, spring = false, instant = false) {
+  drawerAnimations.get(el)?.stop();
+  const motionAllowed = !instant && !reducedMotion.matches;
+  const control = animate(el, values, {
+    duration: motionAllowed ? spring ? .42 : .19 : 0,
+    ...(spring && motionAllowed ? { type: 'spring', bounce: .08 } : {}),
+  });
+  drawerAnimations.set(el, control);
+  return control;
+}
+function setPageInert(value) {
+  document.querySelector('.top').inert = value;
+  $('ops').inert = value;
+  $('inbox').inert = value;
+}
+function drawerWidth() {
+  return Math.min(640, narrowDrawer.matches ? innerWidth : Math.max(400, $('workspace').clientWidth * .42));
+}
+function showDrawer(fromHidden, focusOnOpen, instant = false) {
+  const dr = $('drawer'), scrim = $('drawer-scrim'), modal = narrowDrawer.matches;
+  const version = ++drawerVersion, width = drawerWidth();
+  dr.hidden = false;
+  dr.inert = false;
+  dr.classList.add('open');
+  dr.setAttribute('aria-hidden', 'false');
+  dr.setAttribute('role', modal ? 'dialog' : 'complementary');
+  dr.style.setProperty('--drawer-width', `${width}px`);
+  if (modal) {
+    dr.setAttribute('aria-modal', 'true');
+    setPageInert(true);
+    scrim.hidden = false;
+    dr.style.width = `${width}px`;
+    if (fromHidden) {
+      dr.style.transform = `translateX(${width}px)`;
+      scrim.style.opacity = '0';
+    }
+    runMotion(scrim, { opacity: 1 }, false, instant);
+    runMotion(dr, { x: 0 }, true, instant);
+  } else {
+    dr.removeAttribute('aria-modal');
+    setPageInert(false);
+    scrim.hidden = true;
+    scrim.style.opacity = '';
+    dr.style.transform = 'none';
+    if (fromHidden) dr.style.width = '0px';
+    runMotion(dr, { width }, true, instant);
+  }
+  if (focusOnOpen && modal) queueMicrotask(() => {
+    if (version === drawerVersion && S.sel != null) $('d-close').focus({ preventScroll: true });
+  });
+}
+function hideDrawer(restoreFocus = false, instant = false) {
+  const dr = $('drawer'), scrim = $('drawer-scrim');
+  if (dr.hidden) { setPageInert(false); scrim.hidden = true; return; }
+  const version = ++drawerVersion, ticket = renderedTicket, opener = drawerOpener;
+  const modal = narrowDrawer.matches, width = drawerWidth();
+  dr.classList.remove('open');
+  dr.setAttribute('aria-hidden', 'true');
+  dr.inert = true;
+  if (modal) {
+    setPageInert(true);
+    scrim.hidden = false;
+    if (!scrim.style.opacity) scrim.style.opacity = '1';
+  }
+  const exit = modal ? runMotion(dr, { x: width }, true, instant) : runMotion(dr, { width: 0 }, true, instant);
+  if (modal) runMotion(scrim, { opacity: 0 }, false, instant);
+  else { setPageInert(false); scrim.hidden = true; }
+  const finish = () => {
+    if (version !== drawerVersion || S.sel != null) return;
+    dr.hidden = true;
+    dr.inert = false;
+    dr.style.width = '';
+    dr.style.transform = '';
+    dr.style.removeProperty('--drawer-width');
+    dr.removeAttribute('aria-modal');
+    dr.setAttribute('role', 'complementary');
+    scrim.hidden = true;
+    scrim.style.opacity = '';
+    setPageInert(false);
+    renderedTicket = null;
+    renderedTab = null;
+    drawerOpener = null;
+    if (restoreFocus) {
+      const fallback = document.querySelector(`.card[data-n="${ticket}"]`);
+      const target = opener?.isConnected && !opener.closest('[inert]') ? opener : fallback;
+      target?.focus({ preventScroll: true });
+    }
+  };
+  exit.then(finish, finish);
+}
 function openTicket(n, tab) {
-  S.sel = n; if (tab) S.tab = tab;
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && active !== document.body && !$('drawer').contains(active)) drawerOpener = active;
+  else drawerOpener = document.querySelector(`.card[data-n="${n}"]`) || drawerOpener;
+  S.sel = n;
+  if (tab) S.tab = tab;
   if (S.view === 'inbox') S.inboxKey = String(n);
   syncHash();
-  render();
+  render(true);
 }
-function closeDrawer() { S.sel = null; syncHash(); render(); $('drawer').classList.remove('open'); $('drawer').setAttribute('aria-hidden', 'true'); }
+function closeDrawer(restoreFocus = true) {
+  if (S.sel == null && $('drawer').hidden) return;
+  S.sel = null;
+  syncHash();
+  if (S.snap) { renderBoard(); renderLanes(); }
+  hideDrawer(restoreFocus);
+}
+function activateDrawerTab(tab) {
+  S.tab = tab;
+  renderDrawer();
+  $(`d-tab-${tab}`)?.focus({ preventScroll: true });
+}
 function renderDrawer() {
   const t = S.snap.tickets.find(x => x.number === S.sel);
   const dr = $('drawer');
-  if (!t) { closeDrawer(); return; }
-  dr.classList.add('open'); dr.setAttribute('aria-hidden', 'false'); dr.className = `drawer open ${stageClass(t.stage)}`;
+  if (!t) { closeDrawer(false); return; }
+  const fromHidden = dr.hidden, opening = !dr.classList.contains('open');
+  const contentChanged = renderedTicket !== t.number || renderedTab !== S.tab;
+  dr.className = `drawer open ${stageClass(t.stage)}`;
+  if (opening) showDrawer(fromHidden, true);
+  else dr.setAttribute('aria-hidden', 'false');
   $('d-num').textContent = `#${t.number}`;
   $('d-stage').textContent = STAGE_NAME[t.stage];
   $('d-live').replaceChildren(t.lock_held ? h('span', { class: 'chip live', style: { '--c': 'var(--yel)' } }, t.phase ? `${phaseCell(t)} · ${t.phase.artifact} ${ago(t.phase.at)}` : 'lock held') : '');
@@ -924,9 +1061,27 @@ function renderDrawer() {
     h('span', {}, `${t.worker} worker`), h('span', {}, t.assignees.length ? `@${t.assignees.join(' @')}` : 'unassigned'),
     h('span', { title: fmt(t.created_at) }, `opened ${ago(t.created_at)}`),
     h('span', {}, ...t.labels.map(l => h('span', { class: 'lab' }, l))));
-  $('d-tabs').replaceChildren(...TABS.map(tab => h('button', { class: S.tab === tab ? 'on' : '', onclick: () => { S.tab = tab; renderDrawer(); } }, tab)));
-  const c = $('d-content'); c.replaceChildren();
+  $('d-tabs').replaceChildren(...TABS.map((tab, index) => h('button', {
+    id: `d-tab-${tab}`, role: 'tab', class: S.tab === tab ? 'on' : '', tabindex: S.tab === tab ? 0 : -1,
+    'aria-selected': S.tab === tab ? 'true' : 'false', 'aria-controls': 'd-content',
+    onclick: () => activateDrawerTab(tab),
+    onkeydown: event => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? TABS.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : TABS.length - 1)) % TABS.length;
+      activateDrawerTab(TABS[next]);
+    },
+  }, tab)));
+  const c = $('d-content'), scrollTop = c.scrollTop;
+  c.replaceChildren();
+  c.setAttribute('aria-labelledby', `d-tab-${S.tab}`);
   ({ timeline: tabTimeline, attempts: tabAttempts, gate: tabGate, review: tabReview, branch: tabBranch, prompt: tabPrompt, issue: tabIssue })[S.tab](t, c);
+  if (contentChanged) {
+    c.scrollTop = 0;
+    runMotion(c, { opacity: [.35, 1], y: [6, 0] });
+  } else c.scrollTop = scrollTop;
+  renderedTicket = t.number;
+  renderedTab = S.tab;
   $('d-close').onclick = closeDrawer;
 }
 const pre = text => h('pre', {}, text || '(empty)');
@@ -1090,7 +1245,7 @@ async function fmRequest(path, payload) {
 }
 function updateInbox(force = false, preserveFocus = false) {
   if (!S.snap) return;
-  if ($('fm-dialog').open || $('decision-dialog').open || (!force && $('inbox').contains(document.activeElement))) { S.inboxDirty = true; return; }
+  if ($('fm-dialog').open || $('decision-dialog').open || (S.sel != null && narrowDrawer.matches) || (!force && $('inbox').contains(document.activeElement))) { S.inboxDirty = true; return; }
   const active = preserveFocus && $('inbox').contains(document.activeElement) ? document.activeElement : null;
   const selection = active?.tagName === 'TEXTAREA' ? [active.selectionStart, active.selectionEnd] : null;
   const expanded = preserveFocus ? [...$('inbox').querySelectorAll('details[open]')].map(el => el.querySelector('summary')?.textContent) : [];
@@ -1378,9 +1533,12 @@ function renderTaskBriefing(item) {
     decisionForm(item));
 }
 function selectCase(key) {
-  S.inboxKey = key; S.sel = null;
-  $('drawer').classList.remove('open'); $('drawer').setAttribute('aria-hidden', 'true');
-  syncHash(); saveInboxState(); updateInbox(true);
+  S.inboxKey = key;
+  S.sel = null;
+  syncHash();
+  saveInboxState();
+  updateInbox(true);
+  hideDrawer(false);
   $('inbox-list').querySelector('.briefing-question')?.focus({ preventScroll: true });
 }
 function renderInbox() {
@@ -1513,27 +1671,60 @@ function applyView() {
   $('nav-ops').setAttribute('aria-current', S.view === 'ops' ? 'page' : 'false'); $('nav-inbox').setAttribute('aria-current', S.view === 'inbox' ? 'page' : 'false');
   document.title = `Factory — ${S.view === 'inbox' ? 'Inbox' : 'Ops'}`;
 }
-function setView(view) { S.view = view; S.sel = null; $('drawer').classList.remove('open'); $('drawer').setAttribute('aria-hidden', 'true'); syncHash(); applyView(); updateInbox(true); window.scrollTo(0, 0); }
+function setView(view) { S.view = view; S.sel = null; syncHash(); applyView(); updateInbox(true); hideDrawer(false); window.scrollTo(0, 0); }
 $('inbox').addEventListener('focusout', () => { if (S.inboxDirty) setTimeout(() => updateInbox(), 100); });
 
 // ---------------------------------------------------------------- input
 document.addEventListener('keydown', e => {
   if ($('fm-dialog').open || $('decision-dialog').open) return;
+  if (e.key === 'Escape' && S.sel != null) { e.preventDefault(); closeDrawer(); return; }
+  if (e.key === 'Tab' && narrowDrawer.matches && S.sel != null) {
+    const controls = [...$('drawer').querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), summary, [tabindex]:not([tabindex="-1"])')]
+      .filter(el => el.getClientRects().length && !el.closest('[inert]'));
+    if (controls.length) {
+      const first = controls[0], last = controls.at(-1);
+      if (!controls.includes(document.activeElement)) { e.preventDefault(); (e.shiftKey ? last : first).focus(); }
+      else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+    return;
+  }
   const typing = ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'SUMMARY', 'A'].includes(e.target.tagName);
   if (e.key === '/' && !typing) { e.preventDefault(); $('search').focus(); return; }
-  if (e.key === 'Escape') { if (typing) { e.target.blur(); return; } if (S.sel != null) closeDrawer(); else if (S.filter || S.q) { S.filter = null; S.q = ''; $('search').value = ''; render(); } return; }
+  if (e.key === 'Escape') { if (typing) { e.target.blur(); return; } if (S.filter || S.q) { S.filter = null; S.q = ''; $('search').value = ''; render(); } return; }
   if (typing) return;
   if (e.key === 'r') { load(true); return; }
   if (S.view === 'ops' && (e.key === 'j' || e.key === 'k')) {
     const cards = [...document.querySelectorAll('.card')]; if (!cards.length) return;
     const i = cards.findIndex(c => +c.dataset.n === S.sel);
-    const next = cards[Math.min(cards.length - 1, Math.max(0, i + (e.key === 'j' ? 1 : -1)))];
-    openTicket(+next.dataset.n); next.focus(); next.scrollIntoView({ block: 'nearest' });
+    const number = +cards[Math.min(cards.length - 1, Math.max(0, i + (e.key === 'j' ? 1 : -1)))].dataset.n;
+    openTicket(number);
+    const next = document.querySelector(`.card[data-n="${number}"]`);
+    next?.focus({ preventScroll: true });
+    next?.scrollIntoView({ block: 'nearest' });
   }
 });
 $('search').addEventListener('input', e => { S.q = e.target.value; render(); });
 $('window').onchange = renderLanes;
 $('refresh').onclick = () => load(true);
+$('drawer-scrim').onclick = closeDrawer;
+function scheduleDrawerLayout() {
+  cancelAnimationFrame(resizeFrame);
+  resizeFrame = requestAnimationFrame(() => {
+    if (S.sel != null && !$('drawer').hidden) showDrawer(false, false, true);
+    else if (!$('drawer').hidden) hideDrawer(false, true);
+  });
+}
+window.addEventListener('resize', scheduleDrawerLayout);
+narrowDrawer.addEventListener('change', scheduleDrawerLayout);
+reducedMotion.addEventListener('change', () => {
+  if (reducedMotion.matches) drawerAnimations.forEach(control => control.complete());
+  scheduleDrawerLayout();
+});
+const topBar = document.querySelector('.top');
+const sizeTopBar = () => document.documentElement.style.setProperty('--factory-header-height', `${topBar.offsetHeight}px`);
+new ResizeObserver(sizeTopBar).observe(topBar);
+sizeTopBar();
 let timer = null;
 function schedule() { clearInterval(timer); if ($('auto').checked) timer = setInterval(() => { if (!document.hidden) load(false); }, 30000); }
 $('auto').onchange = schedule;
@@ -1547,7 +1738,12 @@ function initFromHash() {
   if (m) { S.view = 'ops'; if (m[1] === 't') S.sel = +m[2]; else { S.filter = m[2]; S.sel = null; } }
 }
 initFromHash();
-window.addEventListener('hashchange', () => { initFromHash(); applyView(); if (S.snap) { updateInbox(true); render(); } });
+window.addEventListener('hashchange', () => {
+  initFromHash();
+  applyView();
+  if (S.snap) { updateInbox(true); render(); }
+  if (S.sel == null) hideDrawer(false);
+});
 $('nav-ops').onclick = () => setView('ops');
 $('nav-inbox').onclick = () => setView('inbox');
 schedule();

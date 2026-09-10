@@ -316,7 +316,10 @@ Labels (`needs-review`, `needs-viability`, `needs-triage`, `needs-info`,
   Compare → Decide** briefing for each case needing human judgment. The question,
   situation, FM recommendation, relevant earlier decisions, uncertainty, options,
   consequences, and next owner stay visible; raw evidence is expandable. **Ops**
-  retains the board, telemetry, dispatcher runs, and task drawers.
+  retains the board, telemetry, and dispatcher runs. Ticket details dock beside
+  the workspace on desktop, keeping the queue visible; narrow screens use an
+  overlay with keyboard focus containment and Escape to close. Transitions use
+  locally served Motion and respect the system reduced-motion preference.
   **Ask FM** works on a whole task or a specific source/log and returns cited
   answers. It requires an authenticated `omp` installation; `[manager].model`
   chooses the model (host-wide: `[defaults.manager]`). If unset, an existing

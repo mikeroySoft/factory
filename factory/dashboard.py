@@ -71,6 +71,9 @@ HTML = Path(__file__).with_name("dashboard.html")
 ATLAS = Path(__file__).with_name("architecture.html")
 CODEBASE_HTML = Path(__file__).with_name("codebase.html")
 BRIEFING_CSS = Path(__file__).with_name("briefing.css")
+MOTION = Path(__file__).with_name("motion.js")
+MOTION_LICENSE = Path(__file__).with_name("MOTION-LICENSE.txt")
+DOCKED_CSS = Path(__file__).with_name("docked.css")
 NEWSREADER = Path(__file__).with_name("fonts") / "Newsreader.ttf"
 NEWSREADER_LICENSE = Path(__file__).with_name("fonts") / "Newsreader-OFL.txt"
 FACTORY_LABELS = {
@@ -1057,6 +1060,12 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(url.query)
         if url.path == "/":
             self._send(200, "text/html; charset=utf-8", HTML.read_bytes())
+        elif url.path == "/motion.js":
+            self._send(200, "application/javascript", MOTION.read_bytes())
+        elif url.path == "/MOTION-LICENSE.txt":
+            self._send(200, "text/plain; charset=utf-8", MOTION_LICENSE.read_bytes())
+        elif url.path == "/docked.css":
+            self._send(200, "text/css; charset=utf-8", DOCKED_CSS.read_bytes())
         elif url.path == "/theme.css":
             self._send(200, "text/css", cfg.dashboard_theme.read_bytes() if cfg.dashboard_theme else b"")
         elif url.path == "/briefing.css":
