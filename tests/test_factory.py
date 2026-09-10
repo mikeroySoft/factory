@@ -110,6 +110,7 @@ def merge_stage_mocks(origin: Path, pr_number: int, branch: str, title: str, ori
         "number": pr_number,
         "headRefName": branch,
         "headRefOid": head,
+        "baseRefName": "main",
         "isDraft": False,
         "labels": [{"name": config.LABEL_APPROVED}],
         "reviewDecision": "APPROVED",
@@ -1002,6 +1003,89 @@ PY
                 else:
                     self.assertNotIn("issue edit", calls)
 
+    def test_fix_rejects_wrong_or_missing_base_before_mutation(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        for actual_base in ("main", None):
+            with self.subTest(actual_base=actual_base), tempfile.TemporaryDirectory() as d:
+                repo = make_repo(Path(d))
+                dispatch.configure(config.Config(
+                    root=repo, repo="acme/widgets", main="release",
+                ))
+                wt = dispatch.FACTORY / "wt-7"
+                wt.mkdir(parents=True)
+                packet = dispatch.FACTORY / "packet.md"
+                packet.write_text("evidence")
+                pr = {
+                    "state": "OPEN", "headRefName": "agent/7",
+                    "headRefOid": "head", "reviewDecision": "",
+                }
+                if actual_base is not None:
+                    pr["baseRefName"] = actual_base
+
+                with mock.patch.object(dispatch, "gh_json", return_value=pr), \
+                        mock.patch.object(dispatch, "run") as run, \
+                        mock.patch.object(dispatch, "worker_round") as worker:
+                    with self.assertRaisesRegex(ValueError, "configured target"):
+                        manage.apply(
+                            7, {"title": "Fix CI"}, "FIX", "",
+                            {"worker": "ci-fix", "guidance": "Fix CI"}, packet,
+                        )
+
+                run.assert_not_called()
+                worker.assert_not_called()
+
+    def test_fix_rechecks_base_before_push(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            dispatch.configure(config.Config(
+                root=repo, repo="acme/widgets", main="release",
+            ))
+            wt = dispatch.FACTORY / "wt-7"
+            wt.mkdir(parents=True)
+            packet = dispatch.FACTORY / "packet.md"
+            packet.write_text("evidence")
+            pr = {
+                "state": "OPEN", "headRefName": "agent/7",
+                "headRefOid": "head", "baseRefName": "release", "reviewDecision": "",
+            }
+
+            def fake_run(cmd, *args, **kwargs):
+                stdout = (
+                    "agent/7\n" if cmd[:3] == ["git", "branch", "--show-current"]
+                    else "head\n" if cmd[:3] == ["git", "rev-parse", "HEAD"]
+                    else ""
+                )
+                return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+            with mock.patch.object(
+                    dispatch, "gh_json",
+                    side_effect=[pr, {"baseRefName": "main"}],
+            ), mock.patch.object(dispatch, "run", side_effect=fake_run) as run, \
+                    mock.patch.object(
+                        dispatch, "worker_round",
+                        return_value=(True, "ok", packet, "new-head"),
+                    ), mock.patch.object(
+                        dispatch, "review", return_value=("REVISE", "retargeted"),
+                    ), mock.patch.object(dispatch, "pr_comment"), \
+                    mock.patch.object(dispatch, "escalate"):
+                with self.assertRaisesRegex(ValueError, "configured target"):
+                    manage.apply(
+                        7, {"title": "Fix CI"}, "FIX", "",
+                        {"worker": "ci-fix", "guidance": "Fix CI"}, packet,
+                    )
+
+            self.assertFalse(any(
+                call.args[0][:2] == ["git", "push"]
+                for call in run.call_args_list
+            ))
+
     def test_fix_runs_selected_worker_on_red_ci_and_requires_gate_and_review(self) -> None:
         cases = ((False, "APPROVE", False), (True, "REVISE", False),
                  (True, "APPROVE", False), (True, "APPROVE", True))
@@ -1041,7 +1125,10 @@ case "$1 $2" in
   "issue list") echo '[{"number":7,"title":"Fix CI","body":"Original","labels":[{"name":"chore"}]}]';;
   "api repos/acme/widgets/issues/7/timeline") echo '[]';;
   "issue view") echo '{"title":"Fix CI","body":"Original","comments":[]}';;
-  "pr view") head=$(git -C .factory/wt-7 rev-parse HEAD); printf '{"number":9,"state":"OPEN","headRefName":"agent/7","headRefOid":"%s","reviewDecision":""}\n' "$head";;
+  "pr view")
+    head=$(git -C .factory/wt-7 rev-parse HEAD)
+    case "$*" in *--json*number*) number='"number":9,';; *) number=;; esac
+    printf '{%s"state":"OPEN","headRefName":"agent/7","headRefOid":"%s","baseRefName":"main","reviewDecision":""}\n' "$number" "$head";;
   "pr checks") echo '[{"name":"unit","bucket":"fail"}]';;
 esac
 ''',
@@ -1197,6 +1284,65 @@ esac
 
 
 class DispatchTest(unittest.TestCase):
+    def test_push_and_pr_targets_configured_nondefault_branch(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            dispatch.configure(config.Config(
+                root=repo, repo="acme/widgets", main="stable",
+            ))
+            dispatch.FACTORY.mkdir()
+
+            selected_base = {}
+
+            def fake_run(cmd, *args, **kwargs):
+                stdout = "1\n" if cmd[:3] == ["git", "rev-list", "--count"] else ""
+                if cmd[:3] == ["gh", "pr", "create"]:
+                    selected_base["value"] = (
+                        cmd[cmd.index("--base") + 1] if "--base" in cmd else "main"
+                    )
+                return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+            with mock.patch.object(dispatch, "run", side_effect=fake_run), \
+                    mock.patch.object(dispatch, "gh_json", return_value=[]):
+                self.assertTrue(dispatch.push_and_pr(
+                    repo, "agent/7", "feature", "body", ticket=7,
+                ))
+
+            self.assertEqual(selected_base["value"], "stable")
+
+    def test_push_and_pr_does_not_push_existing_wrong_or_missing_base(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        for actual_base in ("main", None):
+            with self.subTest(actual_base=actual_base), tempfile.TemporaryDirectory() as d:
+                repo = make_repo(Path(d))
+                dispatch.configure(config.Config(
+                    root=repo, repo="acme/widgets", main="stable",
+                ))
+                existing = {"number": 17}
+                if actual_base is not None:
+                    existing["baseRefName"] = actual_base
+
+                def fake_run(cmd, *args, **kwargs):
+                    stdout = "1\n" if cmd[:3] == ["git", "rev-list", "--count"] else ""
+                    return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+                with mock.patch.object(dispatch, "run", side_effect=fake_run) as run, \
+                        mock.patch.object(dispatch, "gh_json", return_value=[existing]):
+                    self.assertFalse(dispatch.push_and_pr(
+                        repo, "agent/7", "feature", "body", ticket=7,
+                    ))
+
+                commands = [call.args[0] for call in run.call_args_list]
+                self.assertFalse(any(cmd[:2] == ["git", "push"] for cmd in commands))
+                self.assertFalse(any(cmd[:3] == ["gh", "pr", "create"] for cmd in commands))
+
     def test_prompt_carries_handoff_and_events_append(self) -> None:
         from unittest import mock
 
@@ -1382,7 +1528,7 @@ class DispatchTest(unittest.TestCase):
             self.assertIn("`unit` flakes on a cold cache", prompt.read_text())  # notes.md is evidence
             self.assertFalse((repo / config.LESSONS_NAME).exists())  # nothing written in ROOT
             calls = (Path(stubs) / "gh.log").read_text()
-            self.assertIn("pr create --repo acme/widgets --head agent/lessons-", calls)
+            self.assertIn("pr create --repo acme/widgets --base main --head agent/lessons-", calls)
             self.assertIn("--label chore", calls)
             branch = git(bare, "branch", "--list", "agent/lessons-*").lstrip("* ")
             self.assertTrue(branch.startswith("agent/lessons-"), branch)
@@ -1400,8 +1546,8 @@ class DispatchTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("DECISION: CURATE", prompt.read_text())  # the prompt offers the decision
             calls = (Path(stubs) / "gh.log").read_text()
-            self.assertIn("pr create --repo acme/widgets --head agent/lessons-", calls)
-            self.assertIn("pr create --repo acme/widgets --head agent/curate-", calls)
+            self.assertIn("pr create --repo acme/widgets --base main --head agent/lessons-", calls)
+            self.assertIn("pr create --repo acme/widgets --base main --head agent/curate-", calls)
             self.assertEqual(calls.count("--label chore"), 2)
             branch = git(bare, "branch", "--list", "agent/curate-*").lstrip("* ")
             self.assertTrue(branch.startswith("agent/curate-"), branch)
@@ -1546,6 +1692,95 @@ class DispatchTest(unittest.TestCase):
             self.assertFalse(review_event["accepted"])
             self.assertNotEqual(review_event["actual_head"], expected)
 
+    def test_approval_rejects_wrong_or_missing_base_before_label_mutation(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        for actual_base in ("main", None):
+            with self.subTest(actual_base=actual_base), tempfile.TemporaryDirectory() as d:
+                repo = make_repo(Path(d))
+                dispatch.configure(config.Config(
+                    root=repo, repo="acme/widgets", main="stable",
+                ))
+                expected = git(repo, "rev-parse", "HEAD")
+                lifecycle.append(dispatch.EVENTS, {
+                    "event": "attempt", "ticket": 7, "gate": "PASS",
+                    "head": expected, "actual_head": expected,
+                })
+                lifecycle.append(dispatch.EVENTS, {
+                    "event": "review", "ticket": 7, "verdict": "APPROVE",
+                    "accepted": True, "head": expected, "actual_head": expected,
+                })
+                pr = {
+                    "number": 17, "state": "OPEN", "headRefOid": expected,
+                    "reviewDecision": "",
+                }
+                if actual_base is not None:
+                    pr["baseRefName"] = actual_base
+                with mock.patch.object(dispatch, "gh_json", return_value=pr), \
+                        mock.patch.object(
+                            dispatch, "run",
+                            return_value=subprocess.CompletedProcess([], 0, "", ""),
+                        ) as run:
+                    self.assertFalse(dispatch.approve_pr(7, expected))
+
+                run.assert_not_called()
+                self.assertFalse(any(
+                    e.get("event") == "approved"
+                    for e in lifecycle.read_events(dispatch.EVENTS)
+                ))
+
+    def test_approval_withdraws_label_when_remote_base_races(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            dispatch.configure(config.Config(
+                root=repo, repo="acme/widgets", main="stable",
+            ))
+            expected = git(repo, "rev-parse", "HEAD")
+            lifecycle.append(dispatch.EVENTS, {
+                "event": "attempt", "ticket": 7, "gate": "PASS",
+                "head": expected, "actual_head": expected,
+            })
+            lifecycle.append(dispatch.EVENTS, {
+                "event": "review", "ticket": 7, "verdict": "APPROVE",
+                "accepted": True, "head": expected, "actual_head": expected,
+            })
+            views = [
+                {
+                    "number": 17, "state": "OPEN", "headRefOid": expected,
+                    "baseRefName": "stable", "reviewDecision": "",
+                },
+                {
+                    "number": 17, "state": "OPEN", "headRefOid": expected,
+                    "baseRefName": "main", "reviewDecision": "",
+                },
+            ]
+            with mock.patch.object(dispatch, "gh_json", side_effect=views), \
+                    mock.patch.object(
+                        dispatch, "run",
+                        return_value=subprocess.CompletedProcess([], 0, "", ""),
+                    ) as run:
+                self.assertFalse(dispatch.approve_pr(7, expected))
+
+            self.assertEqual(
+                [call.args[0] for call in run.call_args_list],
+                [
+                    ["gh", "pr", "edit", "17", "--repo", "acme/widgets",
+                     "--add-label", "factory-approved"],
+                    ["gh", "pr", "edit", "17", "--repo", "acme/widgets",
+                     "--remove-label", "factory-approved"],
+                ],
+            )
+            self.assertFalse(any(
+                e.get("event") == "approved"
+                for e in lifecycle.read_events(dispatch.EVENTS)
+            ))
+
     def test_approval_withdraws_label_when_remote_head_races(self) -> None:
         from unittest import mock
 
@@ -1564,8 +1799,10 @@ class DispatchTest(unittest.TestCase):
                 "accepted": True, "head": expected, "actual_head": expected,
             })
             views = [
-                {"number": 17, "state": "OPEN", "headRefOid": expected, "reviewDecision": ""},
-                {"number": 17, "state": "OPEN", "headRefOid": "new-head", "reviewDecision": ""},
+                {"number": 17, "state": "OPEN", "headRefOid": expected,
+                 "baseRefName": "main", "reviewDecision": ""},
+                {"number": 17, "state": "OPEN", "headRefOid": "new-head",
+                 "baseRefName": "main", "reviewDecision": ""},
             ]
             with mock.patch.object(dispatch, "gh_json", side_effect=views), \
                     mock.patch.object(
@@ -1583,6 +1820,79 @@ class DispatchTest(unittest.TestCase):
                 e.get("event") == "approved"
                 for e in lifecycle.read_events(dispatch.EVENTS)
             ))
+
+    def test_merge_ignores_wrong_or_missing_base_without_mutation(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        for actual_base in ("main", None):
+            with self.subTest(actual_base=actual_base), tempfile.TemporaryDirectory() as d:
+                repo = make_repo(Path(d))
+                dispatch.configure(config.Config(
+                    root=repo, repo="acme/widgets", main="stable",
+                ))
+                pr = {
+                    "number": 70, "headRefName": "agent/7", "headRefOid": "head",
+                    "isDraft": False, "labels": [{"name": "factory-approved"}],
+                    "reviewDecision": "APPROVED",
+                }
+                if actual_base is not None:
+                    pr["baseRefName"] = actual_base
+                with mock.patch.object(dispatch, "gh_json", return_value=[pr]), \
+                        mock.patch.object(
+                            dispatch, "pr_checks",
+                            return_value=[{"name": "ci", "bucket": "fail"}],
+                        ), \
+                        mock.patch.object(dispatch, "run") as run, \
+                        mock.patch.object(dispatch, "refresh_pr_branch") as refresh, \
+                        mock.patch.object(dispatch, "escalate") as escalate:
+                    dispatch.merge_pass_locked(False)
+
+                run.assert_not_called()
+                refresh.assert_not_called()
+                escalate.assert_not_called()
+
+    def test_merge_rechecks_base_before_mutating_candidate(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            dispatch.configure(config.Config(
+                root=repo, repo="acme/widgets", main="stable",
+            ))
+            listed = {
+                "number": 70, "headRefName": "agent/7", "headRefOid": "head",
+                "baseRefName": "stable", "isDraft": False,
+                "labels": [{"name": "factory-approved"}],
+                "reviewDecision": "APPROVED", "state": "OPEN", "title": "feature",
+            }
+            fresh = {**listed, "baseRefName": "main"}
+
+            def query(args):
+                if args[:2] == ["pr", "list"]:
+                    return [listed]
+                if args[:2] == ["pr", "view"]:
+                    return fresh
+                if args[0] == "api":
+                    return {"behind_by": 0}
+                raise AssertionError(args)
+
+            with mock.patch.object(dispatch, "gh_json", side_effect=query), \
+                    mock.patch.object(
+                        dispatch, "pr_checks",
+                        return_value=[{"name": "ci", "bucket": "pass"}],
+                    ), \
+                    mock.patch.object(dispatch, "run") as run, \
+                    mock.patch.object(dispatch, "refresh_pr_branch") as refresh, \
+                    mock.patch.object(dispatch, "escalate") as escalate:
+                dispatch.merge_pass_locked(False)
+
+            run.assert_not_called()
+            refresh.assert_not_called()
+            escalate.assert_not_called()
 
     def test_merge_refuses_legacy_approval_without_sha_evidence(self) -> None:
         from unittest import mock
@@ -1604,6 +1914,7 @@ class DispatchTest(unittest.TestCase):
             lifecycle.append(dispatch.EVENTS, {"event": "approved", "ticket": 7})
             pr = {
                 "number": 70, "headRefName": "agent/7", "headRefOid": head,
+                "baseRefName": "main",
                 "isDraft": False, "labels": [{"name": "factory-approved"}],
                 "reviewDecision": "APPROVED", "state": "OPEN", "title": "feature",
             }
@@ -1644,12 +1955,12 @@ class DispatchTest(unittest.TestCase):
             )
             self.assertFalse(any(cmd[:3] == ["gh", "pr", "merge"] for cmd in calls))
 
-    def test_merge_final_reread_preserves_head_and_human_veto(self) -> None:
+    def test_merge_final_reread_preserves_target_head_and_human_veto(self) -> None:
         from unittest import mock
 
         from factory import dispatch
 
-        for changed in ("head", "veto"):
+        for changed in ("head", "base", "veto"):
             with self.subTest(changed=changed), tempfile.TemporaryDirectory() as d:
                 repo = make_repo(Path(d))
                 dispatch.configure(config.Config(
@@ -1670,12 +1981,15 @@ class DispatchTest(unittest.TestCase):
                 })
                 base = {
                     "number": 70, "headRefName": "agent/7", "headRefOid": head,
-                    "isDraft": False, "labels": [{"name": "factory-approved"}],
+                    "baseRefName": "main", "isDraft": False,
+                    "labels": [{"name": "factory-approved"}],
                     "reviewDecision": "APPROVED", "state": "OPEN", "title": "feature",
                 }
                 final = dict(base)
                 if changed == "head":
                     final["headRefOid"] = "raced-head"
+                elif changed == "base":
+                    final["baseRefName"] = "stable"
                 else:
                     final["reviewDecision"] = "CHANGES_REQUESTED"
                 views = iter((base, final))
@@ -1704,6 +2018,28 @@ class DispatchTest(unittest.TestCase):
                     call.args[0][:3] == ["gh", "pr", "merge"]
                     for call in run.call_args_list
                 ))
+
+    def test_refresh_rejects_wrong_or_missing_base_before_mutation(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        for actual_base in ("stable", None):
+            with self.subTest(actual_base=actual_base), tempfile.TemporaryDirectory() as d:
+                repo = make_repo(Path(d))
+                dispatch.configure(config.Config(
+                    root=repo, repo="acme/widgets", main="release",
+                ))
+                pr = {} if actual_base is None else {"baseRefName": actual_base}
+                with mock.patch.object(dispatch, "gh_json", return_value=pr), \
+                        mock.patch.object(dispatch, "ensure_worktree") as ensure, \
+                        mock.patch.object(dispatch, "run") as run, \
+                        mock.patch.object(dispatch, "escalate") as escalate:
+                    self.assertFalse(dispatch.refresh_pr_branch(7, 70, False))
+
+                ensure.assert_not_called()
+                run.assert_not_called()
+                escalate.assert_not_called()
 
     def test_merge_stage_merges_sync_pr_despite_upstream_advancing_past_tip(self) -> None:
         from unittest import mock
@@ -1825,7 +2161,10 @@ class DispatchTest(unittest.TestCase):
                     return subprocess.CompletedProcess(cmd, 0, "", "")
                 return real_run(cmd, *args, **kwargs)
 
-            with mock.patch.object(dispatch, "run", side_effect=run_spy), \
+            with mock.patch.object(
+                    dispatch, "gh_json", return_value={"baseRefName": "main"},
+            ), \
+                    mock.patch.object(dispatch, "run", side_effect=run_spy), \
                     mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
                     mock.patch.object(
                         dispatch, "review", return_value=("APPROVE", "fresh findings"),
@@ -1884,7 +2223,10 @@ class DispatchTest(unittest.TestCase):
                     return subprocess.CompletedProcess(cmd, 0, "", "")
                 return real_run(cmd, *args, **kwargs)
 
-            with mock.patch.object(dispatch, "run", side_effect=run_spy), \
+            with mock.patch.object(
+                    dispatch, "gh_json", return_value={"baseRefName": "main"},
+            ), \
+                    mock.patch.object(dispatch, "run", side_effect=run_spy), \
                     mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
                     mock.patch.object(
                         dispatch, "review", return_value=("APPROVE", "fresh findings"),
@@ -1928,7 +2270,10 @@ class DispatchTest(unittest.TestCase):
                     return subprocess.CompletedProcess(cmd, 0, "", "")
                 return real_run(cmd, *args, **kwargs)
 
-            with mock.patch.object(dispatch, "run", side_effect=run_spy), \
+            with mock.patch.object(
+                    dispatch, "gh_json", return_value={"baseRefName": "main"},
+            ), \
+                    mock.patch.object(dispatch, "run", side_effect=run_spy), \
                     mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
                     mock.patch.object(
                         dispatch, "review", return_value=("REVISE", "required fix"),
@@ -1978,7 +2323,10 @@ class DispatchTest(unittest.TestCase):
                     return subprocess.CompletedProcess(cmd, 0, "", "")
                 return real_run(cmd, **kw)
 
-            with mock.patch.object(dispatch, "run", side_effect=run_spy), \
+            with mock.patch.object(
+                    dispatch, "gh_json", return_value={"baseRefName": "main"},
+            ), \
+                 mock.patch.object(dispatch, "run", side_effect=run_spy), \
                  mock.patch.object(dispatch, "run_gate") as gate, \
                  mock.patch.object(dispatch, "escalate") as esc:
                 dispatch.refresh_pr_branch(8, 101, False)
@@ -2026,7 +2374,10 @@ class DispatchTest(unittest.TestCase):
                     return subprocess.CompletedProcess(cmd, 0, "", "")
                 return real_run(cmd, **kw)
 
-            with mock.patch.object(dispatch, "run", side_effect=run_spy), \
+            with mock.patch.object(
+                    dispatch, "gh_json", return_value={"baseRefName": "main"},
+            ), \
+                 mock.patch.object(dispatch, "run", side_effect=run_spy), \
                  mock.patch.object(dispatch, "run_gate") as gate, \
                  mock.patch.object(dispatch, "escalate") as esc:
                 dispatch.refresh_pr_branch(9, 102, False)

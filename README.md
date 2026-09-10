@@ -40,14 +40,15 @@ npx skills add mikeroysoft/factory
   llama.cpp, LM Studio)
 
 ```sh
-uv tool install git+https://github.com/mikeroySoft/factory          # stable: latest release
+uv tool install git+https://github.com/mikeroySoft/factory@stable   # stable: released channel
 uv tool install git+https://github.com/mikeroySoft/factory@main     # latest: tip of main
 uv tool install git+https://github.com/mikeroySoft/factory@v0.3.0   # a specific release
 ```
 
 `pipx install` and `pip install --user` take the same URLs. The repository's
-default branch is `stable`, which moves only on a tagged release; see
-[CHANGELOG.md](CHANGELOG.md). No Python dependencies.
+default branch is `main`, so a bare URL installs development code. Select
+`@stable` explicitly for the released channel or a version tag for a fixed release;
+see [CHANGELOG.md](CHANGELOG.md). No Python dependencies.
 
 ## Set up a repository
 
@@ -250,7 +251,7 @@ ticket's `human_touch` details. The dashboard retains its existing 100-issue,
    `factory-approved` label, and a matching successful journal approval whose
    gate, review, approval, and current PR head SHAs are identical. Checks are
    associated with that head and rechecked after evidence evaluation; the PR
-   head, label, and veto are then re-read immediately before
+   head, target branch, label, and veto are then re-read immediately before
    `gh pr merge --match-head-commit <sha>`. Missing,
    unbound, legacy, or stale approval evidence never merges. Behind `main` →
    refresh, re-gate on this host, force-push, run a fresh independent review,
@@ -261,6 +262,13 @@ ticket's `human_touch` details. The dashboard retains its existing 100-issue,
    An up-to-date PR carrying a pre-upgrade unbound approval is withdrawn and
    escalated once; use the existing manager `FIX` path to re-run its worker,
    gate, push, and review. Do not hand-edit the journal or fabricate SHA fields.
+   PR creation explicitly selects `[repo].main` (default `main`), independently
+   of the installed engine channel and GitHub's default branch. Approval and merge
+   eligibility require that same PR target; existing wrong-target PRs are left
+   untouched for operator review. Missing target evidence also fails closed.
+   `--match-head-commit` atomically guards the head, not the target branch or a
+   late human veto. Protect release branches on GitHub; the final reads alone
+   cannot prevent a retarget after the last check.
 7. **Escalation.** Budget exceeded, gate failed thrice, second `REVISE`,
    nothing to PR, rebase conflict, red CI: the issue gets `ready-for-human`,
    loses the assignee and `ready-for-agent`, and receives a comment with the

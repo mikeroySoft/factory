@@ -11,12 +11,13 @@ gitignored `.factory/`. `factory --help` lists commands; `factory <cmd> --help` 
 options.
 
 First, ensure the tool is installed: `factory --version`. If absent, install it with
-the first available of `uv tool install git+https://github.com/mikeroySoft/factory`,
-`pipx install git+https://github.com/mikeroySoft/factory`, or
-`python3 -m pip install --user git+https://github.com/mikeroySoft/factory`
-(Linux, Python ≥ 3.11; no dependencies). The bare URL installs the `stable` branch,
-which moves only on a tagged release; append `@main` for the tip of main or `@v0.3.0`
-for a specific release. Confirm with `factory --version` before continuing. Then pick the branch:
+the first available of `uv tool install git+https://github.com/mikeroySoft/factory@stable`,
+`pipx install git+https://github.com/mikeroySoft/factory@stable`, or
+`python3 -m pip install --user git+https://github.com/mikeroySoft/factory@stable`
+(Linux, Python ≥ 3.11; no dependencies). These URLs explicitly select the released
+`stable` channel. Replace `@stable` with `@main` for development or `@v0.3.0`
+for a fixed release. A bare URL follows the default `main` branch.
+Confirm with `factory --version` before continuing. Then pick the branch:
 
 - Repo has no `.factory.toml` → **Set up**.
 - User asks whether an issue or PR direction is worth pursuing → **Assess viability**.

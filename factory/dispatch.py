@@ -504,10 +504,16 @@ def push_and_pr(wt: Path, branch: str, title: str, body: str, label: str = "", t
     ahead = run(["git", "rev-list", "--count", f"origin/{cfg.main}..HEAD"], cwd=wt).stdout
     if int(ahead) == 0:
         return False
-    run(["git", "push", "-u", "origin", branch], cwd=wt)
     existing = gh_json(
-        ["pr", "list", "--repo", REPO, "--head", branch, "--json", "number"]
+        ["pr", "list", "--repo", REPO, "--head", branch, "--json", "number,baseRefName"]
     )
+    if existing and existing[0].get("baseRefName") != cfg.main:
+        log(
+            f"{branch}: existing PR #{existing[0]['number']} targets "
+            f"{existing[0].get('baseRefName')!r}, not {cfg.main!r}; not pushing"
+        )
+        return False
+    run(["git", "push", "-u", "origin", branch], cwd=wt)
     if existing:
         log(f"{branch}: PR already exists (#{existing[0]['number']})")
         return True
@@ -520,6 +526,8 @@ def push_and_pr(wt: Path, branch: str, title: str, body: str, label: str = "", t
             "create",
             "--repo",
             REPO,
+            "--base",
+            cfg.main,
             "--head",
             branch,
             "--title",
@@ -749,11 +757,12 @@ def approve_pr(n: int, head: str) -> bool:
     """Label and record approval only for matching gate, review, and remote head evidence."""
     if not _head_evidence_matches(lifecycle.read_events(EVENTS), n, head):
         return False
-    fields = "number,state,headRefOid,reviewDecision"
+    fields = "number,state,headRefOid,baseRefName,reviewDecision"
     pr = gh_json(["pr", "view", f"agent/{n}", "--repo", REPO, "--json", fields])
     if (
         pr.get("state") != "OPEN"
         or pr.get("headRefOid") != head
+        or pr.get("baseRefName") != cfg.main
         or pr.get("reviewDecision") == "CHANGES_REQUESTED"
     ):
         return False
@@ -776,6 +785,7 @@ def approve_pr(n: int, head: str) -> bool:
     if (
         fresh.get("state") != "OPEN"
         or fresh.get("headRefOid") != head
+        or fresh.get("baseRefName") != cfg.main
         or fresh.get("reviewDecision") == "CHANGES_REQUESTED"
     ):
         run(
@@ -816,6 +826,10 @@ def pr_checks(pr: int) -> list[dict]:
 
 def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     """Refresh, gate, push, and independently review the resulting immutable head."""
+    target = gh_json(["pr", "view", str(pr), "--repo", REPO, "--json", "baseRefName"])
+    if target.get("baseRefName") != cfg.main:
+        log(f"PR #{pr}: targets {target.get('baseRefName')!r}, not {cfg.main!r}; not refreshing")
+        return False
     wt = ensure_worktree(n)
 
     def withdraw(reason: str) -> None:
@@ -949,13 +963,16 @@ def merge_pass_locked(dry_run: bool) -> None:
             "--state",
             "open",
             "--json",
-            "number,headRefName,headRefOid,isDraft,labels,reviewDecision",
+            "number,headRefName,headRefOid,baseRefName,isDraft,labels,reviewDecision",
         ]
     )
     candidates = []
     for pr in prs:
         m = re.fullmatch(r"agent/(\d+)", pr["headRefName"])
         if not m or pr["isDraft"]:
+            continue
+        if pr.get("baseRefName") != cfg.main:
+            log(f"PR #{pr['number']}: targets {pr.get('baseRefName')!r}, not {cfg.main!r}; not merging")
             continue
         if FACTORY_APPROVED not in {label["name"] for label in pr["labels"]}:
             continue
@@ -1008,13 +1025,14 @@ def merge_pass_locked(dry_run: bool) -> None:
                     execution.outcome, execution.reason = "not_eligible", "no_passing_ci"
                     execution.wait("no_passing_ci", mode="eligibility", pr=pr_num)
                 continue
-            fields = "number,state,headRefName,headRefOid,isDraft,labels,reviewDecision,title"
+            fields = "number,state,headRefName,headRefOid,baseRefName,isDraft,labels,reviewDecision,title"
             fresh = gh_json(["pr", "view", str(pr_num), "--repo", REPO, "--json", fields])
             labels = {label["name"] for label in fresh.get("labels", [])}
             head = fresh.get("headRefOid")
             if (
                 fresh.get("state") != "OPEN"
                 or fresh.get("headRefName") != f"agent/{n}"
+                or fresh.get("baseRefName") != cfg.main
                 or fresh.get("isDraft")
                 or FACTORY_APPROVED not in labels
                 or fresh.get("reviewDecision") == "CHANGES_REQUESTED"
@@ -1124,6 +1142,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 final.get("state") != "OPEN"
                 or final.get("headRefName") != f"agent/{n}"
                 or final.get("headRefOid") != head
+                or final.get("baseRefName") != cfg.main
                 or final.get("isDraft")
                 or FACTORY_APPROVED not in final_labels
                 or final.get("reviewDecision") == "CHANGES_REQUESTED"
@@ -1299,7 +1318,10 @@ def process_ticket(
 
             body = f"Closes #{n}\n\n## Gate report\n\n{report}\n"
             if not push_and_pr(wt, f"agent/{n}", f"agent/{n}: {title}", body, ticket=n):
-                escalate(n, f"agent/{n} has no commits over main; nothing to PR", logfile)
+                escalate(
+                    n, f"agent/{n}: PR not published (no commits over {cfg.main} "
+                    "or existing PR target mismatch); inspect dispatcher log", logfile,
+                )
                 return
             execution.review_round = 1
             verdict, findings = review(wt, n, report, gate_head)

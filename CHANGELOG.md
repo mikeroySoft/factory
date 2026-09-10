@@ -9,6 +9,7 @@
 - Keep generated services on the installed Factory snapshot even when their repository working directory contains a shadowing `factory` package. (#70)
 - Preserve package-less manifest inventory when Graphify labels valid empty output as a failed source; retain fatal parse errors and last-good history. (#72)
 - Bind gate, reviewer, durable approval, CI, and merge eligibility to one immutable PR head; fail closed on reviewer process/verdict errors and raced heads or vetoes, re-review refreshed branches, and pin merges with `--match-head-commit`. Legacy unbound approvals are withdrawn for re-earning through manager FIX.
+- Create PRs against the configured integration branch explicitly and reject approval/merge eligibility for missing, wrong, or changed targets. Existing wrong-target PRs are not retargeted. Document explicit `@stable` and `@main` installation channels now that the GitHub default is `main`.
 
 ## 0.3.0 — 2026-09-08
 
