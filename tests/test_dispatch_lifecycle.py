@@ -13,7 +13,7 @@ from factory import lifecycle
 
 
 GH = '''#!/usr/bin/env python3
-import json, os, sys
+import json, os, subprocess, sys
 from pathlib import Path
 p = Path(os.environ["SMOKE_STATE"])
 s = json.loads(p.read_text())
@@ -24,11 +24,18 @@ if a[:2] == ["issue", "view"]:
 elif a[:2] == ["issue", "list"]:
     print("[]")
 elif a[:2] == ["pr", "list"]:
-    print(json.dumps([{"number": 70, "headRefName": "agent/7", "isDraft": False, "labels": [{"name": "factory-approved"}], "reviewDecision": "APPROVED"}] if s.get("pr") else []))
+    if s.get("pr"):
+        head = subprocess.run(["git", "-C", ".factory/wt-7", "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+        print(json.dumps([{"number": 70, "headRefName": "agent/7", "headRefOid": head, "isDraft": False, "labels": [{"name": "factory-approved"}], "reviewDecision": "APPROVED"}]))
+    else:
+        print("[]")
 elif a[:2] == ["pr", "create"]:
     s["pr"] = True
     p.write_text(json.dumps(s))
     print("https://example.invalid/pull/70")
+elif a[:2] == ["pr", "view"]:
+    head = subprocess.run(["git", "-C", ".factory/wt-7", "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    print(json.dumps({"number": 70, "headRefName": "agent/7", "headRefOid": head, "state": "OPEN", "reviewDecision": ""}))
 elif a[:2] == ["pr", "checks"]:
     print(json.dumps([{"name": "ci", "bucket": "pending"}]))
 elif a[:2] not in (["issue", "edit"], ["issue", "comment"], ["pr", "edit"], ["pr", "comment"]):
@@ -123,6 +130,24 @@ class LocalCLI(unittest.TestCase):
         review_exits = [r["outcome"] for r in rows if r["stage"] == "review" and r["kind"] == "exit"]
         self.assertEqual(review_exits, ["product_feedback", "approved"])
         self.assertFalse(any(r["stage"] == "merge" for r in rows))
+        evidence = lifecycle.read_events(self.events)
+        approval = next(r for r in evidence if r.get("event") == "approved")
+        self.assertEqual(
+            (approval["head"], approval["gate_head"], approval["review_head"]),
+            (approval["head"],) * 3,
+        )
+        self.assertTrue(any(
+            r.get("event") == "attempt"
+            and r.get("gate") == "PASS"
+            and r.get("head") == approval["head"] == r.get("actual_head")
+            for r in evidence
+        ))
+        self.assertTrue(any(
+            r.get("event") == "review"
+            and r.get("accepted") is True
+            and r.get("head") == approval["head"] == r.get("actual_head")
+            for r in evidence
+        ))
         self.cli("dispatch")
         rows = self.rows()
         revisit = [r for r in rows if r["stage"] == "merge-eligibility" and r["kind"] == "exit"]

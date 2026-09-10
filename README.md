@@ -114,10 +114,13 @@ Workers can use either the legacy argv array or a `[workers.<label>]` table with
 with their `when` rules; neither ROUTE nor FIX accepts unlisted labels.
 FIX uses `{"worker":"ci-fix","guidance":"..."}` to run exactly one selected worker
 round in the kept `agent/<n>` worktree for its open PR, ignoring other ticket
-labels. It passes guidance and the escalation packet to the worker, re-gates,
-pushes only on gate PASS, and re-reviews. Only a fresh APPROVE restores
-`factory-approved`; failure stays with the human. FIX does not merge or requeue
-the issue. The template includes opt-in `ci-fix` and `conflict` profiles for a
+labels and refusing a kept head that no longer matches the remote PR. It passes
+guidance and the escalation packet to the worker, re-gates, pushes only on a
+gate PASS bound to the resulting commit, and re-reviews that
+same commit. Only a zero-exit, well-formed fresh APPROVE whose remote PR head
+still matches restores `factory-approved`; failure stays with the human. FIX
+does not merge or requeue the issue.
+The template includes opt-in `ci-fix` and `conflict` profiles for a
 human to apply in host config; the manager cannot add profiles or edit config.
 Code validates the output, records a `manage` event before GitHub mutations, and
 leaves malformed decisions with a prefixed HUMAN diagnosis. Split children enter
@@ -233,20 +236,31 @@ ticket's `human_touch` details. The dashboard retains its existing 100-issue,
    are optional suggestions, never requirements, and a passing gate does not
    excuse a defect it did not detect. Net-new abstractions beyond the brief,
    whether the diff introduced them or the review asks for them, need that same
-   justification, but a missing justification alone does not block. Reviews end
-   with `VERDICT: APPROVE` or `VERDICT: REVISE`; optional suggestions alone mean
-   APPROVE. Each `REVISE` sends the findings back to the worker, flagged so only
-   the required fixes are binding (re-gate, push, re-review), up to
-   `review_rounds` times; then it escalates.
-   `APPROVE` adds the `factory-approved` label — durable evidence on the PR,
-   not in memory.
-6. **Merge stage** (start of the next pass). One PR per pass, requiring all
-   four: gate PASS in the PR body, `factory-approved`, green GitHub checks
-   (fail-closed on missing or unparsable checks), and a head that already
-   contains the current `main` tip. Behind `main` → rebase, re-gate on this
-   host, force-push, merge next pass. Red CI → label removed, escalated once
-   with the failing check names. A human blocks any merge by requesting
-   changes on the PR.
+   justification, but a missing justification alone does not block. Reviews must
+   exit zero and end with exactly one final `VERDICT: APPROVE` or
+   `VERDICT: REVISE` line; malformed, multiple, non-final, and nonzero-exit
+   verdicts fail closed as REVISE. Each `REVISE` sends the findings back to the
+   worker, flagged so only the required fixes are binding (re-gate, push,
+   re-review), up to `review_rounds` times; then it escalates.
+   `APPROVE` adds the `factory-approved` label only while the remote PR still
+   points to the exact commit that passed the gate and review. The successful
+   label operation and gate/review commit are recorded in `.factory/events.jsonl`.
+6. **Merge stage** (start of the next pass). One PR per pass requires green
+   GitHub checks, a current-main head, no human requested-changes veto, the
+   `factory-approved` label, and a matching successful journal approval whose
+   gate, review, approval, and current PR head SHAs are identical. Checks are
+   associated with that head and rechecked after evidence evaluation; the PR
+   head, label, and veto are then re-read immediately before
+   `gh pr merge --match-head-commit <sha>`. Missing,
+   unbound, legacy, or stale approval evidence never merges. Behind `main` →
+   refresh, re-gate on this host, force-push, run a fresh independent review,
+   post its findings, and either reapprove the resulting head or withdraw the
+   label and escalate. Red CI → label removed, escalated once with the failing
+   check names.
+   Existing behind PRs re-earn bound evidence through that automatic refresh.
+   An up-to-date PR carrying a pre-upgrade unbound approval is withdrawn and
+   escalated once; use the existing manager `FIX` path to re-run its worker,
+   gate, push, and review. Do not hand-edit the journal or fabricate SHA fields.
 7. **Escalation.** Budget exceeded, gate failed thrice, second `REVISE`,
    nothing to PR, rebase conflict, red CI: the issue gets `ready-for-human`,
    loses the assignee and `ready-for-agent`, and receives a comment with the

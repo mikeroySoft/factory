@@ -161,16 +161,18 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         cfg = dispatch.cfg
         wt = cfg.factory / f"wt-{n}"
         pr = dispatch.gh_json(["pr", "view", f"agent/{n}", "--repo", dispatch.REPO,
-                               "--json", "state,headRefName,reviewDecision"])
+                               "--json", "state,headRefName,headRefOid,reviewDecision"])
         if not wt.is_dir() or pr["state"] != "OPEN" or pr["headRefName"] != f"agent/{n}" or pr["reviewDecision"] == "CHANGES_REQUESTED":
             raise ValueError("FIX requires a kept factory worktree and an open PR without requested changes")
         if dispatch.run(["git", "branch", "--show-current"], cwd=wt).stdout.strip() != f"agent/{n}":
             raise ValueError("FIX worktree is not on the ticket branch")
+        if dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip() != pr.get("headRefOid"):
+            raise ValueError("FIX worktree head does not match the remote PR head")
         dispatch.LOGS.mkdir(parents=True, exist_ok=True)
         attempts = [e.get("attempt", 0) for e in lifecycle.read_events(dispatch.EVENTS)
                     if e.get("event") == "attempt" and e.get("ticket") == n]
         extra = f"## Manager FIX guidance\n\n{data['guidance']}\n\n{packet.read_text()}"
-        ok, report, logfile = dispatch.worker_round(
+        ok, report, logfile, gate_head = dispatch.worker_round(
             n, wt, {data["worker"]}, issue["title"], extra, max(attempts, default=0) + 1,
             time.monotonic() + cfg.budget_min * 60,
         )
@@ -178,12 +180,12 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
             dispatch.escalate(n, "gate failed after manager FIX", logfile)
             return
         dispatch.run(["git", "push", "--force-with-lease", "origin", f"agent/{n}"], cwd=wt)
-        verdict, findings = dispatch.review(wt, n, report)
+        verdict, findings = dispatch.review(wt, n, report, gate_head)
         dispatch.pr_comment(n, findings)
-        if verdict == "APPROVE":
-            dispatch.approve_pr(n)
-        else:
+        if verdict != "APPROVE":
             dispatch.escalate(n, "review requested changes after manager FIX", logfile)
+        elif not dispatch.approve_pr(n, gate_head):
+            dispatch.escalate(n, "approval evidence, head, or human review state changed before manager FIX approval", logfile)
         return
 
     if decision == "REWRITE":
