@@ -131,16 +131,21 @@ class HistoryExtractionTest(unittest.TestCase):
             self.assertEqual(set(files), {"Cargo.toml", "pyproject.toml"})
             self.assertEqual(snapshot["edges"], [])
             warnings = " ".join(snapshot["warnings"])
+            self.assertTrue(any("inventory only" in warning for warning in snapshot["warnings"]))
             for path, item in files.items():
                 self.assertEqual(item["symbols"], [])
                 self.assertIn(path, warnings)
 
             published = (cache / "history.json").read_bytes()
             (root / "Cargo.toml").write_text("[workspace\n")
-            commit(root, "malformed manifest")
-            with self.assertRaises(RuntimeError):
+            malformed = commit(root, "malformed manifest")
+            with self.assertRaisesRegex(RuntimeError, "failed to extract.*Cargo.toml"):
                 codebase.build_history(root, "main", "acme/widgets", cache, 1)
             self.assertEqual((cache / "history.json").read_bytes(), published)
+            self.assertFalse(
+                (cache / "snapshots" / codebase.EXTRACTOR.replace("==", "-") / f"{malformed}.json")
+                .exists()
+            )
 
     def test_real_history_tracks_edit_move_delete_cache_and_publication_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

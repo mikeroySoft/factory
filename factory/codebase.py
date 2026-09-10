@@ -542,7 +542,12 @@ def _extract_snapshot(
                     if is_package_manifest_path(manifest):
                         result = extract_package_manifest(manifest)
                         # Graphify also labels intentional, error-free empty manifests as failed.
-                        if result.get("nodes") == [] and result.get("edges") == [] and not result.get("error"):
+                        if (
+                            isinstance(result, dict)
+                            and result.get("nodes") == []
+                            and result.get("edges") == []
+                            and not result.get("error")
+                        ):
                             continue
                 names.append(path or Path(str(value)).name)
             if names:
