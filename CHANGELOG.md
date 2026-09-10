@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Preserve the shared `needs-review` opt-in after every PR viability verdict so #5's external-PR discovery can use it independently; viability replay remains keyed to the label-add event, not the PR head.
 - Add optional Codebase history: stable commit-timeline maps, baseline comparisons, confidence-aware relationships, pinned source citations, and bounded background refresh through `factory[atlas]`. (#67)
 - Add opt-in direction viability to `factory manage`: `needs-review` PRs before `needs-viability` issues, evidence-cited BUILD/DONT_BUILD/DEFER comments, and label-event replay protection. Only issue BUILD enters `needs-triage`; PRs remain recommendation-only, with no review or handoff mechanics.
 - Fix manager prompt transport to use files, including `factory learn`; validate manager commands in doctor, bound nonzero-exit diagnostics, and count manager failures separately from escalation totals and rounds without overriding human takeover. (#62)
