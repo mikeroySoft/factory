@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
+import ipaddress
 import json
 import os
+import re
 import shutil
+import socket
 import subprocess
 import sys
 import urllib.error
@@ -159,6 +163,94 @@ def sha256(path: Path) -> str | None:
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
 
 
+def dashboard_port_error(cfg: config.Config, host: str, port: int, reason: str = "is in use") -> str:
+    return (
+        f'factory dashboard: port {port} on {host} {reason}; set [repo."{cfg.repo}".dashboard] port '
+        f"in {config.host_config_path()} (each factory needs its own port)"
+    )
+
+
+def _listener_conflicts(local: str, target: str) -> bool:
+    address = local.rpartition(":")[0].strip("[]").split("%", 1)[0]
+    if address == "*":
+        return True
+    try:
+        listener = ipaddress.ip_address(address)
+        requested = ipaddress.ip_address(target)
+    except ValueError:
+        return True
+    if listener.version == 6 and listener.ipv4_mapped:
+        listener = listener.ipv4_mapped
+    if listener.version != requested.version:
+        return listener.is_unspecified
+    return listener.is_unspecified or requested.is_unspecified or listener == requested
+
+
+def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[bool, str]:
+    unit = f"{cfg.unit}-dashboard.service"
+    try:
+        target = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)[0][4]
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    except OSError as exc:
+        return False, dashboard_port_error(cfg, host, port, f"cannot be bound: {exc.strerror or exc}")
+
+    with probe:
+        try:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind(target)
+            collision = False
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE:
+                return False, dashboard_port_error(cfg, host, port, f"cannot be bound: {exc.strerror or exc}")
+            collision = True
+
+        # Keep a free probe held through `ss`; the later install-to-service bind
+        # remains inherently racy. A collision that vanishes here fails closed.
+        try:
+            listeners = sh(["ss", "-ltnp", f"sport = :{port}"])
+        except OSError as exc:
+            return False, dashboard_port_error(cfg, host, port, f"could not be checked (ss: {exc})")
+        if listeners.returncode != 0:
+            detail = listeners.stderr.strip() or str(listeners.returncode)
+            return False, dashboard_port_error(cfg, host, port, f"could not be checked (ss: {detail})")
+        if not collision:
+            return True, f"available on {host}"
+
+    holders: list[tuple[str, int]] = []
+    unknown = False
+    for line in listeners.stdout.splitlines():
+        fields = line.split(maxsplit=5)
+        if not fields or fields[0] == "State" or len(fields) < 4 or not _listener_conflicts(fields[3], target[0]):
+            continue
+        found = re.findall(r'\("([^"]+)",pid=(\d+)', line)
+        unknown |= not found
+        holders.extend((name, int(pid)) for name, pid in found)
+    if unknown or not holders:
+        return False, dashboard_port_error(cfg, host, port, "is in use by an unknown process")
+
+    names = ", ".join(dict.fromkeys(name for name, _ in holders))
+    try:
+        owner = sh(["systemctl", "--user", "show", "-p", "MainPID", "--value", unit])
+    except OSError as exc:
+        return False, dashboard_port_error(
+            cfg, host, port, f"is in use by {names} (could not verify {unit}: {exc})"
+        )
+    try:
+        main_pid = int(owner.stdout.strip())
+    except ValueError:
+        main_pid = -1
+    if owner.returncode != 0 or main_pid < 0:
+        detail = owner.stderr.strip() or owner.stdout.strip() or str(owner.returncode)
+        return False, dashboard_port_error(
+            cfg, host, port, f"is in use by {names} (could not verify {unit}: {detail})"
+        )
+    foreign = [name for name, pid in holders if pid != main_pid]
+    if foreign or main_pid == 0:
+        names = ", ".join(dict.fromkeys(foreign or (name for name, _ in holders)))
+        return False, dashboard_port_error(cfg, host, port, f"is in use by {names}")
+    return True, f"owned by {unit} (pid {main_pid})"
+
+
 def doctor(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="factory doctor", description="Check tools, auth, remotes, config drift, and the triage model."
@@ -263,6 +355,9 @@ def doctor(argv: list[str]) -> int:
     timer = sh(["systemctl", "--user", "is-active", f"{cfg.unit}.timer"]).stdout.strip()
     report(True if timer == "active" else None, f"systemd timer {cfg.unit}.timer", timer or "not installed (factory install)")
 
+    port_ok, port_detail = _dashboard_port_check(cfg, cfg.install["host"], cfg.dashboard_port)
+    report(port_ok, f"dashboard port {cfg.dashboard_port}", port_detail)
+
     fails = sum(r["status"] == "FAIL" for r in rows)
     if args.json:
         print(json.dumps({"ok": not fails, "version": __version__, "repo": cfg.repo, "root": str(cfg.root), "rows": rows}, indent=2))
@@ -345,6 +440,11 @@ def install(argv: list[str]) -> int:
         return 0
     if shutil.which("systemctl") is None:
         raise ConfigError("systemctl not found; run `factory dispatch` from cron or by hand instead")
+    if args.dashboard:
+        port_ok, port_detail = _dashboard_port_check(cfg, args.host, cfg.dashboard_port)
+        if not port_ok:
+            print(port_detail, file=sys.stderr)
+            return 1
 
     udir = unit_dir()
     udir.mkdir(parents=True, exist_ok=True)
