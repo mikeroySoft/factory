@@ -211,10 +211,8 @@ class ViabilityTest(unittest.TestCase):
         self.assertEqual(state["model_order"], ["PR direction", "Issue direction"])
         comments = [(m["kind"], m["number"]) for m in state["mutations"] if m["action"] == "comment"]
         self.assertEqual(comments, [("pr", 10), ("issue", 20)])
-        self.assertEqual(self.labels("pr", 10), set())
+        self.assertEqual(self.labels("pr", 10), {"needs-review"})
         self.assertEqual(self.labels("issue", 20), {"needs-triage"})
-        pr_edit = next(m for m in state["mutations"] if m["kind"] == "pr" and m["action"] == "edit")
-        self.assertNotIn("--add-label", pr_edit["args"])
         self.assertFalse(any(call[:2] in (["pr", "merge"], ["pr", "review"]) for call in state["calls"]))
         decisions = self.decisions()
         self.assertEqual([(d["kind"], d.get("pr", d.get("ticket")), d["verdict"], d["request"])
@@ -263,16 +261,17 @@ class ViabilityTest(unittest.TestCase):
         self.save()
 
         manage.viability_pass()
+        self.assertEqual(self.labels("pr", 24), {"needs-review"})
+        self.state["prs"][0]["headRefOid"] = "next-head"
+        self.save()
         manage.viability_pass()
         state = self.load()
         self.assertEqual(state["model_runs"], 1)
         self.assertEqual(sum(m["action"] == "comment" for m in state["mutations"]), 1)
-        row = state["prs"][0]
-        row["labels"].append({"name": "needs-review"})
-        state["timelines"]["24"].append({
-            "id": 2402, "event": "labeled", "label": {"name": "needs-review"},
-            "actor": {"login": "maintainer"}, "created_at": "2026-09-09T00:02:00Z",
-        })
+        state["timelines"]["24"].extend([
+            {"id": 2402, "event": "unlabeled", "label": {"name": "needs-review"}},
+            {"id": 2403, "event": "labeled", "label": {"name": "needs-review"}},
+        ])
         self.state = state
         self.save()
 
@@ -281,12 +280,9 @@ class ViabilityTest(unittest.TestCase):
         state = self.load()
         self.assertEqual(state["model_runs"], 2)
         self.assertEqual([(d["request"], d["verdict"]) for d in self.decisions()],
-                         [(2401, "BUILD"), (2402, "DONT_BUILD")])
-        self.assertEqual(self.labels("pr", 24), set())
-        pr_edits = [mutation for mutation in state["mutations"]
-                    if mutation["kind"] == "pr" and mutation["action"] == "edit"]
-        self.assertEqual(len(pr_edits), 2)
-        self.assertFalse(any("--add-label" in mutation["args"] for mutation in pr_edits))
+                         [(2401, "BUILD"), (2403, "DONT_BUILD")])
+        self.assertEqual(self.labels("pr", 24), {"needs-review"})
+        self.assertEqual(len(state["prs"][0]["comments"]), 2)
 
     def test_disabled_competing_and_dry_run_never_infer_mutate_or_persist(self) -> None:
         self.add("issue", 25, "Disabled", "Would build [S1]\nVERDICT: BUILD")

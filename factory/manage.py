@@ -332,7 +332,8 @@ def viability_pass(dry_run: bool = False) -> None:
                             f"- [{s['id']}] {s.get('url') or s.get('path') or s['label']}"
                             for s in sources if f"[{s['id']}]" in body
                         )
-                        note = ("Recommendation only: no review or handoff label is applied to PRs until factory #5 is implemented."
+                        note = ("Recommendation only: needs-review is retained for factory #5's review discovery. "
+                                "No code-quality review or handoff is performed here."
                                 if kind == "pr" else
                                 "BUILD queues needs-triage for deeper investigation, not implementation."
                                 if verdict == "BUILD" else
@@ -344,10 +345,11 @@ def viability_pass(dry_run: bool = False) -> None:
                         # At-most-once: an ambiguous/partial GitHub mutation requires human recovery.
                         dispatch.record("viability", **identity, kind=kind, request=request, verdict=verdict, comment=comment)
                         dispatch.run(["gh", kind, "comment", str(n), "--repo", cfg.repo, "--body", comment])
-                        args = ["gh", kind, "edit", str(n), "--repo", cfg.repo, "--remove-label", label]
-                        if kind == "issue" and verdict == "BUILD":
-                            args += ["--add-label", LABEL_TRIAGE]
-                        dispatch.run(args)
+                        if kind == "issue":
+                            args = ["gh", kind, "edit", str(n), "--repo", cfg.repo, "--remove-label", label]
+                            if verdict == "BUILD":
+                                args += ["--add-label", LABEL_TRIAGE]
+                            dispatch.run(args)
                         dispatch.log(f"{kind} #{n}: viability {verdict}")
                     except (CalledProcessError, OSError, ValueError, evidence.EvidenceError) as exc:
                         if not dry_run:
