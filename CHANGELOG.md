@@ -6,6 +6,7 @@
 - Add opt-in direction viability to `factory manage`: `needs-review` PRs before `needs-viability` issues, evidence-cited BUILD/DONT_BUILD/DEFER comments, and label-event replay protection. Only issue BUILD enters `needs-triage`; PRs remain recommendation-only, with no review or handoff mechanics.
 - Fix manager prompt transport to use files, including `factory learn`; validate manager commands in doctor, bound nonzero-exit diagnostics, and count manager failures separately from escalation totals and rounds without overriding human takeover. (#62)
 - Recognize District's `[defaults.engine]` snapshot metadata in `factory doctor` without loading it as pipeline configuration; keep warnings for unknown and misplaced host tables.
+- Keep generated services on the installed Factory snapshot even when their repository working directory contains a shadowing `factory` package. (#70)
 
 ## 0.3.0 — 2026-09-08
 
