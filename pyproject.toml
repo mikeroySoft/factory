@@ -18,6 +18,9 @@ classifiers = [
   "Topic :: Software Development :: Build Tools",
 ]
 
+[project.optional-dependencies]
+atlas = ["graphifyy==0.9.56"]
+
 [project.urls]
 Homepage = "https://github.com/mikeroySoft/factory"
 

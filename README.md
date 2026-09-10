@@ -1204,6 +1204,67 @@ in a repo, write tickets it can actually work, and diagnose escalations:
 npx skills add mikeroysoft/factory
 ```
 
+## Codebase history
+
+The dashboard's **Codebase** view (`/codebase`) maps the configured repository
+across its locally available default-branch history. Install the optional
+extractor when running from this source checkout:
+
+```sh
+uv sync --extra atlas
+uv run --extra atlas factory codebase
+uv run --extra atlas factory dashboard
+```
+
+Ordinary Factory commands still have no required Python dependencies. The
+`atlas` extra pins Graphify 0.9.56; code extraction runs locally, without an LLM,
+network access, checking out historical revisions, or executing repository code.
+
+- Drag the revision slider, use its arrow keys, or select **Previous / Next**.
+  Pick a baseline to distinguish additions, equal-size edits, moves, and deletions.
+- Select a folder area or file for callable symbols, resolved relationship
+  diagrams, confidence labels, and source links pinned to that commit.
+  Inferred relationships are hidden by default.
+- File slots stay fixed while scrubbing. Git-detected renames preserve identity;
+  areas remain anchored to their original folder so moving a file does not
+  rearrange the map. Folder labels follow a whole-area rename. Size bars use
+  physical text lines against a common scale for the loaded history.
+- While the dashboard runs, its background monitor checks local refs every
+  30 seconds; the page also refreshes every 30 seconds. New history does not
+  reset an older selected revision or its baseline. A failed update keeps the
+  last completed in-memory history visible with an error.
+
+By default this reads `origin/<repo.main>`, falling back to the local
+`<repo.main>` branch, and backfills the newest 80 first-parent commits.
+It **does not fetch**: normal dispatcher/operator fetches advance the observed
+remote-tracking ref. Uncommitted changes and side-branch commits outside that
+first-parent history are not shown. The page names the observed ref and snapshot
+generation time; that timestamp is not a claim about remote freshness.
+
+```sh
+uv run --extra atlas factory codebase --ref origin/main --limit 200
+uv run --extra atlas factory dashboard --codebase-ref origin/main --codebase-limit 200
+```
+
+Snapshots and the generated history live in the gitignored `.factory/codebase/`
+cache, keyed by commit and extractor version. Extraction failure does not replace
+the previously published `history.json`. The full Git lineage is read to retain
+rename identities even when the displayed history window is bounded.
+
+**Coverage is explicit, not a completeness guarantee.** Unsupported files remain
+inventory-only; unresolved/external relationships are omitted and counted.
+Symlinks, submodules, unsafe paths and vendored/runtime directories are excluded.
+When a previously mapped file crosses a coverage boundary, comparison marks a
+**coverage change**, not a deletion; its baseline source remains inspectable.
+Snapshots are bounded to 5,000 files, 1 MiB per file and 32 MiB total; exclusions
+appear in coverage warnings. Preprocessed Fortran is inventory-only rather than
+invoking host preprocessing. Shallow history is marked incomplete. Git rename
+detection is heuristic: a heavily rewritten move can appear as deletion/addition.
+The small relationship diagram shows up to four neighbors; all resolved
+relationships for the selection remain in the evidence list.
+
+Design and acceptance criteria: [codebase history plan](docs/codebase-history-plan.md).
+
 ## Architecture
 
 `factory/architecture.html` (served by the dashboard at `/atlas`) shows

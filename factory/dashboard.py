@@ -27,7 +27,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
-from factory import __version__, briefing, config, dispatch, lifecycle, stats
+from factory import __version__, briefing, codebase, config, dispatch, lifecycle, stats
 from factory.config import (
     LABEL_AGENT,
     LABEL_APPROVED,
@@ -69,6 +69,7 @@ CLOSE_REASONS = {"completed", "not planned"}
 
 HTML = Path(__file__).with_name("dashboard.html")
 ATLAS = Path(__file__).with_name("architecture.html")
+CODEBASE_HTML = Path(__file__).with_name("codebase.html")
 BRIEFING_CSS = Path(__file__).with_name("briefing.css")
 NEWSREADER = Path(__file__).with_name("fonts") / "Newsreader.ttf"
 NEWSREADER_LICENSE = Path(__file__).with_name("fonts") / "Newsreader-OFL.txt"
@@ -919,6 +920,40 @@ def cached_snapshot(fresh: bool) -> dict:
         return _cache["data"]
 
 
+class CodebaseMonitor:
+    """Refresh local Git history off the request thread; keep the last good map."""
+
+    def __init__(self, c: Config, ref: str | None = None, limit: int = 80):
+        self.config = c
+        self.ref = ref
+        self.limit = limit
+        self.state: dict = {"status": "building", "error": None, "data": None}
+        self.stop = threading.Event()
+
+    def refresh(self) -> None:
+        previous = self.state["data"]
+        try:
+            c = self.config
+            ref = self.ref or codebase.default_ref(c.root, c.main)
+            tip = config.git(c.root, "rev-parse", "--verify", "--end-of-options", f"{ref}^{{commit}}")
+            if previous and previous["tip"] == tip and previous["ref"] == ref:
+                self.state = {"status": "ready", "error": None, "data": previous}
+                return
+            self.state = {"status": "building", "error": None, "data": previous}
+            data = codebase.build_history(c.root, ref, c.repo, c.factory / "codebase", self.limit)
+            self.state = {"status": "ready", "error": None, "data": data}
+        except (Exception, config.ConfigError) as exc:
+            self.state = {"status": "error", "error": str(exc), "data": previous}
+
+    def run(self) -> None:
+        while not self.stop.is_set():
+            self.refresh()
+            self.stop.wait(30)
+
+
+codebase_monitor: CodebaseMonitor | None = None
+
+
 # ---------------------------------------------------------------- actions
 
 
@@ -1032,6 +1067,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, "text/plain; charset=utf-8", NEWSREADER_LICENSE.read_bytes())
         elif url.path == "/atlas":
             self._send(200, "text/html; charset=utf-8", ATLAS.read_bytes())
+        elif url.path == "/codebase":
+            self._send(200, "text/html; charset=utf-8", CODEBASE_HTML.read_bytes())
+        elif url.path == "/api/codebase":
+            state = codebase_monitor.state if codebase_monitor else {
+                "status": "error", "error": "Codebase monitor is not running", "data": None,
+            }
+            self._send(200, "application/json", json.dumps(state).encode())
         elif url.path == "/api/snapshot":
             data = cached_snapshot("fresh" in query)
             self._send(200, "application/json", json.dumps(data).encode())
@@ -1119,9 +1161,23 @@ def main(argv: list[str]) -> int:
     output.add_argument("--json", action="store_true", help="print one full snapshot and exit")
     output.add_argument("--runtime-json", action="store_true",
                         help="print one bounded read-only local runtime observation and exit")
+    parser.add_argument(
+        "--codebase-ref",
+        help="local Git ref to visualize (default: origin/<main>, then <main>)",
+    )
+    parser.add_argument(
+        "--codebase-limit",
+        type=int,
+        default=80,
+        help="recent first-parent commits to visualize (default: 80)",
+    )
     args = parser.parse_args(argv)
+    if args.codebase_limit < 1:
+        parser.error("--codebase-limit must be positive")
     if args.runtime_json:
-        if any(arg == "--no-open" or arg.split("=")[0] in {"--host", "--port"} for arg in argv):
+        if any(arg == "--no-open" or arg.split("=")[0] in {
+            "--host", "--port", "--codebase-ref", "--codebase-limit"
+        } for arg in argv):
             parser.error("--runtime-json cannot be combined with server options")
         from factory import runtime_events, runtime_local
 
@@ -1153,6 +1209,9 @@ def main(argv: list[str]) -> int:
         return 0
 
     server = ThreadingHTTPServer((args.host, port), Handler)
+    global codebase_monitor
+    codebase_monitor = CodebaseMonitor(cfg, args.codebase_ref, args.codebase_limit)
+    threading.Thread(target=codebase_monitor.run, name="factory-codebase", daemon=True).start()
     url = f"http://127.0.0.1:{port}/"
     print(
         f"factory dashboard: listening on {args.host}:{port}  "
@@ -1161,6 +1220,10 @@ def main(argv: list[str]) -> int:
     )
     if not args.no_open:
         webbrowser.open(url)
-    with contextlib.suppress(KeyboardInterrupt):
-        server.serve_forever()
+    try:
+        with contextlib.suppress(KeyboardInterrupt):
+            server.serve_forever()
+    finally:
+        codebase_monitor.stop.set()
+        server.server_close()
     return 0
