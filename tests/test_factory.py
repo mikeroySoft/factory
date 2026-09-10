@@ -2394,5 +2394,52 @@ class DispatchTest(unittest.TestCase):
             )
 
 
+class FeedbackSnapshotTest(unittest.TestCase):
+    def test_full_snapshot_preserves_legacy_contract_and_attaches_feedback(self):
+        from unittest import mock
+        from factory import dashboard, dispatch
+        from tests.test_feedback import Provider, REPO, PR, ISSUE, H, AT, factory_events
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), '[repo]\nslug = "example/project"\n')
+            state = repo / ".factory"
+            state.mkdir()
+            (state / "events.jsonl").write_text("\n".join(map(json.dumps, factory_events())) + "\n")
+            issue = {**ISSUE, "title": "Feedback contract", "state": "OPEN", "body": "Keep human constraint",
+                     "createdAt": AT, "updatedAt": AT, "closedAt": None,
+                     "labels": {"nodes": [{"name": "ready-for-human"}]}, "assignees": {"nodes": []}}
+            raw_pr = {**PR, "title": "Feedback", "headRefName": "agent/79", "headRefOid": H,
+                      "state": "OPEN", "isDraft": False, "createdAt": AT, "closedAt": None, "mergedAt": None,
+                      "additions": 1, "deletions": 0, "changedFiles": 1, "body": "## Gate report\n- test: PASS",
+                      "reviewDecision": "CHANGES_REQUESTED", "labels": {"nodes": []},
+                      "comments": {"nodes": [{"createdAt": AT, "body": "VERDICT: APPROVE", "url": PR["url"] + "#issuecomment-1"}]},
+                      "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "FAILURE", "contexts": {"nodes": [
+                          {"__typename": "CheckRun", "name": "CI", "status": "COMPLETED", "conclusion": "FAILURE"}]}}}}]}}
+            provider = Provider()
+            def read(**kwargs):
+                if kwargs:
+                    return provider(**kwargs)
+                return {"repository": {"id": REPO["id"], "issues": {"nodes": [issue, {
+                    **issue, "number": 81, "id": "I_81", "url": issue["url"].replace("79", "81")}]},
+                    "pullRequests": {"nodes": [raw_pr]}}}
+            with mock.patch.dict(dashboard.__dict__), mock.patch.dict(dispatch.__dict__):
+                dashboard.configure(config.load(repo))
+                with mock.patch.object(dashboard, "github", side_effect=read), \
+                     mock.patch.object(dashboard, "dispatcher", return_value={}), \
+                     mock.patch.object(dashboard, "upstream_state", return_value={}), \
+                     mock.patch.object(dashboard, "triage_llm_online", return_value=False):
+                    snapshot = dashboard.snapshot()
+            ticket = next(t for t in snapshot["tickets"] if t["number"] == 79)
+            pr = ticket["pr"]
+            self.assertEqual(pr["gate_text"], "- test: PASS")
+            self.assertEqual(pr["review_decision"], "CHANGES_REQUESTED")
+            self.assertEqual(pr["checks"]["list"], [{"name": "CI", "result": "FAILURE"}])
+            self.assertEqual(pr["comments"][0]["body"], "VERDICT: APPROVE")
+            self.assertEqual(pr["verdicts"][0]["verdict"], "APPROVE")
+            self.assertEqual({i["kind"] for i in pr["feedback"]["items"]},
+                             {"review", "review_comment", "check_run", "factory_review"})
+            self.assertIsNone(next(t for t in snapshot["tickets"] if t["number"] == 81)["pr"])
+
+
 if __name__ == "__main__":
     unittest.main()

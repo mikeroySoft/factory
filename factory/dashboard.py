@@ -27,7 +27,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
-from factory import __version__, briefing, codebase, config, dispatch, lifecycle, stats
+from factory import __version__, briefing, codebase, config, dispatch, feedback, lifecycle, stats
 from factory.config import (
     LABEL_AGENT,
     LABEL_APPROVED,
@@ -121,9 +121,10 @@ GRAPHQL = """
 query($owner:String!,$name:String!{UVARS}){
 {UPSTREAM}
   repository(owner:$owner,name:$name){
+    id
     issues(first:100,orderBy:{field:CREATED_AT,direction:DESC}){
       nodes{
-        number title state url createdAt updatedAt closedAt body
+        id number title state url createdAt updatedAt closedAt body
         labels(first:20){nodes{name color}}
         assignees(first:5){nodes{login}}
         timelineItems(last:100,itemTypes:[LABELED_EVENT,UNLABELED_EVENT,
@@ -146,7 +147,7 @@ query($owner:String!,$name:String!{UVARS}){
     }
     pullRequests(first:100,orderBy:{field:CREATED_AT,direction:DESC}){
       nodes{
-        number title state url headRefName createdAt mergedAt closedAt isDraft
+        id number title state url headRefName headRefOid createdAt mergedAt closedAt isDraft
         additions deletions changedFiles body reviewDecision
         labels(first:10){nodes{name}}
         comments(last:30){pageInfo{hasPreviousPage} nodes{createdAt author{login} body url}}
@@ -192,29 +193,33 @@ def file_meta(path: Path) -> dict | None:
 # ---------------------------------------------------------------- GitHub
 
 
-def github() -> dict:
-    owner, name = REPO.split("/", 1)
-    query = GRAPHQL.replace(
-        "{UVARS}", ",$uowner:String!,$uname:String!" if UPSTREAM else ""
-    ).replace("{UPSTREAM}", GRAPHQL_UPSTREAM if UPSTREAM else "")
-    cmd = [
-        "gh",
-        "api",
-        "graphql",
-        "-f",
-        f"query={query}",
-        "-F",
-        f"owner={owner}",
-        "-F",
-        f"name={name}",
-    ]
-    if UPSTREAM:
-        uowner, uname = UPSTREAM.split("/", 1)
-        cmd += ["-F", f"uowner={uowner}", "-F", f"uname={uname}"]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+def github(*, endpoint: str | None = None, query: str | None = None,
+           variables: dict | None = None, timeout: float | None = None) -> dict | list:
+    """Shared full-snapshot transport; feedback supplies only fixed read queries."""
+    if endpoint is not None:
+        cmd = ["gh", "api", "--method", "GET", endpoint]
+    else:
+        if query is None:
+            owner, name = REPO.split("/", 1)
+            query = GRAPHQL.replace(
+                "{UVARS}", ",$uowner:String!,$uname:String!" if UPSTREAM else ""
+            ).replace("{UPSTREAM}", GRAPHQL_UPSTREAM if UPSTREAM else "")
+            variables = {"owner": owner, "name": name}
+            if UPSTREAM:
+                variables["uowner"], variables["uname"] = UPSTREAM.split("/", 1)
+        cmd = ["gh", "api", "graphql", "-f", f"query={query}"]
+        for key, value in (variables or {}).items():
+            if value is not None:
+                cmd += ["-F" if type(value) is int else "-f", f"{key}={value}"]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout)
     if proc.returncode:
-        raise RuntimeError(proc.stderr.strip() or "gh api graphql failed")
-    return json.loads(proc.stdout)["data"]
+        raise RuntimeError("GitHub read failed")
+    value = json.loads(proc.stdout)
+    if endpoint is not None:
+        return value
+    if value.get("errors"):
+        raise RuntimeError("GitHub query was incomplete")
+    return value["data"]
 
 
 def pr_checks(pr: dict) -> dict:
@@ -803,6 +808,8 @@ def snapshot() -> dict:
     errors = []
     issues: list[dict] = []
     prs: dict[int, dict] = {}
+    raw_prs: dict[int, dict] = {}
+    repo: dict = {}
     gh_upstream = None
     try:
         data = github()
@@ -817,6 +824,7 @@ def snapshot() -> dict:
             # Prefer the merged PR, else the newest, when a branch had several.
             if n not in prs or (rec["merged_at"] and not prs[n]["merged_at"]):
                 prs[n] = rec
+                raw_prs[n] = pr
     except (RuntimeError, ValueError, KeyError) as exc:
         errors.append(f"github: {exc}")
 
@@ -839,10 +847,48 @@ def snapshot() -> dict:
     for execution in executions:
         if execution["ticket"] is not None:
             by_ticket.setdefault(execution["ticket"], []).append(execution)
+    provenance, provenance_complete = [], True
+    if raw_prs:
+        try:
+            ledger = briefing.bounded_file(FACTORY, "events.jsonl", briefing.EVENT_READ_CAP, tail=True)
+            if ledger is not None:
+                text, cut = ledger
+                lines = text.split("\n")
+                provenance_complete = not cut and not lines.pop()
+                if cut and lines:
+                    lines = lines[1:]
+                for line in lines:
+                    try:
+                        row = json.loads(line)
+                        if isinstance(row, dict):
+                            provenance.append(row)
+                        else:
+                            provenance_complete = False
+                    except ValueError:
+                        provenance_complete = False
+            else:
+                provenance_complete = False
+        except OSError:
+            provenance_complete = False
+        # Revision belongs to the imported source checkout, not the observed repository.
+        source_root = Path(__file__).resolve().parent
+        revision = sh(["git", "rev-parse", "HEAD"], cwd=source_root).strip()
+        if sh(["git", "status", "--porcelain", "--", "."], cwd=source_root).strip():
+            revision = None
     for issue in issues:
         n = issue["number"]
         if not selected_issue(issue, prs, on_disk, by_ticket, audit):
             continue
+        if n in raw_prs:
+            raw = raw_prs[n]
+            prs[n]["feedback"] = feedback.collect(
+                github, repository={"id": repo.get("id"), "slug": REPO,
+                                    "host": urlparse(raw["url"]).hostname or "github.com"},
+                pr={"id": raw.get("id"), "number": raw["number"], "url": raw["url"]},
+                issue={"id": issue.get("id"), "number": n, "url": issue["url"]},
+                events=provenance, provenance_complete=provenance_complete,
+                producer_revision=revision,
+            )
         tickets.append(build_ticket(
             issue, prs.get(n), disk_state(n), spend.get(n), by_ticket.get(n), audit=audit.get(n),
         ))
