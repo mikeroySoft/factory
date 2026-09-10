@@ -1,0 +1,151 @@
+diff --git a/factory/config.py b/factory/config.py
+index dc242c6..194cc0c 100644
+--- a/factory/config.py
++++ b/factory/config.py
+@@ -57,7 +57,7 @@ KNOWN_KEYS = {
+     "dispatch": ("max_active", "max_attempts", "budget_min", "review_rounds", "cost_pattern", "signoff"),
+     "workers": None,
+     "review": ("command",),
+-    "manager": ("model", "command"),
++    "manager": ("model", "command", "rounds", "review"),
+     "gate": ("timeout", "lock", "check"),
+     "leak_scan": ("pattern", "exclude"),
+     "triage": ("url", "model"),
+@@ -101,6 +101,9 @@ class Config:
+         default_factory=lambda: {"default": DEFAULT_WORKER, LABEL_CHORE: DEFAULT_CHORE_WORKER}
+     )
+     reviewer: list[str] = field(default_factory=lambda: list(DEFAULT_REVIEWER))
++    manager: list[str] | None = None
++    manager_rounds: int = 1
++    manager_review: str = "escalated"
+     checks: list[Check] = field(default_factory=list)
+     check_timeout: int = 1200
+     lock: Path = Path("/tmp/factory.lock")  # host-wide: one GPU, many repos
+@@ -263,6 +266,7 @@ def load(start: Path | None = None) -> Config:
+     raw, raw_repo = merge(layered, raw), raw
+     repo_t, dispatch, workers = raw.get("repo", {}), raw.get("dispatch", {}), raw.get("workers", {})
+     gate, leak, triage, dash = raw.get("gate", {}), raw.get("leak_scan", {}), raw.get("triage", {}), raw.get("dashboard", {})
++    manager = raw.get("manager", {})
+     cfg = Config(root=root, repo=slug, raw_repo=raw_repo)
+     cfg.upstream = repo_t.get("upstream") or None
+     cfg.main = repo_t.get("main", cfg.main)
+@@ -278,6 +282,10 @@ def load(start: Path | None = None) -> Config:
+         cfg.workers = {k: list(v) for k, v in workers.items()}
+     if "command" in raw.get("review", {}):
+         cfg.reviewer = list(raw["review"]["command"])
++    if "command" in manager:
++        cfg.manager = list(manager["command"])
++    cfg.manager_rounds = int(manager.get("rounds", cfg.manager_rounds))
++    cfg.manager_review = manager.get("review", cfg.manager_review)
+     cfg.check_timeout = int(gate.get("timeout", cfg.check_timeout))
+     cfg.lock = Path(gate.get("lock", cfg.lock))
+     cfg.checks = [
+diff --git a/factory/dashboard.py b/factory/dashboard.py
+index bc8add6..f91d11e 100644
+--- a/factory/dashboard.py
++++ b/factory/dashboard.py
+@@ -837,6 +837,11 @@ def snapshot() -> dict:
+             "gpu_lock": str(cfg.lock),
+             "workers": {label: " ".join(argv) for label, argv in cfg.workers.items()},
+             "reviewer": " ".join(cfg.reviewer),
++            "manager": {
++                "command": " ".join(cfg.manager) if cfg.manager else None,
++                "rounds": cfg.manager_rounds,
++                "review": cfg.manager_review,
++            },
+             "approved_label": FACTORY_APPROVED,
+             "triage": {
+                 "url": LLM_URL,
+diff --git a/factory/onboard.py b/factory/onboard.py
+index db74531..a3c7313 100644
+--- a/factory/onboard.py
++++ b/factory/onboard.py
+@@ -223,6 +223,8 @@ def doctor(argv: list[str]) -> int:
+     for label, argv_t in cfg.workers.items():
+         report(shutil.which(argv_t[0]) is not None, f"worker `{label}`: {argv_t[0]}")
+     report(shutil.which(cfg.reviewer[0]) is not None, f"reviewer: {cfg.reviewer[0]}")
++    if cfg.manager:
++        report(shutil.which(cfg.manager[0]) is not None, f"manager: {cfg.manager[0]}")
+ 
+     if cfg.checks:
+         for check in cfg.checks:
+diff --git a/factory/templates/factory.toml b/factory/templates/factory.toml
+index 6a3118e..ce8ba27 100644
+--- a/factory/templates/factory.toml
++++ b/factory/templates/factory.toml
+@@ -37,8 +37,15 @@
+ 
+ [manager]
+ # Dashboard briefings and contextual Ask FM use a bounded, no-tools OMP process.
+-# Only the model is configurable here; generated advice cannot execute actions.
+-# model = "openai-codex/gpt-6-astra"  # unset: existing manager.command --model, then OMP default
++# Only the model controls those briefings; generated advice cannot execute actions.
++# model = "openai-codex/gpt-6-astra"  # unset: manager.command --model, then OMP default
++#
++# Host-side frontier manager configuration; running it is a separate feature.
++# Unset command disables the frontier manager, not read-only dashboard briefings.
++# {prompt} = manager prompt text; {cwd} = kept worktree or repository root.
++# command = ["omp", "-p", "--model", "openai-codex/gpt-6-astra", "--cwd", "{cwd}", "{prompt}"]
++# rounds = 1
++# review = "escalated"  # "all" also reviews non-escalated factory PRs
+ 
+ [gate]
+ # timeout = 1200                      # seconds per check; a wedged check FAILs
+diff --git a/tests/test_factory.py b/tests/test_factory.py
+index 753dd34..7ab6b4f 100644
+--- a/tests/test_factory.py
++++ b/tests/test_factory.py
+@@ -109,6 +109,10 @@ signoff = false
+ default = ["agent", "{prompt}"]
+ [review]
+ command = ["rev", "--ask", "{prompt}"]
++[manager]
++command = ["manage", "--prompt", "{prompt}", "--cwd", "{cwd}"]
++rounds = 2
++review = "all"
+ [gate]
+ timeout = 7
+ lock = "/tmp/x.lock"
+@@ -130,6 +134,8 @@ port = 1
+             self.assertEqual((cfg.repo, cfg.upstream, cfg.main), ("other/name", "up", "trunk"))
+             self.assertEqual((cfg.max_active, cfg.signoff, cfg.check_timeout), (5, False, 7))
+             self.assertEqual(cfg.review_cmd("hi {x}"), ["rev", "--ask", "hi {x}"])
++            self.assertEqual(cfg.manager, ["manage", "--prompt", "{prompt}", "--cwd", "{cwd}"])
++            self.assertEqual((cfg.manager_rounds, cfg.manager_review), (2, "all"))
+             self.assertEqual([(c.name, c.exclusive) for c in cfg.checks], [("unit", True)])
+             self.assertIsNone(cfg.leak_pattern)
+             self.assertEqual((cfg.leak_exclude, cfg.llm_model, cfg.dashboard_port), (["vendor"], "m", 1))
+@@ -243,7 +249,7 @@ class HostConfigTest(unittest.TestCase):
+     def test_doctor_json_reports_drift(self) -> None:
+         host_file('[defaults.triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n[defaults.leak_scan]\npattern = ""\n[repo."acme/widgets"]\npath = "/x"\n[repo."acme/widgets".dashboard]\nport = 1\ntheme = "no"\n')
+         gh = 'case "$1 $2" in "repo view") echo ADMIN;; "label list") echo "[]";; esac\nexit 0'
+-        toml = '[triage]\nmodel = "m"\n[dashboard]\ntheme = "t.css"\n[gate]\nlock = "/tmp/l"\ntimeout = 5\n[dispatch]\nmax_atempts = 2\n'
++        toml = '[triage]\nmodel = "m"\n[dashboard]\ntheme = "t.css"\n[gate]\nlock = "/tmp/l"\ntimeout = 5\n[dispatch]\nmax_atempts = 2\n[manager]\nunknown = true\n'
+         with tempfile.TemporaryDirectory() as d:
+             repo = make_repo(Path(d), toml)
+             (repo / ".github/ISSUE_TEMPLATE").mkdir(parents=True)
+@@ -254,6 +260,7 @@ class HostConfigTest(unittest.TestCase):
+             rows = {r["label"]: r for r in out["rows"]}
+             self.assertEqual(rows[".factory.toml keys"]["status"], "WARN")
+             self.assertIn("dispatch.max_atempts", rows[".factory.toml keys"]["detail"])
++            self.assertIn("manager.unknown", rows[".factory.toml keys"]["detail"])
+             self.assertEqual(rows["host settings committed"]["status"], "WARN")
+             self.assertIn("triage, gate.lock", rows["host settings committed"]["detail"])
+             self.assertNotIn("dashboard", rows["host settings committed"]["detail"])  # theme is repo-owned
+@@ -266,6 +273,16 @@ class HostConfigTest(unittest.TestCase):
+             self.assertEqual(rows["push access to acme/widgets"]["status"], "PASS")
+             self.assertEqual(out["ok"], proc.returncode == 0)
+ 
++    def test_doctor_reports_manager_only_when_configured(self) -> None:
++        gh = 'case "$1 $2" in "repo view") echo ADMIN;; "label list") echo "[]";; esac\nexit 0'
++        with tempfile.TemporaryDirectory() as d:
++            repo = make_repo(Path(d))
++            stubs = stub_bin(Path(d), gh=gh, systemctl="echo inactive", manage="exit 0")
++            rows = lambda: {r["label"]: r for r in json.loads(factory(repo, "doctor", "--json", path=stubs).stdout)["rows"]}  # noqa: E731
++            self.assertNotIn("manager: manage", rows())
++            (repo / ".factory.toml").write_text('[manager]\ncommand = ["manage", "{prompt}"]\n')
++            self.assertEqual(rows()["manager: manage"]["status"], "PASS")
++
+ 
+ class DashboardTest(unittest.TestCase):
+     def test_metrics_from_synthetic_tickets(self) -> None:

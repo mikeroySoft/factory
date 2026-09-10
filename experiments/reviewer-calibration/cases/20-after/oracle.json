@@ -1,0 +1,44 @@
+{
+  "case_id": "20-after",
+  "issue": 20,
+  "review_base": "07913b4276be9d6013cafa025aeb489d6304a99a",
+  "head": "ce5568eef63003636e98dc6eca258d1a615b5e94",
+  "head_blobs": {
+    "README.md": "d36d9296ff86751cdf6ae0e40c9be0a25709e33d",
+    "factory/config.py": "58d239674590ae7b716dcf61d3bd92721227bbc6",
+    "factory/dashboard.py": "653ccf486564e08a4e7a161784aa1bde9e4093c8",
+    "factory/manage.py": "cfc77511a84856082c0b1f931450c41ceb323373",
+    "factory/templates/factory.toml": "910d69fd22385083ee9686634044610b44e20679",
+    "tests/test_factory.py": "0cf38767c5395dc01757be4c55443cd3d795a270"
+  },
+  "issue_url": "https://github.com/mikeroySoft/factory/issues/20",
+  "gate_evidence": "real `factory gate` run at this head in a throwaway --shared clone with refs/remotes/origin/main set to review_base; only a [repo].slug line was prepended to .factory.toml for slug resolution, committed gate checks unmodified",
+  "expected_verdict": "APPROVE",
+  "findings": [],
+  "unnecessary_demand_rule": "Identical to 20-before plus `--force-with-lease` and a rebase FIX test asserting the remote advances to the rebased head. No in-scope defect was found by independent adjudication, so any REVISE, or any Required-fix finding, is an unnecessary demand.",
+  "adjudication": "independent read of the frozen source by the calibration owner; historical model verdicts were used only to discover candidates, never as truth",
+  "gate_report": "# Gate report\n\n- conflict-markers: PASS\n- test: PASS\n- leak-scan: PASS",
+  "provenance": [
+    {
+      "path": "sources/README.md",
+      "sha256": "0ac60324432ab2d0ea9b7028c23d229bc04c47da927c99cdf016ee67bef135a9",
+      "bytes": 57678
+    },
+    {
+      "path": "sources/diff.patch",
+      "sha256": "15018904806116beda20b240e02a91408aa018d5e37be9c9ded38ed4047a6905",
+      "bytes": 22378
+    },
+    {
+      "path": "sources/gate-report.md",
+      "sha256": "fb756e34975585daa9c8c20f5e2edafecb5c7059f6f568dbba3a78f066873efd",
+      "bytes": 71
+    },
+    {
+      "path": "sources/issue.md",
+      "sha256": "4c65d2fc8dd75b188f03e1a56ad7c9ddf36a8abc4e1432c0dec7c54366d3842e",
+      "bytes": 2627
+    }
+  ],
+  "packet_sha256": "aa5cd3797d0c60c46d9552055275307f9d6105f5089478e63a16e38a9a2d1504"
+}
