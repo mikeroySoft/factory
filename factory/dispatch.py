@@ -1318,7 +1318,10 @@ def process_ticket(
 
             body = f"Closes #{n}\n\n## Gate report\n\n{report}\n"
             if not push_and_pr(wt, f"agent/{n}", f"agent/{n}: {title}", body, ticket=n):
-                escalate(n, f"agent/{n} has no commits over main; nothing to PR", logfile)
+                escalate(
+                    n, f"agent/{n}: PR not published (no commits over {cfg.main} "
+                    "or existing PR target mismatch); inspect dispatcher log", logfile,
+                )
                 return
             execution.review_round = 1
             verdict, findings = review(wt, n, report, gate_head)

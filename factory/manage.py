@@ -182,7 +182,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
             dispatch.escalate(n, "gate failed after manager FIX", logfile)
             return
         fresh = dispatch.gh_json(
-            ["pr", "view", str(pr["number"]), "--repo", dispatch.REPO, "--json", "baseRefName"]
+            ["pr", "view", f"agent/{n}", "--repo", dispatch.REPO, "--json", "baseRefName"]
         )
         if fresh.get("baseRefName") != cfg.main:
             raise ValueError(f"FIX requires a PR targeting the configured target `{cfg.main}`")

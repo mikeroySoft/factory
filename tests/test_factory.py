@@ -1052,7 +1052,7 @@ PY
             packet = dispatch.FACTORY / "packet.md"
             packet.write_text("evidence")
             pr = {
-                "number": 17, "state": "OPEN", "headRefName": "agent/7",
+                "state": "OPEN", "headRefName": "agent/7",
                 "headRefOid": "head", "baseRefName": "release", "reviewDecision": "",
             }
 
@@ -1125,7 +1125,10 @@ case "$1 $2" in
   "issue list") echo '[{"number":7,"title":"Fix CI","body":"Original","labels":[{"name":"chore"}]}]';;
   "api repos/acme/widgets/issues/7/timeline") echo '[]';;
   "issue view") echo '{"title":"Fix CI","body":"Original","comments":[]}';;
-  "pr view") head=$(git -C .factory/wt-7 rev-parse HEAD); printf '{"number":9,"state":"OPEN","headRefName":"agent/7","headRefOid":"%s","baseRefName":"main","reviewDecision":""}\n' "$head";;
+  "pr view")
+    head=$(git -C .factory/wt-7 rev-parse HEAD)
+    case "$*" in *--json*number*) number='"number":9,';; *) number=;; esac
+    printf '{%s"state":"OPEN","headRefName":"agent/7","headRefOid":"%s","baseRefName":"main","reviewDecision":""}\n' "$number" "$head";;
   "pr checks") echo '[{"name":"unit","bucket":"fail"}]';;
 esac
 ''',
