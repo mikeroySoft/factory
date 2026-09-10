@@ -147,6 +147,20 @@ def collect(read, *, repository: dict, pr: dict, issue: dict | None = None,
             success('pr')
             if not sha(p.get('headRefOid')):
                 gap('pr', 'head_missing', 'Provider PR head is unavailable.')
+            p = dict(p)
+            if p.get('state') not in ('OPEN', 'CLOSED', 'MERGED'):
+                p['state'] = 'UNKNOWN'
+                gap('pr', 'state_unknown', 'Provider PR state is unavailable or unsupported.')
+            if type(p.get('isDraft')) is not bool:
+                gap('pr', 'draft_unknown', 'Provider PR draft state is unavailable.')
+            links = p.get('closingIssuesReferences')
+            if (not isinstance(links, dict) or not isinstance(links.get('nodes'), list)
+                    or not isinstance(links.get('pageInfo'), dict)
+                    or type(links['pageInfo'].get('hasNextPage')) is not bool):
+                p['closingIssuesReferences'] = {}
+                gap('pr', 'links_unknown', 'Provider issue-link coverage is unavailable.')
+            elif links['pageInfo']['hasNextPage']:
+                gap('pr', 'issue_link_limit', 'Issue links stop after 100 entries; ownership is unknown.', truncated=True)
             return p
         except (KeyError, TypeError, ValueError, AttributeError):
             gap('pr', 'malformed_response', 'Provider PR response is malformed.')

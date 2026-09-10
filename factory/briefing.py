@@ -205,7 +205,7 @@ def sources_for(
         (f"escalations/{number}.md", "Escalation packet"),
         (f"manager-{number}.md", "Manager notes"),
         (f"wt-{number}/.factory/gate-report-{number}.md", "Gate report"),
-        (f"review-{number}.md", "Review verdict"),
+        (f"review-{number}.md", "Legacy review verdict · provenance unknown"),
         (f"pr-body-{number}.md", "PR body"),
     ]
     pr = ticket.get("pr") or {}
@@ -228,6 +228,10 @@ def sources_for(
     state = {k: ticket.get(k) for k in ("number", "title", "state", "stage", "labels", "assignees", "worker", "lock_held", "phase", "updated_at", "spend")}
     if pr:
         state["pull_request"] = {k: pr.get(k) for k in ("number", "state", "approved", "draft", "checks", "review_decision", "merged_at")}
+        state["pull_request_evidence_notice"] = (
+            "Legacy labels, check rollups and review decisions are context, not source-versioned "
+            "approval or delivery authority. Use the appended PR feedback and its coverage."
+        )
     add("Current ticket state", json.dumps(state, ensure_ascii=False, indent=2))
     events = sorted(ticket.get("events", []), key=lambda e: e.get("at") or "")
     comments = [e for e in events if e.get("body")]
@@ -264,7 +268,8 @@ def sources_for(
         add(f"PR #{pr['number']} gate report", pr["gate_text"], url=pr.get("url", ticket["url"]))
     for e in reversed(comments):
         if e not in decisions:
-            add(f"{e.get('kind', 'Comment').capitalize()} · {e.get('at', '')}", e["body"], url=e.get("url") or ticket["url"])
+            label = "Legacy verdict · provenance unknown" if e.get("kind") == "verdict" else e.get("kind", "Comment").capitalize()
+            add(f"{label} · {e.get('at', '')}", e["body"], url=e.get("url") or ticket["url"])
     timeline = [{k: e[k] for k in ("at", "kind", "detail") if k in e} for e in events]
     add("Issue timeline", json.dumps(timeline, ensure_ascii=False, indent=2), url=ticket["url"], truncated=ticket.get("timeline_truncated", False))
     attempts = sorted(ticket.get("attempts", []), key=lambda a: a.get("attempt", 0), reverse=True)

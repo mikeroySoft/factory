@@ -254,6 +254,19 @@ class FeedbackTests(unittest.TestCase):
         self.assertTrue(all(i['observed_head_sha'] is None and i['relevance'] == 'unknown' for i in result['items']))
 
 
+    def test_malformed_pr_metadata_preserves_independent_sources(self):
+        p = Provider()
+        def read(**kwargs):
+            value = p(**kwargs)
+            if kwargs.get('query') == feedback.HEAD_QUERY:
+                value['repository']['pullRequest'].update(state=42, closingIssuesReferences=42)
+            return value
+        result = collect(read)
+        self.assertEqual(result['pr']['state'], 'unknown')
+        self.assertEqual(result['owner']['relation'], 'unverified')
+        self.assertEqual(len(result['items']), 3)
+        self.assertEqual(result['coverage']['pr']['status'], 'partial')
+
 def factory_events():
     rows = [{'event': 'claimed', 'ticket': 79}]
     for sequence, kind in enumerate(('enter', 'result', 'exit'), 1):

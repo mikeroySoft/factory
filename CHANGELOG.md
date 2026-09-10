@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add schema-1 source-versioned PR feedback at full dashboard `tickets[].pr.feedback`, shared by Review, Inbox and briefing. Retain simultaneous native review/thread/check evidence and provenance-backed Factory reviews with deterministic identities, explicit unknown/partial coverage, fixed 100-item/two-page/20 KB-body/32-error/30-second bounds, and head-race handling. Read-only: no feedback delivery, readiness or merge authority; runtime JSON is unchanged. (#79)
 - Add optional Codebase history: stable commit-timeline maps, baseline comparisons, confidence-aware relationships, pinned source citations, and bounded background refresh through `factory[atlas]`. (#67)
 - Add opt-in direction viability to `factory manage`: `needs-review` PRs before `needs-viability` issues, evidence-cited BUILD/DONT_BUILD/DEFER comments, and label-event replay protection. Only issue BUILD enters `needs-triage`; PRs remain recommendation-only, with no review or handoff mechanics.
 - Fix manager prompt transport to use files, including `factory learn`; validate manager commands in doctor, bound nonzero-exit diagnostics, and count manager failures separately from escalation totals and rounds without overriding human takeover. (#62)
