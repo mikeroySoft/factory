@@ -25,6 +25,8 @@ from factory.config import (
     LABEL_HUMAN,
     LABEL_INFO,
     LABEL_TRIAGE,
+    LABEL_REVIEW,
+    LABEL_VIABILITY,
     Config,
 )
 
@@ -47,7 +49,7 @@ LABEL_TABLE = "\n".join(
         *(
             f"| {label} | {meaning} |"
             for label, (_color, meaning) in config.LABELS.items()
-            if label not in (LABEL_APPROVED, LABEL_CHORE)
+            if label not in (LABEL_APPROVED, LABEL_CHORE, LABEL_REVIEW, LABEL_VIABILITY)
         ),
         "| wontfix | Will not be actioned |",
     ]

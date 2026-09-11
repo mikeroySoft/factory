@@ -8,9 +8,12 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import shlex
+import shutil
 import sys
 import tempfile
 import unittest
+import venv
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,7 +22,7 @@ sys.path.insert(0, str(ROOT))
 XDG = Path(tempfile.mkdtemp())
 os.environ["XDG_CONFIG_HOME"] = str(XDG)
 
-from factory import __version__, config, manage  # noqa: E402
+from factory import __version__, config, lifecycle, manage  # noqa: E402
 
 
 def host_file(text: str) -> None:
@@ -87,22 +90,46 @@ def build_fork(tmp: Path) -> tuple[Path, Path, Path]:
 
 
 def merge_stage_mocks(origin: Path, pr_number: int, branch: str, title: str, original_run):
-    """gh_json/run fakes for merge_pass_locked: PR list/checks/compare/view are
-    canned; `gh pr merge` is simulated as the equivalent local git operation on
-    `origin` (what GitHub would do), everything else runs for real."""
+    """Simulate a SHA-bound approved PR and GitHub's merge operation locally."""
+    from factory import dispatch
+
+    head = git(origin, "rev-parse", branch)
+    ticket = int(branch.removeprefix("agent/"))
+    dispatch.record(
+        "attempt", ticket=ticket, gate="PASS", head=head, actual_head=head,
+    )
+    dispatch.record(
+        "review", ticket=ticket, verdict="APPROVE", accepted=True,
+        head=head, actual_head=head,
+    )
+    dispatch.record(
+        "approved", ticket=ticket, pr=pr_number, head=head,
+        gate_head=head, review_head=head,
+    )
+    pr = {
+        "number": pr_number,
+        "headRefName": branch,
+        "headRefOid": head,
+        "baseRefName": "main",
+        "isDraft": False,
+        "labels": [{"name": config.LABEL_APPROVED}],
+        "reviewDecision": "APPROVED",
+        "state": "OPEN",
+        "title": title,
+    }
 
     def fake_gh_json(args):
         if args[:2] == ["pr", "list"]:
-            return [{"number": pr_number, "headRefName": branch, "isDraft": False,
-                      "labels": [{"name": config.LABEL_APPROVED}], "reviewDecision": "APPROVED"}]
+            return [pr]
         if args[0] == "api":
             return {"behind_by": 0}
         if args[:2] == ["pr", "view"]:
-            return {"title": title}
+            return pr
         raise AssertionError(args)
 
     def fake_run(cmd, *a, **kw):
         if cmd[:3] == ["gh", "pr", "merge"]:
+            assert cmd[cmd.index("--match-head-commit") + 1] == head
             method = "merge" if "--merge" in cmd else "squash"
             git(origin, "checkout", "-q", "main")
             if method == "merge":
@@ -147,6 +174,23 @@ def gate(cwd: Path, *args: str) -> tuple[int, str, str]:
 
 
 class ConfigTest(unittest.TestCase):
+    def test_manager_prompt_file_and_omp_inline_rejection(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            prompt = root / "manager-prompt-7.md"
+            text = "Issue body\n" + "packet " * 30_000
+            prompt.write_text(text)
+            cfg = config.Config(root, "acme/widgets", manager=[
+                "omp", "-p", "--no-session", "--model", "openai-codex/gpt-6-astra",
+                "--cwd", "{cwd}", "@{prompt}",
+            ])
+            argv = cfg.manager_cmd(prompt, root)
+            self.assertEqual(argv[-1], "@" + str(prompt))
+            self.assertEqual(Path(argv[-1][1:]).read_text(), text)
+            cfg.manager[-1] = "{prompt}"
+            with self.assertRaisesRegex(config.ConfigError, r'@\{prompt\}'):
+                cfg.manager_cmd(prompt, root)
+
     def test_defaults_from_origin(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             repo = make_repo(Path(d))
@@ -297,6 +341,47 @@ class HostConfigTest(unittest.TestCase):
             proc = factory(make_repo(Path(d) / "b"), "install", "--print", "--no-dashboard")
             self.assertNotIn("dashboard.service", proc.stdout)
 
+    def test_generated_services_ignore_a_shadowing_checkout_package(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = make_repo(Path(directory))
+            environment = Path(directory) / "venv"
+            venv.EnvBuilder(with_pip=False).create(environment)
+            python = environment / "bin" / "python"
+            env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONSAFEPATH", "PYTHONHOME")}
+            site = subprocess.run(
+                [str(python), "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+                env=env, capture_output=True, text=True, check=True,
+            )
+            # Install this snapshot without pip, network access, or optional dependencies.
+            shutil.copytree(ROOT / "factory", Path(site.stdout.strip()) / "factory", ignore=shutil.ignore_patterns("__pycache__"))
+            generated = subprocess.run(
+                [str(python), "-m", "factory", "install", "--print", "--dashboard"],
+                cwd=repo, env=env, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(generated.returncode, 0, generated.stderr)
+            shadow = repo / "factory"
+            shadow.mkdir()
+            marker = repo / "checkout-executed"
+            (shadow / "__init__.py").write_text(
+                "from pathlib import Path\n"
+                "Path('checkout-executed').touch()\n"
+                "raise RuntimeError('checkout package executed')\n"
+            )
+            commands = []
+            for line in generated.stdout.splitlines():
+                if not line.startswith("ExecStart="):
+                    continue
+                command = shlex.split(line.removeprefix("ExecStart=").removeprefix("-"))
+                commands.append(command[command.index("factory") + 1])
+                with self.subTest(command=command):
+                    result = subprocess.run(
+                        [*command, "--help"], cwd=repo, env=env,
+                        capture_output=True, text=True, check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertFalse(marker.exists(), "service imported the checkout package")
+            self.assertEqual(commands, ["triage", "dispatch", "dashboard"])
+
     def test_init_labels_only_touches_nothing_and_fails_on_gh(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             repo = make_repo(Path(d))
@@ -339,6 +424,34 @@ class HostConfigTest(unittest.TestCase):
             ci.unlink()
             row = doctor()["github workflow"]
             self.assertEqual((row["status"], row["detail"].startswith("none")), ("WARN", True))
+
+    def test_doctor_accepts_district_engine_metadata_without_loading_it(self) -> None:
+        metadata = (
+            '[defaults.triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n'
+            '[defaults.workers]\ndefault = ["worker", "{prompt}"]\n'
+            '[defaults.engine]\nref = "v0.3.0"\nsha = "abc"\nprevious = "def"\n'
+            'installed_at = "2026-09-09T00:00:00Z"\n'
+            '[defaults.engine.workers]\ndefault = ["not-a-worker"]\n'
+        )
+        host_file(metadata)
+        gh = 'case "$1 $2" in "repo view") echo ADMIN;; "label list") echo "[]";; esac\nexit 0'
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            stubs = stub_bin(Path(d), gh=gh, systemctl="echo inactive")
+            proc = factory(repo, "doctor", "--json", path=stubs)
+            rows = {r["label"]: r for r in json.loads(proc.stdout)["rows"]}
+            self.assertEqual(rows["host config"]["status"], "PASS", rows["host config"])
+            self.assertNotIn("engine", config.host_filter(config.host_config()["defaults"]))
+            self.assertEqual(config.load(repo).worker(set(), Path("/p"), repo), ["worker", "/p"])
+
+            # Only defaults.engine is metadata; typos and misplaced tables still warn.
+            host_file(metadata + '[defaults.engien]\nsha = "bad"\n[repo."acme/widgets".engine]\nsha = "bad"\n')
+            proc = factory(repo, "doctor", "--json", path=stubs)
+            rows = {r["label"]: r for r in json.loads(proc.stdout)["rows"]}
+            self.assertEqual(rows["host config"]["status"], "WARN")
+            self.assertIn("defaults.engien", rows["host config"]["detail"])
+            self.assertIn('repo."acme/widgets".engine', rows["host config"]["detail"])
+            self.assertNotIn("defaults.engine", rows["host config"]["detail"])
 
     def test_doctor_json_reports_drift(self) -> None:
         host_file('[defaults.triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n[defaults.leak_scan]\npattern = ""\n[repo."acme/widgets"]\npath = "/x"\n[repo."acme/widgets".dashboard]\nport = 1\ntheme = "no"\n')
@@ -400,15 +513,33 @@ class HostConfigTest(unittest.TestCase):
                     with self.assertRaises(config.ConfigError):
                         config.load(repo)
 
-    def test_doctor_reports_manager_only_when_configured(self) -> None:
-        gh = 'case "$1 $2" in "repo view") echo ADMIN;; "label list") echo "[]";; esac\nexit 0'
-        with tempfile.TemporaryDirectory() as d:
-            repo = make_repo(Path(d))
-            stubs = stub_bin(Path(d), gh=gh, systemctl="echo inactive", manage="exit 0")
-            rows = lambda: {r["label"]: r for r in json.loads(factory(repo, "doctor", "--json", path=stubs).stdout)["rows"]}  # noqa: E731
-            self.assertNotIn("manager: manage", rows())
-            (repo / ".factory.toml").write_text('[manager]\ncommand = ["manage", "{prompt}"]\n')
-            self.assertEqual(rows()["manager: manage"]["status"], "PASS")
+    def test_doctor_manager_command(self) -> None:
+        cases = [
+            (None, "WARN", ["unset", "no automated diagnosis"]),
+            (["manage"], "FAIL", ["{prompt}", "{cwd}"]),
+            (["manage", "{prompt}"], "FAIL", ["{cwd}"]),
+            (["manage", "{cwd}"], "FAIL", ["{prompt}"]),
+            (["missing-manager-executable", "{prompt}", "{cwd}"], "FAIL", ["missing-manager-executable"]),
+            (["omp", "{prompt}", "--cwd", "{cwd}"], "FAIL", ['use "@{prompt}"']),
+            (["omp", "@{prompt}", "--cwd", "{cwd}"], "PASS", []),
+            (["manage", "{prompt}", "{cwd}"], "PASS", []),
+        ]
+        host_file("")
+        for command, status, details in cases:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as d:
+                settings = '[triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n'
+                if command is not None:
+                    settings += "[manager]\ncommand = " + json.dumps(command) + "\n"
+                repo = make_repo(Path(d), settings)
+                stubs = stub_bin(Path(d), gh='case "$1 $2" in "repo view") echo ADMIN;; "label list") echo "[]";; esac',
+                                 systemctl="echo inactive", manage="exit 0", omp="exit 0")
+                result = factory(repo, "doctor", "--json", path=stubs)
+                rows = {row["label"]: row for row in json.loads(result.stdout)["rows"]}
+                self.assertEqual(rows["manager command"]["status"], status)
+                for detail in details:
+                    self.assertIn(detail, rows["manager command"]["detail"])
+                text = factory(repo, "doctor", path=stubs)
+                self.assertIn(f"{status}  manager command", text.stdout)
 
 
 class StatsTest(unittest.TestCase):
@@ -693,6 +824,7 @@ class ManageTest(unittest.TestCase):
         timeline = json.dumps(activity or [])
         stubs = stub_bin(root, gh=f'''
 case "$1 $2" in
+  "pr list") echo '[]';;
   "issue list") echo '[{{"number":7,"title":"Fix gate","body":"Original body","labels":[{{"name":"ready-for-human"}}]}}]';;
   "api repos/acme/widgets/issues/7/timeline") echo '{timeline}';;
   "issue create") echo "https://github.com/acme/widgets/issues/8";;
@@ -701,6 +833,97 @@ case "$1 $2" in
 esac
 ''')
         return repo, stubs, packet
+
+    def test_external_review_escalation_stays_in_human_queue(self) -> None:
+        repo, stubs, _ = self.scenario()
+        events_path = repo / ".factory/events.jsonl"
+        escalation = json.loads(events_path.read_text())
+        escalation.update(pr=17, head="reviewed-head")
+        events_path.write_text(json.dumps(escalation) + "\n")
+
+        for _ in range(2):
+            result = factory(repo, "manage", path=stubs)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+        calls = (Path(stubs) / "gh.log").read_text()
+        self.assertNotIn("issue edit", calls)
+        self.assertNotIn("issue comment", calls)
+        events = list(map(json.loads, events_path.read_text().splitlines()))
+        self.assertFalse(any(e.get("event") == "manage" for e in events))
+
+    def test_manager_reads_prompt_file_with_district_command(self) -> None:
+        repo, stubs, packet = self.scenario()
+        text = "Escalation evidence\n" + "packet " * 30_000
+        packet.write_text(text)
+        stub_bin(Path(stubs).parent, omp='''
+python3 - "$5" <<'PY'
+import pathlib, sys
+assert sys.argv[1].startswith("@"), sys.argv
+prompt = pathlib.Path(sys.argv[1][1:]).read_text()
+assert "Original body" in prompt
+assert "packet " * 30_000 in prompt
+print("DECISION: HUMAN\\nRead the complete prompt")
+PY
+''')
+        (repo / config.CONFIG_NAME).write_text(
+            '[manager]\ncommand = ["omp", "-p", "--cwd", "{cwd}", "--no-session", "@{prompt}"]\n')
+        result = factory(repo, "manage", path=stubs)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Factory manager: Read the complete prompt", (Path(stubs) / "gh.log").read_text())
+        self.assertIn(text, (repo / ".factory/manager-prompt-7.md").read_text())
+
+    def test_manager_failure_bounds_stderr_and_records_reason(self) -> None:
+        from unittest.mock import patch
+        from factory import dispatch, stats
+
+        repo, _, packet = self.scenario()
+        command = [sys.executable, "-c",
+                   "import sys; sys.stderr.write(''.join(f'error-{i}\\n' for i in range(20))); sys.exit(1)",
+                   "{prompt}", "{cwd}"]
+        cfg = config.Config(repo, "acme/widgets", manager=command, manager_rounds=2)
+        dispatch.configure(cfg)
+        with patch.object(dispatch, "gh_json", return_value=[
+            {"number": 7, "title": "Fix gate", "body": "Original body"}
+        ]), patch.object(manage, "human_activity", return_value=False), patch.object(manage, "apply") as apply:
+            manage.manage_pass()
+        _, _, decision, body, _, _ = apply.call_args.args
+        self.assertEqual(decision, "HUMAN")
+        self.assertTrue(body.startswith("Manager command exited 1 (argv: "), body)
+        self.assertIn("{prompt}", body.splitlines()[0])
+        self.assertIn("{cwd}", body.splitlines()[0])
+        self.assertEqual(body.splitlines()[1:], [f"error-{i}" for i in range(15, 20)])
+        events = list(map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines()))
+        failed = [e for e in events if e.get("event") == "escalate" and e.get("reason") == "manager_failed"]
+        self.assertEqual([(e["event"], e["ticket"], e["round"], e["packet"]) for e in failed],
+                         [("escalate", 7, 1, str(packet))])
+        touch = stats.human_touch([], events)
+        self.assertEqual(touch["escalation_count"], 1)
+        self.assertEqual(touch["manager_failures"], 1)
+        now = stats.datetime.fromisoformat(events[0]["at"].replace("Z", "+00:00"))
+        self.assertEqual(stats.human_touch_metrics([touch], now)["escalations_per_week"], 1)
+        packet, round_number = dispatch.escalation_packet(7, "gate_failed", None, repo / ".factory/wt-7")
+        self.assertEqual(round_number, 2)
+        dispatch.record("escalate", ticket=7, round=round_number, packet=str(packet), reason="gate_failed")
+        command[:] = ["printf", "DECISION: RETRY\nTry again"]
+        with patch.object(dispatch, "gh_json", return_value=[
+            {"number": 7, "title": "Fix gate", "body": "Original body"}
+        ]), patch.object(manage, "human_activity", return_value=False), patch.object(manage, "apply") as apply:
+            manage.manage_pass()
+        self.assertEqual(apply.call_args.args[2:4], ("RETRY", "Try again"))
+
+    def test_manager_config_error_leaves_diagnosis_without_replaying(self) -> None:
+        repo, stubs, _ = self.scenario()
+        (repo / config.CONFIG_NAME).write_text(
+            '[manager]\ncommand = ["omp", "-p", "{prompt}", "--cwd", "{cwd}"]\n')
+        result = factory(repo, "manage", path=stubs)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = (Path(stubs) / "gh.log").read_text()
+        self.assertIn('use "@{prompt}"', calls)
+        events = list(map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines()))
+        self.assertEqual([(e["decision"], e["round"]) for e in events if e.get("event") == "manage"],
+                         [("HUMAN", 1)])
+        self.assertEqual(factory(repo, "manage", path=stubs).returncode, 0)
+        self.assertNotIn("issue comment", (Path(stubs) / "gh.log").read_text()[len(calls):])
 
     def test_manage_retry_records_before_comment_and_relabels(self) -> None:
         repo, stubs, packet = self.scenario()
@@ -733,6 +956,31 @@ esac
         self.assertNotIn("issue comment", (Path(stubs) / "gh.log").read_text())
         self.assertFalse(any(e.get("event") == "manage" for e in map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines())))
 
+    def test_manager_failure_preserves_human_takeover_on_next_pass(self) -> None:
+        from unittest.mock import patch
+        from factory import dispatch
+
+        repo, _, _ = self.scenario()
+        marker = repo / "human-takeover"
+        command = [sys.executable, "-c",
+                   "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('taken'); sys.exit(1)",
+                   str(marker)]
+        dispatch.configure(config.Config(repo, "acme/widgets", manager=command))
+
+        def github(args: list[str]) -> list[dict]:
+            if args[:2] == ["issue", "list"]:
+                return [{"number": 7, "title": "Fix gate", "body": "Original body"}]
+            return [{"event": "commented", "created_at": "2026-01-01T00:00:01Z",
+                     "body": "I will handle this"}] if marker.exists() else []
+
+        with patch.object(dispatch, "gh_json", side_effect=github), \
+             patch.object(dispatch.time, "strftime", return_value="2026-01-01T00:00:02Z"), \
+             patch.object(manage, "apply") as apply:
+            manage.manage_pass()
+            manage.manage_pass()
+        self.assertTrue(marker.exists())
+        apply.assert_not_called()
+
     def test_manage_applies_closed_menu_and_rejects_unknown_route(self) -> None:
         cases = [
             ("REWRITE", "Replacement acceptance criteria", "issue edit 7 --repo acme/widgets --body Replacement acceptance criteria"),
@@ -764,7 +1012,7 @@ esac
                 prompt = repo / ".factory/manager-prompt.txt"
                 output = 'DECISION: ROUTE\n{"add":["chore"],"guidance":"Use the mechanical worker"}'
                 command = [sys.executable, "-c",
-                           "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2]); print(sys.argv[3])",
+                           "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(pathlib.Path(sys.argv[2]).read_text()); print(sys.argv[3])",
                            str(prompt), "{prompt}", output]
                 settings = "[manager]\ncommand = " + json.dumps(command) + '\n[workers]\ndefault = ["false"]\n'
                 if configured:
@@ -781,6 +1029,89 @@ esac
                     self.assertIn("--add-label chore", calls)
                 else:
                     self.assertNotIn("issue edit", calls)
+
+    def test_fix_rejects_wrong_or_missing_base_before_mutation(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        for actual_base in ("main", None):
+            with self.subTest(actual_base=actual_base), tempfile.TemporaryDirectory() as d:
+                repo = make_repo(Path(d))
+                dispatch.configure(config.Config(
+                    root=repo, repo="acme/widgets", main="release",
+                ))
+                wt = dispatch.FACTORY / "wt-7"
+                wt.mkdir(parents=True)
+                packet = dispatch.FACTORY / "packet.md"
+                packet.write_text("evidence")
+                pr = {
+                    "state": "OPEN", "headRefName": "agent/7",
+                    "headRefOid": "head", "reviewDecision": "",
+                }
+                if actual_base is not None:
+                    pr["baseRefName"] = actual_base
+
+                with mock.patch.object(dispatch, "gh_json", return_value=pr), \
+                        mock.patch.object(dispatch, "run") as run, \
+                        mock.patch.object(dispatch, "worker_round") as worker:
+                    with self.assertRaisesRegex(ValueError, "configured target"):
+                        manage.apply(
+                            7, {"title": "Fix CI"}, "FIX", "",
+                            {"worker": "ci-fix", "guidance": "Fix CI"}, packet,
+                        )
+
+                run.assert_not_called()
+                worker.assert_not_called()
+
+    def test_fix_rechecks_base_before_push(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            dispatch.configure(config.Config(
+                root=repo, repo="acme/widgets", main="release",
+            ))
+            wt = dispatch.FACTORY / "wt-7"
+            wt.mkdir(parents=True)
+            packet = dispatch.FACTORY / "packet.md"
+            packet.write_text("evidence")
+            pr = {
+                "state": "OPEN", "headRefName": "agent/7",
+                "headRefOid": "head", "baseRefName": "release", "reviewDecision": "",
+            }
+
+            def fake_run(cmd, *args, **kwargs):
+                stdout = (
+                    "agent/7\n" if cmd[:3] == ["git", "branch", "--show-current"]
+                    else "head\n" if cmd[:3] == ["git", "rev-parse", "HEAD"]
+                    else ""
+                )
+                return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+            with mock.patch.object(
+                    dispatch, "gh_json",
+                    side_effect=[pr, {"baseRefName": "main"}],
+            ), mock.patch.object(dispatch, "run", side_effect=fake_run) as run, \
+                    mock.patch.object(
+                        dispatch, "worker_round",
+                        return_value=(True, "ok", packet, "new-head"),
+                    ), mock.patch.object(
+                        dispatch, "review", return_value=("REVISE", "retargeted"),
+                    ), mock.patch.object(dispatch, "pr_comment"), \
+                    mock.patch.object(dispatch, "escalate"):
+                with self.assertRaisesRegex(ValueError, "configured target"):
+                    manage.apply(
+                        7, {"title": "Fix CI"}, "FIX", "",
+                        {"worker": "ci-fix", "guidance": "Fix CI"}, packet,
+                    )
+
+            self.assertFalse(any(
+                call.args[0][:2] == ["git", "push"]
+                for call in run.call_args_list
+            ))
 
     def test_fix_runs_selected_worker_on_red_ci_and_requires_gate_and_review(self) -> None:
         cases = ((False, "APPROVE", False), (True, "REVISE", False),
@@ -817,10 +1148,14 @@ esac
                 stub_bin(Path(stubs).parent, **{
                     "gh": '''
 case "$1 $2" in
+  "pr list") echo '[]';;
   "issue list") echo '[{"number":7,"title":"Fix CI","body":"Original","labels":[{"name":"chore"}]}]';;
   "api repos/acme/widgets/issues/7/timeline") echo '[]';;
   "issue view") echo '{"title":"Fix CI","body":"Original","comments":[]}';;
-  "pr view") echo '{"number":9,"state":"OPEN","headRefName":"agent/7","reviewDecision":""}';;
+  "pr view")
+    head=$(git -C .factory/wt-7 rev-parse HEAD)
+    case "$*" in *--json*number*) number='"number":9,';; *) number=;; esac
+    printf '{%s"state":"OPEN","headRefName":"agent/7","headRefOid":"%s","baseRefName":"main","reviewDecision":""}\n' "$number" "$head";;
   "pr checks") echo '[{"name":"unit","bucket":"fail"}]';;
 esac
 ''',
@@ -840,6 +1175,15 @@ esac
                 self.assertNotIn("--add-label ready-for-agent", calls)
                 self.assertEqual(git(remote, "rev-parse", "agent/7"),
                                  git(wt, "rev-parse", "HEAD") if gate_ok else original)
+                approvals = [e for e in events if e.get("event") == "approved"]
+                if gate_ok and verdict == "APPROVE":
+                    self.assertEqual(
+                        (approvals[-1]["head"], approvals[-1]["gate_head"],
+                         approvals[-1]["review_head"]),
+                        (git(remote, "rev-parse", "agent/7"),) * 3,
+                    )
+                else:
+                    self.assertEqual(approvals, [])
                 if rebase:
                     self.assertEqual(git(remote, "show", "agent/7:main.txt"), "main intent")
 
@@ -886,7 +1230,7 @@ esac
             with events_path.open("a") as events:
                 events.write(json.dumps({**escalation, "round": round_number}) + "\n")
             command = [sys.executable, "-c",
-                       "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2]); sys.stdout.write(sys.argv[3])",
+                       "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(pathlib.Path(sys.argv[2]).read_text()); sys.stdout.write(sys.argv[3])",
                        str(prompt), "{prompt}", output]
             (repo / config.CONFIG_NAME).write_text(
                 "[manager]\nrounds = 3\ncommand = " + json.dumps(command) + "\n")
@@ -927,6 +1271,7 @@ esac
         (repo / config.CONFIG_NAME).write_text("[manager]\ncommand = " + json.dumps(command) + "\n")
         stub_bin(Path(stubs).parent, gh='''
 case "$1 $2 $3" in
+  "pr list --repo") echo '[]';;
   "issue list --repo") echo '[{"number":7,"title":"First","body":"Old"},{"number":8,"title":"Next","body":"Old"}]';;
   "api repos/acme/widgets/issues/"*) echo '[]';;
   "issue edit 7") echo 'GitHub rejected body edit' >&2; exit 1;;
@@ -966,6 +1311,428 @@ esac
 
 
 class DispatchTest(unittest.TestCase):
+    def test_push_and_pr_targets_configured_nondefault_branch(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            dispatch.configure(config.Config(
+                root=repo, repo="acme/widgets", main="stable",
+            ))
+            dispatch.FACTORY.mkdir()
+
+            selected_base = {}
+
+            def fake_run(cmd, *args, **kwargs):
+                stdout = "1\n" if cmd[:3] == ["git", "rev-list", "--count"] else ""
+                if cmd[:3] == ["gh", "pr", "create"]:
+                    selected_base["value"] = (
+                        cmd[cmd.index("--base") + 1] if "--base" in cmd else "main"
+                    )
+                return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+            with mock.patch.object(dispatch, "run", side_effect=fake_run), \
+                    mock.patch.object(dispatch, "gh_json", return_value=[]):
+                self.assertTrue(dispatch.push_and_pr(
+                    repo, "agent/7", "feature", "body", ticket=7,
+                ))
+
+            self.assertEqual(selected_base["value"], "stable")
+
+    def test_push_and_pr_does_not_push_existing_wrong_or_missing_base(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        for actual_base in ("main", None):
+            with self.subTest(actual_base=actual_base), tempfile.TemporaryDirectory() as d:
+                repo = make_repo(Path(d))
+                dispatch.configure(config.Config(
+                    root=repo, repo="acme/widgets", main="stable",
+                ))
+                existing = {"number": 17}
+                if actual_base is not None:
+                    existing["baseRefName"] = actual_base
+
+                def fake_run(cmd, *args, **kwargs):
+                    stdout = "1\n" if cmd[:3] == ["git", "rev-list", "--count"] else ""
+                    return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+                with mock.patch.object(dispatch, "run", side_effect=fake_run) as run, \
+                        mock.patch.object(dispatch, "gh_json", return_value=[existing]):
+                    self.assertFalse(dispatch.push_and_pr(
+                        repo, "agent/7", "feature", "body", ticket=7,
+                    ))
+
+                commands = [call.args[0] for call in run.call_args_list]
+                self.assertFalse(any(cmd[:2] == ["git", "push"] for cmd in commands))
+                self.assertFalse(any(cmd[:3] == ["gh", "pr", "create"] for cmd in commands))
+
+    def test_external_review_readiness_tracks_required_checks_and_head(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch, lifecycle
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            dispatch.configure(config.Config(root=repo, repo="acme/widgets"))
+            dispatch.record("review-intake", pr=17, head="head-1")
+            dispatch.record("review-result", pr=17, head="head-1", verdict="APPROVE")
+            pr = {"number": 17, "state": "OPEN", "isDraft": False,
+                  "headRefOid": "head-1", "baseRefOid": "base",
+                  "labels": [], "reviewRequests": []}
+            payload, code, fresh_head = "[]", 0, "head-1"
+            commands = []
+
+            def run(cmd, **kwargs):
+                commands.append(cmd)
+                if cmd[:3] == ["gh", "pr", "checks"]:
+                    self.assertIn("--required", cmd)
+                    return subprocess.CompletedProcess(cmd, code, payload, "")
+                if cmd[:3] == ["gh", "pr", "view"]:
+                    return subprocess.CompletedProcess(
+                        cmd, 0, json.dumps({"headRefOid": fresh_head}), "")
+                self.fail(f"Unexpected command: {cmd}")
+
+            with mock.patch.object(dispatch, "gh_json", return_value=[pr]), \
+                    mock.patch.object(dispatch, "run", side_effect=run):
+                for payload, code, expected in [
+                    ("[]", 0, "ci_pending"),
+                    ('[{"name":"test","bucket":[]}]', 0, "ci_pending"),
+                    ('[{"name":"test","bucket":"unknown"}]', 0, "ci_pending"),
+                    ('[{"name":"a","bucket":"pass"},{"name":"b","bucket":"pending"}]', 8, "ci_pending"),
+                    ('[{"name":"a","bucket":"pass"},{"name":"b","bucket":"fail"}]', 1, "ci_failed"),
+                    ("not json", 1, "ci_pending"),
+                    ("null", 0, "ci_pending"),
+                    ('[{}]', 0, "ci_pending"),
+                    ('[{"name":"test","bucket":"pending"}]', 8, "ci_pending"),
+                    ('[{"name":"test","bucket":"fail"}]', 1, "ci_failed"),
+                    ('[{"name":"test","bucket":"cancel"}]', 1, "ci_failed"),
+                    ('[{"name":"test","bucket":"skipping"}]', 0, "ci_pending"),
+                    ('[{"name":"test","bucket":"pass"}]', 1, "ci_pending"),
+                    ('[{"name":"test","bucket":"pass"}]', 0, "ready"),
+                ]:
+                    with self.subTest(payload=payload, code=code):
+                        dispatch.review_intake_pass(False)
+                        event = lifecycle.read_events(dispatch.EVENTS)[-1]
+                        self.assertEqual(event["event"], "review-readiness")
+                        self.assertEqual((event["head"], event["state"]), ("head-1", expected))
+                # A push during the query cannot inherit the old approval.
+                fresh_head = "head-2"
+                dispatch.review_intake_pass(False)
+                self.assertEqual(lifecycle.read_events(dispatch.EVENTS)[-1]["state"], "review_pending")
+                pr["headRefOid"] = fresh_head
+                dispatch.review_intake_pass(False)
+                event = lifecycle.read_events(dispatch.EVENTS)[-1]
+                self.assertEqual((event["head"], event["state"]), ("head-2", "review_pending"))
+                dispatch.record("review-result", pr=17, head="head-2", verdict="REQUEST_CHANGES")
+                dispatch.review_intake_pass(False)
+                self.assertEqual(lifecycle.read_events(dispatch.EVENTS)[-1]["state"], "changes_requested")
+                before = dispatch.EVENTS.read_text()
+                dispatch.review_intake_pass(True)
+                self.assertEqual(dispatch.EVENTS.read_text(), before)
+            self.assertFalse(any(cmd[:3] == ["gh", "pr", "merge"] for cmd in commands))
+
+    def test_external_review_head_transitions_end_on_approval(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            cfg = config.Config(
+                root=repo, repo="acme/widgets", review_rounds=2,
+                reviewer=[sys.executable, "-c",
+                          "print('- src/a.py:1: Fix input.\\nVERDICT: REVISE')"],
+            )
+            dispatch.configure(cfg)
+            pr = {"number": 17, "state": "OPEN", "isDraft": False,
+                  "headRefOid": "head-1", "baseRefOid": "base",
+                  "labels": [], "reviewRequests": [{"login": "reviewer"}]}
+            publications = []
+            real_run = dispatch.run
+
+            def run(cmd, **kwargs):
+                if cmd[0] != "gh":
+                    return real_run(cmd, **kwargs)
+                if "--method" in cmd:
+                    publications.append(cmd)
+                return subprocess.CompletedProcess(cmd, 0, "diff", "")
+
+            with mock.patch.object(dispatch, "gh_json", side_effect=lambda args:
+                                   {"login": "reviewer"} if args == ["api", "user"] else [pr]), \
+                    mock.patch.object(dispatch, "run", side_effect=run):
+                dispatch.review_intake_pass(False)
+                dispatch.configure(cfg)
+                dispatch.review_intake_pass(False)
+                self.assertEqual(len(publications), 1)
+                pr["headRefOid"] = "head-2"
+                pr["reviewRequests"] = []
+                cfg.reviewer = [sys.executable, "-c", "print('VERDICT: APPROVE')"]
+                dispatch.review_intake_pass(False)
+                dispatch.review_intake_pass(False)
+                self.assertEqual(len(publications), 2)
+                self.assertIn("commit_id=head-2", publications[-1])
+                self.assertIn("event=APPROVE", publications[-1])
+                pr["headRefOid"] = "head-3"
+                dispatch.configure(cfg)
+                dispatch.review_intake_pass(False)
+                self.assertEqual(len(publications), 2)
+
+    def test_external_review_exhaustion_escalates_once_without_another_review(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch, lifecycle
+
+        for rounds in (0, 1):
+            with self.subTest(rounds=rounds), tempfile.TemporaryDirectory() as d:
+                repo = make_repo(Path(d))
+                cfg = config.Config(
+                    root=repo, repo="acme/widgets", review_rounds=rounds,
+                    reviewer=[sys.executable, "-c",
+                              "print('- src/a.py:1: Fix input.\\nVERDICT: REVISE')"],
+                )
+                dispatch.configure(cfg)
+                pr = {"number": 17, "state": "OPEN", "isDraft": False,
+                      "headRefOid": "head-0", "baseRefOid": "base",
+                      "labels": [{"name": "needs-review"}], "reviewRequests": []}
+                publications, issues = [], []
+                real_run = dispatch.run
+
+                def run(cmd, **kwargs):
+                    if cmd[0] != "gh":
+                        return real_run(cmd, **kwargs)
+                    if "--method" in cmd:
+                        publications.append(cmd)
+                    if cmd[:3] == ["gh", "issue", "create"]:
+                        issues.append(cmd)
+                        return subprocess.CompletedProcess(
+                            cmd, 0, "https://github.com/acme/widgets/issues/99\n", "")
+                    return subprocess.CompletedProcess(cmd, 0, "diff", "")
+
+                with mock.patch.object(dispatch, "gh_json", return_value=[pr]), \
+                        mock.patch.object(dispatch, "run", side_effect=run):
+                    for head in range(rounds + 1):
+                        pr["headRefOid"] = f"head-{head}"
+                        dispatch.review_intake_pass(False)
+                    dispatch.review_intake_pass(True)
+                    self.assertEqual(issues, [])
+                    dispatch.configure(cfg)
+                    dispatch.review_intake_pass(False)
+                    pr["headRefOid"] = "over-budget"
+                    dispatch.review_intake_pass(False)
+                    self.assertEqual(len(publications), rounds + 1)
+                    self.assertEqual(len(issues), 1)
+                    self.assertIn("ready-for-human", issues[0])
+                escalations = [e for e in lifecycle.read_events(dispatch.EVENTS)
+                               if e.get("event") == "escalate"]
+                self.assertEqual(len(escalations), 1)
+                self.assertEqual((escalations[0]["pr"], escalations[0]["ticket"]), (17, 99))
+                evidence = Path(escalations[0]["packet"]).read_text()
+                self.assertIn("src/a.py:1: Fix input.", evidence)
+                self.assertIn(f"head-{rounds}", evidence)
+                self.assertIn("https://github.com/acme/widgets/pull/17", evidence)
+
+    def test_external_review_publishes_recorded_head(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            output = "VERDICT: APPROVE"
+            dispatch.configure(config.Config(
+                root=repo, repo="acme/widgets",
+                reviewer=[sys.executable, "-c",
+                          f"import sys; print({output!r}); "
+                          "open('received.txt', 'w').write(sys.argv[1])", "{prompt}"],
+            ))
+            pr = {"number": 17, "state": "OPEN", "isDraft": False,
+                  "headRefOid": "recorded-head", "baseRefOid": "recorded-base",
+                  "labels": [{"name": "needs-review"}], "reviewRequests": []}
+            publications = []
+            real_run = dispatch.run
+
+            def run(cmd, **kwargs):
+                if cmd[:2] != ["gh", "api"]:
+                    return real_run(cmd, **kwargs)
+                if "repos/acme/widgets/compare/recorded-base...recorded-head" in cmd:
+                    pr["headRefOid"] = "newer-head"
+                    return subprocess.CompletedProcess(cmd, 0, "RECORDED DIFF", "")
+                publications.append(cmd)
+                return subprocess.CompletedProcess(cmd, 0, "{}", "")
+
+            with mock.patch.object(dispatch, "gh_json", return_value=[pr]), \
+                    mock.patch.object(dispatch, "run", side_effect=run):
+                dispatch.review_intake_pass(False)
+            self.assertIn("RECORDED DIFF", (repo / "received.txt").read_text())
+            self.assertEqual(len(publications), 1)
+            self.assertEqual(publications[0], [
+                "gh", "api", "--method", "POST",
+                "repos/acme/widgets/pulls/17/reviews",
+                "-f", "commit_id=recorded-head", "-f", "event=APPROVE",
+                "-f", f"body={output}",
+            ])
+
+    def test_external_review_requires_valid_verdict_and_cited_findings(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        cases = (
+            ("- src/widget.py:12: Reject missing input.\nVERDICT: REVISE", 0,
+             "REQUEST_CHANGES"),
+            ("- src/widget.py:12: Optional simplification.\nVERDICT: APPROVE", 0,
+             "APPROVE"),
+            ("No verdict", 0, None),
+            ("VERDICT: MAYBE", 0, None),
+            ("VERDICT: APPROVE\nVERDICT: REVISE", 0, None),
+            ("VERDICT: APPROVE\ntrailing text", 0, None),
+            ("VERDICT: APPROVE", 1, None),
+            ("VERDICT: REVISE", 0, None),
+            ("Uncited finding\nVERDICT: REVISE", 0, None),
+            ("- src/widget.py:12: Cited.\nUncited finding\nVERDICT: APPROVE", 0, None),
+        )
+        for output, returncode, event in cases:
+            with self.subTest(output=output), tempfile.TemporaryDirectory() as d:
+                repo = make_repo(Path(d))
+                dispatch.configure(config.Config(
+                    root=repo, repo="acme/widgets",
+                    reviewer=[sys.executable, "-c",
+                              f"print({output!r}); raise SystemExit({returncode})"],
+                ))
+                pr = {"number": 17, "state": "OPEN", "isDraft": False,
+                      "headRefOid": "recorded-head", "baseRefOid": "recorded-base",
+                      "labels": [{"name": "needs-review"}], "reviewRequests": []}
+                real_run = dispatch.run
+                publications = []
+
+                def run(cmd, **kwargs):
+                    if cmd[0] != "gh":
+                        return real_run(cmd, **kwargs)
+                    if "--method" in cmd:
+                        publications.append(cmd)
+                    return subprocess.CompletedProcess(cmd, 0, "diff", "")
+
+                with mock.patch.object(dispatch, "gh_json", return_value=[pr]), \
+                        mock.patch.object(dispatch, "run", side_effect=run), \
+                        mock.patch.dict(os.environ, {"FACTORY_LIFECYCLE_CONTEXT": ""}):
+                    dispatch.review_intake_pass(False)
+                if event is None:
+                    self.assertEqual(publications, [])
+                else:
+                    self.assertEqual(publications, [[
+                        "gh", "api", "--method", "POST",
+                        "repos/acme/widgets/pulls/17/reviews",
+                        "-f", "commit_id=recorded-head", "-f", f"event={event}",
+                        "-f", f"body={output}",
+                    ]])
+                events = list(map(json.loads, dispatch.EVENTS.read_text().splitlines()))
+                terminal = next(e for e in events
+                                if e.get("kind") == "exit" and e.get("stage") == "review")
+                expected = (
+                    ("unknown", f"review_exit:{returncode}" if returncode else "unparsed_verdict")
+                    if event is None else
+                    ("approved", "APPROVE") if event == "APPROVE" else
+                    ("product_feedback", "REVISE")
+                )
+                self.assertEqual((terminal["outcome"], terminal["reason"]), expected)
+
+    def test_external_review_skips_oversized_diff_and_continues_intake(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            dispatch.configure(config.Config(
+                root=repo, repo="acme/widgets",
+                reviewer=[sys.executable, "-c", "print('VERDICT: APPROVE')", "{prompt}"],
+            ))
+            prs = [
+                {"number": n, "state": "OPEN", "isDraft": False,
+                 "headRefOid": f"head-{n}", "baseRefOid": "base",
+                 "labels": [{"name": "needs-review"}], "reviewRequests": []}
+                for n in (17, 18)
+            ]
+            publications = []
+            real_run = dispatch.run
+
+            def run(cmd, **kwargs):
+                if cmd[0] != "gh":
+                    return real_run(cmd, **kwargs)
+                if "--method" in cmd:
+                    publications.append(cmd)
+                diff = "é" * 70000 if "repos/acme/widgets/compare/base...head-17" in cmd else "diff"
+                return subprocess.CompletedProcess(cmd, 0, diff, "")
+
+            with mock.patch.object(dispatch, "gh_json", return_value=prs), \
+                    mock.patch.object(dispatch, "run", side_effect=run), \
+                    mock.patch.dict(os.environ, {"FACTORY_LIFECYCLE_CONTEXT": ""}):
+                dispatch.review_intake_pass(False)
+            self.assertEqual(len(publications), 1)
+            self.assertIn("repos/acme/widgets/pulls/18/reviews", publications[0])
+            self.assertIn("commit_id=head-18", publications[0])
+            events = list(map(json.loads, dispatch.EVENTS.read_text().splitlines()))
+            terminals = [(e["outcome"], e["reason"]) for e in events
+                         if e.get("kind") == "exit" and e.get("stage") == "review"]
+            self.assertEqual(terminals, [
+                ("unknown", "prompt_too_large"), ("approved", "APPROVE"),
+            ])
+
+    def test_dispatch_intakes_opted_in_pr_heads_once(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        def pr(n, **fields):
+            return {"number": n, "state": "OPEN", "isDraft": False,
+                    "headRefName": "contributor/fix", "headRefOid": f"head-{n}",
+                    "baseRefOid": "base",
+                    "labels": [], "reviewRequests": [], **fields}
+
+        label = [{"name": "needs-review"}]
+        prs = [
+            pr(1, labels=label),
+            pr(2, reviewRequests=[{"login": "FactoryBot"}]),
+            pr(3, labels=label, isDraft=True),
+            pr(4, labels=label, state="CLOSED"),
+            pr(5, reviewRequests=[{"login": "someone-else"}]),
+            pr(6, labels=label),
+            pr(7, reviewRequests=[{"name": "FactoryBot", "slug": "factorybot"}]),
+            pr(8, labels=[{"name": "factory-review"}]),
+            pr(9, labels=label, state="MERGED"),
+        ]
+
+        def github(args):
+            if args == ["api", "user"]:
+                return {"login": "factorybot"}
+            if args[:2] == ["pr", "list"]:
+                return prs
+            self.fail(f"Unexpected GitHub operation: {args}")
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            cfg = config.load(repo)
+            dispatch.configure(cfg)
+            with mock.patch.object(config, "load", return_value=cfg), \
+                    mock.patch.object(dispatch, "gh_json", side_effect=github), \
+                    mock.patch.object(dispatch, "land_pass"), \
+                    mock.patch.object(dispatch, "review_external_pr"), \
+                    mock.patch.object(manage, "manage_pass"), \
+                    mock.patch.object(dispatch, "frontier", return_value=[]):
+                self.assertEqual(dispatch.main(["--dry-run"]), 0)
+                self.assertFalse(cfg.factory.exists())
+                dispatch.record("review-intake", pr=6, head="head-6")
+                self.assertEqual(dispatch.main([]), 0)
+                self.assertEqual(dispatch.main([]), 0)
+            rows = [e for e in lifecycle.read_events(dispatch.EVENTS)
+                    if e.get("event") == "review-intake"]
+            self.assertEqual([(e["pr"], e["head"]) for e in rows],
+                             [(6, "head-6"), (1, "head-1"), (2, "head-2")])
+
     def test_prompt_carries_handoff_and_events_append(self) -> None:
         from unittest import mock
 
@@ -1122,7 +1889,7 @@ class DispatchTest(unittest.TestCase):
         prompt = root / "prompt.txt"
         (root / "reply.txt").write_text(reply)
         command = [sys.executable, "-c",
-                   "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2]); "
+                   "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(pathlib.Path(sys.argv[2]).read_text()); "
                    "sys.stdout.write(pathlib.Path(sys.argv[3]).read_text())",
                    str(prompt), "{prompt}", str(root / "reply.txt")]
         (repo / config.CONFIG_NAME).write_text(
@@ -1151,7 +1918,7 @@ class DispatchTest(unittest.TestCase):
             self.assertIn("`unit` flakes on a cold cache", prompt.read_text())  # notes.md is evidence
             self.assertFalse((repo / config.LESSONS_NAME).exists())  # nothing written in ROOT
             calls = (Path(stubs) / "gh.log").read_text()
-            self.assertIn("pr create --repo acme/widgets --head agent/lessons-", calls)
+            self.assertIn("pr create --repo acme/widgets --base main --head agent/lessons-", calls)
             self.assertIn("--label chore", calls)
             branch = git(bare, "branch", "--list", "agent/lessons-*").lstrip("* ")
             self.assertTrue(branch.startswith("agent/lessons-"), branch)
@@ -1169,8 +1936,8 @@ class DispatchTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("DECISION: CURATE", prompt.read_text())  # the prompt offers the decision
             calls = (Path(stubs) / "gh.log").read_text()
-            self.assertIn("pr create --repo acme/widgets --head agent/lessons-", calls)
-            self.assertIn("pr create --repo acme/widgets --head agent/curate-", calls)
+            self.assertIn("pr create --repo acme/widgets --base main --head agent/lessons-", calls)
+            self.assertIn("pr create --repo acme/widgets --base main --head agent/curate-", calls)
             self.assertEqual(calls.count("--label chore"), 2)
             branch = git(bare, "branch", "--list", "agent/curate-*").lstrip("* ")
             self.assertTrue(branch.startswith("agent/curate-"), branch)
@@ -1221,6 +1988,448 @@ class DispatchTest(unittest.TestCase):
             log = Path(d) / "w.log"
             log.write_text("... Total cost: $0.25\nmore\nTotal cost: $1.00\n")
             self.assertEqual(dispatch.log_cost(log), 1.25)
+
+    def test_review_fails_closed_unless_one_final_verdict_exits_zero(self) -> None:
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            head = git(repo, "rev-parse", "HEAD")
+            cases = (
+                ("VERDICT: APPROVE", 1),
+                ("VERDICT: APPROVE\nVERDICT: APPROVE", 0),
+                ("VERDICT: MAYBE\nVERDICT: APPROVE", 0),
+                ("VERDICT: APPROVE\ntrailing output", 0),
+            )
+            for output, returncode in cases:
+                with self.subTest(output=output, returncode=returncode):
+                    dispatch.configure(config.Config(
+                        root=repo, repo="acme/widgets",
+                        reviewer=[
+                            sys.executable, "-c",
+                            f"import sys; print({output!r}); raise SystemExit({returncode})",
+                        ],
+                    ))
+                    verdict, findings = dispatch.review(repo, 7, "PASS", head)
+                    self.assertEqual(verdict, "REVISE")
+                    self.assertIn("Factory rejected reviewer evidence", findings)
+
+    def test_worker_round_rejects_gate_that_mutates_head(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            dispatch.configure(config.Config(root=repo, repo="acme/widgets"))
+            dispatch.LOGS.mkdir(parents=True)
+            expected = git(repo, "rev-parse", "HEAD")
+
+            def mutating_gate(*_args):
+                (repo / "gate-race.txt").write_text("changed by gate\n")
+                git(repo, "add", "gate-race.txt")
+                git(repo, "commit", "-qm", "gate changed head")
+                return True, "PASS"
+
+            with mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
+                    mock.patch.object(dispatch, "run_worker", return_value=0), \
+                    mock.patch.object(dispatch, "commit_leftovers"), \
+                    mock.patch.object(dispatch, "run_gate", side_effect=mutating_gate):
+                ok, report, _, gate_head = dispatch.worker_round(
+                    7, repo, set(), "ticket", "", 1, float("inf"),
+                )
+
+            self.assertFalse(ok)
+            self.assertEqual(gate_head, expected)
+            self.assertIn("Gate evidence rejected", report)
+            attempt = next(
+                e for e in lifecycle.read_events(dispatch.EVENTS)
+                if e.get("event") == "attempt"
+            )
+            self.assertEqual(attempt["gate"], "FAIL")
+            self.assertNotEqual(attempt["head"], attempt["actual_head"])
+
+    def test_review_rejects_head_mutation_during_review(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            dispatch.configure(config.Config(
+                root=repo, repo="acme/widgets", reviewer=["reviewer"],
+            ))
+            expected = git(repo, "rev-parse", "HEAD")
+            original_run = dispatch.run
+
+            def raced_run(cmd, *args, **kwargs):
+                if cmd == ["reviewer"]:
+                    (repo / "raced.txt").write_text("changed during review\n")
+                    git(repo, "add", "raced.txt")
+                    git(repo, "commit", "-qm", "raced reviewer change")
+                    return subprocess.CompletedProcess(cmd, 0, "VERDICT: APPROVE\n", "")
+                return original_run(cmd, *args, **kwargs)
+
+            with mock.patch.object(dispatch, "run", side_effect=raced_run):
+                verdict, findings = dispatch.review(repo, 7, "PASS", expected)
+
+            self.assertEqual(verdict, "REVISE")
+            self.assertIn("state_changed", findings)
+            review_event = next(
+                e for e in lifecycle.read_events(dispatch.EVENTS)
+                if e.get("event") == "review"
+            )
+            self.assertFalse(review_event["accepted"])
+            self.assertNotEqual(review_event["actual_head"], expected)
+
+    def test_approval_rejects_wrong_or_missing_base_before_label_mutation(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        for actual_base in ("main", None):
+            with self.subTest(actual_base=actual_base), tempfile.TemporaryDirectory() as d:
+                repo = make_repo(Path(d))
+                dispatch.configure(config.Config(
+                    root=repo, repo="acme/widgets", main="stable",
+                ))
+                expected = git(repo, "rev-parse", "HEAD")
+                lifecycle.append(dispatch.EVENTS, {
+                    "event": "attempt", "ticket": 7, "gate": "PASS",
+                    "head": expected, "actual_head": expected,
+                })
+                lifecycle.append(dispatch.EVENTS, {
+                    "event": "review", "ticket": 7, "verdict": "APPROVE",
+                    "accepted": True, "head": expected, "actual_head": expected,
+                })
+                pr = {
+                    "number": 17, "state": "OPEN", "headRefOid": expected,
+                    "reviewDecision": "",
+                }
+                if actual_base is not None:
+                    pr["baseRefName"] = actual_base
+                with mock.patch.object(dispatch, "gh_json", return_value=pr), \
+                        mock.patch.object(
+                            dispatch, "run",
+                            return_value=subprocess.CompletedProcess([], 0, "", ""),
+                        ) as run:
+                    self.assertFalse(dispatch.approve_pr(7, expected))
+
+                run.assert_not_called()
+                self.assertFalse(any(
+                    e.get("event") == "approved"
+                    for e in lifecycle.read_events(dispatch.EVENTS)
+                ))
+
+    def test_approval_withdraws_label_when_remote_base_races(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            dispatch.configure(config.Config(
+                root=repo, repo="acme/widgets", main="stable",
+            ))
+            expected = git(repo, "rev-parse", "HEAD")
+            lifecycle.append(dispatch.EVENTS, {
+                "event": "attempt", "ticket": 7, "gate": "PASS",
+                "head": expected, "actual_head": expected,
+            })
+            lifecycle.append(dispatch.EVENTS, {
+                "event": "review", "ticket": 7, "verdict": "APPROVE",
+                "accepted": True, "head": expected, "actual_head": expected,
+            })
+            views = [
+                {
+                    "number": 17, "state": "OPEN", "headRefOid": expected,
+                    "baseRefName": "stable", "reviewDecision": "",
+                },
+                {
+                    "number": 17, "state": "OPEN", "headRefOid": expected,
+                    "baseRefName": "main", "reviewDecision": "",
+                },
+            ]
+            with mock.patch.object(dispatch, "gh_json", side_effect=views), \
+                    mock.patch.object(
+                        dispatch, "run",
+                        return_value=subprocess.CompletedProcess([], 0, "", ""),
+                    ) as run:
+                self.assertFalse(dispatch.approve_pr(7, expected))
+
+            self.assertEqual(
+                [call.args[0] for call in run.call_args_list],
+                [
+                    ["gh", "pr", "edit", "17", "--repo", "acme/widgets",
+                     "--add-label", "factory-approved"],
+                    ["gh", "pr", "edit", "17", "--repo", "acme/widgets",
+                     "--remove-label", "factory-approved"],
+                ],
+            )
+            self.assertFalse(any(
+                e.get("event") == "approved"
+                for e in lifecycle.read_events(dispatch.EVENTS)
+            ))
+
+    def test_approval_withdraws_label_when_remote_head_races(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            dispatch.configure(config.Config(root=repo, repo="acme/widgets"))
+            expected = git(repo, "rev-parse", "HEAD")
+            lifecycle.append(dispatch.EVENTS, {
+                "event": "attempt", "ticket": 7, "gate": "PASS",
+                "head": expected, "actual_head": expected,
+            })
+            lifecycle.append(dispatch.EVENTS, {
+                "event": "review", "ticket": 7, "verdict": "APPROVE",
+                "accepted": True, "head": expected, "actual_head": expected,
+            })
+            views = [
+                {"number": 17, "state": "OPEN", "headRefOid": expected,
+                 "baseRefName": "main", "reviewDecision": ""},
+                {"number": 17, "state": "OPEN", "headRefOid": "new-head",
+                 "baseRefName": "main", "reviewDecision": ""},
+            ]
+            with mock.patch.object(dispatch, "gh_json", side_effect=views), \
+                    mock.patch.object(
+                        dispatch, "run",
+                        return_value=subprocess.CompletedProcess([], 0, "", ""),
+                    ) as run:
+                self.assertFalse(dispatch.approve_pr(7, expected))
+
+            self.assertIn(
+                ["gh", "pr", "edit", "17", "--repo", "acme/widgets",
+                 "--remove-label", "factory-approved"],
+                [call.args[0] for call in run.call_args_list],
+            )
+            self.assertFalse(any(
+                e.get("event") == "approved"
+                for e in lifecycle.read_events(dispatch.EVENTS)
+            ))
+
+    def test_merge_ignores_wrong_or_missing_base_without_mutation(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        for actual_base in ("main", None):
+            with self.subTest(actual_base=actual_base), tempfile.TemporaryDirectory() as d:
+                repo = make_repo(Path(d))
+                dispatch.configure(config.Config(
+                    root=repo, repo="acme/widgets", main="stable",
+                ))
+                pr = {
+                    "number": 70, "headRefName": "agent/7", "headRefOid": "head",
+                    "isDraft": False, "labels": [{"name": "factory-approved"}],
+                    "reviewDecision": "APPROVED",
+                }
+                if actual_base is not None:
+                    pr["baseRefName"] = actual_base
+                with mock.patch.object(dispatch, "gh_json", return_value=[pr]), \
+                        mock.patch.object(
+                            dispatch, "pr_checks",
+                            return_value=[{"name": "ci", "bucket": "fail"}],
+                        ), \
+                        mock.patch.object(dispatch, "run") as run, \
+                        mock.patch.object(dispatch, "refresh_pr_branch") as refresh, \
+                        mock.patch.object(dispatch, "escalate") as escalate:
+                    dispatch.merge_pass_locked(False)
+
+                run.assert_not_called()
+                refresh.assert_not_called()
+                escalate.assert_not_called()
+
+    def test_merge_rechecks_base_before_mutating_candidate(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            dispatch.configure(config.Config(
+                root=repo, repo="acme/widgets", main="stable",
+            ))
+            listed = {
+                "number": 70, "headRefName": "agent/7", "headRefOid": "head",
+                "baseRefName": "stable", "isDraft": False,
+                "labels": [{"name": "factory-approved"}],
+                "reviewDecision": "APPROVED", "state": "OPEN", "title": "feature",
+            }
+            fresh = {**listed, "baseRefName": "main"}
+
+            def query(args):
+                if args[:2] == ["pr", "list"]:
+                    return [listed]
+                if args[:2] == ["pr", "view"]:
+                    return fresh
+                if args[0] == "api":
+                    return {"behind_by": 0}
+                raise AssertionError(args)
+
+            with mock.patch.object(dispatch, "gh_json", side_effect=query), \
+                    mock.patch.object(
+                        dispatch, "pr_checks",
+                        return_value=[{"name": "ci", "bucket": "pass"}],
+                    ), \
+                    mock.patch.object(dispatch, "run") as run, \
+                    mock.patch.object(dispatch, "refresh_pr_branch") as refresh, \
+                    mock.patch.object(dispatch, "escalate") as escalate:
+                dispatch.merge_pass_locked(False)
+
+            run.assert_not_called()
+            refresh.assert_not_called()
+            escalate.assert_not_called()
+
+    def test_merge_refuses_legacy_approval_without_sha_evidence(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            root, origin, _ = build_fork(tmp)
+            git(origin, "checkout", "-qb", "agent/7")
+            (origin / "feature.txt").write_text("feature")
+            git(origin, "add", "feature.txt")
+            git(origin, "commit", "-qm", "feature")
+            head = git(origin, "rev-parse", "HEAD")
+            git(origin, "checkout", "-q", "main")
+            dispatch.configure(config.Config(
+                root=root, repo="acme/widgets", signoff=False,
+            ))
+            lifecycle.append(dispatch.EVENTS, {"event": "approved", "ticket": 7})
+            pr = {
+                "number": 70, "headRefName": "agent/7", "headRefOid": head,
+                "baseRefName": "main",
+                "isDraft": False, "labels": [{"name": "factory-approved"}],
+                "reviewDecision": "APPROVED", "state": "OPEN", "title": "feature",
+            }
+
+            def query(args):
+                if args[:2] == ["pr", "list"]:
+                    return [pr]
+                if args[:2] == ["pr", "view"]:
+                    return pr
+                if args[0] == "api":
+                    return {"behind_by": 0}
+                raise AssertionError(args)
+
+            original_run = dispatch.run
+            calls = []
+
+            def run_spy(cmd, *args, **kwargs):
+                if cmd[0] == "gh":
+                    calls.append(cmd)
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+                return original_run(cmd, *args, **kwargs)
+
+            with mock.patch.object(dispatch, "gh_json", side_effect=query), \
+                    mock.patch.object(
+                        dispatch, "pr_checks",
+                        return_value=[{"name": "ci", "bucket": "pass"}],
+                    ), \
+                    mock.patch.object(dispatch, "run", side_effect=run_spy), \
+                    mock.patch.object(dispatch, "escalate") as escalate:
+                dispatch.merge_pass_locked(False)
+
+            escalate.assert_called_once()
+            self.assertIn("missing approval evidence", escalate.call_args.args[1])
+            self.assertIn(
+                ["gh", "pr", "edit", "70", "--repo", "acme/widgets",
+                 "--remove-label", "factory-approved"],
+                calls,
+            )
+            self.assertFalse(any(cmd[:3] == ["gh", "pr", "merge"] for cmd in calls))
+
+    def test_merge_final_reread_preserves_target_head_and_human_veto(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        for changed in ("head", "base", "veto"):
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as d:
+                repo = make_repo(Path(d))
+                dispatch.configure(config.Config(
+                    root=repo, repo="acme/widgets", signoff=False,
+                ))
+                head = git(repo, "rev-parse", "HEAD")
+                lifecycle.append(dispatch.EVENTS, {
+                    "event": "attempt", "ticket": 7, "gate": "PASS",
+                    "head": head, "actual_head": head,
+                })
+                lifecycle.append(dispatch.EVENTS, {
+                    "event": "review", "ticket": 7, "verdict": "APPROVE",
+                    "accepted": True, "head": head, "actual_head": head,
+                })
+                lifecycle.append(dispatch.EVENTS, {
+                    "event": "approved", "ticket": 7, "pr": 70, "head": head,
+                    "gate_head": head, "review_head": head,
+                })
+                base = {
+                    "number": 70, "headRefName": "agent/7", "headRefOid": head,
+                    "baseRefName": "main", "isDraft": False,
+                    "labels": [{"name": "factory-approved"}],
+                    "reviewDecision": "APPROVED", "state": "OPEN", "title": "feature",
+                }
+                final = dict(base)
+                if changed == "head":
+                    final["headRefOid"] = "raced-head"
+                elif changed == "base":
+                    final["baseRefName"] = "stable"
+                else:
+                    final["reviewDecision"] = "CHANGES_REQUESTED"
+                views = iter((base, final))
+
+                def query(args):
+                    if args[:2] == ["pr", "list"]:
+                        return [base]
+                    if args[:2] == ["pr", "view"]:
+                        return next(views)
+                    if args[0] == "api":
+                        return {"behind_by": 0}
+                    raise AssertionError(args)
+
+                with mock.patch.object(dispatch, "gh_json", side_effect=query), \
+                        mock.patch.object(
+                            dispatch, "pr_checks",
+                            return_value=[{"name": "ci", "bucket": "pass"}],
+                        ), \
+                        mock.patch.object(
+                            dispatch, "run",
+                            return_value=subprocess.CompletedProcess([], 0, "", ""),
+                        ) as run:
+                    dispatch.merge_pass_locked(False)
+
+                self.assertFalse(any(
+                    call.args[0][:3] == ["gh", "pr", "merge"]
+                    for call in run.call_args_list
+                ))
+
+    def test_refresh_rejects_wrong_or_missing_base_before_mutation(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        for actual_base in ("stable", None):
+            with self.subTest(actual_base=actual_base), tempfile.TemporaryDirectory() as d:
+                repo = make_repo(Path(d))
+                dispatch.configure(config.Config(
+                    root=repo, repo="acme/widgets", main="release",
+                ))
+                pr = {} if actual_base is None else {"baseRefName": actual_base}
+                with mock.patch.object(dispatch, "gh_json", return_value=pr), \
+                        mock.patch.object(dispatch, "ensure_worktree") as ensure, \
+                        mock.patch.object(dispatch, "run") as run, \
+                        mock.patch.object(dispatch, "escalate") as escalate:
+                    self.assertFalse(dispatch.refresh_pr_branch(7, 70, False))
+
+                ensure.assert_not_called()
+                run.assert_not_called()
+                escalate.assert_not_called()
 
     def test_merge_stage_merges_sync_pr_despite_upstream_advancing_past_tip(self) -> None:
         from unittest import mock
@@ -1333,8 +2542,36 @@ class DispatchTest(unittest.TestCase):
             wt = dispatch.FACTORY / "wt-31"
             git(root, "worktree", "add", str(wt), "agent/31")
 
-            with mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")):
+            real_run = dispatch.run
+            gh_calls = []
+
+            def run_spy(cmd, *args, **kwargs):
+                if cmd[0] == "gh":
+                    gh_calls.append(cmd)
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+                return real_run(cmd, *args, **kwargs)
+
+            with mock.patch.object(
+                    dispatch, "gh_json", return_value={"baseRefName": "main"},
+            ), \
+                    mock.patch.object(dispatch, "run", side_effect=run_spy), \
+                    mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
+                    mock.patch.object(
+                        dispatch, "review", return_value=("APPROVE", "fresh findings"),
+                    ) as review, \
+                    mock.patch.object(dispatch, "pr_comment") as comment, \
+                    mock.patch.object(dispatch, "approve_pr", return_value=True) as approve:
                 dispatch.refresh_pr_branch(31, 100, True)
+
+            refreshed_head = git(wt, "rev-parse", "HEAD")
+            review.assert_called_once_with(wt, 31, "ok", refreshed_head)
+            comment.assert_called_once_with(31, "fresh findings")
+            approve.assert_called_once_with(31, refreshed_head)
+            self.assertIn(
+                ["gh", "pr", "edit", "100", "--repo", "acme/widgets",
+                 "--remove-label", "factory-approved"],
+                gh_calls,
+            )
 
             self.assertEqual(
                 subprocess.run(["git", "-C", str(wt), "merge-base", "--is-ancestor", u1, "HEAD"]).returncode,
@@ -1369,13 +2606,79 @@ class DispatchTest(unittest.TestCase):
                 dispatch.configure(cfg)
 
             # No local agent/7 and no worktree: the PR was pushed from elsewhere.
-            with mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
-                 mock.patch.object(dispatch, "escalate") as esc:
+            real_run = dispatch.run
+
+            def run_spy(cmd, *args, **kwargs):
+                if cmd[0] == "gh":
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+                return real_run(cmd, *args, **kwargs)
+
+            with mock.patch.object(
+                    dispatch, "gh_json", return_value={"baseRefName": "main"},
+            ), \
+                    mock.patch.object(dispatch, "run", side_effect=run_spy), \
+                    mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
+                    mock.patch.object(
+                        dispatch, "review", return_value=("APPROVE", "fresh findings"),
+                    ) as review, \
+                    mock.patch.object(dispatch, "pr_comment") as comment, \
+                    mock.patch.object(dispatch, "approve_pr", return_value=True) as approve, \
+                    mock.patch.object(dispatch, "escalate") as esc:
                 dispatch.refresh_pr_branch(7, 100, False)
+
+            refreshed_head = git(dispatch.FACTORY / "wt-7", "rev-parse", "HEAD")
+            review.assert_called_once_with(dispatch.FACTORY / "wt-7", 7, "ok", refreshed_head)
+            comment.assert_called_once_with(7, "fresh findings")
+            approve.assert_called_once_with(7, refreshed_head)
 
             esc.assert_not_called()
             self.assertEqual(git(origin, "rev-parse", "agent/7"), feature)
             self.assertNotEqual(git(origin, "rev-parse", "agent/7"), main_tip)
+
+    def test_refresh_failed_fresh_review_stays_with_human(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            root, origin, upstream = build_fork(tmp)
+            git(origin, "checkout", "-qb", "agent/7")
+            (origin / "feature.txt").write_text("feature")
+            git(origin, "add", "feature.txt")
+            git(origin, "commit", "-qm", "feature")
+            git(origin, "checkout", "-q", "main")
+            cfg = config.Config(
+                root=root, repo="acme/widgets", upstream="upstream", main="main",
+            )
+            with mock.patch.object(config, "remote_slug", return_value="acme/upstream-widgets"):
+                dispatch.configure(cfg)
+            real_run = dispatch.run
+
+            def run_spy(cmd, *args, **kwargs):
+                if cmd[0] == "gh":
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+                return real_run(cmd, *args, **kwargs)
+
+            with mock.patch.object(
+                    dispatch, "gh_json", return_value={"baseRefName": "main"},
+            ), \
+                    mock.patch.object(dispatch, "run", side_effect=run_spy), \
+                    mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
+                    mock.patch.object(
+                        dispatch, "review", return_value=("REVISE", "required fix"),
+                    ) as review, \
+                    mock.patch.object(dispatch, "pr_comment") as comment, \
+                    mock.patch.object(dispatch, "approve_pr") as approve, \
+                    mock.patch.object(dispatch, "escalate") as escalate:
+                dispatch.refresh_pr_branch(7, 100, False)
+
+            head = git(dispatch.FACTORY / "wt-7", "rev-parse", "HEAD")
+            review.assert_called_once_with(dispatch.FACTORY / "wt-7", 7, "ok", head)
+            comment.assert_called_once_with(7, "required fix")
+            approve.assert_not_called()
+            escalate.assert_called_once()
+            self.assertIn("fresh review requested changes", escalate.call_args.args[1])
 
     def test_refresh_with_nothing_ahead_of_main_escalates_instead_of_pushing(self) -> None:
         from unittest import mock
@@ -1410,7 +2713,10 @@ class DispatchTest(unittest.TestCase):
                     return subprocess.CompletedProcess(cmd, 0, "", "")
                 return real_run(cmd, **kw)
 
-            with mock.patch.object(dispatch, "run", side_effect=run_spy), \
+            with mock.patch.object(
+                    dispatch, "gh_json", return_value={"baseRefName": "main"},
+            ), \
+                 mock.patch.object(dispatch, "run", side_effect=run_spy), \
                  mock.patch.object(dispatch, "run_gate") as gate, \
                  mock.patch.object(dispatch, "escalate") as esc:
                 dispatch.refresh_pr_branch(8, 101, False)
@@ -1423,6 +2729,267 @@ class DispatchTest(unittest.TestCase):
                 ["gh", "pr", "edit", "101", "--repo", "acme/widgets", "--remove-label", "factory-approved"],
                 gh_calls,
             )
+
+    def test_refresh_conflict_withdraws_pr_from_candidacy(self) -> None:
+        # district#5: a rebase conflict escalated every pass (146 comments)
+        # because `factory-approved` stayed on the PR.
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            root, origin, upstream = build_fork(tmp)
+
+            git(origin, "checkout", "-q", "-b", "agent/9")
+            (origin / "shared.txt").write_text("agent version")
+            git(origin, "add", "-A")
+            git(origin, "commit", "-q", "-m", "agent change")
+            before = git(origin, "rev-parse", "HEAD")
+            git(origin, "checkout", "-q", "main")
+            (origin / "shared.txt").write_text("main version")
+            git(origin, "add", "-A")
+            git(origin, "commit", "-q", "-m", "conflicting main change")
+
+            cfg = config.Config(root=root, repo="acme/widgets", upstream="upstream", main="main")
+            with mock.patch.object(config, "remote_slug", return_value="acme/upstream-widgets"):
+                dispatch.configure(cfg)
+
+            real_run = dispatch.run
+            gh_calls: list[list[str]] = []
+
+            def run_spy(cmd, **kw):
+                if cmd[0] == "gh":
+                    gh_calls.append(cmd)
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+                return real_run(cmd, **kw)
+
+            with mock.patch.object(
+                    dispatch, "gh_json", return_value={"baseRefName": "main"},
+            ), \
+                 mock.patch.object(dispatch, "run", side_effect=run_spy), \
+                 mock.patch.object(dispatch, "run_gate") as gate, \
+                 mock.patch.object(dispatch, "escalate") as esc:
+                dispatch.refresh_pr_branch(9, 102, False)
+
+            esc.assert_called_once()
+            self.assertIn("conflicts", esc.call_args.args[1])
+            gate.assert_not_called()
+            self.assertEqual(git(origin, "rev-parse", "agent/9"), before)  # nothing pushed
+            wt = root / ".factory" / "wt-9"
+            self.assertFalse(Path(git(wt, "rev-parse", "--git-path", "rebase-merge")).exists())  # aborted
+            self.assertIn(
+                ["gh", "pr", "edit", "102", "--repo", "acme/widgets", "--remove-label", "factory-approved"],
+                gh_calls,
+            )
+
+
+class FeedbackSnapshotTest(unittest.TestCase):
+    def test_external_review_queue_snapshot_states_and_revision_identity(self):
+        from unittest import mock
+        from factory import dashboard, dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            prs = [{
+                "number": n, "title": f"Contribution {n}", "state": "OPEN",
+                "url": f"https://github.com/acme/widgets/pull/{n}",
+                "author": {"login": "contributor"}, "isDraft": False,
+                "headRefName": f"contribution-{n}", "headRefOid": f"head-{n}",
+                "labels": {"nodes": [{"name": "needs-review"}]},
+                "reviewRequests": {"nodes": []},
+            } for n in range(1, 7)]
+            # A request to this viewer opts in; another reviewer does not.
+            prs[0]["labels"]["nodes"] = []
+            prs[0]["reviewRequests"]["nodes"] = [{"requestedReviewer": {"login": "operator"}}]
+            prs += [{**prs[0], "number": 7, "reviewRequests": {"nodes": [
+                {"requestedReviewer": {"login": "someone-else"}}]}},
+                {**prs[1], "number": 8, "state": "CLOSED"},
+                {**prs[1], "number": 9, "isDraft": True}]
+            with mock.patch.dict(dashboard.__dict__), mock.patch.dict(dispatch.__dict__):
+                dashboard.configure(config.Config(root=repo, repo="acme/widgets"))
+                dispatch.record("review-result", pr=1, head="old-head", verdict="APPROVE")
+                dispatch.record("review-readiness", pr=1, head="old-head", state="ready",
+                                checks=[{"name": "test", "bucket": "pass"}])
+                for n, verdict, state, bucket in [
+                    (2, "REQUEST_CHANGES", "changes_requested", "pass"),
+                    (3, "APPROVE", "ci_pending", "pending"),
+                    (4, "APPROVE", "ci_failed", "fail"),
+                    (5, "APPROVE", "ready", "pass"),
+                ]:
+                    dispatch.record("review-result", pr=n, head=f"head-{n}", verdict=verdict)
+                    dispatch.record("review-readiness", pr=n, head=f"head-{n}", state=state,
+                                    checks=[{"name": "test", "bucket": bucket}])
+                # Consumed review requests must not remove an admitted PR.
+                prs[4]["labels"]["nodes"] = []
+                dispatch.record("escalate", pr=6, head="head-6", reason="Review attempts exhausted")
+                before = dispatch.EVENTS.read_bytes()
+                with mock.patch.object(dashboard, "github", return_value={
+                    "viewer": {"login": "operator"}, "repository": {
+                        "issues": {"nodes": []}, "pullRequests": {"nodes": prs}}}), \
+                     mock.patch.object(dashboard, "dispatcher", return_value={}), \
+                     mock.patch.object(dashboard, "upstream_state", return_value={}), \
+                     mock.patch.object(dashboard, "triage_llm_online", return_value=False):
+                    result = dashboard.snapshot()
+                self.assertTrue(dispatch.EVENTS.read_bytes().startswith(before))
+            queue = {pr["number"]: pr for pr in result["review_queue"]}
+            self.assertEqual({n: pr["state"] for n, pr in queue.items()}, {
+                1: "review_pending", 2: "changes_requested", 3: "ci_pending",
+                4: "ci_failed", 5: "ready", 6: "escalated"})
+            for n, pr in queue.items():
+                self.assertEqual(pr["url"], f"https://github.com/acme/widgets/pull/{n}")
+                self.assertEqual(pr["head"], f"head-{n}")
+                self.assertEqual(pr["author"], "contributor")
+                self.assertEqual(pr["title"], f"Contribution {n}")
+            self.assertEqual(queue[1]["review_head"], "old-head")
+            self.assertEqual(queue[1]["verdict"], "APPROVE")
+            self.assertEqual(queue[1]["ci_state"], "unknown")
+            self.assertEqual(queue[5]["review_head"], "head-5")
+            self.assertEqual(queue[5]["ci_state"], "pass")
+            self.assertEqual(queue[6]["reason"], "Review attempts exhausted")
+            self.assertEqual(result["tickets"], [])
+
+    def test_github_failure_preserves_provider_diagnostic(self):
+        from unittest import mock
+        from factory import dashboard
+
+        proc = subprocess.CompletedProcess([], 1, "", "gh: run gh auth login\n")
+        with mock.patch.object(dashboard.subprocess, "run", return_value=proc):
+            with self.assertRaisesRegex(RuntimeError, "gh: run gh auth login"):
+                dashboard.github(query="query { viewer { login } }")
+
+    def test_full_snapshot_preserves_legacy_contract_and_attaches_feedback(self):
+        from unittest import mock
+        from factory import dashboard, dispatch
+        from tests.test_feedback import Provider, REPO, PR, ISSUE, H, AT, factory_events
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), '[repo]\nslug = "example/project"\n')
+            state = repo / ".factory"
+            state.mkdir()
+            (state / "events.jsonl").write_text("\n".join(map(json.dumps, factory_events())) + "\n")
+            issue = {**ISSUE, "title": "Feedback contract", "state": "OPEN", "body": "Keep human constraint",
+                     "createdAt": AT, "updatedAt": AT, "closedAt": None,
+                     "labels": {"nodes": [{"name": "ready-for-human"}]}, "assignees": {"nodes": []}}
+            raw_pr = {**PR, "title": "Feedback", "headRefName": "agent/79", "headRefOid": H,
+                      "state": "OPEN", "isDraft": False, "createdAt": AT, "closedAt": None, "mergedAt": None,
+                      "additions": 1, "deletions": 0, "changedFiles": 1, "body": "## Gate report\n- test: PASS",
+                      "reviewDecision": "CHANGES_REQUESTED", "labels": {"nodes": []},
+                      "comments": {"nodes": [{"createdAt": AT, "body": "VERDICT: APPROVE", "url": PR["url"] + "#issuecomment-1"}]},
+                      "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "FAILURE", "contexts": {"nodes": [
+                          {"__typename": "CheckRun", "name": "CI", "status": "COMPLETED", "conclusion": "FAILURE"}]}}}}]}}
+            provider = Provider()
+            def read(**kwargs):
+                if kwargs:
+                    return provider(**kwargs)
+                return {"repository": {"id": REPO["id"], "issues": {"nodes": [issue, {
+                    **issue, "number": 81, "id": "I_81", "url": issue["url"].replace("79", "81")}]},
+                    "pullRequests": {"nodes": [raw_pr]}}}
+            with mock.patch.dict(dashboard.__dict__), mock.patch.dict(dispatch.__dict__):
+                dashboard.configure(config.load(repo))
+                with mock.patch.object(dashboard, "github", side_effect=read), \
+                     mock.patch.object(dashboard, "dispatcher", return_value={}), \
+                     mock.patch.object(dashboard, "upstream_state", return_value={}), \
+                     mock.patch.object(dashboard, "triage_llm_online", return_value=False):
+                    snapshot = dashboard.snapshot()
+                    provider.heads = [H, H]
+                    torn = "discarded prefix\n" + "\n".join(map(json.dumps, factory_events()))
+                    with mock.patch.object(dashboard.briefing, "bounded_file", return_value=(torn, True)):
+                        partial = dashboard.snapshot()
+                    partial_feedback = next(t for t in partial["tickets"] if t["number"] == 79)["pr"]["feedback"]
+                    self.assertNotIn("factory_review", {i["kind"] for i in partial_feedback["items"]})
+                    self.assertEqual(partial_feedback["coverage"]["reviews"]["status"], "partial")
+                    package = repo / ".venv" / "factory"
+                    package.mkdir(parents=True)
+                    source = package / "feedback.py"
+                    source.write_text("# installed producer\n")
+                    (repo / ".gitignore").write_text(".factory/\n.venv/\n")
+                    git(repo, "add", ".gitignore")
+                    git(repo, "commit", "-m", "Ignore installed packages")
+                    with mock.patch.object(dashboard, "__file__", str(package / "dashboard.py")):
+                        for mode in ("ignored", "tracked", "dirty"):
+                            if mode == "tracked":
+                                git(repo, "add", "-f", str(source))
+                                git(repo, "commit", "-m", "Track producer source")
+                            elif mode == "dirty":
+                                source.write_text("# modified producer\n")
+                            provider.heads = [H, H]
+                            observed = dashboard.snapshot()
+                            produced = next(t for t in observed["tickets"] if t["number"] == 79)["pr"]["feedback"]
+                            with self.subTest(package=mode):
+                                expected = git(repo, "rev-parse", "HEAD") if mode == "tracked" else None
+                                self.assertEqual(produced["producer"]["revision"], expected)
+            ticket = next(t for t in snapshot["tickets"] if t["number"] == 79)
+            pr = ticket["pr"]
+            self.assertEqual(pr["gate_text"], "- test: PASS")
+            self.assertEqual(pr["review_decision"], "CHANGES_REQUESTED")
+            self.assertEqual(pr["checks"]["list"], [{"name": "CI", "result": "FAILURE"}])
+            self.assertEqual(pr["comments"][0]["body"], "VERDICT: APPROVE")
+            self.assertEqual(pr["verdicts"][0]["verdict"], "APPROVE")
+            self.assertEqual({i["kind"] for i in pr["feedback"]["items"]},
+                             {"review", "review_comment", "check_run", "factory_review"})
+            self.assertIsNone(next(t for t in snapshot["tickets"] if t["number"] == 81)["pr"])
+
+    def test_historical_prs_add_no_feedback_reads_but_keep_schema_1(self):
+        from unittest import mock
+        from factory import dashboard, dispatch, feedback
+        from tests.test_feedback import Provider, REPO, PR, ISSUE, H, AT
+
+        def issue_of(number):
+            return {"id": f"I_{number}", "number": number, "title": "Historical",
+                    "url": ISSUE["url"].replace("79", str(number)), "state": "OPEN", "body": "",
+                    "createdAt": AT, "updatedAt": AT, "closedAt": None,
+                    "labels": {"nodes": []}, "assignees": {"nodes": []}}
+
+        def pr_of(number, state):
+            return {"id": f"PR_{number}", "number": number, "url": PR["url"].replace("80", str(number)),
+                    "title": "Historical", "headRefName": f"agent/{number}", "headRefOid": H,
+                    "state": state, "isDraft": False, "createdAt": AT, "closedAt": None,
+                    "mergedAt": AT if state == "MERGED" else None, "additions": 1, "deletions": 0,
+                    "changedFiles": 1, "body": "", "reviewDecision": None, "labels": {"nodes": []},
+                    "comments": {"nodes": []}, "commits": {"nodes": []}}
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), '[repo]\nslug = "example/project"\n')
+            (repo / ".factory").mkdir()
+            issues = [issue_of(79), issue_of(81), issue_of(82)]
+            raw = [{**pr_of(79, "OPEN"), "id": PR["id"], "url": PR["url"]},
+                   pr_of(81, "MERGED"), pr_of(82, "CLOSED")]
+            provider = Provider()
+            def read(**kwargs):
+                if kwargs:
+                    return provider(**kwargs)
+                return {"repository": {"id": REPO["id"], "issues": {"nodes": issues},
+                                       "pullRequests": {"nodes": raw}}}
+            with mock.patch.dict(dashboard.__dict__), mock.patch.dict(dispatch.__dict__):
+                dashboard.configure(config.load(repo))
+                with mock.patch.object(dashboard, "github", side_effect=read), \
+                     mock.patch.object(dashboard, "dispatcher", return_value={}), \
+                     mock.patch.object(dashboard, "upstream_state", return_value={}), \
+                     mock.patch.object(dashboard, "triage_llm_online", return_value=False):
+                    mixed = dashboard.snapshot()
+                    with_history = len(provider.calls)
+                    provider.calls.clear()
+                    provider.heads = [H, H]
+                    raw[:] = raw[:1]
+                    issues[:] = issues[:1]
+                    only_open = dashboard.snapshot()
+            self.assertEqual(with_history, len(provider.calls))
+            open_feedback = next(t for t in mixed["tickets"] if t["number"] == 79)["pr"]["feedback"]
+            self.assertEqual(open_feedback["pr"]["state"], "open")
+            self.assertTrue(open_feedback["items"])
+            self.assertEqual(open_feedback["items"],
+                             next(t for t in only_open["tickets"] if t["number"] == 79)["pr"]["feedback"]["items"])
+            for number, state in ((81, "merged"), (82, "closed")):
+                observed = next(t for t in mixed["tickets"] if t["number"] == number)["pr"]["feedback"]
+                with self.subTest(pr=number):
+                    self.assertEqual(observed["schema_version"], 1)
+                    self.assertEqual(observed["pr"]["state"], state)
+                    self.assertEqual(observed["pr"]["id"], f"PR_{number}")
+                    self.assertIsNone(observed["pr"]["head_sha"])
+                    self.assertEqual(observed["items"], [])
+                    self.assertEqual({c["status"] for c in observed["coverage"].values()}, {"unavailable"})
+                    self.assertEqual({e["code"] for e in observed["errors"]}, {feedback.NOT_COLLECTED})
 
 
 if __name__ == "__main__":

@@ -169,7 +169,7 @@ class RouteCliTest(CliCase):
         argv = ["route", str(number), "--reason", reason]
         for path in paths:
             argv += ["--path", path]
-        data = self.run_plan(*argv, code=code)
+        data = self.run_plan(*argv, "--json", code=code)
         if code != 2:
             self.assertEqual(data["scope"], {"repository": REPO, "issue": number, "reason": reason})
             self.assertEqual(data["route"]["reason"], reason)
@@ -249,7 +249,6 @@ class RouteCliTest(CliCase):
         self.assertEqual(self.route(7, "ci", code=2)["error"]["code"], "invalid_scope")
         for argv in (["route", "7"], ["route", "7", "--reason", "docs"], ["route", "7", "--reason", "ci", "--path"]):
             self.assertEqual(self.run_plan(*argv, code=2)["error"]["code"], "invalid_request")
-
 
 if __name__ == "__main__":
     unittest.main()

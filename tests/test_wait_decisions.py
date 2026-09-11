@@ -43,6 +43,7 @@ class WaitDecisions(unittest.TestCase):
                 patch.object(dispatch, "sync_pass") as sync, \
                 patch.object(dispatch, "merge_pass_locked") as merge, \
                 patch.object(dispatch, "frontier") as frontier, \
+                patch.object(dispatch, "gh_json", return_value=[]), \
                 patch.object(dispatch, "process_ticket") as process:
             self.assertEqual(dispatch.main([]), 0)
         sync.assert_called_once_with(False)
@@ -148,7 +149,8 @@ class WaitDecisions(unittest.TestCase):
         self.assertFalse(any(row["kind"] == "wait" for row in rows))
 
     def test_ci_waits_reuse_single_query_per_candidate_and_preserve_eligibility(self):
-        prs = [{"number": n * 10, "headRefName": f"agent/{n}", "isDraft": False,
+        prs = [{"number": n * 10, "headRefName": f"agent/{n}", "headRefOid": f"head-{n}",
+                "baseRefName": "main", "isDraft": False,
                 "labels": [{"name": "factory-approved"}], "reviewDecision": "APPROVED"}
                for n in (7, 8)]
         results = [subprocess.CompletedProcess([], 8, '[{"name":"ci","bucket":"pending"}]'),
@@ -176,6 +178,7 @@ class WaitDecisions(unittest.TestCase):
         with patch.object(dispatch.config, "load", return_value=self.cfg), \
                 patch.object(dispatch, "sync_pass") as sync, \
                 patch.object(dispatch, "merge_pass_locked") as merge, \
+                patch.object(dispatch, "gh_json", return_value=[]), \
                 patch.object(dispatch, "frontier", return_value=[]):
             self.assertEqual(dispatch.main(["--dry-run"]), 0)
             dispatch.process_ticket(self.issue, 1, True)

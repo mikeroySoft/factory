@@ -20,6 +20,8 @@ CONFIG_NAME = ".factory.toml"
 LESSONS_NAME = ".factory-lessons.md"  # committed; `factory learn` writes, every worker prompt reads
 
 # Triage roles -> label strings. Fixed by convention; `factory init` creates them.
+LABEL_VIABILITY = "needs-viability"
+LABEL_REVIEW = "needs-review"
 LABEL_TRIAGE = "needs-triage"
 LABEL_INFO = "needs-info"
 LABEL_AGENT = "ready-for-agent"
@@ -28,6 +30,8 @@ LABEL_APPROVED = "factory-approved"
 LABEL_CHORE = "chore"
 LABEL_INITIATIVE = "initiative"
 LABELS = {
+    LABEL_VIABILITY: ("D4C5F9", "Opt in to a manager build/defer recommendation before triage"),
+    LABEL_REVIEW: ("D4C5F9", "Opt in to a manager PR direction recommendation before review"),
     LABEL_TRIAGE: ("FBCA04", "Maintainer needs to evaluate this issue"),
     LABEL_INFO: ("D4C5F9", "Waiting on reporter for more information"),
     LABEL_AGENT: ("0E8A16", "Fully specified and ready for an AFK agent"),
@@ -152,8 +156,12 @@ class Config:
     def review_cmd(self, prompt: str) -> list[str]:
         return expand(self.reviewer, prompt=prompt)
 
-    def manager_cmd(self, prompt: str, cwd: Path) -> list[str]:
-        return expand(self.manager or [], prompt=prompt, cwd=str(cwd))
+    def manager_cmd(self, prompt_path: Path, cwd: Path) -> list[str]:
+        """Expand the manager's prompt file, matching the worker transport."""
+        argv = self.manager or []
+        if argv and Path(argv[0]).name == "omp" and "{prompt}" in argv:
+            raise ConfigError('manager.command: use "@{prompt}" instead of bare "{prompt}" for omp')
+        return expand(argv, prompt=str(prompt_path), cwd=str(cwd))
 
 
 def expand(argv: list[str], **values: str) -> list[str]:

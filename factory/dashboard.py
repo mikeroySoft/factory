@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import json
 import re
 import subprocess
@@ -27,15 +28,18 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
-from factory import __version__, briefing, config, dispatch, lifecycle, stats
+from factory import __version__, briefing, codebase, config, dispatch, feedback, lifecycle, stats
 from factory.config import (
     LABEL_AGENT,
     LABEL_APPROVED,
     LABEL_HUMAN,
     LABEL_INFO,
     LABEL_TRIAGE,
+    LABEL_REVIEW,
+    LABEL_VIABILITY,
     Config,
 )
+from factory.onboard import dashboard_port_error
 
 cfg: Config
 FACTORY: Path
@@ -68,10 +72,12 @@ CLOSE_REASONS = {"completed", "not planned"}
 
 HTML = Path(__file__).with_name("dashboard.html")
 ATLAS = Path(__file__).with_name("architecture.html")
+CODEBASE_HTML = Path(__file__).with_name("codebase.html")
 BRIEFING_CSS = Path(__file__).with_name("briefing.css")
 NEWSREADER = Path(__file__).with_name("fonts") / "Newsreader.ttf"
 NEWSREADER_LICENSE = Path(__file__).with_name("fonts") / "Newsreader-OFL.txt"
 FACTORY_LABELS = {
+    LABEL_VIABILITY,
     LABEL_TRIAGE,
     LABEL_INFO,
     LABEL_AGENT,
@@ -117,10 +123,12 @@ GRAPHQL_UPSTREAM = """
 GRAPHQL = """
 query($owner:String!,$name:String!{UVARS}){
 {UPSTREAM}
+  viewer{login}
   repository(owner:$owner,name:$name){
+    id
     issues(first:100,orderBy:{field:CREATED_AT,direction:DESC}){
       nodes{
-        number title state url createdAt updatedAt closedAt body
+        id number title state url createdAt updatedAt closedAt body
         labels(first:20){nodes{name color}}
         assignees(first:5){nodes{login}}
         timelineItems(last:100,itemTypes:[LABELED_EVENT,UNLABELED_EVENT,
@@ -143,8 +151,10 @@ query($owner:String!,$name:String!{UVARS}){
     }
     pullRequests(first:100,orderBy:{field:CREATED_AT,direction:DESC}){
       nodes{
-        number title state url headRefName createdAt mergedAt closedAt isDraft
+        id number title state url headRefName headRefOid createdAt mergedAt closedAt isDraft
         additions deletions changedFiles body reviewDecision
+        author{login}
+        reviewRequests(first:100){nodes{requestedReviewer{... on User{login}}}}
         labels(first:10){nodes{name}}
         comments(last:30){pageInfo{hasPreviousPage} nodes{createdAt author{login} body url}}
         commits(last:1){nodes{commit{statusCheckRollup{state
@@ -189,29 +199,33 @@ def file_meta(path: Path) -> dict | None:
 # ---------------------------------------------------------------- GitHub
 
 
-def github() -> dict:
-    owner, name = REPO.split("/", 1)
-    query = GRAPHQL.replace(
-        "{UVARS}", ",$uowner:String!,$uname:String!" if UPSTREAM else ""
-    ).replace("{UPSTREAM}", GRAPHQL_UPSTREAM if UPSTREAM else "")
-    cmd = [
-        "gh",
-        "api",
-        "graphql",
-        "-f",
-        f"query={query}",
-        "-F",
-        f"owner={owner}",
-        "-F",
-        f"name={name}",
-    ]
-    if UPSTREAM:
-        uowner, uname = UPSTREAM.split("/", 1)
-        cmd += ["-F", f"uowner={uowner}", "-F", f"uname={uname}"]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+def github(*, endpoint: str | None = None, query: str | None = None,
+           variables: dict | None = None, timeout: float | None = None) -> dict | list:
+    """Shared full-snapshot transport; feedback supplies only fixed read queries."""
+    if endpoint is not None:
+        cmd = ["gh", "api", "--method", "GET", endpoint]
+    else:
+        if query is None:
+            owner, name = REPO.split("/", 1)
+            query = GRAPHQL.replace(
+                "{UVARS}", ",$uowner:String!,$uname:String!" if UPSTREAM else ""
+            ).replace("{UPSTREAM}", GRAPHQL_UPSTREAM if UPSTREAM else "")
+            variables = {"owner": owner, "name": name}
+            if UPSTREAM:
+                variables["uowner"], variables["uname"] = UPSTREAM.split("/", 1)
+        cmd = ["gh", "api", "graphql", "-f", f"query={query}"]
+        for key, value in (variables or {}).items():
+            if value is not None:
+                cmd += ["-F" if type(value) is int else "-f", f"{key}={value}"]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout)
     if proc.returncode:
         raise RuntimeError(proc.stderr.strip() or "gh api graphql failed")
-    return json.loads(proc.stdout)["data"]
+    value = json.loads(proc.stdout)
+    if endpoint is not None:
+        return value
+    if value.get("errors"):
+        raise RuntimeError("GitHub query was incomplete")
+    return value["data"]
 
 
 def pr_checks(pr: dict) -> dict:
@@ -796,15 +810,72 @@ def build_ticket(
     }
 
 
+def review_queue(prs: list[dict], rows: list[dict], login: str) -> list[dict]:
+    """Read-only projection of intake and SHA-bound review/required-CI evidence."""
+    history: dict[int, list[dict]] = {}
+    for row in rows:
+        if row.get("pr") is not None:
+            history.setdefault(row["pr"], []).append(row)
+    queue = []
+    for pr in prs:
+        if pr["state"] != "OPEN" or pr["isDraft"]:
+            continue
+        events = history.get(pr["number"], [])
+        review = next((e for e in reversed(events) if e.get("event") == "review-result"), {})
+        labels = {label["name"] for label in pr.get("labels", {}).get("nodes") or []}
+        requested = any(
+            login and (r.get("requestedReviewer") or {}).get("login", "").casefold() == login.casefold()
+            for r in pr.get("reviewRequests", {}).get("nodes") or []
+        )
+        if LABEL_REVIEW not in labels and not requested and not any(
+            e.get("event") == "review-result" and e.get("verdict") in {"APPROVE", "REQUEST_CHANGES"}
+            for e in events
+        ):
+            continue
+        head = pr["headRefOid"]
+        current = next((e for e in reversed(events)
+                        if e.get("event") == "review-result" and e.get("head") == head), {})
+        readiness = next((e for e in reversed(events)
+                          if e.get("event") == "review-readiness" and e.get("head") == head), {})
+        escalation = next((e for e in reversed(events) if e.get("event") == "escalate"), {})
+        checks = readiness.get("checks") or []
+        buckets = {check["bucket"] for check in checks}
+        ci = ("fail" if buckets & {"fail", "cancel"} else
+              "pass" if buckets == {"pass"} else "pending" if buckets else "unknown")
+        state = "review_pending"
+        if current.get("verdict") == "REQUEST_CHANGES":
+            state = "changes_requested"
+        elif current.get("verdict") == "APPROVE":
+            state = "ci_failed" if ci == "fail" else "ci_pending"
+            if ci == "pass" and readiness.get("state") == "ready":
+                state = "ready"
+        if escalation:
+            state = "escalated"
+        queue.append({
+            "number": pr["number"], "title": pr["title"], "url": pr["url"],
+            "author": (pr.get("author") or {}).get("login"), "head": head,
+            "review_head": review.get("head"), "verdict": review.get("verdict"),
+            "ci_state": ci, "ci_at": readiness.get("at"), "state": state,
+            "reason": escalation.get("reason") or current.get("reason"),
+        })
+    return sorted(queue, key=lambda pr: pr["number"], reverse=True)
+
+
 def snapshot() -> dict:
     errors = []
     issues: list[dict] = []
     prs: dict[int, dict] = {}
+    raw_prs: dict[int, dict] = {}
+    repo: dict = {}
     gh_upstream = None
+    review_prs: list[dict] = []
+    viewer = ""
     try:
         data = github()
         repo, gh_upstream = data["repository"], data.get("upstream")
         issues = repo["issues"]["nodes"]
+        review_prs = repo["pullRequests"]["nodes"]
+        viewer = (data.get("viewer") or {}).get("login", "")
         for pr in repo["pullRequests"]["nodes"]:
             m = AGENT_BRANCH.fullmatch(pr["headRefName"])
             if not m:
@@ -814,6 +885,7 @@ def snapshot() -> dict:
             # Prefer the merged PR, else the newest, when a branch had several.
             if n not in prs or (rec["merged_at"] and not prs[n]["merged_at"]):
                 prs[n] = rec
+                raw_prs[n] = pr
     except (RuntimeError, ValueError, KeyError) as exc:
         errors.append(f"github: {exc}")
 
@@ -836,10 +908,53 @@ def snapshot() -> dict:
     for execution in executions:
         if execution["ticket"] is not None:
             by_ticket.setdefault(execution["ticket"], []).append(execution)
+    provenance, provenance_complete = [], True
+    if raw_prs:
+        try:
+            ledger = briefing.bounded_file(FACTORY, "events.jsonl", briefing.EVENT_READ_CAP, tail=True)
+            if ledger is not None:
+                text, cut = ledger
+                lines = text.split("\n")
+                unfinished = lines.pop()
+                provenance_complete = not cut and not unfinished
+                if cut and lines:
+                    lines = lines[1:]
+                for line in lines:
+                    try:
+                        row = json.loads(line)
+                        if isinstance(row, dict):
+                            provenance.append(row)
+                        else:
+                            provenance_complete = False
+                    except ValueError:
+                        provenance_complete = False
+            else:
+                provenance_complete = False
+        except OSError:
+            provenance_complete = False
+        # Revision belongs to the imported source checkout, not the observed repository.
+        source_root = Path(__file__).resolve().parent
+        revision = sh(["git", "rev-parse", "HEAD"], cwd=source_root).strip()
+        if (not sh(["git", "ls-files", "--error-unmatch", "--", "feedback.py"], cwd=source_root).strip()
+                or sh(["git", "status", "--porcelain", "--", "."], cwd=source_root).strip()):
+            revision = None
     for issue in issues:
         n = issue["number"]
         if not selected_issue(issue, prs, on_disk, by_ticket, audit):
             continue
+        if n in raw_prs:
+            raw = raw_prs[n]
+            # Detail reads stay bounded to open work: the snapshot lists up to 100
+            # PRs, and closed history must not multiply provider calls per refresh.
+            prs[n]["feedback"] = feedback.collect(
+                github, repository={"id": repo.get("id"), "slug": REPO,
+                                    "host": urlparse(raw["url"]).hostname or "github.com"},
+                pr={"id": raw.get("id"), "number": raw["number"], "url": raw["url"],
+                    "state": raw.get("state"), "draft": raw.get("isDraft")},
+                issue={"id": issue.get("id"), "number": n, "url": issue["url"]},
+                events=provenance, provenance_complete=provenance_complete,
+                producer_revision=revision, collect_details=raw.get("state") == "OPEN",
+            )
         tickets.append(build_ticket(
             issue, prs.get(n), disk_state(n), spend.get(n), by_ticket.get(n), audit=audit.get(n),
         ))
@@ -900,6 +1015,7 @@ def snapshot() -> dict:
         "executions": executions,
         "resources": resources,
         "tickets": tickets,
+        "review_queue": review_queue(review_prs, rows, viewer),
     }
 
 
@@ -915,6 +1031,40 @@ def cached_snapshot(fresh: bool) -> dict:
             _cache["data"] = snapshot()
             _cache["at"] = time.time()
         return _cache["data"]
+
+
+class CodebaseMonitor:
+    """Refresh local Git history off the request thread; keep the last good map."""
+
+    def __init__(self, c: Config, ref: str | None = None, limit: int = 80):
+        self.config = c
+        self.ref = ref
+        self.limit = limit
+        self.state: dict = {"status": "building", "error": None, "data": None}
+        self.stop = threading.Event()
+
+    def refresh(self) -> None:
+        previous = self.state["data"]
+        try:
+            c = self.config
+            ref = self.ref or codebase.default_ref(c.root, c.main)
+            tip = config.git(c.root, "rev-parse", "--verify", "--end-of-options", f"{ref}^{{commit}}")
+            if previous and previous["tip"] == tip and previous["ref"] == ref:
+                self.state = {"status": "ready", "error": None, "data": previous}
+                return
+            self.state = {"status": "building", "error": None, "data": previous}
+            data = codebase.build_history(c.root, ref, c.repo, c.factory / "codebase", self.limit)
+            self.state = {"status": "ready", "error": None, "data": data}
+        except (Exception, config.ConfigError) as exc:
+            self.state = {"status": "error", "error": str(exc), "data": previous}
+
+    def run(self) -> None:
+        while not self.stop.is_set():
+            self.refresh()
+            self.stop.wait(30)
+
+
+codebase_monitor: CodebaseMonitor | None = None
 
 
 # ---------------------------------------------------------------- actions
@@ -1030,6 +1180,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, "text/plain; charset=utf-8", NEWSREADER_LICENSE.read_bytes())
         elif url.path == "/atlas":
             self._send(200, "text/html; charset=utf-8", ATLAS.read_bytes())
+        elif url.path == "/codebase":
+            self._send(200, "text/html; charset=utf-8", CODEBASE_HTML.read_bytes())
+        elif url.path == "/api/codebase":
+            state = codebase_monitor.state if codebase_monitor else {
+                "status": "error", "error": "Codebase monitor is not running", "data": None,
+            }
+            self._send(200, "application/json", json.dumps(state).encode())
         elif url.path == "/api/snapshot":
             data = cached_snapshot("fresh" in query)
             self._send(200, "application/json", json.dumps(data).encode())
@@ -1117,9 +1274,23 @@ def main(argv: list[str]) -> int:
     output.add_argument("--json", action="store_true", help="print one full snapshot and exit")
     output.add_argument("--runtime-json", action="store_true",
                         help="print one bounded read-only local runtime observation and exit")
+    parser.add_argument(
+        "--codebase-ref",
+        help="local Git ref to visualize (default: origin/<main>, then <main>)",
+    )
+    parser.add_argument(
+        "--codebase-limit",
+        type=int,
+        default=80,
+        help="recent first-parent commits to visualize (default: 80)",
+    )
     args = parser.parse_args(argv)
+    if args.codebase_limit < 1:
+        parser.error("--codebase-limit must be positive")
     if args.runtime_json:
-        if any(arg == "--no-open" or arg.split("=")[0] in {"--host", "--port"} for arg in argv):
+        if any(arg == "--no-open" or arg.split("=")[0] in {
+            "--host", "--port", "--codebase-ref", "--codebase-limit"
+        } for arg in argv):
             parser.error("--runtime-json cannot be combined with server options")
         from factory import runtime_events, runtime_local
 
@@ -1150,7 +1321,15 @@ def main(argv: list[str]) -> int:
         print(json.dumps(snapshot(), indent=2))
         return 0
 
-    server = ThreadingHTTPServer((args.host, port), Handler)
+    try:
+        server = ThreadingHTTPServer((args.host, port), Handler)
+    except OSError as exc:
+        reason = "is in use" if exc.errno == errno.EADDRINUSE else (exc.strerror or str(exc))
+        print(dashboard_port_error(cfg, args.host, port, reason), file=sys.stderr)
+        return 1
+    global codebase_monitor
+    codebase_monitor = CodebaseMonitor(cfg, args.codebase_ref, args.codebase_limit)
+    threading.Thread(target=codebase_monitor.run, name="factory-codebase", daemon=True).start()
     url = f"http://127.0.0.1:{port}/"
     print(
         f"factory dashboard: listening on {args.host}:{port}  "
@@ -1159,6 +1338,10 @@ def main(argv: list[str]) -> int:
     )
     if not args.no_open:
         webbrowser.open(url)
-    with contextlib.suppress(KeyboardInterrupt):
-        server.serve_forever()
+    try:
+        with contextlib.suppress(KeyboardInterrupt):
+            server.serve_forever()
+    finally:
+        codebase_monitor.stop.set()
+        server.server_close()
     return 0

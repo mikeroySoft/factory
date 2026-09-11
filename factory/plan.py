@@ -255,11 +255,14 @@ def config_revision(root) -> dict:
 
 
 def route_args(argv: list[str]) -> tuple[int, str, list[str]] | None:
-    """`route N --reason R [--path P]...`; None when malformed."""
+    """`route N --reason R [--path P]... [--json]`; None when malformed."""
     if len(argv) < 4 or argv[0] != "route" or not (argv[1].isascii() and argv[1].isdigit() and int(argv[1]) > 0):
         return None
     reason, paths, rest = None, [], argv[2:]
     while rest:
+        if rest[0] == "--json":
+            rest = rest[1:]
+            continue
         flag, value, rest = rest[0], rest[1] if len(rest) > 1 else None, rest[2:]
         if flag == "--reason" and reason is None and value in config.ROUTE_REASONS:
             reason = value
@@ -272,7 +275,7 @@ def route_args(argv: list[str]) -> tuple[int, str, list[str]] | None:
     return int(argv[1]), reason, paths
 
 USAGE = ("usage: factory plan list | factory plan inspect <number> | factory plan route <number> --reason "
-         f"<{'|'.join(config.ROUTE_REASONS)}> [--path <repo-relative path>]...\n\n"
+         f"<{'|'.join(config.ROUTE_REASONS)}> [--path <repo-relative path>]... [--json]\n\n"
          "Emit one schema_version:1 JSON object. Exit: 0 complete, 1 partial/unavailable, 2 invalid usage/configuration.")
 
 
