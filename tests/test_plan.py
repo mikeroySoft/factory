@@ -148,7 +148,8 @@ class PlanCliTest(CliCase):
     def test_usage_errors_exit_two(self):
         for bad in ("x", "²", "0"):
             data = self.run_plan("inspect", bad, code=2)
-        self.assertEqual(data["error"]["code"], "invalid_request")
+            self.assertEqual(data["error"]["code"], "invalid_request")
+            self.assertEqual(data["coverage"]["notices"], plan.NOTICES)
         self.assertFalse(self.calls_path.exists())
 
 
@@ -190,6 +191,19 @@ class RouteCliTest(CliCase):
         self.assertEqual((route["status"], route["owner"], route["source"]), ("invalid", None, "decision_owner"))
         self.assertEqual(route["provenance"][-1]["step"], "decision_owner")
 
+    def test_empty_decision_owner_is_invalid_at_next_heading_and_eof(self):
+        self.configure()
+        body = self.child["body"]
+        for ending in ("\n\n**Decision owner**\n\n**Acceptance**\n@not-the-owner",
+                       "\n\n**Decision owner**\n\n"):
+            with self.subTest(ending=ending):
+                self.child["body"] = body + ending
+                route = self.route(53, "ci")
+                self.assertEqual((route["status"], route["owner"], route["source"]),
+                                 ("invalid", None, "decision_owner"))
+                self.assertEqual([(step["step"], step["outcome"]) for step in route["provenance"]],
+                                 [("decision_owner", "invalid")])
+
     def test_requirements_use_initiative_owner_then_fall_back(self):
         self.configure()
         route = self.route(53, "requirements")
@@ -202,6 +216,30 @@ class RouteCliTest(CliCase):
         route = self.route(53, "ci")
         self.assertEqual((route["owner"], route["source"]), ("ci-owner", "reason"))
         self.assertEqual((route["provenance"][1]["step"], route["provenance"][1]["outcome"]), ("initiative", "skipped"))
+
+    def test_missing_initiative_owner_falls_through_to_configured_routes(self):
+        self.initiative["body"] = BODY.replace("**Owner**\n@github-login\n\n", "")
+        configured = COLLAB.replace("[collaboration.reasons]\n",
+                                    '[collaboration.reasons]\nrequirements = "requirements-owner"\n')
+        for text, expected in ((configured, ("requirements-owner", "reason")),
+                               (COLLAB, ("repo-owner", "fallback"))):
+            with self.subTest(source=expected[1]):
+                self.configure(text)
+                route = self.route(53, "requirements")
+                self.assertEqual((route["status"], route["owner"], route["source"]),
+                                 ("selected", *expected))
+                initiative = next(step for step in route["provenance"] if step["step"] == "initiative")
+                self.assertEqual(initiative["outcome"], "absent")
+
+    def test_declared_blank_or_malformed_initiative_owner_is_invalid(self):
+        self.configure()
+        for owner in ("", "not a login"):
+            with self.subTest(owner=owner):
+                self.initiative["body"] = BODY.replace("@github-login", owner)
+                route = self.route(53, "requirements")
+                self.assertEqual((route["status"], route["owner"], route["source"]),
+                                 ("invalid", None, "initiative"))
+                self.assertEqual(route["provenance"][-1]["outcome"], "invalid")
 
     def test_component_prefixes_are_exact_and_ambiguity_yields_candidates(self):
         self.configure()
@@ -220,7 +258,8 @@ class RouteCliTest(CliCase):
         route = self.route(7, "implementation")
         self.assertEqual((route["status"], route["owner"], route["provenance"][-1]["step"]), ("unassigned", None, "component"))
         route = self.route(7, "unknown")
-        self.assertEqual((route["status"], route["provenance"][-1]["outcome"]), ("unassigned", "skipped"))
+        self.assertEqual((route["status"], route["owner"], route["source"], route["provenance"][-1]["outcome"]),
+                         ("unassigned", None, None, "skipped"))
 
     def test_missing_configuration_leaves_only_ticket_sources(self):
         route = self.route(7, "ci")
@@ -242,13 +281,30 @@ class RouteCliTest(CliCase):
         route = self.route(7, "implementation", "docs/a.md")
         self.assertEqual((route["owner"], route["verification"]), ("@example/docs", "verified"))
 
+    def test_mixed_team_and_login_candidates_are_all_rejected_on_user_repo(self):
+        self.configure()
+        self.responses["repos/" + REPO] = {"json": {"owner": {"type": "User"}}}
+        route = self.route(7, "implementation", "src/auth/a.py", "docs/a.md")
+        self.assertEqual((route["status"], route["owner"], route["candidates"], route["source"]),
+                         ("invalid", None, [], "component"))
+        verification = route["provenance"][-1]
+        self.assertEqual((verification["step"], verification["outcome"]),
+                         ("verification", "invalid"))
+        self.assertEqual(verification["destinations"], ["@example/docs", "auth-owner"])
+        self.assertEqual(verification["rejected_teams"], ["@example/docs"])
+
     def test_bad_configuration_and_usage_exit_two(self):
-        self.configure('[collaboration.reasons]\nrequirements = "@org/"\n')
-        self.assertEqual(self.route(7, "ci", code=2)["error"]["code"], "invalid_scope")
-        self.configure('[collaboration.components]\n"../x" = "a"\n')
-        self.assertEqual(self.route(7, "ci", code=2)["error"]["code"], "invalid_scope")
+        for text in ('[collaboration.reasons]\nrequirements = "@org/"\n',
+                     '[collaboration.reasons]\nunknown = "nobody"\n',
+                     '[collaboration.components]\n"../x" = "a"\n',
+                     '[collaboration.components]\n"src/auth" = "a"\n"src/auth/" = "b"\n'):
+            with self.subTest(text=text):
+                self.configure(text)
+                self.assertEqual(self.route(7, "ci", code=2)["error"]["code"], "invalid_scope")
         for argv in (["route", "7"], ["route", "7", "--reason", "docs"], ["route", "7", "--reason", "ci", "--path"]):
-            self.assertEqual(self.run_plan(*argv, code=2)["error"]["code"], "invalid_request")
+            data = self.run_plan(*argv, code=2)
+            self.assertEqual(data["error"]["code"], "invalid_request")
+            self.assertEqual(data["coverage"]["notices"], plan.NOTICES)
 
 if __name__ == "__main__":
     unittest.main()

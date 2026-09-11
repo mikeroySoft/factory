@@ -264,14 +264,17 @@ def collaboration_settings(table: object) -> dict:
     if not isinstance(reasons, dict) or not isinstance(components, dict):
         raise ConfigError("collaboration.reasons and collaboration.components must be tables")
     for reason, value in reasons.items():
-        if reason not in ROUTE_REASONS:
-            raise ConfigError(f"collaboration.reasons.{reason}: expected one of {', '.join(ROUTE_REASONS)}")
+        if reason not in ROUTE_REASONS[:-1]:
+            raise ConfigError(f"collaboration.reasons.{reason}: expected one of {', '.join(ROUTE_REASONS[:-1])}")
         out["reasons"][reason] = owner(value, f"collaboration.reasons.{reason}")
     for prefix, value in components.items():
         parts = prefix.strip("/").split("/")
         if not prefix or prefix.startswith("/") or "\\" in prefix or any(p in ("", ".", "..") for p in parts):
             raise ConfigError(f"collaboration.components: {prefix!r} is not a repo-relative path prefix")
-        out["components"]["/".join(parts)] = owner(value, f"collaboration.components.{prefix!r}")
+        normalized = "/".join(parts)
+        if normalized in out["components"]:
+            raise ConfigError(f"collaboration.components: duplicate normalized prefix {normalized!r}")
+        out["components"][normalized] = owner(value, f"collaboration.components.{prefix!r}")
     return out
 
 

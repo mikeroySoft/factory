@@ -26,7 +26,6 @@ SECTIONS = ("Status", "Outcome", "Owner", "Areas", "Boundaries", "Plan",
 HEADER = re.compile(r"^\*\*([^*\n]+)\*\*[ \t]*$", re.M)
 LOGIN = re.compile(r"@?([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)")
 LINK = re.compile(r"(?<![\w/#])#(\d{1,9})\b")
-DECISION = re.compile(r"^\*\*Decision owner\*\*[ \t]*\n\s*(\S[^\n]*?)[ \t]*$", re.M)
 PROGRAMME = re.compile(r"^Programme:[ \t]*#(\d{1,9})\b", re.M | re.I)
 PATHS = 200
 NOTICES = [
@@ -41,15 +40,18 @@ ROUTE_NOTICES = [
 ]
 
 
-def parse(body: str) -> dict:
-    """Sections from bold `**Name**` headers; problems name every missing or invalid declared fact."""
-    sections, problems = {}, []
+def _sections(body: str):
     matches = list(HEADER.finditer(body))
     for index, match in enumerate(matches):
         end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
-        name = match[1].strip()
+        yield match[1].strip(), body[match.end():end].strip()
+
+
+def parse(body: str) -> dict:
+    """Sections from bold `**Name**` headers; problems name every missing or invalid declared fact."""
+    sections, problems = {}, []
+    for name, text in _sections(body):
         if name in SECTIONS and name not in sections:
-            text = body[match.end():end].strip()
             sections[name] = text[:SECTION_CAP]
             if len(text) > SECTION_CAP:
                 problems.append(f"truncated section: {name} cut to {SECTION_CAP} characters")
@@ -149,11 +151,11 @@ class Reader:
             return True
 
         # 1. explicit per-ticket override
-        declared = DECISION.search(body)
-        if declared:
-            match = config.OWNER.fullmatch(declared[1])
+        declared = next((text for name, text in _sections(body) if name == "Decision owner"), None)
+        if declared is not None:
+            match = config.OWNER.fullmatch(declared)
             if step("decision_owner", "selected" if match else "invalid",
-                    f"ticket body declares {declared[1]!r}" + ("" if match else ": not a GitHub login or @org/team"),
+                    f"ticket body declares {declared!r}" + ("" if match else ": not a GitHub login or @org/team"),
                     owner=(match["login"] or match["team"]) if match else None):
                 return self.verify()
         else:
@@ -178,6 +180,8 @@ class Reader:
                 route["revision"]["initiative_updated_at"] = parent["updated_at"]
                 if not parent["initiative"] or parent["pull_request"]:
                     step("initiative", "absent", f"#{programme[1]} does not carry the `{LABEL}` label")
+                elif "Owner" not in parent["sections"]:
+                    step("initiative", "absent", f"#{programme[1]} has no Owner section")
                 elif not parent["owner"]:
                     step("initiative", "invalid", f"#{programme[1]} declares no valid single-login Owner")
                     return self.verify()
@@ -223,7 +227,8 @@ class Reader:
     def verify(self) -> None:
         """Team destinations are invalid on a user-owned repository; an unreadable repo record is unknown, not proof."""
         route = self.result["route"]
-        teams = [o for o in [route["owner"], *route["candidates"]] if o and o.startswith("@")]
+        destinations = [o for o in [route["owner"], *route["candidates"]] if o]
+        teams = [o for o in destinations if o.startswith("@")]
         if not teams:
             return
         try:
@@ -234,8 +239,11 @@ class Reader:
             kind = None
         if kind == "User":
             route.update(status="invalid", owner=None, candidates=[], verification="verified")
-            route["provenance"].append({"step": "verification", "outcome": "invalid",
-                                        "detail": f"{', '.join(teams)}: team destinations are rejected for a user-owned repository"})
+            route["provenance"].append({
+                "step": "verification", "outcome": "invalid",
+                "detail": f"{', '.join(teams)}: team destinations are rejected for a user-owned repository",
+                "destinations": destinations, "rejected_teams": teams,
+            })
         elif kind == "Organization":
             route["verification"] = "verified"
             route["provenance"].append({"step": "verification", "outcome": "verified", "detail": "repository is organization-owned; team syntax accepted, membership not checked"})
@@ -285,7 +293,7 @@ def main(argv: list[str] | None = None) -> int:
         print(USAGE)
         return 0 if argv else 2
     result = {"schema_version": 1, "ok": True, "scope": {"repository": None}, "observation_id": uuid4().hex,
-              "coverage": {"status": "unavailable", "notices": []}, "sources": [], "errors": []}
+              "coverage": {"status": "unavailable", "notices": list(NOTICES)}, "sources": [], "errors": []}
     exit_code = 0
     try:
         route = route_args(argv)

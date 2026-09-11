@@ -109,6 +109,9 @@ exclusive = false
 # `**Decision owner**` body section, the initiative Owner (requirements only),
 # reasons.<reason>, components (implementation only, exact repo-relative path
 # prefixes: "src/auth" matches src/auth/x.py, never src/authentication/), fallback.
+# Missing optional owner sections permit fallback; explicit empty/malformed owners
+# stop with invalid. Mixed team/login routes on user repos stay invalid, not filtered
+# into a selection. `reasons.unknown` and duplicate normalized prefixes are errors.
 # [collaboration]
 # fallback = "maintainer-login"
 # [collaboration.reasons]

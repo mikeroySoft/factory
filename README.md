@@ -110,6 +110,16 @@ merge stage.
 | `factory plan route N --reason <requirements\|implementation\|ci\|unknown> [--path P]... --json` | Read-only schema 1 JSON naming the human who owns a decision on ticket N; nothing is assigned, labelled or commented. JSON is also the default when `--json` is omitted. Priority: a `**Decision owner**` section in the ticket body (human override, wins on every recomputation), the `Programme: #N` initiative's Owner (requirements only), `[collaboration.reasons]`, `[collaboration.components]` exact repo-relative path prefixes against the given `--path`s (implementation only; `src/auth` matches `src/auth/x.py`, never `src/authentication/`), then `[collaboration].fallback`. `route.status` is `selected`, `candidates` (paths span prefixes with different owners), `unassigned` (reason `unknown`, no `--path` for implementation, or nothing configured) or `invalid` (malformed declared owner; `@org/team` on a user-owned repository). `route.revision` ties the answer to the `.factory.toml` commit and issue `updated_at`; `route.provenance` lists every step. Owner syntax is checked, membership is not: an unreadable repository record leaves `verification: unknown`. Without a `[collaboration]` section only ticket sources apply. |
 | `factory doctor` / `init` / `install` | Onboarding, above. |
 
+Routing distinguishes absent optional information from invalid declarations. A missing
+ticket `Decision owner` section permits fallback; an empty or malformed section stops
+with `invalid`. A missing initiative `Owner` section permits configured requirements
+ownership and fallback, but an explicitly empty or malformed Owner stops routing.
+On user-owned repositories, mixed team/login destinations remain invalid with no
+selection; provenance retains the original destinations and rejected teams for
+diagnosis. Unavailable verification remains unknown, never authorization.
+`collaboration.reasons.unknown` and component prefixes that normalize to the same
+key are configuration errors; `--reason unknown` remains a valid non-guessing request.
+
 Every command reads `.factory.toml` from the main checkout, even when run
 inside one of its worktrees.
 
