@@ -1425,7 +1425,8 @@ class DispatchTest(unittest.TestCase):
                     return subprocess.CompletedProcess(cmd, 0, "diff", "")
 
                 with mock.patch.object(dispatch, "gh_json", return_value=[pr]), \
-                        mock.patch.object(dispatch, "run", side_effect=run):
+                        mock.patch.object(dispatch, "run", side_effect=run), \
+                        mock.patch.dict(os.environ, {"FACTORY_LIFECYCLE_CONTEXT": ""}):
                     dispatch.review_intake_pass(False)
                 if event is None:
                     self.assertEqual(publications, [])
@@ -1436,6 +1437,58 @@ class DispatchTest(unittest.TestCase):
                         "-f", "commit_id=recorded-head", "-f", f"event={event}",
                         "-f", f"body={output}",
                     ]])
+                events = list(map(json.loads, dispatch.EVENTS.read_text().splitlines()))
+                terminal = next(e for e in events
+                                if e.get("kind") == "exit" and e.get("stage") == "review")
+                expected = (
+                    ("unknown", f"review_exit:{returncode}" if returncode else "unparsed_verdict")
+                    if event is None else
+                    ("approved", "APPROVE") if event == "APPROVE" else
+                    ("product_feedback", "REVISE")
+                )
+                self.assertEqual((terminal["outcome"], terminal["reason"]), expected)
+
+    def test_external_review_skips_oversized_diff_and_continues_intake(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            dispatch.configure(config.Config(
+                root=repo, repo="acme/widgets",
+                reviewer=[sys.executable, "-c", "print('VERDICT: APPROVE')", "{prompt}"],
+            ))
+            prs = [
+                {"number": n, "state": "OPEN", "isDraft": False,
+                 "headRefOid": f"head-{n}", "baseRefOid": "base",
+                 "labels": [{"name": "needs-review"}], "reviewRequests": []}
+                for n in (17, 18)
+            ]
+            publications = []
+            real_run = dispatch.run
+
+            def run(cmd, **kwargs):
+                if cmd[0] != "gh":
+                    return real_run(cmd, **kwargs)
+                if "--method" in cmd:
+                    publications.append(cmd)
+                diff = "é" * 70000 if "repos/acme/widgets/compare/base...head-17" in cmd else "diff"
+                return subprocess.CompletedProcess(cmd, 0, diff, "")
+
+            with mock.patch.object(dispatch, "gh_json", return_value=prs), \
+                    mock.patch.object(dispatch, "run", side_effect=run), \
+                    mock.patch.dict(os.environ, {"FACTORY_LIFECYCLE_CONTEXT": ""}):
+                dispatch.review_intake_pass(False)
+            self.assertEqual(len(publications), 1)
+            self.assertIn("repos/acme/widgets/pulls/18/reviews", publications[0])
+            self.assertIn("commit_id=head-18", publications[0])
+            events = list(map(json.loads, dispatch.EVENTS.read_text().splitlines()))
+            terminals = [(e["outcome"], e["reason"]) for e in events
+                         if e.get("kind") == "exit" and e.get("stage") == "review"]
+            self.assertEqual(terminals, [
+                ("unknown", "prompt_too_large"), ("approved", "APPROVE"),
+            ])
 
     def test_dispatch_intakes_opted_in_pr_heads_once(self) -> None:
         from unittest import mock

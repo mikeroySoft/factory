@@ -343,6 +343,9 @@ between the recorded base and head SHAs. Valid final `VERDICT: APPROVE` or
 through `gh api`, explicitly bound to the recorded head with `commit_id`.
 Findings must each cite `path:line`; malformed output or a failed reviewer
 publishes nothing. Branch advancement cannot retarget the supplied diff or review.
+Prompts exceeding 120 KiB (UTF-8, including the diff) are skipped before reviewer
+execution and recorded as `unknown` with reason `prompt_too_large`; intake
+continues with the next PR. The recorded revision is not automatically retried.
 This lane does not change contributor branches, monitor CI, or merge external PRs.
 
 ## Operating it

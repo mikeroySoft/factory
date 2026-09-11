@@ -250,7 +250,13 @@ def review_external_pr(n: int, base: str, head: str) -> None:
         "only VERDICT: APPROVE.\n\n"
         f"--- BEGIN UNTRUSTED DIFF ---\n{diff}\n--- END UNTRUSTED DIFF ---"
     )
-    with lifecycle.scope(EVENTS, "review"):
+    with lifecycle.scope(EVENTS, "review") as execution:
+        # ponytail: cap inline prompts below Linux's 128 KiB argv limit; use files for larger diffs.
+        if len(prompt.encode()) > 120 * 1024:
+            execution.outcome = "unknown"
+            execution.reason = "prompt_too_large"
+            log(f"PR #{n}: diff too large to review at {head}")
+            return
         proc = run(cfg.review_cmd(prompt), cwd=ROOT, check=False)
         findings = proc.stdout.strip()
         lines = findings.splitlines()
@@ -264,6 +270,8 @@ def review_external_pr(n: int, base: str, head: str) -> None:
             or (lines[-1] == "VERDICT: REVISE" and not any(
                 line.strip() for line in lines[:-1]))
         ):
+            execution.outcome = "unknown"
+            execution.reason = f"review_exit:{proc.returncode}" if proc.returncode else "unparsed_verdict"
             log(f"PR #{n}: rejected malformed or failed reviewer output at {head}")
             return
         event = "APPROVE" if lines[-1] == "VERDICT: APPROVE" else "REQUEST_CHANGES"
@@ -272,6 +280,8 @@ def review_external_pr(n: int, base: str, head: str) -> None:
             "-f", f"commit_id={head}", "-f", f"event={event}",
             "-f", f"body={findings}",
         ])
+        execution.outcome = "approved" if event == "APPROVE" else "product_feedback"
+        execution.reason = "APPROVE" if event == "APPROVE" else "REVISE"
 
 
 def build_prompt(n: int, wt: Path, extra: str = "") -> str:
