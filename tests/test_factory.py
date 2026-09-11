@@ -1360,6 +1360,71 @@ class DispatchTest(unittest.TestCase):
                 self.assertFalse(any(cmd[:2] == ["git", "push"] for cmd in commands))
                 self.assertFalse(any(cmd[:3] == ["gh", "pr", "create"] for cmd in commands))
 
+    def test_external_review_readiness_tracks_required_checks_and_head(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch, lifecycle
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            dispatch.configure(config.Config(root=repo, repo="acme/widgets"))
+            dispatch.record("review-intake", pr=17, head="head-1")
+            dispatch.record("review-result", pr=17, head="head-1", verdict="APPROVE")
+            pr = {"number": 17, "state": "OPEN", "isDraft": False,
+                  "headRefOid": "head-1", "baseRefOid": "base",
+                  "labels": [], "reviewRequests": []}
+            payload, code, fresh_head = "[]", 0, "head-1"
+            commands = []
+
+            def run(cmd, **kwargs):
+                commands.append(cmd)
+                if cmd[:3] == ["gh", "pr", "checks"]:
+                    self.assertIn("--required", cmd)
+                    return subprocess.CompletedProcess(cmd, code, payload, "")
+                if cmd[:3] == ["gh", "pr", "view"]:
+                    return subprocess.CompletedProcess(
+                        cmd, 0, json.dumps({"headRefOid": fresh_head}), "")
+                self.fail(f"Unexpected command: {cmd}")
+
+            with mock.patch.object(dispatch, "gh_json", return_value=[pr]), \
+                    mock.patch.object(dispatch, "run", side_effect=run):
+                for payload, code, expected in [
+                    ("[]", 0, "ci_pending"),
+                    ('[{"name":"test","bucket":[]}]', 0, "ci_pending"),
+                    ('[{"name":"test","bucket":"unknown"}]', 0, "ci_pending"),
+                    ('[{"name":"a","bucket":"pass"},{"name":"b","bucket":"pending"}]', 8, "ci_pending"),
+                    ('[{"name":"a","bucket":"pass"},{"name":"b","bucket":"fail"}]', 1, "ci_failed"),
+                    ("not json", 1, "ci_pending"),
+                    ("null", 0, "ci_pending"),
+                    ('[{}]', 0, "ci_pending"),
+                    ('[{"name":"test","bucket":"pending"}]', 8, "ci_pending"),
+                    ('[{"name":"test","bucket":"fail"}]', 1, "ci_failed"),
+                    ('[{"name":"test","bucket":"cancel"}]', 1, "ci_failed"),
+                    ('[{"name":"test","bucket":"skipping"}]', 0, "ci_pending"),
+                    ('[{"name":"test","bucket":"pass"}]', 1, "ci_pending"),
+                    ('[{"name":"test","bucket":"pass"}]', 0, "ready"),
+                ]:
+                    with self.subTest(payload=payload, code=code):
+                        dispatch.review_intake_pass(False)
+                        event = lifecycle.read_events(dispatch.EVENTS)[-1]
+                        self.assertEqual(event["event"], "review-readiness")
+                        self.assertEqual((event["head"], event["state"]), ("head-1", expected))
+                # A push during the query cannot inherit the old approval.
+                fresh_head = "head-2"
+                dispatch.review_intake_pass(False)
+                self.assertEqual(lifecycle.read_events(dispatch.EVENTS)[-1]["state"], "review_pending")
+                pr["headRefOid"] = fresh_head
+                dispatch.review_intake_pass(False)
+                event = lifecycle.read_events(dispatch.EVENTS)[-1]
+                self.assertEqual((event["head"], event["state"]), ("head-2", "review_pending"))
+                dispatch.record("review-result", pr=17, head="head-2", verdict="REQUEST_CHANGES")
+                dispatch.review_intake_pass(False)
+                self.assertEqual(lifecycle.read_events(dispatch.EVENTS)[-1]["state"], "changes_requested")
+                before = dispatch.EVENTS.read_text()
+                dispatch.review_intake_pass(True)
+                self.assertEqual(dispatch.EVENTS.read_text(), before)
+            self.assertFalse(any(cmd[:3] == ["gh", "pr", "merge"] for cmd in commands))
+
     def test_external_review_head_transitions_end_on_approval(self) -> None:
         from unittest import mock
 
