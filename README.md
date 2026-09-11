@@ -346,7 +346,23 @@ publishes nothing. Branch advancement cannot retarget the supplied diff or revie
 Prompts exceeding 120 KiB (UTF-8, including the diff) are skipped before reviewer
 execution and recorded as `unknown` with reason `prompt_too_large`; intake
 continues with the next PR. The recorded revision is not automatically retried.
-This lane does not change contributor branches, monitor CI, or merge external PRs.
+Dispatch records SHA-specific required-CI readiness for admitted PRs and escalates
+exhausted review attempts to a human issue. This lane does not change contributor
+branches or merge external PRs.
+
+The dashboard's **Ops → External PR review queue** lists open, non-draft opted-in
+PRs, including review-request admissions after GitHub consumes the request.
+Each GitHub-linked row shows the repository-local PR number, title, author,
+current head SHA, last reviewed SHA and verdict, and required-CI state with its
+last observation time. CI evidence comes from dispatch's `review-readiness`
+events, not a new CI poll; missing evidence for the current head is unknown.
+The six queue states are **pending review**, **changes requested**, **CI pending**,
+**CI failed**, **ready**, and **escalated**. An old approval never makes a new head
+ready, and readiness is advisory—not permission to merge.
+Changes requested, failed CI, escalations, and pending reviews needing human
+attention also appear in **Inbox**, with links to GitHub rather than mutation
+controls. Viewing or refreshing the queue does not change labels, reviews,
+branches, or merge state.
 
 ## Operating it
 
