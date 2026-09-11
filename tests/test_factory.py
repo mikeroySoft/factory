@@ -2775,6 +2775,70 @@ class DispatchTest(unittest.TestCase):
 
 
 class FeedbackSnapshotTest(unittest.TestCase):
+    def test_external_review_queue_snapshot_states_and_revision_identity(self):
+        from unittest import mock
+        from factory import dashboard, dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            prs = [{
+                "number": n, "title": f"Contribution {n}", "state": "OPEN",
+                "url": f"https://github.com/acme/widgets/pull/{n}",
+                "author": {"login": "contributor"}, "isDraft": False,
+                "headRefName": f"contribution-{n}", "headRefOid": f"head-{n}",
+                "labels": {"nodes": [{"name": "needs-review"}]},
+                "reviewRequests": {"nodes": []},
+            } for n in range(1, 7)]
+            # A request to this viewer opts in; another reviewer does not.
+            prs[0]["labels"]["nodes"] = []
+            prs[0]["reviewRequests"]["nodes"] = [{"requestedReviewer": {"login": "operator"}}]
+            prs += [{**prs[0], "number": 7, "reviewRequests": {"nodes": [
+                {"requestedReviewer": {"login": "someone-else"}}]}},
+                {**prs[1], "number": 8, "state": "CLOSED"},
+                {**prs[1], "number": 9, "isDraft": True}]
+            with mock.patch.dict(dashboard.__dict__), mock.patch.dict(dispatch.__dict__):
+                dashboard.configure(config.Config(root=repo, repo="acme/widgets"))
+                dispatch.record("review-result", pr=1, head="old-head", verdict="APPROVE")
+                dispatch.record("review-readiness", pr=1, head="old-head", state="ready",
+                                checks=[{"name": "test", "bucket": "pass"}])
+                for n, verdict, state, bucket in [
+                    (2, "REQUEST_CHANGES", "changes_requested", "pass"),
+                    (3, "APPROVE", "ci_pending", "pending"),
+                    (4, "APPROVE", "ci_failed", "fail"),
+                    (5, "APPROVE", "ready", "pass"),
+                ]:
+                    dispatch.record("review-result", pr=n, head=f"head-{n}", verdict=verdict)
+                    dispatch.record("review-readiness", pr=n, head=f"head-{n}", state=state,
+                                    checks=[{"name": "test", "bucket": bucket}])
+                # Consumed review requests must not remove an admitted PR.
+                prs[4]["labels"]["nodes"] = []
+                dispatch.record("escalate", pr=6, head="head-6", reason="Review attempts exhausted")
+                before = dispatch.EVENTS.read_bytes()
+                with mock.patch.object(dashboard, "github", return_value={
+                    "viewer": {"login": "operator"}, "repository": {
+                        "issues": {"nodes": []}, "pullRequests": {"nodes": prs}}}), \
+                     mock.patch.object(dashboard, "dispatcher", return_value={}), \
+                     mock.patch.object(dashboard, "upstream_state", return_value={}), \
+                     mock.patch.object(dashboard, "triage_llm_online", return_value=False):
+                    result = dashboard.snapshot()
+                self.assertTrue(dispatch.EVENTS.read_bytes().startswith(before))
+            queue = {pr["number"]: pr for pr in result["review_queue"]}
+            self.assertEqual({n: pr["state"] for n, pr in queue.items()}, {
+                1: "review_pending", 2: "changes_requested", 3: "ci_pending",
+                4: "ci_failed", 5: "ready", 6: "escalated"})
+            for n, pr in queue.items():
+                self.assertEqual(pr["url"], f"https://github.com/acme/widgets/pull/{n}")
+                self.assertEqual(pr["head"], f"head-{n}")
+                self.assertEqual(pr["author"], "contributor")
+                self.assertEqual(pr["title"], f"Contribution {n}")
+            self.assertEqual(queue[1]["review_head"], "old-head")
+            self.assertEqual(queue[1]["verdict"], "APPROVE")
+            self.assertEqual(queue[1]["ci_state"], "unknown")
+            self.assertEqual(queue[5]["review_head"], "head-5")
+            self.assertEqual(queue[5]["ci_state"], "pass")
+            self.assertEqual(queue[6]["reason"], "Review attempts exhausted")
+            self.assertEqual(result["tickets"], [])
+
     def test_github_failure_preserves_provider_diagnostic(self):
         from unittest import mock
         from factory import dashboard

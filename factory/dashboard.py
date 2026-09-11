@@ -34,6 +34,7 @@ from factory.config import (
     LABEL_HUMAN,
     LABEL_INFO,
     LABEL_TRIAGE,
+    LABEL_REVIEW,
     LABEL_VIABILITY,
     Config,
 )
@@ -120,6 +121,7 @@ GRAPHQL_UPSTREAM = """
 GRAPHQL = """
 query($owner:String!,$name:String!{UVARS}){
 {UPSTREAM}
+  viewer{login}
   repository(owner:$owner,name:$name){
     id
     issues(first:100,orderBy:{field:CREATED_AT,direction:DESC}){
@@ -149,6 +151,8 @@ query($owner:String!,$name:String!{UVARS}){
       nodes{
         id number title state url headRefName headRefOid createdAt mergedAt closedAt isDraft
         additions deletions changedFiles body reviewDecision
+        author{login}
+        reviewRequests(first:100){nodes{requestedReviewer{... on User{login}}}}
         labels(first:10){nodes{name}}
         comments(last:30){pageInfo{hasPreviousPage} nodes{createdAt author{login} body url}}
         commits(last:1){nodes{commit{statusCheckRollup{state
@@ -804,6 +808,57 @@ def build_ticket(
     }
 
 
+def review_queue(prs: list[dict], rows: list[dict], login: str) -> list[dict]:
+    """Read-only projection of intake and SHA-bound review/required-CI evidence."""
+    history: dict[int, list[dict]] = {}
+    for row in rows:
+        if row.get("pr") is not None:
+            history.setdefault(row["pr"], []).append(row)
+    queue = []
+    for pr in prs:
+        if pr["state"] != "OPEN" or pr["isDraft"]:
+            continue
+        events = history.get(pr["number"], [])
+        review = next((e for e in reversed(events) if e.get("event") == "review-result"), {})
+        labels = {label["name"] for label in pr.get("labels", {}).get("nodes") or []}
+        requested = any(
+            login and (r.get("requestedReviewer") or {}).get("login", "").casefold() == login.casefold()
+            for r in pr.get("reviewRequests", {}).get("nodes") or []
+        )
+        if LABEL_REVIEW not in labels and not requested and not any(
+            e.get("event") == "review-result" and e.get("verdict") in {"APPROVE", "REQUEST_CHANGES"}
+            for e in events
+        ):
+            continue
+        head = pr["headRefOid"]
+        current = next((e for e in reversed(events)
+                        if e.get("event") == "review-result" and e.get("head") == head), {})
+        readiness = next((e for e in reversed(events)
+                          if e.get("event") == "review-readiness" and e.get("head") == head), {})
+        escalation = next((e for e in reversed(events) if e.get("event") == "escalate"), {})
+        checks = readiness.get("checks") or []
+        buckets = {check["bucket"] for check in checks}
+        ci = ("fail" if buckets & {"fail", "cancel"} else
+              "pass" if buckets == {"pass"} else "pending" if buckets else "unknown")
+        state = "review_pending"
+        if current.get("verdict") == "REQUEST_CHANGES":
+            state = "changes_requested"
+        elif current.get("verdict") == "APPROVE":
+            state = "ci_failed" if ci == "fail" else "ci_pending"
+            if ci == "pass" and readiness.get("state") == "ready":
+                state = "ready"
+        if escalation:
+            state = "escalated"
+        queue.append({
+            "number": pr["number"], "title": pr["title"], "url": pr["url"],
+            "author": (pr.get("author") or {}).get("login"), "head": head,
+            "review_head": review.get("head"), "verdict": review.get("verdict"),
+            "ci_state": ci, "ci_at": readiness.get("at"), "state": state,
+            "reason": escalation.get("reason") or current.get("reason"),
+        })
+    return sorted(queue, key=lambda pr: pr["number"], reverse=True)
+
+
 def snapshot() -> dict:
     errors = []
     issues: list[dict] = []
@@ -811,10 +866,14 @@ def snapshot() -> dict:
     raw_prs: dict[int, dict] = {}
     repo: dict = {}
     gh_upstream = None
+    review_prs: list[dict] = []
+    viewer = ""
     try:
         data = github()
         repo, gh_upstream = data["repository"], data.get("upstream")
         issues = repo["issues"]["nodes"]
+        review_prs = repo["pullRequests"]["nodes"]
+        viewer = (data.get("viewer") or {}).get("login", "")
         for pr in repo["pullRequests"]["nodes"]:
             m = AGENT_BRANCH.fullmatch(pr["headRefName"])
             if not m:
@@ -954,6 +1013,7 @@ def snapshot() -> dict:
         "executions": executions,
         "resources": resources,
         "tickets": tickets,
+        "review_queue": review_queue(review_prs, rows, viewer),
     }
 
 
