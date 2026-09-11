@@ -163,7 +163,7 @@ reasoning, source citations, and one final machine-readable line:
 |---|---|
 | Issue / BUILD | Remove `needs-viability`, add `needs-triage` for deeper investigation. Never directly queue implementation; a vague idea need not already pass triage's specification checks. |
 | Issue / DONT_BUILD or DEFER | Remove `needs-viability`; leave open, propose only. No `wontfix`, closure, or replacement workflow label. A human decides whether to close, defer, or overrule. |
-| PR / any verdict | Remove `needs-review`; recommend only. Even BUILD adds **no handoff label**. Dispatch records review intake independently before this stage. No quality review, approval, requested changes, merge, or closure. |
+| PR / any verdict | Remove `needs-review`; recommend only. Even BUILD adds **no handoff label**. Dispatch independently runs the SHA-bound quality review before this stage; the manager itself never approves, requests changes, merges, or closes PRs. |
 
 The model uses the existing evidence/briefing source helpers: bounded target
 description/comments, recent issues and PRs (not an exhaustive duplicate search),
@@ -336,9 +336,17 @@ Before the manager runs, dispatch discovers open, non-draft PRs labeled
 `needs-review` or with a pending review request for the authenticated `gh` account.
 Contributor branch names are unrestricted. Intake writes `review-intake` events
 with `pr` and `head` to `.factory/events.jsonl`, skipping already-recorded pairs
-under the shared PR/issue lock. Dry runs only print eligible revisions. This is
-discovery only: no reviews are published, branches changed, CI monitored, or
-external PRs merged by this lane.
+under the shared PR/issue lock. Dry runs only print eligible revisions. For each
+newly admitted revision, the configured `[review]` command receives the diff
+between the recorded base and head SHAs. Valid final `VERDICT: APPROVE` or
+`VERDICT: REVISE` output publishes an approving or changes-requested GitHub review
+through `gh api`, explicitly bound to the recorded head with `commit_id`.
+Findings must each cite `path:line`; malformed output or a failed reviewer
+publishes nothing. Branch advancement cannot retarget the supplied diff or review.
+Prompts exceeding 120 KiB (UTF-8, including the diff) are skipped before reviewer
+execution and recorded as `unknown` with reason `prompt_too_large`; intake
+continues with the next PR. The recorded revision is not automatically retried.
+This lane does not change contributor branches, monitor CI, or merge external PRs.
 
 ## Operating it
 
