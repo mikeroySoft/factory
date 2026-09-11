@@ -1,0 +1,743 @@
+<!doctype html>
+<!-- Throwaway UI study: four layouts for a dedicated Factory Manager chat page, ?variant=A|B|C|D.
+     Question: how should conversation, tooling, activity/progress, and past conversations be arranged?
+     Sample data and a simulated FM only. No backend, no persistence, nothing is sent anywhere.
+     Run from repo root:  python -m http.server 8794 --bind 127.0.0.1
+     then open:           http://127.0.0.1:8794/console/chat-prototype/?variant=A -->
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Factory — Chat (prototype)</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="../../docs/mikeroysoft.css">
+<style>
+/* ---------- base ---------- */
+html { scroll-behavior: smooth; }
+body { margin: 0; min-height: 100dvh; background: var(--surface-page); color: var(--text-primary); font: 13px/1.6 var(--font-mono); -webkit-font-smoothing: antialiased; padding-bottom: 96px; }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+button, input, textarea, select { font: inherit; color: inherit; }
+button { cursor: pointer; background: transparent; border: 1px solid var(--border-hairline); border-radius: var(--radius-sm); min-height: 44px; padding: 8px 14px; color: var(--text-secondary); transition: background .15s, border-color .15s, color .15s; touch-action: manipulation; }
+button:hover:not(:disabled) { border-color: var(--accent); color: var(--text-primary); background: var(--accent-tint); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.sm { min-height: 32px; padding: 4px 10px; font-size: 11px; }
+button.ghost { border-color: transparent; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--text-on-accent); font-weight: 600; }
+button.primary:hover:not(:disabled) { background: var(--accent-soft); color: var(--text-on-accent); }
+button[aria-pressed=true], button[aria-selected=true], [aria-current=page] { color: var(--accent); border-color: var(--accent); background: var(--accent-tint); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+a { color: var(--accent); text-decoration: none; }
+.muted { color: var(--text-secondary); }
+.faint { color: var(--text-muted); }
+.eyebrow { font: var(--type-eyebrow); letter-spacing: .15em; text-transform: uppercase; color: var(--text-secondary); }
+code, kbd { font-family: var(--font-mono); font-size: 11px; }
+kbd { border: 1px solid var(--border-strong); border-radius: 3px; padding: 0 5px; color: var(--text-secondary); background: var(--surface-inset); }
+.led { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--status-idle); margin-right: 7px; vertical-align: 1px; }
+.led.ok { background: var(--status-ok); box-shadow: 0 0 8px var(--accent-glow); }
+.led.warn { background: var(--status-warn); animation: pulse var(--pulse-period) infinite; }
+.led.busy { background: var(--accent); animation: pulse .9s infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; padding: 2px 8px; border: 1px solid var(--border-hairline); border-radius: var(--radius-pill); color: var(--text-secondary); white-space: nowrap; }
+.chip i { width: 7px; height: 7px; border-radius: 50%; background: var(--stage); }
+.chip.stage { --stage: var(--status-idle); }
+.stage-pr-open { --stage: var(--stage-pr-open); } .stage-in-flight { --stage: var(--stage-in-flight); } .stage-escalated { --stage: var(--stage-escalated); }
+.stage-merged { --stage: var(--stage-merged); } .stage-queued { --stage: var(--stage-queued); } .stage-triage { --stage: var(--stage-triage); }
+
+/* ---------- topbar (mirrors codebase.html sibling page) ---------- */
+.topbar { display: grid; grid-template-columns: minmax(210px, 1fr) auto; gap: 12px 32px; align-items: center; padding: 14px clamp(16px, 3vw, 40px); border-bottom: 1px solid var(--border-hairline); background: var(--surface-page); position: sticky; top: 0; z-index: 20; }
+.title-row { display: flex; align-items: center; gap: 12px; margin-top: 3px; }
+.title-row h1 { margin: 0; font: 700 clamp(20px, 2.6vw, 26px)/1.15 var(--font-mono); letter-spacing: -.02em; }
+.nav { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.nav a, .nav span { display: inline-flex; min-height: 40px; align-items: center; padding: 6px 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); color: var(--text-secondary); }
+.nav a:hover { color: var(--accent); border-color: var(--accent); }
+.meta { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px 22px; font-size: 11px; color: var(--text-secondary); }
+.meta strong { color: var(--text-primary); font-weight: 500; }
+.progress-line { grid-column: 1 / -1; height: 2px; margin: -6px 0 -8px; background: var(--border-hairline); overflow: hidden; border-radius: 1px; }
+.progress-line i { display: block; height: 100%; width: 0; background: var(--accent); box-shadow: 0 0 10px var(--accent-glow); }
+
+/* ---------- shared chat pieces ---------- */
+.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.chat-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; padding: 14px 20px; border-bottom: 1px solid var(--border-hairline); }
+.chat-head h2 { margin: 0; font-size: 14px; font-weight: 500; }
+.chat-head .spacer { flex: 1; }
+.transcript { flex: 1; min-height: 0; overflow: auto; padding: 20px; display: flex; flex-direction: column; gap: 18px; scroll-padding-bottom: 40px; }
+.msg { display: grid; gap: 10px; max-width: 860px; }
+.msg .who { display: flex; align-items: baseline; gap: 10px; font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--text-secondary); }
+.msg .who time { letter-spacing: 0; text-transform: none; color: var(--text-muted); }
+.msg .who .tools { margin-left: auto; display: flex; gap: 2px; opacity: 0; transition: opacity .15s; }
+.msg:hover .who .tools, .msg:focus-within .who .tools { opacity: 1; }
+.msg .who .tools button { min-height: 26px; padding: 0 8px; font-size: 10px; letter-spacing: 0; text-transform: none; border-color: transparent; }
+.msg.user { border-left: 2px solid var(--border-strong); padding-left: 14px; }
+.msg.user .body { color: var(--text-primary); white-space: pre-wrap; }
+.msg.fm { border-left: 2px solid var(--accent); padding-left: 14px; }
+.msg.fm .body { white-space: pre-wrap; line-height: 1.7; }
+.msg.fm .who b { color: var(--accent); font-weight: 600; }
+.scopes-inline { display: flex; gap: 6px; flex-wrap: wrap; }
+.cite { display: inline-flex; align-items: center; min-height: 0; margin: 0 2px; padding: 0 6px; font-size: 11px; line-height: 1.5; border: 1px solid var(--border-hairline); border-radius: var(--radius-xs); color: var(--accent); background: var(--accent-wash); vertical-align: baseline; }
+.cite:hover { background: var(--accent-tint-strong); }
+.cite.lit { background: var(--accent); color: var(--text-on-accent); border-color: var(--accent); }
+.cursor { display: inline-block; width: 7px; height: 14px; background: var(--accent); vertical-align: -2px; margin-left: 2px; animation: pulse .8s steps(2) infinite; }
+
+.trace { display: grid; gap: 4px; font-size: 11px; color: var(--text-secondary); border: 1px solid var(--border-hairline); border-radius: var(--radius-md); background: var(--surface-sunken); padding: 10px 12px; overflow: hidden; }
+.trace .row { display: flex; align-items: center; gap: 10px; min-height: 22px; }
+.trace .row i { width: 8px; height: 8px; border-radius: 50%; flex: none; border: 1px solid var(--border-strong); }
+.trace .row.done i { background: var(--status-ok); border-color: var(--status-ok); }
+.trace .row.live i { background: var(--accent); border-color: var(--accent); animation: pulse .8s infinite; }
+.trace .row.live { color: var(--text-primary); }
+.trace .row .ms { margin-left: auto; color: var(--text-muted); }
+.trace summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 10px; color: var(--text-secondary); }
+.trace summary::-webkit-details-marker { display: none; }
+.trace summary .sum { color: var(--text-primary); }
+.trace summary::after { content: '+'; margin-left: auto; color: var(--text-muted); }
+.trace[open] summary::after { content: '−'; }
+.trace[open] summary { margin-bottom: 6px; }
+.spinner { width: 14px; height: 14px; flex: none; border: 2px solid var(--border-strong); border-top-color: var(--accent); border-right-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.card { border: 1px solid var(--border-hairline); border-radius: var(--radius-md); background: var(--surface-panel); padding: 12px 14px; display: grid; gap: 8px; }
+.card .ct { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.card .ct b { font-weight: 600; color: var(--text-primary); }
+.card .ct .n { color: var(--accent); font-weight: 600; }
+.card .ct .spacer { flex: 1; }
+.card p { margin: 0; color: var(--text-secondary); font-size: 12px; }
+.card .stages { display: flex; gap: 0; font-size: 9px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-muted); position: relative; margin: 6px 0 2px; }
+.card .stages span { flex: 1; display: grid; gap: 6px; justify-items: center; }
+.card .stages i { width: 9px; height: 9px; border-radius: 50%; border: 1px solid var(--border-strong); background: var(--surface-panel); z-index: 1; }
+.card .stages::before { content: ''; position: absolute; left: 10%; right: 10%; top: 4px; height: 1px; background: var(--border-strong); }
+.card .stages .done i { background: var(--status-ok); border-color: var(--status-ok); }
+.card .stages .done { color: var(--text-secondary); }
+.card .stages .cur i { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 8px var(--accent-glow); }
+.card .stages .cur { color: var(--accent); }
+.card .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.proposal { border-color: var(--accent); background: var(--accent-wash); }
+.proposal .cmd { font-size: 11px; color: var(--text-primary); background: var(--surface-terminal); padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border-hairline); white-space: pre-wrap; }
+.proposal .risk { font-size: 11px; }
+.proposal .risk b { color: var(--status-ok); font-weight: 500; }
+.receipt { border-left: 3px solid var(--status-warn); padding: 8px 12px; background: var(--surface-sunken); font-size: 12px; color: var(--text-secondary); }
+.source { border: 1px solid var(--border-hairline); border-left: 3px solid var(--accent); border-radius: var(--radius-sm); background: var(--surface-sunken); padding: 10px 12px; display: grid; gap: 6px; font-size: 12px; }
+.source .sl { display: flex; gap: 10px; align-items: baseline; }
+.source .sl b { color: var(--accent); font-weight: 600; }
+.source pre { margin: 0; font-size: 11px; color: var(--text-secondary); white-space: pre-wrap; max-height: 160px; overflow: auto; }
+.sources { display: grid; gap: 8px; }
+
+.quick { display: flex; gap: 8px; flex-wrap: wrap; }
+.quick button { font-size: 12px; min-height: 36px; border-radius: var(--radius-pill); }
+.composer { border-top: 1px solid var(--border-hairline); padding: 12px 20px 16px; display: grid; gap: 8px; background: var(--surface-page); position: relative; }
+.composer .scopes { display: flex; gap: 6px; flex-wrap: wrap; min-height: 0; }
+.composer .scopes:empty { display: none; }
+.composer .scopes .chip button { min-height: 0; padding: 0 2px; border: 0; color: var(--text-muted); }
+.composer .box { position: relative; display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--surface-sunken); padding: 8px 8px 8px 12px; transition: border-color .15s, box-shadow .15s; }
+.composer .box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-tint); }
+.composer textarea { width: 100%; min-height: 44px; max-height: 200px; resize: none; border: 0; background: transparent; padding: 10px 0; line-height: 1.5; color: var(--text-primary); }
+.composer textarea:focus { outline: none; }
+.composer .toolrow { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 11px; color: var(--text-muted); }
+.composer .toolrow .spacer { flex: 1; }
+.composer .status { font-size: 11px; color: var(--text-secondary); min-height: 18px; display: flex; align-items: center; gap: 8px; }
+.menu { position: absolute; left: 20px; right: 20px; bottom: calc(100% - 4px); background: var(--surface-inset); border: 1px solid var(--border-strong); border-radius: var(--radius-md); box-shadow: 0 12px 40px #0009; padding: 6px; display: grid; gap: 2px; z-index: 30; max-height: 280px; overflow: auto; }
+.menu button { min-height: 36px; border: 0; text-align: left; display: flex; gap: 12px; justify-content: space-between; align-items: center; font-size: 12px; }
+.menu button small { color: var(--text-muted); }
+.menu button[aria-selected=true] { background: var(--accent-tint-strong); color: var(--text-primary); }
+.menu .mh { padding: 6px 10px 2px; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--text-muted); }
+
+/* ---------- history list (A rail, B palette, D drawer share this) ---------- */
+.hist { display: grid; gap: 2px; }
+.hist .hh { padding: 12px 10px 4px; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--text-muted); }
+.hist button { border: 0; text-align: left; display: grid; gap: 4px; padding: 8px 10px; min-height: 0; border-radius: var(--radius-sm); }
+.hist button .ht { color: var(--text-primary); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hist button .hm { display: flex; gap: 8px; align-items: center; font-size: 10px; color: var(--text-muted); }
+.hist button[aria-current=page] { background: var(--accent-tint); border-left: 2px solid var(--accent); }
+.hist button[aria-current=page] .ht { color: var(--accent); }
+.search { width: 100%; background: var(--surface-sunken); border: 1px solid var(--border-hairline); border-radius: var(--radius-sm); padding: 8px 10px; color: var(--text-primary); min-height: 40px; }
+.search:focus { outline: none; border-color: var(--accent); }
+
+/* ---------- variant A · console ---------- */
+.va { display: grid; grid-template-columns: 272px minmax(0, 1fr) 320px; height: calc(100dvh - var(--top) - 96px); }
+.va .rail { border-right: 1px solid var(--border-hairline); display: flex; flex-direction: column; min-height: 0; overflow: hidden; width: 272px; }
+.va .rail .rh { padding: 14px 12px 8px; display: grid; gap: 8px; }
+.va .rail .rl { flex: 1; overflow: auto; padding: 0 6px 12px; }
+.va .dock { border-left: 1px solid var(--border-hairline); overflow: auto; padding: 14px 16px; display: grid; gap: 18px; align-content: start; font-size: 12px; }
+.va .dock section { display: grid; gap: 8px; }
+.va .dock h3 { margin: 0; font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--text-muted); }
+.va .dock .case { display: grid; gap: 2px; padding: 8px 10px; border: 1px solid var(--border-hairline); border-radius: var(--radius-sm); text-align: left; min-height: 0; }
+.va .dock .case .ct { display: flex; gap: 8px; align-items: baseline; }
+.va .dock .case .ct b { color: var(--accent); }
+.va .dock .case small { color: var(--text-muted); }
+.va .dock .trace { font-size: 11px; }
+.va .dock .src { font-size: 11px; display: flex; gap: 8px; align-items: baseline; text-align: left; min-height: 0; padding: 4px 6px; border: 0; }
+.va .dock .src b { color: var(--accent); font-weight: 500; }
+.va .dock .src.lit { background: var(--accent-tint-strong); }
+.va .composer .status { order: 1; }
+@media (max-width: 1180px) { .va { grid-template-columns: 240px minmax(0, 1fr); } .va .dock { display: none; } }
+@media (max-width: 800px) { .va { grid-template-columns: minmax(0, 1fr); } .va .rail { display: none; } }
+
+/* ---------- variant B · focus ---------- */
+.vb { max-width: 780px; margin: 0 auto; padding: 0 clamp(12px, 3vw, 24px); display: flex; flex-direction: column; min-height: calc(100dvh - var(--top)); }
+.vb .strip { display: flex; align-items: center; gap: 10px; padding: 14px 0 10px; font-size: 11px; color: var(--text-secondary); position: sticky; top: var(--top); z-index: 10; background: var(--surface-page); }
+.vb .strip .crumbs { display: flex; gap: 10px; align-items: center; min-width: 0; }
+.vb .strip .crumbs b { color: var(--text-primary); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vb .strip .spacer { flex: 1; }
+.vb .transcript { padding: 12px 0 270px; gap: 28px; overflow: visible; }
+.vb .msg { max-width: none; }
+.vb .msg.fm { border-left: 0; padding-left: 0; }
+.vb .msg.fm .body { font: 400 19px/1.55 var(--font-display); color: var(--cream-50); letter-spacing: .005em; }
+.vb .msg.fm .cite { font-family: var(--font-mono); vertical-align: 2px; }
+.vb .msg.user { border-left: 0; padding: 0; }
+.vb .msg.user .body { font-size: 14px; color: var(--text-secondary); }
+.vb .msg.user .body::before { content: '› '; color: var(--accent); }
+.vb .composer { position: fixed; left: 0; right: 0; margin: 0 auto; bottom: 88px; width: min(780px, calc(100% - 24px)); border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: rgba(13, 12, 10, .88); backdrop-filter: blur(12px); box-shadow: 0 20px 60px #000a; padding: 10px 14px 12px; z-index: 15; }
+.vb .composer .menu { left: 14px; right: 14px; }
+.vb .palette-scrim { position: fixed; inset: 0; background: rgba(13, 12, 10, .7); backdrop-filter: blur(3px); z-index: 40; }
+.vb .palette { position: fixed; left: 0; right: 0; margin: 0 auto; top: 12vh; width: min(640px, calc(100% - 24px)); background: var(--surface-inset); border: 1px solid var(--border-strong); border-radius: var(--radius-lg); box-shadow: 0 30px 90px #000c; z-index: 41; display: grid; grid-template-rows: auto 1fr; max-height: 70vh; overflow: hidden; }
+.vb .palette .search { border: 0; border-bottom: 1px solid var(--border-hairline); border-radius: 0; background: transparent; min-height: 52px; padding: 14px 16px; font-size: 14px; }
+.vb .palette .pl { overflow: auto; padding: 6px; }
+.vb .palette .hist button { padding: 10px 12px; }
+.vb .palette .cmd { display: flex; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 0; min-height: 0; border-radius: var(--radius-sm); font-size: 12px; text-align: left; }
+.vb .palette .cmd small { color: var(--text-muted); }
+.vb .palette .hint { padding: 8px 14px; border-top: 1px solid var(--border-hairline); font-size: 10px; color: var(--text-muted); display: flex; gap: 14px; }
+.vb .toolbelt { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+
+/* ---------- variant C · workbench ---------- */
+.vc { display: grid; grid-template-rows: auto minmax(0, 1fr); height: calc(100dvh - var(--top) - 96px); }
+.vc .sessions { display: flex; align-items: stretch; gap: 2px; padding: 8px 12px 0; border-bottom: 1px solid var(--border-hairline); overflow-x: auto; scrollbar-width: none; position: relative; }
+.vc .sessions button { border: 1px solid transparent; border-bottom: 0; border-radius: var(--radius-sm) var(--radius-sm) 0 0; min-height: 40px; padding: 6px 14px; font-size: 12px; white-space: nowrap; display: flex; gap: 8px; align-items: center; color: var(--text-secondary); }
+.vc .sessions button small { color: var(--text-muted); font-size: 10px; }
+.vc .sessions button[aria-current=page] { background: var(--surface-panel); border-color: var(--border-hairline); color: var(--text-primary); }
+.vc .sessions .tabline { position: absolute; bottom: -1px; height: 2px; background: var(--accent); width: 0; pointer-events: none; }
+.vc .sessions .plus { margin-left: 4px; border: 1px dashed var(--border-strong); border-bottom: 0; }
+.vc .split { display: grid; grid-template-columns: minmax(360px, 46%) minmax(0, 1fr); min-height: 0; }
+.vc .chat { border-right: 1px solid var(--border-hairline); background: var(--surface-panel); }
+.vc .transcript { padding: 16px; gap: 14px; }
+.vc .msg { max-width: none; }
+.vc .bench { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; background: var(--surface-page); }
+.vc .bench .bt { display: flex; align-items: center; gap: 2px; padding: 8px 10px 0; border-bottom: 1px solid var(--border-hairline); overflow-x: auto; position: relative; min-height: 46px; }
+.vc .bench .bt button { border: 1px solid transparent; border-bottom: 0; border-radius: var(--radius-sm) var(--radius-sm) 0 0; min-height: 36px; padding: 4px 12px; font-size: 11px; white-space: nowrap; display: flex; gap: 8px; align-items: center; }
+.vc .bench .bt button[aria-selected=true] { background: var(--surface-sunken); border-color: var(--border-hairline); color: var(--text-primary); }
+.vc .bench .bt button .x { color: var(--text-muted); font-size: 11px; padding: 0 2px; }
+.vc .bench .bt .ticker { margin-left: auto; font-size: 11px; color: var(--accent); display: flex; align-items: center; gap: 8px; padding: 0 6px; white-space: nowrap; }
+.vc .bench .bb { overflow: auto; padding: 18px 20px; background: var(--surface-sunken); }
+.vc .bench .bb h3 { margin: 0 0 12px; font: 400 24px/1.2 var(--font-display); }
+.vc .bench .bb pre { margin: 0; font-size: 12px; line-height: 1.6; white-space: pre-wrap; color: var(--text-secondary); background: var(--surface-terminal); border: 1px solid var(--border-hairline); border-radius: var(--radius-sm); padding: 14px 16px; }
+.vc .bench .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.vc .bench .kv { display: grid; gap: 4px; padding: 12px 14px; border: 1px solid var(--border-hairline); border-radius: var(--radius-sm); background: var(--surface-panel); }
+.vc .bench .kv label { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--text-muted); }
+.vc .bench .kv .v { font-size: 22px; color: var(--text-primary); }
+.vc .bench .kv small { color: var(--text-secondary); }
+.vc .bench .caselist { display: grid; gap: 6px; margin-top: 14px; }
+.vc .bench .caselist button { text-align: left; display: flex; gap: 10px; align-items: baseline; min-height: 40px; }
+.vc .bench .caselist button b { color: var(--accent); }
+.vc .bench .caselist button small { margin-left: auto; color: var(--text-muted); }
+.vc .bench .diff { font-size: 11px; }
+.vc .bench .diff .add { color: var(--status-ok); } .vc .bench .diff .del { color: var(--status-danger); }
+@media (max-width: 900px) { .vc .split { grid-template-columns: minmax(0, 1fr); } .vc .bench { display: none; } }
+
+/* ---------- variant D · thread ---------- */
+.vd { display: grid; grid-template-columns: minmax(0, 1fr) 88px; max-width: 1100px; margin: 0 auto; }
+.vd .thread { padding: 0 clamp(12px, 3vw, 32px) 160px; display: flex; flex-direction: column; gap: 14px; }
+.vd .since { position: sticky; top: var(--top); z-index: 10; margin: 0 -8px; padding: 10px 14px; background: rgba(13, 12, 10, .92); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border-hairline); display: flex; gap: 14px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+.vd .since b { color: var(--text-primary); font-weight: 500; }
+.vd .since .spacer { flex: 1; }
+.vd .day { display: flex; align-items: center; gap: 14px; margin: 22px 0 6px; font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--text-muted); scroll-margin-top: 150px; }
+.vd .day::before, .vd .day::after { content: ''; flex: 1; height: 1px; background: var(--border-hairline); }
+.vd .ev { display: flex; gap: 12px; align-items: baseline; font-size: 11px; color: var(--text-secondary); padding: 2px 0 2px 16px; position: relative; }
+.vd .ev::before { content: ''; position: absolute; left: 3px; top: 8px; width: 7px; height: 7px; border-radius: 50%; background: var(--k, var(--status-idle)); }
+.vd .ev time { color: var(--text-muted); flex: none; width: 46px; }
+.vd .ev.gate { --k: var(--status-ok); } .vd .ev.pr { --k: var(--stage-pr-open); } .vd .ev.escalated { --k: var(--stage-escalated); } .vd .ev.claimed { --k: var(--stage-in-flight); } .vd .ev.merged { --k: var(--stage-merged); } .vd .ev.warn { --k: var(--status-warn); } .vd .ev.fm { --k: var(--accent); color: var(--accent); }
+.vd .ev.live::before { animation: pulse .8s infinite; }
+.vd .ev button { min-height: 0; padding: 0 6px; font-size: 10px; border-color: transparent; color: var(--accent); }
+.vd .msg { max-width: none; scroll-margin-top: 150px; }
+.vd .msg.fm .body { font-size: 14px; }
+.vd .topic { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--text-muted); margin-top: 10px; display: flex; gap: 8px; align-items: center; }
+.vd .topic::before { content: '§'; color: var(--accent); }
+.vd .composer { position: sticky; bottom: 88px; margin: 20px -8px 0; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: rgba(13, 12, 10, .9); backdrop-filter: blur(12px); box-shadow: 0 16px 50px #000a; z-index: 12; }
+.vd .rail { position: sticky; top: var(--top); height: calc(100dvh - var(--top) - 96px); display: grid; grid-template-rows: auto 1fr auto; gap: 8px; padding: 18px 10px 12px 12px; border-left: 1px solid var(--border-hairline); font-size: 10px; color: var(--text-muted); }
+.vd .rail .ticks { position: relative; display: flex; flex-direction: column; justify-content: space-between; }
+.vd .rail .ticks::before { content: ''; position: absolute; left: 6px; top: 0; bottom: 0; width: 1px; background: var(--border-strong); }
+.vd .rail .ticks button { border: 0; min-height: 0; padding: 4px 0 4px 18px; text-align: left; font-size: 10px; color: var(--text-muted); position: relative; letter-spacing: .06em; }
+.vd .rail .ticks button::before { content: ''; position: absolute; left: 3px; top: 50%; width: 7px; height: 7px; margin-top: -4px; border-radius: 50%; background: var(--surface-page); border: 1px solid var(--border-strong); }
+.vd .rail .ticks button[aria-current=true] { color: var(--accent); }
+.vd .rail .ticks button[aria-current=true]::before { background: var(--accent); border-color: var(--accent); }
+.vd .rail .ticks button small { display: block; color: var(--text-faint); letter-spacing: 0; }
+.vd .rail .now { color: var(--accent); letter-spacing: .12em; }
+.vd .search { min-height: 34px; font-size: 11px; padding: 6px 8px; }
+@media (max-width: 800px) { .vd { grid-template-columns: minmax(0, 1fr); } .vd .rail { display: none; } }
+
+/* ---------- prototype bar (identical across variants; not part of the design) ---------- */
+.prototype-bar { position: fixed; z-index: 100; bottom: 14px; left: 50%; transform: translateX(-50%); width: min(720px, calc(100% - 24px)); background: var(--surface-inset); border: 1px solid var(--border-strong); border-radius: 10px; box-shadow: 0 12px 45px #000a; padding: 8px 12px; }
+.bar-controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.variant-picker { display: flex; align-items: center; gap: 10px; }
+.variant-picker button { font-size: 16px; padding: 4px 12px; min-height: 40px; }
+.variant-label { min-width: 210px; font-size: 11px; }
+.variant-label small { display: block; color: var(--text-secondary); font-size: 9px; letter-spacing: .08em; }
+.motion-control { font-size: 11px; display: flex; align-items: center; gap: 8px; min-height: 40px; cursor: pointer; }
+.motion-control input { accent-color: var(--accent); width: 16px; height: 16px; }
+.state { margin-top: 6px; font-size: 10px; color: var(--text-muted); letter-spacing: .04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 700px) { .variant-label { min-width: 0; } .bar-controls > div:last-child { display: none; } }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+</style>
+</head>
+<body data-product="factory" data-variant="A">
+<header class="topbar">
+  <div>
+    <p class="eyebrow" style="margin:0">Factory · manager</p>
+    <div class="title-row"><span class="mrs-mark mrs-mark-diamond" aria-hidden="true"></span><h1>Chat</h1></div>
+  </div>
+  <nav class="nav" aria-label="Factory views">
+    <a href="#">Inbox <span class="chip" style="padding:0 6px;margin-left:4px">3</span></a><a href="#">Ops</a><a href="#">Codebase</a><a href="#">Atlas</a><span aria-current="page">Chat</span>
+  </nav>
+  <div class="meta">
+    <span><i class="led ok" id="led"></i><span id="led-text">Factory Manager ready</span></span>
+    <span>repository <strong>mikeroySoft/factory</strong></span>
+    <span>snapshot <strong id="snap-age">42s ago</strong></span>
+    <span>dispatcher <strong>active · next run 22:52</strong></span>
+    <span>model <strong>claude-fable · read-only advice</strong></span>
+  </div>
+  <div class="progress-line" id="progress" hidden><i></i></div>
+</header>
+<div id="app"></div>
+
+<nav class="prototype-bar" aria-label="Prototype controls"><div class="bar-controls"><div class="variant-picker"><button id="previous" aria-label="Previous layout">←</button><div class="variant-label"><small>CHAT LAYOUT STUDY</small><span id="variant-label"></span></div><button id="next" aria-label="Next layout">→</button></div><div><label class="motion-control"><input id="motion-enabled" type="checkbox" checked>Motion on</label></div></div><div id="state" class="state" role="status" aria-live="polite"></div></nav>
+
+<script src="motion.js"></script>
+<script>
+'use strict';
+const { animate } = Motion;
+const $ = id => document.getElementById(id);
+const NOW = Date.parse('2026-09-11T22:50:00Z');
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === 'class') el.className = v; else if (k.startsWith('on')) el[k] = v;
+    else if (v != null && v !== false) el.setAttribute(k, v === true ? '' : v);
+  }
+  el.append(...kids.flat(Infinity).filter(k => k != null && k !== false));
+  return el;
+}
+const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+const running = new Map();
+function motionOn() { return !reduced.matches && $('motion-enabled').checked; }
+function motion(el, values, opts = {}) {
+  running.get(el)?.stop();
+  const spring = opts.spring && motionOn();
+  const control = animate(el, values, { duration: motionOn() ? (opts.spring ? .42 : opts.duration ?? .22) : 0, delay: motionOn() ? opts.delay ?? 0 : 0, ...(spring ? { type: 'spring', bounce: .08 } : {}) });
+  running.set(el, control);
+  return control;
+}
+const wait = ms => new Promise(r => setTimeout(r, motionOn() ? ms : Math.min(ms, 40)));
+function hm(iso) { return new Date(iso).toISOString().slice(11, 16); }
+function dayKey(iso) { return new Date(iso).toISOString().slice(0, 10); }
+function dayLabel(key) { const d = Date.parse(key + 'T00:00Z'), today = dayKey(new Date(NOW).toISOString()); return key === today ? 'Today' : key === dayKey(new Date(NOW - 864e5).toISOString()) ? 'Yesterday' : new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }); }
+function ago(iso) { const s = Math.max(0, (NOW - Date.parse(iso)) / 1000); return s < 3600 ? `${Math.round(s / 60)}m ago` : s < 86400 ? `${Math.round(s / 3600)}h ago` : `${Math.round(s / 86400)}d ago`; }
+
+// ---------------------------------------------------------------- sample data
+const CASES = {
+  62: { n: 62, title: 'Give every decision its evidence', stage: 'pr-open', label: 'PR open', meta: 'gate PASS · review APPROVE · PR #71 awaiting merge', step: 4 },
+  67: { n: 67, title: 'Trace the shape of the codebase', stage: 'in-flight', label: 'In flight', meta: 'attempt 2 · worker running 14m', step: 1 },
+  34: { n: 34, title: 'Calibrate the reviewer against real work', stage: 'escalated', label: 'Escalated', meta: 'reviewer REVISE ×3 · needs a human decision', step: 3 },
+  36: { n: 36, title: 'Keep review focused on what matters', stage: 'merged', label: 'Merged', meta: 'merged yesterday · 3 files', step: 5 },
+  85: { n: 85, title: 'Dock ticket details beside the board', stage: 'queued', label: 'Queued', meta: 'ready-for-agent · unclaimed', step: 0 },
+};
+const SOURCES = {
+  S1: { id: 'S1', label: 'Issue #62 · acceptance criteria', kind: 'issue', body: '- Decision context stays visible while investigating\n- Evidence is available without navigation\n- Long output is disclosed on demand (collapsed by default)' },
+  S2: { id: 'S2', label: '.factory/gate-report-62.md', kind: 'gate', body: 'attempt 2 · 14:32\n- conflict-markers: PASS\n- ruff: PASS\n- pytest: PASS (42 passed in 1.84s)\n- leak-scan: PASS' },
+  S3: { id: 'S3', label: '.factory/review-62.md', kind: 'review', body: 'VERDICT: APPROVE\n\nBlocking findings: none.\nSuggestion: the <details> disclosure was not exercised at narrow widths; consider a follow-up.' },
+  S4: { id: 'S4', label: 'PR #71 · checks and mergeability', kind: 'pr', body: 'head 4a1f2c9 · base main\nCI: 3/3 checks passing\nmergeable: MERGEABLE · no conflicts' },
+  S5: { id: 'S5', label: 'dispatcher run · 22:47', kind: 'run', body: '22:47:01 Starting factory dispatch\n22:47:02 claimed=1 active=1/2 capacity ok\n22:47:04 #67 attempt 2 running (14m)\n22:47:05 Finished' },
+  S6: { id: 'S6', label: '.factory/review-34.md (attempt 3)', kind: 'review', body: 'VERDICT: REVISE\n\nBlocking: calibration set hard-codes 4 outcomes; acceptance asks for a fixed set loaded from calibration/cases.json.\nRepeats the attempt 2 finding.' },
+  S7: { id: 'S7', label: 'Issue #34 · comments', kind: 'issue', body: 'Reporter (2d ago): the case file format is intentionally undecided; pick the simplest.\nWorker attempt 3 did not read this comment.' },
+  S8: { id: 'S8', label: 'systemd journal · factory.timer', kind: 'run', body: 'Sep 11 02:00 timer inactive (host suspend)\nSep 11 08:00 timer re-enabled by operator\n6 scheduled runs missed' },
+};
+const CONVERSATIONS = [
+  { id: 'c1', title: 'Is #62 safe to merge?', at: '2026-09-11T22:41:00Z', cases: [62], messages: [
+    { role: 'user', at: '2026-09-11T22:41:00Z', text: 'Is #62 safe to merge?', scopes: [{ kind: 'case', n: 62 }] },
+    { role: 'fm', at: '2026-09-11T22:41:04Z', trace: [['Observing snapshot', 380], ['Reading issue #62 acceptance criteria', 620], ['Reading .factory/gate-report-62.md', 540], ['Reading .factory/review-62.md', 700], ['Checking PR #71 checks and conflicts', 810]], text: 'Yes, with one caveat. The gate passed all four checks on attempt 2 [S2] and the reviewer approved with no blocking findings [S3]. PR #71 has green CI and no conflicts with main [S4].\n\nThe caveat: the acceptance criterion about long output being disclosed on demand [S1] is met with a <details> element the reviewer did not exercise at narrow widths [S3]. If that matters to you, ask me to draft a follow-up; otherwise this is a clean merge.', sources: ['S1', 'S2', 'S3', 'S4'], card: 62, proposal: { title: 'Merge PR #71 for #62', cmd: 'gh pr merge 71 --squash --delete-branch\nlabel: factory:pr-open → factory:merged', risk: 'Low', why: 'CI green, no conflicts, reviewer approved, no open blocking findings.' } },
+    { role: 'user', at: '2026-09-11T22:44:00Z', text: 'What would a follow-up cost?' },
+    { role: 'fm', at: '2026-09-11T22:44:03Z', trace: [['Reading .factory/review-62.md', 420], ['Estimating from recent attempts', 500]], text: 'About one worker attempt. The change is confined to briefing.css and the disclosure markup [S3]; comparable one-file tickets have landed in a single attempt this week. I would file it as a small ticket rather than block #62 on it.', sources: ['S3'] },
+  ] },
+  { id: 'c2', title: 'Why did #34 escalate three times?', at: '2026-09-11T20:12:00Z', cases: [34], messages: [
+    { role: 'user', at: '2026-09-11T20:12:00Z', text: 'Why did #34 escalate three times?' },
+    { role: 'fm', at: '2026-09-11T20:12:05Z', trace: [['Reading review-34.md attempts 1–3', 900], ['Reading issue #34 comments', 500]], text: 'The same blocking finding repeated on every attempt: the worker hard-coded four calibration outcomes while the acceptance asks for a fixed set loaded from a file [S6]. The reporter clarified two days ago that the file format is up to the worker [S7], but no attempt read that comment. This is a prompt-context gap, not a hard problem; a human note pinning the format would likely unblock a fourth attempt.', sources: ['S6', 'S7'], card: 34 },
+  ] },
+  { id: 'c3', title: 'Dispatcher timer went quiet overnight', at: '2026-09-11T08:05:00Z', cases: [], messages: [
+    { role: 'user', at: '2026-09-11T08:05:00Z', text: 'Nothing ran overnight. What happened?' },
+    { role: 'fm', at: '2026-09-11T08:05:06Z', trace: [['Reading systemd journal', 700], ['Comparing scheduled vs observed runs', 400]], text: 'The timer went inactive at 02:00 when the host suspended and stayed off until you re-enabled it at 08:00 [S8]. Six scheduled runs were missed; nothing was claimed during the gap, so no work is stranded. Consider `WakeSystem=` on the timer if overnight dispatch matters.', sources: ['S8'] },
+  ] },
+  { id: 'c4', title: 'Review bloat guard: what changed?', at: '2026-09-10T17:30:00Z', cases: [36], messages: [
+    { role: 'user', at: '2026-09-10T17:30:00Z', text: 'Summarize what #36 changed in the reviewer.' },
+    { role: 'fm', at: '2026-09-10T17:30:05Z', trace: [['Reading PR #66 diff', 800]], text: 'Blocking findings must now cite an acceptance criterion, a documented rule, or a concrete correctness defect; suggestions are listed separately and never block. Three files changed: the reviewer template, review.py, and its tests.', sources: [], card: 36 },
+  ] },
+  { id: 'c5', title: 'Handoff experiment: which ticket pair?', at: '2026-09-10T11:02:00Z', cases: [], messages: [
+    { role: 'user', at: '2026-09-10T11:02:00Z', text: 'Which two tickets would make a fair handoff experiment?' },
+    { role: 'fm', at: '2026-09-10T11:02:07Z', trace: [['Scanning open tickets for dependencies', 900]], text: 'Pair #67 with #85: the codebase-history map produces data the docked ticket detail would consume, and neither is started. Both are real wanted work, which keeps the experiment honest.', sources: [] },
+  ] },
+  { id: 'c6', title: 'Codebase history refresh cadence', at: '2026-09-09T15:44:00Z', cases: [67], messages: [
+    { role: 'user', at: '2026-09-09T15:44:00Z', text: 'How often does the codebase map refresh?' },
+    { role: 'fm', at: '2026-09-09T15:44:03Z', trace: [['Reading dashboard.py CodebaseMonitor', 500]], text: 'Every 30 seconds off the request thread; the last good map is kept if a refresh fails.', sources: [] },
+  ] },
+];
+const EVENTS = [
+  { at: '2026-09-09T15:50:00Z', text: 'Codebase monitor refreshed · 412 commits mapped', kind: 'info' },
+  { at: '2026-09-10T11:40:00Z', text: '#36 merged by human · PR #66', kind: 'merged', n: 36 },
+  { at: '2026-09-10T17:35:00Z', text: '#67 claimed · worker attempt 1', kind: 'claimed', n: 67 },
+  { at: '2026-09-11T02:00:00Z', text: 'dispatcher timer inactive · host suspend', kind: 'warn' },
+  { at: '2026-09-11T08:00:00Z', text: 'dispatcher timer re-enabled by operator', kind: 'info' },
+  { at: '2026-09-11T14:32:00Z', text: '#62 gate PASS · attempt 2', kind: 'gate', n: 62 },
+  { at: '2026-09-11T14:35:00Z', text: '#62 review APPROVE · PR #71 opened', kind: 'pr', n: 62 },
+  { at: '2026-09-11T20:05:00Z', text: '#34 escalated · reviewer REVISE ×3', kind: 'escalated', n: 34 },
+  { at: '2026-09-11T22:30:00Z', text: '#67 attempt 2 running', kind: 'claimed', n: 67 },
+  { at: '2026-09-11T22:47:00Z', text: 'dispatcher run · claimed 1 · capacity 1/2', kind: 'info' },
+];
+const SNAP = { waiting: [34, 62, 85], inflight: [67], merged: [36] };
+const QUICK = ["What's waiting on me?", 'Is #62 safe to merge?', 'Why did #34 escalate?', 'Summarize today\'s dispatcher runs'];
+const COMMANDS = [['/status', 'Grounded summary of what needs you'], ['/case 62', 'Attach a case as question scope'], ['/runs', 'Recent dispatcher runs'], ['/briefing 34', 'Full decision briefing for a case'], ['/new', 'Start a new conversation']];
+const REPLIES = {
+  status: { trace: [['Observing snapshot', 400], ['Counting cases by stage', 350], ['Reading dispatcher status', 450]], text: 'Three cases are waiting on you and one is in flight.\n\n#34 is escalated after three REVISE verdicts [S6]; #62 has an open PR with a passing gate and an approving review [S2][S3]; #85 is queued and unclaimed. #67 is on attempt 2 and has been running 14 minutes [S5]. The dispatcher is active and next fires at 22:52 [S5]. Nothing is stale.', sources: ['S2', 'S3', 'S5', 'S6'], cards: [34, 62, 85] },
+  merge: { trace: [['Observing snapshot', 380], ['Reading .factory/gate-report-62.md', 540], ['Reading .factory/review-62.md', 700], ['Checking PR #71 checks and conflicts', 810]], text: 'Still yes. Nothing about #62 changed since my last read: gate PASS on attempt 2 [S2], review APPROVE [S3], PR #71 mergeable with green CI [S4]. The only open thread is the narrow-width disclosure suggestion, which does not block.', sources: ['S2', 'S3', 'S4'], card: 62, proposal: { title: 'Merge PR #71 for #62', cmd: 'gh pr merge 71 --squash --delete-branch\nlabel: factory:pr-open → factory:merged', risk: 'Low', why: 'CI green, no conflicts, reviewer approved, no open blocking findings.' } },
+  escalate: { trace: [['Reading review-34.md attempts 1–3', 900], ['Reading issue #34 comments', 500], ['Comparing findings across attempts', 400]], text: 'Every attempt failed the same way: hard-coded outcomes instead of a loaded case file [S6]. The reporter already said the file format is the worker\'s call [S7], but that comment never reached the prompt. A one-line human note fixing the format should unblock a fourth attempt.', sources: ['S6', 'S7'], card: 34, proposal: { title: 'Add manager note and requeue #34', cmd: 'note: "Load cases from calibration/cases.json; JSON list of {input, expected}."\nlabel: ready-for-human → ready-for-agent', risk: 'Low', why: 'Reversible; the note is visible on the issue and the worker gets one more attempt within the cap.' } },
+  runs: { trace: [['Reading systemd journal', 650], ['Reading .factory/events.jsonl', 500]], text: 'Fourteen runs today, thirteen clean. The 22:47 run claimed nothing new and reported capacity 1/2 [S5]. The overnight gap from 02:00 to 08:00 was the suspended host, not a failure [S8].', sources: ['S5', 'S8'] },
+  codebase: { trace: [['Observing snapshot', 380], ['Reading dispatcher run 22:47', 500]], text: '#67 is on attempt 2 after attempt 1 hit a pytest failure in the history walker. It has been running 14 minutes [S5], which is within the median for this ticket size. No action needed yet; I will surface it if it exceeds 40 minutes.', sources: ['S5'], card: 67 },
+  generic: { trace: [['Observing snapshot', 400], ['Selecting relevant evidence', 600]], text: 'I can answer that from the current snapshot, but the most useful next question is about a specific case or run so I can cite exact evidence. Three cases are waiting on you: #34, #62, and #85 [S5].', sources: ['S5'], cards: [34, 62, 85] },
+};
+function reply(q) {
+  const s = q.toLowerCase();
+  if (/^\/status|waiting|status|today|summar/.test(s) && !/run/.test(s)) return REPLIES.status;
+  if (/merge|62/.test(s)) return REPLIES.merge;
+  if (/34|escalat/.test(s)) return REPLIES.escalate;
+  if (/run|dispatch|timer/.test(s)) return REPLIES.runs;
+  if (/67|codebase|history/.test(s)) return REPLIES.codebase;
+  return REPLIES.generic;
+}
+
+// ---------------------------------------------------------------- state
+const VARIANTS = {
+  A: ['Console', 'Conversations on the left, live context on the right, the transcript in between.'],
+  B: ['Focus', 'One reading column. History and tools live in a ⌘K palette and inline in the answer.'],
+  C: ['Workbench', 'Sessions as tabs. The conversation drives an evidence workbench beside it.'],
+  D: ['Thread', 'One continuous thread with factory events woven in. History is the scrollback.'],
+};
+const S = { variant: 'A', conv: 'c1', pending: null, scopes: [], palette: false, filter: '', menu: null, bench: { tabs: ['snapshot'], active: 'snapshot' }, lit: null };
+const conv = () => CONVERSATIONS.find(c => c.id === S.conv);
+
+// ---------------------------------------------------------------- shared pieces
+function caseChip(n, onclick) { const c = CASES[n]; return h(onclick ? 'button' : 'span', { class: `chip stage stage-${c.stage}`, onclick, style: onclick ? 'min-height:0' : '', title: c.title }, h('i'), `#${n} · ${c.label}`); }
+function cited(text) {
+  const frag = document.createDocumentFragment();
+  for (const part of String(text).split(/(\[S\d+\])/g)) {
+    const src = SOURCES[part.slice(1, -1)];
+    frag.append(src ? h('button', { class: 'cite' + (S.lit === src.id ? ' lit' : ''), title: src.label, onclick: () => openSource(src.id) }, src.id) : part);
+  }
+  return frag;
+}
+function sourcePanel(id) { const s = SOURCES[id]; return h('div', { class: 'source', id: `src-${id}` }, h('div', { class: 'sl' }, h('b', {}, s.id), h('span', {}, s.label), h('span', { class: 'faint', style: 'margin-left:auto' }, s.kind)), h('pre', {}, s.body)); }
+function traceNode(m) {
+  const done = !m.pending;
+  const total = m.trace.reduce((a, [, ms]) => a + ms, 0);
+  const rows = m.trace.map(([label, ms], i) => h('div', { class: 'row ' + (done || i < m.step ? 'done' : i === m.step ? 'live' : '') }, h('i'), label, (done || i < m.step) && h('span', { class: 'ms' }, `${ms}ms`)));
+  if (!done) return h('div', { class: 'trace', role: 'status', 'aria-live': 'polite' }, rows);
+  return h('details', { class: 'trace' }, h('summary', {}, h('span', { class: 'sum' }, `Read ${m.sources.length || m.trace.length} source${(m.sources.length || m.trace.length) === 1 ? '' : 's'} · ${(total / 1000).toFixed(1)}s`), h('span', { class: 'faint' }, 'inspect activity')), rows);
+}
+function stageTrack(c) {
+  const names = ['Triage', 'Worker', 'Gate', 'Review', 'Merge'];
+  return h('div', { class: 'stages', 'aria-label': 'Pipeline position' }, names.map((n, i) => h('span', { class: i < c.step ? 'done' : i === c.step ? 'cur' : '' }, h('i'), n)));
+}
+function caseCard(n) {
+  const c = CASES[n];
+  return h('div', { class: 'card' }, h('div', { class: 'ct' }, h('span', { class: 'n' }, `#${n}`), h('b', {}, c.title), h('span', { class: 'spacer' }), caseChip(n)), h('p', {}, c.meta), stageTrack(c),
+    h('div', { class: 'actions' }, h('button', { class: 'sm', onclick: () => openCase(n) }, 'Open case'), h('button', { class: 'sm', onclick: () => addScope({ kind: 'case', n }) }, 'Ask about this'), h('button', { class: 'sm ghost', onclick: () => send(`/briefing ${n}`) }, 'Full briefing')));
+}
+function proposalCard(m) {
+  const p = m.proposal, box = h('div', { class: 'card proposal' });
+  const render = () => {
+    box.replaceChildren(h('div', { class: 'ct' }, h('span', { class: 'eyebrow' }, 'Proposed action'), h('b', {}, p.title), h('span', { class: 'spacer' }), h('span', { class: 'risk' }, 'risk ', h('b', {}, p.risk))),
+      h('p', {}, p.why), h('pre', { class: 'cmd' }, p.cmd),
+      p.state === 'receipt' ? h('div', { class: 'receipt' }, 'Sample only. Nothing was sent: this prototype has no backend. In the real page this would show the server receipt with each step\'s outcome.') :
+      p.state === 'confirm' ? h('div', { class: 'actions' }, h('button', { class: 'primary', onclick: () => { p.state = 'receipt'; render(); motion(box, { opacity: [.4, 1] }); state(); } }, 'Confirm and apply'), h('button', { onclick: () => { p.state = null; render(); } }, 'Cancel'), h('span', { class: 'faint', style: 'align-self:center' }, 'exact preview above · stale-state refusal applies')) :
+      h('div', { class: 'actions' }, h('button', { onclick: () => { p.state = 'confirm'; render(); motion(box, { scale: [.98, 1] }, { spring: true }); state(); } }, 'Preview and confirm'), h('button', { class: 'ghost', onclick: () => send(`What are the risks of "${p.title}"?`) }, 'Ask about risks')));
+  };
+  render();
+  return box;
+}
+function messageNode(m, i) {
+  const fm = m.role === 'fm';
+  const tools = h('span', { class: 'tools' }, h('button', { onclick: () => navigator.clipboard?.writeText(m.text) }, 'copy'), fm && h('button', { onclick: () => send(conv().messages[i - 1]?.text || m.text) }, 'retry'), fm && m.card && h('button', { onclick: () => openCase(m.card) }, `#${m.card}`), !fm && h('button', { onclick: () => { const ta = document.querySelector('.composer textarea'); if (ta) { ta.value = m.text; ta.focus(); } } }, 'edit'));
+  const body = h('div', { class: 'body' });
+  if (fm) { body.append(cited(m.streamed ?? m.text)); if (m.pending && m.streamed != null) body.append(h('span', { class: 'cursor' })); }
+  else body.textContent = m.text;
+  return h('article', { class: `msg ${m.role}`, id: `m-${m.at}`, 'aria-busy': m.pending ? 'true' : 'false' },
+    h('div', { class: 'who' }, fm ? h('b', {}, 'Factory Manager') : 'You', h('time', {}, hm(m.at)), m.pending && h('span', { class: 'spinner', role: 'progressbar', 'aria-label': 'FM working' }), tools),
+    !fm && m.scopes?.length && h('div', { class: 'scopes-inline' }, m.scopes.map(s => scopeChip(s))),
+    fm && m.trace && (m.pending ? m.streamed == null : true) && traceNode(m),
+    (!fm || m.streamed != null || !m.pending) && body,
+    fm && !m.pending && m.card && caseCard(m.card),
+    fm && !m.pending && m.cards && h('div', { class: 'scopes-inline' }, m.cards.map(n => caseChip(n, () => openCase(n)))),
+    fm && !m.pending && m.proposal && proposalCard(m),
+    fm && !m.pending && m.sources?.length && S.variant !== 'C' && h('details', { class: 'trace', ontoggle: e => { if (e.target.open) motion(e.target, { opacity: [.5, 1] }); } }, h('summary', {}, h('span', { class: 'sum' }, `Evidence · ${m.sources.length} source${m.sources.length === 1 ? '' : 's'}`), h('span', { class: 'faint' }, 'cited above')), h('div', { class: 'sources' }, m.sources.map(sourcePanel))));
+}
+function scopeChip(s, remove) { return h('span', { class: 'chip' }, s.kind === 'case' ? h('i', { style: `background: var(--stage-${CASES[s.n].stage})` }) : null, s.kind === 'case' ? `#${s.n} ${CASES[s.n].title}` : s.kind === 'run' ? 'run 22:47' : s.label, remove && h('button', { onclick: remove, 'aria-label': 'Remove scope' }, '×')); }
+function addScope(s) { if (!S.scopes.some(x => x.kind === s.kind && x.n === s.n && x.label === s.label)) S.scopes.push(s); renderScopes(); document.querySelector('.composer textarea')?.focus(); state(); }
+function renderScopes() { const el = document.querySelector('.composer .scopes'); if (el) el.replaceChildren(...S.scopes.map((s, i) => scopeChip(s, () => { S.scopes.splice(i, 1); renderScopes(); state(); }))); }
+function composer() {
+  const ta = h('textarea', { rows: 1, placeholder: 'Ask the Factory Manager…  / for commands', 'aria-label': 'Your question', maxlength: 4000 });
+  const send_ = h('button', { class: 'primary', type: 'submit' }, 'Ask');
+  const stop = h('button', { type: 'button', hidden: true, onclick: () => S.pending && (S.pending.cancel = true) }, 'Stop');
+  const status = h('div', { class: 'status', role: 'status' });
+  const menu = h('div', { class: 'menu', hidden: true, role: 'listbox' });
+  const form = h('form', { class: 'composer', onsubmit: e => { e.preventDefault(); send(ta.value); ta.value = ''; ta.style.height = ''; } },
+    menu, h('div', { class: 'scopes' }), h('div', { class: 'box' }, ta, h('div', { style: 'display:flex;gap:6px' }, stop, send_)),
+    h('div', { class: 'toolrow' }, h('button', { class: 'sm ghost', type: 'button', onclick: () => pick(menu, 'case') }, '+ case'), h('button', { class: 'sm ghost', type: 'button', onclick: () => pick(menu, 'run') }, '+ run'), h('button', { class: 'sm ghost', type: 'button', onclick: () => pick(menu, 'artifact') }, '+ artifact'),
+      h('span', { class: 'spacer' }), h('span', {}, h('kbd', {}, 'Enter'), ' send · ', h('kbd', {}, 'Shift+Enter'), ' newline · ', h('kbd', {}, '/'), ' commands')), status);
+  ta.oninput = () => { ta.style.height = ''; ta.style.height = Math.min(200, ta.scrollHeight) + 'px'; slash(menu, ta); };
+  ta.onkeydown = e => {
+    if (!menu.hidden) { const items = [...menu.querySelectorAll('button')], i = items.findIndex(b => b.getAttribute('aria-selected') === 'true');
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); items[i]?.setAttribute('aria-selected', 'false'); items[(i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.setAttribute('aria-selected', 'true'); return; }
+      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); items[i]?.click(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); menu.hidden = true; return; } }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
+    if (e.key === 'ArrowUp' && !ta.value) { const last = conv().messages.findLast(m => m.role === 'user'); if (last) { ta.value = last.text; ta.oninput(); } }
+  };
+  form.status = status; form.stop = stop; form.send = send_; form.ta = ta;
+  return form;
+}
+function slash(menu, ta) {
+  const v = ta.value;
+  if (!v.startsWith('/')) { menu.hidden = true; return; }
+  const q = v.slice(1).toLowerCase(), hits = COMMANDS.filter(([c]) => c.slice(1).startsWith(q.split(' ')[0]));
+  if (!hits.length) { menu.hidden = true; return; }
+  menu.replaceChildren(h('div', { class: 'mh' }, 'Commands'), ...hits.map(([c, d], i) => h('button', { type: 'button', role: 'option', 'aria-selected': i === 0 ? 'true' : 'false', onclick: () => { ta.value = c + ' '; menu.hidden = true; ta.focus(); if (c === '/new') { ta.value = ''; newConv(); } } }, h('span', {}, c), h('small', {}, d))));
+  if (menu.hidden) { menu.hidden = false; motion(menu, { opacity: [0, 1], y: [6, 0] }); }
+}
+function pick(menu, kind) {
+  const items = kind === 'case' ? Object.values(CASES).map(c => [`#${c.n} · ${c.title}`, c.label, () => addScope({ kind: 'case', n: c.n })])
+    : kind === 'run' ? [['dispatcher run · 22:47', 'latest', () => addScope({ kind: 'run', label: 'run 22:47' })], ['dispatcher run · 22:42', 'clean', () => addScope({ kind: 'run', label: 'run 22:42' })]]
+    : Object.values(SOURCES).filter(s => s.kind !== 'issue').map(s => [s.label, s.kind, () => addScope({ kind: 'artifact', label: s.label })]);
+  menu.replaceChildren(h('div', { class: 'mh' }, `Attach ${kind}`), ...items.map(([l, d, fn], i) => h('button', { type: 'button', role: 'option', 'aria-selected': i === 0 ? 'true' : 'false', onclick: () => { fn(); menu.hidden = true; } }, h('span', {}, l), h('small', {}, d))));
+  menu.hidden = false; motion(menu, { opacity: [0, 1], y: [6, 0] });
+  const close = e => { if (!menu.contains(e.target)) { menu.hidden = true; document.removeEventListener('pointerdown', close); } };
+  setTimeout(() => document.addEventListener('pointerdown', close), 0);
+}
+function chatPane() {
+  const c = conv();
+  return h('section', { class: 'chat', 'aria-label': 'Conversation' },
+    S.variant !== 'B' && S.variant !== 'D' && h('header', { class: 'chat-head' }, h('h2', {}, c.title), c.cases.map(n => caseChip(n, () => openCase(n))), h('span', { class: 'spacer' }), h('span', { class: 'faint', style: 'font-size:11px' }, `started ${ago(c.at)} · ${c.messages.length} messages`), h('button', { class: 'sm', onclick: newConv }, 'New conversation')),
+    h('div', { class: 'transcript', id: 'transcript', role: 'log', 'aria-live': 'polite' }), composer());
+}
+
+// ---------------------------------------------------------------- transcript + simulation
+function renderTranscript(animateNew = false) {
+  const t = $('transcript'); if (!t) return;
+  const c = conv();
+  const nodes = S.variant === 'D' ? threadNodes() : c.messages.map((m, i) => messageNode(m, i));
+  if (!c.messages.length && S.variant !== 'D') nodes.push(h('div', { class: 'msg fm' }, h('div', { class: 'who' }, h('b', {}, 'Factory Manager'), h('time', {}, hm(new Date(NOW).toISOString()))), h('div', { class: 'body' }, 'Three cases are waiting on you: #34 escalated, #62 with an open PR, #85 queued. #67 is in flight. Ask about any of them, or type / for commands.'), h('div', { class: 'quick' }, QUICK.map(q => h('button', { onclick: () => send(q) }, q)))));
+  if (S.variant !== 'D' && c.messages.length && !S.pending) nodes.push(h('div', { class: 'quick', style: 'padding-left:16px' }, QUICK.filter(q => !c.messages.some(m => m.text === q)).slice(0, 3).map(q => h('button', { class: 'sm', style: 'min-height:32px', onclick: () => send(q) }, q))));
+  t.replaceChildren(...nodes);
+  const since = document.querySelector('.since b'); if (since) { const n = sinceCount(); since.textContent = `${n} factory event${n === 1 ? '' : 's'}`; }
+  if (animateNew && motionOn()) nodes.slice(-2).forEach((n, i) => motion(n, { opacity: [0, 1], y: [12, 0] }, { delay: i * .05 }));
+  scrollBottom();
+  renderContext();
+  const f = document.querySelector('.composer');
+  if (f) { f.stop.hidden = !S.pending; f.send.hidden = !!S.pending; f.ta.disabled = !!S.pending; f.status.replaceChildren(...(S.pending ? [h('span', { class: 'spinner' }), S.pending.label] : ['Read-only advice from the configured Factory Manager. Nothing here runs commands or changes GitHub.'])); }
+}
+function scrollBottom() { const t = $('transcript'); if (!t) return; if (S.variant === 'B' || S.variant === 'D') window.scrollTo({ top: document.body.scrollHeight, behavior: motionOn() ? 'smooth' : 'auto' }); else t.scrollTo({ top: t.scrollHeight, behavior: motionOn() ? 'smooth' : 'auto' }); }
+async function send(text) {
+  text = (text || '').trim();
+  if (!text || S.pending) return;
+  const c = conv(), at = new Date(NOW + (Date.now() % 1e6) + 60000).toISOString();
+  if (text === '/new') { newConv(); return; }
+  const m = text.match(/^\/(case|briefing) (\d+)/);
+  if (m && CASES[m[2]]) { addScope({ kind: 'case', n: +m[2] }); if (m[1] === 'case') { document.querySelector('.composer textarea').value = ''; return; } }
+  c.messages.push({ role: 'user', at, text, scopes: S.scopes.splice(0) }); renderScopes();
+  if (c.messages.length === 1) c.title = text.slice(0, 48);
+  const r = reply(text), fm = { role: 'fm', at: new Date(Date.parse(at) + 3000).toISOString(), trace: r.trace, text: r.text, sources: r.sources, card: r.card, cards: r.cards, proposal: r.proposal && { ...r.proposal }, pending: true, step: 0, streamed: null };
+  c.messages.push(fm);
+  S.pending = { cancel: false, label: 'Waiting for FM · observing…' };
+  setLed('busy', 'Factory Manager working');
+  renderHistory(); renderTranscript(true); state();
+  const bar = $('progress'); bar.hidden = false; motion(bar.firstElementChild, { width: '0%' }, { duration: 0 });
+  for (let i = 0; i < fm.trace.length && !S.pending.cancel; i++) {
+    fm.step = i; S.pending.label = `Waiting for FM · ${fm.trace[i][0].toLowerCase()}…`; renderTranscript(); tick(fm.trace[i][0]);
+    motion(bar.firstElementChild, { width: `${((i + 1) / (fm.trace.length + 1)) * 100}%` });
+    await wait(fm.trace[i][1]);
+  }
+  fm.step = fm.trace.length; S.pending.label = 'Waiting for FM · composing answer…'; fm.streamed = '';
+  const words = fm.text.split(/(\s+)/);
+  for (let i = 0; i < words.length && !S.pending.cancel; i++) { fm.streamed += words[i]; if (i % 3 === 0) { renderTranscript(); await wait(28); } }
+  if (S.pending.cancel) { fm.text = fm.streamed + ' — (stopped)'; fm.sources = []; fm.card = fm.cards = fm.proposal = null; }
+  fm.pending = false; fm.streamed = null; S.pending = null;
+  motion(bar.firstElementChild, { width: '100%' }); setTimeout(() => { if (!S.pending) bar.hidden = true; }, motionOn() ? 320 : 0);
+  setLed('ok', 'Factory Manager ready');
+  if (S.variant === 'C' && fm.sources[0]) openBench(fm.card ? `case:${fm.card}` : `src:${fm.sources[0]}`);
+  renderHistory(); renderTranscript(true); state();
+}
+function tick(label) { const t = document.querySelector('.ticker'); if (t) { t.replaceChildren(h('span', { class: 'spinner' }), label); motion(t, { opacity: [0, 1], x: [8, 0] }); } const d = document.querySelector('.dock-trace'); if (d) { d.replaceChildren(h('div', { class: 'row live' }, h('i'), label)); } }
+function setLed(cls, text) { $('led').className = 'led ' + cls; $('led-text').textContent = text; }
+function newConv() {
+  const id = 'c' + (CONVERSATIONS.length + 1);
+  CONVERSATIONS.unshift({ id, title: 'New conversation', at: new Date(NOW + 60000).toISOString(), cases: [], messages: [] });
+  S.conv = id; S.scopes = []; S.palette = false; S.filter = ''; S.bench = { tabs: ['snapshot'], active: 'snapshot' };
+  renderApp(); document.querySelector('.composer textarea')?.focus();
+}
+function switchConv(id) { if (S.pending) return; S.conv = id; S.palette = false; S.scopes = []; S.bench = { tabs: ['snapshot'], active: 'snapshot' }; renderApp(); }
+function openCase(n) {
+  if (S.variant === 'C') openBench(`case:${n}`);
+  else if (S.variant === 'A') { const el = $(`dock-case-${n}`); if (el) { el.scrollIntoView({ block: 'nearest' }); motion(el, { scale: [1.04, 1], borderColor: ['var(--accent)', 'var(--border-hairline)'] }, { spring: true }); } else addScope({ kind: 'case', n }); }
+  else addScope({ kind: 'case', n });
+  state();
+}
+function openSource(id) {
+  S.lit = id;
+  if (S.variant === 'C') { openBench(`src:${id}`); return; }
+  const inline = [...document.querySelectorAll(`#src-${id}`)].at(-1);
+  if (inline) { const d = inline.closest('details'); if (d) d.open = true; inline.scrollIntoView({ block: 'center', behavior: motionOn() ? 'smooth' : 'auto' }); motion(inline, { backgroundColor: ['var(--accent-tint-strong)', 'var(--surface-sunken)'] }, { duration: .9 }); }
+  const dock = document.querySelector(`[data-src="${id}"]`);
+  if (dock) { document.querySelectorAll('.src.lit').forEach(x => x.classList.remove('lit')); dock.classList.add('lit'); dock.scrollIntoView({ block: 'nearest' }); }
+  document.querySelectorAll('.cite').forEach(b => b.classList.toggle('lit', b.textContent === id));
+  state();
+}
+
+// ---------------------------------------------------------------- history (rail / palette / tabs / thread)
+function historyList(onPick) {
+  const q = S.filter.toLowerCase(), groups = new Map();
+  for (const c of CONVERSATIONS) { if (q && !(c.title + ' ' + c.cases.map(n => '#' + n).join(' ')).toLowerCase().includes(q)) continue; const k = dayLabel(dayKey(c.at)); (groups.get(k) || groups.set(k, []).get(k)).push(c); }
+  const out = [];
+  for (const [k, list] of groups) { out.push(h('div', { class: 'hh' }, k)); for (const c of list) out.push(h('button', { 'aria-current': c.id === S.conv ? 'page' : null, onclick: () => onPick(c.id) }, h('span', { class: 'ht' }, c.title), h('span', { class: 'hm' }, h('span', {}, hm(c.at)), h('span', {}, `${c.messages.length} msgs`), c.cases.map(n => h('span', { class: `chip stage stage-${CASES[n].stage}`, style: 'padding:0 6px' }, h('i'), `#${n}`))))); }
+  if (!out.length) out.push(h('div', { class: 'hh' }, 'No conversations match'));
+  return h('div', { class: 'hist' }, out);
+}
+function renderHistory() {
+  const rail = $('rail-list'); if (rail) rail.replaceChildren(historyList(switchConv));
+  const tabs = $('sessions'); if (tabs) { renderSessions(tabs); }
+  const pl = $('palette-list'); if (pl) renderPaletteList(pl);
+}
+function renderContext() {
+  const dock = $('dock-sources'); if (dock) { const ids = [...new Set(conv().messages.flatMap(m => m.sources || []))]; dock.replaceChildren(...(ids.length ? ids.map(id => h('button', { class: 'src' + (S.lit === id ? ' lit' : ''), 'data-src': id, onclick: () => openSource(id) }, h('b', {}, id), SOURCES[id].label)) : [h('span', { class: 'faint' }, 'Nothing cited yet.')])); }
+  const dt = document.querySelector('.dock-trace'); if (dt && !S.pending) dt.replaceChildren(h('span', { class: 'faint' }, 'Idle. Activity appears here while FM reads evidence.'));
+  const tk = document.querySelector('.ticker'); if (tk && !S.pending) tk.replaceChildren(h('i', { class: 'led ok' }), 'FM idle');
+}
+
+// A ---------------------------------------------------------------
+function variantA() {
+  const dockCase = n => { const c = CASES[n]; return h('button', { class: 'case', id: `dock-case-${n}`, onclick: () => addScope({ kind: 'case', n }) }, h('span', { class: 'ct' }, h('b', {}, `#${n}`), h('span', {}, c.title)), h('small', {}, c.meta)); };
+  return h('div', { class: 'va' },
+    h('aside', { class: 'rail', 'aria-label': 'Conversations' }, h('div', { class: 'rh' }, h('button', { class: 'primary', onclick: newConv }, '+ New conversation'), h('input', { class: 'search', type: 'search', placeholder: 'Search conversations', 'aria-label': 'Search conversations', value: S.filter, oninput: e => { S.filter = e.target.value; renderHistory(); } })), h('div', { class: 'rl', id: 'rail-list' })),
+    chatPane(),
+    h('aside', { class: 'dock', 'aria-label': 'Live context' },
+      h('section', {}, h('h3', {}, 'FM activity'), h('div', { class: 'trace dock-trace' })),
+      h('section', {}, h('h3', {}, `Waiting on you · ${SNAP.waiting.length}`), SNAP.waiting.map(dockCase)),
+      h('section', {}, h('h3', {}, 'In flight'), SNAP.inflight.map(dockCase)),
+      h('section', {}, h('h3', {}, 'Cited in this conversation'), h('div', { id: 'dock-sources', style: 'display:grid;gap:2px' })),
+      h('section', {}, h('h3', {}, 'Dispatcher'), h('div', { class: 'faint' }, h('i', { class: 'led ok' }), 'active · 14 runs today · next 22:52'))));
+}
+// B ---------------------------------------------------------------
+function renderPaletteList(pl) {
+  const q = S.filter.toLowerCase();
+  pl.replaceChildren(h('div', { class: 'hist' }, h('div', { class: 'hh' }, 'Actions'), COMMANDS.filter(([c, d]) => !q || (c + d).toLowerCase().includes(q)).map(([c, d]) => h('button', { class: 'cmd', onclick: () => { togglePalette(false); if (c === '/new') newConv(); else { const ta = document.querySelector('.composer textarea'); ta.value = c + ' '; ta.focus(); ta.oninput(); } } }, h('span', {}, c), h('small', {}, d)))), historyList(id => { togglePalette(false); switchConv(id); }));
+}
+function togglePalette(open) {
+  S.palette = open;
+  const p = $('palette'), sc = $('palette-scrim'); if (!p) return;
+  if (open) { p.hidden = sc.hidden = false; S.filter = ''; $('palette-search').value = ''; renderPaletteList($('palette-list')); motion(p, { opacity: [0, 1], scale: [.97, 1] }); motion(sc, { opacity: [0, 1] }); $('palette-search').focus(); }
+  else { motion(p, { opacity: 0, scale: .98 }); motion(sc, { opacity: 0 }); setTimeout(() => { if (!S.palette) { p.hidden = true; sc.hidden = true; } }, motionOn() ? 240 : 0); document.querySelector('.composer textarea')?.focus(); }
+  state();
+}
+function variantB() {
+  const c = conv();
+  return h('div', { class: 'vb' },
+    h('div', { class: 'strip' }, h('div', { class: 'crumbs' }, h('button', { class: 'sm ghost', onclick: () => togglePalette(true) }, '☰ Recent'), h('span', { class: 'faint' }, '/'), h('b', {}, c.title), c.cases.map(n => caseChip(n, () => openCase(n)))), h('span', { class: 'spacer' }), h('span', { class: 'faint' }, `${c.messages.length} messages`), h('button', { class: 'sm ghost', onclick: () => togglePalette(true) }, h('kbd', {}, '⌘K'), ' history & commands'), h('button', { class: 'sm', onclick: newConv }, 'New')),
+    chatPane(),
+    h('div', { class: 'palette-scrim', id: 'palette-scrim', hidden: true, onclick: () => togglePalette(false) }),
+    h('div', { class: 'palette', id: 'palette', hidden: true, role: 'dialog', 'aria-label': 'History and commands' }, h('input', { class: 'search', id: 'palette-search', type: 'search', placeholder: 'Search conversations, cases, or type a command', oninput: e => { S.filter = e.target.value; renderPaletteList($('palette-list')); } }), h('div', { class: 'pl', id: 'palette-list' }), h('div', { class: 'hint' }, h('span', {}, h('kbd', {}, 'Esc'), ' close'), h('span', {}, h('kbd', {}, '↵'), ' open'), h('span', {}, 'Conversations stay in this browser session'))));
+}
+// C ---------------------------------------------------------------
+function renderSessions(tabs) {
+  tabs.replaceChildren(...CONVERSATIONS.slice(0, 6).map(c => h('button', { 'aria-current': c.id === S.conv ? 'page' : null, onclick: () => switchConv(c.id) }, c.title.length > 26 ? c.title.slice(0, 26) + '…' : c.title, h('small', {}, ago(c.at)))), h('button', { class: 'plus', onclick: newConv, 'aria-label': 'New conversation' }, '+'), h('span', { class: 'tabline', id: 'tabline' }));
+  const on = tabs.querySelector('[aria-current=page]'); if (on) motion($('tabline'), { x: on.offsetLeft, width: on.offsetWidth }, { spring: true });
+}
+function benchTab(key) { if (key === 'snapshot') return 'Snapshot'; const [k, v] = key.split(':'); return k === 'case' ? `#${v} · ${CASES[v].title.slice(0, 22)}` : `${v} · ${SOURCES[v].label.split(' · ')[0].replace('.factory/', '')}`; }
+function benchBody(key) {
+  if (key === 'snapshot') return [h('h3', {}, 'What the manager sees'), h('div', { class: 'grid' }, h('div', { class: 'kv' }, h('label', {}, 'Waiting on you'), h('span', { class: 'v' }, '3'), h('small', {}, '#34 · #62 · #85')), h('div', { class: 'kv' }, h('label', {}, 'In flight'), h('span', { class: 'v' }, '1'), h('small', {}, '#67 · attempt 2 · 14m')), h('div', { class: 'kv' }, h('label', {}, 'Dispatcher'), h('span', { class: 'v' }, '14'), h('small', {}, 'runs today · next 22:52')), h('div', { class: 'kv' }, h('label', {}, 'Gate pass rate'), h('span', { class: 'v' }, '94%'), h('small', {}, 'last 24 runs'))), h('div', { class: 'caselist' }, [...SNAP.waiting, ...SNAP.inflight].map(n => h('button', { onclick: () => openBench(`case:${n}`) }, h('b', {}, `#${n}`), CASES[n].title, caseChip(n), h('small', {}, CASES[n].meta))))];
+  const [k, v] = key.split(':');
+  if (k === 'case') { const c = CASES[v]; return [h('h3', {}, `#${v} · ${c.title}`), h('p', { class: 'muted' }, c.meta), h('div', { class: 'card', style: 'margin:14px 0' }, stageTrack(c)), h('div', { class: 'sources' }, Object.values(SOURCES).filter(s => s.body.includes(`#${v}`) || s.label.includes(`-${v}`) || s.label.includes(`#${v}`)).map(s => sourcePanel(s.id))), h('div', { class: 'actions', style: 'margin-top:14px;display:flex;gap:8px' }, h('button', { onclick: () => addScope({ kind: 'case', n: +v }) }, 'Ask about this case'), h('button', { class: 'ghost', onclick: () => send(`/briefing ${v}`) }, 'Full briefing'))]; }
+  const s = SOURCES[v];
+  return [h('h3', {}, s.label), h('p', { class: 'muted' }, `${s.kind} · read by FM ${ago(conv().at)} · server-allowlisted artifact`), h('pre', {}, s.body), h('div', { style: 'margin-top:14px;display:flex;gap:8px' }, h('button', { onclick: () => addScope({ kind: 'artifact', label: s.label }) }, 'Ask about this source'), h('button', { class: 'ghost', onclick: () => navigator.clipboard?.writeText(s.body) }, 'Copy'))];
+}
+function openBench(key) {
+  if (!S.bench.tabs.includes(key)) S.bench.tabs.push(key);
+  S.bench.active = key; renderBench(true); state();
+}
+function renderBench(animateBody = false) {
+  const bt = $('bench-tabs'), bb = $('bench-body'); if (!bt) return;
+  bt.replaceChildren(...S.bench.tabs.map(k => h('button', { role: 'tab', 'aria-selected': k === S.bench.active ? 'true' : 'false', onclick: () => { S.bench.active = k; renderBench(true); } }, benchTab(k), k !== 'snapshot' && h('span', { class: 'x', role: 'button', 'aria-label': 'Close tab', onclick: e => { e.stopPropagation(); S.bench.tabs = S.bench.tabs.filter(x => x !== k); if (S.bench.active === k) S.bench.active = S.bench.tabs.at(-1); renderBench(true); } }, '×'))), h('span', { class: 'ticker' }));
+  bb.replaceChildren(...benchBody(S.bench.active));
+  if (animateBody) motion(bb, { opacity: [.2, 1], x: [10, 0] });
+  renderContext();
+}
+function variantC() {
+  return h('div', { class: 'vc' }, h('div', { class: 'sessions', id: 'sessions', role: 'tablist', 'aria-label': 'Conversations' }),
+    h('div', { class: 'split' }, chatPane(), h('section', { class: 'bench', 'aria-label': 'Evidence workbench' }, h('div', { class: 'bt', id: 'bench-tabs', role: 'tablist' }), h('div', { class: 'bb', id: 'bench-body' }))));
+}
+// D ---------------------------------------------------------------
+function threadNodes() {
+  const items = [];
+  for (const c of CONVERSATIONS) c.messages.forEach((m, i) => items.push({ at: m.at, kind: 'msg', m, i, c, first: i === 0 }));
+  for (const e of EVENTS) items.push({ at: e.at, kind: 'ev', e });
+  items.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  const out = []; let day = null;
+  for (const it of items) {
+    const k = dayKey(it.at); if (k !== day) { day = k; out.push(h('div', { class: 'day', id: `day-${k}` }, dayLabel(k))); }
+    if (it.kind === 'ev') out.push(h('div', { class: `ev ${it.e.kind}` }, h('time', {}, hm(it.at)), h('span', {}, it.e.text), it.e.n && h('button', { onclick: () => addScope({ kind: 'case', n: it.e.n }) }, 'ask')));
+    else { if (it.first) out.push(h('div', { class: 'topic' }, it.c.title)); out.push(messageNode(it.m, it.i)); }
+  }
+  if (S.pending) { const fm = conv().messages.at(-1); if (fm?.trace && fm.streamed == null) out.push(h('div', { class: 'ev fm live' }, h('time', {}, 'now'), h('span', {}, `FM · ${fm.trace[fm.step]?.[0] || 'composing'}`))); }
+  return out;
+}
+function variantD() {
+  const days = [...new Set([...CONVERSATIONS.map(c => dayKey(c.at)), ...EVENTS.map(e => dayKey(e.at))])].sort();
+  const sinceLast = sinceCount();
+  return h('div', { class: 'vd' },
+    h('div', { class: 'thread' },
+      h('div', { class: 'since' }, h('i', { class: 'led ok' }), h('span', {}, h('b', {}, `${sinceLast} factory event${sinceLast === 1 ? '' : 's'}`), ' since your last question'), h('span', { class: 'spacer' }), h('input', { class: 'search', type: 'search', placeholder: 'Find in thread', 'aria-label': 'Find in thread', style: 'width:200px', oninput: e => { const q = e.target.value.toLowerCase(); document.querySelectorAll('#transcript .msg, #transcript .ev, #transcript .topic').forEach(n => { n.hidden = q && !n.textContent.toLowerCase().includes(q); }); } }), h('button', { class: 'sm ghost', onclick: () => send("What's waiting on me?") }, 'Catch me up')),
+      h('div', { class: 'transcript', id: 'transcript', role: 'log', 'aria-live': 'polite', style: 'overflow:visible;padding:0' }), composer()),
+    h('aside', { class: 'rail', 'aria-label': 'Timeline' }, h('span', {}, 'TIMELINE'), h('div', { class: 'ticks' }, days.map(k => h('button', { id: `tick-${k}`, onclick: () => { $(`day-${k}`)?.scrollIntoView({ behavior: motionOn() ? 'smooth' : 'auto', block: 'start' }); } }, dayLabel(k), h('small', {}, `${CONVERSATIONS.filter(c => dayKey(c.at) === k).length} conv · ${EVENTS.filter(e => dayKey(e.at) === k).length} ev`)))), h('button', { class: 'ghost now', style: 'padding:4px 0;min-height:0;text-align:left', onclick: scrollBottom }, 'NOW ↓')));
+}
+function sinceCount() { const last = Math.max(0, ...CONVERSATIONS.flatMap(c => c.messages.map(m => Date.parse(m.at)))); return EVENTS.filter(e => Date.parse(e.at) > last).length; }
+let railObserver;
+function watchDays() {
+  railObserver?.disconnect(); if (S.variant !== 'D') return;
+  railObserver = new IntersectionObserver(entries => { for (const e of entries) if (e.isIntersecting) { document.querySelectorAll('.ticks button').forEach(b => b.removeAttribute('aria-current')); $(`tick-${e.target.id.slice(4)}`)?.setAttribute('aria-current', 'true'); } }, { rootMargin: '-140px 0px -60% 0px' });
+  document.querySelectorAll('.day').forEach(d => railObserver.observe(d));
+}
+
+// ---------------------------------------------------------------- app
+const RENDER = { A: variantA, B: variantB, C: variantC, D: variantD };
+function renderApp() {
+  document.body.dataset.variant = S.variant;
+  const app = $('app'); app.replaceChildren(RENDER[S.variant]());
+  renderHistory(); renderTranscript(); if (S.variant === 'C') renderBench(); renderScopes(); watchDays();
+  motion(app, { opacity: [0, 1] });
+  state();
+}
+function setVariant(key) {
+  S.variant = key; S.palette = false;
+  const url = new URL(location.href); url.searchParams.set('variant', key); history.replaceState(null, '', url);
+  $('variant-label').textContent = `${key} · ${VARIANTS[key][0]}`; $('variant-label').title = VARIANTS[key][1];
+  document.title = `Factory — Chat · ${VARIANTS[key][0]} (prototype)`;
+  renderApp();
+}
+function cycle(step) { const keys = Object.keys(VARIANTS); setVariant(keys[(keys.indexOf(S.variant) + step + keys.length) % keys.length]); }
+function state() { $('state').textContent = `${S.variant} / ${VARIANTS[S.variant][0]} · ${VARIANTS[S.variant][1]}  —  conversation ${S.conv} · ${conv().messages.length} msgs · scopes ${S.scopes.length} · FM ${S.pending ? 'working' : 'idle'}${S.variant === 'C' ? ` · bench ${S.bench.active}` : ''}${S.palette ? ' · palette open' : ''} · motion ${reduced.matches ? 'system-reduced' : $('motion-enabled').checked ? 'on' : 'off'}`; }
+const topbar = document.querySelector('.topbar');
+function measureTop() { document.documentElement.style.setProperty('--top', topbar.offsetHeight + 'px'); }
+new ResizeObserver(measureTop).observe(topbar); measureTop();
+$('previous').onclick = () => cycle(-1); $('next').onclick = () => cycle(1);
+$('motion-enabled').onchange = () => { if (!motionOn()) running.forEach(c => c.complete()); state(); }; reduced.addEventListener('change', () => state());
+document.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); if (S.variant === 'B') togglePalette(!S.palette); else document.querySelector('.rail .search, .sessions button[aria-current], .thread .search')?.focus(); return; }
+  if (e.key === 'Escape') { if (S.palette) togglePalette(false); document.querySelectorAll('.menu').forEach(m => { m.hidden = true; }); return; }
+  if (e.target.matches('input,textarea,select,[contenteditable]')) return;
+  if (e.key === 'ArrowLeft') cycle(-1); else if (e.key === 'ArrowRight') cycle(1);
+  else if (e.key === '/') { e.preventDefault(); const ta = document.querySelector('.composer textarea'); if (ta) { ta.focus(); ta.value = '/'; ta.oninput(); } }
+});
+const initial = new URLSearchParams(location.search).get('variant');
+setVariant(VARIANTS[initial] ? initial : 'A');
+</script>
+</body>
+</html>
