@@ -1366,10 +1366,15 @@ the checkout, then launch:
 
 ```sh
 # One-time: install the pinned Pi runtime (Node >=22.19) into the console.
+# The console lives in this factory checkout; install it there once.
 npm ci --ignore-scripts --no-audit --no-fund --prefix console/app
 
 # Open the read-only console on an explicit repository/checkout.
-factory chat --root /path/to/checkout --repository owner/name
+# --root is the managed repository's main checkout; --console defaults to
+# <root>/console/app but may point at any installed console directory, so one
+# installed console can serve a --root that has no console/app of its own.
+factory chat --root /path/to/checkout --repository owner/name \
+    --console /path/to/factory/console/app
 
 # Resume this scope's latest conversation; startup always reobserves fresh evidence.
 factory chat --root /path/to/checkout --repository owner/name --continue

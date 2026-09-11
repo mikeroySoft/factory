@@ -49,7 +49,7 @@ def args(root: Path, **over):
     argv = ["--root", str(root), "--repository", over.pop("repository", "owner/name")]
     if over.pop("resume", False):
         argv.append("--continue")
-    for key in ("provider", "model"):
+    for key in ("provider", "model", "console"):
         if key in over:
             argv += [f"--{key}", over.pop(key)]
     assert not over, over
@@ -145,6 +145,14 @@ class ChatLauncherTest(unittest.TestCase):
             (fresh / "console/app/extension.ts").write_text("// ext")  # but no node_modules
             with self.assertRaises(SystemExit):
                 self.prepare(args(fresh))
+
+    def test_console_decoupled_from_root(self):
+        with tempfile.TemporaryDirectory() as other:
+            bare = Path(other)  # a --root with no console/app of its own
+            argv, env, _ = self.prepare(
+                args(bare, console=str(self.root / "console/app")))
+            self.assertEqual(env["FM_C0_ROOT"], str(bare.resolve()))
+            self.assertIn(str(self.root / "console/app"), " ".join(argv))
 
     def test_non_interactive_refused(self):
         self.fake_sys.stdout = types.SimpleNamespace(isatty=lambda: False)

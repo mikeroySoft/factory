@@ -29,8 +29,10 @@ KEEP_ENV = {"HOME", "USER", "LOGNAME", "PATH", "TERM", "COLORTERM", "LANG", "LC_
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="factory chat", description=__doc__)
     p.add_argument("--root", type=Path, required=True,
-                   help="Explicit Factory checkout with an installed console/app; never inferred from conversation")
+                   help="Explicit Factory checkout (managed repository main checkout); never inferred from conversation")
     p.add_argument("--repository", required=True, help="Exact owner/name configured for that root")
+    p.add_argument("--console", type=Path, default=None,
+                   help="Installed read-only console directory; defaults to <root>/console/app")
     p.add_argument("--continue", dest="resume", action="store_true",
                    help="Resume this scope's latest conversation; startup always reobserves fresh evidence")
     p.add_argument("--provider", choices=("ornith", "openai", "openai-codex"), default="ornith",
@@ -59,11 +61,12 @@ def prepare(args: argparse.Namespace, fail) -> tuple[list[str], dict, Path]:
     if sys.platform != "linux" or not sys.stdin.isatty() or not sys.stdout.isatty():
         fail("Linux interactive terminal required; piped prompts and print/RPC modes are not supported")
     root = args.root.resolve(strict=True)
-    console = root / "console" / "app"
+    console = (args.console or root / "console" / "app").resolve()
     pi = console / "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"
     extension = console / "extension.ts"
     if not pi.is_file() or not extension.is_file() or not shutil.which("node") or not shutil.which("gh"):
-        fail("Requires Node >=22.19, authenticated gh, and `npm ci --ignore-scripts --prefix console/app` in the checkout")
+        fail(f"Requires Node >=22.19, authenticated gh, and an installed console at {console} "
+             f"(`npm ci --ignore-scripts --prefix {console}`)")
     package = json.loads((pi.parents[2] / "package.json").read_text())
     if package.get("version") != VERSION:
         fail(f"Requires pinned upstream Pi {VERSION}; no automatic download or upgrade")
