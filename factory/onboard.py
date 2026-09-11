@@ -23,6 +23,7 @@ from factory.config import CONFIG_NAME, LABELS, ConfigError
 TEMPLATES = Path(__file__).with_name("templates")
 GITIGNORE_LINES = ("/.factory/", ".factory-prompt.md")
 ISSUE_TEMPLATE = Path(".github/ISSUE_TEMPLATE/agent_task.md")
+INITIATIVE_TEMPLATE = Path(".github/ISSUE_TEMPLATE/initiative.md")
 WORKFLOWS = Path(".github/workflows")
 CI_WORKFLOW = WORKFLOWS / "ci.yml"
 
@@ -90,13 +91,14 @@ def init(argv: list[str]) -> int:
         if ensure_line(root / ".gitignore", line):
             done.append(f"added `{line}` to .gitignore")
 
-    tmpl = root / ISSUE_TEMPLATE
-    if tmpl.exists():
-        done.append(f"kept existing {ISSUE_TEMPLATE}")
-    else:
-        tmpl.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(TEMPLATES / "agent_task.md", tmpl)
-        done.append(f"wrote {ISSUE_TEMPLATE}")
+    for tmpl in (ISSUE_TEMPLATE, INITIATIVE_TEMPLATE):
+        target = root / tmpl
+        if target.exists():
+            done.append(f"kept existing {tmpl}")
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(TEMPLATES / tmpl.name, target)
+            done.append(f"wrote {tmpl}")
 
     # The merge stage refuses a PR with no passing GitHub check; give every repo one.
     if workflows(root):
@@ -120,7 +122,7 @@ def init(argv: list[str]) -> int:
         "\nnext:\n"
         f"  1. edit {CONFIG_NAME}: put your real test/lint commands in [[gate.check]],\n"
         f"     and the same commands in {CI_WORKFLOW} (the merge stage needs a passing check)\n"
-        f"  2. git add {CONFIG_NAME} .gitignore {ISSUE_TEMPLATE} {WORKFLOWS} && git commit\n"
+        f"  2. git add {CONFIG_NAME} .gitignore {ISSUE_TEMPLATE.parent} {WORKFLOWS} && git commit\n"
         "  3. factory doctor\n"
         "  4. factory install --dashboard   # systemd user timer, every 10 min"
     )
@@ -277,11 +279,12 @@ def doctor(argv: list[str]) -> int:
     if unset:
         report(None, "defaults in effect", ", ".join(unset), info=True)
 
-    shipped, ours = sha256(TEMPLATES / "agent_task.md"), sha256(cfg.root / ISSUE_TEMPLATE)
-    report(
-        True if ours == shipped else None, f"{ISSUE_TEMPLATE}",
-        "matches shipped template" if ours == shipped else ("missing (factory init)" if ours is None else "differs from shipped template"),
-    )
+    for tmpl in (ISSUE_TEMPLATE, INITIATIVE_TEMPLATE):
+        shipped, ours = sha256(TEMPLATES / tmpl.name), sha256(cfg.root / tmpl)
+        report(
+            True if ours == shipped else None, f"{tmpl}",
+            "matches shipped template" if ours == shipped else ("missing (factory init)" if ours is None else "differs from shipped template"),
+        )
     host = config.host_config()
     if host:
         sections = [("defaults", host.get("defaults", {}))] + [(f'repo."{s}"', t) for s, t in host.get("repo", {}).items()]

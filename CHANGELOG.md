@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Initiative issue template (`.github/ISSUE_TEMPLATE/initiative.md`, label `initiative` only) installed by `factory init`; the `initiative` label is provisioned with the others. Read-only `factory plan list` / `factory plan inspect N` emit schema 1 JSON: declared status/owner, sections, implementation links and linked-issue state, with partial/malformed results explicit. The label is not yet a dispatch guard. (#53)
 - Add optional Codebase history: stable commit-timeline maps, baseline comparisons, confidence-aware relationships, pinned source citations, and bounded background refresh through `factory[atlas]`. (#67)
 - Add opt-in direction viability to `factory manage`: `needs-review` PRs before `needs-viability` issues, evidence-cited BUILD/DONT_BUILD/DEFER comments, and label-event replay protection. Only issue BUILD enters `needs-triage`; PRs remain recommendation-only, with no review or handoff mechanics.
 - Fix manager prompt transport to use files, including `factory learn`; validate manager commands in doctor, bound nonzero-exit diagnostics, and count manager failures separately from escalation totals and rounds without overriding human takeover. (#62)
