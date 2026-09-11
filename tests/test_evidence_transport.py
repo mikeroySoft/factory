@@ -12,8 +12,8 @@ fixture, no live credentials):
 - a direct SIGINT during the same hung read must unwind cleanly (bounded
   outcome, no live descendants), matching production Ctrl+C behavior.
 
-The C0 extension's real `collect` path is exercised by
-console/c0-prototype/check-transport.ts (healthy read accepted, hung read
+The console extension's real `collect` path is exercised by
+console/app/check-transport.ts (healthy read accepted, hung read
 cancelled through an actual AbortSignal with no surviving descendants, and
 a byte-bounded partial accepted instead of being discarded).
 

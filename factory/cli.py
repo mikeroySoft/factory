@@ -16,6 +16,7 @@ COMMANDS = {
     "stats": ("stats", "main", "ticket metrics from GitHub"),
     "learn": ("learn", "main", "distil recent ticket outcomes into .factory-lessons.md"),
     "dashboard": ("dashboard", "main", "serve the local ops dashboard"),
+    "chat": ("chat", "main", "open the read-only Factory Manager console (needs the installed Pi runtime)"),
     "evidence": ("evidence", "main", "read one bounded schema-1 project/CI evidence request"),
     "plan": ("plan", "main", "read initiative issues: `plan list` or `plan inspect N` (JSON)"),
     "codebase": ("codebase", "main", "build commit-pinned codebase history for the dashboard"),
