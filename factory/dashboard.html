@@ -1494,19 +1494,24 @@ function renderSystemBriefing(item) {
       h('details', { class: 'briefing-sources' }, h('summary', {}, 'Host command / configuration reference'), pre(item.cmd)),
       h('button', { onclick: () => setView('ops') }, 'Inspect operations')));
 }
+function fmProgress(label) {
+  return h('p', { class: 'fm-progress' },
+    h('span', { class: 'fm-spinner', role: 'progressbar', 'aria-label': label }),
+    h('span', {}, label));
+}
 function renderTaskBriefing(item) {
   const t = item.t, entry = S.briefings[t.number], fresh = entry && entry.fingerprint === ticketFingerprint(t);
   const result = fresh ? entry.data : null, briefing = result?.briefing, sources = result?.sources || [];
   const state = h('div', { id: 'briefing-fm-status', class: 'briefing-status', role: 'status' });
   const retry = label => h('button', { id: 'briefing-refresh', onclick: () => ensureBriefing(t.number, true) }, label);
-  if (entry?.loading) state.append(h('p', {}, 'Factory Manager is reading the recorded task evidence. The full briefing may take a moment; all current action consequences remain available below.'), h('button', { id: 'briefing-refresh', disabled: true }, 'Generating briefing…'));
+  if (entry?.loading) state.append(fmProgress('Waiting for FM · generating briefing…'), h('p', {}, 'Factory Manager is reading the recorded task evidence. The full briefing may take a moment; all current action consequences remain available below.'), h('button', { id: 'briefing-refresh', disabled: true }, 'Generating briefing…'));
   else if (entry?.error) state.append(h('p', {}, `Factory Manager could not generate this briefing: ${entry.error}`), retry('Retry briefing'));
   else if (entry && !fresh) state.append(h('p', {}, 'Task evidence changed. The previous recommendation is not shown as current.'), retry('Generate updated briefing'));
   else if (briefing) state.append(h('p', {}, `FM briefing generated ${fmt(result.generated_at)} · advisory, not an authorization`), retry('Refresh briefing'));
   else state.append(h('p', {}, 'No FM briefing has been generated yet.'));
-  const history = h('div', { class: 'briefing-history' }, h('h4', { class: 'briefing-label' }, 'Earlier decisions & constraints that still matter'));
+  const history = h('div', { class: 'briefing-history', 'aria-busy': entry?.loading ? 'true' : 'false' }, h('h4', { class: 'briefing-label' }, 'Earlier decisions & constraints that still matter'));
   if (briefing?.history?.length) history.append(h('ul', {}, ...briefing.history.map(entry => h('li', {}, cited(entry.text, sources, t.number), h('span', { class: 'fm-citations' }, ...entry.sources.filter(id => !entry.text.includes(`[${id}]`)).map(id => cited(` [${id}]`, sources, t.number)))))));
-  else history.append(h('p', {}, briefing ? 'FM did not identify a relevant earlier decision in the available evidence. This does not prove none exists; inspect the source record or ask about missing context.' : 'Earlier decisions are not summarized until FM returns a grounded briefing. The raw issue and task evidence remain available below.'));
+  else history.append(entry?.loading ? fmProgress('Waiting for FM · reviewing earlier decisions…') : h('p', {}, briefing ? 'FM did not identify a relevant earlier decision in the available evidence. This does not prove none exists; inspect the source record or ask about missing context.' : 'Earlier decisions are not summarized until FM returns a grounded briefing. The raw issue and task evidence remain available below.'));
   const raw = h('details', { class: 'briefing-sources' }, h('summary', {}, `Inspect raw evidence${sources.length ? ` · ${sources.length} sources` : ''}`));
   if (sources.length) raw.append(...sources.map(source => sourceDetails(t.number, source)));
   else raw.append(h('details', {}, h('summary', {}, 'Issue body'), pre(t.body)), h('button', { onclick: () => openTicket(t.number, 'timeline') }, 'Open task timeline and artifacts'));
@@ -1518,9 +1523,9 @@ function renderTaskBriefing(item) {
       h('div', { class: 'briefing-actions' }, h('button', { onclick: () => openFM(t.number) }, 'Ask FM about this task'), h('button', { onclick: () => openTicket(t.number) }, 'Open task details'), h('a', { href: t.url, target: '_blank', rel: 'noopener noreferrer' }, 'Issue on GitHub'), t.pr ? h('a', { href: t.pr.url, target: '_blank', rel: 'noopener noreferrer' }, `PR #${t.pr.number}`) : null)),
     briefingSection('01', 'Understand', state,
       h('div', {}, h('h4', { class: 'briefing-label' }, 'The situation'), h('p', {}, briefing ? cited(briefing.summary, sources, t.number) : item.why), taskFacts(item)),
-      h('div', { class: 'briefing-recommendation' }, h('h4', { class: 'briefing-label' }, 'Factory Manager’s recommendation'), h('p', {}, briefing ? cited(briefing.recommendation, sources, t.number) : 'No recommendation is available. Do not treat the ordering of options as advice.')),
+      h('div', { class: 'briefing-recommendation', 'aria-busy': entry?.loading ? 'true' : 'false' }, h('h4', { class: 'briefing-label' }, 'Factory Manager’s recommendation'), entry?.loading ? fmProgress('Waiting for FM · preparing recommendation…') : h('p', {}, briefing ? cited(briefing.recommendation, sources, t.number) : 'No recommendation is available. Do not treat the ordering of options as advice.')),
       history,
-      h('div', { class: 'briefing-unknown' }, h('h4', { class: 'briefing-label' }, 'What is still uncertain'), h('p', {}, briefing ? cited(briefing.unknown, sources, t.number) : 'FM has not yet identified uncertainties. Missing logs, earlier discussion, or recent changes may affect this decision.')),
+      h('div', { class: 'briefing-unknown', 'aria-busy': entry?.loading ? 'true' : 'false' }, h('h4', { class: 'briefing-label' }, 'What is still uncertain'), entry?.loading ? fmProgress('Waiting for FM · identifying uncertainties…') : h('p', {}, briefing ? cited(briefing.unknown, sources, t.number) : 'FM has not yet identified uncertainties. Missing logs, earlier discussion, or recent changes may affect this decision.')),
       raw),
     decisionForm(item));
 }
@@ -1612,6 +1617,7 @@ function renderFMMessages() {
   $('fm-messages').replaceChildren(...chat.messages.map(message => h('article', { class: `fm-message ${message.role}` }, h('h3', { class: 'briefing-label' }, message.role === 'user' ? 'You' : 'Factory Manager'), h('p', {}, cited(message.content, message.sources || [], number, run)),
     message.sources?.length ? h('details', { class: 'fm-citations' }, h('summary', {}, `Inspect answer evidence · ${message.sources.length} sources`), ...message.sources.map(source => sourceDetails(number, source, false, run))) : null)));
   $('fm-status').textContent = context.resolving ? 'Resolving the selected source before a question can be sent.' : context.scopeError ? 'Source unavailable. Retry it or explicitly switch to the whole task.' : chat.pending ? 'FM is reading the evidence and answering… You can close this dialog; your conversation is retained.' : chat.error || 'Questions stay in this browser session. They are not posted as GitHub comments.';
+  if (context.resolving || chat.pending) $('fm-status').prepend(fmProgress(context.resolving ? 'Waiting for FM · loading source context…' : 'Waiting for FM · preparing answer…'));
   $('fm-send').disabled = !!(context.resolving || context.scopeError || chat.pending);
   $('fm-question').disabled = !!chat.pending;
   $('fm-retry').hidden = !chat.error || !chat.lastQuestion;
