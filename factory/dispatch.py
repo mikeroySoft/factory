@@ -214,7 +214,13 @@ def review_intake_pass(dry_run: bool) -> None:
             if login is None:
                 login = gh_json(["api", "user"])["login"].casefold()
             opted_in = any(request.get("login", "").casefold() == login for request in requests)
-        if not opted_in:
+        # GitHub consumes review requests when a review is submitted. A pending
+        # changes request keeps the already opted-in cycle eligible.
+        if not opted_in and not any(
+            e.get("event") == "review-result" and e.get("pr") == pr["number"]
+            and e.get("verdict") == "REQUEST_CHANGES"
+            for e in lifecycle.read_events(EVENTS)
+        ):
             continue
         n, head = pr["number"], pr["headRefOid"]
         with nullcontext() if dry_run else ticket_lock(n).open("w") as lock:
@@ -223,8 +229,39 @@ def review_intake_pass(dry_run: bool) -> None:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
                     continue
-            if any(e.get("event") == "review-intake" and e.get("pr") == n
-                   and e.get("head") == head for e in lifecycle.read_events(EVENTS)):
+            history = [e for e in lifecycle.read_events(EVENTS) if e.get("pr") == n]
+            if any(e.get("event") == "review-result" and e.get("verdict") == "APPROVE"
+                   for e in history):
+                continue
+            if any(e.get("event") == "escalate" for e in history):
+                continue
+            attempts = [e for e in history if e.get("event") == "review-intake"]
+            if len(attempts) >= cfg.review_rounds + 1:
+                reason = f"PR #{n}: unresolved after {len(attempts)} automated review attempt(s)"
+                log(f"{reason}; {'would escalate' if dry_run else 'escalating'} to human")
+                if not dry_run:
+                    packet = FACTORY / "escalations" / f"review-{n}.md"
+                    packet.parent.mkdir(parents=True, exist_ok=True)
+                    packet.write_text(
+                        f"# {reason}\n\nhttps://github.com/{REPO}/pull/{n}\n\n"
+                        f"Current head: `{head}`\n\n"
+                        + "\n\n".join(
+                            f"Head: `{e['head']}`\n\n{e.get('findings', 'Review admitted')}"
+                            for e in history
+                            if e.get("event") in {"review-intake", "review-result"}
+                        )
+                    )
+                    url = run([
+                        "gh", "issue", "create", "--repo", REPO,
+                        "--title", reason, "--label", LABEL_HUMAN,
+                        "--body-file", str(packet),
+                    ]).stdout.strip().splitlines()[-1]
+                    record("escalate", pr=n, head=head,
+                           ticket=int(url.rstrip("/").rsplit("/", 1)[-1]),
+                           reason=reason, packet=str(packet), round=1)
+                continue
+            if any(e.get("event") == "review-intake" and e.get("head") == head
+                   for e in history):
                 continue
             log(f"PR #{n}: {'would record' if dry_run else 'recording'} review intake at {head}")
             if not dry_run:
@@ -280,6 +317,7 @@ def review_external_pr(n: int, base: str, head: str) -> None:
             "-f", f"commit_id={head}", "-f", f"event={event}",
             "-f", f"body={findings}",
         ])
+        record("review-result", pr=n, head=head, verdict=event, findings=findings)
         execution.outcome = "approved" if event == "APPROVE" else "product_feedback"
         execution.reason = "APPROVE" if event == "APPROVE" else "REVISE"
 
