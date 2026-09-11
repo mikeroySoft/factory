@@ -824,6 +824,23 @@ esac
 ''')
         return repo, stubs, packet
 
+    def test_external_review_escalation_stays_in_human_queue(self) -> None:
+        repo, stubs, _ = self.scenario()
+        events_path = repo / ".factory/events.jsonl"
+        escalation = json.loads(events_path.read_text())
+        escalation.update(pr=17, head="reviewed-head")
+        events_path.write_text(json.dumps(escalation) + "\n")
+
+        for _ in range(2):
+            result = factory(repo, "manage", path=stubs)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+        calls = (Path(stubs) / "gh.log").read_text()
+        self.assertNotIn("issue edit", calls)
+        self.assertNotIn("issue comment", calls)
+        events = list(map(json.loads, events_path.read_text().splitlines()))
+        self.assertFalse(any(e.get("event") == "manage" for e in events))
+
     def test_manager_reads_prompt_file_with_district_command(self) -> None:
         repo, stubs, packet = self.scenario()
         text = "Escalation evidence\n" + "packet " * 30_000
@@ -1342,6 +1359,106 @@ class DispatchTest(unittest.TestCase):
                 commands = [call.args[0] for call in run.call_args_list]
                 self.assertFalse(any(cmd[:2] == ["git", "push"] for cmd in commands))
                 self.assertFalse(any(cmd[:3] == ["gh", "pr", "create"] for cmd in commands))
+
+    def test_external_review_head_transitions_end_on_approval(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            cfg = config.Config(
+                root=repo, repo="acme/widgets", review_rounds=2,
+                reviewer=[sys.executable, "-c",
+                          "print('- src/a.py:1: Fix input.\\nVERDICT: REVISE')"],
+            )
+            dispatch.configure(cfg)
+            pr = {"number": 17, "state": "OPEN", "isDraft": False,
+                  "headRefOid": "head-1", "baseRefOid": "base",
+                  "labels": [], "reviewRequests": [{"login": "reviewer"}]}
+            publications = []
+            real_run = dispatch.run
+
+            def run(cmd, **kwargs):
+                if cmd[0] != "gh":
+                    return real_run(cmd, **kwargs)
+                if "--method" in cmd:
+                    publications.append(cmd)
+                return subprocess.CompletedProcess(cmd, 0, "diff", "")
+
+            with mock.patch.object(dispatch, "gh_json", side_effect=lambda args:
+                                   {"login": "reviewer"} if args == ["api", "user"] else [pr]), \
+                    mock.patch.object(dispatch, "run", side_effect=run):
+                dispatch.review_intake_pass(False)
+                dispatch.configure(cfg)
+                dispatch.review_intake_pass(False)
+                self.assertEqual(len(publications), 1)
+                pr["headRefOid"] = "head-2"
+                pr["reviewRequests"] = []
+                cfg.reviewer = [sys.executable, "-c", "print('VERDICT: APPROVE')"]
+                dispatch.review_intake_pass(False)
+                dispatch.review_intake_pass(False)
+                self.assertEqual(len(publications), 2)
+                self.assertIn("commit_id=head-2", publications[-1])
+                self.assertIn("event=APPROVE", publications[-1])
+                pr["headRefOid"] = "head-3"
+                dispatch.configure(cfg)
+                dispatch.review_intake_pass(False)
+                self.assertEqual(len(publications), 2)
+
+    def test_external_review_exhaustion_escalates_once_without_another_review(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch, lifecycle
+
+        for rounds in (0, 1):
+            with self.subTest(rounds=rounds), tempfile.TemporaryDirectory() as d:
+                repo = make_repo(Path(d))
+                cfg = config.Config(
+                    root=repo, repo="acme/widgets", review_rounds=rounds,
+                    reviewer=[sys.executable, "-c",
+                              "print('- src/a.py:1: Fix input.\\nVERDICT: REVISE')"],
+                )
+                dispatch.configure(cfg)
+                pr = {"number": 17, "state": "OPEN", "isDraft": False,
+                      "headRefOid": "head-0", "baseRefOid": "base",
+                      "labels": [{"name": "needs-review"}], "reviewRequests": []}
+                publications, issues = [], []
+                real_run = dispatch.run
+
+                def run(cmd, **kwargs):
+                    if cmd[0] != "gh":
+                        return real_run(cmd, **kwargs)
+                    if "--method" in cmd:
+                        publications.append(cmd)
+                    if cmd[:3] == ["gh", "issue", "create"]:
+                        issues.append(cmd)
+                        return subprocess.CompletedProcess(
+                            cmd, 0, "https://github.com/acme/widgets/issues/99\n", "")
+                    return subprocess.CompletedProcess(cmd, 0, "diff", "")
+
+                with mock.patch.object(dispatch, "gh_json", return_value=[pr]), \
+                        mock.patch.object(dispatch, "run", side_effect=run):
+                    for head in range(rounds + 1):
+                        pr["headRefOid"] = f"head-{head}"
+                        dispatch.review_intake_pass(False)
+                    dispatch.review_intake_pass(True)
+                    self.assertEqual(issues, [])
+                    dispatch.configure(cfg)
+                    dispatch.review_intake_pass(False)
+                    pr["headRefOid"] = "over-budget"
+                    dispatch.review_intake_pass(False)
+                    self.assertEqual(len(publications), rounds + 1)
+                    self.assertEqual(len(issues), 1)
+                    self.assertIn("ready-for-human", issues[0])
+                escalations = [e for e in lifecycle.read_events(dispatch.EVENTS)
+                               if e.get("event") == "escalate"]
+                self.assertEqual(len(escalations), 1)
+                self.assertEqual((escalations[0]["pr"], escalations[0]["ticket"]), (17, 99))
+                evidence = Path(escalations[0]["packet"]).read_text()
+                self.assertIn("src/a.py:1: Fix input.", evidence)
+                self.assertIn(f"head-{rounds}", evidence)
+                self.assertIn("https://github.com/acme/widgets/pull/17", evidence)
 
     def test_external_review_publishes_recorded_head(self) -> None:
         from unittest import mock
