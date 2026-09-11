@@ -101,3 +101,22 @@ exclusive = false
 [dashboard]
 # port = 8765
 # theme = ".factory-dashboard.css"   # repo-relative CSS loaded after the built-in stylesheet
+
+# Human decision owners for `factory plan route N --reason R` (read-only; nothing
+# is ever assigned). Omit the whole section to keep legacy behaviour. Owners are
+# GitHub logins or `@org/team`; syntax is checked, membership is not. Team
+# destinations are rejected on a user-owned repository. Priority: the ticket's
+# `**Decision owner**` body section, the initiative Owner (requirements only),
+# reasons.<reason>, components (implementation only, exact repo-relative path
+# prefixes: "src/auth" matches src/auth/x.py, never src/authentication/), fallback.
+# Missing optional owner sections permit fallback; explicit empty/malformed owners
+# stop with invalid. Mixed team/login routes on user repos stay invalid, not filtered
+# into a selection. `reasons.unknown` and duplicate normalized prefixes are errors.
+# [collaboration]
+# fallback = "maintainer-login"
+# [collaboration.reasons]
+# requirements = "product-owner"
+# ci = "@org/infra"
+# [collaboration.components]
+# "src/auth" = "auth-owner"
+# "docs" = "docs-owner"

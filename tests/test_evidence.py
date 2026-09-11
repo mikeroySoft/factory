@@ -48,7 +48,7 @@ query = dict(parse_qsl(parts.query))
 method = args[args.index("--method") + 1] if "--method" in args else "GET"
 with open(os.environ["EVIDENCE_CALLS"], "a") as stream:
     stream.write(json.dumps({"path": parts.path, "query": query, "method": method}) + "\\n")
-if not args or args[0] != "api" or method != "GET" or not parts.path.startswith("repos/example/evidence/"):
+if not args or args[0] != "api" or method != "GET" or not (parts.path + "/").startswith("repos/example/evidence/"):
     print("forbidden fixture command", file=sys.stderr)
     raise SystemExit(97)
 with open(os.environ["EVIDENCE_RESPONSES"]) as stream:

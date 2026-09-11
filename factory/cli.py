@@ -18,7 +18,7 @@ COMMANDS = {
     "dashboard": ("dashboard", "main", "serve the local ops dashboard"),
     "chat": ("chat", "main", "open the read-only Factory Manager console (needs the installed Pi runtime)"),
     "evidence": ("evidence", "main", "read one bounded schema-1 project/CI evidence request"),
-    "plan": ("plan", "main", "read initiative issues: `plan list` or `plan inspect N` (JSON)"),
+    "plan": ("plan", "main", "read initiative issues: `plan list`, `plan inspect N`, `plan route N --reason R` (JSON)"),
     "codebase": ("codebase", "main", "build commit-pinned codebase history for the dashboard"),
 }
 
