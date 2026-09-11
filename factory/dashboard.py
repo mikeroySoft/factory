@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import json
 import re
 import subprocess
@@ -38,6 +39,7 @@ from factory.config import (
     LABEL_VIABILITY,
     Config,
 )
+from factory.onboard import dashboard_port_error
 
 cfg: Config
 FACTORY: Path
@@ -1319,7 +1321,12 @@ def main(argv: list[str]) -> int:
         print(json.dumps(snapshot(), indent=2))
         return 0
 
-    server = ThreadingHTTPServer((args.host, port), Handler)
+    try:
+        server = ThreadingHTTPServer((args.host, port), Handler)
+    except OSError as exc:
+        reason = "is in use" if exc.errno == errno.EADDRINUSE else (exc.strerror or str(exc))
+        print(dashboard_port_error(cfg, args.host, port, reason), file=sys.stderr)
+        return 1
     global codebase_monitor
     codebase_monitor = CodebaseMonitor(cfg, args.codebase_ref, args.codebase_limit)
     threading.Thread(target=codebase_monitor.run, name="factory-codebase", daemon=True).start()

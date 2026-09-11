@@ -411,6 +411,16 @@ class HostConfigTest(unittest.TestCase):
             ci.write_text(ci.read_text().replace('run: "true"', "run: make test"))
             self.assertEqual(doctor()["github workflow"]["status"], "PASS")
             self.assertIn("kept existing .github/workflows", factory(repo, "init", "--no-labels").stdout)
+            initiative = repo / ".github/ISSUE_TEMPLATE/initiative.md"
+            self.assertEqual(initiative.read_text(), (Path(config.__file__).parent / "templates/initiative.md").read_text())
+            self.assertIn("labels: initiative\n", initiative.read_text())
+            self.assertNotIn("needs-triage", initiative.read_text().split("---\n", 2)[1])
+            (repo / ".github/ISSUE_TEMPLATE/agent_task.md").write_text("custom\n")
+            initiative.unlink()
+            out = factory(repo, "init", "--no-labels").stdout
+            self.assertIn("kept existing .github/ISSUE_TEMPLATE/agent_task.md", out)
+            self.assertIn("wrote .github/ISSUE_TEMPLATE/initiative.md", out)
+            self.assertEqual((repo / ".github/ISSUE_TEMPLATE/agent_task.md").read_text(), "custom\n")
             ci.unlink()
             row = doctor()["github workflow"]
             self.assertEqual((row["status"], row["detail"].startswith("none")), ("WARN", True))

@@ -17,6 +17,7 @@ COMMANDS = {
     "learn": ("learn", "main", "distil recent ticket outcomes into .factory-lessons.md"),
     "dashboard": ("dashboard", "main", "serve the local ops dashboard"),
     "evidence": ("evidence", "main", "read one bounded schema-1 project/CI evidence request"),
+    "plan": ("plan", "main", "read initiative issues: `plan list` or `plan inspect N` (JSON)"),
     "codebase": ("codebase", "main", "build commit-pinned codebase history for the dashboard"),
 }
 
