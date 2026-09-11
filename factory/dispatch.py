@@ -28,6 +28,7 @@ from factory.config import (
     LABEL_APPROVED,
     LABEL_CHORE,
     LABEL_HUMAN,
+    LABEL_REVIEW,
     LESSONS_NAME,
     Config,
 )
@@ -195,6 +196,39 @@ def frontier() -> list[dict]:
             continue
         ready.append(issue)
     return ready
+
+
+def review_intake_pass(dry_run: bool) -> None:
+    """Record opted-in PR revisions without running the issue/merge pipeline."""
+    prs = gh_json([
+        "pr", "list", "--repo", REPO, "--state", "open", "--limit", "1000",
+        "--json", "number,state,isDraft,headRefOid,labels,reviewRequests",
+    ])
+    login = None
+    for pr in prs:
+        if pr["state"] != "OPEN" or pr["isDraft"]:
+            continue
+        opted_in = any(label["name"] == LABEL_REVIEW for label in pr["labels"])
+        requests = pr["reviewRequests"]
+        if not opted_in and requests:
+            if login is None:
+                login = gh_json(["api", "user"])["login"].casefold()
+            opted_in = any(request.get("login", "").casefold() == login for request in requests)
+        if not opted_in:
+            continue
+        n, head = pr["number"], pr["headRefOid"]
+        with nullcontext() if dry_run else ticket_lock(n).open("w") as lock:
+            if not dry_run:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    continue
+            if any(e.get("event") == "review-intake" and e.get("pr") == n
+                   and e.get("head") == head for e in lifecycle.read_events(EVENTS)):
+                continue
+            log(f"PR #{n}: {'would record' if dry_run else 'recording'} review intake at {head}")
+            if not dry_run:
+                record("review-intake", pr=n, head=head)
 
 
 def build_prompt(n: int, wt: Path, extra: str = "") -> str:
@@ -1406,6 +1440,7 @@ def main(argv: list[str]) -> int:
             return 0
 
         land_pass(args.dry_run)
+        review_intake_pass(args.dry_run)
         from factory.manage import manage_pass
 
         manage_pass(args.dry_run)

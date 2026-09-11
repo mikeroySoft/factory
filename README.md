@@ -82,7 +82,7 @@ merge stage.
 | Command | What one invocation does |
 |---|---|
 | `factory triage` | Labels every `needs-triage` issue via the local model: `ready-for-agent` (with an agent brief), `needs-info` (with the question), `ready-for-human`, or a `wontfix` proposal comment. `--dry-run`, `--issue N`, `--replay a,b,c`. |
-| `factory dispatch` | One stateless pass: upstream sync → merge stage (at most one PR) → manager → claim up to `max_active` tickets → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan. |
+| `factory dispatch` | One stateless pass: upstream sync → merge stage (at most one PR) → review-only PR intake → manager → claim up to `max_active` tickets → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan. |
 | `factory manage` | First recommends directions for `needs-review` PRs, then `needs-viability` issues; then resolves untouched `ready-for-human` escalation packets within `[manager].rounds`. Disabled unless `manager.command` is configured. `--dry-run` lists eligible requests without inference or writes. |
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
 | `factory stats` | Ticket table: attempts, review rounds, hours to merge, escalation count, resolver attribution, minutes in `ready-for-human`, and re-queues. Reads GitHub plus existing `events.jsonl`. `--by-worker` reads only events and shows every configured worker label: first-attempt gate pass rate, all attempts (including review bounces), and known cost. Attribution uses claim labels with current worker precedence; unclaimed attempts are excluded, missing rates/cost are `n/a`. The dashboard Ops view shows the same worker metrics. `--json`. |
@@ -163,7 +163,7 @@ reasoning, source citations, and one final machine-readable line:
 |---|---|
 | Issue / BUILD | Remove `needs-viability`, add `needs-triage` for deeper investigation. Never directly queue implementation; a vague idea need not already pass triage's specification checks. |
 | Issue / DONT_BUILD or DEFER | Remove `needs-viability`; leave open, propose only. No `wontfix`, closure, or replacement workflow label. A human decides whether to close, defer, or overrule. |
-| PR / any verdict | Remove `needs-review`; recommend only. Even BUILD adds **no handoff label** until [#5](https://github.com/mikeroySoft/factory/issues/5) is implemented. The comment states this limit. No quality review, approval, requested changes, merge, or closure. |
+| PR / any verdict | Remove `needs-review`; recommend only. Even BUILD adds **no handoff label**. Dispatch records review intake independently before this stage. No quality review, approval, requested changes, merge, or closure. |
 
 The model uses the existing evidence/briefing source helpers: bounded target
 description/comments, recent issues and PRs (not an exhaustive duplicate search),
@@ -329,8 +329,16 @@ under a per-repository section still produce host-config warnings.
 Labels (`needs-review`, `needs-viability`, `needs-triage`, `needs-info`,
 `ready-for-agent`, `ready-for-human`, `factory-approved`, `chore`) and the
 `agent/<n>` branch scheme are fixed conventions; `factory init` creates the labels.
-`needs-review` opts a PR into direction viability, not code review;
+`needs-review` opts a PR into direction viability and dispatch's review-only intake;
 `needs-viability` opts an issue into viability before triage.
+
+Before the manager runs, dispatch discovers open, non-draft PRs labeled
+`needs-review` or with a pending review request for the authenticated `gh` account.
+Contributor branch names are unrestricted. Intake writes `review-intake` events
+with `pr` and `head` to `.factory/events.jsonl`, skipping already-recorded pairs
+under the shared PR/issue lock. Dry runs only print eligible revisions. This is
+discovery only: no reviews are published, branches changed, CI monitored, or
+external PRs merged by this lane.
 
 ## Operating it
 

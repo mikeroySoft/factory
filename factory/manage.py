@@ -341,7 +341,7 @@ def viability_pass(dry_run: bool = False) -> None:
                             f"- [{s['id']}] {s.get('url') or s.get('path') or s['label']}"
                             for s in sources if f"[{s['id']}]" in body
                         )
-                        note = ("Recommendation only: no review or handoff label is applied to PRs until factory #5 is implemented."
+                        note = ("Recommendation only: this viability assessment applies no review or handoff label to PRs."
                                 if kind == "pr" else
                                 "BUILD queues needs-triage for deeper investigation, not implementation."
                                 if verdict == "BUILD" else
