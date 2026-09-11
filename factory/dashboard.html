@@ -327,6 +327,10 @@
     <header><b>Workers</b> claim labels · first-attempt gate outcomes · all attempts · known cost</header>
     <div class="kpis" id="worker-metrics"></div>
   </section>
+  <section class="panel" aria-label="External pull-request review queue">
+    <header><b>External PR review queue</b> read-only · required CI last observed by dispatch</header>
+    <div class="body" id="review-queue"></div>
+  </section>
 
   <section class="panel">
     <header><b>Pipeline</b> live · click a node to filter the board and lanes <span class="note hint">hover a node for its tickets</span></header>
@@ -597,6 +601,7 @@ function render() {
   }
   renderStatus(); renderErrors(); renderKpis(); renderPipeline(); renderBoard(); renderFeed(); renderRuns(); renderUpstream(); renderLanes(); renderThroughput(); renderConfig();
   renderInboxHealth();
+  renderReviewQueue();
   updateInbox();
   applyView();
   if (S.sel != null && !$('drawer').contains(document.activeElement) && !$('fm-dialog').open) renderDrawer();
@@ -1122,7 +1127,25 @@ function tabIssue(t, c) {
 
 // ---------------------------------------------------------------- inbox
 function lastEvent(t, kind) { return t.events.filter(e => e.kind === kind).at(-1); }
-const WAITING = new Set(['system', 'escalated', 'needs-info', 'wontfix', 'stuck', 'triage']);
+const REVIEW_STATES = { review_pending: 'Pending review', changes_requested: 'Changes requested', ci_pending: 'CI pending', ci_failed: 'CI failed', ready: 'Ready', escalated: 'Escalated' };
+function reviewMatches(pr) {
+  return `#${pr.number} ${pr.title} ${pr.author || ''} ${pr.head} ${pr.review_head || ''} ${REVIEW_STATES[pr.state]}`.toLowerCase().includes(S.q.trim().toLowerCase());
+}
+function reviewRow(pr) {
+  return h('article', { class: 'briefing-option' },
+    h('h3', {}, h('a', { href: pr.url, target: '_blank', rel: 'noopener' }, `PR #${pr.number} · ${pr.title}`)),
+    h('p', {}, `@${pr.author || 'unknown'} · ${REVIEW_STATES[pr.state]}`),
+    h('p', {}, 'Current head: ', h('code', { style: { overflowWrap: 'anywhere' } }, pr.head)),
+    h('p', {}, 'Last reviewed SHA: ', h('code', { style: { overflowWrap: 'anywhere' } }, pr.review_head || 'Not reviewed'),
+      ` · Verdict: ${pr.verdict || 'None'}`),
+    h('p', {}, `Required CI: ${pr.ci_state} · Last observed: ${pr.ci_at ? fmt(pr.ci_at) : 'Not observed for this head'}`),
+    pr.reason ? h('p', {}, pr.reason) : null);
+}
+function renderReviewQueue() {
+  const queue = (S.snap.review_queue || []).filter(reviewMatches);
+  $('review-queue').replaceChildren(...(queue.length ? queue.map(reviewRow) : [h('p', { class: 'empty' }, 'No opted-in pull requests match this view.')]));
+}
+const WAITING = new Set(['system', 'escalated', 'needs-info', 'wontfix', 'stuck', 'triage', 'external-review']);
 const INBOX_KINDS = { system: 'System attention', escalated: 'Human decision', 'needs-info': 'Question for you', wontfix: 'Wontfix proposal', stuck: 'Stuck claim', triage: 'Untriaged', pr: 'Merge queue', stale: 'Housekeeping', assigned: 'In human hands', active: 'Current task' };
 function inboxItems() {
   const items = [], d = S.snap.dispatcher, cfg = S.snap.config;
@@ -1133,6 +1156,13 @@ function inboxItems() {
   if (cfg.upstream && S.snap.upstream.blocker) {
     const b = S.snap.upstream.blocker;
     items.push({ key: 'system-upstream', pri: 0, kind: 'system', title: `Upstream sync is parked: ${b.title}`, why: `${upstreamPending().length} upstream commit(s) are waiting on issue #${b.number}.`, url: b.url, cmd: `git fetch ${cfg.upstream}\ngit merge --no-ff --signoff ${cfg.upstream}/${cfg.main}`, next: `The maintainer must inspect and resolve issue #${b.number}, validate the merge, then explicitly push and close the blocker. These commands are reference only.` });
+  }
+  for (const pr of S.snap.review_queue || []) {
+    if (['changes_requested', 'ci_failed', 'escalated'].includes(pr.state) ||
+        (pr.state === 'review_pending' && (pr.reason || pr.verdict === 'APPROVE'))) {
+      items.push({ key: `review-${pr.number}`, pri: 1, kind: 'external-review', review: pr,
+        title: `PR #${pr.number} · ${pr.title}`, why: REVIEW_STATES[pr.state] });
+    }
   }
   for (const t of S.snap.tickets) {
     const triaged = lastEvent(t, 'triaged'), humanHands = t.assignees.length > 0;
@@ -1501,7 +1531,7 @@ function selectCase(key) {
   $('inbox-list').querySelector('.briefing-question')?.focus({ preventScroll: true });
 }
 function renderInbox() {
-  const all = inboxItems(), waiting = all.filter(i => WAITING.has(i.kind)), matching = waiting.filter(i => !i.t || matches(i.t));
+  const all = inboxItems(), waiting = all.filter(i => WAITING.has(i.kind)), matching = waiting.filter(i => i.review ? reviewMatches(i.review) : !i.t || matches(i.t));
   $('nav-inbox').replaceChildren('Inbox ', h('span', { class: `badge ${waiting.length ? 'hot' : ''}` }, waiting.length));
   $('inbox-sum').textContent = waiting.length ? `${waiting.length} case${waiting.length === 1 ? '' : 's'} waiting on you` : 'Nothing waiting on you';
   if (!S.inboxKey && matching.length) { S.inboxKey = matching[0].key; syncHash(); saveInboxState(); }
@@ -1511,13 +1541,14 @@ function renderInbox() {
   const navItems = matching.slice();
   if (item && !navItems.some(i => i.key === item.key)) navItems.unshift(item);
   selector.append(h('option', { value: '', disabled: true, selected: !item }, 'Choose a case'));
-  selector.append(...navItems.map(i => h('option', { value: i.key, selected: i.key === S.inboxKey }, `${i.t ? '#' + i.t.number : 'System'} · ${i.title}`)));
+  selector.append(...navItems.map(i => h('option', { value: i.key, selected: i.key === S.inboxKey }, `${i.review ? 'External review' : i.t ? '#' + i.t.number : 'System'} · ${i.title}`)));
   const index = navItems.findIndex(i => i.key === S.inboxKey);
   list.append(h('nav', { class: 'briefing-nav', 'aria-label': 'Inbox cases' }, h('label', { for: 'briefing-case' }, 'Case to consider'), selector,
     h('button', { disabled: index <= 0, onclick: () => selectCase(navItems[index - 1].key) }, 'Previous'),
     h('button', { disabled: index < 0 || index >= navItems.length - 1, onclick: () => selectCase(navItems[index + 1].key) }, 'Next')));
   if (S.q.trim()) list.append(h('p', { class: 'briefing-muted' }, `${matching.length} waiting case(s) match “${S.q.trim()}”. Your selected case stays visible even if it does not match.`));
-  if (item) list.append(item.t ? renderTaskBriefing(item) : renderSystemBriefing(item));
+  if (item) list.append(item.review ? h('section', { 'aria-label': 'External review attention' },
+    reviewRow(item.review), h('p', {}, 'Inspect the review or CI on GitHub. Contributor fixes and maintainer decisions happen there; this dashboard cannot submit reviews, change branches, or merge this PR.')) : item.t ? renderTaskBriefing(item) : renderSystemBriefing(item));
   else {
     list.append(h('div', { class: 'briefing-status' }, h('h3', {}, S.inboxKey ? 'The selected case is no longer in this snapshot' : 'Inbox clear'),
       h('p', {}, S.inboxKey ? 'Your selection and draft are retained. Choose another case, or refresh to check whether the task is available again.' : 'No human-required cases match this view. Informational work is listed separately below.'),
