@@ -214,11 +214,10 @@ def review_intake_pass(dry_run: bool) -> None:
             if login is None:
                 login = gh_json(["api", "user"])["login"].casefold()
             opted_in = any(request.get("login", "").casefold() == login for request in requests)
-        # GitHub consumes review requests when a review is submitted. A pending
-        # changes request keeps the already opted-in cycle eligible.
+        # GitHub consumes review requests on submission; keep tracking admitted PRs.
         if not opted_in and not any(
             e.get("event") == "review-result" and e.get("pr") == pr["number"]
-            and e.get("verdict") == "REQUEST_CHANGES"
+            and e.get("verdict") in {"REQUEST_CHANGES", "APPROVE"}
             for e in lifecycle.read_events(EVENTS)
         ):
             continue
@@ -230,6 +229,8 @@ def review_intake_pass(dry_run: bool) -> None:
                 except BlockingIOError:
                     continue
             history = [e for e in lifecycle.read_events(EVENTS) if e.get("pr") == n]
+            if not dry_run:
+                review_readiness(n, head, history)
             if any(e.get("event") == "review-result" and e.get("verdict") == "APPROVE"
                    for e in history):
                 continue
@@ -267,6 +268,48 @@ def review_intake_pass(dry_run: bool) -> None:
             if not dry_run:
                 record("review-intake", pr=n, head=head)
                 review_external_pr(n, pr["baseRefOid"], head)
+                review_readiness(n, head, lifecycle.read_events(EVENTS))
+
+
+def review_readiness(n: int, head: str, history: list[dict]) -> None:
+    """Record advisory readiness, never merge authorization, for a confirmed head."""
+    checks = run([
+        "gh", "pr", "checks", str(n), "--repo", REPO,
+        "--required", "--json", "name,bucket",
+    ], check=False)
+    fresh = run([
+        "gh", "pr", "view", str(n), "--repo", REPO, "--json", "headRefOid",
+    ], check=False)
+    rows, confirmed = [], False
+    try:
+        rows = json.loads(checks.stdout)
+        current = json.loads(fresh.stdout)
+        if fresh.returncode == 0 and isinstance(current, dict) and current.get("headRefOid"):
+            confirmed = current["headRefOid"] == head
+            head = current["headRefOid"]
+    except (ValueError, TypeError):
+        pass
+    valid = isinstance(rows, list) and bool(rows) and all(
+        isinstance(row, dict) and isinstance(row.get("name"), str)
+        and row.get("bucket") in ("pass", "fail", "pending", "skipping", "cancel")
+        for row in rows
+    )
+    review = next((e for e in reversed(history)
+                   if e.get("event") == "review-result" and e.get("pr") == n
+                   and e.get("head") == head), {})
+    state = "review_pending"
+    if review.get("verdict") == "REQUEST_CHANGES":
+        state = "changes_requested"
+    elif review.get("verdict") == "APPROVE":
+        state = "ci_pending"
+        if valid and any(row["bucket"] in {"fail", "cancel"} for row in rows):
+            state = "ci_failed"
+        elif confirmed and valid and checks.returncode == 0 and all(
+            row["bucket"] == "pass" for row in rows
+        ):
+            state = "ready"
+    record("review-readiness", pr=n, head=head, state=state,
+           review_head=review.get("head"), checks=rows if valid else [])
 
 
 def review_external_pr(n: int, base: str, head: str) -> None:
