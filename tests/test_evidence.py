@@ -272,6 +272,44 @@ class EvidenceCliTest(unittest.TestCase):
         self.assertEqual(self.calls(), [])
         self.assertFalse(self.journal.parent.exists())
 
+    def reader_from(self, engine):
+        env = {**self.env, "PYTHONPATH": os.pathsep.join((str(self.guard), str(engine)))}
+        self.responses_path.write_text(json.dumps(self.responses))
+        payload = json.dumps({"schema_version": 1, "repository": REPO, "op": "capabilities"}).encode()
+        proc = subprocess.run([sys.executable, "-B", "-m", "factory.cli", "evidence", "--root", str(self.root)],
+                              cwd=self.directory, env=env, input=payload, capture_output=True, timeout=60)
+        self.assertNotIn(b"EVIDENCE_FORBIDDEN:", proc.stderr, proc.stderr.decode())
+        self.assertEqual(proc.returncode, 0, (proc.stdout.decode(), proc.stderr.decode()))
+        return json.loads(proc.stdout)["capabilities"]["producers"]["reader"]
+
+    def test_reader_build_identity_is_verifiable_and_never_fabricated(self):
+        reader = self.invoke()["capabilities"]["producers"]["reader"]
+        self.assertEqual((reader["evidence_schema"], reader["runtime_schema"]), (1, 1))
+        self.assertIs(type(reader["verified"]), bool)
+        self.assertEqual(reader["verified"], reader["revision"] is not None)
+        if reader["revision"] is not None:
+            self.assertRegex(reader["revision"], r"\A[0-9a-f]{40,64}\Z")
+
+        # Deterministic provenance through the actual CLI: run the engine from a
+        # clean committed checkout, then from the same tree locally modified.
+        engine = self.directory / "engine"
+        shutil.copytree(ROOT / "factory", engine / "factory")
+        commit = ["git", "-C", str(engine)]
+        subprocess.run([*commit, "init", "-q", "-b", "main"], check=True)
+        subprocess.run([*commit, "add", "."], check=True)
+        subprocess.run([*commit, "-c", "user.name=E", "-c", "user.email=e@e.invalid",
+                        "commit", "-qm", "engine"], check=True)
+        revision = subprocess.run([*commit, "rev-parse", "HEAD"], capture_output=True,
+                                  text=True, check=True).stdout.strip()
+        verified = self.reader_from(engine)
+        self.assertEqual((verified["verified"], verified["revision"]), (True, revision))
+        self.assertNotEqual(verified["revision"], self.head)  # engine build, not the selected repo revision
+
+        source = engine / "factory" / "evidence.py"
+        source.write_text(source.read_text() + "\n# local modification\n")
+        unavailable = self.reader_from(engine)
+        self.assertEqual((unavailable["verified"], unavailable["revision"]), (False, None))
+
     def test_strict_requests_never_collect_external_evidence(self):
         request = {"schema_version": 1, "repository": REPO, "op": "observe"}
         invalid = [b"", b"{", b"[]", b"{} {}", b"\xff", b" " * 4097,
