@@ -98,7 +98,7 @@ merge stage.
 | Command | What one invocation does |
 |---|---|
 | `factory triage` | Labels every `needs-triage` issue via the local model: `ready-for-agent` (with an agent brief), `needs-info` (with the question), `ready-for-human`, or a `wontfix` proposal comment. `--dry-run`, `--issue N`, `--replay a,b,c`. |
-| `factory dispatch` | One stateless pass: upstream sync → merge stage (at most one PR) → manager → claim up to `max_active` tickets → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan. |
+| `factory dispatch` | One stateless pass: upstream sync → merge stage (at most one PR) → review-only PR intake → manager → claim up to `max_active` tickets → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan. |
 | `factory manage` | First recommends directions for `needs-review` PRs, then `needs-viability` issues; then resolves untouched `ready-for-human` escalation packets within `[manager].rounds`. Disabled unless `manager.command` is configured. `--dry-run` lists eligible requests without inference or writes. |
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
 | `factory stats` | Ticket table: attempts, review rounds, hours to merge, escalation count, resolver attribution, minutes in `ready-for-human`, and re-queues. Reads GitHub plus existing `events.jsonl`. `--by-worker` reads only events and shows every configured worker label: first-attempt gate pass rate, all attempts (including review bounces), and known cost. Attribution uses claim labels with current worker precedence; unclaimed attempts are excluded, missing rates/cost are `n/a`. The dashboard Ops view shows the same worker metrics. `--json`. |
@@ -180,7 +180,7 @@ reasoning, source citations, and one final machine-readable line:
 |---|---|
 | Issue / BUILD | Remove `needs-viability`, add `needs-triage` for deeper investigation. Never directly queue implementation; a vague idea need not already pass triage's specification checks. |
 | Issue / DONT_BUILD or DEFER | Remove `needs-viability`; leave open, propose only. No `wontfix`, closure, or replacement workflow label. A human decides whether to close, defer, or overrule. |
-| PR / any verdict | Remove `needs-review`; recommend only. Even BUILD adds **no handoff label** until [#5](https://github.com/mikeroySoft/factory/issues/5) is implemented. The comment states this limit. No quality review, approval, requested changes, merge, or closure. |
+| PR / any verdict | Remove `needs-review`; recommend only. Even BUILD adds **no handoff label**. Dispatch independently runs the SHA-bound quality review before this stage; the manager itself never approves, requests changes, merges, or closes PRs. |
 
 The model uses the existing evidence/briefing source helpers: bounded target
 description/comments, recent issues and PRs (not an exhaustive duplicate search),
@@ -346,8 +346,40 @@ under a per-repository section still produce host-config warnings.
 Labels (`needs-review`, `needs-viability`, `needs-triage`, `needs-info`,
 `ready-for-agent`, `ready-for-human`, `factory-approved`, `chore`, `initiative`)
 and the `agent/<n>` branch scheme are fixed conventions; `factory init` creates
-the labels. `needs-review` opts a PR into direction viability, not code review;
+the labels. `needs-review` opts a PR into direction viability and dispatch's review-only intake;
 `needs-viability` opts an issue into viability before triage.
+
+Before the manager runs, dispatch discovers open, non-draft PRs labeled
+`needs-review` or with a pending review request for the authenticated `gh` account.
+Contributor branch names are unrestricted. Intake writes `review-intake` events
+with `pr` and `head` to `.factory/events.jsonl`, skipping already-recorded pairs
+under the shared PR/issue lock. Dry runs only print eligible revisions. For each
+newly admitted revision, the configured `[review]` command receives the diff
+between the recorded base and head SHAs. Valid final `VERDICT: APPROVE` or
+`VERDICT: REVISE` output publishes an approving or changes-requested GitHub review
+through `gh api`, explicitly bound to the recorded head with `commit_id`.
+Findings must each cite `path:line`; malformed output or a failed reviewer
+publishes nothing. Branch advancement cannot retarget the supplied diff or review.
+Prompts exceeding 120 KiB (UTF-8, including the diff) are skipped before reviewer
+execution and recorded as `unknown` with reason `prompt_too_large`; intake
+continues with the next PR. The recorded revision is not automatically retried.
+Dispatch records SHA-specific required-CI readiness for admitted PRs and escalates
+exhausted review attempts to a human issue. This lane does not change contributor
+branches or merge external PRs.
+
+The dashboard's **Ops → External PR review queue** lists open, non-draft opted-in
+PRs, including review-request admissions after GitHub consumes the request.
+Each GitHub-linked row shows the repository-local PR number, title, author,
+current head SHA, last reviewed SHA and verdict, and required-CI state with its
+last observation time. CI evidence comes from dispatch's `review-readiness`
+events, not a new CI poll; missing evidence for the current head is unknown.
+The six queue states are **pending review**, **changes requested**, **CI pending**,
+**CI failed**, **ready**, and **escalated**. An old approval never makes a new head
+ready, and readiness is advisory—not permission to merge.
+Changes requested, failed CI, escalations, and pending reviews needing human
+attention also appear in **Inbox**, with links to GitHub rather than mutation
+controls. Viewing or refreshing the queue does not change labels, reviews,
+branches, or merge state.
 
 ## Operating it
 
@@ -712,6 +744,92 @@ for row in read_events(Path(".factory/events.jsonl")):
         print(json.dumps(row))
 PY
 ```
+
+## Source-versioned PR feedback (schema 1)
+
+The full `factory dashboard --json` / `/api/snapshot` observation exposes
+`tickets[].pr.feedback`. The existing Review drawer, Inbox raw evidence, and
+`factory.briefing.sources_for` consume this same object. Non-PR tickets have no
+fabricated feedback. `--runtime-json` does not invoke this collector
+and retains its network-free contract.
+
+`factory.feedback.collect(read, *, repository, pr, issue=None, events=(),
+provenance_complete=True, producer_revision=None, observed_at=None,
+collect_details=True)` is the shared producer. `read` is the existing dashboard
+GitHub transport, accepting `endpoint` for fixed REST GETs or `query`/`variables`
+for GraphQL reads, plus a remaining `timeout`. Source exceptions become sanitized
+coverage/errors without discarding independently observed facts. There is no
+feedback cache, event append, model invocation, delivery, dispatch, readiness, or
+approval decision. The full dashboard's pre-existing lifecycle reconciliation
+remains unchanged.
+
+Detail reads are limited to open pull requests, so closed history never
+multiplies provider calls per refresh. `collect_details=False` reads nothing: the
+schema-1 envelope still carries the caller's independently known repository/PR
+identities and state, `head_sha` stays null, every source is `unavailable` with
+the `not_collected` reason/error code, and ownership stays `unverified`. Review,
+Inbox and briefing report that intentional noncollection explicitly; it is not an
+empty, resolved, or unsupported observation, and it is distinct from an older
+engine that has no `feedback` key at all.
+
+The required envelope is `schema_version`, `producer`, `observed_at`,
+`observation_id`, `repository`, `pr`, `owner`, `coverage`, `items`, and `errors`.
+Native repository/PR IDs are retained alongside host/slug, PR number/URL/head,
+state and nullable draft. Ownership needs an actual same-repository closing-issue
+link plus retained Factory claim provenance; branch text and shared credentials
+do not establish it. Relations are `factory_issue`, `unverified`, `ambiguous`,
+or `none`. A missing key or unsupported schema is unknown, not an empty success.
+
+Items retain native source IDs/links, source revision/update time, review/thread/
+check-run IDs, nullable run attempt, source versus observed head, disposition,
+author, body/truncation, location and provider name/title. Kinds are `review`,
+`review_comment`, `check_run`, `commit_status`, and `factory_review`; all can
+coexist. Review state, thread resolved/outdated state, and check status/conclusion
+remain independent. Missing source SHA is never filled with the current head.
+Relevance is `current_head`, `historical`, or `unknown`; outdated threads cannot
+become current through SHA equality. Provider User attribution remains unknown
+because shared credentials may belong to Factory. A Factory review requires a
+valid recorded review execution result, successful parse/exit and matching target
+SHA; ordinary discussion or `VERDICT` prose is legacy context, not that evidence.
+Unavailable provider fields remain explicit nulls (including check-run update
+time or run attempt when the API does not supply them).
+
+Fixed bounds in `factory/feedback.py`: `ITEM_LIMIT=100` per reviews, threads/
+comments and checks/statuses; `PAGE_LIMIT=2`; `BODY_LIMIT=20000` UTF-8 bytes per
+body; `ERROR_LIMIT=32`; `DETAIL_TIMEOUT=30` seconds, with initial/final head reads.
+Reviews and review threads are read as bounded GraphQL connections carrying native
+IDs, links, the reviewed commit and the provider's own `updatedAt` (an edited review
+revises it; a submission time would not). Both use up to two pages; the combined
+checks source reserves one page for native check runs and one for commit statuses. Nested thread comment
+overflow is explicit rather than an unbounded fan-out. Provenance reuses the
+existing safe, bounded 2 MB committed-event tail reader. Every source (`pr`,
+`reviews`, `threads`, `checks`) reports `status` (`complete`, `partial`,
+`unavailable`), nullable `observed_at`/`reason`, and `truncated`. A cap, malformed
+response, missing SHA, failed read, or head race never establishes disappearance
+or resolution. A failed final read exposes an unknown head; raced reads retain
+facts and both observed heads while making relevance unknown. Truncated text
+without a reliable provider update signal explicitly lacks byte-exact change
+detection beyond the retained body.
+
+Canonical JSON is UTF-8, sorted keys, compact separators and explicit nulls.
+Identity strings are stripped/NFC-normalized; host/slug and SHA hex are lowercase.
+Evidence IDs namespace provider, host, repository ID, PR ID, kind and source ID.
+`source_revision` is `sha256:` over exactly `kind`, `source_id`, `review_id`,
+`thread_id`, `check_run_id`, `run_attempt`, `source_head_sha`, `source_updated_at`,
+`author`, `body`, `truncated`, `location`, `disposition`, `summary`.
+`observation_id` hashes repository/PR native IDs, final observed head, sorted
+`(evidence_id, source_revision)` pairs, and coverage status/truncated/reason.
+Collection timestamps, URLs, relevance and presentation order are excluded.
+Unchanged polls keep identity; edits/resolution/dismissal/outcome changes revise
+the same source. The producer revision is a clean source-checkout Git revision,
+otherwise null, never a CLI version.
+
+Briefing appends feedback behind existing evidence and human constraints and
+reports omissions in its reserved coverage citation. Source text is quoted
+untrusted evidence, rendered through safe text helpers. No consumer may infer
+delivery, fixed status, merge approval or readiness from this read-only schema.
+B2 (#79) does not authorize #15 delivery or change its held status; acceptance
+requires the actual merged producer revision and a separately authorized handoff.
 
 ## Bounded runtime JSON (schema 1)
 

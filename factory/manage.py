@@ -341,7 +341,7 @@ def viability_pass(dry_run: bool = False) -> None:
                             f"- [{s['id']}] {s.get('url') or s.get('path') or s['label']}"
                             for s in sources if f"[{s['id']}]" in body
                         )
-                        note = ("Recommendation only: no review or handoff label is applied to PRs until factory #5 is implemented."
+                        note = ("Recommendation only: this viability assessment applies no review or handoff label to PRs."
                                 if kind == "pr" else
                                 "BUILD queues needs-triage for deeper investigation, not implementation."
                                 if verdict == "BUILD" else
@@ -395,7 +395,7 @@ def manage_pass(dry_run: bool = False) -> None:
                     events = [e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("ticket") == n]
                     escalation = next((e for e in reversed(events) if e.get("event") == "escalate"
                                        and e.get("reason") != "manager_failed"), None)
-                    if not escalation or escalation.get("upstream") or not escalation.get("packet"):
+                    if not escalation or escalation.get("upstream") or escalation.get("pr") or not escalation.get("packet"):
                         continue
                     round_number = escalation.get("round", 0)
                     if not 1 <= round_number <= cfg.manager_rounds or any(

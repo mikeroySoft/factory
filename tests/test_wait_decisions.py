@@ -43,6 +43,7 @@ class WaitDecisions(unittest.TestCase):
                 patch.object(dispatch, "sync_pass") as sync, \
                 patch.object(dispatch, "merge_pass_locked") as merge, \
                 patch.object(dispatch, "frontier") as frontier, \
+                patch.object(dispatch, "gh_json", return_value=[]), \
                 patch.object(dispatch, "process_ticket") as process:
             self.assertEqual(dispatch.main([]), 0)
         sync.assert_called_once_with(False)
@@ -177,6 +178,7 @@ class WaitDecisions(unittest.TestCase):
         with patch.object(dispatch.config, "load", return_value=self.cfg), \
                 patch.object(dispatch, "sync_pass") as sync, \
                 patch.object(dispatch, "merge_pass_locked") as merge, \
+                patch.object(dispatch, "gh_json", return_value=[]), \
                 patch.object(dispatch, "frontier", return_value=[]):
             self.assertEqual(dispatch.main(["--dry-run"]), 0)
             dispatch.process_ticket(self.issue, 1, True)
