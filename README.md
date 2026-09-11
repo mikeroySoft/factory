@@ -1352,6 +1352,45 @@ separate, network-free F03 endpoint; it never calls this GitHub-capable collecto
 No installed-host support, deployment approval, or chat/action packaging is
 implied by the source interface.
 
+## Read-only Factory Manager console (`factory chat`)
+
+`factory chat` opens a conversational, **read-only** Factory Manager on one
+explicitly named repository. It reuses the bounded schema-1 evidence interface
+above (`fm_observe`, `fm_inspect`, `fm_investigate`, `fm_capabilities`,
+`fm_source`, `fm_resource`, `fm_sample_preview`) — no shell, no edit/write, no
+publication or dispatch. It never mutates anything.
+
+The console runs on a pinned upstream Pi runtime that is an **optional** console
+dependency; ordinary Factory execution never needs Node. Install it once inside
+the checkout, then launch:
+
+```sh
+# One-time: install the pinned Pi runtime (Node >=22.19) into the console.
+npm ci --ignore-scripts --no-audit --no-fund --prefix console/app
+
+# Open the read-only console on an explicit repository/checkout.
+factory chat --root /path/to/checkout --repository owner/name
+
+# Resume this scope's latest conversation; startup always reobserves fresh evidence.
+factory chat --root /path/to/checkout --repository owner/name --continue
+```
+
+Startup requires a Linux interactive terminal and authenticated `gh`. The
+launcher writes only console-owned settings into an isolated `console/app/.runtime`
+directory (default project trust `never`; packages, extensions, skills, prompts
+and themes empty; images blocked); it never copies provider auth or ambient host
+settings. No inference happens until you approve the explicit provider/model
+disclosure dialog. The default provider is the local keyless Ornith endpoint;
+`--provider openai|openai-codex --model <id>` uses Pi's native, isolated
+authentication for that provider only. Scope is fixed per launch — switching
+repository means exiting and relaunching with a fresh disclosure.
+
+Conversation history is not authoritative state: every start and `--continue`
+resume reobserves Factory, and a failed or interrupted turn marks evidence stale
+and reobserves on the next turn. The `console/app/check.py` read-boundary smoke
+and `console/app/check-transport.ts` transport smoke exercise the bridge without
+any model call.
+
 ## Agent skill
 
 `skills/factory/SKILL.md` teaches a coding agent to install the factory
