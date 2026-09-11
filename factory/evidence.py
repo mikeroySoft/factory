@@ -371,6 +371,32 @@ def github_read(endpoint: str, deadline: float, *, text: bool = False) -> tuple[
         raise EvidenceError("github_unavailable", "GitHub returned unreadable JSON.", endpoint) from None
 
 
+def reader_build() -> dict:
+    """Verifiable identity of the installed evidence engine, kept distinct from
+    the operator's selected repository checkout and running service. The build
+    revision is this reader's own source checkout HEAD, reported only when this
+    module is a clean, tracked git file; a packaged or locally modified install
+    has no verifiable revision and is reported explicitly unknown. Neither the
+    factory version string nor the selected --root HEAD ever stand in for it."""
+    root = Path(__file__).resolve().parent
+    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
+
+    def git(*args: str) -> str | None:
+        try:
+            proc = subprocess.run(["git", "-C", str(root), *args], capture_output=True,
+                                  text=True, timeout=COMMAND_SECONDS, env=env, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return proc.stdout.strip() if proc.returncode == 0 else None
+
+    revision = git("rev-parse", "HEAD")
+    tracked = git("ls-files", "--error-unmatch", "--", Path(__file__).name)
+    status = git("status", "--porcelain", "--", ".")
+    verified = bool(revision and SHA.fullmatch(revision)) and bool(tracked) and status == ""
+    return {"revision": revision if verified else None, "verified": verified,
+            "evidence_schema": 1, "runtime_schema": 1}
+
+
 def capabilities() -> dict:
     return {
         "reads": [
@@ -391,8 +417,8 @@ def capabilities() -> dict:
                    "directory_entries": DIRECTORY_CAP, "path_characters": 1024,
                    "ref_characters": 255, "repository_characters": 200, "id_exclusive_max": 2**63,
                    "runtime_bytes": runtime_events.BYTE_LIMIT, "runtime_events": runtime_events.EVENT_LIMIT},
-        "producers": {"evidence_schema": 1, "runtime_schema": 1, "runtime_reader": "F03 non-persisting",
-                      "escalation_packet": "escalations/{number}.md"},
+        "producers": {"reader": reader_build(), "evidence_schema": 1, "runtime_schema": 1,
+                      "runtime_reader": "F03 non-persisting", "escalation_packet": "escalations/{number}.md"},
         "actions": [],
         "unavailable": ["arbitrary shell, API URLs or host paths", "writes, dispatch or action execution",
                         "provider configuration", "full pagination and complete log archives", "configured worker attribution"],
