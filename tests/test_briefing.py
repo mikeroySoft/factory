@@ -198,6 +198,28 @@ class BriefingBoundaryTest(unittest.TestCase):
             with self.subTest(request=req), self.assertRaises(ValueError):
                 briefing.validate_request(req, True)
 
+    def test_repository_wide_question_uses_bounded_snapshot_evidence(self) -> None:
+        cfg = config.Config(root=Path("/unused"), repo="acme/widgets")
+        snapshot = {
+            "generated_at": "2026-09-12T12:00:00Z",
+            "errors": [],
+            "active": 1,
+            "metrics": {},
+            "spend": {},
+            "dispatcher": {"timer": {"active": True}, "runs": []},
+            "tickets": [{
+                "number": 7, "title": "Needs a decision", "state": "OPEN",
+                "stage": "escalated", "labels": ["ready-for-human"],
+                "assignees": [], "events": [],
+            }],
+        }
+        sources = briefing.factory_sources(cfg, snapshot)
+        case = next(source for source in sources if source["label"].startswith("Case #7"))
+        with patch.object(briefing, "run_model", return_value=f"Case #7 needs a decision [{case['id']}]"):
+            result = briefing.respond(cfg, snapshot, {"question": "What needs me?"}, True)
+        self.assertEqual(result["answer"], f"Case #7 needs a decision [{case['id']}]")
+        self.assertEqual(result["sources"], sources)
+
     def test_stale_evidence_and_unknown_scopes_never_reach_model(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             cfg = config.Config(root=Path(directory), repo="acme/widgets")

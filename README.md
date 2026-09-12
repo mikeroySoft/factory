@@ -107,7 +107,7 @@ merge stage.
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
 | `factory stats` | Ticket table: attempts, review rounds, hours to merge, escalation count, resolver attribution, minutes in `ready-for-human`, and re-queues. Reads GitHub plus existing `events.jsonl`. `--by-worker` reads only events and shows every configured worker label: first-attempt gate pass rate, all attempts (including review bounces), and known cost. Attribution uses claim labels with current worker precedence; unclaimed attempts are excluded, missing rates/cost are `n/a`. The dashboard Ops view shows the same worker metrics. `--json`. |
 | `factory learn` | Reads the last N finished tickets' event trail, failing-attempt log tails, reviewer findings, and escalation reasons; asks the local model for ≤10 repo-specific lessons; writes `.factory-lessons.md` (you commit it). Every worker prompt carries it. `--dry-run`, `--last N`. |
-| `factory dashboard` | Local ops UI: tickets by stage, authoritative in-flight phase when known, gate reports, worker logs, journal heartbeat, upstream drift, and an action list with one-click answers. `--json` prints the existing snapshot, including independent executions and local interruption reconciliation. `--host 0.0.0.0` exposes it (and its mutating `/api/act`) to your network. |
+| `factory dashboard` | Local ops UI: Inbox, Ops, a dedicated read-only Factory Manager Chat with browser-local history, Codebase history, and Atlas; tickets by stage, in-flight phase, gate reports, worker logs, journal heartbeat, and upstream drift. `--json` prints the existing snapshot, including independent executions and local interruption reconciliation. `--host 0.0.0.0` exposes it (and its mutating `/api/act`) to your network. |
 | `factory dashboard --runtime-json` | One bounded schema 1 runtime observation using only local read-only evidence; no GitHub, model probe, journal append, lock acquisition, or state creation. Partial source failures remain structured JSON. See [runtime contract](#bounded-runtime-json-schema-1). |
 | `factory evidence --root /path/to/main-checkout` | One explicit-repository schema 1 JSON read: compact cases, selected evidence, workflow/file/PR/CI investigations, or capabilities. Read-only GitHub GETs and F03 local evidence; no model, action execution, or state writes. See [evidence contract](#bounded-project-evidence-json-schema-1). |
 | `factory plan list` / `factory plan inspect N` | Read-only schema 1 JSON over `initiative` issues: declared status/owner, parsed sections, `#N` implementation links (`inspect` also fetches each linked issue's title/state), per-issue `malformed` + `problems` (missing/invalid declared facts, sections cut at 4,000 characters, links beyond the first 20), cited sources with `observed_at`. `list` reads at most 3 pages of 100 and keeps malformed initiatives flagged per row (exit 0); a failed page, or a malformed initiative under `inspect`, yields `coverage.status: partial` and exit 1, never a mutation. |
@@ -423,13 +423,16 @@ branches, or merge state.
   consequences, and next owner stay visible; raw evidence is expandable. **Ops**
   retains the board, telemetry, dispatcher runs, and task drawers.
   **Ask FM** works on a whole task or a specific source/log and returns cited
-  answers. It requires an authenticated `omp` installation; `[manager].model`
-  chooses the model (host-wide: `[defaults.manager]`). If unset, an existing
-  `manager.command` supplies only its `--model` value, otherwise OMP's default
-  model is used. The dashboard never executes that command: questions run a
-  bounded, read-only, no-tools OMP process against server-collected evidence.
-  Evidence is sent to the selected model provider; questions are not posted to
-  GitHub. Errors remain visible and retryable, never replaced with canned advice.
+  answers. The dedicated **Chat** page at `/chat` also answers repository-wide,
+  case, and dispatcher-run questions; cited evidence is inspectable and
+  conversations persist in that browser. It requires an authenticated `omp`
+  installation; `[manager].model` chooses the model (host-wide:
+  `[defaults.manager]`). If unset, an existing `manager.command` supplies only
+  its `--model` value, otherwise OMP's default model is used. The dashboard never
+  executes that command: questions run a bounded, read-only, no-tools OMP process
+  against server-collected evidence. Evidence is sent to the selected model
+  provider; questions are not posted to GitHub. Errors remain visible and
+  retryable, never replaced with canned advice.
   Decisions require rationale and an exact mutation preview; stale or incomplete
   snapshots block execution. Confirmed decisions leave GitHub rationale comments
   and a local `human-decision` audit event with success, partial, or failed outcome.
