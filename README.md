@@ -1508,11 +1508,11 @@ Design and acceptance criteria: [codebase history plan](docs/codebase-history-pl
 
 ## Architecture
 
-`factory/architecture.html` (served by the dashboard at `/atlas`) shows
-the system and the ticket lifecycle. Modules map 1:1 to commands:
-`triage.py`, `dispatch.py`, `gate.py`, `stats.py`, `dashboard.py`,
-`onboard.py`, with `config.py` as the single source of every repo-specific
-value.
+`factory/architecture.html` (served by the dashboard at `/atlas`) maps the core
+ticket system and lifecycle alongside the manager, operator, codebase, planning,
+evidence, chat, onboarding, metrics, and learning surfaces. `factory/cli.py`
+defines the command surface; `factory/config.py` layers host and repository
+configuration.
 
 ## License
 
