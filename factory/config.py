@@ -49,7 +49,7 @@ DEFAULT_CHORE_WORKER = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "
 DEFAULT_REVIEWER = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1", "{prompt}"]
 DEFAULT_LLM_URL = "http://127.0.0.1:11434/v1/chat/completions"
 DEFAULT_LLM_MODEL = "qwen3:30b"
-DEFAULT_INSTALL = {"every": "10min", "dashboard": False, "host": "127.0.0.1", "env": {}}
+DEFAULT_INSTALL = {"every": "10min", "dashboard": False, "host": "127.0.0.1", "python": None, "env": {}}
 
 # Host-side layer: `$XDG_CONFIG_HOME/factory/config.toml`, same table shapes
 # as `.factory.toml`. `[defaults.*]` < `[repo."owner/name".*]` < the repo file.
@@ -71,7 +71,7 @@ KNOWN_KEYS = {
     "leak_scan": ("pattern", "exclude"),
     "triage": ("url", "model"),
     "dashboard": ("port", "theme"),
-    "install": ("every", "dashboard", "host", "env"),
+    "install": ("every", "dashboard", "host", "python", "env"),
     "collaboration": ("fallback", "reasons", "components"),
 }
 CHECK_KEYS = ("name", "run", "exclusive")
@@ -385,6 +385,9 @@ def load(start: Path | None = None) -> Config:
     cfg.dashboard_port = int(dash.get("port", cfg.dashboard_port))
     cfg.dashboard_theme = root / dash["theme"] if dash.get("theme") else None
     cfg.install = merge(DEFAULT_INSTALL, raw.get("install", {}))
+    python = cfg.install["python"]
+    if python is not None and (not isinstance(python, str) or not python):
+        raise ConfigError("[install].python must be a non-empty path")
     cfg.install["dashboard"] = bool(cfg.install["dashboard"])
     cfg.install["env"] = {k: str(v) for k, v in cfg.install["env"].items()}
     return cfg

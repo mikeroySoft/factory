@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import errno
 import hashlib
 import ipaddress
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -290,6 +292,10 @@ def doctor(argv: list[str]) -> int:
         sections = [("defaults", host.get("defaults", {}))] + [(f'repo."{s}"', t) for s, t in host.get("repo", {}).items()]
         foreign = [f"{name}.{k}" for name, sec in sections if isinstance(sec, dict) for k in foreign_host_keys(sec, defaults=name == "defaults")]
         report(None if foreign else True, "host config", f"ignored (not host-owned): {', '.join(foreign)}" if foreign else str(config.host_config_path()))
+    if cfg.install.get("python") is not None:
+        ok, detail = interpreter_probe(cfg)
+        report(ok, "service interpreter", detail)
+
 
     for tool in ("git", "gh"):
         report(shutil.which(tool) is not None, f"{tool} on PATH")
@@ -379,9 +385,171 @@ def doctor(argv: list[str]) -> int:
 def unit_dir() -> Path:
     return config.host_config_path().parents[1] / "systemd" / "user"
 
+INTERPRETER_PROBE = """
+import importlib
+import importlib.util
+import json
+import sysconfig
+
+result = {
+    "origins": {},
+    "purelib": sysconfig.get_path("purelib"),
+    "platlib": sysconfig.get_path("platlib"),
+}
+try:
+    for name in ("factory", "factory.cli", "factory.triage", "factory.dispatch", "factory.dashboard"):
+        spec = importlib.util.find_spec(name)
+        result["origins"][name] = spec.origin if spec else None
+        module = importlib.import_module(name)
+        result["origins"][name] = module.__file__
+    import factory
+    result["version"] = getattr(factory, "__version__", "unknown")
+    from factory.cli import COMMANDS
+    for command in ("triage", "dispatch", "dashboard"):
+        entry = COMMANDS.get(command)
+        if not entry:
+            raise RuntimeError(f"missing {command} command")
+        module, function, _ = entry
+        getattr(importlib.import_module(f"factory.{module}"), function)
+except Exception as exc:
+    result["error"] = f"{type(exc).__name__}: {exc}"
+print(json.dumps(result))
+raise SystemExit("error" in result)
+"""
+
+
+def service_python(cfg: config.Config) -> Path:
+    """Interpreter rendered into service units; keep a configured venv symlink intact."""
+    value = cfg.install.get("python")
+    if value is None:
+        return Path(sys.executable)
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else cfg.root / path
+
+
+def systemd_argument(value: str) -> str:
+    """Render one literal ExecStart argument, without shell or systemd expansion."""
+    if any(ord(char) < 32 or 127 <= ord(char) < 160 for char in value):
+        raise ConfigError("service interpreter path contains a control character")
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    escaped = escaped.replace("$", "$$").replace("%", "%%")
+    if re.fullmatch(r"[A-Za-z0-9_./:@+-]+", value):
+        return escaped
+    return f'"{escaped}"'
+
+
+def interpreter_probe(cfg: config.Config) -> tuple[bool, str]:
+    """Validate a configured interpreter under the generated services' cwd and environment."""
+    python = service_python(cfg)
+    try:
+        systemd_argument(str(python))
+    except ConfigError as exc:
+        return False, str(exc)
+    if not python.exists():
+        return False, f"{python} does not exist"
+    if not python.is_file():
+        return False, f"{python} is not a file"
+    if not os.access(python, os.X_OK):
+        return False, f"{python} is not executable"
+
+    command = "systemctl --user show-environment"
+    try:
+        manager = sh(["systemctl", "--user", "show-environment"])
+    except (OSError, UnicodeError) as exc:
+        return False, f"{command} failed: {exc}; check the user systemd manager"
+    if manager.returncode:
+        return False, (
+            f"{command} failed: {manager.stderr.strip() or manager.returncode}; "
+            "check the user systemd manager"
+        )
+    env = {}
+    lines = manager.stdout.removesuffix("\n").split("\n") if manager.stdout else []
+    for number, line in enumerate(lines, 1):
+        try:
+            name, separator, value = line.partition("=")
+            if not separator or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                raise ValueError("expected NAME=VALUE")
+            if name in env:
+                raise ValueError(f"duplicate assignment for {name}")
+            if value.startswith("$'"):
+                if not re.fullmatch(
+                    r"\$'(?:[^'\\\x00-\x1f]|\\(?:[abfnrtv\\'\"]|[0-7]{3}|x[0-9a-fA-F]{2}))*'",
+                    value,
+                ):
+                    raise ValueError("invalid ANSI-C quoted value")
+                values = [ast.literal_eval(value[1:])]
+            else:
+                values = shlex.split(value, comments=False, posix=True)
+            if len(values) > 1 or (value and not values):
+                raise ValueError("expected one shell-quoted value")
+            decoded = values[0] if values else ""
+            if "\0" in decoded:
+                raise ValueError("environment value contains NUL")
+            env[name] = decoded
+        except (ValueError, SyntaxError) as exc:
+            return False, (
+                f"{command} returned invalid assignment output at line {number}: {exc}; "
+                "inspect and correct the user manager environment"
+            )
+    env["PATH"] = os.environ["PATH"]
+    env.update(cfg.install["env"])
+    try:
+        proc = subprocess.run(
+            [str(python), "-P", "-c", INTERPRETER_PROBE],
+            cwd=cfg.root, env=env, capture_output=True, text=True, check=False, timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"{python} probe timed out after 10 seconds"
+    except OSError as exc:
+        return False, f"{python} could not run: {exc}"
+
+    try:
+        result = json.loads(proc.stdout.splitlines()[-1])
+    except (IndexError, json.JSONDecodeError):
+        detail = " ".join((proc.stderr.strip() or f"exit {proc.returncode} without probe output").split())
+        return False, f"{python} could not load Factory service commands: {detail[:500]}"
+
+    origins = result.get("origins", {})
+    location = origins.get("factory")
+    version = result.get("version", "unknown")
+    identity = f"Factory {version} at {location}" if location else "Factory not importable"
+    details = ", ".join(
+        f"{name}={origins.get(name)}"
+        for name in ("factory", "factory.cli", "factory.triage", "factory.dispatch", "factory.dashboard")
+    )
+    details += f", purelib={result.get('purelib')}, platlib={result.get('platlib')}"
+    identity += f" ({details})"
+    installed = [Path(result[key]) for key in ("purelib", "platlib") if result.get(key)]
+    for name, origin in origins.items():
+        if not origin:
+            continue
+        # Check both spellings: resolving alone hides lexical checkout imports,
+        # while lexical checks alone miss symlinks back into the checkout.
+        for resolve in (False, True):
+            root = cfg.root.resolve() if resolve else Path(os.path.abspath(cfg.root))
+            loaded = Path(origin).resolve() if resolve else Path(os.path.abspath(origin))
+            package_roots = [
+                path.resolve() if resolve else Path(os.path.abspath(path)) for path in installed
+            ]
+            if loaded.is_relative_to(root) and not any(
+                loaded.is_relative_to(path) for path in package_roots
+            ):
+                return False, (
+                    f"{python} loaded {identity}; {name} comes from the repository checkout; "
+                    "remove the PYTHONPATH/import override and install Factory into the interpreter"
+                )
+    if proc.returncode:
+        error = " ".join(
+            str(result.get("error") or proc.stderr.strip() or f"exit {proc.returncode}").split()
+        )
+        if location:
+            return False, f"{python} loaded {identity}, but service commands failed: {error[:500]}"
+        return False, f"{python} could not load Factory service commands: {error[:500]} ({details})"
+    return True, f"{python} loads {identity}"
+
 
 def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
-    exe = f"{sys.executable} -P -m factory"
+    exe = f"{systemd_argument(str(service_python(cfg)))} -P -m factory"
     # At boot the user manager's PATH is the systemd default (no ~/.local/bin),
     # so gh/omp/codex vanish; carry the installing shell's PATH into the units.
     # [install].env (host config) adds one line each: policy such as UV_EXCLUDE_NEWER.
@@ -418,7 +586,8 @@ def install(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="factory install",
         description="Install systemd user units: a dispatcher timer and, optionally, the dashboard. "
-        "Defaults come from [install] in the host config; re-running converges the unit set.",
+        "Defaults come from [install] in the host config; [install].python selects the service "
+        "interpreter. --print only renders units and does not validate the interpreter.",
     )
     parser.add_argument("--every", help="dispatcher interval, systemd time span (default 10min)")
     parser.add_argument(
@@ -441,6 +610,11 @@ def install(argv: list[str]) -> int:
         for name, body in wanted.items():
             print(f"# {name}\n{body}")
         return 0
+    if cfg.install.get("python") is not None:
+        ok, detail = interpreter_probe(cfg)
+        if not ok:
+            raise ConfigError(f"service interpreter: {detail}")
+        print(f"validated service interpreter: {detail}")
     if shutil.which("systemctl") is None:
         raise ConfigError("systemctl not found; run `factory dispatch` from cron or by hand instead")
     if args.dashboard:

@@ -67,13 +67,31 @@ its own `[repo."owner/name".dashboard] port` in the host config. The preflight c
 reserve the port until systemd starts the service: a later bind failure exits 1
 with a one-line diagnostic, and the existing systemd restart policy still applies.
 
-Generated triage, dispatch and dashboard services use `python -P -m factory`:
-Python does not prepend the repository working directory to its module search
-path, so an older checkout cannot shadow the installed Factory package.
-The interpreter must already have Factory installed; explicit `PYTHONPATH`
-overrides remain operator-controlled. This source change does not rewrite
-existing units: review their import paths before any separately authorized
-unit update or service reload.
+Generated triage, dispatch and dashboard services use the interpreter selected by
+host-owned, optional `[install].python`, or `sys.executable` (the interpreter running
+`factory install`) when unset, followed by `-P -m factory`. Set
+`python = "/path/to/venv/bin/python"` under `[defaults.install]` or
+`[repo."owner/name".install]`; a committed `[install]` remains a host-setting warning.
+The selected path preserves symlink identity and is rendered as one systemd
+argument: control characters are rejected, and backslash, quote, `$` and `%` are
+escaped so systemd executes the validated literal path.
+
+For a configured interpreter, `doctor` and a real `install` check the path and run
+a 10-second probe from the repository working directory. Validation snapshots the
+user manager environment read-only with `systemctl --user show-environment`,
+parses its assignments, applies the PATH rendered into units, then overlays
+`[install].env`. Failures stop installation before any mutation.
+The probe loads all three service commands and reports the loaded Factory version
+and location. It checks every loaded service module origin (`factory`,
+`factory.cli`, `factory.triage`, `factory.dispatch` and `factory.dashboard`), with
+the selected interpreter's `purelib`/`platlib` context as appropriate, rejecting
+lexical origins under the repository root (`cfg.root`) unless within a selected
+package root.
+`-P` only prevents Python from automatically prepending the working directory:
+`PYTHONPATH` and other explicit import sources still apply and remain
+operator-controlled. Factory neither provisions the environment nor requires its
+version to match the installer. `install --print` only renders the units; like its
+other operational preflights, interpreter validation runs only for a real install.
 
 Then file an issue with the **Agent task** template (Scope / Touches / Exit
 gate / Out of scope). It gets `needs-triage`; the next pass triages it; if it is
