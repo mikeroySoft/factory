@@ -85,9 +85,13 @@ Success evidence / Implementation links). It gets only `initiative`, never
 `needs-triage`; discussion and edits on the issue are the collaboration
 surface, and `factory plan` reads it. Status (`proposed`, `shaping`, `ready`,
 `underway`, `delivered`) and Owner are declared facts, never inferred from
-child closure and not grants of permission. The `initiative` label is not yet
-an enforced dispatch guard: an initiative that is also labelled
-`ready-for-agent` is treated as an ordinary ticket.
+child closure and not grants of permission. The `initiative` label is an
+unconditional execution guard read fresh at every boundary: triage never
+promotes an initiative (no model call), the dispatcher never claims one even
+with `--ticket`, the manager never assesses or manages one, and the merge stage
+never merges an `agent/<n>` PR whose ticket #n is an initiative. Refusals are
+logged (also in `--dry-run`) and mutate nothing: no labels, assignees, comments
+or escalation packets. A stale frontier row cannot bypass the fresh read.
 
 For a fork that tracks an upstream, set `[repo].upstream = "upstream"` and the
 dispatcher merges new upstream commits into your `main` (gated) before each

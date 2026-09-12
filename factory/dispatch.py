@@ -149,6 +149,13 @@ def issue_is_open(number: int) -> bool:
     return data["state"].upper() == "OPEN"
 
 
+def initiative_kind(n: int) -> bool:
+    """Fresh label read at the execution boundary; list/search rows lag label edits."""
+    from factory.plan import is_initiative  # plan -> evidence -> dashboard -> dispatch: import lazily
+
+    return is_initiative(gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels"]))
+
+
 def open_blockers(number: int, body: str) -> list[int]:
     blockers: set[int] = set()
     # GitHub issue-dependency API; 404 means the feature/edges are absent.
@@ -187,6 +194,9 @@ def frontier() -> list[dict]:
     ready = []
     for issue in issues:
         n = issue["number"]
+        if any(label.get("name") == config.LABEL_INITIATIVE for label in issue.get("labels", [])):
+            log(f"#{n}: skipped (initiative record)")
+            continue
         if issue["assignees"]:
             log(f"#{n}: skipped (assigned)")
             continue
@@ -1152,6 +1162,11 @@ def merge_pass_locked(dry_run: bool) -> None:
         with nullcontext() if dry_run else lifecycle.scope(
             EVENTS, "merge-eligibility", ticket=n, lock=FACTORY / "locks" / "merge.lock"
         ) as execution:
+            if initiative_kind(n):
+                log(f"PR #{pr_num}: refused (ticket #{n} is an initiative record); not merging")
+                if execution:
+                    execution.outcome, execution.reason = "not_eligible", "initiative"
+                continue
             checks = pr_checks(pr_num)
             buckets: dict[str, int] = {}
             for c in checks:
@@ -1417,6 +1432,9 @@ def process_ticket(
                 execution.wait("ticket_lock_contended", mode="retry_next_pass", resource=request["resource"])
         return
     if dry_run:
+        if initiative_kind(n):
+            log(f"#{n}: refused (initiative records are never executed)")
+            return
         log(
             f"#{n}: would claim (assign @me), create worktree {wt} on branch agent/{n}, "
             f"run {worker} worker, gate, push, open PR, review"
@@ -1439,27 +1457,34 @@ def process_ticket(
             execution.resource("acquired", lock_path, scope="repository")
             # Strong re-read before claiming: `issue list` is search-backed and lags
             # label/assignee edits, which re-claimed #16/#17 seconds after escalation.
-            if not forced:
-                fresh = gh_json(
-                    [
-                        "issue",
-                        "view",
-                        str(n),
-                        "--repo",
-                        REPO,
-                        "--json",
-                        "state,labels,assignees",
-                    ]
-                )
-                if (
-                    fresh["state"].upper() != "OPEN"
-                    or fresh["assignees"]
-                    or LABEL_AGENT not in {label["name"] for label in fresh["labels"]}
-                ):
-                    log(f"#{n}: skipped (state changed since frontier query)")
-                    execution.outcome = "not_admitted"
-                    execution.reason = "state_changed"
-                    return
+            # The initiative kind is read here even when forced: `--ticket` cannot bypass it.
+            from factory.plan import is_initiative  # plan -> evidence -> dashboard -> dispatch
+
+            fresh = gh_json(
+                [
+                    "issue",
+                    "view",
+                    str(n),
+                    "--repo",
+                    REPO,
+                    "--json",
+                    "state,labels,assignees",
+                ]
+            )
+            if is_initiative(fresh):
+                log(f"#{n}: refused (initiative records are never executed)")
+                execution.outcome = "not_admitted"
+                execution.reason = "initiative"
+                return
+            if not forced and (
+                fresh["state"].upper() != "OPEN"
+                or fresh["assignees"]
+                or LABEL_AGENT not in {label["name"] for label in fresh["labels"]}
+            ):
+                log(f"#{n}: skipped (state changed since frontier query)")
+                execution.outcome = "not_admitted"
+                execution.reason = "state_changed"
+                return
 
             run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-assignee", "@me"])
             record("claimed", ticket=n, title=title, labels=sorted(labels))

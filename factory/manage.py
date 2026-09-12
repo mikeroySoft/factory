@@ -279,7 +279,7 @@ def parse_viability(output: str, sources: list[dict]) -> tuple[str, str]:
 
 
 def viability_pass(dry_run: bool = False) -> None:
-    from factory import evidence
+    from factory import evidence, plan
 
     cfg = dispatch.cfg
     if not cfg.manager:
@@ -311,6 +311,9 @@ def viability_pass(dry_run: bool = False) -> None:
                         snapshot = viability_snapshot(kind, n, label)
                         issue, _, request = snapshot
                         if request is None:
+                            continue
+                        if kind == "issue" and plan.is_initiative(issue):
+                            dispatch.log(f"issue #{n}: refused (initiative records are never assessed)")
                             continue
                         if any(e.get("event") == "viability" and e.get("kind") == kind
                                and e.get("request") == request and all(e.get(k) == v for k, v in identity.items())
@@ -403,6 +406,9 @@ def manage_pass(dry_run: bool = False) -> None:
                     ):
                         continue
                     packet = Path(escalation["packet"])
+                    if dispatch.initiative_kind(n):
+                        dispatch.log(f"#{n}: refused (initiative records are never managed)")
+                        continue
                     if not packet.is_file() or human_activity(n, escalation):
                         continue
                     if dry_run:
