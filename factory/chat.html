@@ -113,24 +113,26 @@ textarea { width:100%; min-height:42px; max-height:180px; padding:9px 0; resize:
 .dock-in { isolation:isolate; display:grid; align-content:start; gap:18px; width:100%; min-width:320px; height:100%; padding:14px 16px; overflow:auto; }
 .dock section { display:grid; min-width:0; gap:7px; }
 .dock h3 { margin:0; color:var(--text-muted); font-size:10px; letter-spacing:.14em; text-transform:uppercase; }
-.case, .source-button { display:grid; gap:2px; min-height:0; padding:8px 9px; text-align:left; }
+.case { display:grid; gap:2px; min-height:0; padding:8px 9px; text-align:left; }
 .case strong { color:var(--accent); }
-.case small, .source-button small { color:var(--text-muted); white-space:normal; }
-.source-button { grid-template-columns:auto 1fr; }
-.source-button b { color:var(--accent); }
+.case small { color:var(--text-muted); white-space:normal; }
+#sources { display:grid; gap:6px; }
+.source-card { position:relative; z-index:1; overflow:hidden; border:1px solid var(--border-hairline); border-radius:4px; }
+.source-card.open { z-index:2; border-color:var(--accent); background:var(--surface-sunken); }
+.source-toggle { width:100%; min-height:36px; padding:7px 9px; border:0; text-align:left; }
+.source-toggle b { color:var(--accent); }
+.source-details { display:grid; grid-template-rows:1fr; animation:source-grow .28s ease-out both; }
+.source-details-in { min-height:0; overflow:hidden; display:grid; gap:7px; padding:0 9px 9px; }
+.source-details small { color:var(--text-muted); overflow-wrap:anywhere; }
+.source-details p { margin:0; }
+.source-details pre { max-height:46dvh; margin:0; overflow:auto; padding:10px 12px; border:1px solid var(--border-hairline); border-radius:5px; color:var(--text-secondary); background:var(--surface-page); font:11px/1.6 var(--font-mono); white-space:pre-wrap; }
+@keyframes source-grow { from { grid-template-rows:0fr; } }
 .activity { display:grid; gap:6px; padding:9px 10px; border:1px solid var(--border-hairline); border-radius:5px; color:var(--text-secondary); background:var(--surface-sunken); font-size:11px; }
 .activity .row { display:flex; align-items:center; gap:8px; }
 .activity .dot { width:7px; height:7px; border:1px solid var(--border-strong); border-radius:50%; }
 .activity .done .dot { border-color:var(--status-ok); background:var(--status-ok); }
 .activity .live .dot { border-color:var(--accent); background:var(--accent); animation:pulse .8s infinite; }
 .error { padding:8px 10px; border-left:3px solid var(--status-danger); color:#efa18f; background:var(--surface-sunken); }
-.source-inspector { position:relative; z-index:2; width:100%; min-width:0; overflow:hidden; padding-bottom:16px; border-bottom:1px solid var(--border-hairline); background:var(--surface-page); box-shadow:0 12px 18px -18px #000; clip-path:inset(0); }
-@keyframes source-reveal { from { clip-path:inset(0 0 100% 0); } }
-.source-inspector:not([hidden]) { animation:source-reveal .28s ease-out both; }
-.source-inspector header { display:grid; grid-template-columns:minmax(0,1fr) auto auto; align-items:center; gap:8px; }
-.source-inspector header .spacer { display:none; }
-.source-inspector header h3 { min-width:0; overflow-wrap:anywhere; color:var(--accent); }
-.source-inspector pre { max-height:46dvh; margin:0; overflow:auto; padding:10px 12px; border:1px solid var(--border-hairline); border-radius:5px; color:var(--text-secondary); background:var(--surface-sunken); font:11px/1.6 var(--font-mono); white-space:pre-wrap; }
 @media (max-width:1180px) { .dock { display:none; } .dock.source-open { display:block; } }
 @media (max-width:600px) { .msg.user .who { width:88%; } .msg.user .body { max-width:88%; } }
 @media (max-width:800px) { .rail { display:none; } .topbar { grid-template-columns:1fr; } .nav { justify-content:flex-start; } .meta { grid-column:1; } .shell { grid-template-columns:minmax(0,1fr); } .chat-head { padding-inline:12px; } .transcript,.composer { padding-inline:12px; } .shell.source-mode .chat { display:none; } .shell.source-mode .dock { display:block; width:100% !important; border-left:0; } .shell.source-mode .dock-in { min-width:0; } }
@@ -174,10 +176,6 @@ body[data-product="factory"] .compose-box textarea:focus-visible { outline:0; bo
     </form>
   </section>
   <aside class="dock slide" aria-label="Live context"><div class="dock-in">
-    <section class="source-inspector" id="source-inspector" hidden>
-      <header><h3 id="source-title">Evidence</h3><span class="spacer"></span><button class="sm" id="source-focus">Use as focus</button><button class="sm" id="source-close">Close</button></header>
-      <p class="faint" id="source-meta"></p><pre id="source-text"></pre>
-    </section>
     <section><h3>FM activity</h3><div class="activity" id="activity"><span class="faint">Idle. Activity appears here while the manager reads evidence.</span></div></section>
     <section><h3 id="waiting-title">Waiting on you</h3><div id="waiting"></div></section>
     <section><h3>In flight</h3><div id="inflight"></div></section>
@@ -248,18 +246,26 @@ function renderHead() {
     h('button',{class:'sm',type:'button','data-toggle':'dock','aria-pressed':String(S.dock),onclick:()=>{if(S.source)closeSource();else{setPanel('dock',!S.dock);save();}}},'Context')
   );
 }
-function sourceMap(item=current()) { const out=new Map(); for (const message of item.messages) for (const source of message.sources||[]) out.set(source.id,source); return out; }
-function openSource(source) {
-  if (S.source?.id===source.id) { closeSource(); return; }
-  if (!S.source) S.sourceDockWasOpen=S.dock;
-  const dock=document.querySelector('.dock'), inspector=$('source-inspector');
-  S.source=source; dock.classList.add('source-open'); document.querySelector('.shell').classList.add('source-mode'); inspector.hidden=false;
-  $('source-title').textContent=`${source.id} · ${source.label}`;
-  $('source-meta').textContent=source.truncated?'This evidence was truncated by the bounded source reader.':'Bounded evidence supplied to the Factory Manager.';
-  $('source-text').textContent=source.text||'No source text was returned.';
-  setPanel('dock',true); document.querySelector('.dock-in').scrollTo({top:0,behavior:'auto'});
+function sourceList(item=current()) { return item.messages.flatMap(message=>message.sources||[]); }
+function sourceMap(item=current()) { return new Map(sourceList(item).map(source=>[source.id,source])); }
+function sourceCard(source,index) {
+  const open=S.source===source;
+  return h('article',{class:`source-card${open?' open':''}`,id:`source-card-${index}`},
+    h('button',{class:'source-toggle',type:'button','aria-expanded':String(open),onclick:()=>openSource(source)},h('b',{},source.id)),
+    h('div',{class:'source-details',hidden:!open},h('div',{class:'source-details-in'},
+      h('small',{},source.label),
+      h('p',{class:'faint'},source.truncated?'This evidence was truncated by the bounded source reader.':'Bounded evidence supplied to the Factory Manager.'),
+      h('pre',{},source.text||'No source text was returned.')
+    ))
+  );
 }
-function closeSource(restoreFocus=true) { if (!S.source) return; const wasOpen=S.sourceDockWasOpen; S.source=null; S.sourceDockWasOpen=null; $('source-inspector').hidden=true; document.querySelector('.dock').classList.remove('source-open'); document.querySelector('.shell').classList.remove('source-mode'); setPanel('dock',wasOpen!==false); save(); if (restoreFocus) $('question').focus(); }
+function openSource(source) {
+  if (S.source===source) { closeSource(false); return; }
+  if (!S.source) S.sourceDockWasOpen=S.dock;
+  S.source=source; document.querySelector('.dock').classList.add('source-open'); document.querySelector('.shell').classList.add('source-mode'); setPanel('dock',true); renderContext();
+  requestAnimationFrame(()=>$(`source-card-${sourceList().indexOf(source)}`)?.scrollIntoView({block:'nearest',behavior:reduced.matches?'auto':'smooth'}));
+}
+function closeSource(restoreFocus=true) { if (!S.source) return; const wasOpen=S.sourceDockWasOpen; S.source=null; S.sourceDockWasOpen=null; document.querySelector('.dock').classList.remove('source-open'); document.querySelector('.shell').classList.remove('source-mode'); renderContext(); setPanel('dock',wasOpen!==false); save(); if (restoreFocus) $('question').focus(); }
 function cited(text,sources) { const fragment=document.createDocumentFragment(), map=new Map((sources||[]).map(source=>[source.id,source])); for (const part of String(text).split(/(\[S\d+\])/g)) { const source=map.get(part.slice(1,-1)); fragment.append(source?h('button',{class:'cite',type:'button',onclick:()=>openSource(source),title:source.label},source.id):part); } return fragment; }
 function messageNode(message) {
   const assistant=message.role==='assistant', body=h('div',{class:'body'});
@@ -289,7 +295,7 @@ function caseButton(item) { return h('button',{class:'case',type:'button',onclic
 function renderContext() {
   const waiting=S.snap.tickets.filter(item=>WAITING.has(item.stage)); $('waiting-title').textContent=`Waiting on you · ${waiting.length}`; $('waiting').replaceChildren(...(waiting.length?waiting.map(caseButton):[h('span',{class:'faint'},'Nothing currently requires human attention.')]));
   const inflight=S.snap.tickets.filter(item=>item.stage==='in-flight'); $('inflight').replaceChildren(...(inflight.length?inflight.map(caseButton):[h('span',{class:'faint'},'No work is in flight.')]));
-  const sources=[...sourceMap().values()]; $('sources').replaceChildren(...(sources.length?sources.map(source=>h('button',{class:'source-button',type:'button',onclick:()=>openSource(source)},h('b',{},source.id),h('small',{},source.label))):[h('span',{class:'faint'},'Nothing cited yet.')]));
+  const sources=sourceList(); $('sources').replaceChildren(...(sources.length?sources.map(sourceCard):[h('span',{class:'faint'},'Nothing cited yet.')]));
   const dispatcher=S.snap.dispatcher, timer=dispatcher.timer||{}; $('dispatcher').replaceChildren(h('i',{class:`led ${timer.active?'ok':'warn'}`}),timer.active?`active${timer.next?' · next '+fmtTime(timer.next):''}`:'timer inactive',` · ${dispatcher.runs?.length||0} recent runs`);
 }
 function activity(state='idle') {
@@ -330,8 +336,6 @@ $('question').onkeydown=event=>{ if (event.key==='Enter'&&!event.shiftKey) { eve
 document.querySelectorAll('[data-picker]').forEach(button=>button.onclick=()=>openPicker(button.dataset.picker));
 document.addEventListener('pointerdown',event=>{ if (!$('picker').hidden&&!$('picker').contains(event.target)&&!event.target.closest('[data-picker]')) $('picker').hidden=true; });
 document.addEventListener('keydown',event=>{ if (event.key==='Escape') { $('picker').hidden=true; if (S.source) closeSource(); } if (!event.target.matches('input,textarea')&&event.key==='[') setPanel('rail',!S.rail); if (!event.target.matches('input,textarea')&&event.key===']') { if (S.source) closeSource(); else setPanel('dock',!S.dock); } });
-$('source-close').onclick=()=>closeSource();
-$('source-focus').onclick=()=>{ const item=current(); if (item&&S.source) { item.focus=S.source.id; save(); renderScopes(); } closeSource(); };
 const topbar=document.querySelector('.topbar'); new ResizeObserver(()=>document.documentElement.style.setProperty('--top',topbar.offsetHeight+'px')).observe(topbar);
 setInterval(()=>{ if (S.snap) $('meta-snapshot').textContent=ago(S.snap.generated_at); },10000);
 load();
