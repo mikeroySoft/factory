@@ -152,6 +152,9 @@ def human_activity(n: int, escalation: dict, events: list[dict]) -> bool:
             if (item.get("updated_at") or item["created_at"]) != item["created_at"]:
                 return True
             continue
+        # Without a receipt (marker is None) the factory cannot recognize its own escalation
+        # churn, so this signature is skipped anywhere in the window. GitHub emits no
+        # `labeled` event for an already-present label, so a human cannot produce it here.
         if (marker is None or index < marker) and (
             (kind == "labeled" and item.get("label", {}).get("name") == LABEL_HUMAN)
             or (kind == "unlabeled" and item.get("label", {}).get("name") == LABEL_AGENT)

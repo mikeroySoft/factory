@@ -65,6 +65,9 @@ elif a[0] == "api" and "--method" in a:
         print(json.dumps({"number": 7, "title": issue["title"], "body": issue["body"], "state": "open",
                           "html_url": issue["url"], "updated_at": "2026-01-01T00:00:00Z", "labels": issue["labels"]}))
     elif endpoint == "repos/acme/widgets":
+        if s.get("fail_repo"):
+            print("HTTP 502", file=sys.stderr)
+            raise SystemExit(1)
         print(json.dumps({"owner": {"type": s.get("owner_type", "User")}}))
     else:
         print("HTTP 404", file=sys.stderr)
@@ -364,6 +367,17 @@ class HandoffCli(unittest.TestCase):
         self.assertEqual(len(self.requests()), 1)
         self.assertIn("the escalation packet is missing on the runner", self.requests()[0]["body"])
         self.packet.write_text("# Escalation #7\n")
+
+    def test_unverifiable_team_owner_is_named_without_being_mentioned(self) -> None:
+        self.reset()
+        self.configure(collaboration='[collaboration.reasons]\nci = "@acme/ci"\n')
+        self.escalate("PR #9: CI failed (unit)", 1)
+        self.manage(mode="HUMAN", fail_repo=True)  # owner type unreadable: unknown, not authorization
+        body = self.requests()[0]["body"]
+        self.assertIn("`@acme/ci`: team destinations could not be verified", body)
+        self.assertNotIn("@acme/ci —", body)
+        self.assertNotIn("unassigned", body)
+        self.assertEqual(self.events("handoff")[0]["target"], "selected")
 
     def test_each_terminal_manager_path_publishes_once_and_recovery_never_notifies(self) -> None:
         proc = self.manage("--dry-run", mode="HUMAN")
