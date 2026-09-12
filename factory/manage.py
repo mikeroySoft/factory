@@ -1,4 +1,4 @@
-"""Recommend opted-in PR/issue directions, then resolve escalation packets."""
+"""Recommend opted-in PR/issue directions, resolve escalation packets, then publish terminal human handoffs."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pathlib import Path
 from subprocess import CalledProcessError
 from tempfile import NamedTemporaryFile
 
-from factory import config, dispatch, lifecycle
+from factory import config, dispatch, handoff, lifecycle
 from factory.config import (
     LABEL_AGENT, LABEL_APPROVED, LABEL_HUMAN, LABEL_INFO, LABEL_REVIEW,
     LABEL_TRIAGE, LABEL_VIABILITY, LESSONS_NAME,
@@ -132,34 +132,42 @@ def parse(output: str, workers: dict, *, approval: bool = False) -> tuple[str, s
     return "HUMAN", "Unparseable manager output:\n\n" + (output.strip() or "(empty output)"), None
 
 
-def human_activity(n: int, escalation: dict) -> bool:
-    pages = dispatch.gh_json(["api", f"repos/{dispatch.REPO}/issues/{n}/timeline", "--paginate", "--slurp"])
-    events = [item for page in pages for item in page] if pages and isinstance(pages[0], list) else pages
-    # The escalation event precedes its own label changes and packet comment.
-    marker = next((i for i, item in enumerate(events) if item.get("event") == "commented"
-                   and item.get("created_at", "") >= escalation["at"]
-                   and item.get("body", "").startswith("Factory dispatcher escalating:")
-                   and escalation["packet"] in item.get("body", "")), None)
-    for index, item in enumerate(events):
+def human_activity(n: int, escalation: dict, events: list[dict]) -> bool:
+    """Timeline activity since the escalation that the factory did not journal itself.
+
+    Only recorded `comment` receipts identify machine comments (never a text prefix); an
+    edited receipt is human activity again. The escalation's own label edits before its
+    recorded comment are skipped.
+    """
+    items = handoff.timeline(n)
+    machine = {e["comment"] for e in events if e.get("event") == "comment"}
+    marker = next((i for i, item in enumerate(items) if item.get("event") == "commented"
+                   and item.get("id") in machine and item.get("created_at", "") >= escalation["at"]), None)
+    for index, item in enumerate(items):
         if item.get("created_at", "") < escalation["at"]:
             continue
-        if index == marker:
-            continue
         kind = item.get("event")
+        if kind == "commented" and item.get("id") in machine:
+            if (item.get("updated_at") or item["created_at"]) != item["created_at"]:
+                return True
+            continue
         if marker is not None and index < marker and (
             (kind == "labeled" and item.get("label", {}).get("name") == LABEL_HUMAN)
             or (kind == "unlabeled" and item.get("label", {}).get("name") == LABEL_AGENT)
             or kind == "unassigned"
         ):
             continue
-        if kind in {"commented", "labeled", "unlabeled", "assigned", "unassigned", "edited", "renamed", "closed", "reopened"}:
+        if kind in handoff.TIMELINE_EVENTS:
             return True
     return False
 
 
 def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: Path) -> None:
     def gh(action: str, *args: str) -> str:
-        return dispatch.run(["gh", "issue", action, str(n), "--repo", dispatch.REPO, *args]).stdout.strip()
+        out = dispatch.run(["gh", "issue", action, str(n), "--repo", dispatch.REPO, *args]).stdout.strip()
+        if action == "comment":
+            dispatch.comment_receipt(n, "manager", out, decision=decision)
+        return out
 
     if decision == "FIX":
         cfg = dispatch.cfg
@@ -590,11 +598,16 @@ def frontier_pass(dry_run: bool = False) -> None:
 
 
 def manage_pass(dry_run: bool = False) -> None:
+    """Viability, PR frontier and escalation rounds need a manager; terminal handoffs do not."""
+    if dispatch.cfg.manager:
+        viability_pass(dry_run)
+        frontier_pass(dry_run)
+        escalation_pass(dry_run)
+    handoff.handoff_pass(dry_run)
+
+
+def escalation_pass(dry_run: bool = False) -> None:
     cfg = dispatch.cfg
-    if not cfg.manager:
-        return
-    viability_pass(dry_run)
-    frontier_pass(dry_run)
     issues = dispatch.gh_json(["issue", "list", "--repo", cfg.repo, "--state", "open", "--label", LABEL_HUMAN,
                                "--json", "number,title,body,labels", "--limit", "1000"])
     for issue in issues:
@@ -627,7 +640,7 @@ def manage_pass(dry_run: bool = False) -> None:
                     if dispatch.initiative_kind(n):
                         dispatch.log(f"#{n}: refused (initiative records are never managed)")
                         continue
-                    if not packet.is_file() or human_activity(n, escalation):
+                    if not packet.is_file() or human_activity(n, escalation, events):
                         continue
                     if dry_run:
                         dispatch.log(f"#{n}: would manage escalation round {round_number}")
@@ -661,8 +674,10 @@ def manage_pass(dry_run: bool = False) -> None:
                             decision, body, data = ("HUMAN", CURATE_REJECTED, None) if rejected else parse(output, workers)
                     except (OSError, config.ConfigError) as exc:
                         decision, body, data = "HUMAN", f"Manager command failed: {exc}", None
+                        dispatch.record("escalate", ticket=n, round=round_number,
+                                        packet=str(packet), reason="manager_failed")
                     # A human may have taken over while the model was thinking.
-                    if human_activity(n, escalation):
+                    if human_activity(n, escalation, events):
                         continue
                     status = write_notes(notes_path, notes) if notes is not None else None
                     if status is not None and status != "written":

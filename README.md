@@ -103,7 +103,7 @@ merge stage.
 |---|---|
 | `factory triage` | Labels every `needs-triage` issue via the local model: `ready-for-agent` (with an agent brief), `needs-info` (with the question), `ready-for-human`, or a `wontfix` proposal comment. `--dry-run`, `--issue N`, `--replay a,b,c`. |
 | `factory dispatch` | One stateless pass: upstream sync → merge stage (at most one PR) → review-only PR intake → manager → claim up to `max_active` tickets → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan. |
-| `factory manage` | First recommends directions for `needs-review` PRs, then `needs-viability` issues; then resolves untouched `ready-for-human` escalation packets within `[manager].rounds`. Disabled unless `manager.command` is configured. `--dry-run` lists eligible requests without inference or writes. |
+| `factory manage` | First recommends directions for `needs-review` PRs, then `needs-viability` issues; then resolves untouched `ready-for-human` escalation packets within `[manager].rounds`; finally publishes one routed human handoff request per escalation whose automatic recovery is terminal (also without a manager). `--dry-run` lists eligible requests without inference or writes. |
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
 | `factory stats` | Ticket table: attempts, review rounds, hours to merge, escalation count, resolver attribution, minutes in `ready-for-human`, and re-queues. Reads GitHub plus existing `events.jsonl`. `--by-worker` reads only events and shows every configured worker label: first-attempt gate pass rate, all attempts (including review bounces), and known cost. Attribution uses claim labels with current worker precedence; unclaimed attempts are excluded, missing rates/cost are `n/a`. The dashboard Ops view shows the same worker metrics. `--json`. |
 | `factory learn` | Reads the last N finished tickets' event trail, failing-attempt log tails, reviewer findings, and escalation reasons; asks the local model for ≤10 repo-specific lessons; writes `.factory-lessons.md` (you commit it). Every worker prompt carries it. `--dry-run`, `--last N`. |
@@ -167,6 +167,36 @@ Manager executions and ticket-lock waits use the lifecycle journal. If a GitHub
 mutation fails, the execution records a terminal failure and the ticket remains
 with the human; other tickets can proceed. The consumed round is not replayed,
 because a partial rewrite or split may already have changed GitHub.
+
+### Routed human handoffs
+
+Once automatic recovery for an escalation is terminal — the manager returned `HUMAN`,
+its command could not run (an explicit *unable to diagnose*, never a fabricated
+diagnosis), `manager.rounds` is exhausted, or no manager is configured — `factory manage`
+publishes **one** request comment for that escalation generation (`<ticket>/<round>`):
+a concrete question, bounded public links (PR, the recorded escalation and manager
+comments), a proposed next step, the routed owner or candidates, and the step-by-step
+routing rationale from `factory plan route` (reason `ci` for CI failures, otherwise
+`implementation` with the PR's changed paths). Runner-local paths, packets and logs
+never reach GitHub. While recovery is still eligible nothing is posted; routing stays
+advisory (`factory plan route N`).
+
+The request `@mention`s a GitHub login on the initial handoff and again only when the
+owner actually changes (a human sets or edits `**Decision owner**` in the issue body,
+which wins on every later read and is never written back). Teams are mentioned only on a
+verified organization repository; unassigned, invalid or unavailable routing states the
+gap instead. Nobody is assigned. Publication is intent-then-receipt in
+`.factory/events.jsonl` (`handoff` row before the comment, `comment` row with the
+comment id after); a crash or failed `gh` between the two is reconciled from the issue
+timeline before any retry, and when that lookup fails nothing is posted. GitHub
+delivery of a mention is not asserted.
+
+Human-takeover detection uses only the factory's own recorded comment ids: the
+escalation comment, manager comments and handoff requests are journaled as `comment`
+receipts and ignored; any other comment, label, assignee, body edit, or an edit to a
+recorded comment counts as human activity and stops the manager. Text prefixes are
+never trusted. A reply is context for humans, not a retry, approval or merge command;
+use the documented labels for that.
 
 ### Opt-in viability recommendations
 
@@ -304,7 +334,9 @@ ticket's `human_touch` details. The dashboard retains its existing 100-issue,
 7. **Escalation.** Budget exceeded, gate failed thrice, second `REVISE`,
    nothing to PR, rebase conflict, red CI: the issue gets `ready-for-human`,
    loses the assignee and `ready-for-agent`, and receives a comment with the
-   reason and the worker log path. The worktree is kept for forensics.
+   reason and the worker log path (its comment id is journaled). The worktree
+   is kept for forensics. When no automatic manager recovery remains, one routed
+   human handoff request follows (see [Routed human handoffs](#routed-human-handoffs)).
 8. **Manager PR frontier** (when `manager.command` is configured; runs in
    `factory manage` after landing). Every open same-repository `agent/<n>` PR
    targeting the configured branch is observed through the schema-1 feedback

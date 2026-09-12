@@ -832,7 +832,8 @@ case "$1 $2" in
   "api repos/acme/widgets/issues/7/timeline") echo '{timeline}';;
   "issue create") echo "https://github.com/acme/widgets/issues/8";;
   "issue comment"|"issue edit")
-    python3 -c 'import json; from pathlib import Path; assert any(json.loads(line).get("event") == "manage" for line in Path("{state}/events.jsonl").read_text().splitlines())' || exit 1;;
+    python3 -c 'import json; from pathlib import Path; assert any(json.loads(line).get("event") in ("manage", "handoff") for line in Path("{state}/events.jsonl").read_text().splitlines())' || exit 1
+    if [ "$2" = comment ]; then c=$(( $(cat "{state}/comments" 2>/dev/null || echo 100) + 1 )); echo $c > "{state}/comments"; echo "https://github.com/acme/widgets/issues/7#issuecomment-$c"; fi;;
 esac
 ''')
         return repo, stubs, packet
@@ -888,7 +889,7 @@ PY
         with patch.object(dispatch, "gh_json", return_value=[
             {"number": 7, "title": "Fix gate", "body": "Original body"}
         ]), patch.object(manage, "human_activity", return_value=False), patch.object(manage, "frontier_pass"), \
-                patch.object(manage, "apply") as apply:
+                patch.object(manage.handoff, "handoff_pass"), patch.object(manage, "apply") as apply:
             manage.manage_pass()
         _, _, decision, body, _, _ = apply.call_args.args
         self.assertEqual(decision, "HUMAN")
@@ -912,7 +913,7 @@ PY
         with patch.object(dispatch, "gh_json", return_value=[
             {"number": 7, "title": "Fix gate", "body": "Original body"}
         ]), patch.object(manage, "human_activity", return_value=False), patch.object(manage, "frontier_pass"), \
-                patch.object(manage, "apply") as apply:
+                patch.object(manage.handoff, "handoff_pass"), patch.object(manage, "apply") as apply:
             manage.manage_pass()
         self.assertEqual(apply.call_args.args[2:4], ("RETRY", "Try again"))
 
@@ -982,7 +983,7 @@ PY
 
         with patch.object(dispatch, "gh_json", side_effect=github), \
              patch.object(dispatch.time, "strftime", return_value="2026-01-01T00:00:02Z"), \
-             patch.object(manage, "apply") as apply:
+             patch.object(manage.handoff, "handoff_pass"), patch.object(manage, "apply") as apply:
             manage.manage_pass()
             manage.manage_pass()
         self.assertTrue(marker.exists())
