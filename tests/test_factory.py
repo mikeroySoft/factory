@@ -887,7 +887,8 @@ PY
         dispatch.configure(cfg)
         with patch.object(dispatch, "gh_json", return_value=[
             {"number": 7, "title": "Fix gate", "body": "Original body"}
-        ]), patch.object(manage, "human_activity", return_value=False), patch.object(manage, "apply") as apply:
+        ]), patch.object(manage, "human_activity", return_value=False), patch.object(manage, "frontier_pass"), \
+                patch.object(manage, "apply") as apply:
             manage.manage_pass()
         _, _, decision, body, _, _ = apply.call_args.args
         self.assertEqual(decision, "HUMAN")
@@ -910,7 +911,8 @@ PY
         command[:] = ["printf", "DECISION: RETRY\nTry again"]
         with patch.object(dispatch, "gh_json", return_value=[
             {"number": 7, "title": "Fix gate", "body": "Original body"}
-        ]), patch.object(manage, "human_activity", return_value=False), patch.object(manage, "apply") as apply:
+        ]), patch.object(manage, "human_activity", return_value=False), patch.object(manage, "frontier_pass"), \
+                patch.object(manage, "apply") as apply:
             manage.manage_pass()
         self.assertEqual(apply.call_args.args[2:4], ("RETRY", "Try again"))
 
@@ -973,6 +975,8 @@ PY
         def github(args: list[str]) -> list[dict]:
             if args[:2] == ["issue", "list"]:
                 return [{"number": 7, "title": "Fix gate", "body": "Original body"}]
+            if args[:2] == ["pr", "list"]:
+                return []
             return [{"event": "commented", "created_at": "2026-01-01T00:00:01Z",
                      "body": "I will handle this"}] if marker.exists() else []
 
@@ -1115,6 +1119,66 @@ PY
                 call.args[0][:2] == ["git", "push"]
                 for call in run.call_args_list
             ))
+
+    def test_red_ci_pr_is_fixed_relabelled_and_merged_on_the_next_pass(self) -> None:
+        """#15 exit gate: red CI withdrew the label; FIX + green gate + APPROVE relabel; next pass merges."""
+        repo, stubs, packet = self.scenario()
+        packet.write_text("PR #9: CI failed (unit); factory-approved label removed")
+        command = ["printf", "%s", "DECISION: FIX\n" + json.dumps({"worker": "ci-fix", "guidance": "Read the unit log"})]
+        (repo / config.CONFIG_NAME).write_text(
+            "[manager]\ncommand = " + json.dumps(command)
+            + '\n[workers]\ndefault = ["false"]\n[workers.ci-fix]\ncommand = ["fix-worker", "{prompt}"]\nwhen = "Red CI"'
+            + '\n[review]\ncommand = ["printf", "VERDICT: APPROVE"]'
+            + '\n[[gate.check]]\nname = "unit"\nrun = ["true"]\n[repo]\nslug = "acme/widgets"\n'
+        )
+        wt = repo / ".factory/wt-7"
+        git(repo, "worktree", "add", "-q", str(wt), "-b", "agent/7")
+        remote = repo.parent / "origin.git"
+        git(repo, "init", "--bare", str(remote))
+        git(repo, "remote", "set-url", "origin", str(remote))
+        (wt / "README.md").write_text("branch intent\n")
+        git(wt, "add", "README.md")
+        git(wt, "commit", "-qm", "Branch intent")
+        git(wt, "push", "-u", "origin", "agent/7")
+        git(repo, "push", "-q", "origin", "main")
+        state = Path(stubs).parent / "state"
+        state.mkdir()
+        # The stub remembers the label and the merge, as GitHub would.
+        stub_bin(Path(stubs).parent, **{
+            "gh": f'''
+head=$(git -C .factory/wt-7 rev-parse HEAD 2>/dev/null || git -C {remote} rev-parse agent/7)
+labels='[]'; [ -e {state}/approved ] && labels='[{{"name":"factory-approved"}}]'
+pr="{{\\"id\\":\\"PR_9\\",\\"number\\":9,\\"title\\":\\"Fix CI\\",\\"url\\":\\"https://github.com/acme/widgets/pull/9\\",\\"state\\":\\"OPEN\\",\\"headRefName\\":\\"agent/7\\",\\"headRefOid\\":\\"$head\\",\\"baseRefName\\":\\"main\\",\\"isCrossRepository\\":false,\\"isDraft\\":false,\\"labels\\":$labels,\\"reviewDecision\\":\\"\\",\\"updatedAt\\":\\"2026-09-12T00:00:00Z\\"}}"
+case "$1 $2" in
+  "pr list") case "$*" in *needs-review*) echo '[]';; *) [ -e {state}/merged ] && echo '[]' || echo "[$pr]";; esac;;
+  "pr view") echo "$pr";;
+  "pr checks") [ -e {state}/approved ] && echo '[{{"name":"unit","bucket":"pass"}}]' || echo '[{{"name":"unit","bucket":"fail"}}]';;
+  "pr edit") case "$*" in *--add-label*factory-approved*) touch {state}/approved;; *--remove-label*factory-approved*) rm -f {state}/approved;; esac;;
+  "pr merge") touch {state}/merged;;
+  "issue list") [ -e {state}/fixed ] && echo '[]' || echo '[{{"number":7,"title":"Fix CI","body":"Original","labels":[{{"name":"chore"}}]}}]';;
+  "issue view") echo '{{"id":"I_7","number":7,"url":"https://github.com/acme/widgets/issues/7","title":"Fix CI","body":"Original","state":"OPEN","labels":[{{"name":"ready-for-human"}}],"comments":[]}}';;
+  "api repos/acme/widgets/issues/7/timeline") echo '[]';;
+  "api repos/acme/widgets/compare/main...$head") echo '{{"behind_by":0}}';;
+  "api repos/acme/widgets") echo '{{"id":"R_1"}}';;
+  "api graphql") echo '{{"data":{{}}}}';;
+  "api "*) echo '[]';;
+esac
+''',
+            "fix-worker": f'mkdir -p .factory\nprintf "fixed\\n" > README.md\ntouch {state}/fixed',
+        })
+        result = factory(repo, "manage", path=stubs)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((state / "approved").exists())
+        head = git(remote, "rev-parse", "agent/7")
+        result = factory(repo, "dispatch", path=stubs)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((state / "merged").exists())
+        calls = (Path(stubs) / "gh.log").read_text()
+        self.assertIn(f"pr merge 9 --repo acme/widgets --squash --match-head-commit {head}", calls)
+        events = list(map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines()))
+        self.assertEqual([e["head"] for e in events if e.get("event") == "merged"], [head])
+        # The escalated ticket belonged to the escalation loop, never the frontier: no delivery.
+        self.assertFalse(any(e.get("event") == "feedback-delivered" for e in events))
 
     def test_fix_runs_selected_worker_on_red_ci_and_requires_gate_and_review(self) -> None:
         cases = ((False, "APPROVE", False), (True, "REVISE", False),

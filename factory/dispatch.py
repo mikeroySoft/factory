@@ -508,6 +508,7 @@ def escalation_packet(
     wt: Path,
     gate_detail: str = "",
     artifact: str | None = None,
+    extra: str = "",
 ) -> tuple[Path, int]:
     events = [
         json.loads(line)
@@ -549,6 +550,7 @@ def escalation_packet(
         + "\n\n## Log paths\n\n"
         + ("\n".join(f"- `{path}`" for path in logs) or "- none recorded")
         + f"\n\n## Worktree path\n\n`{wt}`\n"
+        + (f"\n{extra.strip()}\n" if extra.strip() else "")
     )
     round_number = 1 + sum(
         event.get("event") == "escalate" and event.get("reason") != "manager_failed"
@@ -557,10 +559,10 @@ def escalation_packet(
     return packet, round_number
 
 
-def escalate(n: int, reason: str, log_path: Path | None) -> None:
+def escalate(n: int, reason: str, log_path: Path | None, extra: str = "") -> None:
     log(f"#{n}: escalating to human ({reason})")
     wt = FACTORY / f"wt-{n}"
-    packet, round_number = escalation_packet(n, reason, log_path, wt)
+    packet, round_number = escalation_packet(n, reason, log_path, wt, extra=extra)
     record(
         "escalate", ticket=n, reason=reason, log=str(log_path) if log_path else None,
         packet=str(packet), round=round_number,
@@ -694,10 +696,12 @@ def push_and_pr(wt: Path, branch: str, title: str, body: str, label: str = "", t
     run(["git", "push", "-u", "origin", branch], cwd=wt)
     if existing:
         log(f"{branch}: PR already exists (#{existing[0]['number']})")
+        if ticket is not None:
+            record("pr-opened", ticket=ticket, pr=existing[0]["number"])
         return True
     body_file = FACTORY / f"pr-body-{branch.removeprefix('agent/')}.md"
     body_file.write_text(body)
-    run(
+    created = run(
         [
             "gh",
             "pr",
@@ -716,7 +720,8 @@ def push_and_pr(wt: Path, branch: str, title: str, body: str, label: str = "", t
         ]
     )
     if ticket is not None:
-        record("pr-opened", ticket=ticket)
+        number = created.stdout.strip().rstrip("/").rsplit("/", 1)[-1]
+        record("pr-opened", ticket=ticket, pr=int(number) if number.isdigit() else None)
     return True
 
 
@@ -931,10 +936,29 @@ def _head_evidence_matches(events: list[dict], n: int, head: str) -> bool:
     return gate is True and review_ok is True
 
 
+def manager_approval(events: list[dict], n: int, head: str) -> bool:
+    """`manager.review = "all"`: a recorded manager APPROVE bound to this exact head."""
+    return any(
+        e.get("event") == "manage" and e.get("ticket") == n and e.get("head") == head
+        and e.get("decision") == "APPROVE"
+        for e in events
+    )
+
+
 def approve_pr(n: int, head: str) -> bool:
-    """Label and record approval only for matching gate, review, and remote head evidence."""
-    if not _head_evidence_matches(lifecycle.read_events(EVENTS), n, head):
+    """Label and record approval only for matching gate, review, and remote head evidence.
+
+    With `manager.review = "all"` the label additionally waits for a manager APPROVE
+    bound to `head`; until the PR frontier obtains one this returns True without
+    labelling (nothing is wrong, so callers must not escalate). A refreshed head is a
+    new head and needs a fresh decision; nothing is ever re-bound.
+    """
+    events = lifecycle.read_events(EVENTS)
+    if not _head_evidence_matches(events, n, head):
         return False
+    if cfg.manager and cfg.manager_review == "all" and not manager_approval(events, n, head):
+        log(f"#{n}: gate and review passed at {head[:12]}; waiting for manager approval (manager.review = all)")
+        return True
     fields = "number,state,headRefOid,baseRefName,reviewDecision"
     pr = gh_json(["pr", "view", f"agent/{n}", "--repo", REPO, "--json", fields])
     if (

@@ -305,6 +305,25 @@ ticket's `human_touch` details. The dashboard retains its existing 100-issue,
    nothing to PR, rebase conflict, red CI: the issue gets `ready-for-human`,
    loses the assignee and `ready-for-agent`, and receives a comment with the
    reason and the worker log path. The worktree is kept for forensics.
+8. **Manager PR frontier** (when `manager.command` is configured; runs in
+   `factory manage` after landing). Every open same-repository `agent/<n>` PR
+   targeting the configured branch is observed through the schema-1 feedback
+   producer; only `owner.relation = factory_issue` (a same-repository closing
+   link plus the retained claim) puts it in the frontier, never branch text.
+   Initiatives and already-escalated tickets are left alone. Pending CI waits.
+   Red CI, unresolved current-head feedback (changes-requested review,
+   unresolved non-outdated thread, failed check) and inactivity beyond
+   `manager.stale_days` (default 7) escalate the ticket once through the
+   ordinary packet, so the manager's `FIX`/`CLOSE`/`HUMAN` decisions apply.
+   Late feedback is delivered at most once per `(evidence_id, source_revision)`
+   (`feedback-delivered` journal rows); partial or unavailable coverage, unknown
+   relevance and the factory's own reviewer are never delivered. `CLOSE` closes
+   the PR with the diagnosis; a human's issue stays open with
+   `wontfix-proposal`, a child the factory created by `SPLIT` is closed.
+   With `manager.review = "all"`, a head that passed the gate and independent
+   review is not labelled until the manager returns `APPROVE` for that exact
+   head (`manage` row with `head`); a refreshed head needs a fresh decision and
+   nothing is re-bound. Decisions are bounded by `manager.rounds` per PR.
 
 ## Configuration
 

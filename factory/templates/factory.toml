@@ -64,7 +64,8 @@
 # OMP requires `@{prompt}`; bare `{prompt}` passes path text and is rejected.
 # command = ["omp", "-p", "--model", "openai-codex/gpt-6-astra", "--cwd", "{cwd}", "@{prompt}"]
 # rounds = 1  # escalation rounds; viability runs once per explicit label-add event
-# review = "escalated"  # "all" also reviews non-escalated factory PRs
+# review = "escalated"  # "all": the label also waits for a manager APPROVE bound to the head
+# stale_days = 7       # positive integer; an inactive factory PR escalates after this many days
 #
 # Ceilings for the fleet manager (`district manage`) raising dispatch.max_active /
 # dispatch.budget_min per repo. Host-wide under [defaults.manager]; unset = no cap.
