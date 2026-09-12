@@ -49,13 +49,13 @@ LABEL_TABLE = "\n".join(
         *(
             f"| {label} | {meaning} |"
             for label, (_color, meaning) in config.LABELS.items()
-            if label not in (LABEL_APPROVED, LABEL_CHORE, LABEL_REVIEW, LABEL_VIABILITY)
+            if label not in (LABEL_APPROVED, LABEL_CHORE, LABEL_REVIEW, LABEL_VIABILITY, config.LABEL_WONTFIX)
         ),
         "| wontfix | Will not be actioned |",
     ]
 )
 
-DECISIONS = (LABEL_AGENT, LABEL_INFO, LABEL_HUMAN, "wontfix-proposal")
+DECISIONS = (LABEL_AGENT, LABEL_INFO, LABEL_HUMAN, config.LABEL_WONTFIX)
 
 ACCEPTANCE_HINTS = re.compile(
     r"acceptance|exit gate|verification|expected behavior|steps to reproduce",

@@ -29,6 +29,7 @@ LABEL_HUMAN = "ready-for-human"
 LABEL_APPROVED = "factory-approved"
 LABEL_CHORE = "chore"
 LABEL_INITIATIVE = "initiative"
+LABEL_WONTFIX = "wontfix-proposal"
 LABELS = {
     LABEL_VIABILITY: ("D4C5F9", "Opt in to a manager build/defer recommendation before triage"),
     LABEL_REVIEW: ("D4C5F9", "Opt in to a manager PR direction recommendation before review"),
@@ -38,6 +39,7 @@ LABELS = {
     LABEL_HUMAN: ("B60205", "Requires human implementation"),
     LABEL_APPROVED: ("0E8A16", "Reviewer APPROVE recorded by the factory; merge-stage precondition"),
     LABEL_CHORE: ("C2E0C6", "Mechanical task; routed to the chore worker"),
+    LABEL_WONTFIX: ("EDEDED", "Triage or manager proposes not to action this; a human decides"),
     LABEL_INITIATIVE: ("1D76DB", "Shared initiative plan read by `factory plan`; never triaged, dispatched, managed or merged"),
 }
 
@@ -64,7 +66,7 @@ KNOWN_KEYS = {
     "dispatch": ("max_active", "max_attempts", "budget_min", "review_rounds", "cost_pattern", "signoff"),
     "workers": None,
     "review": ("command",),
-    "manager": ("model", "command", "rounds", "review", "max_active_cap", "budget_min_cap"),
+    "manager": ("model", "command", "rounds", "review", "stale_days", "max_active_cap", "budget_min_cap"),
     "gate": ("timeout", "lock", "check"),
     "leak_scan": ("pattern", "exclude"),
     "triage": ("url", "model"),
@@ -116,6 +118,7 @@ class Config:
     manager: list[str] | None = None
     manager_rounds: int = 1
     manager_review: str = "escalated"
+    manager_stale_days: int = 7
     # Ceilings for the fleet manager (`district manage`) raising `max_active`/`budget_min`; None = no cap.
     manager_max_active_cap: int | None = None
     manager_budget_min_cap: int | None = None
@@ -356,6 +359,9 @@ def load(start: Path | None = None) -> Config:
     cfg.manager_review = manager.get("review", cfg.manager_review)
     if cfg.manager_review not in ("escalated", "all"):
         raise ConfigError("manager.review must be escalated or all")
+    cfg.manager_stale_days = manager.get("stale_days", cfg.manager_stale_days)
+    if type(cfg.manager_stale_days) is not int or cfg.manager_stale_days <= 0:
+        raise ConfigError("manager.stale_days must be a positive integer")
     for key in ("max_active_cap", "budget_min_cap"):
         cap = manager.get(key)
         if cap is not None and (isinstance(cap, bool) or not isinstance(cap, int) or cap < 1):
