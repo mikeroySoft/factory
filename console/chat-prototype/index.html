@@ -174,6 +174,8 @@ kbd { border: 1px solid var(--border-strong); border-radius: 3px; padding: 0 5px
 .va .chat-head .tog { min-height: 32px; padding: 4px 10px; font-size: 11px; }
 @media (max-width: 1180px) { .va .dock { display: none; } }
 @media (max-width: 800px) { .va .rail { display: none; } }
+.va .transcript > *, .va .composer > * { width: 100%; max-width: 860px; margin-left: auto; margin-right: auto; }
+.va .composer .menu { left: max(20px, calc(50% - 430px)); right: max(20px, calc(50% - 430px)); }
 
 /* ---------- variant B · focus ---------- */
 .vb-shell { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; }
@@ -790,7 +792,7 @@ document.addEventListener('keydown', e => {
   else if (e.key === '/') { e.preventDefault(); const ta = document.querySelector('.composer textarea'); if (ta) { ta.focus(); ta.value = '/'; ta.oninput(); } }
 });
 const initial = new URLSearchParams(location.search).get('variant');
-setVariant(VARIANTS[initial] ? initial : 'A');
+setVariant(VARIANTS[initial] ? initial : 'A'); // A: chosen direction (centered chat column)
 </script>
 </body>
 </html>
