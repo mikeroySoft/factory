@@ -192,7 +192,7 @@ const ago = value => { const seconds=Math.max(0,(Date.now()-Date.parse(value))/1
 const scopeLabel = scope => scope?.kind==='ticket' ? `#${scope.number} · ${ticket(scope.number)?.title || 'case'}` : scope?.kind==='run' ? `run · ${fmtTime(scope.started)}` : 'Factory overview';
 function motion(el, values, options={}) { if (!el || reduced.matches) return; animate(el, values, {duration:.2,...options}); }
 function setPanel(kind, open) { S[kind]=open; const el=document.querySelector(`.${kind}`), width=kind==='rail'?272:320; el.setAttribute('aria-hidden',String(!open)); el.inert=!open; if (reduced.matches) el.style.width=(open?width:0)+'px'; else motion(el,{width:open?width:0},{type:'spring',bounce:.08,duration:.42}); document.querySelector(`[data-toggle="${kind}"]`)?.setAttribute('aria-pressed',String(open)); }
-function conversation() { return {id:crypto.randomUUID(),title:'New conversation',created_at:now(),updated_at:now(),scope:{kind:'factory'},focus:null,draft:'',messages:[]}; }
+function conversation() { return {id:crypto.randomUUID?.()||`${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,title:'New conversation',created_at:now(),updated_at:now(),scope:{kind:'factory'},focus:null,draft:'',messages:[]}; }
 function restore() {
   try {
     const saved=JSON.parse(localStorage.getItem(S.storageKey)||'null');
