@@ -159,7 +159,8 @@ class WaitDecisions(unittest.TestCase):
                 patch.object(dispatch, "run", side_effect=results) as run, \
                 patch.object(dispatch, "refresh_pr_branch") as refresh:
             dispatch.merge_pass_locked(False)
-        query.assert_called_once()
+        # One `pr list` plus one fresh initiative-kind read per candidate; CI is still read once each.
+        self.assertEqual(query.call_count, 3)
         self.assertEqual(run.call_count, 2)
         self.assertEqual([call.args[0][:4] for call in run.call_args_list],
                          [["gh", "pr", "checks", "70"], ["gh", "pr", "checks", "80"]])

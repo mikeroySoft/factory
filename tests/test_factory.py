@@ -125,6 +125,8 @@ def merge_stage_mocks(origin: Path, pr_number: int, branch: str, title: str, ori
             return {"behind_by": 0}
         if args[:2] == ["pr", "view"]:
             return pr
+        if args[:2] == ["issue", "view"]:
+            return {"labels": []}
         raise AssertionError(args)
 
     def fake_run(cmd, *a, **kw):
@@ -826,6 +828,7 @@ class ManageTest(unittest.TestCase):
 case "$1 $2" in
   "pr list") echo '[]';;
   "issue list") echo '[{{"number":7,"title":"Fix gate","body":"Original body","labels":[{{"name":"ready-for-human"}}]}}]';;
+  "issue view") echo '{{"labels":[{{"name":"ready-for-human"}}]}}';;
   "api repos/acme/widgets/issues/7/timeline") echo '{timeline}';;
   "issue create") echo "https://github.com/acme/widgets/issues/8";;
   "issue comment"|"issue edit")
@@ -1273,6 +1276,7 @@ esac
 case "$1 $2 $3" in
   "pr list --repo") echo '[]';;
   "issue list --repo") echo '[{"number":7,"title":"First","body":"Old"},{"number":8,"title":"Next","body":"Old"}]';;
+  "issue view "*) echo '{"labels":[{"name":"ready-for-human"}]}';;
   "api repos/acme/widgets/issues/"*) echo '[]';;
   "issue edit 7") echo 'GitHub rejected body edit' >&2; exit 1;;
 esac
@@ -2268,6 +2272,8 @@ class DispatchTest(unittest.TestCase):
                     return fresh
                 if args[0] == "api":
                     return {"behind_by": 0}
+                if args[:2] == ["issue", "view"]:
+                    return {"labels": []}
                 raise AssertionError(args)
 
             with mock.patch.object(dispatch, "gh_json", side_effect=query), \
@@ -2316,6 +2322,8 @@ class DispatchTest(unittest.TestCase):
                     return pr
                 if args[0] == "api":
                     return {"behind_by": 0}
+                if args[:2] == ["issue", "view"]:
+                    return {"labels": []}
                 raise AssertionError(args)
 
             original_run = dispatch.run
@@ -2391,6 +2399,8 @@ class DispatchTest(unittest.TestCase):
                         return next(views)
                     if args[0] == "api":
                         return {"behind_by": 0}
+                    if args[:2] == ["issue", "view"]:
+                        return {"labels": []}
                     raise AssertionError(args)
 
                 with mock.patch.object(dispatch, "gh_json", side_effect=query), \
@@ -2990,6 +3000,115 @@ class FeedbackSnapshotTest(unittest.TestCase):
                     self.assertEqual(observed["items"], [])
                     self.assertEqual({c["status"] for c in observed["coverage"].values()}, {"unavailable"})
                     self.assertEqual({e["code"] for e in observed["errors"]}, {feedback.NOT_COLLECTED})
+
+
+class InitiativeGuardTest(unittest.TestCase):
+    """#55: an `initiative` issue is never triaged, claimed, managed or merged, however it is labelled."""
+
+    INITIATIVE = ('{"number":9,"title":"Plan","body":"Outcome","state":"OPEN","comments":[],'
+                  '"labels":[{"name":"initiative"},{"name":"ready-for-agent"},{"name":"ready-for-human"}],"assignees":[]}')
+
+    def setUp(self) -> None:
+        from unittest.mock import patch
+        from factory import lifecycle
+
+        self.enterContext(patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
+        host_file("")
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def stubs(self, listed_labels: str) -> str:
+        return stub_bin(self.root, gh=f'''
+case "$1 $2" in
+  "pr list") echo '[]';;
+  "issue list") echo '[{{"number":9,"title":"Plan","body":"Outcome","labels":[{listed_labels}],"assignees":[]}}]';;
+  "issue view") echo '{self.INITIATIVE}';;
+  "api repos/acme/widgets/issues/9/timeline") echo '[]';;
+  "api repos/acme/widgets/issues/9/dependencies/blocked_by") echo '[]';;
+esac
+''', **{"worker-stub": "touch worker-ran", "manager-stub": "touch manager-ran; printf 'DECISION: HUMAN\\nno'"})
+
+    def assert_untouched(self, repo: Path, stubs: str, result: subprocess.CompletedProcess) -> None:
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("refused", result.stdout + result.stderr)
+        calls = (Path(stubs) / "gh.log").read_text()
+        self.assertNotIn("issue edit", calls)
+        self.assertNotIn("issue comment", calls)
+        self.assertFalse((repo / "worker-ran").exists())
+        self.assertFalse((repo / "manager-ran").exists())
+        events = repo / ".factory/events.jsonl"
+        if events.exists():
+            rows = [json.loads(line) for line in events.read_text().splitlines()]
+            self.assertFalse(any(r.get("event") in {"claimed", "manage", "escalate", "attempt"} and r.get("ticket") == 9
+                                 and r.get("at", "") > "2026-01-01T00:00:00Z" for r in rows))
+
+    def test_forced_ticket_and_stale_frontier_never_claim_an_initiative(self) -> None:
+        toml = '[workers]\ndefault = ["worker-stub", "{prompt}"]\n'
+        for argv, listed in ((("--ticket", "9"), '{"name":"ready-for-agent"}'),
+                             (("--ticket", "9", "--dry-run"), '{"name":"ready-for-agent"}'),
+                             ((), '{"name":"ready-for-agent"}'),                       # frontier row lags the label
+                             ((), '{"name":"ready-for-agent"},{"name":"initiative"}')):  # accidentally ready-labelled
+            with self.subTest(argv=argv, listed=listed), tempfile.TemporaryDirectory() as d:
+                repo = make_repo(Path(d), toml)
+                stubs = self.stubs(listed)
+                result = factory(repo, "dispatch", *argv, path=stubs)
+                if "initiative" in listed:
+                    self.assertIn("skipped (initiative record)", result.stdout)
+                    self.assertNotIn("would claim", result.stdout)
+                    self.assertNotIn("issue edit", (Path(stubs) / "gh.log").read_text())
+                else:
+                    self.assert_untouched(repo, stubs, result)
+                self.assertNotIn("would claim", result.stdout)
+
+    def test_escalated_initiative_is_never_managed(self) -> None:
+        repo = make_repo(self.root, '[manager]\ncommand = ["manager-stub"]\n')
+        state = repo / ".factory"
+        (state / "escalations").mkdir(parents=True)
+        packet = state / "escalations/9.md"
+        packet.write_text("gate failed")
+        (state / "events.jsonl").write_text(json.dumps({
+            "event": "escalate", "ticket": 9, "at": "2026-01-01T00:00:00Z", "round": 1, "packet": str(packet),
+        }) + "\n")
+        stubs = self.stubs('{"name":"ready-for-human"}')
+        for flag in (("--dry-run",), ()):
+            with self.subTest(flag=flag):
+                self.assert_untouched(repo, stubs, factory(repo, "manage", *flag, path=stubs))
+
+    def test_triage_refuses_initiative_before_any_model_call(self) -> None:
+        repo = make_repo(self.root, '[triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n')
+        stubs = self.stubs('{"name":"needs-triage"}')
+        for flag in (("--dry-run",), ()):
+            with self.subTest(flag=flag):
+                result = factory(repo, "triage", "--issue", "9", *flag, path=stubs)
+                self.assert_untouched(repo, stubs, result)
+
+    def test_merge_stage_refuses_initiative_pr_without_reading_ci_or_mutating(self) -> None:
+        from unittest import mock
+        from factory import dispatch
+
+        repo = make_repo(self.root)
+        dispatch.configure(config.Config(root=repo, repo="acme/widgets", main="main"))
+        listed = {"number": 90, "headRefName": "agent/9", "headRefOid": "head", "baseRefName": "main",
+                  "isDraft": False, "labels": [{"name": "factory-approved"}], "reviewDecision": "APPROVED"}
+
+        def query(args):
+            if args[:2] == ["pr", "list"]:
+                return [listed]
+            if args[:2] == ["issue", "view"]:
+                return {"labels": [{"name": "initiative"}]}
+            raise AssertionError(args)
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=query), \
+                mock.patch.object(dispatch, "pr_checks") as checks, \
+                mock.patch.object(dispatch, "run") as run, \
+                mock.patch.object(dispatch, "refresh_pr_branch") as refresh, \
+                mock.patch.object(dispatch, "escalate") as escalate:
+            dispatch.merge_pass_locked(False)
+        for call in (checks, run, refresh, escalate):
+            call.assert_not_called()
+        rows = [json.loads(line) for line in (repo / ".factory/events.jsonl").read_text().splitlines()]
+        self.assertEqual(next(r["reason"] for r in rows if r.get("kind") == "exit" and r.get("ticket") == 9), "initiative")
 
 
 if __name__ == "__main__":

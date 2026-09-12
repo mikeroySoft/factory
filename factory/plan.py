@@ -71,13 +71,20 @@ def parse(body: str) -> dict:
             "links": links, "problems": problems, "malformed": bool(problems)}
 
 
+def is_initiative(issue: object) -> bool:
+    """The kind predicate every execution boundary shares. Pass a fresh `gh issue view`
+    read (`labels` as `[{name}]`), never a search/frontier row: those lag label edits."""
+    labels = issue.get("labels") if isinstance(issue, dict) else None
+    return any(isinstance(label, dict) and label.get("name") == LABEL for label in labels or [])
+
+
 def record(issue: object, path: str) -> dict:
     if not isinstance(issue, dict) or type(issue.get("number")) is not int:
         raise EvidenceError("invalid_response", "GitHub issue response has an unexpected shape.", path)
     labels = [clean_text(str(label.get("name") or "")) for label in issue.get("labels") or [] if isinstance(label, dict)][:20]
     result = {"number": issue["number"], "title": clean_text(str(issue.get("title") or "")),
               "state": str(issue.get("state") or "").upper(), "url": clean_text(str(issue.get("html_url") or "")),
-              "updated_at": issue.get("updated_at"), "labels": labels, "initiative": LABEL in labels,
+              "updated_at": issue.get("updated_at"), "labels": labels, "initiative": is_initiative(issue),
               "pull_request": "pull_request" in issue}
     result.update(parse(clean_text(str(issue.get("body") or ""))))
     return result
