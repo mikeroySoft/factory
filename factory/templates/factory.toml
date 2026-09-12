@@ -22,23 +22,55 @@
 # cost_pattern = 'Total cost:\s*\$([0-9.]+)'      # Claude Code
 [workers]
 # argv templates. {prompt} = path to the ticket prompt file, {cwd} = worktree.
+# OMP file prompts require `@{prompt}`; bare `{prompt}` passes the path as text.
 # The key is a ticket label; `default` is required. First matching label wins.
 # default = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]
 # chore   = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
 # Other agents work the same way, e.g.
 # default = ["claude", "-p", "--dangerously-skip-permissions", "{prompt}"]  # reads the path as text: use a wrapper
 # default = ["codex", "exec", "--full-auto", "-C", "{cwd}", "@{prompt}"]
+#
+# A worker may also be a table with `command` argv and an optional natural-language
+# `when` rule. Array and table forms can coexist; do not define a label twice.
+# The manager lists configured labels and their rules; ROUTE and FIX cannot invent
+# profiles or write host config. FIX uses {"worker": "ci-fix", "guidance": "..."}.
+#
+# Human-applied host profiles: copy these into the host config under
+# [defaults.workers.<label>] or [repo."owner/name".workers.<label>].
+# Keep a default worker in that layer when configuring workers there.
+#
+# [workers.ci-fix]
+# when = "CI is red: read the failing job log, fix the cause or declare a flake with evidence."
+# command = ["omp", "-p", "--cwd", "{cwd}", "Read the ticket prompt at {prompt}. Read the failing CI job log. Fix the cause, or declare a flake in the handoff with concrete log and run evidence. Do not claim a flake without evidence."]
+#
+# [workers.conflict]
+# when = "A rebase conflicts: resolve the rebase, keep both intents, make no semantic changes."
+# command = ["omp", "-p", "--cwd", "{cwd}", "Read the ticket prompt at {prompt}. Resolve the rebase conflicts, preserving both sides' intents with no semantic changes. If the rebase was aborted, restart it against the configured main before resolving. If the intents cannot be preserved without semantic changes, stop and explain in the handoff."]
 
 [review]
-# {prompt} = review prompt text. Output must end with `VERDICT: APPROVE` or `VERDICT: REVISE`.
+# {prompt} = inline review prompt text. Output must end with `VERDICT: APPROVE` or `VERDICT: REVISE`.
 # Keep the reviewer on a different model family than [manager] so the two verdicts are independent.
 # command = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1", "{prompt}"]
 # command = ["codex", "exec", "{prompt}"]
 
 [manager]
 # Dashboard briefings and contextual Ask FM use a bounded, no-tools OMP process.
-# Only the model is configurable here; generated advice cannot execute actions.
-# model = "openai-codex/gpt-6-astra"  # unset: existing manager.command --model, then OMP default
+# Only the model controls those briefings; generated advice cannot execute actions.
+# model = "openai-codex/gpt-6-astra"  # unset: manager.command --model, then OMP default
+#
+# `factory manage`: opted-in needs-review PRs first, needs-viability issues next,
+# then escalations. Unset command disables these, not read-only dashboard briefings.
+# {prompt} = path to the manager prompt file; {cwd} = kept worktree or repository root.
+# OMP requires `@{prompt}`; bare `{prompt}` passes path text and is rejected.
+# command = ["omp", "-p", "--model", "openai-codex/gpt-6-astra", "--cwd", "{cwd}", "@{prompt}"]
+# rounds = 1  # escalation rounds; viability runs once per explicit label-add event
+# review = "escalated"  # "all": the label also waits for a manager APPROVE bound to the head
+# stale_days = 7       # positive integer; an inactive factory PR escalates after this many days
+#
+# Ceilings for the fleet manager (`district manage`) raising dispatch.max_active /
+# dispatch.budget_min per repo. Host-wide under [defaults.manager]; unset = no cap.
+# max_active_cap = 4
+# budget_min_cap = 240
 
 [gate]
 # timeout = 1200                      # seconds per check; a wedged check FAILs
@@ -70,3 +102,22 @@ exclusive = false
 [dashboard]
 # port = 8765
 # theme = ".factory-dashboard.css"   # repo-relative CSS loaded after the built-in stylesheet
+
+# Human decision owners for `factory plan route N --reason R` (read-only; nothing
+# is ever assigned). Omit the whole section to keep legacy behaviour. Owners are
+# GitHub logins or `@org/team`; syntax is checked, membership is not. Team
+# destinations are rejected on a user-owned repository. Priority: the ticket's
+# `**Decision owner**` body section, the initiative Owner (requirements only),
+# reasons.<reason>, components (implementation only, exact repo-relative path
+# prefixes: "src/auth" matches src/auth/x.py, never src/authentication/), fallback.
+# Missing optional owner sections permit fallback; explicit empty/malformed owners
+# stop with invalid. Mixed team/login routes on user repos stay invalid, not filtered
+# into a selection. `reasons.unknown` and duplicate normalized prefixes are errors.
+# [collaboration]
+# fallback = "maintainer-login"
+# [collaboration.reasons]
+# requirements = "product-owner"
+# ci = "@org/infra"
+# [collaboration.components]
+# "src/auth" = "auth-owner"
+# "docs" = "docs-owner"

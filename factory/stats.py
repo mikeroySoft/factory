@@ -1,4 +1,4 @@
-"""Print read-only factory ticket metrics from GitHub."""
+"""Print read-only factory ticket metrics from GitHub and events.jsonl."""
 
 from __future__ import annotations
 
@@ -7,10 +7,11 @@ import json
 import re
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
-from factory import config
+from factory import config, lifecycle
 from factory.config import LABEL_AGENT, LABEL_HUMAN, Config
 
 cfg: Config
@@ -27,7 +28,7 @@ def configure(c: Config) -> None:
 def gh(*args: str) -> Any:
     """Run gh and decode its JSON output."""
     completed = subprocess.run(
-        ["gh", *args, "--repo", REPOSITORY],
+        ["gh", *args, *([] if args[0] == "api" else ["--repo", REPOSITORY])],
         text=True,
         capture_output=True,
         check=False,
@@ -48,8 +49,148 @@ def issue(number: int) -> dict[str, Any]:
         "view",
         str(number),
         "--json",
-        "number,title,createdAt,comments",
+        "number,title,state,createdAt,closedAt,comments",
     )
+
+
+def audit_by_ticket(path: Path, rows: list[dict] | None = None) -> dict[int, list[dict]]:
+    """Group committed traces, reusing a caller's coherent journal snapshot."""
+    result: dict[int, list[dict]] = {}
+    for row in lifecycle.read_events(path) if rows is None else rows:
+        if isinstance(row.get("ticket"), int):
+            result.setdefault(row["ticket"], []).append(row)
+    return result
+
+
+def worker_metrics(audit: dict[int, list[dict]], workers: dict[str, list[str]]) -> list[dict]:
+    """Claim-label attribution, using Config.worker's first-match precedence.
+
+    First-pass denominators are attempt-1 gate outcomes per claim. All attempts
+    (including review bounces) and reported costs count; unclaimed history does not.
+    """
+    rows = {key: {"worker": key, "first_pass": None, "attempts": 0, "cost": None} for key in workers}
+    outcomes: dict[str, list[bool]] = {key: [] for key in workers}
+    for events in audit.values():
+        worker = None
+        for event in events:
+            if event.get("event") == "claimed":
+                labels = event.get("labels", [])
+                worker = next((key for key in workers if key in labels), "default")
+            elif event.get("event") == "attempt" and worker is not None:
+                row = rows[worker]
+                row["attempts"] += 1
+                cost = event.get("cost")
+                if type(cost) in (int, float):
+                    row["cost"] = round((row["cost"] or 0) + cost, 4)
+                if event.get("attempt") == 1 and event.get("gate") in ("PASS", "FAIL"):
+                    outcomes[worker].append(event["gate"] == "PASS")
+    for worker, gates in outcomes.items():
+        if gates:
+            rows[worker]["first_pass"] = sum(gates) / len(gates)
+    return list(rows.values())
+
+
+def print_workers(rows: list[dict]) -> None:
+    width = max(len("worker"), *(len(row["worker"]) for row in rows))
+    print(f"{'worker':<{width}}  first-gate pass  attempts  cost")
+    for row in rows:
+        rate = "n/a" if row["first_pass"] is None else f"{row['first_pass']:.1%}"
+        cost = "n/a" if row["cost"] is None else f"${row['cost']:.2f}"
+        print(f"{row['worker']:<{width}}  {rate:>15}  {row['attempts']:>8}  {cost}")
+
+
+def brief_metrics(audit: dict[int, list[dict]]) -> list[dict]:
+    """First-gate pass rate split by whether attempt 1 carried a brief."""
+    outcomes: dict[str, list[bool]] = {"with brief": [], "without brief": []}
+    for events in audit.values():
+        for event in events:
+            if event.get("event") == "attempt" and event.get("attempt") == 1 and event.get("gate") in ("PASS", "FAIL"):
+                outcomes["with brief" if event.get("brief") else "without brief"].append(event["gate"] == "PASS")
+    return [{"tickets": key, "first_pass": sum(gates) / len(gates) if gates else None, "attempts": len(gates)}
+            for key, gates in outcomes.items()]
+
+
+def print_briefs(rows: list[dict]) -> None:
+    print("tickets        first-gate pass  attempts")
+    for row in rows:
+        rate = "n/a" if row["first_pass"] is None else f"{row['first_pass']:.1%}"
+        print(f"{row['tickets']:<13}  {rate:>15}  {row['attempts']:>8}")
+
+
+def timeline(number: int) -> list[dict]:
+    pages = gh("api", f"repos/{REPOSITORY}/issues/{number}/timeline",
+               "--paginate", "--slurp")
+    return [
+        {"__typename": "LabeledEvent" if item["event"] == "labeled" else "UnlabeledEvent",
+         "createdAt": item["created_at"], "label": item["label"],
+         "actor": {"login": actor.get("login"), "__typename": actor.get("type")}}
+        for page in pages for item in page
+        if item.get("event") in {"labeled", "unlabeled"}
+        for actor in [item.get("actor") or {}]
+    ]
+
+
+def human_touch(items: list[dict], audit: list[dict], end: str | None = None) -> dict:
+    """Label intervals; removal actor, never comment author, resolves an escalation.
+
+    Bot actors are factory, User actors human; missing actors remain unknown.
+    Shared human credentials cannot distinguish automation from manual activity.
+    Trace counts supplement missing timeline history without double-counting it.
+    """
+    starts = []
+    resolutions = []
+    opened = None
+    minutes = 0.0
+    queued = 0
+    for item in sorted(items, key=lambda e: e.get("createdAt") or ""):
+        kind, at = item.get("__typename"), item.get("createdAt")
+        label = (item.get("label") or {}).get("name")
+        if not at or (end and at > end):
+            continue
+        if kind == "LabeledEvent" and label == LABEL_AGENT:
+            queued += 1
+        if label != LABEL_HUMAN:
+            continue
+        if kind == "LabeledEvent" and opened is None:
+            opened = at
+            starts.append(at)
+        elif kind == "UnlabeledEvent" and opened is not None:
+            minutes += merge_hours(opened, at) * 60
+            actor = item.get("actor") or {}
+            resolutions.append({
+                "actor": actor.get("login"),
+                "resolved_by": {"Bot": "factory", "User": "human"}.get(actor.get("__typename"), "unknown"),
+            })
+            opened = None
+    if opened:
+        minutes += merge_hours(opened, end or datetime.now(timezone.utc).isoformat()) * 60
+    escalated = [e["at"] for e in audit
+                 if e.get("event") == "escalate" and e.get("reason") != "manager_failed"]
+    claims = sum(e.get("event") == "claimed" for e in audit)
+    return {
+        "escalation_count": max(len(starts), len(escalated)),
+        "escalation_times": escalated if len(escalated) >= len(starts) else starts,
+        "manager_failures": sum(e.get("event") == "escalate" and e.get("reason") == "manager_failed"
+                                for e in audit),
+        "resolutions": resolutions,
+        "ready_for_human_minutes": round(minutes, 2),
+        "requeue_count": max(0, queued - 1, claims - 1),
+    }
+
+
+def human_touch_metrics(rows: list[dict], now: datetime | None = None) -> dict:
+    """Trailing seven-day escalation count; human share of attributed resolutions."""
+    now = now or datetime.now(timezone.utc)
+    since = now - timedelta(days=7)
+    resolved = [r["resolved_by"] for row in rows for r in row.get("resolutions", [])
+                if r["resolved_by"] in {"human", "factory"}]
+    return {
+        "escalations_per_week": sum(
+            since <= datetime.fromisoformat(at.replace("Z", "+00:00")) <= now
+            for row in rows for at in row.get("escalation_times", [])
+        ),
+        "human_resolved_pct": round(100 * resolved.count("human") / len(resolved), 1) if resolved else None,
+    }
 
 
 def merge_hours(created_at: str, merged_at: str | None) -> float | None:
@@ -79,6 +220,8 @@ def make_row(
 
 def collect_rows() -> list[dict[str, Any]]:
     rows: dict[int, dict[str, Any]] = {}
+    audit = audit_by_ticket(cfg.factory / "events.jsonl")
+    details_by_ticket = {}
     pull_requests = gh(
         "pr",
         "list",
@@ -94,6 +237,7 @@ def collect_rows() -> list[dict[str, Any]]:
         if not match:
             continue
         details = issue(int(match.group(1)))
+        details_by_ticket[details["number"]] = details
         review = gh("pr", "view", str(pull_request["number"]), "--json", "comments")
         state = "open PR" if pull_request["state"] == "OPEN" else "merged"
         if not pull_request["mergedAt"] and state != "open PR":
@@ -123,7 +267,18 @@ def collect_rows() -> list[dict[str, Any]]:
         )
         for listed_issue in issues:
             number = listed_issue["number"]
-            rows.setdefault(number, make_row(issue(number), state))
+            if number not in rows:
+                details_by_ticket[number] = details = issue(number)
+                rows[number] = make_row(details, state)
+
+    for number, events in audit.items():
+        if number not in rows:
+            details_by_ticket[number] = details = issue(number)
+            merged = next((e["at"] for e in reversed(events) if e.get("event") == "merged"), None)
+            rows[number] = make_row(details, "merged" if merged else details["state"].lower(), merged_at=merged)
+    for number, row in rows.items():
+        details = details_by_ticket[number]
+        row.update(human_touch(timeline(number), audit.get(number, []), details.get("closedAt")))
 
     return [rows[number] for number in sorted(rows)]
 
@@ -144,6 +299,12 @@ def print_table(rows: list[dict[str, Any]]) -> None:
         ("attempts", lambda row: str(row["attempts"])),
         ("review rounds", lambda row: str(row["review_rounds"])),
         ("hours", lambda row: format_hours(row["merge_hours"])),
+        ("escalations", lambda row: str(row["escalation_count"])),
+        ("manager failures", lambda row: str(row["manager_failures"])),
+        ("resolved by (actor)", lambda row: ", ".join(
+            f"{r['resolved_by']} ({r['actor'] or '?'})" for r in row["resolutions"])),
+        ("human minutes", lambda row: f"{row['ready_for_human_minutes']:.1f}"),
+        ("re-queues", lambda row: str(row["requeue_count"])),
     )
     values = [[render(row) for _, render in columns] for row in rows]
     widths = [
@@ -165,11 +326,25 @@ def print_table(rows: list[dict[str, Any]]) -> None:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="factory stats", description=__doc__)
     parser.add_argument("--json", action="store_true", help="print metric rows as JSON")
+    parser.add_argument("--by-worker", action="store_true", help="split gate pass rate, attempts and known cost by claim label")
+    parser.add_argument("--by-brief", action="store_true", help="split first-gate pass rate by tickets with/without a brief")
     args = parser.parse_args(argv)
     configure(config.load())
-    rows = collect_rows()
+    if args.by_worker or args.by_brief:
+        audit = audit_by_ticket(cfg.factory / "events.jsonl")
+        rows = worker_metrics(audit, cfg.workers) if args.by_worker else brief_metrics(audit)
+    else:
+        rows = collect_rows()
     if args.json:
         print(json.dumps(rows, indent=2))
+    elif args.by_worker:
+        print_workers(rows)
+    elif args.by_brief:
+        print_briefs(rows)
     else:
         print_table(rows)
+        totals = human_touch_metrics(rows)
+        human = totals["human_resolved_pct"]
+        print(f"\nEscalations/week (last 7 days): {totals['escalations_per_week']}")
+        print(f"Human-resolved: {str(human) + '%' if human is not None else 'n/a'} (attributed resolutions)")
     return 0

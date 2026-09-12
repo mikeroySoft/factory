@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
+import ipaddress
 import json
 import os
+import re
 import shutil
+import socket
 import subprocess
 import sys
 import urllib.error
@@ -19,6 +23,7 @@ from factory.config import CONFIG_NAME, LABELS, ConfigError
 TEMPLATES = Path(__file__).with_name("templates")
 GITIGNORE_LINES = ("/.factory/", ".factory-prompt.md")
 ISSUE_TEMPLATE = Path(".github/ISSUE_TEMPLATE/agent_task.md")
+INITIATIVE_TEMPLATE = Path(".github/ISSUE_TEMPLATE/initiative.md")
 WORKFLOWS = Path(".github/workflows")
 CI_WORKFLOW = WORKFLOWS / "ci.yml"
 
@@ -44,7 +49,7 @@ def ensure_line(path: Path, line: str) -> bool:
 
 
 def ensure_labels(slug: str) -> list[str]:
-    """Create or update the six factory labels; returns one line per failure."""
+    """Create or update the factory labels; returns one line per failure."""
     failed = []
     for name, (color, desc) in LABELS.items():
         proc = sh(["gh", "label", "create", name, "--repo", slug, "--color", color, "--description", desc, "--force"])
@@ -86,13 +91,14 @@ def init(argv: list[str]) -> int:
         if ensure_line(root / ".gitignore", line):
             done.append(f"added `{line}` to .gitignore")
 
-    tmpl = root / ISSUE_TEMPLATE
-    if tmpl.exists():
-        done.append(f"kept existing {ISSUE_TEMPLATE}")
-    else:
-        tmpl.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(TEMPLATES / "agent_task.md", tmpl)
-        done.append(f"wrote {ISSUE_TEMPLATE}")
+    for tmpl in (ISSUE_TEMPLATE, INITIATIVE_TEMPLATE):
+        target = root / tmpl
+        if target.exists():
+            done.append(f"kept existing {tmpl}")
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(TEMPLATES / tmpl.name, target)
+            done.append(f"wrote {tmpl}")
 
     # The merge stage refuses a PR with no passing GitHub check; give every repo one.
     if workflows(root):
@@ -116,7 +122,7 @@ def init(argv: list[str]) -> int:
         "\nnext:\n"
         f"  1. edit {CONFIG_NAME}: put your real test/lint commands in [[gate.check]],\n"
         f"     and the same commands in {CI_WORKFLOW} (the merge stage needs a passing check)\n"
-        f"  2. git add {CONFIG_NAME} .gitignore {ISSUE_TEMPLATE} {WORKFLOWS} && git commit\n"
+        f"  2. git add {CONFIG_NAME} .gitignore {ISSUE_TEMPLATE.parent} {WORKFLOWS} && git commit\n"
         "  3. factory doctor\n"
         "  4. factory install --dashboard   # systemd user timer, every 10 min"
     )
@@ -144,15 +150,107 @@ def unset_repo_keys(raw: dict) -> list[str]:
     return out
 
 
-def foreign_host_keys(section: dict) -> list[str]:
-    """Tables/keys in one host section the loader ignores (repo-owned or unknown)."""
-    out = [k for k, v in section.items() if isinstance(v, dict) and k not in config.HOST_TABLES and k not in config.HOST_KEYS]
+def foreign_host_keys(section: dict, *, defaults: bool = False) -> list[str]:
+    """Report unsupported host tables/keys, excluding District's defaults.engine metadata."""
+    out = [
+        k for k, v in section.items()
+        if isinstance(v, dict) and k not in config.HOST_TABLES and k not in config.HOST_KEYS
+        and not (defaults and k == "engine")
+    ]
     out += [f"{t}.{k}" for t, keys in config.HOST_KEYS.items() for k in section.get(t, {}) if k not in keys]
     return out + config.unknown_keys(config.host_filter(section))
 
 
 def sha256(path: Path) -> str | None:
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+
+
+def dashboard_port_error(cfg: config.Config, host: str, port: int, reason: str = "is in use") -> str:
+    return (
+        f'factory dashboard: port {port} on {host} {reason}; set [repo."{cfg.repo}".dashboard] port '
+        f"in {config.host_config_path()} (each factory needs its own port)"
+    )
+
+
+def _listener_conflicts(local: str, target: str) -> bool:
+    address = local.rpartition(":")[0].strip("[]").split("%", 1)[0]
+    if address == "*":
+        return True
+    try:
+        listener = ipaddress.ip_address(address)
+        requested = ipaddress.ip_address(target)
+    except ValueError:
+        return True
+    if listener.version == 6 and listener.ipv4_mapped:
+        listener = listener.ipv4_mapped
+    if listener.version != requested.version:
+        return listener.is_unspecified
+    return listener.is_unspecified or requested.is_unspecified or listener == requested
+
+
+def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[bool, str]:
+    unit = f"{cfg.unit}-dashboard.service"
+    try:
+        target = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)[0][4]
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    except OSError as exc:
+        return False, dashboard_port_error(cfg, host, port, f"cannot be bound: {exc.strerror or exc}")
+
+    with probe:
+        try:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind(target)
+            collision = False
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE:
+                return False, dashboard_port_error(cfg, host, port, f"cannot be bound: {exc.strerror or exc}")
+            collision = True
+
+        # Keep a free probe held through `ss`; the later install-to-service bind
+        # remains inherently racy. A collision that vanishes here fails closed.
+        try:
+            listeners = sh(["ss", "-ltnp", f"sport = :{port}"])
+        except OSError as exc:
+            return False, dashboard_port_error(cfg, host, port, f"could not be checked (ss: {exc})")
+        if listeners.returncode != 0:
+            detail = listeners.stderr.strip() or str(listeners.returncode)
+            return False, dashboard_port_error(cfg, host, port, f"could not be checked (ss: {detail})")
+        if not collision:
+            return True, f"available on {host}"
+
+    holders: list[tuple[str, int]] = []
+    unknown = False
+    for line in listeners.stdout.splitlines():
+        fields = line.split(maxsplit=5)
+        if not fields or fields[0] == "State" or len(fields) < 4 or not _listener_conflicts(fields[3], target[0]):
+            continue
+        found = re.findall(r'\("([^"]+)",pid=(\d+)', line)
+        unknown |= not found
+        holders.extend((name, int(pid)) for name, pid in found)
+    if unknown or not holders:
+        return False, dashboard_port_error(cfg, host, port, "is in use by an unknown process")
+
+    names = ", ".join(dict.fromkeys(name for name, _ in holders))
+    try:
+        owner = sh(["systemctl", "--user", "show", "-p", "MainPID", "--value", unit])
+    except OSError as exc:
+        return False, dashboard_port_error(
+            cfg, host, port, f"is in use by {names} (could not verify {unit}: {exc})"
+        )
+    try:
+        main_pid = int(owner.stdout.strip())
+    except ValueError:
+        main_pid = -1
+    if owner.returncode != 0 or main_pid < 0:
+        detail = owner.stderr.strip() or owner.stdout.strip() or str(owner.returncode)
+        return False, dashboard_port_error(
+            cfg, host, port, f"is in use by {names} (could not verify {unit}: {detail})"
+        )
+    foreign = [name for name, pid in holders if pid != main_pid]
+    if foreign or main_pid == 0:
+        names = ", ".join(dict.fromkeys(foreign or (name for name, _ in holders)))
+        return False, dashboard_port_error(cfg, host, port, f"is in use by {names}")
+    return True, f"owned by {unit} (pid {main_pid})"
 
 
 def doctor(argv: list[str]) -> int:
@@ -181,15 +279,16 @@ def doctor(argv: list[str]) -> int:
     if unset:
         report(None, "defaults in effect", ", ".join(unset), info=True)
 
-    shipped, ours = sha256(TEMPLATES / "agent_task.md"), sha256(cfg.root / ISSUE_TEMPLATE)
-    report(
-        True if ours == shipped else None, f"{ISSUE_TEMPLATE}",
-        "matches shipped template" if ours == shipped else ("missing (factory init)" if ours is None else "differs from shipped template"),
-    )
+    for tmpl in (ISSUE_TEMPLATE, INITIATIVE_TEMPLATE):
+        shipped, ours = sha256(TEMPLATES / tmpl.name), sha256(cfg.root / tmpl)
+        report(
+            True if ours == shipped else None, f"{tmpl}",
+            "matches shipped template" if ours == shipped else ("missing (factory init)" if ours is None else "differs from shipped template"),
+        )
     host = config.host_config()
     if host:
         sections = [("defaults", host.get("defaults", {}))] + [(f'repo."{s}"', t) for s, t in host.get("repo", {}).items()]
-        foreign = [f"{name}.{k}" for name, sec in sections if isinstance(sec, dict) for k in foreign_host_keys(sec)]
+        foreign = [f"{name}.{k}" for name, sec in sections if isinstance(sec, dict) for k in foreign_host_keys(sec, defaults=name == "defaults")]
         report(None if foreign else True, "host config", f"ignored (not host-owned): {', '.join(foreign)}" if foreign else str(config.host_config_path()))
 
     for tool in ("git", "gh"):
@@ -223,6 +322,19 @@ def doctor(argv: list[str]) -> int:
     for label, argv_t in cfg.workers.items():
         report(shutil.which(argv_t[0]) is not None, f"worker `{label}`: {argv_t[0]}")
     report(shutil.which(cfg.reviewer[0]) is not None, f"reviewer: {cfg.reviewer[0]}")
+    if not cfg.manager:
+        report(None, "manager command", "[manager].command is unset; escalations get no automated diagnosis")
+    else:
+        problems = [
+            f"missing `{{{name}}}` placeholder"
+            for name in ("prompt", "cwd")
+            if not any(f"{{{name}}}" in arg for arg in cfg.manager)
+        ]
+        if Path(cfg.manager[0]).name == "omp" and "{prompt}" in cfg.manager:
+            problems.append('omp needs a prompt file; use "@{prompt}"')
+        if shutil.which(cfg.manager[0]) is None:
+            problems.append(f"executable not on PATH: {cfg.manager[0]}")
+        report(not problems, "manager command", "; ".join(problems) if problems else cfg.manager[0])
 
     if cfg.checks:
         for check in cfg.checks:
@@ -246,6 +358,9 @@ def doctor(argv: list[str]) -> int:
     timer = sh(["systemctl", "--user", "is-active", f"{cfg.unit}.timer"]).stdout.strip()
     report(True if timer == "active" else None, f"systemd timer {cfg.unit}.timer", timer or "not installed (factory install)")
 
+    port_ok, port_detail = _dashboard_port_check(cfg, cfg.install["host"], cfg.dashboard_port)
+    report(port_ok, f"dashboard port {cfg.dashboard_port}", port_detail)
+
     fails = sum(r["status"] == "FAIL" for r in rows)
     if args.json:
         print(json.dumps({"ok": not fails, "version": __version__, "repo": cfg.repo, "root": str(cfg.root), "rows": rows}, indent=2))
@@ -266,7 +381,7 @@ def unit_dir() -> Path:
 
 
 def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
-    exe = f"{sys.executable} -m factory"
+    exe = f"{sys.executable} -P -m factory"
     # At boot the user manager's PATH is the systemd default (no ~/.local/bin),
     # so gh/omp/codex vanish; carry the installing shell's PATH into the units.
     # [install].env (host config) adds one line each: policy such as UV_EXCLUDE_NEWER.
@@ -328,6 +443,11 @@ def install(argv: list[str]) -> int:
         return 0
     if shutil.which("systemctl") is None:
         raise ConfigError("systemctl not found; run `factory dispatch` from cron or by hand instead")
+    if args.dashboard:
+        port_ok, port_detail = _dashboard_port_check(cfg, args.host, cfg.dashboard_port)
+        if not port_ok:
+            print(port_detail, file=sys.stderr)
+            return 1
 
     udir = unit_dir()
     udir.mkdir(parents=True, exist_ok=True)

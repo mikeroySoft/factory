@@ -1,6 +1,6 @@
 ---
 name: factory
-description: Operate the factory pipeline (label-driven GitHub issues → worker agents in worktrees → deterministic gate → reviewer → merge stage). Use when the user asks to set up the factory in a repository, write or split a ticket for the factory, check why a ticket escalated to ready-for-human or stalled, read the factory dashboard, or change gate checks, workers, or the reviewer in .factory.toml.
+description: Operate the factory pipeline (label-driven GitHub issues → worker agents in worktrees → deterministic gate → reviewer → merge stage). Use when the user asks to set up the factory in a repository, assess an issue or PR direction's viability, write or split a ticket for the factory, check why a ticket escalated to ready-for-human or stalled, read the factory dashboard, or change gate checks, workers, or the reviewer in .factory.toml.
 ---
 
 # factory
@@ -11,13 +11,16 @@ gitignored `.factory/`. `factory --help` lists commands; `factory <cmd> --help` 
 options.
 
 First, ensure the tool is installed: `factory --version`. If absent, install it with
-the first available of `uv tool install git+https://github.com/mikeroySoft/factory`,
-`pipx install git+https://github.com/mikeroySoft/factory`, or
-`python3 -m pip install --user git+https://github.com/mikeroySoft/factory`
-(Linux, Python ≥ 3.11; no dependencies). Confirm with `factory --version` before
-continuing. Then pick the branch:
+the first available of `uv tool install git+https://github.com/mikeroySoft/factory@stable`,
+`pipx install git+https://github.com/mikeroySoft/factory@stable`, or
+`python3 -m pip install --user git+https://github.com/mikeroySoft/factory@stable`
+(Linux, Python ≥ 3.11; no dependencies). These URLs explicitly select the released
+`stable` channel. Replace `@stable` with `@main` for development or `@v0.3.0`
+for a fixed release. A bare URL follows the default `main` branch.
+Confirm with `factory --version` before continuing. Then pick the branch:
 
 - Repo has no `.factory.toml` → **Set up**.
+- User asks whether an issue or PR direction is worth pursuing → **Assess viability**.
 - User wants work done by the factory → **Write a ticket**.
 - A ticket is `ready-for-human`, stuck, or the user asks "what happened" → **Diagnose**.
 - User wants different checks, workers, reviewer, or model → edit `.factory.toml`
@@ -48,6 +51,37 @@ continuing. Then pick the branch:
    tell them `factory dispatch` runs one pass by hand.
 
 Done when `factory dispatch --dry-run` runs without error and prints the frontier.
+
+## Assess viability
+
+Use the existing `[manager].command` in read-only/no-tools mode. Without it,
+viability is disabled. This stage recommends direction; it does not write specs
+or perform code-quality review.
+
+1. On an existing installation, `factory init --labels-only` provisions
+   `needs-review` and `needs-viability` through the normal label registry.
+2. With authorization for the exact target, opt a PR in with
+   `gh pr edit N --add-label needs-review`, or an issue with
+   `gh issue edit N --add-label needs-viability`. Unlabeled issues are not swept.
+3. `factory manage --dry-run` lists eligible requests without inference or writes.
+   `factory manage` (also the dispatch manager stage) processes PRs before issues.
+   Held, closed, conflicting-stage, and locked targets are skipped.
+4. Read the target's `Factory manager:` comment and final
+   `VERDICT: BUILD|DONT_BUILD|DEFER`, with evidence citations and cost/risk reasoning.
+   All verdicts consume the opt-in label. An issue BUILD adds `needs-triage`
+   for deeper investigation, never `ready-for-agent`. Negative/deferred issues
+   stay open without `wontfix`; the human closes or overrules.
+   PR verdicts are recommendation-only, even BUILD: no handoff label until
+   factory #5, and no quality review, approval, merge, or closure.
+5. If application failed, inspect `.factory/events.jsonl`'s `viability` event
+   and live state: the full comment is recorded before mutations and that
+   label-add request is never automatically replayed. Recover manually rather
+   than duplicating a potentially posted comment. To request a new assessment,
+   remove and re-add the label; each label-add timeline ID is a new request.
+
+Done when the cited verdict is visible and the opt-in label is consumed (plus
+`needs-triage` for an issue BUILD), or a failed application is handed to the
+human with the recorded verdict and observed live state.
 
 ## Write a ticket
 
@@ -93,9 +127,10 @@ Then act at the cause: a gate failure that is the ticket's fault → fix the tic
 (sharpen the exit gate) and re-label `ready-for-agent`; a gate failure from a
 wrong check command → fix `.factory.toml`; reviewer disagreement → read the
 findings and either amend the ticket or take the branch over by hand
-(`git worktree` at `.factory/wt-<n>`, branch `agent/<n>`); red CI → the label
-`factory-approved` was removed on purpose; re-add it after the fix to re-enter the
-merge stage. A human blocks any merge by requesting changes on the PR. When the same
+(`git worktree` at `.factory/wt-<n>`, branch `agent/<n>`); red CI or a failed
+refresh (rebase conflict, nothing ahead of main, gate failed after rebase) → the
+label `factory-approved` was removed on purpose; resolve, then re-add it to
+re-enter the merge stage. A human blocks any merge by requesting changes on the PR. When the same
 cause shows up across tickets, run `factory learn --dry-run`, check the proposed
 lessons against the evidence, then `factory learn` and commit `.factory-lessons.md`.
 
@@ -108,5 +143,7 @@ the cause and the evidence path.
 - A merge needs all four: gate PASS, `factory-approved`, green CI, head contains
   `main`. One PR per pass; behind-main PRs are rebased and re-gated first.
 - `wontfix` is proposed by triage, never applied.
+- Viability consumes explicit opt-in labels, PRs before issues. Only issue BUILD
+  can add `needs-triage`; PR verdicts have no handoff or review authority.
 - Concurrency is the per-ticket `flock` in `.factory/locks/`; `max_active` counts held
   locks. Removing a worktree does not release its lock.

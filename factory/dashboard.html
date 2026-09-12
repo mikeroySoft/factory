@@ -244,6 +244,12 @@
   .attempt .ah button { margin-left: auto; }
   .empty { color: var(--dim); font-size: 11px; padding: 14px 16px; }
   .err { background: rgba(255,42,109,.1); border: 1px solid var(--mag); color: var(--mag); padding: 8px 14px; font-size: 11px; }
+  .feedback-evidence { display: grid; gap: 8px; }
+  .feedback-item { border: 1px solid var(--line); padding: 8px 10px; }
+  .feedback-item > summary { color: var(--ink); word-break: break-word; }
+  .feedback-item .kv { margin: 10px 0; }
+  .feedback-item pre { max-height: 24vh; }
+  .feedback-errors { display: grid; gap: 6px; }
 
   /* tooltip */
   .tip { position: fixed; z-index: 70; pointer-events: none; background: rgba(5,7,12,.95); border: 1px solid var(--cyan);
@@ -306,7 +312,7 @@
     <h1 class="glitch" id="title" data-text="FACTORY">FACTORY</h1>
   </div>
   <div class="status" id="status"></div>
-  <nav class="views" aria-label="Factory views"><button id="nav-inbox" class="on">Inbox</button><button id="nav-ops">Ops</button><a class="navlink" href="/atlas" title="Static architecture diagrams">Atlas ↗</a></nav>
+  <nav class="views" aria-label="Factory views"><button id="nav-inbox" class="on">Inbox</button><button id="nav-ops">Ops</button><a class="navlink" href="/codebase" title="Explore codebase organization and history">Codebase ↗</a><a class="navlink" href="/atlas" title="Static architecture diagrams">Atlas ↗</a></nav>
   <div class="controls">
     <input id="search" type="search" placeholder="/ filter  #n · title · label · stage" aria-label="Filter tickets" title="Filters the board, lanes, activity feed, and inbox">
     <button id="refresh" title="r">Refresh</button>
@@ -317,6 +323,14 @@
 <main id="ops" hidden>
   <div id="errors"></div>
   <section class="kpis" id="kpis" aria-label="Key metrics"></section>
+  <section class="panel" aria-label="Worker metrics">
+    <header><b>Workers</b> claim labels · first-attempt gate outcomes · all attempts · known cost</header>
+    <div class="kpis" id="worker-metrics"></div>
+  </section>
+  <section class="panel" aria-label="External pull-request review queue">
+    <header><b>External PR review queue</b> read-only · required CI last observed by dispatch</header>
+    <div class="body" id="review-queue"></div>
+  </section>
 
   <section class="panel">
     <header><b>Pipeline</b> live · click a node to filter the board and lanes <span class="note hint">hover a node for its tickets</span></header>
@@ -522,8 +536,7 @@ function counts() {
   return c;
 }
 function phaseCell(t) {
-  const a = t.phase && t.phase.artifact;
-  return a === 'worker' ? 'worker' : a === 'gate' ? 'gate' : a ? 'review' : 'worker';
+  return t.phase?.artifact || 'unknown';
 }
 function metrics() {
   const T = S.snap.tickets, cfg = S.snap.config;
@@ -532,7 +545,7 @@ function metrics() {
   const reachedPr = T.filter(t => t.pr);
   const firstPass = reachedPr.filter(t => gateRounds(t) === 1).length;
   const bounced = reachedPr.filter(t => t.attempts.some(isBounce)).length;
-  const escalations = T.flatMap(t => t.events.filter(e => e.kind === 'escalated')).length;
+  const escalations = S.snap.metrics.escalations;
   return {
     firstPass: pct(firstPass, reachedPr.length), bounceRate: pct(bounced, reachedPr.length),
     medAttempts: median(ran.map(gateRounds)), escalations,
@@ -588,6 +601,7 @@ function render() {
   }
   renderStatus(); renderErrors(); renderKpis(); renderPipeline(); renderBoard(); renderFeed(); renderRuns(); renderUpstream(); renderLanes(); renderThroughput(); renderConfig();
   renderInboxHealth();
+  renderReviewQueue();
   updateInbox();
   applyView();
   if (S.sel != null && !$('drawer').contains(document.activeElement) && !$('fm-dialog').open) renderDrawer();
@@ -598,10 +612,12 @@ function renderStatus() {
   const title = `${S.snap.config.name.toUpperCase()} FACTORY`;
   $('title').textContent = title; $('title').dataset.text = title;
   $('journal-unit').textContent = `${S.snap.config.unit}.service`;
-  const led = d.service_active ? 'warn' : d.timer.active ? 'on' : 'bad';
+  const unknown = d.service_active == null || d.timer.active == null;
+  const led = d.service_active ? 'warn' : unknown ? '' : d.timer.active ? 'on' : 'bad';
+  const next = d.schedule?.wait?.details?.next_at;
   $('status').replaceChildren(
-    h('span', {}, h('i', { class: `led ${led}` }), 'dispatcher ', h('b', {}, d.service_active ? 'RUNNING' : d.timer.active ? 'ARMED' : 'TIMER OFF')),
-    h('span', {}, 'next ', h('b', {}, d.timer.next ? `${hm(d.timer.next)} (${dur(new Date().toISOString(), d.timer.next)})` : '—')),
+    h('span', {}, h('i', { class: `led ${led}` }), 'dispatcher ', h('b', {}, d.service_active ? 'RUNNING' : unknown ? 'UNKNOWN' : d.timer.active ? 'ARMED' : 'TIMER OFF')),
+    h('span', {}, 'next ', h('b', {}, next ? `${hm(next)} (${dur(new Date().toISOString(), next)})` : '—')),
     h('span', {}, 'last ', h('b', {}, d.timer.last ? ago(d.timer.last) : '—')),
     h('span', {}, h('i', { class: `led ${S.snap.active ? 'warn' : ''}` }), 'capacity ', h('b', {}, `${S.snap.active}/${S.snap.config.max_active}`)),
     h('span', {}, h('i', { class: `led ${S.snap.gpu_lock_held ? 'warn' : ''}` }), 'gpu lock ', h('b', {}, S.snap.gpu_lock_held ? 'HELD' : 'free')),
@@ -629,11 +645,16 @@ function renderKpis() {
     kpi('Escalated', c.escalated, `${m.escalations} escalations all-time`, { stage: 'escalated' }),
     kpi('Merged', c.merged, 'all-time', { stage: 'merged' }),
     kpi('First-gate pass', m.firstPass, `bounce rate ${m.bounceRate}`),
+    kpi('Escalations/week', S.snap.metrics.escalations_per_week, 'last 7 days'),
+    kpi('Human-resolved', S.snap.metrics.human_resolved_pct == null ? '—' : `${S.snap.metrics.human_resolved_pct}%`, 'of attributed resolutions'),
     ...(S.snap.config.upstream ? [kpi('Upstream', upstreamWord(), S.snap.upstream.blocker ? `sync parked on #${S.snap.upstream.blocker.number}` : `fork +${S.snap.upstream.ahead ?? '?'} · last sync ${S.snap.upstream.syncs.length ? ago(S.snap.upstream.syncs.at(-1).at) : 'never'}`)] : []),
     kpi('Issue → PR', Number.isFinite(m.issueToPr) ? `${m.issueToPr.toFixed(1)}h` : '—', `PR → merge ${Number.isFinite(m.prToMerge) ? m.prToMerge.toFixed(1) + 'h' : '—'} (median)`),
     kpi('Verdicts', m.verdicts.length, `${m.verdicts.filter(v => v.verdict === 'APPROVE').length} approve · ${m.verdicts.filter(v => v.verdict === 'REVISE').length} revise`),
     kpi('Spend', spendText(S.snap.spend), S.snap.spend.cost == null && S.snap.config.cost_pattern == null ? `worker+gate wall clock · ${S.snap.spend.tickets} tickets · set cost_pattern for $` : `worker+gate wall clock · ${S.snap.spend.tickets} tickets`),
   );
+  $('worker-metrics').replaceChildren(...S.snap.workers.map(w =>
+    kpi(w.worker, w.first_pass == null ? 'n/a' : `${(100 * w.first_pass).toFixed(1)}%`,
+      `first-gate pass · ${w.attempts} attempts · ${w.cost == null ? 'n/a cost' : '$' + w.cost.toFixed(2)}`)));
 }
 function upstreamPending() { return S.snap.upstream.commits.filter(c => !c.synced); }
 function upstreamLed() { const u = S.snap.upstream; return u.blocker ? 'bad' : upstreamPending().length ? 'warn' : u.commits.length ? 'on' : ''; }
@@ -716,7 +737,7 @@ function card(t) {
     ci.QUEUED || ci.IN_PROGRESS || ci.PENDING ? h('b', { class: 'pend' }, `…${(ci.QUEUED || 0) + (ci.IN_PROGRESS || 0) + (ci.PENDING || 0)}`) : null) : null;
   const el = h('article', { class: `card ${stageClass(t.stage)} ${S.sel === t.number ? 'sel' : ''}`, tabindex: 0, dataset: { n: t.number }, 'aria-label': `#${t.number} ${t.title}` },
     h('div', { class: 'ct' }, h('span', { class: 'num' }, `#${t.number}`), h('span', { class: 'wk' }, t.worker),
-      t.lock_held ? h('span', { class: 'chip live', style: { '--c': 'var(--yel)' } }, t.phase ? `${phaseCell(t)}${t.phase.attempt ? ' #' + t.phase.attempt : ''}` : 'live') : null,
+      t.lock_held ? h('span', { class: `chip${t.phase ? ' live' : ''}`, style: { '--c': 'var(--yel)' } }, t.phase ? `${phaseCell(t)}${t.phase.attempt ? ' #' + t.phase.attempt : ''}` : 'phase unknown') : null,
       t.pr && t.pr.approved && t.pr.state === 'OPEN' ? h('span', { class: 'chip', style: { '--c': 'var(--grn)' }, title: 'factory-approved: merge stage will land it' }, 'approved') : null,
       t.stage === 'escalated' && t.assignees.length ? h('span', { class: 'chip', style: { '--c': 'var(--cyan)' } }, 'in human hands') : null,
       h('span', { class: 'chip' }, STAGE_NAME[t.stage])),
@@ -873,8 +894,8 @@ function renderConfig() {
   const inflight = ticketsIn('in-flight');
   $('config').replaceChildren(
     h('div', { class: 'cardc' }, h('h4', {}, 'factory dispatch'), dl([
-      ['timer', d.timer.active ? `active · every ${cfg.timer_interval}` : 'inactive'], ['next pass', d.timer.next ? fmt(d.timer.next) : '—'], ['last pass', d.timer.last ? fmt(d.timer.last) : '—'],
-      ['service', d.service_active ? 'running now' : 'idle (oneshot)'], ['MAX_ACTIVE', `${cfg.max_active} · ${S.snap.active} held`], ['MAX_ATTEMPTS', `${cfg.max_attempts} gate rounds + ${cfg.review_rounds} review bounce${cfg.review_rounds === 1 ? '' : 's'}`],
+      ['timer', d.timer.active == null ? 'unknown' : d.timer.active ? `active · every ${cfg.timer_interval}` : 'inactive'], ['next pass', d.schedule?.wait?.details?.next_at ? fmt(d.schedule.wait.details.next_at) : '—'], ['last pass', d.timer.last ? fmt(d.timer.last) : '—'],
+      ['service', d.service_active == null ? 'unknown' : d.service_active ? 'running now' : 'idle (oneshot)'], ['MAX_ACTIVE', `${cfg.max_active} · ${S.snap.active} held`], ['MAX_ATTEMPTS', `${cfg.max_attempts} gate rounds + ${cfg.review_rounds} review bounce${cfg.review_rounds === 1 ? '' : 's'}`],
       ['budget', `${cfg.budget_min} min wall clock / ticket`], ['escalation', 'unassign · ready-for-human · comment with log path · CI failure pulls factory-approved'], ['merge stage', `squash, ≤1 PR per pass · needs ${cfg.approved_label} + green CI + head contains ${cfg.main} tip`],
       ['upstream sync', cfg.upstream ? `${S.snap.upstream.repo} ${cfg.main} → ${cfg.main} · merge commit under host gate (leak scan skipped) · conflict/gate fail opens a ready-for-human issue` : 'disabled']])),
     h('div', { class: 'cardc' }, h('h4', {}, 'factory gate'), dl([
@@ -974,14 +995,109 @@ function tabGate(t, c) {
   if (text) c.append(pre(text));
   if (t.gate && t.pr && t.pr.gate_text && t.pr.gate_text !== t.gate.text.trim()) { c.append(h('div', { class: 'section-h' }, 'report attached to the PR at open'), pre(t.pr.gate_text)); }
 }
+function feedbackEvidence(t, expanded = false) {
+  const root = h('div', { class: 'feedback-evidence', dataset: { feedbackSchema: t.pr?.feedback?.schema_version ?? 'missing' } });
+  if (!t.pr) {
+    root.append(h('div', { class: 'empty feedback-unsupported' }, 'No pull request exists, so there is no PR feedback observation.'));
+    return root;
+  }
+  const f = t.pr.feedback;
+  if (!f || f.schema_version !== 1) {
+    root.append(h('div', { class: 'err feedback-unsupported', role: 'status' },
+      f ? `PR feedback schema ${String(f.schema_version ?? 'unknown')} is unsupported. This evidence is unknown and non-actionable.`
+        : 'This engine does not expose source-versioned PR feedback. Evidence is unsupported/unknown and non-actionable.'));
+    return root;
+  }
+  const value = v => v == null || v === '' ? 'unknown' : String(v);
+  const kvList = pairs => h('dl', { class: 'kv' }, ...pairs.flatMap(([label, content]) => [h('dt', {}, label), h('dd', {}, content)]));
+  const sourceLink = (url, label) => {
+    const safe = safeSourceURL(url);
+    return safe ? h('a', { href: safe, target: '_blank', rel: 'noopener noreferrer' }, label) : null;
+  };
+  const owner = f.owner || {};
+  const ownerIssue = owner.issue || null;
+  const ownerUnknown = owner.relation !== 'factory_issue' || !ownerIssue;
+  root.append(
+    h('div', { class: 'section-h' }, `source-versioned PR feedback · schema ${f.schema_version}`),
+    kvList([
+      ['repository', `${value(f.repository?.slug)} · host ${value(f.repository?.host)} · native id ${value(f.repository?.id)}`],
+      ['pull request', h('span', {}, sourceLink(f.pr?.url, `#${value(f.pr?.number)} ↗`) || `#${value(f.pr?.number)}`, ` · native id ${value(f.pr?.id)} · ${value(f.pr?.state)} · draft ${value(f.pr?.draft)}`)],
+      ['observed head', h('code', {}, value(f.pr?.head_sha))],
+      ['observed at', value(f.observed_at)],
+      ['observation', h('code', {}, value(f.observation_id))],
+      ['producer', `${value(f.producer?.name)} · revision ${value(f.producer?.revision)}`],
+    ]),
+    h('div', { class: `feedback-owner${ownerUnknown ? ' err' : ''}` },
+      h('div', { class: 'section-h' }, 'containing owner identity'),
+      kvList([
+        ['relation', `${value(owner.relation)}${ownerUnknown ? ' · unknown/non-actionable' : ''}`],
+        ['issue', ownerIssue ? h('span', {}, sourceLink(ownerIssue.url, `#${value(ownerIssue.number)} ↗`) || `#${value(ownerIssue.number)}`, ` · native id ${value(ownerIssue.id)}`) : 'unknown'],
+      ]),
+      h('div', { class: 'hint' }, 'Ownership is evidence, not readiness or approval authority.'),
+      owner.evidence?.length ? h('ul', {}, ...owner.evidence.map(entry => h('li', {}, entry))) : h('div', { class: 'empty' }, 'No ownership evidence recorded.')),
+    h('div', { class: 'section-h' }, 'source coverage'),
+    h('div', { class: 'checks feedback-coverage' },
+      ...['pr', 'reviews', 'threads', 'checks'].map(source => {
+        const coverage = f.coverage?.[source];
+        const state = coverage?.status === 'complete' ? 'SUCCESS' : coverage?.status === 'unavailable' ? 'ERROR' : 'PENDING';
+        return h('span', { class: `chk ${state}`, dataset: { feedbackSource: source }, title: coverage?.reason || 'No coverage reason recorded' },
+          `${source} ${value(coverage?.status)} · observed ${value(coverage?.observed_at)} · truncated ${value(coverage?.truncated)}${coverage?.reason ? ` · ${coverage.reason}` : ''}`);
+      })),
+    h('div', { class: 'hint' }, 'Partial or unavailable coverage never means that no feedback exists.'),
+  );
+  const uncollected = (f.errors || []).filter(error => error?.code === 'not_collected').map(error => value(error.source));
+  if (uncollected.length) root.append(h('div', { class: 'err feedback-not-collected', role: 'status' },
+    `Detail sources ${uncollected.join(', ')} were not collected: detail reads are limited to open pull requests. Intentional noncollection is unknown, not empty, resolved, or unsupported evidence.`));
+  root.append(h('div', { class: 'section-h' }, `simultaneous evidence · ${f.items?.length || 0} item${f.items?.length === 1 ? '' : 's'}`));
+  if (!f.items?.length) {
+    const complete = ['reviews', 'threads', 'checks'].every(source => f.coverage?.[source]?.status === 'complete');
+    root.append(h('div', { class: 'empty feedback-empty' }, uncollected.length ? 'No items were returned because these sources were not read for this non-open pull request.' : complete ? 'The observed feedback sources were complete and returned no items.' : 'No items were returned, but incomplete coverage makes absence unknown.'));
+  }
+  for (const item of f.items || []) {
+    const disposition = item.disposition || {}, location = item.location || {};
+    const detail = h('details', { class: 'feedback-item', open: expanded, dataset: { evidenceId: value(item.evidence_id), relevance: value(item.relevance), kind: value(item.kind) } },
+      h('summary', {}, `${value(item.kind)} · ${value(item.summary || item.source_id)} · relevance ${value(item.relevance)}`),
+      kvList([
+        ['evidence id', h('code', {}, value(item.evidence_id))],
+        ['source id', value(item.source_id)],
+        ['source revision', h('code', {}, value(item.source_revision))],
+        ['observed head', h('code', {}, value(item.observed_head_sha))],
+        ['source head', h('code', {}, value(item.source_head_sha))],
+        ['updated at', value(item.source_updated_at)],
+        ['author', `${value(item.author?.login)} · ${value(item.author?.kind)}`],
+        ['review/thread', `${value(item.review_id)} / ${value(item.thread_id)}`],
+        ['check run/attempt', `${value(item.check_run_id)} / ${value(item.run_attempt)}`],
+        ['relevance', value(item.relevance)],
+        ['review state', value(disposition.review_state)],
+        ['thread resolved', value(disposition.thread_resolved)],
+        ['thread outdated', value(disposition.thread_outdated)],
+        ['check status', value(disposition.check_status)],
+        ['check conclusion', value(disposition.check_conclusion)],
+        ['location', `${value(location.path)} · line ${value(location.line)} · side ${value(location.side)} · original line ${value(location.original_line)} · original commit ${value(location.original_commit_sha)}`],
+      ]),
+      item.truncated ? h('div', { class: 'err' }, 'Body truncated by the bounded collector; use the provider source for omitted text.') : null,
+      h('div', { class: 'section-h' }, 'source body'),
+      pre(item.body),
+      sourceLink(item.source_url, 'Open provider source ↗') || h('span', { class: 'hint feedback-source-unavailable' }, 'Provider source link unavailable.'));
+    root.append(detail);
+  }
+  root.append(h('div', { class: 'section-h' }, `collection errors · ${f.errors?.length || 0}`));
+  if (f.errors?.length) root.append(h('div', { class: 'feedback-errors' }, ...f.errors.map(error =>
+    h('div', { class: 'err feedback-error', dataset: { feedbackSource: value(error.source), feedbackCode: value(error.code) } }, `${value(error.source)} · ${value(error.code)} · ${value(error.message)}`))));
+  else root.append(h('div', { class: 'empty' }, 'No collection errors recorded.'));
+  root.append(h('div', { class: 'hint' }, 'Feedback is read-only evidence. It does not imply delivery, resolution, readiness, or approval for merge.'));
+  return root;
+}
 function tabReview(t, c) {
+  c.append(feedbackEvidence(t, true));
   const vs = t.pr ? t.pr.verdicts : [];
   const last = vs.at(-1);
-  c.append(h('div', { class: 'section-h' }, last ? `latest verdict: ${last.verdict} · ${ago(last.at)}` : 'no reviewer verdict on the PR'));
-  if (last || t.review) c.append(h('button', { onclick: () => openFM(t.number, t.review ? { path: t.review.path, label: 'Local review' } : { match: 'verdict|review', label: 'PR review verdict' }) }, 'Ask FM about this review'));
-  if (last) c.append(h('div', { class: 'checks' }, ...vs.map(v => h('span', { class: `chk ${v.verdict === 'APPROVE' ? 'PASS' : 'FAIL'}`, title: fmt(v.at) }, `${v.verdict} ${hm(v.at)}`))));
-  vs.slice().reverse().forEach((v, i) => c.append(h('details', { open: i === 0 }, h('summary', {}, `${v.verdict} · ${fmt(v.at)}`), pre(v.body))));
-  if (t.review) c.append(h('div', { class: 'section-h' }, `local review-${t.number}.md · ${t.review.verdict || '?'} · ${ago(t.review.mtime)}`), h('details', {}, h('summary', {}, t.review.path), pre(t.review.text)));
+  c.append(h('div', { class: 'section-h' }, 'legacy review context · not source-versioned authority'));
+  c.append(h('div', { class: 'hint' }, last ? `Latest legacy verdict record: ${last.verdict} · ${ago(last.at)}. This is not trusted source-versioned approval.` : 'No legacy reviewer verdict record on the PR.'));
+  if (last || t.review) c.append(h('button', { onclick: () => openFM(t.number, t.review ? { path: t.review.path, label: 'Local review' } : { match: 'verdict|review', label: 'Legacy PR review context' }) }, 'Ask FM about this legacy review context'));
+  if (last) c.append(h('div', { class: 'checks' }, ...vs.map(v => h('span', { class: 'chk', title: fmt(v.at) }, `legacy ${v.verdict} ${hm(v.at)}`))));
+  vs.slice().reverse().forEach((v, i) => c.append(h('details', { open: i === 0 }, h('summary', {}, `legacy ${v.verdict} · ${fmt(v.at)}`), pre(v.body))));
+  if (t.review) c.append(h('div', { class: 'section-h' }, `legacy local review-${t.number}.md · ${t.review.verdict || '?'} · ${ago(t.review.mtime)}`), h('details', {}, h('summary', {}, t.review.path), pre(t.review.text)));
 }
 function tabBranch(t, c) {
   const w = t.worktree, p = t.pr;
@@ -1011,7 +1127,25 @@ function tabIssue(t, c) {
 
 // ---------------------------------------------------------------- inbox
 function lastEvent(t, kind) { return t.events.filter(e => e.kind === kind).at(-1); }
-const WAITING = new Set(['system', 'escalated', 'needs-info', 'wontfix', 'stuck', 'triage']);
+const REVIEW_STATES = { review_pending: 'Pending review', changes_requested: 'Changes requested', ci_pending: 'CI pending', ci_failed: 'CI failed', ready: 'Ready', escalated: 'Escalated' };
+function reviewMatches(pr) {
+  return `#${pr.number} ${pr.title} ${pr.author || ''} ${pr.head} ${pr.review_head || ''} ${REVIEW_STATES[pr.state]}`.toLowerCase().includes(S.q.trim().toLowerCase());
+}
+function reviewRow(pr) {
+  return h('article', { class: 'briefing-option' },
+    h('h3', {}, h('a', { href: pr.url, target: '_blank', rel: 'noopener' }, `PR #${pr.number} · ${pr.title}`)),
+    h('p', {}, `@${pr.author || 'unknown'} · ${REVIEW_STATES[pr.state]}`),
+    h('p', {}, 'Current head: ', h('code', { style: { overflowWrap: 'anywhere' } }, pr.head)),
+    h('p', {}, 'Last reviewed SHA: ', h('code', { style: { overflowWrap: 'anywhere' } }, pr.review_head || 'Not reviewed'),
+      ` · Verdict: ${pr.verdict || 'None'}`),
+    h('p', {}, `Required CI: ${pr.ci_state} · Last observed: ${pr.ci_at ? fmt(pr.ci_at) : 'Not observed for this head'}`),
+    pr.reason ? h('p', {}, pr.reason) : null);
+}
+function renderReviewQueue() {
+  const queue = (S.snap.review_queue || []).filter(reviewMatches);
+  $('review-queue').replaceChildren(...(queue.length ? queue.map(reviewRow) : [h('p', { class: 'empty' }, 'No opted-in pull requests match this view.')]));
+}
+const WAITING = new Set(['system', 'escalated', 'needs-info', 'wontfix', 'stuck', 'triage', 'external-review']);
 const INBOX_KINDS = { system: 'System attention', escalated: 'Human decision', 'needs-info': 'Question for you', wontfix: 'Wontfix proposal', stuck: 'Stuck claim', triage: 'Untriaged', pr: 'Merge queue', stale: 'Housekeeping', assigned: 'In human hands', active: 'Current task' };
 function inboxItems() {
   const items = [], d = S.snap.dispatcher, cfg = S.snap.config;
@@ -1022,6 +1156,13 @@ function inboxItems() {
   if (cfg.upstream && S.snap.upstream.blocker) {
     const b = S.snap.upstream.blocker;
     items.push({ key: 'system-upstream', pri: 0, kind: 'system', title: `Upstream sync is parked: ${b.title}`, why: `${upstreamPending().length} upstream commit(s) are waiting on issue #${b.number}.`, url: b.url, cmd: `git fetch ${cfg.upstream}\ngit merge --no-ff --signoff ${cfg.upstream}/${cfg.main}`, next: `The maintainer must inspect and resolve issue #${b.number}, validate the merge, then explicitly push and close the blocker. These commands are reference only.` });
+  }
+  for (const pr of S.snap.review_queue || []) {
+    if (['changes_requested', 'ci_failed', 'escalated'].includes(pr.state) ||
+        (pr.state === 'review_pending' && (pr.reason || pr.verdict === 'APPROVE'))) {
+      items.push({ key: `review-${pr.number}`, pri: 1, kind: 'external-review', review: pr,
+        title: `PR #${pr.number} · ${pr.title}`, why: REVIEW_STATES[pr.state] });
+    }
   }
   for (const t of S.snap.tickets) {
     const triaged = lastEvent(t, 'triaged'), humanHands = t.assignees.length > 0;
@@ -1146,14 +1287,29 @@ function taskFacts(item) {
   facts.push(t.assignees.length ? `Currently assigned to @${t.assignees.join(', @')}. Routing labels alone do not release an assignment.` : 'Currently unassigned.');
   if (t.gate) {
     const failures = Object.entries(t.gate.checks).filter(([, value]) => value === 'FAIL').map(([name]) => name);
-    facts.push(failures.length ? `Gate failures: ${failures.join(', ')}.` : `Latest gate: ${Object.entries(t.gate.checks).map(([name, value]) => `${name} ${value}`).join(' · ') || 'no check results recorded'}.`);
+    facts.push(failures.length ? `Legacy local gate failures: ${failures.join(', ')}.` : `Legacy local gate context: ${Object.entries(t.gate.checks).map(([name, value]) => `${name} ${value}`).join(' · ') || 'no check results recorded'}.`);
   } else facts.push('No local gate report is available.');
   if (t.pr) {
-    facts.push(`PR #${t.pr.number}: ${t.pr.state.toLowerCase()}, ${t.pr.approved ? 'factory-approved' : 'not approved'}, CI ${t.pr.checks.state || 'unknown'}.`);
+    facts.push(`PR #${t.pr.number}: ${t.pr.state.toLowerCase()}, ${t.pr.approved ? 'factory-approved label present' : 'factory-approved label absent'}, legacy CI rollup ${t.pr.checks.state || 'unknown'}. Labels and legacy rollups are not source-versioned feedback authority.`);
     const failed = t.pr.checks.list.filter(c => ['FAILURE', 'ERROR'].includes(c.result)).map(c => c.name);
-    if (failed.length) facts.push(`Failing CI checks: ${failed.join(', ')}. Approval does not bypass CI.`);
+    if (failed.length) facts.push(`Legacy failing CI check context: ${failed.join(', ')}. Approval does not bypass CI.`);
     const verdict = t.pr.verdicts.at(-1);
-    if (verdict) facts.push(`Latest reviewer verdict: ${verdict.verdict} (${fmt(verdict.at)}).`);
+    if (verdict) facts.push(`Latest legacy reviewer verdict record: ${verdict.verdict} (${fmt(verdict.at)}). It is not trusted source-versioned approval.`);
+    const feedback = t.pr.feedback;
+    if (!feedback || feedback.schema_version !== 1) {
+      facts.push(feedback ? `PR feedback schema ${String(feedback.schema_version ?? 'unknown')} is unsupported; feedback is unknown and non-actionable.` : 'This engine does not expose source-versioned PR feedback; feedback is unsupported/unknown and non-actionable.');
+    } else {
+      const owner = feedback.owner || {};
+      facts.push(owner.relation === 'factory_issue' && owner.issue
+        ? `Feedback owner identity: Factory issue #${owner.issue.number} (${owner.evidence?.length || 0} evidence record${owner.evidence?.length === 1 ? '' : 's'}).`
+        : `Feedback owner identity: ${owner.relation || 'unknown'}; ownership is unknown/non-actionable.`);
+      const counts = { current_head: 0, historical: 0, unknown: 0 };
+      for (const evidence of feedback.items || []) counts[evidence.relevance] = (counts[evidence.relevance] || 0) + 1;
+      facts.push(`Source-versioned feedback: ${feedback.items?.length || 0} items · ${counts.current_head} current head · ${counts.historical} historical · ${counts.unknown} unknown. Coverage: ${['pr', 'reviews', 'threads', 'checks'].map(source => `${source} ${feedback.coverage?.[source]?.status || 'unknown'}`).join(' · ')}.`);
+      const uncollected = (feedback.errors || []).filter(error => error?.code === 'not_collected').map(error => String(error.source));
+      if (uncollected.length) facts.push(`Feedback detail sources ${uncollected.join(', ')} were not collected: detail reads are limited to open pull requests. This is intentional noncollection, not empty, resolved, or unsupported evidence.`);
+      facts.push('Feedback is read-only evidence and does not authorize delivery, resolution, readiness, or approval for merge.');
+    }
   }
   return h('ul', {}, ...facts.map(fact => h('li', {}, fact)));
 }
@@ -1338,22 +1494,28 @@ function renderSystemBriefing(item) {
       h('details', { class: 'briefing-sources' }, h('summary', {}, 'Host command / configuration reference'), pre(item.cmd)),
       h('button', { onclick: () => setView('ops') }, 'Inspect operations')));
 }
+function fmProgress(label) {
+  return h('p', { class: 'fm-progress' },
+    h('span', { class: 'fm-spinner', role: 'progressbar', 'aria-label': label }),
+    h('span', {}, label));
+}
 function renderTaskBriefing(item) {
   const t = item.t, entry = S.briefings[t.number], fresh = entry && entry.fingerprint === ticketFingerprint(t);
   const result = fresh ? entry.data : null, briefing = result?.briefing, sources = result?.sources || [];
   const state = h('div', { id: 'briefing-fm-status', class: 'briefing-status', role: 'status' });
   const retry = label => h('button', { id: 'briefing-refresh', onclick: () => ensureBriefing(t.number, true) }, label);
-  if (entry?.loading) state.append(h('p', {}, 'Factory Manager is reading the recorded task evidence. The full briefing may take a moment; all current action consequences remain available below.'), h('button', { id: 'briefing-refresh', disabled: true }, 'Generating briefing…'));
+  if (entry?.loading) state.append(fmProgress('Waiting for FM · generating briefing…'), h('p', {}, 'Factory Manager is reading the recorded task evidence. The full briefing may take a moment; all current action consequences remain available below.'), h('button', { id: 'briefing-refresh', disabled: true }, 'Generating briefing…'));
   else if (entry?.error) state.append(h('p', {}, `Factory Manager could not generate this briefing: ${entry.error}`), retry('Retry briefing'));
   else if (entry && !fresh) state.append(h('p', {}, 'Task evidence changed. The previous recommendation is not shown as current.'), retry('Generate updated briefing'));
   else if (briefing) state.append(h('p', {}, `FM briefing generated ${fmt(result.generated_at)} · advisory, not an authorization`), retry('Refresh briefing'));
   else state.append(h('p', {}, 'No FM briefing has been generated yet.'));
-  const history = h('div', { class: 'briefing-history' }, h('h4', { class: 'briefing-label' }, 'Earlier decisions & constraints that still matter'));
+  const history = h('div', { class: 'briefing-history', 'aria-busy': entry?.loading ? 'true' : 'false' }, h('h4', { class: 'briefing-label' }, 'Earlier decisions & constraints that still matter'));
   if (briefing?.history?.length) history.append(h('ul', {}, ...briefing.history.map(entry => h('li', {}, cited(entry.text, sources, t.number), h('span', { class: 'fm-citations' }, ...entry.sources.filter(id => !entry.text.includes(`[${id}]`)).map(id => cited(` [${id}]`, sources, t.number)))))));
-  else history.append(h('p', {}, briefing ? 'FM did not identify a relevant earlier decision in the available evidence. This does not prove none exists; inspect the source record or ask about missing context.' : 'Earlier decisions are not summarized until FM returns a grounded briefing. The raw issue and task evidence remain available below.'));
+  else history.append(entry?.loading ? fmProgress('Waiting for FM · reviewing earlier decisions…') : h('p', {}, briefing ? 'FM did not identify a relevant earlier decision in the available evidence. This does not prove none exists; inspect the source record or ask about missing context.' : 'Earlier decisions are not summarized until FM returns a grounded briefing. The raw issue and task evidence remain available below.'));
   const raw = h('details', { class: 'briefing-sources' }, h('summary', {}, `Inspect raw evidence${sources.length ? ` · ${sources.length} sources` : ''}`));
   if (sources.length) raw.append(...sources.map(source => sourceDetails(t.number, source)));
   else raw.append(h('details', {}, h('summary', {}, 'Issue body'), pre(t.body)), h('button', { onclick: () => openTicket(t.number, 'timeline') }, 'Open task timeline and artifacts'));
+  if (t.pr) raw.append(feedbackEvidence(t));
   return h('article', {},
     h('header', { class: 'briefing-intro' }, h('p', { class: 'briefing-label' }, `${INBOX_KINDS[item.kind]} · #${t.number} · ${t.title}`),
       h('h2', { id: 'briefing-question', class: 'briefing-question', tabindex: -1 }, briefing ? cited(briefing.question, sources, t.number) : item.kind === 'needs-info' ? item.why : `What should happen next for #${t.number}?`),
@@ -1361,9 +1523,9 @@ function renderTaskBriefing(item) {
       h('div', { class: 'briefing-actions' }, h('button', { onclick: () => openFM(t.number) }, 'Ask FM about this task'), h('button', { onclick: () => openTicket(t.number) }, 'Open task details'), h('a', { href: t.url, target: '_blank', rel: 'noopener noreferrer' }, 'Issue on GitHub'), t.pr ? h('a', { href: t.pr.url, target: '_blank', rel: 'noopener noreferrer' }, `PR #${t.pr.number}`) : null)),
     briefingSection('01', 'Understand', state,
       h('div', {}, h('h4', { class: 'briefing-label' }, 'The situation'), h('p', {}, briefing ? cited(briefing.summary, sources, t.number) : item.why), taskFacts(item)),
-      h('div', { class: 'briefing-recommendation' }, h('h4', { class: 'briefing-label' }, 'Factory Manager’s recommendation'), h('p', {}, briefing ? cited(briefing.recommendation, sources, t.number) : 'No recommendation is available. Do not treat the ordering of options as advice.')),
+      h('div', { class: 'briefing-recommendation', 'aria-busy': entry?.loading ? 'true' : 'false' }, h('h4', { class: 'briefing-label' }, 'Factory Manager’s recommendation'), entry?.loading ? fmProgress('Waiting for FM · preparing recommendation…') : h('p', {}, briefing ? cited(briefing.recommendation, sources, t.number) : 'No recommendation is available. Do not treat the ordering of options as advice.')),
       history,
-      h('div', { class: 'briefing-unknown' }, h('h4', { class: 'briefing-label' }, 'What is still uncertain'), h('p', {}, briefing ? cited(briefing.unknown, sources, t.number) : 'FM has not yet identified uncertainties. Missing logs, earlier discussion, or recent changes may affect this decision.')),
+      h('div', { class: 'briefing-unknown', 'aria-busy': entry?.loading ? 'true' : 'false' }, h('h4', { class: 'briefing-label' }, 'What is still uncertain'), entry?.loading ? fmProgress('Waiting for FM · identifying uncertainties…') : h('p', {}, briefing ? cited(briefing.unknown, sources, t.number) : 'FM has not yet identified uncertainties. Missing logs, earlier discussion, or recent changes may affect this decision.')),
       raw),
     decisionForm(item));
 }
@@ -1374,7 +1536,7 @@ function selectCase(key) {
   $('inbox-list').querySelector('.briefing-question')?.focus({ preventScroll: true });
 }
 function renderInbox() {
-  const all = inboxItems(), waiting = all.filter(i => WAITING.has(i.kind)), matching = waiting.filter(i => !i.t || matches(i.t));
+  const all = inboxItems(), waiting = all.filter(i => WAITING.has(i.kind)), matching = waiting.filter(i => i.review ? reviewMatches(i.review) : !i.t || matches(i.t));
   $('nav-inbox').replaceChildren('Inbox ', h('span', { class: `badge ${waiting.length ? 'hot' : ''}` }, waiting.length));
   $('inbox-sum').textContent = waiting.length ? `${waiting.length} case${waiting.length === 1 ? '' : 's'} waiting on you` : 'Nothing waiting on you';
   if (!S.inboxKey && matching.length) { S.inboxKey = matching[0].key; syncHash(); saveInboxState(); }
@@ -1384,13 +1546,14 @@ function renderInbox() {
   const navItems = matching.slice();
   if (item && !navItems.some(i => i.key === item.key)) navItems.unshift(item);
   selector.append(h('option', { value: '', disabled: true, selected: !item }, 'Choose a case'));
-  selector.append(...navItems.map(i => h('option', { value: i.key, selected: i.key === S.inboxKey }, `${i.t ? '#' + i.t.number : 'System'} · ${i.title}`)));
+  selector.append(...navItems.map(i => h('option', { value: i.key, selected: i.key === S.inboxKey }, `${i.review ? 'External review' : i.t ? '#' + i.t.number : 'System'} · ${i.title}`)));
   const index = navItems.findIndex(i => i.key === S.inboxKey);
   list.append(h('nav', { class: 'briefing-nav', 'aria-label': 'Inbox cases' }, h('label', { for: 'briefing-case' }, 'Case to consider'), selector,
     h('button', { disabled: index <= 0, onclick: () => selectCase(navItems[index - 1].key) }, 'Previous'),
     h('button', { disabled: index < 0 || index >= navItems.length - 1, onclick: () => selectCase(navItems[index + 1].key) }, 'Next')));
   if (S.q.trim()) list.append(h('p', { class: 'briefing-muted' }, `${matching.length} waiting case(s) match “${S.q.trim()}”. Your selected case stays visible even if it does not match.`));
-  if (item) list.append(item.t ? renderTaskBriefing(item) : renderSystemBriefing(item));
+  if (item) list.append(item.review ? h('section', { 'aria-label': 'External review attention' },
+    reviewRow(item.review), h('p', {}, 'Inspect the review or CI on GitHub. Contributor fixes and maintainer decisions happen there; this dashboard cannot submit reviews, change branches, or merge this PR.')) : item.t ? renderTaskBriefing(item) : renderSystemBriefing(item));
   else {
     list.append(h('div', { class: 'briefing-status' }, h('h3', {}, S.inboxKey ? 'The selected case is no longer in this snapshot' : 'Inbox clear'),
       h('p', {}, S.inboxKey ? 'Your selection and draft are retained. Choose another case, or refresh to check whether the task is available again.' : 'No human-required cases match this view. Informational work is listed separately below.'),
@@ -1454,6 +1617,7 @@ function renderFMMessages() {
   $('fm-messages').replaceChildren(...chat.messages.map(message => h('article', { class: `fm-message ${message.role}` }, h('h3', { class: 'briefing-label' }, message.role === 'user' ? 'You' : 'Factory Manager'), h('p', {}, cited(message.content, message.sources || [], number, run)),
     message.sources?.length ? h('details', { class: 'fm-citations' }, h('summary', {}, `Inspect answer evidence · ${message.sources.length} sources`), ...message.sources.map(source => sourceDetails(number, source, false, run))) : null)));
   $('fm-status').textContent = context.resolving ? 'Resolving the selected source before a question can be sent.' : context.scopeError ? 'Source unavailable. Retry it or explicitly switch to the whole task.' : chat.pending ? 'FM is reading the evidence and answering… You can close this dialog; your conversation is retained.' : chat.error || 'Questions stay in this browser session. They are not posted as GitHub comments.';
+  if (context.resolving || chat.pending) $('fm-status').prepend(fmProgress(context.resolving ? 'Waiting for FM · loading source context…' : 'Waiting for FM · preparing answer…'));
   $('fm-send').disabled = !!(context.resolving || context.scopeError || chat.pending);
   $('fm-question').disabled = !!chat.pending;
   $('fm-retry').hidden = !chat.error || !chat.lastQuestion;

@@ -9,6 +9,7 @@ conventions, not configuration.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 import tomllib
@@ -19,19 +20,27 @@ CONFIG_NAME = ".factory.toml"
 LESSONS_NAME = ".factory-lessons.md"  # committed; `factory learn` writes, every worker prompt reads
 
 # Triage roles -> label strings. Fixed by convention; `factory init` creates them.
+LABEL_VIABILITY = "needs-viability"
+LABEL_REVIEW = "needs-review"
 LABEL_TRIAGE = "needs-triage"
 LABEL_INFO = "needs-info"
 LABEL_AGENT = "ready-for-agent"
 LABEL_HUMAN = "ready-for-human"
 LABEL_APPROVED = "factory-approved"
 LABEL_CHORE = "chore"
+LABEL_INITIATIVE = "initiative"
+LABEL_WONTFIX = "wontfix-proposal"
 LABELS = {
+    LABEL_VIABILITY: ("D4C5F9", "Opt in to a manager build/defer recommendation before triage"),
+    LABEL_REVIEW: ("D4C5F9", "Opt in to a manager PR direction recommendation before review"),
     LABEL_TRIAGE: ("FBCA04", "Maintainer needs to evaluate this issue"),
     LABEL_INFO: ("D4C5F9", "Waiting on reporter for more information"),
     LABEL_AGENT: ("0E8A16", "Fully specified and ready for an AFK agent"),
     LABEL_HUMAN: ("B60205", "Requires human implementation"),
     LABEL_APPROVED: ("0E8A16", "Reviewer APPROVE recorded by the factory; merge-stage precondition"),
     LABEL_CHORE: ("C2E0C6", "Mechanical task; routed to the chore worker"),
+    LABEL_WONTFIX: ("EDEDED", "Triage or manager proposes not to action this; a human decides"),
+    LABEL_INITIATIVE: ("1D76DB", "Shared initiative plan read by `factory plan`; never triaged, dispatched, managed or merged"),
 }
 
 DEFAULT_LEAK_PATTERN = r"internal|confidential|proprietary|private|jira|confluence|\.corp|\.internal"
@@ -57,14 +66,18 @@ KNOWN_KEYS = {
     "dispatch": ("max_active", "max_attempts", "budget_min", "review_rounds", "cost_pattern", "signoff"),
     "workers": None,
     "review": ("command",),
-    "manager": ("model", "command"),
+    "manager": ("model", "command", "rounds", "review", "stale_days", "max_active_cap", "budget_min_cap"),
     "gate": ("timeout", "lock", "check"),
     "leak_scan": ("pattern", "exclude"),
     "triage": ("url", "model"),
     "dashboard": ("port", "theme"),
     "install": ("every", "dashboard", "host", "env"),
+    "collaboration": ("fallback", "reasons", "components"),
 }
 CHECK_KEYS = ("name", "run", "exclusive")
+ROUTE_REASONS = ("requirements", "implementation", "ci", "unknown")
+# GitHub login, or `@org/team`. Syntax only: never proof of membership or authorization.
+OWNER = re.compile(r"@?(?P<login>[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)|(?P<team>@[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9_.-]{1,100})")
 
 
 class ConfigError(SystemExit):
@@ -100,7 +113,15 @@ class Config:
     workers: dict[str, list[str]] = field(
         default_factory=lambda: {"default": DEFAULT_WORKER, LABEL_CHORE: DEFAULT_CHORE_WORKER}
     )
+    worker_when: dict[str, str] = field(default_factory=dict)
     reviewer: list[str] = field(default_factory=lambda: list(DEFAULT_REVIEWER))
+    manager: list[str] | None = None
+    manager_rounds: int = 1
+    manager_review: str = "escalated"
+    manager_stale_days: int = 7
+    # Ceilings for the fleet manager (`district manage`) raising `max_active`/`budget_min`; None = no cap.
+    manager_max_active_cap: int | None = None
+    manager_budget_min_cap: int | None = None
     checks: list[Check] = field(default_factory=list)
     check_timeout: int = 1200
     lock: Path = Path("/tmp/factory.lock")  # host-wide: one GPU, many repos
@@ -112,6 +133,8 @@ class Config:
     dashboard_port: int = 8765
     dashboard_theme: Path | None = None  # CSS file served after the built-in stylesheet
     install: dict = field(default_factory=lambda: dict(DEFAULT_INSTALL))  # `factory install` defaults
+    # `[collaboration]`: human decision owners for `factory plan route`; None = section absent (legacy behaviour).
+    collaboration: dict | None = None
     raw_repo: dict = field(default_factory=dict)  # the committed file alone, before host layering
 
     @property
@@ -135,6 +158,13 @@ class Config:
 
     def review_cmd(self, prompt: str) -> list[str]:
         return expand(self.reviewer, prompt=prompt)
+
+    def manager_cmd(self, prompt_path: Path, cwd: Path) -> list[str]:
+        """Expand the manager's prompt file, matching the worker transport."""
+        argv = self.manager or []
+        if argv and Path(argv[0]).name == "omp" and "{prompt}" in argv:
+            raise ConfigError('manager.command: use "@{prompt}" instead of bare "{prompt}" for omp')
+        return expand(argv, prompt=str(prompt_path), cwd=str(cwd))
 
 
 def expand(argv: list[str], **values: str) -> list[str]:
@@ -218,12 +248,46 @@ def unknown_keys(raw: dict) -> list[str]:
     return out
 
 
-def manager_model(table: dict) -> str | None:
-    """Read only a model selector from legacy manager argv; never execute it."""
+def owner(value: object, where: str) -> str:
+    """Normalize one configured owner: `login` or `@org/team`; syntactic invalidity is a ConfigError."""
+    match = OWNER.fullmatch(value) if isinstance(value, str) else None
+    if not match:
+        raise ConfigError(f"{where}: expected a GitHub login or @org/team, got {value!r}")
+    return match["login"] or match["team"]
+
+
+def collaboration_settings(table: object) -> dict:
+    """Validate `[collaboration]`: fallback owner, per-reason owners, exact path-prefix component owners."""
+    if not isinstance(table, dict):
+        raise ConfigError("[collaboration] must be a table")
+    out = {"fallback": None, "reasons": {}, "components": {}}
+    if "fallback" in table:
+        out["fallback"] = owner(table["fallback"], "collaboration.fallback")
+    reasons, components = table.get("reasons", {}), table.get("components", {})
+    if not isinstance(reasons, dict) or not isinstance(components, dict):
+        raise ConfigError("collaboration.reasons and collaboration.components must be tables")
+    for reason, value in reasons.items():
+        if reason not in ROUTE_REASONS[:-1]:
+            raise ConfigError(f"collaboration.reasons.{reason}: expected one of {', '.join(ROUTE_REASONS[:-1])}")
+        out["reasons"][reason] = owner(value, f"collaboration.reasons.{reason}")
+    for prefix, value in components.items():
+        parts = prefix.strip("/").split("/")
+        if not prefix or prefix.startswith("/") or "\\" in prefix or any(p in ("", ".", "..") for p in parts):
+            raise ConfigError(f"collaboration.components: {prefix!r} is not a repo-relative path prefix")
+        normalized = "/".join(parts)
+        if normalized in out["components"]:
+            raise ConfigError(f"collaboration.components: duplicate normalized prefix {normalized!r}")
+        out["components"][normalized] = owner(value, f"collaboration.components.{prefix!r}")
+    return out
+
+
+def manager_settings(table: dict) -> tuple[list[str] | None, str | None]:
+    """Normalize manager argv and select the read-only briefing model; never execute."""
     if not isinstance(table, dict):
         raise ConfigError("[manager] must be a table")
     model = table.get("model")
-    if model is None and "command" in table:
+    command = None
+    if "command" in table:
         command = table["command"]
         if isinstance(command, str):
             try:
@@ -232,6 +296,7 @@ def manager_model(table: dict) -> str | None:
                 raise ConfigError(f"manager.command: {exc}") from exc
         if not isinstance(command, list) or not all(isinstance(arg, str) for arg in command):
             raise ConfigError("manager.command must be an argv array or command string")
+    if model is None and command:
         for i, arg in enumerate(command):
             if arg == "--model":
                 if i + 1 == len(command):
@@ -244,7 +309,7 @@ def manager_model(table: dict) -> str | None:
         or model.startswith("-") or any(c.isspace() or ord(c) < 32 for c in model)
     ):
         raise ConfigError("manager.model must be a nonempty model selector (≤ 200 chars, no whitespace)")
-    return model
+    return command, model
 
 
 def load(start: Path | None = None) -> Config:
@@ -263,6 +328,7 @@ def load(start: Path | None = None) -> Config:
     raw, raw_repo = merge(layered, raw), raw
     repo_t, dispatch, workers = raw.get("repo", {}), raw.get("dispatch", {}), raw.get("workers", {})
     gate, leak, triage, dash = raw.get("gate", {}), raw.get("leak_scan", {}), raw.get("triage", {}), raw.get("dashboard", {})
+    manager = raw.get("manager", {})
     cfg = Config(root=root, repo=slug, raw_repo=raw_repo)
     cfg.upstream = repo_t.get("upstream") or None
     cfg.main = repo_t.get("main", cfg.main)
@@ -275,9 +341,34 @@ def load(start: Path | None = None) -> Config:
     if workers:
         if "default" not in workers:
             raise ConfigError(f"{path}: [workers] needs a `default` command")
-        cfg.workers = {k: list(v) for k, v in workers.items()}
+        cfg.workers = {}
+        for label, entry in workers.items():
+            command = entry.get("command") if isinstance(entry, dict) else entry
+            when = entry.get("when", "") if isinstance(entry, dict) else ""
+            if not isinstance(command, list) or not command or any(not isinstance(arg, str) for arg in command) or not command[0]:
+                raise ConfigError(f"{path}: workers.{label} needs a non-empty command argv")
+            if not isinstance(when, str):
+                raise ConfigError(f"{path}: workers.{label}.when must be text")
+            cfg.workers[label] = command
+            if when:
+                cfg.worker_when[label] = when
     if "command" in raw.get("review", {}):
         cfg.reviewer = list(raw["review"]["command"])
+    cfg.manager, cfg.manager_model = manager_settings(manager)
+    cfg.manager_rounds = int(manager.get("rounds", cfg.manager_rounds))
+    cfg.manager_review = manager.get("review", cfg.manager_review)
+    if cfg.manager_review not in ("escalated", "all"):
+        raise ConfigError("manager.review must be escalated or all")
+    cfg.manager_stale_days = manager.get("stale_days", cfg.manager_stale_days)
+    if type(cfg.manager_stale_days) is not int or cfg.manager_stale_days <= 0:
+        raise ConfigError("manager.stale_days must be a positive integer")
+    for key in ("max_active_cap", "budget_min_cap"):
+        cap = manager.get(key)
+        if cap is not None and (isinstance(cap, bool) or not isinstance(cap, int) or cap < 1):
+            raise ConfigError(f"manager.{key} must be a positive integer")
+        setattr(cfg, f"manager_{key}", cap)
+    if "collaboration" in raw:
+        cfg.collaboration = collaboration_settings(raw["collaboration"])
     cfg.check_timeout = int(gate.get("timeout", cfg.check_timeout))
     cfg.lock = Path(gate.get("lock", cfg.lock))
     cfg.checks = [
@@ -291,7 +382,6 @@ def load(start: Path | None = None) -> Config:
     cfg.leak_exclude = list(leak.get("exclude", []))
     cfg.llm_url = triage.get("url", cfg.llm_url)
     cfg.llm_model = triage.get("model", cfg.llm_model)
-    cfg.manager_model = manager_model(raw.get("manager", {}))
     cfg.dashboard_port = int(dash.get("port", cfg.dashboard_port))
     cfg.dashboard_theme = root / dash["theme"] if dash.get("theme") else None
     cfg.install = merge(DEFAULT_INSTALL, raw.get("install", {}))

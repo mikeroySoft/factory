@@ -14,6 +14,174 @@ from factory import briefing, config, dashboard, dispatch
 
 
 class BriefingBoundaryTest(unittest.TestCase):
+    @staticmethod
+    def feedback(*, coverage: dict | None = None, items: list[dict] | None = None) -> dict:
+        default_coverage = {
+            source: {"status": "complete", "observed_at": "2026-09-10T22:00:00Z", "truncated": False, "reason": None}
+            for source in ("pr", "reviews", "threads", "checks")
+        }
+        default_item = {
+            "evidence_id": "github:github.com:R_1:PR_9:review:RV_4",
+            "kind": "review",
+            "source_id": "RV_4",
+            "source_url": "https://github.com/acme/widgets/pull/9#pullrequestreview-4",
+            "source_revision": "sha256:item",
+            "source_updated_at": "2026-09-10T21:59:00Z",
+            "review_id": "RV_4",
+            "thread_id": None,
+            "check_run_id": None,
+            "run_attempt": None,
+            "observed_head_sha": "abc123",
+            "source_head_sha": "abc123",
+            "relevance": "current_head",
+            "disposition": {
+                "review_state": "changes_requested",
+                "thread_resolved": None,
+                "thread_outdated": None,
+                "check_status": None,
+                "check_conclusion": None,
+            },
+            "author": {"login": "reviewer", "kind": "human"},
+            "body": "Please cover the error path.",
+            "truncated": False,
+            "location": {
+                "path": None,
+                "line": None,
+                "side": None,
+                "original_line": None,
+                "original_commit_sha": None,
+            },
+            "summary": None,
+        }
+        return {
+            "schema_version": 1,
+            "producer": {"name": "factory.pr-feedback", "revision": "8fba9c5"},
+            "observed_at": "2026-09-10T22:00:00Z",
+            "observation_id": "sha256:observation",
+            "repository": {"id": "R_1", "slug": "acme/widgets", "host": "github.com"},
+            "pr": {
+                "id": "PR_9",
+                "number": 9,
+                "url": "https://github.com/acme/widgets/pull/9",
+                "head_sha": "abc123",
+                "state": "open",
+                "draft": False,
+            },
+            "owner": {
+                "issue": {"id": "I_7", "number": 7, "url": "https://github.com/acme/widgets/issues/7"},
+                "relation": "factory_issue",
+                "evidence": ["branch agent/7", "Factory claim for issue #7"],
+            },
+            "coverage": coverage or default_coverage,
+            "items": [default_item] if items is None else items,
+            "errors": [],
+        }
+
+    @classmethod
+    def ticket(cls, feedback: object = ...) -> dict:
+        pr = {"number": 9, "state": "OPEN", "url": "https://github.com/acme/widgets/pull/9"}
+        if feedback is not ...:
+            pr["feedback"] = feedback
+        return {
+            "number": 7,
+            "title": "A decision",
+            "url": "https://github.com/acme/widgets/issues/7",
+            "body": "Original constraints",
+            "events": [{
+                "at": "2026-09-10T20:00:00Z",
+                "body": "Factory human decision: Preserve compatibility.",
+            }],
+            "pr": pr,
+        }
+
+    def test_feedback_sources_preserve_snapshot_item_and_containing_identities(self) -> None:
+        feedback = self.feedback()
+        with (
+            patch.object(briefing, "run_model", side_effect=AssertionError("model called")),
+            patch.object(subprocess, "run", side_effect=AssertionError("provider called")),
+        ):
+            sources = briefing.sources_for(config.Config(root=Path("/unused"), repo="acme/widgets"), self.ticket(feedback), [])
+
+        decision_index = next(i for i, source in enumerate(sources) if source["label"].startswith("Earlier human decision"))
+        evidence_index = next(i for i, source in enumerate(sources) if source["label"].startswith("PR feedback · review"))
+        evidence = sources[evidence_index]
+        payload = json.loads(evidence["text"])
+        self.assertGreater(evidence_index, decision_index)
+        self.assertEqual(evidence_index, len(sources) - 2)
+        self.assertEqual(payload["producer"], feedback["producer"])
+        self.assertEqual(payload["observed_at"], feedback["observed_at"])
+        self.assertEqual(payload["repository"], feedback["repository"])
+        self.assertEqual(payload["pr"], feedback["pr"])
+        self.assertEqual(payload["owner"], feedback["owner"])
+        self.assertEqual(payload["item"], feedback["items"][0])
+        self.assertEqual(evidence["url"], feedback["items"][0]["source_url"])
+        self.assertRegex(evidence["id"], r"^S\d+$")
+        coverage = sources[-1]
+        self.assertEqual(coverage["label"], "Evidence coverage")
+        self.assertIn('"reviews":{"status":"complete"', coverage["text"])
+        self.assertIn('"relation":"factory_issue"', coverage["text"])
+
+    def test_feedback_coverage_is_explicit_for_missing_unknown_and_partial_snapshots(self) -> None:
+        cfg = config.Config(root=Path("/unused"), repo="acme/widgets")
+        partial = {
+            source: {
+                "status": "partial" if source == "reviews" else "unavailable" if source == "threads" else "complete",
+                "observed_at": None,
+                "truncated": source == "reviews",
+                "reason": "head changed during collection" if source == "reviews" else "provider unavailable" if source == "threads" else None,
+            }
+            for source in ("pr", "reviews", "threads", "checks")
+        }
+        cases = [
+            (self.ticket(), "no schema-versioned feedback object"),
+            (self.ticket({"schema_version": 2, "items": [{"body": "DO NOT INTERPRET"}]}), "schema_version 2 is not supported"),
+            (self.ticket(self.feedback(coverage=partial)), '"status":"partial"'),
+        ]
+        for ticket, expected in cases:
+            with self.subTest(expected=expected):
+                sources = briefing.sources_for(cfg, ticket, [])
+                self.assertIn(expected, sources[-1]["text"])
+                self.assertTrue(sources[-1]["label"].startswith("Evidence coverage"))
+        self.assertNotIn("DO NOT INTERPRET", json.dumps(briefing.sources_for(cfg, cases[1][0], [])))
+        partial_text = briefing.sources_for(cfg, cases[2][0], [])[-1]["text"]
+        self.assertTrue(any(source["label"].startswith("PR feedback ·") for source in briefing.sources_for(cfg, cases[2][0], [])))
+        self.assertIn("head changed during collection", partial_text)
+        self.assertIn('"status":"unavailable"', partial_text)
+
+    def test_uncollected_history_is_cited_apart_from_unsupported_feedback(self) -> None:
+        from factory import feedback as producer
+
+        cfg = config.Config(root=Path("/unused"), repo="acme/widgets")
+        uncollected = self.feedback(
+            coverage={source: {"status": "unavailable", "observed_at": None, "truncated": False,
+                               "reason": f"{producer.NOT_COLLECTED}: {producer.NOT_COLLECTED_MESSAGE}"}
+                      for source in ("pr", "reviews", "threads", "checks")},
+            items=[],
+        )
+        uncollected["errors"] = [{"source": source, "code": producer.NOT_COLLECTED,
+                                  "message": producer.NOT_COLLECTED_MESSAGE}
+                                 for source in ("pr", "reviews", "threads", "checks")]
+        notice = briefing.sources_for(cfg, self.ticket(uncollected), [])[-1]["text"]
+        self.assertIn("were not collected", notice)
+        self.assertIn(producer.NOT_COLLECTED, notice)
+        self.assertNotIn("unsupported/unknown", notice)
+        missing = briefing.sources_for(cfg, self.ticket(), [])[-1]["text"]
+        self.assertIn("unsupported/unknown", missing)
+        self.assertNotIn("were not collected", missing)
+
+    def test_feedback_budget_omission_does_not_evict_human_constraints(self) -> None:
+        cfg = config.Config(root=Path("/unused"), repo="acme/widgets")
+        ticket = self.ticket(self.feedback())
+        with patch.object(briefing, "SOURCE_COUNT", 4):
+            sources = briefing.sources_for(cfg, ticket, [])
+
+        self.assertEqual(len(sources), 4)
+        decision = next(source for source in sources if source["label"].startswith("Earlier human decision"))
+        self.assertIn("Preserve compatibility.", decision["text"])
+        self.assertFalse(any(source["label"].startswith("PR feedback ·") for source in sources))
+        self.assertIn("1 PR feedback evidence item(s) omitted", sources[-1]["text"])
+        self.assertIn("additional evidence source(s) omitted", sources[-1]["text"])
+
     def test_rejects_untrusted_request_shapes_and_scope(self) -> None:
         invalid = [
             [],
@@ -113,15 +281,15 @@ class BriefingBoundaryTest(unittest.TestCase):
         self.assertNotIn("OTHER RUN SECRET", text)
         self.assertNotIn("OTHER TICKET SECRET", text)
 
-    def test_manager_command_is_only_a_model_selector(self) -> None:
+    def test_manager_settings_never_execute_the_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             marker = Path(directory) / "should-not-exist"
-            selector = config.manager_model({"command": ["sh", "-c", f"touch {marker}", "--model", "openai-codex/gpt-6-astra"]})
+            _, selector = config.manager_settings({"command": ["sh", "-c", f"touch {marker}", "--model", "openai-codex/gpt-6-astra"]})
             self.assertEqual(selector, "openai-codex/gpt-6-astra")
             self.assertFalse(marker.exists())
-            self.assertEqual(config.manager_model({"model": "preferred/model", "command": ["omp", "--model", "ignored/model"]}), "preferred/model")
+            self.assertEqual(config.manager_settings({"model": "preferred/model", "command": ["omp", "--model", "ignored/model"]})[1], "preferred/model")
             with self.assertRaises(config.ConfigError):
-                config.manager_model({"command": ["omp", "--model", "--tools=bash"]})
+                config.manager_settings({"command": ["omp", "--model", "--tools=bash"]})
 
 
 class HumanDecisionTest(unittest.TestCase):

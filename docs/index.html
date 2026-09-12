@@ -3,13 +3,48 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="A label-driven autonomous ticket pipeline for any GitHub repository.">
-  <title>factory — A label-driven autonomous ticket pipeline for any GitHub repository.</title>
+  <meta name="description" content="Turn GitHub issues into reviewed, gated pull requests on your own machine. Explore Factory's releases, design decisions, and roadmap.">
+  <title>factory — Issues in. Merged PRs out.</title>
   <link rel="stylesheet" href="mikeroysoft.css">
   <style>
     *,*::before,*::after{box-sizing:border-box;}html{color-scheme:dark;scroll-behavior:smooth;}body{margin:0;min-width:20rem;background:var(--surface-page);color:var(--text-primary);font-family:var(--font-mono);font-size:1rem;line-height:1.6;-webkit-font-smoothing:antialiased;}a{color:inherit;text-decoration:underline;}a:hover{color:inherit;}.wordmark:hover,.nav-link:hover,.button:hover{text-decoration:none;}a:focus-visible{outline:2px solid var(--accent);outline-offset:4px;}code,pre,button{font:inherit;}.shell{width:min(100% - 2rem,75rem);margin-inline:auto;}.site-header{border-bottom:1px solid var(--border-hairline);}.nav{min-height:4.5rem;display:flex;align-items:center;justify-content:space-between;gap:var(--rhythm-4);}.wordmark{display:inline-flex;align-items:center;gap:var(--rhythm-3);color:var(--text-primary);font-size:0.92rem;font-weight:700;letter-spacing:-0.02em;text-decoration:none;}.nav-link{min-height:2.75rem;display:inline-flex;align-items:center;gap:var(--rhythm-2);padding-inline:var(--rhythm-3);color:var(--text-muted);font-size:0.78rem;font-weight:600;letter-spacing:0.08em;text-decoration:none;text-transform:uppercase;transition:color 160ms ease;}.nav-link:hover{color:var(--accent);}.nav-link svg{width:1.1rem;height:1.1rem;}.hero{position:relative;isolation:isolate;padding-block:clamp(4.5rem,10vw,8rem);border-bottom:1px solid var(--border-hairline);}.hero::before{position:absolute;z-index:-1;inset:0 0 auto;height:34rem;background:radial-gradient(circle at 70% 25%,var(--accent-tint),transparent 52%);content:"";pointer-events:none;}.hero-grid{display:grid;grid-template-columns:minmax(0,1.02fr) minmax(28rem,0.98fr);align-items:center;gap:clamp(3rem,7vw,6rem);}.eyebrow{margin:0 0 var(--rhythm-5);color:var(--accent);font-size:0.72rem;font-weight:700;letter-spacing:0.2em;text-transform:uppercase;}.eyebrow::before{content:"// ";color:var(--link);}h1,h2,h3,p{overflow-wrap:anywhere;}h1,h2{font-family:var(--font-display);font-weight:400;}h1{max-width:13ch;margin:0;background:var(--gradient-wordmark);background-clip:text;color:transparent;font-size:clamp(2.8rem,6.5vw,5.8rem);font-weight:400;letter-spacing:-0.075em;line-height:0.98;}.lede{max-width:39rem;margin:var(--rhythm-6) 0 0;color:var(--text-muted);font-size:clamp(1rem,1.5vw,1.16rem);}.install-grid{display:grid;gap:var(--rhythm-3);margin-top:var(--rhythm-6);}.install-line{display:grid;grid-template-columns:4.6rem minmax(0,1fr);align-items:stretch;border:1px solid var(--border-hairline);border-radius:0.35rem;background:var(--surface-panel);}.install-label{display:grid;place-items:center;border-right:1px solid var(--border-hairline);color:var(--text-muted);font-size:0.68rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;}.install-line pre{min-width:0;margin:0;padding:var(--rhythm-3) var(--rhythm-4);overflow-x:auto;color:var(--text-primary);font-size:0.78rem;white-space:pre;}.install-line code::before{content:"$ ";color:var(--accent);}.hero-actions{display:flex;flex-wrap:wrap;gap:var(--rhythm-3);margin-top:var(--rhythm-5);}.button{min-height:2.75rem;display:inline-flex;align-items:center;justify-content:center;gap:var(--rhythm-2);padding:var(--rhythm-2) var(--rhythm-5);border:1px solid var(--accent);border-radius:0.35rem;background:var(--accent);color:var(--text-on-accent);font-size:0.78rem;font-weight:800;letter-spacing:0.07em;text-decoration:none;text-transform:uppercase;transition:background-color 160ms ease,color 160ms ease;}.button:hover{background:var(--text-primary);color:var(--text-on-accent);}.button svg{width:1rem;height:1rem;}.terminal{border:1px solid var(--border-strong);border-radius:0.35rem;background:var(--surface-terminal);}.terminal-bar{display:flex;align-items:center;justify-content:space-between;min-height:2.75rem;padding-inline:var(--rhythm-4);border-bottom:1px solid var(--border-hairline);color:var(--text-muted);font-size:0.68rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;}.terminal-status{color:var(--status-ok);}.terminal pre{margin:0;padding:clamp(1.25rem,4vw,2rem);overflow-x:auto;color:var(--text-muted);font-size:clamp(0.72rem,1.4vw,0.84rem);line-height:1.9;white-space:pre;}.prompt{color:var(--accent);}.log-key{color:var(--text-primary);}.log-pass{color:var(--status-ok);font-weight:700;}.log-review{color:var(--status-ok);font-weight:700;}.section{padding-block:clamp(4.5rem,9vw,7.5rem);border-bottom:1px solid var(--border-hairline);}.section-head{display:grid;grid-template-columns:1fr minmax(18rem,0.75fr);align-items:end;gap:var(--rhythm-6);margin-bottom:var(--rhythm-7);}.section-head h2{max-width:17ch;margin:0;font-size:clamp(1.8rem,4vw,3rem);line-height:1.15;letter-spacing:-0.05em;}.section-head p{margin:0;color:var(--text-muted);font-size:0.92rem;}.pipeline-board{padding:clamp(1.25rem,3vw,2rem);border:1px solid var(--border-strong);border-radius:0.35rem;background:var(--surface-panel);}.pipeline{display:grid;grid-template-columns:minmax(8.8rem,1fr) minmax(8rem,0.75fr) minmax(8.8rem,1fr) minmax(8rem,0.75fr) minmax(8.8rem,1fr) minmax(7rem,0.65fr) minmax(5rem,0.7fr);align-items:start;gap:0;}.stage{display:flex;justify-content:center;padding-top:1.85rem;}.chip{display:inline-flex;align-items:center;min-height:1.75rem;padding:0.24rem 0.58rem;border:1px solid var(--border-strong);border-radius:999px;background:var(--surface-inset);color:var(--text-primary);font-size:0.68rem;font-weight:600;line-height:1.15;text-align:center;white-space:nowrap;}.chip-cyan{border-color:var(--stage-queued);color:var(--stage-queued);}.chip-magenta{border-color:var(--stage-escalated);color:var(--stage-escalated);}.chip-success{border-color:var(--stage-merged);color:var(--stage-merged);}.connector{min-width:0;text-align:center;}.connector-name{display:block;min-height:1.85rem;color:var(--text-muted);font-size:0.6rem;letter-spacing:0.03em;white-space:nowrap;}.connector-line{position:relative;display:block;height:1px;margin-top:0.86rem;background:var(--border-strong);}.connector-line::after{position:absolute;top:50%;right:-1px;width:0.42rem;height:0.42rem;border-top:1px solid var(--accent);border-right:1px solid var(--accent);content:"";transform:translateY(-50%) rotate(45deg);}.branch{display:flex;flex-direction:column;align-items:center;gap:var(--rhythm-2);margin-top:var(--rhythm-5);}.branch-line{width:1px;height:1.5rem;background:var(--border-strong);}.branch-line::after{display:block;width:0.38rem;height:0.38rem;margin:1.1rem 0 0 -0.19rem;border-right:1px solid var(--link);border-bottom:1px solid var(--link);content:"";transform:rotate(45deg);}.features{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-top:1px solid var(--border-hairline);border-left:1px solid var(--border-hairline);}.feature{min-height:14rem;padding:var(--rhythm-6);border-right:1px solid var(--border-hairline);border-bottom:1px solid var(--border-hairline);}.feature-top{display:flex;align-items:center;gap:var(--rhythm-3);margin-bottom:var(--rhythm-7);color:var(--text-muted);font-size:0.66rem;font-weight:700;letter-spacing:0.16em;text-transform:uppercase;}.status-dot{width:7px;height:7px;flex:0 0 7px;border-radius:50%;background:var(--accent);}.feature:nth-child(2n) .status-dot{background:var(--link);}.feature:nth-child(3n) .status-dot{background:var(--status-ok);}.feature h3{margin:0 0 var(--rhythm-3);font-size:1rem;line-height:1.35;}.feature p{margin:0;color:var(--text-muted);font-size:0.84rem;}.steps{margin:0;padding:0;list-style:none;border-top:1px solid var(--border-hairline);}.step{display:grid;grid-template-columns:5rem 9rem minmax(0,1fr);gap:var(--rhythm-5);padding-block:var(--rhythm-5);border-bottom:1px solid var(--border-hairline);}.step-number{color:var(--accent);font-size:1.2rem;font-weight:800;letter-spacing:-0.05em;}.step h3{margin:0;font-size:0.9rem;text-transform:uppercase;}.step p{margin:0;color:var(--text-muted);font-size:0.83rem;}.code-panel{border:1px solid var(--border-strong);border-radius:0.35rem;background:var(--surface-panel);}.code-title{min-height:2.75rem;display:flex;align-items:center;justify-content:space-between;gap:var(--rhythm-4);padding-inline:var(--rhythm-4);border-bottom:1px solid var(--border-hairline);color:var(--text-muted);font-size:0.68rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;}.code-title span:last-child{color:var(--accent);}.code-panel pre{margin:0;padding:clamp(1.25rem,4vw,2rem);overflow-x:auto;color:var(--text-primary);font-size:clamp(0.72rem,1.5vw,0.86rem);line-height:1.75;}.commands{margin-top:var(--rhythm-7);border-top:1px solid var(--border-hairline);}.command{display:grid;grid-template-columns:minmax(15rem,0.55fr) minmax(0,1fr);gap:var(--rhythm-6);padding-block:var(--rhythm-4);border-bottom:1px solid var(--border-hairline);}.command code{color:var(--accent);font-size:0.82rem;}.command p{margin:0;color:var(--text-muted);font-size:0.82rem;}.site-footer{padding-block:var(--rhythm-6);}.footer-inner{display:flex;align-items:center;justify-content:space-between;gap:var(--rhythm-5);color:var(--text-muted);font-size:0.75rem;}.footer-inner p{margin:0;}.footer-inner a{color:var(--text-primary);text-underline-offset:0.25em;}.footer-inner a:hover{color:var(--accent);}@media (max-width:64rem){.hero-grid{grid-template-columns:1fr;}.terminal{max-width:46rem;}.pipeline-board{overflow-x:auto;}.pipeline{min-width:58rem;}.features{grid-template-columns:repeat(2,minmax(0,1fr));}}@media (max-width:48rem){.shell{width:min(100% - 1.5rem,75rem);}.hero{padding-block:var(--rhythm-8);}.section{padding-block:var(--rhythm-8);}.section-head{grid-template-columns:1fr;margin-bottom:var(--rhythm-6);}.pipeline-board{overflow:visible;}.pipeline{min-width:0;grid-template-columns:1fr;}.stage{padding-top:0;padding-block:var(--rhythm-3);}.connector{display:flex;flex-direction:column;align-items:center;}.connector-name{min-height:0;order:2;margin:var(--rhythm-2) 0;}.connector-line{width:1px;height:2rem;margin:0;background:var(--border-strong);}.connector-line::after{top:auto;right:auto;bottom:0;left:50%;transform:translateX(-50%) rotate(135deg);}.branch{order:3;width:100%;margin:var(--rhythm-2) 0 var(--rhythm-5);}.branch-line{height:1rem;}.branch-line::after{margin-top:0.6rem;}.features{grid-template-columns:1fr;}.feature{min-height:0;}.step{grid-template-columns:3.2rem minmax(0,1fr);}.step p{grid-column:2;}.command{grid-template-columns:1fr;gap:var(--rhythm-2);}}@media (max-width:30rem){h1{font-size:clamp(2.55rem,14vw,3.8rem);}.nav-link span{display:none;}.install-line{grid-template-columns:1fr;}.install-label{min-height:2rem;border-right:0;border-bottom:1px solid var(--border-hairline);}.terminal pre{font-size:0.68rem;}.step{grid-template-columns:2.6rem minmax(0,1fr);gap:var(--rhythm-3);}.footer-inner{align-items:flex-start;flex-direction:column;}}@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto;}*,*::before,*::after{transition-duration:0.01ms !important;}}
   </style>
   <style>
+    .nav { flex-wrap: wrap; padding-block: var(--rhythm-3); }
+    .hero-grid > * { min-width: 0; }
+    .terminal-bar { flex-wrap: wrap; gap: var(--rhythm-2); padding-block: var(--rhythm-2); }
+    .nav-links { display: flex; flex-wrap: wrap; gap: var(--rhythm-2); }
+    .nav-links .nav-link { color: var(--text-secondary); }
+    .nav-links .nav-link:hover { color: var(--accent); }
+    .nav-links .nav-link span { display: inline; }
+    section[id] { scroll-margin-top: var(--rhythm-6); }
+    .release-note { margin: var(--rhythm-5) 0 0; color: var(--text-secondary); font-size: 0.8rem; }
+    .release-note a, .history a, .roadmap a { text-underline-offset: 0.25em; }
+    .history { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--border-hairline); }
+    .release { display: grid; grid-template-columns: 12rem minmax(0,1fr); gap: var(--rhythm-7); padding-block: var(--rhythm-7); border-bottom: 1px solid var(--border-hairline); }
+    .release-meta { display: flex; align-items: flex-start; flex-direction: column; gap: var(--rhythm-3); }
+    .release-meta time, .release-meta > span:not(.chip) { color: var(--text-secondary); font-size: 0.8rem; }
+    .release-meta > a { color: var(--accent); font-size: 1.25rem; font-weight: 700; }
+    .release h3, .roadmap h3 { margin: 0 0 var(--rhythm-4); font-size: 1.1rem; }
+    .release p, .release li, .roadmap p { color: var(--text-secondary); font-size: 0.88rem; }
+    .release p { margin: 0; }
+    .release ul { margin: var(--rhythm-4) 0; padding-left: 1.2rem; }
+    .release li + li { margin-top: var(--rhythm-2); }
+    .decision { padding-left: var(--rhythm-4); border-left: 2px solid var(--accent); }
+    .decision strong { color: var(--text-primary); }
+    .section-note { margin: var(--rhythm-6) 0 0; color: var(--text-secondary); font-size: 0.82rem; }
+    .roadmap { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: var(--rhythm-5); }
+    .roadmap article { padding: var(--rhythm-6); border: 1px solid var(--border-hairline); background: var(--surface-panel); }
+    .roadmap .chip { margin-bottom: var(--rhythm-5); }
+    .roadmap p { margin: 0 0 var(--rhythm-4); }
+    .roadmap p:last-child { margin-bottom: 0; }
+    @media (max-width: 48rem) {
+      .nav { gap: var(--rhythm-2); }
+      .nav-links { width: 100%; }
+      .nav-links .nav-link { padding-inline: var(--rhythm-2); font-size: 0.7rem; }
+      .release { grid-template-columns: 1fr; gap: var(--rhythm-5); }
+      .roadmap { grid-template-columns: 1fr; }
+    }
     @media (max-width: 48rem) {
       .pipeline .connector {
         position: relative;
@@ -70,6 +105,10 @@
         <span class="mrs-mark mrs-mark-diamond" aria-hidden="true"></span>
         <span>mikeroySoft :: factory</span>
       </a>
+      <div class="nav-links">
+      <a class="nav-link" href="#features">Features</a>
+      <a class="nav-link" href="#changelog">Changelog</a>
+      <a class="nav-link" href="#roadmap">Roadmap</a>
       <a class="nav-link" href="https://github.com/mikeroySoft/factory">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3.3-.4 6.8-1.6 6.8-7A5.4 5.4 0 0 0 19.4 4 5 5 0 0 0 19.3.5S18.2.1 15 1.8a12.3 12.3 0 0 0-6 0C5.8.1 4.7.5 4.7.5A5 5 0 0 0 4.6 4a5.4 5.4 0 0 0-1.4 3.7c0 5.4 3.5 6.6 6.8 7A4.8 4.8 0 0 0 9 18v4"></path>
@@ -77,6 +116,7 @@
         </svg>
         <span>GitHub</span>
       </a>
+      </div>
     </nav>
   </header>
 
@@ -86,7 +126,7 @@
         <div>
           <p class="eyebrow">label-driven autonomy</p>
           <h1 id="hero-title">Issues in. Merged PRs out.</h1>
-          <p class="lede">A label-driven autonomous ticket pipeline for any GitHub repository.</p>
+          <p class="lede">Turn well-scoped GitHub issues into reviewed, gated pull requests on your own machine. Let agents do the implementation. Keep human judgment where it matters.</p>
 
           <div class="install-grid" aria-label="Install commands">
             <div class="install-line">
@@ -95,9 +135,10 @@
             </div>
             <div class="install-line">
               <span class="install-label">CLI</span>
-              <pre><code>uv tool install git+https://github.com/mikeroySoft/factory</code></pre>
+              <pre><code>uv tool install git+https://github.com/mikeroySoft/factory@v0.3.0</code></pre>
             </div>
           </div>
+          <p class="release-note"><a href="#changelog">Latest release: v0.3.0 · September 8, 2026</a><br>CLI command pins this release. Use <code>@stable</code> for the released channel or <code>@main</code> for development; the bare URL follows the default <code>main</code> branch.</p>
 
           <div class="hero-actions">
             <a class="button" href="https://github.com/mikeroySoft/factory">
@@ -106,12 +147,13 @@
                 <path d="M5 12h14"></path><path d="m13 6 6 6-6 6"></path>
               </svg>
             </a>
+            <a class="nav-link" href="#quick-start">Get started</a>
           </div>
         </div>
 
-        <div class="terminal" aria-label="factory dispatch pass log">
+        <div class="terminal" aria-label="Illustrative factory ticket lifecycle">
           <div class="terminal-bar">
-            <span>factory dispatch</span>
+            <span>ticket lifecycle · example</span>
             <span class="terminal-status">PASS</span>
           </div>
           <pre><code><span class="prompt">$</span> factory dispatch
@@ -175,21 +217,21 @@
       </div>
     </section>
 
-    <section class="section" aria-labelledby="features-title">
+    <section class="section" id="features" aria-labelledby="features-title">
       <div class="shell">
         <div class="section-head">
           <div>
             <p class="eyebrow">control surfaces</p>
             <h2 id="features-title">Deterministic where it matters.</h2>
           </div>
-          <p>Runs on your machine, on a systemd timer, with the agent CLIs you already have. No SaaS, no runner fleet.</p>
+          <p>Runs on your Linux machine with the agent CLIs you choose. No hosted control plane and no Python dependencies. Model calls use your configured providers.</p>
         </div>
 
         <div class="features">
           <article class="feature">
             <div class="feature-top"><span class="status-dot"></span>Isolation</div>
             <h3>Worktree per ticket</h3>
-            <p>Main is never touched by an agent.</p>
+            <p>Workers implement each ticket on an isolated branch and worktree, not your main checkout.</p>
           </article>
           <article class="feature">
             <div class="feature-top"><span class="status-dot"></span>Gate</div>
@@ -199,7 +241,7 @@
           <article class="feature">
             <div class="feature-top"><span class="status-dot"></span>Review</div>
             <h3>Second-model review</h3>
-            <p>Path:line citations and a hard <code>VERDICT</code>.</p>
+            <p>Blocking findings must cite an acceptance criterion, a documented rule, or a concrete defect. Required fixes stay separate from optional suggestions.</p>
           </article>
           <article class="feature">
             <div class="feature-top"><span class="status-dot"></span>Merge</div>
@@ -212,9 +254,24 @@
             <p><code>ready-for-human</code> with the reason, log path, and handoff note.</p>
           </article>
           <article class="feature">
-            <div class="feature-top"><span class="status-dot"></span>State</div>
-            <h3>Stateless dispatcher</h3>
-            <p>State is GitHub plus a gitignored <code>.factory/</code> directory. Safe to re-run.</p>
+            <div class="feature-top"><span class="status-dot"></span>Recovery</div>
+            <h3>A bounded manager stage</h3>
+            <p>Opt in to recover untouched escalations through retry, rewrite, split, route, or human handoff. Decisions are recorded before changes; invalid output stays with a human.</p>
+          </article>
+          <article class="feature">
+            <div class="feature-top"><span class="status-dot"></span>Human judgment</div>
+            <h3>Understand. Compare. Decide.</h3>
+            <p>Inbox briefings bring the question, recommendation, alternatives, and consequences together. Preview the exact action before confirming it with your rationale.</p>
+          </article>
+          <article class="feature">
+            <div class="feature-top"><span class="status-dot"></span>Context</div>
+            <h3>Ask FM, with evidence</h3>
+            <p>Ask about a task or a specific log and get cited answers. Read-only questions use server-collected evidence and are not posted to GitHub.</p>
+          </article>
+          <article class="feature">
+            <div class="feature-top"><span class="status-dot"></span>Learning</div>
+            <h3>Make the next run better</h3>
+            <p>Track attempts, review bounces, and time to merge. Distill finished-ticket evidence into repo-specific lessons you review and commit for future workers.</p>
           </article>
         </div>
       </div>
@@ -225,7 +282,7 @@
         <div class="section-head">
           <div>
             <p class="eyebrow">how a ticket moves</p>
-            <h2 id="steps-title">Seven stages. Evidence at every handoff.</h2>
+            <h2 id="steps-title">Evidence at every handoff.</h2>
           </div>
           <p>Issues labelled <code>ready-for-agent</code> move through a worktree, your deterministic checks, a second model, GitHub CI, and freshness against <code>main</code>.</p>
         </div>
@@ -244,7 +301,7 @@
           <li class="step">
             <span class="step-number">03</span>
             <h3>Work</h3>
-            <p>The worker gets the issue, comments, standing instructions, and on retries the previous gate report or reviewer findings.</p>
+            <p>The worker gets the issue, comments, standing instructions, a per-ticket brief, and on retries the previous gate report or reviewer findings.</p>
           </li>
           <li class="step">
             <span class="step-number">04</span>
@@ -264,20 +321,25 @@
           <li class="step">
             <span class="step-number">07</span>
             <h3>Escalation</h3>
-            <p>Unresolved work gets <code>ready-for-human</code>, loses its assignee, and gets a comment with the reason and worker log path. The worktree stays for forensics.</p>
+            <p>Unresolved work gets <code>ready-for-human</code> with a reason, logs, and handoff evidence. The worktree stays for forensics. Human intervention takes precedence over automatic recovery.</p>
+          </li>
+          <li class="step">
+            <span class="step-number">08</span>
+            <h3>Manage · opt-in</h3>
+            <p>When configured, the manager revisits untouched escalations within a round limit. Factory applies a closed decision menu and records the result; unresolved cases stay with a human. The configured executable is trusted, not sandboxed.</p>
           </li>
         </ol>
       </div>
     </section>
 
-    <section class="section" aria-labelledby="quick-start-title">
+    <section class="section" id="quick-start" aria-labelledby="quick-start-title">
       <div class="shell">
         <div class="section-head">
           <div>
             <p class="eyebrow">quick start</p>
             <h2 id="quick-start-title">Bring your own checks. Keep your own machine.</h2>
           </div>
-          <p>Linux, Python &gt;= 3.11, git, and gh. No Python dependencies.</p>
+          <p>Linux, Python &gt;= 3.11, git, authenticated gh with push access, and worker/reviewer CLIs. Ask FM requires authenticated OMP and sends evidence to the selected model provider.</p>
         </div>
 
         <div class="code-panel">
@@ -285,17 +347,19 @@
           <pre><code>cd your-repo
 factory init            # .factory.toml, .gitignore, issue template, labels
 $EDITOR .factory.toml   # put your real test/lint commands in [[gate.check]]
+git add .factory.toml .gitignore .github/ISSUE_TEMPLATE/agent_task.md &amp;&amp; git commit
 factory doctor          # tools, auth, remotes, model endpoint
 factory install --dashboard   # systemd user timer every 10 min + dashboard on :8765</code></pre>
         </div>
 
         <div class="commands" aria-label="factory commands">
           <div class="command"><code>factory triage</code><p>Label <code>needs-triage</code> issues via the local model.</p></div>
-          <div class="command"><code>factory dispatch</code><p>One stateless pass: sync → merge stage → claim → work → gate → PR → review.</p></div>
+          <div class="command"><code>factory dispatch</code><p>One stateless pass through upstream sync, merge, the optional manager stage, and eligible ticket execution.</p></div>
           <div class="command"><code>factory gate</code><p>Run the deterministic gate in the current worktree and write a Markdown report.</p></div>
+          <div class="command"><code>factory manage</code><p>Bounded recovery for untouched escalations. Inert until <code>[manager].command</code> is configured.</p></div>
           <div class="command"><code>factory stats</code><p>Ticket table: attempts, review rounds, hours to merge; <code>--json</code>.</p></div>
           <div class="command"><code>factory learn</code><p>Distill lessons from finished tickets into <code>.factory-lessons.md</code>.</p></div>
-          <div class="command"><code>factory dashboard</code><p>Local ops UI.</p></div>
+          <div class="command"><code>factory dashboard</code><p>Inbox decision briefings, cited Ask FM answers, and Ops telemetry. Binds to localhost by default; exposing it to a network also exposes its mutating API.</p></div>
           <div class="command"><code>factory doctor / init / install</code><p>Onboarding.</p></div>
         </div>
       </div>
@@ -308,7 +372,7 @@ factory install --dashboard   # systemd user timer every 10 min + dashboard on :
             <p class="eyebrow">configuration</p>
             <h2 id="config-title">Agent CLIs you already have.</h2>
           </div>
-          <p>Bring your own reviewer model and, optionally, a local OpenAI-compatible model for triage.</p>
+          <p>Choose workers by ticket label or brief fields, bring your own reviewer, and use an OpenAI-compatible model for triage. Optional manager configuration adds bounded escalation recovery.</p>
         </div>
 
         <div class="code-panel">
@@ -329,6 +393,116 @@ exclusive = true
 url = "http://127.0.0.1:11434/v1/chat/completions"
 model = "qwen3:30b"</code></pre>
         </div>
+      </div>
+    </section>
+
+    <section class="section" id="changelog" aria-labelledby="changelog-title">
+      <div class="shell">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">changelog</p>
+            <h2 id="changelog-title">What changed.<br>And why.</h2>
+          </div>
+          <p>From a ticket pipeline to an evidence-backed operation. Selected milestones below; release notes and linked decisions keep the full record.</p>
+        </div>
+
+        <ol class="history">
+          <li class="release">
+            <div class="release-meta">
+              <span class="chip">Unreleased · main only</span>
+              <a href="https://github.com/mikeroySoft/factory/issues/53">Initiative planning</a>
+              <span>Not included in v0.3.0</span>
+            </div>
+            <div>
+              <h3>A shared plan above the ticket queue</h3>
+              <p>An initiative issue template and read-only <code>factory plan list</code> / <code>factory plan inspect N</code> make outcomes, owners, open decisions, and implementation links inspectable.</p>
+              <ul>
+                <li>Plans live in GitHub issues, alongside the discussion and delivery evidence.</li>
+                <li>Status is an explicit declaration, not an inference from closed child tickets. Ownership routing and the shared dashboard are still ahead.</li>
+              </ul>
+              <p class="decision"><strong>The decision:</strong> one canonical plan, no second database. Reading a plan does not authorize execution; the initiative label is not yet an enforced dispatch guard. <a href="https://github.com/mikeroySoft/factory/issues/52">Read the collaboration contract.</a></p>
+            </div>
+          </li>
+          <li class="release">
+            <div class="release-meta">
+              <span class="chip chip-success">Latest release</span>
+              <a href="https://github.com/mikeroySoft/factory/releases/tag/v0.3.0">v0.3.0</a>
+              <time datetime="2026-09-08">September 8, 2026</time>
+            </div>
+            <div>
+              <h3>Recover deliberately. Review with evidence.</h3>
+              <ul>
+                <li><strong>Manager recovery:</strong> opt-in, bounded decisions for untouched escalations, journaled before GitHub changes. Failed mutations are not replayed.</li>
+                <li><strong>Grounded review:</strong> blockers need a criterion, rule, or concrete defect; optional suggestions no longer masquerade as required fixes.</li>
+                <li><strong>Safer merges:</strong> refresh from the remote PR branch when no local branch exists, reject empty refreshes, and preserve upstream-sync ancestry.</li>
+                <li><strong>Authoritative runtime evidence:</strong> execution, child-process, wait, and handoff records; a read-only runtime projection; human-touch and per-label pass metrics.</li>
+              </ul>
+              <p class="decision"><strong>The decision:</strong> let the model recommend, let code constrain the action, and keep the evidence. A passing gate is not permission to ignore a real defect. <a href="https://github.com/mikeroySoft/factory/issues/36">Read the review-contract decision.</a></p>
+            </div>
+          </li>
+          <li class="release">
+            <div class="release-meta">
+              <span class="chip">Foundation</span>
+              <a href="https://github.com/mikeroySoft/factory/tree/f9122cd">The original pipeline</a>
+              <span>Before tagged releases</span>
+            </div>
+            <div>
+              <h3>Start with a ticket. End with evidence.</h3>
+              <p>Label-driven triage, one worktree per ticket, repo-defined gates, second-model review, and fail-closed merging established the core loop. The dashboard, handoff notes, and learning loop made that work inspectable.</p>
+              <ul>
+                <li>Use the agent CLIs and deterministic checks the repository already has.</li>
+                <li>Keep operational state in GitHub and local event files, with a re-runnable dispatcher rather than a hosted control plane.</li>
+              </ul>
+              <p class="decision"><strong>The decision:</strong> automate the implementation, not the definition of success. Your acceptance criteria and checks remain the contract.</p>
+            </div>
+          </li>
+        </ol>
+        <p class="section-note"><a href="https://github.com/mikeroySoft/factory/blob/main/CHANGELOG.md">Full changelog</a> · <a href="https://github.com/mikeroySoft/factory/releases">Tagged releases</a> · <a href="https://github.com/mikeroySoft/factory/compare/v0.3.0...main">Changes since v0.3.0</a></p>
+      </div>
+    </section>
+
+    <section class="section" id="roadmap" aria-labelledby="roadmap-title">
+      <div class="shell">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">roadmap</p>
+            <h2 id="roadmap-title">Less supervision.<br>Clearer ownership.</h2>
+          </div>
+          <p>Direction, not delivery dates. This snapshot reflects September 8, 2026; linked issues carry current status, dependencies, and acceptance criteria.</p>
+        </div>
+
+        <div class="roadmap">
+          <article>
+            <span class="chip chip-cyan">In progress · staged rollout</span>
+            <h3>Shared plans. The right human.</h3>
+            <p>Shape major changes above the issue queue, route decisions to the responsible person, and bind implementation to an approved plan revision. The read-only initiative reader is on main; routing is under revision. Handoffs and the shared dashboard remain held for human-reviewed rollout.</p>
+            <p><strong>Why:</strong> separate outcome ownership, decision ownership, and the runner’s execution claim. One runner per repo; humans keep their own GitHub identities. Completion requires a real two-human workflow, not just merged tickets.</p>
+            <p><a href="https://github.com/mikeroySoft/factory/issues/52">Collaboration programme #52</a> · <a href="https://github.com/mikeroySoft/factory/issues/59">Acceptance checkpoint</a></p>
+          </article>
+          <article>
+            <span class="chip chip-cyan">In progress · not yet merged</span>
+            <h3>Keep open PRs moving</h3>
+            <p>Extend manager oversight to every open agent PR: understand pending CI, stale branches, review loops, and conflicts; choose bounded recovery or a terminal human handoff. Implementation is under review.</p>
+            <p><strong>Why:</strong> opening a PR is not finishing a ticket. Recovery needs an accountable next step without overriding human intervention.</p>
+            <p><a href="https://github.com/mikeroySoft/factory/issues/15">PR frontier #15</a></p>
+          </article>
+          <article>
+            <span class="chip">Planned · not started</span>
+            <h3>Review contributor PRs, too</h3>
+            <p>An opt-in review lane for PRs outside Factory’s own worker flow: publish cited GitHub reviews, re-review changed heads, track CI readiness, and surface a human review queue.</p>
+            <p><strong>The boundary:</strong> review contributor work without pushing to its branch or merging it. This lane is scoped in the backlog, not available today.</p>
+            <p><a href="https://github.com/mikeroySoft/factory/issues/5">Review intake #5</a> · <a href="https://github.com/mikeroySoft/factory/issues/9">Dashboard queue #9</a></p>
+          </article>
+          <article>
+            <span class="chip">Research · no ship date</span>
+            <h3>Measure what review misses</h3>
+            <p>Calibrate review against known defects, not just whether a model agrees. The required/optional contract has shipped; reliable defect detection remains an open problem.</p>
+            <p><strong>The decision:</strong> do not force a second reviewer to disagree. Explore evidence-seeking review instead. Self-reported coverage is not proof, and the small calibration experiment is not an accuracy benchmark.</p>
+            <p><a href="https://github.com/mikeroySoft/factory/issues/34">Calibration #34</a> · <a href="https://github.com/mikeroySoft/factory/issues/35">Adversarial-review discussion #35</a></p>
+          </article>
+        </div>
+        <p class="section-note"><strong>Also exploring:</strong> a <a href="https://github.com/mikeroySoft/factory/issues/37">tested local-model configuration</a> for triage and review. Still an unscoped idea, not a zero-cloud guarantee; the pipeline continues to use GitHub.</p>
+        <p class="section-note">Have evidence, a use case, or a different tradeoff? Join the linked issue discussions. Plans can change as implementation teaches us more.</p>
       </div>
     </section>
   </main>

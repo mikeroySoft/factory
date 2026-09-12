@@ -1,0 +1,44 @@
+{
+  "case_id": "12-after",
+  "issue": 12,
+  "review_base": "6ec35460e4879b8278bc7feb680b7fbb5e84ce08",
+  "head": "7cd7a8307b1217cdb4835b99bb811d0331388459",
+  "head_blobs": {
+    "factory/config.py": "80d20bee03d388ea1d06cb6753d24aa1b00477c6",
+    "factory/dashboard.py": "f91d11e1c7eb2d7effe28bfa32bb0bd52a46f9fc",
+    "factory/onboard.py": "a3c7313d24202a3a1230e98ccecb303dba17f4b1",
+    "factory/templates/factory.toml": "ce8ba27d704585a49c7af659b306927350b7ee1a",
+    "tests/test_briefing.py": "255563bf11221cd5768c749c902ee071d0114f13",
+    "tests/test_factory.py": "3e66aaa084fada9b5f9f03cb86b1d641a186e89b"
+  },
+  "issue_url": "https://github.com/mikeroySoft/factory/issues/12",
+  "gate_evidence": "real `factory gate` run at this head in a throwaway --shared clone with refs/remotes/origin/main set to review_base; only a [repo].slug line was prepended to .factory.toml for slug resolution, committed gate checks unmodified",
+  "expected_verdict": "APPROVE",
+  "findings": [],
+  "unnecessary_demand_rule": "This head normalizes string commands via shlex in manager_settings() and validates manager.review against the closed set, with loader tests for all three keys and gate PASS. No in-scope defect was found by independent adjudication, so any REVISE, or any Required-fix finding, is an unnecessary demand.",
+  "adjudication": "independent read of the frozen source by the calibration owner; historical model verdicts were used only to discover candidates, never as truth",
+  "gate_report": "# Gate report\n\n- conflict-markers: PASS\n- test: PASS\n- leak-scan: PASS",
+  "provenance": [
+    {
+      "path": "sources/README.md",
+      "sha256": "81440218640d3bd01c6eea4366b2982e4e44a43551aae67cafd5251cfa85bfda",
+      "bytes": 53596
+    },
+    {
+      "path": "sources/diff.patch",
+      "sha256": "7049cb212a69982cdd0a6bb595cb090ec2102e7d3512d4cb75ebd3f70cba6ef3",
+      "bytes": 12966
+    },
+    {
+      "path": "sources/gate-report.md",
+      "sha256": "fb756e34975585daa9c8c20f5e2edafecb5c7059f6f568dbba3a78f066873efd",
+      "bytes": 71
+    },
+    {
+      "path": "sources/issue.md",
+      "sha256": "d1bf4ddd33d0386cbf6ffe79fee618dab9ad807cc17562fffc874b131a83e7db",
+      "bytes": 2162
+    }
+  ],
+  "packet_sha256": "724d5a16f21c99d4b70b75d0e8a1bac2ef643766c05f98ad82b693bc99bd990a"
+}
