@@ -110,7 +110,7 @@ textarea { width:100%; min-height:42px; max-height:180px; padding:9px 0; resize:
 .menu button { display:flex; justify-content:space-between; gap:12px; min-height:36px; border:0; text-align:left; }
 .menu small { color:var(--text-muted); }
 .dock { width:320px; border-left:1px solid var(--border-hairline); }
-.dock-in { display:grid; align-content:start; gap:18px; width:100%; min-width:320px; height:100%; padding:14px 16px; overflow:auto; }
+.dock-in { isolation:isolate; display:grid; align-content:start; gap:18px; width:100%; min-width:320px; height:100%; padding:14px 16px; overflow:auto; }
 .dock section { display:grid; min-width:0; gap:7px; }
 .dock h3 { margin:0; color:var(--text-muted); font-size:10px; letter-spacing:.14em; text-transform:uppercase; }
 .case, .source-button { display:grid; gap:2px; min-height:0; padding:8px 9px; text-align:left; }
@@ -124,7 +124,9 @@ textarea { width:100%; min-height:42px; max-height:180px; padding:9px 0; resize:
 .activity .done .dot { border-color:var(--status-ok); background:var(--status-ok); }
 .activity .live .dot { border-color:var(--accent); background:var(--accent); animation:pulse .8s infinite; }
 .error { padding:8px 10px; border-left:3px solid var(--status-danger); color:#efa18f; background:var(--surface-sunken); }
-.source-inspector { width:100%; min-width:0; overflow:hidden; padding-bottom:16px; border-bottom:1px solid var(--border-hairline); }
+.source-inspector { position:relative; z-index:2; width:100%; min-width:0; overflow:hidden; padding-bottom:16px; border-bottom:1px solid var(--border-hairline); background:var(--surface-page); box-shadow:0 12px 18px -18px #000; clip-path:inset(0); }
+@keyframes source-reveal { from { clip-path:inset(0 0 100% 0); } }
+.source-inspector:not([hidden]) { animation:source-reveal .28s ease-out both; }
 .source-inspector header { display:grid; grid-template-columns:minmax(0,1fr) auto auto; align-items:center; gap:8px; }
 .source-inspector header .spacer { display:none; }
 .source-inspector header h3 { min-width:0; overflow-wrap:anywhere; color:var(--accent); }
@@ -137,6 +139,8 @@ textarea { width:100%; min-height:42px; max-height:180px; padding:9px 0; resize:
 <link rel="stylesheet" href="/theme.css">
 <style>
 body[data-product="factory"] button { letter-spacing:normal; text-transform:none; }
+body[data-product="factory"] .compose-box textarea:focus,
+body[data-product="factory"] .compose-box textarea:focus-visible { outline:0; box-shadow:none; }
 </style>
 </head>
 <body data-product="factory">
@@ -199,7 +203,7 @@ const fmtDate = value => value ? new Date(value).toLocaleDateString([], {weekday
 const ago = value => { const seconds=Math.max(0,(Date.now()-Date.parse(value))/1000); return seconds<60?'now':seconds<3600?`${Math.round(seconds/60)}m ago`:seconds<86400?`${Math.round(seconds/3600)}h ago`:`${Math.round(seconds/86400)}d ago`; };
 const scopeLabel = scope => scope?.kind==='ticket' ? `#${scope.number} · ${ticket(scope.number)?.title || 'case'}` : scope?.kind==='run' ? `run · ${fmtTime(scope.started)}` : 'Factory overview';
 function motion(el, values, options={}) { if (!el || reduced.matches) return; animate(el, values, {duration:.2,...options}); }
-function setPanel(kind, open) { S[kind]=open; const el=document.querySelector(`.${kind}`), width=kind==='rail'?272:S.source?Math.min(520,Math.max(360,innerWidth*.42)):320; el.setAttribute('aria-hidden',String(!open)); el.inert=!open; if (reduced.matches) el.style.width=(open?width:0)+'px'; else motion(el,{width:open?width:0},{type:'spring',bounce:.08,duration:.42}); document.querySelector(`[data-toggle="${kind}"]`)?.setAttribute('aria-pressed',String(open)); }
+function setPanel(kind, open) { S[kind]=open; const el=document.querySelector(`.${kind}`), width=kind==='rail'?272:320; el.setAttribute('aria-hidden',String(!open)); el.inert=!open; if (reduced.matches) el.style.width=(open?width:0)+'px'; else motion(el,{width:open?width:0},{type:'spring',bounce:.08,duration:.42}); document.querySelector(`[data-toggle="${kind}"]`)?.setAttribute('aria-pressed',String(open)); }
 function conversation() { return {id:crypto.randomUUID?.()||`${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,title:'New conversation',created_at:now(),updated_at:now(),scope:{kind:'factory'},focus:null,draft:'',messages:[]}; }
 function restore() {
   try {
@@ -245,7 +249,16 @@ function renderHead() {
   );
 }
 function sourceMap(item=current()) { const out=new Map(); for (const message of item.messages) for (const source of message.sources||[]) out.set(source.id,source); return out; }
-function openSource(source) { if (!S.source) S.sourceDockWasOpen=S.dock; S.source=source; const dock=document.querySelector('.dock'), inspector=$('source-inspector'); dock.classList.add('source-open'); document.querySelector('.shell').classList.add('source-mode'); inspector.hidden=false; $('source-title').textContent=`${source.id} · ${source.label}`; $('source-meta').textContent=source.truncated?'This evidence was truncated by the bounded source reader.':'Bounded evidence supplied to the Factory Manager.'; $('source-text').textContent=source.text||'No source text was returned.'; setPanel('dock',true); inspector.scrollIntoView({block:'start',behavior:reduced.matches?'auto':'smooth'}); motion(inspector,{opacity:[.35,1],x:[18,0]}); }
+function openSource(source) {
+  if (S.source?.id===source.id) { closeSource(); return; }
+  if (!S.source) S.sourceDockWasOpen=S.dock;
+  const dock=document.querySelector('.dock'), inspector=$('source-inspector');
+  S.source=source; dock.classList.add('source-open'); document.querySelector('.shell').classList.add('source-mode'); inspector.hidden=false;
+  $('source-title').textContent=`${source.id} · ${source.label}`;
+  $('source-meta').textContent=source.truncated?'This evidence was truncated by the bounded source reader.':'Bounded evidence supplied to the Factory Manager.';
+  $('source-text').textContent=source.text||'No source text was returned.';
+  setPanel('dock',true); document.querySelector('.dock-in').scrollTo({top:0,behavior:'auto'});
+}
 function closeSource(restoreFocus=true) { if (!S.source) return; const wasOpen=S.sourceDockWasOpen; S.source=null; S.sourceDockWasOpen=null; $('source-inspector').hidden=true; document.querySelector('.dock').classList.remove('source-open'); document.querySelector('.shell').classList.remove('source-mode'); setPanel('dock',wasOpen!==false); save(); if (restoreFocus) $('question').focus(); }
 function cited(text,sources) { const fragment=document.createDocumentFragment(), map=new Map((sources||[]).map(source=>[source.id,source])); for (const part of String(text).split(/(\[S\d+\])/g)) { const source=map.get(part.slice(1,-1)); fragment.append(source?h('button',{class:'cite',type:'button',onclick:()=>openSource(source),title:source.label},source.id):part); } return fragment; }
 function messageNode(message) {
