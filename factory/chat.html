@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Factory — Chat</title>
+<link rel="icon" href="data:,">
+<style>
+@font-face { font-family: Newsreader; src: url('/fonts/Newsreader.ttf') format('truetype'); font-display: swap; }
+:root {
+  color-scheme: dark;
+  --surface-page:#0d0c0a; --surface-sunken:#151310; --surface-panel:#1a1712; --surface-inset:#211d17;
+  --text-primary:#f6ead0; --text-secondary:#b5a589; --text-muted:#81745e;
+  --border-hairline:#30291f; --border-strong:#554a38;
+  --accent:#9dc26b; --accent-soft:#c4dca0; --accent-tint:rgba(157,194,107,.08); --accent-tint-strong:rgba(157,194,107,.14); --accent-glow:rgba(157,194,107,.25);
+  --status-ok:#9dc26b; --status-warn:#f0cf8e; --status-danger:#d64545; --status-idle:#81745e;
+  --stage-triage:#b89bd6; --stage-needs-info:#e07b39; --stage-queued:#9dc26b; --stage-in-flight:#f0cf8e; --stage-pr-open:#c9b458; --stage-escalated:#d64545; --stage-merged:#9dc26b; --stage-closed:#5a4f3c;
+  --font-mono:"JetBrains Mono","SFMono-Regular",Consolas,monospace; --font-display:Newsreader,Georgia,serif;
+  --top:126px;
+}
+* { box-sizing:border-box; }
+[hidden] { display:none !important; }
+html, body { margin:0; min-height:100%; background:var(--surface-page); color:var(--text-primary); font:13px/1.6 var(--font-mono); -webkit-font-smoothing:antialiased; }
+button, input, textarea { font:inherit; color:inherit; }
+button { min-height:44px; padding:7px 12px; cursor:pointer; border:1px solid var(--border-hairline); border-radius:4px; color:var(--text-secondary); background:transparent; transition:background .15s,border-color .15s,color .15s; }
+button:hover:not(:disabled) { color:var(--text-primary); border-color:var(--accent); background:var(--accent-tint); }
+button:disabled { opacity:.45; cursor:not-allowed; }
+button.primary { color:#0d0c0a; border-color:var(--accent); background:var(--accent); font-weight:700; }
+button.primary:hover:not(:disabled) { color:#0d0c0a; background:var(--accent-soft); }
+button.sm { min-height:32px; padding:3px 9px; font-size:11px; }
+button.ghost { border-color:transparent; }
+a { color:var(--accent); text-decoration:none; }
+a:hover { text-decoration:underline; }
+:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.eyebrow { margin:0; color:var(--text-secondary); font-size:10px; letter-spacing:.16em; text-transform:uppercase; }
+.faint { color:var(--text-muted); }
+.led { display:inline-block; width:8px; height:8px; margin-right:7px; border-radius:50%; background:var(--status-idle); vertical-align:1px; }
+.led.ok { background:var(--status-ok); box-shadow:0 0 8px var(--accent-glow); }
+.led.busy { background:var(--accent); animation:pulse .9s infinite; }
+.led.warn { background:var(--status-warn); }
+@keyframes pulse { 50% { opacity:.35; } }
+.topbar { position:sticky; top:0; z-index:20; display:grid; grid-template-columns:minmax(220px,1fr) auto; gap:10px 28px; align-items:center; padding:13px clamp(16px,3vw,40px); border-bottom:1px solid var(--border-hairline); background:rgba(13,12,10,.96); backdrop-filter:blur(10px); }
+.title-row { display:flex; align-items:center; gap:12px; margin-top:3px; }
+.mark { width:13px; height:13px; border:2px solid var(--accent); transform:rotate(45deg); box-shadow:0 0 10px var(--accent-glow); }
+h1 { margin:0; color:var(--accent-soft); font:700 clamp(20px,2.6vw,26px)/1.15 var(--font-mono); letter-spacing:-.02em; }
+.nav { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:7px; }
+.nav a, .nav span { display:inline-flex; min-height:38px; align-items:center; padding:5px 11px; border:1px solid var(--border-strong); border-radius:4px; color:var(--text-secondary); }
+.nav a:hover { color:var(--accent); border-color:var(--accent); text-decoration:none; }
+.nav [aria-current=page] { color:var(--accent); border-color:var(--accent); background:var(--accent-tint); }
+.meta { grid-column:1/-1; display:flex; flex-wrap:wrap; gap:5px 22px; color:var(--text-secondary); font-size:11px; }
+.meta strong { color:var(--text-primary); font-weight:500; }
+.progress-line { grid-column:1/-1; height:2px; margin:-4px 0 -7px; overflow:hidden; background:var(--border-hairline); }
+.progress-line i { display:block; width:0; height:100%; background:var(--accent); box-shadow:0 0 10px var(--accent-glow); }
+body.busy .progress-line i { animation:progress 120s cubic-bezier(.1,.5,.2,1) forwards; }
+@keyframes progress { from { width:3%; } to { width:92%; } }
+.shell { display:grid; grid-template-columns:auto minmax(0,1fr) auto; width:100%; max-width:none; height:calc(100dvh - var(--top)); margin:0; padding:0; gap:0; }
+.slide { min-width:0; overflow:hidden; flex:none; }
+.rail { width:272px; border-right:1px solid var(--border-hairline); }
+.rail-in { display:flex; flex-direction:column; width:272px; height:100%; min-height:0; }
+.rail-head { display:grid; gap:8px; padding:14px 12px 8px; }
+.rail-list { flex:1; overflow:auto; padding:0 6px 12px; }
+.storage-note { padding:8px 12px; border-top:1px solid var(--border-hairline); color:var(--text-muted); font-size:10px; }
+.search { width:100%; min-height:38px; padding:7px 9px; border:1px solid var(--border-hairline); border-radius:4px; color:var(--text-primary); background:var(--surface-sunken); }
+.search:focus { outline:none; border-color:var(--accent); }
+.hist { display:grid; gap:2px; }
+.hist .group { padding:12px 10px 4px; color:var(--text-muted); font-size:10px; letter-spacing:.12em; text-transform:uppercase; }
+.hist button { display:grid; gap:3px; min-height:0; padding:8px 10px; border:0; text-align:left; }
+.hist button[aria-current=page] { border-left:2px solid var(--accent); color:var(--accent); background:var(--accent-tint); }
+.hist .title { overflow:hidden; color:var(--text-primary); font-size:12px; text-overflow:ellipsis; white-space:nowrap; }
+.hist .details { color:var(--text-muted); font-size:10px; }
+.chat { display:flex; flex-direction:column; min-width:0; min-height:0; }
+.chat-head { display:flex; flex-wrap:wrap; align-items:center; gap:10px; min-height:58px; padding:11px 20px; border-bottom:1px solid var(--border-hairline); }
+.chat-head h2 { margin:0; font-size:14px; font-weight:600; }
+.spacer { flex:1; }
+.scope-chip { display:inline-flex; align-items:center; gap:6px; min-height:26px; padding:2px 8px; border:1px solid var(--border-hairline); border-radius:999px; color:var(--text-secondary); font-size:11px; }
+.scope-chip i { width:7px; height:7px; border-radius:50%; background:var(--stage,var(--accent)); }
+.transcript { flex:1; display:flex; flex-direction:column; gap:18px; min-height:0; overflow:auto; padding:20px; scroll-padding-bottom:40px; }
+.transcript > *, .composer > * { width:100%; max-width:860px; margin-left:auto; margin-right:auto; }
+.msg { display:grid; gap:9px; max-width:860px; padding-left:14px; border-left:2px solid var(--border-strong); }
+.msg.assistant { border-color:var(--accent); }
+.who { display:flex; align-items:center; gap:9px; color:var(--text-secondary); font-size:10px; letter-spacing:.13em; text-transform:uppercase; }
+.who b { color:var(--accent); }
+.who time { color:var(--text-muted); letter-spacing:0; text-transform:none; }
+.who .copy { min-height:25px; margin-left:auto; padding:0 7px; border-color:transparent; font-size:10px; letter-spacing:0; text-transform:none; }
+.body { line-height:1.72; white-space:pre-wrap; }
+.msg.assistant .body { font:400 17px/1.62 var(--font-display); }
+.cite { display:inline-flex; align-items:center; min-height:0; margin:0 2px; padding:0 5px; border:1px solid var(--border-hairline); border-radius:3px; color:var(--accent); background:var(--accent-tint); font:11px/1.5 var(--font-mono); vertical-align:2px; }
+.trace { display:flex; align-items:center; gap:8px; padding:8px 10px; border:1px solid var(--border-hairline); border-radius:5px; color:var(--text-secondary); background:var(--surface-sunken); font-size:11px; }
+.spinner { width:13px; height:13px; border:2px solid var(--border-strong); border-top-color:var(--accent); border-radius:50%; animation:spin 1s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+.quick { display:flex; flex-wrap:wrap; gap:7px; padding-left:16px; }
+.quick button { min-height:34px; border-radius:999px; font-size:11px; }
+.empty { display:grid; gap:14px; align-self:center; max-width:680px; margin:auto; padding:40px 20px; text-align:center; }
+.empty h2 { margin:0; font:400 28px/1.2 var(--font-display); }
+.empty p { margin:0; color:var(--text-secondary); }
+.composer { position:relative; display:grid; gap:8px; padding:11px 20px 15px; border-top:1px solid var(--border-hairline); background:var(--surface-page); }
+.composer-scopes { display:flex; flex-wrap:wrap; gap:6px; }
+.composer-scopes:empty { display:none; }
+.compose-box { display:grid; grid-template-columns:1fr auto; gap:8px; align-items:end; padding:7px 7px 7px 12px; border:1px solid var(--border-strong); border-radius:6px; background:var(--surface-sunken); }
+.compose-box:focus-within { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-tint); }
+textarea { width:100%; min-height:42px; max-height:180px; padding:9px 0; resize:none; border:0; outline:0; color:var(--text-primary); background:transparent; line-height:1.5; }
+.toolrow { display:flex; flex-wrap:wrap; align-items:center; gap:5px; color:var(--text-muted); font-size:10px; }
+.compose-status { min-height:17px; color:var(--text-secondary); font-size:11px; }
+.menu { position:absolute; right:max(20px,calc(50% - 430px)); bottom:calc(100% - 2px); left:max(20px,calc(50% - 430px)); z-index:30; display:grid; gap:2px; max-height:310px; overflow:auto; padding:6px; border:1px solid var(--border-strong); border-radius:6px; background:var(--surface-inset); box-shadow:0 14px 40px #000a; }
+.menu .menu-head { padding:6px 9px 2px; color:var(--text-muted); font-size:10px; letter-spacing:.12em; text-transform:uppercase; }
+.menu button { display:flex; justify-content:space-between; gap:12px; min-height:36px; border:0; text-align:left; }
+.menu small { color:var(--text-muted); }
+.dock { width:320px; border-left:1px solid var(--border-hairline); }
+.dock-in { display:grid; align-content:start; gap:18px; width:320px; height:100%; padding:14px 16px; overflow:auto; }
+.dock section { display:grid; gap:7px; }
+.dock h3 { margin:0; color:var(--text-muted); font-size:10px; letter-spacing:.14em; text-transform:uppercase; }
+.case, .source-button { display:grid; gap:2px; min-height:0; padding:8px 9px; text-align:left; }
+.case strong { color:var(--accent); }
+.case small, .source-button small { color:var(--text-muted); white-space:normal; }
+.source-button { grid-template-columns:auto 1fr; }
+.source-button b { color:var(--accent); }
+.activity { display:grid; gap:6px; padding:9px 10px; border:1px solid var(--border-hairline); border-radius:5px; color:var(--text-secondary); background:var(--surface-sunken); font-size:11px; }
+.activity .row { display:flex; align-items:center; gap:8px; }
+.activity .dot { width:7px; height:7px; border:1px solid var(--border-strong); border-radius:50%; }
+.activity .done .dot { border-color:var(--status-ok); background:var(--status-ok); }
+.activity .live .dot { border-color:var(--accent); background:var(--accent); animation:pulse .8s infinite; }
+.error { padding:8px 10px; border-left:3px solid var(--status-danger); color:#efa18f; background:var(--surface-sunken); }
+dialog { width:min(760px,calc(100vw - 32px)); max-height:80dvh; padding:0; border:1px solid var(--border-strong); border-radius:6px; color:var(--text-primary); background:var(--surface-inset); box-shadow:0 24px 80px #000; }
+dialog::backdrop { background:#000a; backdrop-filter:blur(3px); }
+.dialog-head { display:flex; align-items:center; gap:12px; padding:12px 14px; border-bottom:1px solid var(--border-hairline); }
+.dialog-head h2 { margin:0; font-size:14px; }
+.dialog-body { display:grid; gap:10px; padding:16px; }
+.dialog-body pre { max-height:55dvh; margin:0; overflow:auto; color:var(--text-secondary); font:11px/1.6 var(--font-mono); white-space:pre-wrap; }
+@media (max-width:1180px) { .dock { display:none; } }
+@media (max-width:800px) { .rail { display:none; } .topbar { grid-template-columns:1fr; } .nav { justify-content:flex-start; } .meta { grid-column:1; } .shell { grid-template-columns:minmax(0,1fr); } .chat-head { padding-inline:12px; } .transcript,.composer { padding-inline:12px; } }
+@media (prefers-reduced-motion:reduce) { *,*::before,*::after { animation-duration:.01ms !important; transition-duration:.01ms !important; scroll-behavior:auto !important; } }
+</style>
+<link rel="stylesheet" href="/theme.css">
+<style>
+body[data-product="factory"] button { letter-spacing:normal; text-transform:none; }
+</style>
+</head>
+<body data-product="factory">
+<header class="topbar">
+  <div><p class="eyebrow">Factory · manager</p><div class="title-row"><span class="mark" aria-hidden="true"></span><h1>Chat</h1></div></div>
+  <nav class="nav" aria-label="Factory views"><a href="/">Dashboard</a><a href="/codebase">Codebase</a><a href="/atlas">Atlas</a><span aria-current="page">Chat</span></nav>
+  <div class="meta">
+    <span><i class="led" id="led"></i><span id="led-text">Loading Factory Manager</span></span>
+    <span>repository <strong id="meta-repo">—</strong></span>
+    <span>snapshot <strong id="meta-snapshot">—</strong></span>
+    <span>dispatcher <strong id="meta-dispatcher">—</strong></span>
+    <span>mode <strong>read-only advice</strong></span>
+  </div>
+  <div class="progress-line" id="progress" hidden><i></i></div>
+</header>
+<main class="shell">
+  <aside class="rail slide" aria-label="Conversations"><div class="rail-in">
+    <div class="rail-head"><button class="primary" id="new-conversation">+ New conversation</button><input class="search" id="history-search" type="search" placeholder="Search conversations" aria-label="Search conversations"></div>
+    <div class="rail-list" id="history-list"></div>
+    <div class="storage-note" id="storage-note">Conversation history is stored in this browser.</div>
+  </div></aside>
+  <section class="chat" aria-label="Conversation">
+    <header class="chat-head" id="chat-head"></header>
+    <div class="transcript" id="transcript" role="log" aria-live="polite"></div>
+    <form class="composer" id="composer">
+      <div class="menu" id="picker" role="listbox" hidden></div>
+      <div class="composer-scopes" id="composer-scopes"></div>
+      <div class="compose-box"><textarea id="question" rows="1" maxlength="4000" placeholder="Ask the Factory Manager…" aria-label="Your question"></textarea><button class="primary" id="ask" type="submit">Ask</button></div>
+      <div class="toolrow"><button class="sm ghost" type="button" data-picker="case">+ case</button><button class="sm ghost" type="button" data-picker="run">+ run</button><button class="sm ghost" type="button" data-picker="source">+ source</button><span class="spacer"></span><span>Enter sends · Shift+Enter adds a line</span></div>
+      <div class="compose-status" id="compose-status">Read-only advice. No command or GitHub action runs from Chat.</div>
+    </form>
+  </section>
+  <aside class="dock slide" aria-label="Live context"><div class="dock-in">
+    <section><h3>FM activity</h3><div class="activity" id="activity"><span class="faint">Idle. Activity appears here while the manager reads evidence.</span></div></section>
+    <section><h3 id="waiting-title">Waiting on you</h3><div id="waiting"></div></section>
+    <section><h3>In flight</h3><div id="inflight"></div></section>
+    <section><h3>Cited in this conversation</h3><div id="sources"></div></section>
+    <section><h3>Dispatcher</h3><div class="faint" id="dispatcher">—</div></section>
+  </div></aside>
+</main>
+<dialog id="source-dialog"><div class="dialog-head"><h2 id="source-title">Evidence</h2><span class="spacer"></span><button class="sm" id="source-focus">Use as focus</button><button class="sm" id="source-close">Close</button></div><div class="dialog-body"><p class="faint" id="source-meta"></p><pre id="source-text"></pre></div></dialog>
+<script src="/motion.js"></script>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const animate = window.Motion?.animate || ((el, values, options) => el.animate(values, options));
+const S = { snap:null, conversations:[], active:null, pending:false, error:'', source:null, storageKey:null, rail:true, dock:true, timer:null };
+const WAITING = new Set(['escalated','needs-info','triage','wontfix']);
+const STAGE = { triage:'var(--stage-triage)', 'needs-info':'var(--stage-needs-info)', queued:'var(--stage-queued)', 'in-flight':'var(--stage-in-flight)', 'pr-open':'var(--stage-pr-open)', escalated:'var(--stage-escalated)', merged:'var(--stage-merged)', closed:'var(--stage-closed)' };
+const reduced = matchMedia('(prefers-reduced-motion:reduce)');
+const h = (tag, attrs={}, ...children) => { const el=document.createElement(tag); for (const [key,value] of Object.entries(attrs)) { if (key==='class') el.className=value; else if (key==='style' && typeof value==='object') Object.assign(el.style,value); else if (key.startsWith('on')) el[key]=value; else if (value!=null && value!==false) el.setAttribute(key,value===true?'':String(value)); } el.append(...children.flat().filter(value=>value!=null&&value!==false)); return el; };
+const now = () => new Date().toISOString();
+const current = () => S.conversations.find(conversation => conversation.id===S.active);
+const ticket = number => S.snap?.tickets.find(item => item.number===number);
+const fmtTime = value => value ? new Date(value).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '—';
+const ago = value => { const seconds=Math.max(0,(Date.now()-Date.parse(value))/1000); return seconds<60?'now':seconds<3600?`${Math.round(seconds/60)}m ago`:seconds<86400?`${Math.round(seconds/3600)}h ago`:`${Math.round(seconds/86400)}d ago`; };
+const scopeLabel = scope => scope?.kind==='ticket' ? `#${scope.number} · ${ticket(scope.number)?.title || 'case'}` : scope?.kind==='run' ? `run · ${fmtTime(scope.started)}` : 'Factory overview';
+function motion(el, values, options={}) { if (!el || reduced.matches) return; animate(el, values, {duration:.2,...options}); }
+function setPanel(kind, open) { S[kind]=open; const el=document.querySelector(`.${kind}`), width=kind==='rail'?272:320; el.setAttribute('aria-hidden',String(!open)); el.inert=!open; if (reduced.matches) el.style.width=(open?width:0)+'px'; else motion(el,{width:open?width:0},{type:'spring',bounce:.08,duration:.42}); document.querySelector(`[data-toggle="${kind}"]`)?.setAttribute('aria-pressed',String(open)); }
+function conversation() { return {id:crypto.randomUUID(),title:'New conversation',created_at:now(),updated_at:now(),scope:{kind:'factory'},focus:null,draft:'',messages:[]}; }
+function restore() {
+  try {
+    const saved=JSON.parse(localStorage.getItem(S.storageKey)||'null');
+    if (saved && Array.isArray(saved.conversations)) {
+      S.conversations=saved.conversations.filter(item=>item&&typeof item.id==='string'&&Array.isArray(item.messages));
+      S.active=typeof saved.active==='string'?saved.active:null;
+      S.rail=saved.rail!==false; S.dock=saved.dock!==false;
+    }
+  } catch (_) { $('storage-note').textContent='Browser storage is unavailable; conversations last until this page closes.'; }
+  if (!S.conversations.length) { const item=conversation(); S.conversations=[item]; S.active=item.id; }
+  if (!current()) S.active=S.conversations[0].id;
+}
+// ponytail: browser-local history is enough for one operator; use shared Factory
+// continuity only when cross-browser or multi-user conversation history is required.
+function save() {
+  try { localStorage.setItem(S.storageKey,JSON.stringify({active:S.active,rail:S.rail,dock:S.dock,conversations:S.conversations})); }
+  catch (_) { $('storage-note').textContent='Browser history is full or unavailable; recent changes may not survive reload.'; }
+}
+function newConversation() { if (S.pending) return; const item=conversation(); S.conversations.unshift(item); S.active=item.id; S.error=''; save(); renderConversation(); $('question').focus(); }
+function switchConversation(id) { if (S.pending||id===S.active) return; S.active=id; S.error=''; save(); renderConversation(); }
+function setScope(scope) { const item=current(); if (!item||S.pending) return; item.scope=scope; item.focus=null; item.updated_at=now(); save(); renderConversation(); $('question').focus(); }
+function stageChip(item) { return h('span',{class:'scope-chip',style:{'--stage':STAGE[item.stage]||'var(--accent)'}},h('i'),item.stage||'unknown'); }
+function renderHistory() {
+  const query=$('history-search').value.trim().toLowerCase();
+  const items=[...S.conversations].sort((a,b)=>Date.parse(b.updated_at)-Date.parse(a.updated_at)).filter(item=>!query||(item.title+' '+scopeLabel(item.scope)).toLowerCase().includes(query));
+  const groups=new Map();
+  for (const item of items) { const date=new Date(item.updated_at), today=new Date(); const key=date.toDateString()===today.toDateString()?'Today':date.toLocaleDateString([],{month:'short',day:'numeric'}); if (!groups.has(key)) groups.set(key,[]); groups.get(key).push(item); }
+  const nodes=[];
+  for (const [label,list] of groups) { nodes.push(h('div',{class:'group'},label)); for (const item of list) nodes.push(h('button',{'aria-current':item.id===S.active?'page':null,onclick:()=>switchConversation(item.id)},h('span',{class:'title'},item.title),h('span',{class:'details'},`${ago(item.updated_at)} · ${item.messages.length} messages · ${scopeLabel(item.scope)}`))); }
+  if (!nodes.length) nodes.push(h('div',{class:'group'},'No conversations match'));
+  $('history-list').replaceChildren(h('div',{class:'hist'},...nodes));
+}
+function renderHead() {
+  const item=current(), scoped=item.scope?.kind==='ticket'?ticket(item.scope.number):null;
+  $('chat-head').replaceChildren(
+    h('button',{class:'sm',type:'button','data-toggle':'rail','aria-pressed':String(S.rail),onclick:()=>{setPanel('rail',!S.rail);save();},title:'Toggle conversations'},'☰'),
+    h('h2',{},item.title),
+    h('span',{class:'scope-chip',style:{'--stage':scoped?STAGE[scoped.stage]:'var(--accent)'}},h('i'),scopeLabel(item.scope)),
+    h('span',{class:'spacer'}),h('span',{class:'faint',style:{fontSize:'11px'}},`${item.messages.length} messages`),
+    h('button',{class:'sm',type:'button',onclick:newConversation},'New conversation'),
+    h('button',{class:'sm',type:'button','data-toggle':'dock','aria-pressed':String(S.dock),onclick:()=>{setPanel('dock',!S.dock);save();}},'Context')
+  );
+}
+function sourceMap(item=current()) { const out=new Map(); for (const message of item.messages) for (const source of message.sources||[]) out.set(source.id,source); return out; }
+function openSource(source) { S.source=source; $('source-title').textContent=`${source.id} · ${source.label}`; $('source-meta').textContent=source.truncated?'This evidence was truncated by the bounded source reader.':'Bounded evidence supplied to the Factory Manager.'; $('source-text').textContent=source.text||'No source text was returned.'; $('source-dialog').showModal(); }
+function cited(text,sources) { const fragment=document.createDocumentFragment(), map=new Map((sources||[]).map(source=>[source.id,source])); for (const part of String(text).split(/(\[S\d+\])/g)) { const source=map.get(part.slice(1,-1)); fragment.append(source?h('button',{class:'cite',type:'button',onclick:()=>openSource(source),title:source.label},source.id):part); } return fragment; }
+function messageNode(message) {
+  const assistant=message.role==='assistant', body=h('div',{class:'body'});
+  if (assistant) body.append(cited(message.content,message.sources)); else body.textContent=message.content;
+  return h('article',{class:`msg ${message.role}`},h('div',{class:'who'},assistant?h('b',{},'Factory Manager'):'You',h('time',{},fmtTime(message.at)),h('button',{class:'copy',type:'button',onclick:()=>navigator.clipboard?.writeText(message.content)},'copy')),body,assistant&&message.sources?.length?h('button',{class:'sm ghost',type:'button',style:{justifySelf:'start'},onclick:()=>openSource(message.sources[0])},`Evidence · ${message.sources.length} sources`):null);
+}
+function quickPrompts() { const item=current(), number=item.scope?.kind==='ticket'?item.scope.number:null; return number?[`What should happen next for #${number}?`,`What evidence is missing for #${number}?`,`Summarize the latest attempt for #${number}`]:["What's waiting on me?",'Summarize current in-flight work','Is the dispatcher healthy?']; }
+function renderTranscript(fresh=false) {
+  const item=current(), nodes=item.messages.map(messageNode);
+  if (!nodes.length) {
+    const waiting=S.snap.tickets.filter(item=>WAITING.has(item.stage)).length, active=S.snap.tickets.filter(item=>item.stage==='in-flight').length;
+    nodes.push(h('div',{class:'empty'},h('h2',{},'Factory Manager is ready'),h('p',{},S.snap.errors.length?'The current snapshot is partial. Ask a scoped question and I will cite what is available.':`${waiting} case${waiting===1?'':'s'} require human attention; ${active} ${active===1?'is':'are'} in flight.`),h('div',{class:'quick'},...quickPrompts().map(prompt=>h('button',{type:'button',onclick:()=>ask(prompt)},prompt)))));
+  } else if (!S.pending) nodes.push(h('div',{class:'quick'},...quickPrompts().slice(0,2).map(prompt=>h('button',{class:'sm',type:'button',onclick:()=>ask(prompt)},prompt))));
+  if (S.pending) nodes.push(h('div',{class:'trace'},h('span',{class:'spinner'}),h('span',{},'Factory Manager is reading bounded evidence…')));
+  if (S.error) nodes.push(h('div',{class:'error',role:'alert'},S.error));
+  $('transcript').replaceChildren(...nodes);
+  if (fresh) motion(nodes.at(-1),{opacity:[0,1],y:[10,0]});
+  $('transcript').scrollTo({top:$('transcript').scrollHeight,behavior:reduced.matches?'auto':'smooth'});
+}
+function renderScopes() {
+  const item=current(), scoped=item.scope?.kind==='ticket'?ticket(item.scope.number):null, nodes=[h('span',{class:'scope-chip',style:{'--stage':scoped?STAGE[scoped.stage]:'var(--accent)'}},h('i'),scopeLabel(item.scope),item.scope?.kind!=='factory'?h('button',{class:'ghost',type:'button','aria-label':'Return to Factory overview',onclick:()=>setScope({kind:'factory'}),style:{minHeight:'0',padding:'0 2px',border:'0'}},'×'):null)];
+  if (item.focus) nodes.push(h('span',{class:'scope-chip'},`focus ${item.focus}`,h('button',{class:'ghost',type:'button','aria-label':'Remove source focus',onclick:()=>{item.focus=null;save();renderScopes();},style:{minHeight:'0',padding:'0 2px',border:'0'}},'×')));
+  $('composer-scopes').replaceChildren(...nodes); $('question').value=item.draft||''; $('ask').disabled=S.pending; $('question').disabled=S.pending;
+  $('compose-status').textContent=S.pending?'Waiting for the configured Factory Manager…':'Read-only advice. No command or GitHub action runs from Chat.';
+}
+function caseButton(item) { return h('button',{class:'case',type:'button',onclick:()=>setScope({kind:'ticket',number:item.number})},h('span',{},h('strong',{},`#${item.number}`),` · ${item.title}`),h('small',{},`${item.stage}${item.phase?.artifact?' · '+item.phase.artifact:''}`)); }
+function renderContext() {
+  const waiting=S.snap.tickets.filter(item=>WAITING.has(item.stage)); $('waiting-title').textContent=`Waiting on you · ${waiting.length}`; $('waiting').replaceChildren(...(waiting.length?waiting.map(caseButton):[h('span',{class:'faint'},'Nothing currently requires human attention.')]));
+  const inflight=S.snap.tickets.filter(item=>item.stage==='in-flight'); $('inflight').replaceChildren(...(inflight.length?inflight.map(caseButton):[h('span',{class:'faint'},'No work is in flight.')]));
+  const sources=[...sourceMap().values()]; $('sources').replaceChildren(...(sources.length?sources.map(source=>h('button',{class:'source-button',type:'button',onclick:()=>openSource(source)},h('b',{},source.id),h('small',{},source.label))):[h('span',{class:'faint'},'Nothing cited yet.')]));
+  const dispatcher=S.snap.dispatcher, timer=dispatcher.timer||{}; $('dispatcher').replaceChildren(h('i',{class:`led ${timer.active?'ok':'warn'}`}),timer.active?`active${timer.next?' · next '+fmtTime(timer.next):''}`:'timer inactive',` · ${dispatcher.runs?.length||0} recent runs`);
+}
+function activity(state='idle') {
+  clearInterval(S.timer); const box=$('activity');
+  if (state==='idle') { box.replaceChildren(h('span',{class:'faint'},'Idle. Activity appears here while the manager reads evidence.')); return; }
+  const started=Date.now(), update=()=>box.replaceChildren(h('div',{class:'row done'},h('i',{class:'dot'}),'Current snapshot selected'),h('div',{class:'row done'},h('i',{class:'dot'}),scopeLabel(current().scope)),h('div',{class:'row live'},h('i',{class:'dot'}),`Waiting for Factory Manager · ${Math.round((Date.now()-started)/1000)}s`)); update(); S.timer=setInterval(update,1000);
+}
+function renderConversation() { renderHistory(); renderHead(); renderTranscript(); renderScopes(); renderContext(); }
+function openPicker(kind) {
+  const menu=$('picker'), item=current(); let entries=[];
+  if (kind==='case') entries=S.snap.tickets.filter(ticket=>!['merged','closed'].includes(ticket.stage)).map(ticket=>[ `#${ticket.number} · ${ticket.title}`,ticket.stage,()=>setScope({kind:'ticket',number:ticket.number}) ]);
+  if (kind==='run') entries=[...(S.snap.dispatcher.runs||[])].reverse().map(run=>[ `Dispatcher run · ${fmtTime(run.started)}`,run.result||'recorded',()=>setScope({kind:'run',started:run.started}) ]);
+  if (kind==='source') entries=[...sourceMap(item).values()].map(source=>[ `${source.id} · ${source.label}`,source.truncated?'truncated':'evidence',()=>{item.focus=source.id;save();renderScopes();} ]);
+  menu.replaceChildren(h('div',{class:'menu-head'},`Choose ${kind}`),...(entries.length?entries.map(([label,detail,action])=>h('button',{type:'button',onclick:()=>{action();menu.hidden=true;}},h('span',{},label),h('small',{},detail))):[h('div',{class:'menu-head'},`No ${kind} options are available.`)])); menu.hidden=false; motion(menu,{opacity:[0,1],y:[6,0]});
+}
+async function ask(value) {
+  const item=current(), question=String(value??$('question').value).trim(); if (!question||S.pending) return;
+  const history=item.messages.slice(-12).map(message=>({role:message.role,content:message.content}));
+  const payload={question,history}; if (item.scope?.kind==='ticket') payload.number=item.scope.number; else if (item.scope?.kind==='run') payload.run=item.scope.started; if (item.focus) payload.source=item.focus;
+  const user={role:'user',content:question,at:now()}, oldTitle=item.title; item.messages.push(user); if (oldTitle==='New conversation') item.title=question.slice(0,60); item.draft=''; item.updated_at=user.at; S.pending=true; S.error=''; document.body.classList.add('busy'); $('progress').hidden=false; $('led').className='led busy'; $('led-text').textContent='Factory Manager working'; activity('busy'); renderConversation();
+  try {
+    const response=await fetch('/api/ask',{method:'POST',headers:{'Content-Type':'application/json','X-Factory-Act':'1'},body:JSON.stringify(payload)}), result=await response.json();
+    if (!response.ok||!result.ok) throw new Error(result.error||`Request failed (${response.status})`);
+    item.messages.push({role:'assistant',content:result.answer,at:result.generated_at||now(),sources:result.sources||[]}); item.updated_at=result.generated_at||now(); item.focus=null; save();
+  } catch (error) { item.messages.pop(); item.title=oldTitle; item.draft=question; S.error=error.message||String(error); save(); }
+  finally { S.pending=false; document.body.classList.remove('busy'); $('progress').hidden=true; $('led').className=`led ${S.snap.errors.length?'warn':'ok'}`; $('led-text').textContent=S.snap.errors.length?'Factory Manager ready · partial snapshot':'Factory Manager ready'; activity(); renderConversation(); $('question').focus(); }
+}
+async function load() {
+  try {
+    const response=await fetch('/api/snapshot',{cache:'no-store'}); if (!response.ok) throw new Error(`Snapshot failed (${response.status})`); S.snap=await response.json(); S.storageKey=`factory-chat:${S.snap.repo}`; restore(); $('meta-repo').textContent=S.snap.repo; $('meta-snapshot').textContent=ago(S.snap.generated_at); $('meta-dispatcher').textContent=S.snap.dispatcher?.timer?.active?'active':'inactive'; $('led').className=`led ${S.snap.errors.length?'warn':'ok'}`; $('led-text').textContent=S.snap.errors.length?'Factory Manager ready · partial snapshot':'Factory Manager ready'; renderConversation(); setPanel('rail',S.rail); setPanel('dock',S.dock);
+  } catch (error) { $('led').className='led warn'; $('led-text').textContent='Chat unavailable'; $('transcript').replaceChildren(h('div',{class:'error',role:'alert'},error.message||String(error))); $('question').disabled=true; $('ask').disabled=true; }
+}
+$('new-conversation').onclick=newConversation;
+$('history-search').oninput=renderHistory;
+$('composer').onsubmit=event=>{event.preventDefault();ask();};
+$('question').oninput=event=>{ const item=current(); if (!item) return; item.draft=event.target.value; event.target.style.height=''; event.target.style.height=Math.min(180,event.target.scrollHeight)+'px'; save(); };
+$('question').onkeydown=event=>{ if (event.key==='Enter'&&!event.shiftKey) { event.preventDefault(); $('composer').requestSubmit(); } };
+document.querySelectorAll('[data-picker]').forEach(button=>button.onclick=()=>openPicker(button.dataset.picker));
+document.addEventListener('pointerdown',event=>{ if (!$('picker').hidden&&!$('picker').contains(event.target)&&!event.target.closest('[data-picker]')) $('picker').hidden=true; });
+document.addEventListener('keydown',event=>{ if (event.key==='Escape') $('picker').hidden=true; if (!event.target.matches('input,textarea')&&event.key==='[') setPanel('rail',!S.rail); if (!event.target.matches('input,textarea')&&event.key===']') setPanel('dock',!S.dock); });
+$('source-close').onclick=()=>$('source-dialog').close();
+$('source-focus').onclick=()=>{ const item=current(); if (item&&S.source) { item.focus=S.source.id; save(); renderScopes(); } $('source-dialog').close(); $('question').focus(); };
+const topbar=document.querySelector('.topbar'); new ResizeObserver(()=>document.documentElement.style.setProperty('--top',topbar.offsetHeight+'px')).observe(topbar);
+setInterval(()=>{ if (S.snap) $('meta-snapshot').textContent=ago(S.snap.generated_at); },10000);
+load();
+</script>
+</body>
+</html>
