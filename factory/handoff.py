@@ -13,6 +13,7 @@ from __future__ import annotations
 import fcntl
 import re
 from contextlib import nullcontext
+from pathlib import Path
 from subprocess import CalledProcessError
 
 from factory import dispatch, lifecycle
@@ -34,7 +35,10 @@ def timeline(n: int) -> list[dict]:
 
 
 def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
-    """Why no automatic recovery remains for this escalation; None while the manager may still act."""
+    """Why no automatic recovery remains for this escalation; None while the manager may still act.
+
+    Mirrors every reason `manage.escalation_pass` will never run the manager again.
+    """
     r = escalation.get("round", 0)
     if not cfg.manager:
         return "no manager is configured, so nothing recovers automatically"
@@ -42,6 +46,12 @@ def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
         return f"the manager's {cfg.manager_rounds} allowed round(s) are exhausted"
     decided = [e for e in events if e.get("event") == "manage" and e.get("round") == r]
     if not decided:
+        if not Path(escalation["packet"]).is_file():
+            return "the escalation packet is missing on the runner, so the manager cannot run"
+        if not any(e.get("event") == "comment" and e.get("kind") == "escalation" and e.get("at", "") >= escalation["at"]
+                   for e in events):
+            # Without its own comment receipt the factory cannot tell its escalation comment from a human's.
+            return "the escalation comment was not journaled, so takeover detection cannot clear the manager to run"
         return None
     if any(e.get("event") == "escalate" and e.get("reason") == "manager_failed" and e.get("round") == r for e in events):
         return "the manager could not run, so there is no automatic diagnosis; the cause is unknown until a human looks"
@@ -50,6 +60,11 @@ def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
     spent = next((e for e in decided if e.get("pr")), None)
     if spent:  # the escalation loop skips a round its PR frontier already decided (round numbers collide)
         return f"the manager's round for this escalation was already spent by its PR #{spent['pr']} {spent.get('decision')} decision"
+    failed = next((e for e in events if e.get("event") == "lifecycle" and e.get("kind") == "exit"
+                   and e.get("outcome") == "mechanism_failure"
+                   and e.get("execution_id") in {d.get("execution_id") for d in decided}), None)
+    if failed:
+        return f"the manager's {decided[-1].get('decision')} decision could not be applied to GitHub and is never replayed"
     return None  # handed back to automation; a later failure is a new escalation generation
 
 
@@ -97,8 +112,9 @@ def compose(n: int, request: str, token: str, escalation: dict, why: str, observ
         owner = f"{who[0]} — you own this decision ({source})."
     elif route["status"] == "candidates" and who:
         owner = f"{', '.join(who)} — candidates ({source}); one of you should claim it."
-    elif route["status"] == "selected":
-        owner = f"Owner `{route['owner']}` is a team that could not be verified, so it is not mentioned ({source})."
+    elif route["status"] in ("selected", "candidates"):
+        teams = ", ".join(f"`{name}`" for name in ([route["owner"]] if route.get("owner") else route["candidates"]))
+        owner = f"{teams}: team destinations could not be verified on this repository, so nobody is mentioned ({source})."
     elif route["status"] == "invalid":
         owner = f"The routed owner declaration is invalid ({public(route['provenance'][-1]['detail'])}); fix it before anyone is mentioned."
     else:
@@ -164,7 +180,7 @@ def handoff_pass(dry_run: bool = False) -> None:
                     if dispatch.initiative_kind(n):
                         dispatch.log(f"#{n}: refused (initiative records never receive handoff requests)")
                         continue
-                    r = escalation["round"]
+                    r = escalation.get("round", 0)
                     request = f"{n}/{r}"
                     receipts = [e for e in events if e.get("event") == "comment" and e.get("kind") == "handoff" and e.get("request") == request]
                     intents = [e for e in events if e.get("event") == "handoff" and e.get("request") == request]
@@ -180,10 +196,13 @@ def handoff_pass(dry_run: bool = False) -> None:
                             found = next((item for item in items if item.get("event") == "commented"
                                           and type(item.get("id")) is int and intent["token"] in (item.get("body") or "")), None)
                             if found:
-                                dispatch.record("comment", ticket=n, kind="handoff", round=r, request=request,
-                                                token=intent["token"], target=intent["target"], comment=found["id"],
-                                                url=found.get("html_url"), reconciled=True)
+                                if not dry_run:
+                                    dispatch.record("comment", ticket=n, kind="handoff", round=r, request=request,
+                                                    token=intent["token"], target=intent["target"], comment=found["id"],
+                                                    url=found.get("html_url"), reconciled=True)
                                 receipts.append({"token": intent["token"], "target": intent["target"]})
+                    # ponytail: ~2 GETs per parked terminal ticket per pass to notice owner changes;
+                    # add an issue-updatedAt short-circuit if rate limits ever bite.
                     observed = observe(cfg, n, escalation)
                     if observed is None:
                         dispatch.log(f"#{n}: handoff request {request} deferred; the ticket could not be read for routing")
@@ -192,7 +211,9 @@ def handoff_pass(dry_run: bool = False) -> None:
                     current = target(route)
                     previous = receipts[-1]["target"] if receipts else None
                     if previous is not None and (previous == current or not mentions(route)):
-                        continue  # same owner, or a transition to nobody: nothing to notify
+                        if dry_run:
+                            dispatch.log(f"#{n}: handoff request {request} already published to {previous}; nothing to notify")
+                        continue  # same owner, or a transition to nobody
                     if dry_run:
                         dispatch.log(f"#{n}: would publish handoff request {request} to {current} ({why})")
                         continue

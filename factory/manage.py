@@ -136,8 +136,9 @@ def human_activity(n: int, escalation: dict, events: list[dict]) -> bool:
     """Timeline activity since the escalation that the factory did not journal itself.
 
     Only recorded `comment` receipts identify machine comments (never a text prefix); an
-    edited receipt is human activity again. The escalation's own label edits before its
-    recorded comment are skipped.
+    edited receipt is human activity again. The escalation's own label/assignee edits are
+    skipped up to its recorded comment, or anywhere in the window when no receipt exists
+    (the comment failed to post, or predates receipts).
     """
     items = handoff.timeline(n)
     machine = {e["comment"] for e in events if e.get("event") == "comment"}
@@ -151,7 +152,7 @@ def human_activity(n: int, escalation: dict, events: list[dict]) -> bool:
             if (item.get("updated_at") or item["created_at"]) != item["created_at"]:
                 return True
             continue
-        if marker is not None and index < marker and (
+        if (marker is None or index < marker) and (
             (kind == "labeled" and item.get("label", {}).get("name") == LABEL_HUMAN)
             or (kind == "unlabeled" and item.get("label", {}).get("name") == LABEL_AGENT)
             or kind == "unassigned"

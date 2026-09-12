@@ -172,7 +172,10 @@ because a partial rewrite or split may already have changed GitHub.
 
 Once automatic recovery for an escalation is terminal — the manager returned `HUMAN`,
 its command could not run (an explicit *unable to diagnose*, never a fabricated
-diagnosis), `manager.rounds` is exhausted, or no manager is configured — `factory manage`
+diagnosis), `manager.rounds` is exhausted, no manager is configured, or the escalation
+loop can never act again (its decision could not be applied to GitHub, its packet is
+gone, or its escalation comment was never receipted so takeover detection cannot clear
+it, as for escalations recorded before this version) — `factory manage`
 publishes **one** request comment for that escalation generation (`<ticket>/<round>`):
 a concrete question, bounded public links (PR, the recorded escalation and manager
 comments), a proposed next step, the routed owner or candidates, and the step-by-step

@@ -86,6 +86,9 @@ elif a[:2] == ["issue", "comment"]:
         time.sleep(2)
     print(url)
 elif a[:2] == ["issue", "edit"]:
+    if s.get("fail_edit"):
+        print("HTTP 502", file=sys.stderr)
+        raise SystemExit(1)
     names = [l["name"] for l in issue["labels"]]
     for i, token in enumerate(a):
         if token == "--add-label" and a[i + 1] not in names:
@@ -240,6 +243,10 @@ class HandoffCli(unittest.TestCase):
         self.assertEqual(len(self.requests()), 1)
         self.assertEqual([e["request"] for e in self.events("handoff")], ["7/1"])
         self.assertFalse(any(e["kind"] == "handoff" for e in self.events("comment")))
+        before = (self.factory / "events.jsonl").read_bytes()
+        proc = self.manage("--dry-run")  # reads and reports; never journals the reconciled receipt
+        self.assertIn("already published to @auth-owner; nothing to notify", proc.stdout)
+        self.assertEqual((self.factory / "events.jsonl").read_bytes(), before)
         self.manage()
         receipts = [e for e in self.events("comment") if e["kind"] == "handoff"]
         self.assertEqual([(r["request"], r["comment"], r.get("reconciled")) for r in receipts],
@@ -307,6 +314,56 @@ class HandoffCli(unittest.TestCase):
                 self.assertEqual(self.events("manage"), [])
                 self.assertEqual(self.requests(), [])
                 self.assertEqual([l["name"] for l in self.state["issue"]["labels"]], ["ready-for-human"])
+        with self.subTest(activity="published handoff of the previous generation"):
+            self.reset()
+            self.escalate("gate failed again", 1)
+            self.manage(mode="HUMAN")  # generation 1 ends with a routed request on the timeline
+            self.assertEqual(len(self.requests()), 1)
+            self.state["issue"]["labels"] = [{"name": "ready-for-human"}]
+            self.escalate("gate failed once more", 2, at="2026-01-01T00:05:00Z")
+            self.manage(mode="RETRY")
+            self.assertTrue(self.ran.exists())
+            self.assertEqual([e["decision"] for e in self.events("manage")], ["HUMAN", "RETRY"])
+
+    def test_unreceipted_escalations_publish_but_a_failed_post_does_not_strand_the_manager(self) -> None:
+        # Legacy journal: the escalation comment exists on GitHub but was never receipted.
+        self.reset()
+        self.escalate("gate failed", 1)
+        rows = [json.loads(line) for line in (self.factory / "events.jsonl").read_text().splitlines()]
+        (self.factory / "events.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows if r["event"] != "comment"))
+        self.manage(mode="RETRY")
+        self.assertFalse(self.ran.exists())  # its own unreceipted comment cannot be told from a human's
+        self.assertEqual(len(self.requests()), 1)
+        self.assertIn("the escalation comment was not journaled", self.requests()[0]["body"])
+        self.manage(mode="RETRY")
+        self.assertEqual(len(self.requests()), 1)
+        # The comment never reached GitHub: only the escalation's own label churn is on the timeline.
+        self.reset()
+        self.escalate("gate failed", 1)
+        (self.factory / "events.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows if r["event"] != "comment"))
+        self.state["timeline"] = [item for item in self.state["timeline"] if item["event"] != "commented"]
+        self.manage(mode="RETRY")
+        self.assertTrue(self.ran.exists())
+        self.assertEqual([e["decision"] for e in self.events("manage")], ["RETRY"])
+        self.assertEqual((self.requests(), [l["name"] for l in self.state["issue"]["labels"]]), ([], ["ready-for-agent"]))
+
+    def test_unapplied_decision_and_missing_packet_are_terminal(self) -> None:
+        proc = self.manage(mode="RETRY", fail_edit=True)  # decision recorded, comment posted, relabel failed
+        self.assertIn("manager decision application failed", proc.stdout)
+        self.assertEqual([e["decision"] for e in self.events("manage")], ["RETRY"])
+        self.assertEqual(len(self.requests()), 1)
+        self.assertIn("the manager's RETRY decision could not be applied to GitHub", self.requests()[0]["body"])
+        self.manage(mode="RETRY")
+        self.assertEqual((len(self.requests()), len(self.events("manage"))), (1, 1))
+
+        self.reset()
+        self.escalate("gate failed", 1)
+        self.packet.unlink()
+        self.manage(mode="RETRY")
+        self.assertFalse(self.ran.exists())
+        self.assertEqual(len(self.requests()), 1)
+        self.assertIn("the escalation packet is missing on the runner", self.requests()[0]["body"])
+        self.packet.write_text("# Escalation #7\n")
 
     def test_each_terminal_manager_path_publishes_once_and_recovery_never_notifies(self) -> None:
         proc = self.manage("--dry-run", mode="HUMAN")
@@ -417,18 +474,27 @@ class ReceiptTest(unittest.TestCase):
 
     def test_terminal_reasons_and_public_redaction(self) -> None:
         cfg = config.Config(Path("/nonexistent"), REPO, manager=["m"], manager_rounds=1)
-        escalation = {"event": "escalate", "round": 1}
-        self.assertIsNone(handoff.terminal(cfg, [escalation], escalation))
-        frontier_row = {"event": "manage", "round": 1, "pr": 9, "decision": "FIX"}
-        self.assertIn("spent by its PR #9 FIX decision", handoff.terminal(cfg, [escalation, frontier_row], escalation))
-        self.assertIsNone(handoff.terminal(cfg, [escalation, {**frontier_row, "round": 2}], escalation))
-        self.assertIsNone(handoff.terminal(cfg, [escalation, {"event": "manage", "round": 1, "decision": "RETRY"}], escalation))
-        self.assertIn("asked for a human", handoff.terminal(cfg, [escalation, {"event": "manage", "round": 1, "decision": "HUMAN"}], escalation))
-        self.assertIn("could not run", handoff.terminal(
-            cfg, [escalation, {"event": "escalate", "round": 1, "reason": "manager_failed"},
-                  {"event": "manage", "round": 1, "decision": "HUMAN"}], escalation))
-        self.assertIn("exhausted", handoff.terminal(cfg, [], {"round": 2}))
-        self.assertIn("no manager", handoff.terminal(config.Config(Path("/nonexistent"), REPO), [], escalation))
+        with tempfile.NamedTemporaryFile(suffix=".md") as packet:
+            escalation = {"event": "escalate", "round": 1, "at": AT, "packet": packet.name}
+            receipt = {"event": "comment", "kind": "escalation", "at": AT, "comment": 101}
+            eligible = [escalation, receipt]
+            self.assertIsNone(handoff.terminal(cfg, eligible, escalation))
+            self.assertIn("not journaled", handoff.terminal(cfg, [escalation], escalation))
+            self.assertIn("packet is missing", handoff.terminal(cfg, eligible, {**escalation, "packet": packet.name + ".gone"}))
+            frontier_row = {"event": "manage", "round": 1, "pr": 9, "decision": "FIX"}
+            self.assertIn("spent by its PR #9 FIX decision", handoff.terminal(cfg, eligible + [frontier_row], escalation))
+            self.assertIsNone(handoff.terminal(cfg, eligible + [{**frontier_row, "round": 2}], escalation))
+            retry = {"event": "manage", "round": 1, "decision": "RETRY", "execution_id": "x1"}
+            self.assertIsNone(handoff.terminal(cfg, eligible + [retry], escalation))
+            failed_exit = {"event": "lifecycle", "kind": "exit", "outcome": "mechanism_failure", "execution_id": "x1"}
+            self.assertIn("RETRY decision could not be applied", handoff.terminal(cfg, eligible + [retry, failed_exit], escalation))
+            self.assertIsNone(handoff.terminal(cfg, eligible + [retry, {**failed_exit, "execution_id": "other"}], escalation))
+            self.assertIn("asked for a human", handoff.terminal(cfg, eligible + [{"event": "manage", "round": 1, "decision": "HUMAN"}], escalation))
+            self.assertIn("could not run", handoff.terminal(
+                cfg, eligible + [{"event": "escalate", "round": 1, "reason": "manager_failed"},
+                                 {"event": "manage", "round": 1, "decision": "HUMAN"}], escalation))
+            self.assertIn("exhausted", handoff.terminal(cfg, [], {"round": 2}))
+            self.assertIn("no manager", handoff.terminal(config.Config(Path("/nonexistent"), REPO), [], escalation))
         self.assertEqual(handoff.public("see https://github.com/acme/widgets/pull/9 and /home/me/.factory/wt-7 or a/b"),
                          "see https://github.com/acme/widgets/pull/9 and (local path withheld) or a/b")
 
