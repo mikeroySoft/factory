@@ -78,6 +78,10 @@ body.busy .progress-line i { animation:progress 120s cubic-bezier(.1,.5,.2,1) fo
 .transcript > *, .composer > * { width:100%; max-width:860px; margin-left:auto; margin-right:auto; }
 .msg { display:grid; gap:9px; max-width:860px; padding-left:14px; border-left:2px solid var(--border-strong); }
 .msg.assistant { border-color:var(--accent); }
+.msg.user { justify-items:end; padding:0 14px 0 0; border-left:0; border-right:2px solid var(--border-strong); }
+.msg.user .who { width:min(78%,680px); justify-content:flex-end; }
+.msg.user .who .copy { order:-1; margin:0 auto 0 0; }
+.msg.user .body { width:fit-content; max-width:78%; padding:9px 12px; border-radius:5px; background:var(--surface-sunken); text-align:left; }
 .who { display:flex; align-items:center; gap:9px; color:var(--text-secondary); font-size:10px; letter-spacing:.13em; text-transform:uppercase; }
 .who b { color:var(--accent); }
 .who time { color:var(--text-muted); letter-spacing:0; text-transform:none; }
@@ -127,6 +131,7 @@ dialog::backdrop { background:#000a; backdrop-filter:blur(3px); }
 .dialog-body { display:grid; gap:10px; padding:16px; }
 .dialog-body pre { max-height:55dvh; margin:0; overflow:auto; color:var(--text-secondary); font:11px/1.6 var(--font-mono); white-space:pre-wrap; }
 @media (max-width:1180px) { .dock { display:none; } }
+@media (max-width:600px) { .msg.user .who { width:88%; } .msg.user .body { max-width:88%; } }
 @media (max-width:800px) { .rail { display:none; } .topbar { grid-template-columns:1fr; } .nav { justify-content:flex-start; } .meta { grid-column:1; } .shell { grid-template-columns:minmax(0,1fr); } .chat-head { padding-inline:12px; } .transcript,.composer { padding-inline:12px; } }
 @media (prefers-reduced-motion:reduce) { *,*::before,*::after { animation-duration:.01ms !important; transition-duration:.01ms !important; scroll-behavior:auto !important; } }
 </style>
@@ -188,6 +193,7 @@ const now = () => new Date().toISOString();
 const current = () => S.conversations.find(conversation => conversation.id===S.active);
 const ticket = number => S.snap?.tickets.find(item => item.number===number);
 const fmtTime = value => value ? new Date(value).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '—';
+const fmtDate = value => value ? new Date(value).toLocaleDateString([], {weekday:'long',year:'numeric',month:'long',day:'numeric'}) : 'Unknown date';
 const ago = value => { const seconds=Math.max(0,(Date.now()-Date.parse(value))/1000); return seconds<60?'now':seconds<3600?`${Math.round(seconds/60)}m ago`:seconds<86400?`${Math.round(seconds/3600)}h ago`:`${Math.round(seconds/86400)}d ago`; };
 const scopeLabel = scope => scope?.kind==='ticket' ? `#${scope.number} · ${ticket(scope.number)?.title || 'case'}` : scope?.kind==='run' ? `run · ${fmtTime(scope.started)}` : 'Factory overview';
 function motion(el, values, options={}) { if (!el || reduced.matches) return; animate(el, values, {duration:.2,...options}); }
@@ -242,7 +248,7 @@ function cited(text,sources) { const fragment=document.createDocumentFragment(),
 function messageNode(message) {
   const assistant=message.role==='assistant', body=h('div',{class:'body'});
   if (assistant) body.append(cited(message.content,message.sources)); else body.textContent=message.content;
-  return h('article',{class:`msg ${message.role}`},h('div',{class:'who'},assistant?h('b',{},'Factory Manager'):'You',h('time',{},fmtTime(message.at)),h('button',{class:'copy',type:'button',onclick:()=>navigator.clipboard?.writeText(message.content)},'copy')),body,assistant&&message.sources?.length?h('button',{class:'sm ghost',type:'button',style:{justifySelf:'start'},onclick:()=>openSource(message.sources[0])},`Evidence · ${message.sources.length} sources`):null);
+  return h('article',{class:`msg ${message.role}`},h('div',{class:'who'},assistant?h('b',{},'Factory Manager'):'You',h('time',{datetime:message.at,title:fmtDate(message.at)},fmtTime(message.at)),h('button',{class:'copy',type:'button',onclick:()=>navigator.clipboard?.writeText(message.content)},'copy')),body,assistant&&message.sources?.length?h('button',{class:'sm ghost',type:'button',style:{justifySelf:'start'},onclick:()=>openSource(message.sources[0])},`Evidence · ${message.sources.length} sources`):null);
 }
 function quickPrompts() { const item=current(), number=item.scope?.kind==='ticket'?item.scope.number:null; return number?[`What should happen next for #${number}?`,`What evidence is missing for #${number}?`,`Summarize the latest attempt for #${number}`]:["What's waiting on me?",'Summarize current in-flight work','Is the dispatcher healthy?']; }
 function renderTranscript(fresh=false) {
