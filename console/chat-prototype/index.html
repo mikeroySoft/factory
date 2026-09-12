@@ -151,11 +151,15 @@ kbd { border: 1px solid var(--border-strong); border-radius: 3px; padding: 0 5px
 .search:focus { outline: none; border-color: var(--accent); }
 
 /* ---------- variant A · console ---------- */
-.va { display: grid; grid-template-columns: 272px minmax(0, 1fr) 320px; height: calc(100dvh - var(--top) - 96px); }
-.va .rail { border-right: 1px solid var(--border-hairline); display: flex; flex-direction: column; min-height: 0; overflow: hidden; width: 272px; }
+.va { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; height: calc(100dvh - var(--top) - 96px); }
+.slide { overflow: hidden; flex: none; min-width: 0; }
+.slide[aria-hidden=true] { border-color: transparent !important; }
+.va .rail { border-right: 1px solid var(--border-hairline); width: 272px; }
+.va .rail-in { width: 272px; height: 100%; display: flex; flex-direction: column; min-height: 0; }
 .va .rail .rh { padding: 14px 12px 8px; display: grid; gap: 8px; }
 .va .rail .rl { flex: 1; overflow: auto; padding: 0 6px 12px; }
-.va .dock { border-left: 1px solid var(--border-hairline); overflow: auto; padding: 14px 16px; display: grid; gap: 18px; align-content: start; font-size: 12px; }
+.va .dock { border-left: 1px solid var(--border-hairline); width: 320px; }
+.va .dock-in { width: 320px; height: 100%; overflow: auto; padding: 14px 16px; display: grid; gap: 18px; align-content: start; font-size: 12px; }
 .va .dock section { display: grid; gap: 8px; }
 .va .dock h3 { margin: 0; font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--text-muted); }
 .va .dock .case { display: grid; gap: 2px; padding: 8px 10px; border: 1px solid var(--border-hairline); border-radius: var(--radius-sm); text-align: left; min-height: 0; }
@@ -167,16 +171,18 @@ kbd { border: 1px solid var(--border-strong); border-radius: 3px; padding: 0 5px
 .va .dock .src b { color: var(--accent); font-weight: 500; }
 .va .dock .src.lit { background: var(--accent-tint-strong); }
 .va .composer .status { order: 1; }
-@media (max-width: 1180px) { .va { grid-template-columns: 240px minmax(0, 1fr); } .va .dock { display: none; } }
-@media (max-width: 800px) { .va { grid-template-columns: minmax(0, 1fr); } .va .rail { display: none; } }
+.va .chat-head .tog { min-height: 32px; padding: 4px 10px; font-size: 11px; }
+@media (max-width: 1180px) { .va .dock { display: none; } }
+@media (max-width: 800px) { .va .rail { display: none; } }
 
 /* ---------- variant B · focus ---------- */
-.vb { max-width: 780px; margin: 0 auto; padding: 0 clamp(12px, 3vw, 24px); display: flex; flex-direction: column; min-height: calc(100dvh - var(--top)); }
+.vb-shell { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; }
+.vb { max-width: 780px; margin: 0 auto; padding: 0 clamp(12px, 3vw, 24px); display: flex; flex-direction: column; min-height: calc(100dvh - var(--top)); min-width: 0; }
 .vb .strip { display: flex; align-items: center; gap: 10px; padding: 14px 0 10px; font-size: 11px; color: var(--text-secondary); position: sticky; top: var(--top); z-index: 10; background: var(--surface-page); }
 .vb .strip .crumbs { display: flex; gap: 10px; align-items: center; min-width: 0; }
 .vb .strip .crumbs b { color: var(--text-primary); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .vb .strip .spacer { flex: 1; }
-.vb .transcript { padding: 12px 0 270px; gap: 28px; overflow: visible; }
+.vb .transcript { padding: 12px 0 24px; gap: 28px; overflow: visible; }
 .vb .msg { max-width: none; }
 .vb .msg.fm { border-left: 0; padding-left: 0; }
 .vb .msg.fm .body { font: 400 19px/1.55 var(--font-display); color: var(--cream-50); letter-spacing: .005em; }
@@ -184,16 +190,16 @@ kbd { border: 1px solid var(--border-strong); border-radius: 3px; padding: 0 5px
 .vb .msg.user { border-left: 0; padding: 0; }
 .vb .msg.user .body { font-size: 14px; color: var(--text-secondary); }
 .vb .msg.user .body::before { content: '› '; color: var(--accent); }
-.vb .composer { position: fixed; left: 0; right: 0; margin: 0 auto; bottom: 88px; width: min(780px, calc(100% - 24px)); border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: rgba(13, 12, 10, .88); backdrop-filter: blur(12px); box-shadow: 0 20px 60px #000a; padding: 10px 14px 12px; z-index: 15; }
+.vb .composer { position: sticky; bottom: 88px; margin: 16px 0 0; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: rgba(13, 12, 10, .88); backdrop-filter: blur(12px); box-shadow: 0 20px 60px #000a; padding: 10px 14px 12px; z-index: 15; }
 .vb .composer .menu { left: 14px; right: 14px; }
-.vb .palette-scrim { position: fixed; inset: 0; background: rgba(13, 12, 10, .7); backdrop-filter: blur(3px); z-index: 40; }
-.vb .palette { position: fixed; left: 0; right: 0; margin: 0 auto; top: 12vh; width: min(640px, calc(100% - 24px)); background: var(--surface-inset); border: 1px solid var(--border-strong); border-radius: var(--radius-lg); box-shadow: 0 30px 90px #000c; z-index: 41; display: grid; grid-template-rows: auto 1fr; max-height: 70vh; overflow: hidden; }
-.vb .palette .search { border: 0; border-bottom: 1px solid var(--border-hairline); border-radius: 0; background: transparent; min-height: 52px; padding: 14px 16px; font-size: 14px; }
-.vb .palette .pl { overflow: auto; padding: 6px; }
-.vb .palette .hist button { padding: 10px 12px; }
-.vb .palette .cmd { display: flex; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 0; min-height: 0; border-radius: var(--radius-sm); font-size: 12px; text-align: left; }
-.vb .palette .cmd small { color: var(--text-muted); }
-.vb .palette .hint { padding: 8px 14px; border-top: 1px solid var(--border-hairline); font-size: 10px; color: var(--text-muted); display: flex; gap: 14px; }
+.vb-shell .palette { position: sticky; top: var(--top); height: calc(100dvh - var(--top) - 96px); width: 0; border-right: 1px solid var(--border-hairline); background: var(--surface-sunken); }
+.vb .palette-in { width: 360px; height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+.vb-shell .palette .search { border: 0; border-bottom: 1px solid var(--border-hairline); border-radius: 0; background: transparent; min-height: 52px; padding: 14px 16px; font-size: 14px; }
+.vb-shell .palette .pl { overflow: auto; padding: 6px; }
+.vb-shell .palette .hist button { padding: 10px 12px; }
+.vb-shell .palette .cmd { display: flex; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 0; min-height: 0; border-radius: var(--radius-sm); font-size: 12px; text-align: left; }
+.vb-shell .palette .cmd small { color: var(--text-muted); }
+.vb-shell .palette .hint { padding: 8px 14px; border-top: 1px solid var(--border-hairline); font-size: 10px; color: var(--text-muted); display: flex; gap: 14px; }
 .vb .toolbelt { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
 
 /* ---------- variant C · workbench ---------- */
@@ -204,11 +210,14 @@ kbd { border: 1px solid var(--border-strong); border-radius: 3px; padding: 0 5px
 .vc .sessions button[aria-current=page] { background: var(--surface-panel); border-color: var(--border-hairline); color: var(--text-primary); }
 .vc .sessions .tabline { position: absolute; bottom: -1px; height: 2px; background: var(--accent); width: 0; pointer-events: none; }
 .vc .sessions .plus { margin-left: 4px; border: 1px dashed var(--border-strong); border-bottom: 0; }
-.vc .split { display: grid; grid-template-columns: minmax(360px, 46%) minmax(0, 1fr); min-height: 0; }
-.vc .chat { border-right: 1px solid var(--border-hairline); background: var(--surface-panel); }
+.vc .split { display: grid; grid-template-columns: minmax(0, 1fr) auto; min-height: 0; }
+.vc .chat { background: var(--surface-panel); }
+.vc .chat-head .tog { min-height: 32px; padding: 4px 10px; font-size: 11px; }
 .vc .transcript { padding: 16px; gap: 14px; }
 .vc .msg { max-width: none; }
-.vc .bench { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; background: var(--surface-page); }
+.vc .bench { width: 0; border-left: 1px solid var(--border-hairline); background: var(--surface-page); }
+.vc .bench-in { width: 720px; height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; }
+.vc .bench .bt .close { margin-left: 4px; min-height: 30px; padding: 0 8px; font-size: 12px; border-color: transparent; }
 .vc .bench .bt { display: flex; align-items: center; gap: 2px; padding: 8px 10px 0; border-bottom: 1px solid var(--border-hairline); overflow-x: auto; position: relative; min-height: 46px; }
 .vc .bench .bt button { border: 1px solid transparent; border-bottom: 0; border-radius: var(--radius-sm) var(--radius-sm) 0 0; min-height: 36px; padding: 4px 12px; font-size: 11px; white-space: nowrap; display: flex; gap: 8px; align-items: center; }
 .vc .bench .bt button[aria-selected=true] { background: var(--surface-sunken); border-color: var(--border-hairline); color: var(--text-primary); }
@@ -228,7 +237,7 @@ kbd { border: 1px solid var(--border-strong); border-radius: 3px; padding: 0 5px
 .vc .bench .caselist button small { margin-left: auto; color: var(--text-muted); }
 .vc .bench .diff { font-size: 11px; }
 .vc .bench .diff .add { color: var(--status-ok); } .vc .bench .diff .del { color: var(--status-danger); }
-@media (max-width: 900px) { .vc .split { grid-template-columns: minmax(0, 1fr); } .vc .bench { display: none; } }
+@media (max-width: 900px) { .vc .bench { display: none; } }
 
 /* ---------- variant D · thread ---------- */
 .vd { display: grid; grid-template-columns: minmax(0, 1fr) 88px; max-width: 1100px; margin: 0 auto; }
@@ -414,7 +423,9 @@ const VARIANTS = {
   C: ['Workbench', 'Sessions as tabs. The conversation drives an evidence workbench beside it.'],
   D: ['Thread', 'One continuous thread with factory events woven in. History is the scrollback.'],
 };
-const S = { variant: 'A', conv: 'c1', pending: null, scopes: [], palette: false, filter: '', menu: null, bench: { tabs: ['snapshot'], active: 'snapshot' }, lit: null };
+const S = { variant: 'A', conv: 'c1', pending: null, scopes: [], palette: false, filter: '', menu: null, bench: { tabs: ['snapshot'], active: 'snapshot', open: false }, lit: null, ui: { rail: true, dock: true } };
+// Spring a side panel's width; neighbours reflow because the grid column is `auto`.
+function slide(el, open, width) { el.setAttribute('aria-hidden', String(!open)); el.inert = !open; return motion(el, { width: open ? width : 0 }, { spring: true }); }
 const conv = () => CONVERSATIONS.find(c => c.id === S.conv);
 
 // ---------------------------------------------------------------- shared pieces
@@ -517,7 +528,11 @@ function pick(menu, kind) {
 function chatPane() {
   const c = conv();
   return h('section', { class: 'chat', 'aria-label': 'Conversation' },
-    S.variant !== 'B' && S.variant !== 'D' && h('header', { class: 'chat-head' }, h('h2', {}, c.title), c.cases.map(n => caseChip(n, () => openCase(n))), h('span', { class: 'spacer' }), h('span', { class: 'faint', style: 'font-size:11px' }, `started ${ago(c.at)} · ${c.messages.length} messages`), h('button', { class: 'sm', onclick: newConv }, 'New conversation')),
+    S.variant !== 'B' && S.variant !== 'D' && h('header', { class: 'chat-head' },
+      S.variant === 'A' && h('button', { class: 'tog tog-rail', 'aria-pressed': String(S.ui.rail), 'aria-label': 'Toggle conversations', title: '[', onclick: () => setRail(!S.ui.rail) }, '☰'),
+      h('h2', {}, c.title), c.cases.map(n => caseChip(n, () => openCase(n))), h('span', { class: 'spacer' }), h('span', { class: 'faint', style: 'font-size:11px' }, `started ${ago(c.at)} · ${c.messages.length} messages`), h('button', { class: 'sm', onclick: newConv }, 'New conversation'),
+      S.variant === 'A' && h('button', { class: 'tog tog-dock', 'aria-pressed': String(S.ui.dock), title: ']', onclick: () => setDock(!S.ui.dock) }, 'Context'),
+      S.variant === 'C' && h('button', { class: 'tog', 'aria-pressed': String(S.bench.open), title: ']', onclick: () => setBench(!S.bench.open) }, `Workbench · ${S.bench.tabs.length}`)),
     h('div', { class: 'transcript', id: 'transcript', role: 'log', 'aria-live': 'polite' }), composer());
 }
 
@@ -564,7 +579,6 @@ async function send(text) {
   fm.pending = false; fm.streamed = null; S.pending = null;
   motion(bar.firstElementChild, { width: '100%' }); setTimeout(() => { if (!S.pending) bar.hidden = true; }, motionOn() ? 320 : 0);
   setLed('ok', 'Factory Manager ready');
-  if (S.variant === 'C' && fm.sources[0]) openBench(fm.card ? `case:${fm.card}` : `src:${fm.sources[0]}`);
   renderHistory(); renderTranscript(true); state();
 }
 function tick(label) { const t = document.querySelector('.ticker'); if (t) { t.replaceChildren(h('span', { class: 'spinner' }), label); motion(t, { opacity: [0, 1], x: [8, 0] }); } const d = document.querySelector('.dock-trace'); if (d) { d.replaceChildren(h('div', { class: 'row live' }, h('i'), label)); } }
@@ -572,13 +586,13 @@ function setLed(cls, text) { $('led').className = 'led ' + cls; $('led-text').te
 function newConv() {
   const id = 'c' + (CONVERSATIONS.length + 1);
   CONVERSATIONS.unshift({ id, title: 'New conversation', at: new Date(NOW + 60000).toISOString(), cases: [], messages: [] });
-  S.conv = id; S.scopes = []; S.palette = false; S.filter = ''; S.bench = { tabs: ['snapshot'], active: 'snapshot' };
+  S.conv = id; S.scopes = []; S.palette = false; S.filter = ''; S.bench = { tabs: ['snapshot'], active: 'snapshot', open: false };
   renderApp(); document.querySelector('.composer textarea')?.focus();
 }
-function switchConv(id) { if (S.pending) return; S.conv = id; S.palette = false; S.scopes = []; S.bench = { tabs: ['snapshot'], active: 'snapshot' }; renderApp(); }
+function switchConv(id) { if (S.pending) return; S.conv = id; S.palette = false; S.scopes = []; S.bench = { tabs: ['snapshot'], active: 'snapshot', open: false }; renderApp(); }
 function openCase(n) {
   if (S.variant === 'C') openBench(`case:${n}`);
-  else if (S.variant === 'A') { const el = $(`dock-case-${n}`); if (el) { el.scrollIntoView({ block: 'nearest' }); motion(el, { scale: [1.04, 1], borderColor: ['var(--accent)', 'var(--border-hairline)'] }, { spring: true }); } else addScope({ kind: 'case', n }); }
+  else if (S.variant === 'A') { if (!S.ui.dock) setDock(true); const el = $(`dock-case-${n}`); if (el) { el.scrollIntoView({ block: 'nearest' }); motion(el, { scale: [1.04, 1], borderColor: ['var(--accent)', 'var(--border-hairline)'] }, { spring: true }); } else addScope({ kind: 'case', n }); }
   else addScope({ kind: 'case', n });
   state();
 }
@@ -614,17 +628,19 @@ function renderContext() {
 }
 
 // A ---------------------------------------------------------------
+function setRail(open) { S.ui.rail = open; const el = document.querySelector('.va .rail'); if (el) slide(el, open, 272); document.querySelector('.va .tog-rail')?.setAttribute('aria-pressed', String(open)); state(); }
+function setDock(open) { S.ui.dock = open; const el = document.querySelector('.va .dock'); if (el) slide(el, open, 320); document.querySelector('.va .tog-dock')?.setAttribute('aria-pressed', String(open)); state(); }
 function variantA() {
   const dockCase = n => { const c = CASES[n]; return h('button', { class: 'case', id: `dock-case-${n}`, onclick: () => addScope({ kind: 'case', n }) }, h('span', { class: 'ct' }, h('b', {}, `#${n}`), h('span', {}, c.title)), h('small', {}, c.meta)); };
   return h('div', { class: 'va' },
-    h('aside', { class: 'rail', 'aria-label': 'Conversations' }, h('div', { class: 'rh' }, h('button', { class: 'primary', onclick: newConv }, '+ New conversation'), h('input', { class: 'search', type: 'search', placeholder: 'Search conversations', 'aria-label': 'Search conversations', value: S.filter, oninput: e => { S.filter = e.target.value; renderHistory(); } })), h('div', { class: 'rl', id: 'rail-list' })),
+    h('aside', { class: 'rail slide', 'aria-label': 'Conversations', 'aria-hidden': String(!S.ui.rail), style: `width:${S.ui.rail ? 272 : 0}px` }, h('div', { class: 'rail-in' }, h('div', { class: 'rh' }, h('button', { class: 'primary', onclick: newConv }, '+ New conversation'), h('input', { class: 'search', type: 'search', placeholder: 'Search conversations', 'aria-label': 'Search conversations', value: S.filter, oninput: e => { S.filter = e.target.value; renderHistory(); } })), h('div', { class: 'rl', id: 'rail-list' }))),
     chatPane(),
-    h('aside', { class: 'dock', 'aria-label': 'Live context' },
+    h('aside', { class: 'dock slide', 'aria-label': 'Live context', 'aria-hidden': String(!S.ui.dock), style: `width:${S.ui.dock ? 320 : 0}px` }, h('div', { class: 'dock-in' },
       h('section', {}, h('h3', {}, 'FM activity'), h('div', { class: 'trace dock-trace' })),
       h('section', {}, h('h3', {}, `Waiting on you · ${SNAP.waiting.length}`), SNAP.waiting.map(dockCase)),
       h('section', {}, h('h3', {}, 'In flight'), SNAP.inflight.map(dockCase)),
       h('section', {}, h('h3', {}, 'Cited in this conversation'), h('div', { id: 'dock-sources', style: 'display:grid;gap:2px' })),
-      h('section', {}, h('h3', {}, 'Dispatcher'), h('div', { class: 'faint' }, h('i', { class: 'led ok' }), 'active · 14 runs today · next 22:52'))));
+      h('section', {}, h('h3', {}, 'Dispatcher'), h('div', { class: 'faint' }, h('i', { class: 'led ok' }), 'active · 14 runs today · next 22:52')))));
 }
 // B ---------------------------------------------------------------
 function renderPaletteList(pl) {
@@ -633,18 +649,20 @@ function renderPaletteList(pl) {
 }
 function togglePalette(open) {
   S.palette = open;
-  const p = $('palette'), sc = $('palette-scrim'); if (!p) return;
-  if (open) { p.hidden = sc.hidden = false; S.filter = ''; $('palette-search').value = ''; renderPaletteList($('palette-list')); motion(p, { opacity: [0, 1], scale: [.97, 1] }); motion(sc, { opacity: [0, 1] }); $('palette-search').focus(); }
-  else { motion(p, { opacity: 0, scale: .98 }); motion(sc, { opacity: 0 }); setTimeout(() => { if (!S.palette) { p.hidden = true; sc.hidden = true; } }, motionOn() ? 240 : 0); document.querySelector('.composer textarea')?.focus(); }
+  const p = $('palette'); if (!p) return;
+  slide(p, open, 360);
+  if (open) { S.filter = ''; $('palette-search').value = ''; renderPaletteList($('palette-list')); $('palette-search').focus(); }
+  else document.querySelector('.composer textarea')?.focus();
   state();
 }
 function variantB() {
   const c = conv();
-  return h('div', { class: 'vb' },
-    h('div', { class: 'strip' }, h('div', { class: 'crumbs' }, h('button', { class: 'sm ghost', onclick: () => togglePalette(true) }, '☰ Recent'), h('span', { class: 'faint' }, '/'), h('b', {}, c.title), c.cases.map(n => caseChip(n, () => openCase(n)))), h('span', { class: 'spacer' }), h('span', { class: 'faint' }, `${c.messages.length} messages`), h('button', { class: 'sm ghost', onclick: () => togglePalette(true) }, h('kbd', {}, '⌘K'), ' history & commands'), h('button', { class: 'sm', onclick: newConv }, 'New')),
-    chatPane(),
-    h('div', { class: 'palette-scrim', id: 'palette-scrim', hidden: true, onclick: () => togglePalette(false) }),
-    h('div', { class: 'palette', id: 'palette', hidden: true, role: 'dialog', 'aria-label': 'History and commands' }, h('input', { class: 'search', id: 'palette-search', type: 'search', placeholder: 'Search conversations, cases, or type a command', oninput: e => { S.filter = e.target.value; renderPaletteList($('palette-list')); } }), h('div', { class: 'pl', id: 'palette-list' }), h('div', { class: 'hint' }, h('span', {}, h('kbd', {}, 'Esc'), ' close'), h('span', {}, h('kbd', {}, '↵'), ' open'), h('span', {}, 'Conversations stay in this browser session'))));
+  return h('div', { class: 'vb-shell' },
+    h('aside', { class: 'palette slide', id: 'palette', 'aria-label': 'History and commands', 'aria-hidden': String(!S.palette), style: `width:${S.palette ? 360 : 0}px` },
+      h('div', { class: 'palette-in' }, h('input', { class: 'search', id: 'palette-search', type: 'search', placeholder: 'Search conversations, cases, or type a command', oninput: e => { S.filter = e.target.value; renderPaletteList($('palette-list')); } }), h('div', { class: 'pl', id: 'palette-list' }), h('div', { class: 'hint' }, h('span', {}, h('kbd', {}, 'Esc'), ' close'), h('span', {}, h('kbd', {}, '⌘K'), ' toggle'), h('span', {}, 'Conversations stay in this browser session')))),
+    h('div', { class: 'vb' },
+      h('div', { class: 'strip' }, h('div', { class: 'crumbs' }, h('button', { class: 'sm ghost', 'aria-pressed': String(S.palette), onclick: () => togglePalette(!S.palette) }, '☰ Recent'), h('span', { class: 'faint' }, '/'), h('b', {}, c.title), c.cases.map(n => caseChip(n, () => openCase(n)))), h('span', { class: 'spacer' }), h('span', { class: 'faint' }, `${c.messages.length} messages`), h('button', { class: 'sm ghost', onclick: () => togglePalette(!S.palette) }, h('kbd', {}, '⌘K'), ' history & commands'), h('button', { class: 'sm', onclick: newConv }, 'New')),
+      chatPane()));
 }
 // C ---------------------------------------------------------------
 function renderSessions(tabs) {
@@ -661,18 +679,29 @@ function benchBody(key) {
 }
 function openBench(key) {
   if (!S.bench.tabs.includes(key)) S.bench.tabs.push(key);
-  S.bench.active = key; renderBench(true); state();
+  S.bench.active = key; renderBench(true); if (!S.bench.open) setBench(true); state();
 }
 function renderBench(animateBody = false) {
   const bt = $('bench-tabs'), bb = $('bench-body'); if (!bt) return;
-  bt.replaceChildren(...S.bench.tabs.map(k => h('button', { role: 'tab', 'aria-selected': k === S.bench.active ? 'true' : 'false', onclick: () => { S.bench.active = k; renderBench(true); } }, benchTab(k), k !== 'snapshot' && h('span', { class: 'x', role: 'button', 'aria-label': 'Close tab', onclick: e => { e.stopPropagation(); S.bench.tabs = S.bench.tabs.filter(x => x !== k); if (S.bench.active === k) S.bench.active = S.bench.tabs.at(-1); renderBench(true); } }, '×'))), h('span', { class: 'ticker' }));
+  bt.replaceChildren(...S.bench.tabs.map(k => h('button', { role: 'tab', 'aria-selected': k === S.bench.active ? 'true' : 'false', onclick: () => { S.bench.active = k; renderBench(true); } }, benchTab(k), k !== 'snapshot' && h('span', { class: 'x', role: 'button', 'aria-label': 'Close tab', onclick: e => { e.stopPropagation(); S.bench.tabs = S.bench.tabs.filter(x => x !== k); if (S.bench.active === k) S.bench.active = S.bench.tabs.at(-1); renderBench(true); } }, '×'))), h('span', { class: 'ticker' }), h('button', { class: 'close', 'aria-label': 'Close workbench', title: 'Close workbench', onclick: () => setBench(false) }, '×'));
   bb.replaceChildren(...benchBody(S.bench.active));
   if (animateBody) motion(bb, { opacity: [.2, 1], x: [10, 0] });
+  const tog = document.querySelector('.vc .chat-head .tog'); if (tog) { tog.textContent = `Workbench · ${S.bench.tabs.length}`; tog.setAttribute('aria-pressed', String(S.bench.open)); }
   renderContext();
+}
+function benchWidth() { const split = document.querySelector('.vc .split'); return Math.min(760, Math.max(420, (split?.clientWidth || 1200) * .54)); }
+function setBench(open) {
+  S.bench.open = open;
+  const el = document.querySelector('.vc .bench'); if (!el) return;
+  if (open) el.querySelector('.bench-in').style.width = benchWidth() + 'px';
+  slide(el, open, benchWidth());
+  const tog = document.querySelector('.vc .chat-head .tog'); if (tog) tog.setAttribute('aria-pressed', String(open));
+  state();
 }
 function variantC() {
   return h('div', { class: 'vc' }, h('div', { class: 'sessions', id: 'sessions', role: 'tablist', 'aria-label': 'Conversations' }),
-    h('div', { class: 'split' }, chatPane(), h('section', { class: 'bench', 'aria-label': 'Evidence workbench' }, h('div', { class: 'bt', id: 'bench-tabs', role: 'tablist' }), h('div', { class: 'bb', id: 'bench-body' }))));
+    h('div', { class: 'split' }, chatPane(), h('section', { class: 'bench slide', 'aria-label': 'Evidence workbench', 'aria-hidden': String(!S.bench.open), style: `width:${S.bench.open ? benchWidth() : 0}px` },
+      h('div', { class: 'bench-in', style: `width:${benchWidth()}px` }, h('div', { class: 'bt', id: 'bench-tabs', role: 'tablist' }), h('div', { class: 'bb', id: 'bench-body' })))));
 }
 // D ---------------------------------------------------------------
 function threadNodes() {
@@ -712,6 +741,7 @@ function renderApp() {
   document.body.dataset.variant = S.variant;
   const app = $('app'); app.replaceChildren(RENDER[S.variant]());
   renderHistory(); renderTranscript(); if (S.variant === 'C') renderBench(); renderScopes(); watchDays();
+  document.querySelectorAll('.slide[aria-hidden=true]').forEach(el => { el.inert = true; });
   motion(app, { opacity: [0, 1] });
   state();
 }
@@ -723,7 +753,8 @@ function setVariant(key) {
   renderApp();
 }
 function cycle(step) { const keys = Object.keys(VARIANTS); setVariant(keys[(keys.indexOf(S.variant) + step + keys.length) % keys.length]); }
-function state() { $('state').textContent = `${S.variant} / ${VARIANTS[S.variant][0]} · ${VARIANTS[S.variant][1]}  —  conversation ${S.conv} · ${conv().messages.length} msgs · scopes ${S.scopes.length} · FM ${S.pending ? 'working' : 'idle'}${S.variant === 'C' ? ` · bench ${S.bench.active}` : ''}${S.palette ? ' · palette open' : ''} · motion ${reduced.matches ? 'system-reduced' : $('motion-enabled').checked ? 'on' : 'off'}`; }
+function state() { $('state').textContent = `${S.variant} / ${VARIANTS[S.variant][0]} · ${VARIANTS[S.variant][1]}  —  conversation ${S.conv} · ${conv().messages.length} msgs · scopes ${S.scopes.length} · FM ${S.pending ? 'working' : 'idle'}${S.variant === 'A' ? ` · rail ${S.ui.rail ? 'open' : 'closed'} · dock ${S.ui.dock ? 'open' : 'closed'}` : ''}${S.variant === 'C' ? ` · bench ${S.bench.open ? S.bench.active : 'closed'}` : ''}${S.palette ? ' · palette open' : ''} · motion ${reduced.matches ? 'system-reduced' : $('motion-enabled').checked ? 'on' : 'off'}`; }
+addEventListener('resize', () => { if (S.variant === 'C' && S.bench.open) { const el = document.querySelector('.vc .bench'); el.style.width = benchWidth() + 'px'; el.querySelector('.bench-in').style.width = benchWidth() + 'px'; } });
 const topbar = document.querySelector('.topbar');
 function measureTop() { document.documentElement.style.setProperty('--top', topbar.offsetHeight + 'px'); }
 new ResizeObserver(measureTop).observe(topbar); measureTop();
@@ -731,8 +762,10 @@ $('previous').onclick = () => cycle(-1); $('next').onclick = () => cycle(1);
 $('motion-enabled').onchange = () => { if (!motionOn()) running.forEach(c => c.complete()); state(); }; reduced.addEventListener('change', () => state());
 document.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); if (S.variant === 'B') togglePalette(!S.palette); else document.querySelector('.rail .search, .sessions button[aria-current], .thread .search')?.focus(); return; }
-  if (e.key === 'Escape') { if (S.palette) togglePalette(false); document.querySelectorAll('.menu').forEach(m => { m.hidden = true; }); return; }
+  if (e.key === 'Escape') { if (S.palette) togglePalette(false); else if (S.variant === 'C' && S.bench.open && !e.target.matches('textarea')) setBench(false); document.querySelectorAll('.menu').forEach(m => { m.hidden = true; }); return; }
   if (e.target.matches('input,textarea,select,[contenteditable]')) return;
+  if (e.key === '[' && S.variant === 'A') { setRail(!S.ui.rail); return; }
+  if (e.key === ']') { if (S.variant === 'A') setDock(!S.ui.dock); else if (S.variant === 'C') setBench(!S.bench.open); return; }
   if (e.key === 'ArrowLeft') cycle(-1); else if (e.key === 'ArrowRight') cycle(1);
   else if (e.key === '/') { e.preventDefault(); const ta = document.querySelector('.composer textarea'); if (ta) { ta.focus(); ta.value = '/'; ta.oninput(); } }
 });
