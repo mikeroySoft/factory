@@ -110,8 +110,8 @@ textarea { width:100%; min-height:42px; max-height:180px; padding:9px 0; resize:
 .menu button { display:flex; justify-content:space-between; gap:12px; min-height:36px; border:0; text-align:left; }
 .menu small { color:var(--text-muted); }
 .dock { width:320px; border-left:1px solid var(--border-hairline); }
-.dock-in { display:grid; align-content:start; gap:18px; width:320px; height:100%; padding:14px 16px; overflow:auto; }
-.dock section { display:grid; gap:7px; }
+.dock-in { display:grid; align-content:start; gap:18px; width:100%; min-width:320px; height:100%; padding:14px 16px; overflow:auto; }
+.dock section { display:grid; min-width:0; gap:7px; }
 .dock h3 { margin:0; color:var(--text-muted); font-size:10px; letter-spacing:.14em; text-transform:uppercase; }
 .case, .source-button { display:grid; gap:2px; min-height:0; padding:8px 9px; text-align:left; }
 .case strong { color:var(--accent); }
@@ -124,15 +124,14 @@ textarea { width:100%; min-height:42px; max-height:180px; padding:9px 0; resize:
 .activity .done .dot { border-color:var(--status-ok); background:var(--status-ok); }
 .activity .live .dot { border-color:var(--accent); background:var(--accent); animation:pulse .8s infinite; }
 .error { padding:8px 10px; border-left:3px solid var(--status-danger); color:#efa18f; background:var(--surface-sunken); }
-dialog { width:min(760px,calc(100vw - 32px)); max-height:80dvh; padding:0; border:1px solid var(--border-strong); border-radius:6px; color:var(--text-primary); background:var(--surface-inset); box-shadow:0 24px 80px #000; }
-dialog::backdrop { background:#000a; backdrop-filter:blur(3px); }
-.dialog-head { display:flex; align-items:center; gap:12px; padding:12px 14px; border-bottom:1px solid var(--border-hairline); }
-.dialog-head h2 { margin:0; font-size:14px; }
-.dialog-body { display:grid; gap:10px; padding:16px; }
-.dialog-body pre { max-height:55dvh; margin:0; overflow:auto; color:var(--text-secondary); font:11px/1.6 var(--font-mono); white-space:pre-wrap; }
-@media (max-width:1180px) { .dock { display:none; } }
+.source-inspector { width:100%; min-width:0; overflow:hidden; padding-bottom:16px; border-bottom:1px solid var(--border-hairline); }
+.source-inspector header { display:grid; grid-template-columns:minmax(0,1fr) auto auto; align-items:center; gap:8px; }
+.source-inspector header .spacer { display:none; }
+.source-inspector header h3 { min-width:0; overflow-wrap:anywhere; color:var(--accent); }
+.source-inspector pre { max-height:46dvh; margin:0; overflow:auto; padding:10px 12px; border:1px solid var(--border-hairline); border-radius:5px; color:var(--text-secondary); background:var(--surface-sunken); font:11px/1.6 var(--font-mono); white-space:pre-wrap; }
+@media (max-width:1180px) { .dock { display:none; } .dock.source-open { display:block; } }
 @media (max-width:600px) { .msg.user .who { width:88%; } .msg.user .body { max-width:88%; } }
-@media (max-width:800px) { .rail { display:none; } .topbar { grid-template-columns:1fr; } .nav { justify-content:flex-start; } .meta { grid-column:1; } .shell { grid-template-columns:minmax(0,1fr); } .chat-head { padding-inline:12px; } .transcript,.composer { padding-inline:12px; } }
+@media (max-width:800px) { .rail { display:none; } .topbar { grid-template-columns:1fr; } .nav { justify-content:flex-start; } .meta { grid-column:1; } .shell { grid-template-columns:minmax(0,1fr); } .chat-head { padding-inline:12px; } .transcript,.composer { padding-inline:12px; } .shell.source-mode .chat { display:none; } .shell.source-mode .dock { display:block; width:100% !important; border-left:0; } .shell.source-mode .dock-in { min-width:0; } }
 @media (prefers-reduced-motion:reduce) { *,*::before,*::after { animation-duration:.01ms !important; transition-duration:.01ms !important; scroll-behavior:auto !important; } }
 </style>
 <link rel="stylesheet" href="/theme.css">
@@ -171,6 +170,10 @@ body[data-product="factory"] button { letter-spacing:normal; text-transform:none
     </form>
   </section>
   <aside class="dock slide" aria-label="Live context"><div class="dock-in">
+    <section class="source-inspector" id="source-inspector" hidden>
+      <header><h3 id="source-title">Evidence</h3><span class="spacer"></span><button class="sm" id="source-focus">Use as focus</button><button class="sm" id="source-close">Close</button></header>
+      <p class="faint" id="source-meta"></p><pre id="source-text"></pre>
+    </section>
     <section><h3>FM activity</h3><div class="activity" id="activity"><span class="faint">Idle. Activity appears here while the manager reads evidence.</span></div></section>
     <section><h3 id="waiting-title">Waiting on you</h3><div id="waiting"></div></section>
     <section><h3>In flight</h3><div id="inflight"></div></section>
@@ -178,13 +181,12 @@ body[data-product="factory"] button { letter-spacing:normal; text-transform:none
     <section><h3>Dispatcher</h3><div class="faint" id="dispatcher">—</div></section>
   </div></aside>
 </main>
-<dialog id="source-dialog"><div class="dialog-head"><h2 id="source-title">Evidence</h2><span class="spacer"></span><button class="sm" id="source-focus">Use as focus</button><button class="sm" id="source-close">Close</button></div><div class="dialog-body"><p class="faint" id="source-meta"></p><pre id="source-text"></pre></div></dialog>
 <script src="/motion.js"></script>
 <script>
 'use strict';
 const $ = id => document.getElementById(id);
 const animate = window.Motion?.animate || ((el, values, options) => el.animate(values, options));
-const S = { snap:null, conversations:[], active:null, pending:false, error:'', source:null, storageKey:null, rail:true, dock:true, timer:null };
+const S = { snap:null, conversations:[], active:null, pending:false, error:'', source:null, sourceDockWasOpen:null, storageKey:null, rail:true, dock:true, timer:null };
 const WAITING = new Set(['escalated','needs-info','triage','wontfix']);
 const STAGE = { triage:'var(--stage-triage)', 'needs-info':'var(--stage-needs-info)', queued:'var(--stage-queued)', 'in-flight':'var(--stage-in-flight)', 'pr-open':'var(--stage-pr-open)', escalated:'var(--stage-escalated)', merged:'var(--stage-merged)', closed:'var(--stage-closed)' };
 const reduced = matchMedia('(prefers-reduced-motion:reduce)');
@@ -197,7 +199,7 @@ const fmtDate = value => value ? new Date(value).toLocaleDateString([], {weekday
 const ago = value => { const seconds=Math.max(0,(Date.now()-Date.parse(value))/1000); return seconds<60?'now':seconds<3600?`${Math.round(seconds/60)}m ago`:seconds<86400?`${Math.round(seconds/3600)}h ago`:`${Math.round(seconds/86400)}d ago`; };
 const scopeLabel = scope => scope?.kind==='ticket' ? `#${scope.number} · ${ticket(scope.number)?.title || 'case'}` : scope?.kind==='run' ? `run · ${fmtTime(scope.started)}` : 'Factory overview';
 function motion(el, values, options={}) { if (!el || reduced.matches) return; animate(el, values, {duration:.2,...options}); }
-function setPanel(kind, open) { S[kind]=open; const el=document.querySelector(`.${kind}`), width=kind==='rail'?272:320; el.setAttribute('aria-hidden',String(!open)); el.inert=!open; if (reduced.matches) el.style.width=(open?width:0)+'px'; else motion(el,{width:open?width:0},{type:'spring',bounce:.08,duration:.42}); document.querySelector(`[data-toggle="${kind}"]`)?.setAttribute('aria-pressed',String(open)); }
+function setPanel(kind, open) { S[kind]=open; const el=document.querySelector(`.${kind}`), width=kind==='rail'?272:S.source?Math.min(520,Math.max(360,innerWidth*.42)):320; el.setAttribute('aria-hidden',String(!open)); el.inert=!open; if (reduced.matches) el.style.width=(open?width:0)+'px'; else motion(el,{width:open?width:0},{type:'spring',bounce:.08,duration:.42}); document.querySelector(`[data-toggle="${kind}"]`)?.setAttribute('aria-pressed',String(open)); }
 function conversation() { return {id:crypto.randomUUID?.()||`${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,title:'New conversation',created_at:now(),updated_at:now(),scope:{kind:'factory'},focus:null,draft:'',messages:[]}; }
 function restore() {
   try {
@@ -217,8 +219,8 @@ function save() {
   try { localStorage.setItem(S.storageKey,JSON.stringify({active:S.active,rail:S.rail,dock:S.dock,conversations:S.conversations})); }
   catch (_) { $('storage-note').textContent='Browser history is full or unavailable; recent changes may not survive reload.'; }
 }
-function newConversation() { if (S.pending) return; const item=conversation(); S.conversations.unshift(item); S.active=item.id; S.error=''; save(); renderConversation(); $('question').focus(); }
-function switchConversation(id) { if (S.pending||id===S.active) return; S.active=id; S.error=''; save(); renderConversation(); }
+function newConversation() { if (S.pending) return; closeSource(false); const item=conversation(); S.conversations.unshift(item); S.active=item.id; S.error=''; save(); renderConversation(); $('question').focus(); }
+function switchConversation(id) { if (S.pending||id===S.active) return; closeSource(false); S.active=id; S.error=''; save(); renderConversation(); }
 function setScope(scope) { const item=current(); if (!item||S.pending) return; item.scope=scope; item.focus=null; item.updated_at=now(); save(); renderConversation(); $('question').focus(); }
 function stageChip(item) { return h('span',{class:'scope-chip',style:{'--stage':STAGE[item.stage]||'var(--accent)'}},h('i'),item.stage||'unknown'); }
 function renderHistory() {
@@ -239,11 +241,12 @@ function renderHead() {
     h('span',{class:'scope-chip',style:{'--stage':scoped?STAGE[scoped.stage]:'var(--accent)'}},h('i'),scopeLabel(item.scope)),
     h('span',{class:'spacer'}),h('span',{class:'faint',style:{fontSize:'11px'}},`${item.messages.length} messages`),
     h('button',{class:'sm',type:'button',onclick:newConversation},'New conversation'),
-    h('button',{class:'sm',type:'button','data-toggle':'dock','aria-pressed':String(S.dock),onclick:()=>{setPanel('dock',!S.dock);save();}},'Context')
+    h('button',{class:'sm',type:'button','data-toggle':'dock','aria-pressed':String(S.dock),onclick:()=>{if(S.source)closeSource();else{setPanel('dock',!S.dock);save();}}},'Context')
   );
 }
 function sourceMap(item=current()) { const out=new Map(); for (const message of item.messages) for (const source of message.sources||[]) out.set(source.id,source); return out; }
-function openSource(source) { S.source=source; $('source-title').textContent=`${source.id} · ${source.label}`; $('source-meta').textContent=source.truncated?'This evidence was truncated by the bounded source reader.':'Bounded evidence supplied to the Factory Manager.'; $('source-text').textContent=source.text||'No source text was returned.'; $('source-dialog').showModal(); }
+function openSource(source) { if (!S.source) S.sourceDockWasOpen=S.dock; S.source=source; const dock=document.querySelector('.dock'), inspector=$('source-inspector'); dock.classList.add('source-open'); document.querySelector('.shell').classList.add('source-mode'); inspector.hidden=false; $('source-title').textContent=`${source.id} · ${source.label}`; $('source-meta').textContent=source.truncated?'This evidence was truncated by the bounded source reader.':'Bounded evidence supplied to the Factory Manager.'; $('source-text').textContent=source.text||'No source text was returned.'; setPanel('dock',true); inspector.scrollIntoView({block:'start',behavior:reduced.matches?'auto':'smooth'}); motion(inspector,{opacity:[.35,1],x:[18,0]}); }
+function closeSource(restoreFocus=true) { if (!S.source) return; const wasOpen=S.sourceDockWasOpen; S.source=null; S.sourceDockWasOpen=null; $('source-inspector').hidden=true; document.querySelector('.dock').classList.remove('source-open'); document.querySelector('.shell').classList.remove('source-mode'); setPanel('dock',wasOpen!==false); save(); if (restoreFocus) $('question').focus(); }
 function cited(text,sources) { const fragment=document.createDocumentFragment(), map=new Map((sources||[]).map(source=>[source.id,source])); for (const part of String(text).split(/(\[S\d+\])/g)) { const source=map.get(part.slice(1,-1)); fragment.append(source?h('button',{class:'cite',type:'button',onclick:()=>openSource(source),title:source.label},source.id):part); } return fragment; }
 function messageNode(message) {
   const assistant=message.role==='assistant', body=h('div',{class:'body'});
@@ -313,9 +316,9 @@ $('question').oninput=event=>{ const item=current(); if (!item) return; item.dra
 $('question').onkeydown=event=>{ if (event.key==='Enter'&&!event.shiftKey) { event.preventDefault(); $('composer').requestSubmit(); } };
 document.querySelectorAll('[data-picker]').forEach(button=>button.onclick=()=>openPicker(button.dataset.picker));
 document.addEventListener('pointerdown',event=>{ if (!$('picker').hidden&&!$('picker').contains(event.target)&&!event.target.closest('[data-picker]')) $('picker').hidden=true; });
-document.addEventListener('keydown',event=>{ if (event.key==='Escape') $('picker').hidden=true; if (!event.target.matches('input,textarea')&&event.key==='[') setPanel('rail',!S.rail); if (!event.target.matches('input,textarea')&&event.key===']') setPanel('dock',!S.dock); });
-$('source-close').onclick=()=>$('source-dialog').close();
-$('source-focus').onclick=()=>{ const item=current(); if (item&&S.source) { item.focus=S.source.id; save(); renderScopes(); } $('source-dialog').close(); $('question').focus(); };
+document.addEventListener('keydown',event=>{ if (event.key==='Escape') { $('picker').hidden=true; if (S.source) closeSource(); } if (!event.target.matches('input,textarea')&&event.key==='[') setPanel('rail',!S.rail); if (!event.target.matches('input,textarea')&&event.key===']') { if (S.source) closeSource(); else setPanel('dock',!S.dock); } });
+$('source-close').onclick=()=>closeSource();
+$('source-focus').onclick=()=>{ const item=current(); if (item&&S.source) { item.focus=S.source.id; save(); renderScopes(); } closeSource(); };
 const topbar=document.querySelector('.topbar'); new ResizeObserver(()=>document.documentElement.style.setProperty('--top',topbar.offsetHeight+'px')).observe(topbar);
 setInterval(()=>{ if (S.snap) $('meta-snapshot').textContent=ago(S.snap.generated_at); },10000);
 load();
