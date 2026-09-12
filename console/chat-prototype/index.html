@@ -525,14 +525,21 @@ function pick(menu, kind) {
   const close = e => { if (!menu.contains(e.target)) { menu.hidden = true; document.removeEventListener('pointerdown', close); } };
   setTimeout(() => document.addEventListener('pointerdown', close), 0);
 }
-function chatPane() {
+function chatHead() {
   const c = conv();
+  return h('header', { class: 'chat-head' },
+    S.variant === 'A' && h('button', { class: 'tog tog-rail', 'aria-pressed': String(S.ui.rail), 'aria-label': 'Toggle conversations', title: '[', onclick: () => setRail(!S.ui.rail) }, '☰'),
+    h('h2', {}, c.title), c.cases.map(n => caseChip(n, () => openCase(n))), h('span', { class: 'spacer' }), h('span', { class: 'faint', style: 'font-size:11px' }, `started ${ago(c.at)} · ${c.messages.length} messages`), h('button', { class: 'sm', onclick: newConv }, 'New conversation'),
+    S.variant === 'A' && h('button', { class: 'tog tog-dock', 'aria-pressed': String(S.ui.dock), title: ']', onclick: () => setDock(!S.ui.dock) }, 'Context'),
+    S.variant === 'C' && h('button', { class: 'tog', 'aria-pressed': String(S.bench.open), title: ']', onclick: () => setBench(!S.bench.open) }, `Workbench · ${S.bench.tabs.length}`));
+}
+function stripBar() {
+  const c = conv();
+  return h('div', { class: 'strip' }, h('div', { class: 'crumbs' }, h('button', { class: 'sm ghost', 'aria-pressed': String(S.palette), onclick: () => togglePalette(!S.palette) }, '☰ Recent'), h('span', { class: 'faint' }, '/'), h('b', {}, c.title), c.cases.map(n => caseChip(n, () => openCase(n)))), h('span', { class: 'spacer' }), h('span', { class: 'faint' }, `${c.messages.length} messages`), h('button', { class: 'sm ghost', onclick: () => togglePalette(!S.palette) }, h('kbd', {}, '⌘K'), ' history & commands'), h('button', { class: 'sm', onclick: newConv }, 'New'));
+}
+function chatPane() {
   return h('section', { class: 'chat', 'aria-label': 'Conversation' },
-    S.variant !== 'B' && S.variant !== 'D' && h('header', { class: 'chat-head' },
-      S.variant === 'A' && h('button', { class: 'tog tog-rail', 'aria-pressed': String(S.ui.rail), 'aria-label': 'Toggle conversations', title: '[', onclick: () => setRail(!S.ui.rail) }, '☰'),
-      h('h2', {}, c.title), c.cases.map(n => caseChip(n, () => openCase(n))), h('span', { class: 'spacer' }), h('span', { class: 'faint', style: 'font-size:11px' }, `started ${ago(c.at)} · ${c.messages.length} messages`), h('button', { class: 'sm', onclick: newConv }, 'New conversation'),
-      S.variant === 'A' && h('button', { class: 'tog tog-dock', 'aria-pressed': String(S.ui.dock), title: ']', onclick: () => setDock(!S.ui.dock) }, 'Context'),
-      S.variant === 'C' && h('button', { class: 'tog', 'aria-pressed': String(S.bench.open), title: ']', onclick: () => setBench(!S.bench.open) }, `Workbench · ${S.bench.tabs.length}`)),
+    S.variant !== 'B' && S.variant !== 'D' && chatHead(),
     h('div', { class: 'transcript', id: 'transcript', role: 'log', 'aria-live': 'polite' }), composer());
 }
 
@@ -586,10 +593,23 @@ function setLed(cls, text) { $('led').className = 'led ' + cls; $('led-text').te
 function newConv() {
   const id = 'c' + (CONVERSATIONS.length + 1);
   CONVERSATIONS.unshift({ id, title: 'New conversation', at: new Date(NOW + 60000).toISOString(), cases: [], messages: [] });
-  S.conv = id; S.scopes = []; S.palette = false; S.filter = ''; S.bench = { tabs: ['snapshot'], active: 'snapshot', open: false };
-  renderApp(); document.querySelector('.composer textarea')?.focus();
+  S.filter = '';
+  const s = document.querySelector('.rail .search'); if (s) s.value = '';
+  showConv(id); document.querySelector('.composer textarea')?.focus();
 }
-function switchConv(id) { if (S.pending) return; S.conv = id; S.palette = false; S.scopes = []; S.bench = { tabs: ['snapshot'], active: 'snapshot', open: false }; renderApp(); }
+function switchConv(id) { if (S.pending) return; showConv(id); }
+// Re-render only what depends on the selected conversation; the layout, panels, and composer stay put.
+function showConv(id) {
+  S.conv = id; S.scopes = []; S.bench.tabs = ['snapshot']; S.bench.active = 'snapshot';
+  if (S.variant === 'B' && S.palette) togglePalette(false);
+  if (S.variant === 'C' && S.bench.open) setBench(false);
+  document.querySelector('.chat-head')?.replaceWith(chatHead());
+  document.querySelector('.vb .strip')?.replaceWith(stripBar());
+  renderHistory(); renderScopes(); if (S.variant === 'C') renderBench();
+  renderTranscript();
+  const t = $('transcript'); if (t) motion(t, { opacity: [0, 1], y: [6, 0] });
+  state();
+}
 function openCase(n) {
   if (S.variant === 'C') openBench(`case:${n}`);
   else if (S.variant === 'A') { if (!S.ui.dock) setDock(true); const el = $(`dock-case-${n}`); if (el) { el.scrollIntoView({ block: 'nearest' }); motion(el, { scale: [1.04, 1], borderColor: ['var(--accent)', 'var(--border-hairline)'] }, { spring: true }); } else addScope({ kind: 'case', n }); }
@@ -661,7 +681,7 @@ function variantB() {
     h('aside', { class: 'palette slide', id: 'palette', 'aria-label': 'History and commands', 'aria-hidden': String(!S.palette), style: `width:${S.palette ? 360 : 0}px` },
       h('div', { class: 'palette-in' }, h('input', { class: 'search', id: 'palette-search', type: 'search', placeholder: 'Search conversations, cases, or type a command', oninput: e => { S.filter = e.target.value; renderPaletteList($('palette-list')); } }), h('div', { class: 'pl', id: 'palette-list' }), h('div', { class: 'hint' }, h('span', {}, h('kbd', {}, 'Esc'), ' close'), h('span', {}, h('kbd', {}, '⌘K'), ' toggle'), h('span', {}, 'Conversations stay in this browser session')))),
     h('div', { class: 'vb' },
-      h('div', { class: 'strip' }, h('div', { class: 'crumbs' }, h('button', { class: 'sm ghost', 'aria-pressed': String(S.palette), onclick: () => togglePalette(!S.palette) }, '☰ Recent'), h('span', { class: 'faint' }, '/'), h('b', {}, c.title), c.cases.map(n => caseChip(n, () => openCase(n)))), h('span', { class: 'spacer' }), h('span', { class: 'faint' }, `${c.messages.length} messages`), h('button', { class: 'sm ghost', onclick: () => togglePalette(!S.palette) }, h('kbd', {}, '⌘K'), ' history & commands'), h('button', { class: 'sm', onclick: newConv }, 'New')),
+      stripBar(),
       chatPane()));
 }
 // C ---------------------------------------------------------------
