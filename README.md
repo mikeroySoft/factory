@@ -198,7 +198,11 @@ Human-takeover detection uses only the factory's own recorded comment ids: the
 escalation comment, manager comments and handoff requests are journaled as `comment`
 receipts and ignored; any other comment, label, assignee, body edit, or an edit to a
 recorded comment counts as human activity and stops the manager. Text prefixes are
-never trusted. A reply is context for humans, not a retry, approval or merge command;
+never trusted. Without the current escalation's recorded comment on the timeline,
+the manager fails closed: even a failed escalation post leads to a routed handoff,
+not an exemption for later human label or assignee changes. A handoff receipt cannot
+substitute for the missing escalation receipt on a later pass.
+A reply is context for humans, not a retry, approval or merge command;
 use the documented labels for that.
 
 ### Opt-in viability recommendations

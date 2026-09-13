@@ -822,14 +822,18 @@ class ManageTest(unittest.TestCase):
         packet.write_text("gate failed")
         event = {"event": "escalate", "ticket": 7, "at": "2026-01-01T00:00:00Z",
                  "round": round_number, "packet": str(packet)}
-        (state / "events.jsonl").write_text(json.dumps(event) + "\n")
-        timeline = json.dumps(activity or [])
+        receipt = {"event": "comment", "ticket": 7, "at": event["at"],
+                   "kind": "escalation", "round": round_number, "comment": 100}
+        (state / "events.jsonl").write_text(json.dumps(event) + "\n" + json.dumps(receipt) + "\n")
+        timeline = [{"event": "commented", "id": 100, "created_at": event["at"], "updated_at": event["at"]},
+                    *(activity or [])]
+        (state / "timeline.json").write_text(json.dumps(timeline))
         stubs = stub_bin(root, gh=f'''
 case "$1 $2" in
   "pr list") echo '[]';;
   "issue list") echo '[{{"number":7,"title":"Fix gate","body":"Original body","labels":[{{"name":"ready-for-human"}}]}}]';;
   "issue view") echo '{{"labels":[{{"name":"ready-for-human"}}]}}';;
-  "api repos/acme/widgets/issues/7/timeline") echo '{timeline}';;
+  "api repos/acme/widgets/issues/7/timeline") cat "{state}/timeline.json";;
   "issue create") echo "https://github.com/acme/widgets/issues/8";;
   "issue comment"|"issue edit")
     python3 -c 'import json; from pathlib import Path; assert any(json.loads(line).get("event") in ("manage", "handoff") for line in Path("{state}/events.jsonl").read_text().splitlines())' || exit 1
@@ -841,7 +845,7 @@ esac
     def test_external_review_escalation_stays_in_human_queue(self) -> None:
         repo, stubs, _ = self.scenario()
         events_path = repo / ".factory/events.jsonl"
-        escalation = json.loads(events_path.read_text())
+        escalation = json.loads(events_path.read_text().splitlines()[0])
         escalation.update(pr=17, head="reviewed-head")
         events_path.write_text(json.dumps(escalation) + "\n")
 
@@ -978,8 +982,11 @@ PY
                 return [{"number": 7, "title": "Fix gate", "body": "Original body"}]
             if args[:2] == ["pr", "list"]:
                 return []
-            return [{"event": "commented", "created_at": "2026-01-01T00:00:01Z",
-                     "body": "I will handle this"}] if marker.exists() else []
+            timeline = json.loads((repo / ".factory/timeline.json").read_text())
+            if marker.exists():
+                timeline.append({"event": "commented", "created_at": "2026-01-01T00:00:01Z",
+                                 "body": "I will handle this"})
+            return timeline
 
         with patch.object(dispatch, "gh_json", side_effect=github), \
              patch.object(dispatch.time, "strftime", return_value="2026-01-01T00:00:02Z"), \
@@ -1158,7 +1165,7 @@ case "$1 $2" in
   "pr merge") touch {state}/merged;;
   "issue list") [ -e {state}/fixed ] && echo '[]' || echo '[{{"number":7,"title":"Fix CI","body":"Original","labels":[{{"name":"chore"}}]}}]';;
   "issue view") echo '{{"id":"I_7","number":7,"url":"https://github.com/acme/widgets/issues/7","title":"Fix CI","body":"Original","state":"OPEN","labels":[{{"name":"ready-for-human"}}],"comments":[]}}';;
-  "api repos/acme/widgets/issues/7/timeline") echo '[]';;
+  "api repos/acme/widgets/issues/7/timeline") cat .factory/timeline.json;;
   "api repos/acme/widgets/compare/main...$head") echo '{{"behind_by":0}}';;
   "api repos/acme/widgets") echo '{{"id":"R_1"}}';;
   "api graphql") echo '{{"data":{{}}}}';;
@@ -1218,7 +1225,7 @@ esac
 case "$1 $2" in
   "pr list") echo '[]';;
   "issue list") echo '[{"number":7,"title":"Fix CI","body":"Original","labels":[{"name":"chore"}]}]';;
-  "api repos/acme/widgets/issues/7/timeline") echo '[]';;
+  "api repos/acme/widgets/issues/7/timeline") cat .factory/timeline.json;;
   "issue view") echo '{"title":"Fix CI","body":"Original","comments":[]}';;
   "pr view")
     head=$(git -C .factory/wt-7 rev-parse HEAD)
@@ -1289,7 +1296,7 @@ esac
     def test_manager_notes_round_trip_and_refused_replacements(self) -> None:
         repo, stubs, _ = self.scenario()
         events_path = repo / ".factory/events.jsonl"
-        escalation = json.loads(events_path.read_text())
+        escalation, receipt = map(json.loads, events_path.read_text().splitlines())
         prompt = repo / ".factory/manager-prompt.txt"
         notes = repo / ".factory/manager/notes.md"
         first = "2026-01-01: `unit` flakes on a cold cache; RETRY re-run cleared it.\n"
@@ -1297,6 +1304,7 @@ esac
         def run_manager(round_number: int, output: str) -> str:
             with events_path.open("a") as events:
                 events.write(json.dumps({**escalation, "round": round_number}) + "\n")
+                events.write(json.dumps({**receipt, "round": round_number}) + "\n")
             command = [sys.executable, "-c",
                        "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(pathlib.Path(sys.argv[2]).read_text()); sys.stdout.write(sys.argv[3])",
                        str(prompt), "{prompt}", output]
@@ -1331,10 +1339,11 @@ esac
     def test_failed_rewrite_is_not_requeued_or_replayed_and_next_ticket_runs(self) -> None:
         repo, stubs, packet = self.scenario()
         events_path = repo / ".factory/events.jsonl"
-        escalation = json.loads(events_path.read_text())
+        escalation, receipt = map(json.loads, events_path.read_text().splitlines())
         escalation["ticket"] = 8
         with events_path.open("a") as events:
             events.write(json.dumps(escalation) + "\n")
+            events.write(json.dumps({**receipt, "ticket": 8}) + "\n")
         command = ["printf", "%s", "DECISION: REWRITE\nReplacement body"]
         (repo / config.CONFIG_NAME).write_text("[manager]\ncommand = " + json.dumps(command) + "\n")
         stub_bin(Path(stubs).parent, gh='''
@@ -1342,7 +1351,7 @@ case "$1 $2 $3" in
   "pr list --repo") echo '[]';;
   "issue list --repo") echo '[{"number":7,"title":"First","body":"Old"},{"number":8,"title":"Next","body":"Old"}]';;
   "issue view "*) echo '{"labels":[{"name":"ready-for-human"}]}';;
-  "api repos/acme/widgets/issues/"*) echo '[]';;
+  "api repos/acme/widgets/issues/"*) cat .factory/timeline.json;;
   "issue edit 7") echo 'GitHub rejected body edit' >&2; exit 1;;
 esac
 ''')

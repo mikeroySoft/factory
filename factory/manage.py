@@ -137,13 +137,18 @@ def human_activity(n: int, escalation: dict, events: list[dict]) -> bool:
 
     Only recorded `comment` receipts identify machine comments (never a text prefix); an
     edited receipt is human activity again. The escalation's own label/assignee edits are
-    skipped up to its recorded comment, or anywhere in the window when no receipt exists
-    (the comment failed to post, or predates receipts).
+    skipped only up to its recorded escalation comment. Without that provenance, fail
+    closed and leave the escalation for the terminal handoff pass.
     """
     items = handoff.timeline(n)
     machine = {e["comment"] for e in events if e.get("event") == "comment"}
+    escalation_comments = {e["comment"] for e in events if e.get("event") == "comment"
+                           and e.get("kind") == "escalation" and e.get("round") == escalation.get("round")
+                           and e.get("at", "") >= escalation["at"]}
     marker = next((i for i, item in enumerate(items) if item.get("event") == "commented"
-                   and item.get("id") in machine and item.get("created_at", "") >= escalation["at"]), None)
+                   and item.get("id") in escalation_comments and item.get("created_at", "") >= escalation["at"]), None)
+    if marker is None:
+        return True
     for index, item in enumerate(items):
         if item.get("created_at", "") < escalation["at"]:
             continue
@@ -152,10 +157,8 @@ def human_activity(n: int, escalation: dict, events: list[dict]) -> bool:
             if (item.get("updated_at") or item["created_at"]) != item["created_at"]:
                 return True
             continue
-        # Without a receipt (marker is None) the factory cannot recognize its own escalation
-        # churn, so this signature is skipped anywhere in the window. GitHub emits no
-        # `labeled` event for an already-present label, so a human cannot produce it here.
-        if (marker is None or index < marker) and (
+        # Only the recorded escalation comment bounds its own label/assignee churn.
+        if index < marker and (
             (kind == "labeled" and item.get("label", {}).get("name") == LABEL_HUMAN)
             or (kind == "unlabeled" and item.get("label", {}).get("name") == LABEL_AGENT)
             or kind == "unassigned"

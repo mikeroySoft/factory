@@ -328,7 +328,7 @@ class HandoffCli(unittest.TestCase):
             self.assertTrue(self.ran.exists())
             self.assertEqual([e["decision"] for e in self.events("manage")], ["HUMAN", "RETRY"])
 
-    def test_unreceipted_escalations_publish_but_a_failed_post_does_not_strand_the_manager(self) -> None:
+    def test_unreceipted_escalations_publish_without_running_the_manager(self) -> None:
         # Legacy journal: the escalation comment exists on GitHub but was never receipted.
         self.reset()
         self.escalate("gate failed", 1)
@@ -340,15 +340,22 @@ class HandoffCli(unittest.TestCase):
         self.assertIn("the escalation comment was not journaled", self.requests()[0]["body"])
         self.manage(mode="RETRY")
         self.assertEqual(len(self.requests()), 1)
-        # The comment never reached GitHub: only the escalation's own label churn is on the timeline.
-        self.reset()
-        self.escalate("gate failed", 1)
-        (self.factory / "events.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows if r["event"] != "comment"))
-        self.state["timeline"] = [item for item in self.state["timeline"] if item["event"] != "commented"]
-        self.manage(mode="RETRY")
-        self.assertTrue(self.ran.exists())
-        self.assertEqual([e["decision"] for e in self.events("manage")], ["RETRY"])
-        self.assertEqual((self.requests(), [l["name"] for l in self.state["issue"]["labels"]]), ([], ["ready-for-agent"]))
+        # A failed escalation post also lacks provenance for ignoring label/assignee changes.
+        for activity in (None, {"event": "unassigned", "created_at": "2026-01-01T00:01:00Z",
+                                "actor": {"login": "maintainer"}, "assignee": {"login": "runner"}}):
+            with self.subTest(activity=activity):
+                self.reset()
+                self.escalate("gate failed", 1)
+                (self.factory / "events.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows if r["event"] != "comment"))
+                self.state["timeline"] = [item for item in self.state["timeline"] if item["event"] != "commented"]
+                if activity:
+                    self.state["timeline"].append(activity)
+                for _ in range(2):
+                    self.manage(mode="RETRY")
+                    self.assertFalse(self.ran.exists())
+                    self.assertEqual(self.events("manage"), [])
+                    self.assertEqual(len(self.requests()), 1)
+                    self.assertEqual([l["name"] for l in self.state["issue"]["labels"]], ["ready-for-human"])
 
     def test_unapplied_decision_and_missing_packet_are_terminal(self) -> None:
         proc = self.manage(mode="RETRY", fail_edit=True)  # decision recorded, comment posted, relabel failed
