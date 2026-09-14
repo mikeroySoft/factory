@@ -12,7 +12,7 @@ from pathlib import Path
 from subprocess import CalledProcessError
 from tempfile import NamedTemporaryFile
 
-from factory import config, dispatch, handoff, lifecycle
+from factory import binding, config, dispatch, handoff, lifecycle
 from factory.config import (
     LABEL_AGENT, LABEL_APPROVED, LABEL_HUMAN, LABEL_INFO, LABEL_REVIEW,
     LABEL_TRIAGE, LABEL_VIABILITY, LESSONS_NAME,
@@ -25,6 +25,8 @@ RETRY: plain-text guidance for the next worker.
 REWRITE: the complete replacement issue body.
 SPLIT: JSON array of {"title": "...", "body": "...", "blocked_by": [1]}.
 blocked_by contains 1-based indexes of earlier children; code adds Blocked by lines.
+For an initiative-linked issue, REWRITE must preserve its exact Initiative and Plan
+baseline; SPLIT children inherit that binding. Never propose a replacement baseline.
 ROUTE: JSON object {"add": ["label"], "remove": ["label"], "guidance": "..."}.
 Only configured worker labels listed below may be added or removed.
 FIX: JSON object {"worker": "label", "guidance": "..."}.
@@ -169,6 +171,74 @@ def human_activity(n: int, escalation: dict, events: list[dict]) -> bool:
     return False
 
 
+def _linked_baseline(n: int, body: str) -> dict | None:
+    event = binding.accepted(dispatch.cfg, n)
+    accepted = event["baseline"] if event is not None else None
+    initiative = binding.linked(body)
+    if accepted is None:
+        if initiative is not None:
+            raise binding.BindingError("linked ticket has no accepted plan binding evidence")
+        return None
+    if initiative is None:
+        raise binding.BindingError(
+            "live ticket removed its accepted Initiative and Plan baseline"
+        )
+    current = binding.baseline(body, dispatch.REPO)
+    if current != accepted:
+        raise binding.BindingError(
+            "live ticket plan binding differs from its accepted execution scope"
+        )
+    return accepted
+
+
+def _validate_rewrite(n: int, current: str, replacement: str) -> None:
+    accepted = _linked_baseline(n, current)
+    proposed = binding.linked(replacement)
+    if accepted is None:
+        if proposed is not None:
+            raise binding.BindingError(
+                "REWRITE cannot add an initiative binding; use human-reviewed intake"
+            )
+        return
+    if proposed is None or binding.baseline(replacement, dispatch.REPO) != accepted:
+        raise binding.BindingError(
+            "REWRITE must preserve the accepted Initiative and Plan baseline exactly"
+        )
+
+
+def _split_bodies(n: int, parent_body: str, children: list[dict]) -> list[dict]:
+    accepted = _linked_baseline(n, parent_body)
+    if accepted is not None:
+        try:
+            if binding.admit(dispatch.cfg, parent_body) != accepted:
+                raise binding.BindingError(
+                    "live initiative no longer matches the accepted baseline"
+                )
+        except binding.BindingError as exc:
+            raise binding.BindingError(f"SPLIT refused before mutation: {exc}") from exc
+
+    prepared = []
+    for index, child in enumerate(children, 1):
+        child_body = child["body"]
+        try:
+            initiative = binding.linked(child_body)
+            if accepted is not None:
+                if initiative is None:
+                    child_body = child_body.rstrip() + "\n\n" + binding.render(accepted)
+                if binding.baseline(child_body, dispatch.REPO) != accepted:
+                    raise binding.BindingError(
+                        "child must inherit the parent's accepted Initiative and Plan baseline"
+                    )
+            elif initiative is not None:
+                binding.admit(dispatch.cfg, child_body)
+        except binding.BindingError as exc:
+            raise binding.BindingError(
+                f"SPLIT child {index} is not intake-ready: {exc}"
+            ) from exc
+        prepared.append({**child, "body": child_body})
+    return prepared
+
+
 def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: Path) -> None:
     def issue_action(action: str, *args: str) -> None:
         dispatch.run(["gh", "issue", action, str(n), "--repo", dispatch.REPO, *args])
@@ -179,6 +249,23 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         ).stdout.strip()
         dispatch.comment_receipt(number, "manager", out, decision=decision, **fields)
 
+    if decision in {"REWRITE", "SPLIT"}:
+        fresh = dispatch.gh_json(
+            ["issue", "view", str(n), "--repo", dispatch.REPO, "--json", "title,body"]
+        )
+        if (
+            not isinstance(fresh, dict)
+            or "body" not in fresh
+            or (fresh["body"] is not None and not isinstance(fresh["body"], str))
+        ):
+            raise binding.BindingError(
+                "ticket body refresh is incomplete; refusing manager edit"
+            )
+        issue = {**issue, **fresh, "body": fresh["body"] or ""}
+        if decision == "REWRITE":
+            _validate_rewrite(n, issue.get("body") or "", body)
+        else:
+            data = _split_bodies(n, issue.get("body") or "", data)
     if decision == "FIX":
         cfg = dispatch.cfg
         wt = cfg.factory / f"wt-{n}"

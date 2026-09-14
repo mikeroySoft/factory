@@ -111,6 +111,76 @@ never merges an `agent/<n>` PR whose ticket #n is an initiative. Refusals are
 logged (also in `--dry-run`) and mutate nothing: no labels, assignees, comments
 or escalation packets. A stale frontier row cannot bypass the fresh read.
 
+### Immutable initiative bindings
+
+An implementation ticket can opt in to an immutable initiative revision with an
+`Initiative: #N` declaration and a fenced JSON object under either
+`**Plan baseline**` or `## Plan baseline`. The baseline object has
+`schema_version: 1`, the integer `initiative`, a `sections` object containing
+exactly `Outcome`, `Boundaries`, `Plan`, and `Success evidence`, a `sha256`,
+the exact `source_url` (`https://github.com/OWNER/REPO/issues/N`), and a
+timezone-bearing `observed_at`. Factory reads the complete initiative body
+through the REST issue endpoint, not the bounded display projection.
+
+For the digest, each relevant section first converts CRLF and CR line endings
+to LF and strips whitespace only at the section edges; internal whitespace is
+retained. Factory then hashes the UTF-8 encoding of
+`json.dumps(sections, sort_keys=True, ensure_ascii=False, separators=(",", ":"))`
+with SHA-256. The same parser and normalization drive baseline validation and
+later drift, so changes beyond display limits cannot look unchanged. Changes
+inside canonical non-scope sections (such as Status, Owner and Open decisions),
+issue metadata, and GitHub discussion comments do not change this digest.
+Only the initiative template's named headings delimit sections; free-form
+subheadings within a relevant section remain part of that section and its digest.
+
+Admission fails closed with a specific reason when a linked ticket has a
+missing, malformed, ambiguous, mismatched, incomplete, deleted, or inaccessible
+binding or source. A successful admission journals a schema-1 `plan-bound`
+event with the accepted baseline and the ticket's complete title, body, and
+comments. That whole accepted ticket snapshot remains the human-approved
+execution contract: every retry reuses it and cannot adopt later ticket-body or
+initiative revisions. A previously bound ticket cannot downgrade itself by
+removing the link or baseline. Legacy tickets that have never declared an
+initiative remain unchanged.
+A later explicit admission records a new complete ticket snapshot without
+rewriting the evidence or contract of earlier attempts.
+Briefing event summaries retain revision metadata rather than duplicating the
+full snapshot, so later attempts, escalations and handoff evidence keep their
+context budget. The complete accepted evidence remains in the journal.
+
+`factory plan baseline N` is read-only and returns a proposed object under the
+schema-1 response's top-level `baseline` key. `factory plan drift TICKET` is
+also read-only: it loads the latest accepted `plan-bound` evidence before
+querying the live initiative and writes `status`, `baseline`, `observed`,
+`changed_sections`, `proposed_question`, and `attribution` under the top-level
+`drift` key. Status is `unchanged`, `changed`, or `unavailable`; changed results
+name only the relevant sections, while unavailable results retain the accepted
+snapshot and set `observed` to null. Attribution is always `unknown`, never
+guessed from the current issue author when plan history is unavailable.
+
+To rebaseline, generate a fresh proposal after the initiative edit, have a
+human review and replace the ticket's fenced baseline, then send that ticket
+through the ordinary intake workflow. Comments are discussion only: Factory
+has no comment command that rebaselines or expands execution authority. Once a
+ticket is bound, wholly unlinked work belongs in a new ticket. A currently
+running contract never changes in place.
+
+Manager `REWRITE` may retain existing behavior only when it preserves the
+accepted Initiative link and baseline exactly. `SPLIT` children inherit that
+same binding; Factory validates the complete live source before creating any
+child. A child of an unlinked parent may declare its own binding, but it must
+pass the same validation. Any missing, invalid, drifted, or unavailable source
+rejects the whole split before the first child reaches `needs-triage`; the
+manager cannot supply a replacement baseline.
+Preserving the binding allows the existing rewrite-and-requeue behavior; a
+later admission records its own full ticket snapshot and leaves prior
+`plan-bound` evidence intact.
+
+GitHub issue-body writes remain last-write-wins. Refresh the issue immediately
+before editing and use discussion to propose revisions first. The pinned
+snapshot protects admitted execution; it is not concurrency control for
+simultaneous human edits.
+
 For a fork that tracks an upstream, set `[repo].upstream = "upstream"` and the
 dispatcher merges new upstream commits into your `main` (gated) before each
 merge stage.
@@ -130,6 +200,7 @@ merge stage.
 | `factory evidence --root /path/to/main-checkout` | One explicit-repository schema 1 JSON read: compact cases, selected evidence, workflow/file/PR/CI investigations, or capabilities. Read-only GitHub GETs and F03 local evidence; no model, action execution, or state writes. See [evidence contract](#bounded-project-evidence-json-schema-1). |
 | `factory plan list` / `factory plan inspect N` | Read-only schema 1 JSON over `initiative` issues: declared status/owner, parsed sections, `#N` implementation links (`inspect` also fetches each linked issue's title/state), per-issue `malformed` + `problems` (missing/invalid declared facts, sections cut at 4,000 characters, links beyond the first 20), cited sources with `observed_at`. `list` reads at most 3 pages of 100 and keeps malformed initiatives flagged per row (exit 0); a failed page, or a malformed initiative under `inspect`, yields `coverage.status: partial` and exit 1, never a mutation. |
 | `factory plan route N --reason <requirements\|implementation\|ci\|unknown> [--path P]... --json` | Read-only schema 1 JSON naming the human who owns a decision on ticket N; nothing is assigned, labelled or commented. JSON is also the default when `--json` is omitted. Priority: a `**Decision owner**` section in the ticket body (human override, wins on every recomputation), the `Programme: #N` initiative's Owner (requirements only), `[collaboration.reasons]`, `[collaboration.components]` exact repo-relative path prefixes against the given `--path`s (implementation only; `src/auth` matches `src/auth/x.py`, never `src/authentication/`), then `[collaboration].fallback`. `route.status` is `selected`, `candidates` (paths span prefixes with different owners), `unassigned` (reason `unknown`, no `--path` for implementation, or nothing configured) or `invalid` (malformed declared owner; `@org/team` on a user-owned repository). `route.revision` ties the answer to the `.factory.toml` commit and issue `updated_at`; `route.provenance` lists every step. Owner syntax is checked, membership is not: an unreadable repository record leaves `verification: unknown`. Without a `[collaboration]` section only ticket sources apply. |
+| `factory plan baseline N` / `factory plan drift TICKET` | Read-only schema 1 JSON for proposing a complete immutable initiative baseline or comparing a ticket's latest accepted baseline with the live complete source. Results are under top-level `baseline` or `drift`; neither command edits issues, rebaselines work, or grants execution authority. |
 | `factory doctor` / `init` / `install` | Onboarding, above. |
 
 Routing distinguishes absent optional information from invalid declarations. A missing
@@ -176,6 +247,12 @@ human to apply in host config; the manager cannot add profiles or edit config.
 Code validates the output, records a `manage` event before GitHub mutations, and
 leaves malformed decisions with a prefixed HUMAN diagnosis. Split children enter
 `needs-triage`; the parent keeps `ready-for-human` with child blocker lines.
+For `REWRITE` and `SPLIT`, Factory refreshes the issue body immediately before
+applying the decision. A linked rewrite must preserve its accepted Initiative
+and Plan baseline exactly. Bound split children inherit that baseline, and all
+linked children are validated against the complete live initiative before the
+first issue is created. A validation failure consumes the recorded manager
+round, creates no intake-ready child, and leaves the parent with the human.
 A trailing fenced `notes` block replaces `.factory/manager/notes.md`
 (gitignored, never committed, carried into every later manager prompt). The block
 is optional; code refuses an empty or over-16 KB replacement, keeps the existing

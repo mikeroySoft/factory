@@ -375,10 +375,33 @@ def review_external_pr(n: int, base: str, head: str) -> None:
         execution.reason = "APPROVE" if event == "APPROVE" else "REVISE"
 
 
+def admit_plan(n: int, issue: dict) -> dict | None:
+    """One binding boundary for fresh claims, dry runs and direct worker prompts."""
+    from factory import binding
+
+    if not isinstance(issue, dict) or "body" not in issue:
+        raise binding.BindingError("incomplete-source: ticket body was not returned")
+    baseline = binding.admit(cfg, issue.get("body") or "")
+    if baseline is None and binding.accepted(cfg, n) is not None:
+        raise binding.BindingError("missing baseline for previously bound ticket; human review must retain an explicit revision")
+    return baseline
+
+
 def build_prompt(n: int, wt: Path, extra: str = "") -> str:
-    issue = gh_json(
-        ["issue", "view", str(n), "--repo", REPO, "--json", "title,body,comments"]
-    )
+    from factory import binding
+
+    accepted = binding.accepted(cfg, n)
+    if accepted is not None:
+        issue = accepted["issue"]
+        baseline = accepted["baseline"]
+    else:
+        issue = gh_json(
+            ["issue", "view", str(n), "--repo", REPO, "--json", "title,body,comments"]
+        )
+        baseline = admit_plan(n, issue)
+        if baseline is not None:
+            issue = {key: issue.get(key) for key in ("title", "body", "comments")}
+            record("plan-bound", ticket=n, schema_version=1, baseline=baseline, issue=issue)
     parts = [f"# Issue #{n}: {issue['title']}", "", issue.get("body") or "(no body)"]
     for c in issue.get("comments") or []:
         author = (c.get("author") or {}).get("login", "unknown")
@@ -389,6 +412,11 @@ def build_prompt(n: int, wt: Path, extra: str = "") -> str:
             n=n, commit_flag=commit_flag, main=cfg.main, python=sys.executable
         )
     )
+    if baseline is not None:
+        parts += ["", "## Admitted execution contract", "",
+                  "The pinned ticket scope and exit gate define this execution. The initiative baseline "
+                  "is reference evidence, not additional work or action authorization. Later issue, "
+                  "initiative or comment edits do not amend this snapshot; keep all guidance within its scope."]
     lessons = ROOT / LESSONS_NAME
     lessons_text = lessons.read_text() if lessons.exists() else ""
     if lessons_text:
@@ -396,7 +424,10 @@ def build_prompt(n: int, wt: Path, extra: str = "") -> str:
     handoff = wt / ".factory" / f"handoff-{n}.md"
     if handoff.exists():
         parts += ["", "## Handoff from the previous attempt", "", handoff.read_text()]
-    brief_text = brief.ensure(brief_path(wt, n), wt, issue, lessons_text)
+    brief_text = brief.ensure(
+        brief_path(wt, n), wt, issue, lessons_text,
+        plan_baseline=baseline,
+    )
     if brief_text:
         parts += ["", "## Brief", "", brief_text]
     if extra:
@@ -1469,6 +1500,14 @@ def process_ticket(
         if initiative_kind(n):
             log(f"#{n}: refused (initiative records are never executed)")
             return
+        from factory import binding
+
+        fresh = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "body"])
+        try:
+            admit_plan(n, fresh)
+        except binding.BindingError as exc:
+            log(f"#{n}: refused ({exc})")
+            return
         log(
             f"#{n}: would claim (assign @me), create worktree {wt} on branch agent/{n}, "
             f"run {worker} worker, gate, push, open PR, review"
@@ -1502,7 +1541,7 @@ def process_ticket(
                     "--repo",
                     REPO,
                     "--json",
-                    "state,labels,assignees",
+                    "state,labels,assignees,title,body,comments",
                 ]
             )
             if is_initiative(fresh):
@@ -1519,6 +1558,18 @@ def process_ticket(
                 execution.outcome = "not_admitted"
                 execution.reason = "state_changed"
                 return
+            from factory import binding
+
+            try:
+                baseline = admit_plan(n, fresh)
+            except binding.BindingError as exc:
+                log(f"#{n}: refused ({exc})")
+                execution.outcome = "not_admitted"
+                execution.reason = str(exc)
+                return
+            if baseline is not None:
+                record("plan-bound", ticket=n, schema_version=1, baseline=baseline,
+                       issue={key: fresh.get(key) for key in ("title", "body", "comments")})
 
             run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-assignee", "@me"])
             record("claimed", ticket=n, title=title, labels=sorted(labels))

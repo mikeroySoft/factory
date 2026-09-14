@@ -254,6 +254,17 @@ def sources_for(
             except ValueError:
                 continue
             if isinstance(row, dict) and (row.get("ticket") == number or (pr and row.get("pr") == pr.get("number"))):
+                if row.get("event") == "plan-bound":
+                    baseline = row.get("baseline")
+                    row = {key: value for key, value in row.items() if key not in {"baseline", "issue"}}
+                    row["baseline"] = (
+                        {key: baseline.get(key) for key in ("initiative", "sha256", "source_url", "observed_at")}
+                        if isinstance(baseline, dict) else None
+                    )
+                    row["snapshot_notice"] = (
+                        "Complete accepted ticket and sections retained in events.jsonl; "
+                        f"use factory plan drift {number} for the validated baseline."
+                    )
                 rows.append(row)
         outcomes = {}
         for i, row in enumerate(rows):
