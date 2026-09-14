@@ -285,7 +285,10 @@ class HandoffCli(unittest.TestCase):
         requests = self.requests()
         self.assertEqual(len(requests), 2)
         self.assertIn("the decision owner is now @lead (decision_owner", requests[1]["body"])
-        self.assertIn("previously @auth-owner", requests[1]["body"])
+        self.assertIn("ticket body declares '&#64;lead'", requests[1]["body"])
+        self.assertNotIn("ticket body declares '@lead'", requests[1]["body"])
+        self.assertIn("previously &#64;auth-owner", requests[1]["body"])
+        self.assertNotIn("previously @auth-owner", requests[1]["body"])
         self.assertEqual([r["target"] for r in self.events("comment") if r["kind"] == "handoff"], ["@auth-owner", "@lead"])
         self.assertIn("@lead", self.state["issue"]["body"])
         self.assertEqual(self.calls("issue", "edit"), [])
@@ -381,8 +384,8 @@ class HandoffCli(unittest.TestCase):
         self.escalate("PR #9: CI failed (unit)", 1)
         self.manage(mode="HUMAN", fail_repo=True)  # owner type unreadable: unknown, not authorization
         body = self.requests()[0]["body"]
-        self.assertIn("`@acme/ci`: team destinations could not be verified", body)
-        self.assertNotIn("@acme/ci —", body)
+        self.assertIn("&#64;acme/ci: team destinations could not be verified", body)
+        self.assertNotIn("@acme/ci", body)
         self.assertNotIn("unassigned", body)
         self.assertEqual(self.events("handoff")[0]["target"], "selected")
 
@@ -421,13 +424,15 @@ class HandoffCli(unittest.TestCase):
 
     def test_local_paths_candidates_unassigned_and_unverified_team_are_public_safe(self) -> None:
         self.reset()
-        self.escalate(f"PR #9: rebase onto moved main conflicts; worktree {self.factory}/wt-7", 1)
+        self.escalate(f"PR #9: rebase onto moved main conflicts; notify @ops/review; worktree {self.factory}/wt-7", 1)
         self.state["pr"] = {"url": PR_URL, "files": [{"path": "src/auth/a.py"}, {"path": "docs/b.md"}]}
         self.manage(mode="HUMAN")
         body = self.requests()[0]["body"]
         self.assertIn("worktree (local path withheld)", body)
         self.assertNotIn(str(self.factory), body)
         self.assertIn("@auth-owner, @docs-owner — candidates (component)", body)
+        self.assertIn("notify &#64;ops/review", body)
+        self.assertNotIn("@ops/review", body)
         self.assertEqual(self.events("handoff")[0]["target"], "@auth-owner @docs-owner")
 
         with self.subTest(route="unassigned then claimed"):
@@ -446,14 +451,29 @@ class HandoffCli(unittest.TestCase):
 
         with self.subTest(route="team on a user-owned repository"):
             self.reset()
-            self.configure(collaboration='[collaboration.reasons]\nci = "@acme/ci"\n')
+            self.configure(collaboration='[collaboration.reasons]\nci = "@acme/security"\n')
             self.escalate("PR #9: CI failed (unit)", 1)
             self.manage(mode="HUMAN")
             body = self.requests()[0]["body"]
             self.assertIn("The routed owner declaration is invalid", body)
             self.assertIn("team destinations are rejected for a user-owned repository", body)
-            self.assertNotIn("@acme/ci —", body)
+            explanation, routing = body.split("**Routing**", 1)
+            self.assertIn("&#64;acme/security", explanation)
+            self.assertIn("&#64;acme/security", routing)
+            self.assertNotIn("@acme/security", body)
             self.assertEqual(self.events("handoff")[0]["target"], "invalid")
+
+    def test_invalid_decision_owner_provenance_cannot_create_mentions(self) -> None:
+        self.state["issue"]["body"] += "\n\n**Decision owner**\n\n`@intruder` and @acme/security"
+        self.manage(mode="HUMAN")
+        body = self.requests()[0]["body"]
+        self.assertIn("The routed owner declaration is invalid", body)
+        explanation, routing = body.split("**Routing**", 1)
+        for handle in ("@intruder", "@acme/security", "@org/team"):
+            self.assertNotIn(handle, body)
+            self.assertIn(handle.replace("@", "&#64;"), explanation)
+            self.assertIn(handle.replace("@", "&#64;"), routing)
+        self.assertEqual(self.events("handoff")[0]["target"], "invalid")
 
     def test_unreadable_routing_defers_publication_until_the_ticket_can_be_read(self) -> None:
         proc = self.manage(mode="HUMAN", fail_read=True)
@@ -516,8 +536,9 @@ class ReceiptTest(unittest.TestCase):
                                  {"event": "manage", "round": 1, "decision": "HUMAN"}], escalation))
             self.assertIn("exhausted", handoff.terminal(cfg, [], {"round": 2}))
             self.assertIn("no manager", handoff.terminal(config.Config(Path("/nonexistent"), REPO), [], escalation))
-        self.assertEqual(handoff.public("see https://github.com/acme/widgets/pull/9 and /home/me/.factory/wt-7 or a/b"),
-                         "see https://github.com/acme/widgets/pull/9 and (local path withheld) or a/b")
+        self.assertEqual(handoff.public(
+            "see https://github.com/acme/widgets/pull/9 and notify @ops/review at /home/me/.factory/wt-7 or a/b"),
+            "see https://github.com/acme/widgets/pull/9 and notify &#64;ops/review at (local path withheld) or a/b")
 
 
 if __name__ == "__main__":

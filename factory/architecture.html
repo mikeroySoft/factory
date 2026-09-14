@@ -412,7 +412,7 @@
   <!-- ============ Diagram B — ticket lifecycle ============ -->
   <div class="section">
     <p class="section-eyebrow"><b>Diagram B</b> — ticket lifecycle</p>
-    <p class="section-note">One ticket, start to handoff: triage, configured worker and gate attempts, configured review rounds, then the merge stage or escalation; the configured manager can retry, rewrite, split, route, fix, or close escalated work.</p>
+    <p class="section-note">One ticket, start to handoff: triage, configured worker and gate attempts, configured review rounds, then the merge stage or escalation. The configured manager may recover escalated work; only terminal recovery produces a durable routed human request.</p>
   </div>
 
   <div class="diagram-frame" role="region" aria-label="Scrollable ticket lifecycle diagram" tabindex="0">
@@ -421,7 +421,7 @@
     <title id="factory-flow-title">agent factory — ticket lifecycle</title>
     <desc id="factory-flow-desc">Flowchart of one ticket: triage routes an agent-ready issue
     into a claimed worktree; a configured worker is gated for the allowed attempts, then reviewed
-    for the allowed rounds, ending in an approved pull request for the merge stage or escalation.</desc>
+    for the allowed rounds, ending in an approved pull request for the merge stage or escalation; once automatic recovery is terminal, a durable request routes the decision to a human.</desc>
     <defs>
       <marker id="b-mut" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
         <polygon points="0 0, 8 3, 0 6" fill="#8a9cb3"/>
@@ -576,7 +576,7 @@
   <!-- ============ Summary cards ============ -->
   <div class="cards">
     <div class="card">
-      <p class="card-eyebrow">factory/gate.py:101–188 · factory/config.py:88–98</p>
+      <p class="card-eyebrow">factory/gate.py:86–129 · 156–225 · factory/config.py:89–98</p>
       <div class="card-header">
         <span class="card-dot dot-accent"></span>
         <h3>Deterministic gate</h3>
@@ -590,7 +590,7 @@
     </div>
 
     <div class="card">
-      <p class="card-eyebrow">factory/dispatch.py:948–981 · 1118–1384 · 1442–1646 · factory/manage.py:461–585</p>
+      <p class="card-eyebrow">factory/dispatch.py:958–1019 · 1128–1393 · 1452–1657 · factory/manage.py:481–610</p>
       <div class="card-header">
         <span class="card-dot dot-ink"></span>
         <h3>Orchestration and merge</h3>
@@ -605,7 +605,7 @@
     </div>
 
     <div class="card">
-      <p class="card-eyebrow">factory/dispatch.py:50–62 · 562–594 · 1443–1579</p>
+      <p class="card-eyebrow">factory/dispatch.py:49–62 · 411–436 · 513–603 · 1452–1594</p>
       <div class="card-header">
         <span class="card-dot dot-muted"></span>
         <h3>Local state and evidence</h3>
@@ -615,6 +615,7 @@
         <li><code>locks/&lt;n&gt;.lock</code> survives worktree cleanup; <code>locks/merge.lock</code> serializes landing</li>
         <li><code>logs/</code>, <code>events.jsonl</code>, PR bodies, and review findings remain inspectable</li>
         <li>pipeline runtime state is gitignored beneath <code>.factory/</code></li>
+        <li>handoff intent precedes publication; comment-id receipts reconcile uncertain results across restarts</li>
       </ul>
     </div>
 
@@ -647,7 +648,7 @@
     </div>
 
     <div class="card">
-      <p class="card-eyebrow">factory/manage.py:297–598 · factory/chat.py:1–7 · factory/evidence.py:1–7 · factory/plan.py:1–6 · factory/learn.py:1–7</p>
+      <p class="card-eyebrow">factory/manage.py:317–408 · 481–712 · factory/chat.py:1–7 · factory/evidence.py:1–7 · factory/plan.py:1–6 · factory/learn.py:1–7</p>
       <div class="card-header">
         <span class="card-dot dot-muted"></span>
         <h3>Manager and support commands</h3>
@@ -659,12 +660,26 @@
         <li><code>learn</code> distils runtime outcomes into repository lessons carried by later workers</li>
       </ul>
     </div>
+
+    <div class="card">
+      <p class="card-eyebrow">factory/handoff.py:39–70 · 151–248 · factory/manage.py:135–169 · 613–621 · factory/plan.py:160–167 · 247–259</p>
+      <div class="card-header">
+        <span class="card-dot dot-muted"></span>
+        <h3>Routed human handoffs</h3>
+      </div>
+      <ul>
+        <li>the final manager pass publishes only after automatic recovery is terminal, disabled, exhausted, or unavailable</li>
+        <li>one durable request identity per escalation generation survives uncertain publication and restart</li>
+        <li>validated owners or candidates receive the initial mention; owner transitions are explicit and human overrides win</li>
+        <li>human replies and edits stop conflicting recovery; they never authorize retry, approval, or merge</li>
+      </ul>
+    </div>
   </div>
 
   <!-- ============ Footer ============ -->
   <div class="footer">
-    <span>core: triage → dispatch → gate → reviewer → merge · control/support: manager · dashboard · plan · chat · evidence · briefing · codebase · learn</span>
-    <span>source reviewed 2026-09-12</span>
+    <span>core: triage → dispatch → gate → reviewer → merge · control/support: manager · human handoff · dashboard · plan · chat · evidence · briefing · codebase · learn</span>
+    <span>source reviewed 2026-09-14</span>
   </div>
 
 </main>

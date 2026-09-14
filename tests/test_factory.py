@@ -1231,6 +1231,93 @@ PY
         self.assertTrue(marker.exists())
         apply.assert_not_called()
 
+    def test_terminal_handoff_runs_after_manager_timeline_lookup_fails(self) -> None:
+        from unittest.mock import patch
+        from factory import dispatch, evidence
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            state = repo / ".factory"
+            state.mkdir()
+            packet = state / "terminal-8.md"
+            packet.write_text("terminal escalation")
+            dispatch.configure(config.Config(repo, "acme/widgets", manager=["manager-stub"]))
+            failed_packet = state / "escalation-7.md"
+            failed_packet.write_text("manager lookup will fail")
+            dispatch.record(
+                "escalate", ticket=7, at="2026-01-01T00:00:00Z", round=1,
+                packet=str(failed_packet), reason="gate failed",
+            )
+            dispatch.record(
+                "comment", ticket=7, at="2026-01-01T00:00:00Z", kind="escalation",
+                round=1, comment=700,
+            )
+            dispatch.record(
+                "escalate", ticket=8, at="2026-01-01T00:00:00Z", round=1,
+                packet=str(packet), reason="needs a product decision",
+            )
+            dispatch.record(
+                "manage", ticket=8, at="2026-01-01T00:00:01Z", round=1,
+                packet=str(packet), decision="HUMAN",
+            )
+            human_lists = 0
+
+            def github(args):
+                nonlocal human_lists
+                if args[:2] == ["pr", "list"]:
+                    return []
+                if args[:2] == ["issue", "list"]:
+                    label = args[args.index("--label") + 1]
+                    if label != config.LABEL_HUMAN:
+                        return []
+                    human_lists += 1
+                    if human_lists == 1:
+                        return [{"number": 7, "title": "Lookup fails", "body": "First"}]
+                    return [{"number": 8, "title": "Terminal", "body": "Second"}]
+                if args[0] == "api" and args[1].endswith("/issues/7/timeline"):
+                    raise ValueError("ticket #7 timeline lookup failed")
+                if args[:2] == ["issue", "view"]:
+                    return {"labels": []}
+                if args[:2] == ["pr", "view"]:
+                    return {"url": "https://github.com/acme/widgets/pull/9", "files": []}
+                raise AssertionError(args)
+
+            comments = []
+
+            def run(cmd, *args, **kwargs):
+                comments.append(cmd)
+                if cmd[:4] != ["gh", "issue", "comment", "8"]:
+                    raise AssertionError(cmd)
+                return subprocess.CompletedProcess(
+                    cmd, 0, "https://github.com/acme/widgets/issues/8#issuecomment-808\n", "",
+                )
+
+            def github_read(endpoint, *args, **kwargs):
+                self.assertEqual(endpoint, "repos/acme/widgets/issues/8")
+                return {
+                    "number": 8, "title": "Terminal", "body": "Second",
+                    "updated_at": "2026-01-01T00:00:01Z",
+                }, False
+
+            with patch.object(dispatch, "gh_json", side_effect=github), \
+                    patch.object(dispatch, "run", side_effect=run), \
+                    patch.object(evidence, "github_read", side_effect=github_read):
+                with self.assertRaisesRegex(ValueError, "ticket #7 timeline lookup failed"):
+                    manage.manage_pass()
+
+            self.assertEqual(len(comments), 1)
+            self.assertIn("factory-handoff 8/1", comments[0][comments[0].index("--body") + 1])
+            events = lifecycle.read_events(dispatch.EVENTS)
+            self.assertEqual(
+                [(e["request"], e["target"]) for e in events if e.get("event") == "handoff"],
+                [("8/1", "unassigned")],
+            )
+            self.assertEqual(
+                [(e["ticket"], e["kind"], e["comment"], e["url"])
+                 for e in events if e.get("event") == "comment" and e.get("kind") == "handoff"],
+                [(8, "handoff", 808, "https://github.com/acme/widgets/issues/8#issuecomment-808")],
+            )
+
     def test_manage_applies_closed_menu_and_rejects_unknown_route(self) -> None:
         cases = [
             ("REWRITE", "Replacement acceptance criteria", "issue edit 7 --repo acme/widgets --body Replacement acceptance criteria"),

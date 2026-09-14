@@ -22,11 +22,13 @@ from factory.config import LABEL_AGENT, LABEL_HUMAN
 MARK = "factory-handoff"
 # Runner-local absolute paths; URLs are untouched (`://` and `host/` precede their slashes).
 LOCAL_PATH = re.compile(r"(?<![\w:/])/[\w.@+-]+(?:/[\w.@+-]*)*")
+MENTION = re.compile(r"@(?=[A-Za-z0-9])")
 TIMELINE_EVENTS = {"commented", "labeled", "unlabeled", "assigned", "unassigned", "edited", "renamed", "closed", "reopened"}
 
 
 def public(text: str) -> str:
-    return LOCAL_PATH.sub("(local path withheld)", text)
+    text = LOCAL_PATH.sub("(local path withheld)", text)
+    return MENTION.sub("&#64;", text)
 
 
 def timeline(n: int) -> list[dict]:
@@ -107,13 +109,13 @@ def compose(n: int, request: str, token: str, escalation: dict, why: str, observ
     if previous is not None:
         rationale = route["provenance"][-1]["detail"] if route["provenance"] else source
         return (f"Factory handoff `{request}`: the decision owner is now {' '.join(who)} ({source}: {public(rationale)}); "
-                f"previously {previous}.\n\n<!-- {token} -->")
+                f"previously {public(previous)}.\n\n<!-- {token} -->")
     if route["status"] == "selected" and who:
         owner = f"{who[0]} — you own this decision ({source})."
     elif route["status"] == "candidates" and who:
         owner = f"{', '.join(who)} — candidates ({source}); one of you should claim it."
     elif route["status"] in ("selected", "candidates"):
-        teams = ", ".join(f"`{name}`" for name in ([route["owner"]] if route.get("owner") else route["candidates"]))
+        teams = ", ".join(public(name) for name in ([route["owner"]] if route.get("owner") else route["candidates"]))
         owner = f"{teams}: team destinations could not be verified on this repository, so nobody is mentioned ({source})."
     elif route["status"] == "invalid":
         owner = f"The routed owner declaration is invalid ({public(route['provenance'][-1]['detail'])}); fix it before anyone is mentioned."

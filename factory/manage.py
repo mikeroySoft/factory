@@ -170,11 +170,14 @@ def human_activity(n: int, escalation: dict, events: list[dict]) -> bool:
 
 
 def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: Path) -> None:
-    def gh(action: str, *args: str) -> str:
-        out = dispatch.run(["gh", "issue", action, str(n), "--repo", dispatch.REPO, *args]).stdout.strip()
-        if action == "comment":
-            dispatch.comment_receipt(n, "manager", out, decision=decision)
-        return out
+    def issue_action(action: str, *args: str) -> None:
+        dispatch.run(["gh", "issue", action, str(n), "--repo", dispatch.REPO, *args])
+
+    def post_comment(subject: str, number: int, text: str, **fields: object) -> None:
+        out = dispatch.run(
+            ["gh", subject, "comment", str(number), "--repo", dispatch.REPO, "--body", text]
+        ).stdout.strip()
+        dispatch.comment_receipt(number, "manager", out, decision=decision, **fields)
 
     if decision == "FIX":
         cfg = dispatch.cfg
@@ -215,8 +218,8 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         return
 
     if decision == "REWRITE":
-        gh("comment", "--body", "Factory manager: Replacing the issue body. Previous body:\n\n" + (issue.get("body") or ""))
-        gh("edit", "--body", body)
+        post_comment("issue", n, "Factory manager: Replacing the issue body. Previous body:\n\n" + (issue.get("body") or ""))
+        issue_action("edit", "--body", body)
     elif decision == "SPLIT":
         children = []
         for child in data:
@@ -228,31 +231,33 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
             children.append(int(url.rstrip("/").rsplit("/", 1)[-1]))
             dispatch.record("issue-created", ticket=children[-1], parent=n)
         blockers = "\n".join(f"Blocked by: #{child}" for child in children)
-        gh("edit", "--body", (issue.get("body") or "") + "\n\n" + blockers)
-        gh("comment", "--body", "Factory manager: Split into child tickets. Parent remains ready-for-human.\n\n" + blockers)
+        issue_action("edit", "--body", (issue.get("body") or "") + "\n\n" + blockers)
+        post_comment("issue", n, "Factory manager: Split into child tickets. Parent remains ready-for-human.\n\n" + blockers)
         return
     elif decision == "CLOSE":
         pr = dispatch.gh_json(["pr", "view", f"agent/{n}", "--repo", dispatch.REPO, "--json", "number,state,baseRefName"])
         if pr.get("state") != "OPEN" or pr.get("baseRefName") != dispatch.cfg.main:
             raise ValueError(f"CLOSE requires an open PR targeting the configured target `{dispatch.cfg.main}`")
-        dispatch.run(["gh", "pr", "close", str(pr["number"]), "--repo", dispatch.REPO, "--comment", "Factory manager: " + body])
+        message = "Factory manager: " + body
+        post_comment("pr", pr["number"], message, pr=pr["number"])
+        dispatch.run(["gh", "pr", "close", str(pr["number"]), "--repo", dispatch.REPO])
+        post_comment("issue", n, message, pr=pr["number"])
         if any(e.get("event") == "issue-created" and e.get("ticket") == n for e in lifecycle.read_events(dispatch.EVENTS)):
-            gh("close", "--reason", "not planned", "--comment", "Factory manager: " + body)
+            issue_action("close", "--reason", "not planned")
         else:
-            gh("comment", "--body", "Factory manager: " + body)
-            gh("edit", "--add-label", config.LABEL_WONTFIX)
+            issue_action("edit", "--add-label", config.LABEL_WONTFIX)
         return
     elif decision == "ROUTE":
         args = []
         for key, flag in (("add", "--add-label"), ("remove", "--remove-label")):
             for label in data.get(key, []):
                 args.extend([flag, label])
-        gh("comment", "--body", "Factory manager: " + (data.get("guidance") or body))
-        gh("edit", *args)
+        post_comment("issue", n, "Factory manager: " + (data.get("guidance") or body))
+        issue_action("edit", *args)
     else:
-        gh("comment", "--body", "Factory manager: " + body)
+        post_comment("issue", n, "Factory manager: " + body)
     if decision != "HUMAN":
-        gh("edit", "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT)
+        issue_action("edit", "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT)
 
 
 VIABILITY_MENU = """You are the factory manager assessing whether a direction is worth pursuing,
@@ -586,7 +591,8 @@ def frontier_pass(dry_run: bool = False) -> None:
                         continue
                     dispatch.record("manage", ticket=n, pr=number, head=head, decision=decision,
                                     round=len(decided) + 1, packet=str(packet))
-                    dispatch.run(["gh", "pr", "comment", str(number), "--repo", cfg.repo, "--body", "Factory manager: " + body])
+                    if decision != "CLOSE":
+                        dispatch.run(["gh", "pr", "comment", str(number), "--repo", cfg.repo, "--body", "Factory manager: " + body])
                     if decision == "APPROVE":
                         if not dispatch.approve_pr(n, head):
                             dispatch.escalate(n, f"PR #{number}: approval evidence, head, or human review state changed before manager approval", None)
@@ -606,11 +612,13 @@ def frontier_pass(dry_run: bool = False) -> None:
 
 def manage_pass(dry_run: bool = False) -> None:
     """Viability, PR frontier and escalation rounds need a manager; terminal handoffs do not."""
-    if dispatch.cfg.manager:
-        viability_pass(dry_run)
-        frontier_pass(dry_run)
-        escalation_pass(dry_run)
-    handoff.handoff_pass(dry_run)
+    try:
+        if dispatch.cfg.manager:
+            viability_pass(dry_run)
+            frontier_pass(dry_run)
+            escalation_pass(dry_run)
+    finally:
+        handoff.handoff_pass(dry_run)
 
 
 def escalation_pass(dry_run: bool = False) -> None:

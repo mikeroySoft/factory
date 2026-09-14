@@ -201,6 +201,9 @@ routing rationale from `factory plan route` (reason `ci` for CI failures, otherw
 `implementation` with the PR's changed paths). Runner-local paths, packets and logs
 never reach GitHub. While recovery is still eligible nothing is posted; routing stays
 advisory (`factory plan route N`).
+The terminal handoff phase is still attempted if an earlier manager phase fails.
+That failure remains an error: publishing a handoff does not authorize the dispatcher
+to continue scheduling new work.
 
 The request `@mention`s a GitHub login on the initial handoff and again only when the
 owner actually changes (a human sets or edits `**Decision owner**` in the issue body,
@@ -211,6 +214,9 @@ gap instead. Nobody is assigned. Publication is intent-then-receipt in
 comment id after); a crash or failed `gh` between the two is reconciled from the issue
 timeline before any retry, and when that lookup fails nothing is posted. GitHub
 delivery of a mention is not asserted.
+Explanatory text escapes mention syntax, including rejected destinations, routing
+provenance and previous owners; only the current validated owner or candidates receive
+native mentions.
 
 Human-takeover detection uses only the factory's own recorded comment ids: the
 escalation comment, manager comments and handoff requests are journaled as `comment`
@@ -220,6 +226,9 @@ never trusted. Without the current escalation's recorded comment on the timeline
 the manager fails closed: even a failed escalation post leads to a routed handoff,
 not an exemption for later human label or assignee changes. A handoff receipt cannot
 substitute for the missing escalation receipt on a later pass.
+Manager `CLOSE` comments are posted explicitly before closing their respective PR
+or issue, with each receipt scoped to the timeline that owns the comment. A partial
+close failure does not replay the consumed manager decision.
 A reply is context for humans, not a retry, approval or merge command;
 use the documented labels for that.
 
