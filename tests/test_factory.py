@@ -1233,7 +1233,7 @@ PY
 
     def test_terminal_handoff_runs_after_manager_timeline_lookup_fails(self) -> None:
         from unittest.mock import patch
-        from factory import dispatch, evidence
+        from factory import dispatch, plan
 
         with tempfile.TemporaryDirectory() as d:
             repo = make_repo(Path(d))
@@ -1301,7 +1301,7 @@ PY
 
             with patch.object(dispatch, "gh_json", side_effect=github), \
                     patch.object(dispatch, "run", side_effect=run), \
-                    patch.object(evidence, "github_read", side_effect=github_read):
+                    patch.object(plan, "github_read", side_effect=github_read):
                 with self.assertRaisesRegex(ValueError, "ticket #7 timeline lookup failed"):
                     manage.manage_pass()
 
