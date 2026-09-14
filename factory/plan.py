@@ -1,9 +1,9 @@
-"""`factory plan list` / `inspect N` / `route N --reason R`: read-only initiative plans and decision-owner routing as schema-1 JSON.
+"""Read-only initiative plans, immutable baselines, drift, and decision-owner routing.
 
 An initiative is an issue carrying the `initiative` label whose body follows
 templates/initiative.md. Owner and Status are declared facts read from the body;
-status is never inferred from linked child issues. Issue text is untrusted data.
-The label is not yet an enforced dispatch guard.
+status is never inferred from linked child issues. Issue text is untrusted data,
+and every command emits one schema-1 JSON object.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import time
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from factory import config
+from factory import binding, config
 from factory.evidence import PAGE_SIZE, READ_SECONDS, EvidenceError, _encode, clean_text, failed, github_read, source
 
 LABEL = config.LABEL_INITIATIVE
@@ -37,6 +37,11 @@ ROUTE_NOTICES = [
     "Only fixed GitHub GETs are used; nothing is assigned, labelled or commented.",
     "Owners are declared facts (issue body, .factory.toml); syntax is checked, membership and authorization are not.",
     "A `**Decision owner**` in the ticket body is a human override and wins on every recomputation.",
+]
+BINDING_NOTICES = [
+    "Complete REST issue bodies and retained local evidence are read; nothing is mutated.",
+    "Only normalized Outcome, Boundaries, Plan, and Success evidence sections determine drift.",
+    "Plan history is not inferred; attribution remains unknown.",
 ]
 
 
@@ -289,9 +294,18 @@ def route_args(argv: list[str]) -> tuple[int, str, list[str]] | None:
         return None
     return int(argv[1]), reason, paths
 
-USAGE = ("usage: factory plan list | factory plan inspect <number> | factory plan route <number> --reason "
-         f"<{'|'.join(config.ROUTE_REASONS)}> [--path <repo-relative path>]... [--json]\n\n"
-         "Emit one schema_version:1 JSON object. Exit: 0 complete, 1 partial/unavailable, 2 invalid usage/configuration.")
+
+def _binding_failure(exc: binding.BindingError, source_name: str) -> EvidenceError:
+    return EvidenceError(exc.code, str(exc), source_name, "binding")
+
+
+USAGE = (
+    "usage: factory plan list | factory plan inspect <number> | factory plan baseline <initiative> | "
+    "factory plan drift <ticket> | factory plan route <number> --reason "
+    f"<{'|'.join(config.ROUTE_REASONS)}> [--path <repo-relative path>]... [--json]\n\n"
+    "Emit one schema_version:1 JSON object. Exit: 0 complete, 1 partial/unavailable, "
+    "2 invalid usage/configuration."
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -304,20 +318,39 @@ def main(argv: list[str] | None = None) -> int:
     exit_code = 0
     try:
         route = route_args(argv)
+        numbered = (
+            len(argv) == 2
+            and argv[1].isascii()
+            and argv[1].isdigit()
+            and int(argv[1]) > 0
+        )
         if argv == ["list"]:
             result["plans"] = []
-        elif len(argv) == 2 and argv[0] == "inspect" and argv[1].isascii() and argv[1].isdigit() and int(argv[1]) > 0:
+        elif numbered and argv[0] == "inspect":
             result["plan"] = None
+        elif numbered and argv[0] == "baseline":
+            result["baseline"] = None
+            result["scope"]["initiative"] = int(argv[1])
+        elif numbered and argv[0] == "drift":
+            result["drift"] = None
+            result["scope"]["issue"] = int(argv[1])
         elif route:
             result["route"] = None
             result["scope"].update(issue=route[0], reason=route[1])
         else:
             raise EvidenceError("invalid_request", USAGE, "invocation", "scope")
-        result["coverage"]["notices"] = list(ROUTE_NOTICES if route else NOTICES)
+        binding_mode = numbered and argv[0] in {"baseline", "drift"}
+        notices = BINDING_NOTICES if binding_mode else ROUTE_NOTICES if route else NOTICES
+        result["coverage"]["notices"] = list(notices)
         try:
             cfg = config.load()
         except config.ConfigError as exc:
-            raise EvidenceError("invalid_scope", f"Repository configuration could not be loaded: {exc}", "configuration", "scope") from None
+            raise EvidenceError(
+                "invalid_scope",
+                f"Repository configuration could not be loaded: {exc}",
+                "configuration",
+                "scope",
+            ) from None
         result["scope"]["repository"] = cfg.repo
         result["coverage"]["status"] = "bounded"
         reader = Reader(cfg, result)
@@ -325,10 +358,48 @@ def main(argv: list[str] | None = None) -> int:
             reader.list()
         elif route:
             reader.route(*route)
-        else:
+        elif argv[0] == "inspect":
             reader.inspect(int(argv[1]))
+        elif argv[0] == "baseline":
+            try:
+                observed = binding.observe(cfg, int(argv[1]))
+            except binding.BindingError as exc:
+                raise _binding_failure(exc, f"repos/{cfg.repo}/issues/{argv[1]}") from exc
+            result["baseline"] = observed
+            result["sources"].append(source(
+                "Initiative REST issue",
+                f"Complete issue body observed as {observed['sha256']}.",
+                url=f"https://api.github.com/repos/{cfg.repo}/issues/{argv[1]}",
+            ))
+        else:
+            try:
+                event = binding.accepted(cfg, int(argv[1]))
+                if event is None:
+                    raise binding.BindingError(f"ticket #{argv[1]} has no accepted plan binding")
+                accepted = event["baseline"]
+            except binding.BindingError as exc:
+                raise _binding_failure(exc, ".factory/events.jsonl") from exc
+            result["sources"].append(source(
+                "Accepted plan binding",
+                f"Ticket #{argv[1]} retained initiative #{accepted['initiative']} at {accepted['sha256']}.",
+                path=".factory/events.jsonl",
+            ))
+            report = result["drift"] = binding.drift(cfg, accepted)
+            if report["observed"] is not None:
+                result["sources"].append(source(
+                    "Initiative REST issue",
+                    f"Complete issue body observed as {report['observed']['sha256']}.",
+                    url=f"https://api.github.com/repos/{cfg.repo}/issues/{accepted['initiative']}",
+                ))
+            if report["status"] == "unavailable":
+                failed(result, _binding_failure(
+                    binding.BindingError(report["reason"], report["error_code"]),
+                    f"repos/{cfg.repo}/issues/{accepted['initiative']}",
+                ))
         if result["ok"]:
-            result["coverage"]["status"] = "complete" if len(result["coverage"]["notices"]) == len(ROUTE_NOTICES if route else NOTICES) else "bounded"
+            result["coverage"]["status"] = (
+                "complete" if len(result["coverage"]["notices"]) == len(notices) else "bounded"
+            )
     except EvidenceError as exc:
         failed(result, exc)
         result["error"] = {"code": exc.code, "message": exc.message}

@@ -1067,7 +1067,7 @@ class ManageTest(unittest.TestCase):
 case "$1 $2" in
   "pr list") echo '[]';;
   "issue list") echo '[{{"number":7,"title":"Fix gate","body":"Original body","labels":[{{"name":"ready-for-human"}}]}}]';;
-  "issue view") echo '{{"labels":[{{"name":"ready-for-human"}}]}}';;
+  "issue view") echo '{{"body":"Original body","labels":[{{"name":"ready-for-human"}}]}}';;
   "api repos/acme/widgets/issues/7/timeline") cat "{state}/timeline.json";;
   "issue create") echo "https://github.com/acme/widgets/issues/8";;
   "issue comment"|"issue edit")
@@ -1672,7 +1672,7 @@ esac
 case "$1 $2 $3" in
   "pr list --repo") echo '[]';;
   "issue list --repo") echo '[{"number":7,"title":"First","body":"Old"},{"number":8,"title":"Next","body":"Old"}]';;
-  "issue view "*) echo '{"labels":[{"name":"ready-for-human"}]}';;
+  "issue view "*) echo '{"body":"Old","labels":[{"name":"ready-for-human"}]}';;
   "api repos/acme/widgets/issues/"*) cat .factory/timeline.json;;
   "issue edit 7") echo 'GitHub rejected body edit' >&2; exit 1;;
 esac
