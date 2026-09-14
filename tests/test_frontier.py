@@ -73,7 +73,13 @@ class FrontierTest(unittest.TestCase):
     def fake_run(self, cmd, *a, **kw):
         if cmd[0] == "gh":
             self.mutations.append(cmd)
-            return subprocess.CompletedProcess(cmd, 0, "", "")
+            stdout = (
+                "https://github.com/example/project/pull/80#issuecomment-8001"
+                if cmd[1:3] == ["pr", "comment"] else
+                "https://github.com/example/project/issues/79#issuecomment-7901"
+                if cmd[1:3] == ["issue", "comment"] else ""
+            )
+            return subprocess.CompletedProcess(cmd, 0, stdout, "")
         if cmd[0] == "manager-stub":
             return subprocess.CompletedProcess(cmd, 0, self.manager_output, "")
         raise AssertionError(cmd)
@@ -221,6 +227,32 @@ class FrontierTest(unittest.TestCase):
         self.assertFalse(any("ready-for-agent" in c for c in flat), flat)
         self.assertEqual(self.escalations(), [])
 
+    def test_failed_close_is_not_replayed_for_the_same_head(self) -> None:
+        self.cfg.manager_review = "all"
+        self.quiet_provider()
+        self.approved_head(H)
+        self.manager_output = "DECISION: CLOSE\nDuplicate of shipped work"
+
+        def fail_close(cmd, *args, **kwargs):
+            result = self.fake_run(cmd, *args, **kwargs)
+            if cmd[:3] == ["gh", "pr", "close"]:
+                raise subprocess.CalledProcessError(1, cmd, stderr="close failed")
+            return result
+
+        with mock.patch.object(dispatch, "run", side_effect=fail_close):
+            manage.frontier_pass()
+            self.assertEqual(len([cmd for cmd in self.mutations if cmd[1:3] == ["pr", "comment"]]), 1)
+            self.assertEqual(len([cmd for cmd in self.mutations if cmd[1:3] == ["pr", "close"]]), 1)
+            self.assertFalse(any(cmd[1:3] == ["issue", "comment"] for cmd in self.mutations))
+            self.mutations.clear()
+            manage.frontier_pass()
+
+        self.assertEqual(self.mutations, [])
+        decisions = [e for e in self.events() if e.get("event") == "manage"]
+        self.assertEqual([(e["pr"], e["head"], e["decision"]) for e in decisions], [(80, H, "CLOSE")])
+        receipts = [e for e in self.events() if e.get("event") == "comment"]
+        self.assertEqual([(e["ticket"], e["pr"], e["comment"]) for e in receipts], [(80, 80, 8001)])
+
     def test_manager_approval_is_discarded_when_the_head_moves_while_thinking(self) -> None:
         self.cfg.manager_review = "all"
         self.quiet_provider()
@@ -250,15 +282,48 @@ class CloseDecisionTest(unittest.TestCase):
                 if created:
                     dispatch.record("issue-created", ticket=79, parent=70)
                 calls = []
-                with mock.patch.object(dispatch, "gh_json", return_value={"number": 80, "state": "OPEN", "baseRefName": "main"}), \
-                        mock.patch.object(dispatch, "run", side_effect=lambda cmd, *a, **kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", "")):
+
+                def run(cmd, *args, **kwargs):
+                    calls.append(cmd)
+                    stdout = (
+                        "https://github.com/example/project/pull/80#issuecomment-8001"
+                        if cmd[1:3] == ["pr", "comment"] else
+                        "https://github.com/example/project/issues/79#issuecomment-7901"
+                        if cmd[1:3] == ["issue", "comment"] else
+                        "closed"
+                    )
+                    return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+                with mock.patch.object(
+                    dispatch, "gh_json",
+                    return_value={"number": 80, "state": "OPEN", "baseRefName": "main"},
+                ), mock.patch.object(dispatch, "run", side_effect=run):
                     manage.apply(79, {"title": "t", "body": "b"}, "CLOSE", "Not worth landing", None, repo / "packet.md")
-                flat = [" ".join(c) for c in calls]
-                self.assertEqual(flat[0][:len("gh pr close 80 --repo example/project --comment Factory manager: Not worth landing")],
-                                 "gh pr close 80 --repo example/project --comment Factory manager: Not worth landing")
-                self.assertEqual(any("issue close 79" in c for c in flat), created)
-                self.assertEqual(any("--add-label wontfix-proposal" in c for c in flat), not created)
-                self.assertFalse(any("ready-for-agent" in c for c in flat))
+
+                def actions(subject, action):
+                    return [cmd for cmd in calls if cmd[1:3] == [subject, action]]
+
+                self.assertEqual(len(actions("pr", "comment")), 1)
+                self.assertEqual(len(actions("pr", "close")), 1)
+                self.assertNotIn("--comment", actions("pr", "close")[0])
+                self.assertEqual(len(actions("issue", "comment")), 1)
+                self.assertEqual(len(actions("issue", "close")), int(created))
+                self.assertEqual(len(actions("issue", "edit")), int(not created))
+                if created:
+                    self.assertIn("not planned", actions("issue", "close")[0])
+                    self.assertNotIn("--comment", actions("issue", "close")[0])
+                else:
+                    self.assertIn(config.LABEL_WONTFIX, actions("issue", "edit")[0])
+                self.assertFalse(any("ready-for-agent" in cmd for cmd in calls))
+
+                receipts = [e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("event") == "comment"]
+                self.assertEqual(
+                    {(e["ticket"], e["pr"], e["comment"], e["url"], e["decision"]) for e in receipts},
+                    {
+                        (80, 80, 8001, "https://github.com/example/project/pull/80#issuecomment-8001", "CLOSE"),
+                        (79, 80, 7901, "https://github.com/example/project/issues/79#issuecomment-7901", "CLOSE"),
+                    },
+                )
 
     def test_close_requires_an_open_pr_on_the_configured_target(self) -> None:
         with tempfile.TemporaryDirectory() as d:

@@ -427,6 +427,15 @@ def record(event: str, **fields: object) -> None:
     lifecycle.append(EVENTS, row)
 
 
+def comment_receipt(n: int, kind: str, stdout: str, **fields: object) -> bool:
+    """Journal the issue comment `gh` just created; its URL is the receipt. False when none came back."""
+    match = re.search(r"https://\S+#issuecomment-(\d+)", stdout or "")
+    if not match:
+        return False
+    record("comment", ticket=n, kind=kind, comment=int(match[1]), url=match[0], **fields)
+    return True
+
+
 def run_worker(cmd: list[str], wt: Path, logfile: Path) -> int:
     log(f"worker: {' '.join(cmd)} -> {logfile}")
     started = time.monotonic()
@@ -590,7 +599,8 @@ def escalate(n: int, reason: str, log_path: Path | None, extra: str = "") -> Non
     handoff = wt / ".factory" / f"handoff-{n}.md"
     if handoff.exists():
         body += f"\n\nWorker handoff notes:\n\n{handoff.read_text().strip()[-4000:]}"
-    run(["gh", "issue", "comment", str(n), "--repo", REPO, "--body", body], check=False)
+    posted = run(["gh", "issue", "comment", str(n), "--repo", REPO, "--body", body], check=False)
+    comment_receipt(n, "escalation", posted.stdout if posted.returncode == 0 else "", round=round_number)
 
 
 def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str, str]:

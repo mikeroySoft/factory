@@ -110,8 +110,11 @@ Evidence, in order of authority:
 1. `.factory/events.jsonl` filtered to the ticket: the ordered trail of `claimed`,
    `attempt` (worker exit, gate PASS/FAIL, seconds, log path), `review` verdicts,
    `approved`, `merged`, `escalate` with the terminal reason.
-2. The issue's last factory comment: `Factory dispatcher escalating: <reason>` plus
-   the worker's handoff notes (what it changed, what it left unverified).
+2. The issue's last factory comments: `Factory dispatcher escalating: <reason>` plus
+   the worker's handoff notes (what it changed, what it left unverified), and, once
+   automatic recovery is terminal, one `Factory handoff request <n>/<round>` naming
+   the question, public evidence links, the routed decision owner and why. Replying
+   there is context only; re-label to retry.
 3. The gate report: `.factory/wt-<n>/.factory/gate-report-<n>.md` — PASS/FAIL per
    check with the failing tail. On the PR, the same report is in the body.
 4. The reviewer's findings: PR comments ending in `VERDICT: …`; each finding cites

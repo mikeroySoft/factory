@@ -1,4 +1,4 @@
-"""Recommend opted-in PR/issue directions, then resolve escalation packets."""
+"""Recommend opted-in PR/issue directions, resolve escalation packets, then publish terminal human handoffs."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pathlib import Path
 from subprocess import CalledProcessError
 from tempfile import NamedTemporaryFile
 
-from factory import config, dispatch, lifecycle
+from factory import config, dispatch, handoff, lifecycle
 from factory.config import (
     LABEL_AGENT, LABEL_APPROVED, LABEL_HUMAN, LABEL_INFO, LABEL_REVIEW,
     LABEL_TRIAGE, LABEL_VIABILITY, LESSONS_NAME,
@@ -132,34 +132,52 @@ def parse(output: str, workers: dict, *, approval: bool = False) -> tuple[str, s
     return "HUMAN", "Unparseable manager output:\n\n" + (output.strip() or "(empty output)"), None
 
 
-def human_activity(n: int, escalation: dict) -> bool:
-    pages = dispatch.gh_json(["api", f"repos/{dispatch.REPO}/issues/{n}/timeline", "--paginate", "--slurp"])
-    events = [item for page in pages for item in page] if pages and isinstance(pages[0], list) else pages
-    # The escalation event precedes its own label changes and packet comment.
-    marker = next((i for i, item in enumerate(events) if item.get("event") == "commented"
-                   and item.get("created_at", "") >= escalation["at"]
-                   and item.get("body", "").startswith("Factory dispatcher escalating:")
-                   and escalation["packet"] in item.get("body", "")), None)
-    for index, item in enumerate(events):
+def human_activity(n: int, escalation: dict, events: list[dict]) -> bool:
+    """Timeline activity since the escalation that the factory did not journal itself.
+
+    Only recorded `comment` receipts identify machine comments (never a text prefix); an
+    edited receipt is human activity again. The escalation's own label/assignee edits are
+    skipped only up to its recorded escalation comment. Without that provenance, fail
+    closed and leave the escalation for the terminal handoff pass.
+    """
+    items = handoff.timeline(n)
+    machine = {e["comment"] for e in events if e.get("event") == "comment"}
+    escalation_comments = {e["comment"] for e in events if e.get("event") == "comment"
+                           and e.get("kind") == "escalation" and e.get("round") == escalation.get("round")
+                           and e.get("at", "") >= escalation["at"]}
+    marker = next((i for i, item in enumerate(items) if item.get("event") == "commented"
+                   and item.get("id") in escalation_comments and item.get("created_at", "") >= escalation["at"]), None)
+    if marker is None:
+        return True
+    for index, item in enumerate(items):
         if item.get("created_at", "") < escalation["at"]:
             continue
-        if index == marker:
-            continue
         kind = item.get("event")
-        if marker is not None and index < marker and (
+        if kind == "commented" and item.get("id") in machine:
+            if (item.get("updated_at") or item["created_at"]) != item["created_at"]:
+                return True
+            continue
+        # Only the recorded escalation comment bounds its own label/assignee churn.
+        if index < marker and (
             (kind == "labeled" and item.get("label", {}).get("name") == LABEL_HUMAN)
             or (kind == "unlabeled" and item.get("label", {}).get("name") == LABEL_AGENT)
             or kind == "unassigned"
         ):
             continue
-        if kind in {"commented", "labeled", "unlabeled", "assigned", "unassigned", "edited", "renamed", "closed", "reopened"}:
+        if kind in handoff.TIMELINE_EVENTS:
             return True
     return False
 
 
 def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: Path) -> None:
-    def gh(action: str, *args: str) -> str:
-        return dispatch.run(["gh", "issue", action, str(n), "--repo", dispatch.REPO, *args]).stdout.strip()
+    def issue_action(action: str, *args: str) -> None:
+        dispatch.run(["gh", "issue", action, str(n), "--repo", dispatch.REPO, *args])
+
+    def post_comment(subject: str, number: int, text: str, **fields: object) -> None:
+        out = dispatch.run(
+            ["gh", subject, "comment", str(number), "--repo", dispatch.REPO, "--body", text]
+        ).stdout.strip()
+        dispatch.comment_receipt(number, "manager", out, decision=decision, **fields)
 
     if decision == "FIX":
         cfg = dispatch.cfg
@@ -200,8 +218,8 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         return
 
     if decision == "REWRITE":
-        gh("comment", "--body", "Factory manager: Replacing the issue body. Previous body:\n\n" + (issue.get("body") or ""))
-        gh("edit", "--body", body)
+        post_comment("issue", n, "Factory manager: Replacing the issue body. Previous body:\n\n" + (issue.get("body") or ""))
+        issue_action("edit", "--body", body)
     elif decision == "SPLIT":
         children = []
         for child in data:
@@ -213,31 +231,33 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
             children.append(int(url.rstrip("/").rsplit("/", 1)[-1]))
             dispatch.record("issue-created", ticket=children[-1], parent=n)
         blockers = "\n".join(f"Blocked by: #{child}" for child in children)
-        gh("edit", "--body", (issue.get("body") or "") + "\n\n" + blockers)
-        gh("comment", "--body", "Factory manager: Split into child tickets. Parent remains ready-for-human.\n\n" + blockers)
+        issue_action("edit", "--body", (issue.get("body") or "") + "\n\n" + blockers)
+        post_comment("issue", n, "Factory manager: Split into child tickets. Parent remains ready-for-human.\n\n" + blockers)
         return
     elif decision == "CLOSE":
         pr = dispatch.gh_json(["pr", "view", f"agent/{n}", "--repo", dispatch.REPO, "--json", "number,state,baseRefName"])
         if pr.get("state") != "OPEN" or pr.get("baseRefName") != dispatch.cfg.main:
             raise ValueError(f"CLOSE requires an open PR targeting the configured target `{dispatch.cfg.main}`")
-        dispatch.run(["gh", "pr", "close", str(pr["number"]), "--repo", dispatch.REPO, "--comment", "Factory manager: " + body])
+        message = "Factory manager: " + body
+        post_comment("pr", pr["number"], message, pr=pr["number"])
+        dispatch.run(["gh", "pr", "close", str(pr["number"]), "--repo", dispatch.REPO])
+        post_comment("issue", n, message, pr=pr["number"])
         if any(e.get("event") == "issue-created" and e.get("ticket") == n for e in lifecycle.read_events(dispatch.EVENTS)):
-            gh("close", "--reason", "not planned", "--comment", "Factory manager: " + body)
+            issue_action("close", "--reason", "not planned")
         else:
-            gh("comment", "--body", "Factory manager: " + body)
-            gh("edit", "--add-label", config.LABEL_WONTFIX)
+            issue_action("edit", "--add-label", config.LABEL_WONTFIX)
         return
     elif decision == "ROUTE":
         args = []
         for key, flag in (("add", "--add-label"), ("remove", "--remove-label")):
             for label in data.get(key, []):
                 args.extend([flag, label])
-        gh("comment", "--body", "Factory manager: " + (data.get("guidance") or body))
-        gh("edit", *args)
+        post_comment("issue", n, "Factory manager: " + (data.get("guidance") or body))
+        issue_action("edit", *args)
     else:
-        gh("comment", "--body", "Factory manager: " + body)
+        post_comment("issue", n, "Factory manager: " + body)
     if decision != "HUMAN":
-        gh("edit", "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT)
+        issue_action("edit", "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT)
 
 
 VIABILITY_MENU = """You are the factory manager assessing whether a direction is worth pursuing,
@@ -571,7 +591,8 @@ def frontier_pass(dry_run: bool = False) -> None:
                         continue
                     dispatch.record("manage", ticket=n, pr=number, head=head, decision=decision,
                                     round=len(decided) + 1, packet=str(packet))
-                    dispatch.run(["gh", "pr", "comment", str(number), "--repo", cfg.repo, "--body", "Factory manager: " + body])
+                    if decision != "CLOSE":
+                        dispatch.run(["gh", "pr", "comment", str(number), "--repo", cfg.repo, "--body", "Factory manager: " + body])
                     if decision == "APPROVE":
                         if not dispatch.approve_pr(n, head):
                             dispatch.escalate(n, f"PR #{number}: approval evidence, head, or human review state changed before manager approval", None)
@@ -590,11 +611,18 @@ def frontier_pass(dry_run: bool = False) -> None:
 
 
 def manage_pass(dry_run: bool = False) -> None:
+    """Viability, PR frontier and escalation rounds need a manager; terminal handoffs do not."""
+    try:
+        if dispatch.cfg.manager:
+            viability_pass(dry_run)
+            frontier_pass(dry_run)
+            escalation_pass(dry_run)
+    finally:
+        handoff.handoff_pass(dry_run)
+
+
+def escalation_pass(dry_run: bool = False) -> None:
     cfg = dispatch.cfg
-    if not cfg.manager:
-        return
-    viability_pass(dry_run)
-    frontier_pass(dry_run)
     issues = dispatch.gh_json(["issue", "list", "--repo", cfg.repo, "--state", "open", "--label", LABEL_HUMAN,
                                "--json", "number,title,body,labels", "--limit", "1000"])
     for issue in issues:
@@ -627,7 +655,7 @@ def manage_pass(dry_run: bool = False) -> None:
                     if dispatch.initiative_kind(n):
                         dispatch.log(f"#{n}: refused (initiative records are never managed)")
                         continue
-                    if not packet.is_file() or human_activity(n, escalation):
+                    if not packet.is_file() or human_activity(n, escalation, events):
                         continue
                     if dry_run:
                         dispatch.log(f"#{n}: would manage escalation round {round_number}")
@@ -661,8 +689,10 @@ def manage_pass(dry_run: bool = False) -> None:
                             decision, body, data = ("HUMAN", CURATE_REJECTED, None) if rejected else parse(output, workers)
                     except (OSError, config.ConfigError) as exc:
                         decision, body, data = "HUMAN", f"Manager command failed: {exc}", None
+                        dispatch.record("escalate", ticket=n, round=round_number,
+                                        packet=str(packet), reason="manager_failed")
                     # A human may have taken over while the model was thinking.
-                    if human_activity(n, escalation):
+                    if human_activity(n, escalation, events):
                         continue
                     status = write_notes(notes_path, notes) if notes is not None else None
                     if status is not None and status != "written":
