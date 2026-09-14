@@ -115,8 +115,11 @@ def validate_request(req: object, asking: bool) -> dict:
     if "run" in req:
         if "number" in req or not isinstance(req["run"], str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", req["run"]):
             raise ValueError("run: an exact dispatcher run start time is required, instead of number")
-    elif type(req.get("number")) is not int or not 0 < req["number"] < 2**31:
-        raise ValueError("number: positive ticket integer required (or select a dispatcher run)")
+    elif "number" in req:
+        if type(req["number"]) is not int or not 0 < req["number"] < 2**31:
+            raise ValueError("number: positive ticket integer required (or select a dispatcher run)")
+    elif not asking:
+        raise ValueError("number: positive ticket integer required")
     if not asking:
         return req
     question = req.get("question")
@@ -409,6 +412,108 @@ def sources_for(
     return sources
 
 
+def factory_sources(cfg: Config, snapshot: dict) -> list[dict]:
+    """Bounded current-state evidence for repository-wide manager questions."""
+    dispatcher = snapshot.get("dispatcher", {})
+    overview = {
+        "repository": cfg.repo,
+        "generated_at": snapshot.get("generated_at"),
+        "errors": snapshot.get("errors", []),
+        "active": snapshot.get("active"),
+        "metrics": snapshot.get("metrics"),
+        "spend": snapshot.get("spend"),
+        "dispatcher": {
+            "timer": dispatcher.get("timer"),
+            "service_active": dispatcher.get("service_active"),
+            "consecutive_failures": dispatcher.get("consecutive_failures"),
+            "runs": [
+                {key: run.get(key) for key in ("started", "finished", "result")}
+                for run in dispatcher.get("runs", [])[-12:]
+            ],
+        },
+        "configuration": {
+            "main": cfg.main,
+            "max_active": cfg.max_active,
+            "max_attempts": cfg.max_attempts,
+            "review_rounds": cfg.review_rounds,
+            "budget_min": cfg.budget_min,
+        },
+    }
+    priorities = {
+        "escalated": 0, "needs-info": 1, "triage": 2, "pr-open": 3,
+        "in-flight": 4, "queued": 5,
+    }
+    tickets = sorted(
+        snapshot.get("tickets", []),
+        key=lambda ticket: (
+            priorities.get(ticket.get("stage"), 9),
+            -int(ticket.get("number", 0)),
+        ),
+    )
+    sources: list[dict] = []
+    remaining = CONTEXT_CAP
+
+    def add(label: str, value: object) -> bool:
+        nonlocal remaining
+        data = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
+        cap = min(SOURCE_CAP, remaining)
+        if cap < 256:
+            return False
+        truncated = len(data) > cap
+        source = {
+            "label": label + (" · truncated" if truncated else ""),
+            "text": data[:cap].decode("utf-8", errors="ignore"),
+            "truncated": truncated,
+        }
+        digest = hashlib.sha256(
+            json.dumps(source, sort_keys=True, ensure_ascii=False).encode()
+        ).digest()
+        source["id"] = "S" + str(int.from_bytes(digest[:8], "big"))
+        sources.append(source)
+        remaining -= len(source["text"].encode())
+        return True
+
+    add("Factory snapshot, dispatcher, and configuration", overview)
+    included = 0
+    # ponytail: bounded summaries prioritize active work; add pagination when
+    # repository-wide questions regularly exceed the existing evidence budget.
+    for ticket in tickets:
+        if len(sources) >= SOURCE_COUNT - 1:
+            break
+        summary = {
+            key: ticket.get(key)
+            for key in (
+                "number", "title", "state", "stage", "labels", "assignees",
+                "updated_at", "lock_held", "phase", "spend",
+            )
+        }
+        pr = ticket.get("pr")
+        summary["pr"] = (
+            {key: pr.get(key) for key in (
+                "number", "state", "approved", "mergeable", "merged_at", "closed_at",
+            )}
+            if isinstance(pr, dict) else None
+        )
+        summary["recent_events"] = [
+            {key: event.get(key) for key in ("at", "kind", "detail")}
+            for event in ticket.get("events", [])[-8:]
+        ]
+        if not add(f"Case #{ticket.get('number')} · {ticket.get('title', '')}", summary):
+            break
+        included += 1
+    if included < len(tickets):
+        add(
+            "Factory overview coverage · truncated",
+            {
+                "included_cases": included,
+                "available_cases": len(tickets),
+                "note": "Lower-priority cases were omitted by the evidence source or byte limit. "
+                        "Select a case for its complete bounded evidence.",
+            },
+        )
+    return sources
+
+
 def run_sources(cfg: Config, snapshot: dict, started: str) -> list[dict]:
     dispatcher = snapshot.get("dispatcher", {})
     run = next((r for r in dispatcher.get("runs", []) if r.get("started") == started), None)
@@ -525,17 +630,19 @@ def respond(cfg: Config, snapshot: dict, req: dict, asking: bool) -> dict:
     validate_request(req, asking)
     if "run" in req:
         sources = run_sources(cfg, snapshot, req["run"])
-    else:
+    elif "number" in req:
         ticket = next((t for t in snapshot.get("tickets", []) if t["number"] == req["number"]), None)
         if ticket is None:
             detail = "; snapshot errors: " + "; ".join(snapshot["errors"]) if snapshot.get("errors") else ""
             raise ValueError(f"Unknown ticket #{req['number']} in the current dashboard snapshot; refresh before retrying{detail}")
         sources = sources_for(cfg, ticket, snapshot.get("errors", []), req.get("path"))
+    else:
+        sources = factory_sources(cfg, snapshot)
     ids = {s["id"] for s in sources}
     if asking and "source" in req and req["source"] not in ids:
         raise ValueError("Unknown or stale source for this scope; reload and select its current source")
     focused_source = next((s["id"] for s in sources if s.get("path") == req.get("path")), None) if "path" in req else req.get("source")
-    evidence = json.dumps({"repository": cfg.repo, "ticket": req.get("number"), "run": req.get("run"), "sources": sources}, ensure_ascii=False)
+    evidence = json.dumps({"repository": cfg.repo, "ticket": req.get("number"), "run": req.get("run"), "scope": "factory" if "number" not in req and "run" not in req else None, "sources": sources}, ensure_ascii=False)
     fingerprint = hashlib.sha256(((cfg.manager_model or "OMP default") + str(cfg.root) + SYSTEM + BRIEF_REQUEST + evidence).encode()).hexdigest()
     if not asking:
         with _cache_lock:

@@ -154,6 +154,23 @@ def factory(cwd: Path, *argv: str, path: str | None = None) -> subprocess.Comple
     )
 
 
+def installed_factory(environment: Path) -> tuple[Path, Path]:
+    """Create a disposable environment containing this Factory snapshot."""
+    venv.EnvBuilder(with_pip=False).create(environment)
+    python = environment / "bin" / "python"
+    env = {
+        k: v for k, v in os.environ.items()
+        if k not in ("PYTHONPATH", "PYTHONSAFEPATH", "PYTHONHOME")
+    }
+    site = subprocess.run(
+        [str(python), "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+        env=env, capture_output=True, text=True, check=True,
+    )
+    package = Path(site.stdout.strip()) / "factory"
+    shutil.copytree(ROOT / "factory", package, ignore=shutil.ignore_patterns("__pycache__"))
+    return python, package
+
+
 def stub_bin(tmp: Path, **scripts: str) -> str:
     """Fake executables first on PATH: name -> sh body; each appends its argv to <bin>/<name>.log."""
     bindir = tmp / "bin"
@@ -294,23 +311,30 @@ class HostConfigTest(unittest.TestCase):
             '[defaults.dashboard]\nport = 9000\ntheme = "host.css"\n'
             '[defaults.gate]\nlock = "/tmp/host.lock"\n[[defaults.gate.check]]\nname = "evil"\nrun = ["true"]\n'
             '[defaults.leak_scan]\npattern = ""\n[defaults.repo]\nupstream = "evil"\n'
-            '[defaults.install]\nevery = "5min"\ndashboard = true\n[defaults.install.env]\nA = "1"\n'
+            '[defaults.install]\nevery = "5min"\ndashboard = true\npython = "/default/python"\n'
+            '[defaults.install.env]\nA = "1"\n'
             '[repo."acme/widgets"]\npath = "/x"\n[repo."acme/widgets".triage]\nmodel = "r"\n'
             '[repo."acme/widgets".dashboard]\nport = 9001\n'
+            '[repo."acme/widgets".install]\npython = "/repo/python"\n'
         )
         with tempfile.TemporaryDirectory() as d:
-            repo = make_repo(Path(d), '[triage]\nmodel = "f"\n')
+            repo = make_repo(
+                Path(d), '[triage]\nmodel = "f"\n[install]\npython = "/committed/python"\n'
+            )
             cfg = config.load(repo)
             # defaults < per-repo < repo file
             self.assertEqual((cfg.llm_url, cfg.llm_model, cfg.dashboard_port), ("http://h/v1/chat/completions", "f", 9001))
             self.assertEqual(cfg.lock, Path("/tmp/host.lock"))
-            self.assertEqual(cfg.install, {"every": "5min", "dashboard": True, "host": "127.0.0.1", "env": {"A": "1"}})
+            self.assertEqual(cfg.install, {"every": "5min", "dashboard": True, "host": "127.0.0.1", "python": "/committed/python", "env": {"A": "1"}})
             # repo-owned keys never come from the host
             self.assertEqual(cfg.checks, [])
             self.assertEqual(cfg.leak_pattern, config.DEFAULT_LEAK_PATTERN)
             self.assertIsNone(cfg.upstream)
             self.assertIsNone(cfg.dashboard_theme)
-            self.assertEqual(cfg.raw_repo, {"triage": {"model": "f"}})
+            self.assertEqual(
+                cfg.raw_repo,
+                {"triage": {"model": "f"}, "install": {"python": "/committed/python"}},
+            )
 
     def test_missing_host_file_is_current_behaviour(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -336,6 +360,7 @@ class HostConfigTest(unittest.TestCase):
             self.assertIn("RandomizedDelaySec=90", proc.stdout)
             self.assertLess(proc.stdout.index("ExecStart=-"), proc.stdout.index(" dispatch\n"))
             self.assertIn(" triage\nExecStart=", proc.stdout)
+            self.assertIn(f"ExecStart=-{sys.executable} -P -m factory triage", proc.stdout)
             self.assertIn("Environment=UV_EXCLUDE_NEWER=2026-01-01T00:00:00Z", proc.stdout)
             self.assertIn("# factory-widgets-dashboard.service", proc.stdout)
             self.assertIn("--host 127.0.0.1", proc.stdout)
@@ -343,24 +368,72 @@ class HostConfigTest(unittest.TestCase):
             proc = factory(make_repo(Path(d) / "b"), "install", "--print", "--no-dashboard")
             self.assertNotIn("dashboard.service", proc.stdout)
 
-    def test_generated_services_ignore_a_shadowing_checkout_package(self) -> None:
+    def test_selected_interpreter_launchers_and_validation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            repo = make_repo(Path(directory))
-            environment = Path(directory) / "venv"
-            venv.EnvBuilder(with_pip=False).create(environment)
-            python = environment / "bin" / "python"
-            env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONSAFEPATH", "PYTHONHOME")}
-            site = subprocess.run(
-                [str(python), "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
-                env=env, capture_output=True, text=True, check=True,
+            tmp = Path(directory)
+            repo = make_repo(tmp)
+            installer, _ = installed_factory(tmp / "installer")
+            selected, selected_package = installed_factory(tmp / "selected")
+            selected_init = selected_package / "__init__.py"
+            selected_init.write_text(
+                selected_init.read_text().replace(
+                    f'__version__ = "{__version__}"', '__version__ = "selected-test"'
+                )
             )
-            # Install this snapshot without pip, network access, or optional dependencies.
-            shutil.copytree(ROOT / "factory", Path(site.stdout.strip()) / "factory", ignore=shutil.ignore_patterns("__pycache__"))
-            generated = subprocess.run(
-                [str(python), "-m", "factory", "install", "--print", "--dashboard"],
-                cwd=repo, env=env, capture_output=True, text=True, check=False,
+            empty = tmp / "empty"
+            venv.EnvBuilder(with_pip=False).create(empty)
+            xdg = tmp / "xdg"
+            host = xdg / "factory" / "config.toml"
+            host.parent.mkdir(parents=True)
+            env = {
+                k: v for k, v in os.environ.items()
+                if k not in ("PYTHONPATH", "PYTHONSAFEPATH", "PYTHONHOME")
+            }
+            env["XDG_CONFIG_HOME"] = str(xdg)
+            gh = (
+                'case "$1 $2" in "repo view") echo ADMIN;; '
+                f'"label list") echo \'{json.dumps(list(config.LABELS))}\';; esac\nexit 0'
             )
+            manager_environment = tmp / "manager-environment"
+            manager_environment.write_text("")
+            tools = stub_bin(
+                tmp, gh=gh, loginctl="echo yes", ss="exit 0",
+                systemctl=(
+                    'case "$2" in\n'
+                    f'show-environment) /bin/cat {shlex.quote(str(manager_environment))};;\n'
+                    'is-active) echo inactive;;\nesac\nexit 0'
+                ),
+            )
+            env["PATH"] = f"{tools}:{env['PATH']}"
+
+            def configure(
+                python: Path, *, pythonpath: Path | None = None,
+                install_env: dict[str, str] | None = None,
+            ) -> None:
+                text = (
+                    '[defaults.triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n'
+                    f'[repo."acme/widgets".install]\npython = {json.dumps(str(python))}\n'
+                )
+                overrides = dict(install_env or {})
+                if pythonpath is not None:
+                    overrides["PYTHONPATH"] = str(pythonpath)
+                if overrides:
+                    text += '[repo."acme/widgets".install.env]\n'
+                    text += "".join(
+                        f"{key} = {json.dumps(value)}\n" for key, value in overrides.items()
+                    )
+                host.write_text(text)
+
+            def run(*args: str) -> subprocess.CompletedProcess:
+                return subprocess.run(
+                    [str(installer), "-P", "-m", "factory", *args],
+                    cwd=repo, env=env, capture_output=True, text=True, check=False,
+                )
+
+            configure(selected)
+            generated = run("install", "--print", "--dashboard")
             self.assertEqual(generated.returncode, 0, generated.stderr)
+            self.assertNotIn("validated service interpreter", generated.stdout)
             shadow = repo / "factory"
             shadow.mkdir()
             marker = repo / "checkout-executed"
@@ -375,6 +448,7 @@ class HostConfigTest(unittest.TestCase):
                     continue
                 command = shlex.split(line.removeprefix("ExecStart=").removeprefix("-"))
                 commands.append(command[command.index("factory") + 1])
+                self.assertEqual(command[:4], [str(selected), "-P", "-m", "factory"])
                 with self.subTest(command=command):
                     result = subprocess.run(
                         [*command, "--help"], cwd=repo, env=env,
@@ -383,6 +457,167 @@ class HostConfigTest(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertFalse(marker.exists(), "service imported the checkout package")
             self.assertEqual(commands, ["triage", "dispatch", "dashboard"])
+
+            installed = run("install", "--no-dashboard")
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            self.assertIn(f"{selected} loads Factory selected-test at {selected_package}", installed.stdout)
+            units = xdg / "systemd" / "user"
+            before = {path.name: path.read_text() for path in units.iterdir()}
+
+            systemctl_log = Path(tools) / "systemctl.log"
+
+            def assert_rejected(problem: str) -> None:
+                systemctl_log.unlink(missing_ok=True)
+                failed = run("install", "--no-dashboard")
+                self.assertEqual(failed.returncode, 1, failed.stdout + failed.stderr)
+                self.assertIn(problem, failed.stderr)
+                self.assertEqual(
+                    {path.name: path.read_text() for path in units.iterdir()}, before
+                )
+                calls = systemctl_log.read_text().splitlines() if systemctl_log.exists() else []
+                self.assertTrue(
+                    all(call == "--user show-environment" for call in calls), calls
+                )
+                doctor = run("doctor", "--json")
+                row = next(
+                    row for row in json.loads(doctor.stdout)["rows"]
+                    if row["label"] == "service interpreter"
+                )
+                self.assertEqual(row["status"], "FAIL")
+                self.assertIn(problem, row["detail"])
+
+            missing = tmp / "missing-python"
+            not_file = tmp / "python-directory"
+            not_file.mkdir()
+            nonexecutable = tmp / "nonexecutable-python"
+            nonexecutable.write_text("#!/bin/sh\n")
+            cases = (
+                (missing, "does not exist"),
+                (not_file, "is not a file"),
+                (nonexecutable, "is not executable"),
+                (empty / "bin" / "python", "could not load Factory service commands"),
+            )
+            for python, problem in cases:
+                with self.subTest(problem=problem):
+                    configure(python)
+                    if python == missing:
+                        printed = run("install", "--print", "--no-dashboard")
+                        self.assertEqual(printed.returncode, 0, printed.stderr)
+                        self.assertIn(str(missing), printed.stdout)
+                    assert_rejected(problem)
+
+            env["PYTHONPATH"] = str(selected_package.parent)
+            configure(empty / "bin" / "python")
+            assert_rejected("could not load Factory service commands")
+            del env["PYTHONPATH"]
+
+            # These assertions execute inside the selected interpreter, not the installer.
+            original_init = selected_init.read_text()
+            manager_value = 'two words="quoted"=$HOME;%literal'
+            manager_environment.write_text(
+                f"FACTORY_MANAGER={shlex.quote(manager_value)}\nFACTORY_OVERLAY=manager\n"
+                "PATH=/manager-only\nPYTHONPATH=/manager-pythonpath\n"
+            )
+            for overrides in ({}, {"PATH": "/configured-path"}):
+                expected_path = overrides.get("PATH", env["PATH"])
+                selected_init.write_text(
+                    original_init + "\nimport os\n"
+                    f"assert os.environ['FACTORY_MANAGER'] == {manager_value!r}\n"
+                    "assert os.environ['FACTORY_OVERLAY'] == 'configured'\n"
+                    f"assert os.environ['PATH'] == {expected_path!r}\n"
+                    f"assert os.environ['PYTHONPATH'] == {str(selected_package.parent)!r}\n"
+                )
+                configure(
+                    selected, pythonpath=selected_package.parent,
+                    install_env={"FACTORY_OVERLAY": "configured", **overrides},
+                )
+                systemctl_log.unlink(missing_ok=True)
+                passed = run("install", "--no-dashboard")
+                self.assertEqual(passed.returncode, 0, passed.stdout + passed.stderr)
+                self.assertIn("--user show-environment", systemctl_log.read_text().splitlines())
+                rendered = run("install", "--print", "--no-dashboard")
+                self.assertIn(f"Environment=PATH={expected_path}\n", rendered.stdout)
+                doctor = run("doctor", "--json")
+                row = next(
+                    row for row in json.loads(doctor.stdout)["rows"]
+                    if row["label"] == "service interpreter"
+                )
+                self.assertEqual(row["status"], "PASS", row["detail"])
+            selected_init.write_text(original_init)
+            manager_environment.write_text("")
+            before = {path.name: path.read_text() for path in units.iterdir()}
+
+            marker.unlink(missing_ok=True)
+            configure(selected, pythonpath=repo)
+            doctor = run("doctor", "--json")
+            row = next(
+                row for row in json.loads(doctor.stdout)["rows"]
+                if row["label"] == "service interpreter"
+            )
+            self.assertEqual(row["status"], "FAIL")
+            self.assertIn(str(shadow / "__init__.py"), row["detail"])
+            self.assertIn("repository checkout", row["detail"])
+            self.assertTrue(marker.exists(), "probe did not use the configured service environment")
+            assert_rejected("repository checkout")
+
+            # A symlink must not hide the lexical checkout origin from the probe.
+            (shadow / "__init__.py").unlink()
+            (shadow / "__init__.py").symlink_to(selected_init)
+            assert_rejected("repository checkout")
+
+            source_package = repo / "src" / "factory"
+            source_package.mkdir(parents=True)
+            for module in ("cli", "triage", "dispatch", "dashboard"):
+                source = source_package / f"{module}.py"
+                selected_source = selected_package / f"{module}.py"
+                selected_init.write_text(
+                    original_init + f"\n__path__.insert(0, {str(source_package)!r})\n"
+                )
+                configure(selected)
+                for symlink in (False, True):
+                    with self.subTest(module=module, symlink=symlink):
+                        if symlink:
+                            source.symlink_to(selected_source)
+                        else:
+                            shutil.copyfile(selected_source, source)
+                        assert_rejected("repository checkout")
+                        source.unlink()
+                shutil.rmtree(source_package / "__pycache__", ignore_errors=True)
+            selected_init.write_text(original_init)
+
+            in_repo, in_repo_package = installed_factory(repo / ".venv")
+            configure(in_repo)
+            accepted = run("install", "--no-dashboard")
+            self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
+            self.assertIn(str(in_repo_package), accepted.stdout)
+            doctor = run("doctor", "--json")
+            row = next(
+                row for row in json.loads(doctor.stdout)["rows"]
+                if row["label"] == "service interpreter"
+            )
+            self.assertEqual(row["status"], "PASS", row["detail"])
+
+            literal = selected.parent / 'python space$HOME%name"quote\\slash'
+            literal.symlink_to(selected)
+            configure(literal)
+            rendered = run("install", "--print", "--dashboard")
+            self.assertEqual(rendered.returncode, 0, rendered.stderr)
+            escaped = (
+                str(literal).replace("\\", "\\\\").replace('"', '\\"')
+                .replace("$", "$$").replace("%", "%%")
+            )
+            launchers = [
+                line for line in rendered.stdout.splitlines() if line.startswith("ExecStart=")
+            ]
+            self.assertEqual(launchers, [
+                f'ExecStart=-"{escaped}" -P -m factory triage',
+                f'ExecStart="{escaped}" -P -m factory dispatch',
+                f'ExecStart="{escaped}" -P -m factory dashboard'
+                ' --host 127.0.0.1 --port 8765 --no-open',
+            ])
+            accepted = run("install", "--no-dashboard")
+            self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
+            self.assertIn(str(literal), accepted.stdout)
 
     def test_init_labels_only_touches_nothing_and_fails_on_gh(self) -> None:
         with tempfile.TemporaryDirectory() as d:

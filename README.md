@@ -67,13 +67,31 @@ its own `[repo."owner/name".dashboard] port` in the host config. The preflight c
 reserve the port until systemd starts the service: a later bind failure exits 1
 with a one-line diagnostic, and the existing systemd restart policy still applies.
 
-Generated triage, dispatch and dashboard services use `python -P -m factory`:
-Python does not prepend the repository working directory to its module search
-path, so an older checkout cannot shadow the installed Factory package.
-The interpreter must already have Factory installed; explicit `PYTHONPATH`
-overrides remain operator-controlled. This source change does not rewrite
-existing units: review their import paths before any separately authorized
-unit update or service reload.
+Generated triage, dispatch and dashboard services use the interpreter selected by
+host-owned, optional `[install].python`, or `sys.executable` (the interpreter running
+`factory install`) when unset, followed by `-P -m factory`. Set
+`python = "/path/to/venv/bin/python"` under `[defaults.install]` or
+`[repo."owner/name".install]`; a committed `[install]` remains a host-setting warning.
+The selected path preserves symlink identity and is rendered as one systemd
+argument: control characters are rejected, and backslash, quote, `$` and `%` are
+escaped so systemd executes the validated literal path.
+
+For a configured interpreter, `doctor` and a real `install` check the path and run
+a 10-second probe from the repository working directory. Validation snapshots the
+user manager environment read-only with `systemctl --user show-environment`,
+parses its assignments, applies the PATH rendered into units, then overlays
+`[install].env`. Failures stop installation before any mutation.
+The probe loads all three service commands and reports the loaded Factory version
+and location. It checks every loaded service module origin (`factory`,
+`factory.cli`, `factory.triage`, `factory.dispatch` and `factory.dashboard`), with
+the selected interpreter's `purelib`/`platlib` context as appropriate, rejecting
+lexical origins under the repository root (`cfg.root`) unless within a selected
+package root.
+`-P` only prevents Python from automatically prepending the working directory:
+`PYTHONPATH` and other explicit import sources still apply and remain
+operator-controlled. Factory neither provisions the environment nor requires its
+version to match the installer. `install --print` only renders the units; like its
+other operational preflights, interpreter validation runs only for a real install.
 
 Then file an issue with the **Agent task** template (Scope / Touches / Exit
 gate / Out of scope). It gets `needs-triage`; the next pass triages it; if it is
@@ -107,7 +125,7 @@ merge stage.
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
 | `factory stats` | Ticket table: attempts, review rounds, hours to merge, escalation count, resolver attribution, minutes in `ready-for-human`, and re-queues. Reads GitHub plus existing `events.jsonl`. `--by-worker` reads only events and shows every configured worker label: first-attempt gate pass rate, all attempts (including review bounces), and known cost. Attribution uses claim labels with current worker precedence; unclaimed attempts are excluded, missing rates/cost are `n/a`. The dashboard Ops view shows the same worker metrics. `--json`. |
 | `factory learn` | Reads the last N finished tickets' event trail, failing-attempt log tails, reviewer findings, and escalation reasons; asks the local model for ≤10 repo-specific lessons; writes `.factory-lessons.md` (you commit it). Every worker prompt carries it. `--dry-run`, `--last N`. |
-| `factory dashboard` | Local ops UI: tickets by stage, authoritative in-flight phase when known, gate reports, worker logs, journal heartbeat, upstream drift, and an action list with one-click answers. `--json` prints the existing snapshot, including independent executions and local interruption reconciliation. `--host 0.0.0.0` exposes it (and its mutating `/api/act`) to your network. |
+| `factory dashboard` | Local ops UI: Inbox, Ops, a dedicated read-only Factory Manager Chat with browser-local history, Codebase history, and Atlas; tickets by stage, in-flight phase, gate reports, worker logs, journal heartbeat, and upstream drift. `--json` prints the existing snapshot, including independent executions and local interruption reconciliation. `--host 0.0.0.0` exposes it (and its mutating `/api/act`) to your network. |
 | `factory dashboard --runtime-json` | One bounded schema 1 runtime observation using only local read-only evidence; no GitHub, model probe, journal append, lock acquisition, or state creation. Partial source failures remain structured JSON. See [runtime contract](#bounded-runtime-json-schema-1). |
 | `factory evidence --root /path/to/main-checkout` | One explicit-repository schema 1 JSON read: compact cases, selected evidence, workflow/file/PR/CI investigations, or capabilities. Read-only GitHub GETs and F03 local evidence; no model, action execution, or state writes. See [evidence contract](#bounded-project-evidence-json-schema-1). |
 | `factory plan list` / `factory plan inspect N` | Read-only schema 1 JSON over `initiative` issues: declared status/owner, parsed sections, `#N` implementation links (`inspect` also fetches each linked issue's title/state), per-issue `malformed` + `problems` (missing/invalid declared facts, sections cut at 4,000 characters, links beyond the first 20), cited sources with `observed_at`. `list` reads at most 3 pages of 100 and keeps malformed initiatives flagged per row (exit 0); a failed page, or a malformed initiative under `inspect`, yields `coverage.status: partial` and exit 1, never a mutation. |
@@ -462,13 +480,16 @@ branches, or merge state.
   consequences, and next owner stay visible; raw evidence is expandable. **Ops**
   retains the board, telemetry, dispatcher runs, and task drawers.
   **Ask FM** works on a whole task or a specific source/log and returns cited
-  answers. It requires an authenticated `omp` installation; `[manager].model`
-  chooses the model (host-wide: `[defaults.manager]`). If unset, an existing
-  `manager.command` supplies only its `--model` value, otherwise OMP's default
-  model is used. The dashboard never executes that command: questions run a
-  bounded, read-only, no-tools OMP process against server-collected evidence.
-  Evidence is sent to the selected model provider; questions are not posted to
-  GitHub. Errors remain visible and retryable, never replaced with canned advice.
+  answers. The dedicated **Chat** page at `/chat` also answers repository-wide,
+  case, and dispatcher-run questions; cited evidence is inspectable and
+  conversations persist in that browser. It requires an authenticated `omp`
+  installation; `[manager].model` chooses the model (host-wide:
+  `[defaults.manager]`). If unset, an existing `manager.command` supplies only
+  its `--model` value, otherwise OMP's default model is used. The dashboard never
+  executes that command: questions run a bounded, read-only, no-tools OMP process
+  against server-collected evidence. Evidence is sent to the selected model
+  provider; questions are not posted to GitHub. Errors remain visible and
+  retryable, never replaced with canned advice.
   Decisions require rationale and an exact mutation preview; stale or incomplete
   snapshots block execution. Confirmed decisions leave GitHub rationale comments
   and a local `human-decision` audit event with success, partial, or failed outcome.
@@ -1544,11 +1565,11 @@ Design and acceptance criteria: [codebase history plan](docs/codebase-history-pl
 
 ## Architecture
 
-`factory/architecture.html` (served by the dashboard at `/atlas`) shows
-the system and the ticket lifecycle. Modules map 1:1 to commands:
-`triage.py`, `dispatch.py`, `gate.py`, `stats.py`, `dashboard.py`,
-`onboard.py`, with `config.py` as the single source of every repo-specific
-value.
+`factory/architecture.html` (served by the dashboard at `/atlas`) maps the core
+ticket system and lifecycle alongside the manager, operator, codebase, planning,
+evidence, chat, onboarding, metrics, and learning surfaces. `factory/cli.py`
+defines the command surface; `factory/config.py` layers host and repository
+configuration.
 
 ## License
 

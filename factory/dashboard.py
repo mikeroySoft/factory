@@ -73,7 +73,10 @@ CLOSE_REASONS = {"completed", "not planned"}
 HTML = Path(__file__).with_name("dashboard.html")
 ATLAS = Path(__file__).with_name("architecture.html")
 CODEBASE_HTML = Path(__file__).with_name("codebase.html")
+CHAT_HTML = Path(__file__).with_name("chat.html")
 BRIEFING_CSS = Path(__file__).with_name("briefing.css")
+MOTION = Path(__file__).with_name("motion.js")
+MOTION_LICENSE = Path(__file__).with_name("MOTION-LICENSE.txt")
 NEWSREADER = Path(__file__).with_name("fonts") / "Newsreader.ttf"
 NEWSREADER_LICENSE = Path(__file__).with_name("fonts") / "Newsreader-OFL.txt"
 FACTORY_LABELS = {
@@ -1182,6 +1185,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, "text/html; charset=utf-8", ATLAS.read_bytes())
         elif url.path == "/codebase":
             self._send(200, "text/html; charset=utf-8", CODEBASE_HTML.read_bytes())
+        elif url.path == "/chat":
+            self._send(200, "text/html; charset=utf-8", CHAT_HTML.read_bytes())
+        elif url.path == "/motion.js":
+            self._send(200, "text/javascript; charset=utf-8", MOTION.read_bytes())
+        elif url.path == "/MOTION-LICENSE.txt":
+            self._send(200, "text/plain; charset=utf-8", MOTION_LICENSE.read_bytes())
         elif url.path == "/api/codebase":
             state = codebase_monitor.state if codebase_monitor else {
                 "status": "error", "error": "Codebase monitor is not running", "data": None,
