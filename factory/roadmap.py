@@ -401,10 +401,19 @@ def collect(cfg, number: int | None = None, *, deadline: float | None = None) ->
             discovered = [*discovered, *historical]
             _notice(result, "Retained accepted bindings supply historical initiatives absent from the live bounded list; their current state is unknown.")
 
-    latest_escalation = {}
+    # Factory's own claim receipt (`claimed`, then `pr-opened`) is the only evidence
+    # that an assignment is Factory's; `escalate` unassigns it. Same receipt-based
+    # takeover detection as handoff: no receipt means a human holds the ticket.
+    latest_escalation, factory_claim = {}, {}
     for event in events:
-        if event.get("event") == "escalate" and type(event.get("ticket")) is int:
-            latest_escalation[event["ticket"]] = event
+        ticket = event.get("ticket")
+        if type(ticket) is not int:
+            continue
+        if event.get("event") == "escalate":
+            latest_escalation[ticket] = event
+            factory_claim.pop(ticket, None)
+        elif event.get("event") in ("claimed", "pr-opened"):
+            factory_claim[ticket] = event
 
     runtime = None
     canonical_cache: dict[int, object] = {}
@@ -511,6 +520,7 @@ def collect(cfg, number: int | None = None, *, deadline: float | None = None) ->
             active = False
             runtime_uncertain = False
             runtime_source = None
+            claim = None
             if child["assignees"]:
                 if runtime is None:
                     runtime = runtime_events.project(cfg.factory / "events.jsonl")
@@ -520,9 +530,11 @@ def collect(cfg, number: int | None = None, *, deadline: float | None = None) ->
                 runtime_uncertain = bool(states & {"unknown", "interrupted"}) or runtime.get("history", {}).get("complete") is not True
                 if runtime_uncertain:
                     _error(result, "runtime_unavailable", ".factory/events.jsonl", f"ticket:{ticket}")
+                claim = factory_claim.get(ticket)
                 runtime_source = _cite(result, f"Runtime execution projection for #{ticket}", {
                     "ticket": ticket, "active_execution_observed": active,
                     "execution_states": sorted(state for state in states if state),
+                    "factory_claim": {key: claim.get(key) for key in ("event", "pr", "at")} if claim else None,
                     "history": runtime.get("history"), "errors": runtime.get("errors"),
                 }, path=".factory/events.jsonl")
             linked_initiative = None
@@ -547,6 +559,14 @@ def collect(cfg, number: int | None = None, *, deadline: float | None = None) ->
             elif child["assignees"] and runtime_uncertain:
                 child["runnable"] = None
                 child["readiness_reason"] = "Assigned; the dispatcher will not claim it. Existing execution status is unknown, so a human must verify responsibility before takeover or retry."
+            elif child["assignees"] and claim is not None:
+                child["runnable"] = None
+                pr_ref = f" #{claim['pr']}" if type(claim.get("pr")) is int else ""
+                child["readiness_reason"] = (
+                    f"Assigned by Factory's own claim; its PR{pr_ref} is in Factory's review/merge pipeline. This is not a human takeover."
+                    if claim.get("event") == "pr-opened" else
+                    "Assigned by Factory's own claim with no PR recorded yet; this is not a human takeover."
+                )
             elif child["assignees"]:
                 child["runnable"] = False
                 child["readiness_reason"] = (
@@ -572,7 +592,7 @@ def collect(cfg, number: int | None = None, *, deadline: float | None = None) ->
                 child["source"] = child_source
             row["children"].append(child)
 
-            if child["assignees"] and child["state"] == "OPEN" and not active:
+            if child["assignees"] and child["state"] == "OPEN" and not active and (runtime_uncertain or claim is None):
                 route, citations = _route(reader, result, ticket, "implementation", [], child["url"])
                 result["attention"].append({
                     "id": f"initiative-{initiative}-ticket-{ticket}-takeover", "initiative": initiative,

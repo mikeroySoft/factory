@@ -212,6 +212,33 @@ class RoadmapTest(unittest.TestCase):
         self.assertTrue(any(row["kind"] == "execution_unknown" for row in questions))
         self.assertFalse(any(row["kind"] == "human_takeover" for row in questions))
 
+    def test_factory_claim_receipt_is_not_human_takeover_until_escalated(self):
+        parent = issue(50, initiative_body("Plan"), labels=("initiative",))
+        baseline = binding.from_issue(self.cfg, 50, parent)
+        body = binding.render(baseline) + "\n\n**Decision owner**\n@bob"
+        self.accepted(baseline, body)
+        journal = self.cfg.factory / "events.jsonl"
+        lifecycle.append(journal, {"at": AT, "event": "claimed", "ticket": 7})
+        lifecycle.append(journal, {"at": AT, "event": "pr-opened", "ticket": 7, "pr": 12})
+        responses = {
+            f"repos/{REPO}/issues/50": parent,
+            f"repos/{REPO}/issues/7": issue(7, body, labels=("ready-for-agent",), assignees=("factory-bot",)),
+            f"repos/{REPO}/issues/7/dependencies/blocked_by": [],
+        }
+        report = self.collect(responses, 50)
+        child = report["plans"][0]["children"][0]
+        self.assertIsNone(child["runnable"])
+        self.assertIn("PR #12", child["readiness_reason"])
+        self.assertIn("not a human takeover", child["readiness_reason"])
+        self.assertFalse([row for row in report["attention"] if row["kind"] in ("human_takeover", "execution_unknown")])
+
+        lifecycle.append(journal, {"at": AT, "event": "escalate", "ticket": 7, "reason": "review bounced", "round": 1})
+        responses[f"repos/{REPO}/issues/7"] = issue(7, body, labels=("needs-human",), assignees=("bob",))
+        report = self.collect(responses, 50)
+        self.assertIs(report["plans"][0]["children"][0]["runnable"], False)
+        kinds = {row["kind"] for row in report["attention"] if row["ticket"] == 7}
+        self.assertIn("human_takeover", kinds)
+
     def test_invalid_linked_baseline_is_not_reported_runnable(self):
         parent = issue(50, initiative_body("Current plan"), labels=("initiative",), title="Parent")
         child = issue(7, "Initiative: #50", labels=("ready-for-agent",), title="Invalid child")

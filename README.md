@@ -138,8 +138,10 @@ evidence remains readable when the live initiative is unavailable; later edits
 never amend an admitted execution snapshot.
 
 An assigned ticket with evidence of no active execution is shown as non-runnable
-human takeover, not as invisible queue starvation. Incomplete runtime evidence
-instead leaves execution responsibility unknown and asks for human verification.
+human takeover, not as invisible queue starvation. The exception is Factory's own
+claim: a journaled `claimed`/`pr-opened` receipt with no later `escalate` marks the
+ticket as held in Factory's review/merge pipeline, not a takeover. Incomplete runtime
+evidence instead leaves execution responsibility unknown and asks for human verification.
 Changing the attention filter or replying to a question cannot release it. Humans
 must arrange any retry through the existing reviewed ticket/assignment/intake workflow.
 
