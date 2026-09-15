@@ -247,22 +247,10 @@ def accepted(cfg: config.Config, ticket: int) -> dict | None:
     return event
 
 
-def observe(cfg: config.Config, number: int) -> dict:
-    """Read one complete REST issue body and produce its canonical relevant-section revision."""
+def from_issue(cfg: config.Config, number: int, issue: object) -> dict:
+    """Project a complete REST issue response into its canonical plan revision."""
     if type(number) is not int or number <= 0:
         raise BindingError("initiative number must be a positive integer")
-    path = f"repos/{cfg.repo}/issues/{number}"
-    try:
-        issue, truncated = github_read(path, time.monotonic() + READ_SECONDS)
-    except EvidenceError as exc:
-        if exc.code == "response_too_large":
-            raise BindingError(
-                f"initiative #{number} source is incomplete: REST response exceeded the complete read limit",
-                "incomplete_source",
-            ) from exc
-        raise BindingError(f"initiative #{number} source is unavailable: {exc.code}", "source_unavailable") from exc
-    if truncated:
-        raise BindingError(f"initiative #{number} source is incomplete: REST response was truncated", "incomplete_source")
     if not isinstance(issue, dict) or type(issue.get("number")) is not int or issue["number"] != number:
         raise BindingError(f"initiative #{number} source is incomplete: GitHub response has an unexpected shape", "incomplete_source")
     labels = issue.get("labels")
@@ -284,6 +272,25 @@ def observe(cfg: config.Config, number: int) -> dict:
     }
 
 
+def observe(cfg: config.Config, number: int) -> dict:
+    """Read one complete REST issue body and produce its canonical relevant-section revision."""
+    if type(number) is not int or number <= 0:
+        raise BindingError("initiative number must be a positive integer")
+    path = f"repos/{cfg.repo}/issues/{number}"
+    try:
+        issue, truncated = github_read(path, time.monotonic() + READ_SECONDS)
+    except EvidenceError as exc:
+        if exc.code == "response_too_large":
+            raise BindingError(
+                f"initiative #{number} source is incomplete: REST response exceeded the complete read limit",
+                "incomplete_source",
+            ) from exc
+        raise BindingError(f"initiative #{number} source is unavailable: {exc.code}", "source_unavailable") from exc
+    if truncated:
+        raise BindingError(f"initiative #{number} source is incomplete: REST response was truncated", "incomplete_source")
+    return from_issue(cfg, number, issue)
+
+
 def admit(cfg: config.Config, body: str) -> dict | None:
     """Accept a linked ticket only when its pinned baseline still matches the initiative."""
     number = linked(body)
@@ -296,6 +303,24 @@ def admit(cfg: config.Config, body: str) -> dict | None:
     if accepted["sha256"] != observed["sha256"]:
         raise BindingError(f"initiative #{number} relevant plan sections changed after this ticket was baselined")
     return accepted
+
+
+def compare(cfg: config.Config, accepted: dict, observed: dict) -> dict:
+    """Compare two complete canonical revisions without reading either source again."""
+    accepted = _canonical(accepted, cfg.repo)
+    observed = _canonical(observed, cfg.repo, accepted["initiative"])
+    changed = [name for name in SECTIONS if accepted["sections"][name] != observed["sections"][name]]
+    return {
+        "status": "changed" if changed else "unchanged",
+        "baseline": accepted,
+        "observed": observed,
+        "changed_sections": changed,
+        "proposed_question": (
+            f"Initiative #{accepted['initiative']} changed in {', '.join(changed)}. "
+            "Should a new ticket be reviewed and baselined through intake?"
+        ) if changed else None,
+        "attribution": "unknown",
+    }
 
 
 def drift(cfg: config.Config, accepted: dict) -> dict:
@@ -317,22 +342,7 @@ def drift(cfg: config.Config, accepted: dict) -> dict:
             "reason": str(exc),
             "error_code": exc.code,
         }
-    changed = [name for name in SECTIONS if accepted["sections"][name] != observed["sections"][name]]
-    status = "changed" if changed else "unchanged"
-    question = None
-    if changed:
-        question = (
-            f"Initiative #{accepted['initiative']} changed in {', '.join(changed)}. "
-            "Should a new ticket be reviewed and baselined through intake?"
-        )
-    return {
-        "status": status,
-        "baseline": accepted,
-        "observed": observed,
-        "changed_sections": changed,
-        "proposed_question": question,
-        "attribution": "unknown",
-    }
+    return compare(cfg, accepted, observed)
 
 
 def render(value: dict) -> str:

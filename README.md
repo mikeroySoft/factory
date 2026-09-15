@@ -111,6 +111,45 @@ never merges an `agent/<n>` PR whose ticket #n is an initiative. Refusals are
 logged (also in `--dry-run`) and mutate nothing: no labels, assignees, comments
 or escalation packets. A stale frontier row cannot bypass the fresh read.
 
+### Shared roadmap and owner attention
+
+The dashboard's **Roadmap** view and the read-only FM use the same Python
+initiative, decision-routing and immutable-binding producers. The roadmap shows
+declared Outcome and stage, implementation evidence, open decisions, blockers,
+and accepted-versus-observed revision drift. These are different kinds of
+evidence: a declared `delivered` stage, closed child ticket, or merged PR does
+not establish delivery. Outcome success still requires owner-confirmed evidence;
+the reader does not authenticate an issue-body declaration as that confirmation.
+The shared list uses the dashboard's existing 15-second cache; Refresh requests
+new evidence. Targeted initiative reads are collected directly.
+
+The owner/team selector filters **questions**, not the canonical plans or their
+revisions. It is not login, assignment, permission, or a notification receipt.
+Selected owners, candidates, invalid declarations and unknown ownership retain
+the routing producer's meaning. Organization context validation does not prove
+team membership or notification delivery. Unknown owners remain visible as an
+attention gap rather than an empty work list.
+
+Coverage is explicit: failed, partial and incomplete reads are not successful
+empty results. A ticket without an accepted baseline has unknown drift, not
+“unchanged” drift. Complete authoritative content determines revision identity,
+including edits beyond the 4,000-character display projection. Retained accepted
+evidence remains readable when the live initiative is unavailable; later edits
+never amend an admitted execution snapshot.
+
+An assigned ticket with evidence of no active execution is shown as non-runnable
+human takeover, not as invisible queue starvation. Incomplete runtime evidence
+instead leaves execution responsibility unknown and asks for human verification.
+Changing the attention filter or replying to a question cannot release it. Humans
+must arrange any retry through the existing reviewed ticket/assignment/intake workflow.
+
+The roadmap adds no mutation controls or new model call. Full accepted snapshots
+are kept out of shared briefing duplication; use a targeted initiative/drift
+read for revision evidence. Discussion and session-only FM proposals remain proposals,
+not accepted shared policy. The one-runner boundary and all existing holds remain
+in force. This implementation is not the distinct-runner/two-human live acceptance
+pilot tracked by programme #52 and issue #59.
+
 ### Immutable initiative bindings
 
 An implementation ticket can opt in to an immutable initiative revision with an
@@ -199,7 +238,7 @@ merge stage.
 | `factory dashboard --runtime-json` | One bounded schema 1 runtime observation using only local read-only evidence; no GitHub, model probe, journal append, lock acquisition, or state creation. Partial source failures remain structured JSON. See [runtime contract](#bounded-runtime-json-schema-1). |
 | `factory evidence --root /path/to/main-checkout` | One explicit-repository schema 1 JSON read: compact cases, selected evidence, workflow/file/PR/CI investigations, or capabilities. Read-only GitHub GETs and F03 local evidence; no model, action execution, or state writes. See [evidence contract](#bounded-project-evidence-json-schema-1). |
 | `factory plan list` / `factory plan inspect N` | Read-only schema 1 JSON over `initiative` issues: declared status/owner, parsed sections, `#N` implementation links (`inspect` also fetches each linked issue's title/state), per-issue `malformed` + `problems` (missing/invalid declared facts, sections cut at 4,000 characters, links beyond the first 20), cited sources with `observed_at`. `list` reads at most 3 pages of 100 and keeps malformed initiatives flagged per row (exit 0); a failed page, or a malformed initiative under `inspect`, yields `coverage.status: partial` and exit 1, never a mutation. |
-| `factory plan route N --reason <requirements\|implementation\|ci\|unknown> [--path P]... --json` | Read-only schema 1 JSON naming the human who owns a decision on ticket N; nothing is assigned, labelled or commented. JSON is also the default when `--json` is omitted. Priority: a `**Decision owner**` section in the ticket body (human override, wins on every recomputation), the `Programme: #N` initiative's Owner (requirements only), `[collaboration.reasons]`, `[collaboration.components]` exact repo-relative path prefixes against the given `--path`s (implementation only; `src/auth` matches `src/auth/x.py`, never `src/authentication/`), then `[collaboration].fallback`. `route.status` is `selected`, `candidates` (paths span prefixes with different owners), `unassigned` (reason `unknown`, no `--path` for implementation, or nothing configured) or `invalid` (malformed declared owner; `@org/team` on a user-owned repository). `route.revision` ties the answer to the `.factory.toml` commit and issue `updated_at`; `route.provenance` lists every step. Owner syntax is checked, membership is not: an unreadable repository record leaves `verification: unknown`. Without a `[collaboration]` section only ticket sources apply. |
+| `factory plan route N --reason <requirements\|implementation\|ci\|unknown> [--path P]... --json` | Read-only schema 1 JSON naming the human who owns a decision on ticket N; nothing is assigned, labelled or commented. JSON is also the default when `--json` is omitted. Priority: a `**Decision owner**` section in the ticket body (human override, wins on every recomputation), the canonical `Initiative: #N` (or legacy `Programme: #N`) initiative's Owner, or the initiative's own Owner when routing that initiative (requirements only), `[collaboration.reasons]`, `[collaboration.components]` exact repo-relative path prefixes against the given `--path`s (implementation only; `src/auth` matches `src/auth/x.py`, never `src/authentication/`), then `[collaboration].fallback`. `route.status` is `selected`, `candidates` (paths span prefixes with different owners), `unassigned` (reason `unknown`, no `--path` for implementation, or nothing configured) or `invalid` (malformed declared owner; `@org/team` on a user-owned repository). `route.revision` ties the answer to the `.factory.toml` commit and issue `updated_at`; `route.provenance` lists every step. Owner syntax is checked, membership is not: an unreadable repository record leaves `verification: unknown`. Without a `[collaboration]` section only ticket sources apply. |
 | `factory plan baseline N` / `factory plan drift TICKET` | Read-only schema 1 JSON for proposing a complete immutable initiative baseline or comparing a ticket's latest accepted baseline with the live complete source. Results are under top-level `baseline` or `drift`; neither command edits issues, rebaselines work, or grants execution authority. |
 | `factory doctor` / `init` / `install` | Onboarding, above. |
 
@@ -1346,6 +1385,9 @@ never booleans or strings. Repository slugs are at most 200 characters.
 | `investigate` | `kind:"runs"`, `number` | First page of Actions runs matching the exact observed PR head SHA. |
 | `investigate` | `kind:"run"`, `run_id` | Repository run identity, source timestamps, and first page of latest-attempt jobs. |
 | `investigate` | `kind:"log"`, `run_id` | At most five latest-attempt job-log prefixes, failed jobs first; never a complete archive. |
+| `investigate` | `kind:"roadmap"` | Shared bounded initiative roadmap and owner-attention questions; coverage and unknown states remain explicit. |
+| `investigate` | `kind:"initiative"`, `number` | One initiative's declared plan, available revision, linked implementation evidence, blockers, questions and accepted drift evidence. |
+| `investigate` | `kind:"drift"`, `number` | One ticket's validated retained baseline compared with the complete live initiative; preserves historical accepted evidence on live-source failure. |
 
 `path` is a repository-relative path of 1–1024 characters, with no empty, `.`, or
 `..` components, control characters, backslashes, or URL syntax (`:`, `%`, `?`,
@@ -1575,6 +1617,15 @@ resume reobserves Factory, and a failed or interrupted turn marks evidence stale
 and reobserves on the next turn. The `console/app/check.py` read-boundary smoke
 and `console/app/check-transport.ts` transport smoke exercise the bridge without
 any model call.
+
+For shared-plan questions, use `/fm investigate roadmap`,
+`/fm investigate initiative <number>`, and `/fm investigate drift <ticket>`,
+or ask conversationally: “What decision blocks initiative #50, and why does
+the proposed sequence fit its known dependencies?” The FM can read the supplied
+plans and revisions, compare explicitly evidenced areas/dependencies, and propose
+sequencing or plan amendments with exact source citations. Unsupported progress,
+ownership, semantic overlap and outcome delivery remain unknown. It cannot publish
+decisions, edit plans, or turn session-only conversation into shared policy.
 
 ## Agent skill
 

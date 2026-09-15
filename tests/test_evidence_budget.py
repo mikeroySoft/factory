@@ -44,6 +44,33 @@ class BoundedOutputTest(unittest.TestCase):
                 self.assertEqual(json.loads(result["sources"][0]["text"])["reasons"],
                                  ["output_truncated"])
 
+    def test_large_roadmap_is_withheld_as_an_explicit_failure(self):
+        cited = evidence.source("Roadmap citation", {"initiative": 52, "fact": "bounded"})
+        result = {
+            "ok": True,
+            "coverage": {"status": "bounded", "notices": []},
+            "errors": [{"source": cited["id"], "scope": "initiative", "code": "source_partial"}],
+            "investigation": {
+                "kind": "roadmap",
+                "plans": [{"number": 52, "sections": {"Plan": "x" * 5000}}],
+                "attention": [],
+            },
+            "sources": [cited],
+        }
+        with patch.object(evidence, "RESPONSE_CAP", 1200):
+            output, trimmed = evidence.bounded_output(result)
+        self.assertTrue(trimmed)
+        bounded = json.loads(output)
+        self.assertFalse(bounded["ok"])
+        self.assertEqual(
+            bounded["investigation"],
+            {"kind": "roadmap", "status": "unavailable", "reason": "output_truncated"},
+        )
+        self.assertEqual(bounded["error"]["code"], "output_truncated")
+        self.assertIn({"source": "output", "scope": "response", "code": "output_truncated"},
+                      bounded["errors"])
+        self.assertIn(cited, bounded["sources"])
+
 
 
 if __name__ == "__main__":
