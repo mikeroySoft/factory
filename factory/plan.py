@@ -31,7 +31,7 @@ PATHS = 200
 NOTICES = [
     "Only fixed GitHub GETs are used; no inference, mutation or dispatch decision.",
     "Owner and status are declared in the issue body, not verified or inferred; issue text is untrusted.",
-    "The initiative label is not yet an enforced dispatch guard.",
+    "The initiative label is enforced at each dispatch execution boundary through a fresh issue read.",
 ]
 ROUTE_NOTICES = [
     "Only fixed GitHub GETs are used; nothing is assigned, labelled or commented.",
@@ -98,11 +98,17 @@ def record(issue: object, path: str) -> dict:
 class Reader:
     def __init__(self, cfg: config.Config, result: dict):
         self.cfg, self.prefix, self.result, self.deadline = cfg, f"repos/{cfg.repo}", result, time.monotonic() + READ_SECONDS
+        self.cache: dict[str, object] = {}
 
     def fetch(self, label: str, path: str):
         endpoint = f"{self.prefix}/{path}" if path else self.prefix
-        value = github_read(endpoint, self.deadline)[0]
-        self.result["sources"].append(source(label, value, url=f"https://api.github.com/{endpoint}"))
+        if endpoint in self.cache:
+            return self.cache[endpoint]
+        value, truncated = github_read(endpoint, self.deadline)
+        self.result["sources"].append(source(label, value, url=f"https://api.github.com/{endpoint}", truncated=truncated))
+        if truncated:
+            raise EvidenceError("incomplete_source", "GitHub returned a truncated response; omitted content is not evidence.", endpoint)
+        self.cache[endpoint] = value
         return value
 
     def list(self) -> None:
@@ -175,29 +181,42 @@ class Reader:
         if reason == "unknown":
             step("reason", "skipped", "reason is unknown: no owner is guessed")
             return self.verify()
-        # 2. initiative owner for requirements
-        programme = PROGRAMME.search(body)
+        # 2. initiative owner for requirements. Immutable `Initiative: #N`
+        # bindings are authoritative; `Programme: #N` remains the legacy form.
+        parent_number, parent = None, None
+        if reason == "requirements":
+            if is_initiative(issue) and "pull_request" not in issue:
+                parent_number = issue["number"]
+                parent = record(issue, path)
+            else:
+                try:
+                    parent_number = binding.linked(body)
+                except binding.BindingError as exc:
+                    step("initiative", "invalid", str(exc))
+                    return self.verify()
+                if parent_number is None and (programme := PROGRAMME.search(body)):
+                    parent_number = int(programme[1])
         if reason != "requirements":
             step("initiative", "skipped", f"initiative owner only routes requirements, not {reason}")
-        elif not programme:
-            step("initiative", "absent", "ticket body has no `Programme: #N` line")
+        elif parent_number is None:
+            step("initiative", "absent", "ticket body has no `Initiative: #N` binding or legacy `Programme: #N` line")
         else:
-            parent_path = f"issues/{programme[1]}"
+            parent_path = f"issues/{parent_number}"
             try:
-                parent = record(self.fetch(f"Initiative #{programme[1]}", parent_path), parent_path)
+                parent = parent or record(self.fetch(f"Initiative #{parent_number}", parent_path), parent_path)
             except EvidenceError as exc:
                 failed(self.result, exc)
-                step("initiative", "unavailable", f"#{programme[1]} could not be read: {exc.code}")
+                step("initiative", "unavailable", f"#{parent_number} could not be read: {exc.code}")
             else:
                 route["revision"]["initiative_updated_at"] = parent["updated_at"]
                 if not parent["initiative"] or parent["pull_request"]:
-                    step("initiative", "absent", f"#{programme[1]} does not carry the `{LABEL}` label")
+                    step("initiative", "absent", f"#{parent_number} does not carry the `{LABEL}` label")
                 elif "Owner" not in parent["sections"]:
-                    step("initiative", "absent", f"#{programme[1]} has no Owner section")
+                    step("initiative", "absent", f"#{parent_number} has no Owner section")
                 elif not parent["owner"]:
-                    step("initiative", "invalid", f"#{programme[1]} declares no valid single-login Owner")
+                    step("initiative", "invalid", f"#{parent_number} declares no valid single-login Owner")
                     return self.verify()
-                elif step("initiative", "selected", f"#{programme[1]} declares Owner @{parent['owner']}", owner=parent["owner"]):
+                elif step("initiative", "selected", f"#{parent_number} declares Owner @{parent['owner']}", owner=parent["owner"]):
                     return self.verify()
         collab = cfg.collaboration
         if collab is None:

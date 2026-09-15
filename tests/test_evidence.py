@@ -11,11 +11,12 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 from urllib.parse import urlencode
 
-from factory import briefing, config, lifecycle
+from factory import briefing, config, evidence, lifecycle
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO = "example/evidence"
@@ -267,10 +268,57 @@ class EvidenceCliTest(unittest.TestCase):
         data = self.invoke()
         menu = {(row["op"], row.get("kind")) for row in data["capabilities"]["reads"]}
         self.assertEqual(menu, {("capabilities", None), ("observe", None), ("inspect", None),
-                               *(("investigate", kind) for kind in ("workflows", "file", "pr", "checks", "runs", "run", "log"))})
+                               *(("investigate", kind) for kind in ("workflows", "file", "pr", "checks", "runs", "run", "log", "roadmap", "initiative", "drift"))})
         self.assertEqual(data["capabilities"]["actions"], [])
         self.assertEqual(self.calls(), [])
         self.assertFalse(self.journal.parent.exists())
+
+    def test_drift_investigation_cites_metadata_without_exposing_snapshots(self):
+        baseline = {
+            "initiative": 52,
+            "sha256": "a" * 64,
+            "source_url": f"https://github.com/{REPO}/issues/52",
+            "observed_at": AT,
+            "sections": {"Plan": "accepted full-size snapshot"},
+        }
+        observed = {
+            **baseline,
+            "sha256": "b" * 64,
+            "sections": {"Plan": "changed full-size snapshot"},
+        }
+        report = {
+            "status": "changed",
+            "baseline": baseline,
+            "observed": observed,
+            "changed_sections": ["Plan"],
+            "proposed_question": "Should a new ticket be reviewed and baselined through intake?",
+            "attribution": "unknown",
+        }
+        result = {
+            "ok": True,
+            "coverage": {"status": "bounded", "notices": []},
+            "sources": [],
+            "errors": [],
+        }
+        with (
+            patch("factory.binding.accepted", return_value={"baseline": baseline}),
+            patch("factory.binding.drift", return_value=report),
+        ):
+            evidence.investigate(
+                {"kind": "drift", "number": 17},
+                result,
+                SimpleNamespace(repo=REPO),
+                time.monotonic() + 1,
+            )
+        detail = result["investigation"]
+        self.assertEqual((detail["number"], detail["initiative"], detail["status"]), (17, 52, "changed"))
+        self.assertEqual(detail["changed_sections"], ["Plan"])
+        self.assertEqual(detail["citations"], [row["id"] for row in result["sources"]])
+        self.assertNotIn("sections", detail["baseline"])
+        self.assertNotIn("sections", detail["observed"])
+        disclosed = json.dumps({"investigation": detail, "sources": result["sources"]})
+        self.assertNotIn("accepted full-size snapshot", disclosed)
+        self.assertNotIn("changed full-size snapshot", disclosed)
 
     def reader_from(self, engine):
         env = {**self.env, "PYTHONPATH": os.pathsep.join((str(self.guard), str(engine)))}
@@ -322,6 +370,9 @@ class EvidenceCliTest(unittest.TestCase):
                    {**request, "op": "inspect", "number": 2**63},
                    {**request, "op": "investigate", "kind": "log", "run_id": False},
                    {**request, "op": "investigate", "kind": "workflows", "number": 7},
+                   {**request, "op": "investigate", "kind": "roadmap", "number": 7},
+                   {**request, "op": "investigate", "kind": "initiative"},
+                   {**request, "op": "investigate", "kind": "drift", "run_id": 17},
                    {**request, "op": "investigate", "kind": "checks", "number": 17, "ref": "main"}]
         for path, ref in (("../private", "main"), ("/private", "main"), ("a//b", "main"),
                           ("a%2fb", "main"), ("a\\b", "main"), ("a?ref=x", "main"),

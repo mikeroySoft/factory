@@ -1036,6 +1036,16 @@ def cached_snapshot(fresh: bool) -> dict:
         return _cache["data"]
 
 
+def cached_roadmap(fresh: bool) -> dict:
+    from factory import roadmap
+
+    with _cache_lock:
+        if fresh or "roadmap" not in _cache or time.time() - _cache["roadmap_at"] > SNAPSHOT_TTL:
+            _cache["roadmap"] = roadmap.collect(cfg)
+            _cache["roadmap_at"] = time.time()
+        return _cache["roadmap"]
+
+
 class CodebaseMonitor:
     """Refresh local Git history off the request thread; keep the last good map."""
 
@@ -1196,6 +1206,20 @@ class Handler(BaseHTTPRequestHandler):
                 "status": "error", "error": "Codebase monitor is not running", "data": None,
             }
             self._send(200, "application/json", json.dumps(state).encode())
+        elif url.path == "/api/roadmap":
+            values = parse_qs(url.query, keep_blank_values=True).get("initiative", [])
+            if len(values) > 1 or (values and not re.fullmatch(r"[1-9][0-9]{0,8}", values[0])):
+                self._send(
+                    400,
+                    "application/json",
+                    b'{"ok":false,"error":"initiative must be one positive integer"}',
+                )
+                return
+            number = int(values[0]) if values else None
+            from factory import roadmap
+
+            data = roadmap.collect(cfg, number) if number is not None else cached_roadmap("fresh" in query)
+            self._send(200, "application/json", json.dumps(data).encode())
         elif url.path == "/api/snapshot":
             data = cached_snapshot("fresh" in query)
             self._send(200, "application/json", json.dumps(data).encode())

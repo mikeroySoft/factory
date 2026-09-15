@@ -1,12 +1,11 @@
-// C0 consumer-transport regression (Astra findings). Not a copied parser:
-// this drives the real extension.ts collect() path (fm_observe tool
-// execute) against the real Python evidence CLI with a controlled `gh`
-// fixture. A healthy read must be accepted, a hung read cancelled through
-// a real AbortSignal must reject without leaving live descendants, and the
-// consumer boundary must accept the fixed producer's byte-bounded partial —
-// the extension hard-codes its evidence.py entry and response cap, so no
-// fake stream can substitute.
-// Run from the repository root: node console/c0-prototype/check-transport.ts
+// C1 consumer-transport regression. Not a copied parser: this drives the
+// real extension.ts collect() path against console/app/evidence.py and the
+// shared Python evidence CLI with a controlled `gh` fixture. It covers a
+// healthy read, real prompt/context hooks plus a cited roadmap stand-in,
+// cancellation of a hung read without live descendants, and acceptance of
+// the producer's byte-bounded partial.
+// Run from the repository root:
+//   node console/app/check-transport.ts
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -130,12 +129,13 @@ process.env.EVIDENCE_FORK_MARKER = MARKER;
 // Fixture-only PATH: the checker must never resolve the host `gh` binary.
 process.env.PATH = TOOLS;
 
+const hooks: Record<string, (...args: unknown[]) => unknown> = {};
 const tools: Record<string, (id: string, params: unknown, signal: AbortSignal, update: () => void, ctx: unknown) => Promise<{ content: Array<{ type: string; text: string }> }>> = {};
 const piStub = {
   registerTool: (definition: { name: string; execute: (id: string, params: unknown, signal: AbortSignal, update: () => void, ctx: unknown) => Promise<unknown> }) => {
     tools[definition.name] = definition.execute as (typeof tools)["fm_observe"];
   },
-  on: () => undefined,
+  on: (name: string, handler: (...args: unknown[]) => unknown) => { hooks[name] = handler; },
   registerCommand: () => undefined,
   sendMessage: () => undefined,
   setActiveTools: () => undefined,
@@ -146,30 +146,45 @@ const piStub = {
 const { default: register } = await import("./extension.ts");
 register(piStub);
 const observe = tools["fm_observe"];
+const investigate = tools["fm_investigate"];
 
 const ctxStub = {
+  signal: new AbortController().signal,
+  model: { provider: "fixture", id: "fixture" },
   ui: { setStatus: () => undefined, notify: () => undefined, select: async () => "Browse only — send nothing" },
   isIdle: () => false,
 };
 const request = { schema_version: 1, repository: REPO };
 interface ObservedEvidence {
   ok: boolean;
+  observation_id: string;
+  observed_at: string;
   attention_count: number | null;
   coverage: { status: string; notices: unknown };
   cases: { number: number }[];
-  sources: unknown[];
+  sources: { id: string; label: string; text: string; url?: string; path?: string }[];
+  investigation?: {
+    kind: string;
+    plans?: Array<{
+      number: number;
+      sections: Record<string, string>;
+      blockers: Array<{ number: number; title?: string; state?: string; url?: string }>;
+      children?: Array<{ number: number; source?: string; blockers: Array<{ number: number }> }>;
+    }>;
+    attention?: Array<{ kind: string; question: string; initiative: number }>;
+  };
 }
 // Structural parse of a settled tool result. JSON.parse is the untrusted
 // boundary; the cast is its declared contract, and every consumer field is
 // checked against the producer envelope afterwards.
 function parsedEvidence(value: unknown): ObservedEvidence | undefined {
   if (!value || typeof value !== "object" || !("content" in value)) return undefined;
-  const content = (value as { content?: unknown }).content;
+  const content = value.content;
   if (!Array.isArray(content)) return undefined;
   const texts: string[] = [];
   for (const row of content) {
     if (!row || typeof row !== "object" || !("type" in row) || !("text" in row)) return undefined;
-    const item = row as { type: unknown; text: unknown };
+    const item = row;
     if (item.type !== "text" || typeof item.text !== "string") return undefined;
     texts.push(item.text);
   }
@@ -233,6 +248,112 @@ try {
     check(healthyData.attention_count === 8, "grounded attention count reaches the consumer");
   }
   check(calls().filter((path) => path === PREFIX + "issues").length === 1, "exactly one issues GET served the healthy read");
+
+  // Phase A2: provider-free C1 plumbing. Disclosure remains closed, while the
+  // real startup/context hooks and fm_investigate -> Python adapter are
+  // exercised with cited initiative and dependency evidence.
+  const blockedInput = await hooks["input"](
+    { text: "What decision blocks initiative 52?", images: [] },
+    ctxStub,
+  );
+  check(Boolean(blockedInput && typeof blockedInput === "object" && "action" in blockedInput
+    && blockedInput.action === "handled"),
+  "unapproved conversational input remains blocked before any provider request");
+  await hooks["before_agent_start"](
+    { systemPromptOptions: { skills: [], contextFiles: [] } },
+    ctxStub,
+  );
+
+  const initiativeBody = [
+    "**Status**", "underway",
+    "**Outcome**", "A shared API rolls out without skipping the storage prerequisite.",
+    "**Owner**", "roadmap-owner",
+    "**Areas**", "api, storage",
+    "**Boundaries**", "No publication or dispatch from the read-only console.",
+    "**Plan**", "#54 prepares the storage schema before #53 consumes it.",
+    "**Open decisions**", "Which migration window should owner and storage team use?",
+    "**Success evidence**", "Owner-confirmed success evidence is not yet supplied.",
+    "**Implementation links**", "#53",
+  ].join("\n");
+  const issue = (number: number, title: string, body: string, labels: string[] = []) => ({
+    number, title, body, state: "open",
+    html_url: `https://github.com/${REPO}/issues/${number}`,
+    labels: labels.map(name => ({ name })), assignees: [],
+    created_at: "2026-01-02T03:04:05Z", updated_at: "2026-01-02T03:04:05Z",
+  });
+  const initiativeIssue = issue(52, "Shared API roadmap <untrusted>", initiativeBody, ["initiative"]);
+  const childIssue = issue(53, "Ship API consumer", "Initiative: #52\nBlocked by: #54", ["ready-for-human"]);
+  const blockerIssue = issue(54, "Prepare storage schema", "Required before #53.", ["ready-for-human"]);
+  writeResponses({
+    [PREFIX + "issues"]: { json: [initiativeIssue] },
+    [PREFIX + "pulls"]: { json: [] },
+    [PREFIX + "issues/52"]: { json: initiativeIssue },
+    [PREFIX + "issues/52/comments"]: { json: [] },
+    [PREFIX + "issues/52/timeline"]: { json: [] },
+    [PREFIX + "issues/53"]: { json: childIssue },
+    [PREFIX + "issues/53/dependencies/blocked_by"]: { json: [] },
+    [PREFIX + "issues/53/comments"]: { json: [] },
+    [PREFIX + "issues/53/timeline"]: { json: [] },
+    [PREFIX + "issues/54"]: { json: blockerIssue },
+    [PREFIX + "issues/54/comments"]: { json: [] },
+    [PREFIX + "issues/54/timeline"]: { json: [] },
+  });
+  const investigated = await settledWithin(
+    30_000,
+    investigate("op-initiative", { ...request, kind: "initiative", number: 52 },
+      new AbortController().signal, () => undefined, ctxStub),
+    "initiative investigation exceeded 30s",
+  ).then(
+    (value) => ({ ok: true as const, value, error: undefined }),
+    (error: Error) => ({ ok: false as const, value: undefined, error }),
+  );
+  check(investigated.ok, `real initiative tool reaches the Python roadmap producer${investigated.ok ? "" : ": " + String(investigated.error)}`);
+  const initiativeData = investigated.ok ? parsedEvidence(investigated.value) : undefined;
+  const roadmap = initiativeData?.investigation;
+  const plan = roadmap?.plans?.[0];
+  const question = roadmap?.attention?.find(row => row.kind === "open_decisions")?.question;
+  const initiativeCitation = initiativeData?.sources.find(row => row.url?.endsWith("/issues/52"));
+  const dependent = plan?.children?.find(row => row.number === 53);
+  const blocker = dependent?.blockers.find(row => row.number === 54);
+  const blockerCitation = initiativeData?.sources.find(row => row.id === dependent?.source);
+  check(initiativeData?.ok === true && roadmap?.kind === "initiative" && plan?.number === 52,
+    "targeted roadmap reaches the consumer as a complete initiative investigation");
+  check(typeof question === "string" && question.includes("migration window"),
+    "declared migration-window decision remains available beside binding questions");
+  check(Boolean(blocker),
+    "known blocker relationship remains attached to the dependent ticket");
+  check(Boolean(initiativeCitation && blockerCitation),
+    "initiative plan and dependency each retain a supplied source citation");
+
+  let toolContent: unknown = [];
+  if (investigated.ok && investigated.value && typeof investigated.value === "object"
+      && "content" in investigated.value) {
+    toolContent = investigated.value.content;
+  }
+  const toolMessage = { role: "tool", content: toolContent, timestamp: Date.now() };
+  const contextual = await hooks["context"]({ messages: [toolMessage] });
+  const messages = contextual && typeof contextual === "object" && "messages" in contextual
+    && Array.isArray(contextual.messages) ? contextual.messages : [];
+  const lastMessage = messages.at(-1);
+  const awarenessContent = lastMessage && typeof lastMessage === "object" && "content" in lastMessage
+    && Array.isArray(lastMessage.content) ? lastMessage.content[0] : undefined;
+  const awareness = awarenessContent && typeof awarenessContent === "object" && "text" in awarenessContent
+    && typeof awarenessContent.text === "string" ? awarenessContent.text : "";
+  check(messages[0] === toolMessage,
+    "real context hook preserves the source-bearing tool result");
+  check(Boolean(initiativeCitation && awareness.includes(initiativeCitation.id)),
+    "shared awareness cites source metadata without repeating accepted snapshots");
+
+  const standIn = question && initiativeCitation && blockerCitation
+    ? `The blocking decision is: ${question} [${initiativeCitation.id}] Sequence #${blocker?.number} before #${dependent?.number} because the observed dependency blocks that ticket [${blockerCitation.id}]. Delivery and unrecorded overlap remain unknown.`
+    : "";
+  check(/\[S\d+\].*\[S\d+\]/.test(standIn),
+    "deterministic stand-in answers the decision/sequence question with supplied citations");
+  const blockedStandIn = await hooks["input"]({ text: standIn, images: [] }, ctxStub);
+  check(Boolean(blockedStandIn && typeof blockedStandIn === "object" && "action" in blockedStandIn
+    && blockedStandIn.action === "handled"),
+  "adapter stand-in is not sent to a provider while disclosure remains unapproved");
+  console.log(`adapter stand-in (deterministic plumbing only, not model output): ${standIn}`);
 
   // Phase B: hung read + real AbortSignal cancel (the /fm cancel protocol).
   // The marker descendant stays in the gh session; the consumer must cancel
