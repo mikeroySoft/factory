@@ -377,7 +377,14 @@ reasoning, source citations, and one final machine-readable line:
 |---|---|
 | Issue / BUILD | Remove `needs-viability`, add `needs-triage` for deeper investigation. Never directly queue implementation; a vague idea need not already pass triage's specification checks. |
 | Issue / DONT_BUILD or DEFER | Remove `needs-viability`; leave open, propose only. No `wontfix`, closure, or replacement workflow label. A human decides whether to close, defer, or overrule. |
-| PR / any verdict | Remove `needs-review`; recommend only. Even BUILD adds **no handoff label**. Dispatch independently runs the SHA-bound quality review before this stage; the manager itself never approves, requests changes, merges, or closes PRs. |
+| PR / any verdict | Retain `needs-review`; recommend only, even BUILD. Dispatch independently runs the SHA-bound quality review before this stage; viability adds no handoff label and never approves, requests changes, merges, or closes PRs. |
+
+`needs-review` is shared opt-in, not a viability-owned completion marker. Viability
+records each label-add request independently of dispatch's `(PR, head SHA)`
+review-intake record. Its advisory verdict neither completes nor vetoes review.
+Viability can assess drafts; dispatch discovers only open, non-draft PRs and also accepts
+a pending review request for the authenticated factory account. That alternative
+review opt-in does not opt a PR into viability.
 
 The model uses the existing evidence/briefing source helpers: bounded target
 description/comments, recent issues and PRs (not an exhaustive duplicate search),
@@ -397,14 +404,15 @@ Idempotency is per **label-add timeline event**, independent of escalation round
 Under the existing per-ticket lock, the manager rechecks the target (including
 PR head) and timeline after inference; intervening human changes leave it untouched.
 It records the verdict and full proposed comment in `.factory/events.jsonl`
-(`event: viability`) **before** any GitHub mutation, then posts and consumes the
-trigger. A second pass never repeats that request, even after a partial/ambiguous
+(`event: viability`) **before** any GitHub mutation, then posts and consumes only
+issue triggers. A second pass never repeats that request, even with `needs-review`
+still present or after a partial/ambiguous
 GitHub failure. In that case inspect the recorded comment and live state before
 recovering manually; automatic replay could duplicate an already-posted comment.
 Keep the local journal: this is the same single-host at-most-once boundary as
 escalation management, not a distributed exactly-once service. To deliberately
-reconsider, remove and re-add the opt-in label; edits alone do not re-arm a consumed
-request.
+reconsider, remove and re-add the opt-in label; body or PR-head edits alone do not
+re-arm a recorded viability request.
 
 Human-touch metrics are read-only; no manager behavior is required. A
 `ready-for-human` label addition starts an escalation interval; removal ends it
