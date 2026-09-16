@@ -28,7 +28,7 @@
     background: radial-gradient(ellipse at center, transparent 60%, rgba(0,0,0,.55)); }
   a { color: var(--cyan); text-decoration: none; }
   a:hover { text-decoration: underline; }
-  button, input { font: inherit; color: inherit; }
+  button, input, select { font: inherit; color: inherit; }
   button { background: transparent; border: 1px solid var(--line2); padding: 5px 10px; cursor: pointer;
     letter-spacing: .08em; text-transform: uppercase; font-size: 10px; color: var(--muted);
     transition: color .15s, border-color .15s, box-shadow .15s; }
@@ -244,6 +244,12 @@
   .attempt .ah button { margin-left: auto; }
   .empty { color: var(--dim); font-size: 11px; padding: 14px 16px; }
   .err { background: rgba(255,42,109,.1); border: 1px solid var(--mag); color: var(--mag); padding: 8px 14px; font-size: 11px; }
+  .feedback-evidence { display: grid; gap: 8px; }
+  .feedback-item { border: 1px solid var(--line); padding: 8px 10px; }
+  .feedback-item > summary { color: var(--ink); word-break: break-word; }
+  .feedback-item .kv { margin: 10px 0; }
+  .feedback-item pre { max-height: 24vh; }
+  .feedback-errors { display: grid; gap: 6px; }
 
   /* tooltip */
   .tip { position: fixed; z-index: 70; pointer-events: none; background: rgba(5,7,12,.95); border: 1px solid var(--cyan);
@@ -287,6 +293,40 @@
   .toasts { position: fixed; left: 24px; bottom: 24px; z-index: 80; display: grid; gap: 6px; }
   .toast { background: var(--bg2); border: 1px solid var(--grn); color: var(--grn); padding: 8px 14px; font-size: 11px; box-shadow: 0 0 12px rgba(57,255,20,.3); }
 
+
+  /* ---------- roadmap ---------- */
+  .roadmap-top { display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap; }
+  .roadmap-top h2 { font: 700 18px var(--hud); letter-spacing: .08em; color: var(--ink); }
+  .roadmap-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .roadmap-controls label { color: var(--muted); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; }
+  .roadmap-controls select { min-width: 230px; background: var(--bg2); border: 1px solid var(--line2); padding: 7px 10px; }
+  .roadmap-plans, .roadmap-attention, .roadmap-sources { display: grid; gap: 12px; }
+  .roadmap-plans { grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); }
+  .roadmap-plan, .roadmap-question { border: 1px solid var(--line); background: var(--bg2); padding: 14px 16px; min-width: 0; }
+  .roadmap-plan { border-left: 3px solid var(--cyan); }
+  .roadmap-plan.malformed { border-left-color: var(--mag); }
+  .roadmap-plan-head, .roadmap-question-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .roadmap-plan-head h3, .roadmap-question-head h3 { font-size: 13px; font-weight: 500; color: var(--ink); }
+  .roadmap-plan-head .chip, .roadmap-question-head .chip { margin-left: auto; }
+  .roadmap-plan-number { color: var(--cyan); font: 700 15px var(--hud); }
+  .roadmap-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .roadmap-section { min-width: 0; }
+  .roadmap-copy { color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .roadmap-list { list-style: none; display: grid; gap: 6px; }
+  .roadmap-list li { border-left: 2px solid var(--line2); padding-left: 9px; color: var(--muted); overflow-wrap: anywhere; }
+  .roadmap-state { margin-top: 10px; padding: 8px 10px; border: 1px solid var(--line2); color: var(--muted); }
+  .roadmap-state.unknown { border-color: var(--yel); color: var(--yel); }
+  .roadmap-question { border-left: 3px solid var(--pur); }
+  .roadmap-question.unknown-owner { border-left-color: var(--yel); }
+  .roadmap-question.takeover { border-left-color: var(--mag); }
+  .roadmap-question .why { color: var(--muted); margin-top: 7px; white-space: pre-wrap; }
+  .roadmap-meta { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  .roadmap-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+  @media (max-width: 720px) {
+    .roadmap-grid { grid-template-columns: 1fr; }
+    .roadmap-controls { align-items: stretch; flex-direction: column; }
+    .roadmap-controls select { width: 100%; }
+  }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation: none !important; transition: none !important; }
     .scan { display: none; }
@@ -306,11 +346,11 @@
     <h1 class="glitch" id="title" data-text="FACTORY">FACTORY</h1>
   </div>
   <div class="status" id="status"></div>
-  <nav class="views" aria-label="Factory views"><button id="nav-inbox" class="on">Inbox</button><button id="nav-ops">Ops</button><a class="navlink" href="/codebase" title="Explore codebase organization and history">Codebase ↗</a><a class="navlink" href="/atlas" title="Static architecture diagrams">Atlas ↗</a></nav>
+  <nav class="views" aria-label="Factory views"><button id="nav-inbox" class="on">Inbox</button><button id="nav-roadmap">Roadmap</button><button id="nav-ops">Ops</button><a class="navlink" href="/chat" title="Talk with the Factory Manager">Chat ↗</a><a class="navlink" href="/codebase" title="Explore codebase organization and history">Codebase ↗</a><a class="navlink" href="/atlas" title="Static architecture diagrams">Atlas ↗</a></nav>
   <div class="controls">
     <input id="search" type="search" placeholder="/ filter  #n · title · label · stage" aria-label="Filter tickets" title="Filters the board, lanes, activity feed, and inbox">
     <button id="refresh" title="r">Refresh</button>
-    <label><input type="checkbox" id="auto" checked> auto 30s</label>
+    <label id="auto-control"><input type="checkbox" id="auto" checked> auto 30s</label>
   </div>
 </header>
 
@@ -320,6 +360,10 @@
   <section class="panel" aria-label="Worker metrics">
     <header><b>Workers</b> claim labels · first-attempt gate outcomes · all attempts · known cost</header>
     <div class="kpis" id="worker-metrics"></div>
+  </section>
+  <section class="panel" aria-label="External pull-request review queue">
+    <header><b>External PR review queue</b> read-only · required CI last observed by dispatch</header>
+    <div class="body" id="review-queue"></div>
   </section>
 
   <section class="panel">
@@ -384,6 +428,30 @@
   <div id="inbox-health" class="briefing-status" role="status"></div>
   <div id="inbox-list"></div>
 </main>
+
+<main id="roadmap" hidden>
+  <div class="roadmap-top"><h2>Shared roadmap</h2><p class="briefing-muted">Canonical initiative plans stay unchanged while the owner/team filter narrows attention questions only.</p></div>
+  <div id="roadmap-health" class="briefing-status" role="status" aria-live="polite"></div>
+  <section class="panel" aria-labelledby="roadmap-plans-title">
+    <header><b id="roadmap-plans-title">Canonical plans</b> declared direction · accepted revisions · observed implementation <span class="note" id="roadmap-plans-count"></span></header>
+    <div class="body roadmap-plans" id="roadmap-plans" aria-live="polite"></div>
+  </section>
+  <section class="panel" aria-labelledby="roadmap-attention-title">
+    <header><b id="roadmap-attention-title">Owner attention</b> routed questions · read-only · assignment is not authentication</header>
+    <div class="body">
+      <div class="roadmap-controls">
+        <label for="roadmap-owner">Owner or team</label>
+        <select id="roadmap-owner"><option value="">All routed attention</option></select>
+        <span class="hint">Filter only—not login, assignment or permission. Team membership and notification delivery are not verified.</span>
+      </div>
+      <div class="roadmap-attention" id="roadmap-attention" aria-live="polite"></div>
+    </div>
+  </section>
+  <section class="panel" aria-labelledby="roadmap-sources-title">
+    <header><b id="roadmap-sources-title">Observation sources</b> bounded citations · no accepted snapshot bodies repeated here</header>
+    <div class="body roadmap-sources" id="roadmap-sources"></div>
+  </section>
+</main>
 <div id="toasts" class="toasts" aria-live="polite"></div>
 
 <aside class="drawer" id="drawer" aria-label="Ticket detail" aria-hidden="true">
@@ -438,7 +506,7 @@ const ALWAYS_COLS = ['triage', 'queued', 'in-flight', 'pr-open', 'escalated', 'm
 const FEED_KINDS = new Set(['labeled', 'assigned', 'attempt', 'gate', 'pr-opened', 'verdict', 'merged', 'escalated', 'triaged', 'closed', 'pr-closed', 'reopened']);
 const TABS = ['timeline', 'attempts', 'gate', 'review', 'branch', 'prompt', 'issue'];
 
-const S = { snap: null, filter: null, q: '', sel: null, tab: 'timeline', okAt: 0, failed: false, files: {}, view: 'inbox', drafts: {}, inboxDirty: false, inboxKey: null, choices: {}, briefings: {}, chats: {}, receipts: {}, fm: null, preview: null, restored: false, loading: null };
+const S = { snap: null, filter: null, q: '', sel: null, tab: 'timeline', okAt: 0, failed: false, files: {}, view: 'inbox', drafts: {}, inboxDirty: false, inboxKey: null, choices: {}, briefings: {}, chats: {}, receipts: {}, fm: null, preview: null, restored: false, loading: null, roadmap: null, roadmapError: '', roadmapLoading: {}, roadmapDetails: {}, roadmapOwner: '' };
 const $ = id => document.getElementById(id);
 
 // ---------------------------------------------------------------- utils
@@ -502,10 +570,38 @@ async function load(fresh) {
       restoreInboxState();
     } catch (e) {
       S.failed = true;
-    } finally { $('refresh').disabled = false; }
+    } finally { $('refresh').disabled = Object.keys(S.roadmapLoading).length > 0; }
     render();
   })();
   try { await S.loading; } finally { S.loading = null; }
+}
+async function loadRoadmap(number = null, fresh = false) {
+  const key = number == null ? 'list' : String(number);
+  const cached = number == null ? S.roadmap : S.roadmapDetails[number]?.data;
+  if (S.roadmapLoading[key] || (cached && !fresh)) return;
+  S.roadmapLoading[key] = true;
+  $('refresh').disabled = true;
+  renderRoadmap();
+  try {
+    const path = '/api/roadmap' + (number == null ? (fresh ? '?fresh=1' : '') : `?initiative=${encodeURIComponent(number)}`);
+    const response = await fetch(path);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `Roadmap unavailable (${response.status})`);
+    if (number == null) {
+      S.roadmap = data;
+      S.roadmapError = '';
+      if (fresh) S.roadmapDetails = {};
+    } else {
+      S.roadmapDetails[number] = { data, error: '' };
+    }
+  } catch (error) {
+    if (number == null) S.roadmapError = error.message;
+    else S.roadmapDetails[number] = { data: null, error: error.message };
+  } finally {
+    delete S.roadmapLoading[key];
+    $('refresh').disabled = !!S.loading || Object.keys(S.roadmapLoading).length > 0;
+    renderRoadmap();
+  }
 }
 async function file(path) {
   if (S.files[path]) return S.files[path];
@@ -579,6 +675,183 @@ function stageTimeline(t) {
   return segs.filter(s => ms(s.to) > ms(s.from));
 }
 
+const roadmapList = value => Array.isArray(value) ? value : [];
+const roadmapValue = value => value == null || value === '' ? 'unknown' : String(value);
+const ownerLabel = owner => typeof owner === 'string' && owner ? (owner.startsWith('@') ? owner : `@${owner}`) : 'unknown';
+function roadmapProblem(error) {
+  if (typeof error === 'string') return error;
+  if (!error || typeof error !== 'object') return 'Unknown roadmap source error';
+  return [error.source, error.scope, error.code, error.message].filter(value => value != null && value !== '').map(String).join(' · ') || 'Unknown roadmap source error';
+}
+function roadmapAnchor(url, label) {
+  const safe = safeSourceURL(url);
+  return safe ? h('a', { href: safe, target: '_blank', rel: 'noopener noreferrer' }, label) : h('span', {}, label);
+}
+function roadmapRevision(revision, compact = false) {
+  if (!revision) return h('p', { class: 'roadmap-state unknown' }, 'Revision metadata unavailable; no version identity is inferred.');
+  const sha = roadmapValue(revision.sha256);
+  return h('dl', { class: 'kv' },
+    h('dt', {}, 'sha256'), h('dd', {}, h('code', { title: sha }, compact && sha !== 'unknown' ? sha.slice(0, 12) : sha)),
+    h('dt', {}, 'observed'), h('dd', {}, roadmapValue(revision.observed_at)),
+    h('dt', {}, 'source'), h('dd', {}, revision.source_url ? roadmapAnchor(revision.source_url, 'Canonical initiative source ↗') : 'unknown'));
+}
+function roadmapIssueRow(item, noun) {
+  const number = item?.number ?? item?.ticket;
+  const label = number ? `#${number} · ${item?.title || `${noun} title unknown`}` : `${noun} · ${item?.title || 'title unknown'}`;
+  const unavailable = item?.unavailable;
+  return h('li', {},
+    item?.url ? roadmapAnchor(item.url, label) : h('strong', {}, label),
+    ` · ${unavailable ? `unavailable (${unavailable})` : roadmapValue(item?.state ?? item?.status)}`,
+    item?.labels?.length ? ` · ${item.labels.join(', ')}` : '',
+    item?.runnable === false ? h('span', { class: 'chip', style: { '--c': 'var(--mag)' } }, 'not runnable') : null,
+    item?.readiness_reason ? h('div', { class: 'roadmap-meta' }, item.readiness_reason) : null);
+}
+function roadmapDriftRow(row) {
+  const changed = roadmapList(row?.changed_sections);
+  return h('li', {},
+    h('strong', {}, `${row?.ticket ? `#${row.ticket}` : 'Ticket unknown'} · ${roadmapValue(row?.status)}`),
+    changed.length ? h('div', { class: 'roadmap-meta' }, `Changed sections: ${changed.join(', ')}`) : null,
+    row?.reason ? h('p', { class: 'roadmap-copy' }, row.reason) : null,
+    row?.proposed_question ? h('p', { class: 'roadmap-copy' }, `Open question: ${row.proposed_question}`) : null,
+    h('details', {}, h('summary', {}, 'Revision metadata'),
+      h('div', { class: 'section-h' }, 'accepted baseline'), roadmapRevision(row?.baseline, true),
+      h('div', { class: 'section-h' }, 'observed initiative'), roadmapRevision(row?.observed, true)));
+}
+function roadmapPlanCard(summary, coverageStatus) {
+  const detail = S.roadmapDetails[summary.number];
+  const detailed = roadmapList(detail?.data?.plans).find(plan => plan.number === summary.number);
+  const planCoverage = detail?.data?.coverage?.status || coverageStatus;
+  const plan = detailed || summary;
+  const sections = plan.sections || {};
+  const children = roadmapList(plan.children), blockers = roadmapList(plan.blockers), drift = roadmapList(plan.drift);
+  const delivery = plan.delivery || { status: 'unknown', detail: null };
+  const busy = !!S.roadmapLoading[String(plan.number)];
+  const problems = roadmapList(plan.problems);
+  const detailErrors = roadmapList(detail?.data?.errors);
+  const card = h('article', { class: `roadmap-plan${plan.malformed ? ' malformed' : ''}`, dataset: { initiative: plan.number } },
+    h('div', { class: 'roadmap-plan-head' },
+      h('span', { class: 'roadmap-plan-number' }, `#${roadmapValue(plan.number)}`),
+      h('h3', {}, roadmapAnchor(plan.url, roadmapValue(plan.title))),
+      h('span', { class: 'chip', style: { '--c': plan.status ? 'var(--cyan)' : 'var(--yel)' } }, `declared stage · ${roadmapValue(plan.status)}`)),
+    h('p', { class: 'roadmap-meta' }, `Declared owner: ${plan.owner ? ownerLabel(plan.owner) : 'unknown'}${plan.state ? ` · issue ${plan.state}` : ''}`),
+    plan.malformed ? h('div', { class: 'err' }, 'Malformed initiative declaration. Missing or invalid fields remain unknown; no values are inferred.') : null,
+    problems.length ? h('ul', { class: 'roadmap-list' }, ...problems.map(problem => h('li', {}, problem))) : null,
+    h('div', { class: 'section-h' }, 'declared outcome'),
+    h('p', { class: 'roadmap-copy' }, sections.Outcome || 'Outcome declaration unavailable.'),
+    h('details', {}, h('summary', {}, 'Plan, boundaries and declared success evidence'),
+      ...['Plan', 'Areas', 'Boundaries', 'Success evidence'].map(name => h('section', { class: 'roadmap-section' },
+        h('div', { class: 'section-h' }, name), h('p', { class: 'roadmap-copy' }, sections[name] || 'Declaration unavailable.')))),
+    h('div', { class: 'roadmap-state unknown' },
+      h('strong', {}, 'Outcome delivery unknown'),
+      h('div', {}, delivery.detail || 'No owner-confirmed success evidence was observed. Declared stage and child closure do not prove delivery.')),
+    h('div', { class: 'section-h' }, plan.historical ? 'retained accepted revision · live source unavailable' : 'observed canonical revision'),
+    roadmapRevision(plan.revision),
+    h('div', { class: 'roadmap-grid' },
+      h('section', { class: 'roadmap-section', 'aria-label': 'Implementation evidence' },
+        h('div', { class: 'section-h' }, `implementation evidence · ${children.length}`),
+        children.length ? h('ul', { class: 'roadmap-list' }, ...children.map(child => roadmapIssueRow(child, 'Implementation ticket')))
+          : h('p', { class: planCoverage === 'complete' ? 'empty' : 'roadmap-state unknown' }, planCoverage === 'complete' ? 'No linked implementation evidence was returned.' : 'No implementation rows were returned, but source coverage is incomplete.')),
+      h('section', { class: 'roadmap-section', 'aria-label': 'Blockers' },
+        h('div', { class: 'section-h' }, `blockers · ${blockers.length}`),
+        blockers.length ? h('ul', { class: 'roadmap-list' }, ...blockers.map(blocker => roadmapIssueRow(blocker, 'Blocker')))
+          : h('p', { class: planCoverage === 'complete' ? 'empty' : 'roadmap-state unknown' }, planCoverage === 'complete' ? 'No blockers were returned by the available evidence.' : 'No blockers were returned, but source coverage is incomplete.'))),
+    h('div', { class: 'section-h' }, 'declared open questions'),
+    h('p', { class: 'roadmap-copy' }, sections['Open decisions'] || 'Open-decision declaration unavailable.'),
+    h('div', { class: 'section-h' }, `plan drift · ${drift.length}`),
+    drift.length ? h('ul', { class: 'roadmap-list' }, ...drift.map(roadmapDriftRow))
+      : h('p', { class: planCoverage === 'complete' ? 'empty' : 'roadmap-state unknown' }, planCoverage === 'complete' ? 'No bound-ticket drift was returned.' : 'No drift rows were returned, but source coverage is incomplete.'),
+    h('div', { class: 'roadmap-actions' },
+      h('button', { type: 'button', disabled: busy, 'aria-label': `Read detailed evidence for initiative #${plan.number}`, onclick: () => loadRoadmap(plan.number, true) }, busy ? 'Reading initiative…' : detail?.data ? 'Refresh initiative detail' : 'Read initiative detail'),
+      detail?.data ? h('span', { class: 'roadmap-meta' }, `Detailed observation ${roadmapValue(detail.data.observation_id)} · ${roadmapValue(detail.data.observed_at)} · coverage ${planCoverage}`) : null,
+      detail?.error ? h('span', { class: 'err', role: 'status' }, `Initiative detail unavailable: ${detail.error}`) : null),
+    detailErrors.length ? h('div', { class: 'feedback-errors', role: 'status' }, ...detailErrors.map(error => h('div', { class: 'err roadmap-source-error' }, `Detailed source error · ${roadmapProblem(error)}`))) : null);
+  return card;
+}
+function roadmapDestinations(item) {
+  const route = item?.route || {};
+  return [...new Set([route.owner, ...roadmapList(route.candidates)].filter(owner => typeof owner === 'string' && owner))];
+}
+function roadmapRouteText(item) {
+  const route = item?.route || {}, destinations = roadmapDestinations(item);
+  const routed = route.owner ? `Owner ${ownerLabel(route.owner)}` : destinations.length ? `Candidates ${destinations.map(ownerLabel).join(', ')}` : 'Owner unknown';
+  return `${routed} · route ${roadmapValue(route.status)} · source ${roadmapValue(route.source)}${route.verification && route.verification !== 'not_needed' ? ` · repository-context verification ${route.verification}` : ''}`;
+}
+function renderRoadmapAttention(data) {
+  const attention = roadmapList(data.attention), owners = [...new Set(attention.flatMap(roadmapDestinations))].sort((a, b) => a.localeCompare(b));
+  const selector = $('roadmap-owner');
+  if (S.roadmapOwner && S.roadmapOwner !== '__unknown__' && !owners.includes(S.roadmapOwner)) S.roadmapOwner = '';
+  selector.replaceChildren(
+    h('option', { value: '', selected: !S.roadmapOwner }, 'All routed attention'),
+    ...owners.map(owner => h('option', { value: owner, selected: S.roadmapOwner === owner }, ownerLabel(owner))),
+    h('option', { value: '__unknown__', selected: S.roadmapOwner === '__unknown__' }, 'Unknown / unassigned'));
+  const filtered = attention.filter(item => {
+    const destinations = roadmapDestinations(item);
+    return !S.roadmapOwner || (S.roadmapOwner === '__unknown__' ? !destinations.length : destinations.includes(S.roadmapOwner));
+  });
+  const status = data.coverage?.status || 'unknown';
+  $('roadmap-attention').replaceChildren(...(filtered.length ? filtered.map(item => {
+    const takeover = item.runnable === false;
+    const unknownOwner = roadmapDestinations(item).length === 0;
+    const readiness = item.runnable === true ? 'Runnable' : takeover ? 'Not runnable · see readiness reason' : 'Run readiness unknown';
+    return h('article', { class: `roadmap-question${takeover ? ' takeover' : ''}${unknownOwner ? ' unknown-owner' : ''}`, dataset: { attentionId: roadmapValue(item.id), initiative: roadmapValue(item.initiative), ticket: item.ticket ?? '' } },
+      h('div', { class: 'roadmap-question-head' },
+        h('span', { class: 'roadmap-plan-number' }, item.ticket ? `#${item.ticket}` : `Initiative #${roadmapValue(item.initiative)}`),
+        h('h3', {}, roadmapValue(item.kind)),
+        h('span', { class: 'chip', style: { '--c': takeover ? 'var(--mag)' : item.runnable === true ? 'var(--grn)' : 'var(--yel)' } }, readiness)),
+      h('p', { class: 'roadmap-copy' }, roadmapValue(item.question)),
+      h('p', { class: 'why' }, roadmapRouteText(item)),
+      h('details', {}, h('summary', {}, 'Routing evidence'),
+        h('ul', { class: 'roadmap-list' }, ...roadmapList(item.route?.provenance).map(step =>
+          h('li', {}, `${roadmapValue(step.step)} · ${roadmapValue(step.outcome)} · ${roadmapValue(step.detail)}`)))),
+      h('p', { class: 'why' }, `Readiness: ${item.readiness_reason || 'reason unavailable'}`),
+      item.url ? roadmapAnchor(item.url, 'Open evidence source ↗') : h('span', { class: 'roadmap-meta' }, 'Source link unavailable'));
+  }) : [h('div', { class: status === 'complete' ? 'empty' : 'roadmap-state unknown' },
+    S.roadmapOwner ? `No observed attention items match ${S.roadmapOwner === '__unknown__' ? 'unknown ownership' : ownerLabel(S.roadmapOwner)}. Canonical plans above remain unfiltered.${status === 'complete' ? '' : ' Coverage is incomplete, so unobserved attention remains unknown.'}`
+      : status === 'complete' ? 'No owner-attention questions were returned by complete source coverage.' : 'No attention questions were returned, but source coverage is incomplete; this is unknown, not no work.')]));
+}
+function renderRoadmap() {
+  const data = S.roadmap, loading = !!S.roadmapLoading.list;
+  if (!data) {
+    replaceChildren($('roadmap-health'),
+      loading ? fmProgress('Reading canonical plans and routed attention…') : null,
+      S.roadmapError ? h('div', { class: 'err roadmap-source-error' }, `Roadmap unavailable: ${S.roadmapError}`) : h('p', {}, 'Open this view to read the roadmap.'),
+      !loading && S.roadmapError ? h('button', { type: 'button', onclick: () => loadRoadmap(null, true) }, 'Retry roadmap') : null);
+    $('roadmap-plans-count').textContent = '';
+    $('roadmap-plans').replaceChildren(h('div', { class: 'roadmap-state unknown' }, S.roadmapError ? 'Canonical plans are unknown while the producer is unavailable.' : 'Roadmap not loaded.'));
+    $('roadmap-attention').replaceChildren(h('div', { class: 'roadmap-state unknown' }, 'Owner attention is unknown until the roadmap is loaded.'));
+    $('roadmap-sources').replaceChildren(h('p', { class: 'empty' }, 'No source observation loaded.'));
+    return;
+  }
+  if (data.schema_version !== 1) {
+    $('roadmap-health').replaceChildren(h('div', { class: 'err' }, `Unsupported roadmap schema ${roadmapValue(data.schema_version)}. Plans and attention are unknown.`));
+    $('roadmap-plans').replaceChildren(h('div', { class: 'roadmap-state unknown' }, 'Canonical plans cannot be rendered from an unsupported schema.'));
+    $('roadmap-attention').replaceChildren(h('div', { class: 'roadmap-state unknown' }, 'Owner attention cannot be rendered from an unsupported schema.'));
+    $('roadmap-sources').replaceChildren();
+    return;
+  }
+  const status = data.coverage?.status || 'unknown', plans = roadmapList(data.plans);
+  replaceChildren($('roadmap-health'),
+    h('p', {}, `${roadmapValue(data.scope?.repository)} · observation ${roadmapValue(data.observation_id)} · ${roadmapValue(data.observed_at)} · coverage ${status}`),
+    loading ? fmProgress('Refreshing roadmap evidence…') : null,
+    S.roadmapError ? h('div', { class: 'err roadmap-source-error' }, `Refresh failed; retaining the prior observation: ${S.roadmapError}`) : null,
+    status !== 'complete' ? h('div', { class: 'roadmap-state unknown roadmap-coverage-partial' }, 'Roadmap coverage is incomplete. Missing plans, blockers, drift, or questions remain unknown; empty results do not mean no work.') : null,
+    ...roadmapList(data.coverage?.notices).map(notice => h('p', { class: 'roadmap-meta' }, notice)),
+    ...roadmapList(data.errors).map(error => h('div', { class: 'err roadmap-source-error' }, `Source error · ${roadmapProblem(error)}`)));
+  $('roadmap-plans-count').textContent = `${plans.length} plan${plans.length === 1 ? '' : 's'}`;
+  $('roadmap-plans').replaceChildren(...(plans.length ? plans.map(plan => roadmapPlanCard(plan, status)) : [
+    h('div', { class: status === 'complete' ? 'empty' : 'roadmap-state unknown' }, status === 'complete' ? 'No canonical initiative plans were returned by complete source coverage.' : 'No plans were returned, but source coverage is incomplete; plan absence is unknown.')
+  ]));
+  renderRoadmapAttention(data);
+  const sourceRows = [...roadmapList(data.sources), ...Object.values(S.roadmapDetails).flatMap(detail => roadmapList(detail?.data?.sources))];
+  const sources = [...new Map(sourceRows.map(source => [roadmapValue(source?.id || source?.url || source?.label), source])).values()];
+  $('roadmap-sources').replaceChildren(...(sources.length ? sources.map(source =>
+    h('div', { class: 'roadmap-question', dataset: { sourceId: roadmapValue(source.id) } },
+      h('strong', {}, roadmapValue(source.label)),
+      h('p', { class: 'roadmap-meta' }, `${roadmapValue(source.id)}${source.truncated ? ' · bounded/truncated' : ''}`),
+      source.url ? roadmapAnchor(source.url, 'Open provider source ↗') : h('span', { class: 'roadmap-meta' }, 'Provider link unavailable')))
+    : [h('div', { class: status === 'complete' ? 'empty' : 'roadmap-state unknown' }, status === 'complete' ? 'No source citations were returned.' : 'Source citations are unavailable under incomplete coverage.')]));
+}
+
 // ---------------------------------------------------------------- render
 function render() {
   applyView();
@@ -587,10 +860,12 @@ function render() {
     $('errors').replaceChildren(h('div', { class: 'err' }, message));
     $('inbox-sum').textContent = 'Inbox unavailable';
     $('inbox-health').replaceChildren(message, h('button', { onclick: () => load(true) }, 'Retry snapshot'));
+    renderRoadmap();
     return;
   }
   renderStatus(); renderErrors(); renderKpis(); renderPipeline(); renderBoard(); renderFeed(); renderRuns(); renderUpstream(); renderLanes(); renderThroughput(); renderConfig();
   renderInboxHealth();
+  renderReviewQueue();
   updateInbox();
   applyView();
   if (S.sel != null && !$('drawer').contains(document.activeElement) && !$('fm-dialog').open) renderDrawer();
@@ -984,14 +1259,109 @@ function tabGate(t, c) {
   if (text) c.append(pre(text));
   if (t.gate && t.pr && t.pr.gate_text && t.pr.gate_text !== t.gate.text.trim()) { c.append(h('div', { class: 'section-h' }, 'report attached to the PR at open'), pre(t.pr.gate_text)); }
 }
+function feedbackEvidence(t, expanded = false) {
+  const root = h('div', { class: 'feedback-evidence', dataset: { feedbackSchema: t.pr?.feedback?.schema_version ?? 'missing' } });
+  if (!t.pr) {
+    root.append(h('div', { class: 'empty feedback-unsupported' }, 'No pull request exists, so there is no PR feedback observation.'));
+    return root;
+  }
+  const f = t.pr.feedback;
+  if (!f || f.schema_version !== 1) {
+    root.append(h('div', { class: 'err feedback-unsupported', role: 'status' },
+      f ? `PR feedback schema ${String(f.schema_version ?? 'unknown')} is unsupported. This evidence is unknown and non-actionable.`
+        : 'This engine does not expose source-versioned PR feedback. Evidence is unsupported/unknown and non-actionable.'));
+    return root;
+  }
+  const value = v => v == null || v === '' ? 'unknown' : String(v);
+  const kvList = pairs => h('dl', { class: 'kv' }, ...pairs.flatMap(([label, content]) => [h('dt', {}, label), h('dd', {}, content)]));
+  const sourceLink = (url, label) => {
+    const safe = safeSourceURL(url);
+    return safe ? h('a', { href: safe, target: '_blank', rel: 'noopener noreferrer' }, label) : null;
+  };
+  const owner = f.owner || {};
+  const ownerIssue = owner.issue || null;
+  const ownerUnknown = owner.relation !== 'factory_issue' || !ownerIssue;
+  root.append(
+    h('div', { class: 'section-h' }, `source-versioned PR feedback · schema ${f.schema_version}`),
+    kvList([
+      ['repository', `${value(f.repository?.slug)} · host ${value(f.repository?.host)} · native id ${value(f.repository?.id)}`],
+      ['pull request', h('span', {}, sourceLink(f.pr?.url, `#${value(f.pr?.number)} ↗`) || `#${value(f.pr?.number)}`, ` · native id ${value(f.pr?.id)} · ${value(f.pr?.state)} · draft ${value(f.pr?.draft)}`)],
+      ['observed head', h('code', {}, value(f.pr?.head_sha))],
+      ['observed at', value(f.observed_at)],
+      ['observation', h('code', {}, value(f.observation_id))],
+      ['producer', `${value(f.producer?.name)} · revision ${value(f.producer?.revision)}`],
+    ]),
+    h('div', { class: `feedback-owner${ownerUnknown ? ' err' : ''}` },
+      h('div', { class: 'section-h' }, 'containing owner identity'),
+      kvList([
+        ['relation', `${value(owner.relation)}${ownerUnknown ? ' · unknown/non-actionable' : ''}`],
+        ['issue', ownerIssue ? h('span', {}, sourceLink(ownerIssue.url, `#${value(ownerIssue.number)} ↗`) || `#${value(ownerIssue.number)}`, ` · native id ${value(ownerIssue.id)}`) : 'unknown'],
+      ]),
+      h('div', { class: 'hint' }, 'Ownership is evidence, not readiness or approval authority.'),
+      owner.evidence?.length ? h('ul', {}, ...owner.evidence.map(entry => h('li', {}, entry))) : h('div', { class: 'empty' }, 'No ownership evidence recorded.')),
+    h('div', { class: 'section-h' }, 'source coverage'),
+    h('div', { class: 'checks feedback-coverage' },
+      ...['pr', 'reviews', 'threads', 'checks'].map(source => {
+        const coverage = f.coverage?.[source];
+        const state = coverage?.status === 'complete' ? 'SUCCESS' : coverage?.status === 'unavailable' ? 'ERROR' : 'PENDING';
+        return h('span', { class: `chk ${state}`, dataset: { feedbackSource: source }, title: coverage?.reason || 'No coverage reason recorded' },
+          `${source} ${value(coverage?.status)} · observed ${value(coverage?.observed_at)} · truncated ${value(coverage?.truncated)}${coverage?.reason ? ` · ${coverage.reason}` : ''}`);
+      })),
+    h('div', { class: 'hint' }, 'Partial or unavailable coverage never means that no feedback exists.'),
+  );
+  const uncollected = (f.errors || []).filter(error => error?.code === 'not_collected').map(error => value(error.source));
+  if (uncollected.length) root.append(h('div', { class: 'err feedback-not-collected', role: 'status' },
+    `Detail sources ${uncollected.join(', ')} were not collected: detail reads are limited to open pull requests. Intentional noncollection is unknown, not empty, resolved, or unsupported evidence.`));
+  root.append(h('div', { class: 'section-h' }, `simultaneous evidence · ${f.items?.length || 0} item${f.items?.length === 1 ? '' : 's'}`));
+  if (!f.items?.length) {
+    const complete = ['reviews', 'threads', 'checks'].every(source => f.coverage?.[source]?.status === 'complete');
+    root.append(h('div', { class: 'empty feedback-empty' }, uncollected.length ? 'No items were returned because these sources were not read for this non-open pull request.' : complete ? 'The observed feedback sources were complete and returned no items.' : 'No items were returned, but incomplete coverage makes absence unknown.'));
+  }
+  for (const item of f.items || []) {
+    const disposition = item.disposition || {}, location = item.location || {};
+    const detail = h('details', { class: 'feedback-item', open: expanded, dataset: { evidenceId: value(item.evidence_id), relevance: value(item.relevance), kind: value(item.kind) } },
+      h('summary', {}, `${value(item.kind)} · ${value(item.summary || item.source_id)} · relevance ${value(item.relevance)}`),
+      kvList([
+        ['evidence id', h('code', {}, value(item.evidence_id))],
+        ['source id', value(item.source_id)],
+        ['source revision', h('code', {}, value(item.source_revision))],
+        ['observed head', h('code', {}, value(item.observed_head_sha))],
+        ['source head', h('code', {}, value(item.source_head_sha))],
+        ['updated at', value(item.source_updated_at)],
+        ['author', `${value(item.author?.login)} · ${value(item.author?.kind)}`],
+        ['review/thread', `${value(item.review_id)} / ${value(item.thread_id)}`],
+        ['check run/attempt', `${value(item.check_run_id)} / ${value(item.run_attempt)}`],
+        ['relevance', value(item.relevance)],
+        ['review state', value(disposition.review_state)],
+        ['thread resolved', value(disposition.thread_resolved)],
+        ['thread outdated', value(disposition.thread_outdated)],
+        ['check status', value(disposition.check_status)],
+        ['check conclusion', value(disposition.check_conclusion)],
+        ['location', `${value(location.path)} · line ${value(location.line)} · side ${value(location.side)} · original line ${value(location.original_line)} · original commit ${value(location.original_commit_sha)}`],
+      ]),
+      item.truncated ? h('div', { class: 'err' }, 'Body truncated by the bounded collector; use the provider source for omitted text.') : null,
+      h('div', { class: 'section-h' }, 'source body'),
+      pre(item.body),
+      sourceLink(item.source_url, 'Open provider source ↗') || h('span', { class: 'hint feedback-source-unavailable' }, 'Provider source link unavailable.'));
+    root.append(detail);
+  }
+  root.append(h('div', { class: 'section-h' }, `collection errors · ${f.errors?.length || 0}`));
+  if (f.errors?.length) root.append(h('div', { class: 'feedback-errors' }, ...f.errors.map(error =>
+    h('div', { class: 'err feedback-error', dataset: { feedbackSource: value(error.source), feedbackCode: value(error.code) } }, `${value(error.source)} · ${value(error.code)} · ${value(error.message)}`))));
+  else root.append(h('div', { class: 'empty' }, 'No collection errors recorded.'));
+  root.append(h('div', { class: 'hint' }, 'Feedback is read-only evidence. It does not imply delivery, resolution, readiness, or approval for merge.'));
+  return root;
+}
 function tabReview(t, c) {
+  c.append(feedbackEvidence(t, true));
   const vs = t.pr ? t.pr.verdicts : [];
   const last = vs.at(-1);
-  c.append(h('div', { class: 'section-h' }, last ? `latest verdict: ${last.verdict} · ${ago(last.at)}` : 'no reviewer verdict on the PR'));
-  if (last || t.review) c.append(h('button', { onclick: () => openFM(t.number, t.review ? { path: t.review.path, label: 'Local review' } : { match: 'verdict|review', label: 'PR review verdict' }) }, 'Ask FM about this review'));
-  if (last) c.append(h('div', { class: 'checks' }, ...vs.map(v => h('span', { class: `chk ${v.verdict === 'APPROVE' ? 'PASS' : 'FAIL'}`, title: fmt(v.at) }, `${v.verdict} ${hm(v.at)}`))));
-  vs.slice().reverse().forEach((v, i) => c.append(h('details', { open: i === 0 }, h('summary', {}, `${v.verdict} · ${fmt(v.at)}`), pre(v.body))));
-  if (t.review) c.append(h('div', { class: 'section-h' }, `local review-${t.number}.md · ${t.review.verdict || '?'} · ${ago(t.review.mtime)}`), h('details', {}, h('summary', {}, t.review.path), pre(t.review.text)));
+  c.append(h('div', { class: 'section-h' }, 'legacy review context · not source-versioned authority'));
+  c.append(h('div', { class: 'hint' }, last ? `Latest legacy verdict record: ${last.verdict} · ${ago(last.at)}. This is not trusted source-versioned approval.` : 'No legacy reviewer verdict record on the PR.'));
+  if (last || t.review) c.append(h('button', { onclick: () => openFM(t.number, t.review ? { path: t.review.path, label: 'Local review' } : { match: 'verdict|review', label: 'Legacy PR review context' }) }, 'Ask FM about this legacy review context'));
+  if (last) c.append(h('div', { class: 'checks' }, ...vs.map(v => h('span', { class: 'chk', title: fmt(v.at) }, `legacy ${v.verdict} ${hm(v.at)}`))));
+  vs.slice().reverse().forEach((v, i) => c.append(h('details', { open: i === 0 }, h('summary', {}, `legacy ${v.verdict} · ${fmt(v.at)}`), pre(v.body))));
+  if (t.review) c.append(h('div', { class: 'section-h' }, `legacy local review-${t.number}.md · ${t.review.verdict || '?'} · ${ago(t.review.mtime)}`), h('details', {}, h('summary', {}, t.review.path), pre(t.review.text)));
 }
 function tabBranch(t, c) {
   const w = t.worktree, p = t.pr;
@@ -1021,7 +1391,25 @@ function tabIssue(t, c) {
 
 // ---------------------------------------------------------------- inbox
 function lastEvent(t, kind) { return t.events.filter(e => e.kind === kind).at(-1); }
-const WAITING = new Set(['system', 'escalated', 'needs-info', 'wontfix', 'stuck', 'triage']);
+const REVIEW_STATES = { review_pending: 'Pending review', changes_requested: 'Changes requested', ci_pending: 'CI pending', ci_failed: 'CI failed', ready: 'Ready', escalated: 'Escalated' };
+function reviewMatches(pr) {
+  return `#${pr.number} ${pr.title} ${pr.author || ''} ${pr.head} ${pr.review_head || ''} ${REVIEW_STATES[pr.state]}`.toLowerCase().includes(S.q.trim().toLowerCase());
+}
+function reviewRow(pr) {
+  return h('article', { class: 'briefing-option' },
+    h('h3', {}, h('a', { href: pr.url, target: '_blank', rel: 'noopener' }, `PR #${pr.number} · ${pr.title}`)),
+    h('p', {}, `@${pr.author || 'unknown'} · ${REVIEW_STATES[pr.state]}`),
+    h('p', {}, 'Current head: ', h('code', { style: { overflowWrap: 'anywhere' } }, pr.head)),
+    h('p', {}, 'Last reviewed SHA: ', h('code', { style: { overflowWrap: 'anywhere' } }, pr.review_head || 'Not reviewed'),
+      ` · Verdict: ${pr.verdict || 'None'}`),
+    h('p', {}, `Required CI: ${pr.ci_state} · Last observed: ${pr.ci_at ? fmt(pr.ci_at) : 'Not observed for this head'}`),
+    pr.reason ? h('p', {}, pr.reason) : null);
+}
+function renderReviewQueue() {
+  const queue = (S.snap.review_queue || []).filter(reviewMatches);
+  $('review-queue').replaceChildren(...(queue.length ? queue.map(reviewRow) : [h('p', { class: 'empty' }, 'No opted-in pull requests match this view.')]));
+}
+const WAITING = new Set(['system', 'escalated', 'needs-info', 'wontfix', 'stuck', 'triage', 'external-review']);
 const INBOX_KINDS = { system: 'System attention', escalated: 'Human decision', 'needs-info': 'Question for you', wontfix: 'Wontfix proposal', stuck: 'Stuck claim', triage: 'Untriaged', pr: 'Merge queue', stale: 'Housekeeping', assigned: 'In human hands', active: 'Current task' };
 function inboxItems() {
   const items = [], d = S.snap.dispatcher, cfg = S.snap.config;
@@ -1032,6 +1420,13 @@ function inboxItems() {
   if (cfg.upstream && S.snap.upstream.blocker) {
     const b = S.snap.upstream.blocker;
     items.push({ key: 'system-upstream', pri: 0, kind: 'system', title: `Upstream sync is parked: ${b.title}`, why: `${upstreamPending().length} upstream commit(s) are waiting on issue #${b.number}.`, url: b.url, cmd: `git fetch ${cfg.upstream}\ngit merge --no-ff --signoff ${cfg.upstream}/${cfg.main}`, next: `The maintainer must inspect and resolve issue #${b.number}, validate the merge, then explicitly push and close the blocker. These commands are reference only.` });
+  }
+  for (const pr of S.snap.review_queue || []) {
+    if (['changes_requested', 'ci_failed', 'escalated'].includes(pr.state) ||
+        (pr.state === 'review_pending' && (pr.reason || pr.verdict === 'APPROVE'))) {
+      items.push({ key: `review-${pr.number}`, pri: 1, kind: 'external-review', review: pr,
+        title: `PR #${pr.number} · ${pr.title}`, why: REVIEW_STATES[pr.state] });
+    }
   }
   for (const t of S.snap.tickets) {
     const triaged = lastEvent(t, 'triaged'), humanHands = t.assignees.length > 0;
@@ -1156,14 +1551,29 @@ function taskFacts(item) {
   facts.push(t.assignees.length ? `Currently assigned to @${t.assignees.join(', @')}. Routing labels alone do not release an assignment.` : 'Currently unassigned.');
   if (t.gate) {
     const failures = Object.entries(t.gate.checks).filter(([, value]) => value === 'FAIL').map(([name]) => name);
-    facts.push(failures.length ? `Gate failures: ${failures.join(', ')}.` : `Latest gate: ${Object.entries(t.gate.checks).map(([name, value]) => `${name} ${value}`).join(' · ') || 'no check results recorded'}.`);
+    facts.push(failures.length ? `Legacy local gate failures: ${failures.join(', ')}.` : `Legacy local gate context: ${Object.entries(t.gate.checks).map(([name, value]) => `${name} ${value}`).join(' · ') || 'no check results recorded'}.`);
   } else facts.push('No local gate report is available.');
   if (t.pr) {
-    facts.push(`PR #${t.pr.number}: ${t.pr.state.toLowerCase()}, ${t.pr.approved ? 'factory-approved' : 'not approved'}, CI ${t.pr.checks.state || 'unknown'}.`);
+    facts.push(`PR #${t.pr.number}: ${t.pr.state.toLowerCase()}, ${t.pr.approved ? 'factory-approved label present' : 'factory-approved label absent'}, legacy CI rollup ${t.pr.checks.state || 'unknown'}. Labels and legacy rollups are not source-versioned feedback authority.`);
     const failed = t.pr.checks.list.filter(c => ['FAILURE', 'ERROR'].includes(c.result)).map(c => c.name);
-    if (failed.length) facts.push(`Failing CI checks: ${failed.join(', ')}. Approval does not bypass CI.`);
+    if (failed.length) facts.push(`Legacy failing CI check context: ${failed.join(', ')}. Approval does not bypass CI.`);
     const verdict = t.pr.verdicts.at(-1);
-    if (verdict) facts.push(`Latest reviewer verdict: ${verdict.verdict} (${fmt(verdict.at)}).`);
+    if (verdict) facts.push(`Latest legacy reviewer verdict record: ${verdict.verdict} (${fmt(verdict.at)}). It is not trusted source-versioned approval.`);
+    const feedback = t.pr.feedback;
+    if (!feedback || feedback.schema_version !== 1) {
+      facts.push(feedback ? `PR feedback schema ${String(feedback.schema_version ?? 'unknown')} is unsupported; feedback is unknown and non-actionable.` : 'This engine does not expose source-versioned PR feedback; feedback is unsupported/unknown and non-actionable.');
+    } else {
+      const owner = feedback.owner || {};
+      facts.push(owner.relation === 'factory_issue' && owner.issue
+        ? `Feedback owner identity: Factory issue #${owner.issue.number} (${owner.evidence?.length || 0} evidence record${owner.evidence?.length === 1 ? '' : 's'}).`
+        : `Feedback owner identity: ${owner.relation || 'unknown'}; ownership is unknown/non-actionable.`);
+      const counts = { current_head: 0, historical: 0, unknown: 0 };
+      for (const evidence of feedback.items || []) counts[evidence.relevance] = (counts[evidence.relevance] || 0) + 1;
+      facts.push(`Source-versioned feedback: ${feedback.items?.length || 0} items · ${counts.current_head} current head · ${counts.historical} historical · ${counts.unknown} unknown. Coverage: ${['pr', 'reviews', 'threads', 'checks'].map(source => `${source} ${feedback.coverage?.[source]?.status || 'unknown'}`).join(' · ')}.`);
+      const uncollected = (feedback.errors || []).filter(error => error?.code === 'not_collected').map(error => String(error.source));
+      if (uncollected.length) facts.push(`Feedback detail sources ${uncollected.join(', ')} were not collected: detail reads are limited to open pull requests. This is intentional noncollection, not empty, resolved, or unsupported evidence.`);
+      facts.push('Feedback is read-only evidence and does not authorize delivery, resolution, readiness, or approval for merge.');
+    }
   }
   return h('ul', {}, ...facts.map(fact => h('li', {}, fact)));
 }
@@ -1348,22 +1758,28 @@ function renderSystemBriefing(item) {
       h('details', { class: 'briefing-sources' }, h('summary', {}, 'Host command / configuration reference'), pre(item.cmd)),
       h('button', { onclick: () => setView('ops') }, 'Inspect operations')));
 }
+function fmProgress(label) {
+  return h('p', { class: 'fm-progress' },
+    h('span', { class: 'fm-spinner', role: 'progressbar', 'aria-label': label }),
+    h('span', {}, label));
+}
 function renderTaskBriefing(item) {
   const t = item.t, entry = S.briefings[t.number], fresh = entry && entry.fingerprint === ticketFingerprint(t);
   const result = fresh ? entry.data : null, briefing = result?.briefing, sources = result?.sources || [];
   const state = h('div', { id: 'briefing-fm-status', class: 'briefing-status', role: 'status' });
   const retry = label => h('button', { id: 'briefing-refresh', onclick: () => ensureBriefing(t.number, true) }, label);
-  if (entry?.loading) state.append(h('p', {}, 'Factory Manager is reading the recorded task evidence. The full briefing may take a moment; all current action consequences remain available below.'), h('button', { id: 'briefing-refresh', disabled: true }, 'Generating briefing…'));
+  if (entry?.loading) state.append(fmProgress('Waiting for FM · generating briefing…'), h('p', {}, 'Factory Manager is reading the recorded task evidence. The full briefing may take a moment; all current action consequences remain available below.'), h('button', { id: 'briefing-refresh', disabled: true }, 'Generating briefing…'));
   else if (entry?.error) state.append(h('p', {}, `Factory Manager could not generate this briefing: ${entry.error}`), retry('Retry briefing'));
   else if (entry && !fresh) state.append(h('p', {}, 'Task evidence changed. The previous recommendation is not shown as current.'), retry('Generate updated briefing'));
   else if (briefing) state.append(h('p', {}, `FM briefing generated ${fmt(result.generated_at)} · advisory, not an authorization`), retry('Refresh briefing'));
   else state.append(h('p', {}, 'No FM briefing has been generated yet.'));
-  const history = h('div', { class: 'briefing-history' }, h('h4', { class: 'briefing-label' }, 'Earlier decisions & constraints that still matter'));
+  const history = h('div', { class: 'briefing-history', 'aria-busy': entry?.loading ? 'true' : 'false' }, h('h4', { class: 'briefing-label' }, 'Earlier decisions & constraints that still matter'));
   if (briefing?.history?.length) history.append(h('ul', {}, ...briefing.history.map(entry => h('li', {}, cited(entry.text, sources, t.number), h('span', { class: 'fm-citations' }, ...entry.sources.filter(id => !entry.text.includes(`[${id}]`)).map(id => cited(` [${id}]`, sources, t.number)))))));
-  else history.append(h('p', {}, briefing ? 'FM did not identify a relevant earlier decision in the available evidence. This does not prove none exists; inspect the source record or ask about missing context.' : 'Earlier decisions are not summarized until FM returns a grounded briefing. The raw issue and task evidence remain available below.'));
+  else history.append(entry?.loading ? fmProgress('Waiting for FM · reviewing earlier decisions…') : h('p', {}, briefing ? 'FM did not identify a relevant earlier decision in the available evidence. This does not prove none exists; inspect the source record or ask about missing context.' : 'Earlier decisions are not summarized until FM returns a grounded briefing. The raw issue and task evidence remain available below.'));
   const raw = h('details', { class: 'briefing-sources' }, h('summary', {}, `Inspect raw evidence${sources.length ? ` · ${sources.length} sources` : ''}`));
   if (sources.length) raw.append(...sources.map(source => sourceDetails(t.number, source)));
   else raw.append(h('details', {}, h('summary', {}, 'Issue body'), pre(t.body)), h('button', { onclick: () => openTicket(t.number, 'timeline') }, 'Open task timeline and artifacts'));
+  if (t.pr) raw.append(feedbackEvidence(t));
   return h('article', {},
     h('header', { class: 'briefing-intro' }, h('p', { class: 'briefing-label' }, `${INBOX_KINDS[item.kind]} · #${t.number} · ${t.title}`),
       h('h2', { id: 'briefing-question', class: 'briefing-question', tabindex: -1 }, briefing ? cited(briefing.question, sources, t.number) : item.kind === 'needs-info' ? item.why : `What should happen next for #${t.number}?`),
@@ -1371,9 +1787,9 @@ function renderTaskBriefing(item) {
       h('div', { class: 'briefing-actions' }, h('button', { onclick: () => openFM(t.number) }, 'Ask FM about this task'), h('button', { onclick: () => openTicket(t.number) }, 'Open task details'), h('a', { href: t.url, target: '_blank', rel: 'noopener noreferrer' }, 'Issue on GitHub'), t.pr ? h('a', { href: t.pr.url, target: '_blank', rel: 'noopener noreferrer' }, `PR #${t.pr.number}`) : null)),
     briefingSection('01', 'Understand', state,
       h('div', {}, h('h4', { class: 'briefing-label' }, 'The situation'), h('p', {}, briefing ? cited(briefing.summary, sources, t.number) : item.why), taskFacts(item)),
-      h('div', { class: 'briefing-recommendation' }, h('h4', { class: 'briefing-label' }, 'Factory Manager’s recommendation'), h('p', {}, briefing ? cited(briefing.recommendation, sources, t.number) : 'No recommendation is available. Do not treat the ordering of options as advice.')),
+      h('div', { class: 'briefing-recommendation', 'aria-busy': entry?.loading ? 'true' : 'false' }, h('h4', { class: 'briefing-label' }, 'Factory Manager’s recommendation'), entry?.loading ? fmProgress('Waiting for FM · preparing recommendation…') : h('p', {}, briefing ? cited(briefing.recommendation, sources, t.number) : 'No recommendation is available. Do not treat the ordering of options as advice.')),
       history,
-      h('div', { class: 'briefing-unknown' }, h('h4', { class: 'briefing-label' }, 'What is still uncertain'), h('p', {}, briefing ? cited(briefing.unknown, sources, t.number) : 'FM has not yet identified uncertainties. Missing logs, earlier discussion, or recent changes may affect this decision.')),
+      h('div', { class: 'briefing-unknown', 'aria-busy': entry?.loading ? 'true' : 'false' }, h('h4', { class: 'briefing-label' }, 'What is still uncertain'), entry?.loading ? fmProgress('Waiting for FM · identifying uncertainties…') : h('p', {}, briefing ? cited(briefing.unknown, sources, t.number) : 'FM has not yet identified uncertainties. Missing logs, earlier discussion, or recent changes may affect this decision.')),
       raw),
     decisionForm(item));
 }
@@ -1384,7 +1800,7 @@ function selectCase(key) {
   $('inbox-list').querySelector('.briefing-question')?.focus({ preventScroll: true });
 }
 function renderInbox() {
-  const all = inboxItems(), waiting = all.filter(i => WAITING.has(i.kind)), matching = waiting.filter(i => !i.t || matches(i.t));
+  const all = inboxItems(), waiting = all.filter(i => WAITING.has(i.kind)), matching = waiting.filter(i => i.review ? reviewMatches(i.review) : !i.t || matches(i.t));
   $('nav-inbox').replaceChildren('Inbox ', h('span', { class: `badge ${waiting.length ? 'hot' : ''}` }, waiting.length));
   $('inbox-sum').textContent = waiting.length ? `${waiting.length} case${waiting.length === 1 ? '' : 's'} waiting on you` : 'Nothing waiting on you';
   if (!S.inboxKey && matching.length) { S.inboxKey = matching[0].key; syncHash(); saveInboxState(); }
@@ -1394,13 +1810,14 @@ function renderInbox() {
   const navItems = matching.slice();
   if (item && !navItems.some(i => i.key === item.key)) navItems.unshift(item);
   selector.append(h('option', { value: '', disabled: true, selected: !item }, 'Choose a case'));
-  selector.append(...navItems.map(i => h('option', { value: i.key, selected: i.key === S.inboxKey }, `${i.t ? '#' + i.t.number : 'System'} · ${i.title}`)));
+  selector.append(...navItems.map(i => h('option', { value: i.key, selected: i.key === S.inboxKey }, `${i.review ? 'External review' : i.t ? '#' + i.t.number : 'System'} · ${i.title}`)));
   const index = navItems.findIndex(i => i.key === S.inboxKey);
   list.append(h('nav', { class: 'briefing-nav', 'aria-label': 'Inbox cases' }, h('label', { for: 'briefing-case' }, 'Case to consider'), selector,
     h('button', { disabled: index <= 0, onclick: () => selectCase(navItems[index - 1].key) }, 'Previous'),
     h('button', { disabled: index < 0 || index >= navItems.length - 1, onclick: () => selectCase(navItems[index + 1].key) }, 'Next')));
   if (S.q.trim()) list.append(h('p', { class: 'briefing-muted' }, `${matching.length} waiting case(s) match “${S.q.trim()}”. Your selected case stays visible even if it does not match.`));
-  if (item) list.append(item.t ? renderTaskBriefing(item) : renderSystemBriefing(item));
+  if (item) list.append(item.review ? h('section', { 'aria-label': 'External review attention' },
+    reviewRow(item.review), h('p', {}, 'Inspect the review or CI on GitHub. Contributor fixes and maintainer decisions happen there; this dashboard cannot submit reviews, change branches, or merge this PR.')) : item.t ? renderTaskBriefing(item) : renderSystemBriefing(item));
   else {
     list.append(h('div', { class: 'briefing-status' }, h('h3', {}, S.inboxKey ? 'The selected case is no longer in this snapshot' : 'Inbox clear'),
       h('p', {}, S.inboxKey ? 'Your selection and draft are retained. Choose another case, or refresh to check whether the task is available again.' : 'No human-required cases match this view. Informational work is listed separately below.'),
@@ -1464,6 +1881,7 @@ function renderFMMessages() {
   $('fm-messages').replaceChildren(...chat.messages.map(message => h('article', { class: `fm-message ${message.role}` }, h('h3', { class: 'briefing-label' }, message.role === 'user' ? 'You' : 'Factory Manager'), h('p', {}, cited(message.content, message.sources || [], number, run)),
     message.sources?.length ? h('details', { class: 'fm-citations' }, h('summary', {}, `Inspect answer evidence · ${message.sources.length} sources`), ...message.sources.map(source => sourceDetails(number, source, false, run))) : null)));
   $('fm-status').textContent = context.resolving ? 'Resolving the selected source before a question can be sent.' : context.scopeError ? 'Source unavailable. Retry it or explicitly switch to the whole task.' : chat.pending ? 'FM is reading the evidence and answering… You can close this dialog; your conversation is retained.' : chat.error || 'Questions stay in this browser session. They are not posted as GitHub comments.';
+  if (context.resolving || chat.pending) $('fm-status').prepend(fmProgress(context.resolving ? 'Waiting for FM · loading source context…' : 'Waiting for FM · preparing answer…'));
   $('fm-send').disabled = !!(context.resolving || context.scopeError || chat.pending);
   $('fm-question').disabled = !!chat.pending;
   $('fm-retry').hidden = !chat.error || !chat.lastQuestion;
@@ -1504,26 +1922,35 @@ $('decision-close').onclick = () => { if (!S.preview?.busy) $('decision-dialog')
 $('decision-dialog').addEventListener('cancel', e => { if (S.preview?.busy) e.preventDefault(); });
 for (const id of ['fm-dialog', 'decision-dialog']) $(id).addEventListener('close', () => { if (id === 'decision-dialog') S.preview = null; updateInbox(true, true); });
 function syncHash() {
-  const hash = S.view === 'inbox' ? `#inbox${S.inboxKey ? '/' + encodeURIComponent(S.inboxKey) : ''}` : S.sel != null ? `#t=${S.sel}` : S.filter ? `#s=${S.filter}` : '#ops';
+  const hash = S.view === 'inbox' ? `#inbox${S.inboxKey ? '/' + encodeURIComponent(S.inboxKey) : ''}` : S.view === 'roadmap' ? '#roadmap' : S.sel != null ? `#t=${S.sel}` : S.filter ? `#s=${S.filter}` : '#ops';
   history.replaceState(null, '', hash);
 }
 function applyView() {
-  $('ops').hidden = S.view !== 'ops'; $('inbox').hidden = S.view !== 'inbox';
-  $('nav-ops').classList.toggle('on', S.view === 'ops'); $('nav-inbox').classList.toggle('on', S.view === 'inbox');
-  $('nav-ops').setAttribute('aria-current', S.view === 'ops' ? 'page' : 'false'); $('nav-inbox').setAttribute('aria-current', S.view === 'inbox' ? 'page' : 'false');
-  document.title = `Factory — ${S.view === 'inbox' ? 'Inbox' : 'Ops'}`;
+  $('ops').hidden = S.view !== 'ops'; $('inbox').hidden = S.view !== 'inbox'; $('roadmap').hidden = S.view !== 'roadmap';
+  for (const view of ['ops', 'inbox', 'roadmap']) {
+    $(`nav-${view}`).classList.toggle('on', S.view === view);
+    $(`nav-${view}`).setAttribute('aria-current', S.view === view ? 'page' : 'false');
+  }
+  $('search').hidden = S.view === 'roadmap';
+  $('auto-control').hidden = S.view === 'roadmap';
+  document.title = `Factory — ${{ inbox: 'Inbox', roadmap: 'Roadmap', ops: 'Ops' }[S.view] || 'Ops'}`;
 }
-function setView(view) { S.view = view; S.sel = null; $('drawer').classList.remove('open'); $('drawer').setAttribute('aria-hidden', 'true'); syncHash(); applyView(); updateInbox(true); window.scrollTo(0, 0); }
+function setView(view) {
+  S.view = view; S.sel = null;
+  $('drawer').classList.remove('open'); $('drawer').setAttribute('aria-hidden', 'true');
+  syncHash(); applyView(); updateInbox(true); window.scrollTo(0, 0);
+  if (view === 'roadmap') loadRoadmap();
+}
 $('inbox').addEventListener('focusout', () => { if (S.inboxDirty) setTimeout(() => updateInbox(), 100); });
 
 // ---------------------------------------------------------------- input
 document.addEventListener('keydown', e => {
   if ($('fm-dialog').open || $('decision-dialog').open) return;
   const typing = ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'SUMMARY', 'A'].includes(e.target.tagName);
-  if (e.key === '/' && !typing) { e.preventDefault(); $('search').focus(); return; }
+  if (e.key === '/' && !typing && S.view !== 'roadmap') { e.preventDefault(); $('search').focus(); return; }
   if (e.key === 'Escape') { if (typing) { e.target.blur(); return; } if (S.sel != null) closeDrawer(); else if (S.filter || S.q) { S.filter = null; S.q = ''; $('search').value = ''; render(); } return; }
   if (typing) return;
-  if (e.key === 'r') { load(true); return; }
+  if (e.key === 'r') { S.view === 'roadmap' ? loadRoadmap(null, true) : load(true); return; }
   if (S.view === 'ops' && (e.key === 'j' || e.key === 'k')) {
     const cards = [...document.querySelectorAll('.card')]; if (!cards.length) return;
     const i = cards.findIndex(c => +c.dataset.n === S.sel);
@@ -1532,8 +1959,9 @@ document.addEventListener('keydown', e => {
   }
 });
 $('search').addEventListener('input', e => { S.q = e.target.value; render(); });
+$('roadmap-owner').onchange = event => { S.roadmapOwner = event.target.value; if (S.roadmap) renderRoadmapAttention(S.roadmap); };
 $('window').onchange = renderLanes;
-$('refresh').onclick = () => load(true);
+$('refresh').onclick = () => S.view === 'roadmap' ? loadRoadmap(null, true) : load(true);
 let timer = null;
 function schedule() { clearInterval(timer); if ($('auto').checked) timer = setInterval(() => { if (!document.hidden) load(false); }, 30000); }
 $('auto').onchange = schedule;
@@ -1542,16 +1970,19 @@ setInterval(() => { if (S.snap) { renderStatus(); renderInboxHealth(); } }, 1000
 function initFromHash() {
   const inbox = location.hash.match(/^#inbox(?:\/([\w-]+))?$/);
   if (inbox) { S.view = 'inbox'; if (inbox[1]) S.inboxKey = inbox[1]; S.sel = null; return; }
+  if (location.hash === '#roadmap') { S.view = 'roadmap'; S.sel = null; return; }
   if (location.hash === '#ops') { S.view = 'ops'; S.sel = null; return; }
   const m = location.hash.match(/^#(t|s)=([\w-]+)$/);
   if (m) { S.view = 'ops'; if (m[1] === 't') S.sel = +m[2]; else { S.filter = m[2]; S.sel = null; } }
 }
 initFromHash();
-window.addEventListener('hashchange', () => { initFromHash(); applyView(); if (S.snap) { updateInbox(true); render(); } });
+window.addEventListener('hashchange', () => { initFromHash(); applyView(); if (S.view === 'roadmap') loadRoadmap(); if (S.snap) { updateInbox(true); render(); } });
 $('nav-ops').onclick = () => setView('ops');
 $('nav-inbox').onclick = () => setView('inbox');
+$('nav-roadmap').onclick = () => setView('roadmap');
 schedule();
 load(false);
+if (S.view === 'roadmap') loadRoadmap();
 </script>
 </body>
 </html>

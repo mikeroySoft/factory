@@ -9,6 +9,7 @@ conventions, not configuration.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 import tomllib
@@ -27,6 +28,8 @@ LABEL_AGENT = "ready-for-agent"
 LABEL_HUMAN = "ready-for-human"
 LABEL_APPROVED = "factory-approved"
 LABEL_CHORE = "chore"
+LABEL_INITIATIVE = "initiative"
+LABEL_WONTFIX = "wontfix-proposal"
 LABELS = {
     LABEL_VIABILITY: ("D4C5F9", "Opt in to a manager build/defer recommendation before triage"),
     LABEL_REVIEW: ("D4C5F9", "Opt in to a manager PR direction recommendation before review"),
@@ -36,6 +39,8 @@ LABELS = {
     LABEL_HUMAN: ("B60205", "Requires human implementation"),
     LABEL_APPROVED: ("0E8A16", "Reviewer APPROVE recorded by the factory; merge-stage precondition"),
     LABEL_CHORE: ("C2E0C6", "Mechanical task; routed to the chore worker"),
+    LABEL_WONTFIX: ("EDEDED", "Triage or manager proposes not to action this; a human decides"),
+    LABEL_INITIATIVE: ("1D76DB", "Shared initiative plan read by `factory plan`; never triaged, dispatched, managed or merged"),
 }
 
 DEFAULT_LEAK_PATTERN = r"internal|confidential|proprietary|private|jira|confluence|\.corp|\.internal"
@@ -44,7 +49,7 @@ DEFAULT_CHORE_WORKER = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "
 DEFAULT_REVIEWER = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1", "{prompt}"]
 DEFAULT_LLM_URL = "http://127.0.0.1:11434/v1/chat/completions"
 DEFAULT_LLM_MODEL = "qwen3:30b"
-DEFAULT_INSTALL = {"every": "10min", "dashboard": False, "host": "127.0.0.1", "env": {}}
+DEFAULT_INSTALL = {"every": "10min", "dashboard": False, "host": "127.0.0.1", "python": None, "env": {}}
 
 # Host-side layer: `$XDG_CONFIG_HOME/factory/config.toml`, same table shapes
 # as `.factory.toml`. `[defaults.*]` < `[repo."owner/name".*]` < the repo file.
@@ -61,14 +66,18 @@ KNOWN_KEYS = {
     "dispatch": ("max_active", "max_attempts", "budget_min", "review_rounds", "cost_pattern", "signoff"),
     "workers": None,
     "review": ("command",),
-    "manager": ("model", "command", "rounds", "review", "max_active_cap", "budget_min_cap"),
+    "manager": ("model", "command", "rounds", "review", "stale_days", "max_active_cap", "budget_min_cap"),
     "gate": ("timeout", "lock", "check"),
     "leak_scan": ("pattern", "exclude"),
     "triage": ("url", "model"),
     "dashboard": ("port", "theme"),
-    "install": ("every", "dashboard", "host", "env"),
+    "install": ("every", "dashboard", "host", "python", "env"),
+    "collaboration": ("fallback", "reasons", "components"),
 }
 CHECK_KEYS = ("name", "run", "exclusive")
+ROUTE_REASONS = ("requirements", "implementation", "ci", "unknown")
+# GitHub login, or `@org/team`. Syntax only: never proof of membership or authorization.
+OWNER = re.compile(r"@?(?P<login>[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)|(?P<team>@[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9_.-]{1,100})")
 
 
 class ConfigError(SystemExit):
@@ -109,6 +118,7 @@ class Config:
     manager: list[str] | None = None
     manager_rounds: int = 1
     manager_review: str = "escalated"
+    manager_stale_days: int = 7
     # Ceilings for the fleet manager (`district manage`) raising `max_active`/`budget_min`; None = no cap.
     manager_max_active_cap: int | None = None
     manager_budget_min_cap: int | None = None
@@ -123,6 +133,8 @@ class Config:
     dashboard_port: int = 8765
     dashboard_theme: Path | None = None  # CSS file served after the built-in stylesheet
     install: dict = field(default_factory=lambda: dict(DEFAULT_INSTALL))  # `factory install` defaults
+    # `[collaboration]`: human decision owners for `factory plan route`; None = section absent (legacy behaviour).
+    collaboration: dict | None = None
     raw_repo: dict = field(default_factory=dict)  # the committed file alone, before host layering
 
     @property
@@ -236,6 +248,39 @@ def unknown_keys(raw: dict) -> list[str]:
     return out
 
 
+def owner(value: object, where: str) -> str:
+    """Normalize one configured owner: `login` or `@org/team`; syntactic invalidity is a ConfigError."""
+    match = OWNER.fullmatch(value) if isinstance(value, str) else None
+    if not match:
+        raise ConfigError(f"{where}: expected a GitHub login or @org/team, got {value!r}")
+    return match["login"] or match["team"]
+
+
+def collaboration_settings(table: object) -> dict:
+    """Validate `[collaboration]`: fallback owner, per-reason owners, exact path-prefix component owners."""
+    if not isinstance(table, dict):
+        raise ConfigError("[collaboration] must be a table")
+    out = {"fallback": None, "reasons": {}, "components": {}}
+    if "fallback" in table:
+        out["fallback"] = owner(table["fallback"], "collaboration.fallback")
+    reasons, components = table.get("reasons", {}), table.get("components", {})
+    if not isinstance(reasons, dict) or not isinstance(components, dict):
+        raise ConfigError("collaboration.reasons and collaboration.components must be tables")
+    for reason, value in reasons.items():
+        if reason not in ROUTE_REASONS[:-1]:
+            raise ConfigError(f"collaboration.reasons.{reason}: expected one of {', '.join(ROUTE_REASONS[:-1])}")
+        out["reasons"][reason] = owner(value, f"collaboration.reasons.{reason}")
+    for prefix, value in components.items():
+        parts = prefix.strip("/").split("/")
+        if not prefix or prefix.startswith("/") or "\\" in prefix or any(p in ("", ".", "..") for p in parts):
+            raise ConfigError(f"collaboration.components: {prefix!r} is not a repo-relative path prefix")
+        normalized = "/".join(parts)
+        if normalized in out["components"]:
+            raise ConfigError(f"collaboration.components: duplicate normalized prefix {normalized!r}")
+        out["components"][normalized] = owner(value, f"collaboration.components.{prefix!r}")
+    return out
+
+
 def manager_settings(table: dict) -> tuple[list[str] | None, str | None]:
     """Normalize manager argv and select the read-only briefing model; never execute."""
     if not isinstance(table, dict):
@@ -314,11 +359,16 @@ def load(start: Path | None = None) -> Config:
     cfg.manager_review = manager.get("review", cfg.manager_review)
     if cfg.manager_review not in ("escalated", "all"):
         raise ConfigError("manager.review must be escalated or all")
+    cfg.manager_stale_days = manager.get("stale_days", cfg.manager_stale_days)
+    if type(cfg.manager_stale_days) is not int or cfg.manager_stale_days <= 0:
+        raise ConfigError("manager.stale_days must be a positive integer")
     for key in ("max_active_cap", "budget_min_cap"):
         cap = manager.get(key)
         if cap is not None and (isinstance(cap, bool) or not isinstance(cap, int) or cap < 1):
             raise ConfigError(f"manager.{key} must be a positive integer")
         setattr(cfg, f"manager_{key}", cap)
+    if "collaboration" in raw:
+        cfg.collaboration = collaboration_settings(raw["collaboration"])
     cfg.check_timeout = int(gate.get("timeout", cfg.check_timeout))
     cfg.lock = Path(gate.get("lock", cfg.lock))
     cfg.checks = [
@@ -335,6 +385,9 @@ def load(start: Path | None = None) -> Config:
     cfg.dashboard_port = int(dash.get("port", cfg.dashboard_port))
     cfg.dashboard_theme = root / dash["theme"] if dash.get("theme") else None
     cfg.install = merge(DEFAULT_INSTALL, raw.get("install", {}))
+    python = cfg.install["python"]
+    if python is not None and (not isinstance(python, str) or not python):
+        raise ConfigError("[install].python must be a non-empty path")
     cfg.install["dashboard"] = bool(cfg.install["dashboard"])
     cfg.install["env"] = {k: str(v) for k, v in cfg.install["env"].items()}
     return cfg

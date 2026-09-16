@@ -218,14 +218,18 @@ class ViabilityTest(unittest.TestCase):
         self.assertEqual([(d["kind"], d.get("pr", d.get("ticket")), d["verdict"], d["request"])
                           for d in decisions], [("pr", 10, "BUILD", 1000), ("issue", 20, "BUILD", 2000)])
 
-    def test_dont_build_and_defer_leave_issues_open_without_terminal_labels(self) -> None:
+    def test_negative_verdicts_leave_targets_open_and_retain_only_pr_opt_in(self) -> None:
         self.add("issue", 21, "No demand", "Market is absent [S1]\nVERDICT: DONT_BUILD")
         self.add("issue", 22, "Need evidence", "Evidence is incomplete [S1]\nVERDICT: DEFER")
+        self.add("pr", 23, "Uncertain PR", "Evidence is incomplete [S1]\nVERDICT: DEFER",
+                 labels=("enhancement",))
 
         manage.viability_pass()
 
         state = self.load()
         self.assertEqual({d["verdict"] for d in self.decisions()}, {"DONT_BUILD", "DEFER"})
+        self.assertEqual(self.labels("pr", 23), {"needs-review", "enhancement"})
+        self.assertEqual(self.load()["prs"][0]["state"], "OPEN")
         for number in (21, 22):
             self.assertEqual(self.labels("issue", number), set())
             row = next(row for row in self.load()["issues"] if row["number"] == number)
@@ -263,6 +267,7 @@ class ViabilityTest(unittest.TestCase):
         manage.viability_pass()
         self.assertEqual(self.labels("pr", 24), {"needs-review"})
         self.state["prs"][0]["headRefOid"] = "next-head"
+        self.state["prs"][0]["body"] += " amended scope"
         self.save()
         manage.viability_pass()
         state = self.load()

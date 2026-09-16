@@ -11,12 +11,14 @@ COMMANDS = {
     "install": ("onboard", "install", "install the systemd user timer (and dashboard)"),
     "triage": ("triage", "main", "label needs-triage issues with the local model"),
     "dispatch": ("dispatch", "main", "one pass: sync, merge stage, claim and work tickets"),
-    "manage": ("manage", "main", "recommend PR/issue viability, then resolve untouched escalations"),
+    "manage": ("manage", "main", "recommend PR/issue viability, resolve untouched escalations, publish terminal human handoffs"),
     "gate": ("gate", "main", "run the deterministic quality gate in this worktree"),
     "stats": ("stats", "main", "ticket metrics from GitHub"),
     "learn": ("learn", "main", "distil recent ticket outcomes into .factory-lessons.md"),
     "dashboard": ("dashboard", "main", "serve the local ops dashboard"),
+    "chat": ("chat", "main", "open the read-only Factory Manager console (needs the installed Pi runtime)"),
     "evidence": ("evidence", "main", "read one bounded schema-1 project/CI evidence request"),
+    "plan": ("plan", "main", "read initiatives: `plan list`, `plan inspect N`, `plan baseline N`, `plan drift TICKET`, `plan route N --reason R` (JSON)"),
     "codebase": ("codebase", "main", "build commit-pinned codebase history for the dashboard"),
 }
 

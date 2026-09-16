@@ -1,0 +1,9 @@
+{
+  "name": "factory-fm-console",
+  "type": "module",
+  "description": "Read-only Factory Manager console: pinned upstream Pi runtime plus the reviewed evidence extension for `factory chat`",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.4"
+  },
+  "engines": { "node": ">=22.19.0" }
+}

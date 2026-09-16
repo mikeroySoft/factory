@@ -11,12 +11,13 @@ gitignored `.factory/`. `factory --help` lists commands; `factory <cmd> --help` 
 options.
 
 First, ensure the tool is installed: `factory --version`. If absent, install it with
-the first available of `uv tool install git+https://github.com/mikeroySoft/factory`,
-`pipx install git+https://github.com/mikeroySoft/factory`, or
-`python3 -m pip install --user git+https://github.com/mikeroySoft/factory`
-(Linux, Python ≥ 3.11; no dependencies). The bare URL installs the `stable` branch,
-which moves only on a tagged release; append `@main` for the tip of main or `@v0.3.0`
-for a specific release. Confirm with `factory --version` before continuing. Then pick the branch:
+the first available of `uv tool install git+https://github.com/mikeroySoft/factory@stable`,
+`pipx install git+https://github.com/mikeroySoft/factory@stable`, or
+`python3 -m pip install --user git+https://github.com/mikeroySoft/factory@stable`
+(Linux, Python ≥ 3.11; no dependencies). These URLs explicitly select the released
+`stable` channel. Replace `@stable` with `@main` for development or `@v0.3.0`
+for a fixed release. A bare URL follows the default `main` branch.
+Confirm with `factory --version` before continuing. Then pick the branch:
 
 - Repo has no `.factory.toml` → **Set up**.
 - User asks whether an issue or PR direction is worth pursuing → **Assess viability**.
@@ -70,10 +71,10 @@ or perform code-quality review.
    Issue verdicts consume `needs-viability`. An issue BUILD adds `needs-triage`
    for deeper investigation, never `ready-for-agent`. Negative/deferred issues
    stay open without `wontfix`; the human closes or overrules.
-   PR verdicts retain `needs-review` for factory #5's independent review discovery.
+   PR verdicts retain `needs-review` for dispatch's independent review lane.
    They are recommendation-only, even BUILD: no additional handoff label, quality
    review, approval, merge, or closure. Viability records label-add event IDs;
-   #5 will record `(PR, head SHA)`. A viability verdict does not complete or veto review.
+   dispatch records `(PR, head SHA)`. A viability verdict does not complete or veto review.
 5. If application failed, inspect `.factory/events.jsonl`'s `viability` event
    and live state: the full comment is recorded before mutations and that
    label-add request is never automatically replayed. Recover manually rather
@@ -111,8 +112,11 @@ Evidence, in order of authority:
 1. `.factory/events.jsonl` filtered to the ticket: the ordered trail of `claimed`,
    `attempt` (worker exit, gate PASS/FAIL, seconds, log path), `review` verdicts,
    `approved`, `merged`, `escalate` with the terminal reason.
-2. The issue's last factory comment: `Factory dispatcher escalating: <reason>` plus
-   the worker's handoff notes (what it changed, what it left unverified).
+2. The issue's last factory comments: `Factory dispatcher escalating: <reason>` plus
+   the worker's handoff notes (what it changed, what it left unverified), and, once
+   automatic recovery is terminal, one `Factory handoff request <n>/<round>` naming
+   the question, public evidence links, the routed decision owner and why. Replying
+   there is context only; re-label to retry.
 3. The gate report: `.factory/wt-<n>/.factory/gate-report-<n>.md` — PASS/FAIL per
    check with the failing tail. On the PR, the same report is in the body.
 4. The reviewer's findings: PR comments ending in `VERDICT: …`; each finding cites

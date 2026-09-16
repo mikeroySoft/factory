@@ -49,13 +49,13 @@ LABEL_TABLE = "\n".join(
         *(
             f"| {label} | {meaning} |"
             for label, (_color, meaning) in config.LABELS.items()
-            if label not in (LABEL_APPROVED, LABEL_CHORE, LABEL_REVIEW, LABEL_VIABILITY)
+            if label not in (LABEL_APPROVED, LABEL_CHORE, LABEL_REVIEW, LABEL_VIABILITY, config.LABEL_WONTFIX)
         ),
         "| wontfix | Will not be actioned |",
     ]
 )
 
-DECISIONS = (LABEL_AGENT, LABEL_INFO, LABEL_HUMAN, "wontfix-proposal")
+DECISIONS = (LABEL_AGENT, LABEL_INFO, LABEL_HUMAN, config.LABEL_WONTFIX)
 
 ACCEPTANCE_HINTS = re.compile(
     r"acceptance|exit gate|verification|expected behavior|steps to reproduce",
@@ -300,6 +300,8 @@ def main(argv: list[str]) -> int:
 
 def execute(args: argparse.Namespace, execution) -> int:
     replay = bool(args.replay)
+    from factory.plan import is_initiative  # plan -> evidence -> dashboard: import lazily
+
     if replay:
         numbers = [int(n) for n in args.replay.split(",")]
     elif args.issue:
@@ -331,6 +333,11 @@ def execute(args: argparse.Namespace, execution) -> int:
                         ) if execution else nullcontext()
                     ) as ticket_execution:
                         issue = fetch_issue(number, execution=ticket_execution)
+                        if is_initiative(issue):
+                            print(f"#{number}: initiative record; triage refused (never promoted to {LABEL_AGENT})")
+                            if ticket_execution:
+                                ticket_execution.outcome, ticket_execution.reason = "not_admitted", "initiative"
+                            continue
                         decision = triage_issue(issue, execution=ticket_execution)
                         if decision is None:
                             if ticket_execution:

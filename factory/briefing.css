@@ -88,6 +88,9 @@
 .briefing-status { display: grid; gap: 12px; padding: 18px 20px; color: var(--brief-muted); background: var(--bg2); border-left: 2px solid var(--line2); }
 #inbox-health:empty { display: none; }
 .briefing-status[role=alert] { color: var(--brief-danger); border-left-color: var(--brief-danger); }
+.fm-progress { display: flex; align-items: center; gap: 10px; color: var(--brief-accent); font-size: 13px; }
+.fm-spinner { width: 16px; height: 16px; flex: 0 0 16px; border: 2px solid var(--line2); border-top-color: var(--brief-accent); border-right-color: var(--brief-accent); border-radius: 50%; animation: fm-spin 1s linear infinite; }
+@keyframes fm-spin { to { transform: rotate(360deg); } }
 .briefing-receipt { display: grid; gap: 12px; background: var(--bg2); border: 1px solid var(--brief-accent); padding: 24px; border-radius: 6px; }
 .briefing-receipt.bad { border-color: var(--brief-danger); }
 .briefing-dialog { width: min(820px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); margin: auto; padding: 0; background: var(--bg2); border: 1px solid var(--line2); border-radius: 8px; box-shadow: 0 25px 100px #0008; }

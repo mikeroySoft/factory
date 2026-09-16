@@ -99,11 +99,18 @@ def compose(cwd: Path, issue: dict, lessons: str) -> str:
     return "\n\n".join(sections)[:MAX_CHARS]
 
 
-def ensure(path: Path, cwd: Path, issue: dict, lessons: str) -> str:
-    """Write the brief once; later attempts reuse it. Returns its text ("" = none)."""
+def ensure(path: Path, cwd: Path, issue: dict, lessons: str, *, plan_baseline: dict | None = None) -> str:
+    """Reuse the admitted brief; a newly accepted revision replaces an older claim's brief."""
+    baseline_text = ""
+    if plan_baseline is not None:
+        from factory.binding import render
+
+        baseline_text = "\n\n### Accepted initiative revision\n\n" + render(plan_baseline)
     if path.exists():
-        return path.read_text()
-    text = compose(cwd, issue, lessons)
+        text = path.read_text()
+        if not baseline_text or text.endswith(baseline_text):
+            return text
+    text = compose(cwd, issue, lessons) + baseline_text
     if text:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)

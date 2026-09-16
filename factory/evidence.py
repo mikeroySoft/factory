@@ -95,10 +95,11 @@ def _encode(result: dict) -> str:
 
 
 def bounded_output(result: dict) -> tuple[str, bool]:
-    """Fit compact ASCII JSON by dropping whole cases, then tail sources.
+    """Fit compact ASCII JSON without exposing an incomplete roadmap as usable.
 
-    Size partial metadata before choosing the longest fitting case prefix.
-    Retained sources keep their original text and identity.
+    Operational reads retain the existing whole-case/tail-source trimming. A
+    roadmap investigation is withheld as an explicit failure before citations
+    are considered for trimming.
     """
     output = _encode(result)
     if len(output) <= RESPONSE_CAP:
@@ -112,6 +113,17 @@ def bounded_output(result: dict) -> tuple[str, bool]:
     cases = result.get("cases")
     if cases and isinstance(result.get("attention_count"), int):
         attention_unavailable(result, ["output_truncated"], [])
+    investigation = result.get("investigation")
+    if isinstance(investigation, dict) and investigation.get("kind") in ("roadmap", "initiative", "drift"):
+        result["error"] = {
+            "code": "output_truncated",
+            "message": "Roadmap evidence exceeded the response budget and was withheld; no partial roadmap should be treated as complete.",
+        }
+        result["investigation"] = {
+            key: investigation[key]
+            for key in ("kind", "number")
+            if key in investigation
+        } | {"status": "unavailable", "reason": "output_truncated"}
     output = _encode(result)
     over = len(output) - RESPONSE_CAP
     compact = dict(ensure_ascii=True, allow_nan=False, separators=(",", ":"))
@@ -195,11 +207,11 @@ def request(deadline: float) -> dict:
         kind = req.get("kind")
         if kind == "file":
             expected.update(("kind", "path", "ref"))
-        elif kind in ("pr", "checks", "runs"):
+        elif kind in ("pr", "checks", "runs", "initiative", "drift"):
             expected.update(("kind", "number"))
         elif kind in ("run", "log"):
             expected.update(("kind", "run_id"))
-        elif kind == "workflows":
+        elif kind in ("workflows", "roadmap"):
             expected.add("kind")
         else:
             raise EvidenceError("invalid_request", "Unknown investigation kind.", "request", "request")
@@ -371,6 +383,32 @@ def github_read(endpoint: str, deadline: float, *, text: bool = False) -> tuple[
         raise EvidenceError("github_unavailable", "GitHub returned unreadable JSON.", endpoint) from None
 
 
+def reader_build() -> dict:
+    """Verifiable identity of the installed evidence engine, kept distinct from
+    the operator's selected repository checkout and running service. The build
+    revision is this reader's own source checkout HEAD, reported only when this
+    module is a clean, tracked git file; a packaged or locally modified install
+    has no verifiable revision and is reported explicitly unknown. Neither the
+    factory version string nor the selected --root HEAD ever stand in for it."""
+    root = Path(__file__).resolve().parent
+    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
+
+    def git(*args: str) -> str | None:
+        try:
+            proc = subprocess.run(["git", "-C", str(root), *args], capture_output=True,
+                                  text=True, timeout=COMMAND_SECONDS, env=env, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return proc.stdout.strip() if proc.returncode == 0 else None
+
+    revision = git("rev-parse", "HEAD")
+    tracked = git("ls-files", "--error-unmatch", "--", Path(__file__).name)
+    status = git("status", "--porcelain", "--", ".")
+    verified = bool(revision and SHA.fullmatch(revision)) and bool(tracked) and status == ""
+    return {"revision": revision if verified else None, "verified": verified,
+            "evidence_schema": 1, "runtime_schema": 1}
+
+
 def capabilities() -> dict:
     return {
         "reads": [
@@ -383,6 +421,9 @@ def capabilities() -> dict:
             {"op": "investigate", "kind": "runs", "fields": ["number"], "description": "Actions runs for the exact observed PR head."},
             {"op": "investigate", "kind": "run", "fields": ["run_id"], "description": "Run and latest-attempt jobs."},
             {"op": "investigate", "kind": "log", "fields": ["run_id"], "description": "At most five latest-attempt log prefixes, failed jobs first."},
+            {"op": "investigate", "kind": "roadmap", "fields": [], "description": "Shared initiative plans, linked implementation evidence and owner attention."},
+            {"op": "investigate", "kind": "initiative", "fields": ["number"], "description": "One initiative with its canonical revision, blockers, drift and attention questions."},
+            {"op": "investigate", "kind": "drift", "fields": ["number"], "description": "Accepted ticket binding compared with its initiative's current canonical revision."},
             {"op": "capabilities", "fields": [], "description": "Implemented schema and producer support; no case collection."},
         ],
         "limits": {"request_bytes": REQUEST_CAP, "list_entries": PAGE_SIZE, "json_bytes": JSON_CAP,
@@ -391,8 +432,8 @@ def capabilities() -> dict:
                    "directory_entries": DIRECTORY_CAP, "path_characters": 1024,
                    "ref_characters": 255, "repository_characters": 200, "id_exclusive_max": 2**63,
                    "runtime_bytes": runtime_events.BYTE_LIMIT, "runtime_events": runtime_events.EVENT_LIMIT},
-        "producers": {"evidence_schema": 1, "runtime_schema": 1, "runtime_reader": "F03 non-persisting",
-                      "escalation_packet": "escalations/{number}.md"},
+        "producers": {"reader": reader_build(), "evidence_schema": 1, "runtime_schema": 1,
+                      "runtime_reader": "F03 non-persisting", "escalation_packet": "escalations/{number}.md"},
         "actions": [],
         "unavailable": ["arbitrary shell, API URLs or host paths", "writes, dispatch or action execution",
                         "provider configuration", "full pagination and complete log archives", "configured worker attribution"],
@@ -716,11 +757,94 @@ def checked_sha(value, path: str) -> str:
     return value
 
 
-def investigate(req: dict, result: dict, deadline: float) -> None:
-    gh = GitHub(req, result, deadline)
+def investigate(req: dict, result: dict, cfg: config.Config, deadline: float) -> None:
     kind = req["kind"]
-    detail = result["investigation"] = {key: req[key] for key in ("kind", "number", "run_id", "path", "ref") if key in req}
+    detail = result["investigation"] = {
+        key: req[key] for key in ("kind", "number", "run_id", "path", "ref") if key in req
+    }
     notices = result["coverage"]["notices"]
+    if kind in ("roadmap", "initiative"):
+        from factory import roadmap
+
+        report = roadmap.collect(
+            cfg,
+            req.get("number") if kind == "initiative" else None,
+            deadline=deadline,
+        )
+        detail.update(plans=report["plans"], attention=report["attention"])
+        result["sources"].extend(report["sources"])
+        for error in report["errors"]:
+            if error not in result["errors"] and len(result["errors"]) < ERROR_CAP:
+                result["errors"].append(error)
+        notices.extend(report["coverage"]["notices"])
+        result["coverage"]["status"] = report["coverage"]["status"]
+        result["ok"] = result["ok"] and report["ok"]
+        return
+    if kind == "drift":
+        from factory import binding
+
+        ticket = req["number"]
+        try:
+            event = binding.accepted(cfg, ticket)
+        except binding.BindingError as exc:
+            raise EvidenceError(exc.code, str(exc), ".factory/events.jsonl", "binding") from exc
+        if event is None:
+            raise EvidenceError(
+                "binding_unavailable",
+                f"Ticket #{ticket} has no accepted plan binding.",
+                ".factory/events.jsonl",
+                "binding",
+            )
+        baseline = event["baseline"]
+        accepted_source = source(
+            "Accepted plan binding",
+            {
+                "ticket": ticket,
+                "initiative": baseline["initiative"],
+                "sha256": baseline["sha256"],
+                "source_url": baseline["source_url"],
+                "observed_at": baseline["observed_at"],
+            },
+            path=".factory/events.jsonl",
+        )
+        result["sources"].append(accepted_source)
+        report = binding.drift(cfg, baseline)
+        observed = report["observed"]
+        comparison = {
+            "ticket": ticket,
+            "initiative": baseline["initiative"],
+            "status": report["status"],
+            "baseline": {
+                key: baseline[key] for key in ("sha256", "source_url", "observed_at")
+            },
+            "observed": (
+                {key: observed[key] for key in ("sha256", "source_url", "observed_at")}
+                if observed is not None else None
+            ),
+            "changed_sections": report["changed_sections"],
+            "proposed_question": report["proposed_question"],
+            "attribution": report["attribution"],
+            "reason": report.get("reason"),
+        }
+        comparison_source = source(
+            "Initiative plan drift comparison",
+            comparison,
+            url=baseline["source_url"],
+        )
+        result["sources"].append(comparison_source)
+        detail.update(comparison, citations=[accepted_source["id"], comparison_source["id"]])
+        if report["status"] == "unavailable":
+            failed(
+                result,
+                EvidenceError(
+                    report["error_code"],
+                    report["reason"],
+                    comparison_source["id"],
+                    "binding",
+                ),
+            )
+        return
+    gh = GitHub(req, result, deadline)
     if kind == "workflows":
         gh.page("Registered Actions workflows and paths", f"actions/workflows?per_page={PAGE_SIZE}&page=1", "workflows")
         notices.append("Registered workflows are not a complete file inventory at every ref; newly added workflows may not be registered.")
@@ -1102,7 +1226,7 @@ def main(argv: list[str] | None = None) -> int:
                 result["sources"].append(source("Implemented Factory read capabilities", result["capabilities"]))
                 result["coverage"]["status"] = "complete"
             elif req["op"] == "investigate":
-                investigate(req, result, deadline)
+                investigate(req, result, cfg, deadline)
             else:
                 collect_cases(req, result, cfg, deadline)
             if time.monotonic() >= deadline:

@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from factory.config import Config
+from factory.feedback import NOT_COLLECTED
 
 REQUEST_CAP = 100_000
 QUESTION_CAP = 4_000
@@ -114,8 +115,11 @@ def validate_request(req: object, asking: bool) -> dict:
     if "run" in req:
         if "number" in req or not isinstance(req["run"], str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", req["run"]):
             raise ValueError("run: an exact dispatcher run start time is required, instead of number")
-    elif type(req.get("number")) is not int or not 0 < req["number"] < 2**31:
-        raise ValueError("number: positive ticket integer required (or select a dispatcher run)")
+    elif "number" in req:
+        if type(req["number"]) is not int or not 0 < req["number"] < 2**31:
+            raise ValueError("number: positive ticket integer required (or select a dispatcher run)")
+    elif not asking:
+        raise ValueError("number: positive ticket integer required")
     if not asking:
         return req
     question = req.get("question")
@@ -205,7 +209,7 @@ def sources_for(
         (f"escalations/{number}.md", "Escalation packet"),
         (f"manager-{number}.md", "Manager notes"),
         (f"wt-{number}/.factory/gate-report-{number}.md", "Gate report"),
-        (f"review-{number}.md", "Review verdict"),
+        (f"review-{number}.md", "Legacy review verdict · provenance unknown"),
         (f"pr-body-{number}.md", "PR body"),
     ]
     pr = ticket.get("pr") or {}
@@ -228,6 +232,10 @@ def sources_for(
     state = {k: ticket.get(k) for k in ("number", "title", "state", "stage", "labels", "assignees", "worker", "lock_held", "phase", "updated_at", "spend")}
     if pr:
         state["pull_request"] = {k: pr.get(k) for k in ("number", "state", "approved", "draft", "checks", "review_decision", "merged_at")}
+        state["pull_request_evidence_notice"] = (
+            "Legacy labels, check rollups and review decisions are context, not source-versioned "
+            "approval or delivery authority. Use the appended PR feedback and its coverage."
+        )
     add("Current ticket state", json.dumps(state, ensure_ascii=False, indent=2))
     events = sorted(ticket.get("events", []), key=lambda e: e.get("at") or "")
     comments = [e for e in events if e.get("body")]
@@ -246,6 +254,17 @@ def sources_for(
             except ValueError:
                 continue
             if isinstance(row, dict) and (row.get("ticket") == number or (pr and row.get("pr") == pr.get("number"))):
+                if row.get("event") == "plan-bound":
+                    baseline = row.get("baseline")
+                    row = {key: value for key, value in row.items() if key not in {"baseline", "issue"}}
+                    row["baseline"] = (
+                        {key: baseline.get(key) for key in ("initiative", "sha256", "source_url", "observed_at")}
+                        if isinstance(baseline, dict) else None
+                    )
+                    row["snapshot_notice"] = (
+                        "Complete accepted ticket and sections retained in events.jsonl; "
+                        f"use factory plan drift {number} for the validated baseline."
+                    )
                 rows.append(row)
         outcomes = {}
         for i, row in enumerate(rows):
@@ -264,7 +283,8 @@ def sources_for(
         add(f"PR #{pr['number']} gate report", pr["gate_text"], url=pr.get("url", ticket["url"]))
     for e in reversed(comments):
         if e not in decisions:
-            add(f"{e.get('kind', 'Comment').capitalize()} · {e.get('at', '')}", e["body"], url=e.get("url") or ticket["url"])
+            label = "Legacy verdict · provenance unknown" if e.get("kind") == "verdict" else e.get("kind", "Comment").capitalize()
+            add(f"{label} · {e.get('at', '')}", e["body"], url=e.get("url") or ticket["url"])
     timeline = [{k: e[k] for k in ("at", "kind", "detail") if k in e} for e in events]
     add("Issue timeline", json.dumps(timeline, ensure_ascii=False, indent=2), url=ticket["url"], truncated=ticket.get("timeline_truncated", False))
     attempts = sorted(ticket.get("attempts", []), key=lambda a: a.get("attempt", 0), reverse=True)
@@ -280,15 +300,81 @@ def sources_for(
     if errors:
         add("Snapshot collection errors", "\n".join(errors))
 
+    feedback_notice = ""
+    feedback_start = len(candidates)
+    if pr:
+        feedback = pr.get("feedback")
+        if not isinstance(feedback, dict) or "schema_version" not in feedback:
+            feedback_notice = (
+                "PR feedback is unsupported/unknown: this snapshot has no "
+                "schema-versioned feedback object. Absence is not a complete empty observation."
+            )
+        elif type(feedback["schema_version"]) is not int or feedback["schema_version"] != 1:
+            feedback_notice = (
+                f"PR feedback is unsupported/unknown: schema_version "
+                f"{feedback['schema_version']!r} is not supported. Its contents were not interpreted."
+            )
+        elif any(
+            key not in feedback
+            for key in ("producer", "observed_at", "observation_id", "repository", "pr", "owner", "coverage", "items", "errors")
+        ) or not isinstance(feedback["items"], list):
+            feedback_notice = (
+                "PR feedback is unsupported/unknown: the schema-1 snapshot is incomplete. "
+                "Its contents were not interpreted."
+            )
+        else:
+            identity = {
+                "schema_version": feedback["schema_version"],
+                "producer": feedback["producer"],
+                "observed_at": feedback["observed_at"],
+                "observation_id": feedback["observation_id"],
+                "repository": feedback["repository"],
+                "pr": feedback["pr"],
+                "owner": feedback["owner"],
+            }
+            coverage = {
+                "coverage": feedback["coverage"],
+                **identity,
+                "errors": feedback["errors"],
+            }
+            uncollected = [
+                error.get("source") for error in feedback["errors"] or []
+                if isinstance(error, dict) and error.get("code") == NOT_COLLECTED
+            ]
+            feedback_notice = (
+                "PR feedback schema 1 coverage (read-only evidence; partial or unavailable "
+                "coverage is unknown, not empty):\n"
+                + (f"Sources {', '.join(sorted(filter(None, uncollected)))} were not collected "
+                   f"({NOT_COLLECTED}): detail reads are limited to open pull requests. "
+                   "Intentional noncollection is not an empty, resolved, or unsupported observation.\n"
+                   if uncollected else "")
+                + json.dumps(coverage, ensure_ascii=False, separators=(",", ":"))
+            )
+            for item in feedback["items"]:
+                source_id = item.get("source_id") if isinstance(item, dict) else None
+                kind = item.get("kind") if isinstance(item, dict) else None
+                payload = {**identity, "item": item}
+                add(
+                    f"PR feedback · {kind or 'unknown'} · {source_id or 'unknown source'}",
+                    json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                    url=item.get("source_url") if isinstance(item, dict) else None,
+                    truncated=bool(item.get("truncated")) if isinstance(item, dict) else False,
+                )
+
     sources, remaining, omitted = [], CONTEXT_CAP - 1_000, 0
-    for candidate in candidates:
+    feedback_omitted = feedback_shortened = 0
+    for index, candidate in enumerate(candidates):
         if len(sources) >= SOURCE_COUNT - 1 or remaining < 256:
             omitted += 1
+            if index >= feedback_start:
+                feedback_omitted += 1
             continue
         source = dict(candidate)
         encoded = source["text"].encode("utf-8")
         cap = min(SOURCE_CAP, remaining)
         source["text"] = encoded[:cap].decode("utf-8", errors="ignore")
+        if index >= feedback_start and len(encoded) > cap:
+            feedback_shortened += 1
         source["truncated"] = bool(source.get("truncated") or len(encoded) > cap)
         if source["truncated"]:
             source["label"] += " · truncated"
@@ -298,6 +384,15 @@ def sources_for(
             sources.append(source)
             remaining -= len(source["text"].encode("utf-8"))
     notices = []
+    if feedback_omitted:
+        notices.append(
+            f"{feedback_omitted} PR feedback evidence item(s) omitted by the "
+            f"{CONTEXT_CAP}-byte / {SOURCE_COUNT}-source context limit."
+        )
+    if feedback_shortened:
+        notices.append(
+            f"{feedback_shortened} PR feedback evidence item(s) shortened by the context byte limit."
+        )
     if omitted:
         notices.append(f"{omitted} additional evidence source(s) omitted by the {CONTEXT_CAP}-byte / {SOURCE_COUNT}-source context limit.")
     if ledger and ledger[1]:
@@ -306,9 +401,127 @@ def sources_for(
         notices.append(ticket.get("timeline_coverage") or "GitHub issue timeline contains only the latest 100 events; earlier decisions may be missing.")
     if pr.get("comments_truncated"):
         notices.append("PR comments contain only the latest 30 entries; earlier decisions may be missing.")
+    if feedback_notice:
+        notices.append(feedback_notice)
     if notices:
         text = "\n".join(notices)
-        sources.append({"id": "S" + str(int.from_bytes(hashlib.sha256(text.encode()).digest()[:8], "big")), "label": "Evidence coverage · truncated", "text": text, "truncated": True})
+        data = text.encode("utf-8")
+        cap = min(SOURCE_CAP, CONTEXT_CAP - sum(len(source["text"].encode("utf-8")) for source in sources))
+        cut = len(data) > cap
+        suffix = "\nCoverage detail omitted by context byte limit." if cut else ""
+        text = data[:max(0, cap - len(suffix.encode("utf-8")))].decode("utf-8", errors="ignore") + suffix
+        incomplete = bool(
+            cut or omitted or ledger and ledger[1]
+            or ticket.get("timeline_truncated") or pr.get("comments_truncated")
+        )
+        sources.append({
+            "id": "S" + str(int.from_bytes(hashlib.sha256(text.encode()).digest()[:8], "big")),
+            "label": "Evidence coverage" + (" · truncated" if incomplete else ""),
+            "text": text,
+            "truncated": incomplete,
+        })
+    return sources
+
+
+def factory_sources(cfg: Config, snapshot: dict) -> list[dict]:
+    """Bounded current-state evidence for repository-wide manager questions."""
+    dispatcher = snapshot.get("dispatcher", {})
+    overview = {
+        "repository": cfg.repo,
+        "generated_at": snapshot.get("generated_at"),
+        "errors": snapshot.get("errors", []),
+        "active": snapshot.get("active"),
+        "metrics": snapshot.get("metrics"),
+        "spend": snapshot.get("spend"),
+        "dispatcher": {
+            "timer": dispatcher.get("timer"),
+            "service_active": dispatcher.get("service_active"),
+            "consecutive_failures": dispatcher.get("consecutive_failures"),
+            "runs": [
+                {key: run.get(key) for key in ("started", "finished", "result")}
+                for run in dispatcher.get("runs", [])[-12:]
+            ],
+        },
+        "configuration": {
+            "main": cfg.main,
+            "max_active": cfg.max_active,
+            "max_attempts": cfg.max_attempts,
+            "review_rounds": cfg.review_rounds,
+            "budget_min": cfg.budget_min,
+        },
+    }
+    priorities = {
+        "escalated": 0, "needs-info": 1, "triage": 2, "pr-open": 3,
+        "in-flight": 4, "queued": 5,
+    }
+    tickets = sorted(
+        snapshot.get("tickets", []),
+        key=lambda ticket: (
+            priorities.get(ticket.get("stage"), 9),
+            -int(ticket.get("number", 0)),
+        ),
+    )
+    sources: list[dict] = []
+    remaining = CONTEXT_CAP
+
+    def add(label: str, value: object) -> bool:
+        nonlocal remaining
+        data = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
+        cap = min(SOURCE_CAP, remaining)
+        if cap < 256:
+            return False
+        truncated = len(data) > cap
+        source = {
+            "label": label + (" · truncated" if truncated else ""),
+            "text": data[:cap].decode("utf-8", errors="ignore"),
+            "truncated": truncated,
+        }
+        digest = hashlib.sha256(
+            json.dumps(source, sort_keys=True, ensure_ascii=False).encode()
+        ).digest()
+        source["id"] = "S" + str(int.from_bytes(digest[:8], "big"))
+        sources.append(source)
+        remaining -= len(source["text"].encode())
+        return True
+
+    add("Factory snapshot, dispatcher, and configuration", overview)
+    included = 0
+    # ponytail: bounded summaries prioritize active work; add pagination when
+    # repository-wide questions regularly exceed the existing evidence budget.
+    for ticket in tickets:
+        if len(sources) >= SOURCE_COUNT - 1:
+            break
+        summary = {
+            key: ticket.get(key)
+            for key in (
+                "number", "title", "state", "stage", "labels", "assignees",
+                "updated_at", "lock_held", "phase", "spend",
+            )
+        }
+        pr = ticket.get("pr")
+        summary["pr"] = (
+            {key: pr.get(key) for key in (
+                "number", "state", "approved", "mergeable", "merged_at", "closed_at",
+            )}
+            if isinstance(pr, dict) else None
+        )
+        summary["recent_events"] = [
+            {key: event.get(key) for key in ("at", "kind", "detail")}
+            for event in ticket.get("events", [])[-8:]
+        ]
+        if not add(f"Case #{ticket.get('number')} · {ticket.get('title', '')}", summary):
+            break
+        included += 1
+    if included < len(tickets):
+        add(
+            "Factory overview coverage · truncated",
+            {
+                "included_cases": included,
+                "available_cases": len(tickets),
+                "note": "Lower-priority cases were omitted by the evidence source or byte limit. "
+                        "Select a case for its complete bounded evidence.",
+            },
+        )
     return sources
 
 
@@ -428,17 +641,19 @@ def respond(cfg: Config, snapshot: dict, req: dict, asking: bool) -> dict:
     validate_request(req, asking)
     if "run" in req:
         sources = run_sources(cfg, snapshot, req["run"])
-    else:
+    elif "number" in req:
         ticket = next((t for t in snapshot.get("tickets", []) if t["number"] == req["number"]), None)
         if ticket is None:
             detail = "; snapshot errors: " + "; ".join(snapshot["errors"]) if snapshot.get("errors") else ""
             raise ValueError(f"Unknown ticket #{req['number']} in the current dashboard snapshot; refresh before retrying{detail}")
         sources = sources_for(cfg, ticket, snapshot.get("errors", []), req.get("path"))
+    else:
+        sources = factory_sources(cfg, snapshot)
     ids = {s["id"] for s in sources}
     if asking and "source" in req and req["source"] not in ids:
         raise ValueError("Unknown or stale source for this scope; reload and select its current source")
     focused_source = next((s["id"] for s in sources if s.get("path") == req.get("path")), None) if "path" in req else req.get("source")
-    evidence = json.dumps({"repository": cfg.repo, "ticket": req.get("number"), "run": req.get("run"), "sources": sources}, ensure_ascii=False)
+    evidence = json.dumps({"repository": cfg.repo, "ticket": req.get("number"), "run": req.get("run"), "scope": "factory" if "number" not in req and "run" not in req else None, "sources": sources}, ensure_ascii=False)
     fingerprint = hashlib.sha256(((cfg.manager_model or "OMP default") + str(cfg.root) + SYSTEM + BRIEF_REQUEST + evidence).encode()).hexdigest()
     if not asking:
         with _cache_lock:
