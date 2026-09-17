@@ -1185,6 +1185,16 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, "text/html; charset=utf-8", HTML.read_bytes())
         elif url.path == "/theme.css":
             self._send(200, "text/css", cfg.dashboard_theme.read_bytes() if cfg.dashboard_theme else b"")
+        elif url.path in ("/themes.css", "/navigation.css", "/theme-picker.js"):
+            content_type = "text/javascript" if url.path.endswith(".js") else "text/css"
+            content = Path(__file__).with_name(url.path[1:]).read_bytes()
+            if url.path == "/theme-picker.js":
+                default_theme = "repository" if cfg.dashboard_theme else "cyberpunk"
+                content = (
+                    f'document.documentElement.dataset.defaultTheme = "{default_theme}";\n'.encode()
+                    + content
+                )
+            self._send(200, content_type + "; charset=utf-8", content)
         elif url.path == "/briefing.css":
             self._send(200, "text/css; charset=utf-8", BRIEFING_CSS.read_bytes())
         elif url.path == "/fonts/Newsreader.ttf":

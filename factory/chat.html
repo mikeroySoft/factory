@@ -16,11 +16,12 @@
   --status-ok:#9dc26b; --status-warn:#f0cf8e; --status-danger:#d64545; --status-idle:#81745e;
   --stage-triage:#b89bd6; --stage-needs-info:#e07b39; --stage-queued:#9dc26b; --stage-in-flight:#f0cf8e; --stage-pr-open:#c9b458; --stage-escalated:#d64545; --stage-merged:#9dc26b; --stage-closed:#5a4f3c;
   --font-mono:"JetBrains Mono","SFMono-Regular",Consolas,monospace; --font-display:Newsreader,Georgia,serif;
-  --top:126px;
 }
 * { box-sizing:border-box; }
 [hidden] { display:none !important; }
 html, body { margin:0; min-height:100%; background:var(--surface-page); color:var(--text-primary); font:13px/1.6 var(--font-mono); -webkit-font-smoothing:antialiased; }
+body { display:flex; flex-direction:column; height:100dvh; overflow:hidden; }
+.factory-header { flex:none; }
 button, input, textarea { font:inherit; color:inherit; }
 button { min-height:44px; padding:7px 12px; cursor:pointer; border:1px solid var(--border-hairline); border-radius:4px; color:var(--text-secondary); background:transparent; transition:background .15s,border-color .15s,color .15s; }
 button:hover:not(:disabled) { color:var(--text-primary); border-color:var(--accent); background:var(--accent-tint); }
@@ -39,21 +40,17 @@ a:hover { text-decoration:underline; }
 .led.busy { background:var(--accent); animation:pulse .9s infinite; }
 .led.warn { background:var(--status-warn); }
 @keyframes pulse { 50% { opacity:.35; } }
-.topbar { position:sticky; top:0; z-index:20; display:grid; grid-template-columns:minmax(220px,1fr) auto; gap:10px 28px; align-items:center; padding:13px clamp(16px,3vw,40px); border-bottom:1px solid var(--border-hairline); background:rgba(13,12,10,.96); backdrop-filter:blur(10px); }
+.topbar { display:grid; grid-template-columns:minmax(220px,1fr) auto; gap:10px 28px; align-items:center; padding:13px clamp(16px,3vw,40px); border-bottom:1px solid var(--border-hairline); background:rgba(13,12,10,.96); backdrop-filter:blur(10px); }
 .title-row { display:flex; align-items:center; gap:12px; margin-top:3px; }
 .mark { width:13px; height:13px; border:2px solid var(--accent); transform:rotate(45deg); box-shadow:0 0 10px var(--accent-glow); }
 h1 { margin:0; color:var(--accent-soft); font:700 clamp(20px,2.6vw,26px)/1.15 var(--font-mono); letter-spacing:-.02em; }
-.nav { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:7px; }
-.nav a, .nav span { display:inline-flex; min-height:38px; align-items:center; padding:5px 11px; border:1px solid var(--border-strong); border-radius:4px; color:var(--text-secondary); }
-.nav a:hover { color:var(--accent); border-color:var(--accent); text-decoration:none; }
-.nav [aria-current=page] { color:var(--accent); border-color:var(--accent); background:var(--accent-tint); }
 .meta { grid-column:1/-1; display:flex; flex-wrap:wrap; gap:5px 22px; color:var(--text-secondary); font-size:11px; }
 .meta strong { color:var(--text-primary); font-weight:500; }
 .progress-line { grid-column:1/-1; height:2px; margin:-4px 0 -7px; overflow:hidden; background:var(--border-hairline); }
 .progress-line i { display:block; width:0; height:100%; background:var(--accent); box-shadow:0 0 10px var(--accent-glow); }
 body.busy .progress-line i { animation:progress 120s cubic-bezier(.1,.5,.2,1) forwards; }
 @keyframes progress { from { width:3%; } to { width:92%; } }
-.shell { display:grid; grid-template-columns:auto minmax(0,1fr) auto; width:100%; max-width:none; height:calc(100dvh - var(--top)); margin:0; padding:0; gap:0; }
+.shell { flex:1; display:grid; grid-template-columns:auto minmax(0,1fr) auto; width:100%; max-width:none; min-height:0; margin:0; padding:0; gap:0; }
 .slide { min-width:0; overflow:hidden; flex:none; }
 .rail { width:272px; border-right:1px solid var(--border-hairline); }
 .rail-in { display:flex; flex-direction:column; width:272px; height:100%; min-height:0; }
@@ -137,7 +134,7 @@ textarea { width:100%; min-height:42px; max-height:180px; padding:9px 0; resize:
 .error { padding:8px 10px; border-left:3px solid var(--status-danger); color:#efa18f; background:var(--surface-sunken); }
 @media (max-width:1180px) { .dock { display:none; } .dock.source-open { display:block; } }
 @media (max-width:600px) { .msg.user .who { width:88%; } .msg.user .body { max-width:88%; } }
-@media (max-width:800px) { .rail { display:none; } .topbar { grid-template-columns:1fr; } .nav { justify-content:flex-start; } .meta { grid-column:1; } .shell { grid-template-columns:minmax(0,1fr); } .chat-head { padding-inline:12px; } .transcript,.composer { padding-inline:12px; } .shell.source-mode .chat { display:none; } .shell.source-mode .dock { display:block; width:100% !important; border-left:0; } .shell.source-mode .dock-in { min-width:0; } }
+@media (max-width:800px) { .rail { display:none; } .topbar { grid-template-columns:1fr; } .meta { grid-column:1; } .shell { grid-template-columns:minmax(0,1fr); } .chat-head { padding-inline:12px; } .transcript,.composer { padding-inline:12px; } .shell.source-mode .chat { display:none; } .shell.source-mode .dock { display:block; width:100% !important; border-left:0; } .shell.source-mode .dock-in { min-width:0; } }
 @media (prefers-reduced-motion:reduce) { *,*::before,*::after { animation-duration:.01ms !important; transition-duration:.01ms !important; scroll-behavior:auto !important; } }
 </style>
 <link rel="stylesheet" href="/theme.css">
@@ -146,11 +143,14 @@ body[data-product="factory"] button { letter-spacing:normal; text-transform:none
 body[data-product="factory"] .compose-box textarea:focus,
 body[data-product="factory"] .compose-box textarea:focus-visible { outline:0; box-shadow:none; }
 </style>
+<link rel="stylesheet" href="/themes.css">
+<link rel="stylesheet" href="/navigation.css">
+<script src="/theme-picker.js"></script>
 </head>
 <body data-product="factory">
-<header class="topbar">
+<div class="factory-header">
+<header class="topbar factory-titlebar">
   <div><p class="eyebrow">Factory · manager</p><div class="title-row"><span class="mark" aria-hidden="true"></span><h1>Chat</h1></div></div>
-  <nav class="nav" aria-label="Factory views"><a href="/">Dashboard</a><a href="/codebase">Codebase</a><a href="/atlas">Atlas</a><span aria-current="page">Chat</span></nav>
   <div class="meta">
     <span><i class="led" id="led"></i><span id="led-text">Loading Factory Manager</span></span>
     <span>repository <strong id="meta-repo">—</strong></span>
@@ -160,6 +160,8 @@ body[data-product="factory"] .compose-box textarea:focus-visible { outline:0; bo
   </div>
   <div class="progress-line" id="progress" hidden><i></i></div>
 </header>
+<nav class="factory-nav" aria-label="Factory views"><a href="/#inbox">Inbox</a><a href="/#roadmap">Roadmap</a><a href="/#ops">Ops</a><span aria-current="page">Chat</span><a href="/codebase">Codebase</a><a href="/atlas">Atlas</a></nav>
+</div>
 <main class="shell">
   <aside class="rail slide" aria-label="Conversations"><div class="rail-in">
     <div class="rail-head"><button class="primary" id="new-conversation">+ New conversation</button><input class="search" id="history-search" type="search" placeholder="Search conversations" aria-label="Search conversations"></div>
@@ -346,7 +348,6 @@ $('question').onkeydown=event=>{ if (event.key==='Enter'&&!event.shiftKey) { eve
 document.querySelectorAll('[data-picker]').forEach(button=>button.onclick=()=>openPicker(button.dataset.picker));
 document.addEventListener('pointerdown',event=>{ if (!$('picker').hidden&&!$('picker').contains(event.target)&&!event.target.closest('[data-picker]')) $('picker').hidden=true; });
 document.addEventListener('keydown',event=>{ if (event.key==='Escape') { $('picker').hidden=true; if (S.source) closeSource(); } if (!event.target.matches('input,textarea')&&event.key==='[') setPanel('rail',!S.rail); if (!event.target.matches('input,textarea')&&event.key===']') { if (S.source) closeSource(); else setPanel('dock',!S.dock); } });
-const topbar=document.querySelector('.topbar'); new ResizeObserver(()=>document.documentElement.style.setProperty('--top',topbar.offsetHeight+'px')).observe(topbar);
 setInterval(()=>{ if (S.snap) $('meta-snapshot').textContent=ago(S.snap.generated_at); },10000);
 load();
 </script>

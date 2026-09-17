@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Factory — Inbox</title>
+<title>Factory — Ops</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
 <style>
   :root {
@@ -37,7 +37,7 @@
   ::selection { background: rgba(0,229,255,.25); }
 
   /* ---------- header ---------- */
-  .top { position: sticky; top: 0; z-index: 40; display: flex; align-items: center; gap: 24px;
+  .top { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 24px;
     padding: 14px 24px; background: rgba(5,7,12,.92); backdrop-filter: blur(10px);
     border-bottom: 1px solid var(--line); }
   .eyebrow { font-size: 10px; letter-spacing: .22em; text-transform: uppercase; color: var(--dim); }
@@ -259,13 +259,6 @@
 
   kbd { font: 10px var(--mono); border: 1px solid var(--line2); padding: 0 4px; color: var(--muted); }
   .hint { font-size: 10px; color: var(--dim); letter-spacing: .04em; }
-  .views { display: flex; gap: 4px; }
-  .views button { padding: 7px 14px; font-size: 11px; }
-  .views button.on { color: var(--cyan); border-color: var(--cyan); background: rgba(0,229,255,.06); }
-  .views .navlink { display: inline-flex; align-items: center; padding: 7px 14px; border: 1px solid var(--line2); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
-  .views .navlink:hover { color: var(--cyan); border-color: var(--cyan); text-decoration: none; }
-  .badge { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 6px; border: 1px solid var(--line2); border-radius: 9px; font-size: 10px; text-align: center; color: var(--muted); }
-  .badge.hot { color: var(--bg); background: var(--mag); border-color: var(--mag); box-shadow: 0 0 10px var(--mag); }
   .inbox-top { display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap; }
   .inbox-top h2 { font: 700 18px var(--hud); letter-spacing: .08em; color: var(--ink); }
   .inbox-top code { color: var(--muted); }
@@ -323,6 +316,10 @@
   .roadmap-meta { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
   .roadmap-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
   @media (max-width: 720px) {
+    .top { align-items: flex-start; }
+    .status { width: 100%; margin-left: 0; }
+    .controls { width: 100%; flex-wrap: wrap; }
+    .controls input { flex: 1 1 160px; width: auto; min-width: 0; }
     .roadmap-grid { grid-template-columns: 1fr; }
     .roadmap-controls { align-items: stretch; flex-direction: column; }
     .roadmap-controls select { width: 100%; }
@@ -334,27 +331,32 @@
 </style>
 <link rel="stylesheet" href="/theme.css">
 <link rel="stylesheet" href="/briefing.css">
+<link rel="stylesheet" href="/themes.css">
+<link rel="stylesheet" href="/navigation.css">
+<script src="/theme-picker.js"></script>
 </head>
 <body>
 <div class="scan" aria-hidden="true"></div>
 <div class="vignette" aria-hidden="true"></div>
 <div class="tip" id="tip" role="tooltip"></div>
 
-<header class="top">
+<div class="factory-header">
+<header class="top factory-titlebar">
   <div>
     <div class="eyebrow" id="eyebrow">factory</div>
     <h1 class="glitch" id="title" data-text="FACTORY">FACTORY</h1>
   </div>
   <div class="status" id="status"></div>
-  <nav class="views" aria-label="Factory views"><button id="nav-inbox" class="on">Inbox</button><button id="nav-roadmap">Roadmap</button><button id="nav-ops">Ops</button><a class="navlink" href="/chat" title="Talk with the Factory Manager">Chat ↗</a><a class="navlink" href="/codebase" title="Explore codebase organization and history">Codebase ↗</a><a class="navlink" href="/atlas" title="Static architecture diagrams">Atlas ↗</a></nav>
   <div class="controls">
     <input id="search" type="search" placeholder="/ filter  #n · title · label · stage" aria-label="Filter tickets" title="Filters the board, lanes, activity feed, and inbox">
     <button id="refresh" title="r">Refresh</button>
     <label id="auto-control"><input type="checkbox" id="auto" checked> auto 30s</label>
   </div>
 </header>
+<nav class="factory-nav" aria-label="Factory views"><button id="nav-inbox" type="button">Inbox</button><button id="nav-roadmap" type="button">Roadmap</button><button id="nav-ops" class="on" type="button" aria-current="page">Ops</button><a href="/chat">Chat</a><a href="/codebase">Codebase</a><a href="/atlas">Atlas</a></nav>
+</div>
 
-<main id="ops" hidden>
+<main id="ops">
   <div id="errors"></div>
   <section class="kpis" id="kpis" aria-label="Key metrics"></section>
   <section class="panel" aria-label="Worker metrics">
@@ -423,7 +425,7 @@
   </section>
 </main>
 
-<main id="inbox">
+<main id="inbox" hidden>
   <div class="inbox-top"><h2 id="inbox-sum">Loading your Inbox…</h2><p class="briefing-muted">Understand the case. Compare the consequences. Make the call.</p></div>
   <div id="inbox-health" class="briefing-status" role="status"></div>
   <div id="inbox-list"></div>
@@ -506,7 +508,7 @@ const ALWAYS_COLS = ['triage', 'queued', 'in-flight', 'pr-open', 'escalated', 'm
 const FEED_KINDS = new Set(['labeled', 'assigned', 'attempt', 'gate', 'pr-opened', 'verdict', 'merged', 'escalated', 'triaged', 'closed', 'pr-closed', 'reopened']);
 const TABS = ['timeline', 'attempts', 'gate', 'review', 'branch', 'prompt', 'issue'];
 
-const S = { snap: null, filter: null, q: '', sel: null, tab: 'timeline', okAt: 0, failed: false, files: {}, view: 'inbox', drafts: {}, inboxDirty: false, inboxKey: null, choices: {}, briefings: {}, chats: {}, receipts: {}, fm: null, preview: null, restored: false, loading: null, roadmap: null, roadmapError: '', roadmapLoading: {}, roadmapDetails: {}, roadmapOwner: '' };
+const S = { snap: null, filter: null, q: '', sel: null, tab: 'timeline', okAt: 0, failed: false, files: {}, view: 'ops', drafts: {}, inboxDirty: false, inboxKey: null, choices: {}, briefings: {}, chats: {}, receipts: {}, fm: null, preview: null, restored: false, loading: null, roadmap: null, roadmapError: '', roadmapLoading: {}, roadmapDetails: {}, roadmapOwner: '' };
 const $ = id => document.getElementById(id);
 
 // ---------------------------------------------------------------- utils
@@ -1801,7 +1803,6 @@ function selectCase(key) {
 }
 function renderInbox() {
   const all = inboxItems(), waiting = all.filter(i => WAITING.has(i.kind)), matching = waiting.filter(i => i.review ? reviewMatches(i.review) : !i.t || matches(i.t));
-  $('nav-inbox').replaceChildren('Inbox ', h('span', { class: `badge ${waiting.length ? 'hot' : ''}` }, waiting.length));
   $('inbox-sum').textContent = waiting.length ? `${waiting.length} case${waiting.length === 1 ? '' : 's'} waiting on you` : 'Nothing waiting on you';
   if (!S.inboxKey && matching.length) { S.inboxKey = matching[0].key; syncHash(); saveInboxState(); }
   const item = selectedItem(), list = $('inbox-list');
@@ -1968,14 +1969,16 @@ $('auto').onchange = schedule;
 document.addEventListener('visibilitychange', () => { if (!document.hidden && $('auto').checked) load(false); });
 setInterval(() => { if (S.snap) { renderStatus(); renderInboxHealth(); } }, 10000);
 function initFromHash() {
+  S.view = 'ops'; S.sel = null; S.filter = null;
   const inbox = location.hash.match(/^#inbox(?:\/([\w-]+))?$/);
-  if (inbox) { S.view = 'inbox'; if (inbox[1]) S.inboxKey = inbox[1]; S.sel = null; return; }
-  if (location.hash === '#roadmap') { S.view = 'roadmap'; S.sel = null; return; }
-  if (location.hash === '#ops') { S.view = 'ops'; S.sel = null; return; }
+  if (inbox) { S.view = 'inbox'; if (inbox[1]) S.inboxKey = inbox[1]; return; }
+  if (location.hash === '#roadmap') { S.view = 'roadmap'; return; }
+  if (!location.hash || location.hash === '#ops') return;
   const m = location.hash.match(/^#(t|s)=([\w-]+)$/);
-  if (m) { S.view = 'ops'; if (m[1] === 't') S.sel = +m[2]; else { S.filter = m[2]; S.sel = null; } }
+  if (m) { if (m[1] === 't') S.sel = +m[2]; else S.filter = m[2]; }
 }
 initFromHash();
+applyView();
 window.addEventListener('hashchange', () => { initFromHash(); applyView(); if (S.view === 'roadmap') loadRoadmap(); if (S.snap) { updateInbox(true); render(); } });
 $('nav-ops').onclick = () => setView('ops');
 $('nav-inbox').onclick = () => setView('inbox');

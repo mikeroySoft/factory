@@ -609,8 +609,10 @@ branches, or merge state.
 
 ## Operating it
 
-- **Dashboard** (`factory dashboard`): **Inbox** opens a full **Understand →
-  Compare → Decide** briefing for each case needing human judgment. The question,
+- **Dashboard** (`factory dashboard`): the root opens **Ops**, showing recorded
+  pipeline state without requesting an LLM briefing. **Inbox** is an explicit
+  destination and opens a full **Understand → Compare → Decide** briefing for
+  each case needing human judgment. The question,
   situation, FM recommendation, relevant earlier decisions, uncertainty, options,
   consequences, and next owner stay visible; raw evidence is expandable. **Ops**
   retains the board, telemetry, dispatcher runs, and task drawers.
@@ -629,6 +631,15 @@ branches, or merge state.
   snapshots block execution. Confirmed decisions leave GitHub rationale comments
   and a local `human-decision` audit event with success, partial, or failed outcome.
   Drafts and conversations survive refresh within the same browser session.
+  The same navigation row sits below the title/status row on Ops, Inbox, Roadmap,
+  Chat, Codebase and Atlas; the two rows stay together while scrolling.
+  Its **Theme** picker includes Cyberpunk, GPUFlo, District, Factory, ROCm
+  (shared by rocm-cli and rocm-app), Porcelain and Sandstone (light), and Slate
+  and Forest (dark). Cyberpunk is the default for installations
+  without custom CSS; configured `[dashboard].theme` remains the **Repository**
+  default. An explicit choice overrides that CSS and persists in this browser
+  for this dashboard origin. Browser storage being unavailable does not prevent
+  switching themes for the current page.
 - **Spend**: the *Spend* KPI and each ticket's attempts tab total worker+gate
   wall clock from `events.jsonl`, plus dollars when `cost_pattern` matches
   your worker's log.

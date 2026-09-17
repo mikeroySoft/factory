@@ -36,7 +36,6 @@
   }
   .atlas-skip:focus { transform: none; }
   .atlas-topbar {
-    position: sticky; top: 0; z-index: 40;
     display: grid; grid-template-columns: minmax(210px, 1fr) auto; gap: 16px 32px;
     align-items: center; padding: 18px clamp(16px, 3vw, 40px);
     border-bottom: 1px solid var(--atlas-rule);
@@ -54,18 +53,6 @@
     letter-spacing: .16em; text-transform: uppercase;
   }
   .atlas-product { margin-top: 3px; color: var(--atlas-ink); font-size: 16px; font-weight: 700; }
-  .atlas-nav { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-  .atlas-nav a, .atlas-nav span {
-    display: inline-flex; min-height: 44px; align-items: center; padding: 8px 12px;
-    border: 1px solid var(--line2, #4a3d28); border-radius: 4px; color: var(--atlas-muted);
-  }
-  .atlas-nav a:hover {
-    color: var(--atlas-accent); border-color: var(--atlas-accent); text-decoration: none;
-  }
-  .atlas-nav [aria-current="page"] {
-    color: var(--atlas-accent); border-color: var(--atlas-accent);
-    background: var(--atlas-accent-tint);
-  }
   .atlas-page :focus-visible { outline: 2px solid var(--atlas-accent); outline-offset: 3px; }
 
   .header { margin-bottom: 48px; }
@@ -159,8 +146,6 @@
   @media (max-width: 680px) {
     .container { padding: 28px 16px 40px; }
     .atlas-topbar { grid-template-columns: minmax(0, 1fr); padding: 16px; }
-    .atlas-nav { display: grid; grid-template-columns: repeat(3, 1fr); justify-content: stretch; }
-    .atlas-nav a, .atlas-nav span { justify-content: center; padding-inline: 6px; }
     .header { margin-bottom: 36px; }
   }
   @media (prefers-reduced-motion: reduce) {
@@ -169,20 +154,21 @@
     }
   }
 </style>
+<link rel="stylesheet" href="/themes.css">
+<link rel="stylesheet" href="/navigation.css">
+<script src="/theme-picker.js"></script>
 </head>
 <body class="atlas-page" data-product="factory">
 <a class="atlas-skip" href="#atlas-main">Skip to architecture diagrams</a>
-<header class="atlas-topbar">
+<div class="factory-header">
+<header class="atlas-topbar factory-titlebar">
   <div class="atlas-brand">
     <span class="atlas-mark" aria-hidden="true"></span>
     <div><p class="atlas-kicker">Factory · system view</p><p class="atlas-product">Architecture atlas</p></div>
   </div>
-  <nav class="atlas-nav" aria-label="Factory views">
-    <a href="/">Dashboard</a>
-    <a href="/codebase">Codebase</a>
-    <span aria-current="page">Atlas</span>
-  </nav>
 </header>
+<nav class="factory-nav" aria-label="Factory views"><a href="/#inbox">Inbox</a><a href="/#roadmap">Roadmap</a><a href="/#ops">Ops</a><a href="/chat">Chat</a><a href="/codebase">Codebase</a><span aria-current="page">Atlas</span></nav>
+</div>
 <main id="atlas-main" class="container" tabindex="-1">
 
   <!-- ============ Header ============ -->
