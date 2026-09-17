@@ -13,8 +13,6 @@ import tomllib
 from pathlib import Path
 from urllib.parse import urlsplit
 
-import tomlkit
-
 from factory import config
 from factory.config import Config
 
@@ -356,6 +354,8 @@ def _validate_request(request: object) -> tuple[str, dict[str, object]]:
 
 
 def _document(text: str):
+    import tomlkit
+
     try:
         return tomlkit.parse(text) if text else tomlkit.document()
     except Exception as exc:
@@ -363,6 +363,8 @@ def _document(text: str):
 
 
 def _section(document, name: str):
+    import tomlkit
+
     section = document.get(name)
     if section is None:
         section = tomlkit.table()
@@ -373,6 +375,8 @@ def _section(document, name: str):
 
 
 def _apply(document, changes: dict[str, object]) -> str:
+    import tomlkit
+
     for dotted, value in changes.items():
         table_name, key = dotted.split(".", 1)
         if dotted == "manager.model" and value is None:
