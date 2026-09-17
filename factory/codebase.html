@@ -23,10 +23,12 @@
     --cb-danger: var(--danger, #d64545);
     --cb-info: var(--info, #b89bd6);
     --cb-mono: var(--mono, 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+    display: flex;
+    flex-direction: column;
     margin: 0;
     min-width: 320px;
-    min-height: 100dvh;
-    overflow-x: hidden;
+    height: 100dvh;
+    overflow: hidden;
     background: var(--cb-bg);
     color: var(--cb-ink);
     font: 13px/1.6 var(--cb-mono);
@@ -57,7 +59,7 @@
   .codebase-page :focus-visible { outline: 2px solid var(--cb-accent); outline-offset: 3px; box-shadow: none; }
   .cb-skip { position: fixed; z-index: 100; left: 12px; top: 8px; transform: translateY(-150%); padding: 8px 12px; background: var(--cb-panel); border: 1px solid var(--cb-accent); }
   .cb-skip:focus { transform: none; }
-  #codebase-app { min-height: 100dvh; }
+  #codebase-app { flex: 1; min-height: 0; overflow: auto; }
   .cb-topbar {
     display: grid;
     grid-template-columns: minmax(210px, 1fr) auto;
@@ -78,10 +80,6 @@
   .cb-title-row { display: flex; align-items: center; gap: 12px; margin-top: 3px; }
   .cb-mark { width: 12px; height: 12px; flex: 0 0 auto; border: 1px solid var(--cb-accent); background: var(--cb-accent-tint); transform: rotate(45deg); }
   .codebase-page .cb-title { margin: 0; color: var(--cb-ink); font: 700 clamp(22px, 3vw, 30px)/1.15 var(--cb-mono); letter-spacing: -.025em; -webkit-text-fill-color: currentColor; background: none; }
-  .cb-nav { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-  .cb-nav a, .cb-nav span { display: inline-flex; min-height: 44px; align-items: center; padding: 8px 12px; border: 1px solid var(--cb-line-strong); border-radius: 4px; color: var(--cb-muted); }
-  .cb-nav a:hover { color: var(--cb-accent); border-color: var(--cb-accent); text-decoration: none; }
-  .cb-nav [aria-current="page"] { color: var(--cb-accent); border-color: var(--cb-accent); background: var(--cb-accent-tint); }
   .cb-meta { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px 24px; color: var(--cb-muted); font-size: 11px; }
   .cb-meta strong { color: var(--cb-ink); font-weight: 500; overflow-wrap: anywhere; }
   .cb-health { display: inline-flex; align-items: center; gap: 7px; }
@@ -227,7 +225,6 @@
   @media (max-width: 680px) {
     body.codebase-page { font-size: 14px; }
     .cb-topbar { grid-template-columns: minmax(0, 1fr); padding: 16px; }
-    .cb-nav { justify-content: flex-start; }
     .cb-meta { grid-column: auto; display: grid; gap: 5px; }
     .cb-shell { padding: 12px 12px 48px; }
     .cb-timeline { padding: 12px; position: static; }
@@ -247,28 +244,23 @@
   @media (max-width: 390px) {
     .cb-file-grid { grid-template-columns: minmax(0, 1fr); }
     .cb-file-slot, .cb-file-card { min-height: 104px; }
-    .cb-nav { display: grid; grid-template-columns: repeat(4, 1fr); }
-    .cb-nav a, .cb-nav span { justify-content: center; padding-inline: 6px; }
   }
   @media (prefers-reduced-motion: reduce) {
     .codebase-page *, .codebase-page *::before, .codebase-page *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
   }
 </style>
+<link rel="stylesheet" href="/themes.css">
+<link rel="stylesheet" href="/navigation.css">
+<script src="/theme-picker.js"></script>
 </head>
 <body class="codebase-page" data-product="factory">
 <a class="cb-skip" href="#codebase-main">Skip to codebase map</a>
-<div id="codebase-app">
-  <header class="cb-topbar">
+<div class="factory-header">
+  <header class="cb-topbar factory-titlebar">
     <div>
       <p class="cb-eyebrow">Factory · repository view</p>
       <div class="cb-title-row"><span class="cb-mark" aria-hidden="true"></span><h1 class="cb-title">Codebase history</h1></div>
     </div>
-    <nav class="cb-nav" aria-label="Factory views">
-      <a href="/">Dashboard</a>
-      <a href="/chat">Chat</a>
-      <span aria-current="page">Codebase</span>
-      <a href="/atlas">Atlas</a>
-    </nav>
     <div class="cb-meta" id="history-meta" hidden>
       <span id="health" class="cb-health">Loading</span>
       <span>repository <strong id="meta-repo">—</strong></span>
@@ -279,6 +271,9 @@
     </div>
     <div id="notice" class="cb-notice" aria-live="polite"></div>
   </header>
+  <nav class="factory-nav" aria-label="Factory views"><a href="/#inbox">Inbox</a><a href="/#roadmap">Roadmap</a><a href="/#ops">Ops</a><a href="/chat">Chat</a><span aria-current="page">Codebase</span><a href="/atlas">Atlas</a></nav>
+</div>
+<div id="codebase-app">
 
   <section id="load-state" class="cb-state" role="status" aria-live="polite">
     <h2 id="load-title">Building the codebase map</h2>
