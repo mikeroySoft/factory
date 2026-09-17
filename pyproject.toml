@@ -9,7 +9,7 @@ description = "Label-driven autonomous ticket pipeline: triage, worker agents in
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["tomlkit>=0.13,<1"]
 keywords = ["agents", "github", "automation", "ci", "worktree"]
 classifiers = [
   "Environment :: Console",
