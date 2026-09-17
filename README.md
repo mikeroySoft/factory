@@ -48,7 +48,7 @@ uv tool install git+https://github.com/mikeroySoft/factory@v0.3.0   # a specific
 `pipx install` and `pip install --user` take the same URLs. The repository's
 default branch is `main`, so a bare URL installs development code. Select
 `@stable` explicitly for the released channel or a version tag for a fixed release;
-see [CHANGELOG.md](CHANGELOG.md). No Python dependencies.
+see [CHANGELOG.md](CHANGELOG.md). TOMLKit is installed automatically for comment-preserving settings updates.
 
 ## Set up a repository
 
@@ -236,7 +236,7 @@ merge stage.
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
 | `factory stats` | Ticket table: attempts, review rounds, hours to merge, escalation count, resolver attribution, minutes in `ready-for-human`, and re-queues. Reads GitHub plus existing `events.jsonl`. `--by-worker` reads only events and shows every configured worker label: first-attempt gate pass rate, all attempts (including review bounces), and known cost. Attribution uses claim labels with current worker precedence; unclaimed attempts are excluded, missing rates/cost are `n/a`. The dashboard Ops view shows the same worker metrics. `--json`. |
 | `factory learn` | Reads the last N finished tickets' event trail, failing-attempt log tails, reviewer findings, and escalation reasons; asks the local model for ≤10 repo-specific lessons; writes `.factory-lessons.md` (you commit it). Every worker prompt carries it. `--dry-run`, `--last N`. |
-| `factory dashboard` | Local ops UI: Inbox, Ops, a dedicated read-only Factory Manager Chat with browser-local history, Codebase history, and Atlas; tickets by stage, in-flight phase, gate reports, worker logs, journal heartbeat, and upstream drift. `--json` prints the existing snapshot, including independent executions and local interruption reconciliation. `--host 0.0.0.0` exposes it (and its mutating `/api/act`) to your network. |
+| `factory dashboard` | Local ops UI: Inbox, Ops, a dedicated read-only Factory Manager Chat with browser-local history, Codebase history, and Atlas; tickets by stage, in-flight phase, gate reports, worker logs, journal heartbeat, and upstream drift. `--json` prints the existing snapshot, including independent executions and local interruption reconciliation. `--host 0.0.0.0` exposes it, its mutating `/api/act`, and local settings writes to your network. |
 | `factory dashboard --runtime-json` | One bounded schema 1 runtime observation using only local read-only evidence; no GitHub, model probe, journal append, lock acquisition, or state creation. Partial source failures remain structured JSON. See [runtime contract](#bounded-runtime-json-schema-1). |
 | `factory evidence --root /path/to/main-checkout` | One explicit-repository schema 1 JSON read: compact cases, selected evidence, workflow/file/PR/CI investigations, or capabilities. Read-only GitHub GETs and F03 local evidence; no model, action execution, or state writes. See [evidence contract](#bounded-project-evidence-json-schema-1). |
 | `factory plan list` / `factory plan inspect N` | Read-only schema 1 JSON over `initiative` issues: declared status/owner, parsed sections, `#N` implementation links (`inspect` also fetches each linked issue's title/state), per-issue `malformed` + `problems` (missing/invalid declared facts, sections cut at 4,000 characters, links beyond the first 20), cited sources with `observed_at`. `list` reads at most 3 pages of 100 and keeps malformed initiatives flagged per row (exit 0); a failed page, or a malformed initiative under `inspect`, yields `coverage.status: partial` and exit 1, never a mutation. |
@@ -521,6 +521,28 @@ ticket's `human_touch` details. The dashboard retains its existing 100-issue,
 
 `.factory.toml` at the repository root; every key is optional. The template
 written by `factory init` documents them all. The ones you will actually set:
+
+The dashboard's **Settings** view (`/#settings`) edits exactly five controls:
+`dispatch.max_active` (concurrent tickets), `dispatch.budget_min` (time limit
+per ticket, in minutes), `dispatch.max_attempts` (worker and gate attempts),
+`dispatch.review_rounds` (reviewer revision rounds), and `manager.model` (the
+Factory Manager model). It shows each effective value and its source
+(Repository, Host repository override, Host default, or Built-in default), plus
+a read-only worker/reviewer/triage summary with command arguments and endpoint
+credentials omitted.
+
+Review the explicit before/after summary and choose **Save changes**. The
+dashboard writes only changed keys to the local `.factory.toml`, preserving
+unrelated settings and comments; changes remain uncommitted (they never commit
+or push). If another process changes the configuration first, stale edits are
+rejected: reload and review the latest values before saving. Work-limit changes
+apply to the next dispatcher invocation; the selected model applies to the next
+new Factory Manager request. Running work and in-flight requests keep their
+captured configuration unchanged.
+
+Clearing `manager.model` removes the repository override and restores the
+existing host value, a legacy `manager.command --model` fallback, or OMP's
+default model. Gate and safety policy remain file-managed.
 
 ```toml
 [repo]
@@ -1385,8 +1407,8 @@ The root is an **operator-selected main checkout**, not a request field. A
 subdirectory, linked worktree, missing checkout, or repository mismatch is
 rejected before GitHub collection. Repository identity comes from the main
 checkout's `.factory.toml` (`repo.slug`) or its GitHub origin remote, using the
-bounded F03 loader. Cwd does not select scope. The normal Python package remains
-dependency-free; these reads require no Pi installation or model provider.
+bounded F03 loader. Cwd does not select scope. The normal Python package
+requires TOMLKit; these reads require no Pi installation or model provider.
 
 ### Requests and implemented reads
 
@@ -1669,7 +1691,7 @@ uv run --extra atlas factory codebase
 uv run --extra atlas factory dashboard
 ```
 
-Ordinary Factory commands still have no required Python dependencies. The
+TOMLKit is the only required Python dependency. The
 `atlas` extra pins Graphify 0.9.56; code extraction runs locally, without an LLM,
 network access, checking out historical revisions, or executing repository code.
 

@@ -28,7 +28,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
-from factory import __version__, briefing, codebase, config, dispatch, feedback, lifecycle, stats
+from factory import __version__, briefing, codebase, config, dispatch, feedback, lifecycle, settings, stats
 from factory.config import (
     LABEL_AGENT,
     LABEL_APPROVED,
@@ -113,6 +113,13 @@ def configure(c: Config) -> None:
     LLM_URL = c.llm_url
     LLM_MODEL = c.llm_model
     GATE_CHECKS = ["conflict-markers", *(k.name for k in c.checks), "leak-scan"]
+
+def _reload_config() -> None:
+    """Swap the dashboard's config object; existing requests keep their reference."""
+    configure(config.load(ROOT))
+    with _cache_lock:
+        _cache["at"] = 0.0
+
 
 
 # ponytail: first 100 issues / 100 PRs, no pagination; add cursors when the
@@ -1216,6 +1223,8 @@ class Handler(BaseHTTPRequestHandler):
                 "status": "error", "error": "Codebase monitor is not running", "data": None,
             }
             self._send(200, "application/json", json.dumps(state).encode())
+        elif url.path == "/api/settings":
+            self._send(200, "application/json", json.dumps(settings.snapshot(ROOT)).encode())
         elif url.path == "/api/roadmap":
             values = parse_qs(url.query, keep_blank_values=True).get("initiative", [])
             if len(values) > 1 or (values and not re.fullmatch(r"[1-9][0-9]{0,8}", values[0])):
@@ -1240,7 +1249,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         route = urlparse(self.path).path
-        if route not in ("/api/act", "/api/briefing", "/api/ask"):
+        if route not in ("/api/act", "/api/briefing", "/api/ask", "/api/settings"):
             self._send(404, "application/json", b'{"ok":false,"error":"Unknown API route"}')
             return
         # A custom header forces a CORS preflight we never answer. Check Origin
@@ -1264,6 +1273,10 @@ class Handler(BaseHTTPRequestHandler):
             req = json.loads(body)
             if route == "/api/act":
                 result = act(req)
+            elif route == "/api/settings":
+                result = settings.save(ROOT, req)
+                if result.get("ok"):
+                    _reload_config()
             else:
                 asking = route == "/api/ask"
                 briefing.validate_request(req, asking)
@@ -1309,8 +1322,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--host",
         default="127.0.0.1",
-        help="bind address; 0.0.0.0 exposes the dashboard AND /api/act "
-        "(which mutates GitHub with your gh credentials) to the whole network",
+        help="bind address; 0.0.0.0 exposes the dashboard and mutating APIs "
+        "(GitHub actions with your gh credentials and local settings writes) to the whole network",
     )
     parser.add_argument("--no-open", action="store_true", help="do not open a browser")
     output = parser.add_mutually_exclusive_group()

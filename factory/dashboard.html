@@ -325,8 +325,54 @@
     .roadmap-controls select { width: 100%; }
   }
   @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
     *, *::before, *::after { animation: none !important; transition: none !important; }
     .scan { display: none; }
+  }
+  /* ---------- settings ---------- */
+  .settings-head { display: flex; gap: 18px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
+  .settings-head h2 { font: 700 18px var(--hud); letter-spacing: .08em; color: var(--ink); margin-top: 4px; }
+  .settings-lede { color: var(--muted); max-width: 760px; margin-top: 8px; }
+  .settings-scope { color: var(--dim); font-size: 11px; border: 1px solid var(--line); padding: 8px 10px; }
+  .settings-scope b { color: var(--cyan); font-weight: 500; }
+  .settings-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(280px, .8fr); gap: 18px; align-items: start; }
+  .settings-form { display: grid; gap: 16px; }
+  .settings-field { display: grid; gap: 5px; }
+  .settings-field label { color: var(--ink); font-size: 12px; font-weight: 600; }
+  .settings-field input { width: min(100%, 360px); background: var(--bg); border: 1px solid var(--line2); color: var(--ink); padding: 8px 10px; }
+  .settings-field input:focus { border-color: var(--cyan); outline: none; box-shadow: 0 0 8px rgba(0,229,255,.25); }
+  .settings-field input[aria-invalid="true"] { border-color: var(--mag); }
+  .settings-help { font-size: 12px; line-height: 1.45; color: var(--muted); }
+  .settings-effective, .settings-source { font-size: 10px; color: var(--dim); }
+  .settings-effective { color: var(--muted); }
+  .settings-source { color: var(--cyan); }
+  .settings-error { color: var(--mag); font-size: 10px; min-height: 0; }
+  .settings-error:empty { display: none; }
+  .settings-actions { display: flex; gap: 8px; flex-wrap: wrap; padding-top: 4px; border-top: 1px solid var(--line); }
+  .settings-actions button.primary { color: var(--cyan); border-color: var(--cyan); }
+  .settings-actions button:disabled { opacity: .4; cursor: wait; box-shadow: none; }
+  .settings-status { min-height: 20px; color: var(--muted); font-size: 11px; }
+  .settings-status.bad { color: var(--mag); }
+  .settings-status.good { color: var(--grn); }
+  .settings-changes { border-top: 1px solid var(--line); padding-top: 12px; }
+  .settings-changes h3, .settings-agents h3 { color: var(--cyan); font-size: 10px; letter-spacing: .18em; text-transform: uppercase; margin-bottom: 8px; }
+  .settings-change-list { display: grid; gap: 6px; list-style: none; }
+  .settings-change-list li { display: grid; grid-template-columns: minmax(130px, .8fr) 1fr; gap: 10px; font-size: 11px; border-bottom: 1px solid rgba(26,36,54,.6); padding: 5px 0; }
+  .settings-change-list .key { color: var(--dim); }
+  .settings-change-list .from { color: var(--muted); }
+  .settings-change-list .to { color: var(--ink); }
+  .settings-agents { display: grid; gap: 14px; }
+  .settings-agent-group { border-bottom: 1px solid rgba(26,36,54,.6); padding-bottom: 10px; }
+  .settings-agent-group:last-child { border-bottom: 0; padding-bottom: 0; }
+  .settings-agent-group h4 { color: var(--ink); font-size: 11px; font-weight: 600; margin-bottom: 4px; }
+  .settings-agent-group p { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+  .settings-agent-group .hint { display: block; margin-top: 4px; }
+  .settings-omission { color: var(--dim); font-size: 10px; border-left: 2px solid var(--line2); padding-left: 8px; }
+  @media (max-width: 800px) {
+    .settings-grid { grid-template-columns: 1fr; }
+    .settings-field input { width: 100%; min-height: 44px; }
+    .settings-actions button { min-height: 44px; }
+    .settings-change-list li { grid-template-columns: 1fr; gap: 2px; }
   }
 </style>
 <link rel="stylesheet" href="/theme.css">
@@ -353,7 +399,7 @@
     <label id="auto-control"><input type="checkbox" id="auto" checked> auto 30s</label>
   </div>
 </header>
-<nav class="factory-nav" aria-label="Factory views"><button id="nav-inbox" type="button">Inbox</button><button id="nav-roadmap" type="button">Roadmap</button><button id="nav-ops" class="on" type="button" aria-current="page">Ops</button><a href="/chat">Chat</a><a href="/codebase">Codebase</a><a href="/atlas">Atlas</a></nav>
+<nav class="factory-nav" aria-label="Factory views"><button id="nav-inbox" type="button">Inbox</button><button id="nav-roadmap" type="button">Roadmap</button><button id="nav-ops" class="on" type="button" aria-current="page">Ops</button><button id="nav-settings" type="button">Settings</button><a href="/chat">Chat</a><a href="/codebase">Codebase</a><a href="/atlas">Atlas</a></nav>
 </div>
 
 <main id="ops">
@@ -454,6 +500,82 @@
     <div class="body roadmap-sources" id="roadmap-sources"></div>
   </section>
 </main>
+<main id="settings" hidden tabindex="-1" aria-labelledby="settings-title">
+  <div class="settings-head">
+    <div>
+      <p class="eyebrow">Local repository settings</p>
+      <h2 id="settings-title" tabindex="-1">Settings</h2>
+      <p class="settings-lede">Edit the five repository knobs that affect the next dispatcher or Factory Manager request. Running work keeps the values it already captured.</p>
+    </div>
+    <p class="settings-scope" id="settings-scope"><b>Scope</b><br>Loading repository scope…</p>
+  </div>
+  <div id="settings-status" class="settings-status" role="status" aria-live="polite"></div>
+  <form id="settings-form">
+    <div class="settings-grid">
+      <section class="panel" aria-labelledby="settings-work-title">
+        <header><b id="settings-work-title">Work limits</b><span class="note">local, uncommitted until you commit</span></header>
+        <div class="body">
+          <div class="settings-form">
+            <div class="settings-field">
+              <label for="settings-max-active">Maximum active tickets</label>
+              <input id="settings-max-active" name="dispatch.max_active" type="number" min="1" step="1" inputmode="numeric" required>
+              <p class="settings-help">How many tickets the dispatcher may run at once. Applies to the next dispatcher invocation.</p>
+              <p id="settings-error-dispatch-max-active" class="settings-error"></p>
+              <p id="settings-effective-dispatch-max-active" class="settings-effective"></p>
+              <p id="settings-source-dispatch-max-active" class="settings-source"></p>
+            </div>
+            <div class="settings-field">
+              <label for="settings-budget-min">Time limit per ticket (minutes)</label>
+              <input id="settings-budget-min" name="dispatch.budget_min" type="number" min="1" step="1" inputmode="numeric" required>
+              <p class="settings-help">Wall-clock minutes allowed for a ticket before escalation. Applies to the next dispatcher invocation.</p>
+              <p id="settings-error-dispatch-budget-min" class="settings-error"></p>
+              <p id="settings-effective-dispatch-budget-min" class="settings-effective"></p>
+              <p id="settings-source-dispatch-budget-min" class="settings-source"></p>
+            </div>
+            <div class="settings-field">
+              <label for="settings-max-attempts">Worker + gate attempts before escalation</label>
+              <input id="settings-max-attempts" name="dispatch.max_attempts" type="number" min="1" step="1" inputmode="numeric" required>
+              <p class="settings-help">Worker and gate attempts allowed before a ticket can escalate. Reviewer revisions are separate; this is not the review-round count.</p>
+              <p id="settings-error-dispatch-max-attempts" class="settings-error"></p>
+              <p id="settings-effective-dispatch-max-attempts" class="settings-effective"></p>
+              <p id="settings-source-dispatch-max-attempts" class="settings-source"></p>
+            </div>
+            <div class="settings-field">
+              <label for="settings-review-rounds">Reviewer revision rounds</label>
+              <input id="settings-review-rounds" name="dispatch.review_rounds" type="number" min="0" step="1" inputmode="numeric" required>
+              <p class="settings-help">How many reviewer revisions are allowed after gate success. Zero means no reviewer bounce.</p>
+              <p id="settings-error-dispatch-review-rounds" class="settings-error"></p>
+              <p id="settings-effective-dispatch-review-rounds" class="settings-effective"></p>
+              <p id="settings-source-dispatch-review-rounds" class="settings-source"></p>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section class="panel" aria-labelledby="settings-agents-title">
+        <header><b id="settings-agents-title">Models and agents</b><span class="note">manager override + read-only agent summary</span></header>
+        <div class="body">
+          <div class="settings-form">
+            <div class="settings-field">
+              <label for="settings-manager-model">Factory Manager model override</label>
+              <input id="settings-manager-model" name="manager.model" type="text" maxlength="200" autocomplete="off" spellcheck="false">
+              <p class="settings-help">Optional model selector for new FM requests. Leave blank to remove this repository override and use the inherited host, built-in, or legacy manager.command model.</p>
+              <p id="settings-error-manager-model" class="settings-error"></p>
+              <p id="settings-effective-manager-model" class="settings-effective"></p>
+              <p id="settings-source-manager-model" class="settings-source"></p>
+            </div>
+            <div id="settings-agents" class="settings-agents"></div>
+          </div>
+        </div>
+      </section>
+    </div>
+    <div id="settings-changes" class="settings-changes" hidden></div>
+    <div class="settings-actions">
+      <button id="settings-save" class="primary" type="submit" disabled>Save changes</button>
+      <button id="settings-revert" type="button" disabled>Revert edits</button>
+      <button id="settings-reload" type="button" hidden>Reload current settings</button>
+    </div>
+  </form>
+</main>
 <div id="toasts" class="toasts" aria-live="polite"></div>
 
 <aside class="drawer" id="drawer" aria-label="Ticket detail" aria-hidden="true">
@@ -508,7 +630,14 @@ const ALWAYS_COLS = ['triage', 'queued', 'in-flight', 'pr-open', 'escalated', 'm
 const FEED_KINDS = new Set(['labeled', 'assigned', 'attempt', 'gate', 'pr-opened', 'verdict', 'merged', 'escalated', 'triaged', 'closed', 'pr-closed', 'reopened']);
 const TABS = ['timeline', 'attempts', 'gate', 'review', 'branch', 'prompt', 'issue'];
 
-const S = { snap: null, filter: null, q: '', sel: null, tab: 'timeline', okAt: 0, failed: false, files: {}, view: 'ops', drafts: {}, inboxDirty: false, inboxKey: null, choices: {}, briefings: {}, chats: {}, receipts: {}, fm: null, preview: null, restored: false, loading: null, roadmap: null, roadmapError: '', roadmapLoading: {}, roadmapDetails: {}, roadmapOwner: '' };
+const S = { snap: null, filter: null, q: '', sel: null, tab: 'timeline', okAt: 0, failed: false, files: {}, view: 'ops', drafts: {}, inboxDirty: false, inboxKey: null, choices: {}, briefings: {}, chats: {}, receipts: {}, fm: null, preview: null, restored: false, loading: null, roadmap: null, roadmapError: '', roadmapLoading: {}, roadmapDetails: {}, roadmapOwner: '', settings: { snapshot: null, draft: null, loaded: false, loading: null, saving: false, error: '', fieldErrors: {}, conflict: false, reviewPending: false, notice: '' } };
+const SETTINGS_FIELDS = [
+  ['dispatch.max_active', 'Maximum active tickets', 'settings-max-active'],
+  ['dispatch.budget_min', 'Time limit per ticket (minutes)', 'settings-budget-min'],
+  ['dispatch.max_attempts', 'Worker + gate attempts before escalation', 'settings-max-attempts'],
+  ['dispatch.review_rounds', 'Reviewer revision rounds', 'settings-review-rounds'],
+  ['manager.model', 'Factory Manager model override', 'settings-manager-model'],
+];
 const $ = id => document.getElementById(id);
 
 // ---------------------------------------------------------------- utils
@@ -677,6 +806,252 @@ function stageTimeline(t) {
   return segs.filter(s => ms(s.to) > ms(s.from));
 }
 
+// ---------------------------------------------------------------- settings
+function settingsBaseValue(key) {
+  const field = S.settings.snapshot?.fields?.[key];
+  return field ? field.value : key === 'manager.model' ? null : '';
+}
+function settingsDraftValue(key) {
+  const value = S.settings.draft?.[key];
+  return value == null ? '' : String(value);
+}
+function settingsDraftFrom(snapshot) {
+  return Object.fromEntries(SETTINGS_FIELDS.map(([key]) => [key, key === 'manager.model' ? (snapshot.fields?.[key]?.value || '') : String(snapshot.fields?.[key]?.value ?? '')]));
+}
+function settingsNormalize(key, raw) {
+  if (key === 'manager.model') {
+    const value = String(raw ?? '').trim();
+    return value ? value : null;
+  }
+  if (raw === '' || raw == null) return NaN;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) ? value : NaN;
+}
+function settingsEqual(key, left, right) {
+  return key === 'manager.model' ? (String(left ?? '').trim() || null) === (right || null) : Number(left) === Number(right);
+}
+function settingsDraftValid() {
+  return SETTINGS_FIELDS.every(([key]) => {
+    const value = settingsNormalize(key, settingsDraftValue(key));
+    return key === 'dispatch.review_rounds' ? Number.isSafeInteger(value) && value >= 0 : key === 'manager.model' ? value == null || value.length <= 200 : Number.isSafeInteger(value) && value >= 1;
+  });
+}
+function settingsValueError(key, raw) {
+  const value = settingsNormalize(key, raw);
+  if (key === 'manager.model') return value && value.length > 200 ? 'Use 200 characters or fewer.' : '';
+  if (raw === '') return key === 'dispatch.review_rounds' ? 'Enter a whole number of 0 or more.' : 'Enter a whole number of 1 or more.';
+  if (!Number.isSafeInteger(value) || value < (key === 'dispatch.review_rounds' ? 0 : 1)) return key === 'dispatch.review_rounds' ? 'Enter a whole number of 0 or more.' : 'Enter a whole number of 1 or more.';
+  return '';
+}
+function settingsChanges() {
+  if (!S.settings.snapshot || !S.settings.draft || !settingsDraftValid()) return [];
+  return SETTINGS_FIELDS.map(([key]) => [key, settingsNormalize(key, settingsDraftValue(key))])
+    .filter(([key, value]) => !settingsEqual(key, value, settingsBaseValue(key)));
+}
+function settingsDraftChanges(snapshot = S.settings.snapshot, draft = S.settings.draft) {
+  if (!snapshot || !draft) return {};
+  const changes = {};
+  for (const [key] of SETTINGS_FIELDS) {
+    const raw = draft[key] == null ? '' : String(draft[key]);
+    const value = settingsNormalize(key, raw), base = snapshot.fields?.[key]?.value;
+    if (Number.isNaN(value) ? raw !== String(base ?? '') : !settingsEqual(key, value, base)) changes[key] = raw;
+  }
+  return changes;
+}
+function settingsHasDraftChanges() { return Object.keys(settingsDraftChanges()).length > 0; }
+function settingsKeyId(key) { return key.replace(/[._]+/g, '-'); }
+function settingsId(kind, key) { return `settings-${kind}-${settingsKeyId(key)}`; }
+function settingsErrorId(key) { return settingsId('error', key); }
+function settingsEffectiveId(key) { return settingsId('effective', key); }
+function settingsSourceId(key) { return settingsId('source', key); }
+function settingsEffectiveText(key, field) {
+  const value = field?.value == null
+    ? key === 'manager.model' ? 'blank · inherited host, built-in, or legacy manager.command model' : 'none / inherited setting'
+    : String(field.value);
+  return `Effective now: ${value} · ${field?.applies || 'applies on the next new request'}`;
+}
+function settingsSummaryValue(key, value, draft = false) {
+  if (key === 'manager.model') return value ? String(value) : draft ? 'blank · remove repository override' : 'none / inherited setting';
+  return value == null || value === '' ? '—' : String(value);
+}
+function safeAgentProgram(value) {
+  const base = String(value || '').split(/[\\/]/).at(-1) || '';
+  return /^[A-Za-z0-9._+-]+$/.test(base) ? base : 'program omitted for safety';
+}
+function safeAgentModel(value) {
+  if (value == null || String(value) === '') return 'none / inherited';
+  const model = String(value);
+  return model.length <= 200 ? model : 'not disclosed';
+}
+function safeAgentOrigin(value) {
+  if (!value) return 'endpoint omitted for safety';
+  try {
+    const endpoint = new URL(String(value), location.origin);
+    return ['http:', 'https:'].includes(endpoint.protocol) ? endpoint.origin : 'endpoint omitted for safety';
+  } catch (_) { return 'endpoint omitted for safety'; }
+}
+function settingsAgent(label, detail, source, omission = '') {
+  return h('div', { class: 'settings-agent-group' }, h('h4', {}, label), h('p', {}, detail), h('span', { class: 'hint' }, source || 'Source not reported'), omission ? h('p', { class: 'settings-omission' }, omission) : null);
+}
+function renderSettingsAgents(snapshot) {
+  const into = $('settings-agents');
+  if (!snapshot) {
+    into.replaceChildren(h('p', { class: 'empty' }, 'Agent configuration is unavailable. Retry settings without affecting Inbox or Ops.'));
+    return;
+  }
+  const agents = snapshot.agents || {}, workers = Array.isArray(agents.workers) ? agents.workers : [];
+  const nodes = workers.map(worker => settingsAgent(
+    `${worker.label || 'worker'} worker`,
+    `${safeAgentProgram(worker.program)} · model ${safeAgentModel(worker.model)}`,
+    worker.source,
+    'Arguments and environment wrappers are omitted so credentials cannot appear here.',
+  ));
+  const reviewer = agents.reviewer || {};
+  nodes.push(settingsAgent('Reviewer', `${safeAgentProgram(reviewer.program)} · model ${safeAgentModel(reviewer.model)}`, reviewer.source, 'Only the executable basename and recognized model value are shown.'));
+  const triage = agents.triage || {};
+  nodes.push(settingsAgent('Triage', `${safeAgentOrigin(triage.endpoint)} · model ${safeAgentModel(triage.model)}`, triage.source, 'Only the endpoint origin is shown; paths, query strings, fragments, and credentials are withheld.'));
+  replaceChildren(into, nodes);
+}
+function renderSettingsChanges() {
+  const into = $('settings-changes'), changes = [];
+  if (S.settings.snapshot && S.settings.draft) {
+    for (const [key, label] of SETTINGS_FIELDS) {
+      const raw = settingsDraftValue(key), value = settingsNormalize(key, raw), base = settingsBaseValue(key);
+      const changed = Number.isNaN(value) ? raw !== String(base ?? '') : !settingsEqual(key, value, base);
+      if (changed) changes.push(h('li', {}, h('span', { class: 'key' }, label), h('span', { class: 'from' }, `before: ${settingsSummaryValue(key, base)}`), h('span', { class: 'to' }, `after: ${settingsSummaryValue(key, Number.isNaN(value) ? raw : value, true)}${Number.isNaN(value) ? ' · invalid' : ''}`)));
+    }
+  }
+  into.hidden = !changes.length;
+  replaceChildren(into, changes.length ? [h('h3', {}, 'Pending changes'), h('ul', { class: 'settings-change-list' }, changes)] : []);
+}
+function renderSettings() {
+  const st = S.settings, snapshot = st.snapshot;
+  $('settings-scope').replaceChildren(
+    h('b', {}, 'Scope'), h('br'), snapshot ? `Repository ${snapshot.repo || 'current repository'}` : 'Repository scope unavailable',
+    h('br'), h('span', {}, snapshot?.persistence || 'Saved settings are local and uncommitted'),
+  );
+  renderSettingsAgents(snapshot);
+  for (const [key, , id] of SETTINGS_FIELDS) {
+    const input = $(id), field = snapshot?.fields?.[key], error = st.fieldErrors[key];
+    const errorId = settingsErrorId(key), effectiveId = settingsEffectiveId(key), sourceId = settingsSourceId(key);
+    if (st.draft && (document.activeElement !== input || !settingsHasDraftChanges())) input.value = settingsDraftValue(key);
+    input.disabled = !snapshot || st.saving;
+    input.setAttribute('aria-invalid', error ? 'true' : 'false');
+    input.setAttribute('aria-describedby', [errorId, effectiveId, sourceId].join(' '));
+    $(effectiveId).textContent = snapshot ? settingsEffectiveText(key, field) : 'Effective value unavailable until settings load.';
+    $(sourceId).textContent = field?.source ? `Source: ${field.source}` : '';
+    $(errorId).textContent = error || '';
+  }
+  const changes = settingsChanges(), dirty = settingsHasDraftChanges(), valid = settingsDraftValid();
+  $('settings-save').disabled = !snapshot || !dirty || !valid || st.loading || st.saving || st.conflict || st.reviewPending;
+  $('settings-revert').disabled = !snapshot || !dirty || st.saving;
+  const reload = $('settings-reload');
+  reload.hidden = !(st.error || st.conflict || st.reviewPending);
+  reload.textContent = st.reviewPending ? 'I reviewed latest settings' : st.conflict ? 'Reload current settings' : 'Retry settings';
+  if (st.loading || st.saving) {
+    $('settings-status').className = 'settings-status';
+    $('settings-status').textContent = st.saving ? 'Saving settings…' : 'Loading settings…';
+  } else if (st.conflict) {
+    $('settings-status').className = 'settings-status warn';
+    $('settings-status').textContent = `${st.error || 'Settings revision is stale.'} Reload and review the latest values before resaving; your draft stays here.`;
+  } else if (st.error) {
+    $('settings-status').className = 'settings-status bad';
+    $('settings-status').textContent = `${st.error} Your draft is retained.`;
+  } else if (st.reviewPending) {
+    $('settings-status').className = 'settings-status warn';
+    $('settings-status').textContent = 'Latest settings loaded. Review the current values against your draft, then confirm before resaving.';
+  } else if (st.notice) {
+    $('settings-status').className = 'settings-status good';
+    $('settings-status').textContent = st.notice;
+  } else if (!snapshot) {
+    $('settings-status').className = 'settings-status';
+    $('settings-status').textContent = 'Settings can load independently of snapshot or GitHub availability.';
+  } else if (dirty) {
+    $('settings-status').className = 'settings-status warn';
+    $('settings-status').textContent = `${changes.length || 'Some'} unsaved change${changes.length === 1 ? '' : 's'}. Review the summary before saving.`;
+  } else {
+    $('settings-status').className = 'settings-status';
+    $('settings-status').textContent = 'Effective values are shown below. Nothing is saved automatically.';
+  }
+  renderSettingsChanges();
+}
+async function loadSettings(force = false) {
+  const st = S.settings;
+  if (st.loading || st.saving) return st.loading;
+  const previousSnapshot = st.snapshot;
+  const wasReviewPending = st.reviewPending;
+  st.loading = (async () => {
+    try {
+      const response = await fetch('/api/settings' + (force ? '?fresh=1' : ''));
+      let result = null;
+      try { result = await response.json(); } catch (_) { /* handled as an unavailable settings response */ }
+      if (!response.ok || !result?.ok || !result.fields) throw new Error(result?.error || `Settings unavailable (${response.status})`);
+      const draftChanges = settingsDraftChanges(st.snapshot, st.draft);
+      const preserveDraft = Object.keys(draftChanges).length > 0;
+      const nextDraft = settingsDraftFrom(result);
+      Object.assign(nextDraft, draftChanges);
+      const revisionChanged = Boolean(previousSnapshot && previousSnapshot.revision !== result.revision);
+      st.snapshot = result; st.draft = nextDraft; st.loaded = true; st.error = ''; st.fieldErrors = {};
+      st.conflict = false; st.reviewPending = preserveDraft && (wasReviewPending || revisionChanged); st.notice = '';
+    } catch (error) {
+      st.error = String(error?.message || 'Settings unavailable').slice(0, 300);
+      st.fieldErrors = {};
+    } finally {
+      st.loading = null;
+      renderSettings();
+    }
+  })();
+  renderSettings();
+  return st.loading;
+}
+async function saveSettings() {
+  const st = S.settings;
+  if (st.loading || st.saving || st.conflict || st.reviewPending || !st.snapshot) return;
+  const form = $('settings-form');
+  if (!form.checkValidity() || !settingsDraftValid()) {
+    for (const [key] of SETTINGS_FIELDS) {
+      const error = settingsValueError(key, settingsDraftValue(key));
+      if (error) st.fieldErrors[key] = error;
+    }
+    st.notice = ''; renderSettings(); return;
+  }
+  const changes = Object.fromEntries(settingsChanges());
+  if (!Object.keys(changes).length) return;
+  st.saving = true; st.notice = ''; st.error = ''; st.fieldErrors = {};
+  renderSettings();
+  try {
+    const response = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Factory-Act': '1' },
+      body: JSON.stringify({ revision: st.snapshot.revision, changes }),
+    });
+    let result = null;
+    try { result = await response.json(); } catch (_) { /* handled as a failed save */ }
+    if (!response.ok || !result?.ok || !result.fields) {
+      st.error = String(result?.error || `Settings save failed (${response.status})`).slice(0, 300);
+      st.fieldErrors = result?.errors && typeof result.errors === 'object' ? result.errors : {};
+      if (response.status === 409 || /stale|revision|changed/i.test(st.error)) st.conflict = true;
+      return;
+    }
+    st.snapshot = result; st.draft = settingsDraftFrom(result); st.loaded = true; st.error = ''; st.fieldErrors = {}; st.conflict = false; st.reviewPending = false;
+    st.notice = 'Saved locally. Changes apply to the next dispatcher invocation or new Factory Manager request; running work is unchanged. Commit the local config when you want to share it.';
+    if (Object.prototype.hasOwnProperty.call(changes, 'manager.model')) {
+      for (const entry of Object.values(S.briefings)) if (entry) entry.modelStale = true;
+      for (const chat of Object.values(S.chats)) if (chat.messages?.length) chat.modelStale = true;
+    }
+  } catch (error) {
+    st.error = String(error?.message || 'Settings save failed').slice(0, 300);
+  } finally {
+    st.saving = false;
+    renderSettings();
+  }
+}
+function revertSettings() {
+  const st = S.settings;
+  if (!st.snapshot || st.saving) return;
+  st.draft = settingsDraftFrom(st.snapshot); st.fieldErrors = {}; st.notice = '';
+  renderSettings();
+}
 const roadmapList = value => Array.isArray(value) ? value : [];
 const roadmapValue = value => value == null || value === '' ? 'unknown' : String(value);
 const ownerLabel = owner => typeof owner === 'string' && owner ? (owner.startsWith('@') ? owner : `@${owner}`) : 'unknown';
@@ -857,6 +1232,7 @@ function renderRoadmap() {
 // ---------------------------------------------------------------- render
 function render() {
   applyView();
+  renderSettings();
   if (!S.snap) {
     const message = 'No snapshot is available. Check the dashboard connection, then retry.';
     $('errors').replaceChildren(h('div', { class: 'err' }, message));
@@ -1766,7 +2142,7 @@ function fmProgress(label) {
     h('span', {}, label));
 }
 function renderTaskBriefing(item) {
-  const t = item.t, entry = S.briefings[t.number], fresh = entry && entry.fingerprint === ticketFingerprint(t);
+  const t = item.t, entry = S.briefings[t.number], fresh = entry && !entry.modelStale && entry.fingerprint === ticketFingerprint(t);
   const result = fresh ? entry.data : null, briefing = result?.briefing, sources = result?.sources || [];
   const state = h('div', { id: 'briefing-fm-status', class: 'briefing-status', role: 'status' });
   const retry = label => h('button', { id: 'briefing-refresh', onclick: () => ensureBriefing(t.number, true) }, label);
@@ -1843,7 +2219,7 @@ async function openFM(number, scope = null) {
   if (!$('fm-dialog').open) $('fm-dialog').showModal();
   if (!context.resolving) { $('fm-question').focus(); return; }
   const entry = S.briefings[number];
-  const result = await ensureBriefing(number, !entry?.data || entry.fingerprint !== ticketFingerprint(t));
+  const result = await ensureBriefing(number, !entry?.data || entry.modelStale || entry.fingerprint !== ticketFingerprint(t));
   if (S.fm !== context) return;
   const source = result?.sources.find(source => scope.path ? source.path === scope.path : scope.match ? new RegExp(scope.match, 'i').test(source.label) : false);
   context.resolving = false;
@@ -1881,7 +2257,7 @@ function renderFMMessages() {
   const { chat, number, run } = context;
   $('fm-messages').replaceChildren(...chat.messages.map(message => h('article', { class: `fm-message ${message.role}` }, h('h3', { class: 'briefing-label' }, message.role === 'user' ? 'You' : 'Factory Manager'), h('p', {}, cited(message.content, message.sources || [], number, run)),
     message.sources?.length ? h('details', { class: 'fm-citations' }, h('summary', {}, `Inspect answer evidence · ${message.sources.length} sources`), ...message.sources.map(source => sourceDetails(number, source, false, run))) : null)));
-  $('fm-status').textContent = context.resolving ? 'Resolving the selected source before a question can be sent.' : context.scopeError ? 'Source unavailable. Retry it or explicitly switch to the whole task.' : chat.pending ? 'FM is reading the evidence and answering… You can close this dialog; your conversation is retained.' : chat.error || 'Questions stay in this browser session. They are not posted as GitHub comments.';
+  $('fm-status').textContent = context.resolving ? 'Resolving the selected source before a question can be sent.' : context.scopeError ? 'Source unavailable. Retry it or explicitly switch to the whole task.' : chat.pending ? 'FM is reading the evidence and answering… You can close this dialog; your conversation is retained.' : chat.modelStale ? 'The Factory Manager model changed; this conversation is retained for reference. New questions use the new model.' : chat.error || 'Questions stay in this browser session. They are not posted as GitHub comments.';
   if (context.resolving || chat.pending) $('fm-status').prepend(fmProgress(context.resolving ? 'Waiting for FM · loading source context…' : 'Waiting for FM · preparing answer…'));
   $('fm-send').disabled = !!(context.resolving || context.scopeError || chat.pending);
   $('fm-question').disabled = !!chat.pending;
@@ -1923,26 +2299,42 @@ $('decision-close').onclick = () => { if (!S.preview?.busy) $('decision-dialog')
 $('decision-dialog').addEventListener('cancel', e => { if (S.preview?.busy) e.preventDefault(); });
 for (const id of ['fm-dialog', 'decision-dialog']) $(id).addEventListener('close', () => { if (id === 'decision-dialog') S.preview = null; updateInbox(true, true); });
 function syncHash() {
-  const hash = S.view === 'inbox' ? `#inbox${S.inboxKey ? '/' + encodeURIComponent(S.inboxKey) : ''}` : S.view === 'roadmap' ? '#roadmap' : S.sel != null ? `#t=${S.sel}` : S.filter ? `#s=${S.filter}` : '#ops';
+  const hash = S.view === 'settings' ? '#settings' : S.view === 'inbox' ? `#inbox${S.inboxKey ? '/' + encodeURIComponent(S.inboxKey) : ''}` : S.view === 'roadmap' ? '#roadmap' : S.sel != null ? `#t=${S.sel}` : S.filter ? `#s=${S.filter}` : '#ops';
   history.replaceState(null, '', hash);
 }
 function applyView() {
-  $('ops').hidden = S.view !== 'ops'; $('inbox').hidden = S.view !== 'inbox'; $('roadmap').hidden = S.view !== 'roadmap';
-  for (const view of ['ops', 'inbox', 'roadmap']) {
+  $('ops').hidden = S.view !== 'ops'; $('inbox').hidden = S.view !== 'inbox'; $('roadmap').hidden = S.view !== 'roadmap'; $('settings').hidden = S.view !== 'settings';
+  for (const view of ['ops', 'inbox', 'roadmap', 'settings']) {
     $(`nav-${view}`).classList.toggle('on', S.view === view);
     $(`nav-${view}`).setAttribute('aria-current', S.view === view ? 'page' : 'false');
   }
   $('search').hidden = S.view === 'roadmap';
   $('auto-control').hidden = S.view === 'roadmap';
-  document.title = `Factory — ${{ inbox: 'Inbox', roadmap: 'Roadmap', ops: 'Ops' }[S.view] || 'Ops'}`;
+  document.title = `Factory — ${{ inbox: 'Inbox', roadmap: 'Roadmap', settings: 'Settings', ops: 'Ops' }[S.view] || 'Ops'}`;
 }
 function setView(view) {
   S.view = view; S.sel = null;
   $('drawer').classList.remove('open'); $('drawer').setAttribute('aria-hidden', 'true');
   syncHash(); applyView(); updateInbox(true); window.scrollTo(0, 0);
   if (view === 'roadmap') loadRoadmap();
+  if (view === 'settings') { loadSettings(false); queueMicrotask(() => $('settings-title').focus({ preventScroll: true })); }
 }
 $('inbox').addEventListener('focusout', () => { if (S.inboxDirty) setTimeout(() => updateInbox(), 100); });
+$('settings-form').onsubmit = event => { event.preventDefault(); saveSettings(); };
+for (const [key, , id] of SETTINGS_FIELDS) $(id).addEventListener('input', event => {
+  S.settings.draft ||= {};
+  S.settings.draft[key] = event.target.value;
+  const error = settingsValueError(key, event.target.value);
+  if (error) S.settings.fieldErrors[key] = error; else delete S.settings.fieldErrors[key];
+  S.settings.error = '';
+  S.settings.notice = '';
+  renderSettings();
+});
+$('settings-revert').onclick = revertSettings;
+$('settings-reload').onclick = () => {
+  if (S.settings.reviewPending) { S.settings.reviewPending = false; S.settings.notice = 'Review acknowledged. Confirm the pending summary before saving.'; renderSettings(); }
+  else loadSettings(true);
+};
 
 // ---------------------------------------------------------------- input
 document.addEventListener('keydown', e => {
@@ -1951,7 +2343,7 @@ document.addEventListener('keydown', e => {
   if (e.key === '/' && !typing && S.view !== 'roadmap') { e.preventDefault(); $('search').focus(); return; }
   if (e.key === 'Escape') { if (typing) { e.target.blur(); return; } if (S.sel != null) closeDrawer(); else if (S.filter || S.q) { S.filter = null; S.q = ''; $('search').value = ''; render(); } return; }
   if (typing) return;
-  if (e.key === 'r') { S.view === 'roadmap' ? loadRoadmap(null, true) : load(true); return; }
+  if (e.key === 'r') { S.view === 'roadmap' ? loadRoadmap(null, true) : load(true); if (S.view === 'settings') loadSettings(true); return; }
   if (S.view === 'ops' && (e.key === 'j' || e.key === 'k')) {
     const cards = [...document.querySelectorAll('.card')]; if (!cards.length) return;
     const i = cards.findIndex(c => +c.dataset.n === S.sel);
@@ -1962,16 +2354,17 @@ document.addEventListener('keydown', e => {
 $('search').addEventListener('input', e => { S.q = e.target.value; render(); });
 $('roadmap-owner').onchange = event => { S.roadmapOwner = event.target.value; if (S.roadmap) renderRoadmapAttention(S.roadmap); };
 $('window').onchange = renderLanes;
-$('refresh').onclick = () => S.view === 'roadmap' ? loadRoadmap(null, true) : load(true);
+$('refresh').onclick = () => { if (S.view === 'roadmap') loadRoadmap(null, true); else load(true); if (S.view === 'settings' || S.settings.loaded) loadSettings(true); };
 let timer = null;
-function schedule() { clearInterval(timer); if ($('auto').checked) timer = setInterval(() => { if (!document.hidden) load(false); }, 30000); }
+function schedule() { clearInterval(timer); if ($('auto').checked) timer = setInterval(() => { if (!document.hidden) { load(false); if (S.view === 'settings') loadSettings(false); } }, 30000); }
 $('auto').onchange = schedule;
-document.addEventListener('visibilitychange', () => { if (!document.hidden && $('auto').checked) load(false); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && $('auto').checked) { load(false); if (S.view === 'settings') loadSettings(false); } });
 setInterval(() => { if (S.snap) { renderStatus(); renderInboxHealth(); } }, 10000);
 function initFromHash() {
   S.view = 'ops'; S.sel = null; S.filter = null;
   const inbox = location.hash.match(/^#inbox(?:\/([\w-]+))?$/);
   if (inbox) { S.view = 'inbox'; if (inbox[1]) S.inboxKey = inbox[1]; return; }
+  if (location.hash === '#settings') { S.view = 'settings'; return; }
   if (location.hash === '#roadmap') { S.view = 'roadmap'; return; }
   if (!location.hash || location.hash === '#ops') return;
   const m = location.hash.match(/^#(t|s)=([\w-]+)$/);
@@ -1979,10 +2372,19 @@ function initFromHash() {
 }
 initFromHash();
 applyView();
-window.addEventListener('hashchange', () => { initFromHash(); applyView(); if (S.view === 'roadmap') loadRoadmap(); if (S.snap) { updateInbox(true); render(); } });
+if (S.view === 'settings') queueMicrotask(() => $('settings-title').focus({ preventScroll: true }));
+window.addEventListener('hashchange', () => {
+  initFromHash();
+  applyView();
+  if (S.view === 'roadmap') loadRoadmap();
+  if (S.view === 'settings') { loadSettings(false); queueMicrotask(() => $('settings-title').focus({ preventScroll: true })); }
+  if (S.snap) { updateInbox(true); render(); }
+});
 $('nav-ops').onclick = () => setView('ops');
 $('nav-inbox').onclick = () => setView('inbox');
 $('nav-roadmap').onclick = () => setView('roadmap');
+$('nav-settings').onclick = () => setView('settings');
+loadSettings(false);
 schedule();
 load(false);
 if (S.view === 'roadmap') loadRoadmap();

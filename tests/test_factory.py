@@ -156,6 +156,8 @@ def factory(cwd: Path, *argv: str, path: str | None = None) -> subprocess.Comple
 
 def installed_factory(environment: Path) -> tuple[Path, Path]:
     """Create a disposable environment containing this Factory snapshot."""
+    import tomlkit
+
     venv.EnvBuilder(with_pip=False).create(environment)
     python = environment / "bin" / "python"
     env = {
@@ -168,6 +170,10 @@ def installed_factory(environment: Path) -> tuple[Path, Path]:
     )
     package = Path(site.stdout.strip()) / "factory"
     shutil.copytree(ROOT / "factory", package, ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(
+        Path(tomlkit.__file__).parent, package.parent / "tomlkit",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
     return python, package
 
 
