@@ -165,6 +165,10 @@ interface ObservedEvidence {
   sources: { id: string; label: string; text: string; url?: string; path?: string }[];
   investigation?: {
     kind: string;
+    status?: string;
+    reason?: string | null;
+    next_offset?: number | null;
+    handoff_source_id?: string | null;
     plans?: Array<{
       number: number;
       sections: Record<string, string>;
@@ -248,6 +252,20 @@ try {
     check(healthyData.attention_count === 8, "grounded attention count reaches the consumer");
   }
   check(calls().filter((path) => path === PREFIX + "issues").length === 1, "exactly one issues GET served the healthy read");
+
+  // An exact-head archive read is local even when no retained result exists.
+  const beforeResultCalls = calls().length;
+  const absentResult = parsedEvidence(await settledWithin(
+    30_000,
+    investigate("op-retained-result", { ...request, kind: "result", number: 7, head: "a".repeat(40), offset: 0 },
+      new AbortController().signal, () => undefined, ctxStub),
+    "retained-result read exceeded 30s",
+  ));
+  check(absentResult?.ok === false && absentResult.investigation?.kind === "result"
+    && absentResult.investigation.status !== "complete" && Boolean(absentResult.investigation.reason)
+    && absentResult.investigation.next_offset === null && absentResult.investigation.handoff_source_id === null,
+  "missing retained content stays explicit through the actual console tool");
+  check(calls().length === beforeResultCalls, "retained-result lookup makes no GitHub calls");
 
   // Phase A2: provider-free C1 plumbing. Disclosure remains closed, while the
   // real startup/context hooks and fm_investigate -> Python adapter are

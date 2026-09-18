@@ -1041,6 +1041,7 @@ def approve_pr(n: int, head: str) -> bool:
         "approved", ticket=n, pr=pr["number"], head=head,
         gate_head=head, review_head=head,
     )
+    retain_handoff(n, head)
     return True
 
 
@@ -1148,7 +1149,23 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     return True
 
 
-def cleanup_after_merge(n: int) -> None:
+def retain_handoff(n: int, head: str) -> bool:
+    """Retention is evidence preservation, never another approval decision."""
+    from factory import results
+
+    retained = results.retain(cfg, n, head, lifecycle.read_events(EVENTS))
+    record(
+        "result-retention", ticket=n, head=head, status=retained["status"],
+        reason=retained.get("reason"), cleanup_safe=retained["cleanup_safe"],
+    )
+    if not retained["cleanup_safe"]:
+        log(f"#{n}: handoff retention incomplete ({retained.get('reason')}); worktree kept, operator resolution required before cleanup")
+    return retained["cleanup_safe"]
+
+
+def cleanup_after_merge(n: int, head: str) -> None:
+    if not retain_handoff(n, head):
+        return
     wt = FACTORY / f"wt-{n}"
     if wt.is_dir():
         run(["git", "worktree", "remove", "--force", str(wt)], cwd=ROOT, check=False)
@@ -1420,7 +1437,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 record("merged", ticket=n, pr=pr_num, method=method[2:], head=head)
             execution.outcome = "merged"
             log(f"PR #{pr_num}: merged into {cfg.main} ({method[2:]}, ticket #{n})")
-            cleanup_after_merge(n)
+            cleanup_after_merge(n, head)
             return
 
 
@@ -1434,6 +1451,8 @@ def worker_round(
     deadline: float,
 ) -> tuple[bool, str, Path, str]:
     """One worker + gate cycle, bound to one immutable head."""
+    from factory import results
+
     if lifecycle.current() is not None:
         lifecycle.current().attempt = attempt
     promptfile = wt / ".factory-prompt.md"
@@ -1443,6 +1462,7 @@ def worker_round(
     code = run_worker(cfg.worker(labels, promptfile, wt), wt, logfile)
     commit_leftovers(wt, n, title)
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    handoff = results.source_metadata(cfg, n)
     status_cmd = [
         "git", "status", "--porcelain", "--untracked-files=all", "--", ".",
         ":(exclude).factory-prompt.md", ":(exclude).factory",
@@ -1451,7 +1471,7 @@ def worker_round(
     if time.monotonic() > deadline:
         record(
             "attempt", ticket=n, attempt=attempt, worker_exit=code, gate=None,
-            log=str(logfile), head=head,
+            log=str(logfile), head=head, handoff=handoff,
         )
         return False, "budget exceeded before gate", logfile, head
     ok, report = run_gate(wt, n)
@@ -1467,7 +1487,7 @@ def worker_round(
         "attempt", ticket=n, attempt=attempt, worker_exit=code, gate="PASS" if ok else "FAIL",
         seconds=int(time.monotonic() - started), cost=log_cost(logfile), log=str(logfile),
         brief=brief_path(wt, n).exists(), head=head, actual_head=actual_head,
-        clean=not before_status and not after_status,
+        clean=not before_status and not after_status, handoff=handoff,
     )
     return ok, report, logfile, head
 
@@ -1665,6 +1685,12 @@ def main(argv: list[str]) -> int:
         args.budget_min = cfg.budget_min
 
     with nullcontext() if args.dry_run else lifecycle.scope(EVENTS, "dispatcher", dispatcher=True):
+        if not args.dry_run:
+            from factory import results
+
+            maintenance = results.prune(cfg)
+            if maintenance["status"] != "complete":
+                log(f"Accepted-result expiry incomplete ({maintenance.get('reason')}); archive left for inspection")
         if args.ticket:
             if not issue_is_open(args.ticket):
                 log(f"#{args.ticket}: not open, nothing to do")

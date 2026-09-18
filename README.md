@@ -688,6 +688,8 @@ branches, or merge state.
   `.factory/wt-<n>/.factory/handoff-<n>.md` (what changed, what is unverified,
   what next). The next attempt gets it in its prompt; an escalation quotes it
   in the issue comment.
+  Independently accepted handoffs are retained outside the worktree under
+  `.factory/results/<ticket>/<accepted-head>/`; see [retention](#accepted-handoff-retention).
 - **Logs**: `.factory/logs/<n>-attempt-<k>.log` per worker round;
   `.factory/wt-<n>/.factory/gate-report-<n>.md` per gate;
   `journalctl --user -u factory-<repo>.service` for dispatcher passes.
@@ -695,8 +697,63 @@ branches, or merge state.
   frontier and its label checks; respects the in-flight lock).
 - **Stop everything**: `systemctl --user disable --now factory-<repo>.timer`.
   In-flight tickets finish their current pass; nothing new is claimed.
-- **Tear down a ticket**: remove the worktree (`git worktree remove --force
-  .factory/wt-<n>`), delete `agent/<n>`, and re-label the issue.
+- **Tear down a ticket**: verify any accepted handoff is retained before manually
+  removing `.factory/wt-<n>` with `git worktree remove --force`, deleting `agent/<n>`,
+  and re-labelling the issue. Manual removal bypasses the dispatcher's retention guard.
+
+## Accepted handoff retention
+
+Factory retains the full worker handoff at durable, exact-head approval and checks
+retention again before merge cleanup. Worker exit zero, gate PASS, a label, or a
+valid `REVISE` response cannot establish acceptance. Existing reviewer, configured
+manager, CI, human-veto and exact-head merge safeguards are unchanged.
+
+These are **Factory product defaults, per repository**, not host/session retention
+settings. There are no configuration overrides in this interface:
+
+| Limit | Default |
+|---|---|
+| Full handoff content | 90 days from original recorded acceptance |
+| Body-free provenance/status receipt | 365 days from that acceptance |
+| One artifact | 256 KiB |
+| One result bundle, including metadata | 1 MiB |
+| Repository result archive, including temporary writes | 256 MiB |
+
+Reads and repeated observations never renew these lifetimes. Expired content is
+unavailable immediately to readers; the next non-dry-run dispatcher pass removes
+expired payloads, then removes receipts at 365 days. Reads never prune or acquire
+writer locks. These limits do not rotate existing journals, logs or transcripts.
+
+Storage is the main checkout's gitignored `.factory/results/<ticket>/<accepted-head>/`,
+with a bounded `manifest.json` and, when available, raw `handoff.md`. The manifest
+preserves accepted-head provenance, compact acceptance receipts, the first matching
+attempt's observed source head (or explicit unknown), source/retained byte counts
+and SHA-256 integrity, producer identity, and accepted-contract revision references.
+The source head is an observation, not proof of when the handoff was authored.
+Refreshing/rebasing does not silently reattribute older bytes to a new head.
+A different result never silently replaces an existing record at the same head.
+
+Only the handoff and compact provenance are retained: no transcript, worker log,
+prompt, configuration/environment dump, or broad discussion ingestion. Common
+credential forms are withheld, not silently redacted; this is not comprehensive
+DLP. Explicit incomplete/redacted provenance stays incomplete. Local storage is
+not public-safe evidence and does not authorize uploads, new provider disclosure,
+or permission changes.
+
+Missing, oversized, withheld, expired, unreadable and integrity-failed sources
+remain explicit. Quota or archival failure does not evict unexpired results:
+automatic cleanup leaves the affected worktree intact and reports the reason.
+Post-merge cleanup is not automatically retried: resolve the reported retention
+condition before manual cleanup rather than deleting the sole surviving copy.
+A recorded missing-source result can permit cleanup because there is no handoff
+content to lose. This protects against worktree cleanup, not runner loss or deletion
+of the main checkout; it is not a backup service.
+
+Use the `kind:"result"` evidence read below for a known ticket/head, even when the
+ticket is outside current GitHub case-list coverage. Briefings include the newest
+retained historical result without displacing earlier human constraints.
+Retention and historical acceptance are evidence, never permission to resume or
+rewrite scope; revision-aware execution remains a separate consumer contract.
 
 ## Execution event contract
 
@@ -1432,6 +1489,7 @@ never booleans or strings. Repository slugs are at most 200 characters.
 | `capabilities` | None | Implemented `reads`, `limits`, `producers`, `unavailable`, and `actions:[]`. No case or GitHub collection. |
 | `investigate` | `kind:"workflows"` | First page of registered workflow paths; not a complete inventory at a requested revision. |
 | `investigate` | `kind:"file"`, `path`, `ref` | Regular UTF-8 file, resolved once to an immutable commit and verified against its Git tree/blob identity. |
+| `investigate` | `kind:"result"`, `number`, `head`, `offset` | Local retained accepted handoff for an exact 40/64-hex head. Required byte offset is 0–262144; follow `next_offset` for further pages. No GitHub collection. |
 | `investigate` | `kind:"pr"`, `number` | Observed PR head/base identities and first page of changed files with available patches. Omitted or shortened patches remain unknown. |
 | `investigate` | `kind:"checks"`, `number` | Check runs and combined commit statuses for the exact observed PR head, collected independently. |
 | `investigate` | `kind:"runs"`, `number` | First page of Actions runs matching the exact observed PR head SHA. |
@@ -1440,6 +1498,17 @@ never booleans or strings. Repository slugs are at most 200 characters.
 | `investigate` | `kind:"roadmap"` | Shared bounded initiative roadmap and owner-attention questions; coverage and unknown states remain explicit. |
 | `investigate` | `kind:"initiative"`, `number` | One initiative's declared plan, available revision, linked implementation evidence, blockers, questions and accepted drift evidence. |
 | `investigate` | `kind:"drift"`, `number` | One ticket's validated retained baseline compared with the complete live initiative; preserves historical accepted evidence on live-source failure. |
+
+Retained-result reads return archive status and manifest under `investigation`,
+with separate `manifest_source_id` and `handoff_source_id` citations. Pages contain
+at most 20,000 UTF-8 bytes: a complete archive can have a truncated excerpt and a
+non-null `next_offset`. Offsets refer to raw archived bytes; offsets inside a UTF-8
+code point are refused, not silently advanced. Existing terminal-control
+sanitization can change displayed text; `display_sanitized` marks this and
+`raw_artifact_sha256` identifies the original stored bytes, not a transformed
+excerpt. Non-UTF-8 originals stay retained but are unavailable as text.
+Missing/expired/partial content keeps a nonzero exit and explicit coverage rather
+than becoming an empty successful result. No response or briefing budget is raised.
 
 `path` is a repository-relative path of 1–1024 characters, with no empty, `.`, or
 `..` components, control characters, backslashes, or URL syntax (`:`, `%`, `?`,
