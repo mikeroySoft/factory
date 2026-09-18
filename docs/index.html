@@ -135,10 +135,10 @@
             </div>
             <div class="install-line">
               <span class="install-label">CLI</span>
-              <pre><code>uv tool install git+https://github.com/mikeroySoft/factory@v0.3.0</code></pre>
+              <pre><code>uv tool install git+https://github.com/mikeroySoft/factory@v0.3.5</code></pre>
             </div>
           </div>
-          <p class="release-note"><a href="#changelog">Latest release: v0.3.0 · September 8, 2026</a><br>CLI command pins this release. Use <code>@stable</code> for the released channel or <code>@main</code> for development; the bare URL follows the default <code>main</code> branch.</p>
+          <p class="release-note"><a href="#changelog">Latest release: v0.3.5 · September 18, 2026</a><br>CLI command pins this release. Use <code>@stable</code> for the released channel or <code>@main</code> for development; the bare URL follows the default <code>main</code> branch.</p>
 
           <div class="hero-actions">
             <a class="button" href="https://github.com/mikeroySoft/factory">
@@ -224,7 +224,7 @@
             <p class="eyebrow">control surfaces</p>
             <h2 id="features-title">Deterministic where it matters.</h2>
           </div>
-          <p>Runs on your Linux machine with the agent CLIs you choose and no hosted control plane. The v0.3.0 core has no Python dependencies; current <code>main</code> adds TOMLKit for comment-preserving Settings. Model calls use your configured providers.</p>
+          <p>Runs on your Linux machine with the agent CLIs you choose and no hosted control plane. v0.3.5 installs TOMLKit for comment-preserving Settings; there are no other required Python dependencies. Model calls use your configured providers.</p>
         </div>
 
         <div class="features">
@@ -274,17 +274,17 @@
             <p>Track attempts, review bounces, and time to merge. Distill finished-ticket evidence into repo-specific lessons you review and commit for future workers.</p>
           </article>
           <article class="feature">
-            <div class="feature-top"><span class="status-dot"></span>Dashboard · main only</div>
+            <div class="feature-top"><span class="status-dot"></span>Dashboard · v0.3.5</div>
             <h3>Make the dashboard your own</h3>
             <p>Nine bundled themes, title-first navigation, and Ops as the quiet default. Existing Inbox and deep links remain explicit destinations.</p>
           </article>
           <article class="feature">
-            <div class="feature-top"><span class="status-dot"></span>Settings · main only</div>
+            <div class="feature-top"><span class="status-dot"></span>Settings · v0.3.5</div>
             <h3>Five controls, locally saved</h3>
             <p>Set concurrency, ticket time limit, worker/gate attempts, reviewer rounds, and the Factory Manager model with source-aware, comment-preserving edits.</p>
           </article>
           <article class="feature">
-            <div class="feature-top"><span class="status-dot"></span>Read-only · main only</div>
+            <div class="feature-top"><span class="status-dot"></span>Read-only · v0.3.5</div>
             <h3>Chat and code history</h3>
             <p>Use dashboard Chat with browser-local history, or add optional <code>factory[atlas]</code> Codebase history for commit-pinned maps and comparisons.</p>
           </article>
@@ -354,7 +354,7 @@
             <p class="eyebrow">quick start</p>
             <h2 id="quick-start-title">Bring your own checks. Keep your own machine.</h2>
           </div>
-          <p>Linux, Python &gt;= 3.11, git, authenticated gh with push access, and worker/reviewer CLIs. Current <code>main</code> installs TOMLKit; optional Codebase history adds <code>graphifyy</code> through <code>factory[atlas]</code>, while terminal <code>factory chat</code> additionally needs Node and its pinned Pi runtime. Dashboard Chat and Ask FM require authenticated OMP and send evidence to the selected model provider.</p>
+          <p>Linux, Python &gt;= 3.11, git, authenticated gh with push access, and worker/reviewer CLIs. v0.3.5 installs TOMLKit; optional Codebase history adds <code>graphifyy</code> through <code>factory[atlas]</code>, while terminal <code>factory chat</code> additionally needs Node and its pinned Pi runtime. Dashboard Chat and Ask FM require authenticated OMP and send evidence to the selected model provider.</p>
         </div>
 
         <div class="code-panel">
@@ -376,9 +376,9 @@ factory install --dashboard   # systemd user timer every 10 min + dashboard on :
           <div class="command"><code>factory learn</code><p>Distill lessons from finished tickets into <code>.factory-lessons.md</code>.</p></div>
           <div class="command"><code>factory dashboard</code><p>Inbox decision briefings, cited Ask FM answers, and Ops telemetry. Binds to localhost by default; exposing it to a network also exposes its mutating API.</p></div>
           <div class="command"><code>factory doctor / init / install</code><p>Onboarding.</p></div>
-          <div class="command"><code>factory plan</code><p>Main only: read initiatives, resolve decision owners, and inspect accepted baselines and drift. Reading a plan does not authorize execution.</p></div>
-          <div class="command"><code>factory chat</code><p>Main only: a read-only terminal FM console with bounded evidence tools and explicit provider disclosure. Requires the optional Node/Pi setup.</p></div>
-          <div class="command"><code>factory codebase</code><p>Main only, with the optional atlas extra: inspect commit-pinned code maps, history, and baseline comparisons.</p></div>
+          <div class="command"><code>factory plan</code><p>Read initiatives, resolve decision owners, and inspect accepted baselines and drift. Reading a plan does not authorize execution.</p></div>
+          <div class="command"><code>factory chat</code><p>A read-only terminal FM console with bounded evidence tools and explicit provider disclosure. Requires the optional Node/Pi setup.</p></div>
+          <div class="command"><code>factory codebase</code><p>With the optional atlas extra: inspect commit-pinned code maps, history, and baseline comparisons.</p></div>
         </div>
       </div>
     </section>
@@ -427,14 +427,14 @@ model = "qwen3:30b"</code></pre>
         <ol class="history">
           <li class="release">
             <div class="release-meta">
-              <span class="chip">Unreleased · main only</span>
-              <a href="https://github.com/mikeroySoft/factory/compare/v0.3.0...main">Current main</a>
-              <span>Not included in v0.3.0</span>
+              <span class="chip chip-success">Latest release</span>
+              <a href="https://github.com/mikeroySoft/factory/releases/tag/v0.3.5">v0.3.5</a>
+              <time datetime="2026-09-18">September 18, 2026</time>
             </div>
             <div>
               <h3>Collaborate with evidence. Operate from one console.</h3>
-              <p>Selected capabilities merged after v0.3.0:</p>
               <ul>
+                <li><strong>Retained results:</strong> independently accepted worker handoffs survive worktree cleanup with exact-head provenance, integrity, bounded lifetimes, and explicit incomplete states; readable through the evidence interface, console, and briefings.</li>
                 <li><strong>Shared planning:</strong> initiative routing, execution guards, immutable bindings, durable routed handoffs, and shared roadmap/owner-attention reads are implemented. The real two-human acceptance checkpoint remains open; the collaboration programme is not yet proven delivered.</li>
                 <li><strong>PR recovery:</strong> the manager frontier handles stalled Factory-owned PRs and late feedback with bounded recovery and exact-head approval.</li>
                 <li><strong>External PR review:</strong> opt-in discovery, cited SHA-bound reviews, changed-head re-review, CI readiness, and the human queue are available. This lane reviews only; it never edits contributor branches or merges their PRs.</li>
@@ -445,7 +445,7 @@ model = "qwen3:30b"</code></pre>
           </li>
           <li class="release">
             <div class="release-meta">
-              <span class="chip chip-success">Latest release</span>
+              <span class="chip">Release</span>
               <a href="https://github.com/mikeroySoft/factory/releases/tag/v0.3.0">v0.3.0</a>
               <time datetime="2026-09-08">September 8, 2026</time>
             </div>
@@ -477,7 +477,7 @@ model = "qwen3:30b"</code></pre>
             </div>
           </li>
         </ol>
-        <p class="section-note"><a href="https://github.com/mikeroySoft/factory/blob/main/CHANGELOG.md">Full changelog</a> · <a href="https://github.com/mikeroySoft/factory/releases">Tagged releases</a> · <a href="https://github.com/mikeroySoft/factory/compare/v0.3.0...main">Changes since v0.3.0</a></p>
+        <p class="section-note"><a href="https://github.com/mikeroySoft/factory/blob/main/CHANGELOG.md">Full changelog</a> · <a href="https://github.com/mikeroySoft/factory/releases">Tagged releases</a> · <a href="https://github.com/mikeroySoft/factory/compare/v0.3.5...main">Changes since v0.3.5</a></p>
       </div>
     </section>
 
@@ -488,26 +488,26 @@ model = "qwen3:30b"</code></pre>
             <p class="eyebrow">roadmap</p>
             <h2 id="roadmap-title">Less supervision.<br>Clearer ownership.</h2>
           </div>
-          <p>Direction, not delivery dates. This snapshot reflects September 18, 2026; linked issues carry current status, dependencies, and acceptance criteria. Capabilities marked “on main” are merged but not included in v0.3.0.</p>
+          <p>Direction, not delivery dates. This snapshot reflects September 18, 2026; linked issues carry current status, dependencies, and acceptance criteria. Capabilities marked “in v0.3.5” ship in the current release.</p>
         </div>
 
         <div class="roadmap">
           <article>
-            <span class="chip chip-cyan">On main · acceptance pending</span>
+            <span class="chip chip-cyan">In v0.3.5 · acceptance pending</span>
             <h3>Shared plans. The right human.</h3>
-            <p>Routing, execution guards, immutable plan bindings, durable routed handoffs, and shared roadmap/owner-attention reads are implemented on <code>main</code>. They keep plans canonical and decisions human-owned without treating a declaration or merged implementation ticket as delivery proof.</p>
+            <p>Routing, execution guards, immutable plan bindings, durable routed handoffs, and shared roadmap/owner-attention reads are implemented in v0.3.5. They keep plans canonical and decisions human-owned without treating a declaration or merged implementation ticket as delivery proof.</p>
             <p><strong>Still held:</strong> the real distinct-runner, two-human initiative-to-delivery pilot. Programme completion requires owner-confirmed evidence from that workflow, not just merged code.</p>
             <p><a href="https://github.com/mikeroySoft/factory/issues/52">Collaboration programme #52</a> · <a href="https://github.com/mikeroySoft/factory/issues/59">Open acceptance checkpoint #59</a></p>
           </article>
           <article>
-            <span class="chip chip-cyan">On main · manager opt-in</span>
+            <span class="chip chip-cyan">In v0.3.5 · manager opt-in</span>
             <h3>Keep open PRs moving</h3>
             <p>The manager frontier observes factory-owned open PRs, waits on pending CI, and escalates red CI, unresolved current-head feedback, or inactivity into bounded <code>FIX</code>, <code>CLOSE</code>, or human handling. Late feedback is delivered at most once per evidence revision and never from partial or unverified evidence.</p>
             <p><strong>Why:</strong> opening a PR is not finishing a ticket. Recovery has an accountable next step, exact-head approval stays fail-closed, and human intervention still takes precedence.</p>
             <p><a href="https://github.com/mikeroySoft/factory/issues/15">PR frontier #15</a></p>
           </article>
           <article>
-            <span class="chip chip-cyan">On main · review only</span>
+            <span class="chip chip-cyan">In v0.3.5 · review only</span>
             <h3>Review contributor PRs, too</h3>
             <p>Opted-in contributor PRs can receive cited, SHA-bound GitHub reviews, be reviewed again after a head change, and surface fail-closed CI readiness in the Ops queue and Inbox.</p>
             <p><strong>The boundary:</strong> Factory does not edit or push contributor branches and this lane never merges their PRs. Readiness is advisory, not merge authority.</p>

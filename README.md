@@ -42,7 +42,7 @@ npx skills add mikeroysoft/factory
 ```sh
 uv tool install git+https://github.com/mikeroySoft/factory@stable   # stable: released channel
 uv tool install git+https://github.com/mikeroySoft/factory@main     # latest: tip of main
-uv tool install git+https://github.com/mikeroySoft/factory@v0.3.0   # a specific release
+uv tool install git+https://github.com/mikeroySoft/factory@v0.3.5   # a specific release
 ```
 
 `pipx install` and `pip install --user` take the same URLs. The repository's

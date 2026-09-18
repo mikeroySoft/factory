@@ -15,7 +15,7 @@ the first available of `uv tool install git+https://github.com/mikeroySoft/facto
 `pipx install git+https://github.com/mikeroySoft/factory@stable`, or
 `python3 -m pip install --user git+https://github.com/mikeroySoft/factory@stable`
 (Linux, Python ≥ 3.11; no dependencies). These URLs explicitly select the released
-`stable` channel. Replace `@stable` with `@main` for development or `@v0.3.0`
+`stable` channel. Replace `@stable` with `@main` for development or `@v0.3.5`
 for a fixed release. A bare URL follows the default `main` branch.
 Confirm with `factory --version` before continuing. Then pick the branch:
 
