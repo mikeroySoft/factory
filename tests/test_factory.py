@@ -750,12 +750,12 @@ class HostConfigTest(unittest.TestCase):
 
     def test_doctor_relocation_is_redacted_unless_revealed(self) -> None:
         host_file('[defaults.triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n')
-        text = '[triage]\nmodel = "private-model-value"\n[install.env]\nTOKEN = "private-token-value"\n[gate]\nlock = "/private/lock-value"\n'
+        text = '[triage]\nmodel = "sentinel-model-value"\n[install.env]\nTOKEN = "sentinel-token-value"\n[gate]\nlock = "/sentinel-lock-value"\n'
         with tempfile.TemporaryDirectory() as d:
             repo = make_repo(Path(d), text)
             stubs = stub_bin(Path(d), gh="exit 0", systemctl="echo inactive")
             result = factory(repo, "doctor", "--json", path=stubs)
-            self.assertNotIn("private-", result.stdout)
+            self.assertNotIn("sentinel-", result.stdout)
             rows = {r["label"]: r for r in json.loads(result.stdout)["rows"]}
             fix = rows["host settings committed"]["fix"]
             self.assertEqual(fix["kind"], "relocate")
@@ -769,6 +769,7 @@ class HostConfigTest(unittest.TestCase):
             import tomllib
             values = tomllib.loads(rows["host settings committed"]["fix"]["toml"])
             self.assertEqual(values["repo"]["acme/widgets"], tomllib.loads(text))
+            self.assertEqual((repo / config.CONFIG_NAME).read_text(), text)
             (repo / config.CONFIG_NAME).write_text("")
             clean = factory(repo, "doctor", "--json", path=stubs)
             rows = {r["label"]: r for r in json.loads(clean.stdout)["rows"]}
@@ -813,6 +814,20 @@ class HostConfigTest(unittest.TestCase):
                     {"key": "alien", "line": 19},
                 ],
             })
+
+    def test_doctor_inline_check_source_lines(self) -> None:
+        host_file('[defaults.triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n')
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), '[gate]\ncheck = [\n'
+                             '{name = "one", run = ["true"], typo = true},\n'
+                             '{name = "two", run = ["true"], typo = false},\n]\n')
+            result = factory(repo, "doctor", "--json",
+                             path=stub_bin(Path(d), gh="exit 0", systemctl="echo inactive"))
+            rows = {r["label"]: r for r in json.loads(result.stdout)["rows"]}
+            self.assertEqual(rows[".factory.toml keys"]["fix"]["keys"], [
+                {"key": "gate.check[0].typo", "line": 3},
+                {"key": "gate.check[1].typo", "line": 4},
+            ])
 
     def test_manager_legacy_command_and_invalid_settings(self) -> None:
         with tempfile.TemporaryDirectory() as d:

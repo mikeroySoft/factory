@@ -16,7 +16,6 @@ import shutil
 import socket
 import subprocess
 import sys
-import tomllib
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -208,20 +207,44 @@ def relocation_fix(cfg: config.Config, *, reveal: bool) -> dict:
 
 
 def unknown_key_fix(path: Path, unknown: list[str]) -> dict:
+    from bisect import bisect_right
+    from tomlkit.items import AbstractTable
+    from tomlkit.parser import Parser
+
+    source = path.read_text()
+    newlines = [i for i, char in enumerate(source) if char == "\n"]
+
+    # tomlkit exposes no source spans. Capture them in preserved trivia
+    # at its parser boundary, including inline tables and array-table entries.
+    class LocatedParser(Parser):
+        def _parse_key_value(self, parse_comment=False):
+            line = bisect_right(newlines, self._idx) + 1
+            key, value = super()._parse_key_value(parse_comment)
+            value.trivia._factory_line = line
+            return key, value
+
+        def _parse_table(self, parent_name=None, parent=None):
+            line = bisect_right(newlines, self._idx) + 1
+            key, value = super()._parse_table(parent_name, parent)
+            value.trivia._factory_line = line
+            return key, value
+
     locations = {}
-    source = ""
-    start = 1
-    # ponytail: quadratic prefix parsing for small config files; use a span-aware
-    # TOML parser if large configurations make doctor noticeably slow.
-    for number, line in enumerate(path.read_text().splitlines(keepends=True), 1):
-        source += line
-        try:
-            raw = tomllib.loads(source)
-        except tomllib.TOMLDecodeError:
-            continue
-        for key in config.unknown_keys(raw):
-            locations.setdefault(key, start)
-        start = number + 1
+
+    def locate(value, prefix=""):
+        lines = [getattr(getattr(value, "trivia", None), "_factory_line", None)]
+        if isinstance(value, dict):
+            container = value.value if isinstance(value, AbstractTable) else value
+            for key in value:
+                lines.append(locate(container.item(key), f"{prefix}.{key}" if prefix else key))
+        elif isinstance(value, list):
+            for i, child in enumerate(value):
+                lines.append(locate(child, f"{prefix}[{i}]"))
+        line = min((line for line in lines if line is not None), default=None)
+        locations[prefix] = line
+        return line
+
+    locate(LocatedParser(source).parse())
     return {"kind": "keys", "keys": [{"key": key, "line": locations[key]} for key in unknown]}
 
 
