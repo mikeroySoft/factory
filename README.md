@@ -753,7 +753,15 @@ Use the `kind:"result"` evidence read below for a known ticket/head, even when t
 ticket is outside current GitHub case-list coverage. Briefings include the newest
 retained historical result without displacing earlier human constraints.
 Retention and historical acceptance are evidence, never permission to resume or
-rewrite scope; revision-aware execution remains a separate consumer contract.
+rewrite scope. The worker prompt built by `factory dispatch` is the one
+revision-aware execution consumer: when a ticket has a prior retained result, its
+prompt gets a bounded `## Resume context` section reporting the prior accepted
+head/result and whether the admitted scope (this ticket's plan-bound baseline)
+is `unchanged`, `changed`, or `unavailable` since that result, using only the
+local plan-bound journal and the retained result -- never a worker log, prompt,
+or transcript. This is descriptive only: it never rewrites the pinned scope or
+the ticket, and a changed or unavailable comparison never silently authorizes
+continued execution.
 
 ## Execution event contract
 

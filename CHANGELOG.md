@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Bounded worker boot/resume context (#89): `factory dispatch`'s worker prompt gets a `## Resume context` section, built only from the latest retained accepted result (#88) and the local plan-bound journal (#57), when a ticket has prior retained history. It reports the prior accepted head/result and whether the admitted scope has since moved (`unchanged`/`changed`/`unavailable`); never a worker log, prompt, or transcript, never a scope rewrite, and no widened context budgets.
+
 ## 0.3.5 — 2026-09-18
 
 Compared against 0.3.0 (`289cac5`). Released channel `stable` points at `v0.3.5`.
