@@ -387,6 +387,58 @@ def admit_plan(n: int, issue: dict) -> dict | None:
     return baseline
 
 
+def resume_context(n: int, baseline: dict | None) -> str | None:
+    """Bounded boot context from the latest retained accepted result: the scope
+    it was accepted under, whether the admitted scope has since moved, and its
+    handoff text. Local plan-bound/result evidence only -- never a worker log,
+    prompt, or transcript -- and purely descriptive: it authorizes nothing on
+    its own and never rewrites the pinned scope built above.
+    """
+    from factory import results
+
+    prior = results.latest_result(cfg, n)
+    if prior is None:
+        return None
+    manifest = prior.get("manifest")
+    contract = manifest.get("contract") if isinstance(manifest, dict) else None
+    prior_linked = isinstance(contract, dict) and contract.get("status") == "bound"
+    if baseline is None:
+        revision_status = "unavailable" if prior_linked else "unchanged"
+    elif not prior_linked:
+        revision_status = "changed"
+    elif (contract.get("initiative"), contract.get("sha256")) == (baseline.get("initiative"), baseline.get("sha256")):
+        revision_status = "unchanged"
+    else:
+        revision_status = "changed"
+    status = prior.get("status")
+    accepted_head = manifest.get("accepted_head") if isinstance(manifest, dict) else None
+    accepted_at = manifest.get("accepted_at") if isinstance(manifest, dict) else None
+    parts = [
+        "## Resume context", "",
+        "Local evidence from the latest retained accepted result for this ticket, "
+        "never a worker log, prompt, or transcript. Historical reference only: it "
+        "authorizes nothing on its own and never rewrites the pinned scope above.",
+        "",
+        f"- Prior accepted head: {accepted_head or 'unknown'}, accepted {accepted_at or 'at an unknown time'}",
+        f"- Prior retained result: {status}" + (f" ({prior['reason']})" if prior.get("reason") else ""),
+        f"- Admitted scope since that result: {revision_status}",
+    ]
+    if revision_status == "changed":
+        parts.append(
+            "  The admitted scope changed since that accepted result; treat prior work as "
+            "historical only, not authorization to continue it unchanged."
+        )
+    elif revision_status == "unavailable":
+        parts.append(
+            "  The admitted scope cannot be confirmed against that accepted result; treat prior "
+            "work as historical only until a human confirms the current scope."
+        )
+    text = prior.get("text")
+    if status in ("complete", "partial") and isinstance(text, str) and text:
+        parts += ["", "### Prior retained handoff", "", text]
+    return "\n".join(parts)
+
+
 def build_prompt(n: int, wt: Path, extra: str = "") -> str:
     from factory import binding
 
@@ -417,6 +469,9 @@ def build_prompt(n: int, wt: Path, extra: str = "") -> str:
                   "The pinned ticket scope and exit gate define this execution. The initiative baseline "
                   "is reference evidence, not additional work or action authorization. Later issue, "
                   "initiative or comment edits do not amend this snapshot; keep all guidance within its scope."]
+    resume = resume_context(n, baseline)
+    if resume:
+        parts += ["", resume]
     lessons = ROOT / LESSONS_NAME
     lessons_text = lessons.read_text() if lessons.exists() else ""
     if lessons_text:

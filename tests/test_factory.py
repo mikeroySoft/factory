@@ -2298,6 +2298,105 @@ class DispatchTest(unittest.TestCase):
             escalation = json.loads(dispatch.EVENTS.read_text().splitlines()[-1])
             self.assertEqual(escalation["round"], 2)
 
+    def test_resume_context_reports_unchanged_changed_and_unavailable_source(self) -> None:
+        from unittest import mock
+
+        from factory import binding, dispatch, results
+
+        def make_baseline(initiative: int, marker: str) -> dict:
+            sections = {name: f"{name} {marker}" for name in binding.SECTIONS}
+            return {
+                "schema_version": 1, "initiative": initiative, "sections": sections,
+                "sha256": binding._digest(sections),
+                "source_url": f"https://github.com/acme/widgets/issues/{initiative}",
+                "observed_at": "2026-01-01T00:00:00Z",
+            }
+
+        def retain_prior(cfg, ticket: int, head: str, baseline: dict) -> None:
+            issue = {"title": "t", "body": binding.render(baseline), "comments": []}
+            events = [
+                {"event": "plan-bound", "ticket": ticket, "schema_version": 1,
+                 "baseline": baseline, "issue": issue},
+                {"at": "2026-01-01T01:00:00Z", "event": "attempt", "ticket": ticket,
+                 "gate": "PASS", "head": head, "actual_head": head,
+                 "handoff": {"status": "missing", "bytes": None, "sha256": None}},
+                {"at": "2026-01-01T02:00:00Z", "event": "review", "ticket": ticket,
+                 "verdict": "APPROVE", "accepted": True, "parsed": True, "head": head, "actual_head": head},
+                {"at": "2026-01-01T03:00:00Z", "event": "approved", "ticket": ticket,
+                 "pr": ticket + 100, "head": head, "gate_head": head, "review_head": head},
+            ]
+            with mock.patch("factory.evidence.reader_build", return_value={
+                "revision": "f" * 40, "verified": True, "evidence_schema": 1, "runtime_schema": 1,
+            }):
+                retained = results.retain(cfg, ticket, head, events)
+            self.assertIn(retained["status"], ("complete", "partial"))
+
+        prior_baseline = make_baseline(80, "v1")
+
+        # Unchanged: today's admitted scope is the exact prior contract.
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            cfg = config.load(repo)
+            dispatch.configure(cfg)
+            n, head = 9, "1" * 40
+            retain_prior(cfg, n, head, prior_baseline)
+            issue = {"title": "t", "body": binding.render(prior_baseline), "comments": []}
+            dispatch.record("plan-bound", ticket=n, schema_version=1, baseline=prior_baseline, issue=issue)
+            wt = dispatch.FACTORY / f"wt-{n}"
+            wt.mkdir(parents=True)
+            with mock.patch.object(dispatch, "gh_json") as gh:
+                prompt = dispatch.build_prompt(n, wt)
+                gh.assert_not_called()
+            self.assertIn("## Resume context", prompt)
+            self.assertIn("Admitted scope since that result: unchanged", prompt)
+
+        # Changed: today's admitted scope moved to a new baseline revision.
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            cfg = config.load(repo)
+            dispatch.configure(cfg)
+            n, head = 10, "2" * 40
+            retain_prior(cfg, n, head, prior_baseline)
+            new_baseline = make_baseline(80, "v2")
+            issue = {"title": "t", "body": binding.render(new_baseline), "comments": []}
+            dispatch.record("plan-bound", ticket=n, schema_version=1, baseline=new_baseline, issue=issue)
+            wt = dispatch.FACTORY / f"wt-{n}"
+            wt.mkdir(parents=True)
+            with mock.patch.object(dispatch, "gh_json") as gh:
+                prompt = dispatch.build_prompt(n, wt)
+                gh.assert_not_called()
+            self.assertIn("## Resume context", prompt)
+            self.assertIn("Admitted scope since that result: changed", prompt)
+            self.assertIn("not authorization to continue it unchanged", prompt)
+
+        # Unavailable: the prior result was accepted under a linked scope, but
+        # this ticket has no current accepted plan binding to compare against.
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            cfg = config.load(repo)
+            dispatch.configure(cfg)
+            n, head = 11, "3" * 40
+            retain_prior(cfg, n, head, prior_baseline)
+            wt = dispatch.FACTORY / f"wt-{n}"
+            wt.mkdir(parents=True)
+            unlinked_issue = {"title": "t", "body": "an ordinary ticket, no initiative link", "comments": []}
+            with mock.patch.object(dispatch, "gh_json", return_value=unlinked_issue):
+                prompt = dispatch.build_prompt(n, wt)
+            self.assertIn("## Resume context", prompt)
+            self.assertIn("Admitted scope since that result: unavailable", prompt)
+            self.assertIn("until a human confirms the current scope", prompt)
+            self.assertNotIn("## Admitted execution contract", prompt)
+
+        # No prior retained result at all: no resume section, no false claim.
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            dispatch.configure(config.load(repo))
+            wt = dispatch.FACTORY / "wt-12"
+            wt.mkdir(parents=True)
+            with mock.patch.object(dispatch, "gh_json",
+                                    return_value={"title": "t", "body": "b", "comments": []}):
+                self.assertNotIn("## Resume context", dispatch.build_prompt(12, wt))
+
     def test_brief_names_defining_file_and_last_pr(self) -> None:
         from unittest import mock
 
