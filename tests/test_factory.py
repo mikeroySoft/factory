@@ -2299,6 +2299,7 @@ class DispatchTest(unittest.TestCase):
             self.assertEqual(escalation["round"], 2)
 
     def test_resume_context_reports_unchanged_changed_and_unavailable_source(self) -> None:
+        import hashlib
         from unittest import mock
 
         from factory import binding, dispatch, results
@@ -2435,6 +2436,44 @@ class DispatchTest(unittest.TestCase):
             with mock.patch.object(dispatch, "gh_json",
                                     return_value={"title": "t", "body": "b", "comments": []}):
                 self.assertNotIn("## Resume context", dispatch.build_prompt(12, wt))
+
+        # A retained handoff longer than one page is shown as a first page, never as complete text.
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            cfg = config.load(repo)
+            dispatch.configure(cfg)
+            n, head = 13, "4" * 40
+            long_handoff = ("prior work line\n" * 2_000).encode()  # 32,000 bytes, two pages
+            digest = hashlib.sha256(long_handoff).hexdigest()
+            source = dispatch.FACTORY / f"wt-{n}" / ".factory" / f"handoff-{n}.md"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(long_handoff)
+            issue = {"title": "t", "body": binding.render(prior_baseline), "comments": []}
+            # Accepted within the 90-day payload window, unlike the expired fixtures above.
+            from datetime import datetime, timedelta, timezone
+            recent = datetime.now(timezone.utc) - timedelta(hours=3)
+            at = lambda hours: (recent + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            events = [
+                {"event": "plan-bound", "ticket": n, "schema_version": 1, "baseline": prior_baseline, "issue": issue},
+                {"at": at(0), "event": "attempt", "ticket": n, "gate": "PASS", "head": head,
+                 "actual_head": head, "handoff": {"status": "complete", "bytes": len(long_handoff), "sha256": digest}},
+                {"at": at(1), "event": "review", "ticket": n, "verdict": "APPROVE",
+                 "accepted": True, "parsed": True, "head": head, "actual_head": head},
+                {"at": at(2), "event": "approved", "ticket": n, "pr": n + 100,
+                 "head": head, "gate_head": head, "review_head": head},
+            ]
+            with mock.patch("factory.evidence.reader_build", return_value={
+                "revision": "f" * 40, "verified": True, "evidence_schema": 1, "runtime_schema": 1,
+            }):
+                self.assertEqual(results.retain(cfg, n, head, events)["status"], "complete")
+            source.unlink()  # worktree cleanup: the archive is the only remaining copy
+            dispatch.record("plan-bound", ticket=n, schema_version=1, baseline=prior_baseline, issue=issue)
+            with mock.patch.object(dispatch, "gh_json") as gh:
+                prompt = dispatch.build_prompt(n, source.parents[1])
+                gh.assert_not_called()
+            self.assertIn("handoff continues; first page shown, 32000 bytes retained", prompt)
+            self.assertIn("from offset 20000", prompt)
+            self.assertLess(prompt.count("prior work line"), 2_000)
 
     def test_brief_names_defining_file_and_last_pr(self) -> None:
         from unittest import mock

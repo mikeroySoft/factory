@@ -1,10 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Bounded worker boot/resume context (#89): `factory dispatch`'s worker prompt gets a `## Resume context` section, built only from the latest retained accepted result (#88) and the local plan-bound journal (#57), when a ticket has prior retained history. It reports the prior accepted head/result and whether the admitted scope has since moved (`unchanged`/`changed`/`unavailable`); never a worker log, prompt, or transcript, never a scope rewrite, and no widened context budgets.
+
 ## 0.3.5 — 2026-09-18
 
 Compared against 0.3.0 (`289cac5`). Released channel `stable` points at `v0.3.5`.
 
-- Bounded worker boot/resume context (#89): `factory dispatch`'s worker prompt gets a `## Resume context` section, built only from the latest retained accepted result (#88) and the local plan-bound journal (#57), when a ticket has prior retained history. It reports the prior accepted head/result and whether the admitted scope has since moved (`unchanged`/`changed`/`unavailable`); never a worker log, prompt, or transcript, never a scope rewrite, and no widened context budgets.
 - Retain independently accepted worker handoffs outside worktrees (#88): exact-head provenance and integrity, 90-day content/365-day metadata, 256 KiB artifact/1 MiB bundle/256 MiB repository limits, explicit incomplete/privacy/expiry states, and fail-closed cleanup when retention fails. Add local paged `kind: result` evidence reads and console/briefing consumption without widening context budgets, transcript ingestion, or execution authority. (PR #113)
 - External pull-request review lane (#5–#9): discover open, non-draft PRs opted in by `needs-review` or a review request, preserve that opt-in after viability verdicts, publish cited reviews bound to the recorded head, re-review changed heads within bounded rounds, record fail-closed required-CI readiness, and surface the six-state Ops queue plus actionable Inbox rows. The lane never edits or pushes contributor branches and never merges their PRs. Viability replay remains keyed to the label-add event, not the PR head.
 - Bundle Cyberpunk, GPUFlo, District, Factory, ROCm, Porcelain, Sandstone, Slate and Forest dashboard themes with a persistent browser-local picker, preserving configured repository CSS as the default. Keep the title/status row above the consistent navigation row in a shared sticky header. Open Ops at the root without automatic FM briefing requests; explicit Inbox and existing deep links remain available. (PR #110)

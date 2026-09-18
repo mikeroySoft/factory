@@ -437,8 +437,14 @@ def resume_context(n: int, baseline: dict | None) -> str | None:
             "work as historical only until a human confirms the current scope."
         )
     text = prior.get("text")
-    if status in ("complete", "partial") and isinstance(text, str) and text:
+    if status == "complete" and isinstance(text, str) and text:
         parts += ["", "### Prior retained handoff", "", text]
+        if prior.get("next_offset") is not None:
+            retained = (manifest.get("artifact") or {}).get("bytes")
+            parts.append(
+                f"\n(handoff continues; first page shown, {retained or 'an unknown number of'} bytes retained; "
+                f"read the rest with `factory evidence` kind:\"result\" from offset {prior['next_offset']})"
+            )
     return "\n".join(parts)
 
 
