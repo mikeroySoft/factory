@@ -2369,6 +2369,12 @@ class DispatchTest(unittest.TestCase):
             self.assertIn("## Resume context", prompt)
             self.assertIn("Admitted scope since that result: changed", prompt)
             self.assertIn("not authorization to continue it unchanged", prompt)
+            # "changed from what": the prior revision's own identity, not today's.
+            self.assertIn(
+                f"Prior accepted scope revision: initiative #80, sha256 {prior_baseline['sha256']},"
+                f" observed 2026-01-01T00:00:00Z",
+                prompt,
+            )
 
         # Unavailable: the prior result was accepted under a linked scope, but
         # this ticket has no current accepted plan binding to compare against.

@@ -424,8 +424,14 @@ def resume_context(n: int, baseline: dict | None) -> str | None:
         "",
         f"- Prior accepted head: {accepted_head or 'unknown'}, accepted {accepted_at or 'at an unknown time'}",
         f"- Prior retained result: {status}" + (f" ({prior['reason']})" if prior.get("reason") else ""),
-        f"- Admitted scope since that result: {revision_status}",
     ]
+    if contract_status == "bound":
+        parts.append(
+            f"- Prior accepted scope revision: initiative #{contract['initiative']},"
+            f" sha256 {contract['sha256']}, observed {contract['observed_at']}"
+            f" ({contract['source_url']})"
+        )
+    parts.append(f"- Admitted scope since that result: {revision_status}")
     if revision_status == "changed":
         parts.append(
             "  The admitted scope changed since that accepted result; treat prior work as "
