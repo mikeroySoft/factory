@@ -24,7 +24,7 @@ if a[:2] == ["issue", "view"]:
 elif a[:2] == ["issue", "list"]:
     print("[]")
 elif a[:2] == ["pr", "list"]:
-    if s.get("pr"):
+    if s.get("pr") and not s.get("merged"):
         head = subprocess.run(["git", "-C", ".factory/wt-7", "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
         print(json.dumps([{"number": 70, "state": "OPEN", "headRefName": "agent/7", "headRefOid": head, "baseRefName": "main", "isDraft": False, "labels": [{"name": "factory-approved"}], "reviewRequests": [], "reviewDecision": "APPROVED"}]))
     else:
@@ -35,9 +35,14 @@ elif a[:2] == ["pr", "create"]:
     print("https://example.invalid/pull/70")
 elif a[:2] == ["pr", "view"]:
     head = subprocess.run(["git", "-C", ".factory/wt-7", "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
-    print(json.dumps({"number": 70, "headRefName": "agent/7", "headRefOid": head, "baseRefName": "main", "state": "OPEN", "reviewDecision": ""}))
+    print(json.dumps({"number": 70, "headRefName": "agent/7", "headRefOid": head, "baseRefName": "main", "state": "OPEN", "reviewDecision": "", "isDraft": False, "labels": [{"name": "factory-approved"}], "title": "local change"}))
 elif a[:2] == ["pr", "checks"]:
-    print(json.dumps([{"name": "ci", "bucket": "pending"}]))
+    print(json.dumps([{"name": "ci", "bucket": "pass" if s.get("merge_ready") else "pending"}]))
+elif a[:2] == ["pr", "merge"]:
+    s["merged"] = True
+    p.write_text(json.dumps(s))
+elif a[0] == "api" and "/compare/" in a[1]:
+    print(json.dumps({"behind_by": 0}))
 elif a[:2] not in (["issue", "edit"], ["issue", "comment"], ["pr", "edit"], ["pr", "comment"]):
     raise SystemExit("Unexpected external operation: " + repr(a))
 '''
@@ -161,6 +166,69 @@ class LocalCLI(unittest.TestCase):
             self.assertEqual(order, list(range(1, len(order) + 1)))
         legacy = [r for r in lifecycle.read_events(self.events) if r.get("event") == "attempt"]
         self.assertEqual(len(legacy), 2)
+
+    def retained_page(self, head, offset=0, expected=0):
+        request = {"schema_version": 1, "repository": "local/smoke", "op": "investigate",
+                   "kind": "result", "number": 7, "head": head, "offset": offset}
+        result = subprocess.run(
+            [sys.executable, "-m", "factory", "evidence", "--root", str(self.repo)],
+            input=json.dumps(request), cwd=self.repo, env=self.env,
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+        return json.loads(result.stdout)
+
+    def merge_accepted(self):
+        state = json.loads(self.state.read_text())
+        state["merge_ready"] = True
+        self.state.write_text(json.dumps(state))
+        self.cli("dispatch")
+        self.assertTrue(json.loads(self.state.read_text())["merged"])
+        self.assertFalse((self.repo / ".factory" / "wt-7").exists())
+
+    def test_retained_handoff_survives_cleanup(self):
+        text = "Accepted handoff\n" + "λ" * 16_000 + "\nComplete final paragraph.\n"
+        self.worker.write_text(WORKER + "\nPath('.factory/handoff-7.md').write_text(" + repr(text) + ", encoding='utf-8')\n")
+        self.cli("dispatch", "--ticket", "7")
+        approval = next(row for row in lifecycle.read_events(self.events) if row.get("event") == "approved")
+        head = approval["head"]
+        self.merge_accepted()
+        parts, offset = [], 0
+        while offset is not None:
+            page = self.retained_page(head.upper(), offset)
+            detail = page["investigation"]
+            self.assertEqual(detail["status"], "complete")
+            self.assertEqual(detail["manifest"]["accepted_head"], head)
+            self.assertEqual(detail["manifest"]["source"]["head"], head)
+            source = next(source for source in page["sources"] if source["id"] == detail["handoff_source_id"])
+            self.assertLessEqual(len(source["text"].encode("utf-8")), 20_000)
+            parts.append(source["text"])
+            following = detail["next_offset"]
+            if following is not None:
+                self.assertGreater(following, offset)
+                self.assertTrue(source["truncated"])
+            offset = following
+        self.assertEqual("".join(parts), text)
+
+    def test_merge_keeps_the_only_copy_of_an_oversized_handoff(self):
+        self.worker.write_text(WORKER + "\nPath('.factory/handoff-7.md').write_bytes(b'x' * (256 * 1024 + 1))\n")
+        self.cli("dispatch", "--ticket", "7")
+        state = json.loads(self.state.read_text())
+        state["merge_ready"] = True
+        self.state.write_text(json.dumps(state))
+        self.cli("dispatch")
+        self.assertTrue(json.loads(self.state.read_text())["merged"])
+        source = self.repo / ".factory/wt-7/.factory/handoff-7.md"
+        self.assertEqual(source.read_bytes(), b"x" * (256 * 1024 + 1))
+
+    def test_missing_handoff_remains_explicit_after_cleanup(self):
+        self.cli("dispatch", "--ticket", "7")
+        approval = next(row for row in lifecycle.read_events(self.events) if row.get("event") == "approved")
+        self.merge_accepted()
+        page = self.retained_page(approval["head"], expected=1)
+        self.assertEqual(page["investigation"]["manifest"]["source"]["status"], "missing")
+        self.assertNotEqual(page["investigation"]["status"], "complete")
+        self.assertIsNone(page["investigation"]["next_offset"])
 
     def test_ticketless_invocations_and_side_effect_free_dry_run(self):
         self.cli("dispatch", "--dry-run")

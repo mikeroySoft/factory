@@ -81,7 +81,7 @@ def main():
         assert bridge(**fields)["error"]["code"] == "invalid_request", fields
     caps = bridge("capabilities")
     assert caps["ok"] and caps["capabilities"]["actions"] == []
-    assert {read.get("kind") for read in caps["capabilities"]["reads"] if read["op"] == "investigate"} == {"workflows", "file", "pr", "checks", "runs", "run", "log", "roadmap", "initiative", "drift"}
+    assert {read.get("kind") for read in caps["capabilities"]["reads"] if read["op"] == "investigate"} == {"workflows", "file", "pr", "checks", "runs", "run", "log", "roadmap", "initiative", "drift", "result"}
     workflows = bridge("investigate", kind="workflows")
     assert workflows["ok"] and not workflows["sources"][0]["truncated"], "Workflow discovery unavailable or too large for this live smoke"
     paths = [item["path"] for item in json.loads(workflows["sources"][0]["text"])["workflows"] if item["path"].startswith(".github/workflows/")]

@@ -32,6 +32,7 @@ READ_SECONDS = 90
 COMMAND_SECONDS = 20
 RESPONSE_CAP = 500_000
 JSON_CAP = 1_048_576
+RESULT_BYTES = 256 * 1024
 PAGE_SIZE = 100
 LOG_JOBS = 5
 DIRECTORY_CAP = 1024
@@ -47,6 +48,7 @@ ATTENTION_REASONS = {
     "output_truncated": "The emitted case list was shortened to fit the response budget.",
 }
 SHA = re.compile(r"[0-9a-fA-F]{40,64}")
+RESULT_SHA = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
 NOTICES = [
     "Only fixed GitHub GETs and non-persisting local reads are supported; no inference, provider probe or actions.",
     "Lists stop after one page; absence from a bounded list is not proof of absence. Reads are sequential, not an atomic snapshot.",
@@ -207,6 +209,8 @@ def request(deadline: float) -> dict:
         kind = req.get("kind")
         if kind == "file":
             expected.update(("kind", "path", "ref"))
+        elif kind == "result":
+            expected.update(("kind", "number", "head", "offset"))
         elif kind in ("pr", "checks", "runs", "initiative", "drift"):
             expected.update(("kind", "number"))
         elif kind in ("run", "log"):
@@ -224,6 +228,13 @@ def request(deadline: float) -> dict:
     for field in ("number", "run_id"):
         if field in req and (type(req[field]) is not int or not 0 < req[field] < 2**63):
             raise EvidenceError("invalid_request", f"{field} must be a positive integer below 9223372036854775808.", "request", "request")
+    if op == "investigate" and req["kind"] == "result":
+        head, offset = req["head"], req["offset"]
+        if not isinstance(head, str) or not RESULT_SHA.fullmatch(head):
+            raise EvidenceError("invalid_request", "head must be an exact 40- or 64-character hexadecimal revision.", "request", "request")
+        if type(offset) is not int or not 0 <= offset <= RESULT_BYTES:
+            raise EvidenceError("invalid_request", f"offset must be a nonnegative integer no greater than {RESULT_BYTES}.", "request", "request")
+        req["head"] = head.lower()
     if op == "investigate" and req["kind"] == "file":
         path, ref = req["path"], req["ref"]
         if (not isinstance(path, str) or not 0 < len(path) <= 1024 or unsafe_text(path)
@@ -416,6 +427,7 @@ def capabilities() -> dict:
             {"op": "inspect", "fields": ["number"], "description": "Selected issue, recorded decisions, F03 runtime and bounded artifacts."},
             {"op": "investigate", "kind": "workflows", "fields": [], "description": "Registered workflow paths, not a revision inventory."},
             {"op": "investigate", "kind": "file", "fields": ["path", "ref"], "description": "Regular UTF-8 file at an immutable resolved commit."},
+            {"op": "investigate", "kind": "result", "fields": ["number", "head", "offset"], "description": "Locally retained accepted handoff at an exact immutable head and raw byte offset; display_sanitized distinguishes terminal-safe text from raw archive integrity."},
             {"op": "investigate", "kind": "pr", "fields": ["number"], "description": "Observed head/base and available diff patches."},
             {"op": "investigate", "kind": "checks", "fields": ["number"], "description": "Checks and statuses for the exact observed PR head."},
             {"op": "investigate", "kind": "runs", "fields": ["number"], "description": "Actions runs for the exact observed PR head."},
@@ -431,12 +443,14 @@ def capabilities() -> dict:
                    "command_seconds": COMMAND_SECONDS, "read_seconds": READ_SECONDS,
                    "directory_entries": DIRECTORY_CAP, "path_characters": 1024,
                    "ref_characters": 255, "repository_characters": 200, "id_exclusive_max": 2**63,
+                   "result_bytes": RESULT_BYTES, "result_page_bytes": briefing.SOURCE_CAP,
                    "runtime_bytes": runtime_events.BYTE_LIMIT, "runtime_events": runtime_events.EVENT_LIMIT},
         "producers": {"reader": reader_build(), "evidence_schema": 1, "runtime_schema": 1,
+                      "result_schema": 1, "result_reader": "local retained acceptance archive",
                       "runtime_reader": "F03 non-persisting", "escalation_packet": "escalations/{number}.md"},
         "actions": [],
         "unavailable": ["arbitrary shell, API URLs or host paths", "writes, dispatch or action execution",
-                        "provider configuration", "full pagination and complete log archives", "configured worker attribution"],
+                        "provider configuration", "full GitHub pagination and complete log archives", "configured worker attribution"],
     }
 
 
@@ -760,9 +774,93 @@ def checked_sha(value, path: str) -> str:
 def investigate(req: dict, result: dict, cfg: config.Config, deadline: float) -> None:
     kind = req["kind"]
     detail = result["investigation"] = {
-        key: req[key] for key in ("kind", "number", "run_id", "path", "ref") if key in req
+        key: req[key] for key in ("kind", "number", "run_id", "path", "ref", "head", "offset") if key in req
     }
     notices = result["coverage"]["notices"]
+    if kind == "result":
+        from factory import results
+        archive = results.read_result(cfg, req["number"], req["head"], req["offset"])
+
+        status = archive.get("status")
+        reason = archive.get("reason")
+        manifest = archive.get("manifest")
+        if status not in {
+            "complete", "partial", "unavailable", "missing", "expired", "tampered", "privacy_withheld",
+        }:
+            status, reason, manifest = "unavailable", "invalid_result", None
+        elif isinstance(manifest, dict) and (
+            manifest.get("repository") != cfg.repo
+            or manifest.get("ticket") != req["number"]
+            or not isinstance(manifest.get("accepted_head"), str)
+            or manifest["accepted_head"].casefold() != req["head"].casefold()
+        ):
+            status, reason, manifest = "unavailable", "identity_mismatch", None
+        elif status in ("complete", "partial") and not isinstance(manifest, dict):
+            status, reason = "unavailable", "manifest_unavailable"
+        page_offset = archive.get("offset")
+        next_offset = archive.get("next_offset")
+        page_truncated = bool(archive.get("truncated"))
+        text = archive.get("text")
+        if status not in ("complete", "partial"):
+            next_offset, page_truncated, text = None, False, ""
+        detail.update(
+            status=status,
+            reason=reason,
+            manifest=manifest if isinstance(manifest, dict) else None,
+            offset=page_offset,
+            next_offset=next_offset,
+            truncated=page_truncated,
+        )
+        artifact = manifest.get("artifact") if isinstance(manifest, dict) else None
+        detail["offset_basis"] = "raw_archived_utf8_bytes"
+        detail["raw_artifact_sha256"] = artifact.get("sha256") if isinstance(artifact, dict) else None
+        detail["display_sanitized"] = False
+        detail["manifest_source_id"] = None
+        detail["handoff_source_id"] = None
+        citations = []
+        if isinstance(manifest, dict):
+            metadata = source(
+                f"Retained accepted result #{req['number']} manifest",
+                {"status": status, "reason": reason, "manifest": manifest},
+                path=f".factory/results/{req['number']}/{req['head']}/",
+            )
+            result["sources"].append(metadata)
+            citations.append(metadata["id"])
+            detail["manifest_source_id"] = metadata["id"]
+        if status in ("complete", "partial") and isinstance(text, str) and text:
+            excerpt = source(
+                f"Retained accepted result #{req['number']} handoff at {req['head']}",
+                text,
+                path=f".factory/results/{req['number']}/{req['head']}/",
+                truncated=page_truncated,
+            )
+            result["sources"].append(excerpt)
+            citations.append(excerpt["id"])
+            detail["handoff_source_id"] = excerpt["id"]
+            detail["display_sanitized"] = excerpt["text"] != text
+            if detail["display_sanitized"]:
+                notices.append(
+                    "Displayed retained handoff text was sanitized for terminal safety; offset, next_offset, and raw_artifact_sha256 describe the unmodified local archive, not displayed text bytes."
+                )
+        detail["citations"] = citations
+        if page_truncated:
+            notices.append(
+                "Retained accepted result excerpt is byte-bounded; request next_offset with the same immutable head for the next page."
+            )
+        if status == "complete":
+            result["coverage"]["status"] = "bounded" if page_truncated else "complete"
+        else:
+            notices.append(f"Retained accepted result is {status or 'unavailable'} ({reason or 'reason unavailable'}).")
+            failed(
+                result,
+                EvidenceError(
+                    "result_partial" if status == "partial" else "result_unavailable",
+                    "Retained accepted result is not completely available.",
+                    citations[0] if citations else f".factory/results/{req['number']}/{req['head']}/",
+                    "result",
+                ),
+            )
+        return
     if kind in ("roadmap", "initiative"):
         from factory import roadmap
 

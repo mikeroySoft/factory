@@ -281,6 +281,37 @@ def sources_for(
             add(label, found[0], path=rel, truncated=found[1])
     if pr.get("gate_text"):
         add(f"PR #{pr['number']} gate report", pr["gate_text"], url=pr.get("url", ticket["url"]))
+
+    from factory import results
+
+    archived = results.latest_result(cfg, number)
+    if archived is not None:
+        manifest = archived.get("manifest")
+        accepted_head = manifest.get("accepted_head") if isinstance(manifest, dict) else None
+        if not isinstance(accepted_head, str) or not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", accepted_head):
+            accepted_head = None
+        archive_root = f".factory/results/{number}/{accepted_head}/" if accepted_head else f".factory/results/{number}/"
+        add(
+            f"Archived accepted result provenance · historical · {archived.get('status', 'unavailable')}",
+            json.dumps(
+                {
+                    key: archived.get(key)
+                    for key in ("status", "reason", "offset", "next_offset", "truncated")
+                } | {"historical_notice": "Newest retained acceptance by accepted_at; not current ticket authority.",
+                     "manifest": manifest if isinstance(manifest, dict) else None},
+                ensure_ascii=False,
+                indent=2,
+            ),
+            path=archive_root,
+        )
+        if isinstance(archived.get("text"), str) and archived["text"]:
+            add(
+                "Archived accepted handoff · historical acceptance evidence",
+                archived["text"],
+                path=archive_root,
+                truncated=bool(archived.get("truncated")),
+            )
+
     for e in reversed(comments):
         if e not in decisions:
             label = "Legacy verdict · provenance unknown" if e.get("kind") == "verdict" else e.get("kind", "Comment").capitalize()

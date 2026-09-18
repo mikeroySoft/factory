@@ -268,8 +268,10 @@ class EvidenceCliTest(unittest.TestCase):
         data = self.invoke()
         menu = {(row["op"], row.get("kind")) for row in data["capabilities"]["reads"]}
         self.assertEqual(menu, {("capabilities", None), ("observe", None), ("inspect", None),
-                               *(("investigate", kind) for kind in ("workflows", "file", "pr", "checks", "runs", "run", "log", "roadmap", "initiative", "drift"))})
+                               *(("investigate", kind) for kind in ("workflows", "file", "result", "pr", "checks", "runs", "run", "log", "roadmap", "initiative", "drift"))})
         self.assertEqual(data["capabilities"]["actions"], [])
+        self.assertEqual(data["capabilities"]["producers"]["result_schema"], 1)
+        self.assertEqual(data["capabilities"]["limits"]["result_page_bytes"], briefing.SOURCE_CAP)
         self.assertEqual(self.calls(), [])
         self.assertFalse(self.journal.parent.exists())
 
@@ -319,6 +321,78 @@ class EvidenceCliTest(unittest.TestCase):
         disclosed = json.dumps({"investigation": detail, "sources": result["sources"]})
         self.assertNotIn("accepted full-size snapshot", disclosed)
         self.assertNotIn("changed full-size snapshot", disclosed)
+
+    def test_archived_handoff_cannot_displace_human_decisions_or_live_artifacts(self):
+        constraint = "Factory human decision: Keep the operator veto even if the archive disagrees."
+        escalation = "LIVE ESCALATION HAS PRIORITY"
+        gate = "LIVE GATE HAS PRIORITY"
+        packet = self.root / ".factory/escalations/7.md"
+        packet.parent.mkdir(parents=True)
+        packet.write_text(escalation)
+        archived = {
+            "status": "complete",
+            "reason": None,
+            "manifest": {"accepted_head": "a" * 40},
+            "text": "ARCHIVED HANDOFF LOWER PRIORITY",
+            "offset": 0,
+            "next_offset": None,
+            "truncated": False,
+        }
+        ticket = {
+            "number": 7,
+            "title": "Accepted work",
+            "body": "Scope",
+            "url": self.issue["html_url"],
+            "events": [{"at": AT, "kind": "comment", "body": constraint}],
+            "attempts": [],
+            "pr": {"number": 17, "gate_text": gate, "url": self.pr["html_url"], "comments": []},
+        }
+        with (
+            patch("factory.results.latest_result", return_value=archived),
+            patch.object(briefing, "SOURCE_COUNT", 6),
+        ):
+            sources = briefing.sources_for(config.Config(root=self.root, repo=REPO), ticket, [])
+
+        disclosed = json.dumps(sources)
+        self.assertIn(constraint, disclosed)
+        self.assertIn(escalation, disclosed)
+        self.assertIn(gate, disclosed)
+        self.assertNotIn(archived["text"], disclosed)
+
+    def test_retained_result_marks_terminal_sanitization_without_rebinding_raw_provenance(self):
+        requested_head = "A" * 40
+        raw_digest = "c" * 64
+        archived = {
+            "status": "complete",
+            "reason": None,
+            "manifest": {
+                "repository": REPO,
+                "ticket": 7,
+                "accepted_head": requested_head.lower(),
+                "artifact": {"sha256": raw_digest},
+            },
+            "text": "\x1b[31mRED\x1b[0m",
+            "offset": 0,
+            "next_offset": None,
+            "truncated": False,
+        }
+        result = {"ok": True, "coverage": {"status": "bounded", "notices": []},
+                  "sources": [], "errors": []}
+        with patch("factory.results.read_result", return_value=archived):
+            evidence.investigate(
+                {"kind": "result", "number": 7, "head": requested_head, "offset": 0},
+                result,
+                SimpleNamespace(repo=REPO),
+                time.monotonic() + 1,
+            )
+
+        detail = result["investigation"]
+        excerpt = next(row for row in result["sources"] if row["id"] == detail["handoff_source_id"])
+        self.assertEqual((detail["status"], excerpt["text"]), ("complete", "RED"))
+        self.assertTrue(detail["display_sanitized"])
+        self.assertEqual((detail["offset_basis"], detail["raw_artifact_sha256"]),
+                         ("raw_archived_utf8_bytes", raw_digest))
+        self.assertTrue(any("unmodified local archive" in notice for notice in result["coverage"]["notices"]))
 
     def reader_from(self, engine):
         env = {**self.env, "PYTHONPATH": os.pathsep.join((str(self.guard), str(engine)))}
@@ -373,7 +447,13 @@ class EvidenceCliTest(unittest.TestCase):
                    {**request, "op": "investigate", "kind": "roadmap", "number": 7},
                    {**request, "op": "investigate", "kind": "initiative"},
                    {**request, "op": "investigate", "kind": "drift", "run_id": 17},
-                   {**request, "op": "investigate", "kind": "checks", "number": 17, "ref": "main"}]
+                   {**request, "op": "investigate", "kind": "checks", "number": 17, "ref": "main"},
+                   {**request, "op": "investigate", "kind": "result", "number": 7, "head": self.head},
+                   {**request, "op": "investigate", "kind": "result", "number": 7, "head": "main", "offset": 0},
+                   {**request, "op": "investigate", "kind": "result", "number": 7, "head": "a" * 41, "offset": 0},
+                   {**request, "op": "investigate", "kind": "result", "number": 7, "head": self.head, "offset": False},
+                   {**request, "op": "investigate", "kind": "result", "number": 7, "head": self.head, "offset": -1},
+                   {**request, "op": "investigate", "kind": "result", "number": 7, "head": self.head, "offset": 256 * 1024 + 1}]
         for path, ref in (("../private", "main"), ("/private", "main"), ("a//b", "main"),
                           ("a%2fb", "main"), ("a\\b", "main"), ("a?ref=x", "main"),
                           ("a", "main~1"), ("a", "HEAD@{1}"), ("a", "--help"),
