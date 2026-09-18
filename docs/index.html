@@ -224,7 +224,7 @@
             <p class="eyebrow">control surfaces</p>
             <h2 id="features-title">Deterministic where it matters.</h2>
           </div>
-          <p>Runs on your Linux machine with the agent CLIs you choose. No hosted control plane and no Python dependencies. Model calls use your configured providers.</p>
+          <p>Runs on your Linux machine with the agent CLIs you choose and no hosted control plane. The v0.3.0 core has no Python dependencies; current <code>main</code> adds TOMLKit for comment-preserving Settings. Model calls use your configured providers.</p>
         </div>
 
         <div class="features">
@@ -273,6 +273,21 @@
             <h3>Make the next run better</h3>
             <p>Track attempts, review bounces, and time to merge. Distill finished-ticket evidence into repo-specific lessons you review and commit for future workers.</p>
           </article>
+          <article class="feature">
+            <div class="feature-top"><span class="status-dot"></span>Dashboard · main only</div>
+            <h3>Make the dashboard your own</h3>
+            <p>Nine bundled themes, title-first navigation, and Ops as the quiet default. Existing Inbox and deep links remain explicit destinations.</p>
+          </article>
+          <article class="feature">
+            <div class="feature-top"><span class="status-dot"></span>Settings · main only</div>
+            <h3>Five controls, locally saved</h3>
+            <p>Set concurrency, ticket time limit, worker/gate attempts, reviewer rounds, and the Factory Manager model with source-aware, comment-preserving edits.</p>
+          </article>
+          <article class="feature">
+            <div class="feature-top"><span class="status-dot"></span>Read-only · main only</div>
+            <h3>Chat and code history</h3>
+            <p>Use dashboard Chat with browser-local history, or add optional <code>factory[atlas]</code> Codebase history for commit-pinned maps and comparisons.</p>
+          </article>
         </div>
       </div>
     </section>
@@ -284,7 +299,7 @@
             <p class="eyebrow">how a ticket moves</p>
             <h2 id="steps-title">Evidence at every handoff.</h2>
           </div>
-          <p>Issues labelled <code>ready-for-agent</code> move through a worktree, your deterministic checks, a second model, GitHub CI, and freshness against <code>main</code>.</p>
+          <p>Issues labelled <code>ready-for-agent</code> move through a worktree, your deterministic checks, a second model, GitHub CI, and freshness against the configured integration branch (<code>main</code> by default).</p>
         </div>
 
         <ol class="steps">
@@ -316,7 +331,7 @@
           <li class="step">
             <span class="step-number">06</span>
             <h3>Merge stage</h3>
-            <p>One PR per pass, requiring gate PASS, <code>factory-approved</code>, green GitHub checks, and a head containing the current <code>main</code> tip.</p>
+            <p>One PR per pass, requiring gate PASS, <code>factory-approved</code>, green GitHub checks, and a head containing the configured integration branch tip (<code>main</code> by default).</p>
           </li>
           <li class="step">
             <span class="step-number">07</span>
@@ -339,7 +354,7 @@
             <p class="eyebrow">quick start</p>
             <h2 id="quick-start-title">Bring your own checks. Keep your own machine.</h2>
           </div>
-          <p>Linux, Python &gt;= 3.11, git, authenticated gh with push access, and worker/reviewer CLIs. Ask FM requires authenticated OMP and sends evidence to the selected model provider.</p>
+          <p>Linux, Python &gt;= 3.11, git, authenticated gh with push access, and worker/reviewer CLIs. Current <code>main</code> installs TOMLKit; optional Codebase history adds <code>graphifyy</code> through <code>factory[atlas]</code>, while terminal <code>factory chat</code> additionally needs Node and its pinned Pi runtime. Dashboard Chat and Ask FM require authenticated OMP and send evidence to the selected model provider.</p>
         </div>
 
         <div class="code-panel">
@@ -361,6 +376,9 @@ factory install --dashboard   # systemd user timer every 10 min + dashboard on :
           <div class="command"><code>factory learn</code><p>Distill lessons from finished tickets into <code>.factory-lessons.md</code>.</p></div>
           <div class="command"><code>factory dashboard</code><p>Inbox decision briefings, cited Ask FM answers, and Ops telemetry. Binds to localhost by default; exposing it to a network also exposes its mutating API.</p></div>
           <div class="command"><code>factory doctor / init / install</code><p>Onboarding.</p></div>
+          <div class="command"><code>factory plan</code><p>Main only: read initiatives, resolve decision owners, and inspect accepted baselines and drift. Reading a plan does not authorize execution.</p></div>
+          <div class="command"><code>factory chat</code><p>Main only: a read-only terminal FM console with bounded evidence tools and explicit provider disclosure. Requires the optional Node/Pi setup.</p></div>
+          <div class="command"><code>factory codebase</code><p>Main only, with the optional atlas extra: inspect commit-pinned code maps, history, and baseline comparisons.</p></div>
         </div>
       </div>
     </section>
@@ -410,17 +428,19 @@ model = "qwen3:30b"</code></pre>
           <li class="release">
             <div class="release-meta">
               <span class="chip">Unreleased · main only</span>
-              <a href="https://github.com/mikeroySoft/factory/issues/53">Initiative planning</a>
+              <a href="https://github.com/mikeroySoft/factory/compare/v0.3.0...main">Current main</a>
               <span>Not included in v0.3.0</span>
             </div>
             <div>
-              <h3>A shared plan above the ticket queue</h3>
-              <p>An initiative issue template and read-only <code>factory plan list</code> / <code>factory plan inspect N</code> make outcomes, owners, open decisions, and implementation links inspectable.</p>
+              <h3>Collaborate with evidence. Operate from one console.</h3>
+              <p>Selected capabilities merged after v0.3.0:</p>
               <ul>
-                <li>Plans live in GitHub issues, alongside the discussion and delivery evidence.</li>
-                <li>Status is an explicit declaration, not an inference from closed child tickets. Ownership routing and the shared dashboard are still ahead.</li>
+                <li><strong>Shared planning:</strong> initiative routing, execution guards, immutable bindings, durable routed handoffs, and shared roadmap/owner-attention reads are implemented. The real two-human acceptance checkpoint remains open; the collaboration programme is not yet proven delivered.</li>
+                <li><strong>PR recovery:</strong> the manager frontier handles stalled Factory-owned PRs and late feedback with bounded recovery and exact-head approval.</li>
+                <li><strong>External PR review:</strong> opt-in discovery, cited SHA-bound reviews, changed-head re-review, CI readiness, and the human queue are available. This lane reviews only; it never edits contributor branches or merges their PRs.</li>
+                <li><strong>Operator UI:</strong> <a href="https://github.com/mikeroySoft/factory/pull/110">nine themes, title-first navigation, and Ops as the default</a>; <a href="https://github.com/mikeroySoft/factory/pull/111">five local Settings controls</a>; read-only dashboard Chat; and optional Codebase history.</li>
               </ul>
-              <p class="decision"><strong>The decision:</strong> one canonical plan, no second database. Reading a plan does not authorize execution; the initiative label is not yet an enforced dispatch guard. <a href="https://github.com/mikeroySoft/factory/issues/52">Read the collaboration contract.</a></p>
+              <p class="decision"><strong>The decision:</strong> keep one canonical GitHub plan and one review-only contributor lane. Initiative execution is guarded; reading, filtering, or discussing evidence grants no mutation authority. <a href="https://github.com/mikeroySoft/factory/issues/59">Track the held two-human acceptance checkpoint.</a></p>
             </div>
           </li>
           <li class="release">
@@ -468,29 +488,29 @@ model = "qwen3:30b"</code></pre>
             <p class="eyebrow">roadmap</p>
             <h2 id="roadmap-title">Less supervision.<br>Clearer ownership.</h2>
           </div>
-          <p>Direction, not delivery dates. This snapshot reflects September 8, 2026; linked issues carry current status, dependencies, and acceptance criteria.</p>
+          <p>Direction, not delivery dates. This snapshot reflects September 18, 2026; linked issues carry current status, dependencies, and acceptance criteria. Capabilities marked “on main” are merged but not included in v0.3.0.</p>
         </div>
 
         <div class="roadmap">
           <article>
-            <span class="chip chip-cyan">In progress · staged rollout</span>
+            <span class="chip chip-cyan">On main · acceptance pending</span>
             <h3>Shared plans. The right human.</h3>
-            <p>Shape major changes above the issue queue, route decisions to the responsible person, and bind implementation to an approved plan revision. The read-only initiative reader is on main; routing is under revision. Handoffs and the shared dashboard remain held for human-reviewed rollout.</p>
-            <p><strong>Why:</strong> separate outcome ownership, decision ownership, and the runner’s execution claim. One runner per repo; humans keep their own GitHub identities. Completion requires a real two-human workflow, not just merged tickets.</p>
-            <p><a href="https://github.com/mikeroySoft/factory/issues/52">Collaboration programme #52</a> · <a href="https://github.com/mikeroySoft/factory/issues/59">Acceptance checkpoint</a></p>
+            <p>Routing, execution guards, immutable plan bindings, durable routed handoffs, and shared roadmap/owner-attention reads are implemented on <code>main</code>. They keep plans canonical and decisions human-owned without treating a declaration or merged implementation ticket as delivery proof.</p>
+            <p><strong>Still held:</strong> the real distinct-runner, two-human initiative-to-delivery pilot. Programme completion requires owner-confirmed evidence from that workflow, not just merged code.</p>
+            <p><a href="https://github.com/mikeroySoft/factory/issues/52">Collaboration programme #52</a> · <a href="https://github.com/mikeroySoft/factory/issues/59">Open acceptance checkpoint #59</a></p>
           </article>
           <article>
-            <span class="chip chip-cyan">In progress · not yet merged</span>
+            <span class="chip chip-cyan">On main · manager opt-in</span>
             <h3>Keep open PRs moving</h3>
-            <p>Extend manager oversight to every open agent PR: understand pending CI, stale branches, review loops, and conflicts; choose bounded recovery or a terminal human handoff. Implementation is under review.</p>
-            <p><strong>Why:</strong> opening a PR is not finishing a ticket. Recovery needs an accountable next step without overriding human intervention.</p>
+            <p>The manager frontier observes factory-owned open PRs, waits on pending CI, and escalates red CI, unresolved current-head feedback, or inactivity into bounded <code>FIX</code>, <code>CLOSE</code>, or human handling. Late feedback is delivered at most once per evidence revision and never from partial or unverified evidence.</p>
+            <p><strong>Why:</strong> opening a PR is not finishing a ticket. Recovery has an accountable next step, exact-head approval stays fail-closed, and human intervention still takes precedence.</p>
             <p><a href="https://github.com/mikeroySoft/factory/issues/15">PR frontier #15</a></p>
           </article>
           <article>
-            <span class="chip">Planned · not started</span>
+            <span class="chip chip-cyan">On main · review only</span>
             <h3>Review contributor PRs, too</h3>
-            <p>An opt-in review lane for PRs outside Factory’s own worker flow: publish cited GitHub reviews, re-review changed heads, track CI readiness, and surface a human review queue.</p>
-            <p><strong>The boundary:</strong> review contributor work without pushing to its branch or merging it. This lane is scoped in the backlog, not available today.</p>
+            <p>Opted-in contributor PRs can receive cited, SHA-bound GitHub reviews, be reviewed again after a head change, and surface fail-closed CI readiness in the Ops queue and Inbox.</p>
+            <p><strong>The boundary:</strong> Factory does not edit or push contributor branches and this lane never merges their PRs. Readiness is advisory, not merge authority.</p>
             <p><a href="https://github.com/mikeroySoft/factory/issues/5">Review intake #5</a> · <a href="https://github.com/mikeroySoft/factory/issues/9">Dashboard queue #9</a></p>
           </article>
           <article>
