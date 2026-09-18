@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import difflib
 import errno
 import hashlib
 import ipaddress
@@ -167,6 +168,86 @@ def sha256(path: Path) -> str | None:
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
 
 
+def template_fix(root: Path, template: Path) -> dict:
+    target = root / template
+    ours = target.read_bytes().decode() if target.exists() else ""
+    shipped = (TEMPLATES / template.name).read_bytes().decode()
+    lines = difflib.unified_diff(
+        ours.splitlines(keepends=True), shipped.splitlines(keepends=True),
+        fromfile=f"a/{template}", tofile=f"b/{template}",
+    )
+    diff = "".join(
+        line if line.endswith("\n") else line + "\n\\ No newline at end of file\n"
+        for line in lines
+    )
+    return {"kind": "patch", "diff": diff, "advisory": True}
+
+
+def relocation_fix(cfg: config.Config, *, reveal: bool) -> dict:
+    import tomlkit
+
+    def key_paths(value: dict, prefix: str) -> list[str]:
+        return [
+            path
+            for key, item in value.items()
+            for path in (key_paths(item, f"{prefix}.{key}") if isinstance(item, dict) and item
+                         else [f"{prefix}.{key}"])
+        ]
+
+    hosted = config.host_filter(cfg.raw_repo)
+    tables = sorted(t for t in config.HOST_TABLES if t in hosted)
+    tables += [t for t in config.HOST_KEYS if t in hosted]
+    fix = {"kind": "relocate", "tables": [
+        {"table": f"[repo.{json.dumps(cfg.repo)}.{table}]", "keys": key_paths(hosted[table], table)}
+        for table in tables
+    ]}
+    if reveal:
+        fix["toml"] = tomlkit.dumps({"repo": {cfg.repo: hosted}})
+    return fix
+
+
+def unknown_key_fix(path: Path, unknown: list[str]) -> dict:
+    from bisect import bisect_right
+    from tomlkit.items import AbstractTable
+    from tomlkit.parser import Parser
+
+    source = path.read_text()
+    newlines = [i for i, char in enumerate(source) if char == "\n"]
+
+    # tomlkit exposes no source spans. Capture them in preserved trivia
+    # at its parser boundary, including inline tables and array-table entries.
+    class LocatedParser(Parser):
+        def _parse_key_value(self, parse_comment=False):
+            line = bisect_right(newlines, self._idx) + 1
+            key, value = super()._parse_key_value(parse_comment)
+            value.trivia._factory_line = line
+            return key, value
+
+        def _parse_table(self, parent_name=None, parent=None):
+            line = bisect_right(newlines, self._idx) + 1
+            key, value = super()._parse_table(parent_name, parent)
+            value.trivia._factory_line = line
+            return key, value
+
+    locations = {}
+
+    def locate(value, prefix=""):
+        lines = [getattr(getattr(value, "trivia", None), "_factory_line", None)]
+        if isinstance(value, dict):
+            container = value.value if isinstance(value, AbstractTable) else value
+            for key in value:
+                lines.append(locate(container.item(key), f"{prefix}.{key}" if prefix else key))
+        elif isinstance(value, list):
+            for i, child in enumerate(value):
+                lines.append(locate(child, f"{prefix}[{i}]"))
+        line = min((line for line in lines if line is not None), default=None)
+        locations[prefix] = line
+        return line
+
+    locate(LocatedParser(source).parse())
+    return {"kind": "keys", "keys": [{"key": key, "line": locations[key]} for key in unknown]}
+
+
 def dashboard_port_error(cfg: config.Config, host: str, port: int, reason: str = "is in use") -> str:
     return (
         f'factory dashboard: port {port} on {host} {reason}; set [repo."{cfg.repo}".dashboard] port '
@@ -260,13 +341,16 @@ def doctor(argv: list[str]) -> int:
         prog="factory doctor", description="Check tools, auth, remotes, config drift, and the triage model."
     )
     parser.add_argument("--json", action="store_true", help="emit {ok, version, repo, root, rows} instead of text")
+    parser.add_argument("--reveal-fix", action="store_true", help="include host TOML values in JSON fix payloads")
     args = parser.parse_args(argv)
     cfg = config.load()
     rows: list[dict] = []
 
-    def report(status: bool | None, label: str, detail: str = "", *, info: bool = False) -> None:
+    def report(status: bool | None, label: str, detail: str = "", *, info: bool = False, fix: dict | None = None) -> None:
         tag = "INFO" if info else "PASS" if status else ("WARN" if status is None else "FAIL")
         rows.append({"status": tag, "label": label, "detail": detail})
+        if args.json and fix is not None:
+            rows[-1]["fix"] = fix
 
     present = (cfg.root / CONFIG_NAME).exists()
     report(present, f"{CONFIG_NAME} present", "" if present else "run `factory init`")
@@ -274,9 +358,17 @@ def doctor(argv: list[str]) -> int:
     report(True if tracked else None, f"{CONFIG_NAME} committed", "" if tracked else "commit it so clones see it")
 
     unknown = config.unknown_keys(cfg.raw_repo)
-    report(None if unknown else True, f"{CONFIG_NAME} keys", f"unknown (ignored): {', '.join(unknown)}" if unknown else "all known")
+    report(
+        None if unknown else True, f"{CONFIG_NAME} keys",
+        f"unknown (ignored): {', '.join(unknown)}" if unknown else "all known",
+        fix=unknown_key_fix(cfg.root / CONFIG_NAME, unknown) if args.json and unknown else None,
+    )
     hosted = committed_host_keys(cfg.raw_repo)
-    report(None if hosted else True, "host settings committed", f"move to {config.host_config_path()}: {', '.join(hosted)}" if hosted else "none")
+    report(
+        None if hosted else True, "host settings committed",
+        f"move to {config.host_config_path()}: {', '.join(hosted)}" if hosted else "none",
+        fix=relocation_fix(cfg, reveal=args.reveal_fix) if args.json and hosted else None,
+    )
     unset = unset_repo_keys(cfg.raw_repo)
     if unset:
         report(None, "defaults in effect", ", ".join(unset), info=True)
@@ -286,6 +378,7 @@ def doctor(argv: list[str]) -> int:
         report(
             True if ours == shipped else None, f"{tmpl}",
             "matches shipped template" if ours == shipped else ("missing (factory init)" if ours is None else "differs from shipped template"),
+            fix=template_fix(cfg.root, tmpl) if args.json and tmpl == ISSUE_TEMPLATE and ours != shipped else None,
         )
     host = config.host_config()
     if host:
