@@ -67,6 +67,15 @@ its own `[repo."owner/name".dashboard] port` in the host config. The preflight c
 reserve the port until systemd starts the service: a later bind failure exits 1
 with a one-line diagnostic, and the existing systemd restart policy still applies.
 
+`factory doctor --json` includes a `fix` object on actionable drift rows only:
+`kind: patch` carries an advisory `diff` from the issue template to the shipped
+version; `kind: relocate` lists host-setting key paths and destination tables;
+`kind: keys` lists unknown configuration keys with their 1-based source lines.
+Relocation payloads omit values unless explicitly requested with
+`factory doctor --json --reveal-fix`, which adds a `toml` string containing the
+values under their destination host tables. Treat that output as sensitive.
+Doctor never applies these repairs; text output is unchanged.
+
 Generated triage, dispatch and dashboard services use the interpreter selected by
 host-owned, optional `[install].python`, or `sys.executable` (the interpreter running
 `factory install`) when unset, followed by `-P -m factory`. Set

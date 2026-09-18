@@ -16,6 +16,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tomllib
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -206,6 +207,24 @@ def relocation_fix(cfg: config.Config, *, reveal: bool) -> dict:
     return fix
 
 
+def unknown_key_fix(path: Path, unknown: list[str]) -> dict:
+    locations = {}
+    source = ""
+    start = 1
+    # ponytail: quadratic prefix parsing for small config files; use a span-aware
+    # TOML parser if large configurations make doctor noticeably slow.
+    for number, line in enumerate(path.read_text().splitlines(keepends=True), 1):
+        source += line
+        try:
+            raw = tomllib.loads(source)
+        except tomllib.TOMLDecodeError:
+            continue
+        for key in config.unknown_keys(raw):
+            locations.setdefault(key, start)
+        start = number + 1
+    return {"kind": "keys", "keys": [{"key": key, "line": locations[key]} for key in unknown]}
+
+
 def dashboard_port_error(cfg: config.Config, host: str, port: int, reason: str = "is in use") -> str:
     return (
         f'factory dashboard: port {port} on {host} {reason}; set [repo."{cfg.repo}".dashboard] port '
@@ -316,7 +335,11 @@ def doctor(argv: list[str]) -> int:
     report(True if tracked else None, f"{CONFIG_NAME} committed", "" if tracked else "commit it so clones see it")
 
     unknown = config.unknown_keys(cfg.raw_repo)
-    report(None if unknown else True, f"{CONFIG_NAME} keys", f"unknown (ignored): {', '.join(unknown)}" if unknown else "all known")
+    report(
+        None if unknown else True, f"{CONFIG_NAME} keys",
+        f"unknown (ignored): {', '.join(unknown)}" if unknown else "all known",
+        fix=unknown_key_fix(cfg.root / CONFIG_NAME, unknown) if args.json and unknown else None,
+    )
     hosted = committed_host_keys(cfg.raw_repo)
     report(
         None if hosted else True, "host settings committed",

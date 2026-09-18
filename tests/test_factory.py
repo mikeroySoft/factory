@@ -723,6 +723,97 @@ class HostConfigTest(unittest.TestCase):
             self.assertEqual(rows["push access to acme/widgets"]["status"], "PASS")
             self.assertEqual(out["ok"], proc.returncode == 0)
 
+    def test_doctor_template_fix_applies(self) -> None:
+        host_file('[defaults.triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n')
+        for original in (None, "", "custom\n", "custom"):
+            with self.subTest(original=original), tempfile.TemporaryDirectory() as d:
+                repo = make_repo(Path(d))
+                target = repo / ".github/ISSUE_TEMPLATE/agent_task.md"
+                if original is not None:
+                    target.parent.mkdir(parents=True)
+                    target.write_text(original)
+                stubs = stub_bin(Path(d), gh="exit 0", systemctl="echo inactive")
+                def rows():
+                    result = factory(repo, "doctor", "--json", path=stubs)
+                    return {r["label"]: r for r in json.loads(result.stdout)["rows"]}
+                fix = rows()[str(target.relative_to(repo))]["fix"]
+                self.assertEqual((fix["kind"], fix["advisory"]), ("patch", True))
+                self.assertIn("--- a/.github/ISSUE_TEMPLATE/agent_task.md\n", fix["diff"])
+                for args in (["--check"], []):
+                    applied = subprocess.run(
+                        ["git", "apply", *args], cwd=repo, input=fix["diff"],
+                        text=True, capture_output=True,
+                    )
+                    self.assertEqual(applied.returncode, 0, applied.stderr)
+                self.assertEqual(target.read_bytes(), (ROOT / "factory/templates/agent_task.md").read_bytes())
+                self.assertNotIn("fix", rows()[str(target.relative_to(repo))])
+
+    def test_doctor_relocation_is_redacted_unless_revealed(self) -> None:
+        host_file('[defaults.triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n')
+        text = '[triage]\nmodel = "private-model-value"\n[install.env]\nTOKEN = "private-token-value"\n[gate]\nlock = "/private/lock-value"\n'
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), text)
+            stubs = stub_bin(Path(d), gh="exit 0", systemctl="echo inactive")
+            result = factory(repo, "doctor", "--json", path=stubs)
+            self.assertNotIn("private-", result.stdout)
+            rows = {r["label"]: r for r in json.loads(result.stdout)["rows"]}
+            fix = rows["host settings committed"]["fix"]
+            self.assertEqual(fix["kind"], "relocate")
+            self.assertEqual(fix["tables"], [
+                {"table": '[repo."acme/widgets".install]', "keys": ["install.env.TOKEN"]},
+                {"table": '[repo."acme/widgets".triage]', "keys": ["triage.model"]},
+                {"table": '[repo."acme/widgets".gate]', "keys": ["gate.lock"]},
+            ])
+            revealed = factory(repo, "doctor", "--json", "--reveal-fix", path=stubs)
+            rows = {r["label"]: r for r in json.loads(revealed.stdout)["rows"]}
+            import tomllib
+            values = tomllib.loads(rows["host settings committed"]["fix"]["toml"])
+            self.assertEqual(values["repo"]["acme/widgets"], tomllib.loads(text))
+            (repo / config.CONFIG_NAME).write_text("")
+            clean = factory(repo, "doctor", "--json", path=stubs)
+            rows = {r["label"]: r for r in json.loads(clean.stdout)["rows"]}
+            for label in ("host settings committed", ".factory.toml keys", "defaults in effect"):
+                self.assertNotIn("fix", rows[label])
+
+    def test_doctor_unknown_key_source_lines(self) -> None:
+        host_file('[defaults.triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n')
+        source = (
+            '# unknown keys with TOML syntax, not regex-shaped lines\n'
+            '"dispatch"."max_atempts" = 2\n'
+            '[triage]\n'
+            'model = """first\n'
+            '[not_a_table]\n'
+            'fake = 1\n'
+            '"""\n'
+            '"odd.key" = [\n'
+            '  "value",\n'
+            ']\n'
+            '[[gate.check]]\n'
+            'name = "one"\n'
+            'run = ["true"]\n'
+            'typo = true\n'
+            '[[gate.check]]\n'
+            'name = "two"\n'
+            'run = ["true"]\n'
+            'typo = false\n'
+            '[alien.subtable]\n'
+            'value = 1\n'
+        )
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), source)
+            stubs = stub_bin(Path(d), gh="exit 0", systemctl="echo inactive")
+            result = factory(repo, "doctor", "--json", path=stubs)
+            rows = {r["label"]: r for r in json.loads(result.stdout)["rows"]}
+            self.assertEqual(rows[".factory.toml keys"]["fix"], {
+                "kind": "keys", "keys": [
+                    {"key": "dispatch.max_atempts", "line": 2},
+                    {"key": "triage.odd.key", "line": 8},
+                    {"key": "gate.check[0].typo", "line": 14},
+                    {"key": "gate.check[1].typo", "line": 18},
+                    {"key": "alien", "line": 19},
+                ],
+            })
+
     def test_manager_legacy_command_and_invalid_settings(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             repo = make_repo(Path(d))
