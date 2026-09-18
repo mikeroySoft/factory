@@ -2387,6 +2387,45 @@ class DispatchTest(unittest.TestCase):
             self.assertIn("until a human confirms the current scope", prompt)
             self.assertNotIn("## Admitted execution contract", prompt)
 
+        # Unsupported: the prior retained result exists, but its recorded
+        # contract fails validation (results.py:301) -- stale/tampered plan-bound
+        # history, not a legitimate "never plan-bound" ticket. Must report
+        # unavailable even though today's admitted scope exactly matches what
+        # the corrupted contract *would* have recorded, never a false unchanged.
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            cfg = config.load(repo)
+            dispatch.configure(cfg)
+            n, head = 13, "4" * 40
+            mismatched_baseline = make_baseline(80, "other")
+            corrupt_issue = {"title": "t", "body": binding.render(mismatched_baseline), "comments": []}
+            events = [
+                {"event": "plan-bound", "ticket": n, "schema_version": 1,
+                 "baseline": prior_baseline, "issue": corrupt_issue},
+                {"at": "2026-01-01T01:00:00Z", "event": "attempt", "ticket": n,
+                 "gate": "PASS", "head": head, "actual_head": head,
+                 "handoff": {"status": "missing", "bytes": None, "sha256": None}},
+                {"at": "2026-01-01T02:00:00Z", "event": "review", "ticket": n,
+                 "verdict": "APPROVE", "accepted": True, "parsed": True, "head": head, "actual_head": head},
+                {"at": "2026-01-01T03:00:00Z", "event": "approved", "ticket": n,
+                 "pr": n + 100, "head": head, "gate_head": head, "review_head": head},
+            ]
+            with mock.patch("factory.evidence.reader_build", return_value={
+                "revision": "f" * 40, "verified": True, "evidence_schema": 1, "runtime_schema": 1,
+            }):
+                retained = results.retain(cfg, n, head, events)
+            self.assertIn(retained["status"], ("complete", "partial"))
+            issue = {"title": "t", "body": binding.render(prior_baseline), "comments": []}
+            dispatch.record("plan-bound", ticket=n, schema_version=1, baseline=prior_baseline, issue=issue)
+            wt = dispatch.FACTORY / f"wt-{n}"
+            wt.mkdir(parents=True)
+            with mock.patch.object(dispatch, "gh_json") as gh:
+                prompt = dispatch.build_prompt(n, wt)
+                gh.assert_not_called()
+            self.assertIn("## Resume context", prompt)
+            self.assertIn("Admitted scope since that result: unavailable", prompt)
+            self.assertIn("until a human confirms the current scope", prompt)
+
         # No prior retained result at all: no resume section, no false claim.
         with tempfile.TemporaryDirectory() as d:
             repo = make_repo(Path(d))

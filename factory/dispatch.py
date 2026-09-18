@@ -400,19 +400,22 @@ def resume_context(n: int, baseline: dict | None) -> str | None:
     if prior is None:
         return None
     manifest = prior.get("manifest")
-    contract = manifest.get("contract") if isinstance(manifest, dict) else None
-    prior_linked = isinstance(contract, dict) and contract.get("status") == "bound"
-    if baseline is None:
-        revision_status = "unavailable" if prior_linked else "unchanged"
-    elif not prior_linked:
-        revision_status = "changed"
+    manifest = manifest if isinstance(manifest, dict) else {}
+    contract = manifest.get("contract")
+    contract_status = contract.get("status") if isinstance(contract, dict) else None
+    if contract_status not in {"bound", "unbound"}:
+        revision_status = "unavailable"
+    elif contract_status == "unbound":
+        revision_status = "unchanged" if baseline is None else "changed"
+    elif baseline is None:
+        revision_status = "unavailable"
     elif (contract.get("initiative"), contract.get("sha256")) == (baseline.get("initiative"), baseline.get("sha256")):
         revision_status = "unchanged"
     else:
         revision_status = "changed"
     status = prior.get("status")
-    accepted_head = manifest.get("accepted_head") if isinstance(manifest, dict) else None
-    accepted_at = manifest.get("accepted_at") if isinstance(manifest, dict) else None
+    accepted_head = manifest.get("accepted_head")
+    accepted_at = manifest.get("accepted_at")
     parts = [
         "## Resume context", "",
         "Local evidence from the latest retained accepted result for this ticket, "
