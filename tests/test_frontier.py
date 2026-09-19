@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -15,7 +16,12 @@ from tests.test_feedback import H, Provider
 
 ROOT = Path(__file__).resolve().parents[1]
 H2 = "c" * 40
-NOW = "2026-09-12T00:00:00Z"
+# `manage.py` measures staleness against the real clock, so a hardcoded fixture
+# date does not stay fresh: every test using this row started escalating as
+# stale the moment wall time passed 2026-09-12 + manager_stale_days (7), which
+# turned the suite red on 2026-09-19 with no code change. Anchor "recently
+# updated" to now; the stale case passes its own explicit old date.
+NOW = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def pr_row(head=H, labels=(), updated=NOW):
