@@ -3484,6 +3484,95 @@ class DispatchTest(unittest.TestCase):
                 gh_calls,
             )
 
+    def test_sync_lands_the_clean_prefix_and_escalates_only_the_remainder(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            root, origin, upstream = build_fork(tmp)
+            # origin can be pushed to even though main is checked out there.
+            git(origin, "config", "receive.denyCurrentBranch", "ignore")
+
+            # The fork edits shared.txt; upstream later edits the same line.
+            (origin / "shared.txt").write_text("fork\n")
+            git(origin, "add", "-A")
+            git(origin, "commit", "-q", "-m", "fork edit")
+
+            (upstream / "u1.txt").write_text("u1")
+            git(upstream, "add", "-A")
+            git(upstream, "commit", "-q", "-m", "u1")
+            u1 = git(upstream, "rev-parse", "HEAD")
+            (upstream / "shared.txt").write_text("upstream\n")
+            git(upstream, "add", "-A")
+            git(upstream, "commit", "-q", "-m", "u2 conflicting")
+            u2 = git(upstream, "rev-parse", "HEAD")
+
+            cfg = config.Config(root=root, repo="acme/widgets", upstream="upstream", main="main")
+            with mock.patch.object(config, "remote_slug", return_value="acme/upstream-widgets"):
+                dispatch.configure(cfg)
+
+            with mock.patch.object(dispatch, "gh_json", return_value=[]), \
+                 mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
+                 mock.patch.object(
+                     dispatch, "sync_escalate", return_value="https://x/issues/1",
+                 ) as escalate:
+                dispatch.sync_pass(False)
+
+            # Assert in root: it has every upstream object, so a missing commit
+            # cannot make the negative check pass for the wrong reason.
+            git(root, "fetch", "-q", "origin", "main")
+            git(root, "rev-parse", "--verify", f"{u2}^{{commit}}")
+            self.assertEqual(
+                subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", u1, "origin/main"]).returncode,
+                0,
+                "the conflict-free prefix should have landed",
+            )
+            self.assertNotEqual(
+                subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", u2, "origin/main"]).returncode,
+                0,
+                "the conflicting commit must not land",
+            )
+            escalate.assert_called_once()
+            self.assertIn("1 upstream commit(s) remain", escalate.call_args.args[2])
+            self.assertIn("shared.txt", escalate.call_args.args[2])
+
+    def test_sync_escalation_is_not_duplicated_when_the_search_index_lags(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            root, origin, upstream = build_fork(tmp)
+
+            (origin / "shared.txt").write_text("fork\n")
+            git(origin, "add", "-A")
+            git(origin, "commit", "-q", "-m", "fork edit")
+            (upstream / "shared.txt").write_text("upstream\n")
+            git(upstream, "add", "-A")
+            git(upstream, "commit", "-q", "-m", "u1 conflicting")
+
+            cfg = config.Config(root=root, repo="acme/widgets", upstream="upstream", main="main")
+            with mock.patch.object(config, "remote_slug", return_value="acme/upstream-widgets"):
+                dispatch.configure(cfg)
+
+            # GitHub's search index has not picked the escalation up yet; the
+            # issue list has. Reading the index would open a second issue for a
+            # conflict a human is already looking at.
+            def lagging_gh_json(cmd, *args, **kwargs):
+                if "--search" in cmd:
+                    return []
+                return [{"number": 7, "title": "upstream sync: merge conflict at abc123456789"}]
+
+            with mock.patch.object(dispatch, "gh_json", side_effect=lagging_gh_json), \
+                 mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
+                 mock.patch.object(dispatch, "sync_escalate") as escalate:
+                dispatch.sync_pass(False)
+
+            escalate.assert_not_called()
+
 
 class FeedbackSnapshotTest(unittest.TestCase):
     def test_external_review_queue_snapshot_states_and_revision_identity(self):

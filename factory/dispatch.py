@@ -870,6 +870,14 @@ def sync_record(**rec: object) -> None:
 
 
 def open_sync_issue() -> int | None:
+    """The open sync escalation, if one exists.
+
+    Reads the issue list rather than `--search`: the search index is
+    eventually consistent, so an escalation opened minutes ago can still be
+    missing from it. That miss duplicates the escalation — mikeroySoft/rocm-cli
+    #35/#36/#37 are the same conflict opened three times. The list endpoint is
+    read-through, so the title match below is authoritative.
+    """
     issues = gh_json(
         [
             "issue",
@@ -878,8 +886,8 @@ def open_sync_issue() -> int | None:
             REPO,
             "--state",
             "open",
-            "--search",
-            '"upstream sync" in:title',
+            "--limit",
+            "200",
             "--json",
             "number,title",
         ]
@@ -930,6 +938,54 @@ def sync_escalate(tip: str, reason: str, detail: str) -> str:
     return url
 
 
+def merge_upstream_rev(wt: Path, rev: str, label: str, count: str) -> subprocess.CompletedProcess[str]:
+    """Merge one upstream revision into the sync worktree, no commit rewriting."""
+    return run(
+        [
+            "git",
+            "merge",
+            "--no-ff",
+            *(["--signoff"] if cfg.signoff else []),
+            "-m",
+            f"Merge upstream {cfg.main} at {label[:12]} ({count} commits)",
+            rev,
+        ],
+        cwd=wt,
+        check=False,
+    )
+
+
+def newest_clean_upstream_commit(wt: Path, tip: str) -> str | None:
+    """The newest upstream commit below `tip` that merges without conflicts.
+
+    Called only after the tip itself conflicted. Without this the whole
+    backlog parks behind one bad commit: mikeroySoft/rocm-cli sat 36 commits
+    behind for ten days because a single-commit conflict escalated and every
+    later upstream commit queued behind it, so the conflict a human eventually
+    resolved was far larger than the one that caused the park. Landing the
+    conflict-free prefix bounds the escalation to the commits that genuinely
+    conflict, and bounds how far the fork drifts while a human gets to it.
+
+    Walks back from the tip, newest first, so the prefix is the longest one
+    available. Each probe is a real merge, immediately undone — conflict-freeness
+    is a property of the individual merge, so probing is the only honest test.
+    Returns None when even the oldest unmerged commit conflicts, which is the
+    old all-or-nothing case.
+    """
+    revs = run(["git", "rev-list", f"HEAD..{tip}"], cwd=wt).stdout.split()
+    for rev in revs:
+        if rev == tip:
+            continue
+        probe = run(
+            ["git", "merge", "--no-commit", "--no-ff", rev], cwd=wt, check=False
+        )
+        run(["git", "merge", "--abort"], cwd=wt, check=False)
+        run(["git", "reset", "--hard", "HEAD"], cwd=wt)
+        if probe.returncode == 0:
+            return rev
+    return None
+
+
 def sync_pass(dry_run: bool) -> None:
     """Merge upstream main into fork main when upstream moved; one merge per pass.
 
@@ -970,30 +1026,28 @@ def sync_pass(dry_run: bool) -> None:
     )
     try:
         with lifecycle.scope(EVENTS, "merge", lock=FACTORY / "locks" / "merge.lock") as execution:
-            merge = run(
-                [
-                    "git",
-                    "merge",
-                    "--no-ff",
-                    *(["--signoff"] if cfg.signoff else []),
-                    "-m",
-                    f"Merge upstream {cfg.main} at {tip[:12]} ({count} commits)",
-                    f"{UPSTREAM}/{cfg.main}",
-                ],
-                cwd=wt,
-                check=False,
-            )
+            target, conflicts = tip, ""
+            merge = merge_upstream_rev(wt, f"{UPSTREAM}/{cfg.main}", tip, count)
             if merge.returncode != 0:
                 conflicts = run(
                     ["git", "diff", "--name-only", "--diff-filter=U"], cwd=wt, check=False
                 ).stdout
                 run(["git", "merge", "--abort"], cwd=wt, check=False)
-                execution.outcome = "product_feedback" if conflicts.strip() else "unknown"
-                execution.reason = "merge_conflict" if conflicts.strip() else f"merge_exit:{merge.returncode}"
-                url = sync_escalate(tip, "merge conflict", conflicts or merge.stderr)
-                sync_record(upstream=tip, commits=count, result="conflict", issue=url)
-                log(f"upstream sync: merge conflict at {tip[:12]}; escalated {url}")
-                return
+                prefix = newest_clean_upstream_commit(wt, tip)
+                if prefix is not None:
+                    count = run(
+                        ["git", "rev-list", "--count", f"HEAD..{prefix}"], cwd=wt
+                    ).stdout.strip()
+                    merge = merge_upstream_rev(wt, prefix, prefix, count)
+                    target = prefix
+                if prefix is None or merge.returncode != 0:
+                    run(["git", "merge", "--abort"], cwd=wt, check=False)
+                    execution.outcome = "product_feedback" if conflicts.strip() else "unknown"
+                    execution.reason = "merge_conflict" if conflicts.strip() else f"merge_exit:{merge.returncode}"
+                    url = sync_escalate(tip, "merge conflict", conflicts or merge.stderr)
+                    sync_record(upstream=tip, commits=count, result="conflict", issue=url)
+                    log(f"upstream sync: merge conflict at {tip[:12]}; escalated {url}")
+                    return
             ok, report = run_gate(wt, "upstream", skip="leak-scan")
             if not ok:
                 execution.outcome, execution.reason = "project_escalation", "upstream_gate_failed"
@@ -1015,8 +1069,34 @@ def sync_pass(dry_run: bool) -> None:
                 log(f"upstream sync: push rejected; retry next pass\n{push.stderr}")
                 return
             execution.outcome, execution.reason = "merged", "upstream_sync"
-            sync_record(upstream=tip, commits=count, result="synced", merge=merged)
-            log(f"upstream sync: merged {count} commit(s) at {tip[:12]} -> {merged[:12]}")
+            if target == tip:
+                sync_record(upstream=tip, commits=count, result="synced", merge=merged)
+                log(f"upstream sync: merged {count} commit(s) at {tip[:12]} -> {merged[:12]}")
+                return
+            # A prefix landed. Escalate only what is left, so the human sees the
+            # conflict that actually blocked and the fork stops drifting behind it.
+            remaining = run(
+                ["git", "rev-list", "--count", f"{target}..{tip}"], cwd=ROOT
+            ).stdout.strip()
+            url = sync_escalate(
+                tip,
+                "merge conflict",
+                f"Merged the conflict-free prefix through {target[:12]} ({count} commits). "
+                f"{remaining} upstream commit(s) remain; the oldest of them conflicts.\n\n"
+                f"Conflicted files when merging the tip {tip[:12]}:\n{conflicts}",
+            )
+            sync_record(
+                upstream=tip,
+                commits=count,
+                result="partial",
+                merge=merged,
+                remaining=remaining,
+                issue=url,
+            )
+            log(
+                f"upstream sync: merged prefix through {target[:12]} ({count} commits) "
+                f"-> {merged[:12]}; {remaining} left, escalated {url}"
+            )
     finally:
         run(["git", "worktree", "remove", "--force", str(wt)], cwd=ROOT, check=False)
 
