@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -268,12 +269,71 @@ class EvidenceCliTest(unittest.TestCase):
         data = self.invoke()
         menu = {(row["op"], row.get("kind")) for row in data["capabilities"]["reads"]}
         self.assertEqual(menu, {("capabilities", None), ("observe", None), ("inspect", None),
-                               *(("investigate", kind) for kind in ("workflows", "file", "result", "pr", "checks", "runs", "run", "log", "roadmap", "initiative", "drift"))})
+                               *(("investigate", kind) for kind in ("workflows", "file", "result", "pr", "checks", "runs", "run", "log", "roadmap", "initiative", "drift", "experiments", "experiment"))})
         self.assertEqual(data["capabilities"]["actions"], [])
         self.assertEqual(data["capabilities"]["producers"]["result_schema"], 1)
         self.assertEqual(data["capabilities"]["limits"]["result_page_bytes"], briefing.SOURCE_CAP)
         self.assertEqual(self.calls(), [])
         self.assertFalse(self.journal.parent.exists())
+
+    def experiment(self, run, *, state="completed", complete=True):
+        directory = self.root / ".factory/experiments/o1" / run
+        directory.mkdir(parents=True)
+        files = {"protocol.json": json.dumps({"protocol_revision": 2}),
+                 "report.json": json.dumps({"state": state, "disposition": "pending", "decision_owner": "owner",
+                                            "evidence": {"lines": "evidence.jsonl", "offsets": "cases[]"}}),
+                 "evidence.jsonl": "{}\n"}
+        for name, text in files.items():
+            (directory / name).write_text(text)
+        (directory / "status.json").write_text(json.dumps({
+            "schema_version": 1, "experiment": "o1", "run_id": run, "kind": "observation", "state": state,
+            "protocol_revision": 2, "protocol_sha256": hashlib.sha256(files["protocol.json"].encode()).hexdigest(),
+            "source": {"path": str(self.root / ".factory/events.jsonl"), "initial_size": 0, "complete": complete},
+            "artifacts": {name: hashlib.sha256(text.encode()).hexdigest() for name, text in files.items()}}))
+        return directory
+
+    def read_experiment(self, run, code=0):
+        return self.invoke("investigate", kind="experiment", experiment="o1", run=run, code=code)["investigation"]
+
+    def test_experiment_availability_states_stay_distinct_and_completion_is_not_acceptance(self):
+        self.experiment("ok")
+        (self.root / ".factory/events.jsonl").write_text("")
+        detail = self.read_experiment("ok")
+        self.assertEqual((detail["status"], detail["record"]["state"], detail["record"]["disposition"]),
+                         ("complete", "completed", "pending"))
+        self.assertTrue(detail["record"]["protocol_matches_status"])
+        self.assertEqual(detail["source_ledger"]["freshness"], "current")
+        link = detail["links"][0]
+        self.assertEqual((link["target"], link["state"]), ("evidence.jsonl", "available"))
+        self.assertIn(link["source_id"], {source["id"] for source in self.last_output["sources"]})
+        self.assertEqual(detail["links"][1]["state"], "reference_within_report")
+        self.assertTrue(any("does not confirm the hypothesis" in notice for notice in self.last_output["coverage"]["notices"]))
+
+        (self.experiment("gone") / "evidence.jsonl").unlink()
+        detail = self.read_experiment("gone", code=1)
+        self.assertEqual((detail["status"], detail["artifacts"]["evidence.jsonl"]["state"], detail["links"][0]["state"]),
+                         ("partial", "missing", "missing"))
+
+        (self.experiment("edited") / "evidence.jsonl").write_text("changed\n")
+        detail = self.read_experiment("edited", code=1)
+        self.assertEqual((detail["status"], detail["artifacts"]["evidence.jsonl"]["state"]), ("stale", "stale"))
+
+        link = self.experiment("linked") / "report.json"
+        link.unlink()
+        link.symlink_to(self.root / "README.txt")
+        detail = self.read_experiment("linked", code=1)
+        self.assertEqual((detail["status"], detail["artifacts"]["report.json"]["state"]), ("partial", "inaccessible"))
+
+        self.experiment("running", state="observing")
+        self.assertEqual(self.read_experiment("running", code=1)["reason"], "run_not_terminal")
+        self.experiment("uncovered", complete=False)
+        self.assertEqual(self.read_experiment("uncovered", code=1)["reason"], "source_coverage_incomplete")
+        (self.root / ".factory/experiments/o1/escape").symlink_to(self.root / ".factory/experiments/o1/ok")
+        self.assertEqual(self.read_experiment("escape", code=1)["status"], "inaccessible")
+        self.assertEqual(self.read_experiment("absent", code=1)["status"], "missing")
+        self.invoke("investigate", kind="experiment", experiment="o1", run="..", code=2)
+        listed = self.invoke("investigate", kind="experiments")["investigation"]["runs"]
+        self.assertIn({"experiment": "o1", "run": "ok"}, listed)
 
     def test_drift_investigation_cites_metadata_without_exposing_snapshots(self):
         baseline = {

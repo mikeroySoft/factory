@@ -21,14 +21,17 @@ const ScopeFields = { schema_version: Type.Literal(1), repository: Type.Literal(
 const PositiveInteger = Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER });
 const NonnegativeOffset = Type.Integer({ minimum: 0, maximum: 256 * 1024 });
 const ImmutableHead = Type.String({ pattern: "^[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?$" });
+const SafeName = Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" });
 const InvestigationFields = {
-  kind: Type.Union(["workflows", "file", "result", "pr", "checks", "runs", "run", "log", "roadmap", "initiative", "drift"].map(kind => Type.Literal(kind))),
+  kind: Type.Union(["workflows", "file", "result", "pr", "checks", "runs", "run", "log", "roadmap", "initiative", "drift", "experiments", "experiment"].map(kind => Type.Literal(kind))),
   path: Type.Optional(Type.String({ minLength: 1 })), ref: Type.Optional(Type.String({ minLength: 1 })),
   number: Type.Optional(PositiveInteger), run_id: Type.Optional(PositiveInteger),
   head: Type.Optional(ImmutableHead), offset: Type.Optional(NonnegativeOffset),
+  experiment: Type.Optional(SafeName), run: Type.Optional(SafeName),
 };
 const InvestigationVariants = [
-  Type.Object({ ...ScopeFields, kind: Type.Union(["workflows", "roadmap"].map(kind => Type.Literal(kind))) }, { additionalProperties: false }),
+  Type.Object({ ...ScopeFields, kind: Type.Union(["workflows", "roadmap", "experiments"].map(kind => Type.Literal(kind))) }, { additionalProperties: false }),
+  Type.Object({ ...ScopeFields, kind: Type.Literal("experiment"), experiment: SafeName, run: SafeName }, { additionalProperties: false }),
   Type.Object({ ...ScopeFields, kind: Type.Literal("file"), path: Type.String({ minLength: 1 }), ref: Type.String({ minLength: 1 }) }, { additionalProperties: false }),
   Type.Object({ ...ScopeFields, kind: Type.Literal("result"), number: PositiveInteger, head: ImmutableHead, offset: NonnegativeOffset }, { additionalProperties: false }),
   Type.Object({ ...ScopeFields, kind: Type.Union(["pr", "checks", "runs", "initiative", "drift"].map(kind => Type.Literal(kind))), number: PositiveInteger }, { additionalProperties: false }),
@@ -257,7 +260,7 @@ export default function (pi: ExtensionAPI) {
   tool("fm_inspect", "Read a real case via Factory sources_for, with stable citations and honest gaps.", { number: Type.Integer({ minimum: 1, maximum: 2147483647 }) }, async (p, s) => {
     const data = await collect({ op: "inspect", number: p.number }, s); remember(data); return data;
   });
-  tool("fm_investigate", "Bounded read-only evidence. roadmap/workflows have no target fields; result requires number/head/offset; initiative/drift and pr/checks/runs require number; file requires path/ref; run/log require run_id. Retained results are local exact-head pages: offsets and raw_artifact_sha256 describe raw archive bytes, while display_sanitized identifies terminal-safe transformed citation text. Archive completeness and next_offset remain separate. Roadmap plans, questions, blockers, evidenced areas and dependencies include supplied citations. No other fields, shell or mutation.", InvestigationFields, async (p, s) => {
+  tool("fm_investigate", "Bounded read-only evidence. roadmap/workflows/experiments have no target fields; experiment requires experiment/run names from experiments; result requires number/head/offset; initiative/drift and pr/checks/runs require number; file requires path/ref; run/log require run_id. Retained results are local exact-head pages: offsets and raw_artifact_sha256 describe raw archive bytes, while display_sanitized identifies terminal-safe transformed citation text. Archive completeness and next_offset remain separate. Experiment runs report protocol revision, producer state, recorded disposition, evidence links and per-artifact missing/inaccessible/stale availability; completed is not hypothesis confirmation, production acceptance or delivery. Roadmap plans, questions, blockers, evidenced areas and dependencies include supplied citations. No other fields, shell or mutation.", InvestigationFields, async (p, s) => {
     const data = await collect({ op: "investigate", schema_version: 1, repository: REPO, ...p }, s); remember(data); return data;
   }, InvestigationVariants);
   tool("fm_capabilities", "Discover actual read operations, target/revision limits and unavailable actions. No shell, writes, dispatch or inference.", {}, async (_p, s) => {
@@ -382,8 +385,9 @@ export default function (pi: ExtensionAPI) {
           else if (["pr", "checks", "runs", "initiative", "drift"].includes(value) && values.length === 2) request = { schema_version: 1, repository: REPO, kind: value, number: Number(values[1]) };
           else if (["run", "log"].includes(value) && values.length === 2) request = { schema_version: 1, repository: REPO, kind: value, run_id: Number(values[1]) };
           else if (value === "result" && values.length === 4) request = { schema_version: 1, repository: REPO, kind: value, number: Number(values[1]), head: values[2], offset: Number(values[3]) };
-          else if (["workflows", "roadmap"].includes(value) && values.length === 1) request = { schema_version: 1, repository: REPO, kind: value };
-          else throw new Error("Use /fm investigate roadmap, initiative <N>, drift <ticket>, result <N> <head> <offset>, workflows, file <ref> <path>, pr|checks|runs <PR>, or run|log <run-id>.");
+          else if (["workflows", "roadmap", "experiments"].includes(value) && values.length === 1) request = { schema_version: 1, repository: REPO, kind: value };
+          else if (value === "experiment" && values.length === 3) request = { schema_version: 1, repository: REPO, kind: value, experiment: values[1], run: values[2] };
+          else throw new Error("Use /fm investigate roadmap, initiative <N>, drift <ticket>, result <N> <head> <offset>, experiments, experiment <name> <run>, workflows, file <ref> <path>, pr|checks|runs <PR>, or run|log <run-id>.");
           Assert(InvestigationSchema, request);
           const data = await collect({ op: "investigate", ...request }); remember(data);
           show(JSON.stringify({ ...data, sources: data.sources.map(({ text, ...metadata }) => metadata) }, null, 2));
