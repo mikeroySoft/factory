@@ -328,6 +328,14 @@ class RoadmapTest(unittest.TestCase):
         self.assertEqual(sequence["action"]["ticket"], 8)
         self.assertTrue(any("partial" in text for text in sequence["uncertain"]))
 
+        self.experiment_run("i3", "3", ["adopt"], parent["html_url"])
+        report_path = self.cfg.factory / "experiments/o1/i3/report.json"
+        report_path.write_text(json.dumps({**json.loads(report_path.read_text()), "limitations": 5}))
+        report = self.collect(responses, 50)
+        [experiment] = report["plans"][0]["experiments"]
+        self.assertEqual(experiment["outcome"], "unknown")
+        self.assertEqual([row["ticket"] for row in report["plans"][0]["next"]["blocked"]], [7])
+
     def test_historical_gap_is_retained_beside_a_healthy_live_plan(self):
         historical = issue(50, initiative_body("Historical plan"), labels=("initiative",), title="Historical")
         baseline = binding.from_issue(self.cfg, 50, historical)

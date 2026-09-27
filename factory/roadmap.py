@@ -362,6 +362,14 @@ def _experiments(result: dict, cfg) -> dict[int, list[dict]]:
             _notice(result, f"Experiment {row['experiment']} runs are inaccessible; its results remain unknown.")
             continue
         detail = evidence.experiment_run(cfg, row["experiment"], row["run"], {"sources": []})
+        record = detail["record"] = dict(detail["record"] or {})
+        # Untrusted local text: a mistyped field degrades to unknown instead of failing the roadmap.
+        if type(record.get("iteration")) is not int:
+            record["iteration"] = None
+        if not isinstance(record.get("disposition"), str):
+            record["disposition"] = None
+        if not isinstance(record.get("limitations"), list):
+            record["limitations"] = []
         grouped.setdefault(row["experiment"], []).append(detail)
     prefix = f"https://github.com/{cfg.repo}/issues/".lower()
     linked: dict[int, list[dict]] = {}
