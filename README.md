@@ -600,6 +600,24 @@ snapshot. Factory leaves this metadata opaque and out of pipeline configuration;
 `doctor` accepts it only under `defaults`. Unknown tables and an `engine` table
 under a per-repository section still produce host-config warnings.
 
+`[worker_wrap]` is host-only: set `command` under `[defaults.worker_wrap]` or
+`[repo."owner/name".worker_wrap]` (per-repo wins). Its argv is prepended to
+every worker launch, whichever `[workers]` label is selected, including labels
+a repository adds. A committed `.factory.toml` `[worker_wrap]` is a load error,
+so a repository cannot replace or remove it. Placeholders: `{cwd}`, `{prompt}`,
+`{root}` (main checkout), `{repo}` (`owner/name`), `{home}`. Unset = unchanged.
+
+```toml
+[defaults.worker_wrap]
+command = ["/usr/local/bin/my-wrapper", "--worktree", "{cwd}"]
+```
+
+This is a trusted operator-chosen executable, not a sandbox: Factory supplies
+no network, credential, gate or reviewer isolation, and the wrapper inherits the
+launch environment. A containing wrapper must expose the prompt (inside the
+worktree) and the linked worktree's common Git directory (under `{root}/.git`)
+at the same absolute paths.
+
 Labels (`needs-review`, `needs-viability`, `needs-triage`, `needs-info`,
 `ready-for-agent`, `ready-for-human`, `factory-approved`, `chore`, `initiative`)
 and the `agent/<n>` branch scheme are fixed conventions; `factory init` creates

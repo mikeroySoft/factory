@@ -56,7 +56,8 @@ DEFAULT_INSTALL = {"every": "10min", "dashboard": False, "host": "127.0.0.1", "p
 # Only these tables/keys are taken from the host: a clone on another machine
 # must run the same gate, so gate checks, leak scan and upstream never come
 # from here. Everything else in the host file is left for other tools (District).
-HOST_TABLES = frozenset({"triage", "workers", "review", "manager", "install"})
+# `worker_wrap` is host-only: a committed `[worker_wrap]` is refused, never merged.
+HOST_TABLES = frozenset({"triage", "workers", "worker_wrap", "review", "manager", "install"})
 HOST_KEYS = {"dashboard": ("port",), "gate": ("lock",)}
 
 # Every key the loader reads, by table; `factory doctor` reports anything else.
@@ -65,6 +66,7 @@ KNOWN_KEYS = {
     "repo": ("slug", "upstream", "main"),
     "dispatch": ("max_active", "max_attempts", "budget_min", "review_rounds", "cost_pattern", "signoff"),
     "workers": None,
+    "worker_wrap": ("command",),
     "review": ("command",),
     "manager": ("model", "command", "rounds", "review", "stale_days", "max_active_cap", "budget_min_cap"),
     "gate": ("timeout", "lock", "check"),
@@ -114,6 +116,8 @@ class Config:
         default_factory=lambda: {"default": DEFAULT_WORKER, LABEL_CHORE: DEFAULT_CHORE_WORKER}
     )
     worker_when: dict[str, str] = field(default_factory=dict)
+    # Host-only argv prefix for every worker launch: a trusted operator executable, not a sandbox.
+    worker_wrap: list[str] = field(default_factory=list)
     reviewer: list[str] = field(default_factory=lambda: list(DEFAULT_REVIEWER))
     manager: list[str] | None = None
     manager_rounds: int = 1
@@ -154,7 +158,8 @@ class Config:
     def worker(self, labels: set[str], prompt: Path, cwd: Path) -> list[str]:
         """argv for the worker that owns these ticket labels (first match wins)."""
         argv = next((self.workers[k] for k in self.workers if k in labels), self.workers["default"])
-        return expand(argv, prompt=str(prompt), cwd=str(cwd))
+        return expand([*self.worker_wrap, *argv], prompt=str(prompt), cwd=str(cwd),
+                      root=str(self.root), repo=self.repo, home=str(Path.home()))
 
     def review_cmd(self, prompt: str) -> list[str]:
         return expand(self.reviewer, prompt=prompt)
@@ -324,6 +329,9 @@ def load(start: Path | None = None) -> Config:
             raise ConfigError(f"{path}: {exc}") from exc
     slug = raw.get("repo", {}).get("slug") or remote_slug(root, "origin")
     host = host_config()
+    for section in (host.get("defaults", {}), host.get("repo", {}).get(slug, {})):
+        if "worker_wrap" in section and not isinstance(section["worker_wrap"], dict):
+            raise ConfigError(f"{host_config_path()}: worker_wrap must be a table")
     layered = merge(host_filter(host.get("defaults", {})), host_filter(host.get("repo", {}).get(slug, {})))
     raw, raw_repo = merge(layered, raw), raw
     repo_t, dispatch, workers = raw.get("repo", {}), raw.get("dispatch", {}), raw.get("workers", {})
@@ -352,6 +360,15 @@ def load(start: Path | None = None) -> Config:
             cfg.workers[label] = command
             if when:
                 cfg.worker_when[label] = when
+    if "worker_wrap" in raw_repo:
+        raise ConfigError(f"{path}: [worker_wrap] is host-only; set it in {host_config_path()} "
+                          "[defaults.worker_wrap] or [repo.\"<slug>\".worker_wrap]")
+    wrap = raw.get("worker_wrap", {})
+    if "command" in wrap:
+        command = wrap["command"]
+        if not isinstance(command, list) or not command or any(not isinstance(a, str) for a in command) or not command[0]:
+            raise ConfigError("worker_wrap.command needs a non-empty argv array of strings")
+        cfg.worker_wrap = command
     if "command" in raw.get("review", {}):
         cfg.reviewer = list(raw["review"]["command"])
     cfg.manager, cfg.manager_model = manager_settings(manager)

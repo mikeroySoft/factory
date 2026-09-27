@@ -420,6 +420,8 @@ def doctor(argv: list[str]) -> int:
 
     for label, argv_t in cfg.workers.items():
         report(shutil.which(argv_t[0]) is not None, f"worker `{label}`: {argv_t[0]}")
+    if cfg.worker_wrap:
+        report(shutil.which(cfg.worker_wrap[0]) is not None, f"worker wrap: {cfg.worker_wrap[0]}")
     report(shutil.which(cfg.reviewer[0]) is not None, f"reviewer: {cfg.reviewer[0]}")
     if not cfg.manager:
         report(None, "manager command", "[manager].command is unset; escalations get no automated diagnosis")
