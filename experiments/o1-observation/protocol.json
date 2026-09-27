@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "experiment": "o1-observation",
+  "kind": "observation",
+  "lineage": "o1-observation",
+  "protocol_revision": 1,
+  "max_iterations": 3,
+  "accepted_in": "https://github.com/mikeroySoft/factory/issues/96#issuecomment-5859984841",
+  "roadmap": "https://github.com/mikeroySoft/factory/issues/119",
+  "decision_owner": "managing agent under the user's routine-operation delegation",
+  "question": "Which recorded boundaries explain avoidable human intervention versus intentional policy waits in recent Factory execution?",
+  "baseline": "recorded .factory/events.jsonl ledger at the frozen cutoff",
+  "candidate": null,
+  "source": ".factory/events.jsonl",
+  "cutoff": "2026-09-27T21:28:31.070637+00:00",
+  "cohort_size": 12,
+  "limits": {
+    "max_seconds": 600,
+    "max_input_bytes": 268435456,
+    "max_output_bytes": 67108864,
+    "output_reserve_bytes": 262144,
+    "model_calls": 0,
+    "provider_calls": 0,
+    "subprocess_workers": 0
+  },
+  "terminal": {
+    "record_events": {"merged": "merged", "escalate": "project_escalation"},
+    "lifecycle_outcomes": ["merged", "project_escalation"]
+  },
+  "grouping": "terminal signals collapse by root_execution_id lineage (ticket-level fallback when absent); consecutive same ticket/outcome/reason signals across lineages are retries of one case",
+  "classification": {
+    "ignore_outcomes": ["completed", "merged", "approved", "refreshed"],
+    "reason_codes": {
+      "needs-info": "missing_product_spec_decision",
+      "REVISE": "implementation_gate_review_failure",
+      "leak_scan_matches": "implementation_gate_review_failure",
+      "configured_check_failed": "implementation_gate_review_failure",
+      "upstream_gate_failed": "implementation_gate_review_failure",
+      "manager_failed": "provider_tool_failure",
+      "check_timeout": "provider_tool_failure",
+      "github_command_failed": "provider_tool_failure",
+      "unparsed_verdict": "provider_tool_failure",
+      "state_changed": "dependency_ownership_wait",
+      "ready-for-human": "intentional_human_checkpoint"
+    },
+    "reason_prefixes": {
+      "review_exit:": "provider_tool_failure"
+    },
+    "fallback": "unknown"
+  }
+}
