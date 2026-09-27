@@ -1524,6 +1524,18 @@ never booleans or strings. Repository slugs are at most 200 characters.
 | `investigate` | `kind:"roadmap"` | Shared bounded initiative roadmap and owner-attention questions; coverage and unknown states remain explicit. |
 | `investigate` | `kind:"initiative"`, `number` | One initiative's declared plan, available revision, linked implementation evidence, blockers, questions and accepted drift evidence. |
 | `investigate` | `kind:"drift"`, `number` | One ticket's validated retained baseline compared with the complete live initiative; preserves historical accepted evidence on live-source failure. |
+| `investigate` | `kind:"experiments"` | Retained run directories under `.factory/experiments/<experiment>/<run>/`; a listing is not availability. |
+| `investigate` | `kind:"experiment"`, `experiment`, `run` | One retained schema-1 observation/build run: protocol revision, producer state, report fields, recorded disposition, evidence links and per-artifact availability. |
+
+Experiment reads resolve only single-name directories beneath `.factory/experiments`
+and never follow links. Run `status` is `complete`, `partial` (run not terminal,
+artifact missing/inaccessible or source coverage incomplete), `stale` (an artifact no
+longer matches its producer-recorded digest), `inaccessible` (unsafe, unreadable,
+malformed or foreign record) or `missing`; each artifact and report evidence link
+keeps its own state. `source_ledger.freshness` is `stale` once the ledger has grown
+past the frozen snapshot. A `completed` run is producer state only: it is not
+hypothesis confirmation, production acceptance or delivery, and `disposition` is only
+what the decision owner recorded.
 
 Retained-result reads return archive status and manifest under `investigation`,
 with separate `manifest_source_id` and `handoff_source_id` citations. Pages contain

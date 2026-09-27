@@ -215,7 +215,9 @@ def request(deadline: float) -> dict:
             expected.update(("kind", "number"))
         elif kind in ("run", "log"):
             expected.update(("kind", "run_id"))
-        elif kind in ("workflows", "roadmap"):
+        elif kind == "experiment":
+            expected.update(("kind", "experiment", "run"))
+        elif kind in ("workflows", "roadmap", "experiments"):
             expected.add("kind")
         else:
             raise EvidenceError("invalid_request", "Unknown investigation kind.", "request", "request")
@@ -228,6 +230,9 @@ def request(deadline: float) -> dict:
     for field in ("number", "run_id"):
         if field in req and (type(req[field]) is not int or not 0 < req[field] < 2**63):
             raise EvidenceError("invalid_request", f"{field} must be a positive integer below 9223372036854775808.", "request", "request")
+    if op == "investigate" and req["kind"] == "experiment":
+        if not all(isinstance(req[key], str) and EXPERIMENT_NAME.fullmatch(req[key]) for key in ("experiment", "run")):
+            raise EvidenceError("invalid_request", "experiment and run must be single safe directory names.", "request", "request")
     if op == "investigate" and req["kind"] == "result":
         head, offset = req["head"], req["offset"]
         if not isinstance(head, str) or not RESULT_SHA.fullmatch(head):
@@ -436,6 +441,8 @@ def capabilities() -> dict:
             {"op": "investigate", "kind": "roadmap", "fields": [], "description": "Shared initiative plans, linked implementation evidence and owner attention."},
             {"op": "investigate", "kind": "initiative", "fields": ["number"], "description": "One initiative with its canonical revision, blockers, drift and attention questions."},
             {"op": "investigate", "kind": "drift", "fields": ["number"], "description": "Accepted ticket binding compared with its initiative's current canonical revision."},
+            {"op": "investigate", "kind": "experiments", "fields": [], "description": "Retained experiment runs under .factory/experiments; listing is not evidence of availability."},
+            {"op": "investigate", "kind": "experiment", "fields": ["experiment", "run"], "description": "One retained schema-1 run: protocol revision, run state, report, recorded disposition and per-artifact missing/inaccessible/stale availability. Completion is not confirmation, acceptance or delivery."},
             {"op": "capabilities", "fields": [], "description": "Implemented schema and producer support; no case collection."},
         ],
         "limits": {"request_bytes": REQUEST_CAP, "list_entries": PAGE_SIZE, "json_bytes": JSON_CAP,
@@ -765,6 +772,199 @@ def viability_sources(cfg: config.Config, issue: dict, *, kind: str = "issue") -
     return selected
 
 
+EXPERIMENT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+EXPERIMENT_TERMINAL = frozenset({"completed", "interrupted", "invalid", "inconclusive"})
+EXPERIMENT_REPORT_FIELDS = (
+    "schema_version", "kind", "lineage", "iteration", "protocol_revision", "protocol_sha256", "state", "reason",
+    "cutoff", "baseline", "candidate", "decision_owner", "disposition", "interpretation", "note",
+    "limitations", "proposed_amendment",
+)
+EXPERIMENT_NOTICE = (
+    "Experiment run state is producer state: completed does not confirm the hypothesis, accept production use or "
+    "record delivery. Disposition is only what the decision owner recorded; pending means undecided."
+)
+
+
+def _experiment_file(directory: int, name: str) -> tuple[str, bytes | None]:
+    from factory import results
+    try:
+        return "available", results._read_regular(directory, name, JSON_CAP)
+    except FileNotFoundError:
+        return "missing", None
+    except (results._Unsafe, results._TooLarge, OSError):
+        return "inaccessible", None
+
+
+def _experiment_json(data: bytes | None) -> dict | None:
+    try:
+        value = json.loads(data, object_pairs_hook=unique_object)
+    except (TypeError, ValueError, UnicodeError, RecursionError, EvidenceError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def experiment_runs(cfg: config.Config) -> tuple[str, list[dict]]:
+    """Retained run directories under .factory/experiments; never follows links."""
+    from factory import results
+    try:
+        factory = results._state_dir(cfg, create=False)
+        try:
+            top = results._open_dir(factory, "experiments")
+        finally:
+            os.close(factory)
+    except FileNotFoundError:
+        return "missing", []
+    except (results._Unsafe, OSError):
+        return "inaccessible", []
+    rows, status = [], "available"
+    try:
+        for name in sorted(os.listdir(top)):
+            if not EXPERIMENT_NAME.fullmatch(name):
+                continue
+            try:
+                directory = results._open_dir(top, name)
+            except (results._Unsafe, OSError):
+                rows.append({"experiment": name, "run": None, "status": "inaccessible"})
+                continue
+            try:
+                rows.extend({"experiment": name, "run": run} for run in sorted(os.listdir(directory))
+                            if EXPERIMENT_NAME.fullmatch(run))
+            finally:
+                os.close(directory)
+            if len(rows) > DIRECTORY_CAP:
+                rows, status = rows[:DIRECTORY_CAP], "partial"
+                break
+    finally:
+        os.close(top)
+    return status, rows
+
+
+def experiment_run(cfg: config.Config, name: str, run: str, result: dict) -> dict:
+    """Read one retained schema-1 experiment run without trusting its completion.
+
+    Availability is missing (no run/status), inaccessible (unsafe, unreadable,
+    malformed or foreign), partial (some recorded artifact not usable, source not
+    fully covered or run not terminal), stale (every artifact present but one no
+    longer matches its recorded digest) or complete.
+    """
+    from factory import results
+    path = f".factory/experiments/{name}/{run}/"
+    detail = {"experiment": name, "run": run, "path": path, "status": "missing", "reason": "run_missing",
+              "record": None, "artifacts": {}, "links": [], "source_ledger": None, "citations": []}
+    opened = []
+    try:
+        opened.append(results._state_dir(cfg, create=False))
+        for part in ("experiments", name, run):
+            opened.append(results._open_dir(opened[-1], part))
+    except FileNotFoundError:
+        for fd in opened:
+            os.close(fd)
+        return detail
+    except (results._Unsafe, OSError):
+        for fd in opened:
+            os.close(fd)
+        detail.update(status="inaccessible", reason="unsafe_or_unreadable_path")
+        return detail
+    for fd in opened[:-1]:
+        os.close(fd)
+    directory = opened[-1]
+    try:
+        def cite(label: str, data: bytes, file: str) -> str:
+            item = source(f"Experiment {name} run {run} {label}", data.decode("utf-8", errors="replace"),
+                          path=path + file)
+            result["sources"].append(item)
+            detail["citations"].append(item["id"])
+            return item["id"]
+
+        state, data = _experiment_file(directory, "status.json")
+        status = _experiment_json(data)
+        if state == "missing":
+            detail["reason"] = "status_missing"
+            return detail
+        if status is None:
+            detail.update(status="inaccessible", reason="status_unreadable" if state != "available" else "status_malformed")
+            return detail
+        if status.get("schema_version") != 1:
+            detail.update(status="inaccessible", reason="unsupported_schema")
+            return detail
+        if status.get("experiment") != name or status.get("run_id") != run:
+            detail.update(status="inaccessible", reason="identity_mismatch")
+            return detail
+        cite("producer status", data, "status.json")
+        recorded = status.get("artifacts")
+        recorded = recorded if isinstance(recorded, dict) else {}
+        parsed = {}
+        for file, digest in sorted(recorded.items()):
+            if not EXPERIMENT_NAME.fullmatch(file) or file == "status.json":
+                continue
+            state, data = _experiment_file(directory, file)
+            row = {"state": state, "recorded_sha256": digest if isinstance(digest, str) else None,
+                   "observed_sha256": None, "bytes": None, "source_id": None}
+            if data is not None:
+                row.update(observed_sha256=hashlib.sha256(data).hexdigest(), bytes=len(data))
+                if row["observed_sha256"] != row["recorded_sha256"]:
+                    row["state"] = "stale"
+                row["source_id"] = cite(file, data, file)
+                if file.endswith(".json") and row["state"] == "available":
+                    parsed[file] = _experiment_json(data)
+                    if parsed[file] is None:
+                        row["state"] = "inaccessible"
+            detail["artifacts"][file] = row
+        report = parsed.get("report.json") or {}
+        record = {key: status.get(key) for key in ("schema_version", "kind", "lineage", "iteration", "protocol_revision",
+                                                   "protocol_sha256", "state", "reason", "cutoff", "started_at",
+                                                   "finished_at", "updated_at", "prior_runs")}
+        record.update({key: report[key] for key in EXPERIMENT_REPORT_FIELDS if key in report})
+        record.setdefault("disposition", None)
+        record.setdefault("decision_owner", None)
+        observations = report.get("observations")
+        record["observations_summary"] = ({key: value for key, value in observations.items() if key != "cases"}
+                                          if isinstance(observations, dict) else None)
+        protocol = parsed.get("protocol.json")
+        record["protocol_matches_status"] = (
+            None if protocol is None else protocol.get("protocol_revision") == status.get("protocol_revision")
+            and detail["artifacts"]["protocol.json"]["observed_sha256"] == status.get("protocol_sha256"))
+        detail["record"] = record
+        links = report.get("evidence")
+        for key, target in sorted(links.items() if isinstance(links, dict) else []):
+            if isinstance(target, str) and EXPERIMENT_NAME.fullmatch(target):
+                row = detail["artifacts"].get(target)
+                detail["links"].append({"name": key, "target": target, "state": row["state"] if row else "missing",
+                                        "source_id": row["source_id"] if row else None})
+            else:
+                detail["links"].append({"name": key, "target": clean_text(str(target))[:256],
+                                        "state": "reference_within_report", "source_id": None})
+        ledger = status.get("source")
+        if isinstance(ledger, dict):
+            freshness = "unchecked"
+            if ledger.get("path") == str(Path(cfg.root) / ".factory" / "events.jsonl"):
+                try:
+                    size = os.stat(ledger["path"], follow_symlinks=False).st_size
+                    freshness = "current" if size == ledger.get("initial_size") else "stale"
+                except FileNotFoundError:
+                    freshness = "missing"
+                except OSError:
+                    freshness = "inaccessible"
+            detail["source_ledger"] = {key: ledger.get(key) for key in ("sha256", "initial_size", "covered", "complete")}
+            detail["source_ledger"]["freshness"] = freshness
+        states = [row["state"] for row in detail["artifacts"].values()] + [link["state"] for link in detail["links"]]
+        if status.get("state") not in EXPERIMENT_TERMINAL:
+            detail.update(status="partial", reason="run_not_terminal")
+        elif not recorded:
+            detail.update(status="partial", reason="artifacts_unrecorded")
+        elif any(state in ("missing", "inaccessible") for state in states):
+            detail.update(status="partial", reason="artifact_unavailable")
+        elif not isinstance(ledger, dict) or ledger.get("complete") is not True:
+            detail.update(status="partial", reason="source_coverage_incomplete")
+        elif "stale" in states:
+            detail.update(status="stale", reason="artifact_digest_changed")
+        else:
+            detail.update(status="complete", reason=None)
+        return detail
+    finally:
+        os.close(directory)
+
+
 def checked_sha(value, path: str) -> str:
     if not isinstance(value, str) or not SHA.fullmatch(value):
         raise EvidenceError("invalid_response", "GitHub returned an invalid immutable identity.", path)
@@ -777,6 +977,30 @@ def investigate(req: dict, result: dict, cfg: config.Config, deadline: float) ->
         key: req[key] for key in ("kind", "number", "run_id", "path", "ref", "head", "offset") if key in req
     }
     notices = result["coverage"]["notices"]
+    if kind == "experiments":
+        status, runs = experiment_runs(cfg)
+        detail.update(status=status, runs=runs)
+        result["sources"].append(source("Retained experiment run directories", {"status": status, "runs": runs},
+                                        path=".factory/experiments/"))
+        if status == "available":
+            result["coverage"]["status"] = "complete"
+        else:
+            failed(result, EvidenceError(f"experiments_{status}", "Experiment run listing is not complete.",
+                                         ".factory/experiments/", "experiment"))
+        return
+    if kind == "experiment":
+        detail.update(experiment_run(cfg, req["experiment"], req["run"], result))
+        notices.append(EXPERIMENT_NOTICE)
+        if any(row["state"] != "available" for row in detail["artifacts"].values()):
+            notices.append("Per-artifact state: missing is absent, inaccessible is unsafe/unreadable/malformed, stale no longer matches the producer-recorded digest.")
+        if (detail["source_ledger"] or {}).get("freshness") == "stale":
+            notices.append("The source ledger has grown since the frozen cutoff; the report describes its recorded snapshot only.")
+        if detail["status"] == "complete":
+            result["coverage"]["status"] = "bounded" if any(item["truncated"] for item in result["sources"]) else "complete"
+        else:
+            failed(result, EvidenceError(f"experiment_{detail['status']}", "Experiment run evidence is not completely available.",
+                                         detail["path"], "experiment"))
+        return
     if kind == "result":
         from factory import results
         archive = results.read_result(cfg, req["number"], req["head"], req["offset"])
