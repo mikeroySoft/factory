@@ -1,6 +1,8 @@
 """Shared roadmap contracts over the existing plan, binding and routing producers."""
 from __future__ import annotations
 
+import hashlib
+import json
 import tempfile
 import time
 import unittest
@@ -254,6 +256,85 @@ class RoadmapTest(unittest.TestCase):
         self.assertIsNone(linked["runnable"])
         self.assertIn("no Plan baseline", linked["readiness_reason"])
         self.assertEqual(report["plans"][0]["drift"][0]["status"], "unknown")
+
+    def experiment_run(self, run: str, iteration: int, disposition: str, roadmap_url: str, name: str = "o1") -> None:
+        directory = self.cfg.factory / "experiments" / name / run
+        directory.mkdir(parents=True)
+        files = {
+            "protocol.json": json.dumps({"protocol_revision": 1, "question": "Which waits are avoidable?",
+                                         "accepted_in": f"https://github.com/{REPO}/issues/40#issuecomment-1",
+                                         "roadmap": roadmap_url}),
+            "report.json": json.dumps({"state": "completed", "disposition": disposition, "decision_owner": "fm",
+                                       "observations": {"category_counts": {"unknown": iteration}, "cases": [1]},
+                                       "limitations": ["Historical correlation only."],
+                                       "evidence": {"lines": "evidence.jsonl"}}),
+            "evidence.jsonl": "{}\n",
+        }
+        for file, text in files.items():
+            (directory / file).write_text(text)
+        (directory / "status.json").write_text(json.dumps({
+            "schema_version": 1, "experiment": name, "run_id": run, "kind": "observation", "state": "completed",
+            "iteration": iteration, "protocol_revision": 1,
+            "protocol_sha256": hashlib.sha256(files["protocol.json"].encode()).hexdigest(),
+            "source": {"path": str(self.cfg.factory / "events.jsonl"), "initial_size": 0, "complete": True},
+            "artifacts": {file: hashlib.sha256(text.encode()).hexdigest() for file, text in files.items()}}))
+
+    def test_experiments_inform_sequencing_without_becoming_blockers(self):
+        parent = issue(50, initiative_body("NOW: #7 and #8\nNEXT: #9", links="#7 #8 #9"),
+                       labels=("initiative",), title="Parent")
+        baseline = binding.from_issue(self.cfg, 50, parent)
+        bound = binding.render(baseline)
+        self.cfg.factory.mkdir(parents=True, exist_ok=True)
+        (self.cfg.factory / "events.jsonl").write_text("")
+        self.experiment_run("i1", 1, "reject", parent["html_url"])
+        self.experiment_run("i2", 2, "pending", parent["html_url"])
+        self.experiment_run("other", 1, "adopt", f"https://github.com/{REPO}/issues/99", name="o2")
+        responses = {
+            f"repos/{REPO}/issues/50": parent,
+            f"repos/{REPO}/issues/7": issue(7, "Blocked by: #11\n\n" + bound, labels=("ready-for-agent",)),
+            f"repos/{REPO}/issues/11": issue(11, "prerequisite", title="Prerequisite"),
+            f"repos/{REPO}/issues/8": issue(8, bound, title="Held"),
+            f"repos/{REPO}/issues/9": issue(9, bound, labels=("ready-for-agent",), title="Later"),
+        }
+        for number in (7, 8, 9):
+            responses[f"repos/{REPO}/issues/{number}/dependencies/blocked_by"] = []
+        report = self.collect(responses, 50)
+        shared = report["plans"][0]
+
+        [experiment] = shared["experiments"]
+        self.assertEqual((experiment["relation"], experiment["blocking"]), ("informed_by", False))
+        self.assertEqual((experiment["latest"]["run"], experiment["disposition"], experiment["outcome"]), ("i2", "pending", "pending"))
+        self.assertEqual([(run["run"], run["outcome"]) for run in experiment["runs"]], [("i1", "rejected"), ("i2", "pending")])
+        self.assertEqual(experiment["decision_source"], f"https://github.com/{REPO}/issues/40#issuecomment-1")
+        self.assertEqual(experiment["latest"]["observations_summary"], {"category_counts": {"unknown": 2}})
+        self.assertIn(experiment["source"], {row["id"] for row in report["sources"]})
+        self.assertEqual([row["number"] for row in shared["blockers"]], [11])
+
+        sequence = shared["next"]
+        self.assertEqual([row["ticket"] for row in sequence["runnable"]], [9])
+        self.assertEqual([row["ticket"] for row in sequence["blocked"]], [7])
+        self.assertEqual(sequence["blocked"][0]["blocked_by"], [11])
+        self.assertEqual([(row.get("experiment"), row.get("ticket")) for row in sequence["awaiting_decision"]],
+                         [("o1", None), (None, 8)])
+        self.assertEqual(sequence["action"]["experiment"], "o1")
+        self.assertEqual([row["ticket"] for row in sequence["displaced"]], [9])
+        self.assertIn("NEXT", sequence["displaced"][0]["reason"])
+        self.assertIn("Historical correlation only.", sequence["uncertain"])
+        self.assertTrue(sequence["action"]["sources"])
+
+        (self.cfg.factory / "experiments/o1/i2/report.json").unlink()
+        report = self.collect(responses, 50)
+        sequence = report["plans"][0]["next"]
+        self.assertEqual(sequence["action"]["ticket"], 8)
+        self.assertTrue(any("partial" in text for text in sequence["uncertain"]))
+
+        self.experiment_run("i3", "3", ["adopt"], parent["html_url"])
+        report_path = self.cfg.factory / "experiments/o1/i3/report.json"
+        report_path.write_text(json.dumps({**json.loads(report_path.read_text()), "limitations": 5}))
+        report = self.collect(responses, 50)
+        [experiment] = report["plans"][0]["experiments"]
+        self.assertEqual(experiment["outcome"], "unknown")
+        self.assertEqual([row["ticket"] for row in report["plans"][0]["next"]["blocked"]], [7])
 
     def test_historical_gap_is_retained_beside_a_healthy_live_plan(self):
         historical = issue(50, initiative_body("Historical plan"), labels=("initiative",), title="Historical")

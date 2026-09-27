@@ -1094,13 +1094,55 @@ function roadmapDriftRow(row) {
       h('div', { class: 'section-h' }, 'accepted baseline'), roadmapRevision(row?.baseline, true),
       h('div', { class: 'section-h' }, 'observed initiative'), roadmapRevision(row?.observed, true)));
 }
+function roadmapCites(ids) {
+  const cited = roadmapList(ids).filter(Boolean);
+  return cited.length ? h('div', { class: 'roadmap-meta' }, `Sources: ${cited.join(', ')}`) : null;
+}
+function roadmapWorkRow(item) {
+  const subject = item?.experiment ? `Experiment ${item.experiment} · run ${roadmapValue(item.run)}` : `#${roadmapValue(item?.ticket)}${item?.title ? ` · ${item.title}` : ''}`;
+  return h('li', {}, h('strong', {}, subject), ` · priority ${item?.priority || (item?.experiment ? 'current evidence' : 'unranked')}`,
+    item?.blocked_by?.length ? ` · blocked by ${item.blocked_by.map(n => `#${n}`).join(', ')}` : '',
+    item?.reason || item?.readiness_reason ? h('div', { class: 'roadmap-meta' }, item.reason || item.readiness_reason) : null,
+    roadmapCites(item?.sources));
+}
+function roadmapNext(next) {
+  if (!next) return h('p', { class: 'roadmap-state unknown' }, 'Next action is unknown; no sequencing was returned.');
+  const group = (title, items) => h('section', { class: 'roadmap-section' }, h('div', { class: 'section-h' }, `${title} · ${items.length}`),
+    items.length ? h('ul', { class: 'roadmap-list' }, ...items.map(roadmapWorkRow)) : h('p', { class: 'empty' }, 'None observed.'));
+  const uncertain = roadmapList(next.uncertain);
+  return h('section', { class: 'roadmap-section roadmap-next', 'aria-label': 'Next action' },
+    h('div', { class: 'section-h' }, 'next action · explanation only, nothing is applied'),
+    next.action ? h('div', { class: 'roadmap-state' }, h('strong', {}, next.action.kind === 'implement' ? `Implement #${next.action.ticket}` : `Decide ${next.action.experiment ? `experiment ${next.action.experiment}` : `#${next.action.ticket}`}`),
+      h('p', { class: 'roadmap-copy' }, next.action.why), roadmapCites(next.action.sources))
+      : h('p', { class: 'roadmap-state unknown' }, 'No runnable or decision-awaiting work was observed; the next action is unknown.'),
+    h('div', { class: 'roadmap-grid' },
+      group('current-priority work awaiting decision', roadmapList(next.awaiting_decision)),
+      group('runnable implementation', roadmapList(next.runnable)),
+      group('blocked by real blockers', roadmapList(next.blocked)),
+      group('in flight · held by assignment', roadmapList(next.in_flight)),
+      group('later priority · not runnable', roadmapList(next.held)),
+      group('displaced by the next action', roadmapList(next.displaced))),
+    uncertain.length ? h('details', {}, h('summary', {}, `Unresolved evidence · ${uncertain.length}`), h('ul', { class: 'roadmap-list' }, ...uncertain.map(text => h('li', {}, text)))) : null);
+}
+function roadmapExperimentRow(item) {
+  const latest = item?.latest || {};
+  return h('li', {},
+    h('strong', {}, `${roadmapValue(item?.experiment)} · ${roadmapValue(item?.outcome)} (disposition ${roadmapValue(item?.disposition)})`),
+    h('div', { class: 'roadmap-meta' }, `Informed by · not a blocker · latest run ${roadmapValue(latest.run)} · ${roadmapValue(latest.state)} (producer state) · evidence ${roadmapValue(latest.status)}`),
+    item?.question ? h('p', { class: 'roadmap-copy' }, item.question) : null,
+    latest.observations_summary ? h('p', { class: 'roadmap-copy' }, `Latest result: ${JSON.stringify(latest.observations_summary)}`) : null,
+    h('p', { class: 'roadmap-copy' }, roadmapValue(item?.effect)),
+    h('div', { class: 'roadmap-meta' }, 'Runs: ', roadmapList(item?.runs).map(run => `${run.run} → ${roadmapValue(run.outcome)}`).join('; ')),
+    item?.decision_source ? roadmapAnchor(item.decision_source, 'Accepting decision ↗') : null,
+    roadmapCites([item?.source]));
+}
 function roadmapPlanCard(summary, coverageStatus) {
   const detail = S.roadmapDetails[summary.number];
   const detailed = roadmapList(detail?.data?.plans).find(plan => plan.number === summary.number);
   const planCoverage = detail?.data?.coverage?.status || coverageStatus;
   const plan = detailed || summary;
   const sections = plan.sections || {};
-  const children = roadmapList(plan.children), blockers = roadmapList(plan.blockers), drift = roadmapList(plan.drift);
+  const children = roadmapList(plan.children), blockers = roadmapList(plan.blockers), drift = roadmapList(plan.drift), experiments = roadmapList(plan.experiments);
   const delivery = plan.delivery || { status: 'unknown', detail: null };
   const busy = !!S.roadmapLoading[String(plan.number)];
   const problems = roadmapList(plan.problems);
@@ -1132,6 +1174,10 @@ function roadmapPlanCard(summary, coverageStatus) {
         h('div', { class: 'section-h' }, `blockers · ${blockers.length}`),
         blockers.length ? h('ul', { class: 'roadmap-list' }, ...blockers.map(blocker => roadmapIssueRow(blocker, 'Blocker')))
           : h('p', { class: planCoverage === 'complete' ? 'empty' : 'roadmap-state unknown' }, planCoverage === 'complete' ? 'No blockers were returned by the available evidence.' : 'No blockers were returned, but source coverage is incomplete.'))),
+    roadmapNext(plan.next),
+    h('div', { class: 'section-h' }, `experiments · informed by, not blockers · ${experiments.length}`),
+    experiments.length ? h('ul', { class: 'roadmap-list' }, ...experiments.map(roadmapExperimentRow))
+      : h('p', { class: planCoverage === 'complete' ? 'empty' : 'roadmap-state unknown' }, planCoverage === 'complete' ? 'No retained experiment names this initiative as its roadmap.' : 'No experiment rows were returned, but source coverage is incomplete.'),
     h('div', { class: 'section-h' }, 'declared open questions'),
     h('p', { class: 'roadmap-copy' }, sections['Open decisions'] || 'Open-decision declaration unavailable.'),
     h('div', { class: 'section-h' }, `plan drift · ${drift.length}`),

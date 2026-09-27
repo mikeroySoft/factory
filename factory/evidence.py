@@ -924,6 +924,10 @@ def experiment_run(cfg: config.Config, name: str, run: str, result: dict) -> dic
         record["protocol_matches_status"] = (
             None if protocol is None else protocol.get("protocol_revision") == status.get("protocol_revision")
             and detail["artifacts"]["protocol.json"]["observed_sha256"] == status.get("protocol_sha256"))
+        # Question, accepting decision and canonical roadmap the protocol declares; untrusted local text.
+        for key in ("question", "accepted_in", "roadmap"):
+            value = (protocol or {}).get(key)
+            record[key] = clean_text(value)[:1000] if isinstance(value, str) else None
         detail["record"] = record
         links = report.get("evidence")
         for key, target in sorted(links.items() if isinstance(links, dict) else []):
