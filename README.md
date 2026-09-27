@@ -1527,6 +1527,18 @@ never booleans or strings. Repository slugs are at most 200 characters.
 | `investigate` | `kind:"experiments"` | Retained run directories under `.factory/experiments/<experiment>/<run>/`; a listing is not availability. |
 | `investigate` | `kind:"experiment"`, `experiment`, `run` | One retained schema-1 observation/build run: protocol revision, producer state, report fields, recorded disposition, evidence links and per-artifact availability. |
 
+Each roadmap/initiative plan also carries `experiments` and `next`. An experiment
+appears on the plan its latest run's `protocol.json` names as `roadmap`; it is an
+`informed_by` link (`blocking: false`), never a blocker, and keeps the recorded
+`disposition` beside its `outcome` grouping (`adopt`/`amend` accepted,
+`reject`/`no-change` rejected, `defer` deferred, `pending`, else unknown). `next`
+ranks open linked tickets by the first `NOW`/`NEXT`/`THEN`/`LATER` Plan line naming
+them; a pending experiment disposition ranks with `NOW`. `action` is the best runnable
+implementation, else the best decision; `awaiting_decision` holds only current-priority
+decisions, separate from `runnable`, `blocked` (real `Blocked by` edges), `in_flight`,
+`held` and `displaced`; `uncertain` lists incomplete evidence and run limitations.
+Nothing is applied.
+
 Experiment reads resolve only single-name directories beneath `.factory/experiments`
 and never follow links. Run `status` is `complete`, `partial` (run not terminal,
 artifact missing/inaccessible or source coverage incomplete), `stale` (an artifact no

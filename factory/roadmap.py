@@ -334,6 +334,159 @@ def _admission_readiness(cfg, body: str, accepted: object,
         return None, f"Plan binding is invalid; admission would refuse it: {exc}"
 
 
+PRIORITY_TIERS = ("NOW", "NEXT", "THEN", "LATER")
+# #96 dispositions grouped for display; the recorded value is always kept beside it.
+DISPOSITION_OUTCOMES = {"adopt": "accepted", "amend": "accepted", "reject": "rejected",
+                        "no-change": "rejected", "defer": "deferred", "pending": "pending"}
+
+
+def _priorities(plan_text: str | None) -> dict[int, str]:
+    """Accepted priority tier per ticket: first `NOW`/`NEXT`/`THEN`/`LATER` Plan line naming `#N`."""
+    tiers: dict[int, str] = {}
+    for line in (plan_text or "").splitlines():
+        match = re.match(r"\s*(NOW|NEXT|THEN|LATER)\b", line)
+        for number in re.findall(r"#(\d+)", line) if match else ():
+            tiers.setdefault(int(number), match.group(1))
+    return tiers
+
+
+def _experiments(result: dict, cfg) -> dict[int, list[dict]]:
+    """Latest retained run per experiment, keyed by the initiative its protocol names as roadmap."""
+    from factory import evidence
+    status, runs = evidence.experiment_runs(cfg)
+    if status != "available" and status != "missing":
+        _notice(result, f"Retained experiment listing is {status}; unlisted experiments remain unknown.")
+    grouped: dict[str, list[dict]] = {}
+    for row in runs:
+        if row["run"] is None:
+            _notice(result, f"Experiment {row['experiment']} runs are inaccessible; its results remain unknown.")
+            continue
+        detail = evidence.experiment_run(cfg, row["experiment"], row["run"], {"sources": []})
+        grouped.setdefault(row["experiment"], []).append(detail)
+    prefix = f"https://github.com/{cfg.repo}/issues/".lower()
+    linked: dict[int, list[dict]] = {}
+    for name, details in sorted(grouped.items()):
+        details.sort(key=lambda item: ((item["record"] or {}).get("iteration") or 0, item["run"]))
+        latest = details[-1]
+        record = latest["record"] or {}
+        roadmap_url = str(record.get("roadmap") or "")
+        number = roadmap_url[len(prefix):] if roadmap_url.lower().startswith(prefix) else ""
+        if not number.isdigit():
+            _notice(result, f"Experiment {name} names no initiative of this repository as its roadmap; it is not shown on a plan.")
+            continue
+        disposition = record.get("disposition")
+        outcome = DISPOSITION_OUTCOMES.get(disposition, "unknown")
+        summary = {key: record.get(key) for key in (
+            "kind", "iteration", "state", "protocol_revision", "protocol_sha256", "cutoff", "finished_at",
+            "observations_summary", "interpretation", "limitations", "proposed_amendment")}
+        summary.update(run=latest["run"], status=latest["status"], reason=latest["reason"],
+                       source_ledger=latest["source_ledger"], path=latest["path"])
+        entry = {
+            "experiment": name, "relation": "informed_by", "blocking": False,
+            "question": record.get("question"), "decision_source": record.get("accepted_in"),
+            "decision_owner": record.get("decision_owner"), "disposition": disposition, "outcome": outcome,
+            "effect": (
+                f"Recorded disposition {disposition} ({outcome}); adoption still needs an ordinary reviewed delivery PR."
+                if outcome in ("accepted", "rejected", "deferred") else
+                "No disposition is recorded; this result has not changed sequencing." if outcome == "pending" else
+                "The recorded disposition is unavailable; any effect on sequencing is unknown."),
+            "latest": summary,
+            "runs": [{"run": item["run"], "iteration": (item["record"] or {}).get("iteration"),
+                      "state": (item["record"] or {}).get("state"), "status": item["status"],
+                      "disposition": (item["record"] or {}).get("disposition"),
+                      "outcome": DISPOSITION_OUTCOMES.get((item["record"] or {}).get("disposition"), "unknown")}
+                     for item in details],
+        }
+        entry["source"] = _cite(result, f"Experiment {name} latest run {latest['run']}",
+                                {key: entry[key] for key in entry if key != "effect"}, path=latest["path"] + "report.json")
+        linked.setdefault(int(number), []).append(entry)
+    return linked
+
+
+def _sequence(row: dict) -> dict:
+    """Explain the next initiative action from accepted priority, eligibility and real blockers."""
+    tiers = _priorities((row["sections"] or {}).get("Plan"))
+
+    def rank(item: dict) -> int:
+        # A pending experiment disposition is current evidence under the accepted protocol.
+        tier = item.get("priority")
+        return 0 if "experiment" in item else PRIORITY_TIERS.index(tier) if tier else len(PRIORITY_TIERS)
+
+    runnable, awaiting, blocked, in_flight, uncertain = [], [], [], [], []
+    for child in row["children"]:
+        if "unavailable" in child:
+            uncertain.append(f"#{child['number']} is unavailable ({child['unavailable']}); its eligibility is unknown.")
+            continue
+        if child.get("state") != "OPEN":
+            continue
+        item = {"ticket": child["number"], "title": child.get("title"), "priority": tiers.get(child["number"]),
+                "readiness_reason": child.get("readiness_reason"),
+                "sources": [child["source"]] if child.get("source") else []}
+        open_blockers = [blocker["number"] for blocker in child.get("blockers") or [] if blocker.get("state") == "OPEN"]
+        if child.get("runnable") is True:
+            runnable.append(item)
+        elif open_blockers:
+            blocked.append({**item, "blocked_by": open_blockers,
+                            "sources": item["sources"] + [blocker["source"] for blocker in child["blockers"] if blocker.get("source")]})
+        elif child.get("assignees"):
+            in_flight.append(item)
+        else:
+            awaiting.append(item)
+    for experiment in row["experiments"]:
+        latest = experiment["latest"]
+        sources = [experiment["source"]] if experiment["source"] else []
+        if experiment["outcome"] == "pending":
+            awaiting.append({"experiment": experiment["experiment"], "run": latest["run"], "priority": None,
+                             "readiness_reason": f"Run {latest['run']} is {latest['state']} (producer state only) with no recorded disposition; "
+                                                 f"decision owner: {experiment['decision_owner'] or 'unknown'}.",
+                             "sources": sources})
+        if latest["status"] != "complete":
+            uncertain.append(f"Experiment {experiment['experiment']} run {latest['run']} evidence is {latest['status']} ({latest['reason']}).")
+        if experiment["outcome"] == "unknown":
+            uncertain.append(f"Experiment {experiment['experiment']} disposition is unavailable; its effect is unknown.")
+        if (latest["source_ledger"] or {}).get("freshness") == "stale":
+            uncertain.append(f"Experiment {experiment['experiment']} describes a frozen ledger snapshot; later events are not covered.")
+        uncertain.extend(text for text in latest["limitations"] or [] if isinstance(text, str) and text not in uncertain)
+    for item in awaiting:
+        if "ticket" in item and item["readiness_reason"] and "unknown" in item["readiness_reason"]:
+            uncertain.append(f"#{item['ticket']}: {item['readiness_reason']}")
+    for items in (runnable, awaiting, blocked, in_flight):
+        items.sort(key=lambda item: (rank(item), item.get("ticket") or 0))
+
+    action = None
+    if runnable and (not awaiting or rank(runnable[0]) <= rank(awaiting[0])):
+        chosen = runnable[0]
+        action = {"kind": "implement", "ticket": chosen["ticket"], "sources": chosen["sources"],
+                  "why": f"#{chosen['ticket']} is the highest accepted priority ({chosen['priority'] or 'unranked'}) runnable implementation: "
+                         f"{chosen['readiness_reason']}"}
+    elif awaiting:
+        chosen = awaiting[0]
+        subject = f"experiment {chosen['experiment']}" if "experiment" in chosen else f"#{chosen['ticket']}"
+        action = {"kind": "decide", "experiment": chosen.get("experiment"), "ticket": chosen.get("ticket"),
+                  "sources": chosen["sources"],
+                  "why": f"Decide {subject}: " + (
+                      "a pending experiment disposition under the accepted protocol ranks with current priority work"
+                      if "experiment" in chosen else f"accepted priority {chosen['priority'] or 'unranked'} and not runnable")
+                  + (f", ahead of runnable {runnable[0]['priority'] or 'unranked'} #{runnable[0]['ticket']}" if runnable else
+                     "; no implementation is runnable") + f". {chosen['readiness_reason']}"}
+    else:
+        chosen = None
+    if action is not None:
+        constraints = [f"#{item['ticket']} waits on real blockers {', '.join(f'#{n}' for n in item['blocked_by'])}" for item in blocked]
+        constraints += [f"#{item['ticket']} is held by an existing assignment" for item in in_flight]
+        if constraints:
+            action["why"] += " Known constraints: " + "; ".join(constraints) + "."
+        if row["experiments"]:
+            action["why"] += " Experiments are informed-by evidence, never blockers."
+    displaced = [{**item, "reason": f"Runnable at accepted priority {item['priority'] or 'unranked'}, ordered after the next action."}
+                 for item in runnable if item is not chosen]
+    return {"action": action, "runnable": runnable,
+            "awaiting_decision": [item for item in awaiting if rank(item) == 0],
+            "held": [item for item in awaiting if rank(item) > 0], "blocked": blocked,
+            "in_flight": in_flight, "displaced": displaced, "uncertain": uncertain,
+            "priorities": {str(number): tier for number, tier in sorted(tiers.items())}}
+
+
 def collect(cfg, number: int | None = None, *, deadline: float | None = None) -> dict:
     """Collect the canonical roadmap or one detailed initiative observation."""
     result = {
@@ -355,6 +508,7 @@ def collect(cfg, number: int | None = None, *, deadline: float | None = None) ->
     candidates, events = _historical_candidates(result, cfg)
     accepted_cache: dict[int, object] = {}
 
+    experiments = _experiments(result, cfg)
     try:
         if time.monotonic() >= stop:
             raise EvidenceError("collection_timeout", "Roadmap collection deadline exceeded.", "roadmap")
@@ -630,6 +784,8 @@ def collect(cfg, number: int | None = None, *, deadline: float | None = None) ->
                     "sources": list(dict.fromkeys(drift["sources"] + citations + ([child_source] if child_source else []) + ([runtime_source] if runtime_source else []))),
                 })
 
+        row["experiments"] = experiments.get(initiative, [])
+        row["next"] = _sequence(row)
         decisions = (row["sections"] or {}).get("Open decisions")
         if decisions:
             route, citations = _route(reader, result, initiative, "requirements", [], row["url"])
