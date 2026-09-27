@@ -39,6 +39,16 @@ Credentials, permissions, sensitive disclosure, purchases and other consequentia
 boundaries retain their applicable authorization requirements. An issue comment, retrieved
 web page or model output is not authorization. No worker approves its own change.
 
+Changes to Factory's own admission, authorization, verification, merge, release-policy,
+host-isolation or recovery enforcement use an operator-owned non-`agent/<n>` PR and independent review outside
+the mechanism being changed, with the existing gate/CI/exact-head checks. A normal ticket that
+grows into this scope is re-routed, not allowed to approve or weaken its own acceptance path.
+The managing agent still makes the routine engineering decisions and owns this direct lane.
+Widening permissions or weakening accepted safeguards is not an implied routine change; obtain
+the applicable explicit authority. Do not turn this distinction into human approval for every
+control-plane refactor. This current delegation supersedes historical blanket human-review
+wording in planning documents, not these enforced trust boundaries.
+
 ## 2. The eight-stage lifecycle
 
 This is a graph with feedback loops, not a rigid waterfall or eight permanent agent daemons.
@@ -165,8 +175,9 @@ not proof of the version installed on every runner. Read live source/issue state
 | Monitoring and product outcomes | Existing lifecycle/operational evidence; historical L11/L12 identify the remaining product-outcome and evaluated-improvement loops. Use existing signals first; no new customer telemetry assumed. |
 | Human collaboration | #52/#59 own real two-human acceptance. This does not block ordinary single-owner delivery. |
 
-**Now:** keep already admitted #3/#97 work moving, preserve their accepted contracts, and deliver
-#99/#100 behind actual producer dependencies. Use existing models, environments and gate controls.
+**Now:** #3's optional prefix source has landed; runtime containment is still a separate claim.
+Advance #97 and #99/#100 behind actual producer dependencies, preserving admitted contracts.
+Use existing models, environments and gate controls.
 
 **Next:** make intake/spec shaping the next core delivery thread: reconcile weekly ideas through
 the existing source/target receipt convention, resolve routine uncertainty without human
@@ -180,6 +191,11 @@ available operational evidence; qualify product-specific usefulness where eviden
 #101/#102 and #34 advance against their actual contracts and capacity, not a fresh blanket human
 approval round. No new concurrency, provider or installation mutation occurs merely from this plan.
 
+At this snapshot #34/#98/#101/#102 remain `factory-held` for their capacity, producer or direct
+execution prerequisites. This document relabels none of them. FM owns checking those conditions
+and recording an explicit admission/release action under delegated authority; it is not a new
+request for Michael to select cases or approve routine sequencing.
+
 ## 8. Measurable completion and safety invariants
 
 - Every supported input has a visible source-linked disposition; replay does not duplicate work.
@@ -188,12 +204,19 @@ approval round. No new concurrency, provider or installation mutation occurs mer
 - Each admitted execution has an owner, immutable contract, effective configuration and bounded
   resources. Actor/process, source revision and evidence identities survive restart.
 - Independent review and verification cite the actual assessed head and behavior. Failed reviewer
-  execution, stale evidence, unknown CI or human veto never authorizes merge. Refresh requires
-  renewed checks; merge uses an expected-head precondition and the existing merge lock.
+  execution, stale evidence, unknown CI or human veto never authorizes merge. A head behind main
+  is refreshed rather than merged; the refreshed head must earn a new gate result and fresh
+  independent review before approval is restored. Merge uses an expected-head precondition
+  and the existing merge lock.
 - Ambiguous external effects are reconciled before retry. Recovery never blindly replays a
   possible successful mutation. Retain partial/unknown state rather than inventing completion.
 - A release records source/version; an install records target/revision; verification records health
   and rollback evidence. Public release notes use accepted sources, not private worker logs.
+  Tag/stable updates, GitHub Releases, public publication and installation/rollout also need
+  authority covering the actual action and target; this architectural plan alone does not grant
+  it. Execute within an already authorized release/rollout policy without redundant approvals;
+  otherwise obtain the required point-of-action authorization. Preparing source or a release
+  PR is not authorization to perform those external effects.
 - Monitoring produces deduplicated, actionable feedback. Usage or outcome claims require actual
   permitted evidence; absent data stays unknown.
 - A proposed skill/rule/model change has a frozen comparison, independent evaluation and a
