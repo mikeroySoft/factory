@@ -353,6 +353,36 @@ class HostConfigTest(unittest.TestCase):
             repo = make_repo(Path(d), '[repo]\nslug = "other/name"\n')
             self.assertEqual(config.load(repo).dashboard_port, 7)
 
+    def test_worker_wrap_is_host_owned_and_prefixes_every_label(self) -> None:
+        host_file(
+            '[defaults.worker_wrap]\ncommand = ["dflt"]\n'
+            '[repo."acme/widgets".worker_wrap]\ncommand = ["wrap", "--in", "{cwd}", "{root}", "{repo}", "{home}"]\n'
+        )
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), '[workers]\ndefault = ["agent", "{prompt}"]\nextra = ["x"]\n')
+            cfg = config.load(repo)
+            head = ["wrap", "--in", "/w", str(cfg.root), "acme/widgets", str(Path.home())]
+            self.assertEqual(cfg.worker(set(), Path("/p"), Path("/w")), [*head, "agent", "/p"])
+            self.assertEqual(cfg.worker({"extra"}, Path("/p"), Path("/w")), [*head, "x"])
+            for toml in ('[worker_wrap]\ncommand = ["mine"]\n', '[worker_wrap]\n'):
+                with self.subTest(toml=toml):
+                    (repo / config.CONFIG_NAME).write_text(toml)
+                    with self.assertRaisesRegex(SystemExit, "host-only"):
+                        config.load(repo)
+            (repo / config.CONFIG_NAME).unlink()
+            host_file('[defaults.worker_wrap]\ncommand = ["dflt"]\n')
+            self.assertEqual(config.load(repo).worker({"chore"}, Path("/p"), Path("/w"))[:2], ["dflt", "droid"])
+            for bad in ('command = "dflt"', 'command = []', 'command = [""]', 'command = ["a", 3]'):
+                with self.subTest(bad=bad):
+                    host_file(f'[defaults.worker_wrap]\n{bad}\n')
+                    with self.assertRaises(config.ConfigError):
+                        config.load(repo)
+            host_file('[defaults]\nworker_wrap = "dflt"\n')
+            with self.assertRaises(config.ConfigError):
+                config.load(repo)
+            host_file('[defaults.worker_wrap]\n')
+            self.assertEqual(config.load(repo).worker(set(), Path("/p"), Path("/w")), config.expand(config.DEFAULT_WORKER, prompt="/p", cwd="/w"))
+
     def test_unknown_keys(self) -> None:
         raw = {"triage": {"mdoel": "x"}, "gate": {"check": [{"name": "a", "run": [], "exclusiv": True}]}, "bogus": {}}
         self.assertEqual(config.unknown_keys(raw), ["triage.mdoel", "gate.check[0].exclusiv", "bogus"])
