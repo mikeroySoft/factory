@@ -4,6 +4,7 @@
 
 - Host-owned worker argv prefix (#3): `[defaults.worker_wrap]` / `[repo."owner/name".worker_wrap]` `command` is prepended to every worker launch (all labels); a committed `[worker_wrap]` fails to load. `doctor` checks its executable on PATH. A launch prefix, not sandboxing.
 - Bounded worker boot/resume context (#89): `factory dispatch`'s worker prompt gets a `## Resume context` section, built only from the latest retained accepted result (#88) and the local plan-bound journal (#57), when a ticket has prior retained history. It reports the prior accepted head/result and whether the admitted scope has since moved (`unchanged`/`changed`/`unavailable`); never a worker log, prompt, or transcript, never a scope rewrite, and no widened context budgets.
+- O1 bounded observation producer (#97): stdlib-only `experiments/o1-observation/observer.py` (`start`/`status`/`stop`/`report`) with frozen `protocol.json`. Opens `.factory/events.jsonl` O_RDONLY, freezes a chunk-digested byte range (256 MiB cap, suffix + explicit coverage beyond it) before classifying the latest 12 recorded `merged`/`escalate` ticket executions by exact structured reason codes only. Runs land in exclusive, never-overwritten directories under the main root's `.factory/experiments/o1-observation/`, capped at 10 minutes, 64 MiB output and three iterations per lineage; no subprocess, network or model calls. Disposition starts `pending`.
 
 ## 0.3.5 — 2026-09-18
 
