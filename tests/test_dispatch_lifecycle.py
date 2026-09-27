@@ -122,6 +122,34 @@ class LocalCLI(unittest.TestCase):
     def rows(self):
         return [r for r in lifecycle.read_events(self.events) if r.get("event") == "lifecycle"]
 
+    def test_host_worker_wrap_launches_real_worker(self):
+        # Launch-contract proof only: a recording wrapper, NOT sandbox proof.
+        log = self.base / "wrap.log"
+        wrap = self.bin / "wrap"
+        wrap.write_text('#!/bin/sh\nprintf "%s\\n" "$@" >> "$WRAP_LOG"\nexec "$@"\n')
+        wrap.chmod(0o755)
+        self.env["WRAP_LOG"] = str(log)
+        seen = self.base / "prompt-seen"
+        self.worker.write_text(
+            'import subprocess\nfrom pathlib import Path\n'
+            f'Path({str(seen)!r}).write_text(Path(".factory-prompt.md").read_text())\n'
+            'Path("change.txt").write_text("change\\n")\n'
+            'subprocess.run(["git", "add", "change.txt"], check=True)\n'
+            'subprocess.run(["git", "commit", "-qm", "wrapped"], check=True)\n'
+        )
+        host = self.base / "config" / "factory" / "config.toml"
+        host.parent.mkdir(parents=True)
+        host.write_text('[defaults.worker_wrap]\ncommand = ["wrap", "{cwd}"]\n'
+                        '[repo."local/smoke".worker_wrap]\ncommand = ["wrap"]\n')
+        self.cli("dispatch", "--ticket", "7")
+        lines = log.read_text().splitlines()
+        self.assertEqual(lines[:2], [sys.executable, str(self.worker)])
+        self.assertIn("Issue #7", seen.read_text())
+        wt = self.repo / ".factory" / "wt-7"
+        subjects = subprocess.run(["git", "-C", str(wt), "log", "--format=%s"], env=self.env,
+                                  check=True, capture_output=True, text=True).stdout
+        self.assertIn("wrapped", subjects)
+
     def test_revision_loop_and_later_pr_revisit(self):
         self.cli("dispatch", "--ticket", "7")
         rows = self.rows()
