@@ -206,6 +206,22 @@ class O1ObservationTest(unittest.TestCase):
         (run / "status.json").write_text(json.dumps({"state": "observing"}))
         self.assertEqual(self.fresh("stop", run)[1]["state"], "interrupted")
 
+    def test_stop_racing_writer_completion_keeps_terminal_status(self):
+        run = self.out / "racing"
+        run.mkdir(parents=True)
+        status = run / "status.json"
+        status.write_text(json.dumps({"state": "observing"}))
+        done = {"state": "completed", "artifacts": {"report.json": "x"}}
+
+        def writer_finishes(_):  # writer publishes terminal status, then releases the lock
+            status.write_text(json.dumps(done))
+            return False
+
+        with mock.patch.object(observer, "_writer_active", writer_finishes), \
+                contextlib.redirect_stdout(io.StringIO()):
+            observer.main(["stop", str(run)])
+        self.assertEqual(json.loads(status.read_bytes()), done)
+
     def test_lineage_cap_is_three_runs(self):
         self.write([])
         for _ in range(3):

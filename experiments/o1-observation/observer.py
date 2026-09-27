@@ -535,9 +535,11 @@ def stop(args) -> int:
     except FileExistsError:
         pass
     if not _writer_active(run_dir):  # writer gone: record the interruption ourselves, keep all evidence
-        run = Run(run_dir, 0, 0)
-        run.status = current
-        run.put_status(state="interrupted", reason="stopped_without_live_writer", finished_at=now())
+        current = _load_status(run_dir)  # re-read: writer may have finished before releasing the lock
+        if current["state"] not in TERMINAL:
+            run = Run(run_dir, 0, 0)
+            run.status = current
+            run.put_status(state="interrupted", reason="stopped_without_live_writer", finished_at=now())
     print(json.dumps({"run": str(run_dir), "state": _load_status(run_dir)["state"], "stop": "requested"}))
     return 0
 
