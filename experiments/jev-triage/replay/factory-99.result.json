@@ -1,0 +1,24 @@
+{
+  "id": "factory-99",
+  "request_sha256": "afa36a1a4de7ab4d53590e63a6809be5841ce553d49285162923b9dd5a841f7c",
+  "ok": true,
+  "answer": {
+    "type": "choice",
+    "choice": "ready-for-human",
+    "confidence": 0.29,
+    "probabilities": {
+      "ready-for-agent": 0.12,
+      "needs-info": 0.43,
+      "insufficient-evidence": 0.02,
+      "ready-for-human": 0.43,
+      "wontfix-proposal": 0.0
+    }
+  },
+  "model": "jev-1.13.0",
+  "usage": {
+    "input_tokens": 939,
+    "output_tokens": 69
+  },
+  "estimated_usd": 3.9438000000000004e-05,
+  "seconds": 0.25193057395517826
+}

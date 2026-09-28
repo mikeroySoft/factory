@@ -1,0 +1,23 @@
+{
+  "argv": [
+    "gh",
+    "api",
+    "--method",
+    "GET",
+    "-H",
+    "Accept: application/vnd.github+json",
+    "repos/mikeroySoft/factory/issues/79"
+  ],
+  "bytes": 25977,
+  "complete": true,
+  "ended_at": "2026-09-10T22:17:50Z",
+  "endpoint": "repos/mikeroySoft/factory/issues/79",
+  "label": "candidate-issue",
+  "limit_bytes": 5242880,
+  "returncode": 0,
+  "seconds": 0.401,
+  "sha256": "1092af2cee63b6dd9308fc67d5f6034e30a4be4d9aef15957590dca44cad8f87",
+  "started_at": "2026-09-10T22:17:50Z",
+  "stderr_bytes": 0,
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}

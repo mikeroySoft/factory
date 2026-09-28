@@ -9,7 +9,7 @@ description = "Label-driven autonomous ticket pipeline: triage, worker agents in
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["tomlkit>=0.13,<1"]
 keywords = ["agents", "github", "automation", "ci", "worktree"]
 classifiers = [
   "Environment :: Console",
@@ -17,6 +17,9 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "Topic :: Software Development :: Build Tools",
 ]
+
+[project.optional-dependencies]
+atlas = ["graphifyy==0.9.56"]
 
 [project.urls]
 Homepage = "https://github.com/mikeroySoft/factory"

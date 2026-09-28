@@ -1,0 +1,24 @@
+{
+  "id": "smoke",
+  "request_sha256": "04873321356b1d11ba5552a80d28e026b8b9ff0f6f9e230a5c87b49e963d8249",
+  "ok": true,
+  "answer": {
+    "type": "choice",
+    "choice": "ready-for-agent",
+    "confidence": 0.82,
+    "probabilities": {
+      "needs-info": 0.14,
+      "ready-for-human": 0.0,
+      "insufficient-evidence": 0.0,
+      "ready-for-agent": 0.86,
+      "wontfix-proposal": 0.0
+    }
+  },
+  "model": "jev-1.13.0",
+  "usage": {
+    "input_tokens": 606,
+    "output_tokens": 69
+  },
+  "estimated_usd": 2.5452000000000003e-05,
+  "seconds": 0.21883493103086948
+}

@@ -42,7 +42,7 @@ npx skills add mikeroysoft/factory
 uv tool install git+https://github.com/mikeroySoft/factory   # or: pipx install ...
 ```
 
-No Python dependencies.
+TOMLKit is installed automatically for comment-preserving settings updates.
 
 ## Set up a repository
 
@@ -72,7 +72,7 @@ merge stage.
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
 | `factory stats` | Ticket table: attempts, review rounds, hours to merge. `--json`. |
 | `factory learn` | Reads the last N finished tickets' event trail, failing-attempt log tails, reviewer findings, and escalation reasons; asks the local model for ≤10 repo-specific lessons; writes `.factory-lessons.md` (you commit it). Every worker prompt carries it. `--dry-run`, `--last N`. |
-| `factory dashboard` | Local ops UI: tickets by stage, in-flight phase, gate reports, worker logs, journal heartbeat, upstream drift, and an action list with one-click answers. `--host 0.0.0.0` exposes it (and its mutating `/api/act`) to your network. |
+| `factory dashboard` | Local ops UI: tickets by stage, in-flight phase, gate reports, worker logs, journal heartbeat, upstream drift, and an action list with one-click answers. **Settings** edits repository work limits and the FM model. `--host 0.0.0.0` exposes it and its mutating APIs (GitHub actions and local settings writes) to your network. |
 | `factory doctor` / `init` / `install` | Onboarding, above. |
 
 Every command reads `.factory.toml` from the main checkout, even when run
@@ -115,7 +115,22 @@ inside one of its worktrees.
 ## Configuration
 
 `.factory.toml` at the repository root; every key is optional. The template
-written by `factory init` documents them all. The ones you will actually set:
+written by `factory init` documents them all.
+
+The dashboard's **Settings** view (`/#settings`) edits concurrent tickets, time
+limit per ticket in minutes, worker + gate attempts, reviewer revision rounds,
+and the Factory Manager model. It shows effective values, their configuration
+sources, and a read-only worker/reviewer/triage summary with command arguments
+and endpoint credentials omitted.
+
+Review the before/after summary and choose **Save changes**. Saves update only
+changed keys in the local `.factory.toml`, preserving unrelated settings and
+comments; they never commit or push. Stale edits require reloading and reviewing
+the latest configuration. Work limits apply to the next dispatcher invocation;
+the model applies to the next new FM request. Running work is unchanged.
+Clearing the model removes the repository override and restores the existing
+host, legacy `manager.command`, or OMP fallback. Gate and safety policy remain
+file-managed.
 
 ```toml
 [repo]
@@ -164,7 +179,10 @@ conventions; `factory init` creates the labels.
   Compare → Decide** briefing for each case needing human judgment. The question,
   situation, FM recommendation, relevant earlier decisions, uncertainty, options,
   consequences, and next owner stay visible; raw evidence is expandable. **Ops**
-  retains the board, telemetry, dispatcher runs, and task drawers.
+  retains the board, telemetry, and dispatcher runs. Ticket details dock beside
+  the workspace on desktop, keeping the queue visible; narrow screens use an
+  overlay with keyboard focus containment and Escape to close. Transitions use
+  locally served Motion and respect the system reduced-motion preference.
   **Ask FM** works on a whole task or a specific source/log and returns cited
   answers. It requires an authenticated `omp` installation; `[manager].model`
   chooses the model (host-wide: `[defaults.manager]`). If unset, an existing
@@ -173,6 +191,8 @@ conventions; `factory init` creates the labels.
   bounded, read-only, no-tools OMP process against server-collected evidence.
   Evidence is sent to the selected model provider; questions are not posted to
   GitHub. Errors remain visible and retryable, never replaced with canned advice.
+  Pending briefings, recommendations, history, uncertainties, and answers show
+  indeterminate “Waiting for FM” indicators; reduced-motion settings keep them static.
   Decisions require rationale and an exact mutation preview; stale or incomplete
   snapshots block execution. Confirmed decisions leave GitHub rationale comments
   and a local `human-decision` audit event with success, partial, or failed outcome.
@@ -213,13 +233,74 @@ in a repo, write tickets it can actually work, and diagnose escalations:
 npx skills add mikeroysoft/factory
 ```
 
+## Codebase history
+
+The dashboard's **Codebase** view (`/codebase`) maps the configured repository
+across its locally available default-branch history. Install the optional
+extractor when running from this source checkout:
+
+```sh
+uv sync --extra atlas
+uv run --extra atlas factory codebase
+uv run --extra atlas factory dashboard
+```
+
+TOMLKit is the only required Python dependency. The
+`atlas` extra pins Graphify 0.9.56; code extraction runs locally, without an LLM,
+network access, checking out historical revisions, or executing repository code.
+
+- Drag the revision slider, use its arrow keys, or select **Previous / Next**.
+  Pick a baseline to distinguish additions, equal-size edits, moves, and deletions.
+- Select a folder area or file for callable symbols, resolved relationship
+  diagrams, confidence labels, and source links pinned to that commit.
+  Inferred relationships are hidden by default.
+- File slots stay fixed while scrubbing. Git-detected renames preserve identity;
+  areas remain anchored to their original folder so moving a file does not
+  rearrange the map. Folder labels follow a whole-area rename. Size bars use
+  physical text lines against a common scale for the loaded history.
+- While the dashboard runs, its background monitor checks local refs every
+  30 seconds; the page also refreshes every 30 seconds. New history does not
+  reset an older selected revision or its baseline. A failed update keeps the
+  last completed in-memory history visible with an error.
+
+By default this reads `origin/<repo.main>`, falling back to the local
+`<repo.main>` branch, and backfills the newest 80 first-parent commits.
+It **does not fetch**: normal dispatcher/operator fetches advance the observed
+remote-tracking ref. Uncommitted changes and side-branch commits outside that
+first-parent history are not shown. The page names the observed ref and snapshot
+generation time; that timestamp is not a claim about remote freshness.
+
+```sh
+uv run --extra atlas factory codebase --ref origin/main --limit 200
+uv run --extra atlas factory dashboard --codebase-ref origin/main --codebase-limit 200
+```
+
+Snapshots and the generated history live in the gitignored `.factory/codebase/`
+cache, keyed by commit and extractor version. Extraction failure does not replace
+the previously published `history.json`. The full Git lineage is read to retain
+rename identities even when the displayed history window is bounded.
+
+**Coverage is explicit, not a completeness guarantee.** Unsupported files remain
+inventory-only; unresolved/external relationships are omitted and counted.
+Symlinks, submodules, unsafe paths and vendored/runtime directories are excluded.
+When a previously mapped file crosses a coverage boundary, comparison marks a
+**coverage change**, not a deletion; its baseline source remains inspectable.
+Snapshots are bounded to 5,000 files, 1 MiB per file and 32 MiB total; exclusions
+appear in coverage warnings. Preprocessed Fortran is inventory-only rather than
+invoking host preprocessing. Shallow history is marked incomplete. Git rename
+detection is heuristic: a heavily rewritten move can appear as deletion/addition.
+The small relationship diagram shows up to four neighbors; all resolved
+relationships for the selection remain in the evidence list.
+
+Design and acceptance criteria: [codebase history plan](docs/codebase-history-plan.md).
+
 ## Architecture
 
-`factory/architecture.html` (served by the dashboard at `/atlas`) shows
-the system and the ticket lifecycle. Modules map 1:1 to commands:
-`triage.py`, `dispatch.py`, `gate.py`, `stats.py`, `dashboard.py`,
-`onboard.py`, with `config.py` as the single source of every repo-specific
-value.
+`factory/architecture.html` (served by the dashboard at `/atlas`) maps the core
+ticket system and lifecycle alongside the manager, operator, codebase, planning,
+evidence, chat, onboarding, metrics, and learning surfaces. `factory/cli.py`
+defines the command surface; `factory/config.py` layers host and repository
+configuration.
 
 ## License
 

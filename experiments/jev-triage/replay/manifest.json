@@ -1,0 +1,14 @@
+{
+  "mode": "replay",
+  "model": "jev-latest",
+  "timestamp": 1789594526.7777843,
+  "sha256": {
+    "PROTOCOL.md": "7b94fc8627ab65917688c05f28e4f017fe2f6f23ebc1f9355cd80743cff83033",
+    "questions.json": "c2a7350f93dcab1f25f792930b802a3983d35bcea9254c9cbae6cc4da6fdf1bd",
+    "run.py": "94a7e23694d916eccc9fddd1a6effe4d2cfd587326ac425392b6756215599cd8",
+    "cases.json": "518cc3a82830cad17fd35616576468ceaf87bb5f2713f2bde42c79108d8350e0"
+  },
+  "price_per_input_token": 4.2000000000000006e-08,
+  "max_calls": 41,
+  "reserved_tokens_per_call": 1000000
+}

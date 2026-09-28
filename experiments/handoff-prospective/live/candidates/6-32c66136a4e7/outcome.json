@@ -1,0 +1,9 @@
+{
+  "gate_is_acceptance": false,
+  "observed_at": "2026-09-11T03:33:24Z",
+  "outcome": "escalated",
+  "reason": "agent/6: PR not published (no commits over main or existing PR target mismatch); inspect dispatcher log",
+  "replacement_case_allowed": false,
+  "ticket": 6,
+  "worker_exit_is_success": false
+}

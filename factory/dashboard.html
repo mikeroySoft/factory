@@ -63,6 +63,8 @@
   .controls select, .panel select { background: var(--bg2); border: 1px solid var(--line2); color: var(--muted); font: 10px var(--mono); padding: 3px 6px; letter-spacing: .08em; text-transform: uppercase; }
 
   /* ---------- layout ---------- */
+  .workspace { display: flex; align-items: flex-start; min-width: 0; }
+  .workspace > main { flex: 1 1 auto; width: 100%; min-width: 0; }
   main { max-width: 1600px; margin: 0 auto; padding: 20px 24px 60px; display: grid; gap: 18px; }
   main > *, .row2 > * { min-width: 0; }
   main[hidden] { display: none; }
@@ -213,10 +215,11 @@
   .cardc code { color: var(--muted); }
 
   /* ---------- drawer ---------- */
-  .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(640px, 100vw); z-index: 60; background: var(--bg2);
-    border-left: 1px solid var(--line2); box-shadow: -20px 0 50px rgba(0,0,0,.6); display: flex; flex-direction: column;
-    transform: translateX(100%); transition: transform .22s ease-out; }
-  .drawer.open { transform: none; }
+  .drawer { position: sticky; top: var(--factory-header-height, 70px); height: calc(100dvh - var(--factory-header-height, 70px)); width: 0; flex: 0 0 auto; z-index: 30;
+    background: var(--bg2); border-left: 0 solid var(--line2); display: flex; flex-direction: column; overflow: hidden; }
+  .drawer[hidden] { display: none; }
+  .drawer.open { border-left-width: 1px; }
+  .drawer > header, .drawer > .tabs, .drawer > .content { width: var(--drawer-width, min(640px, 42vw)); flex-shrink: 0; }
   .drawer > header { padding: 14px 18px 10px; border-bottom: 1px solid var(--line); }
   .drawer .hd { display: flex; align-items: center; gap: 10px; }
   .drawer .hd .num { font: 700 20px var(--hud); color: var(--c); text-shadow: 0 0 10px color-mix(in srgb, var(--c) 45%, transparent); }
@@ -226,7 +229,22 @@
   .tabs { display: flex; border-bottom: 1px solid var(--line); overflow-x: auto; }
   .tabs button { border: 0; border-bottom: 2px solid transparent; padding: 8px 12px; white-space: nowrap; }
   .tabs button.on { color: var(--cyan); border-bottom-color: var(--cyan); box-shadow: none; }
-  .drawer .content { flex: 1; overflow: auto; padding: 14px 18px 40px; }
+  .drawer .content { flex: 1; min-height: 0; overflow: auto; padding: 14px 18px 40px; }
+  .drawer-scrim { display: none; }
+  @media (max-width: 800px) {
+    html, body { overflow-x: clip; }
+    .top { flex-wrap: wrap; gap: 12px; padding: 14px 18px; }
+    .top .views { margin-left: auto; }
+    .top .controls { width: 100%; flex-wrap: wrap; }
+    .top .controls input[type=search] { flex: 1 1 150px; min-width: 0; width: auto; }
+    .top .status { order: 3; width: 100%; margin-left: 0; }
+    .workspace { display: block; }
+    .drawer { position: fixed; inset: 0 0 0 auto; height: 100dvh; max-width: 100vw; z-index: 60; border-left-width: 1px; box-shadow: -20px 0 50px rgba(0,0,0,.6); transform: translateX(100%); }
+    .drawer > header, .drawer > .tabs, .drawer > .content { width: var(--drawer-width, min(640px, 100vw)); }
+    .drawer button { min-height: 44px; }
+    .drawer .links a { display: inline-flex; align-items: center; min-height: 44px; }
+    .drawer-scrim:not([hidden]) { display: block; position: fixed; inset: 0; z-index: 55; background: rgba(5,7,12,.72); }
+  }
   pre { font: 11px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; color: var(--muted); background: var(--bg);
     border: 1px solid var(--line); padding: 10px 12px; max-height: 60vh; overflow: auto; }
   details { margin: 4px 0; } summary { cursor: pointer; color: var(--muted); font-size: 11px; } summary:hover { color: var(--ink); }
@@ -288,9 +306,57 @@
   .toast { background: var(--bg2); border: 1px solid var(--grn); color: var(--grn); padding: 8px 14px; font-size: 11px; box-shadow: 0 0 12px rgba(57,255,20,.3); }
 
   @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
     *, *::before, *::after { animation: none !important; transition: none !important; }
     .scan { display: none; }
   }
+  /* ---------- settings ---------- */
+  .settings-head { display: flex; gap: 18px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
+  .settings-head h2 { font: 700 18px var(--hud); letter-spacing: .08em; color: var(--ink); margin-top: 4px; }
+  .settings-lede { color: var(--muted); max-width: 760px; margin-top: 8px; }
+  .settings-scope { color: var(--dim); font-size: 11px; border: 1px solid var(--line); padding: 8px 10px; }
+  .settings-scope b { color: var(--cyan); font-weight: 500; }
+  .settings-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(280px, .8fr); gap: 18px; align-items: start; }
+  .settings-form { display: grid; gap: 16px; }
+  .settings-field { display: grid; gap: 5px; }
+  .settings-field label { color: var(--ink); font-size: 12px; font-weight: 600; }
+  .settings-field input { width: min(100%, 360px); background: var(--bg); border: 1px solid var(--line2); color: var(--ink); padding: 8px 10px; }
+  .settings-field input:focus { border-color: var(--cyan); outline: none; box-shadow: 0 0 8px rgba(0,229,255,.25); }
+  .settings-field input[aria-invalid="true"] { border-color: var(--mag); }
+  .settings-help { font-size: 12px; line-height: 1.45; color: var(--muted); }
+  .settings-effective, .settings-source { font-size: 10px; color: var(--dim); }
+  .settings-effective { color: var(--muted); }
+  .settings-source { color: var(--cyan); }
+  .settings-error { color: var(--mag); font-size: 10px; min-height: 0; }
+  .settings-error:empty { display: none; }
+  .settings-actions { display: flex; gap: 8px; flex-wrap: wrap; padding-top: 4px; border-top: 1px solid var(--line); }
+  .settings-actions button.primary { color: var(--cyan); border-color: var(--cyan); }
+  .settings-actions button:disabled { opacity: .4; cursor: wait; box-shadow: none; }
+  .settings-status { min-height: 20px; color: var(--muted); font-size: 11px; }
+  .settings-status.bad { color: var(--mag); }
+  .settings-status.good { color: var(--grn); }
+  .settings-status.warn { color: var(--yel); }
+  .settings-changes { border-top: 1px solid var(--line); padding-top: 12px; }
+  .settings-changes h3, .settings-agents h3 { color: var(--cyan); font-size: 10px; letter-spacing: .18em; text-transform: uppercase; margin-bottom: 8px; }
+  .settings-change-list { display: grid; gap: 6px; list-style: none; }
+  .settings-change-list li { display: grid; grid-template-columns: minmax(130px, .8fr) 1fr; gap: 10px; font-size: 11px; border-bottom: 1px solid rgba(26,36,54,.6); padding: 5px 0; }
+  .settings-change-list .key { color: var(--dim); }
+  .settings-change-list .from { color: var(--muted); }
+  .settings-change-list .to { color: var(--ink); }
+  .settings-agents { display: grid; gap: 14px; }
+  .settings-agent-group { border-bottom: 1px solid rgba(26,36,54,.6); padding-bottom: 10px; }
+  .settings-agent-group:last-child { border-bottom: 0; padding-bottom: 0; }
+  .settings-agent-group h4 { color: var(--ink); font-size: 11px; font-weight: 600; margin-bottom: 4px; }
+  .settings-agent-group p { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+  .settings-agent-group .hint { display: block; margin-top: 4px; }
+  .settings-omission { color: var(--dim); font-size: 10px; border-left: 2px solid var(--line2); padding-left: 8px; }
+  @media (max-width: 800px) {
+    .settings-grid { grid-template-columns: 1fr; }
+    .settings-field input { width: 100%; min-height: 44px; }
+    .settings-actions button { min-height: 44px; }
+    .settings-change-list li { grid-template-columns: 1fr; gap: 2px; }
+  }
+
 </style>
 <link rel="stylesheet" href="/theme.css">
 <link rel="stylesheet" href="/briefing.css">
@@ -306,7 +372,7 @@
     <h1 class="glitch" id="title" data-text="FACTORY">FACTORY</h1>
   </div>
   <div class="status" id="status"></div>
-  <nav class="views" aria-label="Factory views"><button id="nav-inbox" class="on">Inbox</button><button id="nav-ops">Ops</button><a class="navlink" href="/atlas" title="Static architecture diagrams">Atlas ↗</a></nav>
+  <nav class="views" aria-label="Factory views"><button id="nav-inbox" class="on">Inbox</button><button id="nav-ops">Ops</button><button id="nav-settings">Settings</button><a class="navlink" href="/codebase" title="Explore codebase organization and history">Codebase ↗</a><a class="navlink" href="/atlas" title="Static architecture diagrams">Atlas ↗</a></nav>
   <div class="controls">
     <input id="search" type="search" placeholder="/ filter  #n · title · label · stage" aria-label="Filter tickets" title="Filters the board, lanes, activity feed, and inbox">
     <button id="refresh" title="r">Refresh</button>
@@ -314,6 +380,7 @@
   </div>
 </header>
 
+<div class="workspace" id="workspace">
 <main id="ops" hidden>
   <div id="errors"></div>
   <section class="kpis" id="kpis" aria-label="Key metrics"></section>
@@ -327,6 +394,7 @@
     <header><b>Tickets</b> <span id="filterchip"></span> <span class="note hint"><kbd>j</kbd>/<kbd>k</kbd> move · <kbd>enter</kbd> open · <kbd>esc</kbd> clear</span></header>
     <div class="board" id="board"></div>
   </section>
+
 
   <div class="row2">
     <section class="panel">
@@ -375,22 +443,100 @@
   </section>
 </main>
 
+<main id="settings" hidden tabindex="-1" aria-labelledby="settings-title">
+  <div class="settings-head">
+    <div>
+      <p class="eyebrow">Local repository settings</p>
+      <h2 id="settings-title" tabindex="-1">Settings</h2>
+      <p class="settings-lede">Edit the five repository knobs that affect the next dispatcher or Factory Manager request. Running work keeps the values it already captured.</p>
+    </div>
+    <p class="settings-scope" id="settings-scope"><b>Scope</b><br>Loading repository scope…</p>
+  </div>
+  <div id="settings-status" class="settings-status" role="status" aria-live="polite"></div>
+  <form id="settings-form">
+    <div class="settings-grid">
+      <section class="panel" aria-labelledby="settings-work-title">
+        <header><b id="settings-work-title">Work limits</b><span class="note">local, uncommitted until you commit</span></header>
+        <div class="body">
+          <div class="settings-form">
+            <div class="settings-field">
+              <label for="settings-max-active">Maximum active tickets</label>
+              <input id="settings-max-active" name="dispatch.max_active" type="number" min="1" step="1" inputmode="numeric" required>
+              <p class="settings-help">How many tickets the dispatcher may run at once. Applies to the next dispatcher invocation.</p>
+              <p id="settings-error-dispatch-max-active" class="settings-error"></p>
+              <p id="settings-effective-dispatch-max-active" class="settings-effective"></p>
+              <p id="settings-source-dispatch-max-active" class="settings-source"></p>
+            </div>
+            <div class="settings-field">
+              <label for="settings-budget-min">Time limit per ticket (minutes)</label>
+              <input id="settings-budget-min" name="dispatch.budget_min" type="number" min="1" step="1" inputmode="numeric" required>
+              <p class="settings-help">Wall-clock minutes allowed for a ticket before escalation. Applies to the next dispatcher invocation.</p>
+              <p id="settings-error-dispatch-budget-min" class="settings-error"></p>
+              <p id="settings-effective-dispatch-budget-min" class="settings-effective"></p>
+              <p id="settings-source-dispatch-budget-min" class="settings-source"></p>
+            </div>
+            <div class="settings-field">
+              <label for="settings-max-attempts">Worker + gate attempts before escalation</label>
+              <input id="settings-max-attempts" name="dispatch.max_attempts" type="number" min="1" step="1" inputmode="numeric" required>
+              <p class="settings-help">Worker and gate attempts allowed before a ticket can escalate. Reviewer revisions are separate; this is not the review-round count.</p>
+              <p id="settings-error-dispatch-max-attempts" class="settings-error"></p>
+              <p id="settings-effective-dispatch-max-attempts" class="settings-effective"></p>
+              <p id="settings-source-dispatch-max-attempts" class="settings-source"></p>
+            </div>
+            <div class="settings-field">
+              <label for="settings-review-rounds">Reviewer revision rounds</label>
+              <input id="settings-review-rounds" name="dispatch.review_rounds" type="number" min="0" step="1" inputmode="numeric" required>
+              <p class="settings-help">How many reviewer revisions are allowed after gate success. Zero means no reviewer bounce.</p>
+              <p id="settings-error-dispatch-review-rounds" class="settings-error"></p>
+              <p id="settings-effective-dispatch-review-rounds" class="settings-effective"></p>
+              <p id="settings-source-dispatch-review-rounds" class="settings-source"></p>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section class="panel" aria-labelledby="settings-agents-title">
+        <header><b id="settings-agents-title">Models and agents</b><span class="note">manager override + read-only agent summary</span></header>
+        <div class="body">
+          <div class="settings-form">
+            <div class="settings-field">
+              <label for="settings-manager-model">Factory Manager model override</label>
+              <input id="settings-manager-model" name="manager.model" type="text" maxlength="200" autocomplete="off" spellcheck="false">
+              <p class="settings-help">Optional model selector for new FM requests. Leave blank to remove this repository override and use the inherited host, built-in, or legacy manager.command model.</p>
+              <p id="settings-error-manager-model" class="settings-error"></p>
+              <p id="settings-effective-manager-model" class="settings-effective"></p>
+              <p id="settings-source-manager-model" class="settings-source"></p>
+            </div>
+            <div id="settings-agents" class="settings-agents"></div>
+          </div>
+        </div>
+      </section>
+    </div>
+    <div id="settings-changes" class="settings-changes" hidden></div>
+    <div class="settings-actions">
+      <button id="settings-save" class="primary" type="submit" disabled>Save changes</button>
+      <button id="settings-revert" type="button" disabled>Revert edits</button>
+      <button id="settings-reload" type="button" hidden>Reload current settings</button>
+    </div>
+  </form>
+</main>
 <main id="inbox">
   <div class="inbox-top"><h2 id="inbox-sum">Loading your Inbox…</h2><p class="briefing-muted">Understand the case. Compare the consequences. Make the call.</p></div>
   <div id="inbox-health" class="briefing-status" role="status"></div>
   <div id="inbox-list"></div>
 </main>
-<div id="toasts" class="toasts" aria-live="polite"></div>
+<div class="drawer-scrim" id="drawer-scrim" hidden></div>
 
-<aside class="drawer" id="drawer" aria-label="Ticket detail" aria-hidden="true">
+<aside class="drawer" id="drawer" aria-labelledby="d-title" aria-hidden="true" hidden>
   <header>
     <div class="hd"><span class="num" id="d-num"></span><span class="chip" id="d-stage"></span><span id="d-live"></span><button class="x" id="d-close" title="esc">Close</button></div>
     <h2 id="d-title"></h2>
     <div class="links" id="d-links"></div>
   </header>
-  <div class="tabs" id="d-tabs"></div>
-  <div class="content" id="d-content"></div>
+  <div class="tabs" id="d-tabs" role="tablist" aria-label="Ticket information"></div>
+  <div class="content" id="d-content" role="tabpanel" tabindex="0"></div>
 </aside>
+</div>
+<div id="toasts" class="toasts" aria-live="polite"></div>
 
 <dialog id="fm-dialog" class="briefing-dialog" aria-labelledby="fm-title">
   <header class="briefing-dialog-head"><h2 id="fm-title">Ask Factory Manager</h2><button id="fm-close" type="button" autofocus>Close</button></header>
@@ -415,8 +561,10 @@
   </div>
 </dialog>
 
+<script src="/motion.js"></script>
 <script>
 'use strict';
+const { animate } = Motion;
 const STAGES = [
   ['triage', 'TRIAGE', 'needs-triage · awaiting LLM triage'],
   ['needs-info', 'NEEDS INFO', 'back to reporter'],
@@ -434,8 +582,19 @@ const ALWAYS_COLS = ['triage', 'queued', 'in-flight', 'pr-open', 'escalated', 'm
 const FEED_KINDS = new Set(['labeled', 'assigned', 'attempt', 'gate', 'pr-opened', 'verdict', 'merged', 'escalated', 'triaged', 'closed', 'pr-closed', 'reopened']);
 const TABS = ['timeline', 'attempts', 'gate', 'review', 'branch', 'prompt', 'issue'];
 
-const S = { snap: null, filter: null, q: '', sel: null, tab: 'timeline', okAt: 0, failed: false, files: {}, view: 'inbox', drafts: {}, inboxDirty: false, inboxKey: null, choices: {}, briefings: {}, chats: {}, receipts: {}, fm: null, preview: null, restored: false, loading: null };
+const S = { snap: null, filter: null, q: '', sel: null, tab: 'timeline', okAt: 0, failed: false, files: {}, view: 'inbox', drafts: {}, inboxDirty: false, inboxKey: null, choices: {}, briefings: {}, chats: {}, receipts: {}, fm: null, preview: null, restored: false, loading: null, settings: { snapshot: null, draft: null, loaded: false, loading: null, saving: false, error: '', fieldErrors: {}, conflict: false, reviewPending: false, notice: '' } };
+const SETTINGS_FIELDS = [
+  ['dispatch.max_active', 'Maximum active tickets', 'settings-max-active'],
+  ['dispatch.budget_min', 'Time limit per ticket (minutes)', 'settings-budget-min'],
+  ['dispatch.max_attempts', 'Worker + gate attempts before escalation', 'settings-max-attempts'],
+  ['dispatch.review_rounds', 'Reviewer revision rounds', 'settings-review-rounds'],
+  ['manager.model', 'Factory Manager model override', 'settings-manager-model'],
+];
 const $ = id => document.getElementById(id);
+const narrowDrawer = matchMedia('(max-width: 800px)');
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+const drawerAnimations = new Map();
+let drawerOpener = null, drawerVersion = 0, renderedTicket = null, renderedTab = null, resizeFrame = 0;
 
 // ---------------------------------------------------------------- utils
 const domChildren = kids => kids.flat(Infinity).filter(kid => kid != null && kid !== false);
@@ -575,10 +734,259 @@ function stageTimeline(t) {
   to(end, null);
   return segs.filter(s => ms(s.to) > ms(s.from));
 }
+// ---------------------------------------------------------------- settings
+function settingsBaseValue(key) {
+  const field = S.settings.snapshot?.fields?.[key];
+  return field ? field.value : key === 'manager.model' ? null : '';
+}
+function settingsDraftValue(key) {
+  const value = S.settings.draft?.[key];
+  return value == null ? '' : String(value);
+}
+function settingsDraftFrom(snapshot) {
+  return Object.fromEntries(SETTINGS_FIELDS.map(([key]) => [key, key === 'manager.model' ? (snapshot.fields?.[key]?.value || '') : String(snapshot.fields?.[key]?.value ?? '')]));
+}
+function settingsNormalize(key, raw) {
+  if (key === 'manager.model') {
+    const value = String(raw ?? '').trim();
+    return value ? value : null;
+  }
+  if (raw === '' || raw == null) return NaN;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) ? value : NaN;
+}
+function settingsEqual(key, left, right) {
+  return key === 'manager.model' ? (String(left ?? '').trim() || null) === (right || null) : Number(left) === Number(right);
+}
+function settingsDraftValid() {
+  return SETTINGS_FIELDS.every(([key]) => {
+    const value = settingsNormalize(key, settingsDraftValue(key));
+    return key === 'dispatch.review_rounds' ? Number.isSafeInteger(value) && value >= 0 : key === 'manager.model' ? value == null || value.length <= 200 : Number.isSafeInteger(value) && value >= 1;
+  });
+}
+function settingsValueError(key, raw) {
+  const value = settingsNormalize(key, raw);
+  if (key === 'manager.model') return value && value.length > 200 ? 'Use 200 characters or fewer.' : '';
+  if (raw === '') return key === 'dispatch.review_rounds' ? 'Enter a whole number of 0 or more.' : 'Enter a whole number of 1 or more.';
+  if (!Number.isSafeInteger(value) || value < (key === 'dispatch.review_rounds' ? 0 : 1)) return key === 'dispatch.review_rounds' ? 'Enter a whole number of 0 or more.' : 'Enter a whole number of 1 or more.';
+  return '';
+}
+function settingsChanges() {
+  if (!S.settings.snapshot || !S.settings.draft || !settingsDraftValid()) return [];
+  return SETTINGS_FIELDS.map(([key]) => [key, settingsNormalize(key, settingsDraftValue(key))])
+    .filter(([key, value]) => !settingsEqual(key, value, settingsBaseValue(key)));
+}
+function settingsDraftChanges(snapshot = S.settings.snapshot, draft = S.settings.draft) {
+  if (!snapshot || !draft) return {};
+  const changes = {};
+  for (const [key] of SETTINGS_FIELDS) {
+    const raw = draft[key] == null ? '' : String(draft[key]);
+    const value = settingsNormalize(key, raw), base = snapshot.fields?.[key]?.value;
+    if (Number.isNaN(value) ? raw !== String(base ?? '') : !settingsEqual(key, value, base)) changes[key] = raw;
+  }
+  return changes;
+}
+function settingsHasDraftChanges() { return Object.keys(settingsDraftChanges()).length > 0; }
+function settingsKeyId(key) { return key.replace(/[._]+/g, '-'); }
+function settingsId(kind, key) { return `settings-${kind}-${settingsKeyId(key)}`; }
+function settingsErrorId(key) { return settingsId('error', key); }
+function settingsEffectiveId(key) { return settingsId('effective', key); }
+function settingsSourceId(key) { return settingsId('source', key); }
+function settingsEffectiveText(key, field) {
+  const value = field?.value == null
+    ? key === 'manager.model' ? 'blank · inherited host, built-in, or legacy manager.command model' : 'none / inherited setting'
+    : String(field.value);
+  return `Effective now: ${value} · ${field?.applies || 'applies on the next new request'}`;
+}
+function settingsSummaryValue(key, value, draft = false) {
+  if (key === 'manager.model') return value ? String(value) : draft ? 'blank · remove repository override' : 'none / inherited setting';
+  return value == null || value === '' ? '—' : String(value);
+}
+function safeAgentProgram(value) {
+  const base = String(value || '').split(/[\\/]/).at(-1) || '';
+  return /^[A-Za-z0-9._+-]+$/.test(base) ? base : 'program omitted for safety';
+}
+function safeAgentModel(value) {
+  if (value == null || String(value) === '') return 'none / inherited';
+  const model = String(value);
+  return model.length <= 200 ? model : 'not disclosed';
+}
+function safeAgentOrigin(value) {
+  if (!value) return 'endpoint omitted for safety';
+  try {
+    const endpoint = new URL(String(value), location.origin);
+    return ['http:', 'https:'].includes(endpoint.protocol) ? endpoint.origin : 'endpoint omitted for safety';
+  } catch (_) { return 'endpoint omitted for safety'; }
+}
+function settingsAgent(label, detail, source, omission = '') {
+  return h('div', { class: 'settings-agent-group' }, h('h4', {}, label), h('p', {}, detail), h('span', { class: 'hint' }, source || 'Source not reported'), omission ? h('p', { class: 'settings-omission' }, omission) : null);
+}
+function renderSettingsAgents(snapshot) {
+  const into = $('settings-agents');
+  if (!snapshot) {
+    into.replaceChildren(h('p', { class: 'empty' }, 'Agent configuration is unavailable. Retry settings without affecting Inbox or Ops.'));
+    return;
+  }
+  const agents = snapshot.agents || {}, workers = Array.isArray(agents.workers) ? agents.workers : [];
+  const nodes = workers.map(worker => settingsAgent(
+    `${worker.label || 'worker'} worker`,
+    `${safeAgentProgram(worker.program)} · model ${safeAgentModel(worker.model)}`,
+    worker.source,
+    'Arguments and environment wrappers are omitted so credentials cannot appear here.',
+  ));
+  const reviewer = agents.reviewer || {};
+  nodes.push(settingsAgent('Reviewer', `${safeAgentProgram(reviewer.program)} · model ${safeAgentModel(reviewer.model)}`, reviewer.source, 'Only the executable basename and recognized model value are shown.'));
+  const triage = agents.triage || {};
+  nodes.push(settingsAgent('Triage', `${safeAgentOrigin(triage.endpoint)} · model ${safeAgentModel(triage.model)}`, triage.source, 'Only the endpoint origin is shown; paths, query strings, fragments, and credentials are withheld.'));
+  replaceChildren(into, nodes);
+}
+function renderSettingsChanges() {
+  const into = $('settings-changes'), changes = [];
+  if (S.settings.snapshot && S.settings.draft) {
+    for (const [key, label] of SETTINGS_FIELDS) {
+      const raw = settingsDraftValue(key), value = settingsNormalize(key, raw), base = settingsBaseValue(key);
+      const changed = Number.isNaN(value) ? raw !== String(base ?? '') : !settingsEqual(key, value, base);
+      if (changed) changes.push(h('li', {}, h('span', { class: 'key' }, label), h('span', { class: 'from' }, `before: ${settingsSummaryValue(key, base)}`), h('span', { class: 'to' }, `after: ${settingsSummaryValue(key, Number.isNaN(value) ? raw : value, true)}${Number.isNaN(value) ? ' · invalid' : ''}`)));
+    }
+  }
+  into.hidden = !changes.length;
+  replaceChildren(into, changes.length ? [h('h3', {}, 'Pending changes'), h('ul', { class: 'settings-change-list' }, changes)] : []);
+}
+function renderSettings() {
+  const st = S.settings, snapshot = st.snapshot;
+  $('settings-scope').replaceChildren(
+    h('b', {}, 'Scope'), h('br'), snapshot ? `Repository ${snapshot.repo || 'current repository'}` : 'Repository scope unavailable',
+    h('br'), h('span', {}, snapshot?.persistence || 'Saved settings are local and uncommitted'),
+  );
+  renderSettingsAgents(snapshot);
+  for (const [key, , id] of SETTINGS_FIELDS) {
+    const input = $(id), field = snapshot?.fields?.[key], error = st.fieldErrors[key];
+    const errorId = settingsErrorId(key), effectiveId = settingsEffectiveId(key), sourceId = settingsSourceId(key);
+    if (st.draft && (document.activeElement !== input || !settingsHasDraftChanges())) input.value = settingsDraftValue(key);
+    input.disabled = !snapshot || st.saving;
+    input.setAttribute('aria-invalid', error ? 'true' : 'false');
+    input.setAttribute('aria-describedby', [errorId, effectiveId, sourceId].join(' '));
+    $(effectiveId).textContent = snapshot ? settingsEffectiveText(key, field) : 'Effective value unavailable until settings load.';
+    $(sourceId).textContent = field?.source ? `Source: ${field.source}` : '';
+    $(errorId).textContent = error || '';
+  }
+  const changes = settingsChanges(), dirty = settingsHasDraftChanges(), valid = settingsDraftValid();
+  $('settings-save').disabled = !snapshot || !dirty || !valid || st.loading || st.saving || st.conflict || st.reviewPending;
+  $('settings-revert').disabled = !snapshot || !dirty || st.saving;
+  const reload = $('settings-reload');
+  reload.hidden = !(st.error || st.conflict || st.reviewPending);
+  reload.textContent = st.reviewPending ? 'I reviewed latest settings' : st.conflict ? 'Reload current settings' : 'Retry settings';
+  if (st.loading || st.saving) {
+    $('settings-status').className = 'settings-status';
+    $('settings-status').textContent = st.saving ? 'Saving settings…' : 'Loading settings…';
+  } else if (st.conflict) {
+    $('settings-status').className = 'settings-status warn';
+    $('settings-status').textContent = `${st.error || 'Settings revision is stale.'} Reload and review the latest values before resaving; your draft stays here.`;
+  } else if (st.error) {
+    $('settings-status').className = 'settings-status bad';
+    $('settings-status').textContent = `${st.error} Your draft is retained.`;
+  } else if (st.reviewPending) {
+    $('settings-status').className = 'settings-status warn';
+    $('settings-status').textContent = 'Latest settings loaded. Review the current values against your draft, then confirm before resaving.';
+  } else if (st.notice) {
+    $('settings-status').className = 'settings-status good';
+    $('settings-status').textContent = st.notice;
+  } else if (!snapshot) {
+    $('settings-status').className = 'settings-status';
+    $('settings-status').textContent = 'Settings can load independently of snapshot or GitHub availability.';
+  } else if (dirty) {
+    $('settings-status').className = 'settings-status warn';
+    $('settings-status').textContent = `${changes.length || 'Some'} unsaved change${changes.length === 1 ? '' : 's'}. Review the summary before saving.`;
+  } else {
+    $('settings-status').className = 'settings-status';
+    $('settings-status').textContent = 'Effective values are shown below. Nothing is saved automatically.';
+  }
+  renderSettingsChanges();
+}
+async function loadSettings(force = false) {
+  const st = S.settings;
+  if (st.loading || st.saving) return st.loading;
+  const previousSnapshot = st.snapshot;
+  const wasReviewPending = st.reviewPending;
+  st.loading = (async () => {
+    try {
+      const response = await fetch('/api/settings' + (force ? '?fresh=1' : ''));
+      let result = null;
+      try { result = await response.json(); } catch (_) { /* handled as an unavailable settings response */ }
+      if (!response.ok || !result?.ok || !result.fields) throw new Error(result?.error || `Settings unavailable (${response.status})`);
+      const draftChanges = settingsDraftChanges(st.snapshot, st.draft);
+      const preserveDraft = Object.keys(draftChanges).length > 0;
+      const nextDraft = settingsDraftFrom(result);
+      Object.assign(nextDraft, draftChanges);
+      const revisionChanged = Boolean(previousSnapshot && previousSnapshot.revision !== result.revision);
+      st.snapshot = result; st.draft = nextDraft; st.loaded = true; st.error = ''; st.fieldErrors = {};
+      st.conflict = false; st.reviewPending = preserveDraft && (wasReviewPending || revisionChanged); st.notice = '';
+    } catch (error) {
+      st.error = String(error?.message || 'Settings unavailable').slice(0, 300);
+      st.fieldErrors = {};
+    } finally {
+      st.loading = null;
+      renderSettings();
+    }
+  })();
+  renderSettings();
+  return st.loading;
+}
+async function saveSettings() {
+  const st = S.settings;
+  if (st.loading || st.saving || st.conflict || st.reviewPending || !st.snapshot) return;
+  const form = $('settings-form');
+  if (!form.checkValidity() || !settingsDraftValid()) {
+    for (const [key] of SETTINGS_FIELDS) {
+      const error = settingsValueError(key, settingsDraftValue(key));
+      if (error) st.fieldErrors[key] = error;
+    }
+    st.notice = ''; renderSettings(); return;
+  }
+  const changes = Object.fromEntries(settingsChanges());
+  if (!Object.keys(changes).length) return;
+  st.saving = true; st.notice = ''; st.error = ''; st.fieldErrors = {};
+  renderSettings();
+  let succeeded = false;
+  try {
+    const response = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Factory-Act': '1' },
+      body: JSON.stringify({ revision: st.snapshot.revision, changes }),
+    });
+    let result = null;
+    try { result = await response.json(); } catch (_) { /* handled as a failed save */ }
+    if (!response.ok || !result?.ok || !result.fields) {
+      st.error = String(result?.error || `Settings save failed (${response.status})`).slice(0, 300);
+      st.fieldErrors = result?.errors && typeof result.errors === 'object' ? result.errors : {};
+      if (response.status === 409 || /stale|revision|changed/i.test(st.error)) st.conflict = true;
+      return;
+    }
+    st.snapshot = result; st.draft = settingsDraftFrom(result); st.loaded = true; st.error = ''; st.fieldErrors = {}; st.conflict = false; st.reviewPending = false;
+    st.notice = 'Saved locally. Changes apply to the next dispatcher invocation or new Factory Manager request; running work is unchanged. Commit the local config when you want to share it.';
+    if (Object.prototype.hasOwnProperty.call(changes, 'manager.model')) {
+      for (const entry of Object.values(S.briefings)) if (entry) entry.modelStale = true;
+      for (const chat of Object.values(S.chats)) if (chat.messages?.length) chat.modelStale = true;
+    }
+  } catch (error) {
+    st.error = String(error?.message || 'Settings save failed').slice(0, 300);
+  } finally {
+    st.saving = false;
+    renderSettings();
+    if (succeeded && S.view === 'settings') $('settings-title').focus({ preventScroll: true });
+  }
+}
+function revertSettings() {
+  const st = S.settings;
+  if (!st.snapshot || st.saving) return;
+  st.draft = settingsDraftFrom(st.snapshot); st.fieldErrors = {}; st.notice = '';
+  renderSettings();
+}
 
 // ---------------------------------------------------------------- render
-function render() {
+function render(forceDrawer = false) {
   applyView();
+  renderSettings();
   if (!S.snap) {
     const message = 'No snapshot is available. Check the dashboard connection, then retry.';
     $('errors').replaceChildren(h('div', { class: 'err' }, message));
@@ -589,15 +997,14 @@ function render() {
   renderStatus(); renderErrors(); renderKpis(); renderPipeline(); renderBoard(); renderFeed(); renderRuns(); renderUpstream(); renderLanes(); renderThroughput(); renderConfig();
   renderInboxHealth();
   updateInbox();
-  applyView();
-  if (S.sel != null && !$('drawer').contains(document.activeElement) && !$('fm-dialog').open) renderDrawer();
+  if (S.sel != null && (forceDrawer || (!$('drawer').contains(document.activeElement) && !$('fm-dialog').open && !$('decision-dialog').open))) renderDrawer();
 }
 function renderStatus() {
   const d = S.snap.dispatcher, stale = S.failed || Date.now() - S.okAt > 180000;
   $('eyebrow').textContent = `${S.snap.repo} · factory`;
   const title = `${S.snap.config.name.toUpperCase()} FACTORY`;
   $('title').textContent = title; $('title').dataset.text = title;
-  $('journal-unit').textContent = `${S.snap.config.unit}.service`;
+  document.title = `Factory — ${S.view === 'inbox' ? 'Inbox' : S.view === 'settings' ? 'Settings' : 'Ops'}`;
   const led = d.service_active ? 'warn' : d.timer.active ? 'on' : 'bad';
   $('status').replaceChildren(
     h('span', {}, h('i', { class: `led ${led}` }), 'dispatcher ', h('b', {}, d.service_active ? 'RUNNING' : d.timer.active ? 'ARMED' : 'TIMER OFF')),
@@ -714,7 +1121,7 @@ function card(t) {
   const ciNode = ci ? h('span', { class: 'ci', title: 'CI on PR head' }, h('span', { class: 'k' }, 'ci '),
     h('b', { class: 'ok' }, `✓${(ci.SUCCESS || 0)}`), ' ', ci.FAILURE || ci.ERROR ? h('b', { class: 'bad' }, `✗${(ci.FAILURE || 0) + (ci.ERROR || 0)}`) : null, ' ',
     ci.QUEUED || ci.IN_PROGRESS || ci.PENDING ? h('b', { class: 'pend' }, `…${(ci.QUEUED || 0) + (ci.IN_PROGRESS || 0) + (ci.PENDING || 0)}`) : null) : null;
-  const el = h('article', { class: `card ${stageClass(t.stage)} ${S.sel === t.number ? 'sel' : ''}`, tabindex: 0, dataset: { n: t.number }, 'aria-label': `#${t.number} ${t.title}` },
+  const el = h('article', { class: `card ${stageClass(t.stage)} ${S.sel === t.number ? 'sel' : ''}`, tabindex: 0, role: 'button', 'aria-pressed': S.sel === t.number ? 'true' : 'false', 'aria-controls': 'drawer', dataset: { n: t.number }, 'aria-label': `#${t.number} ${t.title}` },
     h('div', { class: 'ct' }, h('span', { class: 'num' }, `#${t.number}`), h('span', { class: 'wk' }, t.worker),
       t.lock_held ? h('span', { class: 'chip live', style: { '--c': 'var(--yel)' } }, t.phase ? `${phaseCell(t)}${t.phase.attempt ? ' #' + t.phase.attempt : ''}` : 'live') : null,
       t.pr && t.pr.approved && t.pr.state === 'OPEN' ? h('span', { class: 'chip', style: { '--c': 'var(--grn)' }, title: 'factory-approved: merge stage will land it' }, 'approved') : null,
@@ -732,7 +1139,7 @@ function card(t) {
       t.assignees.length ? h('span', {}, `@${t.assignees.join(' @')}`) : null,
       h('span', { title: fmt(t.updated_at) }, `upd ${ago(t.updated_at)}`)));
   el.onclick = () => openTicket(t.number);
-  el.onkeydown = e => { if (e.key === 'Enter') openTicket(t.number); };
+  el.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openTicket(t.number); } };
   return el;
 }
 function renderBoard() {
@@ -891,18 +1298,128 @@ function renderConfig() {
 }
 
 // ---------------------------------------------------------------- drawer
+function runMotion(el, values, spring = false, instant = false) {
+  drawerAnimations.get(el)?.stop();
+  const motionAllowed = !instant && !reducedMotion.matches;
+  const control = animate(el, values, {
+    duration: motionAllowed ? spring ? .42 : .19 : 0,
+    ...(spring && motionAllowed ? { type: 'spring', bounce: .08 } : {}),
+  });
+  drawerAnimations.set(el, control);
+  return control;
+}
+function setPageInert(value) {
+  document.querySelector('.top').inert = value;
+  $('ops').inert = value;
+  $('inbox').inert = value;
+  $('settings').inert = value;
+}
+function drawerWidth() {
+  return Math.min(640, narrowDrawer.matches ? innerWidth : Math.max(400, $('workspace').clientWidth * .42));
+}
+function showDrawer(fromHidden, focusOnOpen, instant = false) {
+  const dr = $('drawer'), scrim = $('drawer-scrim'), modal = narrowDrawer.matches;
+  const version = ++drawerVersion, width = drawerWidth();
+  dr.hidden = false;
+  dr.inert = false;
+  dr.classList.add('open');
+  dr.setAttribute('aria-hidden', 'false');
+  dr.setAttribute('role', modal ? 'dialog' : 'complementary');
+  dr.style.setProperty('--drawer-width', `${width}px`);
+  if (modal) {
+    dr.setAttribute('aria-modal', 'true');
+    setPageInert(true);
+    scrim.hidden = false;
+    dr.style.width = `${width}px`;
+    if (fromHidden) {
+      dr.style.transform = `translateX(${width}px)`;
+      scrim.style.opacity = '0';
+    }
+    runMotion(scrim, { opacity: 1 }, false, instant);
+    runMotion(dr, { x: 0 }, true, instant);
+  } else {
+    dr.removeAttribute('aria-modal');
+    setPageInert(false);
+    scrim.hidden = true;
+    scrim.style.opacity = '';
+    dr.style.transform = 'none';
+    if (fromHidden) dr.style.width = '0px';
+    runMotion(dr, { width }, true, instant);
+  }
+  if (focusOnOpen && modal) queueMicrotask(() => {
+    if (version === drawerVersion && S.sel != null) $('d-close').focus({ preventScroll: true });
+  });
+}
+function hideDrawer(restoreFocus = false, instant = false) {
+  const dr = $('drawer'), scrim = $('drawer-scrim');
+  if (dr.hidden) { setPageInert(false); scrim.hidden = true; return; }
+  const version = ++drawerVersion, ticket = renderedTicket, opener = drawerOpener;
+  const modal = narrowDrawer.matches, width = drawerWidth();
+  dr.classList.remove('open');
+  dr.setAttribute('aria-hidden', 'true');
+  dr.inert = true;
+  if (modal) {
+    setPageInert(true);
+    scrim.hidden = false;
+    if (!scrim.style.opacity) scrim.style.opacity = '1';
+  }
+  const exit = modal ? runMotion(dr, { x: width }, true, instant) : runMotion(dr, { width: 0 }, true, instant);
+  if (modal) runMotion(scrim, { opacity: 0 }, false, instant);
+  else { setPageInert(false); scrim.hidden = true; }
+  const finish = () => {
+    if (version !== drawerVersion || S.sel != null) return;
+    dr.hidden = true;
+    dr.inert = false;
+    dr.style.width = '';
+    dr.style.transform = '';
+    dr.style.removeProperty('--drawer-width');
+    dr.removeAttribute('aria-modal');
+    dr.setAttribute('role', 'complementary');
+    scrim.hidden = true;
+    scrim.style.opacity = '';
+    setPageInert(false);
+    renderedTicket = null;
+    renderedTab = null;
+    drawerOpener = null;
+    if (restoreFocus) {
+      const fallback = document.querySelector(`.card[data-n="${ticket}"]`);
+      const target = opener?.isConnected && !opener.closest('[inert]') ? opener : fallback;
+      target?.focus({ preventScroll: true });
+    }
+  };
+  exit.then(finish, finish);
+}
 function openTicket(n, tab) {
-  S.sel = n; if (tab) S.tab = tab;
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && active !== document.body && !$('drawer').contains(active)) drawerOpener = active;
+  else drawerOpener = document.querySelector(`.card[data-n="${n}"]`) || drawerOpener;
+  S.sel = n;
+  if (tab) S.tab = tab;
   if (S.view === 'inbox') S.inboxKey = String(n);
   syncHash();
-  render();
+  render(true);
 }
-function closeDrawer() { S.sel = null; syncHash(); render(); $('drawer').classList.remove('open'); $('drawer').setAttribute('aria-hidden', 'true'); }
+function closeDrawer(restoreFocus = true) {
+  if (S.sel == null && $('drawer').hidden) return;
+  S.sel = null;
+  syncHash();
+  if (S.snap) { renderBoard(); renderLanes(); }
+  hideDrawer(restoreFocus);
+}
+function activateDrawerTab(tab) {
+  S.tab = tab;
+  renderDrawer();
+  $(`d-tab-${tab}`)?.focus({ preventScroll: true });
+}
 function renderDrawer() {
   const t = S.snap.tickets.find(x => x.number === S.sel);
   const dr = $('drawer');
-  if (!t) { closeDrawer(); return; }
-  dr.classList.add('open'); dr.setAttribute('aria-hidden', 'false'); dr.className = `drawer open ${stageClass(t.stage)}`;
+  if (!t) { closeDrawer(false); return; }
+  const fromHidden = dr.hidden, opening = !dr.classList.contains('open');
+  const contentChanged = renderedTicket !== t.number || renderedTab !== S.tab;
+  dr.className = `drawer open ${stageClass(t.stage)}`;
+  if (opening) showDrawer(fromHidden, true);
+  else dr.setAttribute('aria-hidden', 'false');
   $('d-num').textContent = `#${t.number}`;
   $('d-stage').textContent = STAGE_NAME[t.stage];
   $('d-live').replaceChildren(t.lock_held ? h('span', { class: 'chip live', style: { '--c': 'var(--yel)' } }, t.phase ? `${phaseCell(t)} · ${t.phase.artifact} ${ago(t.phase.at)}` : 'lock held') : '');
@@ -914,9 +1431,27 @@ function renderDrawer() {
     h('span', {}, `${t.worker} worker`), h('span', {}, t.assignees.length ? `@${t.assignees.join(' @')}` : 'unassigned'),
     h('span', { title: fmt(t.created_at) }, `opened ${ago(t.created_at)}`),
     h('span', {}, ...t.labels.map(l => h('span', { class: 'lab' }, l))));
-  $('d-tabs').replaceChildren(...TABS.map(tab => h('button', { class: S.tab === tab ? 'on' : '', onclick: () => { S.tab = tab; renderDrawer(); } }, tab)));
-  const c = $('d-content'); c.replaceChildren();
+  $('d-tabs').replaceChildren(...TABS.map((tab, index) => h('button', {
+    id: `d-tab-${tab}`, role: 'tab', class: S.tab === tab ? 'on' : '', tabindex: S.tab === tab ? 0 : -1,
+    'aria-selected': S.tab === tab ? 'true' : 'false', 'aria-controls': 'd-content',
+    onclick: () => activateDrawerTab(tab),
+    onkeydown: event => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? TABS.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : TABS.length - 1)) % TABS.length;
+      activateDrawerTab(TABS[next]);
+    },
+  }, tab)));
+  const c = $('d-content'), scrollTop = c.scrollTop;
+  c.replaceChildren();
+  c.setAttribute('aria-labelledby', `d-tab-${S.tab}`);
   ({ timeline: tabTimeline, attempts: tabAttempts, gate: tabGate, review: tabReview, branch: tabBranch, prompt: tabPrompt, issue: tabIssue })[S.tab](t, c);
+  if (contentChanged) {
+    c.scrollTop = 0;
+    runMotion(c, { opacity: [.35, 1], y: [6, 0] });
+  } else c.scrollTop = scrollTop;
+  renderedTicket = t.number;
+  renderedTab = S.tab;
   $('d-close').onclick = closeDrawer;
 }
 const pre = text => h('pre', {}, text || '(empty)');
@@ -1080,7 +1615,7 @@ async function fmRequest(path, payload) {
 }
 function updateInbox(force = false, preserveFocus = false) {
   if (!S.snap) return;
-  if ($('fm-dialog').open || $('decision-dialog').open || (!force && $('inbox').contains(document.activeElement))) { S.inboxDirty = true; return; }
+  if ($('fm-dialog').open || $('decision-dialog').open || (S.sel != null && narrowDrawer.matches) || (!force && $('inbox').contains(document.activeElement))) { S.inboxDirty = true; return; }
   const active = preserveFocus && $('inbox').contains(document.activeElement) ? document.activeElement : null;
   const selection = active?.tagName === 'TEXTAREA' ? [active.selectionStart, active.selectionEnd] : null;
   const expanded = preserveFocus ? [...$('inbox').querySelectorAll('details[open]')].map(el => el.querySelector('summary')?.textContent) : [];
@@ -1338,19 +1873,24 @@ function renderSystemBriefing(item) {
       h('details', { class: 'briefing-sources' }, h('summary', {}, 'Host command / configuration reference'), pre(item.cmd)),
       h('button', { onclick: () => setView('ops') }, 'Inspect operations')));
 }
+function fmProgress(label) {
+  return h('p', { class: 'fm-progress' },
+    h('span', { class: 'fm-spinner', role: 'progressbar', 'aria-label': label }),
+    h('span', {}, label));
+}
 function renderTaskBriefing(item) {
-  const t = item.t, entry = S.briefings[t.number], fresh = entry && entry.fingerprint === ticketFingerprint(t);
+  const t = item.t, entry = S.briefings[t.number], fresh = entry && !entry.modelStale && entry.fingerprint === ticketFingerprint(t);
   const result = fresh ? entry.data : null, briefing = result?.briefing, sources = result?.sources || [];
   const state = h('div', { id: 'briefing-fm-status', class: 'briefing-status', role: 'status' });
   const retry = label => h('button', { id: 'briefing-refresh', onclick: () => ensureBriefing(t.number, true) }, label);
-  if (entry?.loading) state.append(h('p', {}, 'Factory Manager is reading the recorded task evidence. The full briefing may take a moment; all current action consequences remain available below.'), h('button', { id: 'briefing-refresh', disabled: true }, 'Generating briefing…'));
-  else if (entry?.error) state.append(h('p', {}, `Factory Manager could not generate this briefing: ${entry.error}`), retry('Retry briefing'));
+  if (entry?.loading) state.append(fmProgress('Waiting for FM · generating briefing…'), h('p', {}, 'Factory Manager is reading the recorded task evidence. The full briefing may take a moment; all current action consequences remain available below.'), h('button', { id: 'briefing-refresh', disabled: true }, 'Generating briefing…'));
+  else if (entry?.modelStale) state.append(h('p', {}, 'The Factory Manager model changed. This earlier advice is not shown as current.'), retry('Generate briefing with the new model'));
   else if (entry && !fresh) state.append(h('p', {}, 'Task evidence changed. The previous recommendation is not shown as current.'), retry('Generate updated briefing'));
   else if (briefing) state.append(h('p', {}, `FM briefing generated ${fmt(result.generated_at)} · advisory, not an authorization`), retry('Refresh briefing'));
   else state.append(h('p', {}, 'No FM briefing has been generated yet.'));
-  const history = h('div', { class: 'briefing-history' }, h('h4', { class: 'briefing-label' }, 'Earlier decisions & constraints that still matter'));
+  const history = h('div', { class: 'briefing-history', 'aria-busy': entry?.loading ? 'true' : 'false' }, h('h4', { class: 'briefing-label' }, 'Earlier decisions & constraints that still matter'));
   if (briefing?.history?.length) history.append(h('ul', {}, ...briefing.history.map(entry => h('li', {}, cited(entry.text, sources, t.number), h('span', { class: 'fm-citations' }, ...entry.sources.filter(id => !entry.text.includes(`[${id}]`)).map(id => cited(` [${id}]`, sources, t.number)))))));
-  else history.append(h('p', {}, briefing ? 'FM did not identify a relevant earlier decision in the available evidence. This does not prove none exists; inspect the source record or ask about missing context.' : 'Earlier decisions are not summarized until FM returns a grounded briefing. The raw issue and task evidence remain available below.'));
+  else history.append(entry?.loading ? fmProgress('Waiting for FM · reviewing earlier decisions…') : h('p', {}, briefing ? 'FM did not identify a relevant earlier decision in the available evidence. This does not prove none exists; inspect the source record or ask about missing context.' : 'Earlier decisions are not summarized until FM returns a grounded briefing. The raw issue and task evidence remain available below.'));
   const raw = h('details', { class: 'briefing-sources' }, h('summary', {}, `Inspect raw evidence${sources.length ? ` · ${sources.length} sources` : ''}`));
   if (sources.length) raw.append(...sources.map(source => sourceDetails(t.number, source)));
   else raw.append(h('details', {}, h('summary', {}, 'Issue body'), pre(t.body)), h('button', { onclick: () => openTicket(t.number, 'timeline') }, 'Open task timeline and artifacts'));
@@ -1361,16 +1901,19 @@ function renderTaskBriefing(item) {
       h('div', { class: 'briefing-actions' }, h('button', { onclick: () => openFM(t.number) }, 'Ask FM about this task'), h('button', { onclick: () => openTicket(t.number) }, 'Open task details'), h('a', { href: t.url, target: '_blank', rel: 'noopener noreferrer' }, 'Issue on GitHub'), t.pr ? h('a', { href: t.pr.url, target: '_blank', rel: 'noopener noreferrer' }, `PR #${t.pr.number}`) : null)),
     briefingSection('01', 'Understand', state,
       h('div', {}, h('h4', { class: 'briefing-label' }, 'The situation'), h('p', {}, briefing ? cited(briefing.summary, sources, t.number) : item.why), taskFacts(item)),
-      h('div', { class: 'briefing-recommendation' }, h('h4', { class: 'briefing-label' }, 'Factory Manager’s recommendation'), h('p', {}, briefing ? cited(briefing.recommendation, sources, t.number) : 'No recommendation is available. Do not treat the ordering of options as advice.')),
+      h('div', { class: 'briefing-recommendation', 'aria-busy': entry?.loading ? 'true' : 'false' }, h('h4', { class: 'briefing-label' }, 'Factory Manager’s recommendation'), entry?.loading ? fmProgress('Waiting for FM · preparing recommendation…') : h('p', {}, briefing ? cited(briefing.recommendation, sources, t.number) : 'No recommendation is available. Do not treat the ordering of options as advice.')),
       history,
-      h('div', { class: 'briefing-unknown' }, h('h4', { class: 'briefing-label' }, 'What is still uncertain'), h('p', {}, briefing ? cited(briefing.unknown, sources, t.number) : 'FM has not yet identified uncertainties. Missing logs, earlier discussion, or recent changes may affect this decision.')),
+      h('div', { class: 'briefing-unknown', 'aria-busy': entry?.loading ? 'true' : 'false' }, h('h4', { class: 'briefing-label' }, 'What is still uncertain'), entry?.loading ? fmProgress('Waiting for FM · identifying uncertainties…') : h('p', {}, briefing ? cited(briefing.unknown, sources, t.number) : 'FM has not yet identified uncertainties. Missing logs, earlier discussion, or recent changes may affect this decision.')),
       raw),
     decisionForm(item));
 }
 function selectCase(key) {
-  S.inboxKey = key; S.sel = null;
-  $('drawer').classList.remove('open'); $('drawer').setAttribute('aria-hidden', 'true');
-  syncHash(); saveInboxState(); updateInbox(true);
+  S.inboxKey = key;
+  S.sel = null;
+  syncHash();
+  saveInboxState();
+  updateInbox(true);
+  hideDrawer(false);
   $('inbox-list').querySelector('.briefing-question')?.focus({ preventScroll: true });
 }
 function renderInbox() {
@@ -1415,7 +1958,7 @@ async function openFM(number, scope = null) {
   if (!$('fm-dialog').open) $('fm-dialog').showModal();
   if (!context.resolving) { $('fm-question').focus(); return; }
   const entry = S.briefings[number];
-  const result = await ensureBriefing(number, !entry?.data || entry.fingerprint !== ticketFingerprint(t));
+  const result = await ensureBriefing(number, !entry?.data || entry.modelStale || entry.fingerprint !== ticketFingerprint(t));
   if (S.fm !== context) return;
   const source = result?.sources.find(source => scope.path ? source.path === scope.path : scope.match ? new RegExp(scope.match, 'i').test(source.label) : false);
   context.resolving = false;
@@ -1453,7 +1996,8 @@ function renderFMMessages() {
   const { chat, number, run } = context;
   $('fm-messages').replaceChildren(...chat.messages.map(message => h('article', { class: `fm-message ${message.role}` }, h('h3', { class: 'briefing-label' }, message.role === 'user' ? 'You' : 'Factory Manager'), h('p', {}, cited(message.content, message.sources || [], number, run)),
     message.sources?.length ? h('details', { class: 'fm-citations' }, h('summary', {}, `Inspect answer evidence · ${message.sources.length} sources`), ...message.sources.map(source => sourceDetails(number, source, false, run))) : null)));
-  $('fm-status').textContent = context.resolving ? 'Resolving the selected source before a question can be sent.' : context.scopeError ? 'Source unavailable. Retry it or explicitly switch to the whole task.' : chat.pending ? 'FM is reading the evidence and answering… You can close this dialog; your conversation is retained.' : chat.error || 'Questions stay in this browser session. They are not posted as GitHub comments.';
+  $('fm-status').textContent = context.resolving ? 'Resolving the selected source before a question can be sent.' : context.scopeError ? 'Source unavailable. Retry it or explicitly switch to the whole task.' : chat.pending ? 'FM is reading the evidence and answering… You can close this dialog; your conversation is retained.' : chat.modelStale ? 'The Factory Manager model changed; this conversation is retained for reference. New questions use the new model.' : chat.error || 'Questions stay in this browser session. They are not posted as GitHub comments.';
+  $('fm-messages').setAttribute('aria-busy', chat.pending ? 'true' : 'false');
   $('fm-send').disabled = !!(context.resolving || context.scopeError || chat.pending);
   $('fm-question').disabled = !!chat.pending;
   $('fm-retry').hidden = !chat.error || !chat.lastQuestion;
@@ -1494,53 +2038,115 @@ $('decision-close').onclick = () => { if (!S.preview?.busy) $('decision-dialog')
 $('decision-dialog').addEventListener('cancel', e => { if (S.preview?.busy) e.preventDefault(); });
 for (const id of ['fm-dialog', 'decision-dialog']) $(id).addEventListener('close', () => { if (id === 'decision-dialog') S.preview = null; updateInbox(true, true); });
 function syncHash() {
-  const hash = S.view === 'inbox' ? `#inbox${S.inboxKey ? '/' + encodeURIComponent(S.inboxKey) : ''}` : S.sel != null ? `#t=${S.sel}` : S.filter ? `#s=${S.filter}` : '#ops';
+  const hash = S.view === 'settings' ? '#settings' : S.view === 'inbox' ? `#inbox${S.inboxKey ? '/' + encodeURIComponent(S.inboxKey) : ''}` : S.sel != null ? `#t=${S.sel}` : S.filter ? `#s=${S.filter}` : '#ops';
   history.replaceState(null, '', hash);
 }
 function applyView() {
-  $('ops').hidden = S.view !== 'ops'; $('inbox').hidden = S.view !== 'inbox';
-  $('nav-ops').classList.toggle('on', S.view === 'ops'); $('nav-inbox').classList.toggle('on', S.view === 'inbox');
-  $('nav-ops').setAttribute('aria-current', S.view === 'ops' ? 'page' : 'false'); $('nav-inbox').setAttribute('aria-current', S.view === 'inbox' ? 'page' : 'false');
-  document.title = `Factory — ${S.view === 'inbox' ? 'Inbox' : 'Ops'}`;
+  $('ops').hidden = S.view !== 'ops'; $('inbox').hidden = S.view !== 'inbox'; $('settings').hidden = S.view !== 'settings';
+  $('nav-ops').classList.toggle('on', S.view === 'ops'); $('nav-inbox').classList.toggle('on', S.view === 'inbox'); $('nav-settings').classList.toggle('on', S.view === 'settings');
+  $('nav-ops').setAttribute('aria-current', S.view === 'ops' ? 'page' : 'false'); $('nav-inbox').setAttribute('aria-current', S.view === 'inbox' ? 'page' : 'false'); $('nav-settings').setAttribute('aria-current', S.view === 'settings' ? 'page' : 'false');
+  document.title = `Factory — ${S.view === 'inbox' ? 'Inbox' : S.view === 'settings' ? 'Settings' : 'Ops'}`;
 }
-function setView(view) { S.view = view; S.sel = null; $('drawer').classList.remove('open'); $('drawer').setAttribute('aria-hidden', 'true'); syncHash(); applyView(); updateInbox(true); window.scrollTo(0, 0); }
+function setView(view) {
+  S.view = view; S.sel = null; syncHash(); applyView(); updateInbox(true); hideDrawer(false); window.scrollTo(0, 0);
+  if (view === 'settings') { loadSettings(false); queueMicrotask(() => $('settings-title').focus({ preventScroll: true })); }
+}
 $('inbox').addEventListener('focusout', () => { if (S.inboxDirty) setTimeout(() => updateInbox(), 100); });
+$('settings-form').onsubmit = event => { event.preventDefault(); saveSettings(); };
+for (const [key, , id] of SETTINGS_FIELDS) $(id).addEventListener('input', event => {
+  S.settings.draft ||= {};
+  S.settings.draft[key] = event.target.value;
+  const error = settingsValueError(key, event.target.value);
+  if (error) S.settings.fieldErrors[key] = error; else delete S.settings.fieldErrors[key];
+  S.settings.error = '';
+  S.settings.notice = '';
+  renderSettings();
+});
+$('settings-revert').onclick = revertSettings;
+$('settings-reload').onclick = () => {
+  if (S.settings.reviewPending) { S.settings.reviewPending = false; S.settings.notice = 'Review acknowledged. Confirm the pending summary before saving.'; renderSettings(); }
+  else loadSettings(true);
+};
+
 
 // ---------------------------------------------------------------- input
 document.addEventListener('keydown', e => {
   if ($('fm-dialog').open || $('decision-dialog').open) return;
+  if (e.key === 'Escape' && S.sel != null) { e.preventDefault(); closeDrawer(); return; }
+  if (e.key === 'Tab' && narrowDrawer.matches && S.sel != null) {
+    const controls = [...$('drawer').querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), summary, [tabindex]:not([tabindex="-1"])')]
+      .filter(el => el.getClientRects().length && !el.closest('[inert]'));
+    if (controls.length) {
+      const first = controls[0], last = controls.at(-1);
+      if (!controls.includes(document.activeElement)) { e.preventDefault(); (e.shiftKey ? last : first).focus(); }
+      else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+    return;
+  }
   const typing = ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'SUMMARY', 'A'].includes(e.target.tagName);
   if (e.key === '/' && !typing) { e.preventDefault(); $('search').focus(); return; }
-  if (e.key === 'Escape') { if (typing) { e.target.blur(); return; } if (S.sel != null) closeDrawer(); else if (S.filter || S.q) { S.filter = null; S.q = ''; $('search').value = ''; render(); } return; }
-  if (typing) return;
-  if (e.key === 'r') { load(true); return; }
+  if (e.key === 'Escape') { if (typing) { e.target.blur(); return; } if (S.filter || S.q) { S.filter = null; S.q = ''; $('search').value = ''; render(); } return; }
+  if (e.key === 'r') { load(true); if (S.view === 'settings') loadSettings(true); return; }
   if (S.view === 'ops' && (e.key === 'j' || e.key === 'k')) {
     const cards = [...document.querySelectorAll('.card')]; if (!cards.length) return;
     const i = cards.findIndex(c => +c.dataset.n === S.sel);
-    const next = cards[Math.min(cards.length - 1, Math.max(0, i + (e.key === 'j' ? 1 : -1)))];
-    openTicket(+next.dataset.n); next.focus(); next.scrollIntoView({ block: 'nearest' });
+    const number = +cards[Math.min(cards.length - 1, Math.max(0, i + (e.key === 'j' ? 1 : -1)))].dataset.n;
+    openTicket(number);
+    const next = document.querySelector(`.card[data-n="${number}"]`);
+    next?.focus({ preventScroll: true });
+    next?.scrollIntoView({ block: 'nearest' });
   }
 });
 $('search').addEventListener('input', e => { S.q = e.target.value; render(); });
 $('window').onchange = renderLanes;
-$('refresh').onclick = () => load(true);
+  $('refresh').onclick = () => { load(true); if (S.view === 'settings' || S.settings.loaded) loadSettings(true); };
+$('drawer-scrim').onclick = closeDrawer;
+function scheduleDrawerLayout() {
+  cancelAnimationFrame(resizeFrame);
+  resizeFrame = requestAnimationFrame(() => {
+    if (S.sel != null && !$('drawer').hidden) showDrawer(false, false, true);
+    else if (!$('drawer').hidden) hideDrawer(false, true);
+  });
+}
+window.addEventListener('resize', scheduleDrawerLayout);
+narrowDrawer.addEventListener('change', scheduleDrawerLayout);
+reducedMotion.addEventListener('change', () => {
+  if (reducedMotion.matches) drawerAnimations.forEach(control => control.complete());
+  scheduleDrawerLayout();
+});
+const topBar = document.querySelector('.top');
+const sizeTopBar = () => document.documentElement.style.setProperty('--factory-header-height', `${topBar.offsetHeight}px`);
+new ResizeObserver(sizeTopBar).observe(topBar);
+sizeTopBar();
 let timer = null;
-function schedule() { clearInterval(timer); if ($('auto').checked) timer = setInterval(() => { if (!document.hidden) load(false); }, 30000); }
+function schedule() { clearInterval(timer); if ($('auto').checked) timer = setInterval(() => { if (!document.hidden) { load(false); if (S.view === 'settings') loadSettings(false); } }, 30000); }
 $('auto').onchange = schedule;
-document.addEventListener('visibilitychange', () => { if (!document.hidden && $('auto').checked) load(false); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && $('auto').checked) { load(false); if (S.view === 'settings') loadSettings(false); } });
 setInterval(() => { if (S.snap) { renderStatus(); renderInboxHealth(); } }, 10000);
 function initFromHash() {
   const inbox = location.hash.match(/^#inbox(?:\/([\w-]+))?$/);
   if (inbox) { S.view = 'inbox'; if (inbox[1]) S.inboxKey = inbox[1]; S.sel = null; return; }
+  if (location.hash === '#settings') { S.view = 'settings'; S.sel = null; return; }
   if (location.hash === '#ops') { S.view = 'ops'; S.sel = null; return; }
   const m = location.hash.match(/^#(t|s)=([\w-]+)$/);
   if (m) { S.view = 'ops'; if (m[1] === 't') S.sel = +m[2]; else { S.filter = m[2]; S.sel = null; } }
 }
 initFromHash();
-window.addEventListener('hashchange', () => { initFromHash(); applyView(); if (S.snap) { updateInbox(true); render(); } });
+applyView();
+if (S.view === 'settings') queueMicrotask(() => $('settings-title').focus({ preventScroll: true }));
+window.addEventListener('hashchange', () => {
+  initFromHash();
+  applyView();
+  if (S.view === 'settings') { loadSettings(false); queueMicrotask(() => $('settings-title').focus({ preventScroll: true })); }
+  if (S.snap) { updateInbox(true); render(); }
+  if (S.sel == null) hideDrawer(false);
+});
 $('nav-ops').onclick = () => setView('ops');
 $('nav-inbox').onclick = () => setView('inbox');
+$('nav-settings').onclick = () => setView('settings');
 schedule();
+loadSettings(false);
 load(false);
 </script>
 </body>

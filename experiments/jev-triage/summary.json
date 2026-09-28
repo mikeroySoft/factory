@@ -1,0 +1,82 @@
+{
+  "cases": 40,
+  "jev_recorded": 40,
+  "baseline_recorded": 40,
+  "deterministic_cases": 3,
+  "jev_successful_model_calls": 37,
+  "jev_model_failures": 0,
+  "baseline_errors": 0,
+  "baseline_status": "complete",
+  "paired_model_cases": 37,
+  "paired_model_disagreements": 0,
+  "jev_routes": {
+    "ready-for-agent": 29,
+    "ready-for-human": 8
+  },
+  "deterministic_routes": {
+    "needs-info": 3
+  },
+  "resolved_models": [
+    "jev-1.13.0"
+  ],
+  "jev_input_tokens": 39920,
+  "jev_output_tokens": 2553,
+  "jev_estimated_usd_including_smoke": 0.001702092,
+  "jev_latency": {
+    "n": 37,
+    "median_seconds": 0.21232808905187994,
+    "p95_nearest_rank_seconds": 0.3007142039714381
+  },
+  "baseline_latency": {
+    "n": 37,
+    "median_seconds": 15.456837,
+    "p95_nearest_rank_seconds": 28.916451
+  },
+  "confidence_coverage_not_accuracy": {
+    "development": {
+      "0": {
+        "eligible": 9,
+        "retained": 9,
+        "ready_for_agent": 8
+      },
+      "0.5": {
+        "eligible": 9,
+        "retained": 8,
+        "ready_for_agent": 8
+      },
+      "0.8": {
+        "eligible": 9,
+        "retained": 6,
+        "ready_for_agent": 6
+      },
+      "0.95": {
+        "eligible": 9,
+        "retained": 0,
+        "ready_for_agent": 0
+      }
+    },
+    "evaluation": {
+      "0": {
+        "eligible": 28,
+        "retained": 28,
+        "ready_for_agent": 21
+      },
+      "0.5": {
+        "eligible": 28,
+        "retained": 24,
+        "ready_for_agent": 20
+      },
+      "0.8": {
+        "eligible": 28,
+        "retained": 14,
+        "ready_for_agent": 13
+      },
+      "0.95": {
+        "eligible": 28,
+        "retained": 6,
+        "ready_for_agent": 6
+      }
+    }
+  },
+  "human_adjudication": "pending; no accuracy or false-admission rate established"
+}

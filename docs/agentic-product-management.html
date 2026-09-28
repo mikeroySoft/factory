@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Choose useful work · Product management with agents</title>
+<style>
+:root{--paper:#101617;--panel:#1a2426;--ink:#f2f6f5;--muted:#b1c2c1;--rule:#415553;--accent:#57d5c5;--soft:#263735;--ease:cubic-bezier(.22,.8,.25,1);font-family:Arial,Helvetica,sans-serif;color:var(--ink);background:var(--paper)}
+*{box-sizing:border-box}body{margin:0}h1,h2,h3,p,blockquote{margin:0}h1,h2{font-weight:650;letter-spacing:-.055em;line-height:1.04;text-wrap:balance}h1{font-size:clamp(60px,7.5vw,110px)}h2{font-size:clamp(40px,4.8vw,72px)}h3{font-size:clamp(23px,2.2vw,32px);letter-spacing:-.03em;line-height:1.2}p{line-height:1.45}em{font-style:normal;color:var(--accent)}.muted{color:var(--muted)}.accent{color:var(--accent)}.small{font-size:14px;line-height:1.5}.eyebrow,.label{font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;line-height:1.5}.eyebrow{color:var(--accent)}.label{color:var(--muted)}.lede{font-size:clamp(21px,2.2vw,32px);color:var(--muted);line-height:1.4}.big{font-size:clamp(32px,3.8vw,56px);line-height:1.15;letter-spacing:-.04em}.stack{display:flex;flex-direction:column;gap:24px}.split{display:grid;grid-template-columns:1.1fr 1fr;gap:6vw;align-items:center}a{color:inherit}[hidden]{display:none!important}
+button{font:inherit;color:var(--ink);background:transparent;border:1px solid var(--rule);border-radius:4px;min-height:44px;padding:10px 16px;cursor:pointer;transition:background .18s,border-color .18s}button:hover:not(:disabled){background:var(--soft);border-color:var(--muted)}button:disabled{cursor:default;opacity:.35}button:focus-visible,a:focus-visible,[tabindex]:focus-visible{outline:3px solid var(--accent);outline-offset:4px}button.primary{background:var(--ink);color:var(--paper);border-color:var(--ink);font-weight:700}button.primary:hover:not(:disabled){background:var(--muted)}button[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
+.topbar{height:70px;padding:0 3.6vw;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--rule);gap:20px}.identity{display:flex;gap:14px;align-items:center;font-size:12px;letter-spacing:.12em;font-weight:700;text-transform:uppercase}.mark{width:20px;height:20px;border-top:5px solid var(--accent);border-right:5px solid var(--accent)}.audience{color:var(--muted);border-left:1px solid var(--rule);padding-left:14px}.tools{gap:8px}.tools button{font-size:12px;padding:8px 12px}.deck{position:relative}.slide{padding:40px 5.5vw 34px;min-height:700px;border-bottom:1px solid var(--rule);display:flex;flex-direction:column;gap:28px;position:relative;isolation:isolate}.slide>*{flex-shrink:0}.slide-head{display:flex;flex-direction:column;gap:18px}.content{flex:1 0 auto;display:flex;flex-direction:column;justify-content:center;gap:32px}.content.split{display:grid;flex-direction:initial}.bottom-line{border-top:1px solid var(--rule);padding-top:18px;font-size:clamp(17px,1.5vw,22px);line-height:1.35}
+.js body{height:100dvh;overflow:hidden}.js .deck{height:calc(100dvh - 150px);overflow:hidden}.js .slide{position:absolute;inset:0;min-height:0;border:0;overflow:auto;opacity:0;visibility:hidden;pointer-events:none;transform:translateX(28px);transition:opacity .38s var(--ease),transform .48s var(--ease),visibility .48s}.js .slide.active{opacity:1;visibility:visible;pointer-events:auto;transform:translateX(0);z-index:2}.js .slide.leaving{opacity:0;visibility:visible;transform:translateX(-24px);z-index:1}.js .deck.reverse .slide:not(.active){transform:translateX(-28px)}.js .deck.reverse .slide.leaving{transform:translateX(24px)}.js .slide.active .enter{animation:rise .6s var(--ease) both}.js .slide.active .enter:nth-child(2){animation-delay:.08s}.js .slide.active .enter:nth-child(3){animation-delay:.16s}@keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+.js .slide:not(.active):not(.leaving){transition:none}
+.js .deck{overflow:clip}
+@media(max-height:800px) and (min-width:901px){.exercise .stack{gap:16px}}
+.question{border-left:3px solid var(--accent);padding:12px 0 12px 30px;display:flex;flex-direction:column;gap:20px}.question p{font-size:clamp(34px,4vw,58px);line-height:1.1;letter-spacing:-.04em}.observation{background:var(--panel);border:1px solid var(--rule);padding:32px;display:flex;flex-direction:column;gap:20px}.observation p{font-size:22px;color:var(--muted)}.prompt-line{display:flex;gap:22px;align-items:baseline;padding-bottom:18px;border-bottom:1px solid var(--rule)}.prompt-line span{font-size:13px;color:var(--accent);font-weight:700}.prompt-line p{font-size:clamp(21px,2vw,29px);line-height:1.3}.reframe{display:grid;grid-template-columns:1fr 56px 1.1fr;gap:30px;align-items:center}.reframe .label{display:block;margin-bottom:24px}.reframe .arrow{font-size:48px;color:var(--accent)}.reframe .focus{padding-left:28px;border-left:3px solid var(--accent)}.routes{display:grid;grid-template-columns:repeat(3,1fr);gap:24px}.routes article{padding:28px 24px;border-top:2px solid var(--rule);display:flex;flex-direction:column;gap:20px}.routes article.featured{background:var(--panel);border-color:var(--accent)}.route-number{font-size:15px;color:var(--accent)}.routes h3{font-size:clamp(28px,3vw,44px)}.routes p{font-size:22px;color:var(--muted)}.question-band{border-left:3px solid var(--accent);padding:12px 0 12px 28px}.question-band p{font-size:clamp(25px,2.8vw,40px);line-height:1.2;letter-spacing:-.02em;margin-top:16px}.outcomes{display:grid;grid-template-columns:1fr 1fr;gap:30px}.outcomes article{border-top:1px solid var(--rule);padding-top:20px}.outcomes h3{margin-top:12px;font-size:clamp(21px,2vw,29px)}.work-list{display:flex;flex-direction:column;gap:18px}.work-list p{font-size:clamp(23px,2.5vw,36px);letter-spacing:-.025em;padding-bottom:18px;border-bottom:1px solid var(--rule)}.capacity{display:flex;flex-direction:column;gap:22px}.capacity-line{display:grid;grid-template-columns:100px 1fr;gap:20px;align-items:center;font-size:20px}.slots{display:flex;gap:8px;flex-wrap:wrap}.slot{width:42px;height:42px;display:grid;place-items:center;border:1px solid var(--rule);font-size:14px}.slot.filled{background:var(--ink);color:var(--paper);border-color:var(--ink)}.slot.waiting{border:1px dashed var(--accent);color:var(--accent)}
+.exercise{--paper:#eaf3f0;--panel:#d9e8e3;--ink:#122a27;--muted:#45635e;--rule:#a6bdb6;--accent:#006c61;--soft:#c7ddd5;background:var(--paper);color:var(--ink)}.exercise-choices{grid-template-columns:repeat(3,1fr);gap:8px}.js .exercise-choices{display:grid}.exercise-choices button{font-size:19px;min-height:62px;padding:12px}.exercise-choices button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--paper)}.exercise-feedback{background:var(--panel);border-left:3px solid var(--accent);padding:22px;font-size:20px;line-height:1.5;min-height:152px}.exercise-feedback strong{color:var(--accent)}.closing-steps{display:flex;flex-direction:column;gap:18px}.closing-steps p{font-size:clamp(23px,2.5vw,36px);letter-spacing:-.025em}.closing-steps span{display:inline-block;font-size:13px;color:var(--accent);margin-right:24px;vertical-align:middle}
+.controls{height:80px;display:flex;align-items:center;gap:16px;padding:10px 3.6vw;border-top:1px solid var(--rule);position:relative;background:var(--paper);z-index:5}.progress{position:absolute;left:0;right:0;top:-2px;height:2px;background:var(--rule)}.progress span{display:block;height:100%;background:var(--accent);transform-origin:left;transition:transform .4s var(--ease)}.counter{font-size:13px;min-width:60px;font-variant-numeric:tabular-nums}.chapter{flex:1;font-size:13px;color:var(--muted)}.controls .time{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}.controls button{font-size:14px}.controls .keys{font-size:11px;color:var(--muted)}.controls .next{min-width:132px}.enhanced-only{display:none}.js .enhanced-only{display:flex}.js .exercise-choices{display:grid}.no-js-message{padding:14px 5.5vw;background:var(--panel)}.js .no-js-message{display:none}.speaker-notes{border-top:1px solid var(--rule);padding-top:22px;margin-top:24px;font-size:18px;line-height:1.6;color:var(--muted)}.speaker-notes p+p{margin-top:16px}.speaker-notes strong{color:var(--ink)}.facilitation{border-top:1px solid var(--rule);margin-top:24px;padding-top:20px}.facilitation .label{color:var(--accent)}.js .slide .speaker-notes{display:none}.notes-panel{position:fixed;right:0;top:70px;bottom:80px;width:min(560px,100%);z-index:10;padding:26px;background:var(--panel);border-left:1px solid var(--rule);overflow:auto}.notes-header{display:flex;justify-content:space-between;gap:14px;align-items:center;margin-bottom:18px}.notes-panel .speaker-notes{display:block;margin:0;font-size:18px}.notes-meta{color:var(--accent);font-size:13px;margin:14px 0}.notes-warning{font-size:13px;color:var(--muted);margin-bottom:20px}.notes-panel h2{font-size:28px;letter-spacing:-.03em}.notes-panel .print-notes{margin-top:24px;font-size:13px}
+dialog{background:var(--paper);color:var(--ink);border:1px solid var(--rule);border-radius:6px;width:min(1050px,92vw);max-height:88dvh;padding:28px}dialog::backdrop{background:#000c}.overview-header{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:24px}.overview-header h2{font-size:32px}.overview-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.overview-grid button{text-align:left;display:flex;flex-direction:column;gap:9px;padding:16px;min-height:100px}.overview-grid button[aria-current="step"]{border-color:var(--accent)}.overview-grid button span{font-size:12px;color:var(--muted)}.overview-grid button strong{font-size:18px;line-height:1.25}.status{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.toast{position:fixed;bottom:95px;left:50%;transform:translateX(-50%);padding:14px 20px;background:var(--ink);color:var(--paper);z-index:30;border-radius:4px;max-width:90vw;font-size:14px}
+body.presenter .audience{display:none}body.presenter .deck{width:56%}body.presenter .notes-panel{display:block!important;width:44%}body.presenter .slide{padding:28px;gap:22px}body.presenter h1{font-size:64px}body.presenter .slide h2{font-size:42px}body.presenter .slide h3{font-size:25px}body.presenter .slide .big,body.presenter .question p{font-size:34px}body.presenter .lede{font-size:22px}body.presenter .split{gap:26px}body.presenter .reframe{gap:18px;grid-template-columns:1fr 28px 1.1fr}body.presenter .reframe .arrow{font-size:28px}body.presenter .reframe .focus{padding-left:18px}body.presenter .routes{gap:12px}body.presenter .routes article{padding:18px 12px}body.presenter .routes p{font-size:18px}body.presenter .question-band p{font-size:28px}body.presenter .prompt-line p{font-size:22px}body.presenter .exercise-choices button{font-size:16px;padding:8px}body.presenter .exercise-feedback{font-size:18px}body.presenter .capacity-line{grid-template-columns:80px 1fr;font-size:16px;gap:12px}body.presenter .slot{width:28px;height:32px}body.presenter .controls .keys{display:none}
+@media(max-height:800px) and (min-width:901px){.slide{padding:28px 5vw 24px;gap:22px}h1{font-size:86px}h2{font-size:58px}.content{gap:24px}.slide-head{gap:14px}.question p{font-size:46px}.question-band p{font-size:33px}.routes article{padding:22px}.observation{padding:24px}.closing-steps{gap:12px}.closing-steps p{font-size:30px}.exercise-feedback{min-height:140px;font-size:18px;padding:18px}.exercise .prompt-line p{font-size:23px}}
+@media(max-width:1100px){.audience{display:none}.controls .keys{display:none}.split{gap:32px}.routes{gap:16px}.routes p{font-size:19px}.routes article{padding:22px 16px}.big{font-size:38px}.exercise-choices button{font-size:16px;padding:8px}.capacity-line{grid-template-columns:85px 1fr;font-size:18px;gap:14px}.slot{width:34px;height:38px}.slots{gap:6px}}
+@media(max-width:900px){.topbar{padding:0 20px}.slide{padding:28px;gap:24px}.split,.content.split{grid-template-columns:1fr;gap:30px}.content{justify-content:flex-start}.reframe{gap:20px;grid-template-columns:1fr 32px 1fr}.reframe .focus{padding-left:20px}.reframe .arrow{font-size:32px}.reframe .big{font-size:34px}.question p{font-size:38px}.controls{padding:10px 20px;gap:10px}.controls .next{min-width:90px}.chapter{font-size:12px}.controls .time{display:none}body.presenter .deck{width:52%}body.presenter .notes-panel{width:48%}body.presenter .identity{display:none}body.presenter .slide h1{font-size:42px}body.presenter .slide h2{font-size:32px}body.presenter .slide .big,body.presenter .question p{font-size:28px}body.presenter .slide .split,body.presenter .slide .routes,body.presenter .slide .reframe,body.presenter .slide .outcomes{grid-template-columns:1fr}body.presenter .slide .arrow{display:none}body.presenter .slide .reframe .focus{border-left:0;border-top:2px solid var(--accent);padding:20px 0 0}body.presenter .controls .time{display:block}body.presenter .chapter{display:none}}
+@media(max-width:600px){.topbar{height:60px;padding:0 16px;gap:8px}.identity{font-size:10px;letter-spacing:.07em}.mark{display:none}.tools{gap:6px}.tools button{font-size:11px;padding:6px 8px}#presenter-button,#fullscreen-button{display:none}.js .deck{height:calc(100dvh - 134px)}.slide{padding:24px 20px;gap:24px}h1{font-size:60px}h2{font-size:39px}.lede{font-size:23px}.big{font-size:34px}.reframe,.routes,.outcomes{grid-template-columns:1fr}.reframe .arrow{display:none}.reframe .focus{border-left:0;border-top:2px solid var(--accent);padding:24px 0 0}.reframe .label{margin-bottom:14px}.routes article{padding:20px 16px;gap:14px}.question{padding-left:22px}.question p{font-size:36px}.question-band{padding-left:20px}.question-band p{font-size:27px}.prompt-line{gap:16px}.prompt-line p{font-size:23px}.observation{padding:24px}.work-list p{font-size:25px}.capacity-line{grid-template-columns:80px 1fr;font-size:17px;gap:12px}.slot{width:31px;height:36px}.slots{gap:5px}.exercise-feedback{font-size:18px}.exercise-choices button{font-size:16px;padding:8px;min-height:54px}.controls{height:74px;padding:10px 16px;gap:8px}.counter{flex:1;min-width:0}.chapter{display:none}.controls button{padding:8px 12px}.notes-panel{top:60px;bottom:74px}.bottom-line{font-size:17px}.overview-grid{grid-template-columns:1fr}dialog{padding:20px}.overview-header h2{font-size:26px}.closing-steps p{font-size:25px}.closing-steps span{margin-right:14px}}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}html.motion-off *,html.motion-off *:before,html.motion-off *:after{animation:none!important;transition:none!important}
+@media print{@page{size:A4 landscape;margin:12mm}html,body{background:white!important;color:black!important;height:auto!important;overflow:visible!important}.topbar,.controls,.notes-panel,dialog,.toast,.no-js-message,.enhanced-only{display:none!important}.deck,body.presenter .deck{height:auto!important;width:100%!important;overflow:visible!important}.slide,.js .slide,body.presenter .slide{position:relative!important;opacity:1!important;visibility:visible!important;transform:none!important;display:block!important;overflow:visible!important;break-after:page;min-height:0!important;padding:0!important;background:white!important;color:black!important;--paper:white;--ink:#122a27;--muted:#45635e;--rule:#a6bdb6;--panel:#eaf3f0;--accent:#006c61}.slide-head{margin-bottom:20px}.content{display:block}.content>*{margin-bottom:16px}h1{font-size:44px!important}h2{font-size:34px!important}h3{font-size:20px!important}.big,.question p{font-size:30px!important}.slide .speaker-notes,.js .slide .speaker-notes{display:block!important;font-size:11pt;line-height:1.4;margin-top:20px;padding-top:16px}.speaker-notes p+p{margin-top:10px}.facilitation{margin-top:16px;padding-top:12px}.bottom-line{margin-top:18px;font-size:17px}.routes article,.question,.observation{break-inside:avoid}.exercise-feedback{min-height:0}.closing-steps p{font-size:24px}*{animation:none!important;transition:none!important}}
+/* Native disclosures keep every explanation readable without JavaScript. */
+.js .slide-head .eyebrow::after{content:" · Click + to explore";font-weight:400;letter-spacing:.06em;color:var(--muted)}
+.explore{min-width:0;border-radius:4px;interpolate-size:allow-keywords}
+.explore summary{position:relative;display:block;list-style:none;cursor:pointer;min-height:44px;padding:12px 38px 12px 0;border-radius:4px;transition:background .18s,color .18s}
+.explore summary::-webkit-details-marker{display:none}
+.explore summary::after{content:"+";position:absolute;right:4px;top:10px;color:var(--accent);font-size:25px;font-weight:400;line-height:1}
+.explore[open]>summary::after{content:"−"}
+.explore summary:hover{background:var(--soft)}
+.explore summary:focus-visible{outline:3px solid var(--accent);outline-offset:4px}
+.explore[open]>summary{color:var(--accent)}
+.explore summary .label{display:block;margin-bottom:12px}
+.reveal-title{display:block;font-size:28px;line-height:1.2;letter-spacing:-.025em}
+.reveal-desc{display:block;margin-top:16px;font-size:21px;line-height:1.4;color:var(--muted)}
+.explore .reveal-content{border-top:1px solid var(--rule);padding:14px 0 12px;color:var(--muted)}
+.explore .reveal-content p{font-size:18px;line-height:1.45;letter-spacing:normal;margin:0}
+.explore .reveal-content strong{color:var(--ink)}
+.explore[open] .reveal-content{animation:reveal-in .3s var(--ease) both}
+@keyframes reveal-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@supports(interpolate-size:allow-keywords){
+ .explore::details-content{block-size:0;opacity:0;overflow:clip;transition:block-size .36s var(--ease),opacity .24s var(--ease),content-visibility .36s;transition-behavior:allow-discrete}
+ .explore[open]::details-content{block-size:auto;opacity:1}
+ .explore[open] .reveal-content{animation:none}
+}
+.question.explore{display:block;padding-top:0;padding-bottom:0}
+.question.explore .reveal-title{font-size:clamp(32px,3.5vw,50px)}
+.reframe{align-items:start}
+.reframe .explore .big{display:block}
+.routes .explore .reveal-title{font-size:clamp(28px,3vw,44px);margin-top:16px}
+.outcomes .explore .reveal-title{font-size:25px}
+.work-list{gap:8px}
+.work-list .explore{border-bottom:1px solid var(--rule)}
+.work-list .explore .reveal-title{font-size:clamp(23px,2.3vw,33px)}
+.capacity .explore summary{padding-right:32px}
+.capacity .explore .capacity-line{display:grid}
+.capacity .explore .reveal-content{margin-top:8px}
+.prompt-explore{border-bottom:1px solid var(--rule)}
+.prompt-explore summary{display:flex;gap:20px;align-items:baseline}
+.prompt-explore .number{color:var(--accent);font-size:13px;font-weight:700;flex-shrink:0}
+.prompt-explore .reveal-title{font-size:clamp(21px,1.9vw,27px)}
+.closing-steps{gap:8px}
+.closing-steps .explore{border-bottom:1px solid var(--rule)}
+.closing-steps .reveal-title{display:inline;font-size:clamp(23px,2.4vw,34px)}
+.closing-steps .number{display:inline-block;color:var(--accent);font-size:13px;margin-right:22px;vertical-align:middle}
+.exercise-feedback.revealing{animation:reveal-in .3s var(--ease) both}
+body.presenter .question.explore .reveal-title{font-size:32px}
+body.presenter .explore .reveal-content p{font-size:16px}
+body.presenter .routes .explore .reveal-title{font-size:27px}
+body.presenter .prompt-explore .reveal-title{font-size:21px}
+@media(max-height:800px) and (min-width:901px){.slide{gap:18px}.content{gap:22px}.slide h2{font-size:52px}.lede{font-size:24px}.reframe .big{font-size:42px}.capacity{gap:8px}.question-band{padding-top:6px;padding-bottom:6px}.question-band p{margin-top:8px}.explore .reveal-content p{font-size:17px}.routes .reveal-desc{font-size:19px}.question.explore .reveal-title{font-size:40px}.prompt-explore .reveal-title{font-size:23px}.exercise .stack{gap:12px}.closing-steps .reveal-title{font-size:28px}}
+@media(max-width:600px){.explore .reveal-content p{font-size:17px}.question.explore .reveal-title{font-size:33px}.reveal-title,.outcomes .explore .reveal-title{font-size:24px}.prompt-explore summary{gap:14px}.closing-steps .reveal-title{font-size:24px}.closing-steps .number{margin-right:14px}.explore summary .label{font-size:11px}}
+@media(prefers-reduced-motion:reduce){.explore::details-content{transition:none!important}.explore .reveal-content,.exercise-feedback.revealing{animation:none!important}}
+html.motion-off .explore::details-content{transition:none!important}
+@media print{.explore::details-content{content-visibility:visible!important;block-size:auto!important;opacity:1!important;overflow:visible!important}.explore .reveal-content{display:block!important}.explore summary::after,.js .slide-head .eyebrow::after{content:none}.explore{break-inside:avoid}.explore .reveal-content p{font-size:11pt}.reveal-title,.question.explore .reveal-title,.closing-steps .reveal-title,.routes .explore .reveal-title{font-size:22px!important}}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="identity"><span class="mark" aria-hidden="true"></span><span>Product / Judgment</span><span class="audience">A working session for AMD PMs</span></div>
+  <nav class="tools enhanced-only" aria-label="Presentation tools">
+    <button id="notes-button" aria-expanded="false" aria-controls="notes-panel" title="Show talk track (N)">Notes</button>
+    <button id="presenter-button" title="Open separate presenter window">Presenter view</button>
+    <button id="overview-button" title="Choose a slide (O)">Overview</button>
+    <button id="fullscreen-button" title="Toggle fullscreen (F)">Fullscreen</button>
+  </nav>
+</header>
+<p class="no-js-message">JavaScript is off. All slides and their talk tracks are available below as a readable document.</p>
+<main class="deck" id="deck" aria-label="Presentation slides">
+<section class="slide opening active" id="slide-1" data-title="Start with the request" data-act="01 · Understand the problem" data-seconds="120" aria-labelledby="title-1">
+
+<div class="slide-head"><p class="eyebrow">Product management when agents can build</p><h1 id="title-1">“Build an<br><em>AI assistant.</em>”</h1></div>
+<div class="content split"><div class="stack"><details class="explore" id="request-goal" open><summary><span class="label">The goal in the request</span><span class="lede">Developers get their first GPU workload running.</span></summary><div class="reveal-content"><p><strong>Keep the goal; question the proposed tool.</strong> “An assistant” tells us what someone wants built. It does not tell us where the developer gets stuck.</p></div></details><p class="small muted">A working session for AMD PMs · 30 minutes, including discussion</p></div><details class="question explore" id="request-gap" open><summary><span class="label">Before we start</span><span class="reveal-title">What problem<br>are we solving?</span></summary><div class="reveal-content"><p>Find out who is blocked, where they stop, and what they try next. These answers give the team a clearer assignment than “build an assistant.”</p></div></details></div>
+<p class="bottom-line">We have named a solution. We have not yet understood the problem.</p>
+<div class="speaker-notes"><div class="talk-track"><p>“Build an AI assistant so developers can get their first GPU workload running.”</p><p>Imagine this request lands in your queue. An agent can start building. But what should it build?</p><p>We have named a solution: an assistant. We have not yet established where developers get stuck—or whether an assistant would help.</p><p>The PM’s first job is to close that gap.</p></div><div class="facilitation"><p class="label">Facilitation / 2 minutes</p><p>Use 2 minutes for the opening and a brief response from the room. Ask: “What would you need to know before starting?” Do not solve the request yet. This is an illustrative request, not a reported rocm-cli issue.</p></div></div>
+</section>
+
+<section class="slide " id="slide-2" data-title="Watch where the developer stops" data-act="01 · Understand the problem" data-seconds="180" aria-labelledby="title-2">
+
+<div class="slide-head"><p class="eyebrow">Our running example / rocm-cli</p><h2 id="title-2">Watch where the<br>developer <em>stops.</em></h2></div>
+<div class="content split"><div class="stack"><div class="observation enter"><span class="label">Suppose this happens</span><h3>An error appears.</h3><p>The developer cannot tell what failed or what to do next.</p></div><p class="small muted">A hypothetical situation—not a claim about a current rocm-cli defect.</p></div><div class="stack"><details class="explore prompt-explore" id="observe-stop" open><summary><span class="number">01</span><span class="reveal-title">Where do they stop?</span></summary><div class="reveal-content"><p>Watch the attempt. Capture the step, the message, and the conditions in which it appears. Do not jump straight to a preferred fix.</p></div></details><details class="explore prompt-explore" id="observe-expect" open><summary><span class="number">02</span><span class="reveal-title">What did they expect?</span></summary><div class="reveal-content"><p>Ask what they thought would happen. Compare that expectation with what the tool actually showed them.</p></div></details><details class="explore prompt-explore" id="observe-next" open><summary><span class="number">03</span><span class="reveal-title">What do they try next?</span></summary><div class="reveal-content"><p>Can they choose a next action, or do they need someone to interpret the message? That difference helps us understand what is missing.</p></div></details></div></div>
+<p class="bottom-line">An assistant might help. A clearer error message might be enough.</p>
+<div class="speaker-notes"><div class="talk-track"><p>Let’s make this concrete with rocm-cli, where we are the main architect and contributor. Before we decide what to add to it, watch a developer try to get their first GPU workload running.</p><p>Where do they stop? What did they expect? What do they try next?</p><p>Knowing how we built the tool is not the same as knowing where its users get stuck. We are not yet choosing a feature. We are finding out what prevents the developer from succeeding.</p><p>Suppose we see a developer stop at an error message. They cannot tell what failed or what to do next.</p><p>An assistant might help. But a clearer error message might be enough.</p><p>For rocm-cli, the question becomes smaller: what would help this developer take the next correct step?</p></div><div class="facilitation"><p class="label">Facilitation / 3 minutes</p><p>Use 3 minutes. Read the example, then ask what the team would observe rather than assume. Invite two short answers. Keep the distinction clear: we know how we built rocm-cli, but we still need to understand the developer’s experience.</p></div></div>
+</section>
+
+<section class="slide " id="slide-3" data-title="Choose useful work, not just more work" data-act="01 · Understand the problem" data-seconds="120" aria-labelledby="title-3">
+
+<div class="slide-head"><p class="eyebrow">What changes for the PM</p><h2 id="title-3">Choose useful work.<br>Not just <em>more work.</em></h2></div>
+<div class="content"><div class="reframe"><details class="explore" id="role-delivery" open><summary><span class="label">When building takes longer</span><span class="big muted">Get work ready.<br>Keep it moving.</span></summary><div class="reveal-content"><p>Clarify the request, coordinate the work, and remove delays. This remains useful even when agents help with implementation.</p></div></details><div class="arrow" aria-hidden="true">→</div><details class="focus explore" id="role-choice" open><summary><span class="label">As agents shorten the work</span><span class="big">Put more attention<br>into <em>what to do.</em></span></summary><div class="reveal-content"><p>In our example, “build an assistant” became “help the developer understand this failure.” The team now has a smaller question it can investigate.</p></div></details></div><p class="lede">A broad request became a specific question.<br>That is progress before we ship.</p></div>
+<p class="bottom-line">Easier to implement does not mean worth doing.</p>
+<div class="speaker-notes"><div class="talk-track"><p>We started with a request for an assistant. We now have a specific question about an error message.</p><p>That is progress, even though we have not shipped anything.</p><p>The PM has helped the team replace a broad request with a problem it can investigate. Faster coding makes this work more important, not less.</p><p>When building takes a long time, much of a PM’s attention goes to getting work ready and keeping it moving.</p><p>Agents can shorten parts of that work. But they do not make a request worth doing simply by making it easier to implement.</p><p>The PM must put more attention into choosing the work—not just moving it through the queue.</p></div><div class="facilitation"><p class="label">Facilitation / 2 minutes</p><p>Use 2 minutes. Ask: “What useful work did the PM do before any code changed?” Connect their answer to the role shift. This is a change of emphasis, not a claim that choosing work is a new PM responsibility.</p></div></div>
+</section>
+
+<section class="slide " id="slide-4" data-title="Choose the next step" data-act="02 · Choose the next step" data-seconds="120" aria-labelledby="title-4">
+
+<div class="slide-head"><p class="eyebrow">A queue of requests</p><h2 id="title-4">Not every request<br>needs <em>code next.</em></h2></div>
+<div class="content"><div class="routes"><article><details class="explore" id="route-build" open><summary><span class="route-number">01</span><span class="reveal-title">Build</span><span class="reveal-desc">We understand the problem and have a useful change to make.</span></summary><div class="reveal-content"><p><strong>Ask: what gives us confidence?</strong> For the message change, explain why it should help and how the team will check it.</p></div></details></article><article class="featured"><details class="explore" id="route-investigate" open><summary><span class="route-number">02</span><span class="reveal-title">Investigate</span><span class="reveal-desc">We need to answer a question before choosing the change.</span></summary><div class="reveal-content"><p><strong>Ask: what answer would change our plan?</strong> Check whether the developer can understand the error and select the next action.</p></div></details></article><article><details class="explore" id="route-wait" open><summary><span class="route-number">03</span><span class="reveal-title">Wait</span><span class="reveal-desc">The work should not start yet. Keep the request visible.</span></summary><div class="reveal-content"><p><strong>Ask: what would let it move forward?</strong> For example, the team may first need capacity to review and finish work already underway.</p></div></details></article></div></div>
+<p class="bottom-line">The next step is a choice—not an automatic move into a delivery queue.</p>
+<div class="speaker-notes"><div class="talk-track"><p>Now consider a queue full of requests like “build an assistant.”</p><p>Some describe a problem we understand. Others name a solution before anyone has checked the problem.</p><p>These requests do not all need the same next step. Some are ready to build. Some need a question answered first. Some should wait.</p></div><div class="facilitation"><p class="label">Facilitation / 2 minutes</p><p>Use 2 minutes. Ask which next step fits the rocm-cli example with the information currently available, and why. Do not imply that all requests require investigation. Some problems are already understood.</p></div></div>
+</section>
+
+<section class="slide " id="slide-5" data-title="Investigate to make a decision" data-act="02 · Choose the next step" data-seconds="180" aria-labelledby="title-5">
+
+<div class="slide-head"><p class="eyebrow">Make the investigation useful</p><h2 id="title-5">A question.<br>An owner. <em>A review point.</em></h2></div>
+<div class="content"><details class="question-band explore" id="investigation-plan" open><summary><span class="label">The rocm-cli question</span><span class="reveal-title">Can the developer understand the error<br>and choose the correct next action?</span></summary><div class="reveal-content"><p><strong>Make the next step explicit:</strong> name who will check this with a developer, when the team will review the finding, and what decision it will inform.</p></div></details><div class="outcomes"><article><details class="explore" id="investigation-blocked" open><summary><span class="label">Understands, but still cannot proceed</span><span class="reveal-title">Wording may not be enough.</span></summary><div class="reveal-content"><p>Find out what prevents the next step. Do not conclude that changing the message alone will solve the problem.</p></div></details></article><article><details class="explore" id="investigation-proceed" open><summary><span class="label">Understands and can proceed</span><span class="reveal-title">The change is worth testing further.</span></summary><div class="reveal-content"><p>This is a useful sign, not proof for every developer or environment. Use it to decide what the team should check next.</p></div></details></article></div></div>
+<p class="bottom-line">Agree what the answer will change before running the check.</p>
+<div class="speaker-notes"><div class="talk-track"><p>“We need more information” is not a useful stopping point.</p><p>For the rocm-cli example, name the question: can the developer understand the error and choose the correct next action?</p><p>Assign someone to check it with a developer, then agree when to review what they found. The request now has a next step without becoming a commitment to build an assistant.</p><p>Before we run the check, agree what we will do with the answer.</p><p>If the developer understands the message but cannot complete the next step, clearer wording may not be enough. If they can proceed, the message change is worth testing further.</p><p>The investigation should help us choose—not just produce another report.</p></div><div class="facilitation"><p class="label">Facilitation / 3 minutes</p><p>Use 3 minutes. Ask someone to state the question in their own words. Then ask what each possible answer would change. Emphasize that “worth testing further” is not proof that the change works for every developer or environment.</p></div></div>
+</section>
+
+<section class="slide " id="slide-6" data-title="Give the agent useful work" data-act="02 · Choose the next step" data-seconds="120" aria-labelledby="title-6">
+
+<div class="slide-head"><p class="eyebrow">Now the agent has a clear job</p><h2 id="title-6">Agents help us produce.<br>The team <em>checks the result.</em></h2></div>
+<div class="content split"><div class="work-list"><span class="label">The agent could</span><details class="explore" id="agent-trace" open><summary><span class="reveal-title">Trace the error.</span></summary><div class="reveal-content"><p><strong>Useful output:</strong> the path that produces the message and the conditions that trigger it. The team checks that the explanation matches the code.</p></div></details><details class="explore" id="agent-draft" open><summary><span class="reveal-title">Draft alternative messages.</span></summary><div class="reveal-content"><p><strong>Useful output:</strong> possible explanations and next actions. The team checks that they are accurate and understandable—not merely fluent.</p></div></details><details class="explore" id="agent-change" open><summary><span class="reveal-title">Prepare a change for review.</span></summary><div class="reveal-content"><p><strong>Useful output:</strong> a candidate change the team can inspect and test. Producing it does not establish that it helps the developer.</p></div></details></div><details class="question explore" id="agent-judgment" open><summary><span class="label">The team still asks</span><span class="reveal-title">Is it correct?<br>Does it help?</span></summary><div class="reveal-content"><p>These are separate checks. A technically correct explanation can still leave the developer unable to choose the next action.</p></div></details></div>
+<p class="bottom-line">Speed does not replace judgment.</p>
+<div class="speaker-notes"><div class="talk-track"><p>Once we know what question we need to answer, we can give an agent useful work.</p><p>For rocm-cli, it could trace the error, draft alternative messages, or implement a candidate change for review.</p><p>The team still checks whether the explanation is correct and whether it helps the developer. The agent speeds up the work; it does not replace that judgment.</p></div><div class="facilitation"><p class="label">Facilitation / 2 minutes</p><p>Use 2 minutes. Invite one example of useful agent work on this problem and one check the team still needs to make. Keep the conversation on this assignment, rather than expanding into a catalogue of agent capabilities.</p></div></div>
+</section>
+
+<section class="slide " id="slide-7" data-title="Finish useful work before starting more" data-act="03 · Finish and learn" data-seconds="180" aria-labelledby="title-7">
+
+<div class="slide-head"><p class="eyebrow">Faster coding can move the delay</p><h2 id="title-7">More starts.<br>Or more <em>finished work?</em></h2></div>
+<div class="content split"><div class="capacity" aria-label="Illustrative queue: six changes ready, two in review, four waiting"><details class="explore" id="queue-ready" open><summary><span class="capacity-line"><strong>Ready</strong><span class="slots"><span class="slot filled">1</span><span class="slot filled">2</span><span class="slot filled">3</span><span class="slot filled">4</span><span class="slot filled">5</span><span class="slot filled">6</span></span></span></summary><div class="reveal-content"><p><strong>Six prepared changes are not six delivered improvements.</strong> Two are being reviewed; four are still waiting.</p></div></details><details class="explore" id="queue-review" open><summary><span class="capacity-line"><strong>In review</strong><span class="slots"><span class="slot filled">1</span><span class="slot filled">2</span></span></span></summary><div class="reveal-content"><p><strong>Review is the limit in this snapshot.</strong> Faster implementation does not, by itself, let the team check more changes at once.</p></div></details><details class="explore" id="queue-wait" open><summary><span class="capacity-line"><strong>Waiting</strong><span class="slots"><span class="slot waiting">3</span><span class="slot waiting">4</span><span class="slot waiting">5</span><span class="slot waiting">6</span></span></span></summary><div class="reveal-content"><p><strong>Choose what should finish first.</strong> Keep other requests visible rather than starting more work simply because an agent is free.</p></div></details><p class="small muted">Illustrative queue—not rocm-cli performance data.</p></div><div class="stack"><p class="big">What can we<br>review, test,<br>and <em>release?</em></p><p class="lede">If that capacity is full,<br>choose what should finish first.</p></div></div>
+<p class="bottom-line">Do not start work merely because an agent is available.</p>
+<div class="speaker-notes"><div class="talk-track"><p>An agent may prepare changes faster than the team can review them.</p><p>Starting more work does not help if completed changes are waiting for someone to check them.</p><p>The PM must help the team see what is holding up delivery—not simply ask the agents to produce more.</p><p>Before starting another change, ask what the team can review, test, and release.</p><p>If that capacity is already full, choose what should finish first. Keep other requests visible, but do not start them merely because an agent is available.</p><p>The aim is to get useful changes into developers’ hands—not to keep every agent busy.</p></div><div class="facilitation"><p class="label">Facilitation / 3 minutes</p><p>Use 3 minutes. Ask: “What currently holds up completion in our work?” Take two examples. Distinguish an implementation delay from waiting for review, testing, or release. The queue numbers only illustrate the idea; they are not measurements.</p></div></div>
+</section>
+
+<section class="slide " id="slide-8" data-title="Shipped is not the same as helped" data-act="03 · Finish and learn" data-seconds="120" aria-labelledby="title-8">
+
+<div class="slide-head"><p class="eyebrow">Return to the developer</p><h2 id="title-8">We shipped it.<br><em>Did it help?</em></h2></div>
+<div class="content"><div class="reframe"><details class="explore" id="result-delivered" open><summary><span class="label">Delivered</span><span class="big muted">A clearer<br>rocm-cli message.</span></summary><div class="reveal-content"><p><strong>What this tells us:</strong> the team completed and released a change. It does not yet tell us whether developers can use it to proceed.</p></div></details><div class="arrow" aria-hidden="true">→</div><details class="focus explore" id="result-helped" open><summary><span class="label">The result to check</span><span class="big">The developer<br>can <em>move forward.</em></span></summary><div class="reveal-content"><p><strong>What to look for:</strong> the developer understands the failure and takes the correct next step. Return to the original obstacle, not just the release record.</p></div></details></div></div>
+<p class="bottom-line">Shipping tells us we delivered software. The user’s experience tells us whether it helped.</p>
+<div class="speaker-notes"><div class="talk-track"><p>Suppose we release the clearer rocm-cli message.</p><p>The change is complete, but our question remains: can developers now understand the failure and take the correct next step?</p><p>Check what happens when they use it. Shipping tells us that we delivered software. Their experience tells us whether we solved the problem.</p></div><div class="facilitation"><p class="label">Facilitation / 2 minutes</p><p>Use 2 minutes. Ask what the team would look for after release. Keep answers tied to understanding the failure and taking the correct next step, rather than counting changes shipped. The release is still part of the hypothetical example.</p></div></div>
+</section>
+
+<section class="slide exercise" id="slide-9" data-title="Your turn: one unclear request" data-act="04 · Put it to work" data-seconds="540" aria-labelledby="title-9">
+
+<div class="slide-head"><p class="eyebrow">Team exercise / 9 minutes</p><h2 id="title-9">One unclear request.<br>One <em>useful next step.</em></h2></div>
+<div class="content split"><div class="stack"><details class="explore prompt-explore" id="practice-user" open><summary><span class="number">01</span><span class="reveal-title">Who needs help?<br>What are they trying to do?</span></summary><div class="reveal-content"><p><strong>Use the job, not the feature.</strong> In our example: a developer wants to run a first GPU workload—not use an assistant.</p></div></details><details class="explore prompt-explore" id="practice-unknown" open><summary><span class="number">02</span><span class="reveal-title">What do we still need to learn?</span></summary><div class="reveal-content"><p><strong>Name a question that affects the next step.</strong> Can the developer understand the error and choose the correct action?</p></div></details><details class="explore prompt-explore" id="practice-result" open><summary><span class="number">03</span><span class="reveal-title">What would show that it helped?</span></summary><div class="reveal-content"><p><strong>Describe what the person can now do.</strong> The developer can get past the step that previously stopped them.</p></div></details></div><div class="stack"><span class="label">Choose for your request—not as a quiz</span><div class="exercise-choices enhanced-only" role="group" aria-label="Choose your next step"><button data-choice="build" aria-pressed="false">Build</button><button data-choice="investigate" aria-pressed="false">Investigate</button><button data-choice="wait" aria-pressed="false">Wait</button></div><div class="exercise-feedback" id="exercise-feedback" aria-live="polite"><strong>Compare with the original request.</strong><br>Are you still planning the same work? If not, what changed your mind?</div><p class="small muted">2 min alone · 3 min in pairs<br>3 min share · 1 min agree the next step</p></div></div>
+<p class="bottom-line">Name who will act and when you will review the result.</p>
+<div class="speaker-notes"><div class="talk-track"><p>Take one unclear request from your own queue.</p><p>Who needs help, and what are they trying to do? What do you still need to learn? What would show that the work helped?</p><p>Choose the next step: build, investigate, or wait. Name who will take that step and when you will review the result.</p><p>Compare your next step with the original request.</p><p>Are you still planning the same work? If not, what changed your mind?</p><p>If you chose to investigate, explain what decision the answer will help you make. If you chose to build, explain what already gives you confidence. If you chose to wait, explain what would let the work move forward.</p></div><div class="facilitation"><p class="label">Facilitation / 9 minutes</p><p>Allow the full 9 minutes here. First give people 2 minutes to choose a real request and answer the questions. Allow 3 minutes in pairs to choose build, investigate, or wait. Use 3 minutes to hear examples and debrief with the approved questions below. In the final minute, have each person name an owner and a review point. Click a route to show its debrief prompt; there is no scored or universally correct answer. If someone has no suitable request, use the rocm-cli example.</p></div></div>
+</section>
+
+<section class="slide closing" id="slide-10" data-title="Use the speed well" data-act="04 · Put it to work" data-seconds="120" aria-labelledby="title-10">
+
+<div class="slide-head"><p class="eyebrow">The PM’s contribution</p><h2 id="title-10">Not every request<br>needs to become<br><em>a feature.</em></h2></div>
+<div class="content"><div class="closing-steps"><details class="explore" id="close-understand" open><summary><span class="number">01</span><span class="reveal-title">Understand the problem.</span></summary><div class="reveal-content"><p>Start with the person and the obstacle. Our rocm-cli example began with a request for an assistant and became a question about understanding an error.</p></div></details><details class="explore" id="close-choose" open><summary><span class="number">02</span><span class="reveal-title">Choose useful work.</span></summary><div class="reveal-content"><p>Build, investigate, or wait. Give the next step an owner and a review point, and start only what the team can work toward finishing.</p></div></details><details class="explore" id="close-check" open><summary><span class="number">03</span><span class="reveal-title">Check whether it helped.</span></summary><div class="reveal-content"><p>Return to the developer after the change. The important result is that they can move forward—not simply that an agent produced code.</p></div></details></div></div>
+<p class="bottom-line">Agents can make implementation faster. The PM helps decide where that speed is worth using.</p>
+<div class="speaker-notes"><div class="talk-track"><p>The PM’s job is not to turn every request into a feature.</p><p>It is to help the team understand the problem, choose useful work, and check whether that work helped.</p><p>Agents can make implementation faster. The PM helps the team decide where that speed is worth using.</p></div><div class="facilitation"><p class="label">Facilitation / 2 minutes</p><p>Use the final 2 minutes to connect the exercise back to the opening request and deliver the closing beat. Leave room for one final observation. This session uses a hypothetical rocm-cli situation to teach the method; it does not document a current defect or establish AMD policy.</p></div></div>
+</section>
+</main>
+<footer class="controls enhanced-only" aria-label="Slide navigation">
+  <div class="progress" role="progressbar" aria-label="Presentation progress" aria-valuemin="1" aria-valuemax="10" aria-valuenow="1"><span id="progress-fill"></span></div>
+  <span class="counter" id="counter">01 / 10</span><span class="chapter" id="chapter">01 · Understand the problem</span><span class="keys">← → navigate · N notes · O overview</span>
+  <button id="clock" class="time" title="Start or pause the session clock" aria-label="Start session clock">Start · 30:00</button>
+  <button id="previous" aria-label="Previous slide">← Back</button><button id="next" class="primary next" aria-label="Next slide">Next →</button>
+</footer>
+<aside class="notes-panel" id="notes-panel" aria-labelledby="notes-heading" hidden>
+  <div class="notes-header"><span class="eyebrow" id="notes-heading">Presenter talk track</span><button id="close-notes" aria-label="Close talk track">Close</button></div>
+  <p class="notes-warning" id="notes-warning">These notes are visible on this screen. For a shared audience screen, use Presenter view and share only the audience window.</p>
+  <h2 id="notes-title"></h2><p class="notes-meta" id="notes-meta"></p><div id="notes-copy" class="speaker-notes"></div>
+  <button class="print-notes" id="print-notes">Print all slides + talk track</button>
+  <button class="print-notes" id="motion-button" aria-pressed="false">Reduce motion</button>
+  <button class="print-notes" id="reset-clock">Reset session clock</button>
+</aside>
+<dialog id="overview" aria-labelledby="overview-title"><div class="overview-header"><div><p class="eyebrow accent">The complete story · 30 minutes</p><h2 id="overview-title">Choose a slide</h2></div><button id="close-overview">Close</button></div><div class="overview-grid" id="overview-grid"></div></dialog>
+<div class="status" id="slide-status" role="status" aria-live="polite" aria-atomic="true"></div>
+<div class="toast" id="toast" role="status" hidden></div>
+<script>
+(() => {
+'use strict';
+const slides = [...document.querySelectorAll('.slide')];
+const $ = id => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const isPresenter = params.get('presenter') === '1';
+const totalSeconds = slides.reduce((sum, slide) => sum + Number(slide.dataset.seconds), 0);
+const reveals = [...document.querySelectorAll('.explore')];
+const revealById = new Map(reveals.map(reveal => [reveal.id, reveal]));
+let index = 0, presenterWindow = null, toastTimer, elapsed = 0, clockStarted = null;
+const feedback = {
+  build: '<strong>Why build now?</strong><br>Explain what already gives you confidence. Name who will act and when you will review the result.',
+  investigate: '<strong>What will the answer change?</strong><br>Explain which decision the investigation will help you make. Name an owner and a review point.',
+  wait: '<strong>What would let it move forward?</strong><br>Explain why the request should wait and what would allow the work to start.'
+};
+const formatTime = seconds => `${Math.floor(seconds / 60).toString().padStart(2,'0')}:${Math.floor(seconds % 60).toString().padStart(2,'0')}`;
+const hashIndex = () => { const match = /^#slide-(\d+)$/.exec(location.hash); return match ? Math.max(0, Math.min(slides.length - 1, Number(match[1]) - 1)) : 0; };
+function notify(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').hidden = true; }, 5000); }
+function targetWindow() { return isPresenter ? window.opener : presenterWindow; }
+function send(message) { const target = targetWindow(); if (target && !target.closed) target.postMessage({deck:'pm-judgment', ...message}, '*'); }
+function clockValue() { return elapsed + (clockStarted === null ? 0 : (Date.now() - clockStarted) / 1000); }
+function clockState() { return {elapsed: clockValue(), running: clockStarted !== null}; }
+function updateClock() { const value = clockValue(); $('clock').textContent = value === 0 && clockStarted === null ? `Start · ${formatTime(totalSeconds)}` : `${clockStarted === null ? 'Paused' : 'Live'} ${formatTime(value)} / ${formatTime(totalSeconds)}`; $('clock').setAttribute('aria-label', `${clockStarted === null ? 'Start' : 'Pause'} session clock, ${formatTime(value)} elapsed`); }
+function acceptClock(state) { elapsed = state.elapsed; clockStarted = state.running ? Date.now() : null; updateClock(); }
+function renderNotes() {
+ const slide = slides[index], start = slides.slice(0,index).reduce((sum,s) => sum + Number(s.dataset.seconds),0), duration = Number(slide.dataset.seconds);
+ $('notes-title').textContent = slide.dataset.title;
+ $('notes-meta').textContent = `Slide ${index+1} of ${slides.length} · ${formatTime(duration)} on this slide · planned ${formatTime(start)}–${formatTime(start+duration)}`;
+ $('notes-copy').innerHTML = slide.querySelector('.speaker-notes').innerHTML;
+}
+function show(nextIndex, broadcast = true, updateHash = true) {
+ if (!Number.isInteger(nextIndex) || nextIndex < 0 || nextIndex >= slides.length) return;
+ const previousIndex = index;
+ index = nextIndex;
+ $('deck').classList.toggle('reverse', index < previousIndex);
+ slides.forEach((slide,i) => {
+   slide.classList.toggle('leaving', i === previousIndex && i !== index);
+   slide.classList.toggle('active', i === index);
+   slide.setAttribute('aria-hidden', String(i !== index));
+   slide.inert = i !== index;
+ });
+ slides[index].scrollTop = 0;
+ $('previous').disabled = index === 0;
+ $('next').disabled = index === slides.length - 1;
+ $('next').textContent = index === slides.length - 1 ? 'Complete' : 'Next →';
+ $('counter').textContent = `${String(index+1).padStart(2,'0')} / ${slides.length}`;
+ $('chapter').textContent = slides[index].dataset.act;
+ $('progress-fill').style.transform = `scaleX(${(index+1)/slides.length})`;
+ document.querySelector('.progress').setAttribute('aria-valuenow', String(index+1));
+ document.querySelector('.progress').setAttribute('aria-valuemax', String(slides.length));
+ $('slide-status').textContent = `Slide ${index+1} of ${slides.length}: ${slides[index].dataset.title}`;
+ document.title = `${index+1}. ${slides[index].dataset.title} · ${isPresenter ? 'Presenter' : 'Product / Judgment'}`;
+ document.querySelectorAll('[data-slide-link]').forEach(button => { if (Number(button.dataset.slideLink) === index) button.setAttribute('aria-current','step'); else button.removeAttribute('aria-current'); });
+ renderNotes();
+ if (updateHash && location.hash !== `#slide-${index+1}`) history.replaceState(null,'',`#slide-${index+1}`);
+ if (broadcast) send({type:'slide', index});
+}
+function toggleNotes(force) {
+ if (isPresenter) return;
+ const open = force === undefined ? $('notes-panel').hidden : force;
+ $('notes-panel').hidden = !open;
+ $('notes-button').setAttribute('aria-expanded',String(open));
+ if (open) $('close-notes').focus(); else $('notes-button').focus();
+}
+function revealState() { return reveals.filter(reveal => reveal.open).map(reveal => reveal.id); }
+function setReveal(id, open, broadcast = true) {
+ const reveal = revealById.get(id);
+ if (!reveal || typeof open !== 'boolean') return;
+ if (open) reveal.closest('.slide').querySelectorAll('.explore').forEach(other => { if (other !== reveal) other.open = false; });
+ reveal.open = open;
+ if (broadcast) send({type:'reveal', id, open});
+}
+function syncReveals(ids) {
+ if (!Array.isArray(ids)) return;
+ reveals.forEach(reveal => { reveal.open = false; });
+ ids.forEach(id => setReveal(id, true, false));
+}
+function choose(choice, broadcast = true) {
+ if (!Object.hasOwn(feedback,choice)) return;
+ document.querySelectorAll('[data-choice]').forEach(button => button.setAttribute('aria-pressed',String(button.dataset.choice === choice)));
+ $('exercise-feedback').innerHTML = feedback[choice];
+ $('exercise-feedback').classList.remove('revealing');
+ void $('exercise-feedback').offsetWidth;
+ $('exercise-feedback').classList.add('revealing');
+ if (broadcast) send({type:'choice',choice});
+}
+function openOverview() { $('overview').showModal(); const current = $('overview-grid').querySelector('[aria-current="step"]'); if (current) current.focus(); }
+async function fullscreen() {
+ try { if (document.fullscreenElement) await document.exitFullscreen(); else await document.documentElement.requestFullscreen(); }
+ catch { notify('Fullscreen is unavailable here. Use your browser’s fullscreen control.'); }
+}
+slides.forEach((slide,i) => {
+ const button = document.createElement('button'); button.dataset.slideLink = i;
+ const meta = document.createElement('span'); meta.textContent = `${String(i+1).padStart(2,'0')} / ${formatTime(Number(slide.dataset.seconds))}`;
+ const title = document.createElement('strong'); title.textContent = slide.dataset.title;
+ button.append(meta,title); button.addEventListener('click',() => { $('overview').close(); show(i); }); $('overview-grid').append(button);
+});
+$('previous').addEventListener('click', () => show(index-1));
+$('next').addEventListener('click', () => show(index+1));
+$('notes-button').addEventListener('click', () => toggleNotes());
+$('close-notes').addEventListener('click', () => toggleNotes(false));
+$('overview-button').addEventListener('click', openOverview);
+$('close-overview').addEventListener('click', () => $('overview').close());
+$('fullscreen-button').addEventListener('click', fullscreen);
+$('print-notes').addEventListener('click', () => window.print());
+$('motion-button').addEventListener('click', () => { const reduced = document.documentElement.classList.toggle('motion-off'); $('motion-button').setAttribute('aria-pressed',String(reduced)); });
+$('clock').addEventListener('click', () => { if (clockStarted === null) clockStarted = Date.now(); else { elapsed = clockValue(); clockStarted = null; } updateClock(); send({type:'clock',state:clockState()}); });
+$('reset-clock').addEventListener('click', () => { elapsed = 0; clockStarted = null; updateClock(); send({type:'clock',state:clockState()}); });
+document.querySelectorAll('[data-choice]').forEach(button => button.addEventListener('click', () => choose(button.dataset.choice)));
+reveals.forEach(reveal => {
+ reveal.querySelector('summary').addEventListener('click', event => {
+   event.preventDefault();
+   setReveal(reveal.id, !reveal.open);
+ });
+});
+let beforePrintReveals = [];
+window.addEventListener('beforeprint', () => {
+ beforePrintReveals = revealState();
+ reveals.forEach(reveal => { reveal.open = true; });
+});
+window.addEventListener('afterprint', () => syncReveals(beforePrintReveals));
+$('presenter-button').addEventListener('click', () => {
+ const url = new URL(location.href); url.searchParams.set('presenter','1');
+ presenterWindow = window.open(url.href,'pm-judgment-presenter','popup,width=1440,height=900');
+ if (!presenterWindow) notify('Popup blocked. Allow this local page to open a presenter window, or use Notes.');
+ else notify('Share only this audience window. Keep Presenter view on your private screen.');
+});
+window.addEventListener('message', event => {
+ if (event.source !== targetWindow() || !event.data || event.data.deck !== 'pm-judgment') return;
+ const message = event.data;
+ if (message.type === 'ready' && !isPresenter) { const selected = document.querySelector('[data-choice][aria-pressed="true"]'); send({type:'sync', index, state:clockState(), choice:selected?.dataset.choice, reveals:revealState()}); }
+ else if (message.type === 'slide') show(message.index,false);
+ else if (message.type === 'sync' && isPresenter) { show(message.index,false); acceptClock(message.state); if (message.choice) choose(message.choice,false); syncReveals(message.reveals); }
+ else if (message.type === 'choice') choose(message.choice,false);
+ else if (message.type === 'clock') acceptClock(message.state);
+ else if (message.type === 'reveal') setReveal(message.id, message.open, false);
+});
+window.addEventListener('hashchange', () => show(hashIndex(),true,false));
+document.addEventListener('keydown', event => {
+ if (event.ctrlKey || event.metaKey || event.altKey || event.target.closest('input,textarea,select,[contenteditable="true"]')) return;
+ if ($('overview').open) return;
+ if (event.key === 'Escape' && !$('notes-panel').hidden && !isPresenter) { toggleNotes(false); return; }
+ if (event.target.closest('#notes-panel')) return;
+ const onControl = event.target.closest('button,a,summary');
+ if (event.key === 'ArrowRight' || event.key === 'PageDown' || (event.key === ' ' && !onControl)) { event.preventDefault(); show(index+1); }
+ else if (event.key === 'ArrowLeft' || event.key === 'PageUp') { event.preventDefault(); show(index-1); }
+ else if (event.key === 'Home') { event.preventDefault(); show(0); }
+ else if (event.key === 'End') { event.preventDefault(); show(slides.length-1); }
+ else if (event.key.toLowerCase() === 'n') toggleNotes();
+ else if (event.key.toLowerCase() === 'o') openOverview();
+ else if (event.key.toLowerCase() === 'f') fullscreen();
+});
+if (isPresenter) {
+ document.body.classList.add('presenter'); $('notes-panel').hidden = false;
+ $('notes-button').hidden = true; $('presenter-button').hidden = true; $('close-notes').hidden = true;
+ $('notes-warning').textContent = window.opener ? 'Private presenter window. Navigation and exercise choices sync with the audience window. Share only the audience window.' : 'Standalone presenter view. Open Presenter view from the audience window to synchronize navigation.';
+}
+reveals.forEach(reveal => { reveal.open = false; });
+show(hashIndex(),false);
+document.documentElement.classList.add('js');
+if (isPresenter && window.opener) send({type:'ready'});
+setInterval(updateClock,1000);
+})();
+</script>
+</body>
+</html>

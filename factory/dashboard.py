@@ -27,7 +27,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
-from factory import __version__, briefing, config, dispatch
+from factory import __version__, briefing, codebase, config, dispatch, settings
 from factory.config import (
     LABEL_AGENT,
     LABEL_APPROVED,
@@ -68,7 +68,10 @@ CLOSE_REASONS = {"completed", "not planned"}
 
 HTML = Path(__file__).with_name("dashboard.html")
 ATLAS = Path(__file__).with_name("architecture.html")
+CODEBASE_HTML = Path(__file__).with_name("codebase.html")
 BRIEFING_CSS = Path(__file__).with_name("briefing.css")
+MOTION = Path(__file__).with_name("motion.js")
+MOTION_LICENSE = Path(__file__).with_name("MOTION-LICENSE.txt")
 NEWSREADER = Path(__file__).with_name("fonts") / "Newsreader.ttf"
 NEWSREADER_LICENSE = Path(__file__).with_name("fonts") / "Newsreader-OFL.txt"
 FACTORY_LABELS = {
@@ -104,6 +107,13 @@ def configure(c: Config) -> None:
     LLM_URL = c.llm_url
     LLM_MODEL = c.llm_model
     GATE_CHECKS = ["conflict-markers", *(k.name for k in c.checks), "leak-scan"]
+
+
+def _reload_config() -> None:
+    """Swap the dashboard's config object; existing requests keep their reference."""
+    configure(config.load(ROOT))
+    with _cache_lock:
+        _cache["at"] = 0.0
 
 
 # ponytail: first 100 issues / 100 PRs, no pagination; add cursors when the
@@ -842,6 +852,40 @@ def cached_snapshot(fresh: bool) -> dict:
         return _cache["data"]
 
 
+class CodebaseMonitor:
+    """Refresh local Git history off the request thread; keep the last good map."""
+
+    def __init__(self, c: Config, ref: str | None = None, limit: int = 80):
+        self.config = c
+        self.ref = ref
+        self.limit = limit
+        self.state: dict = {"status": "building", "error": None, "data": None}
+        self.stop = threading.Event()
+
+    def refresh(self) -> None:
+        previous = self.state["data"]
+        try:
+            c = self.config
+            ref = self.ref or codebase.default_ref(c.root, c.main)
+            tip = config.git(c.root, "rev-parse", "--verify", "--end-of-options", f"{ref}^{{commit}}")
+            if previous and previous["tip"] == tip and previous["ref"] == ref:
+                self.state = {"status": "ready", "error": None, "data": previous}
+                return
+            self.state = {"status": "building", "error": None, "data": previous}
+            data = codebase.build_history(c.root, ref, c.repo, c.factory / "codebase", self.limit)
+            self.state = {"status": "ready", "error": None, "data": data}
+        except (Exception, config.ConfigError) as exc:
+            self.state = {"status": "error", "error": str(exc), "data": previous}
+
+    def run(self) -> None:
+        while not self.stop.is_set():
+            self.refresh()
+            self.stop.wait(30)
+
+
+codebase_monitor: CodebaseMonitor | None = None
+
+
 # ---------------------------------------------------------------- actions
 
 
@@ -945,6 +989,10 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(url.query)
         if url.path == "/":
             self._send(200, "text/html; charset=utf-8", HTML.read_bytes())
+        elif url.path == "/motion.js":
+            self._send(200, "application/javascript", MOTION.read_bytes())
+        elif url.path == "/MOTION-LICENSE.txt":
+            self._send(200, "text/plain; charset=utf-8", MOTION_LICENSE.read_bytes())
         elif url.path == "/theme.css":
             self._send(200, "text/css", cfg.dashboard_theme.read_bytes() if cfg.dashboard_theme else b"")
         elif url.path == "/briefing.css":
@@ -955,6 +1003,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, "text/plain; charset=utf-8", NEWSREADER_LICENSE.read_bytes())
         elif url.path == "/atlas":
             self._send(200, "text/html; charset=utf-8", ATLAS.read_bytes())
+        elif url.path == "/codebase":
+            self._send(200, "text/html; charset=utf-8", CODEBASE_HTML.read_bytes())
+        elif url.path == "/api/codebase":
+            state = codebase_monitor.state if codebase_monitor else {
+                "status": "error", "error": "Codebase monitor is not running", "data": None,
+            }
+            self._send(200, "application/json", json.dumps(state).encode())
+        elif url.path == "/api/settings":
+            self._send(200, "application/json", json.dumps(settings.snapshot(ROOT)).encode())
         elif url.path == "/api/snapshot":
             data = cached_snapshot("fresh" in query)
             self._send(200, "application/json", json.dumps(data).encode())
@@ -965,7 +1022,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         route = urlparse(self.path).path
-        if route not in ("/api/act", "/api/briefing", "/api/ask"):
+        if route not in ("/api/act", "/api/briefing", "/api/ask", "/api/settings"):
             self._send(404, "application/json", b'{"ok":false,"error":"Unknown API route"}')
             return
         # A custom header forces a CORS preflight we never answer. Check Origin
@@ -989,6 +1046,10 @@ class Handler(BaseHTTPRequestHandler):
             req = json.loads(body)
             if route == "/api/act":
                 result = act(req)
+            elif route == "/api/settings":
+                result = settings.save(ROOT, req)
+                if result.get("ok"):
+                    _reload_config()
             else:
                 asking = route == "/api/ask"
                 briefing.validate_request(req, asking)
@@ -1034,14 +1095,18 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--host",
         default="127.0.0.1",
-        help="bind address; 0.0.0.0 exposes the dashboard AND /api/act "
-        "(which mutates GitHub with your gh credentials) to the whole network",
+        help="bind address; 0.0.0.0 exposes the dashboard and mutating APIs "
+        "(GitHub actions with your gh credentials and local settings writes) to the whole network",
     )
     parser.add_argument("--no-open", action="store_true", help="do not open a browser")
     parser.add_argument(
         "--json", action="store_true", help="print one snapshot and exit"
     )
+    parser.add_argument("--codebase-ref", help="local Git ref to visualize (default: origin/<main>, then <main>)")
+    parser.add_argument("--codebase-limit", type=int, default=80, help="recent first-parent commits to visualize (default: 80)")
     args = parser.parse_args(argv)
+    if args.codebase_limit < 1:
+        parser.error("--codebase-limit must be positive")
     configure(config.load())
     port = cfg.dashboard_port if args.port is None else args.port
 
@@ -1050,6 +1115,9 @@ def main(argv: list[str]) -> int:
         return 0
 
     server = ThreadingHTTPServer((args.host, port), Handler)
+    global codebase_monitor
+    codebase_monitor = CodebaseMonitor(cfg, args.codebase_ref, args.codebase_limit)
+    threading.Thread(target=codebase_monitor.run, name="factory-codebase", daemon=True).start()
     url = f"http://127.0.0.1:{port}/"
     print(
         f"factory dashboard: listening on {args.host}:{port}  "
@@ -1058,6 +1126,10 @@ def main(argv: list[str]) -> int:
     )
     if not args.no_open:
         webbrowser.open(url)
-    with contextlib.suppress(KeyboardInterrupt):
-        server.serve_forever()
+    try:
+        with contextlib.suppress(KeyboardInterrupt):
+            server.serve_forever()
+    finally:
+        codebase_monitor.stop.set()
+        server.server_close()
     return 0

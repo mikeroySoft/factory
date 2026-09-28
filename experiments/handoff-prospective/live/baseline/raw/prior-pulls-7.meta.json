@@ -1,0 +1,23 @@
+{
+  "argv": [
+    "gh",
+    "api",
+    "--method",
+    "GET",
+    "-H",
+    "Accept: application/vnd.github+json",
+    "repos/mikeroySoft/factory/pulls?state=all&head=mikeroySoft:agent/7&per_page=1"
+  ],
+  "bytes": 2,
+  "complete": true,
+  "ended_at": "2026-09-11T00:04:28Z",
+  "endpoint": "repos/mikeroySoft/factory/pulls?state=all&head=mikeroySoft:agent/7&per_page=1",
+  "label": "prior-pulls-7",
+  "limit_bytes": 5242880,
+  "returncode": 0,
+  "seconds": 0.347,
+  "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  "started_at": "2026-09-11T00:04:27Z",
+  "stderr_bytes": 0,
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}

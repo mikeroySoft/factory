@@ -1,0 +1,100 @@
+{
+  "condition": "baseline",
+  "sample": 1,
+  "model": "openai-codex/gpt-6-astra",
+  "argv": [
+    "omp",
+    "-p",
+    "--mode",
+    "text",
+    "--no-session",
+    "--no-tools",
+    "--no-extensions",
+    "--no-skills",
+    "--no-rules",
+    "--no-lsp",
+    "--no-pty",
+    "--no-title",
+    "--thinking",
+    "medium",
+    "--hide-thinking",
+    "--max-time",
+    "300",
+    "--model",
+    "openai-codex/gpt-6-astra",
+    "@/home/mike/dev/mikeroysoft/factory/experiments/handoff-replanning/runs/initial/baseline.s1.prompt.txt"
+  ],
+  "returncode": 0,
+  "seconds": 39.43,
+  "valid_json_shape": true,
+  "source_ids": [
+    "R0",
+    "I52",
+    "I53",
+    "I54",
+    "I55",
+    "I56",
+    "I57",
+    "I58",
+    "I59",
+    "I15",
+    "P60",
+    "P61"
+  ],
+  "prompt_sha256": "18d279434f90d71a39df4abc46170421f03524537654b5f8b35fae9c541a8e6b",
+  "output_sha256": "f119625ef3d55f2f1ec123bee31d994a405f3c6a9a8b7b49ea45d54934c40f07",
+  "parsed": {
+    "assessment": "#53 is closed and PR #60 merged into stable; #54 remains open with PR #61 reported DIRTY against stable. Both children require a current-main baseline, so integration alignment remains unresolved. The supplied gate reports and issue states do not establish producer acceptance or the two-human programme outcome. The smallest useful adjustment is to reconcile that integration path before treating A/B as accepted prerequisites; no outcome or scope expansion is warranted.",
+    "recommendations": [
+      {
+        "target": "#52 Implementation sequence and #54 / PR #61",
+        "adjustment": "Record a human-owned integration checkpoint: reconcile the required current-main baseline with #60's stable merge and #61's stable target, then resolve #61's reported conflict on the agreed integration path. Determine whether A is present on that baseline before carrying B forward; do not infer this from #53 closure or the PR file lists.",
+        "sources": [
+          "R0",
+          "I52",
+          "I53",
+          "I54",
+          "P60",
+          "P61"
+        ],
+        "observation": "The child contracts require starting from current origin/main. The pinned observations show different main and stable tips, #60 merged into stable, and #61 open against stable with merge state DIRTY. #61's file list also includes files introduced by A, but the bundle provides no ancestry or diff evidence explaining their relationship.",
+        "consequence": "B's remaining integration work depends on establishing which A implementation its accepted baseline contains. Resolving this locally avoids propagating an uncertain producer baseline into the held children without changing their dependency graph.",
+        "kind": "local_remediation",
+        "authority": "A human must resolve integration intent; this recommendation does not authorize retargeting, merging, release or deployment. Preserve #15/PR #40 ownership, admitted scope and all #55-#59 holds.",
+        "check": "At the pinned revisions, inspect ancestry and the relevant A/B diff; record the human-selected baseline and integration disposition. On the resulting candidate, observe that the reported conflict is resolved and run the current unittest gate and the existing #54 real-route exit scenario."
+      },
+      {
+        "target": "#52 Implementation sequence \u2014 A/B producer acceptance",
+        "adjustment": "Distinguish A's closed/merged status and B's pending integration from acceptance of their existing exit gates. Obtain or link the actual CLI observations required by #53 and #54 on the agreed candidate before counting either producer as accepted; this is completion evidence for existing work, not a new feature or test suite.",
+        "sources": [
+          "I52",
+          "I53",
+          "I54",
+          "P60",
+          "P61"
+        ],
+        "observation": "#53 and #54 specify observable real-CLI scenarios, including partial/error results and mutation-free routing. The supplied PR bodies report only conflict-marker, test and leak-scan PASS summaries; they do not include those scenario observations.",
+        "consequence": "Closure and gate summaries leave the read-only producer contracts unverified in this bundle. Downstream planning should retain that uncertainty rather than equate implementation status with accepted behavior.",
+        "kind": "known_prerequisite",
+        "authority": "Keep acceptance human-owned. Use isolated adapters for these existing checks; no GitHub publication, live-account acceptance, hold release or change to admitted execution scope is authorized.",
+        "check": "Review existing revision-linked scenario evidence if available; otherwise exercise the specified #53 reader/template and #54 route scenarios with isolated adapters, recording observable results and absence of GitHub mutation."
+      }
+    ],
+    "unchanged": [
+      "The accepted outcome remains a distinct runner plus two consenting humans completing initiative-to-delivery acceptance; child closure, merges and test reports do not establish delivery.",
+      "Preserve the existing dependency graph, #15/PR #40 ownership and handoff, and serialization of C/D writers at shared control-plane boundaries.",
+      "#55-#59 remain held. G/C/D retain their human-reviewed non-agent implementation or independently enforced external merge-protection checkpoint; descriptive holds and scheduling blockers are not merge interlocks.",
+      "Human-reviewed tickets and immutable admitted plan snapshots remain the execution contract. Later edits produce drift and human questions, not silent rewrites or restarts.",
+      "Initiative ownership, decision ownership and runner claims remain distinct and grant no action authority; preserve legacy human-assignee and intervention semantics.",
+      "Keep one authoritative runner, GitHub collaboration, shared read-only producers and no rival executor, new remote mutation surface, database or scheduler.",
+      "Release, deployment, real-account acceptance, account/access changes and publication retain their separate permissions. Optional design opinions remain optional."
+    ],
+    "unknown": [
+      "The ancestry and implementation relationship between pinned main, stable, #60 and #61; distinct tips alone do not prove A is absent from main.",
+      "The specific cause of #61's reported DIRTY state and its state after any subsequent integration work.",
+      "Actual source behavior and revision-linked CLI exit-gate evidence beyond the supplied PR summaries.",
+      "The current #15/PR #40 handoff disposition and independently enforced merge protection; neither is established by this bundle.",
+      "Availability and authorization of the dedicated pilot repository, distinct runner identity and two consenting humans, and any owner-confirmed end-to-end acceptance evidence."
+    ]
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "status": "agent_assessment_disagreements_not_ground_truth",
+  "differences": [
+    {
+      "id": "factory-15",
+      "jev": "ready-for-agent",
+      "confidence": 0.63,
+      "agent": "ready-for-human",
+      "reason": "The issue grants the manager new authority to close pull requests, relabel issues, and conditionally approve work; that human-policy change takes precedence over its detailed implementation scope."
+    },
+    {
+      "id": "factory-20",
+      "jev": "ready-for-agent",
+      "confidence": 0.53,
+      "agent": "ready-for-human",
+      "reason": "The request changes manager routing and remediation authority, including applying labels and selecting worker profiles, so human-policy review takes precedence over the otherwise concrete contract."
+    },
+    {
+      "id": "factory-62",
+      "jev": "ready-for-agent",
+      "confidence": 0.97,
+      "agent": "needs-info",
+      "reason": "A necessary compatibility requirement conflicts with the immediately stated behavior that the same bare `{prompt}` shape is rejected with `ConfigError`; implementation cannot satisfy both as written."
+    }
+  ]
+}

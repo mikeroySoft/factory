@@ -1,0 +1,23 @@
+{
+  "argv": [
+    "gh",
+    "api",
+    "--method",
+    "GET",
+    "-H",
+    "Accept: application/vnd.github+json",
+    "repos/mikeroySoft/factory/issues/7/comments?per_page=100&page=1"
+  ],
+  "bytes": 3003,
+  "complete": true,
+  "ended_at": "2026-09-11T00:04:27Z",
+  "endpoint": "repos/mikeroySoft/factory/issues/7/comments?per_page=100&page=1",
+  "label": "comments-7",
+  "limit_bytes": 5242880,
+  "returncode": 0,
+  "seconds": 0.323,
+  "sha256": "0e88f2b1d5fe840d08a7b57006ef5bfbc752265572e0b45f91c966461242cf66",
+  "started_at": "2026-09-11T00:04:27Z",
+  "stderr_bytes": 0,
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}

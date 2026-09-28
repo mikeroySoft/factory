@@ -1,0 +1,15 @@
+{
+  "attempt": 1,
+  "bytes": 1382,
+  "completeness": "unproven",
+  "corroborating_event_id": null,
+  "corroborating_event_line_sha256": null,
+  "file_device": 66306,
+  "file_inode": 3492930101,
+  "file_mtime_ns": 1789097524293776788,
+  "head": "d2af513f225dc6744186ed60cd51dad5ba051cbd",
+  "object_path": "/home/mike/dev/mikeroysoft/factory/experiments/handoff-prospective/live/candidates/6-32c66136a4e7/handoff/objects/d6a58c854eaec142b075c3917da491f04162eb5723e9784dc18f16f7cac002de.bin",
+  "observed_at": "2026-09-11T03:32:09Z",
+  "sha256": "d6a58c854eaec142b075c3917da491f04162eb5723e9784dc18f16f7cac002de",
+  "ticket": 6
+}

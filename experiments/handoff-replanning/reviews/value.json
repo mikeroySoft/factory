@@ -1,0 +1,79 @@
+{
+  "overall_correctness": "correct",
+  "explanation": "All 14 recommendations across T1-T6 are factually supported by the source IDs actually available to each trial, and none is unsupported, authority-expanding, or a false delivery claim. The five distinct ideas classify as: baseline/integration reconciliation (all six trials, already_known per the protocol's own exclusion), #57 truncation-versus-canonical-binding (T1/T4, useful_plan_refinement and the one grounded conditional risk check), --json repair (T3/T6, local_remediation), #56 change-path input source (T3/T6, useful_plan_refinement), and obtain-CLI-exit-gate-evidence (T2/T5, already_known and a near-duplicate of item 1's own check clause). Remaining issues are wording and taxonomy imprecision, not defects.",
+  "confidence": 0.78,
+  "findings": [
+    {
+      "title": "Classify item 1 in all six trials as already_known, not a handoff increment",
+      "body": "T1.1, T2.1, T3.1, T4.1, T5.1 and T6.1 are one idea: reconcile the current-origin/main implementation requirement with PR #60's merge into stable and PR #61's stable base plus DIRTY merge state before accepting #54. Fully supported in every trial by R0 (distinct main 8562270 and stable 92cd1e8 tips, pr60.merge equal to the stable tip, pr61 head b7a9aca base stable OPEN), P60/P61 (Base: stable; Merge state: DIRTY; overlapping plan.py, initiative.md and onboard.py file entries) and I53/I54 ('Start from current origin/main, not the stale operator checkout or default stable branch'). PROTOCOL.md's evidence boundary states that all conditions receive the same PR metadata including branch identities, so detecting this mismatch is explicitly not creditable as a handoff-specific discovery: classification already_known for all six instances. Quality note in favour of every trial: none asserts that main lacks #53 as fact. T1 says the branch identities 'do not establish ancestry or equivalent content', T2 says 'distinct tips alone do not prove A is absent from main', T4 says 'the bundle does not establish whether main contains #53's implementation', T5 says 'do not infer branch ancestry from the differing commit identities'. That restraint is correct even though SuccessOracle independently VERIFIED plan.py absent at the pinned main. T3.1 and T6.1 additionally cite H54 and correctly demote its 'once #53 merges this branch rebases cleanly' to a worker prediction rather than integration state; that is conservative and correct use of the extra source, but it does not convert the item into a downstream refinement.",
+      "priority": 2,
+      "confidence": 0.86,
+      "file_path": "experiments/handoff-replanning/blind-trials.json",
+      "line_start": 26,
+      "line_end": 35
+    },
+    {
+      "title": "Credit the #57 truncated-section binding item as the grounded conditional risk check",
+      "body": "T1.2 and T4.2 are one idea: do not build or validate an immutable plan binding from the reader's capped section content, and either capture complete canonical sections or refuse new admission with an explicit incompleteness reason. Support is real. H53B states that parse now records 'truncated section: ... cut to 4000 characters' and flags the row malformed; H53A describes the reader's bounded shape; I57 requires a Plan baseline containing canonical relevant sections (Outcome, Boundaries, Plan, Success evidence) plus their SHA-256, compared over the same normalized sections, with invalid digest failing closed. Nothing in I57's text addresses the producer's section cap, so this is genuine downstream planning about future work rather than restatement of an existing requirement: classification useful_plan_refinement, and the strongest non-baseline item in the packet. Both instances stay correctly conditional ('if binding reuses truncated reader content ... could escape drift detection'; 'if binding consumes shortened sections'), label the reports as worker claims rather than verified implementation, keep #57 held under its existing human-reviewed checkpoint, and disclaim any pagination expansion, which is a distinct concern from the section cap that H53A deferred. Neither presents this as a demonstrated current admission vulnerability, which is the correct treatment for an unimplemented ticket.",
+      "priority": 2,
+      "confidence": 0.83,
+      "file_path": "experiments/handoff-replanning/blind-trials.json",
+      "line_start": 273,
+      "line_end": 282
+    },
+    {
+      "title": "Classify the --json repair item as local_remediation with exact source support",
+      "body": "T3.2 and T6.2 are one idea: accept the literal --json token specified by I54 rather than weakening the documented command. I54 Scope names 'factory plan route N --reason <requirements|implementation|ci|unknown> --json'; E54's Spec section records Required finding 1, that route_args (factory/plan.py:257-272) treats any token other than --reason/--path as malformed, producing invalid_request and exit 2, and E54's summary line reads 'Standards 0 required / 3 optional ... Spec 1 required'. T3's phrase 'the sole required spec finding' and T6's 'the sole required review finding' are therefore both accurate. Both instances self-label local_remediation, which matches the protocol taxonomy and FailureOracle's routing of the plan.py/config.py spec gaps to #54-local remediation; both keep the five Optional spec items and three Optional standards items outside the acceptance blocker, as I52's boundaries require. This is a supported and actionable defect repair but, per the protocol definition, it does not by itself establish successful-handoff replanning value.",
+      "priority": 2,
+      "confidence": 0.85,
+      "file_path": "experiments/handoff-replanning/blind-trials.json",
+      "line_start": 187,
+      "line_end": 196
+    },
+    {
+      "title": "Credit the #56 change-path input item as downstream, not a restatement of I54's no-guess rule",
+      "body": "T3.3 and T6.3 are one idea: decide, before implementing #56, where the terminal handoff consumer obtains evidenced implementation change paths, and preserve unassigned with an explicit missing-path diagnostic rather than adding a PR-file lookup or guessing. Support is exact. H54's 'Unverified / decisions to confirm' states 'Change paths come only from --path (no PR-file lookup); missing --path under implementation is unassigned, by design (no guess). If the dispatcher should derive paths from the PR, add a pulls/{n}/files read.' I54 requires that missing change paths does not guess. I56 consumes the ownership producer for terminal handoffs, listing 'lifecycle and plan ownership producer' under Touches and owner/candidates plus routing rationale under Scope, but nowhere identifies a path-evidence source. The manual --path CLI input versus the future automatic handoff-consumer input is a real seam that neither ticket resolves, so this is useful_plan_refinement in both instances, not a restatement. Authority handling is accurate in both: #56 is Blocked by #54 and #55, and I56 restricts manage.py human_activity integration to after the #15/PR #40 handoff, exactly as cited.",
+      "priority": 2,
+      "confidence": 0.82,
+      "file_path": "experiments/handoff-replanning/blind-trials.json",
+      "line_start": 201,
+      "line_end": 210
+    },
+    {
+      "title": "Treat the exit-gate-evidence item as already_known and near-duplicate of item 1 within its own run",
+      "body": "T2.2 and T5.2 are one idea: obtain or link the actual CLI observations already required by I53 and I54 before treating the producers as accepted. The observation is accurate, since P60 and P61 carry only conflict-markers/test/leak-scan PASS lines and no scenario detail, while I53 and I54 already specify those scenarios including partial/error results, prefix boundaries and absence of mutation. Because the requirement is already explicit in the shared ticket bodies, this is already_known and both instances self-label known_prerequisite. Two adjudication consequences. First, it counts once across T2 and T5, not twice. Second, within each of those runs it substantially duplicates the preceding item's own check clause: T2.1's check already says to 'run the current unittest gate and the existing #54 real-route exit scenario', and T5.1's check covers the reconciled candidate, so under the protocol rule of counting duplicate recommendations once per run, T2 and T5 each contribute roughly one distinct idea rather than two.",
+      "priority": 2,
+      "confidence": 0.8,
+      "file_path": "experiments/handoff-replanning/blind-trials.json",
+      "line_start": 112,
+      "line_end": 121
+    },
+    {
+      "title": "Note inconsistent kind labels applied to identical ideas across trials",
+      "body": "The same integration-baseline idea is labelled local_remediation in T1.1, T2.1, T4.1 and T5.1 but known_prerequisite in T3.1 and T6.1; likewise the identical #56 path-source idea is labelled plan_refinement in T3.3 and open_question in T6.3. Both readings are defensible under the protocol taxonomy (the baseline item both fixes #54 delivery mechanics and restates an explicit I53/I54 requirement; the #56 item is both an unresolved input question and a concrete proposed decision), so neither is a wording error in isolation. It matters only for tallying: self-assigned kind labels are not stable enough to drive the adjudication, and the classification should come from the protocol definitions applied uniformly, as done in the preceding findings.",
+      "priority": 3,
+      "confidence": 0.75,
+      "file_path": "experiments/handoff-replanning/blind-trials.json",
+      "line_start": 182,
+      "line_end": 183
+    },
+    {
+      "title": "Tighten prerequisite wording that could be read as #54 gating #55 and #57",
+      "body": "T6.1 says to reconcile the baseline 'before treating A/B as available prerequisites' and T5.2 says 'the remaining guard, binding and handoff work depends on these producers'. Read collectively over the set {A, B} these are true, but read distributively they suggest that B (#54) is a prerequisite of the guard (#55) and the binding (#57). I52's authoritative table has A + #15 -> G (#55), B + G -> C (#56) and A + G -> D (#57); #54 gates only #56. Neither item proposes a graph change and both preserve the holds in their unchanged lists, so this is imprecision rather than a dependency-graph error, but the wording should name #56 as the B-dependent consumer instead of the undifferentiated 'held consumers' phrasing that also appears in T4.1.",
+      "priority": 3,
+      "confidence": 0.7,
+      "file_path": "experiments/handoff-replanning/blind-trials.json",
+      "line_start": 401,
+      "line_end": 413
+    },
+    {
+      "title": "Correct the display-versus-binding framing of the section cap in T1.2",
+      "body": "T1.2 frames the 4000-character limit as 'the reader's bounded display representation' and warns against 'treating a display limit as an execution-scope limit'. Per H53B the cap is applied inside parse and flagged through problems on the returned row, so it conditions the reader's canonical parsed output, not a separate rendering layer; there is no evidenced un-truncated path in the producer that a consumer could simply select. The proposed remedy (complete canonical content for binding, or explicit refusal of incomplete-source admission) survives the correction and remains the right conditional check, and T4.2's phrasing ('never digest a shortened display value as the complete approved scope', with the completeness question raised as something to determine first) is the more accurate of the two. T1.2 is also the packet's strongest unsupported-leaning wording: its directive 'Do not create or validate a binding from truncated relevant sections' presumes the cap reaches binding-relevant sections, and unlike T4 its unknown list does not carry the matching caveat that T4 states as 'whether the final reader actually truncates binding-relevant content as reported'. It stays inside the supported range only because the observation explicitly labels the report as not independently verified.",
+      "priority": 3,
+      "confidence": 0.72,
+      "file_path": "experiments/handoff-replanning/blind-trials.json",
+      "line_start": 44,
+      "line_end": 52
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+# Issue #6 handoff
+
+## Changed
+
+No source or test changes; no commits or pushes. Inspected the existing opt-in admission path in factory/dispatch.py and its tests.
+
+## Blocker
+
+The ticket requires both `gh pr review` and binding each submitted review to the discovered head SHA. `gh pr review --help` exposes no commit option. Upstream pkg/cmd/pr/review/review.go looks up only PR id/number and submits state/body, without a commit ID. A head check before this command cannot prevent a concurrent commit from receiving the review.
+
+GitHub's REST create-review endpoint supports explicit `commit_id`, `event` (APPROVE or REQUEST_CHANGES), and `body`: https://docs.github.com/en/rest/pulls/reviews#create-a-review-for-a-pull-request . Need approval to use `gh api` for publishing instead of the explicitly requested `gh pr review`.
+
+## Verification
+
+Ran `/home/mike/.local/share/uv/tools/factory/bin/python3 -m factory gate --report .factory/gate-report-6.md`: gate PASS on unchanged source. New review behavior is not implemented or verified.
+
+## Next
+
+Resolve the publishing-command conflict, then implement and test at the admitted-review/GitHub boundary: immutable diff input, configured review command, cited findings, strict verdict parsing, and one SHA-bound review submission. Run python -m unittest and the required gate; commit only ticket source/tests using git commit -s.

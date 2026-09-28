@@ -1,0 +1,75 @@
+{
+  "sources_match": true,
+  "protocol_unchanged": true,
+  "runner_matches_executed_version": true,
+  "condition_prompts_identical_across_samples": true,
+  "rows": [
+    {
+      "run": "baseline.s1",
+      "returncode": 0,
+      "prompt_hash_matches": true,
+      "output_hash_matches": true,
+      "stderr_empty": false,
+      "citations_in_packet": true,
+      "complete_item_fields": true,
+      "stderr_notice": "Working...",
+      "stderr_is_progress_only": true
+    },
+    {
+      "run": "success.s1",
+      "returncode": 0,
+      "prompt_hash_matches": true,
+      "output_hash_matches": true,
+      "stderr_empty": false,
+      "citations_in_packet": true,
+      "complete_item_fields": true,
+      "stderr_notice": "Working...",
+      "stderr_is_progress_only": true
+    },
+    {
+      "run": "mixed.s1",
+      "returncode": 0,
+      "prompt_hash_matches": true,
+      "output_hash_matches": true,
+      "stderr_empty": false,
+      "citations_in_packet": true,
+      "complete_item_fields": true,
+      "stderr_notice": "Working...",
+      "stderr_is_progress_only": true
+    },
+    {
+      "run": "baseline.s2",
+      "returncode": 0,
+      "prompt_hash_matches": true,
+      "output_hash_matches": true,
+      "stderr_empty": false,
+      "citations_in_packet": true,
+      "complete_item_fields": true,
+      "stderr_notice": "Working...",
+      "stderr_is_progress_only": true
+    },
+    {
+      "run": "success.s2",
+      "returncode": 0,
+      "prompt_hash_matches": true,
+      "output_hash_matches": true,
+      "stderr_empty": false,
+      "citations_in_packet": true,
+      "complete_item_fields": true,
+      "stderr_notice": "Working...",
+      "stderr_is_progress_only": true
+    },
+    {
+      "run": "mixed.s2",
+      "returncode": 0,
+      "prompt_hash_matches": true,
+      "output_hash_matches": true,
+      "stderr_empty": false,
+      "citations_in_packet": true,
+      "complete_item_fields": true,
+      "stderr_notice": "Working...",
+      "stderr_is_progress_only": true
+    }
+  ],
+  "passed": true
+}

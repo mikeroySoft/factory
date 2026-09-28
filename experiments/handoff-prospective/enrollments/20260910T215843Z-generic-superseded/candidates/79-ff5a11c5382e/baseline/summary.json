@@ -1,0 +1,90 @@
+{
+  "approved_context_tickets": [],
+  "candidate": {
+    "api_id": 5417830472,
+    "created_at": "2026-09-10T22:11:12Z",
+    "labels": [
+      "ready-for-agent"
+    ],
+    "node_id": "I_kwDOUMiREs8AAAABQu2ISA",
+    "state": "open",
+    "ticket": 79,
+    "updated_at": "2026-09-10T22:17:47Z"
+  },
+  "captured_completed_at": "2026-09-10T22:17:51Z",
+  "captured_started_at": "2026-09-10T22:17:50Z",
+  "claim_at": "2026-09-10T22:17:49Z",
+  "context_references": [],
+  "default_branch_sha": "8fba9c5e33a7b0122683334e424183af5ff1b5fd",
+  "provenance": [
+    {
+      "argv": [
+        "gh",
+        "api",
+        "--method",
+        "GET",
+        "-H",
+        "Accept: application/vnd.github+json",
+        "repos/mikeroySoft/factory/issues/79"
+      ],
+      "bytes": 25977,
+      "complete": true,
+      "ended_at": "2026-09-10T22:17:50Z",
+      "endpoint": "repos/mikeroySoft/factory/issues/79",
+      "label": "candidate-issue",
+      "limit_bytes": 5242880,
+      "returncode": 0,
+      "seconds": 0.401,
+      "sha256": "1092af2cee63b6dd9308fc67d5f6034e30a4be4d9aef15957590dca44cad8f87",
+      "started_at": "2026-09-10T22:17:50Z",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "argv": [
+        "gh",
+        "api",
+        "--method",
+        "GET",
+        "-H",
+        "Accept: application/vnd.github+json",
+        "repos/mikeroySoft/factory/issues/79/comments?per_page=100&page=1"
+      ],
+      "bytes": 4336,
+      "complete": true,
+      "ended_at": "2026-09-10T22:17:50Z",
+      "endpoint": "repos/mikeroySoft/factory/issues/79/comments?per_page=100&page=1",
+      "label": "candidate-comments",
+      "limit_bytes": 5242880,
+      "returncode": 0,
+      "seconds": 0.321,
+      "sha256": "a770acf727be61006b5b34b474e328f0c8179cc72f2a47d11f50cf30e464ca9f",
+      "started_at": "2026-09-10T22:17:50Z",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "argv": [
+        "gh",
+        "api",
+        "--method",
+        "GET",
+        "-H",
+        "Accept: application/vnd.github+json",
+        "repos/mikeroySoft/factory/commits/main"
+      ],
+      "bytes": 52896,
+      "complete": true,
+      "ended_at": "2026-09-10T22:17:51Z",
+      "endpoint": "repos/mikeroySoft/factory/commits/main",
+      "label": "default-branch-commit",
+      "limit_bytes": 5242880,
+      "returncode": 0,
+      "seconds": 0.509,
+      "sha256": "647e1d19fd281070d89c39e980ce9aee637b35d42aab227c5f56b88902375203",
+      "started_at": "2026-09-10T22:17:50Z",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}

@@ -1,0 +1,102 @@
+{
+  "condition": "success",
+  "sample": 1,
+  "model": "openai-codex/gpt-6-astra",
+  "argv": [
+    "omp",
+    "-p",
+    "--mode",
+    "text",
+    "--no-session",
+    "--no-tools",
+    "--no-extensions",
+    "--no-skills",
+    "--no-rules",
+    "--no-lsp",
+    "--no-pty",
+    "--no-title",
+    "--thinking",
+    "medium",
+    "--hide-thinking",
+    "--max-time",
+    "300",
+    "--model",
+    "openai-codex/gpt-6-astra",
+    "@/home/mike/dev/mikeroysoft/factory/experiments/handoff-replanning/runs/initial/success.s1.prompt.txt"
+  ],
+  "returncode": 0,
+  "seconds": 41.86,
+  "valid_json_shape": true,
+  "source_ids": [
+    "R0",
+    "I52",
+    "I53",
+    "I54",
+    "I55",
+    "I56",
+    "I57",
+    "I58",
+    "I59",
+    "I15",
+    "P60",
+    "P61",
+    "H53A",
+    "H53B"
+  ],
+  "prompt_sha256": "9fe36c2a9573a1ef0c82e7ce209761b1499f12c2fb7d4d89cbf6f0b1b7fae0a5",
+  "output_sha256": "08c0fcaa594669a13ad83104a8950174c0d09f1b5a8544b777a610ae5edc02bc",
+  "parsed": {
+    "assessment": "#53 is closed and PR #60 merged to stable; #54 remains open with PR #61 reported DIRTY. These establish implementation progress, not accepted producer behavior or programme delivery. The smallest useful adjustments are to resolve the integration baseline for #54 and account for reported reader truncation when designing #57's immutable binding.",
+    "recommendations": [
+      {
+        "target": "#54 / PR #61 and #52 Baseline and integration boundaries",
+        "adjustment": "Have the responsible human resolve the mismatch between the required current-main baseline and the stable-targeted PRs before accepting #54. Reconcile PR #61's conflicts against that chosen integration path, establishing that #53's producer is present rather than treating child closure as sufficient integration evidence.",
+        "sources": [
+          "R0",
+          "I52",
+          "I53",
+          "I54",
+          "P60",
+          "P61"
+        ],
+        "observation": "The programme and child instructions require current main. PR #60 merged to stable, PR #61 targets stable and is reported DIRTY, and R0 pins distinct main and stable revisions. The bundle does not establish whether main contains #53's implementation. PR #61's reported passing gate does not resolve its current integration state.",
+        "consequence": "#54 and the held consumers need one evidenced producer baseline. Resolving this locally avoids carrying uncertain integration assumptions into control-plane work without changing the dependency graph.",
+        "kind": "local_remediation",
+        "authority": "The human retains integration and acceptance ownership. This proposes no automatic retarget, merge, release or deployment; #55-#59 remain held and #15/PR #40 ownership is untouched.",
+        "check": "Record the human-selected base and resulting PR head, demonstrate that the integrated tree contains #53's producer without unresolved conflicts, then run the existing unittest gate and #54's actual read-only route scenarios on that tree."
+      },
+      {
+        "target": "#57 \u2014 canonical section capture and admission",
+        "adjustment": "Before reusing the plan reader for binding, determine whether its reported truncation affects canonical section capture. If it does, use complete relevant sections for binding or explicitly refuse a new binding when completeness cannot be established; never digest a shortened display value as the complete approved scope.",
+        "sources": [
+          "H53A",
+          "H53B",
+          "I57"
+        ],
+        "observation": "Worker reports describe bounded reader output, including sections cut to 4000 characters and truncation recorded as malformed. These are implementation claims, not independently verified behavior. #57 requires canonical relevant sections and their digest to preserve an immutable execution baseline.",
+        "consequence": "If binding consumes shortened sections, a change beyond the displayed prefix could escape drift detection or approved scope could be omitted. Making the display-versus-binding distinction explicit addresses a concrete producer-consumer risk without requiring general pagination expansion.",
+        "kind": "plan_refinement",
+        "authority": "#57 remains held and subject to its existing human-reviewed implementation checkpoint. Human-approved ticket scope remains authoritative; no automatic rebaseline, rewrite, restart or amendment of admitted work is permitted.",
+        "check": "Use a disposable initiative whose Plan exceeds the reported section limit and change only its tail. Observe either complete capture with detected drift and unchanged admitted scope, or an explicit completeness refusal for new admission; historical admitted evidence must remain readable."
+      }
+    ],
+    "unchanged": [
+      "The accepted outcome remains a distinct runner and two consenting humans completing the initiative-to-delivery workflow; merges, child closure and reported tests do not establish delivery.",
+      "#55-#59 remain held with their existing dependencies and release checkpoints; blockers and factory-held labels are not merge interlocks.",
+      "#15/PR #40 ownership is preserved, including the required handoff and serialization of shared control-plane writers.",
+      "Initiative ownership, decision ownership and runner execution claims remain separate and grant no action authority; legacy human-assignee takeover semantics remain intact.",
+      "Admitted execution scope remains immutable. Later plan edits produce evidence and human questions, not silent changes to running work.",
+      "One authoritative runner, GitHub collaboration and shared read-only producers remain the contract; no new authentication surface, store, scheduler or mutation executor is proposed.",
+      "Releases, deployment, real-account acceptance and publication retain separate permission requirements; private proposals and untrusted source content are not accepted policy or action authorization.",
+      "Optional review opinions and pagination expansion are not promoted to requirements."
+    ],
+    "unknown": [
+      "Whether the pinned main revision contains #53's implementation and which integration baseline the responsible human will approve.",
+      "The cause and resolution of PR #61's DIRTY state, and independently observed route behavior on a reconciled tree.",
+      "Whether the final reader actually truncates binding-relevant content as reported and whether a complete-content path is available; the bundle contains reports, not the implementation source.",
+      "Current PR #40 state and evidence of the #15 ownership handoff; I15 establishes that the issue remains open.",
+      "Independent producer acceptance and end-to-end outcome evidence. Worker reports and PR gate summaries do not supply that proof.",
+      "Availability and authorization of a dedicated pilot repository, distinct runner identity and two consenting human identities; no absence or approval is established here."
+    ]
+  }
+}

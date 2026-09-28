@@ -1,0 +1,15 @@
+{
+  "attempt": 1,
+  "bytes": 1382,
+  "completeness": "corroborated_after_worker_completion",
+  "corroborating_event_id": "4a41f3ce-7f54-4b43-8308-fe1b8168c7f6",
+  "corroborating_event_line_sha256": "7190f92ce9c0565ae82b7b7892a11aed32a4cc17dc6766cf562e3646e1d1a7b8",
+  "file_device": 66306,
+  "file_inode": 3492930101,
+  "file_mtime_ns": 1789097524293776788,
+  "head": "d2af513f225dc6744186ed60cd51dad5ba051cbd",
+  "object_path": "/home/mike/dev/mikeroysoft/factory/experiments/handoff-prospective/live/candidates/6-32c66136a4e7/handoff/objects/d6a58c854eaec142b075c3917da491f04162eb5723e9784dc18f16f7cac002de.bin",
+  "observed_at": "2026-09-11T03:32:14Z",
+  "sha256": "d6a58c854eaec142b075c3917da491f04162eb5723e9784dc18f16f7cac002de",
+  "ticket": 6
+}

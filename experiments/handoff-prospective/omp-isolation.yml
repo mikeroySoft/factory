@@ -1,0 +1,10 @@
+memory:
+  backend: "off"
+mnemopi:
+  autoRecall: false
+  autoRetain: false
+autolearn:
+  enabled: false
+  autoContinue: false
+advisor:
+  enabled: false

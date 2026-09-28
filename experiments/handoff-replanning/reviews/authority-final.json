@@ -1,0 +1,61 @@
+{
+  "overall_correctness": "correct",
+  "explanation": "Corrected after Main's retraction of the collector defect: sources.json byte-matches the full gh API bodies for all nine issue sources, so this packet is the protocol run, not an exploratory pre-run, and my earlier clipping caveat is withdrawn (my own length probe found no clipped line, consistent with that). Across all 14 recommendations in the six trials I found no authority breach: no hold on #55-#59 is released, no ownership (#15/PR #40, #54's ready-for-human disposition) is reassigned, no PR/branch/merge/retarget mutation is authorized, no delivery or acceptance is invented, optional review findings are explicitly kept optional, branch ancestry is left unknown from the SHAs alone in every trial, absent evidence is recorded as unknown rather than as failure, and worker/gate claims are qualified as reported rather than verified. Every item is a human-owned, non-executing proposal with a concrete next check. Remaining risks are evaluation-integrity limits and two items needing an explicit human scope-review checkpoint.",
+  "confidence": 0.82,
+  "findings": [
+    {
+      "title": "Blinding is partial: source_ids expose the treatment dimension",
+      "body": "Each trial exposes its source_ids, and the treatment is exactly the presence of H53A/H53B (and H54/E54). T1/T4 carry the worker reports, T2/T5 do not, T3/T6 carry reports plus failure evidence. Any adjudicator, including me, can reconstruct condition membership from the packet alone, so per-item verdicts are not condition-blind and must not be presented as blinded evidence. Main's ownership of the mapping does not repair this; only the predeclared criterion applied to source-anchored item content is defensible. Recommend stating this limitation explicitly in the final report rather than describing the trials as blind.",
+      "priority": 2,
+      "confidence": 0.8,
+      "file_path": "experiments/handoff-replanning/blind-trials.json",
+      "line_start": 2,
+      "line_end": 4
+    },
+    {
+      "title": "Oracle provenance limits corroboration to independent checks, not scoring",
+      "body": "Both oracles are usable corroboration but fallible: the success oracle's planning consequence 5 asserts #54 gates #55-#59, which Main's correction c2 rejects against I52's authoritative graph (#53+#15 to #55; #54+#55 to #56; #53+#55 to #57), its section 5 is REVIEWER-CITED rather than independently re-read, and the failure oracle's check 3 asserts a causal link between the ENAMETOOLONG crash and the escalation that Main's correction c1 rejects. Per failure-oracle correction c2 the manager-crash comment is not in the planner packet, so no trial may be penalised for not surfacing it. Net effect: the oracles support the exact-head --json defect and the absence of factory/plan.py at pinned main, but neither may be treated as a source the planners were given or as a checklist of required discoveries.",
+      "priority": 2,
+      "confidence": 0.75,
+      "file_path": "experiments/handoff-replanning/oracles/success.json",
+      "line_start": 1,
+      "line_end": 6
+    },
+    {
+      "title": "Qualify T3 item 3's conditional PR-file read as a human scope amendment for #56",
+      "body": "T3 item 3 proposes deciding where #56 obtains implementation change paths and says to 'add a bounded PR-file read only if needed and human-reviewed'. The suggestion is sourced, not invented: H54's own 'Unverified / decisions to confirm' section offers 'add a pulls/{n}/files read'. It is also not a promotion of an optional reviewer opinion to a requirement, since the only requirement stated is that the input be specified before implementation. Still, a new read integration is not named in I56's scope, so this is the item closest to added scope in the packet; its authority line should name the human scope-amendment checkpoint the way T6 item 3 does ('Do not automatically add PR-file lookup', retain unassigned with an explicit missing-path diagnostic). Both variants correctly leave #56 held behind #54 and #55, matching I52's graph.",
+      "priority": 3,
+      "confidence": 0.7,
+      "file_path": "experiments/handoff-replanning/blind-trials.json",
+      "line_start": 201,
+      "line_end": 210
+    },
+    {
+      "title": "T1 item 2 augments a held ticket's exit gate without naming a scope checkpoint",
+      "body": "T1 item 2 asks to 'include an edit beyond the reported 4000-character cutoff in the existing disposable drift scenario', which adds a case to #57's exit gate. #57 is factory-held with a release checkpoint requiring human-reviewed non-agent implementation, and the item's authority line covers baselines ('only human review may approve a new baseline') but not gate content. The underlying observation is sound and independently corroborated (SECTION_CAP truncation recorded in per-plan problems with malformed=true, and #57 binds Outcome/Boundaries/Plan/Success evidence through the plan reader), and T4 item 2 states the same refinement without touching the gate. Record it as a proposed gate amendment requiring human scope review, not as a refinement applicable at implementation time.",
+      "priority": 3,
+      "confidence": 0.65,
+      "file_path": "experiments/handoff-replanning/blind-trials.json",
+      "line_start": 43,
+      "line_end": 52
+    },
+    {
+      "title": "Keep 'producer contracts unverified' bounded to the packet in T2/T5 item 2",
+      "body": "T2 item 2 and T5 item 2 observe that P60/P61 carry only conflict-marker/test/leak-scan PASS lines and no #53/#54 scenario observations. That is accurate against the packet, and both items scope it correctly ('in this bundle', 'Existing gate claims alone'). The source oracle independently confirms those scenarios do exist as isolated-adapter real-CLI tests in tests/test_plan.py, so the real remaining gap is independent or live observation, not missing coverage. If the final report restates these items, preserve the packet scoping; dropping it would convert a PR-reporting gap into a false claim that the #53/#54 exit-gate scenarios were never exercised.",
+      "priority": 3,
+      "confidence": 0.72,
+      "file_path": "experiments/handoff-replanning/blind-trials.json",
+      "line_start": 112,
+      "line_end": 121
+    },
+    {
+      "title": "Item-1 family is bundle-derivable; all six self-label it below plan refinement",
+      "body": "The integration/baseline item appears as item 1 in all six trials (T1 26-40, T2 95-110, T3 170-185, T4 256-270, T5 327-341, T6 401-416). Its factual base is entirely in shared baseline sources: I52 requires building on current main, R0 pins distinct main/stable tips with PR #60 merged at the stable tip, and P61 reports base stable with merge state DIRTY. PROTOCOL.md states a main/stable mismatch is not credited as a handoff-specific discovery. Usefully for adjudication integrity, no trial claims it as a plan refinement: all six self-label local_remediation or known_prerequisite and each disclaims merge, retarget, release and deployment authority. The only trials producing a plan-refinement item on the reader/binding path are those whose source_ids include the worker reports, which is the comparison Main must apply the predeclared criterion to.",
+      "priority": 3,
+      "confidence": 0.78,
+      "file_path": "experiments/handoff-replanning/blind-trials.json",
+      "line_start": 26,
+      "line_end": 33
+    }
+  ]
+}

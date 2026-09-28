@@ -1,0 +1,12 @@
+{
+  "cases_verified": 40,
+  "paired_model_inputs_verified": 37,
+  "deterministic_cases": 3,
+  "paid_attempts": 38,
+  "reserved_usd": 1.596,
+  "credential_scan": "no key found in experiment artifacts",
+  "env_ignored_and_untracked": true,
+  "factory_source_unchanged_during_replay": true,
+  "python_cli": "3.14.7",
+  "assessment_quotes_verified": 40
+}

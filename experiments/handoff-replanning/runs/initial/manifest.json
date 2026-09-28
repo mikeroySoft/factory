@@ -1,0 +1,54 @@
+{
+  "started_at": "2026-09-10T20:41:55Z",
+  "model": "openai-codex/gpt-6-astra",
+  "flags": [
+    "-p",
+    "--mode",
+    "text",
+    "--no-session",
+    "--no-tools",
+    "--no-extensions",
+    "--no-skills",
+    "--no-rules",
+    "--no-lsp",
+    "--no-pty",
+    "--no-title",
+    "--thinking",
+    "medium",
+    "--hide-thinking",
+    "--max-time",
+    "300"
+  ],
+  "samples": 2,
+  "max_workers": 2,
+  "omp_version": "omp/18.1.15",
+  "sources_sha256": "ee1c24cbcb509de16e71ccca8df1197e911ea3cd4240901084ab79eb20d31c14",
+  "protocol_sha256": "8570ccc723b01eef4041aea6a0a5929bf6182762000330c664a2dfe8fbbd4e97",
+  "runner_sha256": "a73471875b46ad464c84663d3f581fd989067bd46aaed9134a5572142feb1b53",
+  "jobs": [
+    [
+      "baseline",
+      1
+    ],
+    [
+      "success",
+      1
+    ],
+    [
+      "mixed",
+      1
+    ],
+    [
+      "baseline",
+      2
+    ],
+    [
+      "success",
+      2
+    ],
+    [
+      "mixed",
+      2
+    ]
+  ]
+}

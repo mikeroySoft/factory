@@ -1,0 +1,7 @@
+{
+  "id": "factory-36",
+  "ok": true,
+  "deterministic": true,
+  "decision": "needs-info",
+  "question": "No acceptance criteria found. Add an observable done-condition and the exact command that verifies it."
+}

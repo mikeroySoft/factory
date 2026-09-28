@@ -1,0 +1,18 @@
+Observer check only — synthetic disposable inputs, not live pilot evidence.
+Run: 2026-09-10T22:02:27Z
+Command: python experiments/handoff-prospective/observer.py --self-test
+Observer SHA-256: cf398a5afcf2d18cfda57787bd77f7a7275a379b464c7aab2e5e2195a4116af3
+Exit: 0
+
+READY enrollment=2026-09-10T22:02:27Z boundary=96 last_event_id=None
+EXCLUDED ticket=10 reasons=ticket_was_claimed_before_enrollment
+EXCLUDED ticket=52 reasons=known_prior_case
+EXCLUDED ticket=81 reasons=control_plane_or_authority_policy
+EXCLUDED ticket=82 reasons=baseline_completed_after_worker_outcome
+SELECTED ticket=83 directory=<disposable temporary directory>
+READY resumed offset=689
+READY_FOR_CONTEXT_REVIEW ticket=83
+READY resumed offset=2063
+PASS observer checks: content-addressed capture; delayed crash replay; same-tick result/exit/attempt/approved; exact-head review/PR/source binding; vanished-worktree handling; prior/known/control exclusion; late baseline rejection; partial-line deferral; context hold; restart state
+
+Setup-review history: the first draft's direct helper check passed, but independent review then reproduced a same-second metadata collision for identical handoff bytes observed under distinct events. That initial observer was stopped before any candidate. The initial empty enrollment is preserved under enrollments/20260910T215058Z-superseded/. Independent review then reproduced replay of the same corroborating event after a delayed crash window; the final check above proves immutable observation reuse and state recovery, plus honest missing-worktree handling. The corrected full-tick check is the readiness evidence.

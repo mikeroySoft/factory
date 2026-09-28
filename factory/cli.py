@@ -15,6 +15,7 @@ COMMANDS = {
     "stats": ("stats", "main", "ticket metrics from GitHub"),
     "learn": ("learn", "main", "distil recent ticket outcomes into .factory-lessons.md"),
     "dashboard": ("dashboard", "main", "serve the local ops dashboard"),
+    "codebase": ("codebase", "main", "build commit-pinned codebase history for the dashboard"),
 }
 
 

@@ -1,0 +1,11 @@
+{
+  "baseline_summary_sha256": "aef89244b5b3fa1c807764e022a6f3d743d5e8db1ccad53af51dba3caedd7ea6",
+  "capture_eligible": true,
+  "claim_at": "2026-09-11T03:29:57Z",
+  "decided_at": "2026-09-11T03:29:59Z",
+  "manual_context_qualification_required_before_trials": true,
+  "reasons": [],
+  "selection": "user-nominated producer #6 and consumer #7",
+  "selection_did_not_inspect_handoff": true,
+  "ticket": 6
+}

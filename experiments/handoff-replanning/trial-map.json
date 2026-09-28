@@ -1,0 +1,32 @@
+[
+  {
+    "trial": "T1",
+    "condition": "success",
+    "sample": 2
+  },
+  {
+    "trial": "T2",
+    "condition": "baseline",
+    "sample": 1
+  },
+  {
+    "trial": "T3",
+    "condition": "mixed",
+    "sample": 2
+  },
+  {
+    "trial": "T4",
+    "condition": "success",
+    "sample": 1
+  },
+  {
+    "trial": "T5",
+    "condition": "baseline",
+    "sample": 2
+  },
+  {
+    "trial": "T6",
+    "condition": "mixed",
+    "sample": 1
+  }
+]

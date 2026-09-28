@@ -1,0 +1,468 @@
+{
+  "note": "Condition labels withheld; source availability is visible. Assess every recommendation using only its trial source_ids. All recommendations remain non-executing.",
+  "trials": [
+    {
+      "trial": "T1",
+      "source_ids": [
+        "R0",
+        "I52",
+        "I53",
+        "I54",
+        "I55",
+        "I56",
+        "I57",
+        "I58",
+        "I59",
+        "I15",
+        "P60",
+        "P61",
+        "H53A",
+        "H53B"
+      ],
+      "response": {
+        "assessment": "#53 is closed and PR #60 merged into stable, but this does not establish integration on the required main baseline or programme delivery. #54 remains open with PR #61 reported DIRTY against stable. Resolve that integration uncertainty before relying on A/B downstream, and account for the reader's reported truncation when implementing immutable bindings. The accepted outcome and held sequence remain unchanged.",
+        "recommendations": [
+          {
+            "target": "#54 / PR #61 and #52 Baseline and integration boundaries",
+            "adjustment": "Reconcile the observed stable-targeted A/B work with the required current-main baseline before accepting #54. Establish whether main contains the accepted #53 changes, then have the responsible human choose the integration path and resolve PR #61's conflicts without duplicating or dropping A's reader changes.",
+            "sources": [
+              "R0",
+              "P60",
+              "P61",
+              "I53",
+              "I54",
+              "I52"
+            ],
+            "observation": "PR #60 merged into stable; PR #61 is open against stable and reported DIRTY. Both child contracts require starting from current origin/main. PR #61 also lists reader/template additions present in PR #60. The supplied branch identities do not establish ancestry or equivalent content.",
+            "consequence": "A's closure and the PR gate reports do not establish a coherent A/B integration for remaining consumers. This is local integration remediation, not a reason to change the dependency graph or release held work.",
+            "kind": "local_remediation",
+            "authority": "The responsible human retains integration and release decisions. Preserve #15/PR #40 ownership, existing local work, and all #55-#59 holds; this recommendation authorizes no merge or branch mutation.",
+            "check": "Record ancestry or content comparison at the pinned revisions and the human-selected integration baseline. On the reconciled candidate, run the existing unittest gate and #54's actual read-only route scenarios, including provenance and absence of mutation."
+          },
+          {
+            "target": "#57 — Plan baseline construction and comparison",
+            "adjustment": "Make the binding path explicitly distinguish complete canonical sections from the reader's bounded display representation. Do not create or validate a binding from truncated relevant sections; use complete canonical content or refuse new admission with an explicit incomplete-source reason. Include an edit beyond the reported 4000-character cutoff in the existing disposable drift scenario.",
+            "sources": [
+              "H53B",
+              "I57",
+              "I53"
+            ],
+            "observation": "The final #53 worker report claims that sections are cut to 4000 characters and truncation is recorded as malformed; this is not independently verified implementation evidence. #57 requires canonical relevant content and digest comparison while preserving admitted scope.",
+            "consequence": "If binding reuses truncated reader content, a later edit outside the retained prefix could escape drift detection. Clarifying the producer boundary now avoids treating a display limit as an execution-scope limit without expanding A's pagination or changing admitted work.",
+            "kind": "plan_refinement",
+            "authority": "Keep #57 held and subject to its existing human-reviewed implementation checkpoint. Only human review may approve a new baseline; missing or truncated source must never rewrite or restart an admitted attempt.",
+            "check": "In the existing #57 scenario, use a relevant section longer than 4000 characters and change only its suffix. Observe either complete-content binding followed by detected drift, or explicit refusal of incomplete-source admission; historical admitted evidence must remain unchanged."
+          }
+        ],
+        "unchanged": [
+          "Success remains the real initiative-to-delivery workflow with one authoritative runner and two distinct consenting humans, not child closure, merge status or reported test success.",
+          "#55-#59 remain held under their existing checkpoints; dependencies and serialization of C/D writers after the #15/PR #40 handoff remain intact.",
+          "Initiative owner, decision owner and execution claim remain separate and grant no action authority; legacy human-assignee and takeover semantics remain unchanged.",
+          "Human-approved admitted scope remains immutable. Later initiative edits produce drift and proposals, not silent execution changes.",
+          "Releases, deployment, real-account acceptance, account/access changes and publication retain their separate permission boundaries.",
+          "FM remains read-only and advisory; private discussion and untrusted source content are not accepted policy or authorization.",
+          "Optional review opinions and the worker's deferred pagination suggestion do not become requirements."
+        ],
+        "unknown": [
+          "Whether the pinned main revision contains #53 or equivalent A/B changes; no ancestry or source comparison is supplied.",
+          "The specific conflicts in PR #61 and the responsible human's chosen integration resolution.",
+          "Independent verification of the reported reader behavior, route behavior and actual CLI exit gates at the integration candidate.",
+          "Current #15/PR #40 handoff readiness and independently enforced merge protection; the bundle does not establish either.",
+          "Availability and authorization of the pilot repository, distinct runner identity and two consenting humans, and any observed end-to-end acceptance evidence."
+        ]
+      }
+    },
+    {
+      "trial": "T2",
+      "source_ids": [
+        "R0",
+        "I52",
+        "I53",
+        "I54",
+        "I55",
+        "I56",
+        "I57",
+        "I58",
+        "I59",
+        "I15",
+        "P60",
+        "P61"
+      ],
+      "response": {
+        "assessment": "#53 is closed and PR #60 merged into stable; #54 remains open with PR #61 reported DIRTY against stable. Both children require a current-main baseline, so integration alignment remains unresolved. The supplied gate reports and issue states do not establish producer acceptance or the two-human programme outcome. The smallest useful adjustment is to reconcile that integration path before treating A/B as accepted prerequisites; no outcome or scope expansion is warranted.",
+        "recommendations": [
+          {
+            "target": "#52 Implementation sequence and #54 / PR #61",
+            "adjustment": "Record a human-owned integration checkpoint: reconcile the required current-main baseline with #60's stable merge and #61's stable target, then resolve #61's reported conflict on the agreed integration path. Determine whether A is present on that baseline before carrying B forward; do not infer this from #53 closure or the PR file lists.",
+            "sources": [
+              "R0",
+              "I52",
+              "I53",
+              "I54",
+              "P60",
+              "P61"
+            ],
+            "observation": "The child contracts require starting from current origin/main. The pinned observations show different main and stable tips, #60 merged into stable, and #61 open against stable with merge state DIRTY. #61's file list also includes files introduced by A, but the bundle provides no ancestry or diff evidence explaining their relationship.",
+            "consequence": "B's remaining integration work depends on establishing which A implementation its accepted baseline contains. Resolving this locally avoids propagating an uncertain producer baseline into the held children without changing their dependency graph.",
+            "kind": "local_remediation",
+            "authority": "A human must resolve integration intent; this recommendation does not authorize retargeting, merging, release or deployment. Preserve #15/PR #40 ownership, admitted scope and all #55-#59 holds.",
+            "check": "At the pinned revisions, inspect ancestry and the relevant A/B diff; record the human-selected baseline and integration disposition. On the resulting candidate, observe that the reported conflict is resolved and run the current unittest gate and the existing #54 real-route exit scenario."
+          },
+          {
+            "target": "#52 Implementation sequence — A/B producer acceptance",
+            "adjustment": "Distinguish A's closed/merged status and B's pending integration from acceptance of their existing exit gates. Obtain or link the actual CLI observations required by #53 and #54 on the agreed candidate before counting either producer as accepted; this is completion evidence for existing work, not a new feature or test suite.",
+            "sources": [
+              "I52",
+              "I53",
+              "I54",
+              "P60",
+              "P61"
+            ],
+            "observation": "#53 and #54 specify observable real-CLI scenarios, including partial/error results and mutation-free routing. The supplied PR bodies report only conflict-marker, test and leak-scan PASS summaries; they do not include those scenario observations.",
+            "consequence": "Closure and gate summaries leave the read-only producer contracts unverified in this bundle. Downstream planning should retain that uncertainty rather than equate implementation status with accepted behavior.",
+            "kind": "known_prerequisite",
+            "authority": "Keep acceptance human-owned. Use isolated adapters for these existing checks; no GitHub publication, live-account acceptance, hold release or change to admitted execution scope is authorized.",
+            "check": "Review existing revision-linked scenario evidence if available; otherwise exercise the specified #53 reader/template and #54 route scenarios with isolated adapters, recording observable results and absence of GitHub mutation."
+          }
+        ],
+        "unchanged": [
+          "The accepted outcome remains a distinct runner plus two consenting humans completing initiative-to-delivery acceptance; child closure, merges and test reports do not establish delivery.",
+          "Preserve the existing dependency graph, #15/PR #40 ownership and handoff, and serialization of C/D writers at shared control-plane boundaries.",
+          "#55-#59 remain held. G/C/D retain their human-reviewed non-agent implementation or independently enforced external merge-protection checkpoint; descriptive holds and scheduling blockers are not merge interlocks.",
+          "Human-reviewed tickets and immutable admitted plan snapshots remain the execution contract. Later edits produce drift and human questions, not silent rewrites or restarts.",
+          "Initiative ownership, decision ownership and runner claims remain distinct and grant no action authority; preserve legacy human-assignee and intervention semantics.",
+          "Keep one authoritative runner, GitHub collaboration, shared read-only producers and no rival executor, new remote mutation surface, database or scheduler.",
+          "Release, deployment, real-account acceptance, account/access changes and publication retain their separate permissions. Optional design opinions remain optional."
+        ],
+        "unknown": [
+          "The ancestry and implementation relationship between pinned main, stable, #60 and #61; distinct tips alone do not prove A is absent from main.",
+          "The specific cause of #61's reported DIRTY state and its state after any subsequent integration work.",
+          "Actual source behavior and revision-linked CLI exit-gate evidence beyond the supplied PR summaries.",
+          "The current #15/PR #40 handoff disposition and independently enforced merge protection; neither is established by this bundle.",
+          "Availability and authorization of the dedicated pilot repository, distinct runner identity and two consenting humans, and any owner-confirmed end-to-end acceptance evidence."
+        ]
+      }
+    },
+    {
+      "trial": "T3",
+      "source_ids": [
+        "R0",
+        "I52",
+        "I53",
+        "I54",
+        "I55",
+        "I56",
+        "I57",
+        "I58",
+        "I59",
+        "I15",
+        "P60",
+        "P61",
+        "H53A",
+        "H53B",
+        "H54",
+        "E54"
+      ],
+      "response": {
+        "assessment": "#53 is closed and PR #60 merged to stable; #54 remains open with PR #61 reported DIRTY. The supplied review identifies a concrete CLI contract failure despite passing gate reports. Resolve that local defect and establish the intended integration baseline before accepting the router; clarify its change-path input at the future handoff boundary. Neither these implementation records nor worker verification claims establish the two-human outcome.",
+        "recommendations": [
+          {
+            "target": "#52 Baseline and integration boundaries; #54 / PR #61",
+            "adjustment": "Have the responsible human reconcile the required current-main implementation baseline with PR #60's stable merge and PR #61's stable target. Record the accepted source/base relationship and resolve PR #61's conflicts through the existing review workflow before accepting #54. Do not assume the worker's predicted clean rebase still applies.",
+            "sources": [
+              "I52",
+              "I54",
+              "R0",
+              "P60",
+              "P61",
+              "H54"
+            ],
+            "observation": "The programme and #54 require starting from current main. API observations identify PR #60 as merged to stable and PR #61 as open against stable; P61 reports DIRTY. H54 says the router incorporated agent/53 and predicts a clean rebase, but that claim does not establish the current integration state or main ancestry.",
+            "consequence": "Remaining consumers need an identified, accepted reader/router baseline rather than relying on child closure, a stable merge, or a historical rebase prediction.",
+            "kind": "known_prerequisite",
+            "authority": "Branch integration remains human-owned; this recommendation authorizes no retarget, merge, release or deployment. Preserve #15/PR #40 ownership and all #55–#59 holds.",
+            "check": "Record the relevant ancestry and intended base using the pinned revisions, then obtain conflict-free integration evidence and the existing gate plus reader/router CLI checks on the human-selected candidate."
+          },
+          {
+            "target": "#54 / PR #61",
+            "adjustment": "Accept the specified --json flag in the route command without changing its read-only behavior. Treat this as a local contract repair, not a programme refinement; leave optional review opinions optional.",
+            "sources": [
+              "I54",
+              "E54",
+              "H54"
+            ],
+            "observation": "I54 explicitly specifies factory plan route N --reason <reason> --json. E54 reports that --json produces invalid_request and exit 2, and identifies it as the sole required spec finding. H54's successful test and fixture reports do not resolve that finding.",
+            "consequence": "The documented command cannot yet be accepted as usable merely because the reported gate passed. Repairing the parser is smaller than changing the accepted CLI contract or expanding router scope.",
+            "kind": "local_remediation",
+            "authority": "Keep #54 under its existing human review disposition. No assignment, notification, retry authorization or downstream release follows from the repair.",
+            "check": "Run the actual route CLI with --json against an isolated read-only adapter and a deterministic owner case; observe the expected owner and provenance, a successful exit, and no mutation calls. Retain a regression for the rejected flag."
+          },
+          {
+            "target": "#56 ownership-producer integration",
+            "adjustment": "Before implementing the held handoff consumer, specify where implementation change paths supplied to the router come from. Decide whether already-available authoritative attempt/PR evidence suffices; add a bounded PR-file read only if needed and human-reviewed. If paths are unavailable, preserve unassigned routing rather than guessing.",
+            "sources": [
+              "H54",
+              "I54",
+              "I56"
+            ],
+            "observation": "H54 reports that route paths currently come only from --path and that no PR-file lookup is implemented. I54 requires no guessing when implementation paths are missing. I56 will consume ownership routing for terminal handoffs, but does not identify the path-evidence source.",
+            "consequence": "A working manual route command does not establish that the future automatic handoff has the evidence needed for component-owner routing. A small integration decision prevents silently losing that routing or introducing an unjustified fallback.",
+            "kind": "plan_refinement",
+            "authority": "#56 remains held behind #54 and #55, with dispatch/manage changes only after the #15/PR #40 handoff. Path evidence grants no action authority; notification remains restricted to terminal, exhausted, disabled or unavailable manager recovery.",
+            "check": "During authorized #56 implementation, exercise a terminal implementation handoff with a known matching path and another with unavailable paths. Observe evidenced owner selection in the first and an explicit unassigned result in the second, without assignment or premature publication."
+          }
+        ],
+        "unchanged": [
+          "The accepted outcome remains one authoritative runner and two consenting humans completing initiative-to-delivery collaboration; #52 stays open until human acceptance, not merely child closure or merge.",
+          "#55–#59 remain held. Existing dependency edges, #15/PR #40 ownership, and serialization of #56/#57 writers remain unchanged; descriptive holds and scheduling blockers are not merge interlocks.",
+          "Initiative ownership, decision ownership and execution claims remain distinct and confer no action authority. Preserve legacy assignee/manual-takeover semantics.",
+          "Human-reviewed ticket scope and admitted plan baselines remain immutable for running work; later edits produce drift evidence and human questions, not silent rewrites or restarts.",
+          "Releases, deployment, real-account acceptance and publication require their own permission. No account creation, credential sharing, permission grants or production changes are authorized.",
+          "Dashboard and FM remain read-only consumers of shared producers; private discussion is not team policy, and conversational mutation is not claimed delivered.",
+          "Optional review suggestions remain optional. No unrelated manager transport fix, CODEOWNERS parser, new service, scheduler or store is added."
+        ],
+        "unknown": [
+          "The supplied revisions do not establish whether or how PR #60's accepted changes are incorporated into current main, or which integration baseline the human owner will approve for PR #61.",
+          "No supplied later evidence shows the --json defect repaired, PR #61 conflicts resolved, or the router accepted on the intended integration baseline.",
+          "Worker reports claim CLI and gate success; independently observed execution results for the final integrated candidate are not supplied.",
+          "Live organization/team routing is unverified in H54. The bundle does not establish membership verification or live notification delivery.",
+          "Current #15/PR #40 handoff readiness and independently enforced merge protection are not established by this bundle.",
+          "No supplied evidence establishes the authorized pilot repository, distinct runner and two consenting human identities, end-to-end restart continuity, or owner-confirmed outcome delivery."
+        ]
+      }
+    },
+    {
+      "trial": "T4",
+      "source_ids": [
+        "R0",
+        "I52",
+        "I53",
+        "I54",
+        "I55",
+        "I56",
+        "I57",
+        "I58",
+        "I59",
+        "I15",
+        "P60",
+        "P61",
+        "H53A",
+        "H53B"
+      ],
+      "response": {
+        "assessment": "#53 is closed and PR #60 merged to stable; #54 remains open with PR #61 reported DIRTY. These establish implementation progress, not accepted producer behavior or programme delivery. The smallest useful adjustments are to resolve the integration baseline for #54 and account for reported reader truncation when designing #57's immutable binding.",
+        "recommendations": [
+          {
+            "target": "#54 / PR #61 and #52 Baseline and integration boundaries",
+            "adjustment": "Have the responsible human resolve the mismatch between the required current-main baseline and the stable-targeted PRs before accepting #54. Reconcile PR #61's conflicts against that chosen integration path, establishing that #53's producer is present rather than treating child closure as sufficient integration evidence.",
+            "sources": [
+              "R0",
+              "I52",
+              "I53",
+              "I54",
+              "P60",
+              "P61"
+            ],
+            "observation": "The programme and child instructions require current main. PR #60 merged to stable, PR #61 targets stable and is reported DIRTY, and R0 pins distinct main and stable revisions. The bundle does not establish whether main contains #53's implementation. PR #61's reported passing gate does not resolve its current integration state.",
+            "consequence": "#54 and the held consumers need one evidenced producer baseline. Resolving this locally avoids carrying uncertain integration assumptions into control-plane work without changing the dependency graph.",
+            "kind": "local_remediation",
+            "authority": "The human retains integration and acceptance ownership. This proposes no automatic retarget, merge, release or deployment; #55-#59 remain held and #15/PR #40 ownership is untouched.",
+            "check": "Record the human-selected base and resulting PR head, demonstrate that the integrated tree contains #53's producer without unresolved conflicts, then run the existing unittest gate and #54's actual read-only route scenarios on that tree."
+          },
+          {
+            "target": "#57 — canonical section capture and admission",
+            "adjustment": "Before reusing the plan reader for binding, determine whether its reported truncation affects canonical section capture. If it does, use complete relevant sections for binding or explicitly refuse a new binding when completeness cannot be established; never digest a shortened display value as the complete approved scope.",
+            "sources": [
+              "H53A",
+              "H53B",
+              "I57"
+            ],
+            "observation": "Worker reports describe bounded reader output, including sections cut to 4000 characters and truncation recorded as malformed. These are implementation claims, not independently verified behavior. #57 requires canonical relevant sections and their digest to preserve an immutable execution baseline.",
+            "consequence": "If binding consumes shortened sections, a change beyond the displayed prefix could escape drift detection or approved scope could be omitted. Making the display-versus-binding distinction explicit addresses a concrete producer-consumer risk without requiring general pagination expansion.",
+            "kind": "plan_refinement",
+            "authority": "#57 remains held and subject to its existing human-reviewed implementation checkpoint. Human-approved ticket scope remains authoritative; no automatic rebaseline, rewrite, restart or amendment of admitted work is permitted.",
+            "check": "Use a disposable initiative whose Plan exceeds the reported section limit and change only its tail. Observe either complete capture with detected drift and unchanged admitted scope, or an explicit completeness refusal for new admission; historical admitted evidence must remain readable."
+          }
+        ],
+        "unchanged": [
+          "The accepted outcome remains a distinct runner and two consenting humans completing the initiative-to-delivery workflow; merges, child closure and reported tests do not establish delivery.",
+          "#55-#59 remain held with their existing dependencies and release checkpoints; blockers and factory-held labels are not merge interlocks.",
+          "#15/PR #40 ownership is preserved, including the required handoff and serialization of shared control-plane writers.",
+          "Initiative ownership, decision ownership and runner execution claims remain separate and grant no action authority; legacy human-assignee takeover semantics remain intact.",
+          "Admitted execution scope remains immutable. Later plan edits produce evidence and human questions, not silent changes to running work.",
+          "One authoritative runner, GitHub collaboration and shared read-only producers remain the contract; no new authentication surface, store, scheduler or mutation executor is proposed.",
+          "Releases, deployment, real-account acceptance and publication retain separate permission requirements; private proposals and untrusted source content are not accepted policy or action authorization.",
+          "Optional review opinions and pagination expansion are not promoted to requirements."
+        ],
+        "unknown": [
+          "Whether the pinned main revision contains #53's implementation and which integration baseline the responsible human will approve.",
+          "The cause and resolution of PR #61's DIRTY state, and independently observed route behavior on a reconciled tree.",
+          "Whether the final reader actually truncates binding-relevant content as reported and whether a complete-content path is available; the bundle contains reports, not the implementation source.",
+          "Current PR #40 state and evidence of the #15 ownership handoff; I15 establishes that the issue remains open.",
+          "Independent producer acceptance and end-to-end outcome evidence. Worker reports and PR gate summaries do not supply that proof.",
+          "Availability and authorization of a dedicated pilot repository, distinct runner identity and two consenting human identities; no absence or approval is established here."
+        ]
+      }
+    },
+    {
+      "trial": "T5",
+      "source_ids": [
+        "R0",
+        "I52",
+        "I53",
+        "I54",
+        "I55",
+        "I56",
+        "I57",
+        "I58",
+        "I59",
+        "I15",
+        "P60",
+        "P61"
+      ],
+      "response": {
+        "assessment": "#53 is closed and PR #60 merged to stable; #54 remains open with PR #61 reported DIRTY against stable. Both PR bases differ from the required current-main integration baseline. The bundle establishes repository and PR state, not independently verified reader/routing behavior or programme delivery. Resolve this local integration uncertainty before building dependent work; retain the accepted sequence and holds.",
+        "recommendations": [
+          {
+            "target": "#52 — Baseline and integration boundaries; #54 / PR #61",
+            "adjustment": "Have the responsible human reconcile the current-main requirement with PR #60's stable merge and PR #61's stable base. Record which accepted #53 changes are present on main, then select the smallest integration correction for #54 and resolve its reported conflict against that reviewed baseline. Do not infer branch ancestry from the differing commit identities.",
+            "sources": [
+              "R0",
+              "I52",
+              "I53",
+              "I54",
+              "P60",
+              "P61"
+            ],
+            "observation": "The issues require starting from current origin/main. R0 pins distinct main and stable commits, places PR #60's merge at the stable tip, and identifies PR #61's open head and stable base. P61 reports DIRTY and lists reader/template additions also listed in P60; these observations do not establish whether main contains the accepted reader changes.",
+            "consequence": "Dependent implementation needs an unambiguous producer baseline. Integrating #54 without resolving this discrepancy risks carrying overlapping changes or building on a branch other than the approved baseline.",
+            "kind": "local_remediation",
+            "authority": "Branch reconciliation and any integration change remain human-reviewed; this advice does not authorize merge, release or deployment, alter #15/PR #40 ownership, or release #55-#59.",
+            "check": "Record ancestry and the relevant #53/#54 diff at the pinned commits, the human-selected integration baseline, and a conflict-free #54 candidate with its resulting commit identity."
+          },
+          {
+            "target": "#53 and #54 — Verification; #52 — Implementation sequence",
+            "adjustment": "At the reconciled candidate, obtain or link the already-required actual CLI evidence and current unittest gate results before treating A/B producer behavior as accepted for dependent work. Keep merged/closed status separate from behavioral acceptance; no new acceptance suite is proposed.",
+            "sources": [
+              "I53",
+              "I54",
+              "P60",
+              "P61",
+              "I52"
+            ],
+            "observation": "P60 and P61 contain generic PASS reports but no detailed observations from the required reader and routing CLI scenarios. I53 and I54 already specify those scenarios, including partial/error results, routing ambiguity, prefix boundaries and absence of mutation.",
+            "consequence": "The remaining guard, binding and handoff work depends on these producers. Existing gate claims alone do not establish their observable contracts, especially after integration correction.",
+            "kind": "known_prerequisite",
+            "authority": "Evidence review does not reopen or rewrite admitted scope, grant action authority, release held children, or substitute for owner-confirmed programme acceptance.",
+            "check": "A report tied to the reconciled commit records the current unittest command/result and the existing isolated-adapter real CLI scenarios, including observable partial/error handling, routing provenance and zero GitHub mutation."
+          }
+        ],
+        "unchanged": [
+          "Success remains one initiative-to-delivery workflow with a distinct authoritative runner and two consenting humans, not seven closed issues or merged PRs; #52 stays open until human acceptance of #59.",
+          "Preserve the existing dependency graph, #15/PR #40 ownership and handoff, and serialization of C/D writers; do not modify that separately owned work.",
+          "#55-#59 remain held without intake labels. G/C/D still require human-reviewed non-agent implementation or separately authorized, independently enforced external merge protection before future intake; descriptive holds and blockers are not merge interlocks.",
+          "Human-reviewed ticket scope and immutable admitted plan bindings remain authoritative. Later plan edits produce drift and human questions, never silent changes to running work.",
+          "Initiative owner, decision owner and execution claim remain distinct and confer no action authority. Preserve assignee/manual-takeover semantics and terminal-manager-only handoffs; human replies do not authorize retry or merge.",
+          "Retain one runner, individual GitHub identities, GitHub proposal space, read-only shared producers and FM, and no new executor, authentication surface, store or scheduler. Team routing requires verified organization context.",
+          "Release, deployment, real-account acceptance, account or permission changes, and publication require their separate applicable authorization; this advisory output grants none."
+        ],
+        "unknown": [
+          "Whether the pinned main commit contains PR #60's accepted implementation, and the precise cause and extent of PR #61's reported conflict.",
+          "Independent observations of the required #53/#54 CLI behavior and current gate results at a reconciled integration commit.",
+          "Current #15/PR #40 handoff readiness and any independently enforced merge protection; #15 is observed open, but no current PR #40 or protection inspection is supplied.",
+          "Availability and consent of distinct pilot identities, authorized test repository and credentials, and end-to-end outcome, retry, drift and restart evidence. These prerequisites are not established as either available or unavailable by this bundle."
+        ]
+      }
+    },
+    {
+      "trial": "T6",
+      "source_ids": [
+        "R0",
+        "I52",
+        "I53",
+        "I54",
+        "I55",
+        "I56",
+        "I57",
+        "I58",
+        "I59",
+        "I15",
+        "P60",
+        "P61",
+        "H53A",
+        "H53B",
+        "H54",
+        "E54"
+      ],
+      "response": {
+        "assessment": "#53 is closed and PR #60 merged to stable; #54 remains human-held with PR #61 open and reported DIRTY. Neither merge status nor reported passing gates establishes the two-human outcome. The smallest useful changes are to reconcile the integration baseline, resolve the reported required CLI defect, and clarify one routing input needed by the remaining handoff work.",
+        "recommendations": [
+          {
+            "target": "#52 Implementation sequence; #54 / PR #61",
+            "adjustment": "Record a human-owned integration checkpoint before treating A/B as available prerequisites: reconcile PR #60's stable merge and PR #61's base/conflicts with the programme's current-main implementation requirement. Identify the accepted integration revision without assuming the worker's predicted clean rebase occurred.",
+            "sources": [
+              "R0",
+              "I52",
+              "I53",
+              "I54",
+              "P60",
+              "P61",
+              "H54"
+            ],
+            "observation": "The plan requires implementation from current main. PR #60 merged to stable; PR #61 targets stable and is reported DIRTY. H54 says its branch incorporated agent/53 and predicts a clean rebase, but that is a worker claim. The supplied branch identities do not establish whether main contains the accepted changes.",
+            "consequence": "Remaining consumers need an identified, accepted producer baseline; child closure and an earlier gate report do not resolve branch integration or current conflicts.",
+            "kind": "known_prerequisite",
+            "authority": "Integration remains human-owned. Do not change #15/PR #40 ownership, release #55-#59, or infer merge, release or deployment permission from this checkpoint.",
+            "check": "A human-reviewed integration record identifies the revision containing the accepted A/B changes, establishes its relationship to current main, and records conflict resolution plus the existing gate and affected CLI checks on that revision."
+          },
+          {
+            "target": "#54 / PR #61",
+            "adjustment": "Resolve the reported rejection of --json before accepting #54, preserving the specified command rather than weakening the contract to match the implementation. Keep optional review opinions outside the acceptance blocker.",
+            "sources": [
+              "I54",
+              "E54",
+              "P61"
+            ],
+            "observation": "I54 specifies factory plan route N --reason <reason> --json. E54 reports that --json produces invalid_request and exit 2, identifying it as the sole required review finding despite passing gate reports. PR #61 remains open.",
+            "consequence": "The documented consumer invocation reportedly fails; the remaining routing consumers should not inherit an unaccepted CLI discrepancy.",
+            "kind": "local_remediation",
+            "authority": "Use the existing human-reviewed #54 resolution path. This does not authorize retry, merge, intake changes or any held control-plane work.",
+            "check": "On the candidate acceptance revision, run the exact route command with --json against an isolated adapter and observe the expected routing JSON and exit status with no mutation."
+          },
+          {
+            "target": "#56 ownership-producer integration",
+            "adjustment": "Clarify where terminal implementation handoffs will obtain evidenced change paths for routing. Prefer an existing trustworthy input if available; if none exists, retain unassigned with an explicit missing-path diagnostic. Do not automatically add PR-file lookup or guess ownership.",
+            "sources": [
+              "H54",
+              "I54",
+              "I56"
+            ],
+            "observation": "H54 reports that routing paths come only from --path and that missing implementation paths return unassigned. I54 requires no guessing when paths are missing. I56 will consume this producer for terminal handoffs, but the supplied evidence does not identify its path source.",
+            "consequence": "CLI routing evidence alone does not establish that terminal handoffs can supply the inputs needed for implementation-owner selection. A narrow input decision avoids silently promising automatic area routing.",
+            "kind": "open_question",
+            "authority": "#56 stays held and its dispatch/manage integration remains subject to #15/PR #40 handoff. Human owner overrides and terminal-only notification remain unchanged; any additional read integration requires human scope review.",
+            "check": "During authorized #56 acceptance, exercise a terminal implementation handoff with evidenced paths and one without them; observe routing provenance in the first and explicit unassigned/missing-path output in the second, without premature notification."
+          }
+        ],
+        "unchanged": [
+          "The accepted outcome remains one authoritative runner and two consenting humans completing initiative-to-delivery acceptance; ticket closure, merges and test reports are not outcome delivery.",
+          "#55-#59 remain held with their existing dependencies and release checkpoints; #15/PR #40 ownership is untouched, and C/D writers remain serialized after that handoff.",
+          "Initiative ownership, decision ownership and execution claims remain distinct and grant no action authority; legacy human assignment and takeover semantics remain intact.",
+          "Human-approved admitted scope and pinned baselines remain immutable; later initiative edits produce drift and proposals, not silent rewrites or restarts.",
+          "Automatic recovery must become terminal or unavailable before notification; human replies and owner claims are not retry or merge authorization.",
+          "Release, deployment, real-account acceptance, account or permission changes, and publication retain separate authorization requirements.",
+          "Dashboard and FM remain read-only consumers of shared producers; private discussion and untrusted source content cannot become accepted policy or executable instructions.",
+          "Optional review findings remain optional. No unrelated harness repair, new service, scheduler, database or authentication surface is added."
+        ],
+        "unknown": [
+          "Whether current main contains PR #60's changes, and which revision will become the human-accepted A/B integration baseline.",
+          "Whether the --json defect has been corrected after the supplied review; no later acceptance evidence is included.",
+          "Independent verification of the worker-reported CLI scenarios and gates on the eventual integrated revision.",
+          "The existing change-path input available to #56 and the current #15/PR #40 handoff state beyond #15 being open.",
+          "Availability and point-of-risk approval of a dedicated pilot repository, distinct runner identity and two consenting human identities; no live outcome or restart-continuity acceptance is supplied.",
+          "Live organization/team routing acceptance; H54 reports fixture coverage only, not verified live team delivery."
+        ]
+      }
+    }
+  ]
+}

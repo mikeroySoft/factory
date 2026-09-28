@@ -1,0 +1,15 @@
+OMP isolation check only — no model call and no global/user config edit.
+Overlay: experiments/handoff-prospective/omp-isolation.yml
+Overlay SHA-256: 700af80e6fee4bbeaa20158b2ae56ebafa9d158acc95dd56485cec8f0391c93b
+Inspection envelope: PI_CONFIG_FILES=<absolute overlay path> omp config get <key> --json
+Future trial envelope also passes --config <absolute overlay path>.
+
+Effective values:
+memory.backend = "off"
+mnemopi.autoRecall = false
+mnemopi.autoRetain = false
+autolearn.enabled = false
+autolearn.autoContinue = false
+advisor.enabled = false
+
+An initial attempt placed --config before the `config get` subcommand. OMP's config subcommand did not apply that launch-only flag and displayed the user defaults; no settings were changed. PI_CONFIG_FILES is the documented overlay mechanism accepted by the config inspector and produced the effective values above. Future raw inspection JSON belongs in the trial run directory if a case qualifies.

@@ -1,0 +1,14 @@
+{
+  "baseline_summary_sha256": "43d2c67de1ca381f87d2d956eb69ee79bd8c115a7d927423a9265062e46ad3ce",
+  "capture_eligible": false,
+  "claim_at": "2026-09-10T22:17:49Z",
+  "context_status_is_eligibility_proxy": true,
+  "decided_at": "2026-09-10T22:17:51Z",
+  "manual_context_qualification_required_before_trials": false,
+  "reasons": [
+    "control_plane_or_authority_policy",
+    "no_approved_downstream_plan_or_consumer_context"
+  ],
+  "selection_did_not_inspect_handoff": true,
+  "ticket": 79
+}

@@ -1,0 +1,89 @@
+{
+  "checked_at": "2026-09-10T20:52:03.267Z",
+  "comparison": "Original frozen body versus full GitHub API body, after outer-whitespace trim",
+  "all_bodies_identical": true,
+  "rows": [
+    {
+      "issue": 52,
+      "original_body_chars": 9876,
+      "api_body_chars": 9876,
+      "identical": true,
+      "original_contains_clipping_marker": false,
+      "updated_at": "2026-09-08T04:03:36Z",
+      "body_sha256": "28e31e9c7aeed71a689a25c8da9105215f23be36cca91337d7fafee8598693da"
+    },
+    {
+      "issue": 53,
+      "original_body_chars": 2696,
+      "api_body_chars": 2696,
+      "identical": true,
+      "original_contains_clipping_marker": false,
+      "updated_at": "2026-09-08T04:29:15Z",
+      "body_sha256": "8952f04245f43f70736299de06cbf4fb4201089f1cb5d205ebbbed4b597e82d1"
+    },
+    {
+      "issue": 54,
+      "original_body_chars": 2528,
+      "api_body_chars": 2528,
+      "identical": true,
+      "original_contains_clipping_marker": false,
+      "updated_at": "2026-09-08T04:55:20Z",
+      "body_sha256": "61b405711d29954d65bb63fc5146a4669d5d6a2ffe0d017ba3474ed30756180e"
+    },
+    {
+      "issue": 55,
+      "original_body_chars": 2269,
+      "api_body_chars": 2269,
+      "identical": true,
+      "original_contains_clipping_marker": false,
+      "updated_at": "2026-09-08T03:59:40Z",
+      "body_sha256": "e52f7b49c4b37d30a08d0528af38380c7a6f7048581b60c143d46351a4337652"
+    },
+    {
+      "issue": 56,
+      "original_body_chars": 4021,
+      "api_body_chars": 4021,
+      "identical": true,
+      "original_contains_clipping_marker": false,
+      "updated_at": "2026-09-08T03:59:41Z",
+      "body_sha256": "5bf553cec635acb5683455f7e141ddeb5cc4fd4e55e93b7b98ca663c74da0c92"
+    },
+    {
+      "issue": 57,
+      "original_body_chars": 3100,
+      "api_body_chars": 3100,
+      "identical": true,
+      "original_contains_clipping_marker": false,
+      "updated_at": "2026-09-08T03:59:42Z",
+      "body_sha256": "f01cb11631ff154126d7d1f7d12812ccb3bc05252caeeb03fe6acbfd97ac0c31"
+    },
+    {
+      "issue": 58,
+      "original_body_chars": 2832,
+      "api_body_chars": 2832,
+      "identical": true,
+      "original_contains_clipping_marker": false,
+      "updated_at": "2026-09-08T03:59:44Z",
+      "body_sha256": "0bd82789840a7b56df2cca8784b116cdcf9278711b948bf12dc0506602f17919"
+    },
+    {
+      "issue": 59,
+      "original_body_chars": 2828,
+      "api_body_chars": 2828,
+      "identical": true,
+      "original_contains_clipping_marker": false,
+      "updated_at": "2026-09-08T03:59:45Z",
+      "body_sha256": "8ae617885a7aea5a6b74e609da691455a6d7bab47a31eaaad0af5e69af2f89b5"
+    },
+    {
+      "issue": 15,
+      "original_body_chars": 1413,
+      "api_body_chars": 1413,
+      "identical": true,
+      "original_contains_clipping_marker": false,
+      "updated_at": "2026-09-07T22:22:44Z",
+      "body_sha256": "9faf81b18b79c1aa637a7f443fdf23a6ffa6d7af07f44ba975d9d7576b0a96e3"
+    }
+  ],
+  "conclusion": "No source truncation. Only transcript display was clipped. No rerun performed."
+}

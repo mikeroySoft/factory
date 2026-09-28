@@ -1,0 +1,13 @@
+{
+  "mode": "smoke",
+  "model": "jev-latest",
+  "timestamp": 1789594204.3233876,
+  "sha256": {
+    "PROTOCOL.md": "ed92e928f7207709177202c74033e4a35efd77f73081f78aecc8bde6abcb17ab",
+    "questions.json": "c2a7350f93dcab1f25f792930b802a3983d35bcea9254c9cbae6cc4da6fdf1bd",
+    "run.py": "94a7e23694d916eccc9fddd1a6effe4d2cfd587326ac425392b6756215599cd8"
+  },
+  "price_per_input_token": 4.2000000000000006e-08,
+  "max_calls": 41,
+  "reserved_tokens_per_call": 1000000
+}

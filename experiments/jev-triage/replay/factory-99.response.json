@@ -1,0 +1,1 @@
+{"model":"jev-1.13.0","answers":{"route":{"type":"choice","choice":"ready-for-human","confidence":0.29,"probabilities":{"ready-for-agent":0.12,"needs-info":0.43,"insufficient-evidence":0.02,"ready-for-human":0.43,"wontfix-proposal":0.0}}},"usage":{"input_tokens":939,"output_tokens":69}}

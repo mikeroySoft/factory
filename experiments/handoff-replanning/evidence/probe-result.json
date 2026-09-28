@@ -1,0 +1,17 @@
+{
+  "source": {
+    "url": "https://github.com/mikeroySoft/factory/blob/b05c356566b86bd54da263b93c61f29c8fd49dd6/factory/plan.py",
+    "sha256": "f34f3a59524478391fc660e3d1b4468d921057b8df4db3034376fae6af125ec8",
+    "scope": "Held-out corroboration only; never supplied to planner trials."
+  },
+  "input_plan_lengths": [4001, 4001],
+  "display_plan_lengths": [4000, 4000],
+  "complete_plan_digests_differ": true,
+  "display_plan_digests_equal": true,
+  "malformed": [true, true],
+  "problems": [
+    ["truncated section: Plan cut to 4000 characters"],
+    ["truncated section: Plan cut to 4000 characters"]
+  ],
+  "interpretation": "The reader flags truncation. A future binding consumer must respect that flag or obtain complete content. No existing #57 admission bug is demonstrated."
+}

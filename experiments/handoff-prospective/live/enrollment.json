@@ -1,0 +1,57 @@
+{
+  "baseline_completed_at": "2026-09-11T00:04:28Z",
+  "baseline_sha256": "8fe6233a79304c6942ca3318b9764a5163a53a98dbffce82b0db1ba75cafaec8",
+  "boundary_size": 57419488,
+  "consumer": 7,
+  "events_device": 66306,
+  "events_inode": 3370000653,
+  "events_path": "/home/mike/dev/mikeroysoft/factory/.factory/events.jsonl",
+  "historically_claimed_tickets": [
+    4,
+    5,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    26,
+    27,
+    28,
+    41,
+    49,
+    53,
+    54,
+    62,
+    67,
+    70,
+    72,
+    79
+  ],
+  "last_complete_event_id": "fa495f5a-6d34-474b-ab47-487accacbc73",
+  "last_complete_line_sha256": "6c7b4e9d5af188a8e02036c7b5c5d5e5c0b89ec2738bbfbc532ea978af3f25d7",
+  "last_complete_offset": 57419488,
+  "opened_at": "2026-09-11T00:07:01Z",
+  "preboundary_partial_bytes": 0,
+  "preboundary_partial_sha256": null,
+  "producer": 6,
+  "protocol_set_sha256": "67acebda4734a2a28ba6ce07a309f3aad057f8c2876ce674d985c4505f977bb6",
+  "protocols": [
+    {
+      "bytes": 11337,
+      "path": "/home/mike/dev/mikeroysoft/factory/experiments/handoff-prospective/PROTOCOL.md",
+      "sha256": "2614bab47a3cbd2be4442cf42e8fe6a2a75934d068e0e6457030b88b8303e949"
+    },
+    {
+      "bytes": 4644,
+      "path": "/home/mike/dev/mikeroysoft/factory/experiments/handoff-prospective/PROTOCOL-NAMED-PAIR.md",
+      "sha256": "0af10476562563b4858fe3101f02c4541c2664024c10020300d5bc395a136244"
+    }
+  ]
+}

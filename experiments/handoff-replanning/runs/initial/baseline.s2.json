@@ -1,0 +1,99 @@
+{
+  "condition": "baseline",
+  "sample": 2,
+  "model": "openai-codex/gpt-6-astra",
+  "argv": [
+    "omp",
+    "-p",
+    "--mode",
+    "text",
+    "--no-session",
+    "--no-tools",
+    "--no-extensions",
+    "--no-skills",
+    "--no-rules",
+    "--no-lsp",
+    "--no-pty",
+    "--no-title",
+    "--thinking",
+    "medium",
+    "--hide-thinking",
+    "--max-time",
+    "300",
+    "--model",
+    "openai-codex/gpt-6-astra",
+    "@/home/mike/dev/mikeroysoft/factory/experiments/handoff-replanning/runs/initial/baseline.s2.prompt.txt"
+  ],
+  "returncode": 0,
+  "seconds": 36.98,
+  "valid_json_shape": true,
+  "source_ids": [
+    "R0",
+    "I52",
+    "I53",
+    "I54",
+    "I55",
+    "I56",
+    "I57",
+    "I58",
+    "I59",
+    "I15",
+    "P60",
+    "P61"
+  ],
+  "prompt_sha256": "18d279434f90d71a39df4abc46170421f03524537654b5f8b35fae9c541a8e6b",
+  "output_sha256": "365940f7d9910d2d6c8f120c219c0112fc32bb9c5353f03304d0b6804138e415",
+  "parsed": {
+    "assessment": "#53 is closed and PR #60 merged to stable; #54 remains open with PR #61 reported DIRTY against stable. Both PR bases differ from the required current-main integration baseline. The bundle establishes repository and PR state, not independently verified reader/routing behavior or programme delivery. Resolve this local integration uncertainty before building dependent work; retain the accepted sequence and holds.",
+    "recommendations": [
+      {
+        "target": "#52 \u2014 Baseline and integration boundaries; #54 / PR #61",
+        "adjustment": "Have the responsible human reconcile the current-main requirement with PR #60's stable merge and PR #61's stable base. Record which accepted #53 changes are present on main, then select the smallest integration correction for #54 and resolve its reported conflict against that reviewed baseline. Do not infer branch ancestry from the differing commit identities.",
+        "sources": [
+          "R0",
+          "I52",
+          "I53",
+          "I54",
+          "P60",
+          "P61"
+        ],
+        "observation": "The issues require starting from current origin/main. R0 pins distinct main and stable commits, places PR #60's merge at the stable tip, and identifies PR #61's open head and stable base. P61 reports DIRTY and lists reader/template additions also listed in P60; these observations do not establish whether main contains the accepted reader changes.",
+        "consequence": "Dependent implementation needs an unambiguous producer baseline. Integrating #54 without resolving this discrepancy risks carrying overlapping changes or building on a branch other than the approved baseline.",
+        "kind": "local_remediation",
+        "authority": "Branch reconciliation and any integration change remain human-reviewed; this advice does not authorize merge, release or deployment, alter #15/PR #40 ownership, or release #55-#59.",
+        "check": "Record ancestry and the relevant #53/#54 diff at the pinned commits, the human-selected integration baseline, and a conflict-free #54 candidate with its resulting commit identity."
+      },
+      {
+        "target": "#53 and #54 \u2014 Verification; #52 \u2014 Implementation sequence",
+        "adjustment": "At the reconciled candidate, obtain or link the already-required actual CLI evidence and current unittest gate results before treating A/B producer behavior as accepted for dependent work. Keep merged/closed status separate from behavioral acceptance; no new acceptance suite is proposed.",
+        "sources": [
+          "I53",
+          "I54",
+          "P60",
+          "P61",
+          "I52"
+        ],
+        "observation": "P60 and P61 contain generic PASS reports but no detailed observations from the required reader and routing CLI scenarios. I53 and I54 already specify those scenarios, including partial/error results, routing ambiguity, prefix boundaries and absence of mutation.",
+        "consequence": "The remaining guard, binding and handoff work depends on these producers. Existing gate claims alone do not establish their observable contracts, especially after integration correction.",
+        "kind": "known_prerequisite",
+        "authority": "Evidence review does not reopen or rewrite admitted scope, grant action authority, release held children, or substitute for owner-confirmed programme acceptance.",
+        "check": "A report tied to the reconciled commit records the current unittest command/result and the existing isolated-adapter real CLI scenarios, including observable partial/error handling, routing provenance and zero GitHub mutation."
+      }
+    ],
+    "unchanged": [
+      "Success remains one initiative-to-delivery workflow with a distinct authoritative runner and two consenting humans, not seven closed issues or merged PRs; #52 stays open until human acceptance of #59.",
+      "Preserve the existing dependency graph, #15/PR #40 ownership and handoff, and serialization of C/D writers; do not modify that separately owned work.",
+      "#55-#59 remain held without intake labels. G/C/D still require human-reviewed non-agent implementation or separately authorized, independently enforced external merge protection before future intake; descriptive holds and blockers are not merge interlocks.",
+      "Human-reviewed ticket scope and immutable admitted plan bindings remain authoritative. Later plan edits produce drift and human questions, never silent changes to running work.",
+      "Initiative owner, decision owner and execution claim remain distinct and confer no action authority. Preserve assignee/manual-takeover semantics and terminal-manager-only handoffs; human replies do not authorize retry or merge.",
+      "Retain one runner, individual GitHub identities, GitHub proposal space, read-only shared producers and FM, and no new executor, authentication surface, store or scheduler. Team routing requires verified organization context.",
+      "Release, deployment, real-account acceptance, account or permission changes, and publication require their separate applicable authorization; this advisory output grants none."
+    ],
+    "unknown": [
+      "Whether the pinned main commit contains PR #60's accepted implementation, and the precise cause and extent of PR #61's reported conflict.",
+      "Independent observations of the required #53/#54 CLI behavior and current gate results at a reconciled integration commit.",
+      "Current #15/PR #40 handoff readiness and any independently enforced merge protection; #15 is observed open, but no current PR #40 or protection inspection is supplied.",
+      "Availability and consent of distinct pilot identities, authorized test repository and credentials, and end-to-end outcome, retry, drift and restart evidence. These prerequisites are not established as either available or unavailable by this bundle."
+    ]
+  }
+}

@@ -1,0 +1,297 @@
+{
+  "assessment_status": "provisional_agent_judgments_not_human_ground_truth",
+  "blinding": {
+    "frozen_issue_inputs": "unblinded",
+    "jev_output": "blinded_not_read",
+    "baseline_output": "blinded_not_read",
+    "human_review": "blinded_not_read",
+    "current_issue_state": "blinded_not_read"
+  },
+  "method": {
+    "rubric": "Frozen route criteria from questions.json, applied only to frozen issue titles, bodies, and empty comment arrays in cases.json.",
+    "deterministic_lint": "Preserved factory/triage.py behavior: body under 80 characters, or body/comments lacking an acceptance hint and a fenced code block, routes to needs-info before model judgment.",
+    "interpretation": "These are source-grounded provisional assessments for comparison, not accuracy labels, human adjudication, or claims about later issue outcomes. Explicit blockers are treated as execution prerequisites rather than missing specification unless the body also leaves required information or approval unresolved. Read-only implementation around authority evidence is distinguished from granting or changing authority."
+  },
+  "assessments": [
+    {
+      "id": "factory-1",
+      "provisional_route": "ready-for-agent",
+      "evidence_quote": "`[install].python` is a host-owned key",
+      "reason": "The repository-local configuration behavior, layering, affected services, doctor behavior, tests, manual check, and exclusions are concrete and observable.",
+      "ambiguity": "The key affects host-owned configuration, but the issue implements an already-specified precedence rule and does not ask the worker to decide host policy or create the venvs."
+    },
+    {
+      "id": "factory-2",
+      "provisional_route": "ready-for-agent",
+      "evidence_quote": "After this change each of those rows gains a `fix` field:",
+      "reason": "All three drift cases define the required representation, unchanged behavior, and executable acceptance checks within this repository.",
+      "ambiguity": "The output describes repairs but remains read-only; applying fixes is expressly out of scope, so it does not grant mutation authority."
+    },
+    {
+      "id": "factory-3",
+      "provisional_route": "ready-for-agent",
+      "evidence_quote": "The first step towards isolation that needs no container image decisions in this repo: a configurable argv prefix.",
+      "reason": "The wrapper contract, placeholders, validation, scope, and checks are fully specified without requiring the implementer to select a sandbox or egress policy.",
+      "ambiguity": "This touches a security boundary, but it adds a host-configured mechanism rather than choosing or changing the host's security policy; image, egress, and enforcement decisions are excluded."
+    },
+    {
+      "id": "factory-4",
+      "provisional_route": "ready-for-agent",
+      "evidence_quote": "`factory install` runs that check before writing units and refuses",
+      "reason": "The error handling, ownership test, install behavior, exact diagnostics, tests, and manual reproduction provide a complete repository-local contract.",
+      "ambiguity": "Process ownership detection has platform detail, but the issue names the commands and expected PASS/FAIL behavior; port allocation policy remains outside the change."
+    },
+    {
+      "id": "factory-5",
+      "provisional_route": "ready-for-agent",
+      "evidence_quote": "A test proves that an open non-draft PR is selected when it has `factory-review` or requests the factory account",
+      "reason": "Discovery, opt-in predicates, SHA deduplication, exclusions, files, and the verification command are explicit.",
+      "ambiguity": "The lane observes PRs but does not publish reviews, edit branches, merge, or otherwise expand action authority."
+    },
+    {
+      "id": "factory-7",
+      "provisional_route": "ready-for-agent",
+      "evidence_quote": "an unchanged head SHA is skipped, a changed SHA after REQUEST_CHANGES is reviewed once",
+      "reason": "State transitions, bounds, escalation behavior, and observable test cases fully specify the repository-local work.",
+      "ambiguity": "`Blocked by: #6` delays execution but does not leave this issue's contract unspecified or require a new human-policy decision."
+    },
+    {
+      "id": "factory-8",
+      "provisional_route": "ready-for-agent",
+      "evidence_quote": "External pull requests must never be merged by this lane.",
+      "reason": "The fail-closed readiness states, SHA invalidation, evidence recording, tests, and no-merge boundary are explicit.",
+      "ambiguity": "The code derives a read-only readiness state near merge authority but expressly does not grant merge authority; dependency #7 is an execution prerequisite, not missing specification."
+    },
+    {
+      "id": "factory-9",
+      "provisional_route": "ready-for-agent",
+      "evidence_quote": "include actionable stalled items in the existing inbox without adding mutation controls.",
+      "reason": "The six display states, fields, links, snapshot contract, tests, and read-only boundary define observable completion.",
+      "ambiguity": "The UI presents authority-relevant evidence but adds no controls or mutations; dependency #8 does not require design judgment in this ticket."
+    },
+    {
+      "id": "factory-10",
+      "provisional_route": "ready-for-agent",
+      "evidence_quote": "For each finished ticket, report escalation count, who resolved each escalation",
+      "reason": "Per-ticket and aggregate metrics, attribution source, affected surfaces, and exit checks are all specified.",
+      "ambiguity": "Timeline actor classification may expose edge cases, but the requested human-versus-factory attribution and its test are sufficiently defined for implementation."
+    },
+    {
+      "id": "factory-11",
+      "provisional_route": "ready-for-agent",
+      "evidence_quote": "`escalate()` writes `.factory/escalations/<n>.md`",
+      "reason": "Packet sections, event fields, upstream parity, deterministic behavior, and a forced-failure verification scenario are concrete.",
+      "ambiguity": "The packet carries evidence for later decisions but neither reads it nor changes decision authority in this slice."
+    },
+    {
+      "id": "factory-12",
+      "provisional_route": "ready-for-agent",
+      "evidence_quote": "`[manager] command = [...]`",
+      "reason": "Defaults, accepted values, host layering, doctor/dashboard exposure, drift handling, and loader verification are specified.",
+      "ambiguity": "This configures a future manager but explicitly excludes running it, so the issue does not itself grant operational authority."
+    },
+    {
+      "id": "factory-14",
+      "provisional_route": "ready-for-agent",
+      "evidence_quote": "an empty `notes` block does not truncate the file; a block over the cap is rejected and recorded.",
+      "reason": "Persistence, prompt inclusion, replacement rules, size cap, content guidance, and consecutive-run checks are precise.",
+      "ambiguity": "Dependency #13 must exist before execution, but the notes behavior has an observable contract and no unresolved approval checkpoint."
+    },
+    {
+      "id": "factory-15",
+      "provisional_route": "ready-for-human",
+      "evidence_quote": "`CLOSE` (close the PR with a diagnosis; the linked issue gets `wontfix-proposal` unless the factory created it).",
+      "reason": "The issue grants the manager new authority to close pull requests, relabel issues, and conditionally approve work; that human-policy change takes precedence over its detailed implementation scope.",
+      "ambiguity": "Most transitions are well specified, but this is not merely implementation near authority: it changes which automated actor may perform consequential repository mutations."
+    },
+    {
+      "id": "factory-16",
+      "provisional_route": "ready-for-agent",
+      "evidence_quote": "opens a PR labeled `chore`",
+      "reason": "The configured and fallback behaviors, exact file boundary, branch form, affected functions, and fake-manager exit check are explicit.",
+      "ambiguity": "The manager creates a reviewable proposal rather than changing canonical content or final approval authority; dependency #14 is an execution prerequisite."
+    },
+    {
+      "id": "factory-17",
+      "provisional_route": "ready-for-agent",
+      "evidence_quote": "Before attempt 1, a deterministic pass writes `.factory/brief-<n>.md`",
+      "reason": "Inputs, bounds, prompt placement, stats split, example observable result, and exclusions define a deterministic repository-local feature.",
+      "ambiguity": "Ticket-noun matching permits implementation choices, but no unresolved product or policy decision prevents the stated observable result; dependency #14 only orders execution."
+    },
+    {
+      "id": "factory-18",
+      "provisional_route": "ready-for-agent",
+      "evidence_quote": "opens a `chore` PR citing the evidence",
+      "reason": "The accepted context, allowed and forbidden paths, rejection behavior, recording, and fake-manager verification form a bounded proposal workflow.",
+      "ambiguity": "This touches harness-governance files, but CURATE only proposes a reviewable PR and cannot edit verification paths or act from escalation; it does not grant final policy authority."
+    },
+    {
+      "id": "factory-19",
+      "provisional_route": "ready-for-agent",
+      "evidence_quote": "prints one row per `[workers]` key with pass rate, attempts, cost.",
+      "reason": "The existing event source, dimensions, outputs, files, and exit gate make the metrics change directly implementable.",
+      "ambiguity": "Dependency #10 affects sequencing, not specification, and routing changes are expressly excluded."
+    },
+    {
+      "id": "factory-20",
+      "provisional_route": "ready-for-human",
+      "evidence_quote": "`ROUTE` and `FIX` are only accepted for listed labels.",
+      "reason": "The request changes manager routing and remediation authority, including applying labels and selecting worker profiles, so human-policy review takes precedence over the otherwise concrete contract.",
+      "ambiguity": "The issue constrains the authority to configured labels and keeps new profiles human-applied, but it still authorizes automated operational routing rather than only presenting or proposing it."
+    },
+    {
+      "id": "factory-21",
+      "provisional_route": "ready-for-human",
+      "evidence_quote": "the pass itself lands in the District repo.",
+      "reason": "The requested fleet-level manager mutates per-repository settings and spans Factory and District, triggering both cross-repository blast radius and human-policy review.",
+      "ambiguity": "Factory's config-key slice is narrow, but the acceptance gate depends on a cross-repository operational pass and cannot be treated as repository-local implementation alone."
+    },
+    {
+      "id": "factory-35",
+      "provisional_route": "needs-info",
+      "evidence_quote": "Add a `[review] adversarial = true` mode",
+      "reason": "The deterministic pre-check routes this body to needs-info because it has no acceptance/exit-gate/verification/expected-behavior/steps-to-reproduce hint and no fenced code block.",
+      "ambiguity": "The prose suggests a reviewer policy, but it does not specify executable done conditions, failure handling, or a verification command; policy implications need not be reached because lint decides first."
+    },
+    {
+      "id": "factory-36",
+      "provisional_route": "needs-info",
+      "evidence_quote": "track diff-size vs brief scope per ticket",
+      "reason": "The deterministic pre-check routes this body to needs-info because it contains neither an acceptance hint nor a fenced code block.",
+      "ambiguity": "Terms such as diff-size, brief scope, and justified abstraction lack an observable pass/fail contract; the broad intent is not enough to bypass deterministic lint."
+    },
+    {
+      "id": "factory-37",
+      "provisional_route": "needs-info",
+      "evidence_quote": "a `factory doctor` check that certifies no code leaves the host",
+      "reason": "The deterministic pre-check routes this body to needs-info because no recognized acceptance hint or fenced code block is present.",
+      "ambiguity": "The proposed certification also raises security-policy and definitional questions about LAN endpoints and offline-capable workers, but missing observable acceptance details are sufficient for the lint route."
+    },
+    {
+      "id": "factory-41",
+      "provisional_route": "ready-for-agent",
+      "evidence_quote": "The question that matters is \"does this PR bring upstream commits that `main` lacks?\"",
+      "reason": "The bug, root cause, algorithmic condition, refresh behavior, three synthetic-repository cases, exact command, and exclusions are fully specified.",
+      "ambiguity": "Merge behavior is authority-sensitive, but this implements an already-declared ancestry-preservation rule and expressly excludes signing and CI eligibility policy."
+    },
+    {
+      "id": "factory-49",
+      "provisional_route": "ready-for-agent",
+      "evidence_quote": "an empty refresh can never be a successful refresh.",
+      "reason": "The destructive failure, root cause, remote-first branch rule, refusal invariant, escalation behavior, and regression scenarios are concrete.",
+      "ambiguity": "Force-push safety touches consequential branch mutation, but the issue narrows it to preserving existing remote work and adds a fail-closed invariant rather than changing merge authority."
+    },
+    {
+      "id": "factory-53",
+      "provisional_route": "ready-for-agent",
+      "evidence_quote": "Owner and status are declared facts, not grants of permission.",
+      "reason": "The template, schema fields, statuses, pagination, partial/error behavior, read-only commands, label installation, and isolated-adapter scenario are specified.",
+      "ambiguity": "The feature records authority-related facts but explicitly does not grant permission and keeps initiatives out of intake pending a separate guard."
+    },
+    {
+      "id": "factory-54",
+      "provisional_route": "ready-for-agent",
+      "evidence_quote": "Observe provenance and no assignment/mutation.",
+      "reason": "Input precedence, ambiguity handling, identity validation, prefix semantics, output provenance, compatibility behavior, and real CLI cases are detailed.",
+      "ambiguity": "The producer recommends decision ownership but is read-only and explicitly avoids assignment, authorization, notifications, and auth grants; blocker #53 is a prerequisite, not missing design."
+    },
+    {
+      "id": "factory-62",
+      "provisional_route": "needs-info",
+      "evidence_quote": "Existing host configs written for inline text (a bare `{prompt}` argument to `omp`) keep working",
+      "reason": "A necessary compatibility requirement conflicts with the immediately stated behavior that the same bare `{prompt}` shape is rejected with `ConfigError`; implementation cannot satisfy both as written.",
+      "ambiguity": "The rest of the prompt-file, doctor, and error-tail contract is detailed, but the contradiction prevents a defensible ready-for-agent choice until compatibility semantics are clarified."
+    },
+    {
+      "id": "factory-70",
+      "provisional_route": "ready-for-agent",
+      "evidence_quote": "Use Python's native `-P` safe-path startup flag in that shared command",
+      "reason": "The root cause, one-line mechanism, affected launchers, process-local boundary, runnable regression, target branch, and exclusions are explicit.",
+      "ambiguity": "The body mentions a user-approved rollout and release handling, but this ticket changes only repository-generated commands and does not itself deploy, release, or change policy."
+    },
+    {
+      "id": "factory-72",
+      "provisional_route": "ready-for-agent",
+      "evidence_quote": "Keep real parser errors, malformed payloads and all other extraction failures fatal.",
+      "reason": "The failing boundary, permitted public classifier, all-format rule, preserved fatal cases, history invariant, real regressions, and rollout exclusions are precise.",
+      "ambiguity": "Later District upgrade and installed-surface readiness are downstream outcome checks; the repository-local implementation and pre-merge verification remain independently specified."
+    },
+    {
+      "id": "factory-79",
+      "provisional_route": "ready-for-agent",
+      "evidence_quote": "This ticket observes and presents evidence only",
+      "reason": "The issue supplies a normative schema, identities, bounds, race semantics, integrations, exhaustive exit checks, fixed gate, and explicit read-only exclusions.",
+      "ambiguity": "It handles evidence used by later dispatch authority, but forbids readiness decisions and every mutation; ownership refresh is a scheduling safeguard, not an unresolved grant of authority."
+    },
+    {
+      "id": "factory-85",
+      "provisional_route": "ready-for-agent",
+      "evidence_quote": "Pending briefings, recommendations, history, uncertainties, answers and source loading show waiting feedback; completion and failure stop it.",
+      "reason": "The UI states, reduced-motion behavior, retry and focus preservation, browser scenarios, integration boundaries, and verification command define observable completion.",
+      "ambiguity": "The exact owning presentation files are left for current-main inspection, but the behavior and reuse constraint are sufficiently bounded and no approval checkpoint remains."
+    },
+    {
+      "id": "factory-86",
+      "provisional_route": "ready-for-agent",
+      "evidence_quote": "no ambient shell or mutation tools.",
+      "reason": "Launcher behavior, runtime pinning, evidence refresh, isolation, disclosure guard, invalid-scope behavior, terminal smoke, and test command are specified.",
+      "ambiguity": "This implements existing authentication and provider-disclosure safeguards rather than waiving or changing them; the session remains explicitly read-only."
+    },
+    {
+      "id": "factory-87",
+      "provisional_route": "ready-for-agent",
+      "evidence_quote": "Unavailable provenance is explicitly unknown",
+      "reason": "The separate identities, non-fabrication rule, actual JSON CLI cases, bounded output, zero-write boundary, and verification command are concrete.",
+      "ambiguity": "The exact existing capability field is discovered during implementation, but no design or authority decision is left unresolved."
+    },
+    {
+      "id": "factory-96",
+      "provisional_route": "ready-for-human",
+      "evidence_quote": "Approve the actual cases, protocols and budgets.",
+      "reason": "The issue explicitly assigns a human, agent-assisted lane and requires approval of experiment cases, protocols, budgets, priorities, and decision owners before execution.",
+      "ambiguity": "The desired roadmap artifact is detailed, but the release checkpoint is a substantive unmet human-policy decision, not merely an implementation dependency."
+    },
+    {
+      "id": "factory-97",
+      "provisional_route": "ready-for-human",
+      "evidence_quote": "Approve exact observed target, data access, retention and any provider calls before execution.",
+      "reason": "The observation framework is specified, but execution depends on explicit human choices about target, access, retention, and provider disclosure.",
+      "ambiguity": "A worker could implement generic mechanics after #96, yet the named real-case exercise is not implementation-ready until the release checkpoint is approved."
+    },
+    {
+      "id": "factory-98",
+      "provisional_route": "ready-for-human",
+      "evidence_quote": "Approve isolation mechanism, credentials, network, resources, retention and case.",
+      "reason": "Required security, credential, network, resource, retention, and experiment-case decisions remain reserved for human approval.",
+      "ambiguity": "The isolation acceptance criteria are concrete, but they intentionally do not choose the approved execution environment or authorize the real experiment."
+    },
+    {
+      "id": "factory-99",
+      "provisional_route": "ready-for-human",
+      "evidence_quote": "Hold until the observation producer and shared record contract are accepted",
+      "reason": "The reader behavior is well scoped, but the issue expressly withholds normal Factory triage until humans accept the producer and shared record contract.",
+      "ambiguity": "This is not missing technical specification in the issue body; it is an unmet approval checkpoint that takes precedence over otherwise ready implementation scope."
+    },
+    {
+      "id": "factory-100",
+      "provisional_route": "ready-for-human",
+      "evidence_quote": "Hold until experiment reader and existing shared roadmap #58 are accepted.",
+      "reason": "The presentation and explanation contract is detailed, but two accepted upstream contracts are required before release through normal triage.",
+      "ambiguity": "The blockers are not ordinary build-order notes: the body calls them a release checkpoint and separates decision-waiting work from runnable implementation."
+    },
+    {
+      "id": "factory-101",
+      "provisional_route": "ready-for-human",
+      "evidence_quote": "Approve exact mutation and approval semantics",
+      "reason": "The request changes a guarded canonical-roadmap mutation path and explicitly reserves mutation semantics, approving authority, ownership coordination, and demonstration target for human approval.",
+      "ambiguity": "The stale-write protections and receipts are concrete implementation details, but they cannot substitute for the unresolved authority decision."
+    },
+    {
+      "id": "factory-102",
+      "provisional_route": "ready-for-human",
+      "evidence_quote": "Human must approve ranking, missing-priority behavior, allocation, fairness and rollout",
+      "reason": "Scheduling priorities, fairness, allocation, and rollout are production policy choices explicitly held for human approval.",
+      "ambiguity": "The queue demonstration is testable, but the governing policy inputs are intentionally unapproved, so ready-for-agent would infer authority the body denies."
+    }
+  ]
+}

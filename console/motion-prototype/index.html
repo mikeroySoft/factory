@@ -1,0 +1,138 @@
+<!doctype html>
+<!-- Throwaway motion study: three Factory detail layouts, ?variant=A|B|C.
+     Sample data only. Run from repo root: python -m http.server 8793 --bind 127.0.0.1 -->
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Factory / Motion study</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="../../docs/mikeroysoft.css">
+<style>
+body{font:13px/1.6 var(--font-mono);padding-bottom:124px}button,input{font:inherit}button{cursor:pointer;color:inherit;background:transparent;border:1px solid var(--border-hairline);border-radius:5px;min-height:44px;padding:8px 14px;transition:background .15s,border-color .15s}button:hover{background:var(--accent-tint);border-color:var(--accent)}button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:3px}button[aria-pressed=true]{color:var(--accent);background:var(--accent-tint);border-color:var(--accent)}[hidden]{display:none!important}.muted{color:var(--text-secondary)}.eyebrow{text-transform:uppercase;letter-spacing:.15em;font-size:10px;color:var(--text-secondary)}
+.topbar{height:77px;display:flex;align-items:center;justify-content:space-between;padding:0 38px;border-bottom:1px solid var(--border-hairline)}.brand{display:flex;gap:14px;align-items:center;font-size:16px}.diamond{width:13px;height:13px;background:var(--accent);transform:rotate(45deg);display:inline-block}.brand small{font-size:12px;color:var(--text-secondary);margin-left:14px}.lab{font-size:10px;letter-spacing:.12em;border:1px solid var(--border-hairline);padding:5px 9px;color:var(--accent)}
+main{max-width:1600px;margin:auto;padding:36px 38px}.intro{display:flex;justify-content:space-between;gap:24px;align-items:end;margin-bottom:32px}h1{font:400 clamp(36px,4vw,55px)/1.1 var(--font-display);margin:10px 0 12px;letter-spacing:-.02em}.intro p{max-width:610px;color:var(--text-secondary);margin:0}.intro-note{max-width:265px;font-size:11px;border-left:1px solid var(--border-strong);padding-left:18px}.intro-note strong{display:block;color:var(--accent);font-weight:400;margin-bottom:5px}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--border-hairline);border-radius:6px;margin-bottom:24px;background:var(--surface-sunken)}.metric{padding:16px 20px;border-right:1px solid var(--border-hairline)}.metric:last-child{border:0}.metric .value{font-size:26px;margin-right:12px;color:var(--text-primary)}.metric small{color:var(--text-secondary);font-size:10px}.metric label{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.12em;color:var(--text-secondary)}
+.workspace{position:relative;display:flex;align-items:stretch;min-height:490px;border:1px solid var(--border-hairline);border-radius:7px;overflow:hidden;background:var(--surface-sunken)}.queue{flex:1;min-width:0}.queue-head{display:flex;justify-content:space-between;align-items:center;padding:17px 20px;border-bottom:1px solid var(--border-hairline)}h2{font-size:13px;font-weight:500;margin:0}.queue-head span{font-size:10px;color:var(--text-secondary)}.queue-caption{padding:13px 20px;color:var(--text-secondary);font-size:10px;letter-spacing:.08em;border-bottom:1px solid var(--border-hairline)}.ticket{display:block;width:100%;border:0;border-radius:0;border-bottom:1px solid var(--border-hairline);padding:18px 20px;text-align:left;position:relative}.ticket:hover{background:var(--accent-wash)}.ticket[aria-pressed=true]{background:var(--accent-tint);color:var(--text-primary)}.ticket[aria-pressed=true]:before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent)}.ticket-top{display:flex;justify-content:space-between;gap:8px;margin-bottom:7px}.ticket-number{color:var(--text-secondary);font-size:11px}.badge{font-size:10px;color:var(--accent);display:inline-flex;align-items:center;gap:7px}.badge:before{content:'';width:5px;height:5px;border-radius:50%;background:currentColor}.badge.review{color:var(--iris-400)}.badge.running{color:var(--wheat-300)}.ticket-title{display:block;font-size:13px;line-height:1.5}.ticket-meta{display:block;font-size:10px;color:var(--text-secondary);margin-top:7px}.queue-foot{display:flex;justify-content:space-between;padding:16px 20px;color:var(--text-secondary);font-size:10px}.queue-foot span:first-child{color:var(--accent)}
+.detail{width:0;flex:none;overflow:hidden;background:var(--surface-panel);position:relative}.detail-inner{padding:22px;width:100%;min-width:320px}.detail-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:22px}.detail-toolbar button{padding:6px 12px;font-size:11px}.detail h3{font:400 30px/1.17 var(--font-display);margin:12px 0 14px}.summary{color:var(--text-secondary);font-size:12px;line-height:1.8}.divider{height:1px;background:var(--border-hairline);margin:22px 0}.stage-track{display:flex;justify-content:space-between;position:relative;margin:25px 0 24px;font-size:9px;color:var(--text-secondary)}.stage-track:before{content:'';position:absolute;left:10px;right:10px;top:5px;height:1px;background:var(--border-strong)}.stage-track span{position:relative;display:flex;flex-direction:column;align-items:center;gap:9px;background:var(--surface-panel)}.stage-track i{display:block;width:11px;height:11px;border:1px solid var(--border-strong);border-radius:50%;background:var(--surface-panel)}.stage-track .done i{background:var(--accent);border-color:var(--accent)}.stage-track .current i{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-tint)}.stage-track .current{color:var(--accent)}
+.tabs{display:flex;position:relative;border-bottom:1px solid var(--border-hairline);margin:0 0 18px}.tabs button{border:0;border-radius:0;font-size:11px;position:relative;padding:10px 12px}.tabs button[aria-selected=true]{color:var(--accent)}.tab-line{position:absolute;bottom:-1px;height:2px;background:var(--accent);width:0;pointer-events:none}.tab-content{min-height:118px;font-size:12px}.tab-content p{color:var(--text-secondary);margin:8px 0}.check{display:flex;gap:12px;padding:5px 0;color:var(--text-secondary)}.check b{color:var(--accent);font-weight:400}.evidence-toggle{display:flex;justify-content:space-between;width:100%;font-size:11px;margin-top:20px}.evidence-body{overflow:hidden;height:0}.evidence-content{padding-top:12px}.evidence-content pre{margin:0;padding:16px;border:1px solid var(--border-hairline);background:var(--surface-terminal);font-size:10px;white-space:pre-wrap;color:var(--text-secondary);line-height:1.9}.evidence-content pre strong{color:var(--accent);font-weight:400}.detail-foot{color:var(--text-secondary);font-size:10px;margin-top:20px}
+.scrim{position:fixed;inset:0;z-index:4;background:rgba(10,9,8,.66)}body[data-variant=B] .detail{position:fixed;right:0;top:0;bottom:0;z-index:5;overflow:auto;box-shadow:var(--shadow-drawer)}body[data-variant=C] .detail{position:absolute;inset:0;z-index:2;overflow:auto}body[data-variant=C] .detail-inner{max-width:800px;margin:auto;padding:30px 40px}body[data-variant=C] .detail h3{font-size:38px}body[data-variant=C] .detail .reading-grid{display:grid;grid-template-columns:1.1fr 1fr;gap:36px}body[data-variant=C] .workspace{min-height:650px}body[data-variant=C] .stage-track{margin-top:30px}.below{display:flex;gap:32px;justify-content:space-between;margin-top:22px;font-size:11px;color:var(--text-secondary)}.below strong{color:var(--text-primary);font-weight:400}
+.prototype-bar{position:fixed;z-index:10;bottom:18px;left:50%;transform:translateX(-50%);width:min(660px,calc(100% - 24px));background:var(--surface-inset);border:1px solid var(--border-strong);border-radius:10px;box-shadow:0 12px 45px #0008;padding:9px 12px}.bar-controls{display:flex;align-items:center;justify-content:space-between;gap:12px}.variant-picker{display:flex;align-items:center;gap:12px}.variant-picker button{font-size:17px;padding:4px 12px}.variant-label{min-width:190px;font-size:11px}.variant-label small{display:block;color:var(--text-secondary);font-size:9px;letter-spacing:.08em}.motion-control{font-size:11px;display:flex;align-items:center;gap:9px;min-height:44px;cursor:pointer}.motion-control input{accent-color:var(--accent);width:16px;height:16px}.state{font-size:9px;color:var(--text-secondary);margin-top:5px;padding-top:6px;border-top:1px solid var(--border-hairline);text-align:center}.system-note{font-size:9px;color:var(--text-secondary);text-align:right}
+@media(min-width:1600px){.detail h3{font-size:34px}}
+@media(max-width:800px){.topbar{padding:0 18px;height:66px}.brand small{display:none}main{padding:26px 16px}.intro{display:block}.intro-note{display:none}h1{font-size:40px}.metrics{grid-template-columns:repeat(2,1fr)}.metric{padding:12px 14px}.metric:nth-child(2){border-right:0}.metric:nth-child(-n+2){border-bottom:1px solid var(--border-hairline)}.metric .value{font-size:23px}.below{display:block}.below p{margin:8px 0}.detail-inner{min-width:0;padding:20px}body[data-variant] .detail{position:fixed;top:0;right:0;bottom:108px;left:auto;z-index:5;overflow:auto}body[data-variant=C] .detail-inner{padding:20px}body[data-variant=C] .detail h3{font-size:30px}body[data-variant=C] .detail .reading-grid{display:block}body[data-variant=C] .workspace{min-height:490px}.prototype-bar{bottom:10px;padding:8px}.bar-controls{gap:5px}.variant-picker{gap:6px}.variant-label{min-width:132px;font-size:10px}.variant-picker button{padding:4px 10px}.motion-control{font-size:10px;gap:5px}.system-note{display:none}.state{font-size:8px}.ticket-title{font-size:12px}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+</style>
+</head>
+<body data-product="factory" data-variant="A">
+<header class="topbar"><div class="brand"><span class="diamond" aria-hidden="true"></span><strong>factory</strong><small>mikeroySoft / operations</small></div><span class="lab">INTERACTION STUDY / 01</span></header>
+<main>
+<section class="intro"><div><div class="eyebrow">Same workspace. A little more life.</div><h1>Make room for the work.</h1><p>Open a ticket. Follow the evidence. Return without losing your place.<br>Three ways to make the interface move with you.</p></div><div class="intro-note"><strong>Real Motion. Sample work.</strong>A throwaway, read-only prototype.<br>No agents, mutations, or live telemetry.</div></section>
+<div class="metrics"><div class="metric"><label>In flight</label><span class="value">03</span><small>workers active</small></div><div class="metric"><label>Needs review</label><span class="value">02</span><small>decisions waiting</small></div><div class="metric"><label>Merged today</label><span class="value">08</span><small>sample snapshot</small></div><div class="metric"><label>Gate pass rate</label><span class="value">94<span style="font-size:14px">%</span></span><small>last 24 runs</small></div></div>
+<div id="workspace" class="workspace">
+<section class="queue" id="queue" aria-label="Sample work queue"><div class="queue-head"><h2>Work queue</h2><span>mikeroySoft / factory</span></div><div class="queue-caption">SELECT A TICKET TO INVESTIGATE</div><div id="tickets"></div><div class="queue-foot"><span>● Snapshot ready</span><span>Sample data · not connected</span></div></section>
+<aside id="detail" class="detail" aria-label="Ticket detail" hidden><div class="detail-inner"><div class="detail-toolbar"><span class="eyebrow" id="detail-number"></span><button id="close">Close <span class="muted">Esc</span></button></div><div id="detail-copy"><span class="badge" id="detail-status"></span><h3 id="detail-title"></h3><p class="summary" id="detail-summary"></p><div class="stage-track" aria-label="Sample pipeline progress"><span class="done"><i></i>Triage</span><span class="done"><i></i>Worker</span><span class="done"><i></i>Gate</span><span class="current"><i></i>Review</span><span><i></i>Merge</span></div><div class="reading-grid"><div><div class="tabs" role="tablist" aria-label="Ticket information"><button role="tab" id="tab-brief" aria-controls="tab-content" aria-selected="true">Brief</button><button role="tab" id="tab-changes" aria-controls="tab-content" aria-selected="false" tabindex="-1">Changes</button><button role="tab" id="tab-activity" aria-controls="tab-content" aria-selected="false" tabindex="-1">Activity</button><span class="tab-line" id="tab-line"></span></div><div id="tab-content" class="tab-content" role="tabpanel" tabindex="0" aria-labelledby="tab-brief"></div></div><div><button id="evidence-toggle" class="evidence-toggle" aria-expanded="false" aria-controls="evidence-body"><span>Inspect gate evidence</span><span id="evidence-sign" aria-hidden="true">+</span></button><div class="evidence-body" id="evidence-body" inert><div class="evidence-content"><pre><span class="muted">SAMPLE / deterministic gate</span>
+
+$ ruff check factory/
+<strong>All checks passed.</strong>
+
+$ pytest -q
+<strong>42 passed in 1.84s</strong>
+
+exit 0 · ready for review</pre></div></div><p class="detail-foot">This evidence is illustrative, not a real gate report.</p></div></div></div></div></aside>
+</div>
+<div class="below"><p><strong id="mode-heading">A / Docked workspace</strong><br><span id="mode-description">The queue makes room. Your context stays visible.</span></p><p>Try switching tickets mid-animation.<br>Then turn motion off and compare.</p></div>
+</main>
+<div id="scrim" class="scrim" hidden></div>
+<nav class="prototype-bar" aria-label="Prototype controls"><div class="bar-controls"><div class="variant-picker"><button id="previous" aria-label="Previous layout">←</button><div class="variant-label"><small>LAYOUT STUDY</small><span id="variant-label">A · Docked workspace</span></div><button id="next" aria-label="Next layout">→</button></div><div><label class="motion-control"><input id="motion-enabled" type="checkbox" checked>Motion on</label><div class="system-note" id="system-note">Spring transitions · Motion 12</div></div></div><div id="state" class="state" role="status" aria-live="polite"></div></nav>
+<script src="motion.js"></script>
+<script>
+const {animate} = Motion;
+const $ = id => document.getElementById(id);
+const data = [
+ {id:36,title:'Keep review focused on what matters',status:'Ready for review',tone:'review',meta:'review-bloat-guard · 3 files changed',summary:'Require blocking findings to cite an acceptance criterion, a documented rule, or a concrete correctness defect. Keep optional suggestions separate.',checks:['Blocking findings are tied to the brief','Required fixes and suggestions stay distinct','New abstractions need a reason'],files:['templates/reviewer.md','factory/review.py','tests/test_review.py']},
+ {id:34,title:'Calibrate the reviewer against real work',status:'Worker active',tone:'running',meta:'reviewer-calibration · evaluation in progress',summary:'Compare reviewer judgments against a small set of known outcomes. Find the cases where a useful guard becomes unnecessary friction.',checks:['Use a fixed set of known review outcomes','Keep calibration separate from production','Record disagreements for human judgment'],files:['calibration/cases.json','calibration/run.py']},
+ {id:62,title:'Give every decision its evidence',status:'Ready for review',tone:'review',meta:'decision-briefing · 5 files changed',summary:'Bring the acceptance criteria, latest gate result, and reviewer findings into one readable briefing. Investigate without leaving the decision.',checks:['Decision context stays visible','Evidence is available without navigation','Long output is disclosed on demand'],files:['factory/briefing.py','factory/briefing.css','factory/templates/briefing.html']},
+ {id:67,title:'Trace the shape of the codebase',status:'Worker active',tone:'running',meta:'codebase-history · indexing snapshot',summary:'Connect a codebase snapshot to the changes that produced it. Keep history and inspection close to the map, without overwhelming the overview.',checks:['Each snapshot identifies its source revision','Inspection preserves the selected snapshot','History remains read-only'],files:['factory/codebase.py','factory/codebase.html']}
+];
+const variants = {A:['Docked workspace','The queue makes room. Your context stays visible.'],B:['Overlay drawer','A temporary investigation layer. Close it to return to the unchanged queue.'],C:['Focused reading','Give the decision the whole workspace. Keep evidence beside the brief.']};
+let variant = new URLSearchParams(location.search).get('variant');
+if (!variants[variant]) variant='A';
+let selected=null, tab='brief', evidence=false, opener=null;
+const reduced=matchMedia('(prefers-reduced-motion: reduce)'), mobile=matchMedia('(max-width: 800px)');
+const running=new Map();
+function motion(el, values, spring=false){
+ running.get(el)?.stop();
+ const control=animate(el, values, {duration:reduced.matches||!$('motion-enabled').checked?0:spring?.42:.19,...(spring&&!reduced.matches&&$('motion-enabled').checked?{type:'spring',bounce:.08}: {})});
+ running.set(el,control);return control;
+}
+function state(){ $('state').textContent=`${variant} / ${selected===null?'queue':`ticket #${data[selected].id}`} · ${tab} · evidence ${evidence?'open':'closed'} · motion ${reduced.matches?'system-reduced':$('motion-enabled').checked?'on':'off'}`; }
+function layout(){
+ const open=selected!==null, overlay=open&&(variant==='B'||mobile.matches), focused=open&&(variant==='C'||overlay);
+ $('scrim').hidden=!overlay;
+ $('queue').inert=focused;
+ $('detail').setAttribute('role',focused?'dialog':'complementary');
+ if(focused) $('detail').setAttribute('aria-modal','true');else $('detail').removeAttribute('aria-modal');
+ const width=!open?0:mobile.matches?innerWidth:variant==='A'?Math.min(520,$('workspace').clientWidth*.49):variant==='B'?550:$('workspace').clientWidth;
+ $('detail').style.borderLeft=open&&variant!=='C'?'1px solid var(--border-hairline)':'0';
+ return motion($('detail'),{width},true);
+}
+function tabContent(){
+ const item=data[selected];
+ $('tab-content').innerHTML=tab==='brief'?item.checks.map(x=>`<div class="check"><b>✓</b><span>${x}</span></div>`).join(''):tab==='changes'?`<p>Sample change set · ${item.files.length} files</p>`+item.files.map(x=>`<div class="check"><b>↳</b><code>${x}</code></div>`).join(''):'<p>14:32 · Worker submitted a change set.</p><p>14:34 · Deterministic gate passed.</p><p>14:35 · Review requested.</p>';
+ if(item.tone==='running'&&tab==='activity') $('tab-content').innerHTML='<p>14:32 · Worker accepted the ticket.</p><p>14:34 · Implementation in progress.</p><p>Gate and review have not started.</p>';
+ const stages=$('detail-copy').querySelectorAll('.stage-track span');
+ stages.forEach((el,i)=>{el.className=i<(item.tone==='running'?1:3)?'done':i===(item.tone==='running'?1:3)?'current':'';});
+ $('evidence-toggle').hidden=item.tone==='running';
+ $('detail-copy').querySelector('.detail-foot').textContent=item.tone==='running'?'No gate evidence yet in this sample.':'This evidence is illustrative, not a real gate report.';
+ $('tab-content').setAttribute('aria-labelledby','tab-'+tab);
+ document.querySelectorAll('[role=tab]').forEach(el=>{const active=el.id==='tab-'+tab;el.setAttribute('aria-selected',active);el.tabIndex=active?0:-1;});
+ const active=$('tab-'+tab);motion($('tab-line'),{x:active.offsetLeft,width:active.offsetWidth},true);
+ motion($('tab-content'),{opacity:[.3,1],y:[5,0]});state();
+}
+function setEvidence(open){evidence=open;$('evidence-toggle').setAttribute('aria-expanded',open);$('evidence-sign').textContent=open?'−':'+';$('evidence-body').inert=!open;motion($('evidence-body'),{height:open?$('evidence-body').scrollHeight:0},true);state();}
+function openTicket(index){
+ const wasClosed=selected===null;selected=index;opener=$('ticket-'+index);$('detail').hidden=false;
+ document.querySelectorAll('.ticket').forEach((el,i)=>el.setAttribute('aria-pressed',i===index));
+ const item=data[index];$('detail-number').textContent=`TICKET / ${item.id}`;$('detail-title').textContent=item.title;$('detail-summary').textContent=item.summary;$('detail-status').textContent=item.status;$('detail-status').className='badge '+item.tone;
+ setEvidence(false);layout();tabContent();motion($('detail-copy'),{opacity:[.3,1],y:[8,0]});
+ if(wasClosed) $('close').focus({preventScroll:true});
+}
+function closeTicket(){
+ if(selected===null)return;selected=null;setEvidence(false);document.querySelectorAll('.ticket').forEach(el=>el.setAttribute('aria-pressed',false));
+ $('detail').inert=true;const exit=layout();opener?.focus({preventScroll:true});
+ exit.then(()=>{if(selected===null){$('detail').hidden=true;$('detail').inert=false;}});state();
+}
+function setVariant(key){
+ variant=key;document.body.dataset.variant=key;
+ const url=new URL(location.href);url.searchParams.set('variant',key);history.replaceState(null,'',url);
+ $('variant-label').textContent=`${key} · ${variants[key][0]}`;$('mode-heading').textContent=`${key} / ${variants[key][0]}`;$('mode-description').textContent=variants[key][1];
+ layout();if(selected!==null)tabContent();state();
+}
+function cycle(step){setVariant(Object.keys(variants)[(Object.keys(variants).indexOf(variant)+step+3)%3]);}
+$('tickets').innerHTML=data.map((x,i)=>`<button class="ticket" id="ticket-${i}" aria-pressed="false" aria-controls="detail"><span class="ticket-top"><span class="ticket-number">#${x.id}</span><span class="badge ${x.tone}">${x.status}</span></span><span class="ticket-title">${x.title}</span><span class="ticket-meta">${x.meta}</span></button>`).join('');
+data.forEach((_,i)=>$('ticket-'+i).onclick=()=>{$('detail').inert=false;openTicket(i);});
+$('close').onclick=closeTicket;$('scrim').onclick=closeTicket;
+$('previous').onclick=()=>cycle(-1);$('next').onclick=()=>cycle(1);
+$('evidence-toggle').onclick=()=>setEvidence(!evidence);
+for(const name of ['brief','changes','activity'])$('tab-'+name).onclick=()=>{tab=name;tabContent();};
+function preference(){if(reduced.matches||!$('motion-enabled').checked)running.forEach(control=>control.complete());$('system-note').textContent=reduced.matches?'System reduced motion respected':'Spring transitions · Motion 12';state();}
+$('motion-enabled').onchange=preference;reduced.addEventListener('change',preference);
+window.addEventListener('resize',()=>{layout();if(selected!==null){tabContent();if(evidence)motion($('evidence-body'),{height:$('evidence-body').scrollHeight});}});
+document.addEventListener('keydown',event=>{
+ if(event.key==='Escape'){closeTicket();return;}
+ if(event.target.matches('input,textarea,select,[contenteditable]'))return;
+ if(event.target.getAttribute('role')==='tab'&&['ArrowLeft','ArrowRight','Home','End'].includes(event.key)){
+ event.preventDefault();const names=['brief','changes','activity'];tab=event.key==='Home'?'brief':event.key==='End'?'activity':names[(names.indexOf(tab)+(event.key==='ArrowRight'?1:2))%3];tabContent();$('tab-'+tab).focus();return;
+ }
+ if(event.key==='ArrowLeft'||event.key==='ArrowRight'){event.preventDefault();cycle(event.key==='ArrowRight'?1:-1);}
+ if(event.key==='Tab'&&selected!==null&&(variant!=='A'||mobile.matches)){
+ const controls=[...$('detail').querySelectorAll('button:not([hidden]),[tabindex="0"]')].filter(el=>el.getClientRects().length&&!el.closest('[inert]'));
+ const first=controls[0],last=controls[controls.length-1];
+ if(!controls.includes(document.activeElement)){event.preventDefault();first.focus();}
+ else if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}
+ else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
+ }
+});
+setVariant(variant);preference();
+</script>
+</body>
+</html>

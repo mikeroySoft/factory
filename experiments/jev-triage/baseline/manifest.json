@@ -1,0 +1,17 @@
+{
+  "case_count": 40,
+  "cases_path": "/home/mike/dev/mikeroysoft/factory/experiments/jev-triage/cases.json",
+  "cases_sha256": "518cc3a82830cad17fd35616576468ceaf87bb5f2713f2bde42c79108d8350e0",
+  "completed_at": "2026-09-16T21:45:39Z",
+  "endpoint": "http://127.0.0.1:11435/v1/chat/completions",
+  "frozen_cases_file": "cases.json",
+  "host_lock": "/tmp/factory.lock",
+  "lock_timeout_seconds": 120.0,
+  "model": "ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+  "model_network_attempts": 37,
+  "model_unavailable": null,
+  "prompt_sha256": "4fb4189f9b3da41d1c9b3abc1700f89fd4afd922c2e267613fd88a68889555d2",
+  "runner_sha256": "43f30d833e973303f7491ba11b7c231802506acb9a005f3d229438c22df1295c",
+  "started_at": "2026-09-16T21:35:26Z",
+  "status": "complete"
+}

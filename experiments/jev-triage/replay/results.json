@@ -1,0 +1,951 @@
+[
+  {
+    "id": "factory-1",
+    "request_sha256": "2645864fc608fc9132bb15cecf763ae6aa09181ab85783f8d6fc264fc53e8ada",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.94,
+      "probabilities": {
+        "ready-for-agent": 0.95,
+        "wontfix-proposal": 0.0,
+        "needs-info": 0.01,
+        "insufficient-evidence": 0.0,
+        "ready-for-human": 0.04
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1049,
+      "output_tokens": 69
+    },
+    "estimated_usd": 4.4058000000000004e-05,
+    "seconds": 0.2553492758888751,
+    "split": "development"
+  },
+  {
+    "id": "factory-10",
+    "request_sha256": "475660cba4746971db1d0356f7151dbb54740258607c39d7e7d36f04ae4a2eab",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.93,
+      "probabilities": {
+        "ready-for-agent": 0.95,
+        "wontfix-proposal": 0.0,
+        "ready-for-human": 0.01,
+        "insufficient-evidence": 0.0,
+        "needs-info": 0.04
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 771,
+      "output_tokens": 69
+    },
+    "estimated_usd": 3.2382e-05,
+    "seconds": 0.20624435401987284,
+    "split": "development"
+  },
+  {
+    "id": "factory-15",
+    "request_sha256": "b31230b456ee28375657a7f4485e4869abf448a969383f60111f41f16ead2353",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.63,
+      "probabilities": {
+        "wontfix-proposal": 0.0,
+        "ready-for-human": 0.11,
+        "insufficient-evidence": 0.01,
+        "needs-info": 0.17,
+        "ready-for-agent": 0.71
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 971,
+      "output_tokens": 69
+    },
+    "estimated_usd": 4.0782000000000004e-05,
+    "seconds": 0.18479221791494638,
+    "split": "development"
+  },
+  {
+    "id": "factory-19",
+    "request_sha256": "181175ddcdda0c9871c83222ff2f89d9146cf5704b95af3b0032cf66d51643ab",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.77,
+      "probabilities": {
+        "ready-for-human": 0.01,
+        "ready-for-agent": 0.8099999999999999,
+        "insufficient-evidence": 0.01,
+        "needs-info": 0.17,
+        "wontfix-proposal": 0.0
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 713,
+      "output_tokens": 69
+    },
+    "estimated_usd": 2.9946000000000004e-05,
+    "seconds": 0.20422738103661686,
+    "split": "development"
+  },
+  {
+    "id": "factory-36",
+    "ok": true,
+    "deterministic": true,
+    "decision": "needs-info",
+    "question": "No acceptance criteria found. Add an observable done-condition and the exact command that verifies it.",
+    "split": "development"
+  },
+  {
+    "id": "factory-5",
+    "request_sha256": "249e80ef7abc8afb594b1bbc20438f8d75773447f28fd92baf2019abf6c5bb13",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.83,
+      "probabilities": {
+        "wontfix-proposal": 0.0,
+        "ready-for-human": 0.04,
+        "insufficient-evidence": 0.0,
+        "needs-info": 0.09,
+        "ready-for-agent": 0.87
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 826,
+      "output_tokens": 69
+    },
+    "estimated_usd": 3.4692000000000006e-05,
+    "seconds": 0.17383385403081775,
+    "split": "development"
+  },
+  {
+    "id": "factory-53",
+    "request_sha256": "9f4c5c2e618d3d1d1cf52f83fb149915227490d74b3522ea3df84a6c7773ad69",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.87,
+      "probabilities": {
+        "wontfix-proposal": 0.0,
+        "ready-for-human": 0.06,
+        "insufficient-evidence": 0.0,
+        "needs-info": 0.04,
+        "ready-for-agent": 0.9
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1107,
+      "output_tokens": 69
+    },
+    "estimated_usd": 4.6494000000000006e-05,
+    "seconds": 0.2181833169888705,
+    "split": "development"
+  },
+  {
+    "id": "factory-72",
+    "request_sha256": "242e5c3a18c03fc543ebbe3a6968880a7e0158ea6f2cc2f8c561250438b150cc",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.86,
+      "probabilities": {
+        "insufficient-evidence": 0.01,
+        "ready-for-human": 0.09,
+        "wontfix-proposal": 0.0,
+        "ready-for-agent": 0.89,
+        "needs-info": 0.01
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1153,
+      "output_tokens": 69
+    },
+    "estimated_usd": 4.842600000000001e-05,
+    "seconds": 0.22903101902920753,
+    "split": "development"
+  },
+  {
+    "id": "factory-87",
+    "request_sha256": "cffe1eae7ec038573eab07ec9700c0f26e55f267024305a4129efa1c9f0f38cc",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.85,
+      "probabilities": {
+        "ready-for-human": 0.05,
+        "wontfix-proposal": 0.0,
+        "ready-for-agent": 0.88,
+        "needs-info": 0.07,
+        "insufficient-evidence": 0.0
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 836,
+      "output_tokens": 69
+    },
+    "estimated_usd": 3.5112000000000005e-05,
+    "seconds": 0.21262445498723537,
+    "split": "development"
+  },
+  {
+    "id": "factory-99",
+    "request_sha256": "afa36a1a4de7ab4d53590e63a6809be5841ce553d49285162923b9dd5a841f7c",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-human",
+      "confidence": 0.29,
+      "probabilities": {
+        "ready-for-agent": 0.12,
+        "needs-info": 0.43,
+        "insufficient-evidence": 0.02,
+        "ready-for-human": 0.43,
+        "wontfix-proposal": 0.0
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 939,
+      "output_tokens": 69
+    },
+    "estimated_usd": 3.9438000000000004e-05,
+    "seconds": 0.25193057395517826,
+    "split": "development"
+  },
+  {
+    "id": "factory-100",
+    "request_sha256": "7f24c6730a5c83d874fb11153c2dad112564c413b770376e1b72400410966cca",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-human",
+      "confidence": 0.29,
+      "probabilities": {
+        "ready-for-human": 0.43,
+        "wontfix-proposal": 0.01,
+        "ready-for-agent": 0.16,
+        "insufficient-evidence": 0.03,
+        "needs-info": 0.37
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 961,
+      "output_tokens": 69
+    },
+    "estimated_usd": 4.0362000000000004e-05,
+    "seconds": 0.2299058809876442,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-101",
+    "request_sha256": "768147df2269a7a9cfe4dcb411c822e9cc862687639442c2be518c2ea2da35a9",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-human",
+      "confidence": 0.56,
+      "probabilities": {
+        "wontfix-proposal": 0.0,
+        "ready-for-human": 0.65,
+        "needs-info": 0.31,
+        "ready-for-agent": 0.03,
+        "insufficient-evidence": 0.01
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 998,
+      "output_tokens": 69
+    },
+    "estimated_usd": 4.1916e-05,
+    "seconds": 0.1884578769095242,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-102",
+    "request_sha256": "784b4dccc5b166e9b03cf76ded89504e94c651aebbba1c031706cddae6694d4f",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-human",
+      "confidence": 0.77,
+      "probabilities": {
+        "needs-info": 0.17,
+        "ready-for-human": 0.81,
+        "insufficient-evidence": 0.0,
+        "ready-for-agent": 0.02,
+        "wontfix-proposal": 0.0
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 962,
+      "output_tokens": 69
+    },
+    "estimated_usd": 4.040400000000001e-05,
+    "seconds": 0.23215203708969057,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-11",
+    "request_sha256": "550f9f54fa65c503ba0c1a7369476be2139fbda58c07a2216ba84bdfc482903a",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.92,
+      "probabilities": {
+        "wontfix-proposal": 0.0,
+        "ready-for-human": 0.0,
+        "insufficient-evidence": 0.0,
+        "ready-for-agent": 0.9400000000000001,
+        "needs-info": 0.06
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 793,
+      "output_tokens": 69
+    },
+    "estimated_usd": 3.3306e-05,
+    "seconds": 0.17843209393322468,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-12",
+    "request_sha256": "e7e6136bb6c61b1e1a7965367f274385da5d75b2062f58bee3756bedb4812d20",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.89,
+      "probabilities": {
+        "ready-for-agent": 0.91,
+        "insufficient-evidence": 0.0,
+        "wontfix-proposal": 0.0,
+        "needs-info": 0.07,
+        "ready-for-human": 0.02
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 791,
+      "output_tokens": 69
+    },
+    "estimated_usd": 3.3222e-05,
+    "seconds": 0.231803921982646,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-14",
+    "request_sha256": "8488a2ade6a29dfbcbb846281c3b507339b3c84a4c9e5365a9f24b9a81f0691e",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.92,
+      "probabilities": {
+        "needs-info": 0.05,
+        "ready-for-human": 0.01,
+        "insufficient-evidence": 0.01,
+        "ready-for-agent": 0.9299999999999999,
+        "wontfix-proposal": 0.0
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 788,
+      "output_tokens": 69
+    },
+    "estimated_usd": 3.3096e-05,
+    "seconds": 0.23193452402483672,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-16",
+    "request_sha256": "cd0c931fc2119cd48822674dc534798512534942238de08f2fd0ccd686fd73f3",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.78,
+      "probabilities": {
+        "wontfix-proposal": 0.0,
+        "ready-for-human": 0.02,
+        "needs-info": 0.15,
+        "ready-for-agent": 0.82,
+        "insufficient-evidence": 0.01
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 773,
+      "output_tokens": 69
+    },
+    "estimated_usd": 3.2466000000000004e-05,
+    "seconds": 0.22366029396653175,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-17",
+    "request_sha256": "177384aacab364ca466aaf0253b130d31ccd27457d32e646427459a02b127592",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.82,
+      "probabilities": {
+        "wontfix-proposal": 0.0,
+        "ready-for-human": 0.01,
+        "needs-info": 0.11,
+        "ready-for-agent": 0.86,
+        "insufficient-evidence": 0.02
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 783,
+      "output_tokens": 69
+    },
+    "estimated_usd": 3.2886e-05,
+    "seconds": 0.2076924629509449,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-18",
+    "request_sha256": "70685f293a18751c58b882e43654ca694ad9377222c2dd6e2d9a4f5dba4386c9",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.48,
+      "probabilities": {
+        "needs-info": 0.16,
+        "insufficient-evidence": 0.01,
+        "ready-for-agent": 0.59,
+        "wontfix-proposal": 0.01,
+        "ready-for-human": 0.23
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 788,
+      "output_tokens": 69
+    },
+    "estimated_usd": 3.3096e-05,
+    "seconds": 0.227459401008673,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-2",
+    "request_sha256": "9685a4bd61775847de84ee9058a403b4101ee5b70a81b5c7252c7ae37f45748f",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.98,
+      "probabilities": {
+        "needs-info": 0.01,
+        "ready-for-human": 0.0,
+        "insufficient-evidence": 0.0,
+        "ready-for-agent": 0.99,
+        "wontfix-proposal": 0.0
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1062,
+      "output_tokens": 69
+    },
+    "estimated_usd": 4.460400000000001e-05,
+    "seconds": 0.18392648093868047,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-20",
+    "request_sha256": "17b81db9886e7a04d69f7ad0e014b53178950bf13c7f9ce6603e08d73b81c6e6",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.53,
+      "probabilities": {
+        "needs-info": 0.19,
+        "wontfix-proposal": 0.0,
+        "insufficient-evidence": 0.03,
+        "ready-for-agent": 0.62,
+        "ready-for-human": 0.16
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 843,
+      "output_tokens": 69
+    },
+    "estimated_usd": 3.5406000000000006e-05,
+    "seconds": 0.17941708711441606,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-21",
+    "request_sha256": "0f0d2a5835453db31a7c01a444273fa9c1acae9bb78a7b84c5ff5ae2ab9e5aa2",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-human",
+      "confidence": 0.42,
+      "probabilities": {
+        "ready-for-human": 0.54,
+        "ready-for-agent": 0.26,
+        "insufficient-evidence": 0.01,
+        "needs-info": 0.19,
+        "wontfix-proposal": 0.0
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 847,
+      "output_tokens": 69
+    },
+    "estimated_usd": 3.5574e-05,
+    "seconds": 0.17508688499219716,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-3",
+    "request_sha256": "b3067bdfe03140b44592e431c8131ecd850754a87d82eec1788b8d341b053222",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.8,
+      "probabilities": {
+        "needs-info": 0.01,
+        "ready-for-human": 0.15,
+        "insufficient-evidence": 0.0,
+        "ready-for-agent": 0.84,
+        "wontfix-proposal": 0.0
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1098,
+      "output_tokens": 69
+    },
+    "estimated_usd": 4.6116000000000004e-05,
+    "seconds": 0.22256236395332962,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-35",
+    "ok": true,
+    "deterministic": true,
+    "decision": "needs-info",
+    "question": "No acceptance criteria found. Add an observable done-condition and the exact command that verifies it.",
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-37",
+    "ok": true,
+    "deterministic": true,
+    "decision": "needs-info",
+    "question": "No acceptance criteria found. Add an observable done-condition and the exact command that verifies it.",
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-4",
+    "request_sha256": "97b1d6d2c30cc6ae7793e068e306379d0eefcc4dc4ddd4788b2e819ae7c62c6b",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.97,
+      "probabilities": {
+        "ready-for-agent": 0.97,
+        "insufficient-evidence": 0.0,
+        "needs-info": 0.01,
+        "ready-for-human": 0.02,
+        "wontfix-proposal": 0.0
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1228,
+      "output_tokens": 69
+    },
+    "estimated_usd": 5.157600000000001e-05,
+    "seconds": 0.21232808905187994,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-41",
+    "request_sha256": "c6a3f0b58556fb33792e9d68788c26f96849d15ae3702cb4a918b20f71be1ed9",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.98,
+      "probabilities": {
+        "ready-for-agent": 0.99,
+        "wontfix-proposal": 0.0,
+        "ready-for-human": 0.01,
+        "insufficient-evidence": 0.0,
+        "needs-info": 0.0
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1470,
+      "output_tokens": 69
+    },
+    "estimated_usd": 6.174e-05,
+    "seconds": 0.20284518401604146,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-49",
+    "request_sha256": "c461dc2f8c9f02139db9d2529398aa3ea64d0c213fa41b9b51101c695ff2c9d3",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.99,
+      "probabilities": {
+        "needs-info": 0.0,
+        "ready-for-human": 0.0,
+        "insufficient-evidence": 0.0,
+        "ready-for-agent": 1.0,
+        "wontfix-proposal": 0.0
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1170,
+      "output_tokens": 69
+    },
+    "estimated_usd": 4.914000000000001e-05,
+    "seconds": 0.18633213697467,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-54",
+    "request_sha256": "1a025e0d92f56890fbaeb917d6f29e7910cdcc62444d70233ddae1bb926a982d",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.67,
+      "probabilities": {
+        "ready-for-human": 0.16,
+        "insufficient-evidence": 0.01,
+        "ready-for-agent": 0.74,
+        "needs-info": 0.09,
+        "wontfix-proposal": 0.0
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1086,
+      "output_tokens": 69
+    },
+    "estimated_usd": 4.5612e-05,
+    "seconds": 0.17147734097670764,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-62",
+    "request_sha256": "b5b5ed22ed600c4dc790d97e632c56f03b88010351364b1c6413061fe3c9d453",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.97,
+      "probabilities": {
+        "ready-for-agent": 0.98,
+        "insufficient-evidence": 0.0,
+        "needs-info": 0.0,
+        "ready-for-human": 0.02,
+        "wontfix-proposal": 0.0
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1747,
+      "output_tokens": 69
+    },
+    "estimated_usd": 7.3374e-05,
+    "seconds": 0.2659353689523414,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-7",
+    "request_sha256": "9ac7c6e8c05f240aa98d219381cd2431f89aa8d5459211734d651ecc63dfae13",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.78,
+      "probabilities": {
+        "ready-for-human": 0.01,
+        "wontfix-proposal": 0.0,
+        "ready-for-agent": 0.82,
+        "insufficient-evidence": 0.01,
+        "needs-info": 0.16
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 806,
+      "output_tokens": 69
+    },
+    "estimated_usd": 3.385200000000001e-05,
+    "seconds": 0.22446209494955838,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-70",
+    "request_sha256": "6ea181771b6f9a44a002a5240ec4eba7f61c80545037e53eab45598bca435d66",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.95,
+      "probabilities": {
+        "needs-info": 0.0,
+        "insufficient-evidence": 0.0,
+        "ready-for-agent": 0.97,
+        "wontfix-proposal": 0.0,
+        "ready-for-human": 0.03
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 1104,
+      "output_tokens": 69
+    },
+    "estimated_usd": 4.636800000000001e-05,
+    "seconds": 0.1885001480113715,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-79",
+    "request_sha256": "022ae3ad196fc261eb1d4da067b3b93fe10916a329de999136a51193e903f917",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.86,
+      "probabilities": {
+        "ready-for-agent": 0.89,
+        "needs-info": 0.01,
+        "insufficient-evidence": 0.0,
+        "ready-for-human": 0.1,
+        "wontfix-proposal": 0.0
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 5197,
+      "output_tokens": 69
+    },
+    "estimated_usd": 0.00021827400000000002,
+    "seconds": 0.3105582860298455,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-8",
+    "request_sha256": "1cda858b73f99a16103556796181303f41d95de6038066c4c86f9f79196af49f",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.78,
+      "probabilities": {
+        "wontfix-proposal": 0.0,
+        "ready-for-human": 0.07,
+        "needs-info": 0.1,
+        "ready-for-agent": 0.82,
+        "insufficient-evidence": 0.01
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 825,
+      "output_tokens": 69
+    },
+    "estimated_usd": 3.465e-05,
+    "seconds": 0.1933194249868393,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-85",
+    "request_sha256": "58a6c0bdce26cde94e101bc3b302710ecec00a3ef255be3ab6722dfb46fcbf1c",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.91,
+      "probabilities": {
+        "ready-for-human": 0.01,
+        "ready-for-agent": 0.93,
+        "insufficient-evidence": 0.01,
+        "needs-info": 0.05,
+        "wontfix-proposal": 0.0
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 843,
+      "output_tokens": 69
+    },
+    "estimated_usd": 3.5406000000000006e-05,
+    "seconds": 0.20806647301651537,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-86",
+    "request_sha256": "c2bf0cc8cdc25b2a130a9dd488ca196efa8fca57ccb346401cbdf94f18509ed8",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.65,
+      "probabilities": {
+        "insufficient-evidence": 0.01,
+        "ready-for-human": 0.16,
+        "wontfix-proposal": 0.0,
+        "ready-for-agent": 0.71,
+        "needs-info": 0.12
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 850,
+      "output_tokens": 69
+    },
+    "estimated_usd": 3.570000000000001e-05,
+    "seconds": 0.19831477501429617,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-9",
+    "request_sha256": "58c48f3ccf7e4485c623e21c89e6e26dd50acf76439d985ed78fe49db2c5c925",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-agent",
+      "confidence": 0.52,
+      "probabilities": {
+        "wontfix-proposal": 0.0,
+        "ready-for-human": 0.04,
+        "insufficient-evidence": 0.01,
+        "ready-for-agent": 0.62,
+        "needs-info": 0.33
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 804,
+      "output_tokens": 69
+    },
+    "estimated_usd": 3.3768000000000006e-05,
+    "seconds": 0.20267862500622869,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-96",
+    "request_sha256": "802bce83001a4f3c65a42c993fb5b18b902b739fef6ebf671f03240ce7861baa",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-human",
+      "confidence": 0.84,
+      "probabilities": {
+        "wontfix-proposal": 0.0,
+        "ready-for-human": 0.88,
+        "insufficient-evidence": 0.0,
+        "needs-info": 0.09,
+        "ready-for-agent": 0.03
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 998,
+      "output_tokens": 69
+    },
+    "estimated_usd": 4.1916e-05,
+    "seconds": 0.2630182459251955,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-97",
+    "request_sha256": "6a839c953049a8ec9abc039aae6610e7da3480662edf197977f0d7627bd53463",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-human",
+      "confidence": 0.32,
+      "probabilities": {
+        "wontfix-proposal": 0.0,
+        "ready-for-human": 0.46,
+        "insufficient-evidence": 0.02,
+        "ready-for-agent": 0.2,
+        "needs-info": 0.32
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 984,
+      "output_tokens": 69
+    },
+    "estimated_usd": 4.132800000000001e-05,
+    "seconds": 0.23192843794822693,
+    "split": "evaluation"
+  },
+  {
+    "id": "factory-98",
+    "request_sha256": "b5e01f4379e08e0df0906533c9e95d2eb76ed660cd80089b7b886b1ec7894d50",
+    "ok": true,
+    "answer": {
+      "type": "choice",
+      "choice": "ready-for-human",
+      "confidence": 0.71,
+      "probabilities": {
+        "ready-for-agent": 0.03,
+        "insufficient-evidence": 0.01,
+        "wontfix-proposal": 0.0,
+        "needs-info": 0.19,
+        "ready-for-human": 0.77
+      }
+    },
+    "model": "jev-1.13.0",
+    "usage": {
+      "input_tokens": 956,
+      "output_tokens": 69
+    },
+    "estimated_usd": 4.0152000000000005e-05,
+    "seconds": 0.3007142039714381,
+    "split": "evaluation"
+  }
+]
