@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -19,7 +20,7 @@ sys.path.insert(0, str(ROOT))
 XDG = Path(tempfile.mkdtemp())
 os.environ["XDG_CONFIG_HOME"] = str(XDG)
 
-from factory import __version__, config  # noqa: E402
+from factory import __version__, config, onboard  # noqa: E402
 
 
 def host_file(text: str) -> None:
@@ -212,6 +213,39 @@ class HostConfigTest(unittest.TestCase):
             (Path(d) / "b").mkdir()
             proc = factory(make_repo(Path(d) / "b"), "install", "--print", "--no-dashboard")
             self.assertNotIn("dashboard.service", proc.stdout)
+
+    def test_unit_commands_import_factory_from_explicit_pythonpath(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            repo = tmp / "repo"
+            controlled = tmp / "controlled"
+            for root, marker in ((repo, "shadow"), (controlled, "controlled")):
+                package = root / "factory"
+                package.mkdir(parents=True)
+                (package / "__init__.py").write_text("")
+                (package / "__main__.py").write_text(
+                    f"import sys\nprint({marker!r}, *sys.argv[1:])\n"
+                )
+
+            env = {**os.environ, "PYTHONPATH": str(controlled)}
+            env.pop("PYTHONSAFEPATH", None)
+            generated = onboard.units(config.Config(repo, "acme/widgets"), "10min", "127.0.0.1")
+            output = []
+            for body in generated.values():
+                for line in body.splitlines():
+                    if line.startswith("ExecStart="):
+                        command = line.removeprefix("ExecStart=").removeprefix("-")
+                        proc = subprocess.run(
+                            shlex.split(command), cwd=repo, env=env,
+                            capture_output=True, text=True, check=True,
+                        )
+                        output.append(proc.stdout.strip())
+
+            self.assertEqual(output, [
+                "controlled triage",
+                "controlled dispatch",
+                "controlled dashboard --host 127.0.0.1 --port 8765 --no-open",
+            ])
 
     def test_init_labels_only_touches_nothing_and_fails_on_gh(self) -> None:
         with tempfile.TemporaryDirectory() as d:
