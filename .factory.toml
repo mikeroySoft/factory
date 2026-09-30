@@ -6,6 +6,7 @@ name = "test"
 run = [
     "uv",
     "run",
+    "--frozen",
     "--no-managed-python",
     "python",
     "-m",
