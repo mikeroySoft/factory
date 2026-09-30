@@ -213,6 +213,34 @@ class RoadmapTest(unittest.TestCase):
         questions = [row for row in report["attention"] if row["ticket"] == 7]
         self.assertTrue(any(row["kind"] == "execution_unknown" for row in questions))
         self.assertFalse(any(row["kind"] == "human_takeover" for row in questions))
+        self.assertIn(("runtime_unavailable", "ticket:7"),
+                      [(row["code"], row["scope"]) for row in report["errors"]])
+
+    def test_truncated_history_alone_does_not_report_runtime_unavailable(self):
+        journal = self.cfg.factory / "events.jsonl"
+        journal.parent.mkdir(parents=True, exist_ok=True)
+        filler = json.dumps({"at": AT, "event": "note", "ticket": 1, "pad": "x" * 4000}) + "\n"
+        journal.write_text(filler * 300)
+        parent = issue(50, initiative_body("Plan", links="#7 #8"), labels=("initiative",))
+        baseline = binding.from_issue(self.cfg, 50, parent)
+        body = binding.render(baseline) + "\n\n**Decision owner**\n@bob"
+        responses = {
+            f"repos/{REPO}/issues/50": parent,
+            f"repos/{REPO}/issues/7": issue(7, body, state="closed", assignees=("bob",)),
+            f"repos/{REPO}/issues/7/dependencies/blocked_by": [],
+            f"repos/{REPO}/issues/8": issue(8, body, labels=("ready-for-agent",), assignees=("bob",)),
+            f"repos/{REPO}/issues/8/dependencies/blocked_by": [],
+        }
+        read = self.reader(responses)
+        with patch("factory.plan.github_read", side_effect=read), \
+             patch("factory.binding.github_read", side_effect=read):
+            report = roadmap.collect(self.cfg, 50, deadline=time.monotonic() + 30)
+        self.assertEqual([row for row in report["errors"] if row["code"] == "runtime_unavailable"], [])
+        runtime = [json.loads(row["text"]) for row in report["sources"]
+                   if row["label"].startswith("Runtime execution projection")]
+        self.assertEqual({row["ticket"] for row in runtime}, {7, 8})
+        self.assertTrue(all(row["history"]["truncated"] and "byte_limit" in row["history"]["gaps"]
+                            for row in runtime))
 
     def test_factory_claim_receipt_is_not_human_takeover_until_escalated(self):
         parent = issue(50, initiative_body("Plan"), labels=("initiative",))
