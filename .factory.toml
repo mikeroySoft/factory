@@ -4,6 +4,9 @@
 [[gate.check]]
 name = "test"
 run = [
+    "uv",
+    "run",
+    "--no-managed-python",
     "python",
     "-m",
     "unittest",
