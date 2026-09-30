@@ -10,7 +10,13 @@ usage: score.py <adjudication.json>
 """
 import json, pathlib, statistics, sys
 
-SPLITS = json.loads((pathlib.Path(__file__).parent / "splits.json").read_text())["splits"]
+HERE = pathlib.Path(__file__).parent
+SPLITS = json.loads((HERE / "splits.json").read_text())["splits"]
+
+
+def primary_ids(case: str) -> set[str]:
+    oracle = json.loads((HERE / "cases" / case / "oracle.json").read_text())
+    return {f["id"] for f in oracle["findings"] if f["severity"] == "primary"}
 
 
 def split_of(case: str) -> str:
@@ -21,7 +27,8 @@ def score(rows: list[dict]) -> dict:
     out: dict = {}
     for r in rows:
         missed = r["expected_verdict"] == "REVISE" and (
-            r["verdict"] != "REVISE" or "missed" in r["defects"].values())
+            r["verdict"] != "REVISE" or any(
+                r["defects"].get(d) == "missed" for d in primary_ids(r["case"])))
         unnecessary = r["expected_verdict"] == "APPROVE" and r["verdict"] == "REVISE"
         arm = out.setdefault(r["contract"], {}).setdefault(split_of(r["case"]), {})
         s = arm.setdefault(r["sample"], {"n": 0, "missed_blocking": 0, "unnecessary_revise": 0})
