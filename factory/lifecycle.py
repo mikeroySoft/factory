@@ -11,6 +11,7 @@ import fcntl
 import gzip
 import json
 import os
+import re
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -24,7 +25,7 @@ _IDENTITY_FIELDS = (
     "ticket", "attempt", "review_round", "stage",
 )
 # Live journal bound and number of gzip segments kept (events.jsonl.N.gz).
-# Defaults; `dispatch.configure` applies `[journal] max_mb` / `retention` from .factory.toml.
+# Defaults; `config.load` applies `[journal] max_mb` / `retention` from .factory.toml.
 MAX_BYTES = 64 * 1024 * 1024
 RETENTION = 8
 
@@ -72,15 +73,18 @@ def _segment(path: Path, n: int) -> Path:
     return path.with_name(f"{path.name}.{n}.gz")
 
 
+def _segments(path: Path) -> list[int]:
+    pattern = re.compile(re.escape(path.name) + r"\.([1-9][0-9]*)\.gz\Z")
+    return sorted((int(match[1]) for entry in path.parent.glob(f"{path.name}.*.gz")
+                   if (match := pattern.fullmatch(entry.name))), reverse=True)
+
+
 def _segment_rows(path: Path) -> list[dict]:
     """Archived rows, oldest segment first. Caller holds the live journal flock."""
     rows = []
-    for n in range(RETENTION, 0, -1):
-        try:
-            with gzip.open(_segment(path, n), "rb") as handle:
-                rows += _rows(handle)
-        except FileNotFoundError:
-            pass
+    for n in _segments(path):
+        with gzip.open(_segment(path, n), "rb") as handle:
+            rows += _rows(handle)
     return rows
 
 
@@ -104,19 +108,23 @@ def _rotate(path: Path, handle) -> None:
               if row.get("event") == "lifecycle" and row.get("kind") == "exit"}
     live = [row for row in rows if row.get("event") == "lifecycle" and row.get("execution_id") not in closed]
     archived = [row for row in rows if not (row.get("event") == "lifecycle" and row.get("execution_id") not in closed)]
-    for n in range(RETENTION, 0, -1):
-        if _segment(path, n).exists():
-            os.replace(_segment(path, n), _segment(path, n + 1))
+    for n in _segments(path):
+        os.replace(_segment(path, n), _segment(path, n + 1))
     _replace(_segment(path, 1), archived)
-    expired = _segment(path, RETENTION + 1)
-    if expired.exists():
-        with gzip.open(expired, "rb") as old:
-            carried = [row for row in _rows(old) if row.get("event") != "lifecycle"]
-        if carried:
-            keeper = _segment(path, RETENTION)
+    expired = [n for n in _segments(path) if n > RETENTION]
+    carried = []
+    for n in expired:
+        with gzip.open(_segment(path, n), "rb") as old:
+            carried.extend(row for row in _rows(old) if row.get("event") != "lifecycle")
+    if carried:
+        keeper = _segment(path, RETENTION)
+        kept = []
+        if keeper.exists():
             with gzip.open(keeper, "rb") as old:
-                _replace(keeper, carried + _rows(old))
-        expired.unlink()
+                kept = _rows(old)
+        _replace(keeper, carried + kept)
+    for n in expired:
+        _segment(path, n).unlink()
     handle.seek(0)
     handle.truncate()
     handle.write(_dump(live))

@@ -1,4 +1,6 @@
+import fcntl
 import gzip
+import json
 import os
 import tempfile
 import threading
@@ -72,6 +74,74 @@ class RotationTest(unittest.TestCase):
             rows = lifecycle.read_events(path)
             self.assertEqual([r["event"] for r in rows], ["record", "late"])
             self.assertIn(b'{"event":"late"}\n', path.read_bytes())
+
+    def test_readers_include_segments_beyond_current_retention(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(lifecycle, "RETENTION", 4):
+            path = Path(tmp) / "events.jsonl"
+            lifecycle.append(path, {"event": "record", "n": 0})
+            for n in range(1, 11):
+                with gzip.open(Path(tmp) / f"events.jsonl.{n}.gz", "wb") as segment:
+                    segment.write(json.dumps({"event": "record", "n": n}).encode() + b"\n")
+            expected = list(range(10, 0, -1)) + [0]
+            self.assertEqual([row["n"] for row in lifecycle.read_events(path)], expected)
+            with lifecycle.journal_snapshot(path, create=False) as (rows, _):
+                self.assertEqual([row["n"] for row in rows], expected)
+
+    def test_sparse_segments_survive_retention_change(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(lifecycle, "MAX_BYTES", 200), \
+                mock.patch.object(lifecycle, "RETENTION", 4):
+            path = Path(tmp) / "events.jsonl"
+            for n in (1, 9):
+                with gzip.open(Path(tmp) / f"events.jsonl.{n}.gz", "wb") as segment:
+                    segment.write(json.dumps({"event": "record", "n": n}).encode() + b"\n")
+            lifecycle.append(path, {"event": "record", "n": 0, "pad": "x" * 300})
+            self.assertEqual([row["n"] for row in lifecycle.read_events(path)], [9, 1, 0])
+            self.assertEqual(sorted(p.name for p in Path(tmp).glob("events.jsonl.*.gz")),
+                             ["events.jsonl.1.gz", "events.jsonl.2.gz", "events.jsonl.4.gz"])
+
+    def test_lowering_retention_preserves_all_audit_rows(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(lifecycle, "MAX_BYTES", 2_000), \
+                mock.patch.object(lifecycle, "RETENTION", 8):
+            path = Path(tmp) / "events.jsonl"
+            lock = Path(tmp) / "held.lock"
+            lock.touch()
+            with lock.open("rb") as held:
+                fcntl.flock(held, fcntl.LOCK_EX)
+                execution = lifecycle.Execution(path, "worker", ticket=7)
+                execution.emit("enter")
+                execution.emit("lock_acquired", lock=str(lock))
+                records = []
+                for n in range(55):
+                    row = {"event": "record", "n": n, "pad": "x" * 550}
+                    records.append(row)
+                    lifecycle.append(path, row)
+                    with lifecycle.scope(path, "check", ticket=n):
+                        pass
+                self.assertEqual(len(list(Path(tmp).glob("events.jsonl.*.gz"))), 8)
+                with mock.patch.object(lifecycle, "RETENTION", 4):
+                    self.assertEqual(
+                        [row for row in lifecycle.read_events(path) if row.get("event") == "record"],
+                        records,
+                    )
+                    for n in range(55, 60):
+                        row = {"event": "record", "n": n, "pad": "y" * 550}
+                        records.append(row)
+                        lifecycle.append(path, row)
+                    segments = list(Path(tmp).glob("events.jsonl.*.gz"))
+                    self.assertEqual(len(segments), 4)
+                    self.assertEqual(
+                        [row for row in lifecycle.read_events(path) if row.get("event") == "record"],
+                        records,
+                    )
+                    for segment in segments:
+                        with gzip.open(segment, "rb") as archive:
+                            self.assertTrue(archive.read())
+                    (state,) = [entry for entry in lifecycle.observe(path)
+                                if entry["execution_id"] == execution.execution_id]
+                    self.assertEqual(state["state"], "active")
+                    self.assertEqual(state["evidence"]["locks"][0]["state"], "held")
 
 
 if __name__ == "__main__":

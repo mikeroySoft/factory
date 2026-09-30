@@ -104,7 +104,8 @@ exclusive = false
 # .2.gz, ...) once it passes max_mb. Lifecycle rows of open executions stay live;
 # every other row is archived and still read by `lifecycle.read_events`. Segments
 # past `retention` drop only closed-execution lifecycle rows; their outcome rows
-# fold into the oldest kept segment. Rotation runs under the journal flock.
+# fold into the oldest kept segment, including when retention is lowered.
+# All commands that load config use these settings. Rotation runs under the journal flock.
 # max_mb = 64
 # retention = 8
 

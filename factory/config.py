@@ -16,6 +16,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from factory import lifecycle
+
 CONFIG_NAME = ".factory.toml"
 LESSONS_NAME = ".factory-lessons.md"  # committed; `factory learn` writes, every worker prompt reads
 
@@ -416,4 +418,6 @@ def load(start: Path | None = None) -> Config:
         raise ConfigError("[install].python must be a non-empty path")
     cfg.install["dashboard"] = bool(cfg.install["dashboard"])
     cfg.install["env"] = {k: str(v) for k, v in cfg.install["env"].items()}
+    lifecycle.MAX_BYTES = cfg.journal_max_mb * 1024 * 1024
+    lifecycle.RETENTION = cfg.journal_retention
     return cfg
