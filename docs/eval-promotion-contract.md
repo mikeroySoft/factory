@@ -33,8 +33,9 @@ One attributable change per round (`change.kind` ∈ prompt, skill, rubric,
 model, effort — no harness rewrites). Score train (+ optional selection).
 
 - **Keep** only if the train gain exceeds noise **and** the lockbox/fresh
-  score does not regress beyond noise.
-- **Revert** train-flat, or train↑ with lockbox↓ (train-only win).
+  mean rises (delta > 0). "Does not regress" means exactly this.
+- **Revert** train-flat, or train↑ with lockbox flat (delta = 0) or down —
+  a train-only win, even when the drop is inside noise.
 - On stall, bucket root cause (ambiguous task / bad grader / harness / real
   miss) before another round.
 

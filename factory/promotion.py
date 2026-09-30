@@ -2,7 +2,7 @@
 
 A claim compares one attributable change (candidate) to a baseline with repeated
 scores per split. Keep only if train improves beyond grader noise and the
-lockbox (or fresh production) does not regress; otherwise revert. Higher score
+lockbox (or fresh production) mean also rises; flat or down reverts. Higher score
 is better. The deterministic gate is untouched: this only judges eval claims.
 """
 
@@ -45,6 +45,6 @@ def decide(claim: dict) -> tuple[str, str]:
     if gain <= margin:
         return "revert", f"train gain {gain:+.3f} within noise {margin:.3f}"
     delta, margin = arms[held]
-    if delta < -margin:
-        return "revert", f"train-only win: {held} {delta:+.3f} regressed beyond noise {margin:.3f}"
+    if delta <= 0:
+        return "revert", f"train-only win: {held} {delta:+.3f} flat or down (noise {margin:.3f})"
     return "keep", f"train {gain:+.3f}; {held} {delta:+.3f} (noise {margin:.3f})"

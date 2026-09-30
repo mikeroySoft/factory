@@ -10,8 +10,14 @@ def claim(train, held, held_name="lockbox", kind="prompt"):
 
 
 class DecideTest(unittest.TestCase):
-    def test_keep_when_train_up_and_lockbox_holds(self):
-        self.assertEqual(decide(claim(([.5, .5], [.8, .8]), ([.6, .6], [.6, .6])))[0], "keep")
+    def test_keep_when_train_up_and_lockbox_up(self):
+        self.assertEqual(decide(claim(([.5, .5], [.8, .8]), ([.6, .6], [.65, .65])))[0], "keep")
+
+    def test_revert_when_lockbox_flat(self):
+        self.assertEqual(decide(claim(([.5, .5], [.8, .8]), ([.6, .6], [.6, .6])))[0], "revert")
+
+    def test_revert_lockbox_drop_inside_noise(self):
+        self.assertEqual(decide(claim(([.5, .5], [.8, .8]), ([.5, .7], [.55, .6])))[0], "revert")
 
     def test_revert_train_only_win(self):
         self.assertEqual(decide(claim(([.5, .5], [.8, .8]), ([.6, .6], [.4, .4])))[0], "revert")
