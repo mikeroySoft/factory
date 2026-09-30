@@ -258,7 +258,7 @@ def current():
 
 class Execution:
     def __init__(self, path: Path, stage: str, *, ticket=None, attempt=None,
-                 review_round=None, dispatcher=False, lock=None):
+                 review_round=None, dispatcher=False, lock=None, lazy=False):
         parent = current()
         inherited = parent._context() if parent is not None else _inherited()
         self.path = Path(inherited.get("path", path)).absolute()
@@ -283,6 +283,10 @@ class Execution:
         self._children = {}
         self._resources = {}
         self._wait = None
+        self._parent = parent
+        # Lazy scopes buffer rows until something happens (wait, audit row, non-completed
+        # outcome, commit()); an uneventful exit drops the buffer instead of journaling it.
+        self._buffer = [] if lazy else None
 
     def _context(self) -> dict:
         return {
@@ -315,17 +319,36 @@ class Execution:
             "reason": self.reason if kind == "exit" else None,
             "process": self.process, "locks": list(self.locks),
         }
+        if self._terminal:
+            raise RuntimeError("execution already has a terminal lifecycle event")
+        row["sequence"] = self._sequence + 1
+        self._sequence = row["sequence"]
+        self._terminal = kind == "exit"
+        if self._buffer is not None:
+            if kind != "exit":
+                self._buffer.append(row)
+                return row
+            if self.outcome == "completed":
+                self._buffer = None  # uneventful lazy scope: no trail
+                return row
+            self.commit()
+        self._append([row])
+        return row
+
+    def commit(self) -> None:
+        """Persist a lazy scope's buffered rows (ancestors first); later rows write through."""
+        if self._parent is not None:
+            self._parent.commit()
+        rows, self._buffer = self._buffer, None
+        if rows:
+            self._append(rows)
+
+    def _append(self, rows: list[dict]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a+b") as handle:
             fcntl.flock(handle, fcntl.LOCK_EX)
-            # One owning Execution object; the journal flock also serializes its threads.
-            if self._terminal:
-                raise RuntimeError("execution already has a terminal lifecycle event")
-            row["sequence"] = self._sequence + 1
-            _write(handle, row)
-            self._sequence = row["sequence"]
-            self._terminal = kind == "exit"
-        return row
+            for row in rows:
+                _write(handle, row)
 
     def wait(self, reason: str, *, mode="blocking", resource=None, **details) -> dict:
         """Record an observed wait, separately from execution stage and outcome."""
@@ -334,6 +357,7 @@ class Execution:
             raise ValueError("invalid lifecycle wait")
         row = self.emit("wait", wait=value)
         self._wait = row["event_id"]
+        self.commit()
         return row
 
     def wait_end(self) -> dict | None:
@@ -388,9 +412,9 @@ class Execution:
 
 @contextmanager
 def scope(path: Path, stage: str, *, ticket=None, attempt=None, review_round=None,
-          dispatcher=False, lock=None):
+          dispatcher=False, lock=None, lazy=False):
     execution = Execution(path, stage, ticket=ticket, attempt=attempt, review_round=review_round,
-                          dispatcher=dispatcher, lock=lock)
+                          dispatcher=dispatcher, lock=lock, lazy=lazy)
     execution.emit("enter")
     token = _CURRENT.set(execution)
     try:

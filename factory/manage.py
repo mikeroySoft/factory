@@ -420,7 +420,7 @@ def viability_pass(dry_run: bool = False) -> None:
             if dry_run and dispatch.lock_held(lock_path):
                 continue
             identity = {"pr" if kind == "pr" else "ticket": n}
-            with nullcontext() if dry_run else lifecycle.scope(dispatch.EVENTS, "manage", ticket=n) as execution:
+            with nullcontext() if dry_run else lifecycle.scope(dispatch.EVENTS, "manage", ticket=n, lazy=True) as execution:
                 with nullcontext() if dry_run else dispatch.ticket_lock(n).open("w") as lock:
                     if not dry_run:
                         resource = execution.resource("requested", lock_path, scope="repository")
@@ -447,6 +447,7 @@ def viability_pass(dry_run: bool = False) -> None:
                             dispatch.log(f"{kind} #{n}: would assess viability ({label})")
                             continue
                         sources = evidence.viability_sources(cfg, issue, kind=kind)
+                        execution.commit()
                         try:
                             with NamedTemporaryFile(mode="w", dir=cfg.factory, prefix="manager-viability-", suffix=".md") as prompt:
                                 prompt.write(VIABILITY_MENU + f"\nTarget: {kind} #{n} in {cfg.repo}\n\n"
@@ -587,7 +588,7 @@ def frontier_pass(dry_run: bool = False) -> None:
         lock_path = cfg.factory / "locks" / f"{n}.lock"
         if dispatch.lock_held(lock_path):
             continue
-        with nullcontext() if dry_run else lifecycle.scope(dispatch.EVENTS, "manage", ticket=n) as execution:
+        with nullcontext() if dry_run else lifecycle.scope(dispatch.EVENTS, "manage", ticket=n, lazy=True) as execution:
             with nullcontext() if dry_run else dispatch.ticket_lock(n).open("w") as lock:
                 if not dry_run:
                     request = execution.resource("requested", lock_path, scope="repository")
@@ -664,6 +665,7 @@ def frontier_pass(dry_run: bool = False) -> None:
                         if path.is_file():
                             parts.append(f"## {path.name}\n\n{path.read_text()}")
                     cwd = wt if wt.is_dir() else cfg.root
+                    execution.commit()
                     try:
                         prompt_path = cfg.factory / f"manager-prompt-{n}.md"
                         prompt_path.write_text("\n\n".join(parts))
@@ -719,7 +721,7 @@ def escalation_pass(dry_run: bool = False) -> None:
         lock_path = cfg.factory / "locks" / f"{n}.lock"
         if dry_run and dispatch.lock_held(lock_path):
             continue
-        with nullcontext() if dry_run else lifecycle.scope(dispatch.EVENTS, "manage", ticket=n) as execution:
+        with nullcontext() if dry_run else lifecycle.scope(dispatch.EVENTS, "manage", ticket=n, lazy=True) as execution:
             with nullcontext() if dry_run else dispatch.ticket_lock(n).open("w") as lock:
                 if not dry_run:
                     request = execution.resource("requested", lock_path, scope="repository")
@@ -760,6 +762,7 @@ def escalation_pass(dry_run: bool = False) -> None:
                     wt = cfg.factory / f"wt-{n}"
                     cwd = wt if wt.is_dir() else cfg.root
                     notes = rejected = None
+                    execution.commit()
                     try:
                         prompt_path = cfg.factory / f"manager-prompt-{n}.md"
                         prompt_path.write_text("\n\n".join(parts))
