@@ -199,6 +199,47 @@ def gate(cwd: Path, *args: str) -> tuple[int, str, str]:
 
 
 class ConfigTest(unittest.TestCase):
+    def test_worker_inherited_execution_uses_loaded_journal_settings(self) -> None:
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), "[journal]\nmax_mb = 1\nretention = 4\n")
+            worktree = Path(d) / "worker"
+            git(repo, "worktree", "add", "-q", str(worktree), "-b", "agent/1")
+            path = repo / ".factory" / "events.jsonl"
+            with mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}), \
+                    mock.patch.object(lifecycle, "MAX_BYTES", 64 * 1024 * 1024):
+                parent = lifecycle.Execution(path, "dispatcher", ticket=1)
+                parent.emit("enter")
+                row = {"event": "attempt", "ticket": 1, "pad": "x" * 1_050_000}
+                lifecycle.append(path, row)
+                env = {**parent.env(), "PYTHONPATH": str(ROOT)}
+            self.assertGreater(path.stat().st_size, 1024 * 1024)
+            self.assertFalse((path.parent / "events.jsonl.1.gz").exists())
+            code = """
+import json
+from pathlib import Path
+from factory import config, lifecycle
+cfg = config.load()
+execution = lifecycle.Execution(Path("ignored"), "worker")
+execution.emit("enter")
+rows = lifecycle.read_events(execution.path)
+print(json.dumps({
+    "root": str(cfg.root), "path": str(execution.path),
+    "max_bytes": lifecycle.MAX_BYTES, "retention": lifecycle.RETENTION,
+    "attempts": sum(row.get("event") == "attempt" for row in rows),
+}))
+"""
+            result = subprocess.run([sys.executable, "-c", code], cwd=worktree, env=env,
+                                    capture_output=True, text=True, check=True)
+            got = json.loads(result.stdout)
+            self.assertEqual(got, {
+                "root": str(repo), "path": str(path), "max_bytes": 1024 * 1024,
+                "retention": 4, "attempts": 1,
+            })
+            self.assertLessEqual(path.stat().st_size, 1024 * 1024)
+            self.assertTrue((path.parent / "events.jsonl.1.gz").exists())
+
     def test_manager_prompt_file_and_omp_inline_rejection(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
@@ -386,6 +427,16 @@ class HostConfigTest(unittest.TestCase):
     def test_unknown_keys(self) -> None:
         raw = {"triage": {"mdoel": "x"}, "gate": {"check": [{"name": "a", "run": [], "exclusiv": True}]}, "bogus": {}}
         self.assertEqual(config.unknown_keys(raw), ["triage.mdoel", "gate.check[0].exclusiv", "bogus"])
+
+    def test_journal_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b, tempfile.TemporaryDirectory() as c:
+            cfg = config.load(make_repo(Path(a)))
+            self.assertEqual((cfg.journal_max_mb, cfg.journal_retention), (64, 8))
+            cfg = config.load(make_repo(Path(b), "[journal]\nmax_mb = 5\nretention = 3\n"))
+            self.assertEqual((cfg.journal_max_mb, cfg.journal_retention), (5, 3))
+            with self.assertRaises(config.ConfigError):
+                config.load(make_repo(Path(c), "[journal]\nretention = 0\n"))
+        self.assertEqual(config.unknown_keys({"journal": {"max_mb": 1, "retentoin": 2}}), ["journal.retentoin"])
 
     def test_install_print_uses_host_defaults_and_env(self) -> None:
         host_file('[defaults.install]\nevery = "5min"\ndashboard = true\n[defaults.install.env]\nUV_EXCLUDE_NEWER = "2026-01-01T00:00:00Z"\n')

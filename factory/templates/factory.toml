@@ -99,6 +99,16 @@ exclusive = false
 # url = "http://127.0.0.1:11434/v1/chat/completions"
 # model = "qwen3:30b"
 
+[journal]
+# .factory/events.jsonl rolls into events.jsonl.1.gz (older segments shift to
+# .2.gz, ...) once it passes max_mb. Lifecycle rows of open executions stay live;
+# every other row is archived and still read by `lifecycle.read_events`. Segments
+# past `retention` drop only closed-execution lifecycle rows; their outcome rows
+# fold into the oldest kept segment, including when retention is lowered.
+# All commands that load config use these settings. Rotation runs under the journal flock.
+# max_mb = 64
+# retention = 8
+
 [dashboard]
 # port = 8765
 # theme = ".factory-dashboard.css"   # repo-relative CSS loaded after the built-in stylesheet

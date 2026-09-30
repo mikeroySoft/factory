@@ -16,6 +16,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from factory import lifecycle
+
 CONFIG_NAME = ".factory.toml"
 LESSONS_NAME = ".factory-lessons.md"  # committed; `factory learn` writes, every worker prompt reads
 
@@ -72,6 +74,7 @@ KNOWN_KEYS = {
     "gate": ("timeout", "lock", "check"),
     "leak_scan": ("pattern", "exclude"),
     "triage": ("url", "model"),
+    "journal": ("max_mb", "retention"),
     "dashboard": ("port", "theme"),
     "install": ("every", "dashboard", "host", "python", "env"),
     "collaboration": ("fallback", "reasons", "components"),
@@ -136,6 +139,8 @@ class Config:
     manager_model: str | None = None  # dashboard's no-tools OMP briefing; never a command
     dashboard_port: int = 8765
     dashboard_theme: Path | None = None  # CSS file served after the built-in stylesheet
+    journal_max_mb: int = 64  # events.jsonl rotates into events.jsonl.N.gz past this size
+    journal_retention: int = 8  # gzip segments kept; older closed-execution lifecycle rows are dropped
     install: dict = field(default_factory=lambda: dict(DEFAULT_INSTALL))  # `factory install` defaults
     # `[collaboration]`: human decision owners for `factory plan route`; None = section absent (legacy behaviour).
     collaboration: dict | None = None
@@ -384,6 +389,12 @@ def load(start: Path | None = None) -> Config:
         if cap is not None and (isinstance(cap, bool) or not isinstance(cap, int) or cap < 1):
             raise ConfigError(f"manager.{key} must be a positive integer")
         setattr(cfg, f"manager_{key}", cap)
+    journal = raw.get("journal", {})
+    for key in ("max_mb", "retention"):
+        value = journal.get(key, getattr(cfg, f"journal_{key}"))
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ConfigError(f"journal.{key} must be a positive integer")
+        setattr(cfg, f"journal_{key}", value)
     if "collaboration" in raw:
         cfg.collaboration = collaboration_settings(raw["collaboration"])
     cfg.check_timeout = int(gate.get("timeout", cfg.check_timeout))
@@ -407,4 +418,6 @@ def load(start: Path | None = None) -> Config:
         raise ConfigError("[install].python must be a non-empty path")
     cfg.install["dashboard"] = bool(cfg.install["dashboard"])
     cfg.install["env"] = {k: str(v) for k, v in cfg.install["env"].items()}
+    lifecycle.MAX_BYTES = cfg.journal_max_mb * 1024 * 1024
+    lifecycle.RETENTION = cfg.journal_retention
     return cfg

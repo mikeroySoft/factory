@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import contextvars
 import fcntl
+import gzip
 import json
 import os
+import re
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -22,6 +24,10 @@ _IDENTITY_FIELDS = (
     "dispatcher_run_id", "root_execution_id", "execution_id", "parent_execution_id",
     "ticket", "attempt", "review_round", "stage",
 )
+# Live journal bound and number of gzip segments kept (events.jsonl.N.gz).
+# Defaults; `config.load` applies `[journal] max_mb` / `retention` from .factory.toml.
+MAX_BYTES = 64 * 1024 * 1024
+RETENTION = 8
 
 
 def _now() -> str:
@@ -44,7 +50,7 @@ def _rows(handle) -> list[dict]:
 
 
 def _write(handle, row: dict) -> None:
-    payload = json.dumps(row, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode() + b"\n"
+    payload = _dump([row])
     handle.seek(0, os.SEEK_END)
     if handle.tell():
         handle.seek(-1, os.SEEK_END)
@@ -52,6 +58,76 @@ def _write(handle, row: dict) -> None:
             # Never promote a syntactically complete but uncommitted tail to a record.
             handle.write(b"\x00\n")
     handle.write(payload)
+    handle.flush()
+    os.fsync(handle.fileno())
+    if handle.tell() > MAX_BYTES:
+        _rotate(Path(handle.name), handle)
+
+
+def _dump(rows: list[dict]) -> bytes:
+    return b"".join(json.dumps(row, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
+                    + b"\n" for row in rows)
+
+
+def _segment(path: Path, n: int) -> Path:
+    return path.with_name(f"{path.name}.{n}.gz")
+
+
+def _segments(path: Path) -> list[int]:
+    pattern = re.compile(re.escape(path.name) + r"\.([1-9][0-9]*)\.gz\Z")
+    return sorted((int(match[1]) for entry in path.parent.glob(f"{path.name}.*.gz")
+                   if (match := pattern.fullmatch(entry.name))), reverse=True)
+
+
+def _segment_rows(path: Path) -> list[dict]:
+    """Archived rows, oldest segment first. Caller holds the live journal flock."""
+    rows = []
+    for n in _segments(path):
+        with gzip.open(_segment(path, n), "rb") as handle:
+            rows += _rows(handle)
+    return rows
+
+
+def _replace(target: Path, rows: list[dict]) -> None:
+    tmp = target.with_name(target.name + ".tmp")
+    with gzip.open(tmp, "wb") as handle:
+        handle.write(_dump(rows))
+    os.replace(tmp, target)
+
+
+def _rotate(path: Path, handle) -> None:
+    """Roll the live journal into events.jsonl.1.gz under the caller's exclusive flock.
+
+    The live inode is rewritten in place (never renamed), so writers blocked on the
+    flock append to the same file afterwards. Lifecycle rows of open executions stay
+    live for observe(); everything else is archived. Segments past RETENTION drop only
+    closed-execution lifecycle rows: their record() rows move into the next-oldest segment.
+    """
+    rows = _rows(handle)
+    closed = {row.get("execution_id") for row in rows
+              if row.get("event") == "lifecycle" and row.get("kind") == "exit"}
+    live = [row for row in rows if row.get("event") == "lifecycle" and row.get("execution_id") not in closed]
+    archived = [row for row in rows if not (row.get("event") == "lifecycle" and row.get("execution_id") not in closed)]
+    for n in _segments(path):
+        os.replace(_segment(path, n), _segment(path, n + 1))
+    _replace(_segment(path, 1), archived)
+    expired = [n for n in _segments(path) if n > RETENTION]
+    carried = []
+    for n in expired:
+        with gzip.open(_segment(path, n), "rb") as old:
+            carried.extend(row for row in _rows(old) if row.get("event") != "lifecycle")
+    if carried:
+        keeper = _segment(path, RETENTION)
+        kept = []
+        if keeper.exists():
+            with gzip.open(keeper, "rb") as old:
+                kept = _rows(old)
+        _replace(keeper, carried + kept)
+    for n in expired:
+        _segment(path, n).unlink()
+    handle.seek(0)
+    handle.truncate()
+    handle.write(_dump(live))
     handle.flush()
     os.fsync(handle.fileno())
 
@@ -66,11 +142,11 @@ def append(path: Path, row: dict) -> None:
 
 
 def read_events(path: Path) -> list[dict]:
-    """Read committed JSON objects, ignoring legacy malformed/interrupted lines."""
+    """Read committed JSON objects from gzip segments and the live journal, oldest first."""
     try:
         with Path(path).open("rb") as handle:
             fcntl.flock(handle, fcntl.LOCK_SH)
-            return _rows(handle)
+            return _segment_rows(Path(path)) + _rows(handle)
     except FileNotFoundError:
         return []
 
@@ -96,7 +172,7 @@ def journal_snapshot(
         return
     with owned:
         fcntl.flock(owned, fcntl.LOCK_EX)
-        yield _rows(owned), owned
+        yield _segment_rows(path) + _rows(owned), owned
 
 
 
