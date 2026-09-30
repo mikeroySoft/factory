@@ -684,8 +684,13 @@ class HostConfigTest(unittest.TestCase):
             )
             self.assertEqual(row["status"], "PASS", row["detail"])
 
-            literal = selected.parent / 'python space$HOME%name"quote\\slash'
-            literal.symlink_to(selected)
+            # Special characters live in the environment directory, not the basename: a
+            # venv resolves its base interpreter as `home/<basename>`, and relocatable
+            # (python-build-standalone) bases cannot fall back to a compiled-in prefix.
+            venv_root = selected.parent.parent
+            literal_root = venv_root.with_name('env space$HOME%name"quote\\slash')
+            literal_root.symlink_to(venv_root)
+            literal = literal_root / "bin" / selected.name
             configure(literal)
             rendered = run("install", "--print", "--dashboard")
             self.assertEqual(rendered.returncode, 0, rendered.stderr)
