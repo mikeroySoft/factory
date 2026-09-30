@@ -871,6 +871,17 @@ def review_queue(prs: list[dict], rows: list[dict], login: str) -> list[dict]:
     return sorted(queue, key=lambda pr: pr["number"], reverse=True)
 
 
+RECENT_EXECUTIONS = 200
+
+
+def recent_executions(executions: list[dict]) -> list[dict]:
+    """Every open execution plus the newest closed ones, without raw event rows."""
+    open_ = [e for e in executions if e.get("ended_at") is None]
+    closed = sorted((e for e in executions if e.get("ended_at") is not None),
+                    key=lambda e: e["ended_at"])[-RECENT_EXECUTIONS:]
+    return [{k: v for k, v in e.items() if k != "events"} for e in open_ + closed]
+
+
 def snapshot() -> dict:
     errors = []
     issues: list[dict] = []
@@ -1022,7 +1033,7 @@ def snapshot() -> dict:
         "upstream": upstream_state(gh_upstream, issues),
         "metrics": metrics(tickets),
         "workers": stats.worker_metrics(audit, cfg.workers),
-        "executions": executions,
+        "executions": recent_executions(executions),
         "resources": resources,
         "tickets": tickets,
         "review_queue": review_queue(review_prs, rows, viewer),
