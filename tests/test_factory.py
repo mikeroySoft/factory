@@ -387,6 +387,16 @@ class HostConfigTest(unittest.TestCase):
         raw = {"triage": {"mdoel": "x"}, "gate": {"check": [{"name": "a", "run": [], "exclusiv": True}]}, "bogus": {}}
         self.assertEqual(config.unknown_keys(raw), ["triage.mdoel", "gate.check[0].exclusiv", "bogus"])
 
+    def test_journal_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b, tempfile.TemporaryDirectory() as c:
+            cfg = config.load(make_repo(Path(a)))
+            self.assertEqual((cfg.journal_max_mb, cfg.journal_retention), (64, 8))
+            cfg = config.load(make_repo(Path(b), "[journal]\nmax_mb = 5\nretention = 3\n"))
+            self.assertEqual((cfg.journal_max_mb, cfg.journal_retention), (5, 3))
+            with self.assertRaises(config.ConfigError):
+                config.load(make_repo(Path(c), "[journal]\nretention = 0\n"))
+        self.assertEqual(config.unknown_keys({"journal": {"max_mb": 1, "retentoin": 2}}), ["journal.retentoin"])
+
     def test_install_print_uses_host_defaults_and_env(self) -> None:
         host_file('[defaults.install]\nevery = "5min"\ndashboard = true\n[defaults.install.env]\nUV_EXCLUDE_NEWER = "2026-01-01T00:00:00Z"\n')
         with tempfile.TemporaryDirectory() as d:

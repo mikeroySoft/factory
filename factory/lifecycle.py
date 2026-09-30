@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import contextvars
 import fcntl
-import json
 import gzip
+import json
 import os
 import uuid
 from contextlib import contextmanager
@@ -24,6 +24,7 @@ _IDENTITY_FIELDS = (
     "ticket", "attempt", "review_round", "stage",
 )
 # Live journal bound and number of gzip segments kept (events.jsonl.N.gz).
+# Defaults; `dispatch.configure` applies `[journal] max_mb` / `retention` from .factory.toml.
 MAX_BYTES = 64 * 1024 * 1024
 RETENTION = 8
 
@@ -48,7 +49,7 @@ def _rows(handle) -> list[dict]:
 
 
 def _write(handle, row: dict) -> None:
-    payload = json.dumps(row, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode() + b"\n"
+    payload = _dump([row])
     handle.seek(0, os.SEEK_END)
     if handle.tell():
         handle.seek(-1, os.SEEK_END)
@@ -74,7 +75,7 @@ def _segment(path: Path, n: int) -> Path:
 def _segment_rows(path: Path) -> list[dict]:
     """Archived rows, oldest segment first. Caller holds the live journal flock."""
     rows = []
-    for n in range(RETENTION + 1, 0, -1):
+    for n in range(RETENTION, 0, -1):
         try:
             with gzip.open(_segment(path, n), "rb") as handle:
                 rows += _rows(handle)

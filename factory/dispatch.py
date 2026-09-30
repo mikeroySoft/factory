@@ -60,6 +60,8 @@ def configure(c: Config) -> None:
     EVENTS = FACTORY / "events.jsonl"
     MAX_ACTIVE = cfg.max_active
     MAX_ATTEMPTS = cfg.max_attempts
+    lifecycle.MAX_BYTES = cfg.journal_max_mb * 1024 * 1024
+    lifecycle.RETENTION = cfg.journal_retention
 
 
 STANDING_INSTRUCTIONS = """

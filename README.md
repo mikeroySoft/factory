@@ -591,6 +591,10 @@ pattern = "internal|confidential|proprietary|private|jira|confluence|\\.corp|\\.
 [triage]
 url = "http://127.0.0.1:11434/v1/chat/completions"
 model = "qwen3:30b"
+
+[journal]
+max_mb = 64      # events.jsonl rolls into events.jsonl.N.gz past this size
+retention = 8    # gzip segments kept
 ```
 
 The shared host file is `$XDG_CONFIG_HOME/factory/config.toml` (default
@@ -701,7 +705,10 @@ branches, or merge state.
   (`claimed`, `attempt`, `pr-opened`, `review`, `approved`, `refreshed`,
   `merged`, `escalate`, `upstream-sync`, and `human-decision`) alongside
   versioned `lifecycle` records. See the [event contract](#execution-event-contract)
-  below. A ticket's history is local; no GitHub call is needed.
+  below. A ticket's history is local; no GitHub call is needed. Past
+  `[journal] max_mb` the live file rolls into gzip segments
+  (`events.jsonl.1.gz`, `.2.gz`, … up to `retention`); outcome rows are never
+  dropped, only closed-execution `lifecycle` rows of expired segments are.
 - **Handoff notes**: each worker attempt ends by writing
   `.factory/wt-<n>/.factory/handoff-<n>.md` (what changed, what is unverified,
   what next). The next attempt gets it in its prompt; an escalation quotes it
@@ -784,7 +791,15 @@ continued execution.
 ## Execution event contract
 
 `.factory/events.jsonl` is the single append-only journal for legacy ticket
-outcomes and authoritative execution evidence. An execution is one entered
+outcomes and authoritative execution evidence. When it passes `[journal] max_mb`
+(default 64) the appender, still holding the journal flock, rewrites the live
+inode in place: `lifecycle` rows of open executions stay live, everything else
+rolls into `events.jsonl.1.gz` and older segments shift to `.2.gz`, … up to
+`retention` (default 8). The expired segment's non-lifecycle rows are folded into
+the oldest kept segment, so `lifecycle.read_events` and `journal_snapshot` return
+every outcome row (segments oldest first, then the live file) and dedupe,
+attempt counts and spend survive rotation. Tail-only readers (runtime status,
+briefing, evidence) read the live file alone. An execution is one entered
 scope, not a ticket's entire history. A dispatcher pass, an independent triage
 run with no tickets, every worker attempt, and each later PR revisit have their
 own identities. Parent/child scopes may overlap; never collapse them into the
