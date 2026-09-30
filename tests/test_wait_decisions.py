@@ -60,7 +60,8 @@ class WaitDecisions(unittest.TestCase):
         lock = self.cfg.factory / "locks" / "merge.lock"
         holder = self.hold(lock)
         with patch.object(dispatch, "sync_pass") as sync, \
-                patch.object(dispatch, "merge_pass_locked") as merge:
+                patch.object(dispatch, "merge_pass_locked",
+                             side_effect=lambda dry: dispatch.record("merged", ticket=7, pr=1)) as merge:
             dispatch.land_pass(False)
             sync.assert_not_called()
             merge.assert_not_called()
@@ -84,15 +85,13 @@ class WaitDecisions(unittest.TestCase):
 
     def test_landing_holds_merge_resource_through_sync_and_merge_then_releases_on_error(self):
         lock = self.cfg.factory / "locks" / "merge.lock"
-        stages = []
+        stages, executions = [], []
 
         def work(name):
             stages.append(name)
             self.assertTrue(dispatch.lock_held(lock))
-            current = lifecycle.current()
-            acquired = next(row for row in self.rows() if row["kind"] == "lock_acquired")
-            self.assertEqual(acquired["execution_id"], current.execution_id)
-            self.assertFalse(any(row["kind"] == "exit" for row in self.rows()))
+            executions.append(lifecycle.current().execution_id)
+            self.assertEqual(self.rows(), [])  # an uneventful landing journals nothing until it fails
             if name == "merge":
                 raise RuntimeError("local merge failure")
 
@@ -107,6 +106,7 @@ class WaitDecisions(unittest.TestCase):
         self.assertLess(kinds.index("resource_requested"), kinds.index("lock_acquired"))
         self.assertLess(kinds.index("lock_released"), kinds.index("exit"))
         acquired = next(row for row in rows if row["kind"] == "lock_acquired")
+        self.assertEqual({acquired["execution_id"]}, set(executions))
         released = next(row for row in rows if row["kind"] == "lock_released")
         self.assertEqual(released["acquisition_id"], acquired["acquisition_id"])
         self.assertEqual(released["execution_id"], acquired["execution_id"])

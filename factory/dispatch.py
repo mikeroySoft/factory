@@ -521,6 +521,7 @@ def record(event: str, **fields: object) -> None:
     if execution is not None:
         row.update(execution_id=execution.execution_id,
                    dispatcher_run_id=execution.dispatcher_run_id)
+        execution.commit()
         if event in {"escalate", "approved", "merged"}:
             execution.outcome = {"escalate": "project_escalation",
                                  "approved": "approved", "merged": "merged"}[event]
@@ -1343,7 +1344,7 @@ def land_pass(dry_run: bool) -> None:
         return
     (FACTORY / "locks").mkdir(parents=True, exist_ok=True)
     lock_path = FACTORY / "locks" / "merge.lock"
-    with lifecycle.scope(EVENTS, "landing") as execution:
+    with lifecycle.scope(EVENTS, "landing", lazy=True) as execution:
         lock_fd = lock_path.open("w")
         request = execution.resource("requested", lock_path, scope="repository")
         try:

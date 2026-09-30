@@ -158,7 +158,7 @@ def handoff_pass(dry_run: bool = False) -> None:
         lock_path = cfg.factory / "locks" / f"{n}.lock"
         if dry_run and dispatch.lock_held(lock_path):
             continue
-        with nullcontext() if dry_run else lifecycle.scope(dispatch.EVENTS, "manage", ticket=n) as execution:
+        with nullcontext() if dry_run else lifecycle.scope(dispatch.EVENTS, "manage", ticket=n, lazy=True) as execution:
             with nullcontext() if dry_run else dispatch.ticket_lock(n).open("w") as lock:
                 if not dry_run:
                     request = execution.resource("requested", lock_path, scope="repository")
