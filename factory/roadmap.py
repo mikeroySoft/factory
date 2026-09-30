@@ -689,7 +689,7 @@ def collect(cfg, number: int | None = None, *, deadline: float | None = None) ->
                 states = {execution.get("state") for execution in runtime["executions"]
                           if execution.get("ticket") == ticket}
                 active = "active" in states
-                runtime_uncertain = bool(states & {"unknown", "interrupted"}) or runtime.get("history", {}).get("complete") is not True
+                runtime_uncertain = child["state"] == "OPEN" and bool(states & {"unknown", "interrupted"})
                 if runtime_uncertain:
                     _error(result, "runtime_unavailable", ".factory/events.jsonl", f"ticket:{ticket}")
                 claim = factory_claim.get(ticket)
