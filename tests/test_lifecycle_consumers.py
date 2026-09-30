@@ -147,6 +147,33 @@ class LifecycleConsumersTest(unittest.TestCase):
             for execution in executions:
                 execution.emit("exit")
 
+    def test_snapshot_bounds_closed_executions_and_keeps_open_ones(self) -> None:
+        with tempfile.TemporaryDirectory() as d, patch.dict(dashboard.__dict__), patch.dict(dispatch.__dict__), \
+             patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}):
+            root = Path(d)
+            dashboard.configure(config.Config(root, "acme/widgets", lock=root / "gpu.lock"))
+            total = dashboard.RECENT_EXECUTIONS + 30
+            for n in range(total):
+                closed = lifecycle.Execution(dispatch.EVENTS, "manage", ticket=n)
+                closed.emit("enter")
+                closed.emit("exit")
+            open_ = [lifecycle.Execution(dispatch.EVENTS, "worker", ticket=10_000 + n) for n in range(3)]
+            for execution in open_:
+                execution.emit("enter")
+            with patch.object(dashboard, "github", side_effect=RuntimeError("offline")), \
+                 patch.object(dashboard, "dispatcher", return_value={}), \
+                 patch.object(dashboard, "upstream_state", return_value={}), \
+                 patch.object(dashboard, "triage_llm_online", return_value=False):
+                snap = dashboard.snapshot()
+            rows = snap["executions"]
+            self.assertEqual(len(rows), dashboard.RECENT_EXECUTIONS + 3)
+            self.assertTrue({10_000, 10_001, 10_002} <= {e["ticket"] for e in rows})
+            closed = {e["ticket"] for e in rows if e["ended_at"] is not None}
+            self.assertEqual(closed, set(range(30, total)))
+            self.assertFalse(any("events" in e for e in rows))
+            for execution in open_:
+                execution.emit("exit")
+
 
 if __name__ == "__main__":
     unittest.main()
