@@ -16,7 +16,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Callable
 
-from factory import config, dispatch, lifecycle, manage, triage
+from factory import config, dispatch, lifecycle, manage, promotion, triage
 from factory.config import LABEL_CHORE, LESSONS_NAME
 
 MAX_LESSONS = 10
@@ -167,9 +167,23 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument("--last", type=int, default=10, help="finished tickets to learn from (default 10)")
     parser.add_argument("--dry-run", action="store_true", help="print the proposed lessons; do not write")
+    parser.add_argument("--promotion", metavar="CLAIM.json",
+                        help="judge and record an eval promotion claim (docs/eval-promotion-contract.md) instead")
     args = parser.parse_args(argv)
     cfg = config.load()
     dispatch.configure(cfg)
+    if args.promotion:
+        claim = json.loads(Path(args.promotion).read_text())
+        try:
+            disposition, reason = promotion.decide(claim)
+        except ValueError as exc:
+            raise SystemExit(f"factory learn: invalid promotion claim: {exc}")
+        print(f"{disposition}: {reason}")
+        if not args.dry_run:
+            dispatch.record("promotion", stage=claim["stage"], change=claim["change"],
+                            baseline=claim["baseline"], candidate=claim["candidate"],
+                            splits=claim["splits"], disposition=disposition, reason=reason)
+        return 0
     triage.configure(cfg)
 
     tickets, evidence_md = evidence(args.last)

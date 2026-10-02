@@ -244,7 +244,7 @@ merge stage.
 | `factory manage` | First recommends directions for `needs-review` PRs, then `needs-viability` issues; then resolves untouched `ready-for-human` escalation packets within `[manager].rounds`; finally publishes one routed human handoff request per escalation whose automatic recovery is terminal (also without a manager). `--dry-run` lists eligible requests without inference or writes. |
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
 | `factory stats` | Ticket table: attempts, review rounds, hours to merge, escalation count, resolver attribution, minutes in `ready-for-human`, and re-queues. Reads GitHub plus existing `events.jsonl`. `--by-worker` reads only events and shows every configured worker label: first-attempt gate pass rate, all attempts (including review bounces), and known cost. Attribution uses claim labels with current worker precedence; unclaimed attempts are excluded, missing rates/cost are `n/a`. The dashboard Ops view shows the same worker metrics. `--json`. |
-| `factory learn` | Reads the last N finished tickets' event trail, failing-attempt log tails, reviewer findings, and escalation reasons; asks the local model for ≤10 repo-specific lessons; writes `.factory-lessons.md` (you commit it). Every worker prompt carries it. `--dry-run`, `--last N`. |
+| `factory learn` | Reads the last N finished tickets' event trail, failing-attempt log tails, reviewer findings, and escalation reasons; asks the local model for ≤10 repo-specific lessons; writes `.factory-lessons.md` (you commit it). Every worker prompt carries it. `--dry-run`, `--last N`. `--promotion claim.json` judges and records a keep/revert claim under the [eval promotion contract](docs/eval-promotion-contract.md). |
 | `factory dashboard` | Local ops UI: Inbox, Ops, a dedicated read-only Factory Manager Chat with browser-local history, Codebase history, and Atlas; tickets by stage, in-flight phase, gate reports, worker logs, journal heartbeat, and upstream drift. `--json` prints the existing snapshot, including independent executions and local interruption reconciliation. `--host 0.0.0.0` exposes it, its mutating `/api/act`, and local settings writes to your network. |
 | `factory dashboard --runtime-json` | One bounded schema 1 runtime observation using only local read-only evidence; no GitHub, model probe, journal append, lock acquisition, or state creation. Partial source failures remain structured JSON. See [runtime contract](#bounded-runtime-json-schema-1). |
 | `factory evidence --root /path/to/main-checkout` | One explicit-repository schema 1 JSON read: compact cases, selected evidence, workflow/file/PR/CI investigations, or capabilities. Read-only GitHub GETs and F03 local evidence; no model, action execution, or state writes. See [evidence contract](#bounded-project-evidence-json-schema-1). |
@@ -700,7 +700,10 @@ branches, or merge state.
   read the proposed lessons, then `factory learn` and commit
   `.factory-lessons.md`. Workers see it on every ticket. The eval signal is the
   dashboard's *first-gate pass* and *bounce rate* KPIs moving after the change;
-  edit or delete lessons that don't earn their keep.
+  edit or delete lessons that don't earn their keep. Claimed improvements to a
+  prompt, skill, rubric, model, or effort follow the
+  [eval promotion contract](docs/eval-promotion-contract.md) (train/lockbox
+  splits, repeat scores, keep/revert).
 - **Audit trail**: `.factory/events.jsonl` retains the ticket outcome events
   (`claimed`, `attempt`, `pr-opened`, `review`, `approved`, `refreshed`,
   `merged`, `escalate`, `upstream-sync`, and `human-decision`) alongside

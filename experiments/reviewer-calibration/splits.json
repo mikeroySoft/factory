@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "note": "Frozen per docs/eval-promotion-contract.md. Lockbox is scored only before a promotion claim, never to pick a round winner. Add new adjudicated cases by bumping version; never move a case out of lockbox.",
+  "splits": {
+    "train": ["12-before", "12-after"],
+    "lockbox": ["20-before", "20-after"]
+  }
+}

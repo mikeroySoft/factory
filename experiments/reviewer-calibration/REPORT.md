@@ -197,6 +197,15 @@ coverage in precisely the case it was meant to flag. A defensible line needs a s
 is independent of the reviewer's self-report; none of the evidence gathered here supplies
 one, and SWE-Gate does not either (§1).
 
+## Promotion contract (#126)
+
+This harness is Pilot 1 of the [eval promotion contract](../../docs/eval-promotion-contract.md).
+Split membership is frozen in [`splits.json`](splits.json) (train: #12, lockbox: #20).
+`python score.py runs/main/adjudication.json` reports `missed_blocking` and
+`unnecessary_revise` separately per arm and split with repeat noise. Current baseline
+(`runs/main`, 2 repeats): both arms 2 missed-blocking / 0 unnecessary-REVISE on each
+split, noise 0 — too few cases for a model comparison; grow the corpus first.
+
 ## 7. Comparison readiness
 
 Ready and already exercised against #36, whose contract is byte-identical to `main` as
