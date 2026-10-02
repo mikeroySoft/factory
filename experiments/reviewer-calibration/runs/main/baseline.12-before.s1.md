@@ -1,30 +1,27 @@
-## Findings
-
-### Spec (issue #12)
+## Spec (issue #12)
 
 | Criterion | Evidence | Status |
 |---|---|---|
-| `[manager]` keys `command`, `rounds`, `review` in `KNOWN_KEYS` | `factory/config.py:60` (`"manager": ("model", "command", "rounds", "review")`) | Met |
-| `Config` fields with defaults `rounds = 1`, `review = "escalated"`, unset command = disabled | `factory/config.py:104-106` (`manager: list[str] \| None = None`, `manager_rounds: int = 1`, `manager_review: str = "escalated"`) | Met |
-| Loader reads all three | `factory/config.py:269`, `:285-288` | Met |
-| `factory doctor` prints `manager:` row only when configured | `factory/onboard.py:226-227` (guarded by `if cfg.manager:`); test `tests/test_factory.py:276-284` covers absent → present | Met |
-| Unknown `[manager]` keys reported as drift | `tests/test_factory.py:252` adds `[manager]\nunknown = true`; `:263` asserts `manager.unknown` in the keys-drift detail | Met |
-| `dashboard --json` `config` includes the table | `factory/dashboard.py:840-844` | Met |
-| `templates/factory.toml` documents it | `factory/templates/factory.toml:43-48` | Met |
-| Loader test for all three keys | `tests/test_factory.py:112-115`, `:137-138` | Met |
-| Out of scope: running the command | No execution path added | Met |
+| `command` argv template, unset = disabled | `factory/config.py:104` (`manager: list[str] \| None = None`), `factory/config.py:285-286` (set only if `"command" in manager`) | met |
+| `rounds = 1` default | `factory/config.py:105`, `factory/config.py:287` | met |
+| `review = "escalated"` default, `"all"` allowed | `factory/config.py:106`, `factory/config.py:288` | met (no value validation; exit gate doesn't require it — see note) |
+| Unknown `[manager]` keys reported as drift | `factory/config.py:60` (`KNOWN_KEYS["manager"]` lists all four keys); `tests/test_factory.py:252`, `:263` assert `manager.unknown` appears in `.factory.toml keys` WARN detail | met |
+| `factory doctor` prints `manager:` row only when configured | `factory/onboard.py:226-227` guarded by `if cfg.manager:`; `tests/test_factory.py:276-284` covers both absent and present | met |
+| `dashboard --json` `config` includes table | `factory/dashboard.py:840-844` (`command`, `rounds`, `review`) | met |
+| `templates/factory.toml` documents it | `factory/templates/factory.toml:43-48` documents `{prompt}`/`{cwd}`, `command`, `rounds`, `review` (`"all"`) | met |
+| Loader test for all three keys | `tests/test_factory.py:112-115` fixture, `:137-138` assertions | met |
+| Out of scope: running the command | No execution path added; template explicitly states running is separate (`factory/templates/factory.toml:44`) | respected |
 
-Non-blocking observations (no citation of a defect; not REVISE-worthy):
+`HOST_TABLES`: the diff does not touch it. `[INFERENCE]` `KNOWN_KEYS["manager"]` already existed on `origin/main` (`factory/config.py:60` context line `-"manager": ("model", "command")`) and README documents `[defaults.manager]` as host-wide, so `manager` is very likely already registered in `HOST_TABLES`. Not citable from the diff; not counted as a finding.
 
-- `HOST_TABLES` is named in the issue's Touches but does not appear in the diff. `KNOWN_KEYS` already contained `"manager"` at base (`factory/config.py:60` context line shows `("model", "command")` pre-change) and README documents `[manager].model` as host-wide via `[defaults.manager]`, so `manager` is very likely already registered in `HOST_TABLES` `[INFERENCE]` — cannot confirm from the packet.
-- `cfg.manager_review` (`factory/config.py:288`) accepts any string; the issue phrases `review` as an enumeration (`"escalated"`, `"all"`). No acceptance criterion requires rejection of other values, and the sibling keys (`reviewer`, `workers`) are likewise unvalidated in the loader, so this matches existing convention.
+## Standards (README.md)
 
-### Standards (README)
+- `config.py` remains the single source of config values; `onboard.py`/`dashboard.py` only read `cfg.*` (`factory/onboard.py:227`, `factory/dashboard.py:841-843`). Consistent.
+- Loader pattern mirrors existing `review.command` handling (`factory/config.py:283-286`) and `int()` coercion used for `gate.timeout` (`factory/config.py:287` vs `:289`). Consistent.
+- Doctor row format matches `reviewer:` row (`factory/onboard.py:225` vs `:227`). Consistent.
 
-- `config.py` remains the single source of the repo-specific values; other modules consume `cfg.manager*` (`factory/dashboard.py:841-843`, `factory/onboard.py:227`). Consistent.
-- Doctor/dashboard rendering follows the existing `reviewer` pattern (`factory/onboard.py:225` → `:227`; `factory/dashboard.py:839` → `:840-844`).
-- Template comment documents `{prompt}`/`{cwd}` placeholders (`factory/templates/factory.toml:45`), consistent with README's `[review]`/`[workers]` documentation style.
+## Non-blocking note
 
-No findings that fail the issue's acceptance criteria or documented conventions.
+- `factory/config.py:288`: `manager_review` accepts any string; issue wording ("`"all"` allowed") implies a two-value domain. Not in the exit gate, so not a REVISE trigger.
 
 VERDICT: APPROVE

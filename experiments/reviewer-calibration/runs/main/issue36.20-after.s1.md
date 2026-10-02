@@ -1,38 +1,31 @@
-## Review: #20 when-rules, ci-fix/conflict profiles (head ce5568e)
+# Review: issue #20 — when-rules, FIX decision, ci-fix/conflict profiles
 
-### Standards (README.md only; no AGENTS.md/CONTRIBUTING.md at this head)
+## Spec coverage
 
-- README updated in step with behavior: decision menu, table-form workers, FIX semantics, opt-in profiles (`README.md:88-102`). Consistent with `MENU` text (`factory/manage.py:19-29`).
-- Existing patterns reused: `ConfigError` with `{path}: ...` prefix (`factory/config.py:293,295`), `dispatch.record("manage", ...)` before mutation retained (`factory/manage.py:219`), FIX errors surface via the existing `ValueError` → `mechanism_failure` path (`factory/manage.py:110,112,221-224`).
-- Dashboard `worker_when` (`factory/dashboard.py:847`) is additive; README snapshot docs don't mention it, but README doesn't enumerate `config` snapshot keys either. Not a rule violation.
-
-### Spec (issue #20 + brief)
-
-| Criterion | Evidence | Status |
+| Acceptance criterion | Evidence | Status |
 |---|---|---|
-| `when` on `[workers.<label>]`; array form still loads | `factory/config.py:289-298`; test `tests/test_factory.py:147-165` | met |
-| Prompt lists labels with `when` | `factory/manage.py:199-201` | met |
-| ROUTE/FIX only for listed labels | `factory/manage.py:54,63-66`; `parse` receives reserved-filtered map (`:213`) | met |
-| ROUTE chore rejected+recorded without worker; label applied with one | `tests/test_factory.py:652-675` (HUMAN decision recorded, no `issue edit`; `--add-label chore` when configured) | met |
-| FIX on red CI runs the selected argv | `factory/manage.py:104-131`; `tests/test_factory.py:677-731` | met |
-| ci-fix + conflict profiles in template, human-applied | `factory/templates/factory.toml:32-47` (commented, opt-in) | met — matches "remain host-config, human-applied" |
-| Out of scope: manager writing host config | no config writes in diff | met |
+| `[workers.<label>]` table with optional `when`; array form still loads | `factory/config.py:289-298` handles dict-or-list per label; `tests/test_factory.py` `test_worker_tables_and_legacy_arrays` covers both forms and five malformed entries | Met |
+| Manager prompt lists labels with `when` | `factory/manage.py:199-201` builds `- {label}: {when or '(no when rule)'}` from non-reserved workers | Met |
+| ROUTE/FIX only for listed labels | `factory/manage.py:54` (ROUTE) and `:63-66` (FIX) validate against `workers`; `manage_pass` passes the filtered dict at `:213` | Met |
+| ROUTE chore without worker rejected and recorded | parse falls through to `HUMAN` + `manage` event recorded at `:220` before `apply`; `test_route_uses_only_listed_worker_labels_and_when_rules` asserts `HUMAN` decision and no `issue edit` | Met |
+| FIX on red CI runs `ci-fix` argv | `factory/manage.py:117-120` dispatches `worker_round` with `{data["worker"]}`; test asserts worker ran, guidance+packet reached it, push only on gate PASS, `factory-approved` only on fresh APPROVE | Met |
+| Two profiles in `templates/factory.toml` | `factory/templates/factory.toml:41-47` | Met (see optional note) |
+| Touches `dashboard.py` | `factory/dashboard.py:847` exposes `worker_when` | Met |
+| Out of scope: manager writing host config | No config writes in diff | Respected |
 
-Correctness checks on the FIX path:
-- Preconditions: kept worktree, OPEN PR on `agent/<n>`, no `CHANGES_REQUESTED`, worktree on ticket branch (`factory/manage.py:106-112`). Human veto respected; `reviewDecision` null compares false safely.
-- Push only after gate PASS with `--force-with-lease` (`:121-124`); `factory-approved` only on fresh APPROVE (`:127-128`). Matches README text.
-- Validation rejects non-string/reserved/unknown workers and empty guidance (`:63-67`); tests cover `default`, `ready-for-agent`, unconfigured `ci-fix`, list value (`tests/test_factory.py:733-743`).
+## Standards
 
-### Required fixes
+No AGENTS.md/CONTRIBUTING.md at this head. README conventions: labels/`agent/<n>` scheme unchanged; `manage` event recorded before GitHub mutation (`manage.py:220` precedes `apply`); README updated for the new decision and worker form (`README.md:88-102`). Human veto respected: `manage.py:109` refuses FIX when `reviewDecision == "CHANGES_REQUESTED"`, consistent with README step 6.
+
+## Required fixes
 
 None.
 
-### Optional suggestions
+## Optional suggestions
 
-1. `factory/manage.py:122,130` — FIX failure calls `dispatch.escalate`, which [INFERENCE] writes a new escalation packet. If that packet is "untouched", the manager may consume another round on the next pass (FIX → escalate → FIX). Bounded by `[manager].rounds` per README, so not a defect; worth confirming the round counter is per-ticket rather than per-packet.
-2. `factory/manage.py:54` — `- RESERVED_LABELS` is now redundant for the `manage_pass` caller (`:199,:213` pre-filters). Harmless defensive check since `parse` is a public seam; leave unless you want one source of truth.
-3. `factory/config.py:296` — array-form entries store the TOML list by reference (previous code did `list(v)`). No observed aliasing consumer; cosmetic.
-
-No unrequested abstractions introduced; `RESERVED_LABELS` (`factory/manage.py:32`) replaces an inline set literal used in two places.
+1. `factory/templates/factory.toml:41-47` — profiles are shipped commented out with instructions to copy into host config. The issue says "ship two default profiles" and "remain host-config, human-applied"; the commented form satisfies the second clause but a reader could expect active defaults. If the intent was active-by-default in the repo template, uncomment; otherwise current form is defensible. Not blocking — the brief is ambiguous and the test suite does not pin either reading.
+2. `factory/manage.py:54`, `:65` — `parse` re-subtracts `RESERVED_LABELS` even though `manage_pass` now passes the pre-filtered dict (`:199`, `:213`). Harmless redundancy; keeps `parse` safe for other callers. Leave as is unless you want a single filter point.
+3. `factory/config.py:296` — stores the TOML list object directly where the old code did `list(v)`. No observed consumer mutates `cfg.workers[label]`, so no defect; mention only because the copy was dropped silently.
+4. `factory/manage.py:116` — manager-produced `guidance` is spliced into the worker prompt ahead of the packet. The packet is already untrusted content per the MENU, so this is not a new trust boundary, but the worker prompt could label the guidance as manager-originated/untrusted the same way the packet is.
 
 VERDICT: APPROVE

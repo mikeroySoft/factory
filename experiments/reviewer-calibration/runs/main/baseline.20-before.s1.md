@@ -1,24 +1,27 @@
-# Review — issue #20, head `8dd6588`
-
-## Spec
+## Spec (issue #20)
 
 | Criterion | Evidence | Status |
 |---|---|---|
-| `[workers.<label>]` table with optional `when`; array form still loads | `factory/config.py:289-298` — dict entries take `command`/`when`, non-dict entries pass through as argv; `tests/test_factory.py:147-165` covers both forms and rejects malformed entries | met |
-| Manager prompt lists labels with `when` | `factory/manage.py:199-201` — reserved labels filtered, each remaining label rendered as `- <label>: <when or '(no when rule)'>` | met |
-| `ROUTE` only for listed labels; rejected + recorded otherwise | `factory/manage.py:54` (ROUTE set excludes `RESERVED_LABELS`), `:213` passes the filtered `workers` to `parse`; unknown label falls through to `HUMAN` and `:220` records the `manage` event before `apply`. `tests/test_factory.py:652-676` asserts HUMAN/no edit without a `chore` worker and `--add-label chore` with one | met |
-| `FIX` only for listed labels | `factory/manage.py:63-69` rejects non-string, unlisted, or reserved workers and empty guidance; `tests/test_factory.py:722-732` covers unconfigured, `default`, `ready-for-agent`, non-string | met |
-| `FIX` on red CI runs the selected argv | `factory/manage.py:104-131` — verifies kept worktree, open `agent/<n>` PR, no CHANGES_REQUESTED, correct branch; runs one `worker_round` with only `{data["worker"]}` and guidance+packet; pushes only on gate PASS; re-reviews; APPROVE → `approve_pr`, else escalate. `tests/test_factory.py:678-720` exercises gate-fail, REVISE, APPROVE matrix | met |
-| `ci-fix` and `conflict` profiles in template | `factory/templates/factory.toml:41-47` | met (see note) |
-| Dashboard exposes `when` | `factory/dashboard.py:847` | met |
+| `[workers.<label>]` table with optional `when` | `factory/config.py:288-298` parses dict-or-list entries, validates argv and `when` type, stores `worker_when` | met |
+| Array-form `[workers]` still loads | `factory/config.py:290-291` (`command = entry` when not dict); `tests/test_factory.py:147-157` | met |
+| Manager prompt lists labels with `when` | `factory/manage.py:199-201` emits `- label: <when or "(no when rule)">` for non-reserved labels | met |
+| ROUTE/FIX only for listed labels | `factory/manage.py:54`, `:63-66`; `parse()` now receives the filtered `workers` dict at `:213` | met |
+| `ROUTE chore` without `chore` worker rejected and recorded | `tests/test_factory.py:652-676` asserts `manage` event decision `HUMAN` and no `issue edit`; with worker, `--add-label chore` | met |
+| `FIX` on red CI runs the `ci-fix` argv | `factory/manage.py:104-130` runs one `worker_round` with `{data["worker"]}`, re-gates, pushes only on PASS, re-reviews, approves only on fresh APPROVE; `tests/test_factory.py:678-717` | met |
+| `ci-fix` / `conflict` profiles in template | `factory/templates/factory.toml:41-47` | met, with caveat below |
+| `dashboard.py` touched | `factory/dashboard.py:847` exposes `worker_when` | met |
+| Out of scope: manager writing host config | no config writes in `apply`; `factory/manage.py:104-130` | respected |
 
-**Note (not blocking):** the issue says "Ship two default profiles"; the diff ships them commented out (`factory/templates/factory.toml:41-47`) with instructions to copy into host config (`:37-39`). This matches the issue's "remain host-config, human-applied" clause and the triage brief ("these remain host-config that humans apply"), and the README text at `README.md:101-102` documents it as opt-in. If "default" was intended to mean active-by-default in the repo template, this is a scope question for the issue author, not a code defect.
+### Caveat (non-blocking)
 
-## Standards
+`factory/templates/factory.toml:41-47` ships the two profiles commented out, as copy-into-host-config instructions. The issue says "Ship two default profiles in `templates/factory.toml`" but immediately qualifies "New profiles remain host-config, human-applied", and the triage brief repeats "these remain host-config that humans apply." The exit gate exercises `ci-fix` only when configured (`tests/test_factory.py:685`), so an opt-in template satisfies the acceptance criteria. Flagging only because "ship ... default profiles" could be read as active-by-default; the diff chose the conservative reading consistent with the out-of-scope clause.
 
-- README manager paragraph updated for `FIX`, table-form workers, and `when` (`README.md:88-102`), consistent with the existing "documented in README" convention for manager decisions.
-- `RESERVED_LABELS` (`factory/manage.py:32`) replaces the inline set previously at the ROUTE branch (`:54`); single definition, both ROUTE and FIX use it.
-- Test additions follow existing `scenario()`/`stub_bin` patterns and assert observable effects (labels applied, push occurred, worker input contents), not internals.
+## Standards (README at head)
+
+- README updated for the new `FIX` decision and table-form workers (`README.md:88-101`), matching the `MENU` text at `factory/manage.py:19-29`. Consistent.
+- `config.py` remains the single source of worker/`when` values (`factory/config.py:103`, `:288-298`); `manage.py` and `dashboard.py` read from `cfg` only. Matches the "config.py as the single source" architecture note.
+- `manage` event recorded before mutations (`factory/manage.py:219`, unchanged ordering), per README's "records a `manage` event before GitHub mutations".
+- Tests follow the existing `scenario()`/`stub_bin` conventions (`tests/test_factory.py:655`, `:690-702`).
 
 No findings that fail acceptance criteria or documented conventions.
 
