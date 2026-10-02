@@ -20,7 +20,7 @@
   "expected_verdict": "APPROVE",
   "findings": [],
   "unnecessary_demand_rule": "Any required-fix finding that does not cite a README/docs convention or an issue #62 acceptance criterion still unmet at this head. Optional style notes are fine; blocking on them is an unnecessary demand. D1/D2 from 62-before are fixed here (profile commands restored; stats filters manager_failed).",
-  "adjudication": "independent read of the frozen source by the calibration owner; historical model verdicts were used only to discover candidates, never as truth",
+  "adjudication": "independent read of the frozen source by the calibration owner; historical model verdicts were used only to discover candidates, never as truth. Human-confirmed by Michael Roy on 2026-10-02 after reading the frozen case; expected_verdict and findings unchanged.",
   "gate_report": "# Gate report\n\n- conflict-markers: PASS\n- test: PASS\n- leak-scan: PASS",
   "provenance": [
     {

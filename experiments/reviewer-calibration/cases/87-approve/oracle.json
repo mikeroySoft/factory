@@ -12,7 +12,7 @@
   "expected_verdict": "APPROVE",
   "findings": [],
   "unnecessary_demand_rule": "Any required-fix finding that does not cite a README/docs convention or an issue #87 acceptance criterion still unmet. Correct implementation of reader build/schema identity; blocking on presentation preference, extra fields beyond the exit gate, or speculative extensibility is an unnecessary demand.",
-  "adjudication": "independent read of frozen source vs issue #87 exit gate; first-pass historical APPROVE used only to discover the candidate; no primary defect found against the identity/provenance obligations",
+  "adjudication": "independent read of frozen source vs issue #87 exit gate; first-pass historical APPROVE used only to discover the candidate; no primary defect found against the identity/provenance obligations. Human-confirmed by Michael Roy on 2026-10-02 after reading the frozen case; expected_verdict and findings unchanged.",
   "gate_report": "# Gate report\n\n- conflict-markers: PASS\n- test: PASS\n- leak-scan: PASS",
   "provenance": [
     {
