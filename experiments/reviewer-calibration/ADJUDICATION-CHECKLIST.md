@@ -14,7 +14,7 @@ and each `primary` finding (or the empty findings list for APPROVE).
 | `62-after` | train | Agree both are fixed at `68b5d164…` and no new primary defect remains? |
 | `79-before` | lockbox | Agree D1 (REST `updated_at` on reviews) is blocking vs #79 schema-1 update-time criterion? |
 | `79-after` | lockbox | Agree GraphQL `updatedAt` fix closes D1 and no new primary defect remains? |
-| `130-approve` | train | Agree idle lazy-scope journal fix is correct vs #130 (no blocking demand)? |
+| `9-approve` | train | Agree external review-queue dashboard work meets #9 exit gate (no blocking demand)? |
 | `8-approve` | train | Agree CI/merge-readiness implementation meets #8 exit gate (no blocking demand)? |
 | `87-approve` | lockbox | Agree evidence build/schema identity meets #87 exit gate (no blocking demand)? |
 

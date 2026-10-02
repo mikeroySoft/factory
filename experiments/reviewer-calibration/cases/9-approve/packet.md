@@ -1,3 +1,360 @@
+## Frozen review packet — case 9-approve
+
+This packet supplies, verbatim, the evidence the reviewer would otherwise read from the
+repository and GitHub. The reviewer process for this experiment has no tools, so the diff,
+the issue text and the repository README are inlined below. Cite `path:line` from the diff.
+
+- repository: mikeroySoft/factory
+- issue: #9
+- review base (origin/main): 311ba913f3f94cabac929d38ca38c8eeb87e180f
+- head under review: 45d96f604da8d167976fcce0edd29bf858e14107
+- documented conventions present at this head: README.md (inlined below). No AGENTS.md or
+  CONTRIBUTING.md exists at this commit. docs/manager-plan.md (if present) is NOT inlined and is
+  outside this packet; do not assume its contents.
+
+### Issue
+
+# Issue #9: Show the external pull-request review queue in the dashboard
+
+## Scope
+
+Add an external pull-request review queue to `factory dashboard`. Show each opted-in PR with repository-local PR number, title, author, current head SHA, last reviewed SHA, review verdict, CI state, and one of: pending review, changes requested, CI pending, CI failed, ready, or escalated. Link each row to GitHub and include actionable stalled items in the existing inbox without adding mutation controls.
+
+Blocked by: #8
+
+## Touches
+
+- `factory/dashboard.py`: review-queue snapshot data
+- `factory/dashboard.html`: queue and inbox rendering
+- `tests/test_factory.py`: snapshot classification and response shape
+- `README.md`: operating description of the review lane
+
+## Exit gate
+
+A dashboard snapshot test covers all six states and verifies PR links and SHA-specific review data; `python -m unittest` passes. Running `factory dashboard` displays the queue without changing labels, reviews, branches, or merge state.
+
+## Out of scope
+
+Submitting reviews from the dashboard, fixing contributor branches, merging external PRs, and adding a separate dashboard service.
+
+## Comment by @mikeroySoft (2026-09-10T17:38:52Z)
+
+Triage: The issue is fully specified: it has a clear problem statement (add an external PR review queue to the dashboard), explicit files to modify (factory/dashboard.py, factory/dashboard.html, tests/test_factory.py, README.md), clearly bounded out-of-scope items, and a concrete exit gate with observable done-conditions (snapshot test covering all six states, verified PR links and SHA-specific review data, `python -m unittest` passing, and no mutation of labels/reviews/branches/merge state). It does not require design judgment, nor does it touch release, signing, or security policy, and its blast radius is contained to this repository. The 'Blocked by #8' note is a dependency/sequencing concern rather than missing information, so it does not warrant needs-info.
+
+Agent brief: Implement an external PR review queue in `factory dashboard`. In factory/dashboard.py add a snapshot that classifies each opted-in PR into one of six states (pending review, changes requested, CI pending, CI failed, ready, escalated) using repository-local PR number, title, author, current head SHA, last reviewed SHA, review verdict, and CI state. Render the queue and inbox in factory/dashboard.html, linking each row to GitHub and surfacing actionable stalled items in the existing inbox without adding any mutation controls. Add a snapshot test in tests/test_factory.py covering all six states and verifying PR links and SHA-specific review data, and document the review lane in README.md. Verification: `python -m unittest` passes and running `factory dashboard` displays the queue without changing labels, reviews, branches, or merge state. (Depends on #8.)
+
+### git diff origin/main..HEAD
+
+```diff
+diff --git a/README.md b/README.md
+index 8a84981..50749de 100644
+--- a/README.md
++++ b/README.md
+@@ -346,7 +346,23 @@ publishes nothing. Branch advancement cannot retarget the supplied diff or revie
+ Prompts exceeding 120 KiB (UTF-8, including the diff) are skipped before reviewer
+ execution and recorded as `unknown` with reason `prompt_too_large`; intake
+ continues with the next PR. The recorded revision is not automatically retried.
+-This lane does not change contributor branches, monitor CI, or merge external PRs.
++Dispatch records SHA-specific required-CI readiness for admitted PRs and escalates
++exhausted review attempts to a human issue. This lane does not change contributor
++branches or merge external PRs.
++
++The dashboard's **Ops → External PR review queue** lists open, non-draft opted-in
++PRs, including review-request admissions after GitHub consumes the request.
++Each GitHub-linked row shows the repository-local PR number, title, author,
++current head SHA, last reviewed SHA and verdict, and required-CI state with its
++last observation time. CI evidence comes from dispatch's `review-readiness`
++events, not a new CI poll; missing evidence for the current head is unknown.
++The six queue states are **pending review**, **changes requested**, **CI pending**,
++**CI failed**, **ready**, and **escalated**. An old approval never makes a new head
++ready, and readiness is advisory—not permission to merge.
++Changes requested, failed CI, escalations, and pending reviews needing human
++attention also appear in **Inbox**, with links to GitHub rather than mutation
++controls. Viewing or refreshing the queue does not change labels, reviews,
++branches, or merge state.
+ 
+ ## Operating it
+ 
+diff --git a/factory/dashboard.html b/factory/dashboard.html
+index a42dd0a..a12197a 100644
+--- a/factory/dashboard.html
++++ b/factory/dashboard.html
+@@ -327,6 +327,10 @@
+     <header><b>Workers</b> claim labels · first-attempt gate outcomes · all attempts · known cost</header>
+     <div class="kpis" id="worker-metrics"></div>
+   </section>
++  <section class="panel" aria-label="External pull-request review queue">
++    <header><b>External PR review queue</b> read-only · required CI last observed by dispatch</header>
++    <div class="body" id="review-queue"></div>
++  </section>
+ 
+   <section class="panel">
+     <header><b>Pipeline</b> live · click a node to filter the board and lanes <span class="note hint">hover a node for its tickets</span></header>
+@@ -597,6 +601,7 @@ function render() {
+   }
+   renderStatus(); renderErrors(); renderKpis(); renderPipeline(); renderBoard(); renderFeed(); renderRuns(); renderUpstream(); renderLanes(); renderThroughput(); renderConfig();
+   renderInboxHealth();
++  renderReviewQueue();
+   updateInbox();
+   applyView();
+   if (S.sel != null && !$('drawer').contains(document.activeElement) && !$('fm-dialog').open) renderDrawer();
+@@ -1122,7 +1127,25 @@ function tabIssue(t, c) {
+ 
+ // ---------------------------------------------------------------- inbox
+ function lastEvent(t, kind) { return t.events.filter(e => e.kind === kind).at(-1); }
+-const WAITING = new Set(['system', 'escalated', 'needs-info', 'wontfix', 'stuck', 'triage']);
++const REVIEW_STATES = { review_pending: 'Pending review', changes_requested: 'Changes requested', ci_pending: 'CI pending', ci_failed: 'CI failed', ready: 'Ready', escalated: 'Escalated' };
++function reviewMatches(pr) {
++  return `#${pr.number} ${pr.title} ${pr.author || ''} ${pr.head} ${pr.review_head || ''} ${REVIEW_STATES[pr.state]}`.toLowerCase().includes(S.q.trim().toLowerCase());
++}
++function reviewRow(pr) {
++  return h('article', { class: 'briefing-option' },
++    h('h3', {}, h('a', { href: pr.url, target: '_blank', rel: 'noopener' }, `PR #${pr.number} · ${pr.title}`)),
++    h('p', {}, `@${pr.author || 'unknown'} · ${REVIEW_STATES[pr.state]}`),
++    h('p', {}, 'Current head: ', h('code', { style: { overflowWrap: 'anywhere' } }, pr.head)),
++    h('p', {}, 'Last reviewed SHA: ', h('code', { style: { overflowWrap: 'anywhere' } }, pr.review_head || 'Not reviewed'),
++      ` · Verdict: ${pr.verdict || 'None'}`),
++    h('p', {}, `Required CI: ${pr.ci_state} · Last observed: ${pr.ci_at ? fmt(pr.ci_at) : 'Not observed for this head'}`),
++    pr.reason ? h('p', {}, pr.reason) : null);
++}
++function renderReviewQueue() {
++  const queue = (S.snap.review_queue || []).filter(reviewMatches);
++  $('review-queue').replaceChildren(...(queue.length ? queue.map(reviewRow) : [h('p', { class: 'empty' }, 'No opted-in pull requests match this view.')]));
++}
++const WAITING = new Set(['system', 'escalated', 'needs-info', 'wontfix', 'stuck', 'triage', 'external-review']);
+ const INBOX_KINDS = { system: 'System attention', escalated: 'Human decision', 'needs-info': 'Question for you', wontfix: 'Wontfix proposal', stuck: 'Stuck claim', triage: 'Untriaged', pr: 'Merge queue', stale: 'Housekeeping', assigned: 'In human hands', active: 'Current task' };
+ function inboxItems() {
+   const items = [], d = S.snap.dispatcher, cfg = S.snap.config;
+@@ -1134,6 +1157,13 @@ function inboxItems() {
+     const b = S.snap.upstream.blocker;
+     items.push({ key: 'system-upstream', pri: 0, kind: 'system', title: `Upstream sync is parked: ${b.title}`, why: `${upstreamPending().length} upstream commit(s) are waiting on issue #${b.number}.`, url: b.url, cmd: `git fetch ${cfg.upstream}\ngit merge --no-ff --signoff ${cfg.upstream}/${cfg.main}`, next: `The maintainer must inspect and resolve issue #${b.number}, validate the merge, then explicitly push and close the blocker. These commands are reference only.` });
+   }
++  for (const pr of S.snap.review_queue || []) {
++    if (['changes_requested', 'ci_failed', 'escalated'].includes(pr.state) ||
++        (pr.state === 'review_pending' && (pr.reason || pr.verdict === 'APPROVE'))) {
++      items.push({ key: `review-${pr.number}`, pri: 1, kind: 'external-review', review: pr,
++        title: `PR #${pr.number} · ${pr.title}`, why: REVIEW_STATES[pr.state] });
++    }
++  }
+   for (const t of S.snap.tickets) {
+     const triaged = lastEvent(t, 'triaged'), humanHands = t.assignees.length > 0;
+     let item;
+@@ -1501,7 +1531,7 @@ function selectCase(key) {
+   $('inbox-list').querySelector('.briefing-question')?.focus({ preventScroll: true });
+ }
+ function renderInbox() {
+-  const all = inboxItems(), waiting = all.filter(i => WAITING.has(i.kind)), matching = waiting.filter(i => !i.t || matches(i.t));
++  const all = inboxItems(), waiting = all.filter(i => WAITING.has(i.kind)), matching = waiting.filter(i => i.review ? reviewMatches(i.review) : !i.t || matches(i.t));
+   $('nav-inbox').replaceChildren('Inbox ', h('span', { class: `badge ${waiting.length ? 'hot' : ''}` }, waiting.length));
+   $('inbox-sum').textContent = waiting.length ? `${waiting.length} case${waiting.length === 1 ? '' : 's'} waiting on you` : 'Nothing waiting on you';
+   if (!S.inboxKey && matching.length) { S.inboxKey = matching[0].key; syncHash(); saveInboxState(); }
+@@ -1511,13 +1541,14 @@ function renderInbox() {
+   const navItems = matching.slice();
+   if (item && !navItems.some(i => i.key === item.key)) navItems.unshift(item);
+   selector.append(h('option', { value: '', disabled: true, selected: !item }, 'Choose a case'));
+-  selector.append(...navItems.map(i => h('option', { value: i.key, selected: i.key === S.inboxKey }, `${i.t ? '#' + i.t.number : 'System'} · ${i.title}`)));
++  selector.append(...navItems.map(i => h('option', { value: i.key, selected: i.key === S.inboxKey }, `${i.review ? 'External review' : i.t ? '#' + i.t.number : 'System'} · ${i.title}`)));
+   const index = navItems.findIndex(i => i.key === S.inboxKey);
+   list.append(h('nav', { class: 'briefing-nav', 'aria-label': 'Inbox cases' }, h('label', { for: 'briefing-case' }, 'Case to consider'), selector,
+     h('button', { disabled: index <= 0, onclick: () => selectCase(navItems[index - 1].key) }, 'Previous'),
+     h('button', { disabled: index < 0 || index >= navItems.length - 1, onclick: () => selectCase(navItems[index + 1].key) }, 'Next')));
+   if (S.q.trim()) list.append(h('p', { class: 'briefing-muted' }, `${matching.length} waiting case(s) match “${S.q.trim()}”. Your selected case stays visible even if it does not match.`));
+-  if (item) list.append(item.t ? renderTaskBriefing(item) : renderSystemBriefing(item));
++  if (item) list.append(item.review ? h('section', { 'aria-label': 'External review attention' },
++    reviewRow(item.review), h('p', {}, 'Inspect the review or CI on GitHub. Contributor fixes and maintainer decisions happen there; this dashboard cannot submit reviews, change branches, or merge this PR.')) : item.t ? renderTaskBriefing(item) : renderSystemBriefing(item));
+   else {
+     list.append(h('div', { class: 'briefing-status' }, h('h3', {}, S.inboxKey ? 'The selected case is no longer in this snapshot' : 'Inbox clear'),
+       h('p', {}, S.inboxKey ? 'Your selection and draft are retained. Choose another case, or refresh to check whether the task is available again.' : 'No human-required cases match this view. Informational work is listed separately below.'),
+diff --git a/factory/dashboard.py b/factory/dashboard.py
+index 6fecd9d..f9b5c19 100644
+--- a/factory/dashboard.py
++++ b/factory/dashboard.py
+@@ -34,6 +34,7 @@ from factory.config import (
+     LABEL_HUMAN,
+     LABEL_INFO,
+     LABEL_TRIAGE,
++    LABEL_REVIEW,
+     LABEL_VIABILITY,
+     Config,
+ )
+@@ -120,6 +121,7 @@ GRAPHQL_UPSTREAM = """
+ GRAPHQL = """
+ query($owner:String!,$name:String!{UVARS}){
+ {UPSTREAM}
++  viewer{login}
+   repository(owner:$owner,name:$name){
+     id
+     issues(first:100,orderBy:{field:CREATED_AT,direction:DESC}){
+@@ -149,6 +151,8 @@ query($owner:String!,$name:String!{UVARS}){
+       nodes{
+         id number title state url headRefName headRefOid createdAt mergedAt closedAt isDraft
+         additions deletions changedFiles body reviewDecision
++        author{login}
++        reviewRequests(first:100){nodes{requestedReviewer{... on User{login}}}}
+         labels(first:10){nodes{name}}
+         comments(last:30){pageInfo{hasPreviousPage} nodes{createdAt author{login} body url}}
+         commits(last:1){nodes{commit{statusCheckRollup{state
+@@ -804,6 +808,57 @@ def build_ticket(
+     }
+ 
+ 
++def review_queue(prs: list[dict], rows: list[dict], login: str) -> list[dict]:
++    """Read-only projection of intake and SHA-bound review/required-CI evidence."""
++    history: dict[int, list[dict]] = {}
++    for row in rows:
++        if row.get("pr") is not None:
++            history.setdefault(row["pr"], []).append(row)
++    queue = []
++    for pr in prs:
++        if pr["state"] != "OPEN" or pr["isDraft"]:
++            continue
++        events = history.get(pr["number"], [])
++        review = next((e for e in reversed(events) if e.get("event") == "review-result"), {})
++        labels = {label["name"] for label in pr.get("labels", {}).get("nodes") or []}
++        requested = any(
++            login and (r.get("requestedReviewer") or {}).get("login", "").casefold() == login.casefold()
++            for r in pr.get("reviewRequests", {}).get("nodes") or []
++        )
++        if LABEL_REVIEW not in labels and not requested and not any(
++            e.get("event") == "review-result" and e.get("verdict") in {"APPROVE", "REQUEST_CHANGES"}
++            for e in events
++        ):
++            continue
++        head = pr["headRefOid"]
++        current = next((e for e in reversed(events)
++                        if e.get("event") == "review-result" and e.get("head") == head), {})
++        readiness = next((e for e in reversed(events)
++                          if e.get("event") == "review-readiness" and e.get("head") == head), {})
++        escalation = next((e for e in reversed(events) if e.get("event") == "escalate"), {})
++        checks = readiness.get("checks") or []
++        buckets = {check["bucket"] for check in checks}
++        ci = ("fail" if buckets & {"fail", "cancel"} else
++              "pass" if buckets == {"pass"} else "pending" if buckets else "unknown")
++        state = "review_pending"
++        if current.get("verdict") == "REQUEST_CHANGES":
++            state = "changes_requested"
++        elif current.get("verdict") == "APPROVE":
++            state = "ci_failed" if ci == "fail" else "ci_pending"
++            if ci == "pass" and readiness.get("state") == "ready":
++                state = "ready"
++        if escalation:
++            state = "escalated"
++        queue.append({
++            "number": pr["number"], "title": pr["title"], "url": pr["url"],
++            "author": (pr.get("author") or {}).get("login"), "head": head,
++            "review_head": review.get("head"), "verdict": review.get("verdict"),
++            "ci_state": ci, "ci_at": readiness.get("at"), "state": state,
++            "reason": escalation.get("reason") or current.get("reason"),
++        })
++    return sorted(queue, key=lambda pr: pr["number"], reverse=True)
++
++
+ def snapshot() -> dict:
+     errors = []
+     issues: list[dict] = []
+@@ -811,10 +866,14 @@ def snapshot() -> dict:
+     raw_prs: dict[int, dict] = {}
+     repo: dict = {}
+     gh_upstream = None
++    review_prs: list[dict] = []
++    viewer = ""
+     try:
+         data = github()
+         repo, gh_upstream = data["repository"], data.get("upstream")
+         issues = repo["issues"]["nodes"]
++        review_prs = repo["pullRequests"]["nodes"]
++        viewer = (data.get("viewer") or {}).get("login", "")
+         for pr in repo["pullRequests"]["nodes"]:
+             m = AGENT_BRANCH.fullmatch(pr["headRefName"])
+             if not m:
+@@ -954,6 +1013,7 @@ def snapshot() -> dict:
+         "executions": executions,
+         "resources": resources,
+         "tickets": tickets,
++        "review_queue": review_queue(review_prs, rows, viewer),
+     }
+ 
+ 
+diff --git a/tests/test_factory.py b/tests/test_factory.py
+index 7db8ca2..ee8e69f 100644
+--- a/tests/test_factory.py
++++ b/tests/test_factory.py
+@@ -2775,6 +2775,70 @@ class DispatchTest(unittest.TestCase):
+ 
+ 
+ class FeedbackSnapshotTest(unittest.TestCase):
++    def test_external_review_queue_snapshot_states_and_revision_identity(self):
++        from unittest import mock
++        from factory import dashboard, dispatch
++
++        with tempfile.TemporaryDirectory() as d:
++            repo = make_repo(Path(d))
++            prs = [{
++                "number": n, "title": f"Contribution {n}", "state": "OPEN",
++                "url": f"https://github.com/acme/widgets/pull/{n}",
++                "author": {"login": "contributor"}, "isDraft": False,
++                "headRefName": f"contribution-{n}", "headRefOid": f"head-{n}",
++                "labels": {"nodes": [{"name": "needs-review"}]},
++                "reviewRequests": {"nodes": []},
++            } for n in range(1, 7)]
++            # A request to this viewer opts in; another reviewer does not.
++            prs[0]["labels"]["nodes"] = []
++            prs[0]["reviewRequests"]["nodes"] = [{"requestedReviewer": {"login": "operator"}}]
++            prs += [{**prs[0], "number": 7, "reviewRequests": {"nodes": [
++                {"requestedReviewer": {"login": "someone-else"}}]}},
++                {**prs[1], "number": 8, "state": "CLOSED"},
++                {**prs[1], "number": 9, "isDraft": True}]
++            with mock.patch.dict(dashboard.__dict__), mock.patch.dict(dispatch.__dict__):
++                dashboard.configure(config.Config(root=repo, repo="acme/widgets"))
++                dispatch.record("review-result", pr=1, head="old-head", verdict="APPROVE")
++                dispatch.record("review-readiness", pr=1, head="old-head", state="ready",
++                                checks=[{"name": "test", "bucket": "pass"}])
++                for n, verdict, state, bucket in [
++                    (2, "REQUEST_CHANGES", "changes_requested", "pass"),
++                    (3, "APPROVE", "ci_pending", "pending"),
++                    (4, "APPROVE", "ci_failed", "fail"),
++                    (5, "APPROVE", "ready", "pass"),
++                ]:
++                    dispatch.record("review-result", pr=n, head=f"head-{n}", verdict=verdict)
++                    dispatch.record("review-readiness", pr=n, head=f"head-{n}", state=state,
++                                    checks=[{"name": "test", "bucket": bucket}])
++                # Consumed review requests must not remove an admitted PR.
++                prs[4]["labels"]["nodes"] = []
++                dispatch.record("escalate", pr=6, head="head-6", reason="Review attempts exhausted")
++                before = dispatch.EVENTS.read_bytes()
++                with mock.patch.object(dashboard, "github", return_value={
++                    "viewer": {"login": "operator"}, "repository": {
++                        "issues": {"nodes": []}, "pullRequests": {"nodes": prs}}}), \
++                     mock.patch.object(dashboard, "dispatcher", return_value={}), \
++                     mock.patch.object(dashboard, "upstream_state", return_value={}), \
++                     mock.patch.object(dashboard, "triage_llm_online", return_value=False):
++                    result = dashboard.snapshot()
++                self.assertTrue(dispatch.EVENTS.read_bytes().startswith(before))
++            queue = {pr["number"]: pr for pr in result["review_queue"]}
++            self.assertEqual({n: pr["state"] for n, pr in queue.items()}, {
++                1: "review_pending", 2: "changes_requested", 3: "ci_pending",
++                4: "ci_failed", 5: "ready", 6: "escalated"})
++            for n, pr in queue.items():
++                self.assertEqual(pr["url"], f"https://github.com/acme/widgets/pull/{n}")
++                self.assertEqual(pr["head"], f"head-{n}")
++                self.assertEqual(pr["author"], "contributor")
++                self.assertEqual(pr["title"], f"Contribution {n}")
++            self.assertEqual(queue[1]["review_head"], "old-head")
++            self.assertEqual(queue[1]["verdict"], "APPROVE")
++            self.assertEqual(queue[1]["ci_state"], "unknown")
++            self.assertEqual(queue[5]["review_head"], "head-5")
++            self.assertEqual(queue[5]["ci_state"], "pass")
++            self.assertEqual(queue[6]["reason"], "Review attempts exhausted")
++            self.assertEqual(result["tickets"], [])
++
+     def test_github_failure_preserves_provider_diagnostic(self):
+         from unittest import mock
+         from factory import dashboard
+```
+
+### README.md at this head (documented conventions)
+
+```markdown
 # factory
 
 A label-driven autonomous ticket pipeline for any GitHub repository. Issues
@@ -42,13 +399,13 @@ npx skills add mikeroysoft/factory
 ```sh
 uv tool install git+https://github.com/mikeroySoft/factory@stable   # stable: released channel
 uv tool install git+https://github.com/mikeroySoft/factory@main     # latest: tip of main
-uv tool install git+https://github.com/mikeroySoft/factory@v0.3.5   # a specific release
+uv tool install git+https://github.com/mikeroySoft/factory@v0.3.0   # a specific release
 ```
 
 `pipx install` and `pip install --user` take the same URLs. The repository's
 default branch is `main`, so a bare URL installs development code. Select
 `@stable` explicitly for the released channel or a version tag for a fixed release;
-see [CHANGELOG.md](CHANGELOG.md). TOMLKit is installed automatically for comment-preserving settings updates.
+see [CHANGELOG.md](CHANGELOG.md). No Python dependencies.
 
 ## Set up a repository
 
@@ -56,180 +413,22 @@ see [CHANGELOG.md](CHANGELOG.md). TOMLKit is installed automatically for comment
 cd your-repo
 factory init            # .factory.toml, .gitignore, issue template, labels
 $EDITOR .factory.toml   # put your real test/lint commands in [[gate.check]]
-git add .factory.toml .gitignore .github/ISSUE_TEMPLATE && git commit
-factory doctor          # tools, auth, remotes, model endpoint, dashboard port ownership
+git add .factory.toml .gitignore .github/ISSUE_TEMPLATE/agent_task.md && git commit
+factory doctor          # tools, auth, remotes, model endpoint
 factory install --dashboard   # systemd user timer every 10 min + dashboard on :8765
 ```
 
-`doctor` checks the configured dashboard bind address and port; `install --dashboard`
-refuses a foreign or unidentified holder before writing units. Each factory needs
-its own `[repo."owner/name".dashboard] port` in the host config. The preflight cannot
-reserve the port until systemd starts the service: a later bind failure exits 1
-with a one-line diagnostic, and the existing systemd restart policy still applies.
-
-`factory doctor --json` includes a `fix` object on actionable drift rows only:
-`kind: patch` carries an advisory `diff` from the issue template to the shipped
-version; `kind: relocate` lists host-setting key paths and destination tables;
-`kind: keys` lists unknown configuration keys with their 1-based source lines.
-Relocation payloads omit values unless explicitly requested with
-`factory doctor --json --reveal-fix`, which adds a `toml` string containing the
-values under their destination host tables. Treat that output as sensitive.
-Doctor never applies these repairs; text output is unchanged.
-
-Generated triage, dispatch and dashboard services use the interpreter selected by
-host-owned, optional `[install].python`, or `sys.executable` (the interpreter running
-`factory install`) when unset, followed by `-P -m factory`. Set
-`python = "/path/to/venv/bin/python"` under `[defaults.install]` or
-`[repo."owner/name".install]`; a committed `[install]` remains a host-setting warning.
-The selected path preserves symlink identity and is rendered as one systemd
-argument: control characters are rejected, and backslash, quote, `$` and `%` are
-escaped so systemd executes the validated literal path.
-
-For a configured interpreter, `doctor` and a real `install` check the path and run
-a 10-second probe from the repository working directory. Validation snapshots the
-user manager environment read-only with `systemctl --user show-environment`,
-parses its assignments, applies the PATH rendered into units, then overlays
-`[install].env`. Failures stop installation before any mutation.
-The probe loads all three service commands and reports the loaded Factory version
-and location. It checks every loaded service module origin (`factory`,
-`factory.cli`, `factory.triage`, `factory.dispatch` and `factory.dashboard`), with
-the selected interpreter's `purelib`/`platlib` context as appropriate, rejecting
-lexical origins under the repository root (`cfg.root`) unless within a selected
-package root.
-`-P` only prevents Python from automatically prepending the working directory:
-`PYTHONPATH` and other explicit import sources still apply and remain
-operator-controlled. Factory neither provisions the environment nor requires its
-version to match the installer. `install --print` only renders the units; like its
-other operational preflights, interpreter validation runs only for a real install.
+Generated triage, dispatch and dashboard services use `python -P -m factory`:
+Python does not prepend the repository working directory to its module search
+path, so an older checkout cannot shadow the installed Factory package.
+The interpreter must already have Factory installed; explicit `PYTHONPATH`
+overrides remain operator-controlled. This source change does not rewrite
+existing units: review their import paths before any separately authorized
+unit update or service reload.
 
 Then file an issue with the **Agent task** template (Scope / Touches / Exit
 gate / Out of scope). It gets `needs-triage`; the next pass triages it; if it is
 fully specified it becomes `ready-for-agent` and is picked up.
-
-For shared, longer-lived plans, file an issue with the **Initiative** template
-(Status / Outcome / Owner / Areas / Boundaries / Plan / Open decisions /
-Success evidence / Implementation links). It gets only `initiative`, never
-`needs-triage`; discussion and edits on the issue are the collaboration
-surface, and `factory plan` reads it. Status (`proposed`, `shaping`, `ready`,
-`underway`, `delivered`) and Owner are declared facts, never inferred from
-child closure and not grants of permission. The `initiative` label is an
-unconditional execution guard read fresh at every boundary: triage never
-promotes an initiative (no model call), the dispatcher never claims one even
-with `--ticket`, the manager never assesses or manages one, and the merge stage
-never merges an `agent/<n>` PR whose ticket #n is an initiative. Refusals are
-logged (also in `--dry-run`) and mutate nothing: no labels, assignees, comments
-or escalation packets. A stale frontier row cannot bypass the fresh read.
-
-### Shared roadmap and owner attention
-
-The dashboard's **Roadmap** view and the read-only FM use the same Python
-initiative, decision-routing and immutable-binding producers. The roadmap shows
-declared Outcome and stage, implementation evidence, open decisions, blockers,
-and accepted-versus-observed revision drift. These are different kinds of
-evidence: a declared `delivered` stage, closed child ticket, or merged PR does
-not establish delivery. Outcome success still requires owner-confirmed evidence;
-the reader does not authenticate an issue-body declaration as that confirmation.
-The shared list uses the dashboard's existing 15-second cache; Refresh requests
-new evidence. Targeted initiative reads are collected directly.
-
-The owner/team selector filters **questions**, not the canonical plans or their
-revisions. It is not login, assignment, permission, or a notification receipt.
-Selected owners, candidates, invalid declarations and unknown ownership retain
-the routing producer's meaning. Organization context validation does not prove
-team membership or notification delivery. Unknown owners remain visible as an
-attention gap rather than an empty work list.
-
-Coverage is explicit: failed, partial and incomplete reads are not successful
-empty results. A ticket without an accepted baseline has unknown drift, not
-“unchanged” drift. Complete authoritative content determines revision identity,
-including edits beyond the 4,000-character display projection. Retained accepted
-evidence remains readable when the live initiative is unavailable; later edits
-never amend an admitted execution snapshot.
-
-An assigned ticket with evidence of no active execution is shown as non-runnable
-human takeover, not as invisible queue starvation. The exception is Factory's own
-claim: a journaled `claimed`/`pr-opened` receipt with no later `escalate` marks the
-ticket as held in Factory's review/merge pipeline, not a takeover. Incomplete runtime
-evidence instead leaves execution responsibility unknown and asks for human verification.
-Changing the attention filter or replying to a question cannot release it. Humans
-must arrange any retry through the existing reviewed ticket/assignment/intake workflow.
-
-The roadmap adds no mutation controls or new model call. Full accepted snapshots
-are kept out of shared briefing duplication; use a targeted initiative/drift
-read for revision evidence. Discussion and session-only FM proposals remain proposals,
-not accepted shared policy. The one-runner boundary and all existing holds remain
-in force. This implementation is not the distinct-runner/two-human live acceptance
-pilot tracked by programme #52 and issue #59.
-
-### Immutable initiative bindings
-
-An implementation ticket can opt in to an immutable initiative revision with an
-`Initiative: #N` declaration and a fenced JSON object under either
-`**Plan baseline**` or `## Plan baseline`. The baseline object has
-`schema_version: 1`, the integer `initiative`, a `sections` object containing
-exactly `Outcome`, `Boundaries`, `Plan`, and `Success evidence`, a `sha256`,
-the exact `source_url` (`https://github.com/OWNER/REPO/issues/N`), and a
-timezone-bearing `observed_at`. Factory reads the complete initiative body
-through the REST issue endpoint, not the bounded display projection.
-
-For the digest, each relevant section first converts CRLF and CR line endings
-to LF and strips whitespace only at the section edges; internal whitespace is
-retained. Factory then hashes the UTF-8 encoding of
-`json.dumps(sections, sort_keys=True, ensure_ascii=False, separators=(",", ":"))`
-with SHA-256. The same parser and normalization drive baseline validation and
-later drift, so changes beyond display limits cannot look unchanged. Changes
-inside canonical non-scope sections (such as Status, Owner and Open decisions),
-issue metadata, and GitHub discussion comments do not change this digest.
-Only the initiative template's named headings delimit sections; free-form
-subheadings within a relevant section remain part of that section and its digest.
-
-Admission fails closed with a specific reason when a linked ticket has a
-missing, malformed, ambiguous, mismatched, incomplete, deleted, or inaccessible
-binding or source. A successful admission journals a schema-1 `plan-bound`
-event with the accepted baseline and the ticket's complete title, body, and
-comments. That whole accepted ticket snapshot remains the human-approved
-execution contract: every retry reuses it and cannot adopt later ticket-body or
-initiative revisions. A previously bound ticket cannot downgrade itself by
-removing the link or baseline. Legacy tickets that have never declared an
-initiative remain unchanged.
-A later explicit admission records a new complete ticket snapshot without
-rewriting the evidence or contract of earlier attempts.
-Briefing event summaries retain revision metadata rather than duplicating the
-full snapshot, so later attempts, escalations and handoff evidence keep their
-context budget. The complete accepted evidence remains in the journal.
-
-`factory plan baseline N` is read-only and returns a proposed object under the
-schema-1 response's top-level `baseline` key. `factory plan drift TICKET` is
-also read-only: it loads the latest accepted `plan-bound` evidence before
-querying the live initiative and writes `status`, `baseline`, `observed`,
-`changed_sections`, `proposed_question`, and `attribution` under the top-level
-`drift` key. Status is `unchanged`, `changed`, or `unavailable`; changed results
-name only the relevant sections, while unavailable results retain the accepted
-snapshot and set `observed` to null. Attribution is always `unknown`, never
-guessed from the current issue author when plan history is unavailable.
-
-To rebaseline, generate a fresh proposal after the initiative edit, have a
-human review and replace the ticket's fenced baseline, then send that ticket
-through the ordinary intake workflow. Comments are discussion only: Factory
-has no comment command that rebaselines or expands execution authority. Once a
-ticket is bound, wholly unlinked work belongs in a new ticket. A currently
-running contract never changes in place.
-
-Manager `REWRITE` may retain existing behavior only when it preserves the
-accepted Initiative link and baseline exactly. `SPLIT` children inherit that
-same binding; Factory validates the complete live source before creating any
-child. A child of an unlinked parent may declare its own binding, but it must
-pass the same validation. Any missing, invalid, drifted, or unavailable source
-rejects the whole split before the first child reaches `needs-triage`; the
-manager cannot supply a replacement baseline.
-Preserving the binding allows the existing rewrite-and-requeue behavior; a
-later admission records its own full ticket snapshot and leaves prior
-`plan-bound` evidence intact.
-
-GitHub issue-body writes remain last-write-wins. Refresh the issue immediately
-before editing and use discussion to propose revisions first. The pinned
-snapshot protects admitted execution; it is not concurrency control for
-simultaneous human edits.
 
 For a fork that tracks an upstream, set `[repo].upstream = "upstream"` and the
 dispatcher merges new upstream commits into your `main` (gated) before each
@@ -241,27 +440,14 @@ merge stage.
 |---|---|
 | `factory triage` | Labels every `needs-triage` issue via the local model: `ready-for-agent` (with an agent brief), `needs-info` (with the question), `ready-for-human`, or a `wontfix` proposal comment. `--dry-run`, `--issue N`, `--replay a,b,c`. |
 | `factory dispatch` | One stateless pass: upstream sync → merge stage (at most one PR) → review-only PR intake → manager → claim up to `max_active` tickets → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan. |
-| `factory manage` | First recommends directions for `needs-review` PRs, then `needs-viability` issues; then resolves untouched `ready-for-human` escalation packets within `[manager].rounds`; finally publishes one routed human handoff request per escalation whose automatic recovery is terminal (also without a manager). `--dry-run` lists eligible requests without inference or writes. |
+| `factory manage` | First recommends directions for `needs-review` PRs, then `needs-viability` issues; then resolves untouched `ready-for-human` escalation packets within `[manager].rounds`. Disabled unless `manager.command` is configured. `--dry-run` lists eligible requests without inference or writes. |
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
 | `factory stats` | Ticket table: attempts, review rounds, hours to merge, escalation count, resolver attribution, minutes in `ready-for-human`, and re-queues. Reads GitHub plus existing `events.jsonl`. `--by-worker` reads only events and shows every configured worker label: first-attempt gate pass rate, all attempts (including review bounces), and known cost. Attribution uses claim labels with current worker precedence; unclaimed attempts are excluded, missing rates/cost are `n/a`. The dashboard Ops view shows the same worker metrics. `--json`. |
 | `factory learn` | Reads the last N finished tickets' event trail, failing-attempt log tails, reviewer findings, and escalation reasons; asks the local model for ≤10 repo-specific lessons; writes `.factory-lessons.md` (you commit it). Every worker prompt carries it. `--dry-run`, `--last N`. |
-| `factory dashboard` | Local ops UI: Inbox, Ops, a dedicated read-only Factory Manager Chat with browser-local history, Codebase history, and Atlas; tickets by stage, in-flight phase, gate reports, worker logs, journal heartbeat, and upstream drift. `--json` prints the existing snapshot, including independent executions and local interruption reconciliation. `--host 0.0.0.0` exposes it, its mutating `/api/act`, and local settings writes to your network. |
+| `factory dashboard` | Local ops UI: tickets by stage, authoritative in-flight phase when known, gate reports, worker logs, journal heartbeat, upstream drift, and an action list with one-click answers. `--json` prints the existing snapshot, including independent executions and local interruption reconciliation. `--host 0.0.0.0` exposes it (and its mutating `/api/act`) to your network. |
 | `factory dashboard --runtime-json` | One bounded schema 1 runtime observation using only local read-only evidence; no GitHub, model probe, journal append, lock acquisition, or state creation. Partial source failures remain structured JSON. See [runtime contract](#bounded-runtime-json-schema-1). |
 | `factory evidence --root /path/to/main-checkout` | One explicit-repository schema 1 JSON read: compact cases, selected evidence, workflow/file/PR/CI investigations, or capabilities. Read-only GitHub GETs and F03 local evidence; no model, action execution, or state writes. See [evidence contract](#bounded-project-evidence-json-schema-1). |
-| `factory plan list` / `factory plan inspect N` | Read-only schema 1 JSON over `initiative` issues: declared status/owner, parsed sections, `#N` implementation links (`inspect` also fetches each linked issue's title/state), per-issue `malformed` + `problems` (missing/invalid declared facts, sections cut at 4,000 characters, links beyond the first 20), cited sources with `observed_at`. `list` reads at most 3 pages of 100 and keeps malformed initiatives flagged per row (exit 0); a failed page, or a malformed initiative under `inspect`, yields `coverage.status: partial` and exit 1, never a mutation. |
-| `factory plan route N --reason <requirements\|implementation\|ci\|unknown> [--path P]... --json` | Read-only schema 1 JSON naming the human who owns a decision on ticket N; nothing is assigned, labelled or commented. JSON is also the default when `--json` is omitted. Priority: a `**Decision owner**` section in the ticket body (human override, wins on every recomputation), the canonical `Initiative: #N` (or legacy `Programme: #N`) initiative's Owner, or the initiative's own Owner when routing that initiative (requirements only), `[collaboration.reasons]`, `[collaboration.components]` exact repo-relative path prefixes against the given `--path`s (implementation only; `src/auth` matches `src/auth/x.py`, never `src/authentication/`), then `[collaboration].fallback`. `route.status` is `selected`, `candidates` (paths span prefixes with different owners), `unassigned` (reason `unknown`, no `--path` for implementation, or nothing configured) or `invalid` (malformed declared owner; `@org/team` on a user-owned repository). `route.revision` ties the answer to the `.factory.toml` commit and issue `updated_at`; `route.provenance` lists every step. Owner syntax is checked, membership is not: an unreadable repository record leaves `verification: unknown`. Without a `[collaboration]` section only ticket sources apply. |
-| `factory plan baseline N` / `factory plan drift TICKET` | Read-only schema 1 JSON for proposing a complete immutable initiative baseline or comparing a ticket's latest accepted baseline with the live complete source. Results are under top-level `baseline` or `drift`; neither command edits issues, rebaselines work, or grants execution authority. |
 | `factory doctor` / `init` / `install` | Onboarding, above. |
-
-Routing distinguishes absent optional information from invalid declarations. A missing
-ticket `Decision owner` section permits fallback; an empty or malformed section stops
-with `invalid`. A missing initiative `Owner` section permits configured requirements
-ownership and fallback, but an explicitly empty or malformed Owner stops routing.
-On user-owned repositories, mixed team/login destinations remain invalid with no
-selection; provenance retains the original destinations and rejected teams for
-diagnosis. Unavailable verification remains unknown, never authorization.
-`collaboration.reasons.unknown` and component prefixes that normalize to the same
-key are configuration errors; `--reason unknown` remains a valid non-guessing request.
 
 Every command reads `.factory.toml` from the main checkout, even when run
 inside one of its worktrees.
@@ -297,12 +483,6 @@ human to apply in host config; the manager cannot add profiles or edit config.
 Code validates the output, records a `manage` event before GitHub mutations, and
 leaves malformed decisions with a prefixed HUMAN diagnosis. Split children enter
 `needs-triage`; the parent keeps `ready-for-human` with child blocker lines.
-For `REWRITE` and `SPLIT`, Factory refreshes the issue body immediately before
-applying the decision. A linked rewrite must preserve its accepted Initiative
-and Plan baseline exactly. Bound split children inherit that baseline, and all
-linked children are validated against the complete live initiative before the
-first issue is created. A validation failure consumes the recorded manager
-round, creates no intake-ready child, and leaves the parent with the human.
 A trailing fenced `notes` block replaces `.factory/manager/notes.md`
 (gitignored, never committed, carried into every later manager prompt). The block
 is optional; code refuses an empty or over-16 KB replacement, keeps the existing
@@ -312,52 +492,6 @@ Manager executions and ticket-lock waits use the lifecycle journal. If a GitHub
 mutation fails, the execution records a terminal failure and the ticket remains
 with the human; other tickets can proceed. The consumed round is not replayed,
 because a partial rewrite or split may already have changed GitHub.
-
-### Routed human handoffs
-
-Once automatic recovery for an escalation is terminal — the manager returned `HUMAN`,
-its command could not run (an explicit *unable to diagnose*, never a fabricated
-diagnosis), `manager.rounds` is exhausted, no manager is configured, or the escalation
-loop can never act again (its decision could not be applied to GitHub, its packet is
-gone, or its escalation comment was never receipted so takeover detection cannot clear
-it, as for escalations recorded before this version) — `factory manage`
-publishes **one** request comment for that escalation generation (`<ticket>/<round>`):
-a concrete question, bounded public links (PR, the recorded escalation and manager
-comments), a proposed next step, the routed owner or candidates, and the step-by-step
-routing rationale from `factory plan route` (reason `ci` for CI failures, otherwise
-`implementation` with the PR's changed paths). Runner-local paths, packets and logs
-never reach GitHub. While recovery is still eligible nothing is posted; routing stays
-advisory (`factory plan route N`).
-The terminal handoff phase is still attempted if an earlier manager phase fails.
-That failure remains an error: publishing a handoff does not authorize the dispatcher
-to continue scheduling new work.
-
-The request `@mention`s a GitHub login on the initial handoff and again only when the
-owner actually changes (a human sets or edits `**Decision owner**` in the issue body,
-which wins on every later read and is never written back). Teams are mentioned only on a
-verified organization repository; unassigned, invalid or unavailable routing states the
-gap instead. Nobody is assigned. Publication is intent-then-receipt in
-`.factory/events.jsonl` (`handoff` row before the comment, `comment` row with the
-comment id after); a crash or failed `gh` between the two is reconciled from the issue
-timeline before any retry, and when that lookup fails nothing is posted. GitHub
-delivery of a mention is not asserted.
-Explanatory text escapes mention syntax, including rejected destinations, routing
-provenance and previous owners; only the current validated owner or candidates receive
-native mentions.
-
-Human-takeover detection uses only the factory's own recorded comment ids: the
-escalation comment, manager comments and handoff requests are journaled as `comment`
-receipts and ignored; any other comment, label, assignee, body edit, or an edit to a
-recorded comment counts as human activity and stops the manager. Text prefixes are
-never trusted. Without the current escalation's recorded comment on the timeline,
-the manager fails closed: even a failed escalation post leads to a routed handoff,
-not an exemption for later human label or assignee changes. A handoff receipt cannot
-substitute for the missing escalation receipt on a later pass.
-Manager `CLOSE` comments are posted explicitly before closing their respective PR
-or issue, with each receipt scoped to the timeline that owns the comment. A partial
-close failure does not replay the consumed manager decision.
-A reply is context for humans, not a retry, approval or merge command;
-use the documented labels for that.
 
 ### Opt-in viability recommendations
 
@@ -386,14 +520,7 @@ reasoning, source citations, and one final machine-readable line:
 |---|---|
 | Issue / BUILD | Remove `needs-viability`, add `needs-triage` for deeper investigation. Never directly queue implementation; a vague idea need not already pass triage's specification checks. |
 | Issue / DONT_BUILD or DEFER | Remove `needs-viability`; leave open, propose only. No `wontfix`, closure, or replacement workflow label. A human decides whether to close, defer, or overrule. |
-| PR / any verdict | Retain `needs-review`; recommend only, even BUILD. Dispatch independently runs the SHA-bound quality review before this stage; viability adds no handoff label and never approves, requests changes, merges, or closes PRs. |
-
-`needs-review` is shared opt-in, not a viability-owned completion marker. Viability
-records each label-add request independently of dispatch's `(PR, head SHA)`
-review-intake record. Its advisory verdict neither completes nor vetoes review.
-Viability can assess drafts; dispatch discovers only open, non-draft PRs and also accepts
-a pending review request for the authenticated factory account. That alternative
-review opt-in does not opt a PR into viability.
+| PR / any verdict | Remove `needs-review`; recommend only. Even BUILD adds **no handoff label**. Dispatch independently runs the SHA-bound quality review before this stage; the manager itself never approves, requests changes, merges, or closes PRs. |
 
 The model uses the existing evidence/briefing source helpers: bounded target
 description/comments, recent issues and PRs (not an exhaustive duplicate search),
@@ -413,15 +540,14 @@ Idempotency is per **label-add timeline event**, independent of escalation round
 Under the existing per-ticket lock, the manager rechecks the target (including
 PR head) and timeline after inference; intervening human changes leave it untouched.
 It records the verdict and full proposed comment in `.factory/events.jsonl`
-(`event: viability`) **before** any GitHub mutation, then posts and consumes only
-issue triggers. A second pass never repeats that request, even with `needs-review`
-still present or after a partial/ambiguous
+(`event: viability`) **before** any GitHub mutation, then posts and consumes the
+trigger. A second pass never repeats that request, even after a partial/ambiguous
 GitHub failure. In that case inspect the recorded comment and live state before
 recovering manually; automatic replay could duplicate an already-posted comment.
 Keep the local journal: this is the same single-host at-most-once boundary as
 escalation management, not a distributed exactly-once service. To deliberately
-reconsider, remove and re-add the opt-in label; body or PR-head edits alone do not
-re-arm a recorded viability request.
+reconsider, remove and re-add the opt-in label; edits alone do not re-arm a consumed
+request.
 
 Human-touch metrics are read-only; no manager behavior is required. A
 `ready-for-human` label addition starts an escalation interval; removal ends it
@@ -503,55 +629,12 @@ ticket's `human_touch` details. The dashboard retains its existing 100-issue,
 7. **Escalation.** Budget exceeded, gate failed thrice, second `REVISE`,
    nothing to PR, rebase conflict, red CI: the issue gets `ready-for-human`,
    loses the assignee and `ready-for-agent`, and receives a comment with the
-   reason and the worker log path (its comment id is journaled). The worktree
-   is kept for forensics. When no automatic manager recovery remains, one routed
-   human handoff request follows (see [Routed human handoffs](#routed-human-handoffs)).
-8. **Manager PR frontier** (when `manager.command` is configured; runs in
-   `factory manage` after landing). Every open same-repository `agent/<n>` PR
-   targeting the configured branch is observed through the schema-1 feedback
-   producer; only `owner.relation = factory_issue` (a same-repository closing
-   link plus the retained claim) puts it in the frontier, never branch text.
-   Initiatives and already-escalated tickets are left alone. Pending CI waits.
-   Red CI, unresolved current-head feedback (changes-requested review,
-   unresolved non-outdated thread, failed check) and inactivity beyond
-   `manager.stale_days` (default 7) escalate the ticket once through the
-   ordinary packet, so the manager's `FIX`/`CLOSE`/`HUMAN` decisions apply.
-   Late feedback is delivered at most once per `(evidence_id, source_revision)`
-   (`feedback-delivered` journal rows); partial or unavailable coverage, unknown
-   relevance and the factory's own reviewer are never delivered. `CLOSE` closes
-   the PR with the diagnosis; a human's issue stays open with
-   `wontfix-proposal`, a child the factory created by `SPLIT` is closed.
-   With `manager.review = "all"`, a head that passed the gate and independent
-   review is not labelled until the manager returns `APPROVE` for that exact
-   head (`manage` row with `head`); a refreshed head needs a fresh decision and
-   nothing is re-bound. Decisions are bounded by `manager.rounds` per PR.
+   reason and the worker log path. The worktree is kept for forensics.
 
 ## Configuration
 
 `.factory.toml` at the repository root; every key is optional. The template
 written by `factory init` documents them all. The ones you will actually set:
-
-The dashboard's **Settings** view (`/#settings`) edits exactly five controls:
-`dispatch.max_active` (concurrent tickets), `dispatch.budget_min` (time limit
-per ticket, in minutes), `dispatch.max_attempts` (worker and gate attempts),
-`dispatch.review_rounds` (reviewer revision rounds), and `manager.model` (the
-Factory Manager model). It shows each effective value and its source
-(Repository, Host repository override, Host default, or Built-in default), plus
-a read-only worker/reviewer/triage summary with command arguments and endpoint
-credentials omitted.
-
-Review the explicit before/after summary and choose **Save changes**. The
-dashboard writes only changed keys to the local `.factory.toml`, preserving
-unrelated settings and comments; changes remain uncommitted (they never commit
-or push). If another process changes the configuration first, stale edits are
-rejected: reload and review the latest values before saving. Work-limit changes
-apply to the next dispatcher invocation; the selected model applies to the next
-new Factory Manager request. Running work and in-flight requests keep their
-captured configuration unchanged.
-
-Clearing `manager.model` removes the repository override and restores the
-existing host value, a legacy `manager.command --model` fallback, or OMP's
-default model. Gate and safety policy remain file-managed.
 
 ```toml
 [repo]
@@ -600,28 +683,10 @@ snapshot. Factory leaves this metadata opaque and out of pipeline configuration;
 `doctor` accepts it only under `defaults`. Unknown tables and an `engine` table
 under a per-repository section still produce host-config warnings.
 
-`[worker_wrap]` is host-only: set `command` under `[defaults.worker_wrap]` or
-`[repo."owner/name".worker_wrap]` (per-repo wins). Its argv is prepended to
-every worker launch, whichever `[workers]` label is selected, including labels
-a repository adds. A committed `.factory.toml` `[worker_wrap]` is a load error,
-so a repository cannot replace or remove it. Placeholders: `{cwd}`, `{prompt}`,
-`{root}` (main checkout), `{repo}` (`owner/name`), `{home}`. Unset = unchanged.
-
-```toml
-[defaults.worker_wrap]
-command = ["/usr/local/bin/my-wrapper", "--worktree", "{cwd}"]
-```
-
-This is a trusted operator-chosen executable, not a sandbox: Factory supplies
-no network, credential, gate or reviewer isolation, and the wrapper inherits the
-launch environment. A containing wrapper must expose the prompt (inside the
-worktree) and the linked worktree's common Git directory (under `{root}/.git`)
-at the same absolute paths.
-
 Labels (`needs-review`, `needs-viability`, `needs-triage`, `needs-info`,
-`ready-for-agent`, `ready-for-human`, `factory-approved`, `chore`, `initiative`)
-and the `agent/<n>` branch scheme are fixed conventions; `factory init` creates
-the labels. `needs-review` opts a PR into direction viability and dispatch's review-only intake;
+`ready-for-agent`, `ready-for-human`, `factory-approved`, `chore`) and the
+`agent/<n>` branch scheme are fixed conventions; `factory init` creates the labels.
+`needs-review` opts a PR into direction viability and dispatch's review-only intake;
 `needs-viability` opts an issue into viability before triage.
 
 Before the manager runs, dispatch discovers open, non-draft PRs labeled
@@ -658,37 +723,23 @@ branches, or merge state.
 
 ## Operating it
 
-- **Dashboard** (`factory dashboard`): the root opens **Ops**, showing recorded
-  pipeline state without requesting an LLM briefing. **Inbox** is an explicit
-  destination and opens a full **Understand → Compare → Decide** briefing for
-  each case needing human judgment. The question,
+- **Dashboard** (`factory dashboard`): **Inbox** opens a full **Understand →
+  Compare → Decide** briefing for each case needing human judgment. The question,
   situation, FM recommendation, relevant earlier decisions, uncertainty, options,
   consequences, and next owner stay visible; raw evidence is expandable. **Ops**
   retains the board, telemetry, dispatcher runs, and task drawers.
   **Ask FM** works on a whole task or a specific source/log and returns cited
-  answers. The dedicated **Chat** page at `/chat` also answers repository-wide,
-  case, and dispatcher-run questions; cited evidence is inspectable and
-  conversations persist in that browser. It requires an authenticated `omp`
-  installation; `[manager].model` chooses the model (host-wide:
-  `[defaults.manager]`). If unset, an existing `manager.command` supplies only
-  its `--model` value, otherwise OMP's default model is used. The dashboard never
-  executes that command: questions run a bounded, read-only, no-tools OMP process
-  against server-collected evidence. Evidence is sent to the selected model
-  provider; questions are not posted to GitHub. Errors remain visible and
-  retryable, never replaced with canned advice.
+  answers. It requires an authenticated `omp` installation; `[manager].model`
+  chooses the model (host-wide: `[defaults.manager]`). If unset, an existing
+  `manager.command` supplies only its `--model` value, otherwise OMP's default
+  model is used. The dashboard never executes that command: questions run a
+  bounded, read-only, no-tools OMP process against server-collected evidence.
+  Evidence is sent to the selected model provider; questions are not posted to
+  GitHub. Errors remain visible and retryable, never replaced with canned advice.
   Decisions require rationale and an exact mutation preview; stale or incomplete
   snapshots block execution. Confirmed decisions leave GitHub rationale comments
   and a local `human-decision` audit event with success, partial, or failed outcome.
   Drafts and conversations survive refresh within the same browser session.
-  The same navigation row sits below the title/status row on Ops, Inbox, Roadmap,
-  Chat, Codebase and Atlas; the two rows stay together while scrolling.
-  Its **Theme** picker includes Cyberpunk, GPUFlo, District, Factory, ROCm
-  (shared by rocm-cli and rocm-app), Porcelain and Sandstone (light), and Slate
-  and Forest (dark). Cyberpunk is the default for installations
-  without custom CSS; configured `[dashboard].theme` remains the **Repository**
-  default. An explicit choice overrides that CSS and persists in this browser
-  for this dashboard origin. Browser storage being unavailable does not prevent
-  switching themes for the current page.
 - **Spend**: the *Spend* KPI and each ticket's attempts tab total worker+gate
   wall clock from `events.jsonl`, plus dollars when `cost_pattern` matches
   your worker's log.
@@ -706,8 +757,6 @@ branches, or merge state.
   `.factory/wt-<n>/.factory/handoff-<n>.md` (what changed, what is unverified,
   what next). The next attempt gets it in its prompt; an escalation quotes it
   in the issue comment.
-  Independently accepted handoffs are retained outside the worktree under
-  `.factory/results/<ticket>/<accepted-head>/`; see [retention](#accepted-handoff-retention).
 - **Logs**: `.factory/logs/<n>-attempt-<k>.log` per worker round;
   `.factory/wt-<n>/.factory/gate-report-<n>.md` per gate;
   `journalctl --user -u factory-<repo>.service` for dispatcher passes.
@@ -715,71 +764,8 @@ branches, or merge state.
   frontier and its label checks; respects the in-flight lock).
 - **Stop everything**: `systemctl --user disable --now factory-<repo>.timer`.
   In-flight tickets finish their current pass; nothing new is claimed.
-- **Tear down a ticket**: verify any accepted handoff is retained before manually
-  removing `.factory/wt-<n>` with `git worktree remove --force`, deleting `agent/<n>`,
-  and re-labelling the issue. Manual removal bypasses the dispatcher's retention guard.
-
-## Accepted handoff retention
-
-Factory retains the full worker handoff at durable, exact-head approval and checks
-retention again before merge cleanup. Worker exit zero, gate PASS, a label, or a
-valid `REVISE` response cannot establish acceptance. Existing reviewer, configured
-manager, CI, human-veto and exact-head merge safeguards are unchanged.
-
-These are **Factory product defaults, per repository**, not host/session retention
-settings. There are no configuration overrides in this interface:
-
-| Limit | Default |
-|---|---|
-| Full handoff content | 90 days from original recorded acceptance |
-| Body-free provenance/status receipt | 365 days from that acceptance |
-| One artifact | 256 KiB |
-| One result bundle, including metadata | 1 MiB |
-| Repository result archive, including temporary writes | 256 MiB |
-
-Reads and repeated observations never renew these lifetimes. Expired content is
-unavailable immediately to readers; the next non-dry-run dispatcher pass removes
-expired payloads, then removes receipts at 365 days. Reads never prune or acquire
-writer locks. These limits do not rotate existing journals, logs or transcripts.
-
-Storage is the main checkout's gitignored `.factory/results/<ticket>/<accepted-head>/`,
-with a bounded `manifest.json` and, when available, raw `handoff.md`. The manifest
-preserves accepted-head provenance, compact acceptance receipts, the first matching
-attempt's observed source head (or explicit unknown), source/retained byte counts
-and SHA-256 integrity, producer identity, and accepted-contract revision references.
-The source head is an observation, not proof of when the handoff was authored.
-Refreshing/rebasing does not silently reattribute older bytes to a new head.
-A different result never silently replaces an existing record at the same head.
-
-Only the handoff and compact provenance are retained: no transcript, worker log,
-prompt, configuration/environment dump, or broad discussion ingestion. Common
-credential forms are withheld, not silently redacted; this is not comprehensive
-DLP. Explicit incomplete/redacted provenance stays incomplete. Local storage is
-not public-safe evidence and does not authorize uploads, new provider disclosure,
-or permission changes.
-
-Missing, oversized, withheld, expired, unreadable and integrity-failed sources
-remain explicit. Quota or archival failure does not evict unexpired results:
-automatic cleanup leaves the affected worktree intact and reports the reason.
-Post-merge cleanup is not automatically retried: resolve the reported retention
-condition before manual cleanup rather than deleting the sole surviving copy.
-A recorded missing-source result can permit cleanup because there is no handoff
-content to lose. This protects against worktree cleanup, not runner loss or deletion
-of the main checkout; it is not a backup service.
-
-Use the `kind:"result"` evidence read below for a known ticket/head, even when the
-ticket is outside current GitHub case-list coverage. Briefings include the newest
-retained historical result without displacing earlier human constraints.
-Retention and historical acceptance are evidence, never permission to resume or
-rewrite scope. The worker prompt built by `factory dispatch` is the one
-revision-aware execution consumer: when a ticket has a prior retained result, its
-prompt gets a bounded `## Resume context` section reporting the prior accepted
-head/result and whether the admitted scope (this ticket's plan-bound baseline)
-is `unchanged`, `changed`, or `unavailable` since that result, using only the
-local plan-bound journal and the retained result -- never a worker log, prompt,
-or transcript. This is descriptive only: it never rewrites the pinned scope or
-the ticket, and a changed or unavailable comparison never silently authorizes
-continued execution.
+- **Tear down a ticket**: remove the worktree (`git worktree remove --force
+  .factory/wt-<n>`), delete `agent/<n>`, and re-label the issue.
 
 ## Execution event contract
 
@@ -1499,8 +1485,8 @@ The root is an **operator-selected main checkout**, not a request field. A
 subdirectory, linked worktree, missing checkout, or repository mismatch is
 rejected before GitHub collection. Repository identity comes from the main
 checkout's `.factory.toml` (`repo.slug`) or its GitHub origin remote, using the
-bounded F03 loader. Cwd does not select scope. The normal Python package
-requires TOMLKit; these reads require no Pi installation or model provider.
+bounded F03 loader. Cwd does not select scope. The normal Python package remains
+dependency-free; these reads require no Pi installation or model provider.
 
 ### Requests and implemented reads
 
@@ -1515,50 +1501,11 @@ never booleans or strings. Repository slugs are at most 200 characters.
 | `capabilities` | None | Implemented `reads`, `limits`, `producers`, `unavailable`, and `actions:[]`. No case or GitHub collection. |
 | `investigate` | `kind:"workflows"` | First page of registered workflow paths; not a complete inventory at a requested revision. |
 | `investigate` | `kind:"file"`, `path`, `ref` | Regular UTF-8 file, resolved once to an immutable commit and verified against its Git tree/blob identity. |
-| `investigate` | `kind:"result"`, `number`, `head`, `offset` | Local retained accepted handoff for an exact 40/64-hex head. Required byte offset is 0–262144; follow `next_offset` for further pages. No GitHub collection. |
 | `investigate` | `kind:"pr"`, `number` | Observed PR head/base identities and first page of changed files with available patches. Omitted or shortened patches remain unknown. |
 | `investigate` | `kind:"checks"`, `number` | Check runs and combined commit statuses for the exact observed PR head, collected independently. |
 | `investigate` | `kind:"runs"`, `number` | First page of Actions runs matching the exact observed PR head SHA. |
 | `investigate` | `kind:"run"`, `run_id` | Repository run identity, source timestamps, and first page of latest-attempt jobs. |
 | `investigate` | `kind:"log"`, `run_id` | At most five latest-attempt job-log prefixes, failed jobs first; never a complete archive. |
-| `investigate` | `kind:"roadmap"` | Shared bounded initiative roadmap and owner-attention questions; coverage and unknown states remain explicit. |
-| `investigate` | `kind:"initiative"`, `number` | One initiative's declared plan, available revision, linked implementation evidence, blockers, questions and accepted drift evidence. |
-| `investigate` | `kind:"drift"`, `number` | One ticket's validated retained baseline compared with the complete live initiative; preserves historical accepted evidence on live-source failure. |
-| `investigate` | `kind:"experiments"` | Retained run directories under `.factory/experiments/<experiment>/<run>/`; a listing is not availability. |
-| `investigate` | `kind:"experiment"`, `experiment`, `run` | One retained schema-1 observation/build run: protocol revision, producer state, report fields, recorded disposition, evidence links and per-artifact availability. |
-
-Each roadmap/initiative plan also carries `experiments` and `next`. An experiment
-appears on the plan its latest run's `protocol.json` names as `roadmap`; it is an
-`informed_by` link (`blocking: false`), never a blocker, and keeps the recorded
-`disposition` beside its `outcome` grouping (`adopt`/`amend` accepted,
-`reject`/`no-change` rejected, `defer` deferred, `pending`, else unknown). `next`
-ranks open linked tickets by the first `NOW`/`NEXT`/`THEN`/`LATER` Plan line naming
-them; a pending experiment disposition ranks with `NOW`. `action` is the best runnable
-implementation, else the best decision; `awaiting_decision` holds only current-priority
-decisions, separate from `runnable`, `blocked` (real `Blocked by` edges), `in_flight`,
-`held` and `displaced`; `uncertain` lists incomplete evidence and run limitations.
-Nothing is applied.
-
-Experiment reads resolve only single-name directories beneath `.factory/experiments`
-and never follow links. Run `status` is `complete`, `partial` (run not terminal,
-artifact missing/inaccessible or source coverage incomplete), `stale` (an artifact no
-longer matches its producer-recorded digest), `inaccessible` (unsafe, unreadable,
-malformed or foreign record) or `missing`; each artifact and report evidence link
-keeps its own state. `source_ledger.freshness` is `stale` once the ledger has grown
-past the frozen snapshot. A `completed` run is producer state only: it is not
-hypothesis confirmation, production acceptance or delivery, and `disposition` is only
-what the decision owner recorded.
-
-Retained-result reads return archive status and manifest under `investigation`,
-with separate `manifest_source_id` and `handoff_source_id` citations. Pages contain
-at most 20,000 UTF-8 bytes: a complete archive can have a truncated excerpt and a
-non-null `next_offset`. Offsets refer to raw archived bytes; offsets inside a UTF-8
-code point are refused, not silently advanced. Existing terminal-control
-sanitization can change displayed text; `display_sanitized` marks this and
-`raw_artifact_sha256` identifies the original stored bytes, not a transformed
-excerpt. Non-UTF-8 originals stay retained but are unavailable as text.
-Missing/expired/partial content keeps a nonzero exit and explicit coverage rather
-than becoming an empty successful result. No response or briefing budget is raised.
 
 `path` is a repository-relative path of 1–1024 characters, with no empty, `.`, or
 `..` components, control characters, backslashes, or URL syntax (`:`, `%`, `?`,
@@ -1745,59 +1692,6 @@ separate, network-free F03 endpoint; it never calls this GitHub-capable collecto
 No installed-host support, deployment approval, or chat/action packaging is
 implied by the source interface.
 
-## Read-only Factory Manager console (`factory chat`)
-
-`factory chat` opens a conversational, **read-only** Factory Manager on one
-explicitly named repository. It reuses the bounded schema-1 evidence interface
-above (`fm_observe`, `fm_inspect`, `fm_investigate`, `fm_capabilities`,
-`fm_source`, `fm_resource`, `fm_sample_preview`) — no shell, no edit/write, no
-publication or dispatch. It never mutates anything.
-
-The console runs on a pinned upstream Pi runtime that is an **optional** console
-dependency; ordinary Factory execution never needs Node. Install it once inside
-the checkout, then launch:
-
-```sh
-# One-time: install the pinned Pi runtime (Node >=22.19) into the console.
-# The console lives in this factory checkout; install it there once.
-npm ci --ignore-scripts --no-audit --no-fund --prefix console/app
-
-# Open the read-only console on an explicit repository/checkout.
-# --root is the managed repository's main checkout; --console defaults to
-# <root>/console/app but may point at any installed console directory, so one
-# installed console can serve a --root that has no console/app of its own.
-factory chat --root /path/to/checkout --repository owner/name \
-    --console /path/to/factory/console/app
-
-# Resume this scope's latest conversation; startup always reobserves fresh evidence.
-factory chat --root /path/to/checkout --repository owner/name --continue
-```
-
-Startup requires a Linux interactive terminal and authenticated `gh`. The
-launcher writes only console-owned settings into an isolated `console/app/.runtime`
-directory (default project trust `never`; packages, extensions, skills, prompts
-and themes empty; images blocked); it never copies provider auth or ambient host
-settings. No inference happens until you approve the explicit provider/model
-disclosure dialog. The default provider is the local keyless Ornith endpoint;
-`--provider openai|openai-codex --model <id>` uses Pi's native, isolated
-authentication for that provider only. Scope is fixed per launch — switching
-repository means exiting and relaunching with a fresh disclosure.
-
-Conversation history is not authoritative state: every start and `--continue`
-resume reobserves Factory, and a failed or interrupted turn marks evidence stale
-and reobserves on the next turn. The `console/app/check.py` read-boundary smoke
-and `console/app/check-transport.ts` transport smoke exercise the bridge without
-any model call.
-
-For shared-plan questions, use `/fm investigate roadmap`,
-`/fm investigate initiative <number>`, and `/fm investigate drift <ticket>`,
-or ask conversationally: “What decision blocks initiative #50, and why does
-the proposed sequence fit its known dependencies?” The FM can read the supplied
-plans and revisions, compare explicitly evidenced areas/dependencies, and propose
-sequencing or plan amendments with exact source citations. Unsupported progress,
-ownership, semantic overlap and outcome delivery remain unknown. It cannot publish
-decisions, edit plans, or turn session-only conversation into shared policy.
-
 ## Agent skill
 
 `skills/factory/SKILL.md` teaches a coding agent to install the factory
@@ -1819,7 +1713,7 @@ uv run --extra atlas factory codebase
 uv run --extra atlas factory dashboard
 ```
 
-TOMLKit is the only required Python dependency. The
+Ordinary Factory commands still have no required Python dependencies. The
 `atlas` extra pins Graphify 0.9.56; code extraction runs locally, without an LLM,
 network access, checking out historical revisions, or executing repository code.
 
@@ -1873,12 +1767,13 @@ Design and acceptance criteria: [codebase history plan](docs/codebase-history-pl
 
 ## Architecture
 
-`factory/architecture.html` (served by the dashboard at `/atlas`) maps the core
-ticket system and lifecycle alongside the manager, operator, codebase, planning,
-evidence, chat, onboarding, metrics, and learning surfaces. `factory/cli.py`
-defines the command surface; `factory/config.py` layers host and repository
-configuration.
+`factory/architecture.html` (served by the dashboard at `/atlas`) shows
+the system and the ticket lifecycle. Modules map 1:1 to commands:
+`triage.py`, `dispatch.py`, `gate.py`, `stats.py`, `dashboard.py`,
+`onboard.py`, with `config.py` as the single source of every repo-specific
+value.
 
 ## License
 
 MIT
+```

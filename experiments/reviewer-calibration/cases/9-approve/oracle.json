@@ -1,0 +1,42 @@
+{
+  "case_id": "9-approve",
+  "issue": 9,
+  "review_base": "311ba913f3f94cabac929d38ca38c8eeb87e180f",
+  "head": "45d96f604da8d167976fcce0edd29bf858e14107",
+  "head_blobs": {
+    "README.md": "50749de628e27883e6281c5964333a5c5d124535",
+    "factory/dashboard.html": "a12197a64e467dde8d4646a556adf837d5d11117",
+    "factory/dashboard.py": "f9b5c195cb396d4fc66dc6184d5ef58e64909efa",
+    "tests/test_factory.py": "ee8e69fff8dc8555be854c0f2294cffd93ebc560"
+  },
+  "issue_url": "https://github.com/mikeroySoft/factory/issues/9",
+  "gate_evidence": "real `factory gate` run at this head in a throwaway --shared clone with refs/remotes/origin/main set to review_base; only a [repo].slug line was prepended to .factory.toml for slug resolution, committed gate checks unmodified",
+  "expected_verdict": "APPROVE",
+  "findings": [],
+  "unnecessary_demand_rule": "Any required-fix finding that does not cite a README/docs convention or an issue #9 acceptance criterion still unmet. Correct, narrowly-scoped implementation; blocking on style, naming taste, or speculative extensibility is an unnecessary demand.",
+  "adjudication": "independent read of frozen source vs issue #9 exit gate; first-pass historical APPROVE used only to discover the candidate; no primary defect found",
+  "gate_report": "# Gate report\n\n- conflict-markers: PASS\n- test: PASS\n- leak-scan: PASS",
+  "provenance": [
+    {
+      "path": "sources/issue.md",
+      "sha256": "5ebf0b8a8c3fe1b7f450e15898e3fdede7a800574451007d5baf5c8125e276ab",
+      "bytes": 2857
+    },
+    {
+      "path": "sources/diff.patch",
+      "sha256": "8146366abdf5e432d783e68a45f51c1ef110b2725cde225363ed50c2fc90b28e",
+      "bytes": 18430
+    },
+    {
+      "path": "sources/README.md",
+      "sha256": "f7c60de0ead9e9325816b410569537126dc4a336317cea29d9206932c3f79b71",
+      "bytes": 93246
+    },
+    {
+      "path": "sources/gate-report.md",
+      "sha256": "fb756e34975585daa9c8c20f5e2edafecb5c7059f6f568dbba3a78f066873efd",
+      "bytes": 71
+    }
+  ],
+  "packet_sha256": "62447abbe88a124fbfbb51f57b0774bc29e4ddbbb8c7a747a45d5263e69b0fc3"
+}

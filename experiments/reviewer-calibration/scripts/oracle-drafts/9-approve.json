@@ -1,0 +1,5 @@
+{
+  "findings": [],
+  "unnecessary_demand_rule": "Any required-fix finding that does not cite a README/docs convention or an issue #9 acceptance criterion still unmet. Correct, narrowly-scoped implementation; blocking on style, naming taste, or speculative extensibility is an unnecessary demand.",
+  "adjudication": "independent read of frozen source vs issue #9 exit gate; first-pass historical APPROVE used only to discover the candidate; no primary defect found"
+}

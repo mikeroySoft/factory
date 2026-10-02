@@ -97,7 +97,9 @@ def run_gate(base: str, head: str) -> str:
         # Prefer the checkout's own factory module via uv/python -m
         report = dest / "gate-report.md"
         # Use the live factory CLI if present; else python -m from REPO on PYTHONPATH
-        env = {**dict(**{k: v for k, v in __import__("os").environ.items()}), "PYTHONPATH": str(REPO)}
+        # Run the factory module from the detached head itself — never the tip checkout —
+        # so historical tests bind to the code under review.
+        env = {**__import__("os").environ, "PYTHONPATH": str(dest)}
         try:
             proc = subprocess.run(
                 [sys.executable, "-m", "factory", "gate", "--report", str(report)],
@@ -114,8 +116,11 @@ def run_gate(base: str, head: str) -> str:
                 f"gate produced no report (rc={proc.returncode})\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
             )
         body = report.read_text()
-        if "PASS" not in body:
-            raise SystemExit(f"gate did not PASS at {head}:\n{body}\nstderr:\n{proc.stderr[-2000:]}")
+        required = ("conflict-markers: PASS", "test: PASS", "leak-scan: PASS")
+        if not all(line in body for line in required):
+            raise SystemExit(
+                f"gate did not fully PASS at {head}:\n{body[:2000]}\nstderr:\n{proc.stderr[-2000:]}"
+            )
         return body if body.startswith("#") else "# Gate report\n\n" + body
 
 

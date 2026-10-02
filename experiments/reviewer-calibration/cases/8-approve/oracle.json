@@ -8,7 +8,7 @@
     "tests/test_factory.py": "7db8ca21fa7e65dd34ebc99889205e430d331bc8"
   },
   "issue_url": "https://github.com/mikeroySoft/factory/issues/8",
-  "gate_evidence": "real `factory gate` run at this head in a throwaway --shared clone with refs/remotes/origin/main set to review_base; only a [repo].slug line was prepended to .factory.toml for slug resolution, committed gate checks unmodified",
+  "gate_evidence": "real `factory gate` run at this head in a throwaway --shared clone with refs/remotes/origin/main set to review_base; factory module loaded from that detached head via PYTHONPATH; only a [repo].slug line was prepended to .factory.toml for slug resolution, committed gate checks unmodified",
   "expected_verdict": "APPROVE",
   "findings": [],
   "unnecessary_demand_rule": "Any required-fix finding that does not cite a README/docs convention or an issue #8 acceptance criterion still unmet. Correct CI/merge-readiness tracking for the opt-in review lane; blocking on alternate state-machine shapes or naming taste is an unnecessary demand.",

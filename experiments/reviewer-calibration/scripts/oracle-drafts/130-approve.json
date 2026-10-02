@@ -1,5 +1,0 @@
-{
-  "findings": [],
-  "unnecessary_demand_rule": "Any required-fix finding that does not cite a README/docs convention or an issue #130 acceptance criterion still unmet. This head is a correct, narrowly-scoped fix (idle manage scopes must not write lifecycle rows for parked tickets). Demanding broader journal refactors, extra metrics, or style-only renames is an unnecessary demand.",
-  "adjudication": "independent read of frozen source vs issue #130 exit gate; first-pass historical APPROVE used only to discover the candidate; no primary defect found in the diff against the idle-pass obligation"
-}

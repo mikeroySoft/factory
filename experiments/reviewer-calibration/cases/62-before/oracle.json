@@ -14,7 +14,7 @@
     "tests/test_factory.py": "ddfcb2494ae1a06fbbeac086dd97daa87a8074f7"
   },
   "issue_url": "https://github.com/mikeroySoft/factory/issues/62",
-  "gate_evidence": "real `factory gate` run at this head in a throwaway --shared clone with refs/remotes/origin/main set to review_base; only a [repo].slug line was prepended to .factory.toml for slug resolution, committed gate checks unmodified",
+  "gate_evidence": "real `factory gate` run at this head in a throwaway --shared clone with refs/remotes/origin/main set to review_base; factory module loaded from that detached head via PYTHONPATH; only a [repo].slug line was prepended to .factory.toml for slug resolution, committed gate checks unmodified",
   "expected_verdict": "REVISE",
   "findings": [
     {

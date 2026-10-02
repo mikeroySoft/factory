@@ -204,7 +204,7 @@ across **5** tickets, without moving any case out of lockbox.
 
 | Split | Cases | Notes |
 |---|---|---|
-| `train` | `12-before`, `12-after`, `62-before`, `62-after`, `130-approve`, `8-approve` | Climber-visible. Adds multi-file #62 defect/fixed pair + two correct-but-narrow APPROVE heads chosen to provoke over-strictness. |
+| `train` | `12-before`, `12-after`, `62-before`, `62-after`, `9-approve`, `8-approve` | Climber-visible. Adds multi-file #62 defect/fixed pair + two correct-but-narrow APPROVE heads chosen to provoke over-strictness. |
 | `lockbox` | `20-before`, `20-after`, `79-before`, `79-after`, `87-approve` | Sealed. Prior #20 membership retained; adds multi-file #79 defect/fixed pair + one sealed APPROVE. |
 
 New case oracles (independent source reads; historical REVISE/APPROVE used only to *discover* candidates):
@@ -215,7 +215,7 @@ New case oracles (independent source reads; historical REVISE/APPROVE used only 
 | `62-after` | #62 | `68b5d164…` | PASS (real) | APPROVE — D1/D2 fixed in `6d9e4d2` / merge head |
 | `79-before` | #79 | `7bd58052…` | PASS (real) | REVISE — D1 REST reviews read missing `updated_at` (should use GraphQL `updatedAt`) |
 | `79-after` | #79 | `e20ebcd5…` | PASS (real) | APPROVE — GraphQL `REVIEW_QUERY` + `updatedAt` |
-| `130-approve` | #130 | `f46b7676…` | PASS (real) | APPROVE — idle manage/landing scopes must not journal uneventful lifecycle rows |
+| `9-approve` | #9 | `f46b7676…` | PASS (real) | APPROVE — external PR review-queue visibility in the dashboard |
 | `8-approve` | #8 | `b1defa4c…` | PASS (real) | APPROVE — fail-closed CI/merge readiness for opt-in review lane |
 | `87-approve` | #87 | `19bd4681…` | PASS (real) | APPROVE — evidence reader build/schema identity |
 
@@ -232,7 +232,7 @@ re-run `run_calibration.py` (and optionally `run_tools.py`) against the grown co
 ## Promotion contract (#126)
 
 This harness is Pilot 1 of the [eval promotion contract](../../docs/eval-promotion-contract.md).
-Split membership is frozen in [`splits.json`](splits.json) **v2** (train: #12+#62+#130+#8;
+Split membership is frozen in [`splits.json`](splits.json) **v2** (train: #12+#62+#9+#8;
 lockbox: #20+#79+#87 — prior lockbox #20 retained). `python score.py runs/main/adjudication.json`
 reports `missed_blocking` and `unnecessary_revise` separately per arm and split with repeat
 noise. Current scored baseline (`runs/main`, 2 repeats, **original four cases only**): both
