@@ -32,10 +32,13 @@ published scores come from the lockbox or fresh tickets only.
 One attributable change per round (`change.kind` ∈ prompt, skill, rubric,
 model, effort — no harness rewrites). Score train (+ optional selection).
 
-- **Keep** only if the train gain exceeds noise **and** the lockbox/fresh
-  mean rises (delta > 0). "Does not regress" means exactly this.
-- **Revert** train-flat, or train↑ with lockbox flat (delta = 0) or down —
-  a train-only win, even when the drop is inside noise.
+- **Keep** only if the train gain exceeds train noise **and** the
+  lockbox/fresh mean rises (delta > 0). Held-out keep does **not** require
+  beating lockbox/fresh noise: a lockbox bump smaller than lockbox noise
+  still keeps today. "Does not regress" means exactly this (train beat
+  noise; held-out mean up).
+- **Revert** train-flat / train within noise, or train↑ with lockbox flat
+  (delta = 0) or down — a train-only win, even when the drop is inside noise.
 - On stall, bucket root cause (ambiguous task / bad grader / harness / real
   miss) before another round.
 
@@ -65,7 +68,8 @@ factory learn --promotion claim.json [--dry-run]
 `claim.json`:
 
 ```json
-{"stage": "review", "change": {"kind": "model", "detail": "sonnet-5.5"},
+{"contract_version": 1, "stage": "review",
+ "change": {"kind": "model", "detail": "sonnet-5.5"},
  "baseline": "reviewer@cadb998", "candidate": "reviewer@cadb998+sonnet-5.5",
  "splits": {"train":   {"baseline": [0.5, 0.5], "candidate": [0.75, 0.75]},
             "lockbox": {"baseline": [0.5, 0.5], "candidate": [0.5, 0.5]}}}
@@ -73,7 +77,7 @@ factory learn --promotion claim.json [--dry-run]
 
 Prints `keep`/`revert` with the reason and appends a `promotion` event to
 `.factory/events.jsonl` recording split membership scores, disposition, and
-baseline/candidate identity. Invalid claims (unknown change kind, missing
+baseline/candidate identity. Invalid claims (missing or unknown `contract_version`, unknown change kind, missing
 held-out split, fewer than 2 repeats) are rejected. Logic: `factory/promotion.py`.
 
 ## Pilots

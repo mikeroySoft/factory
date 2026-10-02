@@ -2,8 +2,10 @@
 
 A claim compares one attributable change (candidate) to a baseline with repeated
 scores per split. Keep only if train improves beyond grader noise and the
-lockbox (or fresh production) mean also rises; flat or down reverts. Higher score
-is better. The deterministic gate is untouched: this only judges eval claims.
+lockbox (or fresh production) mean also rises (delta > 0); held-out keep does
+not require beating lockbox/fresh noise. Flat or down reverts. Higher score
+is better. Claims must set contract_version to 1. The deterministic gate is
+untouched: this only judges eval claims.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from statistics import mean, pstdev
 SPLITS = ("train", "selection", "lockbox", "fresh")
 CHANGE_KINDS = ("prompt", "skill", "rubric", "model", "effort")
 MIN_REPEATS = 2
+CONTRACT_VERSION = 1
 
 
 def noise(scores: list[float]) -> float:
@@ -22,6 +25,11 @@ def noise(scores: list[float]) -> float:
 
 def decide(claim: dict) -> tuple[str, str]:
     """(`keep` | `revert`, reason) for a promotion claim; ValueError if the claim breaks the contract."""
+    version = claim.get("contract_version")
+    if version is None:
+        raise ValueError("claim needs contract_version")
+    if version != CONTRACT_VERSION:
+        raise ValueError(f"unknown contract_version {version!r}; supported: {CONTRACT_VERSION}")
     change = claim.get("change") or {}
     if change.get("kind") not in CHANGE_KINDS:
         raise ValueError(f"change.kind must be one of {CHANGE_KINDS}")
