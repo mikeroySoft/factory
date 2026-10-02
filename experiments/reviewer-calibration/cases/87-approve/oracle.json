@@ -1,0 +1,40 @@
+{
+  "case_id": "87-approve",
+  "issue": 87,
+  "review_base": "76a1a7af74a951aa48740912e4610ea11c08efec",
+  "head": "19bd468162f7c872a4939a51f3b4e572c77d21ac",
+  "head_blobs": {
+    "factory/evidence.py": "ca9b427321dfc78b5a72821a87b2357bd4da11e3",
+    "tests/test_evidence.py": "af28ad86348c6ec0843453cfe6599c5dc9f38555"
+  },
+  "issue_url": "https://github.com/mikeroySoft/factory/issues/87",
+  "gate_evidence": "real `factory gate` run at this head in a throwaway --shared clone with refs/remotes/origin/main set to review_base; factory module loaded from that detached head via PYTHONPATH; only a [repo].slug line was prepended to .factory.toml for slug resolution, committed gate checks unmodified",
+  "expected_verdict": "APPROVE",
+  "findings": [],
+  "unnecessary_demand_rule": "Any required-fix finding that does not cite a README/docs convention or an issue #87 acceptance criterion still unmet. Correct implementation of reader build/schema identity; blocking on presentation preference, extra fields beyond the exit gate, or speculative extensibility is an unnecessary demand.",
+  "adjudication": "independent read of frozen source vs issue #87 exit gate; first-pass historical APPROVE used only to discover the candidate; no primary defect found against the identity/provenance obligations",
+  "gate_report": "# Gate report\n\n- conflict-markers: PASS\n- test: PASS\n- leak-scan: PASS",
+  "provenance": [
+    {
+      "path": "sources/issue.md",
+      "sha256": "59b709146078a45949583093b82dca2e69e5a488bdeda24498fcc23bdc7645c5",
+      "bytes": 3030
+    },
+    {
+      "path": "sources/diff.patch",
+      "sha256": "c7f206414e920be76db1d234d23bedfd898485dea60f2420e9339adb5d247db7",
+      "bytes": 5883
+    },
+    {
+      "path": "sources/README.md",
+      "sha256": "ce96cf71a93091d1735658e65004fbd438ee55248217d22725dc0799b4210e7c",
+      "bytes": 94944
+    },
+    {
+      "path": "sources/gate-report.md",
+      "sha256": "fb756e34975585daa9c8c20f5e2edafecb5c7059f6f568dbba3a78f066873efd",
+      "bytes": 71
+    }
+  ],
+  "packet_sha256": "8b2f71b0c8909dfc260529a8b6f81a757aa8aeb887861ce56ada61e29b71e166"
+}

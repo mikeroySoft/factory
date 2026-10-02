@@ -20,6 +20,7 @@ reviewer mutated its clone.
 
 usage: run_tools.py <out-dir> <samples> [contract ...]
 """
+import json
 import concurrent.futures as cf
 import hashlib, json, pathlib, shutil, subprocess, sys, tempfile, time
 
@@ -30,7 +31,17 @@ REPO = "/home/mike/dev/mikeroysoft/factory"
 CONTRACTS = {"baseline": "cadb9981524ab5506693e27f56ff8ac4ef911da6",
              "landed": "29d21d625bd92b9f3aa6d8ac0c8da1386233f284"}
 CHECKOUT_ROOT = pathlib.Path("/tmp/cal-checkout")
-CASES = ["12-before", "20-before"]                 # the defect-bearing heads
+def _defect_cases() -> list[str]:
+    """Heads whose oracle expects REVISE (primary defects)."""
+    cases = []
+    for case_dir in sorted((EXP / "cases").iterdir()):
+        oracle = json.loads((case_dir / "oracle.json").read_text())
+        if oracle.get("expected_verdict") == "REVISE":
+            cases.append(case_dir.name)
+    return cases
+
+
+CASES = _defect_cases()  # defect-bearing heads only
 MODEL = "anthropic/claude-fable-5-1"               # the repo's configured reviewer model
 TIMEOUT = 900
 

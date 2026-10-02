@@ -1,0 +1,71 @@
+{
+  "case_id": "62-before",
+  "issue": 62,
+  "review_base": "f6dfc77bb61437773d87cf06df8df7d78844f837",
+  "head": "cfbdb6f9be738076d32b6085f9d38e9cb8ed9383",
+  "head_blobs": {
+    "README.md": "9418f4d4878fce38e815b2d71ac4138231daba23",
+    "factory/config.py": "807ffd914848574d57b563525d851bd901507623",
+    "factory/dispatch.py": "1b09b5abe26213940732bfad4cf03e2f5786fdd1",
+    "factory/learn.py": "28d42fcb7c5b71a98d453e45c7566271dafc6309",
+    "factory/manage.py": "d03b4d80c129c321af13f66fc076c7467e72e1d4",
+    "factory/onboard.py": "062df970b1efc01e1861afcb54be6f82db8a98a0",
+    "factory/templates/factory.toml": "fd99cdf7563fdd318eed2bfbeb144eedc4c3d489",
+    "tests/test_factory.py": "ddfcb2494ae1a06fbbeac086dd97daa87a8074f7"
+  },
+  "issue_url": "https://github.com/mikeroySoft/factory/issues/62",
+  "gate_evidence": "real `factory gate` run at this head in a throwaway --shared clone with refs/remotes/origin/main set to review_base; factory module loaded from that detached head via PYTHONPATH; only a [repo].slug line was prepended to .factory.toml for slug resolution, committed gate checks unmodified",
+  "expected_verdict": "REVISE",
+  "findings": [
+    {
+      "id": "D1",
+      "severity": "primary",
+      "obligation": "issue #62 Scope/Exit: document that workers and manager treat {prompt} differently (path vs inline) without dropping the shipped ci-fix/conflict profile guidance that README describes as opt-in worker instructions",
+      "defect": "The template replaces the ci-fix and conflict profile command strings that embedded flake-evidence / no-semantic-change instructions with plain `@{prompt}`. The when-rule is only shown to the manager/dashboard and never reaches the worker prompt, so after this change the two opt-in profiles are functionally identical to default on the ROUTE path: the profile-specific guidance is gone. Not required by #62's scope (document `{prompt}` = file for workers and manager).",
+      "evidence": [
+        "factory/templates/factory.toml: ci-fix command reduced to `@{prompt}`",
+        "factory/templates/factory.toml: conflict command reduced to `@{prompt}`",
+        "README.md documents ci-fix/conflict profile intent; when-rules do not enter the worker prompt"
+      ],
+      "rationale": "Unrequested template edit removes guidance the ticket did not ask to change. Corroboration (not oracle): follow-up commit 6d9e4d2 restores the long command strings and is titled to preserve worker guidance."
+    },
+    {
+      "id": "D2",
+      "severity": "primary",
+      "obligation": "issue #62: manager_failed escalate events exist so stats can count manager failures separately \u2014 not as a second human escalation",
+      "defect": "`manage.py` records `escalate` with `reason=\"manager_failed\"` on nonzero manager exit, and `dispatch.py` excludes that reason from round numbering, but `stats.human_touch` still counts every `event==\"escalate\"` toward `escalation_count`. One real escalation plus one manager failure reports as two escalations in `factory stats` and the dashboard KPI.",
+      "evidence": [
+        "factory/stats.py: escalated = [e[\"at\"] for e in audit if e.get(\"event\") == \"escalate\"] with no reason filter",
+        "factory/manage.py records escalate reason=manager_failed",
+        "factory/dispatch.py excludes manager_failed from round arithmetic but stats does not"
+      ],
+      "rationale": "Same cross-file composition the historical review found; fixed in 6d9e4d2 by filtering manager_failed out of escalation_count and adding a separate manager_failures counter."
+    }
+  ],
+  "unnecessary_demand_rule": "Any finding beyond D1/D2 that does not cite a README/docs convention or an issue #62 acceptance criterion \u2014 style-only renames, extracting the duplicated omp/@{prompt} guard, CHANGELOG presence, or gate-covered build/test/scan status.",
+  "adjudication": "independent read of the frozen source by the calibration owner; historical model verdicts were used only to discover candidates, never as truth",
+  "gate_report": "# Gate report\n\n- conflict-markers: PASS\n- test: PASS\n- leak-scan: PASS",
+  "provenance": [
+    {
+      "path": "sources/issue.md",
+      "sha256": "656bcc88307e2214e99a0fc7ff291a5493b10839f5cf2eb06aff70b4c36da682",
+      "bytes": 9109
+    },
+    {
+      "path": "sources/diff.patch",
+      "sha256": "6b3832c5294872223fe71b54f122e9c69b7358f7882e0fa62aab9cfb37e191fc",
+      "bytes": 21758
+    },
+    {
+      "path": "sources/README.md",
+      "sha256": "ec67d820093b3ffa33e6bd11c709b610c9feabd7f2524363d8e22500dc8c9a83",
+      "bytes": 75212
+    },
+    {
+      "path": "sources/gate-report.md",
+      "sha256": "fb756e34975585daa9c8c20f5e2edafecb5c7059f6f568dbba3a78f066873efd",
+      "bytes": 71
+    }
+  ],
+  "packet_sha256": "8cdbe4838f51b9bf51d6bd5dfea87a67a1b19b33cab50e38b9fdd61d9072af56"
+}

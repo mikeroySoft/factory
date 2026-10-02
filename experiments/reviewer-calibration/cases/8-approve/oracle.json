@@ -1,0 +1,40 @@
+{
+  "case_id": "8-approve",
+  "issue": 8,
+  "review_base": "2f5e7ac524a6b415596d52531de9aacdaf104f0f",
+  "head": "b1defa4c82ef61a95d5103dd556b4019cb1b643b",
+  "head_blobs": {
+    "factory/dispatch.py": "68f2df2696a9e98e576e0e0a44fa7ef2a91f606c",
+    "tests/test_factory.py": "7db8ca21fa7e65dd34ebc99889205e430d331bc8"
+  },
+  "issue_url": "https://github.com/mikeroySoft/factory/issues/8",
+  "gate_evidence": "real `factory gate` run at this head in a throwaway --shared clone with refs/remotes/origin/main set to review_base; factory module loaded from that detached head via PYTHONPATH; only a [repo].slug line was prepended to .factory.toml for slug resolution, committed gate checks unmodified",
+  "expected_verdict": "APPROVE",
+  "findings": [],
+  "unnecessary_demand_rule": "Any required-fix finding that does not cite a README/docs convention or an issue #8 acceptance criterion still unmet. Correct CI/merge-readiness tracking for the opt-in review lane; blocking on alternate state-machine shapes or naming taste is an unnecessary demand.",
+  "adjudication": "independent read of frozen source vs issue #8 exit gate; first-pass historical APPROVE used only to discover the candidate; no primary defect found against fail-closed readiness obligations",
+  "gate_report": "# Gate report\n\n- conflict-markers: PASS\n- test: PASS\n- leak-scan: PASS",
+  "provenance": [
+    {
+      "path": "sources/issue.md",
+      "sha256": "4360f1f5129e99f7f95dd7feebc1a13acc9416d7a829a013ddb7b9d24fdebb65",
+      "bytes": 2725
+    },
+    {
+      "path": "sources/diff.patch",
+      "sha256": "78602c0dd91d887cdda65e232899c6707edd2e33ce28e8abfc17d04232a8669b",
+      "bytes": 8083
+    },
+    {
+      "path": "sources/README.md",
+      "sha256": "20110523f1e7a2d2bb98eb8b0c36d58eedce90435c363d6d9fef5563c7b5adf6",
+      "bytes": 92178
+    },
+    {
+      "path": "sources/gate-report.md",
+      "sha256": "fb756e34975585daa9c8c20f5e2edafecb5c7059f6f568dbba3a78f066873efd",
+      "bytes": 71
+    }
+  ],
+  "packet_sha256": "6f6615883e99fc00a737cf3d16cc110042236381358214c12091fcc9c29f7245"
+}

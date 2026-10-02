@@ -1,0 +1,60 @@
+{
+  "case_id": "79-before",
+  "issue": 79,
+  "review_base": "8fba9c5e33a7b0122683334e424183af5ff1b5fd",
+  "head": "7bd58052e6014c69364959b1f8ea218922ea8a04",
+  "head_blobs": {
+    "CHANGELOG.md": "58b0b311bce1c32076db5fbf5a7b67cbe9341ab4",
+    "README.md": "0f652a5cea6935dc4fc6454b058b8ed16efd9654",
+    "factory/briefing.py": "2be11eb206cbe4dc4958d1efbf53ee6031fe361f",
+    "factory/dashboard.html": "90b538ff5cc6d0461afd782343f28a8ab0139179",
+    "factory/dashboard.py": "788e0efd5bf66ae14b0c81b6cfdd3610bf30e823",
+    "factory/feedback.py": "31029fec98a9e8e193e3473703076744244e161b",
+    "tests/test_briefing.py": "7c85fbbbaee2c17a23441e55d1b385993c69737c",
+    "tests/test_factory.py": "ce2b896d93141153abbfa4c6d5a3dd910c397b8f",
+    "tests/test_feedback.py": "b5240e96235bd7e5a499235afa3760e83a42b8e7"
+  },
+  "issue_url": "https://github.com/mikeroySoft/factory/issues/79",
+  "gate_evidence": "real `factory gate` run at this head in a throwaway --shared clone with refs/remotes/origin/main set to review_base; factory module loaded from that detached head via PYTHONPATH; only a [repo].slug line was prepended to .factory.toml for slug resolution, committed gate checks unmodified",
+  "expected_verdict": "REVISE",
+  "findings": [
+    {
+      "id": "D1",
+      "severity": "primary",
+      "obligation": "issue #79 Exit gate / schema-1: feedback items must use real provider IDs/links and the actual provider UTC update time when the provider supports it",
+      "defect": "Reviews are read via REST `GET /pulls/{n}/reviews`, and the item builder takes `updated=row.get('updated_at')`. The REST review object has no `updated_at` (it has `submitted_at`). Every review therefore gets `source_updated_at: null`, and any truncated review body raises `change_detection_incomplete` even though GraphQL exposes `PullRequestReview.updatedAt`.",
+      "evidence": [
+        "factory/feedback.py: REST `/pulls/{number}/reviews` page loop",
+        "factory/feedback.py: item(..., updated=row.get('updated_at'), ...) on review rows",
+        "GitHub REST Pull Request Review schema: submitted_at, not updated_at"
+      ],
+      "rationale": "Criterion requires actual provider update time when supported. Corroboration (not oracle): commit 9127f40 switches reviews to GraphQL and reads `updatedAt`."
+    }
+  ],
+  "unnecessary_demand_rule": "Any finding beyond D1 that does not cite a README/docs convention or an issue #79 acceptance criterion \u2014 wording nits on 'Legacy local gate', private `_lifecycle` import judgement, or gate-covered build/test/scan status.",
+  "adjudication": "independent read of the frozen source by the calibration owner; historical model verdicts were used only to discover candidates, never as truth",
+  "gate_report": "# Gate report\n\n- conflict-markers: PASS\n- test: PASS\n- leak-scan: PASS",
+  "provenance": [
+    {
+      "path": "sources/issue.md",
+      "sha256": "7289240a6dfda8b1ee69ff2775975f3bd490a090913187eb37cee1f9a57ecad8",
+      "bytes": 28444
+    },
+    {
+      "path": "sources/diff.patch",
+      "sha256": "e7e995a5aef2397f5fccd533cca88f187fa090bed24da292729d409d27f075c0",
+      "bytes": 89316
+    },
+    {
+      "path": "sources/README.md",
+      "sha256": "f18c119e6b1c687ee96bb0bea27d273013ec302c35bd540b46282786fc787ac9",
+      "bytes": 90161
+    },
+    {
+      "path": "sources/gate-report.md",
+      "sha256": "fb756e34975585daa9c8c20f5e2edafecb5c7059f6f568dbba3a78f066873efd",
+      "bytes": 71
+    }
+  ],
+  "packet_sha256": "769104db951c2d13b3b91a7131c94a9f15b744e8b3d42007a392e02d81355df2"
+}

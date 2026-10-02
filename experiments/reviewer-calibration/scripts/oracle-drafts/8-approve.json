@@ -1,0 +1,5 @@
+{
+  "findings": [],
+  "unnecessary_demand_rule": "Any required-fix finding that does not cite a README/docs convention or an issue #8 acceptance criterion still unmet. Correct CI/merge-readiness tracking for the opt-in review lane; blocking on alternate state-machine shapes or naming taste is an unnecessary demand.",
+  "adjudication": "independent read of frozen source vs issue #8 exit gate; first-pass historical APPROVE used only to discover the candidate; no primary defect found against fail-closed readiness obligations"
+}
