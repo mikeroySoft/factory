@@ -2,26 +2,23 @@
 
 | Criterion | Evidence | Status |
 |---|---|---|
-| `[manager]` keys `command`, `rounds`, `review` registered in `KNOWN_KEYS` | `factory/config.py:60` | ✓ |
-| `Config` fields with defaults (`rounds = 1`, `review = "escalated"`, command unset = disabled) | `factory/config.py:104-106` | ✓ |
-| Loader reads all three; rejects `review` outside `{"escalated","all"}` | `factory/config.py:287-291` | ✓ |
-| Argv normalized (list or shell string), never executed; `--model` fallback preserved | `factory/config.py:224-252`; `tests/test_briefing.py:116-124` | ✓ |
-| `factory doctor` prints `manager:` row only when configured | `factory/onboard.py:226-227`; `tests/test_factory.py:294-302` | ✓ |
-| Unknown keys under `[manager]` reported as drift | `tests/test_factory.py:252,263` (relies on existing `unknown_keys` + `KNOWN_KEYS` tuple) | ✓ |
-| `dashboard --json` `config` includes the table | `factory/dashboard.py:840-844` | ✓ |
-| `templates/factory.toml` documents command/rounds/review with `{prompt}`/`{cwd}` semantics | `factory/templates/factory.toml:43-48` | ✓ |
-| Loader test for all three keys in `tests/test_factory.py` | `tests/test_factory.py:112-115,137-138` | ✓ |
-| Host-layer table (`HOST_TABLES`) | Not touched in diff. `[defaults.manager]` already documented as host-wide in README ("host-wide: `[defaults.manager]`") and `tests/test_factory.py:279-281` loads `command` from `[defaults.manager]` successfully under the passing gate → `manager` already in `HOST_TABLES` at base. `[INFERENCE]` from test behavior; no diff change needed. | ✓ |
-| Out of scope: running the command | No execution path added; `manager_settings` docstring and `test_briefing.py:116-120` marker test assert non-execution | ✓ |
+| `[manager]` keys `command`, `rounds`, `review` registered | `factory/config.py:60` (`KNOWN_KEYS["manager"]`) | OK |
+| `command` unset = disabled; `rounds` default 1; `review` default `"escalated"` | `factory/config.py:104-106` | OK |
+| `"all"` allowed, other values rejected | `factory/config.py:290-291` | OK |
+| Loader populates all three | `factory/config.py:287-289` | OK |
+| `factory doctor` prints `manager:` row only when configured | `factory/onboard.py:226-227` | OK |
+| `dashboard --json` `config.manager` | `factory/dashboard.py:840-844` | OK |
+| `templates/factory.toml` documents keys, `{prompt}`/`{cwd}` | `factory/templates/factory.toml:43-48` | OK |
+| Unknown keys under `[manager]` reported as drift | `tests/test_factory.py:252`, `:263` | OK |
+| Loader test for all three keys | `tests/test_factory.py:112-115`, `:137-138` | OK |
+| Doctor row present/absent test | `tests/test_factory.py:293-301` | OK |
+| Host-layer (`[defaults.manager]`) loading | `tests/test_factory.py:279-282` exercises it; `HOST_TABLES` not in diff — `[INFERENCE]` already contained `manager` on base since `KNOWN_KEYS["manager"]` pre-existed and README documents `[defaults.manager]` | OK |
+| Out of scope: running the command | `manager_settings` only parses/normalizes (`factory/config.py:224-252`); regression `tests/test_briefing.py:116-124` | OK |
+
+Non-blocking observation (not an acceptance criterion): `factory/config.py:288` — `int(manager.get("rounds", ...))` raises `ValueError`, not `ConfigError`, on a non-numeric `rounds`. Matches the existing pattern for `gate.timeout` / `dashboard.port` (`:292`, `:305`), so consistent with repo convention.
 
 ## Standards
 
-No AGENTS.md/CONTRIBUTING.md at this head. README conventions: `config.py` remains single source of config values; template documents keys; `--model` read-only behavior for briefings preserved (`factory/config.py:239-240`, template `factory/templates/factory.toml:40-41`).
-
-## Notes (non-blocking)
-
-- `factory/config.py:288` — `int(manager.get("rounds", …))` raises `ValueError` rather than `ConfigError` on a non-integer `rounds`. Identical to existing `check_timeout`/`dashboard_port` handling (`factory/config.py:292,305`); consistent with repo pattern, not an acceptance criterion.
-
-No findings that fail the exit gate or documented conventions.
+No AGENTS.md/CONTRIBUTING.md at this head. README conventions followed: `config.py` remains the single source of config values; dashboard `config` rendering matches the existing `reviewer`/`workers` string-join style (`factory/dashboard.py:838-841`); template comments preserve the "dashboard never executes manager.command" contract (`factory/templates/factory.toml:39-45`).
 
 VERDICT: APPROVE

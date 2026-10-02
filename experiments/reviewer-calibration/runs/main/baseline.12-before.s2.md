@@ -2,24 +2,25 @@
 
 | Criterion | Evidence | Status |
 |---|---|---|
-| Three keys registered in `KNOWN_KEYS` | `factory/config.py:60` adds `rounds`, `review` to existing `("model", "command")` | OK |
-| `Config` + loader for `command` / `rounds=1` / `review="escalated"` | `factory/config.py:104-106` (fields, defaults), `factory/config.py:285-288` (loader) | OK |
-| `factory doctor` prints `manager:` row only when configured | `factory/onboard.py:226-227` guarded by `if cfg.manager:` | OK |
-| Unknown `[manager]` keys reported as drift | `tests/test_factory.py:252`, `:263` (`manager.unknown` in `.factory.toml keys` detail) — relies on existing `KNOWN_KEYS` drift path, no new code needed | OK |
-| `dashboard --json` `config` includes table | `factory/dashboard.py:840-844` | OK |
-| `templates/factory.toml` documents it | `factory/templates/factory.toml:43-48` (`{prompt}`/`{cwd}` semantics, defaults, `"all"` meaning) | OK |
-| Loader test for all three keys | `tests/test_factory.py:112-115` input, `:137-138` assertions | OK |
-| Doctor row present/absent test | `tests/test_factory.py:276-284` | OK |
-| `HOST_TABLES` registration | Not in diff. `[manager]` already existed with `model` and README documents `[defaults.manager]` as host-wide, so `[INFERENCE]` it is already a host table; no diff evidence either way | Not citeable |
-| Out of scope: running the command | No execution path added | OK |
+| `command` argv template, unset = disabled | `factory/config.py:104` (`manager: list[str] \| None = None`), `factory/config.py:285-286` | Met |
+| `rounds = 1` default | `factory/config.py:105`, `factory/config.py:287` | Met |
+| `review = "escalated"` default | `factory/config.py:106`, `factory/config.py:288` | Met |
+| `KNOWN_KEYS` registration | `factory/config.py:60` adds `rounds`, `review` | Met |
+| Doctor `manager:` row only when configured | `factory/onboard.py:226-227`; test `tests/test_factory.py:276-284` | Met |
+| Unknown `[manager]` keys reported as drift | test `tests/test_factory.py:252`, `tests/test_factory.py:263` | Met |
+| `dashboard --json` `config.manager` | `factory/dashboard.py:840-844` | Met |
+| Template documents all three keys | `factory/templates/factory.toml:43-48` | Met |
+| Loader test for all three keys | `tests/test_factory.py:112-115`, `tests/test_factory.py:137-138` | Met |
+| Out of scope: running the command | No execution path added | Met |
+
+Non-blocking observations:
+
+- `factory/config.py:288` — `manager_review` accepts any string; issue says `"escalated"` default, `"all"` allowed. No validation or drift report for other values (e.g. `review = "al"`). Not in the exit gate; not a REVISE trigger.
+- `HOST_TABLES` is named in the issue's Touches but the diff does not modify it. `KNOWN_KEYS` already had a `manager` entry at base (`factory/config.py:60` context line) and README documents `[defaults.manager]` as host-wide, so `[INFERENCE]` `manager` is already in `HOST_TABLES` at `origin/main`. Cannot confirm from the diff alone.
 
 ## Standards (README)
 
-- Loader pattern matches `[review]` handling (`factory/config.py:283-286`): `"command" in table` → `list(...)`; scalar keys via `.get(..., default)` with `int()` coercion like `gate.timeout`. Consistent.
-- Doctor row format `manager: <argv0>` mirrors `reviewer:` (`factory/onboard.py:225-227`).
-
-## Non-blocking
-
-- `factory/config.py:288`: `review` accepts any string; issue names only `"escalated"`/`"all"`. Exit gate does not require value validation and drift covers keys not values, so not a REVISE criterion. Noting only.
+- Loader follows the existing `review.command` pattern (`factory/config.py:283-286`), dashboard snapshot mirrors `reviewer` serialization (`factory/dashboard.py:839-844`), doctor mirrors the reviewer row (`factory/onboard.py:225-227`). No second convention introduced.
+- No AGENTS.md/CONTRIBUTING.md at this head; nothing further to check.
 
 VERDICT: APPROVE

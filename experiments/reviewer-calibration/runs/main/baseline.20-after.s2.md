@@ -1,31 +1,23 @@
-# Review: #20 — when-rules, FIX, ci-fix/conflict profiles
+## Spec (issue #20)
 
-## Spec
+- `when` on `[workers.<label>]`, table-or-array coexistence, validation: `factory/config.py:288-298`. Array form still loads (`tests/test_factory.py:148-157` mixes `default = [...]` with `[workers.chore]` table; `tests/test_factory.py:687` uses array `chore = ["false"]` beside a table `ci-fix`).
+- Prompt lists routable labels with their `when`: `factory/manage.py:199-201`; reserved labels excluded via `RESERVED_LABELS` (`factory/manage.py:33`).
+- ROUTE/FIX accept only listed labels: `parse` now receives the filtered map (`factory/manage.py:213`); FIX validation at `factory/manage.py:63-69`. Exit gate "ROUTE chore without a chore worker is rejected and recorded" covered at `tests/test_factory.py:670-676` (decision `HUMAN` in `manage` event, no `issue edit`); with a worker, `--add-label chore` at `tests/test_factory.py:674-675`.
+- FIX on red CI runs the selected worker argv in the kept `agent/<n>` worktree, re-gates, pushes only on gate PASS, re-reviews, approves only on fresh APPROVE, never requeues: `factory/manage.py:104-131`; covered across gate-fail / REVISE / APPROVE / rebase cases at `tests/test_factory.py:678-736`.
+- `ci-fix` and `conflict` profiles in `factory/templates/factory.toml:41-47`, as opt-in commented blocks with host-config placement instructions (`factory/templates/factory.toml:36-39`). Consistent with the issue's "remain host-config, human-applied" clause and README `README.md:100-101`.
+- Dashboard exposes `worker_when`: `factory/dashboard.py:847`.
+- README updated for the new decision and worker table form: `README.md:88-101`.
 
-| Criterion | Evidence | Status |
-|---|---|---|
-| `[workers.<label>]` table with optional `when` | `factory/config.py:289-298` parses dict-or-array entries, validates argv and `when` type, stores `worker_when` | met |
-| Array-form `[workers]` still loads | `factory/config.py:290` (`entry` used as argv when not a dict); `tests/test_factory.py:147-158` covers coexisting forms | met |
-| Manager prompt lists labels with `when` | `factory/manage.py:199-201` emits `- <label>: <when or "(no when rule)">` for non-reserved workers | met |
-| ROUTE/FIX only for listed labels | `factory/manage.py:63-69` (FIX rejects non-str, unlisted, reserved); ROUTE at `:54`; parse receives the filtered map at `factory/manage.py:213` | met |
-| `ROUTE chore` rejected + recorded without a chore worker; label applied with one | `tests/test_factory.py:652-675` asserts `manage` event decision HUMAN vs ROUTE and `--add-label chore` | met |
-| FIX on red CI runs `ci-fix` argv | `factory/manage.py:104-131`; `tests/test_factory.py:677-731` exercises gate fail / REVISE / APPROVE / rebase cases, checks push only on gate PASS and `factory-approved` only on APPROVE | met |
-| `dashboard.py` touched | `factory/dashboard.py:847` exposes `worker_when` in snapshot | met |
-| Two profiles in `templates/factory.toml` | `factory/templates/factory.toml:41-47` — present but commented out | see note |
+## Standards (README conventions)
 
-**Note (non-blocking):** the issue says "Ship two default profiles"; the diff ships them as commented-out examples with copy instructions (`factory/templates/factory.toml:37-39`). A repo initialized from this template will reject `FIX {"worker":"ci-fix"}` until a human uncomments/copies the block. The issue's own clause "remain host-config, human-applied" and the triage brief ("these remain host-config that humans apply") support the opt-in reading, and the README change at `README.md:99-100` documents it explicitly. Ambiguity resolved in favor of the triage brief; flagging so the author can confirm intent.
+- Manager remains diagnose-only; the FIX branch is executed by code, mirroring existing dispatch primitives (`worker_round`, `review`, `pr_comment`, `approve_pr`, `escalate`) rather than new mechanisms: `factory/manage.py:117-130`.
+- `manage` event recorded before mutation (unchanged ordering at `factory/manage.py:219-221`); failures route to `mechanism_failure` via the existing `except` at `factory/manage.py:222`.
 
-## Standards (README)
+## Non-blocking observations
 
-- README updated for the new decision and worker forms: `README.md:88`, `README.md:93-101`. Consistent with "Configuration" section's claim that the template documents every key.
-- FIX honors documented human veto ("requesting changes on the PR blocks any merge"): `factory/manage.py:109` refuses when `reviewDecision == "CHANGES_REQUESTED"`.
-- Manage event recorded before GitHub mutation, as README states: `factory/manage.py:219` precedes `apply` at `:221`.
-- Worktree/branch invariants (`.factory/wt-<n>` on `agent/<n>`) enforced at `factory/manage.py:106,109-112`.
+- `factory/manage.py:66` re-checks `worker in RESERVED_LABELS` although the caller already filters (`factory/manage.py:199`). Harmless; defends direct `parse(…, cfg.workers)` callers.
+- `factory/manage.py:124,130`: a failed FIX calls `dispatch.escalate`, which (per README §7) writes a new escalation packet; subsequent manager rounds are bounded by `[manager].rounds`, so no unbounded loop. `[INFERENCE]` from README, not visible in diff.
 
-## Observations (no action required)
-
-- `factory/manage.py:54` still subtracts `RESERVED_LABELS` from `workers`, which `manage_pass` already filtered at `:199`. Harmless; `parse` stays safe for direct callers.
-- `factory/templates/factory.toml:39` warns that the `[workers]` layer needs a `default` (enforced at `factory/config.py:286-287`). Uncommenting only `[workers.ci-fix]` in the repo template would fail config load with a clear error; documented, so acceptable.
-- Uncommenting `[workers.conflict]` alongside an active `chore` default: `factory/config.py:288` replaces the whole map, dropping the built-in `chore` argv — pre-existing behavior, unchanged by this diff.
+No findings that fail the acceptance criteria or documented conventions.
 
 VERDICT: APPROVE

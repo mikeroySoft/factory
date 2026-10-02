@@ -1,23 +1,20 @@
-# Review: #12 `[manager]` config table (7cd7a83 vs 6ec3546)
+# Review: issue #12 `[manager]` config table (head 7cd7a83)
 
 ## Spec coverage
 
 | Criterion | Evidence | Status |
 |---|---|---|
-| `command` argv template, unset = disabled | `factory/config.py:104` (`manager: list[str] \| None = None`), `factory/config.py:287` | ✓ |
-| `rounds = 1` default | `factory/config.py:105`, `factory/config.py:288` | ✓ |
-| `review = "escalated"`, `"all"` allowed, others rejected | `factory/config.py:106`, `factory/config.py:289-291` | ✓ |
-| Unknown `[manager]` keys → drift | `factory/config.py:60` (KNOWN_KEYS tuple extended); `tests/test_factory.py:252,263` | ✓ |
-| `doctor` prints `manager:` row only when configured | `factory/onboard.py:226-227`; `tests/test_factory.py:294-302` | ✓ |
-| `dashboard --json` `config` includes table | `factory/dashboard.py:840-844` | ✓ |
-| Template documents all three keys | `factory/templates/factory.toml:43-48` | ✓ |
-| Loader test for all three keys | `tests/test_factory.py:112-115,137-138` | ✓ |
-| Command never executed | `manager_settings` only parses; `tests/test_briefing.py:116-124` | ✓ |
-| Host-layer (`HOST_TABLES`) | Not touched in diff. `[INFERENCE]` `manager` was already in `HOST_TABLES` pre-diff (KNOWN_KEYS already listed it at `factory/config.py:60` old side; README documents `[defaults.manager]`). Host-layer load is exercised by `tests/test_factory.py:279-282` via `host_file('[defaults.manager]…')` and passes on the gate. | ✓ |
+| `command` argv template, unset = disabled | `factory/config.py:104` (`manager: list[str] \| None = None`), `:287` (`cfg.manager, cfg.manager_model = manager_settings(manager)`) | Met |
+| `rounds = 1` default | `factory/config.py:105`, `:288` | Met |
+| `review = "escalated"`, `"all"` allowed, others rejected | `factory/config.py:106`, `:289-291` | Met |
+| `KNOWN_KEYS` extended; unknown keys drift | `factory/config.py:60`; `tests/test_factory.py:252`, `:263` | Met |
+| `factory doctor` prints `manager:` row only when configured | `factory/onboard.py:226-227`; `tests/test_factory.py:294-302` | Met |
+| `dashboard --json` `config` includes table | `factory/dashboard.py:840-844` | Met |
+| `templates/factory.toml` documents it | `factory/templates/factory.toml:43-48` | Met |
+| Loader test for all three keys | `tests/test_factory.py:112-115`, `:137-138` | Met |
+| Do not run the command | `manager_settings` never executes; `tests/test_briefing.py:116-124` retains the no-exec guard | Met |
 
-## Standards
-
-README states `config.py` is "the single source of every repo-specific value" — honored. Dashboard `manager.command` rendering (`" ".join(...)`, `factory/dashboard.py:841`) mirrors existing `reviewer` at `factory/dashboard.py:839`. Doctor row mirrors `reviewer` at `factory/onboard.py:225`. Renaming `manager_model` → `manager_settings` (`factory/config.py:224`) is a clean cutover: the only other caller (`factory/config.py:305` old) is removed and the briefing test migrated. No net-new abstraction introduced.
+`HOST_TABLES`: the diff does not touch it. `manager` was already a known table before this change (`factory/config.py:60` pre-image has `("model", "command")`) and README documents `[defaults.manager]` as host-wide, so it is presumably already registered. `[INFERENCE]` — not verifiable from the diff; the host-layer test at `tests/test_factory.py:279-282` passing on the gate host supports it.
 
 ## Required fixes
 
@@ -25,8 +22,10 @@ None.
 
 ## Optional suggestions
 
-- `factory/config.py:288` — `int(manager.get("rounds", …))` raises `ValueError` (not `ConfigError`) on a non-numeric value, and accepts `0`/negative. This matches the existing `gate.timeout` / `dashboard.port` pattern (`factory/config.py:292,305`), so it is consistent, not a defect; only mention because `review` gets explicit validation two lines below while `rounds` does not.
-- `factory/config.py:233,240` — `command = []` yields `cfg.manager == []`, which doctor/dashboard treat as disabled (falsy). Reasonable; noting so the behavior is intentional rather than accidental.
-- `tests/test_factory.py:298` — `rows = lambda: …  # noqa: E731`; a nested `def` would avoid the noqa. Style only.
+1. `factory/config.py:288` — `int(manager.get("rounds", ...))` accepts negatives and raises `ValueError` (not `ConfigError`) for non-numeric strings. This matches the existing `gate.timeout` pattern at `:292`, so it is consistent with repo convention; mentioning only because `review` at `:289-291` gets explicit validation while `rounds` does not.
+2. `factory/config.py:239` — `command = []` (or `command = ""`) yields `cfg.manager == []`, which is falsy: doctor skips the row (`onboard.py:226`) and dashboard reports `command: null` (`dashboard.py:841`). That matches "unset = disabled" semantics; no action needed unless an empty argv should be rejected.
+3. `factory/config.py:224` — behaviour change: `command` is now parsed/validated even when `model` is set (previously only when `model` was `None`). Correct for this feature (the argv must be retained), and covered by `tests/test_factory.py:279-282`. Note that a previously-tolerated malformed `command` alongside a valid `model` now raises `ConfigError`; the drift report already flags unknown keys, so surfacing bad argv early is the safer choice.
+
+No net-new abstractions introduced; `manager_model` → `manager_settings` is a rename/widening of the existing helper with all callers migrated (`config.py:287`, `tests/test_briefing.py:119-124`).
 
 VERDICT: APPROVE

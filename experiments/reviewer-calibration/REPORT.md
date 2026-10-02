@@ -222,12 +222,7 @@ New case oracles (independent source reads; historical REVISE/APPROVE used only 
 Freeze helper: `scripts/freeze_case.py` (shared throwaway `--shared` clone, real `factory gate`,
 hashed provenance). Human re-adjudication checklist: [`ADJUDICATION-CHECKLIST.md`](ADJUDICATION-CHECKLIST.md).
 
-**Rescoring status.** `runs/main` and `runs/tools` still cover only the original four cases.
-`score.py runs/main/adjudication.json` on splits v2 still reports the prior noise (both arms:
-2 missed-blocking / 0 unnecessary-REVISE per split, noise 0) because adjudication rows for the
-seven new cases do not exist yet. **Next step before any model comparison or promotion claim:**
-re-run `run_calibration.py` (and optionally `run_tools.py`) against the grown corpus and refresh
-`adjudication.json`. No production reviewer-policy change; no auto-promotion.
+**Rescoring status.** On 2026-10-02 `python run_calibration.py runs/main 2` was re-run against all 11 membership cases (2 contracts × 11 cases × 2 samples). One `issue36` / `79-before` sample hit the harness `--max-time 300` deadline with an empty output (`Deadline exceeded`) and was retried once through the same `review()` path (rc 0, 156.9s). `runs/main/results.json` and the per-run markdown now cover all 11 cases, every run rc 0. Literal `VERDICT:` lines versus `expected_verdict`: baseline 15/22, issue36 18/22. `runs/main/adjudication.json` is still the prior hand adjudication of the original four cases only and was not regenerated, so `score.py` noise is **not** this run and defect-level rows for the grown set were not written. `runs/tools` is unchanged. No production reviewer-policy change; no auto-promotion.
 
 ## Promotion contract (#126)
 
@@ -235,9 +230,8 @@ This harness is Pilot 1 of the [eval promotion contract](../../docs/eval-promoti
 Split membership is frozen in [`splits.json`](splits.json) **v2** (train: #12+#62+#9+#8;
 lockbox: #20+#79+#87 — prior lockbox #20 retained). `python score.py runs/main/adjudication.json`
 reports `missed_blocking` and `unnecessary_revise` separately per arm and split with repeat
-noise. Current scored baseline (`runs/main`, 2 repeats, **original four cases only**): both
-arms 2 missed-blocking / 0 unnecessary-REVISE on each split, noise 0. Corpus is now 11 cases;
-**rescoring the grown set is the next step** before any model comparison.
+noise. Hand-adjudicated baseline still in `runs/main/adjudication.json` (2 repeats, **original four cases only**): both
+arms 2 missed-blocking / 0 unnecessary-REVISE on each split, noise 0. That file was not refreshed when `runs/main/results.json` was re-run over all 11 cases, so do not read those noise figures as the grown-corpus run.
 
 ## 7. Comparison readiness
 

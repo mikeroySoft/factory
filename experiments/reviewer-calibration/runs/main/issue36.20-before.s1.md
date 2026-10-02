@@ -1,40 +1,33 @@
 # Review: issue #20 — when-rules, FIX decision, ci-fix/conflict profiles
 
-## Standards
-
-No AGENTS.md / CONTRIBUTING.md at this head; README is the only documented convention source. The diff updates README's manager section (`README.md:88-102`) to match the new `FIX` decision and table-form workers, so docs and behavior stay in sync. No convention violations found.
-
-## Spec (issue #20 + brief)
+## Spec coverage
 
 | Criterion | Evidence | Status |
 |---|---|---|
-| `[workers.<label>]` table with `command` + optional `when` | `factory/config.py:288-298` | Met |
-| Legacy array `[workers]` still loads | `factory/config.py:290` (`entry` non-dict path); `tests/test_factory.py:147-158` | Met |
-| Manager prompt lists labels with `when` | `factory/manage.py:199-201` | Met |
-| ROUTE/FIX only accept listed labels | `factory/manage.py:53-56` (ROUTE), `:63-66` (FIX); `parse` receives reserved-filtered `workers` at `:213` | Met |
-| ROUTE chore without chore worker → rejected and recorded | `parse` falls through to `HUMAN` (`manage.py:72`); `dispatch.record("manage", ...)` at `:219` runs before `apply`; `tests/test_factory.py:652-676` | Met |
-| ROUTE chore with chore worker → label applied | existing ROUTE apply path; asserted at `tests/test_factory.py:673` | Met |
-| FIX on red CI runs `ci-fix` argv | `manage.py:104-131`: `worker_round(n, wt, {data["worker"]}, ...)` selects by the single label; `tests/test_factory.py:678-720` asserts the stub worker ran and `--add-label factory-approved` only on gate PASS + APPROVE | Met |
-| `ci-fix` and `conflict` profiles in `templates/factory.toml` | `factory/templates/factory.toml:31-47` | Met (see optional note 1) |
-| Touches config/manage/dashboard/template | all four touched; `dashboard.py:847` exposes `worker_when` | Met |
-| Out of scope: manager writing host config | Nothing in diff writes config; template comment states it explicitly (`factory.toml:34-35`) | Met |
+| `[workers.<label>]` table with `command` + optional `when`; array form still loads | `factory/config.py:289-298`; `tests/test_factory.py` `test_worker_tables_and_legacy_arrays` | met |
+| Prompt lists labels with `when` | `factory/manage.py:199-201` | met |
+| ROUTE/FIX only for listed labels | `factory/manage.py:54`, `:63-66`, `:213` (parse receives filtered `workers`) | met |
+| ROUTE chore rejected+recorded without worker, label applied with one | `tests/test_factory.py` `test_route_uses_only_listed_worker_labels_and_when_rules` | met |
+| FIX on red CI runs `ci-fix` argv | `factory/manage.py:104-131`; `test_fix_runs_selected_worker_on_red_ci_and_requires_gate_and_review` | met |
+| Two profiles in `templates/factory.toml` | `factory/templates/factory.toml:41-47` (commented, human-applied) | met — consistent with "remain host-config, human-applied" |
+| README updated | `README.md:88-102` | met |
 
 ## Required fixes
 
-None.
+**1. Shipped `conflict` profile cannot succeed through the FIX path.** `factory/templates/factory.toml:45-47` ships a worker whose job is to complete a rebase of `agent/<n>` onto `main`. Two FIX-path lines defeat it:
 
-## Optional suggestions (non-blocking)
+- `factory/manage.py:111-112` — a worktree left mid-rebase (the state README §7 describes as kept "for forensics") has a detached HEAD; `git branch --show-current` prints empty → `ValueError("FIX worktree is not on the ticket branch")` → `mechanism_failure` at `factory/manage.py:224`, round consumed.
+- `factory/manage.py:124` — `git push origin agent/{n}` without `--force-with-lease`. A completed rebase rewrites history relative to the remote `agent/<n>` (remote is pre-rebase by definition: the conflict is why the dispatcher's own rebase→force-push in README §6 never ran). Push is non-fast-forward → `CalledProcessError` → `mechanism_failure` after the worker's full budget is spent.
 
-1. **Profiles shipped commented out** — `factory/templates/factory.toml:41-47`. The issue says "ship two default profiles" while also saying "remain host-config, human-applied"; the commented-out form satisfies the second clause and avoids creating labels `factory init` doesn't know about. Consistent with the brief; noting only that the "ship" wording could be read as live entries. No change requested.
+Trigger: `DECISION: FIX {"worker":"conflict",...}` on any rebase-conflict escalation. Impact: the profile the issue requires to ship is unreachable (precondition) or always fails after spending budget (push). Scope: issue #20 "Scope" — `conflict` (resolve the rebase …) is a named deliverable. Fix options: accept a mid-rebase worktree (check `rebase-merge`/`rebase-apply` state or `git rev-parse --abbrev-ref HEAD` after the worker finishes instead of before), and push with `--force-with-lease=agent/<n>` the way the dispatcher's refresh path does. `[INFERENCE]` on whether `dispatch.escalate` leaves the rebase in progress or aborts it — the template's own text (`factory.toml:47` "If the rebase was aborted, restart it") says both states are possible, and both fail as above. No regression test covers this path; `test_fix_runs_selected_worker…` only exercises a fast-forward push against a stubbed `git push`.
 
-2. **Redundant reserved-label subtraction** — `factory/manage.py:54` still computes `set(workers) - RESERVED_LABELS` even though `manage_pass` now passes a pre-filtered dict (`manage.py:199`, `:213`). Harmless defense for direct `parse` callers; keep or drop at your discretion.
+## Optional suggestions
 
-3. **Post-FIX ticket state** — `factory/manage.py:126-131`. On APPROVE the issue keeps `ready-for-human`; README documents "FIX does not merge or requeue" (`README.md:96-97`), so this is intentional. Worth confirming the merge stage's eligibility check doesn't require absence of `ready-for-human`, otherwise a fixed-and-approved PR needs a manual relabel before it lands. Cannot verify from the diff; `[INFERENCE]` only.
+- `factory/manage.py:109-112` precondition failures are classified `mechanism_failure` at `:224`. Per README "Outcomes" table that outcome means the configured mechanism could not run; a manager choosing FIX when no open PR / wrong branch exists is a bad decision, closer to `unknown`. Recording already satisfies the "rejected and recorded" gate, so non-blocking.
+- `factory/templates/factory.toml:37-38` tells the human to copy `[workers.ci-fix]` under `[defaults.workers.<label>]`, but the snippet headers at `:41`/`:45` are repo-form; a literal copy needs renaming. Whether the host-config merge accepts the table form at all is outside this diff — `[INFERENCE]`, unverified.
+- `factory/manage.py:116` embeds the full escalation packet in the worker prompt. Harmless, but the human-activity check at `:217-218` ran before a worker round that can take `budget_min`; a human taking over during FIX is not re-checked before `push`/`approve_pr` at `:124-128`. Same window exists for other decisions, just much shorter.
+- `factory/config.py:296` stores the TOML list by reference (`list(v)` copy dropped). No current mutation site in the diff; cosmetic.
 
-4. **FIX escalation on gate failure re-escalates an already-escalated ticket** — `factory/manage.py:120-122`, `:130-131`. This produces a fresh packet and comment, which is reasonable forensics, but with `[manager].rounds > 1` it re-enters the manager loop with the new packet. Bounded by `rounds`; documented behavior ("failure stays with the human"). No change requested.
+No unrequested abstractions introduced; `RESERVED_LABELS` (`factory/manage.py:33`) replaces a duplicated literal set and is used at three sites.
 
-## Abstractions
-
-`RESERVED_LABELS` (`manage.py:32`) replaces an inline set literal that was about to be duplicated for FIX — justified by the second use site. `worker_when` as a parallel dict rather than a richer worker record (`config.py:103`) is the smaller change and keeps `cfg.workers: dict[str, list[str]]` stable for existing callers (`cfg.worker`, dashboard, stats). No unrequested abstractions.
-
-VERDICT: APPROVE
+VERDICT: REVISE

@@ -1,26 +1,24 @@
-# Review: mikeroySoft/factory #12 — `[manager]` config table
+# Review: #12 `[manager]` config table (6ec3546..4830b7d)
 
 ## Spec coverage
 
-| Acceptance criterion | Evidence | Status |
+| Criterion (issue #12) | Evidence | Status |
 |---|---|---|
-| `[manager] command` argv template, unset = disabled | `factory/config.py:104` (`manager: list[str] \| None = None`), `:285-286` (only set when `"command" in manager`) | Met |
+| `command` argv template, unset = disabled | `factory/config.py:104` (`manager: list[str] \| None = None`), `:285-286` (set only when `"command" in manager`) | Met |
 | `rounds = 1` default | `factory/config.py:105`, `:287` | Met |
-| `review = "escalated"` default, `"all"` allowed | `factory/config.py:106`, `:288` | Met (no value validation; see Optional) |
-| `KNOWN_KEYS` registration | `factory/config.py:60` adds `rounds`, `review` to existing `manager` tuple | Met |
-| `HOST_TABLES` registration | Not in diff. `manager` already existed in `KNOWN_KEYS` at base and README documents `[defaults.manager]` as host-wide, so [INFERENCE] it was already in `HOST_TABLES`. Cannot confirm from the packet. | Presumed met |
-| `factory doctor` prints `manager:` row only when configured | `factory/onboard.py:226-227`; test `tests/test_factory.py:276-284` covers both absent and present | Met |
-| Unknown keys under `[manager]` reported as drift | `tests/test_factory.py:252`, `:263` (`manager.unknown` in `.factory.toml keys` detail); drift path is the existing `KNOWN_KEYS` walk | Met |
+| `review = "escalated"` default, `"all"` allowed | `factory/config.py:106`, `:288` | Met (no validation; see Optional) |
+| `KNOWN_KEYS` registers new keys | `factory/config.py:60` | Met |
+| `HOST_TABLES` registration | Not in diff. README already documents `[defaults.manager]` as host-wide, so `manager` is presumably in `HOST_TABLES` at base. `[INFERENCE]` — unverifiable from the packet; gate PASS on the `host settings committed` assertions at `tests/test_factory.py:264-266` is consistent with it. | Not blocking |
+| `factory doctor` prints `manager:` row only when configured | `factory/onboard.py:226-227`; test `tests/test_factory.py:276-284` | Met |
+| Unknown `[manager]` keys reported as drift | `tests/test_factory.py:252`, `:263` | Met |
 | `dashboard --json` `config` includes table | `factory/dashboard.py:840-844` | Met |
 | `templates/factory.toml` documents it | `factory/templates/factory.toml:40-48` | Met |
-| Loader test for all three keys | `tests/test_factory.py:112-115`, `:137-138` | Met |
-| Out of scope: running the command | No execution path added | Met |
+| Loader test covering all three keys | `tests/test_factory.py:112-115`, `:137-138` | Met |
+| Out of scope: running the command | No execution path added | Respected |
 
 ## Standards
 
-No AGENTS.md/CONTRIBUTING.md at this head. README convention "`config.py` as the single source of every repo-specific value" — followed (`factory/config.py:104-106`, `:269`, `:285-288`). New fields mirror the existing `reviewer` pattern: `Config` field + `if "command" in raw.get(...)` guard (`:283-286`), `int(...)` coercion for numerics as with `gate.timeout` (`:287` vs `:289`), `" ".join(argv)` in the snapshot (`factory/dashboard.py:841` vs `:839`), `shutil.which(argv[0])` in doctor (`factory/onboard.py:227` vs `:225`). No new abstractions introduced.
-
-Template comment rewrite at `factory/templates/factory.toml:40-41` touches pre-existing lines, but the old text ("Only the model is configurable here") became false with this change, so the edit traces to the request.
+Only README.md exists as documented convention at this head; no AGENTS.md/CONTRIBUTING.md. The diff follows the existing `review`/`reviewer` pattern exactly: same loader shape (`factory/config.py:283-286` mirrors `:283-284`), same doctor `shutil.which(argv[0])` probe (`factory/onboard.py:225` vs `:227`), same `" ".join(argv)` serialization in the snapshot (`factory/dashboard.py:839` vs `:841`). No new abstractions introduced. Template comment rewrite at `factory/templates/factory.toml:40-41` is confined to the `[manager]` block it extends.
 
 ## Required fixes
 
@@ -28,7 +26,7 @@ None.
 
 ## Optional suggestions
 
-- `factory/config.py:288` — `manager_review` accepts any string; the issue text names only `"escalated"` and `"all"`. A typo (`"al"`) silently loads and would only surface when the (out-of-scope) runner reads it. Not a stated acceptance criterion and the existing loader validates no enum values elsewhere, so non-blocking; if you want it, a one-line `ValueError` in the loader is sufficient — no validation framework.
-- `tests/test_factory.py:281` — `assertNotIn("manager: manage", rows())` proves absence of that exact label only; an empty-argv `command = []` would also produce no row (falsy list at `factory/onboard.py:226`) and be indistinguishable from "unset". Acceptable given "unset = disabled" is the spec; noting only.
+1. `factory/config.py:288` — `manager_review` accepts any string. Issue enumerates exactly two values (`"escalated"`, `"all"`); a typo (`"escalted"`) is silently accepted and will only surface when the (out-of-scope) runner reads it. A one-line check raising/warning on values outside `{"escalated", "all"}` would catch it at `doctor` time. Not required: the issue does not state rejection of other values as an acceptance criterion.
+2. `tests/test_factory.py:283` — the "configured" branch writes `[manager]` only with `command`; the dashboard `config.manager` shape at `factory/dashboard.py:840-844` is untested. Exit gate doesn't require it; a throwaway `dashboard --json` check suffices.
 
 VERDICT: APPROVE
