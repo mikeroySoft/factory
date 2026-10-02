@@ -1,0 +1,29 @@
+{
+  "findings": [
+    {
+      "id": "D1",
+      "severity": "primary",
+      "obligation": "issue #62 Scope/Exit: document that workers and manager treat {prompt} differently (path vs inline) without dropping the shipped ci-fix/conflict profile guidance that README describes as opt-in worker instructions",
+      "defect": "The template replaces the ci-fix and conflict profile command strings that embedded flake-evidence / no-semantic-change instructions with plain `@{prompt}`. The when-rule is only shown to the manager/dashboard and never reaches the worker prompt, so after this change the two opt-in profiles are functionally identical to default on the ROUTE path: the profile-specific guidance is gone. Not required by #62's scope (document `{prompt}` = file for workers and manager).",
+      "evidence": [
+        "factory/templates/factory.toml: ci-fix command reduced to `@{prompt}`",
+        "factory/templates/factory.toml: conflict command reduced to `@{prompt}`",
+        "README.md documents ci-fix/conflict profile intent; when-rules do not enter the worker prompt"
+      ],
+      "rationale": "Unrequested template edit removes guidance the ticket did not ask to change. Corroboration (not oracle): follow-up commit 6d9e4d2 restores the long command strings and is titled to preserve worker guidance."
+    },
+    {
+      "id": "D2",
+      "severity": "primary",
+      "obligation": "issue #62: manager_failed escalate events exist so stats can count manager failures separately — not as a second human escalation",
+      "defect": "`manage.py` records `escalate` with `reason=\"manager_failed\"` on nonzero manager exit, and `dispatch.py` excludes that reason from round numbering, but `stats.human_touch` still counts every `event==\"escalate\"` toward `escalation_count`. One real escalation plus one manager failure reports as two escalations in `factory stats` and the dashboard KPI.",
+      "evidence": [
+        "factory/stats.py: escalated = [e[\"at\"] for e in audit if e.get(\"event\") == \"escalate\"] with no reason filter",
+        "factory/manage.py records escalate reason=manager_failed",
+        "factory/dispatch.py excludes manager_failed from round arithmetic but stats does not"
+      ],
+      "rationale": "Same cross-file composition the historical review found; fixed in 6d9e4d2 by filtering manager_failed out of escalation_count and adding a separate manager_failures counter."
+    }
+  ],
+  "unnecessary_demand_rule": "Any finding beyond D1/D2 that does not cite a README/docs convention or an issue #62 acceptance criterion — style-only renames, extracting the duplicated omp/@{prompt} guard, CHANGELOG presence, or gate-covered build/test/scan status."
+}

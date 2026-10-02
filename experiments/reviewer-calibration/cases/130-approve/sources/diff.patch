@@ -1,0 +1,309 @@
+diff --git a/factory/dispatch.py b/factory/dispatch.py
+index a49bc03..a6e4afa 100644
+--- a/factory/dispatch.py
++++ b/factory/dispatch.py
+@@ -521,6 +521,7 @@ def record(event: str, **fields: object) -> None:
+     if execution is not None:
+         row.update(execution_id=execution.execution_id,
+                    dispatcher_run_id=execution.dispatcher_run_id)
++        execution.commit()
+         if event in {"escalate", "approved", "merged"}:
+             execution.outcome = {"escalate": "project_escalation",
+                                  "approved": "approved", "merged": "merged"}[event]
+@@ -1343,7 +1344,7 @@ def land_pass(dry_run: bool) -> None:
+         return
+     (FACTORY / "locks").mkdir(parents=True, exist_ok=True)
+     lock_path = FACTORY / "locks" / "merge.lock"
+-    with lifecycle.scope(EVENTS, "landing") as execution:
++    with lifecycle.scope(EVENTS, "landing", lazy=True) as execution:
+         lock_fd = lock_path.open("w")
+         request = execution.resource("requested", lock_path, scope="repository")
+         try:
+diff --git a/factory/handoff.py b/factory/handoff.py
+index e93157f..82d5318 100644
+--- a/factory/handoff.py
++++ b/factory/handoff.py
+@@ -158,7 +158,7 @@ def handoff_pass(dry_run: bool = False) -> None:
+         lock_path = cfg.factory / "locks" / f"{n}.lock"
+         if dry_run and dispatch.lock_held(lock_path):
+             continue
+-        with nullcontext() if dry_run else lifecycle.scope(dispatch.EVENTS, "manage", ticket=n) as execution:
++        with nullcontext() if dry_run else lifecycle.scope(dispatch.EVENTS, "manage", ticket=n, lazy=True) as execution:
+             with nullcontext() if dry_run else dispatch.ticket_lock(n).open("w") as lock:
+                 if not dry_run:
+                     request = execution.resource("requested", lock_path, scope="repository")
+diff --git a/factory/lifecycle.py b/factory/lifecycle.py
+index 5160b3a..e1e9817 100644
+--- a/factory/lifecycle.py
++++ b/factory/lifecycle.py
+@@ -258,7 +258,7 @@ def current():
+ 
+ class Execution:
+     def __init__(self, path: Path, stage: str, *, ticket=None, attempt=None,
+-                 review_round=None, dispatcher=False, lock=None):
++                 review_round=None, dispatcher=False, lock=None, lazy=False):
+         parent = current()
+         inherited = parent._context() if parent is not None else _inherited()
+         self.path = Path(inherited.get("path", path)).absolute()
+@@ -283,6 +283,10 @@ class Execution:
+         self._children = {}
+         self._resources = {}
+         self._wait = None
++        self._parent = parent
++        # Lazy scopes buffer rows until something happens (wait, audit row, non-completed
++        # outcome, commit()); an uneventful exit drops the buffer instead of journaling it.
++        self._buffer = [] if lazy else None
+ 
+     def _context(self) -> dict:
+         return {
+@@ -315,17 +319,36 @@ class Execution:
+             "reason": self.reason if kind == "exit" else None,
+             "process": self.process, "locks": list(self.locks),
+         }
++        if self._terminal:
++            raise RuntimeError("execution already has a terminal lifecycle event")
++        row["sequence"] = self._sequence + 1
++        self._sequence = row["sequence"]
++        self._terminal = kind == "exit"
++        if self._buffer is not None:
++            if kind != "exit":
++                self._buffer.append(row)
++                return row
++            if self.outcome == "completed":
++                self._buffer = None  # uneventful lazy scope: no trail
++                return row
++            self.commit()
++        self._append([row])
++        return row
++
++    def commit(self) -> None:
++        """Persist a lazy scope's buffered rows (ancestors first); later rows write through."""
++        if self._parent is not None:
++            self._parent.commit()
++        rows, self._buffer = self._buffer, None
++        if rows:
++            self._append(rows)
++
++    def _append(self, rows: list[dict]) -> None:
+         self.path.parent.mkdir(parents=True, exist_ok=True)
+         with self.path.open("a+b") as handle:
+             fcntl.flock(handle, fcntl.LOCK_EX)
+-            # One owning Execution object; the journal flock also serializes its threads.
+-            if self._terminal:
+-                raise RuntimeError("execution already has a terminal lifecycle event")
+-            row["sequence"] = self._sequence + 1
+-            _write(handle, row)
+-            self._sequence = row["sequence"]
+-            self._terminal = kind == "exit"
+-        return row
++            for row in rows:
++                _write(handle, row)
+ 
+     def wait(self, reason: str, *, mode="blocking", resource=None, **details) -> dict:
+         """Record an observed wait, separately from execution stage and outcome."""
+@@ -334,6 +357,7 @@ class Execution:
+             raise ValueError("invalid lifecycle wait")
+         row = self.emit("wait", wait=value)
+         self._wait = row["event_id"]
++        self.commit()
+         return row
+ 
+     def wait_end(self) -> dict | None:
+@@ -388,9 +412,9 @@ class Execution:
+ 
+ @contextmanager
+ def scope(path: Path, stage: str, *, ticket=None, attempt=None, review_round=None,
+-          dispatcher=False, lock=None):
++          dispatcher=False, lock=None, lazy=False):
+     execution = Execution(path, stage, ticket=ticket, attempt=attempt, review_round=review_round,
+-                          dispatcher=dispatcher, lock=lock)
++                          dispatcher=dispatcher, lock=lock, lazy=lazy)
+     execution.emit("enter")
+     token = _CURRENT.set(execution)
+     try:
+diff --git a/factory/manage.py b/factory/manage.py
+index 6c62c5c..813aedc 100644
+--- a/factory/manage.py
++++ b/factory/manage.py
+@@ -420,7 +420,7 @@ def viability_pass(dry_run: bool = False) -> None:
+             if dry_run and dispatch.lock_held(lock_path):
+                 continue
+             identity = {"pr" if kind == "pr" else "ticket": n}
+-            with nullcontext() if dry_run else lifecycle.scope(dispatch.EVENTS, "manage", ticket=n) as execution:
++            with nullcontext() if dry_run else lifecycle.scope(dispatch.EVENTS, "manage", ticket=n, lazy=True) as execution:
+                 with nullcontext() if dry_run else dispatch.ticket_lock(n).open("w") as lock:
+                     if not dry_run:
+                         resource = execution.resource("requested", lock_path, scope="repository")
+@@ -447,6 +447,7 @@ def viability_pass(dry_run: bool = False) -> None:
+                             dispatch.log(f"{kind} #{n}: would assess viability ({label})")
+                             continue
+                         sources = evidence.viability_sources(cfg, issue, kind=kind)
++                        execution.commit()
+                         try:
+                             with NamedTemporaryFile(mode="w", dir=cfg.factory, prefix="manager-viability-", suffix=".md") as prompt:
+                                 prompt.write(VIABILITY_MENU + f"\nTarget: {kind} #{n} in {cfg.repo}\n\n"
+@@ -587,7 +588,7 @@ def frontier_pass(dry_run: bool = False) -> None:
+         lock_path = cfg.factory / "locks" / f"{n}.lock"
+         if dispatch.lock_held(lock_path):
+             continue
+-        with nullcontext() if dry_run else lifecycle.scope(dispatch.EVENTS, "manage", ticket=n) as execution:
++        with nullcontext() if dry_run else lifecycle.scope(dispatch.EVENTS, "manage", ticket=n, lazy=True) as execution:
+             with nullcontext() if dry_run else dispatch.ticket_lock(n).open("w") as lock:
+                 if not dry_run:
+                     request = execution.resource("requested", lock_path, scope="repository")
+@@ -664,6 +665,7 @@ def frontier_pass(dry_run: bool = False) -> None:
+                         if path.is_file():
+                             parts.append(f"## {path.name}\n\n{path.read_text()}")
+                     cwd = wt if wt.is_dir() else cfg.root
++                    execution.commit()
+                     try:
+                         prompt_path = cfg.factory / f"manager-prompt-{n}.md"
+                         prompt_path.write_text("\n\n".join(parts))
+@@ -719,7 +721,7 @@ def escalation_pass(dry_run: bool = False) -> None:
+         lock_path = cfg.factory / "locks" / f"{n}.lock"
+         if dry_run and dispatch.lock_held(lock_path):
+             continue
+-        with nullcontext() if dry_run else lifecycle.scope(dispatch.EVENTS, "manage", ticket=n) as execution:
++        with nullcontext() if dry_run else lifecycle.scope(dispatch.EVENTS, "manage", ticket=n, lazy=True) as execution:
+             with nullcontext() if dry_run else dispatch.ticket_lock(n).open("w") as lock:
+                 if not dry_run:
+                     request = execution.resource("requested", lock_path, scope="repository")
+@@ -760,6 +762,7 @@ def escalation_pass(dry_run: bool = False) -> None:
+                     wt = cfg.factory / f"wt-{n}"
+                     cwd = wt if wt.is_dir() else cfg.root
+                     notes = rejected = None
++                    execution.commit()
+                     try:
+                         prompt_path = cfg.factory / f"manager-prompt-{n}.md"
+                         prompt_path.write_text("\n\n".join(parts))
+diff --git a/tests/test_idle_lifecycle.py b/tests/test_idle_lifecycle.py
+new file mode 100644
+index 0000000..5405ffd
+--- /dev/null
++++ b/tests/test_idle_lifecycle.py
+@@ -0,0 +1,84 @@
++"""An uneventful dispatcher pass over a parked ticket leaves no lifecycle rows behind."""
++from __future__ import annotations
++
++import fcntl
++import os
++import subprocess
++import tempfile
++import unittest
++from pathlib import Path
++from unittest.mock import patch
++
++from factory import dispatch, handoff, lifecycle, manage
++from factory.config import Config
++
++
++class IdlePasses(unittest.TestCase):
++    def setUp(self):
++        temp = tempfile.TemporaryDirectory()
++        self.addCleanup(temp.cleanup)
++        self.enterContext(patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
++        self.cfg = Config(root=Path(temp.name), repo="local/idle", manager=["true"], manager_rounds=2)
++        self.events = self.cfg.factory / "events.jsonl"
++        self.enterContext(patch.multiple(
++            dispatch, create=True, cfg=self.cfg, ROOT=self.cfg.root, REPO=self.cfg.repo,
++            UPSTREAM=None, UPSTREAM_REPO=None, FACTORY=self.cfg.factory,
++            LOGS=self.cfg.factory / "logs", EVENTS=self.events, MAX_ACTIVE=1,
++        ))
++        self.packet = self.cfg.factory / "packet-7.md"
++        self.packet.parent.mkdir(parents=True)
++        self.packet.write_text("evidence")
++        # Ticket 7 is parked: escalated, manager said HUMAN, handoff already published to the same owner.
++        dispatch.record("escalate", ticket=7, round=1, packet=str(self.packet), reason="gate_failed")
++        dispatch.record("comment", ticket=7, kind="escalation", comment=1, url="u")
++        dispatch.record("manage", ticket=7, decision="HUMAN", round=1, packet=str(self.packet))
++        dispatch.record("handoff", ticket=7, round=1, request="7/1", token="factory-handoff 7/1 #1", target="@alice", why="w")
++        dispatch.record("comment", ticket=7, kind="handoff", round=1, request="7/1", token="factory-handoff 7/1 #1",
++                        target="@alice", comment=2, url="u")
++        self.route = {"status": "routed", "owner": "alice", "candidates": [], "source": "s", "reason": "r", "provenance": []}
++        self.issues = [{"number": 7, "title": "parked", "body": "", "labels": [{"name": "ready-for-human"}]}]
++
++    def lifecycle_rows(self):
++        return [row for row in lifecycle.read_events(self.events) if row.get("event") == "lifecycle"]
++
++    def run_passes(self):
++        with patch.object(dispatch, "gh_json", return_value=self.issues), \
++                patch.object(handoff, "observe", return_value={"route": self.route, "pr_url": None}):
++            manage.escalation_pass()
++            handoff.handoff_pass()
++
++    def test_parked_ticket_pass_writes_no_lifecycle_rows(self):
++        before = self.events.read_text()
++        self.run_passes()
++        self.assertEqual(self.events.read_text(), before)
++        self.assertFalse(dispatch.lock_held(dispatch.ticket_lock(7)))
++
++    def test_lock_contention_still_writes_the_trail(self):
++        lock = dispatch.ticket_lock(7)
++        holder = self.enterContext(lock.open("w"))
++        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
++        self.run_passes()
++        rows = self.lifecycle_rows()
++        self.assertEqual([r["kind"] for r in rows], ["enter", "resource_requested", "wait", "exit"] * 2)
++        self.assertEqual({r["ticket"] for r in rows}, {7})
++
++    def test_new_decision_still_writes_the_full_trail(self):
++        self.route["owner"] = "bob"  # owner changed: a new handoff request is published
++        receipt = subprocess.CompletedProcess([], 0, "https://github.com/local/idle/issues/7#issuecomment-3\n", "")
++        with patch.object(dispatch, "run", return_value=receipt):
++            self.run_passes()
++        rows = self.lifecycle_rows()
++        kinds = [r["kind"] for r in rows]
++        self.assertEqual(kinds, ["enter", "resource_requested", "lock_acquired", "lock_released", "exit"])
++        audit = [e for e in lifecycle.read_events(self.events) if e.get("event") == "handoff" and e.get("target") == "@bob"]
++        self.assertEqual(audit[0]["execution_id"], rows[0]["execution_id"])
++        self.assertEqual(rows[-1]["outcome"], "completed")
++
++    def test_idle_landing_writes_no_rows(self):
++        with patch.object(dispatch, "sync_pass"), patch.object(dispatch, "merge_pass_locked"):
++            dispatch.land_pass(False)
++        self.assertEqual(self.lifecycle_rows(), [])
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_wait_decisions.py b/tests/test_wait_decisions.py
+index c5d7842..8b33265 100644
+--- a/tests/test_wait_decisions.py
++++ b/tests/test_wait_decisions.py
+@@ -60,7 +60,8 @@ class WaitDecisions(unittest.TestCase):
+         lock = self.cfg.factory / "locks" / "merge.lock"
+         holder = self.hold(lock)
+         with patch.object(dispatch, "sync_pass") as sync, \
+-                patch.object(dispatch, "merge_pass_locked") as merge:
++                patch.object(dispatch, "merge_pass_locked",
++                             side_effect=lambda dry: dispatch.record("merged", ticket=7, pr=1)) as merge:
+             dispatch.land_pass(False)
+             sync.assert_not_called()
+             merge.assert_not_called()
+@@ -84,15 +85,13 @@ class WaitDecisions(unittest.TestCase):
+ 
+     def test_landing_holds_merge_resource_through_sync_and_merge_then_releases_on_error(self):
+         lock = self.cfg.factory / "locks" / "merge.lock"
+-        stages = []
++        stages, executions = [], []
+ 
+         def work(name):
+             stages.append(name)
+             self.assertTrue(dispatch.lock_held(lock))
+-            current = lifecycle.current()
+-            acquired = next(row for row in self.rows() if row["kind"] == "lock_acquired")
+-            self.assertEqual(acquired["execution_id"], current.execution_id)
+-            self.assertFalse(any(row["kind"] == "exit" for row in self.rows()))
++            executions.append(lifecycle.current().execution_id)
++            self.assertEqual(self.rows(), [])  # an uneventful landing journals nothing until it fails
+             if name == "merge":
+                 raise RuntimeError("local merge failure")
+ 
+@@ -107,6 +106,7 @@ class WaitDecisions(unittest.TestCase):
+         self.assertLess(kinds.index("resource_requested"), kinds.index("lock_acquired"))
+         self.assertLess(kinds.index("lock_released"), kinds.index("exit"))
+         acquired = next(row for row in rows if row["kind"] == "lock_acquired")
++        self.assertEqual({acquired["execution_id"]}, set(executions))
+         released = next(row for row in rows if row["kind"] == "lock_released")
+         self.assertEqual(released["acquisition_id"], acquired["acquisition_id"])
+         self.assertEqual(released["execution_id"], acquired["execution_id"])

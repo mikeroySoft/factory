@@ -15,7 +15,18 @@ REPO = "/home/mike/dev/mikeroysoft/factory"
 CHECKOUT_ROOT = pathlib.Path("/tmp/cal-checkout")
 CONTRACTS = {"baseline": "cadb9981524ab5506693e27f56ff8ac4ef911da6",
              "issue36": "1947fc4e3de23e71f64342f2c9cd2570d845db5e"}
-CASES = ["12-before", "12-after", "20-before", "20-after"]
+def _cases_from_splits() -> list[str]:
+    splits = json.loads((EXP / "splits.json").read_text())["splits"]
+    # Stable order: train then lockbox, preserving membership order.
+    seen, out = set(), []
+    for name in ("train", "selection", "lockbox", "fresh"):
+        for case in splits.get(name, []):
+            if case not in seen:
+                seen.add(case); out.append(case)
+    return out
+
+
+CASES = _cases_from_splits()
 MODEL = "anthropic/claude-fable-5-1"          # the repo's configured reviewer model
 FLAGS = ["-p", "--mode", "text", "--no-session", "--no-tools", "--no-extensions",
          "--no-skills", "--no-rules", "--no-lsp", "--no-pty", "--no-title",

@@ -1,0 +1,17 @@
+{
+  "findings": [
+    {
+      "id": "D1",
+      "severity": "primary",
+      "obligation": "issue #79 Exit gate / schema-1: feedback items must use real provider IDs/links and the actual provider UTC update time when the provider supports it",
+      "defect": "Reviews are read via REST `GET /pulls/{n}/reviews`, and the item builder takes `updated=row.get('updated_at')`. The REST review object has no `updated_at` (it has `submitted_at`). Every review therefore gets `source_updated_at: null`, and any truncated review body raises `change_detection_incomplete` even though GraphQL exposes `PullRequestReview.updatedAt`.",
+      "evidence": [
+        "factory/feedback.py: REST `/pulls/{number}/reviews` page loop",
+        "factory/feedback.py: item(..., updated=row.get('updated_at'), ...) on review rows",
+        "GitHub REST Pull Request Review schema: submitted_at, not updated_at"
+      ],
+      "rationale": "Criterion requires actual provider update time when supported. Corroboration (not oracle): commit 9127f40 switches reviews to GraphQL and reads `updatedAt`."
+    }
+  ],
+  "unnecessary_demand_rule": "Any finding beyond D1 that does not cite a README/docs convention or an issue #79 acceptance criterion — wording nits on 'Legacy local gate', private `_lifecycle` import judgement, or gate-covered build/test/scan status."
+}

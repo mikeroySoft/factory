@@ -1,0 +1,4 @@
+{
+  "findings": [],
+  "unnecessary_demand_rule": "Any required-fix finding that does not cite a README/docs convention or an issue #79 acceptance criterion still unmet at this head. D1 from 79-before is fixed (GraphQL REVIEW_QUERY + updatedAt). Blocking on optional wording or import-visibility notes is an unnecessary demand."
+}

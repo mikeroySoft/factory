@@ -1,0 +1,47 @@
+{
+  "case_id": "79-after",
+  "issue": 79,
+  "review_base": "8fba9c5e33a7b0122683334e424183af5ff1b5fd",
+  "head": "e20ebcd5b9bd4d4a80cdd3a643a56b7e02518d1e",
+  "head_blobs": {
+    "CHANGELOG.md": "c6ec80285f26f1de21e9a299679c1c53578dcc3f",
+    "README.md": "7b74ff5e85094614d70595352c08acdabba9ce57",
+    "factory/briefing.py": "43658fe5de1e5f036010b00f4eaa569e22cd3df2",
+    "factory/dashboard.html": "a42dd0a6129e66562b6fbfd5c5735bd383a72282",
+    "factory/dashboard.py": "6fecd9daa49cce0c34d0a2555287699da3493e03",
+    "factory/feedback.py": "03de855cadcddfd08e166f79f4b9cfd79e78b7ad",
+    "tests/test_briefing.py": "f1291bd620c8258473bd4fa8ae9d9dfb961ae0a4",
+    "tests/test_factory.py": "7a8a80ae9cf8486971b5fea395bfc85a0cc4219a",
+    "tests/test_feedback.py": "82f89d03bc96f8c7d9c8883c4792a3ca04d2ea2e"
+  },
+  "issue_url": "https://github.com/mikeroySoft/factory/issues/79",
+  "gate_evidence": "real `factory gate` run at this head in a throwaway --shared clone with refs/remotes/origin/main set to review_base; only a [repo].slug line was prepended to .factory.toml for slug resolution, committed gate checks unmodified",
+  "expected_verdict": "APPROVE",
+  "findings": [],
+  "unnecessary_demand_rule": "Any required-fix finding that does not cite a README/docs convention or an issue #79 acceptance criterion still unmet at this head. D1 from 79-before is fixed (GraphQL REVIEW_QUERY + updatedAt). Blocking on optional wording or import-visibility notes is an unnecessary demand.",
+  "adjudication": "independent read of the frozen source by the calibration owner; historical model verdicts were used only to discover candidates, never as truth",
+  "gate_report": "# Gate report\n\n- conflict-markers: PASS\n- test: PASS\n- leak-scan: PASS",
+  "provenance": [
+    {
+      "path": "sources/issue.md",
+      "sha256": "7289240a6dfda8b1ee69ff2775975f3bd490a090913187eb37cee1f9a57ecad8",
+      "bytes": 28444
+    },
+    {
+      "path": "sources/diff.patch",
+      "sha256": "a6dcbec62cf3455b32ede3d326c04520e82409830853691fba34856545933f8e",
+      "bytes": 105115
+    },
+    {
+      "path": "sources/README.md",
+      "sha256": "4f9178a786e2e915ce288c5a6afd40d74c4f457e23f824f0a28e8499a111330e",
+      "bytes": 90970
+    },
+    {
+      "path": "sources/gate-report.md",
+      "sha256": "fb756e34975585daa9c8c20f5e2edafecb5c7059f6f568dbba3a78f066873efd",
+      "bytes": 71
+    }
+  ],
+  "packet_sha256": "cd9ac79a2bc891bcf886486dd2db40f94994b00b8ebbd9ab274532ae008c0c95"
+}

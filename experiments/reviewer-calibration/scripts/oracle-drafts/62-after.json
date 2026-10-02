@@ -1,0 +1,4 @@
+{
+  "findings": [],
+  "unnecessary_demand_rule": "Any required-fix finding that does not cite a README/docs convention or an issue #62 acceptance criterion still unmet at this head. Optional style notes are fine; blocking on them is an unnecessary demand. D1/D2 from 62-before are fixed here (profile commands restored; stats filters manager_failed)."
+}

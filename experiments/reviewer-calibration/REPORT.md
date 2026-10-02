@@ -197,14 +197,47 @@ coverage in precisely the case it was meant to flag. A defensible line needs a s
 is independent of the reviewer's self-report; none of the evidence gathered here supplies
 one, and SWE-Gate does not either (§1).
 
+## Corpus growth (splits.json v2)
+
+Grew the Pilot 1 corpus from **4** cases (2 tickets × before/after) to **11** cases
+across **5** tickets, without moving any case out of lockbox.
+
+| Split | Cases | Notes |
+|---|---|---|
+| `train` | `12-before`, `12-after`, `62-before`, `62-after`, `130-approve`, `8-approve` | Climber-visible. Adds multi-file #62 defect/fixed pair + two correct-but-narrow APPROVE heads chosen to provoke over-strictness. |
+| `lockbox` | `20-before`, `20-after`, `79-before`, `79-after`, `87-approve` | Sealed. Prior #20 membership retained; adds multi-file #79 defect/fixed pair + one sealed APPROVE. |
+
+New case oracles (independent source reads; historical REVISE/APPROVE used only to *discover* candidates):
+
+| Case | Issue | Head | Gate | Oracle |
+|---|---|---|---|---|
+| `62-before` | #62 | `cfbdb6f9…` | PASS (real) | REVISE — D1 profile-guidance drop in `templates/factory.toml`; D2 `stats` counts `manager_failed` as escalation |
+| `62-after` | #62 | `68b5d164…` | PASS (real) | APPROVE — D1/D2 fixed in `6d9e4d2` / merge head |
+| `79-before` | #79 | `7bd58052…` | PASS (real) | REVISE — D1 REST reviews read missing `updated_at` (should use GraphQL `updatedAt`) |
+| `79-after` | #79 | `e20ebcd5…` | PASS (real) | APPROVE — GraphQL `REVIEW_QUERY` + `updatedAt` |
+| `130-approve` | #130 | `f46b7676…` | PASS (real) | APPROVE — idle manage/landing scopes must not journal uneventful lifecycle rows |
+| `8-approve` | #8 | `b1defa4c…` | PASS (real) | APPROVE — fail-closed CI/merge readiness for opt-in review lane |
+| `87-approve` | #87 | `19bd4681…` | PASS (real) | APPROVE — evidence reader build/schema identity |
+
+Freeze helper: `scripts/freeze_case.py` (shared throwaway `--shared` clone, real `factory gate`,
+hashed provenance). Human re-adjudication checklist: [`ADJUDICATION-CHECKLIST.md`](ADJUDICATION-CHECKLIST.md).
+
+**Rescoring status.** `runs/main` and `runs/tools` still cover only the original four cases.
+`score.py runs/main/adjudication.json` on splits v2 still reports the prior noise (both arms:
+2 missed-blocking / 0 unnecessary-REVISE per split, noise 0) because adjudication rows for the
+seven new cases do not exist yet. **Next step before any model comparison or promotion claim:**
+re-run `run_calibration.py` (and optionally `run_tools.py`) against the grown corpus and refresh
+`adjudication.json`. No production reviewer-policy change; no auto-promotion.
+
 ## Promotion contract (#126)
 
 This harness is Pilot 1 of the [eval promotion contract](../../docs/eval-promotion-contract.md).
-Split membership is frozen in [`splits.json`](splits.json) (train: #12, lockbox: #20).
-`python score.py runs/main/adjudication.json` reports `missed_blocking` and
-`unnecessary_revise` separately per arm and split with repeat noise. Current baseline
-(`runs/main`, 2 repeats): both arms 2 missed-blocking / 0 unnecessary-REVISE on each
-split, noise 0 — too few cases for a model comparison; grow the corpus first.
+Split membership is frozen in [`splits.json`](splits.json) **v2** (train: #12+#62+#130+#8;
+lockbox: #20+#79+#87 — prior lockbox #20 retained). `python score.py runs/main/adjudication.json`
+reports `missed_blocking` and `unnecessary_revise` separately per arm and split with repeat
+noise. Current scored baseline (`runs/main`, 2 repeats, **original four cases only**): both
+arms 2 missed-blocking / 0 unnecessary-REVISE on each split, noise 0. Corpus is now 11 cases;
+**rescoring the grown set is the next step** before any model comparison.
 
 ## 7. Comparison readiness
 

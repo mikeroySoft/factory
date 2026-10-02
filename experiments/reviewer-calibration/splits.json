@@ -1,8 +1,8 @@
 {
-  "version": 1,
-  "note": "Frozen per docs/eval-promotion-contract.md. Lockbox is scored only before a promotion claim, never to pick a round winner. Add new adjudicated cases by bumping version; never move a case out of lockbox.",
+  "version": 2,
+  "note": "Frozen per docs/eval-promotion-contract.md. Lockbox is scored only before a promotion claim, never to pick a round winner. Add new adjudicated cases by bumping version; never move a case out of lockbox. v2 grows Pilot 1 corpus: train gains #62 defect/fixed pair + two correct-but-narrow APPROVE cases; lockbox gains #79 defect/fixed pair + one sealed APPROVE. Prior lockbox membership (#20) unchanged.",
   "splits": {
-    "train": ["12-before", "12-after"],
-    "lockbox": ["20-before", "20-after"]
+    "train": ["12-before", "12-after", "62-before", "62-after", "130-approve", "8-approve"],
+    "lockbox": ["20-before", "20-after", "79-before", "79-after", "87-approve"]
   }
 }

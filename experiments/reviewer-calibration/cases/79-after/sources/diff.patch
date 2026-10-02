@@ -1,0 +1,1731 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index d01fe75..c6ec802 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,7 @@
+ 
+ ## Unreleased
+ 
++- Add schema-1 source-versioned PR feedback at full dashboard `tickets[].pr.feedback`, shared by Review, Inbox and briefing. Retain simultaneous native review/thread/check evidence and provenance-backed Factory reviews with deterministic identities, explicit unknown/partial coverage, fixed 100-item/two-page/20 KB-body/32-error/30-second bounds, and head-race handling. Reviews carry the provider's own `updatedAt`, so an edited review revises its source revision. Detail reads run only for open PRs; closed and merged PRs keep the schema-1 envelope with `not_collected` sources, which is unknown rather than empty or unsupported. Read-only: no feedback delivery, readiness or merge authority; runtime JSON is unchanged. (#79)
+ - Add optional Codebase history: stable commit-timeline maps, baseline comparisons, confidence-aware relationships, pinned source citations, and bounded background refresh through `factory[atlas]`. (#67)
+ - Add opt-in direction viability to `factory manage`: `needs-review` PRs before `needs-viability` issues, evidence-cited BUILD/DONT_BUILD/DEFER comments, and label-event replay protection. Only issue BUILD enters `needs-triage`; PRs remain recommendation-only, with no review or handoff mechanics.
+ - Fix manager prompt transport to use files, including `factory learn`; validate manager commands in doctor, bound nonzero-exit diagnostics, and count manager failures separately from escalation totals and rounds without overriding human takeover. (#62)
+diff --git a/README.md b/README.md
+index e44ad67..7b74ff5 100644
+--- a/README.md
++++ b/README.md
+@@ -696,6 +696,92 @@ for row in read_events(Path(".factory/events.jsonl")):
+ PY
+ ```
+ 
++## Source-versioned PR feedback (schema 1)
++
++The full `factory dashboard --json` / `/api/snapshot` observation exposes
++`tickets[].pr.feedback`. The existing Review drawer, Inbox raw evidence, and
++`factory.briefing.sources_for` consume this same object. Non-PR tickets have no
++fabricated feedback. `--runtime-json` does not invoke this collector
++and retains its network-free contract.
++
++`factory.feedback.collect(read, *, repository, pr, issue=None, events=(),
++provenance_complete=True, producer_revision=None, observed_at=None,
++collect_details=True)` is the shared producer. `read` is the existing dashboard
++GitHub transport, accepting `endpoint` for fixed REST GETs or `query`/`variables`
++for GraphQL reads, plus a remaining `timeout`. Source exceptions become sanitized
++coverage/errors without discarding independently observed facts. There is no
++feedback cache, event append, model invocation, delivery, dispatch, readiness, or
++approval decision. The full dashboard's pre-existing lifecycle reconciliation
++remains unchanged.
++
++Detail reads are limited to open pull requests, so closed history never
++multiplies provider calls per refresh. `collect_details=False` reads nothing: the
++schema-1 envelope still carries the caller's independently known repository/PR
++identities and state, `head_sha` stays null, every source is `unavailable` with
++the `not_collected` reason/error code, and ownership stays `unverified`. Review,
++Inbox and briefing report that intentional noncollection explicitly; it is not an
++empty, resolved, or unsupported observation, and it is distinct from an older
++engine that has no `feedback` key at all.
++
++The required envelope is `schema_version`, `producer`, `observed_at`,
++`observation_id`, `repository`, `pr`, `owner`, `coverage`, `items`, and `errors`.
++Native repository/PR IDs are retained alongside host/slug, PR number/URL/head,
++state and nullable draft. Ownership needs an actual same-repository closing-issue
++link plus retained Factory claim provenance; branch text and shared credentials
++do not establish it. Relations are `factory_issue`, `unverified`, `ambiguous`,
++or `none`. A missing key or unsupported schema is unknown, not an empty success.
++
++Items retain native source IDs/links, source revision/update time, review/thread/
++check-run IDs, nullable run attempt, source versus observed head, disposition,
++author, body/truncation, location and provider name/title. Kinds are `review`,
++`review_comment`, `check_run`, `commit_status`, and `factory_review`; all can
++coexist. Review state, thread resolved/outdated state, and check status/conclusion
++remain independent. Missing source SHA is never filled with the current head.
++Relevance is `current_head`, `historical`, or `unknown`; outdated threads cannot
++become current through SHA equality. Provider User attribution remains unknown
++because shared credentials may belong to Factory. A Factory review requires a
++valid recorded review execution result, successful parse/exit and matching target
++SHA; ordinary discussion or `VERDICT` prose is legacy context, not that evidence.
++Unavailable provider fields remain explicit nulls (including check-run update
++time or run attempt when the API does not supply them).
++
++Fixed bounds in `factory/feedback.py`: `ITEM_LIMIT=100` per reviews, threads/
++comments and checks/statuses; `PAGE_LIMIT=2`; `BODY_LIMIT=20000` UTF-8 bytes per
++body; `ERROR_LIMIT=32`; `DETAIL_TIMEOUT=30` seconds, with initial/final head reads.
++Reviews and review threads are read as bounded GraphQL connections carrying native
++IDs, links, the reviewed commit and the provider's own `updatedAt` (an edited review
++revises it; a submission time would not). Both use up to two pages; the combined
++checks source reserves one page for native check runs and one for commit statuses. Nested thread comment
++overflow is explicit rather than an unbounded fan-out. Provenance reuses the
++existing safe, bounded 2 MB committed-event tail reader. Every source (`pr`,
++`reviews`, `threads`, `checks`) reports `status` (`complete`, `partial`,
++`unavailable`), nullable `observed_at`/`reason`, and `truncated`. A cap, malformed
++response, missing SHA, failed read, or head race never establishes disappearance
++or resolution. A failed final read exposes an unknown head; raced reads retain
++facts and both observed heads while making relevance unknown. Truncated text
++without a reliable provider update signal explicitly lacks byte-exact change
++detection beyond the retained body.
++
++Canonical JSON is UTF-8, sorted keys, compact separators and explicit nulls.
++Identity strings are stripped/NFC-normalized; host/slug and SHA hex are lowercase.
++Evidence IDs namespace provider, host, repository ID, PR ID, kind and source ID.
++`source_revision` is `sha256:` over exactly `kind`, `source_id`, `review_id`,
++`thread_id`, `check_run_id`, `run_attempt`, `source_head_sha`, `source_updated_at`,
++`author`, `body`, `truncated`, `location`, `disposition`, `summary`.
++`observation_id` hashes repository/PR native IDs, final observed head, sorted
++`(evidence_id, source_revision)` pairs, and coverage status/truncated/reason.
++Collection timestamps, URLs, relevance and presentation order are excluded.
++Unchanged polls keep identity; edits/resolution/dismissal/outcome changes revise
++the same source. The producer revision is a clean source-checkout Git revision,
++otherwise null, never a CLI version.
++
++Briefing appends feedback behind existing evidence and human constraints and
++reports omissions in its reserved coverage citation. Source text is quoted
++untrusted evidence, rendered through safe text helpers. No consumer may infer
++delivery, fixed status, merge approval or readiness from this read-only schema.
++B2 (#79) does not authorize #15 delivery or change its held status; acceptance
++requires the actual merged producer revision and a separately authorized handoff.
++
+ ## Bounded runtime JSON (schema 1)
+ 
+ `factory dashboard --runtime-json` prints one JSON object and exits. It is a
+diff --git a/factory/briefing.py b/factory/briefing.py
+index 9cc9991..43658fe 100644
+--- a/factory/briefing.py
++++ b/factory/briefing.py
+@@ -17,6 +17,7 @@ from datetime import UTC, datetime
+ from pathlib import Path
+ 
+ from factory.config import Config
++from factory.feedback import NOT_COLLECTED
+ 
+ REQUEST_CAP = 100_000
+ QUESTION_CAP = 4_000
+@@ -205,7 +206,7 @@ def sources_for(
+         (f"escalations/{number}.md", "Escalation packet"),
+         (f"manager-{number}.md", "Manager notes"),
+         (f"wt-{number}/.factory/gate-report-{number}.md", "Gate report"),
+-        (f"review-{number}.md", "Review verdict"),
++        (f"review-{number}.md", "Legacy review verdict · provenance unknown"),
+         (f"pr-body-{number}.md", "PR body"),
+     ]
+     pr = ticket.get("pr") or {}
+@@ -228,6 +229,10 @@ def sources_for(
+     state = {k: ticket.get(k) for k in ("number", "title", "state", "stage", "labels", "assignees", "worker", "lock_held", "phase", "updated_at", "spend")}
+     if pr:
+         state["pull_request"] = {k: pr.get(k) for k in ("number", "state", "approved", "draft", "checks", "review_decision", "merged_at")}
++        state["pull_request_evidence_notice"] = (
++            "Legacy labels, check rollups and review decisions are context, not source-versioned "
++            "approval or delivery authority. Use the appended PR feedback and its coverage."
++        )
+     add("Current ticket state", json.dumps(state, ensure_ascii=False, indent=2))
+     events = sorted(ticket.get("events", []), key=lambda e: e.get("at") or "")
+     comments = [e for e in events if e.get("body")]
+@@ -264,7 +269,8 @@ def sources_for(
+         add(f"PR #{pr['number']} gate report", pr["gate_text"], url=pr.get("url", ticket["url"]))
+     for e in reversed(comments):
+         if e not in decisions:
+-            add(f"{e.get('kind', 'Comment').capitalize()} · {e.get('at', '')}", e["body"], url=e.get("url") or ticket["url"])
++            label = "Legacy verdict · provenance unknown" if e.get("kind") == "verdict" else e.get("kind", "Comment").capitalize()
++            add(f"{label} · {e.get('at', '')}", e["body"], url=e.get("url") or ticket["url"])
+     timeline = [{k: e[k] for k in ("at", "kind", "detail") if k in e} for e in events]
+     add("Issue timeline", json.dumps(timeline, ensure_ascii=False, indent=2), url=ticket["url"], truncated=ticket.get("timeline_truncated", False))
+     attempts = sorted(ticket.get("attempts", []), key=lambda a: a.get("attempt", 0), reverse=True)
+@@ -280,15 +286,81 @@ def sources_for(
+     if errors:
+         add("Snapshot collection errors", "\n".join(errors))
+ 
++    feedback_notice = ""
++    feedback_start = len(candidates)
++    if pr:
++        feedback = pr.get("feedback")
++        if not isinstance(feedback, dict) or "schema_version" not in feedback:
++            feedback_notice = (
++                "PR feedback is unsupported/unknown: this snapshot has no "
++                "schema-versioned feedback object. Absence is not a complete empty observation."
++            )
++        elif type(feedback["schema_version"]) is not int or feedback["schema_version"] != 1:
++            feedback_notice = (
++                f"PR feedback is unsupported/unknown: schema_version "
++                f"{feedback['schema_version']!r} is not supported. Its contents were not interpreted."
++            )
++        elif any(
++            key not in feedback
++            for key in ("producer", "observed_at", "observation_id", "repository", "pr", "owner", "coverage", "items", "errors")
++        ) or not isinstance(feedback["items"], list):
++            feedback_notice = (
++                "PR feedback is unsupported/unknown: the schema-1 snapshot is incomplete. "
++                "Its contents were not interpreted."
++            )
++        else:
++            identity = {
++                "schema_version": feedback["schema_version"],
++                "producer": feedback["producer"],
++                "observed_at": feedback["observed_at"],
++                "observation_id": feedback["observation_id"],
++                "repository": feedback["repository"],
++                "pr": feedback["pr"],
++                "owner": feedback["owner"],
++            }
++            coverage = {
++                "coverage": feedback["coverage"],
++                **identity,
++                "errors": feedback["errors"],
++            }
++            uncollected = [
++                error.get("source") for error in feedback["errors"] or []
++                if isinstance(error, dict) and error.get("code") == NOT_COLLECTED
++            ]
++            feedback_notice = (
++                "PR feedback schema 1 coverage (read-only evidence; partial or unavailable "
++                "coverage is unknown, not empty):\n"
++                + (f"Sources {', '.join(sorted(filter(None, uncollected)))} were not collected "
++                   f"({NOT_COLLECTED}): detail reads are limited to open pull requests. "
++                   "Intentional noncollection is not an empty, resolved, or unsupported observation.\n"
++                   if uncollected else "")
++                + json.dumps(coverage, ensure_ascii=False, separators=(",", ":"))
++            )
++            for item in feedback["items"]:
++                source_id = item.get("source_id") if isinstance(item, dict) else None
++                kind = item.get("kind") if isinstance(item, dict) else None
++                payload = {**identity, "item": item}
++                add(
++                    f"PR feedback · {kind or 'unknown'} · {source_id or 'unknown source'}",
++                    json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
++                    url=item.get("source_url") if isinstance(item, dict) else None,
++                    truncated=bool(item.get("truncated")) if isinstance(item, dict) else False,
++                )
++
+     sources, remaining, omitted = [], CONTEXT_CAP - 1_000, 0
+-    for candidate in candidates:
++    feedback_omitted = feedback_shortened = 0
++    for index, candidate in enumerate(candidates):
+         if len(sources) >= SOURCE_COUNT - 1 or remaining < 256:
+             omitted += 1
++            if index >= feedback_start:
++                feedback_omitted += 1
+             continue
+         source = dict(candidate)
+         encoded = source["text"].encode("utf-8")
+         cap = min(SOURCE_CAP, remaining)
+         source["text"] = encoded[:cap].decode("utf-8", errors="ignore")
++        if index >= feedback_start and len(encoded) > cap:
++            feedback_shortened += 1
+         source["truncated"] = bool(source.get("truncated") or len(encoded) > cap)
+         if source["truncated"]:
+             source["label"] += " · truncated"
+@@ -298,6 +370,15 @@ def sources_for(
+             sources.append(source)
+             remaining -= len(source["text"].encode("utf-8"))
+     notices = []
++    if feedback_omitted:
++        notices.append(
++            f"{feedback_omitted} PR feedback evidence item(s) omitted by the "
++            f"{CONTEXT_CAP}-byte / {SOURCE_COUNT}-source context limit."
++        )
++    if feedback_shortened:
++        notices.append(
++            f"{feedback_shortened} PR feedback evidence item(s) shortened by the context byte limit."
++        )
+     if omitted:
+         notices.append(f"{omitted} additional evidence source(s) omitted by the {CONTEXT_CAP}-byte / {SOURCE_COUNT}-source context limit.")
+     if ledger and ledger[1]:
+@@ -306,9 +387,25 @@ def sources_for(
+         notices.append(ticket.get("timeline_coverage") or "GitHub issue timeline contains only the latest 100 events; earlier decisions may be missing.")
+     if pr.get("comments_truncated"):
+         notices.append("PR comments contain only the latest 30 entries; earlier decisions may be missing.")
++    if feedback_notice:
++        notices.append(feedback_notice)
+     if notices:
+         text = "\n".join(notices)
+-        sources.append({"id": "S" + str(int.from_bytes(hashlib.sha256(text.encode()).digest()[:8], "big")), "label": "Evidence coverage · truncated", "text": text, "truncated": True})
++        data = text.encode("utf-8")
++        cap = min(SOURCE_CAP, CONTEXT_CAP - sum(len(source["text"].encode("utf-8")) for source in sources))
++        cut = len(data) > cap
++        suffix = "\nCoverage detail omitted by context byte limit." if cut else ""
++        text = data[:max(0, cap - len(suffix.encode("utf-8")))].decode("utf-8", errors="ignore") + suffix
++        incomplete = bool(
++            cut or omitted or ledger and ledger[1]
++            or ticket.get("timeline_truncated") or pr.get("comments_truncated")
++        )
++        sources.append({
++            "id": "S" + str(int.from_bytes(hashlib.sha256(text.encode()).digest()[:8], "big")),
++            "label": "Evidence coverage" + (" · truncated" if incomplete else ""),
++            "text": text,
++            "truncated": incomplete,
++        })
+     return sources
+ 
+ 
+diff --git a/factory/dashboard.html b/factory/dashboard.html
+index e44d76f..a42dd0a 100644
+--- a/factory/dashboard.html
++++ b/factory/dashboard.html
+@@ -244,6 +244,12 @@
+   .attempt .ah button { margin-left: auto; }
+   .empty { color: var(--dim); font-size: 11px; padding: 14px 16px; }
+   .err { background: rgba(255,42,109,.1); border: 1px solid var(--mag); color: var(--mag); padding: 8px 14px; font-size: 11px; }
++  .feedback-evidence { display: grid; gap: 8px; }
++  .feedback-item { border: 1px solid var(--line); padding: 8px 10px; }
++  .feedback-item > summary { color: var(--ink); word-break: break-word; }
++  .feedback-item .kv { margin: 10px 0; }
++  .feedback-item pre { max-height: 24vh; }
++  .feedback-errors { display: grid; gap: 6px; }
+ 
+   /* tooltip */
+   .tip { position: fixed; z-index: 70; pointer-events: none; background: rgba(5,7,12,.95); border: 1px solid var(--cyan);
+@@ -984,14 +990,109 @@ function tabGate(t, c) {
+   if (text) c.append(pre(text));
+   if (t.gate && t.pr && t.pr.gate_text && t.pr.gate_text !== t.gate.text.trim()) { c.append(h('div', { class: 'section-h' }, 'report attached to the PR at open'), pre(t.pr.gate_text)); }
+ }
++function feedbackEvidence(t, expanded = false) {
++  const root = h('div', { class: 'feedback-evidence', dataset: { feedbackSchema: t.pr?.feedback?.schema_version ?? 'missing' } });
++  if (!t.pr) {
++    root.append(h('div', { class: 'empty feedback-unsupported' }, 'No pull request exists, so there is no PR feedback observation.'));
++    return root;
++  }
++  const f = t.pr.feedback;
++  if (!f || f.schema_version !== 1) {
++    root.append(h('div', { class: 'err feedback-unsupported', role: 'status' },
++      f ? `PR feedback schema ${String(f.schema_version ?? 'unknown')} is unsupported. This evidence is unknown and non-actionable.`
++        : 'This engine does not expose source-versioned PR feedback. Evidence is unsupported/unknown and non-actionable.'));
++    return root;
++  }
++  const value = v => v == null || v === '' ? 'unknown' : String(v);
++  const kvList = pairs => h('dl', { class: 'kv' }, ...pairs.flatMap(([label, content]) => [h('dt', {}, label), h('dd', {}, content)]));
++  const sourceLink = (url, label) => {
++    const safe = safeSourceURL(url);
++    return safe ? h('a', { href: safe, target: '_blank', rel: 'noopener noreferrer' }, label) : null;
++  };
++  const owner = f.owner || {};
++  const ownerIssue = owner.issue || null;
++  const ownerUnknown = owner.relation !== 'factory_issue' || !ownerIssue;
++  root.append(
++    h('div', { class: 'section-h' }, `source-versioned PR feedback · schema ${f.schema_version}`),
++    kvList([
++      ['repository', `${value(f.repository?.slug)} · host ${value(f.repository?.host)} · native id ${value(f.repository?.id)}`],
++      ['pull request', h('span', {}, sourceLink(f.pr?.url, `#${value(f.pr?.number)} ↗`) || `#${value(f.pr?.number)}`, ` · native id ${value(f.pr?.id)} · ${value(f.pr?.state)} · draft ${value(f.pr?.draft)}`)],
++      ['observed head', h('code', {}, value(f.pr?.head_sha))],
++      ['observed at', value(f.observed_at)],
++      ['observation', h('code', {}, value(f.observation_id))],
++      ['producer', `${value(f.producer?.name)} · revision ${value(f.producer?.revision)}`],
++    ]),
++    h('div', { class: `feedback-owner${ownerUnknown ? ' err' : ''}` },
++      h('div', { class: 'section-h' }, 'containing owner identity'),
++      kvList([
++        ['relation', `${value(owner.relation)}${ownerUnknown ? ' · unknown/non-actionable' : ''}`],
++        ['issue', ownerIssue ? h('span', {}, sourceLink(ownerIssue.url, `#${value(ownerIssue.number)} ↗`) || `#${value(ownerIssue.number)}`, ` · native id ${value(ownerIssue.id)}`) : 'unknown'],
++      ]),
++      h('div', { class: 'hint' }, 'Ownership is evidence, not readiness or approval authority.'),
++      owner.evidence?.length ? h('ul', {}, ...owner.evidence.map(entry => h('li', {}, entry))) : h('div', { class: 'empty' }, 'No ownership evidence recorded.')),
++    h('div', { class: 'section-h' }, 'source coverage'),
++    h('div', { class: 'checks feedback-coverage' },
++      ...['pr', 'reviews', 'threads', 'checks'].map(source => {
++        const coverage = f.coverage?.[source];
++        const state = coverage?.status === 'complete' ? 'SUCCESS' : coverage?.status === 'unavailable' ? 'ERROR' : 'PENDING';
++        return h('span', { class: `chk ${state}`, dataset: { feedbackSource: source }, title: coverage?.reason || 'No coverage reason recorded' },
++          `${source} ${value(coverage?.status)} · observed ${value(coverage?.observed_at)} · truncated ${value(coverage?.truncated)}${coverage?.reason ? ` · ${coverage.reason}` : ''}`);
++      })),
++    h('div', { class: 'hint' }, 'Partial or unavailable coverage never means that no feedback exists.'),
++  );
++  const uncollected = (f.errors || []).filter(error => error?.code === 'not_collected').map(error => value(error.source));
++  if (uncollected.length) root.append(h('div', { class: 'err feedback-not-collected', role: 'status' },
++    `Detail sources ${uncollected.join(', ')} were not collected: detail reads are limited to open pull requests. Intentional noncollection is unknown, not empty, resolved, or unsupported evidence.`));
++  root.append(h('div', { class: 'section-h' }, `simultaneous evidence · ${f.items?.length || 0} item${f.items?.length === 1 ? '' : 's'}`));
++  if (!f.items?.length) {
++    const complete = ['reviews', 'threads', 'checks'].every(source => f.coverage?.[source]?.status === 'complete');
++    root.append(h('div', { class: 'empty feedback-empty' }, uncollected.length ? 'No items were returned because these sources were not read for this non-open pull request.' : complete ? 'The observed feedback sources were complete and returned no items.' : 'No items were returned, but incomplete coverage makes absence unknown.'));
++  }
++  for (const item of f.items || []) {
++    const disposition = item.disposition || {}, location = item.location || {};
++    const detail = h('details', { class: 'feedback-item', open: expanded, dataset: { evidenceId: value(item.evidence_id), relevance: value(item.relevance), kind: value(item.kind) } },
++      h('summary', {}, `${value(item.kind)} · ${value(item.summary || item.source_id)} · relevance ${value(item.relevance)}`),
++      kvList([
++        ['evidence id', h('code', {}, value(item.evidence_id))],
++        ['source id', value(item.source_id)],
++        ['source revision', h('code', {}, value(item.source_revision))],
++        ['observed head', h('code', {}, value(item.observed_head_sha))],
++        ['source head', h('code', {}, value(item.source_head_sha))],
++        ['updated at', value(item.source_updated_at)],
++        ['author', `${value(item.author?.login)} · ${value(item.author?.kind)}`],
++        ['review/thread', `${value(item.review_id)} / ${value(item.thread_id)}`],
++        ['check run/attempt', `${value(item.check_run_id)} / ${value(item.run_attempt)}`],
++        ['relevance', value(item.relevance)],
++        ['review state', value(disposition.review_state)],
++        ['thread resolved', value(disposition.thread_resolved)],
++        ['thread outdated', value(disposition.thread_outdated)],
++        ['check status', value(disposition.check_status)],
++        ['check conclusion', value(disposition.check_conclusion)],
++        ['location', `${value(location.path)} · line ${value(location.line)} · side ${value(location.side)} · original line ${value(location.original_line)} · original commit ${value(location.original_commit_sha)}`],
++      ]),
++      item.truncated ? h('div', { class: 'err' }, 'Body truncated by the bounded collector; use the provider source for omitted text.') : null,
++      h('div', { class: 'section-h' }, 'source body'),
++      pre(item.body),
++      sourceLink(item.source_url, 'Open provider source ↗') || h('span', { class: 'hint feedback-source-unavailable' }, 'Provider source link unavailable.'));
++    root.append(detail);
++  }
++  root.append(h('div', { class: 'section-h' }, `collection errors · ${f.errors?.length || 0}`));
++  if (f.errors?.length) root.append(h('div', { class: 'feedback-errors' }, ...f.errors.map(error =>
++    h('div', { class: 'err feedback-error', dataset: { feedbackSource: value(error.source), feedbackCode: value(error.code) } }, `${value(error.source)} · ${value(error.code)} · ${value(error.message)}`))));
++  else root.append(h('div', { class: 'empty' }, 'No collection errors recorded.'));
++  root.append(h('div', { class: 'hint' }, 'Feedback is read-only evidence. It does not imply delivery, resolution, readiness, or approval for merge.'));
++  return root;
++}
+ function tabReview(t, c) {
++  c.append(feedbackEvidence(t, true));
+   const vs = t.pr ? t.pr.verdicts : [];
+   const last = vs.at(-1);
+-  c.append(h('div', { class: 'section-h' }, last ? `latest verdict: ${last.verdict} · ${ago(last.at)}` : 'no reviewer verdict on the PR'));
+-  if (last || t.review) c.append(h('button', { onclick: () => openFM(t.number, t.review ? { path: t.review.path, label: 'Local review' } : { match: 'verdict|review', label: 'PR review verdict' }) }, 'Ask FM about this review'));
+-  if (last) c.append(h('div', { class: 'checks' }, ...vs.map(v => h('span', { class: `chk ${v.verdict === 'APPROVE' ? 'PASS' : 'FAIL'}`, title: fmt(v.at) }, `${v.verdict} ${hm(v.at)}`))));
+-  vs.slice().reverse().forEach((v, i) => c.append(h('details', { open: i === 0 }, h('summary', {}, `${v.verdict} · ${fmt(v.at)}`), pre(v.body))));
+-  if (t.review) c.append(h('div', { class: 'section-h' }, `local review-${t.number}.md · ${t.review.verdict || '?'} · ${ago(t.review.mtime)}`), h('details', {}, h('summary', {}, t.review.path), pre(t.review.text)));
++  c.append(h('div', { class: 'section-h' }, 'legacy review context · not source-versioned authority'));
++  c.append(h('div', { class: 'hint' }, last ? `Latest legacy verdict record: ${last.verdict} · ${ago(last.at)}. This is not trusted source-versioned approval.` : 'No legacy reviewer verdict record on the PR.'));
++  if (last || t.review) c.append(h('button', { onclick: () => openFM(t.number, t.review ? { path: t.review.path, label: 'Local review' } : { match: 'verdict|review', label: 'Legacy PR review context' }) }, 'Ask FM about this legacy review context'));
++  if (last) c.append(h('div', { class: 'checks' }, ...vs.map(v => h('span', { class: 'chk', title: fmt(v.at) }, `legacy ${v.verdict} ${hm(v.at)}`))));
++  vs.slice().reverse().forEach((v, i) => c.append(h('details', { open: i === 0 }, h('summary', {}, `legacy ${v.verdict} · ${fmt(v.at)}`), pre(v.body))));
++  if (t.review) c.append(h('div', { class: 'section-h' }, `legacy local review-${t.number}.md · ${t.review.verdict || '?'} · ${ago(t.review.mtime)}`), h('details', {}, h('summary', {}, t.review.path), pre(t.review.text)));
+ }
+ function tabBranch(t, c) {
+   const w = t.worktree, p = t.pr;
+@@ -1156,14 +1257,29 @@ function taskFacts(item) {
+   facts.push(t.assignees.length ? `Currently assigned to @${t.assignees.join(', @')}. Routing labels alone do not release an assignment.` : 'Currently unassigned.');
+   if (t.gate) {
+     const failures = Object.entries(t.gate.checks).filter(([, value]) => value === 'FAIL').map(([name]) => name);
+-    facts.push(failures.length ? `Gate failures: ${failures.join(', ')}.` : `Latest gate: ${Object.entries(t.gate.checks).map(([name, value]) => `${name} ${value}`).join(' · ') || 'no check results recorded'}.`);
++    facts.push(failures.length ? `Legacy local gate failures: ${failures.join(', ')}.` : `Legacy local gate context: ${Object.entries(t.gate.checks).map(([name, value]) => `${name} ${value}`).join(' · ') || 'no check results recorded'}.`);
+   } else facts.push('No local gate report is available.');
+   if (t.pr) {
+-    facts.push(`PR #${t.pr.number}: ${t.pr.state.toLowerCase()}, ${t.pr.approved ? 'factory-approved' : 'not approved'}, CI ${t.pr.checks.state || 'unknown'}.`);
++    facts.push(`PR #${t.pr.number}: ${t.pr.state.toLowerCase()}, ${t.pr.approved ? 'factory-approved label present' : 'factory-approved label absent'}, legacy CI rollup ${t.pr.checks.state || 'unknown'}. Labels and legacy rollups are not source-versioned feedback authority.`);
+     const failed = t.pr.checks.list.filter(c => ['FAILURE', 'ERROR'].includes(c.result)).map(c => c.name);
+-    if (failed.length) facts.push(`Failing CI checks: ${failed.join(', ')}. Approval does not bypass CI.`);
++    if (failed.length) facts.push(`Legacy failing CI check context: ${failed.join(', ')}. Approval does not bypass CI.`);
+     const verdict = t.pr.verdicts.at(-1);
+-    if (verdict) facts.push(`Latest reviewer verdict: ${verdict.verdict} (${fmt(verdict.at)}).`);
++    if (verdict) facts.push(`Latest legacy reviewer verdict record: ${verdict.verdict} (${fmt(verdict.at)}). It is not trusted source-versioned approval.`);
++    const feedback = t.pr.feedback;
++    if (!feedback || feedback.schema_version !== 1) {
++      facts.push(feedback ? `PR feedback schema ${String(feedback.schema_version ?? 'unknown')} is unsupported; feedback is unknown and non-actionable.` : 'This engine does not expose source-versioned PR feedback; feedback is unsupported/unknown and non-actionable.');
++    } else {
++      const owner = feedback.owner || {};
++      facts.push(owner.relation === 'factory_issue' && owner.issue
++        ? `Feedback owner identity: Factory issue #${owner.issue.number} (${owner.evidence?.length || 0} evidence record${owner.evidence?.length === 1 ? '' : 's'}).`
++        : `Feedback owner identity: ${owner.relation || 'unknown'}; ownership is unknown/non-actionable.`);
++      const counts = { current_head: 0, historical: 0, unknown: 0 };
++      for (const evidence of feedback.items || []) counts[evidence.relevance] = (counts[evidence.relevance] || 0) + 1;
++      facts.push(`Source-versioned feedback: ${feedback.items?.length || 0} items · ${counts.current_head} current head · ${counts.historical} historical · ${counts.unknown} unknown. Coverage: ${['pr', 'reviews', 'threads', 'checks'].map(source => `${source} ${feedback.coverage?.[source]?.status || 'unknown'}`).join(' · ')}.`);
++      const uncollected = (feedback.errors || []).filter(error => error?.code === 'not_collected').map(error => String(error.source));
++      if (uncollected.length) facts.push(`Feedback detail sources ${uncollected.join(', ')} were not collected: detail reads are limited to open pull requests. This is intentional noncollection, not empty, resolved, or unsupported evidence.`);
++      facts.push('Feedback is read-only evidence and does not authorize delivery, resolution, readiness, or approval for merge.');
++    }
+   }
+   return h('ul', {}, ...facts.map(fact => h('li', {}, fact)));
+ }
+@@ -1364,6 +1480,7 @@ function renderTaskBriefing(item) {
+   const raw = h('details', { class: 'briefing-sources' }, h('summary', {}, `Inspect raw evidence${sources.length ? ` · ${sources.length} sources` : ''}`));
+   if (sources.length) raw.append(...sources.map(source => sourceDetails(t.number, source)));
+   else raw.append(h('details', {}, h('summary', {}, 'Issue body'), pre(t.body)), h('button', { onclick: () => openTicket(t.number, 'timeline') }, 'Open task timeline and artifacts'));
++  if (t.pr) raw.append(feedbackEvidence(t));
+   return h('article', {},
+     h('header', { class: 'briefing-intro' }, h('p', { class: 'briefing-label' }, `${INBOX_KINDS[item.kind]} · #${t.number} · ${t.title}`),
+       h('h2', { id: 'briefing-question', class: 'briefing-question', tabindex: -1 }, briefing ? cited(briefing.question, sources, t.number) : item.kind === 'needs-info' ? item.why : `What should happen next for #${t.number}?`),
+diff --git a/factory/dashboard.py b/factory/dashboard.py
+index dfd2b76..6fecd9d 100644
+--- a/factory/dashboard.py
++++ b/factory/dashboard.py
+@@ -27,7 +27,7 @@ from pathlib import Path
+ from urllib.parse import parse_qs, urlparse
+ from uuid import uuid4
+ 
+-from factory import __version__, briefing, codebase, config, dispatch, lifecycle, stats
++from factory import __version__, briefing, codebase, config, dispatch, feedback, lifecycle, stats
+ from factory.config import (
+     LABEL_AGENT,
+     LABEL_APPROVED,
+@@ -121,9 +121,10 @@ GRAPHQL = """
+ query($owner:String!,$name:String!{UVARS}){
+ {UPSTREAM}
+   repository(owner:$owner,name:$name){
++    id
+     issues(first:100,orderBy:{field:CREATED_AT,direction:DESC}){
+       nodes{
+-        number title state url createdAt updatedAt closedAt body
++        id number title state url createdAt updatedAt closedAt body
+         labels(first:20){nodes{name color}}
+         assignees(first:5){nodes{login}}
+         timelineItems(last:100,itemTypes:[LABELED_EVENT,UNLABELED_EVENT,
+@@ -146,7 +147,7 @@ query($owner:String!,$name:String!{UVARS}){
+     }
+     pullRequests(first:100,orderBy:{field:CREATED_AT,direction:DESC}){
+       nodes{
+-        number title state url headRefName createdAt mergedAt closedAt isDraft
++        id number title state url headRefName headRefOid createdAt mergedAt closedAt isDraft
+         additions deletions changedFiles body reviewDecision
+         labels(first:10){nodes{name}}
+         comments(last:30){pageInfo{hasPreviousPage} nodes{createdAt author{login} body url}}
+@@ -192,29 +193,33 @@ def file_meta(path: Path) -> dict | None:
+ # ---------------------------------------------------------------- GitHub
+ 
+ 
+-def github() -> dict:
+-    owner, name = REPO.split("/", 1)
+-    query = GRAPHQL.replace(
+-        "{UVARS}", ",$uowner:String!,$uname:String!" if UPSTREAM else ""
+-    ).replace("{UPSTREAM}", GRAPHQL_UPSTREAM if UPSTREAM else "")
+-    cmd = [
+-        "gh",
+-        "api",
+-        "graphql",
+-        "-f",
+-        f"query={query}",
+-        "-F",
+-        f"owner={owner}",
+-        "-F",
+-        f"name={name}",
+-    ]
+-    if UPSTREAM:
+-        uowner, uname = UPSTREAM.split("/", 1)
+-        cmd += ["-F", f"uowner={uowner}", "-F", f"uname={uname}"]
+-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
++def github(*, endpoint: str | None = None, query: str | None = None,
++           variables: dict | None = None, timeout: float | None = None) -> dict | list:
++    """Shared full-snapshot transport; feedback supplies only fixed read queries."""
++    if endpoint is not None:
++        cmd = ["gh", "api", "--method", "GET", endpoint]
++    else:
++        if query is None:
++            owner, name = REPO.split("/", 1)
++            query = GRAPHQL.replace(
++                "{UVARS}", ",$uowner:String!,$uname:String!" if UPSTREAM else ""
++            ).replace("{UPSTREAM}", GRAPHQL_UPSTREAM if UPSTREAM else "")
++            variables = {"owner": owner, "name": name}
++            if UPSTREAM:
++                variables["uowner"], variables["uname"] = UPSTREAM.split("/", 1)
++        cmd = ["gh", "api", "graphql", "-f", f"query={query}"]
++        for key, value in (variables or {}).items():
++            if value is not None:
++                cmd += ["-F" if type(value) is int else "-f", f"{key}={value}"]
++    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout)
+     if proc.returncode:
+         raise RuntimeError(proc.stderr.strip() or "gh api graphql failed")
+-    return json.loads(proc.stdout)["data"]
++    value = json.loads(proc.stdout)
++    if endpoint is not None:
++        return value
++    if value.get("errors"):
++        raise RuntimeError("GitHub query was incomplete")
++    return value["data"]
+ 
+ 
+ def pr_checks(pr: dict) -> dict:
+@@ -803,6 +808,8 @@ def snapshot() -> dict:
+     errors = []
+     issues: list[dict] = []
+     prs: dict[int, dict] = {}
++    raw_prs: dict[int, dict] = {}
++    repo: dict = {}
+     gh_upstream = None
+     try:
+         data = github()
+@@ -817,6 +824,7 @@ def snapshot() -> dict:
+             # Prefer the merged PR, else the newest, when a branch had several.
+             if n not in prs or (rec["merged_at"] and not prs[n]["merged_at"]):
+                 prs[n] = rec
++                raw_prs[n] = pr
+     except (RuntimeError, ValueError, KeyError) as exc:
+         errors.append(f"github: {exc}")
+ 
+@@ -839,10 +847,53 @@ def snapshot() -> dict:
+     for execution in executions:
+         if execution["ticket"] is not None:
+             by_ticket.setdefault(execution["ticket"], []).append(execution)
++    provenance, provenance_complete = [], True
++    if raw_prs:
++        try:
++            ledger = briefing.bounded_file(FACTORY, "events.jsonl", briefing.EVENT_READ_CAP, tail=True)
++            if ledger is not None:
++                text, cut = ledger
++                lines = text.split("\n")
++                unfinished = lines.pop()
++                provenance_complete = not cut and not unfinished
++                if cut and lines:
++                    lines = lines[1:]
++                for line in lines:
++                    try:
++                        row = json.loads(line)
++                        if isinstance(row, dict):
++                            provenance.append(row)
++                        else:
++                            provenance_complete = False
++                    except ValueError:
++                        provenance_complete = False
++            else:
++                provenance_complete = False
++        except OSError:
++            provenance_complete = False
++        # Revision belongs to the imported source checkout, not the observed repository.
++        source_root = Path(__file__).resolve().parent
++        revision = sh(["git", "rev-parse", "HEAD"], cwd=source_root).strip()
++        if (not sh(["git", "ls-files", "--error-unmatch", "--", "feedback.py"], cwd=source_root).strip()
++                or sh(["git", "status", "--porcelain", "--", "."], cwd=source_root).strip()):
++            revision = None
+     for issue in issues:
+         n = issue["number"]
+         if not selected_issue(issue, prs, on_disk, by_ticket, audit):
+             continue
++        if n in raw_prs:
++            raw = raw_prs[n]
++            # Detail reads stay bounded to open work: the snapshot lists up to 100
++            # PRs, and closed history must not multiply provider calls per refresh.
++            prs[n]["feedback"] = feedback.collect(
++                github, repository={"id": repo.get("id"), "slug": REPO,
++                                    "host": urlparse(raw["url"]).hostname or "github.com"},
++                pr={"id": raw.get("id"), "number": raw["number"], "url": raw["url"],
++                    "state": raw.get("state"), "draft": raw.get("isDraft")},
++                issue={"id": issue.get("id"), "number": n, "url": issue["url"]},
++                events=provenance, provenance_complete=provenance_complete,
++                producer_revision=revision, collect_details=raw.get("state") == "OPEN",
++            )
+         tickets.append(build_ticket(
+             issue, prs.get(n), disk_state(n), spend.get(n), by_ticket.get(n), audit=audit.get(n),
+         ))
+diff --git a/factory/feedback.py b/factory/feedback.py
+new file mode 100644
+index 0000000..03de855
+--- /dev/null
++++ b/factory/feedback.py
+@@ -0,0 +1,441 @@
++"""Schema-1, read-only PR feedback. Transport is supplied by the full snapshot.
++
++No state, model, or mutation lives here. Missing evidence is never authority.
++"""
++from __future__ import annotations
++
++import hashlib
++import json
++import re
++import subprocess
++import time
++import unicodedata
++from datetime import datetime, timezone
++from urllib.parse import quote
++
++from factory import lifecycle
++
++ITEM_LIMIT = 100
++PAGE_LIMIT = 2
++BODY_LIMIT = 20_000
++ERROR_LIMIT = 32
++DETAIL_TIMEOUT = 30
++SOURCES = ('pr', 'reviews', 'threads', 'checks')
++NOT_COLLECTED = 'not_collected'
++NOT_COLLECTED_MESSAGE = ('Detail collection is limited to open pull requests; this source was not read. '
++                         'Intentional noncollection is unknown, not empty, resolved, or unsupported.')
++REVISION_FIELDS = ('kind', 'source_id', 'review_id', 'thread_id', 'check_run_id',
++                   'run_attempt', 'source_head_sha', 'source_updated_at', 'author',
++                   'body', 'truncated', 'location', 'disposition', 'summary')
++HEAD_QUERY = '''query($owner:String!,$name:String!,$number:Int!){
++ repository(owner:$owner,name:$name){id pullRequest(number:$number){
++ id number url headRefOid state isDraft
++ closingIssuesReferences(first:100){nodes{id number url} pageInfo{hasNextPage}}
++ }}}'''
++REVIEW_QUERY = '''query($owner:String!,$name:String!,$number:Int!,$cursor:String){
++ repository(owner:$owner,name:$name){pullRequest(number:$number){
++ reviews(first:50,after:$cursor){pageInfo{hasNextPage endCursor} nodes{
++ id url body state updatedAt author{login __typename} commit{oid}
++ }}}}}'''
++THREAD_QUERY = '''query($owner:String!,$name:String!,$number:Int!,$cursor:String){
++ repository(owner:$owner,name:$name){pullRequest(number:$number){
++ reviewThreads(first:50,after:$cursor){pageInfo{hasNextPage endCursor} nodes{
++ id isResolved isOutdated comments(first:100){pageInfo{hasNextPage} nodes{
++ id url body updatedAt author{login __typename} commit{oid} originalCommit{oid}
++ path line originalLine diffSide pullRequestReview{id}
++ }}}}}}}'''
++
++
++def canonical(value: object) -> bytes:
++    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf-8')
++
++
++def digest(value: object) -> str:
++    return 'sha256:' + hashlib.sha256(canonical(value)).hexdigest()
++
++
++def identity(value: object) -> str | None:
++    if not isinstance(value, (str, int)) or isinstance(value, bool):
++        return None
++    return unicodedata.normalize('NFC', str(value).strip()) or None
++
++
++def sha(value: object) -> str | None:
++    return value.lower() if isinstance(value, str) and re.fullmatch(r'[a-fA-F0-9]{40,64}', value) else None
++
++
++def utc(value: object) -> str | None:
++    if not isinstance(value, str):
++        return None
++    try:
++        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
++        if parsed.tzinfo is not None:
++            return parsed.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
++    except ValueError:
++        pass
++    return None
++
++
++def collect(read, *, repository: dict, pr: dict, issue: dict | None = None,
++            events: list[dict] = (), provenance_complete: bool = True,
++            producer_revision: str | None = None, observed_at: str | None = None,
++            collect_details: bool = True) -> dict:
++    """Collect one PR using read(endpoint=... | query=..., variables=..., timeout=...).
++
++    The transport returns decoded REST JSON or GraphQL data and enforces timeout.
++    All source failures become bounded, sanitized coverage; independent facts survive.
++    events must be retained, committed rows from the repository's bounded journal read.
++    collect_details=False reads nothing: the caller's independently known identities
++    and state are retained and every source is unavailable, never complete-empty.
++    """
++    observed_at = utc(observed_at) or datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
++    repository = {"id": identity(repository.get('id')), "slug": repository['slug'].strip().lower(),
++                  "host": repository['host'].strip().lower()}
++    result = {'schema_version': 1, 'producer': {'name': 'factory.pr-feedback', 'revision': sha(producer_revision)},
++              'observed_at': observed_at, 'observation_id': None, 'repository': repository,
++              'pr': {'id': identity(pr.get('id')), 'number': pr['number'], 'url': pr['url'], 'head_sha': None,
++                     'state': pr['state'].lower() if isinstance(pr.get('state'), str)
++                     and pr['state'].lower() in ('open', 'closed', 'merged') else 'unknown',
++                     'draft': pr['draft'] if type(pr.get('draft')) is bool else None},
++              'owner': {'issue': None, 'relation': 'unverified', 'evidence': []},
++              'coverage': {s: {'status': 'unavailable', 'observed_at': None, 'truncated': False, 'reason': None} for s in SOURCES},
++              'items': [], 'errors': []}
++    reasons = {s: set() for s in SOURCES}
++    deadline = time.monotonic() + DETAIL_TIMEOUT
++    owner, name = repository['slug'].split('/', 1)
++    variables = {'owner': owner, 'name': name, 'number': pr['number']}
++    prefix = 'repos/' + repository['slug']
++    counts = {s: 0 for s in SOURCES}
++    identities = {}
++    conflicts = set()
++
++    def gap(source, code, message, *, truncated=False):
++        coverage = result['coverage'][source]
++        if coverage['observed_at'] is not None:
++            coverage['status'] = 'partial'
++        coverage['truncated'] |= truncated
++        reasons[source].add(code + ': ' + message)
++        error = {'source': source, 'code': code, 'message': message}
++        if error not in result['errors'] and len(result['errors']) < ERROR_LIMIT:
++            result['errors'].append(error)
++
++    def success(source):
++        c = result['coverage'][source]
++        c['observed_at'] = observed_at
++        c['status'] = 'partial' if reasons[source] else 'complete'
++
++    def request(source, **kwargs):
++        # Historical PRs are never fanned out: noncollection is recorded, not read.
++        if not collect_details:
++            gap(source, NOT_COLLECTED, NOT_COLLECTED_MESSAGE)
++            return None
++        try:
++            remaining = deadline - time.monotonic()
++            if remaining <= 0:
++                raise TimeoutError
++            value = read(**kwargs, timeout=remaining)
++            if time.monotonic() > deadline:
++                raise TimeoutError
++            if not isinstance(value, (dict, list)):
++                raise ValueError
++            return value
++        except (TimeoutError, subprocess.TimeoutExpired):
++            gap(source, 'timeout', 'Feedback detail group reached its 30-second limit.')
++        except (OSError, RuntimeError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
++            gap(source, 'source_unavailable', 'Provider source could not be read or decoded.')
++        return None
++
++    def head():
++        data = request('pr', query=HEAD_QUERY, variables=variables)
++        if data is None:
++            return None
++        try:
++            repo = data['repository']
++            p = repo['pullRequest']
++            if not isinstance(p, dict) or p.get('number') != pr['number']:
++                raise ValueError
++            if (not identity(repo.get('id')) or not identity(p.get('id'))
++                    or repository['id'] not in (None, identity(repo['id']))
++                    or result['pr']['id'] not in (None, identity(p['id']))):
++                gap('pr', 'identity_conflict', 'Provider repository or PR native identity is missing or contradictory.')
++                return None
++            repository['id'] = identity(repo['id'])
++            result['pr']['id'] = identity(p['id'])
++            success('pr')
++            if not sha(p.get('headRefOid')):
++                gap('pr', 'head_missing', 'Provider PR head is unavailable.')
++            p = dict(p)
++            if p.get('state') not in ('OPEN', 'CLOSED', 'MERGED'):
++                p['state'] = 'UNKNOWN'
++                gap('pr', 'state_unknown', 'Provider PR state is unavailable or unsupported.')
++            if type(p.get('isDraft')) is not bool:
++                gap('pr', 'draft_unknown', 'Provider PR draft state is unavailable.')
++            links = p.get('closingIssuesReferences')
++            if (not isinstance(links, dict) or not isinstance(links.get('nodes'), list)
++                    or not isinstance(links.get('pageInfo'), dict)
++                    or type(links['pageInfo'].get('hasNextPage')) is not bool):
++                p['closingIssuesReferences'] = {}
++                gap('pr', 'links_unknown', 'Provider issue-link coverage is unavailable.')
++            elif links['pageInfo']['hasNextPage']:
++                gap('pr', 'issue_link_limit', 'Issue links stop after 100 entries; ownership is unknown.', truncated=True)
++            return p
++        except (KeyError, TypeError, ValueError, AttributeError):
++            gap('pr', 'malformed_response', 'Provider PR response is malformed.')
++            return None
++
++    def item(source, kind, source_id, *, body='', updated=None, source_sha=None, url=None,
++             author=None, review_id=None, thread_id=None, check_run_id=None, attempt=None,
++             location=None, disposition=None, summary=None, factory=False):
++        sid = identity(source_id)
++        if not sid or not repository['id'] or not result['pr']['id']:
++            gap(source, 'identity_missing', 'Required native source, repository, or PR identity is unavailable.')
++            return
++        if counts[source] >= ITEM_LIMIT:
++            gap(source, 'item_limit', 'Source retains at most 100 items.', truncated=True)
++            return
++        if not isinstance(body, str):
++            gap(source, 'malformed_body', 'Provider body is not text.')
++            body = ''
++        encoded = body.encode('utf-8')
++        cut = len(encoded) > BODY_LIMIT
++        body = encoded[:BODY_LIMIT].decode('utf-8', errors='ignore')
++        updated = utc(updated)
++        if cut:
++            gap(source, 'body_limit', 'Source body retains at most 20000 UTF-8 bytes.', truncated=True)
++            if updated is None:
++                gap(source, 'change_detection_incomplete', 'No reliable update signal: changes beyond retained body cannot be detected.', truncated=True)
++        source_sha = sha(source_sha)
++        if source_sha is None:
++            gap(source, 'source_head_missing', 'Source commit identity is unavailable; relevance is unknown.')
++        actor = author if isinstance(author, dict) else {}
++        author_kind = 'factory_reviewer' if factory else 'bot' if actor.get('type', actor.get('__typename')) == 'Bot' else 'unknown'
++        value = {'evidence_id': ':'.join(quote(v, safe='') for v in ('github', repository['host'], repository['id'], result['pr']['id'], kind, sid)),
++                 'kind': kind, 'source_id': sid, 'source_url': url if isinstance(url, str) else None,
++                 'source_revision': None, 'source_updated_at': updated,
++                 'review_id': identity(review_id), 'thread_id': identity(thread_id),
++                 'check_run_id': identity(check_run_id), 'run_attempt': attempt if type(attempt) is int and attempt > 0 else None,
++                 'observed_head_sha': None, 'source_head_sha': source_sha, 'relevance': 'unknown',
++                 'disposition': dict.fromkeys(('review_state', 'thread_resolved', 'thread_outdated', 'check_status', 'check_conclusion')),
++                 'author': {'login': identity(actor.get('login')), 'kind': author_kind}, 'body': body, 'truncated': cut,
++                 'location': dict.fromkeys(('path', 'line', 'side', 'original_line', 'original_commit_sha')),
++                 'summary': summary if isinstance(summary, str) else None}
++        value['location'].update(location or {})
++        value['disposition'].update(disposition or {})
++        for field, allowed in {
++            'review_state': ('APPROVED', 'CHANGES_REQUESTED', 'COMMENTED', 'DISMISSED', 'PENDING'),
++            'thread_resolved': (True, False), 'thread_outdated': (True, False),
++            'check_status': ('queued', 'in_progress', 'completed', 'waiting', 'requested', 'pending', 'success', 'failure', 'error'),
++            'check_conclusion': ('success', 'failure', 'neutral', 'cancelled', 'skipped', 'timed_out', 'action_required', 'stale', 'startup_failure'),
++        }.items():
++            retained = value['disposition'][field]
++            if retained is not None and (retained not in allowed or type(retained) is not type(allowed[0])):
++                value['disposition'][field] = None
++                gap(source, 'disposition_unknown', 'Provider disposition is missing or unsupported.')
++        for field in ('line', 'original_line'):
++            retained = value['location'][field]
++            if retained is not None and (type(retained) is not int or retained <= 0):
++                value['location'][field] = None
++                gap(source, 'location_unknown', 'Provider line location is malformed.')
++        for field in ('path', 'side'):
++            retained = value['location'][field]
++            if retained is not None and not isinstance(retained, str):
++                value['location'][field] = None
++                gap(source, 'location_unknown', 'Provider path or side is malformed.')
++        value['source_revision'] = digest({k: value[k] for k in REVISION_FIELDS})
++        key = value['evidence_id']
++        if key in conflicts:
++            return
++        previous = identities.get(key)
++        if previous is not None:
++            if previous['source_revision'] != value['source_revision']:
++                result['items'].remove(previous)
++                conflicts.add(key)
++                gap(source, 'source_identity_conflict', 'One source identity returned contradictory retained facts.')
++            return
++        identities[key] = value
++        result['items'].append(value)
++        counts[source] += 1
++
++    # Real reviews retain native IDs, the reviewed commit, and the provider's own
++    # update time, which (unlike a submission time) moves when a review is edited.
++    initial = head()
++    initial_sha = sha((initial or {}).get('headRefOid'))
++    cursor = None
++    for page in range(PAGE_LIMIT):
++        values = request('reviews', query=REVIEW_QUERY, variables={**variables, 'cursor': cursor})
++        if values is None:
++            break
++        try:
++            connection = values['repository']['pullRequest']['reviews']
++            rows = connection['nodes']
++            page_info = connection['pageInfo']
++            if not isinstance(rows, list) or type(page_info['hasNextPage']) is not bool:
++                raise ValueError
++            success('reviews')
++            for row in rows[:ITEM_LIMIT]:
++                if not isinstance(row, dict):
++                    gap('reviews', 'malformed_response', 'Provider review record is malformed.')
++                    continue
++                item('reviews', 'review', row.get('id'), body=row.get('body') or '', updated=row.get('updatedAt'),
++                     source_sha=(row.get('commit') or {}).get('oid'), url=row.get('url'), author=row.get('author'),
++                     review_id=row.get('id'), disposition={'review_state': row.get('state')})
++            if not page_info['hasNextPage']:
++                break
++            if page + 1 == PAGE_LIMIT or counts['reviews'] >= ITEM_LIMIT:
++                gap('reviews', 'page_limit', 'Reviews stopped at two pages or 100 items; unseen evidence is unknown.', truncated=True)
++                break
++            cursor = identity(page_info.get('endCursor'))
++            if cursor is None:
++                raise ValueError
++        except (KeyError, TypeError, ValueError, AttributeError):
++            gap('reviews', 'malformed_response', 'Provider reviews response is malformed.')
++            break
++
++    cursor = None
++    for page in range(PAGE_LIMIT):
++        values = request('threads', query=THREAD_QUERY, variables={**variables, 'cursor': cursor})
++        if values is None:
++            break
++        try:
++            connection = values['repository']['pullRequest']['reviewThreads']
++            threads = connection['nodes']
++            page_info = connection['pageInfo']
++            if not isinstance(threads, list) or type(page_info['hasNextPage']) is not bool:
++                raise ValueError
++            success('threads')
++            for thread in threads[:ITEM_LIMIT]:
++                if not identity(thread.get('id')):
++                    gap('threads', 'identity_missing', 'Native thread identity is unavailable.')
++                    continue
++                if type(thread.get('isResolved')) is not bool or type(thread.get('isOutdated')) is not bool:
++                    gap('threads', 'thread_state_missing', 'Thread resolution or outdated state is unavailable.')
++                comments = thread['comments']
++                if not isinstance(comments['nodes'], list):
++                    raise ValueError
++                for row in comments['nodes'][:ITEM_LIMIT]:
++                    item('threads', 'review_comment', row.get('id'), body=row.get('body') or '', updated=row.get('updatedAt'),
++                         source_sha=(row.get('commit') or {}).get('oid'), url=row.get('url'), author=row.get('author'),
++                         review_id=(row.get('pullRequestReview') or {}).get('id'), thread_id=thread['id'],
++                         location={'path': row.get('path'), 'line': row.get('line'), 'side': row.get('diffSide'),
++                                   'original_line': row.get('originalLine'), 'original_commit_sha': sha((row.get('originalCommit') or {}).get('oid'))},
++                         disposition={'thread_resolved': thread.get('isResolved'), 'thread_outdated': thread.get('isOutdated')})
++                if comments['pageInfo']['hasNextPage'] or len(comments['nodes']) > ITEM_LIMIT:
++                    gap('threads', 'comment_page_limit', 'Thread comment page retains at most 100 comments; further comments are unknown.', truncated=True)
++            if not page_info['hasNextPage']:
++                break
++            if page + 1 == PAGE_LIMIT or counts['threads'] >= ITEM_LIMIT:
++                gap('threads', 'page_limit', 'Threads stopped at two pages or 100 comments; further evidence is unknown.', truncated=True)
++                break
++            cursor = identity(page_info.get('endCursor'))
++            if cursor is None:
++                raise ValueError
++        except (KeyError, TypeError, ValueError, AttributeError):
++            gap('threads', 'malformed_response', 'Provider thread response is malformed.')
++            break
++
++    # Two pages total for the combined checks source: one native check-run page
++    # and one commit-status page. Never spend the status page budget on check runs.
++    if initial_sha:
++        for kind, endpoint in (('check_run', f'{prefix}/commits/{initial_sha}/check-runs?per_page=100&filter=all'),
++                               ('commit_status', f'{prefix}/commits/{initial_sha}/statuses?per_page=100')):
++            values = request('checks', endpoint=endpoint)
++            if values is None:
++                continue
++            try:
++                rows = values['check_runs'] if kind == 'check_run' else values
++                if not isinstance(rows, list):
++                    raise ValueError
++                success('checks')
++                for row in rows[:ITEM_LIMIT]:
++                    if not isinstance(row, dict):
++                        raise ValueError
++                    is_run = kind == 'check_run'
++                    item('checks', kind, row.get('node_id'), url=row.get('html_url', row.get('target_url')),
++                         body='\n\n'.join(v for v in ((row.get('output') or {}).get('summary'), (row.get('output') or {}).get('text')) if isinstance(v, str) and v) if is_run else (row.get('description') or ''),
++                         updated=row.get('updated_at'), source_sha=row.get('head_sha') if is_run else initial_sha,
++                         author=row.get('creator'), check_run_id=row.get('id') if is_run else None,
++                         attempt=row.get('run_attempt'), summary=row.get('name') if is_run else row.get('context'),
++                         disposition={'check_status': row.get('status') if is_run else row.get('state'),
++                                      'check_conclusion': row.get('conclusion') if is_run else None})
++                if (values.get('total_count', len(rows)) > len(rows) if kind == 'check_run' else len(rows) >= ITEM_LIMIT):
++                    gap('checks', 'page_limit', 'Checks/statuses stop after one page each; unseen evidence is unknown.', truncated=True)
++            except (KeyError, TypeError, ValueError, AttributeError):
++                gap('checks', 'malformed_response', 'Provider checks response is malformed.')
++    elif collect_details:
++        gap('checks', 'head_unavailable', 'Checks cannot be queried without an observed immutable commit.')
++    else:
++        gap('checks', NOT_COLLECTED, NOT_COLLECTED_MESSAGE)
++
++    final = head()
++    final_sha = sha((final or {}).get('headRefOid'))
++    if final:
++        result['pr'].update(head_sha=final_sha, state=final.get('state', 'unknown').lower(),
++                            draft=final.get('isDraft') if type(final.get('isDraft')) is bool else None)
++        if result['pr']['state'] not in ('open', 'closed', 'merged'):
++            result['pr']['state'] = 'unknown'
++    raced = collect_details and (initial_sha != final_sha or initial_sha is None or final_sha is None)
++    if raced:
++        for source in SOURCES:
++            gap(source, 'head_race' if initial_sha and final_sha else 'head_unavailable',
++                f'Collection heads initial={initial_sha or "unknown"}, final={final_sha or "unknown"}; applicability is unknown.')
++
++    # Same-repository native issue/link plus a retained Factory claim. Conflicting
++    # links remain ambiguous; a branch name or shared credential never proves this.
++    links = ((final or initial or {}).get('closingIssuesReferences') or {})
++    linked = links.get('nodes')
++    claimed = issue and any(e.get('event') == 'claimed' and e.get('ticket') == issue['number'] for e in events)
++    if isinstance(linked, list):
++        candidates = [v for v in linked if isinstance(v, dict)]
++        if len(candidates) > 1 or candidates and issue and candidates[0].get('number') != issue['number']:
++            result['owner']['relation'] = 'ambiguous'
++            result['owner']['evidence'] = ['Conflicting provider closing-issue links.']
++        elif candidates and issue and candidates[0].get('id') == issue.get('id') and candidates[0].get('url') == issue.get('url') and claimed and not links.get('pageInfo', {}).get('hasNextPage'):
++            result['owner'] = {'issue': {k: issue[k] for k in ('id', 'number', 'url')}, 'relation': 'factory_issue',
++                               'evidence': ['Provider same-repository closing-issue link: ' + issue['url'], 'Retained Factory claimed event for issue #' + str(issue['number'])]}
++        elif not candidates and not issue:
++            result['owner']['relation'] = 'none'
++    elif not collect_details and claimed:
++        result['owner']['evidence'] = ['Retained Factory claimed event for issue #' + str(issue['number'])
++                                       + '; the provider issue link was not read, so ownership stays unverified.']
++    if collect_details and not provenance_complete:
++        gap('reviews', 'provenance_partial', 'Bounded Factory event provenance is incomplete; unseen reviews are unknown.', truncated=True)
++    if collect_details and result['owner']['relation'] != 'factory_issue':
++        gap('pr', 'ownership_unverified', 'Factory issue ownership is missing, conflicting, or unverified.')
++
++    # Accepted lifecycle result IDs are the source, never rendered VERDICT prose.
++    valid = [e for e in events if lifecycle._lifecycle(e)]
++    if result['owner']['relation'] == 'factory_issue':
++        for event in valid:
++            if event['stage'] != 'review' or event['kind'] != 'result' or event['ticket'] != issue['number']:
++                continue
++            group = [e for e in valid if e['execution_id'] == event['execution_id']]
++            if (event.get('returncode') != 0 or event.get('parsed') is not True
++                    or not sha(event.get('head')) or event.get('head') != event.get('actual_head')
++                    or event.get('verdict') not in ('APPROVE', 'REVISE')
++                    or not any(e['kind'] == 'enter' and e['sequence'] < event['sequence'] for e in group)
++                    or not any(e['kind'] == 'exit' and e['sequence'] > event['sequence']
++                               and e['outcome'] == ('approved' if event['verdict'] == 'APPROVE' else 'product_feedback') for e in group)):
++                continue
++            item('reviews', 'factory_review', event['event_id'], source_sha=event['head'], updated=event['at'],
++                 factory=True, disposition={'review_state': 'APPROVED' if event['verdict'] == 'APPROVE' else 'CHANGES_REQUESTED'})
++
++    for value in result['items']:
++        value['observed_head_sha'] = final_sha
++        source_sha = value['source_head_sha']
++        if not raced and source_sha:
++            value['relevance'] = 'current_head' if source_sha == final_sha else 'historical'
++            if value['kind'] == 'review_comment':
++                outdated = value['disposition']['thread_outdated']
++                if outdated is True:
++                    value['relevance'] = 'historical'
++                elif outdated is None or value['location']['line'] is None:
++                    value['relevance'] = 'unknown'
++                    gap('threads', 'comment_position_unknown', 'Current comment position/outdated evidence is unavailable.')
++    for source in SOURCES:
++        result['coverage'][source]['reason'] = '; '.join(sorted(reasons[source]))[:1000] or None
++    result['items'].sort(key=lambda v: (v['evidence_id'], v['source_revision']))
++    result['errors'].sort(key=lambda e: (e['source'], e['code'], e['message']))
++    result['observation_id'] = digest({'repository_id': repository['id'], 'pr_id': result['pr']['id'], 'head_sha': final_sha,
++        'items': [(v['evidence_id'], v['source_revision']) for v in result['items']],
++        'coverage': {s: {k: result['coverage'][s][k] for k in ('status', 'truncated', 'reason')} for s in SOURCES}})
++    return result
+diff --git a/tests/test_briefing.py b/tests/test_briefing.py
+index 255563b..f1291bd 100644
+--- a/tests/test_briefing.py
++++ b/tests/test_briefing.py
+@@ -14,6 +14,174 @@ from factory import briefing, config, dashboard, dispatch
+ 
+ 
+ class BriefingBoundaryTest(unittest.TestCase):
++    @staticmethod
++    def feedback(*, coverage: dict | None = None, items: list[dict] | None = None) -> dict:
++        default_coverage = {
++            source: {"status": "complete", "observed_at": "2026-09-10T22:00:00Z", "truncated": False, "reason": None}
++            for source in ("pr", "reviews", "threads", "checks")
++        }
++        default_item = {
++            "evidence_id": "github:github.com:R_1:PR_9:review:RV_4",
++            "kind": "review",
++            "source_id": "RV_4",
++            "source_url": "https://github.com/acme/widgets/pull/9#pullrequestreview-4",
++            "source_revision": "sha256:item",
++            "source_updated_at": "2026-09-10T21:59:00Z",
++            "review_id": "RV_4",
++            "thread_id": None,
++            "check_run_id": None,
++            "run_attempt": None,
++            "observed_head_sha": "abc123",
++            "source_head_sha": "abc123",
++            "relevance": "current_head",
++            "disposition": {
++                "review_state": "changes_requested",
++                "thread_resolved": None,
++                "thread_outdated": None,
++                "check_status": None,
++                "check_conclusion": None,
++            },
++            "author": {"login": "reviewer", "kind": "human"},
++            "body": "Please cover the error path.",
++            "truncated": False,
++            "location": {
++                "path": None,
++                "line": None,
++                "side": None,
++                "original_line": None,
++                "original_commit_sha": None,
++            },
++            "summary": None,
++        }
++        return {
++            "schema_version": 1,
++            "producer": {"name": "factory.pr-feedback", "revision": "8fba9c5"},
++            "observed_at": "2026-09-10T22:00:00Z",
++            "observation_id": "sha256:observation",
++            "repository": {"id": "R_1", "slug": "acme/widgets", "host": "github.com"},
++            "pr": {
++                "id": "PR_9",
++                "number": 9,
++                "url": "https://github.com/acme/widgets/pull/9",
++                "head_sha": "abc123",
++                "state": "open",
++                "draft": False,
++            },
++            "owner": {
++                "issue": {"id": "I_7", "number": 7, "url": "https://github.com/acme/widgets/issues/7"},
++                "relation": "factory_issue",
++                "evidence": ["branch agent/7", "Factory claim for issue #7"],
++            },
++            "coverage": coverage or default_coverage,
++            "items": [default_item] if items is None else items,
++            "errors": [],
++        }
++
++    @classmethod
++    def ticket(cls, feedback: object = ...) -> dict:
++        pr = {"number": 9, "state": "OPEN", "url": "https://github.com/acme/widgets/pull/9"}
++        if feedback is not ...:
++            pr["feedback"] = feedback
++        return {
++            "number": 7,
++            "title": "A decision",
++            "url": "https://github.com/acme/widgets/issues/7",
++            "body": "Original constraints",
++            "events": [{
++                "at": "2026-09-10T20:00:00Z",
++                "body": "Factory human decision: Preserve compatibility.",
++            }],
++            "pr": pr,
++        }
++
++    def test_feedback_sources_preserve_snapshot_item_and_containing_identities(self) -> None:
++        feedback = self.feedback()
++        with (
++            patch.object(briefing, "run_model", side_effect=AssertionError("model called")),
++            patch.object(subprocess, "run", side_effect=AssertionError("provider called")),
++        ):
++            sources = briefing.sources_for(config.Config(root=Path("/unused"), repo="acme/widgets"), self.ticket(feedback), [])
++
++        decision_index = next(i for i, source in enumerate(sources) if source["label"].startswith("Earlier human decision"))
++        evidence_index = next(i for i, source in enumerate(sources) if source["label"].startswith("PR feedback · review"))
++        evidence = sources[evidence_index]
++        payload = json.loads(evidence["text"])
++        self.assertGreater(evidence_index, decision_index)
++        self.assertEqual(evidence_index, len(sources) - 2)
++        self.assertEqual(payload["producer"], feedback["producer"])
++        self.assertEqual(payload["observed_at"], feedback["observed_at"])
++        self.assertEqual(payload["repository"], feedback["repository"])
++        self.assertEqual(payload["pr"], feedback["pr"])
++        self.assertEqual(payload["owner"], feedback["owner"])
++        self.assertEqual(payload["item"], feedback["items"][0])
++        self.assertEqual(evidence["url"], feedback["items"][0]["source_url"])
++        self.assertRegex(evidence["id"], r"^S\d+$")
++        coverage = sources[-1]
++        self.assertEqual(coverage["label"], "Evidence coverage")
++        self.assertIn('"reviews":{"status":"complete"', coverage["text"])
++        self.assertIn('"relation":"factory_issue"', coverage["text"])
++
++    def test_feedback_coverage_is_explicit_for_missing_unknown_and_partial_snapshots(self) -> None:
++        cfg = config.Config(root=Path("/unused"), repo="acme/widgets")
++        partial = {
++            source: {
++                "status": "partial" if source == "reviews" else "unavailable" if source == "threads" else "complete",
++                "observed_at": None,
++                "truncated": source == "reviews",
++                "reason": "head changed during collection" if source == "reviews" else "provider unavailable" if source == "threads" else None,
++            }
++            for source in ("pr", "reviews", "threads", "checks")
++        }
++        cases = [
++            (self.ticket(), "no schema-versioned feedback object"),
++            (self.ticket({"schema_version": 2, "items": [{"body": "DO NOT INTERPRET"}]}), "schema_version 2 is not supported"),
++            (self.ticket(self.feedback(coverage=partial)), '"status":"partial"'),
++        ]
++        for ticket, expected in cases:
++            with self.subTest(expected=expected):
++                sources = briefing.sources_for(cfg, ticket, [])
++                self.assertIn(expected, sources[-1]["text"])
++                self.assertTrue(sources[-1]["label"].startswith("Evidence coverage"))
++        self.assertNotIn("DO NOT INTERPRET", json.dumps(briefing.sources_for(cfg, cases[1][0], [])))
++        partial_text = briefing.sources_for(cfg, cases[2][0], [])[-1]["text"]
++        self.assertTrue(any(source["label"].startswith("PR feedback ·") for source in briefing.sources_for(cfg, cases[2][0], [])))
++        self.assertIn("head changed during collection", partial_text)
++        self.assertIn('"status":"unavailable"', partial_text)
++
++    def test_uncollected_history_is_cited_apart_from_unsupported_feedback(self) -> None:
++        from factory import feedback as producer
++
++        cfg = config.Config(root=Path("/unused"), repo="acme/widgets")
++        uncollected = self.feedback(
++            coverage={source: {"status": "unavailable", "observed_at": None, "truncated": False,
++                               "reason": f"{producer.NOT_COLLECTED}: {producer.NOT_COLLECTED_MESSAGE}"}
++                      for source in ("pr", "reviews", "threads", "checks")},
++            items=[],
++        )
++        uncollected["errors"] = [{"source": source, "code": producer.NOT_COLLECTED,
++                                  "message": producer.NOT_COLLECTED_MESSAGE}
++                                 for source in ("pr", "reviews", "threads", "checks")]
++        notice = briefing.sources_for(cfg, self.ticket(uncollected), [])[-1]["text"]
++        self.assertIn("were not collected", notice)
++        self.assertIn(producer.NOT_COLLECTED, notice)
++        self.assertNotIn("unsupported/unknown", notice)
++        missing = briefing.sources_for(cfg, self.ticket(), [])[-1]["text"]
++        self.assertIn("unsupported/unknown", missing)
++        self.assertNotIn("were not collected", missing)
++
++    def test_feedback_budget_omission_does_not_evict_human_constraints(self) -> None:
++        cfg = config.Config(root=Path("/unused"), repo="acme/widgets")
++        ticket = self.ticket(self.feedback())
++        with patch.object(briefing, "SOURCE_COUNT", 4):
++            sources = briefing.sources_for(cfg, ticket, [])
++
++        self.assertEqual(len(sources), 4)
++        decision = next(source for source in sources if source["label"].startswith("Earlier human decision"))
++        self.assertIn("Preserve compatibility.", decision["text"])
++        self.assertFalse(any(source["label"].startswith("PR feedback ·") for source in sources))
++        self.assertIn("1 PR feedback evidence item(s) omitted", sources[-1]["text"])
++        self.assertIn("additional evidence source(s) omitted", sources[-1]["text"])
++
+     def test_rejects_untrusted_request_shapes_and_scope(self) -> None:
+         invalid = [
+             [],
+diff --git a/tests/test_factory.py b/tests/test_factory.py
+index 4e858d5..7a8a80a 100644
+--- a/tests/test_factory.py
++++ b/tests/test_factory.py
+@@ -2394,5 +2394,149 @@ class DispatchTest(unittest.TestCase):
+             )
+ 
+ 
++class FeedbackSnapshotTest(unittest.TestCase):
++    def test_github_failure_preserves_provider_diagnostic(self):
++        from unittest import mock
++        from factory import dashboard
++
++        proc = subprocess.CompletedProcess([], 1, "", "gh: run gh auth login\n")
++        with mock.patch.object(dashboard.subprocess, "run", return_value=proc):
++            with self.assertRaisesRegex(RuntimeError, "gh: run gh auth login"):
++                dashboard.github(query="query { viewer { login } }")
++
++    def test_full_snapshot_preserves_legacy_contract_and_attaches_feedback(self):
++        from unittest import mock
++        from factory import dashboard, dispatch
++        from tests.test_feedback import Provider, REPO, PR, ISSUE, H, AT, factory_events
++
++        with tempfile.TemporaryDirectory() as d:
++            repo = make_repo(Path(d), '[repo]\nslug = "example/project"\n')
++            state = repo / ".factory"
++            state.mkdir()
++            (state / "events.jsonl").write_text("\n".join(map(json.dumps, factory_events())) + "\n")
++            issue = {**ISSUE, "title": "Feedback contract", "state": "OPEN", "body": "Keep human constraint",
++                     "createdAt": AT, "updatedAt": AT, "closedAt": None,
++                     "labels": {"nodes": [{"name": "ready-for-human"}]}, "assignees": {"nodes": []}}
++            raw_pr = {**PR, "title": "Feedback", "headRefName": "agent/79", "headRefOid": H,
++                      "state": "OPEN", "isDraft": False, "createdAt": AT, "closedAt": None, "mergedAt": None,
++                      "additions": 1, "deletions": 0, "changedFiles": 1, "body": "## Gate report\n- test: PASS",
++                      "reviewDecision": "CHANGES_REQUESTED", "labels": {"nodes": []},
++                      "comments": {"nodes": [{"createdAt": AT, "body": "VERDICT: APPROVE", "url": PR["url"] + "#issuecomment-1"}]},
++                      "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "FAILURE", "contexts": {"nodes": [
++                          {"__typename": "CheckRun", "name": "CI", "status": "COMPLETED", "conclusion": "FAILURE"}]}}}}]}}
++            provider = Provider()
++            def read(**kwargs):
++                if kwargs:
++                    return provider(**kwargs)
++                return {"repository": {"id": REPO["id"], "issues": {"nodes": [issue, {
++                    **issue, "number": 81, "id": "I_81", "url": issue["url"].replace("79", "81")}]},
++                    "pullRequests": {"nodes": [raw_pr]}}}
++            with mock.patch.dict(dashboard.__dict__), mock.patch.dict(dispatch.__dict__):
++                dashboard.configure(config.load(repo))
++                with mock.patch.object(dashboard, "github", side_effect=read), \
++                     mock.patch.object(dashboard, "dispatcher", return_value={}), \
++                     mock.patch.object(dashboard, "upstream_state", return_value={}), \
++                     mock.patch.object(dashboard, "triage_llm_online", return_value=False):
++                    snapshot = dashboard.snapshot()
++                    provider.heads = [H, H]
++                    torn = "discarded prefix\n" + "\n".join(map(json.dumps, factory_events()))
++                    with mock.patch.object(dashboard.briefing, "bounded_file", return_value=(torn, True)):
++                        partial = dashboard.snapshot()
++                    partial_feedback = next(t for t in partial["tickets"] if t["number"] == 79)["pr"]["feedback"]
++                    self.assertNotIn("factory_review", {i["kind"] for i in partial_feedback["items"]})
++                    self.assertEqual(partial_feedback["coverage"]["reviews"]["status"], "partial")
++                    package = repo / ".venv" / "factory"
++                    package.mkdir(parents=True)
++                    source = package / "feedback.py"
++                    source.write_text("# installed producer\n")
++                    (repo / ".gitignore").write_text(".factory/\n.venv/\n")
++                    git(repo, "add", ".gitignore")
++                    git(repo, "commit", "-m", "Ignore installed packages")
++                    with mock.patch.object(dashboard, "__file__", str(package / "dashboard.py")):
++                        for mode in ("ignored", "tracked", "dirty"):
++                            if mode == "tracked":
++                                git(repo, "add", "-f", str(source))
++                                git(repo, "commit", "-m", "Track producer source")
++                            elif mode == "dirty":
++                                source.write_text("# modified producer\n")
++                            provider.heads = [H, H]
++                            observed = dashboard.snapshot()
++                            produced = next(t for t in observed["tickets"] if t["number"] == 79)["pr"]["feedback"]
++                            with self.subTest(package=mode):
++                                expected = git(repo, "rev-parse", "HEAD") if mode == "tracked" else None
++                                self.assertEqual(produced["producer"]["revision"], expected)
++            ticket = next(t for t in snapshot["tickets"] if t["number"] == 79)
++            pr = ticket["pr"]
++            self.assertEqual(pr["gate_text"], "- test: PASS")
++            self.assertEqual(pr["review_decision"], "CHANGES_REQUESTED")
++            self.assertEqual(pr["checks"]["list"], [{"name": "CI", "result": "FAILURE"}])
++            self.assertEqual(pr["comments"][0]["body"], "VERDICT: APPROVE")
++            self.assertEqual(pr["verdicts"][0]["verdict"], "APPROVE")
++            self.assertEqual({i["kind"] for i in pr["feedback"]["items"]},
++                             {"review", "review_comment", "check_run", "factory_review"})
++            self.assertIsNone(next(t for t in snapshot["tickets"] if t["number"] == 81)["pr"])
++
++    def test_historical_prs_add_no_feedback_reads_but_keep_schema_1(self):
++        from unittest import mock
++        from factory import dashboard, dispatch, feedback
++        from tests.test_feedback import Provider, REPO, PR, ISSUE, H, AT
++
++        def issue_of(number):
++            return {"id": f"I_{number}", "number": number, "title": "Historical",
++                    "url": ISSUE["url"].replace("79", str(number)), "state": "OPEN", "body": "",
++                    "createdAt": AT, "updatedAt": AT, "closedAt": None,
++                    "labels": {"nodes": []}, "assignees": {"nodes": []}}
++
++        def pr_of(number, state):
++            return {"id": f"PR_{number}", "number": number, "url": PR["url"].replace("80", str(number)),
++                    "title": "Historical", "headRefName": f"agent/{number}", "headRefOid": H,
++                    "state": state, "isDraft": False, "createdAt": AT, "closedAt": None,
++                    "mergedAt": AT if state == "MERGED" else None, "additions": 1, "deletions": 0,
++                    "changedFiles": 1, "body": "", "reviewDecision": None, "labels": {"nodes": []},
++                    "comments": {"nodes": []}, "commits": {"nodes": []}}
++
++        with tempfile.TemporaryDirectory() as d:
++            repo = make_repo(Path(d), '[repo]\nslug = "example/project"\n')
++            (repo / ".factory").mkdir()
++            issues = [issue_of(79), issue_of(81), issue_of(82)]
++            raw = [{**pr_of(79, "OPEN"), "id": PR["id"], "url": PR["url"]},
++                   pr_of(81, "MERGED"), pr_of(82, "CLOSED")]
++            provider = Provider()
++            def read(**kwargs):
++                if kwargs:
++                    return provider(**kwargs)
++                return {"repository": {"id": REPO["id"], "issues": {"nodes": issues},
++                                       "pullRequests": {"nodes": raw}}}
++            with mock.patch.dict(dashboard.__dict__), mock.patch.dict(dispatch.__dict__):
++                dashboard.configure(config.load(repo))
++                with mock.patch.object(dashboard, "github", side_effect=read), \
++                     mock.patch.object(dashboard, "dispatcher", return_value={}), \
++                     mock.patch.object(dashboard, "upstream_state", return_value={}), \
++                     mock.patch.object(dashboard, "triage_llm_online", return_value=False):
++                    mixed = dashboard.snapshot()
++                    with_history = len(provider.calls)
++                    provider.calls.clear()
++                    provider.heads = [H, H]
++                    raw[:] = raw[:1]
++                    issues[:] = issues[:1]
++                    only_open = dashboard.snapshot()
++            self.assertEqual(with_history, len(provider.calls))
++            open_feedback = next(t for t in mixed["tickets"] if t["number"] == 79)["pr"]["feedback"]
++            self.assertEqual(open_feedback["pr"]["state"], "open")
++            self.assertTrue(open_feedback["items"])
++            self.assertEqual(open_feedback["items"],
++                             next(t for t in only_open["tickets"] if t["number"] == 79)["pr"]["feedback"]["items"])
++            for number, state in ((81, "merged"), (82, "closed")):
++                observed = next(t for t in mixed["tickets"] if t["number"] == number)["pr"]["feedback"]
++                with self.subTest(pr=number):
++                    self.assertEqual(observed["schema_version"], 1)
++                    self.assertEqual(observed["pr"]["state"], state)
++                    self.assertEqual(observed["pr"]["id"], f"PR_{number}")
++                    self.assertIsNone(observed["pr"]["head_sha"])
++                    self.assertEqual(observed["items"], [])
++                    self.assertEqual({c["status"] for c in observed["coverage"].values()}, {"unavailable"})
++                    self.assertEqual({e["code"] for e in observed["errors"]}, {feedback.NOT_COLLECTED})
++
++
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/tests/test_feedback.py b/tests/test_feedback.py
+new file mode 100644
+index 0000000..82f89d0
+--- /dev/null
++++ b/tests/test_feedback.py
+@@ -0,0 +1,334 @@
++"""Behavioral contract for the shared read-only PR feedback collector."""
++import copy
++import unittest
++
++from factory import feedback
++
++H = "a" * 40
++OLD = "b" * 40
++AT = "2026-09-10T12:00:00Z"
++REPO = {"id": "R_1", "slug": "example/project", "host": "github.com"}
++ISSUE = {"id": "I_79", "number": 79, "url": "https://github.com/example/project/issues/79"}
++PR = {"id": "PR_80", "number": 80, "url": "https://github.com/example/project/pull/80"}
++
++
++class Provider:
++    def __init__(self):
++        self.heads = [H, H]
++        self.calls = []
++        self.fail = None
++        self.reviews = [{"id": "RV_1", "url": PR["url"] + "#pullrequestreview-1", "commit": {"oid": H},
++                         "state": "CHANGES_REQUESTED", "body": "Fix boundary", "updatedAt": AT,
++                         "author": {"login": "shared", "__typename": "User"}}]
++        self.comments = [{"id": "RC_1", "url": PR["url"] + "#discussion_r1", "body": "<img onerror=alert(1)>",
++                          "updatedAt": AT, "commit": {"oid": H}, "originalCommit": {"oid": OLD},
++                          "path": "factory/example.py", "line": 7, "originalLine": 6, "diffSide": "RIGHT",
++                          "author": {"login": "reader", "__typename": "User"}, "pullRequestReview": {"id": "RV_1"}}]
++        self.thread = {"id": "T_1", "isResolved": False, "isOutdated": False,
++                       "comments": {"nodes": self.comments, "pageInfo": {"hasNextPage": False}}}
++        self.checks = [{"node_id": "CR_1", "id": 1, "html_url": PR["url"] + "/checks?check_run_id=1",
++                        "head_sha": H, "name": "CI", "status": "completed", "conclusion": "failure", "run_attempt": 1}]
++        self.statuses = []
++
++    def __call__(self, *, endpoint=None, query=None, variables=None, timeout=None):
++        self.calls.append((endpoint, query, timeout))
++        source = ({feedback.HEAD_QUERY: 'pr', feedback.THREAD_QUERY: 'threads',
++                   feedback.REVIEW_QUERY: 'reviews'}.get(query, 'checks'))
++        if self.fail == source:
++            raise RuntimeError('token=SECRET provider config')
++        if source == 'pr':
++            return {"repository": {"id": "R_1", "pullRequest": {**PR, "headRefOid": self.heads.pop(0), "state": "OPEN", "isDraft": False,
++                    "closingIssuesReferences": {"nodes": [ISSUE], "pageInfo": {"hasNextPage": False}}}}}
++        if source == 'threads':
++            return {"repository": {"pullRequest": {"reviewThreads": {"nodes": [self.thread], "pageInfo": {"hasNextPage": False}}}}}
++        if source == 'reviews':
++            if not isinstance(self.reviews, list):
++                return self.reviews
++            start = int((variables or {}).get('cursor') or 0)
++            nodes = self.reviews[start:start + 50]
++            more = start + len(nodes) < len(self.reviews)
++            return {"repository": {"pullRequest": {"reviews": {"nodes": nodes, "pageInfo": {
++                "hasNextPage": more, "endCursor": str(start + len(nodes)) if more else None}}}}}
++        if '/check-runs?' in endpoint:
++            return {"total_count": len(self.checks), "check_runs": self.checks}
++        return self.statuses
++
++
++def collect(provider=None, **kwargs):
++    return feedback.collect(provider or Provider(), repository=REPO, pr=PR, issue=ISSUE,
++                            events=[{"event": "claimed", "ticket": 79}], observed_at=AT, **kwargs)
++
++
++class FeedbackTests(unittest.TestCase):
++    def test_simultaneous_native_sources_and_explicit_unknown_attribution(self):
++        result = collect()
++        self.assertEqual(result['schema_version'], 1)
++        self.assertEqual({i['kind'] for i in result['items']}, {'review', 'review_comment', 'check_run'})
++        self.assertEqual(result['owner']['relation'], 'factory_issue')
++        self.assertTrue(all(c['status'] == 'complete' for c in result['coverage'].values()))
++        for item in result['items']:
++            self.assertTrue(item['source_url'].startswith(PR['url']))
++            self.assertEqual(item['observed_head_sha'], H)
++            self.assertEqual(item['source_head_sha'], H)
++            self.assertEqual(item['relevance'], 'current_head')
++            self.assertIn('run_attempt', item)
++            self.assertIn('summary', item)
++        comment = next(i for i in result['items'] if i['kind'] == 'review_comment')
++        self.assertEqual(comment['location']['original_commit_sha'], OLD)
++        self.assertEqual(comment['location']['line'], 7)
++        self.assertFalse(comment['disposition']['thread_resolved'])
++        review = next(i for i in result['items'] if i['kind'] == 'review')
++        self.assertEqual(review['author']['kind'], 'unknown')
++        self.assertIsNone(review['check_run_id'])
++        self.assertEqual(review['disposition']['review_state'], 'CHANGES_REQUESTED')
++
++    def test_factory_provenance_is_not_rendered_verdict_text(self):
++        result = feedback.collect(Provider(), repository=REPO, pr=PR, issue=ISSUE,
++                                  events=factory_events(), observed_at=AT)
++        self.assertEqual(len(result['items']), 4)
++        factory = next(i for i in result['items'] if i['kind'] == 'factory_review')
++        self.assertEqual(factory['source_id'], 'result-79')
++        self.assertEqual(factory['author']['kind'], 'factory_reviewer')
++        self.assertEqual(factory['source_head_sha'], H)
++        self.assertEqual(factory['body'], '')
++        self.assertIsNone(factory['source_url'])
++        for change in ({'returncode': 1}, {'parsed': False}, {'actual_head': OLD}):
++            events = factory_events()
++            events[2].update(change)
++            result = feedback.collect(Provider(), repository=REPO, pr=PR, issue=ISSUE,
++                                      events=events + [{'body': 'VERDICT: APPROVE'}])
++            self.assertNotIn('factory_review', {i['kind'] for i in result['items']})
++
++    def test_equivalent_polls_and_semantic_revisions(self):
++        provider = Provider()
++        second = {**provider.reviews[0], 'id': 'RV_2', 'commit': {'oid': OLD}}
++        provider.reviews.append(second)
++        first = collect(provider)
++        provider.heads = [H, H]
++        provider.reviews.reverse()
++        other = feedback.collect(provider, repository=REPO, pr=PR, issue=ISSUE,
++                                 events=[{'event': 'claimed', 'ticket': 79}], observed_at='2026-09-11T00:00:00Z')
++        self.assertEqual(first['observation_id'], other['observation_id'])
++        self.assertEqual(first['items'], other['items'])
++        baseline = {i['source_id']: i for i in first['items']}
++        for target, change, changed_id in [
++            ('review', {'body': 'edited'}, 'RV_1'),
++            ('review', {'state': 'DISMISSED'}, 'RV_1'),
++            ('comment', {'line': 9}, 'RC_1'),
++            ('thread', {'isResolved': True}, 'RC_1'),
++            ('check', {'conclusion': 'success'}, 'CR_1'),
++            ('check', {'run_attempt': 2}, 'CR_1'),
++        ]:
++            p = Provider()
++            p.reviews.append(copy.deepcopy(second))
++            row = {'review': p.reviews[0], 'comment': p.comments[0], 'thread': p.thread, 'check': p.checks[0]}[target]
++            row.update(change)
++            revised = collect(p)
++            self.assertNotEqual(first['observation_id'], revised['observation_id'])
++            for i in revised['items']:
++                self.assertEqual(i['evidence_id'], baseline[i['source_id']]['evidence_id'])
++                self.assertEqual(i['source_revision'] == baseline[i['source_id']]['source_revision'], i['source_id'] != changed_id)
++        p = Provider()
++        p.checks[0].update(node_id='CR_2', id=2)
++        self.assertNotEqual(next(i for i in collect(p)['items'] if i['kind'] == 'check_run')['evidence_id'], baseline['CR_1']['evidence_id'])
++
++    def test_head_changes_do_not_revise_old_sources(self):
++        baseline = collect()
++        p = Provider()
++        p.heads = [OLD, OLD]
++        advanced = collect(p)
++        self.assertEqual([i['source_revision'] for i in baseline['items']], [i['source_revision'] for i in advanced['items']])
++        self.assertTrue(all(i['relevance'] == 'historical' for i in advanced['items']))
++        p = Provider()
++        p.heads = [H, OLD]
++        race = collect(p)
++        self.assertTrue(all(i['relevance'] == 'unknown' for i in race['items']))
++        self.assertTrue(all(i['observed_head_sha'] == OLD for i in race['items']))
++        self.assertTrue(all(c['status'] == 'partial' for c in race['coverage'].values()))
++        self.assertIn(H, race['coverage']['pr']['reason'])
++        self.assertIn(OLD, race['coverage']['pr']['reason'])
++        p = Provider()
++        p.heads = [H, None]
++        missing = collect(p)
++        self.assertIsNone(missing['pr']['head_sha'])
++        self.assertTrue(all(i['relevance'] == 'unknown' for i in missing['items']))
++        self.assertEqual(len(missing['items']), 3)
++
++    def test_source_failures_do_not_erase_independent_evidence(self):
++        for source in ('reviews', 'threads', 'checks'):
++            p = Provider()
++            p.fail = source
++            result = collect(p)
++            self.assertEqual(result['coverage'][source]['status'], 'unavailable')
++            self.assertTrue(result['items'])
++            self.assertNotIn('SECRET', str(result))
++        p = Provider()
++        p.reviews = []
++        p.comments.clear()
++        p.checks.clear()
++        result = collect(p)
++        self.assertEqual(result['items'], [])
++        self.assertTrue(all(c['status'] == 'complete' for c in result['coverage'].values()))
++
++    def test_unknown_source_head_and_outdated_thread_are_not_current(self):
++        p = Provider()
++        p.reviews[0]['commit'] = None
++        p.thread['isOutdated'] = True
++        p.thread['isResolved'] = True
++        result = collect(p)
++        by_kind = {i['kind']: i for i in result['items']}
++        self.assertEqual(by_kind['review']['relevance'], 'unknown')
++        self.assertEqual(by_kind['review_comment']['relevance'], 'historical')
++        self.assertTrue(by_kind['review_comment']['disposition']['thread_resolved'])
++        self.assertEqual(result['coverage']['reviews']['status'], 'partial')
++        for status, conclusion in [('queued', None), ('in_progress', None), ('completed', 'cancelled'),
++                                   ('completed', 'success'), ('completed', 'failure'),
++                                   ('completed', 'neutral'), ('completed', 'skipped')]:
++            p = Provider()
++            p.checks[0].update(status=status, conclusion=conclusion)
++            check = next(i for i in collect(p)['items'] if i['kind'] == 'check_run')
++            self.assertEqual(check['disposition']['check_status'], status)
++            self.assertEqual(check['disposition']['check_conclusion'], conclusion)
++
++    def test_body_count_pagination_timeout_and_malformed_bounds(self):
++        p = Provider()
++        p.reviews[0].update(body='é' * 20000, updatedAt=None)
++        result = collect(p)
++        review = next(i for i in result['items'] if i['kind'] == 'review')
++        self.assertEqual(len(review['body'].encode()), 20000)
++        self.assertTrue(review['truncated'])
++        self.assertIn('change_detection_incomplete', result['coverage']['reviews']['reason'])
++        p = Provider()
++        p.reviews = [{**p.reviews[0], 'id': f'RV_{n}'} for n in range(120)]
++        result = collect(p)
++        self.assertEqual(len([i for i in result['items'] if i['kind'] == 'review']), 100)
++        self.assertEqual(sum(c[1] == feedback.REVIEW_QUERY for c in p.calls), 2)
++        self.assertTrue(result['coverage']['reviews']['truncated'])
++        p = Provider()
++        p.thread['comments']['pageInfo']['hasNextPage'] = True
++        self.assertEqual(collect(p)['coverage']['threads']['status'], 'partial')
++        p = Provider()
++        p.reviews = {'bad': 'response'}
++        self.assertEqual(collect(p)['coverage']['reviews']['status'], 'unavailable')
++        p = Provider()
++        def timed(**kwargs):
++            if kwargs.get('query') == feedback.REVIEW_QUERY:
++                raise TimeoutError('secret')
++            return p(**kwargs)
++        result = collect(timed)
++        self.assertEqual(result['coverage']['reviews']['status'], 'unavailable')
++        self.assertTrue(any(i['kind'] == 'check_run' for i in result['items']))
++        self.assertTrue(any(e['code'] == 'timeout' for e in result['errors']))
++        self.assertLessEqual(len(result['errors']), 32)
++
++    def test_missing_conflicting_identity_and_ownership(self):
++        p = Provider()
++        p.reviews.append({**p.reviews[0], 'body': 'conflict'})
++        result = collect(p)
++        self.assertNotIn('review', {i['kind'] for i in result['items']})
++        p = Provider()
++        p.checks[0]['node_id'] = None
++        self.assertNotIn('check_run', {i['kind'] for i in collect(p)['items']})
++        result = feedback.collect(Provider(), repository=REPO, pr=PR, issue=ISSUE)
++        self.assertEqual(result['owner']['relation'], 'unverified')
++        self.assertIsNone(result['owner']['issue'])
++
++    def test_native_status_survives_failed_check_run_read(self):
++        p = Provider()
++        p.statuses = [{'node_id': 'CS_1', 'id': 12, 'target_url': 'https://ci.example/status/12',
++                       'state': 'pending', 'context': 'deployment', 'updated_at': AT,
++                       'creator': {'login': 'ci', 'type': 'Bot'}}]
++        def read(**kwargs):
++            if '/check-runs?' in (kwargs.get('endpoint') or ''):
++                raise RuntimeError('credentials')
++            return p(**kwargs)
++        result = collect(read)
++        status = next(i for i in result['items'] if i['kind'] == 'commit_status')
++        self.assertEqual(status['source_head_sha'], H)
++        self.assertEqual(status['author']['kind'], 'bot')
++        self.assertEqual(status['source_url'], 'https://ci.example/status/12')
++        self.assertEqual(status['disposition']['check_status'], 'pending')
++        self.assertEqual(result['coverage']['checks']['status'], 'partial')
++
++    def test_final_head_failure_retains_details_without_promoting_them(self):
++        p = Provider()
++        def read(**kwargs):
++            if kwargs.get('query') == feedback.HEAD_QUERY and len(p.heads) == 1:
++                raise RuntimeError('head unavailable')
++            return p(**kwargs)
++        result = collect(read)
++        self.assertEqual(len(result['items']), 3)
++        self.assertIsNone(result['pr']['head_sha'])
++        self.assertTrue(all(i['observed_head_sha'] is None and i['relevance'] == 'unknown' for i in result['items']))
++
++
++    def test_review_update_time_is_retained_and_signals_change_detection(self):
++        review = next(i for i in collect()['items'] if i['kind'] == 'review')
++        self.assertEqual(review['source_updated_at'], AT)
++        p = Provider()
++        p.reviews[0].update(body='Fix boundary, again', updatedAt='2026-09-11T09:00:00Z')
++        edited = collect(p)
++        revised = next(i for i in edited['items'] if i['kind'] == 'review')
++        self.assertEqual(revised['evidence_id'], review['evidence_id'])
++        self.assertEqual(revised['source_updated_at'], '2026-09-11T09:00:00Z')
++        self.assertNotEqual(revised['source_revision'], review['source_revision'])
++        p = Provider()
++        p.reviews[0]['body'] = 'x' * 20_001
++        signalled = collect(p)
++        self.assertTrue(next(i for i in signalled['items'] if i['kind'] == 'review')['truncated'])
++        self.assertNotIn('change_detection_incomplete', signalled['coverage']['reviews']['reason'])
++        p = Provider()
++        p.reviews[0].update(body='x' * 20_001, updatedAt=None)
++        self.assertIn('change_detection_incomplete', collect(p)['coverage']['reviews']['reason'])
++
++    def test_uncollected_details_are_schema_1_and_read_nothing(self):
++        p = Provider()
++        result = feedback.collect(p, repository=REPO, pr={**PR, 'state': 'MERGED', 'draft': False},
++                                  issue=ISSUE, events=factory_events(), observed_at=AT,
++                                  collect_details=False)
++        self.assertEqual(p.calls, [])
++        self.assertEqual(result['schema_version'], 1)
++        self.assertEqual(result['pr']['id'], PR['id'])
++        self.assertEqual(result['pr']['state'], 'merged')
++        self.assertIs(result['pr']['draft'], False)
++        self.assertIsNone(result['pr']['head_sha'])
++        self.assertEqual(result['items'], [])
++        self.assertTrue(result['observation_id'].startswith('sha256:'))
++        for source in feedback.SOURCES:
++            coverage = result['coverage'][source]
++            self.assertEqual(coverage['status'], 'unavailable')
++            self.assertIsNone(coverage['observed_at'])
++            self.assertIn(feedback.NOT_COLLECTED, coverage['reason'])
++        self.assertEqual({e['code'] for e in result['errors']}, {feedback.NOT_COLLECTED})
++        self.assertEqual({e['source'] for e in result['errors']}, set(feedback.SOURCES))
++        self.assertEqual(result['owner']['relation'], 'unverified')
++        self.assertTrue(any('claimed' in entry for entry in result['owner']['evidence']))
++        closed = feedback.collect(Provider(), repository=REPO, pr={**PR, 'state': 'nonsense'},
++                                  issue=ISSUE, collect_details=False)
++        self.assertEqual(closed['pr']['state'], 'unknown')
++        self.assertIsNone(closed['pr']['draft'])
++
++    def test_malformed_pr_metadata_preserves_independent_sources(self):
++        p = Provider()
++        def read(**kwargs):
++            value = p(**kwargs)
++            if kwargs.get('query') == feedback.HEAD_QUERY:
++                value['repository']['pullRequest'].update(state=42, closingIssuesReferences=42)
++            return value
++        result = collect(read)
++        self.assertEqual(result['pr']['state'], 'unknown')
++        self.assertEqual(result['owner']['relation'], 'unverified')
++        self.assertEqual(len(result['items']), 3)
++        self.assertEqual(result['coverage']['pr']['status'], 'partial')
++
++def factory_events():
++    rows = [{'event': 'claimed', 'ticket': 79}]
++    for sequence, kind in enumerate(('enter', 'result', 'exit'), 1):
++        rows.append({'event': 'lifecycle', 'schema_version': 1, 'event_id': f'{kind}-79',
++                     'execution_id': 'review-79', 'root_execution_id': 'root-79',
++                     'dispatcher_run_id': None, 'parent_execution_id': None, 'ticket': 79,
++                     'attempt': None, 'review_round': None, 'stage': 'review', 'kind': kind,
++                     'sequence': sequence, 'at': AT, 'outcome': 'approved' if kind == 'exit' else None,
++                     'reason': None, 'process': None, 'locks': [], 'head': H, 'actual_head': H,
++                     'returncode': 0, 'parsed': True, 'verdict': 'APPROVE'})
++    return rows

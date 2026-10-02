@@ -1,0 +1,152 @@
+diff --git a/factory/dispatch.py b/factory/dispatch.py
+index f63fad4..68f2df2 100644
+--- a/factory/dispatch.py
++++ b/factory/dispatch.py
+@@ -214,11 +214,10 @@ def review_intake_pass(dry_run: bool) -> None:
+             if login is None:
+                 login = gh_json(["api", "user"])["login"].casefold()
+             opted_in = any(request.get("login", "").casefold() == login for request in requests)
+-        # GitHub consumes review requests when a review is submitted. A pending
+-        # changes request keeps the already opted-in cycle eligible.
++        # GitHub consumes review requests on submission; keep tracking admitted PRs.
+         if not opted_in and not any(
+             e.get("event") == "review-result" and e.get("pr") == pr["number"]
+-            and e.get("verdict") == "REQUEST_CHANGES"
++            and e.get("verdict") in {"REQUEST_CHANGES", "APPROVE"}
+             for e in lifecycle.read_events(EVENTS)
+         ):
+             continue
+@@ -230,6 +229,8 @@ def review_intake_pass(dry_run: bool) -> None:
+                 except BlockingIOError:
+                     continue
+             history = [e for e in lifecycle.read_events(EVENTS) if e.get("pr") == n]
++            if not dry_run:
++                review_readiness(n, head, history)
+             if any(e.get("event") == "review-result" and e.get("verdict") == "APPROVE"
+                    for e in history):
+                 continue
+@@ -267,6 +268,48 @@ def review_intake_pass(dry_run: bool) -> None:
+             if not dry_run:
+                 record("review-intake", pr=n, head=head)
+                 review_external_pr(n, pr["baseRefOid"], head)
++                review_readiness(n, head, lifecycle.read_events(EVENTS))
++
++
++def review_readiness(n: int, head: str, history: list[dict]) -> None:
++    """Record advisory readiness, never merge authorization, for a confirmed head."""
++    checks = run([
++        "gh", "pr", "checks", str(n), "--repo", REPO,
++        "--required", "--json", "name,bucket",
++    ], check=False)
++    fresh = run([
++        "gh", "pr", "view", str(n), "--repo", REPO, "--json", "headRefOid",
++    ], check=False)
++    rows, confirmed = [], False
++    try:
++        rows = json.loads(checks.stdout)
++        current = json.loads(fresh.stdout)
++        if fresh.returncode == 0 and isinstance(current, dict) and current.get("headRefOid"):
++            confirmed = current["headRefOid"] == head
++            head = current["headRefOid"]
++    except (ValueError, TypeError):
++        pass
++    valid = isinstance(rows, list) and bool(rows) and all(
++        isinstance(row, dict) and isinstance(row.get("name"), str)
++        and row.get("bucket") in ("pass", "fail", "pending", "skipping", "cancel")
++        for row in rows
++    )
++    review = next((e for e in reversed(history)
++                   if e.get("event") == "review-result" and e.get("pr") == n
++                   and e.get("head") == head), {})
++    state = "review_pending"
++    if review.get("verdict") == "REQUEST_CHANGES":
++        state = "changes_requested"
++    elif review.get("verdict") == "APPROVE":
++        state = "ci_pending"
++        if valid and any(row["bucket"] in {"fail", "cancel"} for row in rows):
++            state = "ci_failed"
++        elif confirmed and valid and checks.returncode == 0 and all(
++            row["bucket"] == "pass" for row in rows
++        ):
++            state = "ready"
++    record("review-readiness", pr=n, head=head, state=state,
++           review_head=review.get("head"), checks=rows if valid else [])
+ 
+ 
+ def review_external_pr(n: int, base: str, head: str) -> None:
+diff --git a/tests/test_factory.py b/tests/test_factory.py
+index 219710b..7db8ca2 100644
+--- a/tests/test_factory.py
++++ b/tests/test_factory.py
+@@ -1360,6 +1360,71 @@ class DispatchTest(unittest.TestCase):
+                 self.assertFalse(any(cmd[:2] == ["git", "push"] for cmd in commands))
+                 self.assertFalse(any(cmd[:3] == ["gh", "pr", "create"] for cmd in commands))
+ 
++    def test_external_review_readiness_tracks_required_checks_and_head(self) -> None:
++        from unittest import mock
++
++        from factory import dispatch, lifecycle
++
++        with tempfile.TemporaryDirectory() as d:
++            repo = make_repo(Path(d))
++            dispatch.configure(config.Config(root=repo, repo="acme/widgets"))
++            dispatch.record("review-intake", pr=17, head="head-1")
++            dispatch.record("review-result", pr=17, head="head-1", verdict="APPROVE")
++            pr = {"number": 17, "state": "OPEN", "isDraft": False,
++                  "headRefOid": "head-1", "baseRefOid": "base",
++                  "labels": [], "reviewRequests": []}
++            payload, code, fresh_head = "[]", 0, "head-1"
++            commands = []
++
++            def run(cmd, **kwargs):
++                commands.append(cmd)
++                if cmd[:3] == ["gh", "pr", "checks"]:
++                    self.assertIn("--required", cmd)
++                    return subprocess.CompletedProcess(cmd, code, payload, "")
++                if cmd[:3] == ["gh", "pr", "view"]:
++                    return subprocess.CompletedProcess(
++                        cmd, 0, json.dumps({"headRefOid": fresh_head}), "")
++                self.fail(f"Unexpected command: {cmd}")
++
++            with mock.patch.object(dispatch, "gh_json", return_value=[pr]), \
++                    mock.patch.object(dispatch, "run", side_effect=run):
++                for payload, code, expected in [
++                    ("[]", 0, "ci_pending"),
++                    ('[{"name":"test","bucket":[]}]', 0, "ci_pending"),
++                    ('[{"name":"test","bucket":"unknown"}]', 0, "ci_pending"),
++                    ('[{"name":"a","bucket":"pass"},{"name":"b","bucket":"pending"}]', 8, "ci_pending"),
++                    ('[{"name":"a","bucket":"pass"},{"name":"b","bucket":"fail"}]', 1, "ci_failed"),
++                    ("not json", 1, "ci_pending"),
++                    ("null", 0, "ci_pending"),
++                    ('[{}]', 0, "ci_pending"),
++                    ('[{"name":"test","bucket":"pending"}]', 8, "ci_pending"),
++                    ('[{"name":"test","bucket":"fail"}]', 1, "ci_failed"),
++                    ('[{"name":"test","bucket":"cancel"}]', 1, "ci_failed"),
++                    ('[{"name":"test","bucket":"skipping"}]', 0, "ci_pending"),
++                    ('[{"name":"test","bucket":"pass"}]', 1, "ci_pending"),
++                    ('[{"name":"test","bucket":"pass"}]', 0, "ready"),
++                ]:
++                    with self.subTest(payload=payload, code=code):
++                        dispatch.review_intake_pass(False)
++                        event = lifecycle.read_events(dispatch.EVENTS)[-1]
++                        self.assertEqual(event["event"], "review-readiness")
++                        self.assertEqual((event["head"], event["state"]), ("head-1", expected))
++                # A push during the query cannot inherit the old approval.
++                fresh_head = "head-2"
++                dispatch.review_intake_pass(False)
++                self.assertEqual(lifecycle.read_events(dispatch.EVENTS)[-1]["state"], "review_pending")
++                pr["headRefOid"] = fresh_head
++                dispatch.review_intake_pass(False)
++                event = lifecycle.read_events(dispatch.EVENTS)[-1]
++                self.assertEqual((event["head"], event["state"]), ("head-2", "review_pending"))
++                dispatch.record("review-result", pr=17, head="head-2", verdict="REQUEST_CHANGES")
++                dispatch.review_intake_pass(False)
++                self.assertEqual(lifecycle.read_events(dispatch.EVENTS)[-1]["state"], "changes_requested")
++                before = dispatch.EVENTS.read_text()
++                dispatch.review_intake_pass(True)
++                self.assertEqual(dispatch.EVENTS.read_text(), before)
++            self.assertFalse(any(cmd[:3] == ["gh", "pr", "merge"] for cmd in commands))
++
+     def test_external_review_head_transitions_end_on_approval(self) -> None:
+         from unittest import mock
+ 
