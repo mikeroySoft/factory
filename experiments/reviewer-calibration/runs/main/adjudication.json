@@ -358,5 +358,25 @@
     "seconds": 159.3,
     "input_sha256": "111e6a25effffd0c5d48512c867917e25bbfa1ccf234c46e54ac7980b15f68c5",
     "prompt_sha256": "3a0ab03a6f2102e43e4ddf7e1c81553cde96dae76c15b50e7b276a78aafb274d"
+  },
+  {
+    "contract": "baseline",
+    "contract_commit": "cadb9981524ab5506693e27f56ff8ac4ef911da6",
+    "case": "62-before",
+    "sample": 2,
+    "expected_verdict": "REVISE",
+    "verdict": "APPROVE",
+    "verdict_match": false,
+    "defects": {
+      "D1": "reported_nonblocking",
+      "D2": "missed"
+    },
+    "unnecessary_demands": 0,
+    "required": false,
+    "optional": false,
+    "citations": 19,
+    "seconds": 60.2,
+    "input_sha256": "7f90b88e1a5c0915a37e320e88c3f52e55060bd04c17270a5d5b2f0a380d11b1",
+    "prompt_sha256": "49c2a314e4e3494fd57c606aaa33ae2d99e335779ca803be9271c4338e17eef6"
   }
 ]
