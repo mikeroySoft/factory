@@ -8,9 +8,9 @@ After PR #148, `runs/main` already scores `baseline` (`cadb998…`) against `iss
 
 This directory is the third run slot. It re-runs that same `issue36` contract, two samples, against the frozen v2 oracles and splits. `CONTRACTS` in `run_calibration.py` is unchanged so the default pair stays baseline vs issue36.
 
-## Not started
+## Run
 
-The runner is a paid no-tools `omp` pass on `anthropic/claude-fable-5-1`: 11 cases × 2 samples = 22 calls. That spend is not authorized here. No `results.json`, no `adjudication.json`, no scores.
+Completed 2026-10-02 PT on rocm-tank: 11 cases × 2 samples, contract `issue36` only (`1947fc4e3de23e71f64342f2c9cd2570d845db5e`), model `anthropic/claude-fable-5-1`. 22/22 samples rc 0. No sample hit `--max-time 300`, so nothing was retried. Raw outputs are `results.json` and `issue36.<case>.s<n>.md`. There is no `adjudication.json` and no scores. Do not invent rows.
 
 ```sh
 python3 experiments/reviewer-calibration/run_calibration.py \

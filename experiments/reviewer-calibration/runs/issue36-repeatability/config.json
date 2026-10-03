@@ -77,7 +77,14 @@
     "command": "python3 experiments/reviewer-calibration/run_calibration.py experiments/reviewer-calibration/runs/issue36-repeatability 2 issue36",
     "cwd": "repository root on rocm-tank",
     "checkout_repo": "/home/mike/dev/mikeroysoft/factory",
-    "started": false,
-    "blocker": "22 paid anthropic/claude-fable-5-1 calls (max-time 300s, 4 workers) are not authorized. ANTHROPIC_API_KEY is unset in the shell; omp's local profile is what prior calibration runs on this host used. Do not invent scores. After a real run, adjudication.json is still a separate read of each output against the frozen oracles (score.py does not parse reviews). Then: python3 experiments/reviewer-calibration/score.py experiments/reviewer-calibration/runs/issue36-repeatability/adjudication.json"
+    "started": true,
+    "blocker": "results.json is raw reviewer output only. adjudication.json is still a separate read of each output against the frozen oracles (score.py does not parse reviews). Do not invent rows. Then: python3 experiments/reviewer-calibration/score.py experiments/reviewer-calibration/runs/issue36-repeatability/adjudication.json",
+    "completed": "2026-10-02 PT",
+    "returncode_0": 22,
+    "calls_completed": 22,
+    "timeouts": 0,
+    "retries": 0,
+    "results": "experiments/reviewer-calibration/runs/issue36-repeatability/results.json",
+    "adjudication": null
   }
 }
