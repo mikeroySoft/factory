@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "experiment": "b1-build",
+  "kind": "build",
+  "lineage": "b1-build",
+  "protocol_revision": 1,
+  "max_iterations": 3,
+  "accepted_in": "https://github.com/mikeroySoft/factory/issues/96#issuecomment-5859984841",
+  "roadmap": "https://github.com/mikeroySoft/factory/issues/119",
+  "ticket": "https://github.com/mikeroySoft/factory/issues/98",
+  "decision_owner": "managing agent under the user's routine-operation delegation",
+  "question": "Does a compact source-linked roadmap briefing preserve the facts required for sequencing that the existing initiative representation carries?",
+  "selection": "O1 i2 (12 terminal cases: 9 merged, 1 provider/tool failure, 2 unknown) neither supports nor displaces the B1 candidate; it is kept because it needs zero provider calls and exercises the isolation boundary.",
+  "baseline": "existing initiative representation: `factory evidence` investigate initiative <initiative> JSON, captured on the host from the pinned source before rendering",
+  "candidate": "minimal briefing renderer (case.py) run inside the sandbox over the frozen baseline",
+  "initiative": 119,
+  "repository": "mikeroySoft/factory",
+  "oracle": {
+    "derived_from": "raw `gh issue view` JSON of the initiative, its Implementation links and their declared blockers, frozen before rendering",
+    "facts": {
+      "revision": "initiative canonical-section digest (accepted #57 binding contract)",
+      "tier": "first NOW/NEXT/THEN/LATER Plan line naming a linked ticket",
+      "state": "OPEN or CLOSED for every linked ticket",
+      "held": "factory-held label present, for OPEN linked tickets",
+      "open_blockers": "`Blocked by:` lines of OPEN linked tickets whose blocker is OPEN (possibly none)"
+    }
+  },
+  "decision_criterion": "candidate retains every oracle fact with a resolvable citation and makes no unsupported claim; bytes and omissions are measured, compactness is not correctness",
+  "isolation": {
+    "mechanism": "bubblewrap: new user/pid/net/ipc/uts/cgroup namespaces, --disable-userns, --clearenv, read-only /usr, private /tmp and /home, no /run, /etc, /sys or host home; transient systemd user scope for limits; timeout",
+    "mounts": {"/src": "disposable git-archive checkout, read-only", "/in": "frozen inputs, read-only", "/out": "private output directory on user tmpfs"},
+    "required_denials": ["external network", "loopback services", "name resolution config", "host repository and state paths", "writes to /src and /in", "host credentials and sockets", "further user namespaces"],
+    "on_failure": "invalid; never fall back to host execution"
+  },
+  "limits": {
+    "max_seconds": 1800,
+    "memory_bytes": 1073741824,
+    "cpu_cores": 2,
+    "max_tasks": 64,
+    "max_file_bytes": 67108864,
+    "max_output_bytes": 67108864,
+    "output_reserve_bytes": 262144,
+    "model_calls": 0,
+    "provider_calls": 0
+  }
+}
