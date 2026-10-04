@@ -1207,6 +1207,27 @@ class GateTest(unittest.TestCase):
             self.assertIn("- leak-scan: FAIL", report)
             self.assertIn("CONFIDENTIAL", report)
 
+    def test_toolchain_is_recorded_once_and_in_report(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            repo = make_repo(root)
+            path = stub_bin(root, hipconfig='echo 10.0', uname='echo 7.2-test')
+            (Path(path) / "git").symlink_to(shutil.which("git"))
+            # Restrict PATH so modinfo is genuinely absent.
+            import unittest.mock
+            with unittest.mock.patch.dict(os.environ, {"PATH": path, lifecycle.CONTEXT_ENV: ""}):
+                code, out, report = gate(repo)
+            self.assertEqual(code, 0, out)
+            rows = [json.loads(line) for line in (repo / ".factory/events.jsonl").read_text().splitlines()]
+            toolchains = [row for row in rows if row.get("kind") == "toolchain"]
+            self.assertEqual(len(toolchains), 1)
+            self.assertEqual(
+                {key: toolchains[0][key] for key in ("rocm", "kernel", "amdgpu")},
+                {"rocm": "10.0", "kernel": "7.2-test", "amdgpu": "unavailable"},
+            )
+            for line in ("ROCm: 10.0", "Kernel: 7.2-test", "amdgpu: unavailable"):
+                self.assertIn(line, report)
+
     def test_timeout_fails_instead_of_hanging(self) -> None:
         toml = '[gate]\ntimeout = 1\n[[gate.check]]\nname = "slow"\nrun = ["sleep", "5"]\n'
         with tempfile.TemporaryDirectory() as d:

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Gate reports and lifecycle journals record ROCm, kernel, and amdgpu versions once per run; unavailable probes do not fail the gate (#154).
 - B1 isolated build experiment (#98): `experiments/b1-build/build.py` (`start`/`status`/`stop`/`report`) runs its case inside `sandbox.py`'s boundary. That boundary is Bubblewrap with new user/PID/network/IPC/UTS/cgroup namespaces, `--disable-userns`, `--clearenv`, read-only `/usr`, private `/tmp`/`/home`, and no `/run`, `/etc`, `/sys` or host home. It mounts only a read-only `git archive` checkout, read-only frozen inputs and a private tmpfs output directory. A transient `systemd-run --user` scope (1 GiB, no swap, 2 CPUs, 64 tasks), `timeout` and a per-file size cap enforce the limits; a host shim reads the applied cgroup limits back and refuses to run on mismatch. An unavailable or breached boundary makes the run `invalid`, never a host fallback. Inputs (raw issues, the existing `evidence investigate initiative` JSON) and a deterministic fact oracle are frozen on the host before rendering. Reports separate safety probes, input validity and product results. Runs land under the main root's `.factory/experiments/b1-build/`, three iterations per lineage; zero model/provider calls. Experiment-only: nothing in dispatch or workers uses the sandbox.
 
 ## 0.3.8 — 2026-10-03
