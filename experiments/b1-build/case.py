@@ -29,19 +29,15 @@ REVISION = re.compile(r"^revision ([0-9a-f]{64}) observed \S+ \[(S\d+)\]$")
 
 # -- facts: (kind, ticket, value); values are str, bool or a sorted tuple of ints --
 
-def fact_key(fact) -> tuple:
-    return fact[0], fact[1]
-
-
 def as_facts(rows) -> set:
     return {(kind, number, tuple(value) if isinstance(value, list) else value) for kind, number, value in rows}
 
 
 def compare(facts: set, oracle: set) -> dict:
     """Omitted: an oracle fact not stated. Unsupported: a stated fact the oracle contradicts or lacks."""
+    rows = lambda found: sorted(([k, n, list(v) if isinstance(v, tuple) else v] for k, n, v in found), key=str)
     return {"oracle": len(oracle), "stated": len(facts), "retained": len(facts & oracle),
-            "omitted": sorted(map(list, oracle - facts), key=str),
-            "unsupported": sorted(map(list, facts - oracle), key=str)}
+            "omitted": rows(oracle - facts), "unsupported": rows(facts - oracle)}
 
 
 def plan_of(baseline: dict, initiative: int) -> dict | None:
@@ -73,7 +69,7 @@ def baseline_facts(baseline: dict, initiative: int) -> set:
 
 
 def render(baseline: dict, initiative: int) -> str:
-    """Compact source-linked briefing: one line per linked ticket, every line cited."""
+    """Compact source-linked briefing: scored lines (revision, linked tickets) carry a resolvable citation."""
     plan = plan_of(baseline, initiative)
     if plan is None:
         return f"# Initiative #{initiative}: unavailable in the frozen representation\n"
@@ -86,7 +82,7 @@ def render(baseline: dict, initiative: int) -> str:
         f"# Initiative #{initiative}: {plan.get('title')}",
         f"revision {revision.get('sha256')} observed {revision.get('observed_at')} [{plan.get('source')}]",
         f"status {plan.get('status')}; owner {plan.get('owner')}; issue {plan.get('state')}; "
-        f"coverage {coverage.get('status')}; errors {len(baseline.get('errors') or [])}",
+        f"coverage {coverage.get('status')}; errors {len(baseline.get('errors') or [])} [{plan.get('source')}]",
         f"next {action.get('kind') or 'none'} {target} [{','.join(action.get('sources') or [])}]",
         "## linked tickets",
     ]
@@ -194,7 +190,7 @@ def main() -> int:
     manifest = json.loads((IN / "manifest.json").read_bytes())
     initiative = manifest["initiative"]
     validity = {name: sha256(IN / name) == digest for name, digest in sorted(manifest["inputs"].items())}
-    safety = probes(manifest["host_paths"])
+    safety = probes(json.loads((IN / "host-paths.json").read_bytes()))
     result = {"safety": {"ok": all(row["denied"] for row in safety), "probes": safety},
               "validity": {"ok": all(validity.values()), "inputs_match_manifest": validity}, "product": None}
     if result["validity"]["ok"]:

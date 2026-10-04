@@ -209,7 +209,7 @@ def start(args) -> int:
         lineage=protocol["lineage"], iteration=iteration, max_iterations=protocol["max_iterations"],
         prior_runs=prior, protocol_revision=protocol["protocol_revision"], protocol_sha256=sha256(protocol_bytes),
         cutoff=None, source={"commit": commit}, state="waiting", reason=None, started_at=now(), finished_at=None,
-        limits=limits)
+        limits=limits, out_of_lineage=args.output_dir is not None)
     scratch = Path(tempfile.mkdtemp(prefix="b1-", dir=os.environ.get("XDG_RUNTIME_DIR") or None))
     os.chmod(scratch, 0o700)
     state, reason, outcome, result, archive_sha = "invalid", None, None, None, None
@@ -229,11 +229,15 @@ def start(args) -> int:
         frozen = {"issues.json": dumps(issues), "baseline.json": baseline,
                   "oracle.json": dumps({"facts": derive_oracle(issues, revision)})}
         manifest = {"initiative": protocol["initiative"], "inputs": {k: sha256(v) for k, v in frozen.items()},
-                    "host_paths": host_paths(main_root), "commit": commit, "archive_sha256": archive_sha}
+                    "commit": commit, "archive_sha256": archive_sha}
         frozen["manifest.json"] = dumps(manifest)
+        if not run.fits(sum(len(v) for v in frozen.values())):
+            raise o1.Stop("interrupted", "output_limit")
         for name, data in frozen.items():
             (inp / name).write_bytes(data)
             run.create(name, data)
+        # Concrete host paths for the probes stay in the sandbox input only; the record keeps labels.
+        (inp / "host-paths.json").write_bytes(dumps(host_paths(main_root)))
         inputs_digest = sha256(frozen["manifest.json"])
         run.put_status(frozen_at=now(), source={
             "commit": commit, "archive_sha256": archive_sha, "path": f"github:{protocol['repository']}",
@@ -253,6 +257,8 @@ def start(args) -> int:
         state, reason = "invalid", exc.reason
     except o1.Stop as stop:
         state, reason = stop.state, stop.reason
+    except Exception as exc:  # host-side freeze/settle failure: retain an invalid run, never an unsettled one
+        state, reason = "invalid", f"producer_error:{type(exc).__name__}"
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
     report = build_report(run, protocol, outcome, result, state, reason, started)
@@ -299,9 +305,11 @@ def settle(run: Run, outcome: dict, private: Path) -> tuple[str, str | None, dic
         result = json.loads((run.path / "result.json").read_bytes())
     except (OSError, ValueError):
         return "invalid", "result_missing_or_malformed", None
-    if not result["safety"]["ok"]:
+    if not all(isinstance(result, dict) and isinstance(result.get(key), dict) for key in ("safety", "validity")):
+        return "invalid", "result_missing_or_malformed", None
+    if result["safety"].get("ok") is not True:
         return "invalid", "isolation_breach", result
-    if not result["validity"]["ok"]:
+    if result["validity"].get("ok") is not True:
         return "invalid", "inputs_changed", result
     return "completed", None, result
 
@@ -320,13 +328,15 @@ def build_report(run, protocol, outcome, result, state, reason, started) -> dict
         "Output volume inside the sandbox is bounded per file (RLIMIT_FSIZE) and by the memory cgroup "
         "(tmpfs pages), then checked against the output cap before retention.",
         "Loopback probes cover two known service ports; the private network namespace is the actual denial.",
+        "The baseline is captured after this run's directory exists, so it may list this run as an "
+        "unfinished experiment; that entry is not an oracle fact.",
     ]
     return {
         "schema_version": 1, "experiment": protocol["experiment"], "run_id": status["run_id"],
         "kind": protocol["kind"], "lineage": protocol["lineage"], "iteration": status["iteration"],
         "protocol_revision": protocol["protocol_revision"], "protocol_sha256": status["protocol_sha256"],
         "source": status.get("source"), "baseline": protocol["baseline"], "candidate": protocol["candidate"],
-        "state": state, "reason": reason, "cutoff": None,
+        "state": state, "reason": reason, "cutoff": None, "out_of_lineage": status.get("out_of_lineage"),
         "timestamps": {"started_at": status["started_at"], "frozen_at": status.get("frozen_at"),
                        "sandbox_started_at": (outcome or {}).get("started_at"), "reported_at": now()},
         "limits": status["limits"],
@@ -342,13 +352,16 @@ def build_report(run, protocol, outcome, result, state, reason, started) -> dict
             "product": product,
         },
         "interpretation": None if state != "completed" or not product else (
-            "Candidate retained every oracle fact with resolvable citations and no unsupported claim."
-            if product["criterion_met"] else
+            "Candidate stated every scored oracle fact (revision, tier, state, held, open blockers) on cited, "
+            "resolvable lines and contradicted none; header and next-action lines are not scored."
+            if product.get("criterion_met") is True else
             "Candidate did not meet the frozen criterion; see omitted/unsupported/unresolved rows."),
         "limitations": limitations,
-        "evidence": {"inputs": "manifest.json", "oracle": "oracle.json", "baseline": "baseline.json",
-                     "issues": "issues.json", "candidate": "candidate.md", "sandbox_result": "result.json",
-                     "applied_limits": "limits.json"},
+        # Only artifacts this run actually retained: a missing link would read back as a damaged run.
+        "evidence": {key: name for key, name in (
+            ("inputs", "manifest.json"), ("oracle", "oracle.json"), ("baseline", "baseline.json"),
+            ("issues", "issues.json"), ("candidate", "candidate.md"), ("sandbox_result", "result.json"),
+            ("applied_limits", "limits.json")) if (run.path / name).is_file()},
         "proposed_amendment": None,
         "decision_owner": protocol["decision_owner"], "disposition": "pending",
         "note": "Completion is not hypothesis or production acceptance.",

@@ -124,7 +124,8 @@ def run(argv: list[str], *, src: Path, inp: Path, out: Path, limits: dict, secon
             outcome = "limits_mismatch"
         elif code == 124:
             outcome = "time_limit"
-        elif code in (137, -9) or code == 128 + signal.SIGKILL:
+        elif code < 0 or code in (128 + signal.SIGKILL, 128 + signal.SIGTERM):
+            # OOM kill of the payload (137), or systemd stopping the whole scope after it (-15/143).
             outcome = "killed"
         elif code in (125, 126, 127) or _bwrap_failed(stderr_path):
             outcome = "launch_failed"
