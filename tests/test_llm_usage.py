@@ -82,9 +82,9 @@ class UsageExtractionTest(unittest.TestCase):
 
         self.assertEqual(text, "VERDICT: APPROVE")
         self.assertEqual(usage, {
-            "prompt_tokens": 17,
+            "prompt_tokens": 22,
             "completion_tokens": 3,
-            "prefix_cache_hit_rate": 4 / 17,
+            "prefix_cache_hit_rate": 4 / 22,
         })
 
 

@@ -175,7 +175,7 @@ def _omp_output(stdout: str) -> tuple[str, dict | None]:
             valid_usage = False
             continue
         found_usage = True
-        prompt_tokens += input_tokens + cache_read
+        prompt_tokens += input_tokens + cache_read + cache_write
         completion_tokens += output_tokens
         cached_tokens += cache_read
         # OMP normalizes unsupported cache counters to zero, so zeros alone do
