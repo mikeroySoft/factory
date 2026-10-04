@@ -1902,6 +1902,8 @@ evidence, chat, onboarding, metrics, and learning surfaces. `factory/cli.py`
 defines the command surface; `factory/config.py` layers host and repository
 configuration.
 
+Operator and agent guide: [docs/guide/index.md](docs/guide/index.md).
+
 ## License
 
 MIT
