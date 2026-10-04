@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT))
 XDG = Path(tempfile.mkdtemp())
 os.environ["XDG_CONFIG_HOME"] = str(XDG)
 
-from factory import __version__, config, lifecycle, manage  # noqa: E402
+from factory import __version__, config, lifecycle, manage, runtime_events  # noqa: E402
 
 
 def host_file(text: str) -> None:
@@ -1227,6 +1227,10 @@ class GateTest(unittest.TestCase):
             )
             for line in ("ROCm: 10.0", "Kernel: 7.2-test", "amdgpu: unavailable"):
                 self.assertIn(line, report)
+            projected = runtime_events.project(repo / ".factory/events.jsonl")
+            self.assertTrue(projected["history"]["complete"])
+            self.assertEqual(projected["history"]["gaps"], [])
+            self.assertEqual(projected["executions"][0]["observation"], "fresh")
 
     def test_timeout_fails_instead_of_hanging(self) -> None:
         toml = '[gate]\ntimeout = 1\n[[gate.check]]\nname = "slow"\nrun = ["sleep", "5"]\n'
