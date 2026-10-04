@@ -117,6 +117,83 @@ def gh_json(args: list[str]) -> object:
     return json.loads(out)
 
 
+def _review_command(prompt: str) -> tuple[list[str], bool]:
+    command = cfg.review_cmd(prompt)
+    if Path(command[0]).name != "omp":
+        return command, False
+    for index, arg in enumerate(command[1:], 1):
+        if arg == "--mode" and index + 1 < len(command):
+            command[index + 1] = "json"
+            break
+        if arg.startswith("--mode="):
+            command[index] = "--mode=json"
+            break
+    else:
+        command[1:1] = ["--mode", "json"]
+    return command, True
+
+
+def _omp_output(stdout: str) -> tuple[str, dict | None]:
+    """Recover final text and summed model usage from OMP's JSONL mode."""
+    text = ""
+    saw_assistant = found_usage = cache_reported = False
+    valid_usage = True
+    prompt_tokens = completion_tokens = cached_tokens = 0
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("type") != "message_end":
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        saw_assistant = True
+        content = message.get("content")
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = "\n".join(
+                block["text"]
+                for block in content
+                if isinstance(block, dict) and isinstance(block.get("text"), str)
+                and block.get("type") in {"text", "output_text"}
+            )
+        usage = message.get("usage")
+        if not isinstance(usage, dict):
+            valid_usage = False
+            continue
+        input_tokens = usage.get("input")
+        output_tokens = usage.get("output")
+        cache_read = usage.get("cacheRead", 0)
+        cache_write = usage.get("cacheWrite", 0)
+        if not all(
+            type(value) is int and value >= 0
+            for value in (input_tokens, output_tokens, cache_read, cache_write)
+        ):
+            valid_usage = False
+            continue
+        found_usage = True
+        prompt_tokens += input_tokens + cache_read
+        completion_tokens += output_tokens
+        cached_tokens += cache_read
+        # OMP normalizes unsupported cache counters to zero, so zeros alone do
+        # not prove the provider reported cache data.
+        cache_reported = cache_reported or cache_read > 0 or cache_write > 0
+    if not saw_assistant:
+        return stdout.strip(), None
+    fields = None
+    if valid_usage and found_usage and (prompt_tokens or completion_tokens):
+        fields = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+        }
+        if cache_reported and prompt_tokens:
+            fields["prefix_cache_hit_rate"] = cached_tokens / prompt_tokens
+    return text.strip(), fields
+
+
 def lock_held(lockfile: Path) -> bool:
     """True if another process holds an flock on lockfile."""
     if not lockfile.exists():
@@ -340,15 +417,20 @@ def review_external_pr(n: int, base: str, head: str) -> None:
         "only VERDICT: APPROVE.\n\n"
         f"--- BEGIN UNTRUSTED DIFF ---\n{diff}\n--- END UNTRUSTED DIFF ---"
     )
-    with lifecycle.scope(EVENTS, "review") as execution:
+    with lifecycle.scope(EVENTS, "review", ticket=n) as execution:
         # ponytail: cap inline prompts below Linux's 128 KiB argv limit; use files for larger diffs.
         if len(prompt.encode()) > 120 * 1024:
             execution.outcome = "unknown"
             execution.reason = "prompt_too_large"
             log(f"PR #{n}: diff too large to review at {head}")
             return
-        proc = run(cfg.review_cmd(prompt), cwd=ROOT, check=False)
-        findings = proc.stdout.strip()
+        command, structured = _review_command(prompt)
+        proc = run(command, cwd=ROOT, check=False)
+        findings, usage = (
+            _omp_output(proc.stdout) if structured else (proc.stdout.strip(), None)
+        )
+        if usage is not None:
+            record("llm-usage", ticket=n, stage="review", **usage)
         lines = findings.splitlines()
         if (
             proc.returncode != 0
@@ -747,8 +829,14 @@ def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str,
         matches = []
         actual_head = before
         if before == expected_head:
-            proc = run(cfg.review_cmd(prompt), cwd=wt, check=False)
-            findings = (proc.stdout.strip() or proc.stderr.strip())
+            command, structured = _review_command(prompt)
+            proc = run(command, cwd=wt, check=False)
+            findings, usage = (
+                _omp_output(proc.stdout) if structured else (proc.stdout.strip(), None)
+            )
+            if usage is not None:
+                record("llm-usage", ticket=n, stage="review", **usage)
+            findings = findings or proc.stderr.strip()
             matches = list(re.finditer(r"(?m)^VERDICT: (APPROVE|REVISE)[ \t]*$", findings))
             verdict_lines = re.findall(r"(?m)^VERDICT:.*$", findings)
             parsed = (
