@@ -1100,6 +1100,11 @@ unused = ["agent"]
                 {"at": "2026-09-01T00:00:00Z", "event": "claimed", "ticket": 7},
                 *({"at": f"2026-09-01T00:{m:02}:00Z", "event": "escalate", "ticket": 7} for m in (1, 12, 33)),
                 {"at": "2026-09-01T01:00:00Z", "event": "merged", "ticket": 7},
+                {"at": "2026-09-01T00:40:00Z", "event": "llm-usage", "ticket": 7,
+                 "stage": "triage", "prompt_tokens": 10, "completion_tokens": 2,
+                 "prefix_cache_hit_rate": 0.75},
+                {"at": "2026-09-01T00:41:00Z", "event": "llm-usage", "ticket": 7,
+                 "stage": "triage", "prompt_tokens": 5, "completion_tokens": 3},
             ]
             (stats.cfg.factory / "events.jsonl").write_text("\n".join(map(json.dumps, audit)) + "\npartial")
             with mock.patch.object(stats, "gh", side_effect=github):
@@ -1112,6 +1117,21 @@ unused = ["agent"]
             ])
             self.assertEqual(row["ready_for_human_minutes"], 35)
             self.assertEqual(row["requeue_count"], 2)
+            self.assertEqual(row["llm_usage"], {
+                "triage": {
+                    "prompt_tokens": 15,
+                    "completion_tokens": 5,
+                    "prefix_cache_hit_rates": [0.75],
+                },
+            })
+            with mock.patch("builtins.print") as printed:
+                stats.print_table([row])
+            table = "\n".join(call.args[0] for call in printed.call_args_list)
+            self.assertIn("triage prompt", table)
+            self.assertIn("triage completion", table)
+            self.assertIn("15", table)
+            self.assertIn("5", table)
+            self.assertIn("0.75", table)
             from datetime import datetime, timezone
             from factory import dashboard
 
@@ -1132,6 +1152,7 @@ unused = ["agent"]
                 "attempts": [], "gate": None, "lock_held": False,
             }, audit=audit)
             self.assertEqual(ticket["human_touch"]["ready_for_human_minutes"], 35)
+            self.assertEqual(ticket["llm_usage"], row["llm_usage"])
             self.assertEqual(dashboard.metrics([ticket])["human_resolved_pct"], 50.0)
 
 
