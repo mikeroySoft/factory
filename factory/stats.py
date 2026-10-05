@@ -61,6 +61,23 @@ def audit_by_ticket(path: Path, rows: list[dict] | None = None) -> dict[int, lis
             result.setdefault(row["ticket"], []).append(row)
     return result
 
+def llm_usage(events: list[dict]) -> dict[str, dict]:
+    """Sum tokens by stage and preserve each reported cache hit rate."""
+    usage: dict[str, dict] = {}
+    for event in events:
+        stage = event.get("stage")
+        if event.get("event") != "llm-usage" or stage not in {"triage", "review"}:
+            continue
+        totals = usage.setdefault(stage, {"prompt_tokens": 0, "completion_tokens": 0})
+        for key in ("prompt_tokens", "completion_tokens"):
+            value = event.get(key)
+            if type(value) in (int, float):
+                totals[key] += value
+        rate = event.get("prefix_cache_hit_rate")
+        if type(rate) in (int, float):
+            totals.setdefault("prefix_cache_hit_rates", []).append(rate)
+    return usage
+
 
 def worker_metrics(audit: dict[int, list[dict]], workers: dict[str, list[str]]) -> list[dict]:
     """Claim-label attribution, using Config.worker's first-match precedence.
@@ -279,6 +296,7 @@ def collect_rows() -> list[dict[str, Any]]:
     for number, row in rows.items():
         details = details_by_ticket[number]
         row.update(human_touch(timeline(number), audit.get(number, []), details.get("closedAt")))
+        row["llm_usage"] = llm_usage(audit.get(number, []))
 
     return [rows[number] for number in sorted(rows)]
 
@@ -292,6 +310,12 @@ def format_hours(hours: float | None) -> str:
 
 
 def print_table(rows: list[dict[str, Any]]) -> None:
+    def usage(row: dict, stage: str, key: str) -> str:
+        value = row["llm_usage"].get(stage, {}).get(key)
+        if isinstance(value, list):
+            return ", ".join(map(str, value))
+        return "" if value is None else str(value)
+
     columns = (
         ("ticket#", lambda row: f"#{row['ticket']}"),
         ("title", lambda row: truncate(row["title"])),
@@ -299,6 +323,12 @@ def print_table(rows: list[dict[str, Any]]) -> None:
         ("attempts", lambda row: str(row["attempts"])),
         ("review rounds", lambda row: str(row["review_rounds"])),
         ("hours", lambda row: format_hours(row["merge_hours"])),
+        ("triage prompt", lambda row: usage(row, "triage", "prompt_tokens")),
+        ("triage completion", lambda row: usage(row, "triage", "completion_tokens")),
+        ("triage cache rates", lambda row: usage(row, "triage", "prefix_cache_hit_rates")),
+        ("review prompt", lambda row: usage(row, "review", "prompt_tokens")),
+        ("review completion", lambda row: usage(row, "review", "completion_tokens")),
+        ("review cache rates", lambda row: usage(row, "review", "prefix_cache_hit_rates")),
         ("escalations", lambda row: str(row["escalation_count"])),
         ("manager failures", lambda row: str(row["manager_failures"])),
         ("resolved by (actor)", lambda row: ", ".join(

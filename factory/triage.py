@@ -13,6 +13,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from contextlib import nullcontext
@@ -127,6 +128,49 @@ Respond with strict JSON only, no markdown, no prose outside the JSON:
 {{"decision": "<one of ready-for-agent|needs-info|ready-for-human|wontfix-proposal>", "rationale": "<one short paragraph>", "question": "<the question for the reporter, or empty string if decision is not needs-info>", "brief": "<agent brief for ready-for-agent, else empty string>"}}"""
 
 
+def _usage_fields(body: object) -> dict | None:
+    if not isinstance(body, dict) or not isinstance(body.get("usage"), dict):
+        return None
+    usage = body["usage"]
+    prompt = usage.get("prompt_tokens")
+    completion = usage.get("completion_tokens")
+    if (
+        type(prompt) is not int
+        or type(completion) is not int
+        or prompt < 0
+        or completion < 0
+    ):
+        return None
+    fields = {"prompt_tokens": prompt, "completion_tokens": completion}
+    rate = usage.get("prefix_cache_hit_rate")
+    if type(rate) in (int, float) and 0 <= rate <= 1:
+        fields["prefix_cache_hit_rate"] = rate
+    else:
+        details = usage.get("prompt_tokens_details")
+        cached = details.get("cached_tokens") if isinstance(details, dict) else None
+        if type(cached) is int and 0 <= cached <= prompt and prompt:
+            fields["prefix_cache_hit_rate"] = cached / prompt
+    return fields
+
+
+def _record_usage(execution, usage: dict | None) -> None:
+    if execution is None or execution.ticket is None or usage is None:
+        return
+    execution.commit()
+    lifecycle.append(
+        execution.path,
+        {
+            "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "event": "llm-usage",
+            "ticket": execution.ticket,
+            "stage": "triage",
+            "execution_id": execution.execution_id,
+            "root_execution_id": execution.root_execution_id,
+            **usage,
+        },
+    )
+
+
 def call_llm(messages: list[dict], execution=None) -> str:
     payload = json.dumps(
         {
@@ -157,6 +201,7 @@ def call_llm(messages: list[dict], execution=None) -> str:
             file=sys.stderr,
         )
         raise SystemExit(2) from exc
+    _record_usage(execution, _usage_fields(body))
     return body["choices"][0]["message"]["content"]
 
 
