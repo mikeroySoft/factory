@@ -719,6 +719,7 @@ class HostConfigTest(unittest.TestCase):
             self.assertEqual(git(repo, "status", "--porcelain"), "")
             calls = (Path(d) / "bin" / "gh.log").read_text().splitlines()
             self.assertEqual(len(calls), len(config.LABELS))
+            self.assertTrue(any(c.startswith("label create chore ") for c in calls))
             self.assertTrue(all(c.startswith("label create ") and "--repo acme/widgets" in c for c in calls))
             proc = factory(repo, "init", "--labels-only", path=stub_bin(Path(d), gh="echo nope >&2; exit 1"))
             self.assertEqual(proc.returncode, 1)
@@ -1243,6 +1244,19 @@ class GateTest(unittest.TestCase):
             self.assertIn("+changed", report)
             self.assertNotIn("- ran:", report)
             self.assertFalse((repo / "ran").exists())
+
+    def test_worker_cannot_remove_protected_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), '[gate]\nprotected_paths = [".factory.toml", "checks/**"]\n')
+            (repo / config.CONFIG_NAME).write_text("[gate]\n")
+            (repo / "checks").mkdir()
+            (repo / "checks" / "oracle.txt").write_text("tampered\n")
+            git(repo, "add", "-A")
+            git(repo, "commit", "-q", "-m", "remove guard")
+            code, _, report = gate(repo)
+            self.assertEqual(code, 1)
+            self.assertIn("- protected-paths: FAIL", report)
+            self.assertIn("protected_paths", report)
 
     def test_renaming_protected_file_is_blocked_unless_overridden(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -2884,7 +2898,7 @@ class DispatchTest(unittest.TestCase):
             dispatch.LOGS.mkdir(parents=True)
             expected = git(repo, "rev-parse", "HEAD")
 
-            def mutating_gate(*_args):
+            def mutating_gate(*_args, **_kwargs):
                 (repo / "gate-race.txt").write_text("changed by gate\n")
                 git(repo, "add", "gate-race.txt")
                 git(repo, "commit", "-qm", "gate changed head")
@@ -3479,10 +3493,13 @@ class DispatchTest(unittest.TestCase):
                 return real_run(cmd, *args, **kwargs)
 
             with mock.patch.object(
-                    dispatch, "gh_json", return_value={"baseRefName": "main"},
+                    dispatch, "gh_json", side_effect=lambda args: (
+                        {"baseRefName": "main"} if args[0] == "pr"
+                        else {"labels": [{"name": config.LABEL_PROTECTED_OVERRIDE}]}
+                    ),
             ), \
                     mock.patch.object(dispatch, "run", side_effect=run_spy), \
-                    mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
+                    mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")) as gated, \
                     mock.patch.object(
                         dispatch, "review", return_value=("APPROVE", "fresh findings"),
                     ) as review, \
@@ -3490,6 +3507,7 @@ class DispatchTest(unittest.TestCase):
                     mock.patch.object(dispatch, "approve_pr", return_value=True) as approve, \
                     mock.patch.object(dispatch, "escalate") as esc:
                 dispatch.refresh_pr_branch(7, 100, False)
+            gated.assert_called_once_with(dispatch.FACTORY / "wt-7", 7, protected_override=True)
 
             refreshed_head = git(dispatch.FACTORY / "wt-7", "rev-parse", "HEAD")
             review.assert_called_once_with(dispatch.FACTORY / "wt-7", 7, "ok", refreshed_head)
@@ -3678,11 +3696,12 @@ class DispatchTest(unittest.TestCase):
                 dispatch.configure(cfg)
 
             with mock.patch.object(dispatch, "gh_json", return_value=[]), \
-                 mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
+                 mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")) as gated, \
                  mock.patch.object(
                      dispatch, "sync_escalate", return_value="https://x/issues/1",
                  ) as escalate:
                 dispatch.sync_pass(False)
+            gated.assert_called_once_with(mock.ANY, "upstream", skip="leak-scan", protected_override=True)
 
             # Assert in root: it has every upstream object, so a missing commit
             # cannot make the negative check pass for the wrong reason.

@@ -1140,7 +1140,7 @@ def sync_pass(dry_run: bool) -> None:
                     sync_record(upstream=tip, commits=count, result="conflict", issue=url)
                     log(f"upstream sync: merge conflict at {tip[:12]}; escalated {url}")
                     return
-            ok, report = run_gate(wt, "upstream", skip="leak-scan")
+            ok, report = run_gate(wt, "upstream", skip="leak-scan", protected_override=True)
             if not ok:
                 execution.outcome, execution.reason = "project_escalation", "upstream_gate_failed"
                 url = sync_escalate(tip, "gate failed", report)
@@ -1355,7 +1355,9 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         ":(exclude).factory-prompt.md", ":(exclude).factory",
     ]
     before_status = run(status_cmd, cwd=wt).stdout.strip()
-    ok, report = run_gate(wt, n)
+    issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels"])
+    override = LABEL_PROTECTED_OVERRIDE in {label["name"] for label in issue.get("labels", [])}
+    ok, report = run_gate(wt, n, protected_override=override)
     actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     after_status = run(status_cmd, cwd=wt).stdout.strip()
     if actual_head != head:
@@ -1716,8 +1718,7 @@ def worker_round(
             log=str(logfile), head=head, handoff=handoff,
         )
         return False, "budget exceeded before gate", logfile, head
-    ok, report = (run_gate(wt, n, protected_override=True)
-                  if LABEL_PROTECTED_OVERRIDE in labels else run_gate(wt, n))
+    ok, report = run_gate(wt, n, protected_override=LABEL_PROTECTED_OVERRIDE in labels)
     actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     after_status = run(status_cmd, cwd=wt).stdout.strip()
     if actual_head != head:

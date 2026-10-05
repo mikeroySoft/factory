@@ -14,6 +14,7 @@ import re
 import signal
 import subprocess
 from pathlib import Path
+import tomllib
 
 from factory import config, lifecycle
 from factory.config import CONFIG_NAME, Config
@@ -131,12 +132,28 @@ def check_leaks(base: str) -> tuple[bool, str]:
 
 
 def check_protected_paths(base: str) -> tuple[bool, str]:
+    listing = timed(["git", "ls-tree", "--name-only", base, "--", CONFIG_NAME])
+    if listing.returncode:
+        # A new repository has no base commit yet; no worker diff exists to guard.
+        unborn = timed(["git", "rev-parse", "--verify", "HEAD"])
+        return (True, "") if unborn.returncode else (False, listing.stdout + listing.stderr)
+    patterns = []
+    if listing.stdout.strip():
+        source = timed(["git", "show", f"{base}:{CONFIG_NAME}"])
+        if source.returncode:
+            return False, source.stdout + source.stderr
+        try:
+            patterns = tomllib.loads(source.stdout).get("gate", {}).get("protected_paths", [])
+            if not isinstance(patterns, list) or any(not isinstance(p, str) or not p for p in patterns):
+                return False, "base gate.protected_paths must be an array of nonempty globs"
+        except tomllib.TOMLDecodeError as exc:
+            return False, f"base {CONFIG_NAME}: {exc}"
     proc = timed(["git", "diff", "--no-renames", "--name-only", "-z", f"{base}..HEAD"])
     if proc.returncode:
         return False, proc.stdout + proc.stderr
     paths = [
         path for path in proc.stdout.split("\0") if path
-        and any(fnmatch.fnmatchcase(path, pattern) for pattern in cfg.protected_paths)
+        and any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
     ]
     if not paths:
         return True, ""
@@ -197,7 +214,7 @@ def execute(args: argparse.Namespace, execution) -> int:
     if LEAK_RE is None:
         skip.add("leak-scan")
 
-    if cfg.protected_paths and not args.protected_override:
+    if not args.protected_override:
         passed, detail = check_protected_paths(args.base)
         if not passed:
             execution.outcome, execution.reason = "project_escalation", "protected_paths"

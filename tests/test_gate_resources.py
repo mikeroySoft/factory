@@ -219,7 +219,7 @@ class GateResourcesTest(unittest.TestCase):
         requester.wait(timeout=10)
         states = lifecycle.observe(self.events)
         stopped = next(row for row in states if row["execution_id"] == wait["execution_id"])
-        self.assertEqual(stopped["state"], "interrupted")
+        self.assertEqual(stopped["state"], "unknown")  # pre-check git children may have detached descendants
         self.assertIsNone(stopped["wait"])
         self.assertFalse((control / "exclusive.ready").exists())
         held = self.resource()

@@ -41,6 +41,7 @@ LABELS = {
     LABEL_AGENT: ("0E8A16", "Fully specified and ready for an AFK agent"),
     LABEL_HUMAN: ("B60205", "Requires human implementation"),
     LABEL_APPROVED: ("0E8A16", "Reviewer APPROVE recorded by the factory; merge-stage precondition"),
+    LABEL_CHORE: ("C2E0C6", "Mechanical maintenance work routed to the chore worker"),
     LABEL_PROTECTED_OVERRIDE: ("B60205", "Human authorization for worker edits to protected paths"),
     LABEL_WONTFIX: ("EDEDED", "Triage or manager proposes not to action this; a human decides"),
     LABEL_INITIATIVE: ("1D76DB", "Shared initiative plan read by `factory plan`; never triaged, dispatched, managed or merged"),
