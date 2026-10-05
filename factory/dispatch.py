@@ -28,6 +28,7 @@ from factory.config import (
     LABEL_APPROVED,
     LABEL_CHORE,
     LABEL_HUMAN,
+    LABEL_PROTECTED_OVERRIDE,
     LABEL_REVIEW,
     LESSONS_NAME,
     Config,
@@ -670,7 +671,7 @@ def commit_leftovers(wt: Path, n: int, title: str) -> None:
         run(["git", "commit", *flags, "-m", f"agent/{n}: {title}"], cwd=wt)
 
 
-def run_gate(wt: Path, n: int | str, skip: str = "") -> tuple[bool, str]:
+def run_gate(wt: Path, n: int | str, skip: str = "", protected_override: bool = False) -> tuple[bool, str]:
     report_rel = f".factory/gate-report-{n}.md"
     (wt / ".factory").mkdir(exist_ok=True)
     # GPU serialization is the gate's job: the gate flocks the exclusive lock
@@ -688,6 +689,8 @@ def run_gate(wt: Path, n: int | str, skip: str = "") -> tuple[bool, str]:
     if skip:
         cmd += ["--skip", skip]
     # The gate process records its own stage and check boundaries.
+    if protected_override:
+        cmd.append("--protected-override")
     proc = run(cmd, cwd=wt, check=False)
     report = wt / report_rel
     text = report.read_text() if report.exists() else proc.stdout + proc.stderr
@@ -1137,7 +1140,7 @@ def sync_pass(dry_run: bool) -> None:
                     sync_record(upstream=tip, commits=count, result="conflict", issue=url)
                     log(f"upstream sync: merge conflict at {tip[:12]}; escalated {url}")
                     return
-            ok, report = run_gate(wt, "upstream", skip="leak-scan")
+            ok, report = run_gate(wt, "upstream", skip="leak-scan", protected_override=True)
             if not ok:
                 execution.outcome, execution.reason = "project_escalation", "upstream_gate_failed"
                 url = sync_escalate(tip, "gate failed", report)
@@ -1352,7 +1355,9 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         ":(exclude).factory-prompt.md", ":(exclude).factory",
     ]
     before_status = run(status_cmd, cwd=wt).stdout.strip()
-    ok, report = run_gate(wt, n)
+    issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels"])
+    override = LABEL_PROTECTED_OVERRIDE in {label["name"] for label in issue.get("labels", [])}
+    ok, report = run_gate(wt, n, protected_override=override)
     actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     after_status = run(status_cmd, cwd=wt).stdout.strip()
     if actual_head != head:
@@ -1688,6 +1693,7 @@ def worker_round(
     extra: str,
     attempt: int,
     deadline: float,
+    selected_worker: str | None = None,
 ) -> tuple[bool, str, Path, str]:
     """One worker + gate cycle, bound to one immutable head."""
     from factory import results
@@ -1698,7 +1704,8 @@ def worker_round(
     promptfile.write_text(build_prompt(n, wt, extra))
     logfile = LOGS / f"{n}-attempt-{attempt}.log"
     started = time.monotonic()
-    code = run_worker(cfg.worker(labels, promptfile, wt), wt, logfile)
+    code = run_worker(cfg.worker({selected_worker} if selected_worker else labels, promptfile, wt),
+                      wt, logfile)
     commit_leftovers(wt, n, title)
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     handoff = results.source_metadata(cfg, n)
@@ -1713,7 +1720,7 @@ def worker_round(
             log=str(logfile), head=head, handoff=handoff,
         )
         return False, "budget exceeded before gate", logfile, head
-    ok, report = run_gate(wt, n)
+    ok, report = run_gate(wt, n, protected_override=LABEL_PROTECTED_OVERRIDE in labels)
     actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     after_status = run(status_cmd, cwd=wt).stdout.strip()
     if actual_head != head:
@@ -1843,6 +1850,10 @@ def process_ticket(
                 )
                 if ok:
                     break
+                if "- protected-paths: FAIL" in report:
+                    escalate(n, "worker edited protected paths", logfile,
+                             extra="## Offending diff\n\n" + report)
+                    return
                 if time.monotonic() > deadline:
                     escalate(n, f"wall-clock budget ({budget_min} min) exceeded", logfile)
                     return
@@ -1884,6 +1895,10 @@ def process_ticket(
                 ok, report, logfile, gate_head = worker_round(
                     n, wt, labels, title, extra, MAX_ATTEMPTS + bounce, deadline
                 )
+                if "- protected-paths: FAIL" in report:
+                    escalate(n, "worker edited protected paths", logfile,
+                             extra="## Offending diff\n\n" + report)
+                    return
                 if not ok:
                     escalate(
                         n, f"gate failed after review bounce {bounce}; worktree kept at {wt}", logfile

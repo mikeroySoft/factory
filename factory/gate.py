@@ -7,12 +7,14 @@ Writes a short Markdown report (PASS/FAIL per check + failure excerpts).
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import fcntl
 import os
 import re
 import signal
 import subprocess
 from pathlib import Path
+import tomllib
 
 from factory import config, lifecycle
 from factory.config import CONFIG_NAME, Config
@@ -129,6 +131,36 @@ def check_leaks(base: str) -> tuple[bool, str]:
     return not hits, "\n".join(hits)
 
 
+def check_protected_paths(base: str) -> tuple[bool, str]:
+    listing = timed(["git", "ls-tree", "--name-only", base, "--", CONFIG_NAME])
+    if listing.returncode:
+        # A new repository has no base commit yet; no worker diff exists to guard.
+        unborn = timed(["git", "rev-parse", "--verify", "HEAD"])
+        return (True, "") if unborn.returncode else (False, listing.stdout + listing.stderr)
+    patterns = []
+    if listing.stdout.strip():
+        source = timed(["git", "show", f"{base}:{CONFIG_NAME}"])
+        if source.returncode:
+            return False, source.stdout + source.stderr
+        try:
+            patterns = tomllib.loads(source.stdout).get("gate", {}).get("protected_paths", [])
+            if not isinstance(patterns, list) or any(not isinstance(p, str) or not p for p in patterns):
+                return False, "base gate.protected_paths must be an array of nonempty globs"
+        except tomllib.TOMLDecodeError as exc:
+            return False, f"base {CONFIG_NAME}: {exc}"
+    proc = timed(["git", "diff", "--no-renames", "--name-only", "-z", f"{base}...HEAD"])
+    if proc.returncode:
+        return False, proc.stdout + proc.stderr
+    paths = [
+        path for path in proc.stdout.split("\0") if path
+        and any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
+    ]
+    if not paths:
+        return True, ""
+    diff = timed(["git", "diff", "--no-renames", "--binary", f"{base}...HEAD", "--", *paths])
+    return False, diff.stdout + diff.stderr
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Quality gate for agent worktrees.")
     parser.add_argument("--base", default=None, help="base ref for leak scan")
@@ -147,6 +179,8 @@ def main(argv: list[str]) -> int:
         default=None,
         help="per-check timeout in seconds",
     )
+    parser.add_argument("--protected-override", action="store_true",
+                        help="human-authorized protected-path override")
     args = parser.parse_args(argv)
     configure(config.load())
     with lifecycle.scope(cfg.factory / "events.jsonl", "gate") as execution:
@@ -180,6 +214,16 @@ def execute(args: argparse.Namespace, execution) -> int:
     if LEAK_RE is None:
         skip.add("leak-scan")
 
+    if not args.protected_override:
+        passed, detail = check_protected_paths(args.base)
+        if not passed:
+            execution.outcome, execution.reason = "project_escalation", "protected_paths"
+            report = Path(args.report)
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text("# Gate report\n\n- protected-paths: FAIL\n\n"
+                              "## protected-paths failure\n\n```diff\n" + detail + "\n```\n")
+            print(f"report: {report}\ngate FAIL: protected-paths")
+            return 1
     checks = [
         ("conflict-markers", check_conflict_markers),
         *((check.name, (lambda c=check: run(c.run))) for check in cfg.checks),

@@ -456,10 +456,17 @@ ticket's `human_touch` details. The dashboard retains its existing 100-issue,
    (commit incrementally, never touch `main`, never `git stash`, finish with
    `factory gate`), and — on retries — the previous gate report or the
    reviewer's findings. Up to `max_attempts` rounds within `budget_min`.
-4. **Gate.** `conflict-markers`, your `[[gate.check]]` list in order, then a
-   `leak-scan` of added lines against a regex. Checks marked `exclusive`
-   serialise on a host-wide lock (one GPU, many worktrees). Every check has a
-   timeout; a wedged check fails instead of holding the lock.
+4. **Gate.** The configured `[gate].protected_paths` globs from the base ref's
+   `.factory.toml` are checked against the committed worker diff first, before
+   any checks; a hit stops the run and immediately escalates the ticket to
+   `ready-for-human` with the offending diff in the escalation packet. Include
+   `.factory.toml` in the list to protect the list itself. A human can apply
+   `factory-protected-override` to authorize worker edits, including a refresh
+   onto moved main; upstream sync bypasses this worker-only guard. Otherwise
+   make protected changes outside the worker flow. Then `conflict-markers`,
+   your `[[gate.check]]` list in order, and a `leak-scan`
+   run. Checks marked `exclusive` serialise on a host-wide lock. Every check
+   has a timeout.
 5. **Review.** The reviewer runs the diff itself, gets the gate report inline, and
    is told to read issue #N's comments (the triage brief, approved scope changes).
    Every finding cites `path:line`; a required fix also cites an acceptance
@@ -574,6 +581,7 @@ command = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]   # {prompt} = manager pr
 [gate]
 timeout = 1200
 lock = "/tmp/factory.lock"
+protected_paths = [".factory.toml", "tests/**", "TRACKING*"]
 
 [[gate.check]]
 name = "lint"
