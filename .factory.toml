@@ -1,6 +1,9 @@
 # agent-factory configuration. Docs: https://github.com/mikeroySoft/factory
 # Gate checks proposed by District from: --check
 
+[gate]
+protected_paths = [".factory.toml", "tests/**", "**/acceptance/**", "**/*review*prompt*", "TRACKING*", "**/TRACKING*"]
+
 [[gate.check]]
 name = "test"
 run = [

@@ -1228,6 +1228,38 @@ class GateTest(unittest.TestCase):
             self.assertIn("- leak-scan: FAIL", report)
             self.assertIn("CONFIDENTIAL", report)
 
+    def test_protected_edit_stops_gate_before_checks(self) -> None:
+        toml = ('[gate]\nprotected_paths = [".factory.toml", "checks/**"]\n'
+                '[[gate.check]]\nname = "ran"\nrun = ["sh", "-c", "touch ran"]\n')
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), toml)
+            (repo / "checks").mkdir()
+            (repo / "checks" / "oracle.txt").write_text("changed\n")
+            git(repo, "add", "checks/oracle.txt")
+            git(repo, "commit", "-q", "-m", "tamper")
+            code, _, report = gate(repo)
+            self.assertEqual(code, 1)
+            self.assertIn("- protected-paths: FAIL", report)
+            self.assertIn("+changed", report)
+            self.assertNotIn("- ran:", report)
+            self.assertFalse((repo / "ran").exists())
+
+    def test_renaming_protected_file_is_blocked_unless_overridden(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), '[gate]\nprotected_paths = ["checks/**"]\n')
+            (repo / "checks").mkdir()
+            (repo / "checks" / "oracle.txt").write_text("reference\n")
+            git(repo, "add", "checks/oracle.txt")
+            git(repo, "commit", "-q", "-m", "oracle")
+            git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+            git(repo, "mv", "checks/oracle.txt", "renamed.txt")
+            git(repo, "commit", "-q", "-m", "rename")
+            code, _, report = gate(repo)
+            self.assertEqual(code, 1)
+            self.assertIn("deleted file mode", report)
+            code, _, report = gate(repo, "--protected-override")
+            self.assertEqual(code, 0, report)
+
     def test_toolchain_is_recorded_once_and_in_report(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)

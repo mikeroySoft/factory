@@ -28,6 +28,7 @@ from factory.config import (
     LABEL_APPROVED,
     LABEL_CHORE,
     LABEL_HUMAN,
+    LABEL_PROTECTED_OVERRIDE,
     LABEL_REVIEW,
     LESSONS_NAME,
     Config,
@@ -670,7 +671,7 @@ def commit_leftovers(wt: Path, n: int, title: str) -> None:
         run(["git", "commit", *flags, "-m", f"agent/{n}: {title}"], cwd=wt)
 
 
-def run_gate(wt: Path, n: int | str, skip: str = "") -> tuple[bool, str]:
+def run_gate(wt: Path, n: int | str, skip: str = "", protected_override: bool = False) -> tuple[bool, str]:
     report_rel = f".factory/gate-report-{n}.md"
     (wt / ".factory").mkdir(exist_ok=True)
     # GPU serialization is the gate's job: the gate flocks the exclusive lock
@@ -688,6 +689,8 @@ def run_gate(wt: Path, n: int | str, skip: str = "") -> tuple[bool, str]:
     if skip:
         cmd += ["--skip", skip]
     # The gate process records its own stage and check boundaries.
+    if protected_override:
+        cmd.append("--protected-override")
     proc = run(cmd, cwd=wt, check=False)
     report = wt / report_rel
     text = report.read_text() if report.exists() else proc.stdout + proc.stderr
@@ -1713,7 +1716,8 @@ def worker_round(
             log=str(logfile), head=head, handoff=handoff,
         )
         return False, "budget exceeded before gate", logfile, head
-    ok, report = run_gate(wt, n)
+    ok, report = (run_gate(wt, n, protected_override=True)
+                  if LABEL_PROTECTED_OVERRIDE in labels else run_gate(wt, n))
     actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     after_status = run(status_cmd, cwd=wt).stdout.strip()
     if actual_head != head:
@@ -1843,6 +1847,10 @@ def process_ticket(
                 )
                 if ok:
                     break
+                if "- protected-paths: FAIL" in report:
+                    escalate(n, "worker edited protected paths", logfile,
+                             extra="## Offending diff\n\n" + report)
+                    return
                 if time.monotonic() > deadline:
                     escalate(n, f"wall-clock budget ({budget_min} min) exceeded", logfile)
                     return
@@ -1884,6 +1892,10 @@ def process_ticket(
                 ok, report, logfile, gate_head = worker_round(
                     n, wt, labels, title, extra, MAX_ATTEMPTS + bounce, deadline
                 )
+                if "- protected-paths: FAIL" in report:
+                    escalate(n, "worker edited protected paths", logfile,
+                             extra="## Offending diff\n\n" + report)
+                    return
                 if not ok:
                     escalate(
                         n, f"gate failed after review bounce {bounce}; worktree kept at {wt}", logfile

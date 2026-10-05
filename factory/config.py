@@ -29,6 +29,7 @@ LABEL_INFO = "needs-info"
 LABEL_AGENT = "ready-for-agent"
 LABEL_HUMAN = "ready-for-human"
 LABEL_APPROVED = "factory-approved"
+LABEL_PROTECTED_OVERRIDE = "factory-protected-override"
 LABEL_CHORE = "chore"
 LABEL_INITIATIVE = "initiative"
 LABEL_WONTFIX = "wontfix-proposal"
@@ -40,7 +41,7 @@ LABELS = {
     LABEL_AGENT: ("0E8A16", "Fully specified and ready for an AFK agent"),
     LABEL_HUMAN: ("B60205", "Requires human implementation"),
     LABEL_APPROVED: ("0E8A16", "Reviewer APPROVE recorded by the factory; merge-stage precondition"),
-    LABEL_CHORE: ("C2E0C6", "Mechanical task; routed to the chore worker"),
+    LABEL_PROTECTED_OVERRIDE: ("B60205", "Human authorization for worker edits to protected paths"),
     LABEL_WONTFIX: ("EDEDED", "Triage or manager proposes not to action this; a human decides"),
     LABEL_INITIATIVE: ("1D76DB", "Shared initiative plan read by `factory plan`; never triaged, dispatched, managed or merged"),
 }
@@ -71,7 +72,7 @@ KNOWN_KEYS = {
     "worker_wrap": ("command",),
     "review": ("command",),
     "manager": ("model", "command", "rounds", "review", "stale_days", "max_active_cap", "budget_min_cap"),
-    "gate": ("timeout", "lock", "check"),
+    "gate": ("timeout", "lock", "check", "protected_paths"),
     "leak_scan": ("pattern", "exclude"),
     "triage": ("url", "model"),
     "journal": ("max_mb", "retention"),
@@ -130,6 +131,7 @@ class Config:
     manager_max_active_cap: int | None = None
     manager_budget_min_cap: int | None = None
     checks: list[Check] = field(default_factory=list)
+    protected_paths: list[str] = field(default_factory=list)
     check_timeout: int = 1200
     lock: Path = Path("/tmp/factory.lock")  # host-wide: one GPU, many repos
     leak_pattern: str | None = DEFAULT_LEAK_PATTERN
@@ -398,13 +400,17 @@ def load(start: Path | None = None) -> Config:
     if "collaboration" in raw:
         cfg.collaboration = collaboration_settings(raw["collaboration"])
     cfg.check_timeout = int(gate.get("timeout", cfg.check_timeout))
+    paths = gate.get("protected_paths", [])
+    if not isinstance(paths, list) or any(not isinstance(p, str) or not p for p in paths):
+        raise ConfigError("gate.protected_paths must be an array of nonempty globs")
+    cfg.protected_paths = paths
     cfg.lock = Path(gate.get("lock", cfg.lock))
     cfg.checks = [
         Check(c["name"], list(c["run"]), bool(c.get("exclusive", False))) for c in gate.get("check", [])
     ]
     names = [c.name for c in cfg.checks]
-    if len(set(names)) != len(names) or {"conflict-markers", "leak-scan"} & set(names):
-        raise ConfigError(f"{path}: gate check names must be unique and not conflict-markers/leak-scan")
+    if len(set(names)) != len(names) or {"conflict-markers", "leak-scan", "protected-paths"} & set(names):
+        raise ConfigError(f"{path}: gate check names must be unique and not conflict-markers/leak-scan/protected-paths")
     if "pattern" in leak:
         cfg.leak_pattern = leak["pattern"] or None
     cfg.leak_exclude = list(leak.get("exclude", []))
