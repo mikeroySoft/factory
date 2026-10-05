@@ -1,0 +1,47 @@
+{
+  "decision": "Meets the predeclared threshold for recommending a prospective human-reviewed shadow pilot; does not qualify production automation.",
+  "scope": "One retrospective programme, three conditions, two fresh sessions per condition. Six total model calls; no rerun.",
+  "classification_owner": "Main, informed by independent value and authority reviewers and corrected source oracles",
+  "items": [
+    {"run":"baseline.s1","item":1,"classification":"already_known","idea":"Reconcile main/stable integration and PR61 conflict","accepted_as_proposal":true,"reason":"All conditions received the same branch/status evidence. No handoff-specific increment."},
+    {"run":"baseline.s1","item":2,"classification":"already_known","idea":"Obtain or link required CLI acceptance evidence","accepted_as_proposal":true,"reason":"Existing exit criteria; missing evidence in a bounded packet does not revoke accepted #53 progress. Prefer locating evidence over redundant execution."},
+    {"run":"baseline.s2","item":1,"classification":"already_known","idea":"Reconcile main/stable integration and PR61 conflict","accepted_as_proposal":true,"reason":"Same shared-evidence prerequisite as baseline.s1 item 1."},
+    {"run":"baseline.s2","item":2,"classification":"already_known","idea":"Obtain or link required CLI acceptance evidence","accepted_as_proposal":true,"reason":"Existing exit criteria, not a new downstream refinement."},
+    {"run":"success.s1","item":1,"classification":"already_known","idea":"Reconcile main/stable integration and PR61 conflict","accepted_as_proposal":true,"reason":"Shared metadata, not success-handoff value."},
+    {"run":"success.s1","item":2,"classification":"useful_plan_refinement","idea":"Separate complete canonical binding content from clipped reader display content in #57","accepted_as_proposal":true,"reason":"H53B supplies the concrete 4000-character producer limit; I57 requires canonical content/digests. Accepted-parser probe confirms the conditional consumer risk. Absent from both baselines.","approval_needed":"Human-reviewed amendment of held #57 scope/acceptance; no automatic issue edit, rebaseline or admission change."},
+    {"run":"success.s2","item":1,"classification":"already_known","idea":"Reconcile main/stable integration and PR61 conflict","accepted_as_proposal":true,"reason":"Shared metadata, not success-handoff value."},
+    {"run":"success.s2","item":2,"classification":"useful_plan_refinement","idea":"Separate complete canonical binding content from clipped reader display content in #57","accepted_as_proposal":true,"reason":"Same independently corroborated risk as success.s1 item 2, with an explicit suffix-only edit case.","approval_needed":"Human-reviewed amendment of held #57's acceptance scenario before implementation; no hold release."},
+    {"run":"mixed.s1","item":1,"classification":"already_known","idea":"Reconcile main/stable integration and PR61 conflict","accepted_as_proposal":true,"reason":"Correctly treats the worker's clean-rebase prediction as historical, but the integration problem is already visible in shared metadata."},
+    {"run":"mixed.s1","item":2,"classification":"local_remediation","idea":"Repair #54's specified --json invocation","accepted_as_proposal":true,"reason":"Exact required issue behavior and reviewer evidence; not successful-handoff planning value. No failing command was rerun by this experiment."},
+    {"run":"mixed.s1","item":3,"classification":"open_question","idea":"Choose an evidenced path input for #56's future routing integration","accepted_as_proposal":true,"reason":"H54 exposes --path-only input while I56 consumes routing. Useful downstream seam question, not proof that a new PR-file reader is required."},
+    {"run":"mixed.s2","item":1,"classification":"already_known","idea":"Reconcile main/stable integration and PR61 conflict","accepted_as_proposal":true,"reason":"Same shared prerequisite as other conditions."},
+    {"run":"mixed.s2","item":2,"classification":"local_remediation","idea":"Repair #54's specified --json invocation","accepted_as_proposal":true,"reason":"Correct local contract repair; optional findings stay optional."},
+    {"run":"mixed.s2","item":3,"classification":"open_question","idea":"Choose an evidenced path input for #56's future routing integration","accepted_as_proposal":true,"reason":"Classified consistently with mixed.s1 despite the model's stronger plan_refinement label. First check existing evidence; do not assume a new API read is needed.","approval_needed":"Any new read integration or issue-scope change requires explicit human review; #56 stays held."}
+  ],
+  "unique_ideas":5,
+  "supported_recommendation_instances":14,
+  "unsafe_recommendations_accepted":0,
+  "success_specific_refinement":{
+    "idea":"#57 complete canonical content versus bounded display",
+    "baseline_observed":[false,false],
+    "success_observed":[true,true],
+    "mixed_observed":[false,false],
+    "interpretation":"Meets the fixed repetition criterion on this case. Mixed packets omitted the success-derived insight while surfacing different useful work; possible prioritization interference, not a proven causal law."
+  },
+  "review_adjudications":[
+    "Accept value review's support for #57's conditional downstream risk and its exclusion of shared branch reconciliation from handoff credit.",
+    "Conservatively classify #56's unknown path-source choice as open_question in both repetitions, although the value reviewer calls it a useful refinement.",
+    "Accept authority review: proposed #57 gate amendments and any #56 new read integration need explicit human scope review. No actual issue or gate is changed.",
+    "Reject source-oracle claims that #53 is not meaningful progress or that #54 gates #55/#57. Progress differs from delivered outcome; I52 controls the dependency graph.",
+    "Reject the failure oracle's causal claim that a later manager crash caused the prior REVISE escalation. That crash comment is not planner input and earns no discovery credit.",
+    "Withdraw the suspected capture-defect finding: all nine frozen issue bodies match full API bodies. The transcript renderer, not the packet, clipped long lines."
+  ],
+  "limitations":[
+    "One selected programme; two repetitions are not a success-rate or generalizability estimate.",
+    "Successful-worker closing reports substitute only as available evidence, not as a reconstruction of the removed full handoff.",
+    "No prospective worker delivery or measured human time, cost savings, avoided implementation, release, deployment or product outcome.",
+    "Condition labels withheld from reviewers, but source IDs expose condition membership; not a blinded study.",
+    "Main has prior case context; source oracles and reviewers are fallible model outputs requiring adjudication.",
+    "The parser probe runs AST-selected accepted parse/constants only, not a full CLI, provider or unimplemented #57 admission path."
+  ]
+}
