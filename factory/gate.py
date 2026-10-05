@@ -153,8 +153,25 @@ def main(argv: list[str]) -> int:
         return execute(args, execution)
 
 
+def toolchain() -> dict[str, str]:
+    values = {}
+    for name, command in (
+        ("rocm", ["hipconfig", "--version"]),
+        ("kernel", ["uname", "-r"]),
+        ("amdgpu", ["modinfo", "-F", "version", "amdgpu"]),
+    ):
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=5, check=False)
+            values[name] = result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else "unavailable"
+        except (OSError, subprocess.TimeoutExpired):
+            values[name] = "unavailable"
+    return values
+
+
 def execute(args: argparse.Namespace, execution) -> int:
     global CHECK_TIMEOUT
+    host = toolchain()
+    execution.emit("toolchain", **host)
     if args.base is None:
         args.base = f"origin/{cfg.main}"
     if args.check_timeout is not None:
@@ -206,7 +223,10 @@ def execute(args: argparse.Namespace, execution) -> int:
             if gpu_acquired:
                 execution.resource("released", GPU_LOCK, scope="host", blocking=True)
 
-    lines = ["# Gate report", ""]
+    lines = [
+        "# Gate report", "", "## Host toolchain",
+        f"ROCm: {host['rocm']}", f"Kernel: {host['kernel']}", f"amdgpu: {host['amdgpu']}", "",
+    ]
     for name, status, _ in results:
         lines.append(f"- {name}: {status}")
     for name, status, output in results:
