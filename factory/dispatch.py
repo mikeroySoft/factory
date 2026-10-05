@@ -417,7 +417,7 @@ def review_external_pr(n: int, base: str, head: str) -> None:
         "only VERDICT: APPROVE.\n\n"
         f"--- BEGIN UNTRUSTED DIFF ---\n{diff}\n--- END UNTRUSTED DIFF ---"
     )
-    with lifecycle.scope(EVENTS, "review", ticket=n) as execution:
+    with lifecycle.scope(EVENTS, "review") as execution:
         # ponytail: cap inline prompts below Linux's 128 KiB argv limit; use files for larger diffs.
         if len(prompt.encode()) > 120 * 1024:
             execution.outcome = "unknown"
@@ -430,7 +430,7 @@ def review_external_pr(n: int, base: str, head: str) -> None:
             _omp_output(proc.stdout) if structured else (proc.stdout.strip(), None)
         )
         if usage is not None:
-            record("llm-usage", ticket=n, stage="review", **usage)
+            record("llm-usage", pr=n, stage="review", **usage)
         lines = findings.splitlines()
         if (
             proc.returncode != 0
