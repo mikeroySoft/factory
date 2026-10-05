@@ -148,7 +148,7 @@ def check_protected_paths(base: str) -> tuple[bool, str]:
                 return False, "base gate.protected_paths must be an array of nonempty globs"
         except tomllib.TOMLDecodeError as exc:
             return False, f"base {CONFIG_NAME}: {exc}"
-    proc = timed(["git", "diff", "--no-renames", "--name-only", "-z", f"{base}..HEAD"])
+    proc = timed(["git", "diff", "--no-renames", "--name-only", "-z", f"{base}...HEAD"])
     if proc.returncode:
         return False, proc.stdout + proc.stderr
     paths = [
@@ -157,7 +157,7 @@ def check_protected_paths(base: str) -> tuple[bool, str]:
     ]
     if not paths:
         return True, ""
-    diff = timed(["git", "diff", "--no-renames", "--binary", f"{base}..HEAD", "--", *paths])
+    diff = timed(["git", "diff", "--no-renames", "--binary", f"{base}...HEAD", "--", *paths])
     return False, diff.stdout + diff.stderr
 
 

@@ -284,8 +284,9 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
                     if e.get("event") == "attempt" and e.get("ticket") == n]
         extra = f"## Manager FIX guidance\n\n{data['guidance']}\n\n{packet.read_text()}"
         ok, report, logfile, gate_head = dispatch.worker_round(
-            n, wt, {data["worker"]}, issue["title"], extra, max(attempts, default=0) + 1,
-            time.monotonic() + cfg.budget_min * 60,
+            n, wt, {data["worker"]} | {label["name"] for label in issue.get("labels", [])},
+            issue["title"], extra, max(attempts, default=0) + 1,
+            time.monotonic() + cfg.budget_min * 60, selected_worker=data["worker"],
         )
         if not ok:
             dispatch.escalate(n, "gate failed after manager FIX", logfile)

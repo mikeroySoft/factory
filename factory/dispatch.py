@@ -1693,6 +1693,7 @@ def worker_round(
     extra: str,
     attempt: int,
     deadline: float,
+    selected_worker: str | None = None,
 ) -> tuple[bool, str, Path, str]:
     """One worker + gate cycle, bound to one immutable head."""
     from factory import results
@@ -1703,7 +1704,8 @@ def worker_round(
     promptfile.write_text(build_prompt(n, wt, extra))
     logfile = LOGS / f"{n}-attempt-{attempt}.log"
     started = time.monotonic()
-    code = run_worker(cfg.worker(labels, promptfile, wt), wt, logfile)
+    code = run_worker(cfg.worker({selected_worker} if selected_worker else labels, promptfile, wt),
+                      wt, logfile)
     commit_leftovers(wt, n, title)
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     handoff = results.source_metadata(cfg, n)

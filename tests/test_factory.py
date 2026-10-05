@@ -1258,6 +1258,54 @@ class GateTest(unittest.TestCase):
             self.assertIn("- protected-paths: FAIL", report)
             self.assertIn("protected_paths", report)
 
+    def test_main_protected_edit_does_not_block_unrelated_worker_change(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), '[gate]\nprotected_paths = ["checks/**"]\n')
+            (repo / "checks").mkdir()
+            (repo / "checks" / "oracle.txt").write_text("original\n")
+            git(repo, "add", "checks/oracle.txt")
+            git(repo, "commit", "-q", "-m", "add oracle")
+            git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+            git(repo, "switch", "-q", "-c", "agent/1")
+            (repo / "README.md").write_text("worker edit\n")
+            git(repo, "add", "README.md")
+            git(repo, "commit", "-q", "-m", "worker edit")
+            git(repo, "switch", "-q", "main")
+            (repo / "checks" / "oracle.txt").write_text("main edit\n")
+            git(repo, "add", "checks/oracle.txt")
+            git(repo, "commit", "-q", "-m", "main edit")
+            git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+            git(repo, "switch", "-q", "agent/1")
+
+            code, out, report = gate(repo)
+            self.assertEqual(code, 0, report + out)
+            self.assertNotIn("- protected-paths: FAIL", report)
+
+    def test_worker_protected_edit_reports_only_changes_since_fork(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), '[gate]\nprotected_paths = ["checks/**"]\n')
+            (repo / "checks").mkdir()
+            (repo / "checks" / "oracle.txt").write_text("original\n")
+            git(repo, "add", "checks/oracle.txt")
+            git(repo, "commit", "-q", "-m", "add oracle")
+            git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+            git(repo, "switch", "-q", "-c", "agent/1")
+            (repo / "checks" / "oracle.txt").write_text("worker edit\n")
+            git(repo, "add", "checks/oracle.txt")
+            git(repo, "commit", "-q", "-m", "worker edit")
+            git(repo, "switch", "-q", "main")
+            (repo / "checks" / "oracle.txt").write_text("main edit\n")
+            git(repo, "add", "checks/oracle.txt")
+            git(repo, "commit", "-q", "-m", "main edit")
+            git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+            git(repo, "switch", "-q", "agent/1")
+
+            code, _, report = gate(repo)
+            self.assertEqual(code, 1)
+            self.assertIn("- protected-paths: FAIL", report)
+            self.assertIn("-original\n+worker edit", report)
+            self.assertNotIn("-main edit", report)
+
     def test_renaming_protected_file_is_blocked_unless_overridden(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             repo = make_repo(Path(d), '[gate]\nprotected_paths = ["checks/**"]\n')
@@ -1739,6 +1787,81 @@ PY
                 call.args[0][:2] == ["git", "push"]
                 for call in run.call_args_list
             ))
+
+    def test_fix_protected_edit_requires_issue_override_label(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        for authorized in (False, True):
+            with self.subTest(authorized=authorized), tempfile.TemporaryDirectory() as d:
+                repo = make_repo(Path(d), '[gate]\nprotected_paths = ["checks/**"]\n')
+                (repo / "checks").mkdir()
+                (repo / "checks" / "oracle.txt").write_text("original\n")
+                git(repo, "add", "checks/oracle.txt")
+                git(repo, "commit", "-q", "-m", "add oracle")
+                git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+                cfg = config.Config(
+                    root=repo, repo="acme/widgets",
+                    workers={
+                        "default": ["false"],
+                        "chore": ["false"],
+                        "ci-fix": ["sh", "-c", "printf 'worker edit\\n' > checks/oracle.txt"],
+                    },
+                )
+                dispatch.configure(cfg)
+                wt = cfg.factory / "wt-7"
+                wt.parent.mkdir()
+                git(repo, "worktree", "add", "-q", str(wt), "-b", "agent/7")
+                head = git(wt, "rev-parse", "HEAD")
+                packet = cfg.factory / "packet.md"
+                packet.write_text("fix the gate")
+                issue = {
+                    "title": "Fix oracle", "body": "Fix the oracle", "comments": [],
+                    "labels": [{"name": "chore"}] + (
+                        [{"name": config.LABEL_PROTECTED_OVERRIDE}] if authorized else []
+                    ),
+                }
+                pr = {
+                    "state": "OPEN", "headRefName": "agent/7",
+                    "headRefOid": head, "baseRefName": "main", "reviewDecision": "",
+                }
+                original_run = dispatch.run
+
+                def fake_run(cmd, *args, **kwargs):
+                    if cmd[:2] == ["git", "push"]:
+                        return subprocess.CompletedProcess(cmd, 0, "", "")
+                    return original_run(cmd, *args, **kwargs)
+
+                def fake_github(args):
+                    return pr if args[:2] == ["pr", "view"] else issue
+
+                with mock.patch.dict(os.environ, {"PYTHONPATH": str(ROOT)}), \
+                        mock.patch.object(dispatch, "gh_json", side_effect=fake_github), \
+                        mock.patch.object(dispatch, "run", side_effect=fake_run) as run, \
+                        mock.patch.object(dispatch, "review", return_value=("APPROVE", "approved")) as review, \
+                        mock.patch.object(dispatch, "pr_comment"), \
+                        mock.patch.object(dispatch, "approve_pr", return_value=True), \
+                        mock.patch.object(dispatch, "escalate") as escalate:
+                    manage.apply(
+                        7, issue, "FIX", "", {"worker": "ci-fix", "guidance": "Fix oracle"}, packet,
+                    )
+
+                report = (wt / ".factory/gate-report-7.md").read_text()
+                if authorized:
+                    self.assertIn("- conflict-markers: PASS", report)
+                    self.assertNotIn("- protected-paths: FAIL", report)
+                    self.assertTrue(any(call.args[0][:2] == ["git", "push"]
+                                        for call in run.call_args_list))
+                    review.assert_called_once()
+                    escalate.assert_not_called()
+                else:
+                    self.assertIn("- protected-paths: FAIL", report)
+                    self.assertIn("+worker edit", report)
+                    self.assertFalse(any(call.args[0][:2] == ["git", "push"]
+                                         for call in run.call_args_list))
+                    review.assert_not_called()
+                    escalate.assert_called_once()
 
     def test_red_ci_pr_is_fixed_relabelled_and_merged_on_the_next_pass(self) -> None:
         """#15 exit gate: red CI withdrew the label; FIX + green gate + APPROVE relabel; next pass merges."""
