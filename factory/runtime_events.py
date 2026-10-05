@@ -24,7 +24,7 @@ IDENTITY = lifecycle._IDENTITY_FIELDS
 KINDS = {
     "enter", "exit", "handoff", "child_start", "child_exit", "check", "result", "timeout",
     "lock_acquired", "lock_released", "resource_requested", "wait", "wait_end",
-    "resource_observation", "scheduling_observation",
+    "resource_observation", "scheduling_observation", "toolchain",
 }
 OBSERVATIONS = {"resource_observation", "scheduling_observation"}
 OUTCOMES = {

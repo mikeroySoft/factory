@@ -135,10 +135,10 @@
             </div>
             <div class="install-line">
               <span class="install-label">CLI</span>
-              <pre><code>uv tool install git+https://github.com/mikeroySoft/factory@v0.3.5</code></pre>
+              <pre><code>uv tool install git+https://github.com/mikeroySoft/factory@v0.3.8</code></pre>
             </div>
           </div>
-          <p class="release-note"><a href="#changelog">Latest release: v0.3.5 · September 18, 2026</a><br>CLI command pins this release. Use <code>@stable</code> for the released channel or <code>@main</code> for development; the bare URL follows the default <code>main</code> branch.</p>
+          <p class="release-note"><a href="#changelog">Latest release: v0.3.8 · October 3, 2026</a><br>CLI command pins this release. Use <code>@stable</code> for the released channel or <code>@main</code> for development; the bare URL follows the default <code>main</code> branch.</p>
 
           <div class="hero-actions">
             <a class="button" href="https://github.com/mikeroySoft/factory">
@@ -224,7 +224,7 @@
             <p class="eyebrow">control surfaces</p>
             <h2 id="features-title">Deterministic where it matters.</h2>
           </div>
-          <p>Runs on your Linux machine with the agent CLIs you choose and no hosted control plane. v0.3.5 installs TOMLKit for comment-preserving Settings; there are no other required Python dependencies. Model calls use your configured providers.</p>
+          <p>Runs on your Linux machine with the agent CLIs you choose and no hosted control plane. v0.3.8 installs TOMLKit for comment-preserving Settings; there are no other required Python dependencies. Model calls use your configured providers.</p>
         </div>
 
         <div class="features">
@@ -274,17 +274,17 @@
             <p>Track attempts, review bounces, and time to merge. Distill finished-ticket evidence into repo-specific lessons you review and commit for future workers.</p>
           </article>
           <article class="feature">
-            <div class="feature-top"><span class="status-dot"></span>Dashboard · v0.3.5</div>
+            <div class="feature-top"><span class="status-dot"></span>Dashboard · v0.3.8</div>
             <h3>Make the dashboard your own</h3>
             <p>Nine bundled themes, title-first navigation, and Ops as the quiet default. Existing Inbox and deep links remain explicit destinations.</p>
           </article>
           <article class="feature">
-            <div class="feature-top"><span class="status-dot"></span>Settings · v0.3.5</div>
+            <div class="feature-top"><span class="status-dot"></span>Settings · v0.3.8</div>
             <h3>Five controls, locally saved</h3>
             <p>Set concurrency, ticket time limit, worker/gate attempts, reviewer rounds, and the Factory Manager model with source-aware, comment-preserving edits.</p>
           </article>
           <article class="feature">
-            <div class="feature-top"><span class="status-dot"></span>Read-only · v0.3.5</div>
+            <div class="feature-top"><span class="status-dot"></span>Read-only · v0.3.8</div>
             <h3>Chat and code history</h3>
             <p>Use dashboard Chat with browser-local history, or add optional <code>factory[atlas]</code> Codebase history for commit-pinned maps and comparisons.</p>
           </article>
@@ -354,7 +354,7 @@
             <p class="eyebrow">quick start</p>
             <h2 id="quick-start-title">Bring your own checks. Keep your own machine.</h2>
           </div>
-          <p>Linux, Python &gt;= 3.11, git, authenticated gh with push access, and worker/reviewer CLIs. v0.3.5 installs TOMLKit; optional Codebase history adds <code>graphifyy</code> through <code>factory[atlas]</code>, while terminal <code>factory chat</code> additionally needs Node and its pinned Pi runtime. Dashboard Chat and Ask FM require authenticated OMP and send evidence to the selected model provider.</p>
+          <p>Linux, Python &gt;= 3.11, git, authenticated gh with push access, and worker/reviewer CLIs. v0.3.8 installs TOMLKit; optional Codebase history adds <code>graphifyy</code> through <code>factory[atlas]</code>, while terminal <code>factory chat</code> additionally needs Node and its pinned Pi runtime. Dashboard Chat and Ask FM require authenticated OMP and send evidence to the selected model provider.</p>
         </div>
 
         <div class="code-panel">
@@ -428,6 +428,24 @@ model = "qwen3:30b"</code></pre>
           <li class="release">
             <div class="release-meta">
               <span class="chip chip-success">Latest release</span>
+              <a href="https://github.com/mikeroySoft/factory/releases/tag/v0.3.8">v0.3.8</a>
+              <time datetime="2026-10-03">October 3, 2026</time>
+            </div>
+            <div>
+              <h3>Run lean. Keep the record.</h3>
+              <ul>
+                <li><strong>Bounded journal:</strong> idle passes no longer journal parked tickets, and <code>events.jsonl</code> rotates into gzip segments while every outcome row stays readable.</li>
+                <li><strong>Lighter dashboard:</strong> the Ops snapshot bounds its executions list, and a docked ticket drawer replaces the overlay on desktop.</li>
+                <li><strong>Steadier sync:</strong> upstream sync lands the conflict-free prefix instead of parking the whole backlog behind one conflict.</li>
+                <li><strong>Resume and wrap:</strong> workers resume from retained accepted results; a host-owned argv prefix wraps every worker launch.</li>
+                <li><strong>Experiments:</strong> bounded observation, experiment-informed roadmap next actions, and a split-aware eval promotion contract.</li>
+              </ul>
+              <p class="decision"><strong>The decision:</strong> cap what the factory writes, never what it can prove. Rotation drops only closed-execution lifecycle noise; audit rows survive.</p>
+            </div>
+          </li>
+          <li class="release">
+            <div class="release-meta">
+              <span class="chip">Release</span>
               <a href="https://github.com/mikeroySoft/factory/releases/tag/v0.3.5">v0.3.5</a>
               <time datetime="2026-09-18">September 18, 2026</time>
             </div>
@@ -477,7 +495,7 @@ model = "qwen3:30b"</code></pre>
             </div>
           </li>
         </ol>
-        <p class="section-note"><a href="https://github.com/mikeroySoft/factory/blob/main/CHANGELOG.md">Full changelog</a> · <a href="https://github.com/mikeroySoft/factory/releases">Tagged releases</a> · <a href="https://github.com/mikeroySoft/factory/compare/v0.3.5...main">Changes since v0.3.5</a></p>
+        <p class="section-note"><a href="https://github.com/mikeroySoft/factory/blob/main/CHANGELOG.md">Full changelog</a> · <a href="https://github.com/mikeroySoft/factory/releases">Tagged releases</a> · <a href="https://github.com/mikeroySoft/factory/compare/v0.3.8...main">Changes since v0.3.8</a></p>
       </div>
     </section>
 

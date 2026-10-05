@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Gate reports and lifecycle journals record ROCm, kernel, and amdgpu versions once per run; unavailable probes do not fail the gate (#154).
+- B1 isolated build experiment (#98): `experiments/b1-build/build.py` (`start`/`status`/`stop`/`report`) runs its case inside `sandbox.py`'s boundary. That boundary is Bubblewrap with new user/PID/network/IPC/UTS/cgroup namespaces, `--disable-userns`, `--clearenv`, read-only `/usr`, private `/tmp`/`/home`, and no `/run`, `/etc`, `/sys` or host home. It mounts only a read-only `git archive` checkout, read-only frozen inputs and a private tmpfs output directory. A transient `systemd-run --user` scope (1 GiB, no swap, 2 CPUs, 64 tasks), `timeout` and a per-file size cap enforce the limits; a host shim reads the applied cgroup limits back and refuses to run on mismatch. An unavailable or breached boundary makes the run `invalid`, never a host fallback. Inputs (raw issues, the existing `evidence investigate initiative` JSON) and a deterministic fact oracle are frozen on the host before rendering. Reports separate safety probes, input validity and product results. Runs land under the main root's `.factory/experiments/b1-build/`, three iterations per lineage; zero model/provider calls. Experiment-only: nothing in dispatch or workers uses the sandbox.
+
+## 0.3.8 — 2026-10-03
+
+Compared against 0.3.5 (`e3abd2b`). Released channel `stable` points at `v0.3.8`. Versions 0.3.6 and 0.3.7 were not released.
+
+- Idle dispatcher passes write no lifecycle rows for parked tickets (#130): a `manage`/`landing` check that changes nothing no longer journals its enter/lock/handoff/exit trail; passes that act keep the full trail. (PR #133)
+- Bound the dashboard snapshot's executions list (#134): Ops no longer loads hundreds of MB on long-lived repositories.
+- Roadmap stops reporting `runtime_unavailable` for closed or runtime-known tickets (#137).
+- Dashboard docked ticket drawer: desktop docks the detail drawer beside the queue; narrow screens keep the modal overlay with focus trap, Escape and reduced motion. (PR #143)
+- Upstream sync lands the newest conflict-free upstream prefix instead of parking the whole backlog behind one conflicting commit. (PR #117)
+- Split-aware eval promotion contract (#126): `docs/eval-promotion-contract.md` and `factory learn --promotion claim.json`; keep only when the held-out split improves. (PR #128)
+- Experiment evidence in a fresh FM session (#99); reviewer-calibration corpus grown to 11 cases with confirmed oracles and adjudication rows (#34, PRs #144–#148).
+- Repository gate runs `uv run --frozen --no-managed-python`, so declared dependencies are installed and `uv.lock` is never rewritten (PRs #127, #129); the interpreter-escaping test fixture is portable to relocatable Python builds (PR #135).
 - Journal rotation (#131): `.factory/events.jsonl` rolls into gzip segments `events.jsonl.N.gz` under the journal flock once it passes `[journal] max_mb` (default 64; `retention` segments, default 8). Open-execution `lifecycle` rows stay live; every outcome row stays readable via `lifecycle.read_events`, which now includes segments. Only closed-execution `lifecycle` rows of expired segments are dropped; the oldest kept segment grows with carried outcome rows.
 - Host-owned worker argv prefix (#3): `[defaults.worker_wrap]` / `[repo."owner/name".worker_wrap]` `command` is prepended to every worker launch (all labels); a committed `[worker_wrap]` fails to load. `doctor` checks its executable on PATH. A launch prefix, not sandboxing.
 - Bounded worker boot/resume context (#89): `factory dispatch`'s worker prompt gets a `## Resume context` section, built only from the latest retained accepted result (#88) and the local plan-bound journal (#57), when a ticket has prior retained history. It reports the prior accepted head/result and whether the admitted scope has since moved (`unchanged`/`changed`/`unavailable`); never a worker log, prompt, or transcript, never a scope rewrite, and no widened context budgets.
