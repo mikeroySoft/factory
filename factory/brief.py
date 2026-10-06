@@ -138,8 +138,9 @@ def compose(cwd: Path, issue: dict, lessons: str) -> str:
     words = nouns(f"{issue.get('title', '')}\n{issue.get('body') or ''}")
     pool = files_for(cwd, words, POOL_FILES) if words else []
     paths = rerank(cwd, issue, pool)[:MAX_FILES]
-    tracked = set(git(cwd, "ls-files", "--", "README.md", "CHANGELOG.md"))
-    paths.extend(path for path in ("README.md", "CHANGELOG.md") if path in tracked and path not in paths)
+    if paths:
+        tracked = set(git(cwd, "ls-files", "--", "README.md", "CHANGELOG.md"))
+        paths.extend(path for path in ("README.md", "CHANGELOG.md") if path in tracked and path not in paths)
     sections = []
     if paths:
         sections.append("### Files mentioning ticket terms\n" + "\n".join(f"- {p}" for p in paths))

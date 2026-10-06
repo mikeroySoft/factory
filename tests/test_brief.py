@@ -53,3 +53,9 @@ class BriefTest(unittest.TestCase):
                     with patch.object(brief.urllib.request, "urlopen", side_effect=OSError("offline")):
                         text = brief.compose(root, {"title": "Change `a.py`"}, "")
                 self.assertLess(text.index("- a.py"), text.index("- b.py"))
+
+    def test_no_matched_files_does_not_include_docs(self):
+        with patch.object(brief, "files_for", return_value=[]), patch.object(
+            brief, "git", return_value=["README.md", "CHANGELOG.md"]
+        ):
+            self.assertEqual(brief.compose(Path("."), {"title": "Change `missing_symbol`"}, ""), "")
