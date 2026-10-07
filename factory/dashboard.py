@@ -985,6 +985,7 @@ def snapshot() -> dict:
     return {
         "generated_at": iso(time.time()),
         "version": __version__,
+        "engine": {"commit": config.engine_commit(), "warning": config.engine_drift(cfg)},
         "repo": REPO,
         "root": str(ROOT),
         "errors": errors,

@@ -90,8 +90,9 @@ exclusive = false
 
 [leak_scan]
 # Added lines in `origin/main..HEAD` matching this regex FAIL the gate.
-# Set to "" to disable.
-# pattern = "internal|confidential|proprietary|private|jira|confluence|\\.corp|\\.internal"
+# Set to "" to disable. `extra` regexes are added to it (host config may add more).
+# pattern = "\\.(?:corp|internal|intranet|lan)\\b|\\bconfidential\\b|\\bproprietary\\b|\\bjira\\b|\\bconfluence\\b|\\.atlassian\\.net\\b"
+# extra = ["\\bmyproduct\\b"]
 # exclude = ["skills", "skills-lock.json"]   # pathspecs excluded from the scan
 
 [triage]
