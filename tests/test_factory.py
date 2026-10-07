@@ -1018,6 +1018,16 @@ class HostConfigTest(unittest.TestCase):
             self.assertIn(str(unit), missing["detail"])
             unit.write_text(f"[Service]\nEnvironment=PATH={stubs}\n")
             self.assertEqual(row()["status"], "PASS")
+            missing_path = f"{Path(d) / 'empty'}:/nonexistent"
+            for first, last, status in (
+                (stubs, missing_path, "FAIL"),
+                (missing_path, stubs, "PASS"),
+            ):
+                with self.subTest(first=first, last=last):
+                    unit.write_text(f"[Service]\nEnvironment=PATH={first}\nEnvironment=PATH={last}\n")
+                    resolved = row()
+                    self.assertEqual(resolved["status"], status)
+                    self.assertIn(str(unit), resolved["detail"])
 
 
 class StatsTest(unittest.TestCase):

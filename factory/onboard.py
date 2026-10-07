@@ -423,7 +423,7 @@ def doctor(argv: list[str]) -> int:
     # The installed service runs with the PATH baked into its unit, not the caller's.
     unit_file = unit_dir() / f"{cfg.unit}.service"
     lines = unit_file.read_text().splitlines() if unit_file.exists() else []
-    unit_path = next((ln.removeprefix("Environment=PATH=") for ln in lines if ln.startswith("Environment=PATH=")), None)
+    unit_path = next((ln.removeprefix("Environment=PATH=") for ln in reversed(lines) if ln.startswith("Environment=PATH=")), None)
     on_path = "" if unit_path is None else f"PATH from {unit_file}"
 
     def which(exe: str) -> str | None:
