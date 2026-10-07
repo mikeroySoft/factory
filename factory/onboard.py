@@ -388,6 +388,8 @@ def doctor(argv: list[str]) -> int:
     if cfg.install.get("python") is not None:
         ok, detail = interpreter_probe(cfg)
         report(ok, "service interpreter", detail)
+    if drift := config.engine_drift(cfg):
+        report(None, "installed engine", drift)
 
 
     for tool in ("git", "gh"):

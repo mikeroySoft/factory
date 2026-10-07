@@ -22,7 +22,7 @@ import time
 from contextlib import nullcontext
 from pathlib import Path
 
-from factory import brief, config, lifecycle
+from factory import __version__, brief, config, lifecycle
 from factory.config import (
     LABEL_AGENT,
     LABEL_APPROVED,
@@ -1939,7 +1939,10 @@ def main(argv: list[str]) -> int:
         args.budget_min = cfg.budget_min
 
     # Lazy: an idle pass (nothing claimed, merged, waited on or failed) journals no lifecycle rows.
-    with nullcontext() if args.dry_run else lifecycle.scope(EVENTS, "dispatcher", dispatcher=True, lazy=True):
+    with nullcontext() if args.dry_run else lifecycle.scope(
+        EVENTS, "dispatcher", dispatcher=True, lazy=True,
+        engine_version=__version__, engine_commit=config.engine_commit(),
+    ):
         if not args.dry_run:
             from factory import results
 

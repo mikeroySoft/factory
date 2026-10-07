@@ -8,12 +8,14 @@ conventions, not configuration.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
 import subprocess
 import tomllib
 from dataclasses import dataclass, field
+from importlib import metadata
 from pathlib import Path
 
 from factory import lifecycle
@@ -224,6 +226,39 @@ def host_config() -> dict:
         return tomllib.loads(path.read_text())
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{path}: {exc}") from exc
+
+
+def engine_commit() -> str | None:
+    """Source commit of the installed engine: District's `[defaults.engine].sha`,
+    else the uv install's source directory, which District names by commit."""
+    engine = host_config().get("defaults", {}).get("engine", {})
+    if isinstance(engine, dict) and isinstance(engine.get("sha"), str) and engine["sha"]:
+        return engine["sha"]
+    try:
+        url = json.loads(metadata.distribution("factory").read_text("direct_url.json") or "{}").get("url", "")
+    except (metadata.PackageNotFoundError, ValueError):
+        return None
+    name = url.rstrip("/").rsplit("/", 1)[-1]
+    return name if re.fullmatch(r"[0-9a-f]{40}", name) else None
+
+
+def engine_drift(cfg: Config) -> str | None:
+    """Warning when `cfg.root` is factory's own source and origin/<main> is not the installed engine."""
+    try:
+        name = tomllib.loads((cfg.root / "pyproject.toml").read_text()).get("project", {}).get("name")
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    commit = engine_commit() if name == "factory" else None
+    if commit is None:
+        return None
+    main = subprocess.run(
+        ["git", "-C", str(cfg.root), "rev-parse", "--verify", "--quiet", f"origin/{cfg.main}"],
+        capture_output=True, text=True, check=False,
+    ).stdout.strip()
+    if not main or main.startswith(commit):
+        return None
+    return (f"installed {commit[:12]} differs from origin/{cfg.main} {main[:12]}; "
+            "merged engine changes are not installed")
 
 
 def host_filter(table: dict) -> dict:
