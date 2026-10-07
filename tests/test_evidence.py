@@ -526,6 +526,15 @@ class EvidenceCliTest(unittest.TestCase):
                 self.assertEqual(data["sources"], [])
         self.assertEqual(self.calls(), [])
 
+    def test_unknown_investigation_kind_names_value_and_accepted_kinds(self):
+        kinds = [row["kind"] for row in self.invoke()["capabilities"]["reads"] if row["op"] == "investigate"]
+        data = self.invoke("investigate", kind="experimnts", code=2)
+        self.assertEqual(data["error"]["code"], "invalid_request")
+        self.assertIn("experimnts", data["error"]["message"])
+        for kind in kinds:
+            self.assertIn(f"'{kind}'", data["error"]["message"])
+        self.assertEqual(self.calls(), [])
+
     def test_explicit_main_checkout_and_repository_scope_are_required(self):
         data = self.invoke(repository="other/repository", code=2)
         self.assertIn("scope_mismatch", self.error_codes(data))

@@ -181,6 +181,15 @@ def unsafe_text(value: str) -> bool:
     return any(unicodedata.category(c).startswith("C") for c in value)
 
 
+INVESTIGATION_FIELDS = {
+    "workflows": (), "file": ("path", "ref"), "result": ("number", "head", "offset"),
+    "pr": ("number",), "checks": ("number",), "runs": ("number",),
+    "run": ("run_id",), "log": ("run_id",),
+    "roadmap": (), "initiative": ("number",), "drift": ("number",),
+    "experiments": (), "experiment": ("experiment", "run"),
+}
+
+
 def request(deadline: float) -> dict:
     raw = bytearray()
     with selectors.SelectSelector() as selector:
@@ -207,20 +216,10 @@ def request(deadline: float) -> dict:
         expected.add("number")
     elif op == "investigate":
         kind = req.get("kind")
-        if kind == "file":
-            expected.update(("kind", "path", "ref"))
-        elif kind == "result":
-            expected.update(("kind", "number", "head", "offset"))
-        elif kind in ("pr", "checks", "runs", "initiative", "drift"):
-            expected.update(("kind", "number"))
-        elif kind in ("run", "log"):
-            expected.update(("kind", "run_id"))
-        elif kind == "experiment":
-            expected.update(("kind", "experiment", "run"))
-        elif kind in ("workflows", "roadmap", "experiments"):
-            expected.add("kind")
-        else:
-            raise EvidenceError("invalid_request", "Unknown investigation kind.", "request", "request")
+        if not isinstance(kind, str) or kind not in INVESTIGATION_FIELDS:
+            raise EvidenceError("invalid_request", f"Unknown investigation kind {kind!r}; accepted kinds: "
+                                + ", ".join(map(repr, INVESTIGATION_FIELDS)) + ".", "request", "request")
+        expected.update(("kind", *INVESTIGATION_FIELDS[kind]))
     elif op not in ("observe", "capabilities"):
         raise EvidenceError("invalid_request", "Unknown read operation.", "request", "request")
     if set(req) != expected:
