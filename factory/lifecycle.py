@@ -488,10 +488,10 @@ class Execution:
 
 @contextmanager
 def scope(path: Path, stage: str, *, ticket=None, attempt=None, review_round=None,
-          dispatcher=False, lock=None, lazy=False):
+          dispatcher=False, lock=None, lazy=False, **enter):
     execution = Execution(path, stage, ticket=ticket, attempt=attempt, review_round=review_round,
                           dispatcher=dispatcher, lock=lock, lazy=lazy)
-    execution.emit("enter")
+    execution.emit("enter", **enter)
     token = _CURRENT.set(execution)
     try:
         yield execution

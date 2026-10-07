@@ -783,6 +783,26 @@ class HostConfigTest(unittest.TestCase):
             self.assertIn('repo."acme/widgets".engine', rows["host config"]["detail"])
             self.assertNotIn("defaults.engine", rows["host config"]["detail"])
 
+    def test_doctor_warns_when_self_hosted_engine_differs_from_main(self) -> None:
+        gh = 'case "$1 $2" in "repo view") echo ADMIN;; "label list") echo "[]";; esac\nexit 0'
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            stubs = stub_bin(Path(d), gh=gh, systemctl="echo inactive")
+
+            def engine_rows(sha: str) -> list[dict]:
+                host_file('[defaults.triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n'
+                          f'[defaults.engine]\nsha = "{sha}"\n')
+                rows = json.loads(factory(repo, "doctor", "--json", path=stubs).stdout)["rows"]
+                return [r for r in rows if r["label"] == "installed engine"]
+
+            stale = "0" * 40
+            self.assertEqual(engine_rows(stale), [])  # not factory's own repository
+            (repo / "pyproject.toml").write_text('[project]\nname = "factory"\n')
+            [row] = engine_rows(stale)
+            self.assertEqual(row["status"], "WARN")
+            self.assertIn(stale[:12], row["detail"])
+            self.assertEqual(engine_rows(git(repo, "rev-parse", "origin/main")), [])
+
     def test_doctor_json_reports_drift(self) -> None:
         host_file('[defaults.triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n[defaults.leak_scan]\npattern = ""\n[repo."acme/widgets"]\npath = "/x"\n[repo."acme/widgets".dashboard]\nport = 1\ntheme = "no"\n')
         gh = 'case "$1 $2" in "repo view") echo ADMIN;; "label list") echo "[]";; esac\nexit 0'
