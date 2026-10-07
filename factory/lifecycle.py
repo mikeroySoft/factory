@@ -407,7 +407,7 @@ class Execution:
             if self.outcome == "completed":
                 self._buffer = None  # uneventful lazy scope: no trail
                 return row
-            self.commit()
+        self.commit()  # a written row needs its (lazy) ancestors' trail on disk first
         self._append([row])
         return row
 
