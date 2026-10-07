@@ -73,14 +73,15 @@ HOST_KEYS = {"dashboard": ("port",), "gate": ("lock",)}
 # `workers` is label-keyed, `gate.check` is a list of {name, run, exclusive}.
 KNOWN_KEYS = {
     "repo": ("slug", "upstream", "main"),
-    "dispatch": ("max_active", "max_attempts", "budget_min", "review_rounds", "cost_pattern", "signoff"),
+    "dispatch": ("max_active", "max_attempts", "budget_min", "idle_timeout", "exit_grace",
+                 "review_rounds", "cost_pattern", "signoff"),
     "workers": None,
     "worker_wrap": ("command",),
     "review": ("command",),
     "manager": ("model", "command", "rounds", "review", "stale_days", "max_active_cap", "budget_min_cap"),
     "gate": ("timeout", "lock", "check", "protected_paths"),
     "leak_scan": ("pattern", "exclude", "extra"),
-    "triage": ("url", "model"),
+    "triage": ("url", "model", "timeout"),
     "journal": ("max_mb", "retention"),
     "dashboard": ("port", "theme"),
     "install": ("every", "dashboard", "host", "python", "env"),
@@ -119,6 +120,8 @@ class Config:
     max_active: int = 2
     max_attempts: int = 3
     budget_min: int = 90
+    idle_timeout: float = 30  # minutes without worker log output or worktree change = stuck; 0 off
+    exit_grace: float = 300  # seconds a done (handoff/commit) worker may stay quiet before termination; 0 off
     review_rounds: int = 1  # REVISE -> worker -> re-review cycles before escalating
     signoff: bool = True  # `git commit -s`; Signed-off-by trailer on merges
     cost_pattern: str | None = None  # regex with one capture: dollars in the worker log
@@ -144,6 +147,7 @@ class Config:
     leak_exclude: list[str] = field(default_factory=list)
     llm_url: str = DEFAULT_LLM_URL
     llm_model: str = DEFAULT_LLM_MODEL
+    triage_timeout: int = 60  # seconds per triage model request
     manager_model: str | None = None  # dashboard's no-tools OMP briefing; never a command
     dashboard_port: int = 8765
     dashboard_theme: Path | None = None  # CSS file served after the built-in stylesheet
@@ -390,6 +394,10 @@ def load(start: Path | None = None) -> Config:
     cfg.max_active = int(dispatch.get("max_active", cfg.max_active))
     cfg.max_attempts = int(dispatch.get("max_attempts", cfg.max_attempts))
     cfg.budget_min = int(dispatch.get("budget_min", cfg.budget_min))
+    cfg.idle_timeout = float(dispatch.get("idle_timeout", cfg.idle_timeout))
+    cfg.exit_grace = float(dispatch.get("exit_grace", cfg.exit_grace))
+    if cfg.idle_timeout < 0 or cfg.exit_grace < 0:
+        raise ConfigError("dispatch.idle_timeout and dispatch.exit_grace must be >= 0 (0 disables)")
     cfg.review_rounds = int(dispatch.get("review_rounds", cfg.review_rounds))
     cfg.cost_pattern = dispatch.get("cost_pattern") or None
     cfg.signoff = bool(dispatch.get("signoff", cfg.signoff))
@@ -461,6 +469,7 @@ def load(start: Path | None = None) -> Config:
         cfg.leak_pattern = "|".join(p for p in (cfg.leak_pattern, *terms) if p)
     cfg.llm_url = triage.get("url", cfg.llm_url)
     cfg.llm_model = triage.get("model", cfg.llm_model)
+    cfg.triage_timeout = int(triage.get("timeout", cfg.triage_timeout))
     cfg.dashboard_port = int(dash.get("port", cfg.dashboard_port))
     cfg.dashboard_theme = root / dash["theme"] if dash.get("theme") else None
     cfg.install = merge(DEFAULT_INSTALL, raw.get("install", {}))

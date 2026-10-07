@@ -15,11 +15,13 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
+import os
 import re
+import signal
 import subprocess
 import sys
 import time
-from contextlib import nullcontext
+from contextlib import nullcontext, suppress
 from pathlib import Path
 
 from factory import __version__, brief, config, lifecycle
@@ -621,16 +623,96 @@ def comment_receipt(n: int, kind: str, stdout: str, **fields: object) -> bool:
     return True
 
 
-def run_worker(cmd: list[str], wt: Path, logfile: Path) -> int:
+WATCH_POLL = 5.0  # seconds between worker activity checks
+# Which timeout stopped a worker -> the journal reason it records.
+TIMEOUT_REASONS = {"idle_timeout": "stuck", "exit_grace": "hung_after_done", "budget_min": "budget_exceeded"}
+
+
+def _activity(wt: Path, logfile: Path, handoff: Path) -> tuple:
+    """What a working worker changes: its log, HEAD, the worktree, and its handoff file."""
+    def stat(path: Path) -> tuple[int, int] | None:
+        with suppress(OSError):
+            st = path.stat()
+            return st.st_size, st.st_mtime_ns
+        return None
+
+    def git(*args: str) -> str:
+        return subprocess.run(["git", "--no-optional-locks", "-C", str(wt), *args],
+                              capture_output=True, text=True, check=False).stdout
+
+    return (stat(logfile), git("rev-parse", "HEAD"),
+            git("status", "--porcelain", "--untracked-files=all"), stat(handoff))
+
+
+def _watch(proc: subprocess.Popen, wt: Path, logfile: Path, handoff: Path, deadline: float,
+           start: tuple) -> str | None:
+    """Wait for the worker to exit; None if it did, else the timeout that fired first."""
+    state, changed = start, time.monotonic()
+    while True:
+        try:
+            proc.wait(timeout=WATCH_POLL)
+            return None
+        except subprocess.TimeoutExpired:
+            pass
+        now, current = time.monotonic(), _activity(wt, logfile, handoff)
+        if current != state:
+            state, changed = current, now
+        quiet = now - changed
+        # Done: committed or wrote its handoff during this run. A done worker is never "stuck".
+        done = current[1] != start[1] or current[3] != start[3]
+        if now >= deadline:
+            return "budget_min"
+        if done and cfg.exit_grace and quiet >= cfg.exit_grace:
+            return "exit_grace"
+        if not done and cfg.idle_timeout and quiet >= cfg.idle_timeout * 60:
+            return "idle_timeout"
+
+
+def _stop(proc: subprocess.Popen) -> None:
+    """SIGTERM the worker's process group; SIGKILL whatever is left after 10 s."""
+    with suppress(ProcessLookupError):
+        os.killpg(proc.pid, signal.SIGTERM)
+    with suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=10)
+    with suppress(ProcessLookupError):
+        os.killpg(proc.pid, signal.SIGKILL)
+    proc.wait()
+
+
+def run_worker(cmd: list[str], wt: Path, logfile: Path, handoff: Path,
+               deadline: float = float("inf")) -> tuple[int, str | None]:
+    """Run the worker; return its exit code and the timeout that stopped it, if any.
+
+    `idle_timeout`: no log output and no worktree change (stuck mid-work).
+    `exit_grace`: committed or wrote `handoff`, then stayed quiet without exiting.
+    `budget_min`: the ticket's overall wall-clock deadline passed.
+    """
     log(f"worker: {' '.join(cmd)} -> {logfile}")
     started = time.monotonic()
     with lifecycle.scope(EVENTS, "worker") as execution, logfile.open("a") as out:
-        code = run(cmd, cwd=wt, check=False, stdout=out, stderr=subprocess.STDOUT).returncode
+        start = _activity(wt, logfile, handoff)  # before launch: a fast handoff must count as done
+        # Own session, so a timeout stops the whole tree (tests, servers), not just the agent.
+        proc = subprocess.Popen(cmd, cwd=wt, stdout=out, stderr=subprocess.STDOUT,
+                                env=execution.env(), start_new_session=True)
+        try:
+            execution.child(proc.pid)
+            fired = _watch(proc, wt, logfile, handoff, deadline, start)
+        finally:
+            if proc.poll() is None:
+                _stop(proc)
+            execution.child_done(proc.pid)
+        code = proc.returncode
+        if fired:
+            execution.emit("timeout", timeout=fired)
         execution.emit("result", returncode=code)
-        execution.outcome = "completed" if code == 0 else "unknown"
-        execution.reason = None if code == 0 else f"worker_exit:{code}"
-    log(f"worker exited {code} after {int(time.monotonic() - started)}s")
-    return code
+        if fired:
+            execution.outcome, execution.reason = "interrupted", TIMEOUT_REASONS[fired]
+        else:
+            execution.outcome = "completed" if code == 0 else "unknown"
+            execution.reason = None if code == 0 else f"worker_exit:{code}"
+    log(f"worker exited {code} after {int(time.monotonic() - started)}s"
+        + (f" ({fired} fired: {TIMEOUT_REASONS[fired]})" if fired else ""))
+    return code, fired
 
 
 def ensure_worktree(n: int) -> Path:
@@ -715,10 +797,10 @@ def escalation_packet(
     attempts = [event for event in ticket_events if event.get("event") == "attempt"]
     rows = [
         f"| {event.get('attempt', '')} | {event.get('gate') or 'not run'} | "
-        f"{event.get('worker_exit', '')} | {event.get('seconds', '')} | "
+        f"{event.get('worker_exit', '')} | {event.get('timeout') or ''} | {event.get('seconds', '')} | "
         f"`{event.get('log') or ''}` |"
         for event in attempts
-    ] or ["| — | — | — | — | none recorded |"]
+    ] or ["| — | — | — | — | — | none recorded |"]
     artifact = artifact or str(n)
     gate = wt / ".factory" / f"gate-report-{artifact}.md"
     review = FACTORY / f"review-{artifact}.md"
@@ -734,8 +816,8 @@ def escalation_packet(
         f"# Escalation #{n}\n\n"
         f"## Reason\n\n{reason}\n\n"
         "## Attempts\n\n"
-        "| Attempt | Gate | Worker exit | Seconds | Log |\n"
-        "|---:|---|---:|---:|---|\n"
+        "| Attempt | Gate | Worker exit | Timeout | Seconds | Log |\n"
+        "|---:|---|---:|---|---:|---|\n"
         + "\n".join(rows)
         + "\n\n## Last gate report\n\n"
         + ((gate.read_text() if gate.exists() else gate_detail).strip()[-6000:] or "(none recorded)")
@@ -1704,8 +1786,11 @@ def worker_round(
     promptfile.write_text(build_prompt(n, wt, extra))
     logfile = LOGS / f"{n}-attempt-{attempt}.log"
     started = time.monotonic()
-    code = run_worker(cfg.worker({selected_worker} if selected_worker else labels, promptfile, wt),
-                      wt, logfile)
+    code, fired = run_worker(
+        cfg.worker({selected_worker} if selected_worker else labels, promptfile, wt),
+        wt, logfile, wt / ".factory" / f"handoff-{n}.md", deadline,
+    )
+    timeout = {"timeout": fired, "reason": TIMEOUT_REASONS[fired]} if fired else {}
     commit_leftovers(wt, n, title)
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     handoff = results.source_metadata(cfg, n)
@@ -1714,10 +1799,20 @@ def worker_round(
         ":(exclude).factory-prompt.md", ":(exclude).factory",
     ]
     before_status = run(status_cmd, cwd=wt).stdout.strip()
+    if fired == "idle_timeout":
+        # Stuck mid-work: a failed attempt for the normal retry path; the gate never ran.
+        record(
+            "attempt", ticket=n, attempt=attempt, worker_exit=code, gate=None,
+            log=str(logfile), head=head, handoff=handoff, **timeout,
+        )
+        return False, (
+            f"worker stuck: idle_timeout fired ({cfg.idle_timeout:g} min without worker "
+            "log output or worktree change); worker killed before the gate"
+        ), logfile, head
     if time.monotonic() > deadline:
         record(
             "attempt", ticket=n, attempt=attempt, worker_exit=code, gate=None,
-            log=str(logfile), head=head, handoff=handoff,
+            log=str(logfile), head=head, handoff=handoff, **timeout,
         )
         return False, "budget exceeded before gate", logfile, head
     ok, report = run_gate(wt, n, protected_override=LABEL_PROTECTED_OVERRIDE in labels)
@@ -1729,11 +1824,16 @@ def worker_round(
     if before_status or after_status:
         ok = False
         report += "\n\nGate evidence rejected: worktree was not clean for the gated commit."
+    if fired == "exit_grace":
+        report += (
+            f"\n\nWorker hung after done: exit_grace fired ({cfg.exit_grace:g} s quiet after "
+            "its commit or handoff without exiting); terminated, then gated."
+        )
     record(
         "attempt", ticket=n, attempt=attempt, worker_exit=code, gate="PASS" if ok else "FAIL",
         seconds=int(time.monotonic() - started), cost=log_cost(logfile), log=str(logfile),
         brief=brief_path(wt, n).exists(), head=head, actual_head=actual_head,
-        clean=not before_status and not after_status, handoff=handoff,
+        clean=not before_status and not after_status, handoff=handoff, **timeout,
     )
     return ok, report, logfile, head
 
@@ -1859,9 +1959,9 @@ def process_ticket(
                     return
                 extra = f"## Previous gate report (attempt {attempt} failed)\n\n{report}"
             else:
-                escalate(
-                    n, f"gate failed {MAX_ATTEMPTS} times; worktree kept at {wt}", logfile
-                )
+                failed = (f"idle_timeout fired (worker stuck) on attempt {MAX_ATTEMPTS}"
+                          if report.startswith("worker stuck") else f"gate failed {MAX_ATTEMPTS} times")
+                escalate(n, f"{failed}; worktree kept at {wt}", logfile)
                 return
 
             body = f"Closes #{n}\n\n## Gate report\n\n{report}\n"
@@ -1900,8 +2000,9 @@ def process_ticket(
                              extra="## Offending diff\n\n" + report)
                     return
                 if not ok:
+                    failed = "idle_timeout fired (worker stuck)" if report.startswith("worker stuck") else "gate failed"
                     escalate(
-                        n, f"gate failed after review bounce {bounce}; worktree kept at {wt}", logfile
+                        n, f"{failed} after review bounce {bounce}; worktree kept at {wt}", logfile
                     )
                     return
                 run(["git", "push", "origin", f"agent/{n}"], cwd=wt)
