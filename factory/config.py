@@ -66,7 +66,7 @@ DEFAULT_INSTALL = {"every": "10min", "dashboard": False, "host": "127.0.0.1", "p
 # from here. Everything else in the host file is left for other tools (District).
 # `worker_wrap` is host-only: a committed `[worker_wrap]` is refused, never merged.
 # `leak_scan.extra` is read from both and concatenated: host terms only add to the scan.
-HOST_TABLES = frozenset({"triage", "workers", "worker_wrap", "review", "manager", "install"})
+HOST_TABLES = frozenset({"triage", "workers", "worker_wrap", "review", "manager", "install", "prices"})
 HOST_KEYS = {"dashboard": ("port",), "gate": ("lock",)}
 
 # Every key the loader reads, by table; `factory doctor` reports anything else.
@@ -86,7 +86,10 @@ KNOWN_KEYS = {
     "dashboard": ("port", "theme"),
     "install": ("every", "dashboard", "host", "python", "env"),
     "collaboration": ("fallback", "reasons", "components"),
+    "prices": None,
 }
+# Normalized numeric fields of an `llm-usage` event; a worker profile maps each to JSON paths.
+USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "cached_tokens", "cost")
 CHECK_KEYS = ("name", "run", "exclusive")
 ROUTE_REASONS = ("requirements", "implementation", "ci", "unknown")
 # GitHub login, or `@org/team`. Syntax only: never proof of membership or authorization.
@@ -129,6 +132,10 @@ class Config:
         default_factory=lambda: {"default": DEFAULT_WORKER, LABEL_CHORE: DEFAULT_CHORE_WORKER}
     )
     worker_when: dict[str, str] = field(default_factory=dict)
+    # Per worker label: JSON paths read from its log (see `usage_spec`); absent = cost_pattern only.
+    worker_usage: dict[str, dict] = field(default_factory=dict)
+    # Host `[prices."<model>"]`: USD per million prompt/completion/cached tokens; empty = no priced dollars.
+    prices: dict[str, dict] = field(default_factory=dict)
     # Host-only argv prefix for every worker launch: a trusted operator executable, not a sandbox.
     worker_wrap: list[str] = field(default_factory=list)
     reviewer: list[str] = field(default_factory=lambda: list(DEFAULT_REVIEWER))
@@ -172,9 +179,13 @@ class Config:
         """systemd user-unit stem: `<unit>.timer`, `<unit>.service`, `<unit>-dashboard.service`."""
         return f"factory-{self.name}"
 
+    def worker_key(self, labels: set[str]) -> str:
+        """The `[workers]` label that owns these ticket labels (first match wins)."""
+        return next((k for k in self.workers if k in labels), "default")
+
     def worker(self, labels: set[str], prompt: Path, cwd: Path) -> list[str]:
         """argv for the worker that owns these ticket labels (first match wins)."""
-        argv = next((self.workers[k] for k in self.workers if k in labels), self.workers["default"])
+        argv = self.workers[self.worker_key(labels)]
         return expand([*self.worker_wrap, *argv], prompt=str(prompt), cwd=str(cwd),
                       root=str(self.root), repo=self.repo, home=str(Path.home()))
 
@@ -336,6 +347,38 @@ def collaboration_settings(table: object) -> dict:
     return out
 
 
+def usage_spec(label: str, spec: object) -> dict:
+    """Validate `workers.<label>.usage`: dotted JSON paths summed per field, a `model` path, a `match` filter."""
+    where = f"workers.{label}.usage"
+    if not isinstance(spec, dict) or set(spec) - {*USAGE_FIELDS, "model", "match"}:
+        raise ConfigError(f"{where} must be a table of {', '.join(USAGE_FIELDS)}, model, match")
+    out: dict = {}
+    for key in USAGE_FIELDS:
+        paths = spec.get(key, [])
+        out[key] = [paths] if isinstance(paths, str) else paths
+        if not isinstance(out[key], list) or not all(isinstance(p, str) and p for p in out[key]):
+            raise ConfigError(f"{where}.{key} must be a JSON path or an array of paths")
+    out["model"], out["match"] = spec.get("model"), spec.get("match", {})
+    if out["model"] is not None and not (isinstance(out["model"], str) and out["model"]):
+        raise ConfigError(f"{where}.model must be a JSON path")
+    if not isinstance(out["match"], dict):
+        raise ConfigError(f"{where}.match must be a table of JSON path = value")
+    return out
+
+
+def price_table(table: object) -> dict:
+    """Validate `[prices."<model>"]`: nonnegative USD per million `prompt`, `completion`, optional `cached` tokens."""
+    if not isinstance(table, dict):
+        raise ConfigError("[prices] must be a table")
+    for model, price in table.items():
+        if (
+            not isinstance(price, dict) or not {"prompt", "completion"} <= set(price) <= {"prompt", "completion", "cached"}
+            or any(isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0 for v in price.values())
+        ):
+            raise ConfigError(f"prices.{model!r} needs nonnegative prompt and completion (optional cached) USD per million tokens")
+    return table
+
+
 def manager_settings(table: dict) -> tuple[list[str] | None, str | None]:
     """Normalize manager argv and select the read-only briefing model; never execute."""
     if not isinstance(table, dict):
@@ -413,6 +456,8 @@ def load(start: Path | None = None) -> Config:
             if not isinstance(when, str):
                 raise ConfigError(f"{path}: workers.{label}.when must be text")
             cfg.workers[label] = command
+            if isinstance(entry, dict) and "usage" in entry:
+                cfg.worker_usage[label] = usage_spec(label, entry["usage"])
             if when:
                 cfg.worker_when[label] = when
     if "worker_wrap" in raw_repo:
@@ -447,6 +492,7 @@ def load(start: Path | None = None) -> Config:
         setattr(cfg, f"journal_{key}", value)
     if "collaboration" in raw:
         cfg.collaboration = collaboration_settings(raw["collaboration"])
+    cfg.prices = price_table(raw.get("prices", {}))
     cfg.check_timeout = int(gate.get("timeout", cfg.check_timeout))
     paths = gate.get("protected_paths", [])
     if not isinstance(paths, list) or any(not isinstance(p, str) or not p for p in paths):

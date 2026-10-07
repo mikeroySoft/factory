@@ -33,6 +33,7 @@ from factory.config import (
     LABEL_PROTECTED_OVERRIDE,
     LABEL_REVIEW,
     LESSONS_NAME,
+    USAGE_FIELDS,
     Config,
 )
 
@@ -138,7 +139,7 @@ def _review_command(prompt: str) -> tuple[list[str], bool]:
 
 def _omp_output(stdout: str) -> tuple[str, dict | None]:
     """Recover final text and summed model usage from OMP's JSONL mode."""
-    text = ""
+    text, model = "", None
     saw_assistant = found_usage = cache_reported = False
     valid_usage = True
     prompt_tokens = completion_tokens = cached_tokens = 0
@@ -163,6 +164,8 @@ def _omp_output(stdout: str) -> tuple[str, dict | None]:
                 if isinstance(block, dict) and isinstance(block.get("text"), str)
                 and block.get("type") in {"text", "output_text"}
             )
+        if isinstance(message.get("model"), str):
+            model = message["model"]
         usage = message.get("usage")
         if not isinstance(usage, dict):
             valid_usage = False
@@ -194,6 +197,8 @@ def _omp_output(stdout: str) -> tuple[str, dict | None]:
         }
         if cache_reported and prompt_tokens:
             fields["prefix_cache_hit_rate"] = cached_tokens / prompt_tokens
+        if model:
+            fields["model"] = model
     return text.strip(), fields
 
 
@@ -1786,11 +1791,14 @@ def worker_round(
     promptfile.write_text(build_prompt(n, wt, extra))
     logfile = LOGS / f"{n}-attempt-{attempt}.log"
     started = time.monotonic()
+    worker = cfg.worker_key({selected_worker} if selected_worker else labels)
     code, fired = run_worker(
-        cfg.worker({selected_worker} if selected_worker else labels, promptfile, wt),
+        cfg.worker({worker}, promptfile, wt),
         wt, logfile, wt / ".factory" / f"handoff-{n}.md", deadline,
     )
     timeout = {"timeout": fired, "reason": TIMEOUT_REASONS[fired]} if fired else {}
+    usage = worker_usage(logfile, cfg.worker_usage.get(worker))
+    record("llm-usage", ticket=n, stage="worker", attempt=attempt, **usage)
     commit_leftovers(wt, n, title)
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     handoff = results.source_metadata(cfg, n)
@@ -1831,19 +1839,56 @@ def worker_round(
         )
     record(
         "attempt", ticket=n, attempt=attempt, worker_exit=code, gate="PASS" if ok else "FAIL",
-        seconds=int(time.monotonic() - started), cost=log_cost(logfile), log=str(logfile),
+        seconds=int(time.monotonic() - started), cost=usage["cost"], log=str(logfile),
         brief=brief_path(wt, n).exists(), head=head, actual_head=actual_head,
         clean=not before_status and not after_status, handoff=handoff, **timeout,
     )
     return ok, report, logfile, head
 
 
-def log_cost(logfile: Path) -> float | None:
+def log_cost(text: str) -> float | None:
     """Sum of `cost_pattern` captures in the worker log; None when unset/absent."""
     if not cfg.cost_pattern:
         return None
-    hits = re.findall(cfg.cost_pattern, logfile.read_text(errors="replace"))
+    hits = re.findall(cfg.cost_pattern, text)
     return round(sum(float(h) for h in hits), 4) if hits else None
+
+
+def _json_path(row: object, path: str) -> object:
+    for part in path.split("."):
+        if not isinstance(row, dict) or part not in row:
+            return None
+        row = row[part]
+    return row
+
+
+def worker_usage(logfile: Path, spec: dict | None) -> dict:
+    """Normalized usage the worker reported in its log; None = not reported, never guessed.
+
+    `spec` (a `[workers]` profile's `usage`) sums its JSON paths over every JSON-object
+    line whose `match` paths hold; cost falls back to `cost_pattern` when no path gives one.
+    """
+    usage: dict = dict.fromkeys(("model", *USAGE_FIELDS))
+    text = logfile.read_text(errors="replace") if logfile.exists() else ""
+    for line in text.splitlines() if spec else ():
+        try:
+            row = json.loads(line) if line.startswith("{") else None
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict) or any(_json_path(row, k) != v for k, v in spec["match"].items()):
+            continue
+        if spec["model"] and isinstance(model := _json_path(row, spec["model"]), str):
+            usage["model"] = model
+        for field in USAGE_FIELDS:
+            for path in spec[field]:
+                value = _json_path(row, path)
+                if type(value) in (int, float) and value >= 0:
+                    usage[field] = (usage[field] or 0) + value
+    if usage["cost"] is None:
+        usage["cost"] = log_cost(text)
+    else:
+        usage["cost"] = round(usage["cost"], 4)
+    return usage
 
 
 def process_ticket(
