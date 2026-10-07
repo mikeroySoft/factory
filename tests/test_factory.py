@@ -1415,6 +1415,7 @@ class GateTest(unittest.TestCase):
             rows = [json.loads(line) for line in live.read_text().splitlines()]
             kinds = [row["kind"] for row in rows if row.get("stage") == "gate"]
             self.assertEqual((kinds[0], kinds[-1]), ("enter", "exit"))
+            self.assertLessEqual({"handoff", "child_start", "result", "child_exit"}, set(kinds))
             self.assertTrue(all(row["ticket"] == 170 for row in rows))
 
     def test_timeout_fails_instead_of_hanging(self) -> None:
