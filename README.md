@@ -858,11 +858,11 @@ versions are not interpreted as version 1 by the existing observer.
 
 | Stage | Boundary |
 |---|---|
-| `dispatcher` | One real dispatcher pass, including passes with no ticket. Completion means the pass ended, not that any ticket merged. |
+| `dispatcher` | One real dispatcher pass; idle passes with nothing claimed, triaged, merged, waited on or failed leave no lifecycle rows. Completion means the pass ended, not that any ticket merged. |
 | `scheduling` | Frontier/capacity evaluation and scheduling; separate from ticket execution and merge eligibility. |
 | `landing` | The existing nonblocking merge-lock request and, when acquired, upstream sync/merge pass through actual unlock. |
 | `ticket` | A ticket admission/invocation, including nonblocking lock request and admission re-read. Admission refusal is not worker time. Later PR passes have separate `merge-eligibility` executions. |
-| `triage`, `triage-ticket` | Whole triage invocation and each actual ticket decision. Standalone triage retains its own root identity and null dispatcher association. |
+| `triage`, `triage-ticket` | Whole triage invocation and each actual ticket decision; uneventful invocations with no issues to triage leave no lifecycle rows. Standalone triage retains its own root identity and null dispatcher association. |
 | `worker` | One worker subprocess attempt. |
 | `gate`, `gate-check` | An invoked gate and each actually executed check. Skipped checks and a disabled leak scan do not enter a check scope. |
 | `review` | One reviewer invocation, attributed to its review round. |

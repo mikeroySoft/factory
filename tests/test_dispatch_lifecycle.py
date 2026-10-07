@@ -265,16 +265,8 @@ class LocalCLI(unittest.TestCase):
         self.assertFalse((self.repo / ".factory").exists())
         self.cli("dispatch")
         self.cli("triage")
-        rows = self.rows()
-        dispatcher = [r for r in rows if r["stage"] == "dispatcher" and r["kind"] == "exit"]
-        triage = [r for r in rows if r["stage"] == "triage" and r["kind"] == "exit"]
-        self.assertEqual(len(dispatcher), 1)
-        self.assertEqual(len(triage), 1)
-        self.assertIsNone(dispatcher[0]["ticket"])
-        self.assertIsNotNone(dispatcher[0]["dispatcher_run_id"])
-        self.assertIsNone(triage[0]["dispatcher_run_id"])
-        self.assertIsNone(triage[0]["ticket"])
-        self.assertFalse(any(r["stage"] in {"worker", "gate", "review", "merge"} for r in rows))
+        # Nothing to claim, triage or merge: the idle invocations journal no lifecycle trail (#173).
+        self.assertEqual(self.rows(), [])
 
     def test_code_failure_missing_mechanism_and_skipped_check(self):
         self.write_config(check=[sys.executable, "-c", "raise SystemExit(1)"])
