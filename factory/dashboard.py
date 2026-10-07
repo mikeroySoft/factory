@@ -22,20 +22,30 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
-from factory import __version__, briefing, codebase, config, dispatch, feedback, lifecycle, settings, stats
+from factory import (
+    __version__,
+    briefing,
+    codebase,
+    config,
+    dispatch,
+    feedback,
+    lifecycle,
+    settings,
+    stats,
+)
 from factory.config import (
     LABEL_AGENT,
     LABEL_APPROVED,
     LABEL_HUMAN,
     LABEL_INFO,
-    LABEL_TRIAGE,
     LABEL_REVIEW,
+    LABEL_TRIAGE,
     LABEL_VIABILITY,
     Config,
 )
@@ -91,7 +101,7 @@ SNAPSHOT_TTL = 15  # seconds; /api/snapshot?fresh=1 bypasses
 FILE_CAP = 2_000_000  # bytes served per /api/file request
 AGENT_BRANCH = re.compile(r"agent/(\d+)$")
 ATTEMPT_LOG = re.compile(r"(\d+)-attempt-(\d+)\.log$")
-GATE_LINE = re.compile(r"^- ([\w-]+): (PASS|FAIL|SKIP)$", re.M)
+GATE_LINE = re.compile(r"^- ([\w-]+): (PASS|FAIL|SKIP)$", re.MULTILINE)
 VERDICT = re.compile(r"VERDICT:\s*(APPROVE|REVISE)")
 
 
@@ -179,7 +189,7 @@ query($owner:String!,$name:String!{UVARS}){
 
 
 def iso(ts: float) -> str:
-    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def sh(cmd: list[str], cwd: Path | None = None) -> str:
@@ -648,11 +658,11 @@ def dispatcher(*, rows: list[dict] | None = None, handle=None) -> dict:
 
 def metrics(tickets: list[dict]) -> dict:
     """Fleet KPIs: fractions except human_resolved_pct (0–100); None when undefined."""
-    bounce = lambda a: a["attempt"] > MAX_ATTEMPTS  # noqa: E731
-    rounds = lambda t: sum(1 for a in t["attempts"] if not bounce(a))  # noqa: E731
+    bounce = lambda a: a["attempt"] > MAX_ATTEMPTS
+    rounds = lambda t: sum(1 for a in t["attempts"] if not bounce(a))
     reached = [t for t in tickets if t["pr"]]
     ran = sorted(rounds(t) for t in tickets if t["attempts"])
-    frac = lambda n: round(n / len(reached), 3) if reached else None  # noqa: E731
+    frac = lambda n: round(n / len(reached), 3) if reached else None
     return {
         "first_pass": frac(sum(1 for t in reached if rounds(t) == 1)),
         "bounce_rate": frac(sum(1 for t in reached if any(bounce(a) for a in t["attempts"]))),
@@ -1087,7 +1097,7 @@ class CodebaseMonitor:
             self.state = {"status": "building", "error": None, "data": previous}
             data = codebase.build_history(c.root, ref, c.repo, c.factory / "codebase", self.limit)
             self.state = {"status": "ready", "error": None, "data": data}
-        except (Exception, config.ConfigError) as exc:
+        except (Exception, config.ConfigError) as exc:  # noqa: BLE001 — retain last good snapshot
             self.state = {"status": "error", "error": str(exc), "data": previous}
 
     def run(self) -> None:
@@ -1122,7 +1132,7 @@ def labels_arg(req: dict, key: str) -> list[str]:
 def act(req: dict) -> dict:
     """Apply exactly one human action, stopping at the first failed step."""
     if not isinstance(req, dict):
-        raise ValueError("request must be a JSON object")
+        raise ValueError("request must be a JSON object")  # noqa: TRY004 — invalid-request API
     op, number = req.get("op"), req.get("number")
     if type(number) is not int or not 0 < number < 2**31:
         raise ValueError("number: positive int required")
@@ -1181,7 +1191,7 @@ def act(req: dict) -> dict:
             for command in commands:
                 if not step(steps, command, cwd=ROOT if op == "triage" else None):
                     break
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — return partial action results to the operator
         steps.append({"cmd": str(op), "ok": False, "output": str(exc)})
     status = "success" if steps and all(s["ok"] for s in steps) else "partial" if any(s["ok"] for s in steps) or op == "cleanup" else "failure"
     result = {"ok": status == "success", "status": status, "decision_id": decision_id, "steps": steps}
@@ -1297,7 +1307,7 @@ class Handler(BaseHTTPRequestHandler):
             result = {"ok": False, "error": str(exc)}
             if route == "/api/act":
                 result["steps"] = []
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — preserve the HTTP error-response boundary
             result = {"ok": False, "error": f"Dashboard request failed ({type(exc).__name__}): {exc}"}
         self._send(200, "application/json", json.dumps(result).encode())
 

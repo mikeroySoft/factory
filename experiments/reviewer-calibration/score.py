@@ -8,7 +8,10 @@ Counts only; never a population accuracy claim.
 
 usage: score.py <adjudication.json>
 """
-import json, pathlib, statistics, sys
+import json
+import pathlib
+import statistics
+import sys
 
 HERE = pathlib.Path(__file__).parent
 SPLITS = json.loads((HERE / "splits.json").read_text())["splits"]

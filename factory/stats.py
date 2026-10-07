@@ -7,7 +7,7 @@ import json
 import re
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -180,7 +180,7 @@ def human_touch(items: list[dict], audit: list[dict], end: str | None = None) ->
             })
             opened = None
     if opened:
-        minutes += merge_hours(opened, end or datetime.now(timezone.utc).isoformat()) * 60
+        minutes += merge_hours(opened, end or datetime.now(UTC).isoformat()) * 60
     escalated = [e["at"] for e in audit
                  if e.get("event") == "escalate" and e.get("reason") != "manager_failed"]
     claims = sum(e.get("event") == "claimed" for e in audit)
@@ -197,13 +197,13 @@ def human_touch(items: list[dict], audit: list[dict], end: str | None = None) ->
 
 def human_touch_metrics(rows: list[dict], now: datetime | None = None) -> dict:
     """Trailing seven-day escalation count; human share of attributed resolutions."""
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     since = now - timedelta(days=7)
     resolved = [r["resolved_by"] for row in rows for r in row.get("resolutions", [])
                 if r["resolved_by"] in {"human", "factory"}]
     return {
         "escalations_per_week": sum(
-            since <= datetime.fromisoformat(at.replace("Z", "+00:00")) <= now
+            since <= datetime.fromisoformat(at) <= now
             for row in rows for at in row.get("escalation_times", [])
         ),
         "human_resolved_pct": round(100 * resolved.count("human") / len(resolved), 1) if resolved else None,
@@ -213,8 +213,8 @@ def human_touch_metrics(rows: list[dict], now: datetime | None = None) -> dict:
 def merge_hours(created_at: str, merged_at: str | None) -> float | None:
     if not merged_at:
         return None
-    created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-    merged = datetime.fromisoformat(merged_at.replace("Z", "+00:00"))
+    created = datetime.fromisoformat(created_at)
+    merged = datetime.fromisoformat(merged_at)
     return (merged - created).total_seconds() / 3600
 
 

@@ -10,7 +10,13 @@ usage:
 """
 from __future__ import annotations
 
-import argparse, hashlib, json, pathlib, subprocess, sys, tempfile
+import argparse
+import hashlib
+import json
+import pathlib
+import subprocess
+import sys
+import tempfile
 
 REPO = pathlib.Path(__file__).resolve().parents[3]  # factory checkout
 CASES = pathlib.Path(__file__).resolve().parents[1] / "cases"
@@ -108,6 +114,7 @@ def run_gate(base: str, head: str) -> str:
                 text=True,
                 timeout=900,
                 env=env,
+                check=False,
             )
         except subprocess.TimeoutExpired as e:
             raise SystemExit(f"gate timed out at {head}: {e}") from e

@@ -14,7 +14,7 @@ import os
 import re
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 CONTEXT_ENV = "FACTORY_LIFECYCLE_CONTEXT"
@@ -31,7 +31,7 @@ RETENTION = 8
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def _rows(handle) -> list[dict]:
@@ -504,7 +504,7 @@ def scope(path: Path, stage: str, *, ticket=None, attempt=None, review_round=Non
             execution.reason = f"{type(error).__name__}: {error}"
         try:
             execution.emit("exit")
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — preserve the caller's original exception
             # Recording failure must not replace the caller's original exception.
             pass
         raise
@@ -691,7 +691,8 @@ def observe(path: Path, *, rows: list[dict] | None = None, handle=None) -> list[
     Ordinary product outcomes (check failure, revision, escalation) are completed
     mechanisms, not runtime failures. Only mechanism_failure yields failed.
     """
-    with journal_snapshot(path, rows=rows, handle=handle, create=False) as (rows, handle):
+    with journal_snapshot(path, rows=rows, handle=handle, create=False) as snapshot:
+        rows, handle = snapshot
         groups = {}
         for row in rows:
             if _lifecycle(row):
@@ -746,9 +747,9 @@ def observe(path: Path, *, rows: list[dict] | None = None, handle=None) -> list[
                 for event in events:
                     if event["kind"] == "wait":
                         pending_wait = {**event["wait"], "event_id": event["event_id"], "at": event["at"]}
-                    elif event["kind"] == "wait_end" and pending_wait is not None:
-                        if event["wait_event_id"] == pending_wait["event_id"]:
-                            pending_wait = None
+                    elif (event["kind"] == "wait_end" and pending_wait is not None
+                          and event["wait_event_id"] == pending_wait["event_id"]):
+                        pending_wait = None
             result.append({
                 **{key: events[-1].get(key) for key in _IDENTITY_FIELDS},
                 "state": state, "entered_at": entry.get("at"),
@@ -785,7 +786,8 @@ def resources(path: Path, paths=(), *, rows: list[dict] | None = None, handle=No
     supplied = [_resource(path, lock, scope) for lock, scope in paths]
     if rows is None and not path.exists() and not supplied:
         return []
-    with journal_snapshot(path, rows=rows, handle=handle) as (rows, handle):
+    with journal_snapshot(path, rows=rows, handle=handle) as snapshot:
+        rows, handle = snapshot
         journal_rows = rows
         rows = [row for row in rows if _lifecycle(row)]
         descriptors = {}
@@ -873,8 +875,8 @@ def observe_schedule(path: Path, *, next_at: str | None, timer_active: bool | No
     """Persist only changes in an existing timer probe, without creating a run."""
     wait = None
     try:
-        following = datetime.fromisoformat(next_at.replace("Z", "+00:00")) if isinstance(next_at, str) else None
-        observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        following = datetime.fromisoformat(next_at) if isinstance(next_at, str) else None
+        observed = datetime.fromisoformat(observed_at)
         if (timer_active is True and service_active is False and following is not None
                 and following.utcoffset() is not None and observed.utcoffset() is not None and following > observed):
             wait = {"reason": "scheduled_next_pass", "mode": "retry_next_pass",
@@ -884,7 +886,8 @@ def observe_schedule(path: Path, *, next_at: str | None, timer_active: bool | No
     state = {"wait": wait, "timer_active": timer_active if type(timer_active) is bool else None,
              "service_active": service_active if type(service_active) is bool else None}
     path = Path(path)
-    with journal_snapshot(path, rows=rows, handle=handle) as (rows, handle):
+    with journal_snapshot(path, rows=rows, handle=handle) as snapshot:
+        rows, handle = snapshot
         previous = next((row for row in reversed(rows)
                          if _lifecycle(row) and row["kind"] == "scheduling_observation"), None)
         if previous is None or any(previous.get(key) != value for key, value in state.items()):

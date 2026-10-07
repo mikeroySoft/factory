@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import json
-import os
 import math
-from pathlib import Path
+import os
 import re
 import stat
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
+from pathlib import Path
 
 from factory import lifecycle
 
@@ -63,7 +63,7 @@ def _utc(value) -> bool:
     ):
         return False
     try:
-        datetime.fromisoformat(value.replace("Z", "+00:00"))
+        datetime.fromisoformat(value)
         return True
     except ValueError:
         return False
@@ -357,8 +357,8 @@ def _journal(path: Path, errors: list) -> tuple[list, dict, list]:
     if retained:
         history["status"] = "available"
         times = [event["at"] for _, event in retained]
-        history["start_at"] = min(times, key=lambda value: datetime.fromisoformat(value.replace("Z", "+00:00")))
-        history["end_at"] = max(times, key=lambda value: datetime.fromisoformat(value.replace("Z", "+00:00")))
+        history["start_at"] = min(times, key=lambda value: datetime.fromisoformat(value))
+        history["end_at"] = max(times, key=lambda value: datetime.fromisoformat(value))
     elif before.st_size:
         history["status"] = "available"
     history["retained_events"] = len(retained)
