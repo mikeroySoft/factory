@@ -111,6 +111,8 @@ def check_leaks(base: str) -> tuple[bool, str]:
         [
             "git",
             "diff",
+            "--unified=0",
+            "--no-prefix",
             f"{base}..HEAD",
             "--",
             f":(exclude){CONFIG_NAME}",
@@ -123,11 +125,18 @@ def check_leaks(base: str) -> tuple[bool, str]:
             execution.outcome = "unknown"
             execution.reason = "git_diff_failed"
         return False, proc.stdout + proc.stderr
-    hits = [
-        line
-        for line in proc.stdout.splitlines()
-        if line.startswith("+") and not line.startswith("+++") and LEAK_RE.search(line)
-    ]
+    hits, path, header, n = [], "", True, 0
+    for line in proc.stdout.splitlines():
+        if line.startswith("diff --git "):
+            header = True
+        elif header and line.startswith("+++ "):
+            path = line[4:]
+        elif line.startswith("@@ "):
+            header, n = False, int(re.match(r"@@ -\S+ \+(\d+)", line).group(1))
+        elif not header and line.startswith("+"):
+            if m := LEAK_RE.search(line[1:]):
+                hits.append(f"{path}:{n}: [{m.group(0)}] {line[1:]}")
+            n += 1
     execution = lifecycle.current()
     if hits and execution:
         execution.outcome = "product_feedback"

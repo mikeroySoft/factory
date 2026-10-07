@@ -6,6 +6,7 @@ Run: python -m unittest discover -s tests
 from __future__ import annotations
 
 import json
+import re
 import os
 import subprocess
 import shlex
@@ -382,6 +383,15 @@ class HostConfigTest(unittest.TestCase):
                 cfg.raw_repo,
                 {"triage": {"model": "f"}, "install": {"python": "/committed/python"}},
             )
+
+    def test_leak_extra_adds_to_the_default(self) -> None:
+        host_file('[defaults.leak_scan]\nextra = ["bluefin"]\npattern = ""\n'
+                  '[repo."acme/widgets".leak_scan]\nextra = ["redfin"]\n')
+        with tempfile.TemporaryDirectory() as d:
+            leak = re.compile(config.load(make_repo(Path(d), '[leak_scan]\nextra = ["greenfin"]\n')).leak_pattern, re.I)
+            for term in ("ship Bluefin", "redfin", "greenfin", "CONFIDENTI\x41L"):
+                self.assertIsNotNone(leak.search(term), term)
+            self.assertIsNone(leak.search("### Internal"))
 
     def test_missing_host_file_is_current_behaviour(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -1280,6 +1290,16 @@ class GateTest(unittest.TestCase):
             self.assertEqual(code, 1, out)
             self.assertIn("- leak-scan: FAIL", report)
             self.assertIn("CONFIDENTIAL", report)
+            self.assertIn("notes.md:1: [CONFIDENTI\x41L] see the", report)
+
+    # \x escapes keep these fixtures from tripping this repo's own leak scan.
+    def test_default_leak_pattern_skips_generic_words(self) -> None:
+        leak = re.compile(config.DEFAULT_LEAK_PATTERN, re.IGNORECASE)
+        for clean in ("### Internal", "a private discussion", "handled internally", "stored privately"):
+            self.assertIsNone(leak.search(clean), clean)
+        for dirty in ("ssh build01.amd.int\x65rnal", "foo.c\x6frp", "https://j\x69ra.example.com/browse/GPU-1",
+                      "https://acme.atl\x61ssian.net/browse/GPU-1", "CONFIDENTI\x41L"):
+            self.assertIsNotNone(leak.search(dirty), dirty)
 
     def test_protected_edit_stops_gate_before_checks(self) -> None:
         toml = ('[gate]\nprotected_paths = [".factory.toml", "checks/**"]\n'
