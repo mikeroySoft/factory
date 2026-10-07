@@ -1323,7 +1323,10 @@ def _infra_cancel(check: dict) -> dict | None:
     if not m:
         return None
     try:
-        job = json.loads(run(["gh", "api", f"repos/{REPO}/actions/jobs/{m[2]}"], check=False).stdout)
+        res = run(["gh", "api", f"repos/{REPO}/actions/jobs/{m[2]}"], check=False)
+        if res.returncode != 0:
+            return None
+        job = json.loads(res.stdout)
         ran = any(s.get("conclusion") not in (None, "skipped") for s in job.get("steps") or [])
         runner, note = job.get("runner_name") or None, ""
         if ran and runner:
