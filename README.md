@@ -455,7 +455,12 @@ ticket's `human_touch` details. The dashboard retains its existing 100-issue,
 3. **Work.** The worker gets the issue, its comments, standing instructions
    (commit incrementally, never touch `main`, never `git stash`, finish with
    `factory gate`), and — on retries — the previous gate report or the
-   reviewer's findings. Up to `max_attempts` rounds within `budget_min`.
+   reviewer's findings. Up to `max_attempts` rounds within `budget_min`, the
+   overall ceiling. A worker with no log output and no worktree change for
+   `[dispatch].idle_timeout` minutes is killed as `stuck` (a failed attempt,
+   retried). One that committed or wrote its handoff, then stayed quiet for
+   `[dispatch].exit_grace` seconds without exiting, is terminated and gated.
+   The attempt journal row and escalation packet name the timeout that fired.
 4. **Gate.** The configured `[gate].protected_paths` globs from the base ref's
    `.factory.toml` are checked against the committed worker diff first, before
    any checks; a hit stops the run and immediately escalates the ticket to
@@ -566,6 +571,8 @@ default model. Gate and safety policy remain file-managed.
 
 [dispatch]
 review_rounds = 1                # REVISE -> worker -> re-review cycles
+# idle_timeout = 30              # minutes quiet mid-work = stuck; 0 disables
+# exit_grace = 300               # seconds quiet after commit/handoff before termination; 0 disables
 # cost_pattern = 'Total cost:\s*\$([0-9.]+)'   # $ from the worker log (Claude Code prints this)
 
 [workers]                        # ticket label -> argv; {prompt} file, {cwd} worktree
@@ -601,6 +608,7 @@ extra = ["\\bmyproduct\\b"]   # regexes ORed onto the pattern
 [triage]
 url = "http://127.0.0.1:11434/v1/chat/completions"
 model = "qwen3:30b"
+# timeout = 60                    # seconds per model request
 
 [journal]
 max_mb = 64      # events.jsonl rolls into events.jsonl.N.gz past this size

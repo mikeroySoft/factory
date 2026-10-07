@@ -185,7 +185,7 @@ def call_llm(messages: list[dict], execution=None) -> str:
         headers={"Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=cfg.triage_timeout) as resp:
             body = json.load(resp)
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
         if execution:
@@ -194,7 +194,7 @@ def call_llm(messages: list[dict], execution=None) -> str:
             )
             execution.outcome = "unknown" if timed_out else "mechanism_failure"
             execution.reason = "triage_endpoint_timeout" if timed_out else "triage_endpoint_unavailable"
-            execution.emit("result", timed_out=timed_out, timeout_seconds=60)
+            execution.emit("result", timed_out=timed_out, timeout_seconds=cfg.triage_timeout)
         print(
             f"cannot reach local model at {LLM_URL}: {exc}\n"
             "Is the model server running? Set [triage].url in .factory.toml if the endpoint differs.",
