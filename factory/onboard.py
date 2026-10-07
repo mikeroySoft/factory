@@ -158,7 +158,7 @@ def foreign_host_keys(section: dict, *, defaults: bool = False) -> list[str]:
     out = [
         k for k, v in section.items()
         if isinstance(v, dict) and k not in config.HOST_TABLES and k not in config.HOST_KEYS
-        and not (defaults and k == "engine")
+        and not (defaults and k == "engine") and not (k == "leak_scan" and set(v) <= {"extra"})
     ]
     out += [f"{t}.{k}" for t, keys in config.HOST_KEYS.items() for k in section.get(t, {}) if k not in keys]
     return out + config.unknown_keys(config.host_filter(section))

@@ -594,7 +594,9 @@ run = ["cargo", "test", "--workspace"]
 exclusive = true
 
 [leak_scan]
-pattern = "internal|confidential|proprietary|private|jira|confluence|\\.corp|\\.internal"
+# Default; "" disables it. `extra` terms are added to it, never replace it.
+pattern = "\\.(?:corp|internal|intranet|lan)\\b|\\bconfidential\\b|\\bproprietary\\b|\\bjira\\b|\\bconfluence\\b|\\.atlassian\\.net\\b"
+extra = ["\\bmyproduct\\b"]   # regexes ORed onto the pattern
 
 [triage]
 url = "http://127.0.0.1:11434/v1/chat/completions"
@@ -629,6 +631,17 @@ no network, credential, gate or reviewer isolation, and the wrapper inherits the
 launch environment. A containing wrapper must expose the prompt (inside the
 worktree) and the linked worktree's common Git directory (under `{root}/.git`)
 at the same absolute paths.
+
+Leak terms that must not appear in a public repository, such as codenames or
+internal hostnames, go in host config: `extra` under `[defaults.leak_scan]` or
+`[repo."owner/name".leak_scan]`. Host, per-repo host, and committed `extra`
+lists all add to the scan; the host cannot set `pattern` or `exclude`. A leak-scan
+failure lists each hit as `path:line: [matched term] line`.
+
+```toml
+[defaults.leak_scan]
+extra = ["\\bbluefin\\b", "\\.example-corp\\.com\\b"]
+```
 
 Labels (`needs-review`, `needs-viability`, `needs-triage`, `needs-info`,
 `ready-for-agent`, `ready-for-human`, `factory-approved`, `chore`, `initiative`)

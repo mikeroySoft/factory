@@ -49,7 +49,9 @@ LABELS = {
     LABEL_INITIATIVE: ("1D76DB", "Shared initiative plan read by `factory plan`; never triaged, dispatched, managed or merged"),
 }
 
-DEFAULT_LEAK_PATTERN = r"internal|confidential|proprietary|private|jira|confluence|\.corp|\.internal"
+# Word-bounded strong signals only: bare words like "internal"/"private" are ordinary English.
+DEFAULT_LEAK_PATTERN = (r"\.(?:corp|internal|intranet|lan)\b|\bconfidential\b|\bproprietary\b"
+                        r"|\bjira\b|\bconfluence\b|\.atlassian\.net\b")
 DEFAULT_WORKER = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]
 DEFAULT_CHORE_WORKER = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
 DEFAULT_REVIEWER = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1", "{prompt}"]
@@ -63,6 +65,7 @@ DEFAULT_INSTALL = {"every": "10min", "dashboard": False, "host": "127.0.0.1", "p
 # must run the same gate, so gate checks, leak scan and upstream never come
 # from here. Everything else in the host file is left for other tools (District).
 # `worker_wrap` is host-only: a committed `[worker_wrap]` is refused, never merged.
+# `leak_scan.extra` is read from both and concatenated: host terms only add to the scan.
 HOST_TABLES = frozenset({"triage", "workers", "worker_wrap", "review", "manager", "install"})
 HOST_KEYS = {"dashboard": ("port",), "gate": ("lock",)}
 
@@ -76,7 +79,7 @@ KNOWN_KEYS = {
     "review": ("command",),
     "manager": ("model", "command", "rounds", "review", "stale_days", "max_active_cap", "budget_min_cap"),
     "gate": ("timeout", "lock", "check", "protected_paths"),
-    "leak_scan": ("pattern", "exclude"),
+    "leak_scan": ("pattern", "exclude", "extra"),
     "triage": ("url", "model"),
     "journal": ("max_mb", "retention"),
     "dashboard": ("port", "theme"),
@@ -372,10 +375,11 @@ def load(start: Path | None = None) -> Config:
             raise ConfigError(f"{path}: {exc}") from exc
     slug = raw.get("repo", {}).get("slug") or remote_slug(root, "origin")
     host = host_config()
-    for section in (host.get("defaults", {}), host.get("repo", {}).get(slug, {})):
+    host_sections = (host.get("defaults", {}), host.get("repo", {}).get(slug, {}))
+    for section in host_sections:
         if "worker_wrap" in section and not isinstance(section["worker_wrap"], dict):
             raise ConfigError(f"{host_config_path()}: worker_wrap must be a table")
-    layered = merge(host_filter(host.get("defaults", {})), host_filter(host.get("repo", {}).get(slug, {})))
+    layered = merge(host_filter(host_sections[0]), host_filter(host_sections[1]))
     raw, raw_repo = merge(layered, raw), raw
     repo_t, dispatch, workers = raw.get("repo", {}), raw.get("dispatch", {}), raw.get("workers", {})
     gate, leak, triage, dash = raw.get("gate", {}), raw.get("leak_scan", {}), raw.get("triage", {}), raw.get("dashboard", {})
@@ -450,6 +454,11 @@ def load(start: Path | None = None) -> Config:
     if "pattern" in leak:
         cfg.leak_pattern = leak["pattern"] or None
     cfg.leak_exclude = list(leak.get("exclude", []))
+    extra = [section.get("leak_scan", {}).get("extra", []) for section in (*host_sections, raw_repo)]
+    if any(not isinstance(e, list) or any(not isinstance(t, str) or not t for t in e) for e in extra):
+        raise ConfigError("leak_scan.extra needs an array of non-empty regex strings")
+    if terms := [t for e in extra for t in e]:
+        cfg.leak_pattern = "|".join(p for p in (cfg.leak_pattern, *terms) if p)
     cfg.llm_url = triage.get("url", cfg.llm_url)
     cfg.llm_model = triage.get("model", cfg.llm_model)
     cfg.dashboard_port = int(dash.get("port", cfg.dashboard_port))
