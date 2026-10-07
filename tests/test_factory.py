@@ -6,6 +6,7 @@ Run: python -m unittest discover -s tests
 from __future__ import annotations
 
 import json
+import re
 import os
 import shlex
 import shutil
@@ -384,6 +385,15 @@ class HostConfigTest(unittest.TestCase):
                 cfg.raw_repo,
                 {"triage": {"model": "f"}, "install": {"python": "/committed/python"}},
             )
+
+    def test_leak_extra_adds_to_the_default(self) -> None:
+        host_file('[defaults.leak_scan]\nextra = ["bluefin"]\npattern = ""\n'
+                  '[repo."acme/widgets".leak_scan]\nextra = ["redfin"]\n')
+        with tempfile.TemporaryDirectory() as d:
+            leak = re.compile(config.load(make_repo(Path(d), '[leak_scan]\nextra = ["greenfin"]\n')).leak_pattern, re.I)
+            for term in ("ship Bluefin", "redfin", "greenfin", "CONFIDENTI\x41L"):
+                self.assertIsNotNone(leak.search(term), term)
+            self.assertIsNone(leak.search("### Internal"))
 
     def test_missing_host_file_is_current_behaviour(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -785,6 +795,26 @@ class HostConfigTest(unittest.TestCase):
             self.assertIn('repo."acme/widgets".engine', rows["host config"]["detail"])
             self.assertNotIn("defaults.engine", rows["host config"]["detail"])
 
+    def test_doctor_warns_when_self_hosted_engine_differs_from_main(self) -> None:
+        gh = 'case "$1 $2" in "repo view") echo ADMIN;; "label list") echo "[]";; esac\nexit 0'
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            stubs = stub_bin(Path(d), gh=gh, systemctl="echo inactive")
+
+            def engine_rows(sha: str) -> list[dict]:
+                host_file('[defaults.triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n'
+                          f'[defaults.engine]\nsha = "{sha}"\n')
+                rows = json.loads(factory(repo, "doctor", "--json", path=stubs).stdout)["rows"]
+                return [r for r in rows if r["label"] == "installed engine"]
+
+            stale = "0" * 40
+            self.assertEqual(engine_rows(stale), [])  # not factory's own repository
+            (repo / "pyproject.toml").write_text('[project]\nname = "factory"\n')
+            [row] = engine_rows(stale)
+            self.assertEqual(row["status"], "WARN")
+            self.assertIn(stale[:12], row["detail"])
+            self.assertEqual(engine_rows(git(repo, "rev-parse", "origin/main")), [])
+
     def test_doctor_json_reports_drift(self) -> None:
         host_file('[defaults.triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n[defaults.leak_scan]\npattern = ""\n[repo."acme/widgets"]\npath = "/x"\n[repo."acme/widgets".dashboard]\nport = 1\ntheme = "no"\n')
         gh = 'case "$1 $2" in "repo view") echo ADMIN;; "label list") echo "[]";; esac\nexit 0'
@@ -978,6 +1008,38 @@ class HostConfigTest(unittest.TestCase):
                     self.assertIn(detail, rows["manager command"]["detail"])
                 text = factory(repo, "doctor", path=stubs)
                 self.assertIn(f"{status}  manager command", text.stdout)
+
+    def test_doctor_resolves_binaries_on_installed_unit_path(self) -> None:
+        host_file('[defaults.triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n')
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), '[workers]\ndefault = ["unitworker", "{prompt}"]\n')
+            stubs = stub_bin(Path(d), gh="exit 0", systemctl="echo inactive", unitworker="exit 0")
+            unit = XDG / "systemd" / "user" / f"{config.load(repo).unit}.service"
+            label = "worker `default`: unitworker"
+
+            def row() -> dict:
+                result = factory(repo, "doctor", "--json", path=stubs)
+                return {r["label"]: r for r in json.loads(result.stdout)["rows"]}[label]
+
+            self.assertEqual(row()["status"], "PASS")  # no unit: caller PATH, as before
+            unit.parent.mkdir(parents=True, exist_ok=True)
+            self.addCleanup(unit.unlink, missing_ok=True)
+            unit.write_text(f"[Service]\nEnvironment=PATH={Path(d) / 'empty'}:/nonexistent\n")
+            missing = row()
+            self.assertEqual(missing["status"], "FAIL")
+            self.assertIn(str(unit), missing["detail"])
+            unit.write_text(f"[Service]\nEnvironment=PATH={stubs}\n")
+            self.assertEqual(row()["status"], "PASS")
+            missing_path = f"{Path(d) / 'empty'}:/nonexistent"
+            for first, last, status in (
+                (stubs, missing_path, "FAIL"),
+                (missing_path, stubs, "PASS"),
+            ):
+                with self.subTest(first=first, last=last):
+                    unit.write_text(f"[Service]\nEnvironment=PATH={first}\nEnvironment=PATH={last}\n")
+                    resolved = row()
+                    self.assertEqual(resolved["status"], status)
+                    self.assertIn(str(unit), resolved["detail"])
 
 
 class StatsTest(unittest.TestCase):
@@ -1231,6 +1293,16 @@ class GateTest(unittest.TestCase):
             self.assertEqual(code, 1, out)
             self.assertIn("- leak-scan: FAIL", report)
             self.assertIn("CONFIDENTIAL", report)
+            self.assertIn("notes.md:1: [CONFIDENTI\x41L] see the", report)
+
+    # \x escapes keep these fixtures from tripping this repo's own leak scan.
+    def test_default_leak_pattern_skips_generic_words(self) -> None:
+        leak = re.compile(config.DEFAULT_LEAK_PATTERN, re.IGNORECASE)
+        for clean in ("### Internal", "a private discussion", "handled internally", "stored privately"):
+            self.assertIsNone(leak.search(clean), clean)
+        for dirty in ("ssh build01.amd.int\x65rnal", "foo.c\x6frp", "https://j\x69ra.example.com/browse/GPU-1",
+                      "https://acme.atl\x61ssian.net/browse/GPU-1", "CONFIDENTI\x41L"):
+            self.assertIsNotNone(leak.search(dirty), dirty)
 
     def test_protected_edit_stops_gate_before_checks(self) -> None:
         toml = ('[gate]\nprotected_paths = [".factory.toml", "checks/**"]\n'
@@ -1349,6 +1421,25 @@ class GateTest(unittest.TestCase):
             self.assertTrue(projected["history"]["complete"])
             self.assertEqual(projected["history"]["gaps"], [])
             self.assertEqual(projected["executions"][0]["observation"], "fresh")
+
+    def test_check_commands_run_without_inherited_lifecycle_context(self) -> None:
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as d:
+            dump = Path(d) / "check-env.txt"
+            toml = f'[[gate.check]]\nname = "env"\nrun = ["sh", "-c", "env > {dump}"]\n'
+            repo = make_repo(Path(d), toml)
+            live = Path(d) / "live" / "events.jsonl"
+            context = json.dumps({"schema_version": 1, "path": str(live), "ticket": 170, "attempt": 1})
+            with mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: context}):
+                code, out, _ = gate(repo)
+            self.assertEqual(code, 0, out)
+            self.assertNotIn(f"{lifecycle.CONTEXT_ENV}=", dump.read_text())
+            rows = [json.loads(line) for line in live.read_text().splitlines()]
+            kinds = [row["kind"] for row in rows if row.get("stage") == "gate"]
+            self.assertEqual((kinds[0], kinds[-1]), ("enter", "exit"))
+            self.assertLessEqual({"handoff", "child_start", "result", "child_exit"}, set(kinds))
+            self.assertTrue(all(row["ticket"] == 170 for row in rows))
 
     def test_timeout_fails_instead_of_hanging(self) -> None:
         toml = '[gate]\ntimeout = 1\n[[gate.check]]\nname = "slow"\nrun = ["sleep", "5"]\n'

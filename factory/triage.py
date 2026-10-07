@@ -338,7 +338,7 @@ def main(argv: list[str]) -> int:
 
     recording = not (args.replay or args.dry_run)
     with (
-        lifecycle.scope(cfg.factory / "events.jsonl", "triage") if recording else nullcontext()
+        lifecycle.scope(cfg.factory / "events.jsonl", "triage", lazy=True) if recording else nullcontext()
     ) as execution:
         return execute(args, execution)
 

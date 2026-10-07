@@ -158,7 +158,7 @@ def foreign_host_keys(section: dict, *, defaults: bool = False) -> list[str]:
     out = [
         k for k, v in section.items()
         if isinstance(v, dict) and k not in config.HOST_TABLES and k not in config.HOST_KEYS
-        and not (defaults and k == "engine")
+        and not (defaults and k == "engine") and not (k == "leak_scan" and set(v) <= {"extra"})
     ]
     out += [f"{t}.{k}" for t, keys in config.HOST_KEYS.items() for k in section.get(t, {}) if k not in keys]
     return out + config.unknown_keys(config.host_filter(section))
@@ -389,6 +389,8 @@ def doctor(argv: list[str]) -> int:
     if cfg.install.get("python") is not None:
         ok, detail = interpreter_probe(cfg)
         report(ok, "service interpreter", detail)
+    if drift := config.engine_drift(cfg):
+        report(None, "installed engine", drift)
 
 
     for tool in ("git", "gh"):
@@ -419,11 +421,20 @@ def doctor(argv: list[str]) -> int:
         ok = sh(["git", "remote", "get-url", cfg.upstream], cwd=cfg.root).returncode == 0
         report(ok, f"upstream remote `{cfg.upstream}`", "" if ok else "add it or unset [repo].upstream")
 
+    # The installed service runs with the PATH baked into its unit, not the caller's.
+    unit_file = unit_dir() / f"{cfg.unit}.service"
+    lines = unit_file.read_text().splitlines() if unit_file.exists() else []
+    unit_path = next((ln.removeprefix("Environment=PATH=") for ln in reversed(lines) if ln.startswith("Environment=PATH=")), None)
+    on_path = "" if unit_path is None else f"PATH from {unit_file}"
+
+    def which(exe: str) -> str | None:
+        return shutil.which(exe, path=unit_path)
+
     for label, argv_t in cfg.workers.items():
-        report(shutil.which(argv_t[0]) is not None, f"worker `{label}`: {argv_t[0]}")
+        report(which(argv_t[0]) is not None, f"worker `{label}`: {argv_t[0]}", on_path)
     if cfg.worker_wrap:
-        report(shutil.which(cfg.worker_wrap[0]) is not None, f"worker wrap: {cfg.worker_wrap[0]}")
-    report(shutil.which(cfg.reviewer[0]) is not None, f"reviewer: {cfg.reviewer[0]}")
+        report(which(cfg.worker_wrap[0]) is not None, f"worker wrap: {cfg.worker_wrap[0]}", on_path)
+    report(which(cfg.reviewer[0]) is not None, f"reviewer: {cfg.reviewer[0]}", on_path)
     if not cfg.manager:
         report(None, "manager command", "[manager].command is unset; escalations get no automated diagnosis")
     else:
@@ -434,15 +445,15 @@ def doctor(argv: list[str]) -> int:
         ]
         if Path(cfg.manager[0]).name == "omp" and "{prompt}" in cfg.manager:
             problems.append('omp needs a prompt file; use "@{prompt}"')
-        if shutil.which(cfg.manager[0]) is None:
-            problems.append(f"executable not on PATH: {cfg.manager[0]}")
+        if which(cfg.manager[0]) is None:
+            problems.append(f"executable not on {on_path or 'PATH'}: {cfg.manager[0]}")
         report(not problems, "manager command", "; ".join(problems) if problems else cfg.manager[0])
 
     if cfg.checks:
         for check in cfg.checks:
             exe = check.run[0]
-            found = shutil.which(exe) is not None or (cfg.root / exe).exists()
-            report(found, f"gate check `{check.name}`: {exe}{' (exclusive)' if check.exclusive else ''}")
+            found = which(exe) is not None or (cfg.root / exe).exists()
+            report(found, f"gate check `{check.name}`: {exe}{' (exclusive)' if check.exclusive else ''}", on_path)
     else:
         report(None, "gate checks", "none configured; only conflict-markers and leak-scan run")
 
