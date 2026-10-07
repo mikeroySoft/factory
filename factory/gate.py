@@ -44,9 +44,13 @@ def timed(cmd: list[str]) -> subprocess.CompletedProcess:
     tree (cargo/test grandchildren included), not just the direct child.
     """
     execution = lifecycle.current()
+    # The handoff row is still recorded, but the check never inherits the context:
+    # a repo's own tests would otherwise append their fixture rows to the live ledger.
+    env = execution.env() if execution else dict(os.environ)
+    env.pop(lifecycle.CONTEXT_ENV, None)
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True,
-        env=execution.env() if execution else None,
+        env=env,
     )
     if execution:
         execution.child(proc.pid)
