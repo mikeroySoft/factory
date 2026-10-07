@@ -3282,6 +3282,123 @@ class DispatchTest(unittest.TestCase):
             refresh.assert_not_called()
             escalate.assert_not_called()
 
+    def cancelled_ci_pass(self, checks, jobs, annotations=()):
+        """One merge pass over PR #70 (ticket 7) with stubbed CI, job, and annotation reads."""
+        from unittest import mock
+
+        from factory import dispatch
+
+        pr = {
+            "number": 70, "headRefName": "agent/7", "headRefOid": "head",
+            "baseRefName": "main", "isDraft": False,
+            "labels": [{"name": "factory-approved"}],
+            "reviewDecision": "APPROVED", "state": "CLOSED", "title": "feature",
+        }
+
+        def query(args):
+            if args[:2] in (["pr", "list"], ["pr", "view"]):
+                return [pr] if args[1] == "list" else pr
+            if args[:2] == ["issue", "view"]:
+                return {"labels": []}
+            raise AssertionError(args)
+
+        calls = []
+
+        def gh(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[:2] == ["gh", "api"] and "/actions/jobs/" in cmd[2]:
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(jobs), "")
+            if cmd[:2] == ["gh", "api"] and cmd[2].endswith("/annotations"):
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(list(annotations)), "")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        def escalate(n, reason, log_path, extra=""):
+            dispatch.record("escalate", ticket=n, reason=reason)
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=query), \
+                mock.patch.object(dispatch, "pr_checks", return_value=checks), \
+                mock.patch.object(dispatch, "run", side_effect=gh), \
+                mock.patch.object(dispatch, "escalate", side_effect=escalate) as esc:
+            dispatch.merge_pass_locked(False)
+        removed = any("--remove-label" in cmd for cmd in calls)
+        reruns = [cmd for cmd in calls if cmd[:3] == ["gh", "run", "rerun"]]
+        return [c.args[1] for c in esc.call_args_list], removed, reruns, calls
+
+    def cancelled(self, name="compile"):
+        return {"name": name, "bucket": "cancel",
+                "link": "https://github.com/acme/widgets/actions/runs/123/job/456"}
+
+    def test_merge_reruns_unacquired_runner_once_then_merges_on_pass(self) -> None:
+        from factory import dispatch
+
+        starved = {"run_id": 123, "run_attempt": 1, "steps": [], "runner_name": None}
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.configure(config.Config(root=make_repo(Path(d)), repo="acme/widgets"))
+            ok = {"name": "unit", "bucket": "pass"}
+            escalations, removed, reruns, _ = self.cancelled_ci_pass([ok, self.cancelled()], starved)
+            self.assertEqual((escalations, removed), ([], False))
+            self.assertEqual(reruns, [["gh", "run", "rerun", "123", "--failed", "--repo", "acme/widgets"]])
+            events = lifecycle.read_events(dispatch.EVENTS)
+            infra = next(e for e in events if e.get("event") == "ci-infra")
+            self.assertEqual((infra["pr"], infra["run"], infra["checks"]), (70, 123, ["compile"]))
+            self.assertEqual(infra["evidence"][0]["steps_run"], False)
+            self.assertTrue(any(e.get("event") == "ci-rerun" and e.get("ok") for e in events))
+            # GitHub has not surfaced the rerun yet: still attempt 1, so wait, never rerun twice.
+            escalations, removed, reruns, _ = self.cancelled_ci_pass([ok, self.cancelled()], starved)
+            self.assertEqual((escalations, removed, reruns), ([], False, []))
+            # The rerun passes: the PR proceeds past the CI gate to the fresh PR read.
+            escalations, removed, reruns, _ = self.cancelled_ci_pass([ok, {**ok, "name": "compile"}], starved)
+            self.assertEqual((escalations, removed, reruns), ([], False, []))
+
+    def test_merge_escalates_runner_unavailable_after_failed_rerun(self) -> None:
+        from factory import dispatch
+
+        starved = {"run_id": 123, "run_attempt": 1, "steps": [], "runner_name": None}
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.configure(config.Config(root=make_repo(Path(d)), repo="acme/widgets"))
+            checks = [self.cancelled("gate"), self.cancelled("compile")]
+            self.cancelled_ci_pass(checks, starved)
+            again = {**starved, "run_attempt": 2}
+            escalations, removed, reruns, _ = self.cancelled_ci_pass(checks, again)
+            self.assertEqual((removed, reruns), (False, []))
+            self.assertEqual(len(escalations), 1)
+            self.assertIn("CI runner unavailable (gate, compile)", escalations[0])
+            self.assertNotIn("CI failed", escalations[0])
+            self.assertTrue(any(e.get("event") == "ci-infra" and e.get("attempt") == 2
+                                for e in lifecycle.read_events(dispatch.EVENTS)))
+            # Later passes wait on the open escalation instead of repeating it.
+            escalations, removed, reruns, _ = self.cancelled_ci_pass(checks, again)
+            self.assertEqual((escalations, removed, reruns), ([], False, []))
+
+    def test_merge_treats_cancel_after_steps_ran_as_failure(self) -> None:
+        from factory import dispatch
+
+        timed_out = {"run_id": 123, "run_attempt": 1, "runner_name": "GitHub Actions 3",
+                     "steps": [{"conclusion": "success"}, {"conclusion": "cancelled"}]}
+        for annotation, infra in (("", False),
+                                  ("The job was not acquired by Runner of type hosted "
+                                   "even after multiple attempts.", True)):
+            with self.subTest(infra=infra), tempfile.TemporaryDirectory() as d:
+                dispatch.configure(config.Config(root=make_repo(Path(d)), repo="acme/widgets"))
+                escalations, removed, reruns, _ = self.cancelled_ci_pass(
+                    [self.cancelled()], timed_out, [{"message": annotation}])
+                if infra:
+                    self.assertEqual((escalations, removed, len(reruns)), ([], False, 1))
+                else:
+                    self.assertEqual(escalations, ["PR #70: CI failed (compile); `factory-approved` label removed"])
+                    self.assertEqual((removed, reruns), (True, []))
+
+    def test_merge_plain_ci_failure_unchanged(self) -> None:
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.configure(config.Config(root=make_repo(Path(d)), repo="acme/widgets"))
+            escalations, removed, reruns, calls = self.cancelled_ci_pass(
+                [{"name": "unit", "bucket": "fail"}], {})
+            self.assertEqual(escalations, ["PR #70: CI failed (unit); `factory-approved` label removed"])
+            self.assertEqual((removed, reruns), (True, []))
+            self.assertFalse(any(cmd[:2] == ["gh", "api"] for cmd in calls))
+
     def test_merge_refuses_legacy_approval_without_sha_evidence(self) -> None:
         from unittest import mock
 
