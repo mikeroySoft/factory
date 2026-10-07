@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `factory doctor` resolves worker, worker-wrap, reviewer, manager and gate-check binaries against the installed unit's PATH, honoring the last assignment and naming the PATH source in missing-binary diagnostics (#171).
 - Idle dispatcher passes write no lifecycle rows (#173): the `dispatcher`, `scheduling` and `triage` scopes buffer their trail and drop it when the pass claims, triages, merges, waits on or fails nothing (was ~31 rows per pass). Any written row flushes its buffered ancestors first, so passes that act keep the full trail. The dashboard heartbeat reads systemd, not the journal, and still reports the last pass.
 - Engine drift (#172): each dispatcher pass's `enter` row records `engine_version` and `engine_commit` (District's `[defaults.engine].sha`, else the commit-named uv install source). When the managed repository is factory itself, `factory doctor` WARNs `installed engine` and `factory dashboard --json` sets `engine.warning` if that commit differs from `origin/<main>`.
 - Gate reports and lifecycle journals record ROCm, kernel, and amdgpu versions once per run; unavailable probes do not fail the gate (#154).

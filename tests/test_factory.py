@@ -997,6 +997,38 @@ class HostConfigTest(unittest.TestCase):
                 text = factory(repo, "doctor", path=stubs)
                 self.assertIn(f"{status}  manager command", text.stdout)
 
+    def test_doctor_resolves_binaries_on_installed_unit_path(self) -> None:
+        host_file('[defaults.triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n')
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), '[workers]\ndefault = ["unitworker", "{prompt}"]\n')
+            stubs = stub_bin(Path(d), gh="exit 0", systemctl="echo inactive", unitworker="exit 0")
+            unit = XDG / "systemd" / "user" / f"{config.load(repo).unit}.service"
+            label = "worker `default`: unitworker"
+
+            def row() -> dict:
+                result = factory(repo, "doctor", "--json", path=stubs)
+                return {r["label"]: r for r in json.loads(result.stdout)["rows"]}[label]
+
+            self.assertEqual(row()["status"], "PASS")  # no unit: caller PATH, as before
+            unit.parent.mkdir(parents=True, exist_ok=True)
+            self.addCleanup(unit.unlink, missing_ok=True)
+            unit.write_text(f"[Service]\nEnvironment=PATH={Path(d) / 'empty'}:/nonexistent\n")
+            missing = row()
+            self.assertEqual(missing["status"], "FAIL")
+            self.assertIn(str(unit), missing["detail"])
+            unit.write_text(f"[Service]\nEnvironment=PATH={stubs}\n")
+            self.assertEqual(row()["status"], "PASS")
+            missing_path = f"{Path(d) / 'empty'}:/nonexistent"
+            for first, last, status in (
+                (stubs, missing_path, "FAIL"),
+                (missing_path, stubs, "PASS"),
+            ):
+                with self.subTest(first=first, last=last):
+                    unit.write_text(f"[Service]\nEnvironment=PATH={first}\nEnvironment=PATH={last}\n")
+                    resolved = row()
+                    self.assertEqual(resolved["status"], status)
+                    self.assertIn(str(unit), resolved["detail"])
+
 
 class StatsTest(unittest.TestCase):
     def test_stats_by_worker_uses_claim_labels(self) -> None:
