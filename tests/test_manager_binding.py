@@ -90,19 +90,18 @@ class ManagerBindingTest(unittest.TestCase):
         for proposed in proposed_bodies:
             with self.subTest(proposed=proposed[:30]), mock.patch.object(
                 dispatch, "gh_json", return_value=live
-            ), mock.patch.object(dispatch, "run", side_effect=self.run_command):
-                with self.assertRaisesRegex(
-                    binding.BindingError,
-                    "preserve the accepted Initiative and Plan baseline",
-                ):
-                    manage.apply(
-                        7,
-                        {"title": "Bounded slice", "body": "stale list body"},
-                        "REWRITE",
-                        proposed,
-                        None,
-                        self.packet,
-                    )
+            ), mock.patch.object(dispatch, "run", side_effect=self.run_command), self.assertRaisesRegex(
+                binding.BindingError,
+                "preserve the accepted Initiative and Plan baseline",
+            ):
+                manage.apply(
+                    7,
+                    {"title": "Bounded slice", "body": "stale list body"},
+                    "REWRITE",
+                    proposed,
+                    None,
+                    self.packet,
+                )
             self.assertEqual(self.calls, [])
 
     def test_rewrite_refuses_a_live_downgrade_of_an_accepted_ticket(self) -> None:
@@ -111,38 +110,36 @@ class ManagerBindingTest(unittest.TestCase):
             dispatch,
             "gh_json",
             return_value={"title": "Bounded slice", "body": "Binding was removed"},
-        ), mock.patch.object(dispatch, "run", side_effect=self.run_command):
-            with self.assertRaisesRegex(
-                binding.BindingError,
-                "removed its accepted Initiative and Plan baseline",
-            ):
-                manage.apply(
-                    7,
-                    {"title": "Bounded slice", "body": self.bound("Stale list scope")},
-                    "REWRITE",
-                    "Manager replacement without a binding",
-                    None,
-                    self.packet,
-                )
+        ), mock.patch.object(dispatch, "run", side_effect=self.run_command), self.assertRaisesRegex(
+            binding.BindingError,
+            "removed its accepted Initiative and Plan baseline",
+        ):
+            manage.apply(
+                7,
+                {"title": "Bounded slice", "body": self.bound("Stale list scope")},
+                "REWRITE",
+                "Manager replacement without a binding",
+                None,
+                self.packet,
+            )
         self.assertEqual(self.calls, [])
 
     def test_manager_edit_requires_a_complete_fresh_ticket_body(self) -> None:
         for fresh in ({}, {"body": 17}, []):
             with self.subTest(fresh=fresh), mock.patch.object(
                 dispatch, "gh_json", return_value=fresh
-            ), mock.patch.object(dispatch, "run", side_effect=self.run_command):
-                with self.assertRaisesRegex(
-                    binding.BindingError,
-                    "ticket body refresh is incomplete",
-                ):
-                    manage.apply(
-                        7,
-                        {"title": "Legacy ticket", "body": "stale body"},
-                        "REWRITE",
-                        "replacement",
-                        None,
-                        self.packet,
-                    )
+            ), mock.patch.object(dispatch, "run", side_effect=self.run_command), self.assertRaisesRegex(
+                binding.BindingError,
+                "ticket body refresh is incomplete",
+            ):
+                manage.apply(
+                    7,
+                    {"title": "Legacy ticket", "body": "stale body"},
+                    "REWRITE",
+                    "replacement",
+                    None,
+                    self.packet,
+                )
             self.assertEqual(self.calls, [])
 
     def test_rewrite_keeps_binding_and_uses_refreshed_body_for_receipt(self) -> None:
@@ -229,19 +226,18 @@ class ManagerBindingTest(unittest.TestCase):
             return_value={"title": "Bounded slice", "body": live_body},
         ), mock.patch.object(
             binding, "admit", return_value=self.baseline
-        ), mock.patch.object(dispatch, "run", side_effect=self.run_command):
-            with self.assertRaisesRegex(
-                binding.BindingError,
-                "child must inherit the parent's accepted Initiative and Plan baseline",
-            ):
-                manage.apply(
-                    7,
-                    {"title": "Bounded slice", "body": live_body},
-                    "SPLIT",
-                    "",
-                    [child],
-                    self.packet,
-                )
+        ), mock.patch.object(dispatch, "run", side_effect=self.run_command), self.assertRaisesRegex(
+            binding.BindingError,
+            "child must inherit the parent's accepted Initiative and Plan baseline",
+        ):
+            manage.apply(
+                7,
+                {"title": "Bounded slice", "body": live_body},
+                "SPLIT",
+                "",
+                [child],
+                self.packet,
+            )
         self.assertEqual(self.calls, [])
 
     def test_bound_split_rejects_unavailable_source_before_mutation(self) -> None:
@@ -255,19 +251,18 @@ class ManagerBindingTest(unittest.TestCase):
             binding,
             "admit",
             side_effect=binding.BindingError("initiative source is unavailable"),
-        ), mock.patch.object(dispatch, "run", side_effect=self.run_command):
-            with self.assertRaisesRegex(
-                binding.BindingError,
-                "SPLIT refused before mutation: initiative source is unavailable",
-            ):
-                manage.apply(
-                    7,
-                    {"title": "Bounded slice", "body": live_body},
-                    "SPLIT",
-                    "",
-                    [{"title": "Child", "body": "Child scope", "blocked_by": []}],
-                    self.packet,
-                )
+        ), mock.patch.object(dispatch, "run", side_effect=self.run_command), self.assertRaisesRegex(
+            binding.BindingError,
+            "SPLIT refused before mutation: initiative source is unavailable",
+        ):
+            manage.apply(
+                7,
+                {"title": "Bounded slice", "body": live_body},
+                "SPLIT",
+                "",
+                [{"title": "Child", "body": "Child scope", "blocked_by": []}],
+                self.packet,
+            )
         self.assertEqual(self.calls, [])
 
     def test_unlinked_split_preflights_every_declared_child_before_creating_any(self) -> None:
@@ -280,22 +275,21 @@ class ManagerBindingTest(unittest.TestCase):
             binding,
             "admit",
             side_effect=binding.BindingError("initiative source is incomplete"),
-        ) as admit, mock.patch.object(dispatch, "run", side_effect=self.run_command):
-            with self.assertRaisesRegex(
-                binding.BindingError,
-                "SPLIT child 2 is not intake-ready: initiative source is incomplete",
-            ):
-                manage.apply(
-                    7,
-                    {"title": "Legacy parent", "body": "stale parent scope"},
-                    "SPLIT",
-                    "",
-                    [
-                        {"title": "Legacy child", "body": "Legacy child scope", "blocked_by": []},
-                        {"title": "Linked child", "body": declared, "blocked_by": []},
-                    ],
-                    self.packet,
-                )
+        ) as admit, mock.patch.object(dispatch, "run", side_effect=self.run_command), self.assertRaisesRegex(
+            binding.BindingError,
+            "SPLIT child 2 is not intake-ready: initiative source is incomplete",
+        ):
+            manage.apply(
+                7,
+                {"title": "Legacy parent", "body": "stale parent scope"},
+                "SPLIT",
+                "",
+                [
+                    {"title": "Legacy child", "body": "Legacy child scope", "blocked_by": []},
+                    {"title": "Linked child", "body": declared, "blocked_by": []},
+                ],
+                self.packet,
+            )
 
         admit.assert_called_once_with(self.cfg, declared)
         self.assertEqual(self.calls, [])

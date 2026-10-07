@@ -1,13 +1,11 @@
 """#15: the manager PR frontier shepherds factory-owned `agent/<n>` PRs to a terminal state."""
 from __future__ import annotations
 
-import json
 import os
 import subprocess
-import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -21,7 +19,7 @@ H2 = "c" * 40
 # stale the moment wall time passed 2026-09-12 + manager_stale_days (7), which
 # turned the suite red on 2026-09-19 with no code change. Anchor "recently
 # updated" to now; the stale case passes its own explicit old date.
-NOW = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+NOW = (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def pr_row(head=H, labels=(), updated=NOW):
@@ -289,7 +287,7 @@ class CloseDecisionTest(unittest.TestCase):
                     dispatch.record("issue-created", ticket=79, parent=70)
                 calls = []
 
-                def run(cmd, *args, **kwargs):
+                def run(cmd, *args, calls=calls, **kwargs):
                     calls.append(cmd)
                     stdout = (
                         "https://github.com/example/project/pull/80#issuecomment-8001"
@@ -306,7 +304,7 @@ class CloseDecisionTest(unittest.TestCase):
                 ), mock.patch.object(dispatch, "run", side_effect=run):
                     manage.apply(79, {"title": "t", "body": "b"}, "CLOSE", "Not worth landing", None, repo / "packet.md")
 
-                def actions(subject, action):
+                def actions(subject, action, calls=calls):
                     return [cmd for cmd in calls if cmd[1:3] == [subject, action]]
 
                 self.assertEqual(len(actions("pr", "comment")), 1)

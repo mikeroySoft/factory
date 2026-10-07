@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import fcntl
 import os
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from factory import dispatch, lifecycle
@@ -95,10 +95,12 @@ class WaitDecisions(unittest.TestCase):
             if name == "merge":
                 raise RuntimeError("local merge failure")
 
-        with patch.object(dispatch, "sync_pass", side_effect=lambda dry: work("sync")), \
-                patch.object(dispatch, "merge_pass_locked", side_effect=lambda dry: work("merge")):
-            with self.assertRaisesRegex(RuntimeError, "local merge failure"):
-                dispatch.land_pass(False)
+        with (
+            patch.object(dispatch, "sync_pass", side_effect=lambda dry: work("sync")),
+            patch.object(dispatch, "merge_pass_locked", side_effect=lambda dry: work("merge")),
+            self.assertRaisesRegex(RuntimeError, "local merge failure"),
+        ):
+            dispatch.land_pass(False)
         self.assertEqual(stages, ["sync", "merge"])
         self.assertFalse(dispatch.lock_held(lock))
         rows = self.rows()
