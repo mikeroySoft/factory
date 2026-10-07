@@ -1399,6 +1399,25 @@ class GateTest(unittest.TestCase):
             self.assertEqual(projected["history"]["gaps"], [])
             self.assertEqual(projected["executions"][0]["observation"], "fresh")
 
+    def test_check_commands_run_without_inherited_lifecycle_context(self) -> None:
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as d:
+            dump = Path(d) / "check-env.txt"
+            toml = f'[[gate.check]]\nname = "env"\nrun = ["sh", "-c", "env > {dump}"]\n'
+            repo = make_repo(Path(d), toml)
+            live = Path(d) / "live" / "events.jsonl"
+            context = json.dumps({"schema_version": 1, "path": str(live), "ticket": 170, "attempt": 1})
+            with mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: context}):
+                code, out, _ = gate(repo)
+            self.assertEqual(code, 0, out)
+            self.assertNotIn(f"{lifecycle.CONTEXT_ENV}=", dump.read_text())
+            rows = [json.loads(line) for line in live.read_text().splitlines()]
+            kinds = [row["kind"] for row in rows if row.get("stage") == "gate"]
+            self.assertEqual((kinds[0], kinds[-1]), ("enter", "exit"))
+            self.assertLessEqual({"handoff", "child_start", "result", "child_exit"}, set(kinds))
+            self.assertTrue(all(row["ticket"] == 170 for row in rows))
+
     def test_timeout_fails_instead_of_hanging(self) -> None:
         toml = '[gate]\ntimeout = 1\n[[gate.check]]\nname = "slow"\nrun = ["sleep", "5"]\n'
         with tempfile.TemporaryDirectory() as d:
