@@ -99,7 +99,7 @@ class TriagePass(unittest.TestCase):
             self.run_pass()
         self.assertEqual(ended.exception.code, 2)
         self.assertEqual(self.asked, [3])
-        self.assertEqual(self.labels, dict.fromkeys(self.listed, {LABEL_TRIAGE}))
+        self.assertEqual(self.labels, {n: {LABEL_TRIAGE} for n in self.listed})
         self.assertEqual(self.ticket_exits(), {3: "triage_endpoint_unavailable"})
 
 
