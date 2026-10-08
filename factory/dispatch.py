@@ -1346,14 +1346,18 @@ def _infra_cancel(check: dict) -> dict | None:
 def triage_cancelled(pr: int, checks: list[dict], dry_run: bool = False) -> list[dict]:
     """Rebucket `cancel` rows so a CI runner outage is not a code failure.
 
-    A cancel that ran steps becomes `fail`. An infra cancel reruns its run's
-    failed jobs once (`gh run rerun --failed`) and reads `pending` until the
-    rerun attempt reports; cancelled for infra again, it reads `infra`.
+    A cancel that ran steps becomes `fail`. An infra cancel reads `pending` while
+    any check in its run is still pending (GitHub refuses to rerun an in-progress
+    run); once the run finishes it reruns the run's failed jobs once (`gh run
+    rerun --failed`) and reads `pending` until the rerun attempt reports;
+    cancelled for infra again, it reads `infra`.
     """
     if not any(c.get("bucket") == "cancel" for c in checks):
         return checks
     events = lifecycle.read_events(EVENTS)
     out, starved = [], {}
+    running = {int(m[1]) for c in checks if c.get("bucket") == "pending"
+               and (m := re.search(r"/actions/runs/(\d+)/", c.get("link") or ""))}
     for c in checks:
         infra = _infra_cancel(c) if c.get("bucket") == "cancel" else None
         if infra:
@@ -1366,7 +1370,9 @@ def triage_cancelled(pr: int, checks: list[dict], dry_run: bool = False) -> list
         evidence = dict(pr=pr, run=run_id, attempt=attempt, checks=names, evidence=[i for _, i in rows])
         rerun = next((e for e in reversed(events) if e.get("event") == "ci-rerun"
                       and e.get("pr") == pr and e.get("run") == run_id), None)
-        if rerun is None and dry_run:
+        if run_id in running:
+            bucket = "pending"  # retry on a later pass once the run has finished
+        elif rerun is None and dry_run:
             log(f"PR #{pr}: would rerun CI run {run_id} (runner never acquired: {', '.join(names)})")
             bucket = "pending"
         elif rerun is None:

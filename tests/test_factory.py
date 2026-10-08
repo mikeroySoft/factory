@@ -3461,6 +3461,22 @@ class DispatchTest(unittest.TestCase):
             escalations, removed, reruns, _ = self.cancelled_ci_pass(checks, again)
             self.assertEqual((escalations, removed, reruns), ([], False, []))
 
+    def test_merge_waits_on_infra_cancel_while_run_still_pending(self) -> None:
+        from factory import dispatch
+
+        starved = {"run_id": 123, "run_attempt": 1, "steps": [], "runner_name": None}
+        running = {"name": "unit", "bucket": "pending",
+                   "link": "https://github.com/acme/widgets/actions/runs/123/job/789"}
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.configure(config.Config(root=make_repo(Path(d)), repo="acme/widgets"))
+            escalations, removed, reruns, _ = self.cancelled_ci_pass([running, self.cancelled()], starved)
+            self.assertEqual((escalations, removed, reruns), ([], False, []))
+            self.assertFalse(any(e.get("event") == "ci-rerun"
+                                 for e in lifecycle.read_events(dispatch.EVENTS)))
+            # The run finished: a later pass spends the single rerun.
+            _, _, reruns, _ = self.cancelled_ci_pass([{**running, "bucket": "pass"}, self.cancelled()], starved)
+            self.assertEqual(len(reruns), 1)
+
     def test_merge_treats_cancel_after_steps_ran_as_failure(self) -> None:
         from factory import dispatch
 
