@@ -20,5 +20,10 @@ run = [
 ]
 exclusive = false
 
+[[gate.check]]
+name = "ruff"
+run = ["uvx", "ruff@0.16.10", "check", "."]
+exclusive = false
+
 [dashboard]
 theme = ".factory-dashboard.css"
