@@ -500,7 +500,15 @@ ticket's `human_touch` details. The dashboard retains its existing 100-issue,
    refresh, re-gate on this host, force-push, run a fresh independent review,
    post its findings, and either reapprove the resulting head or withdraw the
    label and escalate. Red CI → label removed, escalated once with the failing
-   check names.
+   check names. A check cancelled after running steps is red CI. A check
+   cancelled before any runner picked it up (no steps, no runner, or GitHub's
+   "not acquired by Runner" annotation) is infrastructure: once its run has
+   finished (no other check pending and GitHub reports the run completed), the
+   run's failed jobs are rerun once (`gh run rerun
+   --failed`, journaled as `ci-infra` and `ci-rerun`), the label stays, and the
+   PR waits as CI pending. If the rerun is
+   also starved, the ticket is escalated once as "CI runner unavailable" with the
+   label kept, so a later green rerun still merges.
    Existing behind PRs re-earn bound evidence through that automatic refresh.
    An up-to-date PR carrying a pre-upgrade unbound approval is withdrawn and
    escalated once; use the existing manager `FIX` path to re-run its worker,
