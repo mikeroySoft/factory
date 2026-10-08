@@ -89,12 +89,14 @@ flowchart TB
 
   %% Approval and merge
   MAPP -->|"manager APPROVE: manage.frontier_pass"| FA
-  MAPP -->|"CI fail or cancel, late feedback, stale, rounds exhausted, HUMAN: manage.frontier_pass"| ESC
+  MAPP -->|"CI fail, late feedback, stale, rounds exhausted, HUMAN: manage.frontier_pass"| ESC
+  MAPP -.->|"CI cancel still treated as fail before approval: manage.frontier_pass"| ESC
   MAPP -->|"FIX or CLOSE: manage.apply"| MGR
   FA -->|"dispatch.pr_checks"| CI
   CI -->|"pending: dispatch.merge_pass_locked waits"| FA
-  CI -->|"fail, approval removed: dispatch.merge_pass_locked"| ESC
-  CI -.->|"cancel treated as fail, issue 164: dispatch.merge_pass_locked"| ESC
+  CI -->|"fail or cancel after steps ran, approval removed: dispatch.merge_pass_locked"| ESC
+  CI -->|"cancel before any runner: rerun once, wait: dispatch.triage_cancelled"| FA
+  CI -->|"rerun still found no runner, approval kept: dispatch.runner_unavailable"| ESC
   CI -->|"pass, behind main, approval removed: dispatch.refresh_pr_branch"| REF
   REF -->|"dispatch.approve_pr"| FA
   REF -->|"conflict, gate FAIL, REVISE, or head moved: dispatch.refresh_pr_branch"| ESC
@@ -126,9 +128,10 @@ flowchart TB
 
 ## Gaps
 
-- **CI `cancel` is `fail`.** `dispatch.merge_pass_locked` and `manage.frontier_pass`
-  bucket `cancel` with `fail`, so an infrastructure cancel withdraws
-  `factory-approved` and escalates as "CI failed". Tracked in #164.
+- **CI `cancel` is `fail` before approval.** Since #164 the merge stage reruns a
+  check cancelled before any runner picked it up (`dispatch.triage_cancelled`), but
+  `manage.frontier_pass` still buckets `cancel` with `fail`, so an infrastructure
+  cancel on an unapproved PR escalates as "CI failed".
 - **`wontfix-proposal` means two things.** Triage only comments a wontfix proposal
   and leaves `needs-triage` (`triage.apply_decision`); manager CLOSE applies the
   `wontfix-proposal` label (`manage.apply`).
@@ -148,7 +151,7 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 | `dashboard.act` | `*` | `*` | Human action; labels limited to `dashboard.ACT_LABELS` |
 | `dispatch.approve_pr` | `factory-approved` | `factory-approved` | Approve; withdraw again if the PR changed while labelling |
 | `dispatch.escalate` | `ready-for-agent` | `ready-for-human` | Every escalation |
-| `dispatch.merge_pass_locked` | `factory-approved` | — | CI fail or cancel; missing approval evidence |
+| `dispatch.merge_pass_locked` | `factory-approved` | — | CI fail, or cancel after steps ran; missing approval evidence |
 | `dispatch.push_and_pr` | — | `*` | Caller's PR label; ticket PRs pass none |
 | `dispatch.refresh_pr_branch` | `factory-approved` | — | Behind main: approval withdrawn before refresh |
 | `dispatch.review_intake_pass` | — | `ready-for-human` | New issue for an unresolved opted-in PR review |
@@ -175,7 +178,8 @@ event. `{}` is a runtime value.
 | `dispatch.process_ticket` | ``idle_timeout fired (worker stuck) after review bounce {}; worktree kept at {}`` | review → escalate |
 | `dispatch.process_ticket` | ``REVISE verdict after {} review round(s)`` | review → escalate |
 | `dispatch.process_ticket` | ``approval evidence, head, or human review state changed before approval`` | review → escalate |
-| `dispatch.merge_pass_locked` | ``PR #{}: CI failed ({}); `{}` label removed`` | CI fail/cancel → escalate |
+| `dispatch.merge_pass_locked` | ``PR #{}: CI failed ({}); `{}` label removed`` | CI fail → escalate |
+| `dispatch.runner_unavailable` | ``PR #{}: CI runner unavailable ({}) in run {}; `{}` kept`` | CI no runner after rerun → escalate |
 | `dispatch.merge_pass_locked` | ``PR #{}: missing approval evidence bound to {}; `{}` label removed`` | CI pass, missing evidence → escalate |
 | `dispatch.refresh_pr_branch` | ``PR #{}: could not remove stale `{}` approval`` | refresh → escalate |
 | `dispatch.refresh_pr_branch` | ``PR #{}: {}; `{}` label removed`` | refresh → escalate (wraps the reasons below) |
