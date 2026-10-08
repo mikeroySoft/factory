@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Worker briefs rerank the noun-matched top-40 file pool with Jev when `TYPESAFE_API_KEY` is set; a missing key or provider error falls back to noun order. Tracked README.md and CHANGELOG.md are added whenever at least one file matched (noun-free issues still get no brief), and successful rerank cost is logged (#166).
 - Gate checks run without `FACTORY_LIFECYCLE_CONTEXT` (#170): a repo's own test suite no longer appends its fixture rows to the live `.factory/events.jsonl`. The gate's own `enter`/`handoff`/`child_start`/`result`/`child_exit`/`exit` rows are unchanged.
 - `factory doctor` resolves worker, worker-wrap, reviewer, manager and gate-check binaries against the installed unit's PATH, honoring the last assignment and naming the PATH source in missing-binary diagnostics (#171).
 - Root `AGENTS.md` (#160): a feature map of every `factory/` module with its entry files, tests and gate checks, linking to `README.md` and `skills/factory/SKILL.md`. `tests/test_agents_map.py` fails when a module is unmapped or a mapped path does not exist.
