@@ -278,6 +278,23 @@ class HandoffCli(unittest.TestCase):
         self.assertIn("Factory handoff request `7/2`", self.requests()[-1]["body"])
         self.assertIn("the manager asked for a human decision", self.requests()[-1]["body"])
 
+    def test_review_intake_escalation_gets_a_handoff_request(self) -> None:
+        # #204 (b): `review_intake_pass` escalates an opted-in PR into a new `ready-for-human` issue with a
+        # `pr`-bearing row and no escalation comment; the manager never runs on it, so the handoff pass must post.
+        self.reset()
+        with (self.factory / "events.jsonl").open("a") as stream:
+            stream.write(json.dumps({"at": AT, "event": "escalate", "pr": 9, "head": "a" * 40, "ticket": 7,
+                                     "reason": "PR #9: unresolved after 2 automated review attempt(s)",
+                                     "packet": str(self.packet), "round": 1}) + "\n")
+        for _ in range(2):
+            self.manage(mode="HUMAN")
+            self.assertFalse(self.ran.exists())
+            self.assertEqual([e["request"] for e in self.events("handoff")], ["7/1"])
+            self.assertEqual(len(self.requests()), 1)
+        body = self.requests()[0]["body"]
+        self.assertIn("Factory handoff request `7/1`", body)
+        self.assertIn("review-intake escalations are never managed", body)
+
     def test_crash_after_comment_creation_reconciles_to_the_same_request(self) -> None:
         self.manage(mode="HUMAN", crash_on_comment=True, expect=-9)
         self.assertEqual(len(self.requests()), 1)

@@ -44,6 +44,8 @@ def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
     r = escalation.get("round", 0)
     if not cfg.manager:
         return "no manager is configured, so nothing recovers automatically"
+    if escalation.get("pr"):
+        return "review-intake escalations are never managed; the opted-in PR needs a human review decision"
     if not 1 <= r <= cfg.manager_rounds:
         return f"the manager's {cfg.manager_rounds} allowed round(s) are exhausted"
     decided = [e for e in events if e.get("event") == "manage" and e.get("round") == r and not e.get("pr")]
@@ -173,7 +175,7 @@ def handoff_pass(dry_run: bool = False) -> None:
                 events = [e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("ticket") == n]
                 escalation = next((e for e in reversed(events) if e.get("event") == "escalate"
                                    and e.get("reason") != "manager_failed"), None)
-                if not escalation or escalation.get("upstream") or escalation.get("pr") or not escalation.get("packet"):
+                if not escalation or escalation.get("upstream") or not escalation.get("packet"):
                     continue
                 why = terminal(cfg, events, escalation)
                 if why is None:
