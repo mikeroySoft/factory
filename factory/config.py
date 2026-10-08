@@ -70,7 +70,7 @@ HOST_TABLES = frozenset({"triage", "workers", "worker_wrap", "review", "manager"
 HOST_KEYS = {"dashboard": ("port",), "gate": ("lock",)}
 
 # Every key the loader reads, by table; `factory doctor` reports anything else.
-# `workers` is label-keyed, `gate.check` is a list of {name, run, exclusive}.
+# `workers` is label-keyed, `gate.check` is a list of {name, run, exclusive, when}.
 KNOWN_KEYS = {
     "repo": ("slug", "upstream", "main"),
     "dispatch": ("max_active", "max_attempts", "budget_min", "idle_timeout", "exit_grace",
@@ -90,7 +90,8 @@ KNOWN_KEYS = {
 }
 # Normalized numeric fields of an `llm-usage` event; a worker profile maps each to JSON paths.
 USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "cached_tokens", "cost")
-CHECK_KEYS = ("name", "run", "exclusive")
+CHECK_KEYS = ("name", "run", "exclusive", "when")
+CHECK_TIERS = ("attempt", "pr")
 ROUTE_REASONS = ("requirements", "implementation", "ci", "unknown")
 # GitHub login, or `@org/team`. Syntax only: never proof of membership or authorization.
 OWNER = re.compile(r"@?(?P<login>[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)|(?P<team>@[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9_.-]{1,100})")
@@ -106,12 +107,14 @@ class Check:
     """One gate check: argv run inside the worktree; nonzero exit = FAIL.
 
     `exclusive` checks hold the host lock (shared GPU, licence server, ...)
-    so two worktrees never run them at once.
+    so two worktrees never run them at once. `when = "pr"` checks skip the
+    attempt gate and run once per PR head, before review.
     """
 
     name: str
     run: list[str]
     exclusive: bool = False
+    when: str = "attempt"
 
 
 @dataclass
@@ -499,9 +502,12 @@ def load(start: Path | None = None) -> Config:
         raise ConfigError("gate.protected_paths must be an array of nonempty globs")
     cfg.protected_paths = paths
     cfg.lock = Path(gate.get("lock", cfg.lock))
-    cfg.checks = [
-        Check(c["name"], list(c["run"]), bool(c.get("exclusive", False))) for c in gate.get("check", [])
-    ]
+    cfg.checks = []
+    for i, c in enumerate(gate.get("check", [])):
+        when = c.get("when", "attempt")
+        if when not in CHECK_TIERS:
+            raise ConfigError(f'{path}: gate.check[{i}].when must be "attempt" or "pr", got {when!r}')
+        cfg.checks.append(Check(c["name"], list(c["run"]), bool(c.get("exclusive", False)), when))
     names = [c.name for c in cfg.checks]
     if len(set(names)) != len(names) or {"conflict-markers", "leak-scan", "protected-paths"} & set(names):
         raise ConfigError(f"{path}: gate check names must be unique and not conflict-markers/leak-scan/protected-paths")

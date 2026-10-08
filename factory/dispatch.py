@@ -779,7 +779,9 @@ def commit_leftovers(wt: Path, n: int, title: str) -> None:
         run(["git", "commit", *flags, "-m", f"agent/{n}: {title}"], cwd=wt)
 
 
-def run_gate(wt: Path, n: int | str, skip: str = "", protected_override: bool = False) -> tuple[bool, str]:
+def run_gate(
+    wt: Path, n: int | str, skip: str = "", protected_override: bool = False, tier: str = "attempt",
+) -> tuple[bool, str]:
     report_rel = f".factory/gate-report-{n}.md"
     (wt / ".factory").mkdir(exist_ok=True)
     # GPU serialization is the gate's job: the gate flocks the exclusive lock
@@ -799,6 +801,8 @@ def run_gate(wt: Path, n: int | str, skip: str = "", protected_override: bool = 
     # The gate process records its own stage and check boundaries.
     if protected_override:
         cmd.append("--protected-override")
+    if tier != "attempt":
+        cmd += ["--tier", tier]
     proc = run(cmd, cwd=wt, check=False)
     report = wt / report_rel
     text = report.read_text() if report.exists() else proc.stdout + proc.stderr
@@ -983,6 +987,24 @@ def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str,
             head=expected_head, actual_head=actual_head,
         )
     return verdict, findings
+
+
+def pr_gate_and_review(
+    wt: Path, n: int, report: str, head: str, pr_runs: dict[str, tuple[bool, str]],
+) -> tuple[str, str, bool]:
+    """Run the `when = "pr"` checks once per head, then review with their report appended.
+
+    Returns (verdict, findings, pr_failed); a pr-tier FAIL skips review and its
+    report becomes the findings."""
+    if any(check.when == "pr" for check in cfg.checks):
+        if head not in pr_runs:
+            pr_runs[head] = run_gate(wt, f"{n}-pr", tier="pr")
+        ok, pr_report = pr_runs[head]
+        if not ok:
+            return "REVISE", pr_report, True
+        report = f"{report}\n{pr_report}"
+    verdict, findings = review(wt, n, report, head)
+    return verdict, findings, False
 
 
 def agent_lease(wt: Path, n: int) -> str:
@@ -2180,10 +2202,11 @@ def process_ticket(
                 return
             lease = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
             execution.review_round = 1
-            verdict, findings = review(wt, n, report, gate_head)
+            pr_runs: dict[str, tuple[bool, str]] = {}
+            verdict, findings, pr_failed = pr_gate_and_review(wt, n, report, gate_head, pr_runs)
             pr_comment(n, findings)
-            # Review rounds: each REVISE goes back to the worker with the findings,
-            # then re-gate, push, re-review. `review_rounds` bounces max.
+            # Review rounds: each REVISE (or pr-tier FAIL) goes back to the worker with the
+            # findings, then re-gate, push, re-review. `review_rounds` bounces max.
             for bounce in range(1, cfg.review_rounds + 1):
                 if verdict == "APPROVE":
                     break
@@ -2196,6 +2219,8 @@ def process_ticket(
                     return
                 execution.review_round = bounce + 1
                 extra = (
+                    f"## PR-tier gate report, round {bounce} (failed)\n\n{findings}"
+                    if pr_failed else
                     f"## Reviewer findings, round {bounce}\n\n"
                     f"Address required fixes only; optional suggestions are not requirements.\n\n"
                     f"{findings}"
@@ -2214,9 +2239,11 @@ def process_ticket(
                     )
                     return
                 lease = push_agent(wt, n, lease)
-                verdict, findings = review(wt, n, report, gate_head)
+                verdict, findings, pr_failed = pr_gate_and_review(wt, n, report, gate_head, pr_runs)
                 pr_comment(n, findings)
-            if verdict != "APPROVE":
+            if verdict != "APPROVE" and pr_failed:
+                escalate(n, "pr checks failed", logfile, extra="## PR-tier gate report\n\n" + findings)
+            elif verdict != "APPROVE":
                 escalate(n, f"REVISE verdict after {cfg.review_rounds} review round(s)", logfile)
             elif approve_pr(n, gate_head):
                 log(f"#{n}: done (approved at {gate_head[:12]})")

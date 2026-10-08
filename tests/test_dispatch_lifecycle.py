@@ -60,6 +60,17 @@ p.write_text(json.dumps(s))
 print("VERDICT: REVISE" if s["reviews"] == 1 else "VERDICT: APPROVE")
 '''
 
+# Records the head it ran on in argv[1]; FAILs its first argv[2] runs.
+PR_CHECK = '''import subprocess, sys
+from pathlib import Path
+log = Path(sys.argv[1])
+runs = log.read_text().split() if log.exists() else []
+head = subprocess.run(["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+log.write_text("".join(h + "\\n" for h in [*runs, head]))
+print("pr-check-output")
+raise SystemExit(0 if len(runs) >= int(sys.argv[2]) else 1)
+'''
+
 
 class LocalCLI(unittest.TestCase):
     def setUp(self):
@@ -100,16 +111,16 @@ class LocalCLI(unittest.TestCase):
     def git(self, *args):
         return subprocess.run(["git", *args], cwd=self.repo, env=self.env, check=True, capture_output=True, text=True)
 
-    def write_config(self, check=None, worker=None):
+    def write_config(self, check=None, worker=None, reviewer=None, extra=""):
         argv = check or [sys.executable, "-c", "raise SystemExit(0)"]
         (self.repo / ".factory.toml").write_text(
             '[repo]\nslug = "local/smoke"\n'
             '[dispatch]\nmax_attempts = 2\nreview_rounds = 1\n'
             '[workers]\ndefault = ' + json.dumps(worker or [sys.executable, str(self.worker)]) + '\n'
-            '[review]\ncommand = ' + json.dumps([sys.executable, str(self.reviewer)]) + '\n'
+            '[review]\ncommand = ' + json.dumps(reviewer or [sys.executable, str(self.reviewer)]) + '\n'
             '[leak_scan]\npattern = ""\n'
             '[gate]\nlock = ' + json.dumps(str(self.base / "host.lock")) + '\n'
-            '[[gate.check]]\nname = "code"\nrun = ' + json.dumps(argv) + '\n'
+            '[[gate.check]]\nname = "code"\nrun = ' + json.dumps(argv) + '\n' + extra
         )
 
     def cli(self, *args, expected=0):
@@ -365,6 +376,78 @@ class LocalCLI(unittest.TestCase):
         self.assertEqual(terminal[0]["outcome"], "unknown")
         from factory.dispatch import lock_held
         self.assertFalse(lock_held(self.repo / ".factory" / "locks" / "7.lock"))
+
+    def pr_config(self, fails, when="pr"):
+        """One attempt check (`code`) plus one pr check (`slow`); prompts of worker and reviewer are kept."""
+        self.pr_log = self.base / "pr-runs.log"
+        check = self.base / "pr_check.py"
+        check.write_text(PR_CHECK)
+        self.worker_prompts = self.base / "worker-prompts"
+        self.worker.write_text(WORKER + f"\nwith open({str(self.worker_prompts)!r}, 'a') as f:\n"
+                               "    f.write(Path('.factory-prompt.md').read_text() + '\\0')\n")
+        self.review_prompts = self.base / "review-prompts"
+        self.reviewer.write_text(REVIEWER + f"\nimport sys\nwith open({str(self.review_prompts)!r}, 'a') as f:\n"
+                                 "    f.write(sys.argv[1] + '\\0')\n")
+        self.write_config(
+            reviewer=[sys.executable, str(self.reviewer), "{prompt}"],
+            extra='[[gate.check]]\nname = "slow"\nrun = '
+            + json.dumps([sys.executable, str(check), str(self.pr_log), str(fails)]) + f'\nwhen = "{when}"\n',
+        )
+
+    def pr_runs(self):
+        return self.pr_log.read_text().split() if self.pr_log.exists() else []
+
+    def prompts(self, path):
+        return path.read_text().split("\0")[:-1] if path.exists() else []
+
+    def test_attempt_gate_skips_pr_checks(self):
+        self.pr_config(fails=0)
+        self.cli("gate")
+        report = (self.repo / ".factory" / "gate-report.md").read_text()
+        self.assertIn("- code: PASS", report)
+        self.assertIn("- slow: SKIP (pr tier)", report)
+        self.assertEqual(self.pr_runs(), [])
+
+    def test_invalid_when_is_a_config_error_naming_the_key(self):
+        self.pr_config(fails=0, when="nightly")
+        result = self.cli("gate", expected=1)
+        self.assertIn("gate.check[1].when", result.stderr)
+
+    def test_pr_checks_run_once_per_reviewed_head_before_review(self):
+        self.pr_config(fails=0)
+        self.cli("dispatch", "--ticket", "7")
+        reviewed = [e["head"] for e in lifecycle.read_events(self.events) if e.get("event") == "review"]
+        self.assertEqual(len(set(reviewed)), 2)
+        self.assertEqual(self.pr_runs(), reviewed)
+        prompts = self.prompts(self.review_prompts)
+        self.assertEqual(len(prompts), 2)
+        for prompt in prompts:
+            self.assertIn("- slow: SKIP (pr tier)", prompt)
+            self.assertIn("# Gate report (pr tier)", prompt)
+            self.assertIn("- slow: PASS", prompt)
+
+    def test_pr_check_failure_bounces_to_worker_then_reviews_new_head(self):
+        self.pr_config(fails=1)
+        self.state.write_text(json.dumps({"reviews": 1}))  # the one review APPROVEs
+        self.cli("dispatch", "--ticket", "7")
+        runs = self.pr_runs()
+        self.assertEqual(len(set(runs)), 2)
+        stages = [r["stage"] for r in self.rows() if r["kind"] == "enter" and r["stage"] in {"worker", "gate", "review"}]
+        self.assertEqual(stages, ["worker", "gate", "gate", "worker", "gate", "gate", "review"])
+        bounce = self.prompts(self.worker_prompts)[1]
+        self.assertIn("PR-tier gate report, round 1 (failed)", bounce)
+        self.assertIn("pr-check-output", bounce)
+        evidence = lifecycle.read_events(self.events)
+        self.assertEqual([e["head"] for e in evidence if e.get("event") == "review"], runs[1:])
+        self.assertTrue(any(e.get("event") == "approved" and e["head"] == runs[1] for e in evidence))
+
+    def test_pr_check_failures_exhausting_review_rounds_escalate(self):
+        self.pr_config(fails=99)
+        self.cli("dispatch", "--ticket", "7")
+        self.assertEqual(len(set(self.pr_runs())), 2)
+        self.assertEqual(self.prompts(self.review_prompts), [])
+        escalations = [e["reason"] for e in lifecycle.read_events(self.events) if e.get("event") == "escalate"]
+        self.assertEqual(escalations, ["pr checks failed"])
 
 
 if __name__ == "__main__":

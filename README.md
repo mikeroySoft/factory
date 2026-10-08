@@ -504,8 +504,16 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    make protected changes outside the worker flow. Then `conflict-markers`,
    your `[[gate.check]]` list in order, and a `leak-scan`
    run. Checks marked `exclusive` serialise on a host-wide lock. Every check
-   has a timeout.
-5. **Review.** The reviewer runs the diff itself, gets the gate report inline, and
+   has a timeout. Checks with `when = "pr"` are skipped here and reported
+   `SKIP (pr tier)`; this attempt gate is what the worker and the dispatcher run
+   after each attempt, and what the merge-stage refresh re-runs.
+5. **Review.** After the attempt gate passes, the dispatcher runs the
+   `when = "pr"` checks once for the head about to be reviewed (same timeout and
+   `exclusive` lock; a head is never re-run) and appends their report to the gate
+   report. A pr-tier FAIL goes back to the worker like a `REVISE`, with that
+   report as the findings, and uses one `review_rounds` slot; when the rounds run
+   out the ticket escalates with `pr checks failed`. Otherwise
+   the reviewer runs the diff itself, gets the gate report inline, and
    is told to read issue #N's comments (the triage brief, approved scope changes).
    Every finding cites `path:line`; a required fix also cites an acceptance
    criterion, a documented rule with its source, or a concrete correctness/security
