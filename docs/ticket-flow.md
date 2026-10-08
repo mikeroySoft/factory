@@ -117,7 +117,7 @@ flowchart TB
   MGR -->|"CLOSE PR on an original ticket: manage.apply"| WONT
   MGR -->|"CLOSE PR on a SPLIT child, issue closed not planned: manage.apply"| HUMAN
   MGR -->|"HUMAN or manager failed, label kept: manage.escalation_pass"| HUMAN
-  WONT --> HUMAN
+  WONT -->|"a human decides: config.LABELS"| HUMAN
   HUMAN -->|"relabel, comment, close: dashboard.act"| RFA
 
   classDef state fill:#e8f5e9,stroke:#2e7d32
