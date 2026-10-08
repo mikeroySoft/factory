@@ -1384,14 +1384,14 @@ def signoff() -> str:
 
 
 def pr_checks(pr: int) -> list[dict]:
-    """gh check rows [{name, bucket, link}]; bucket: pass/fail/pending/skipping/cancel.
+    """gh check rows [{name, bucket, link, completedAt}]; bucket: pass/fail/pending/skipping/cancel.
 
     `gh pr checks` exits nonzero for failing or pending checks; that is data
     here, not an error. Unparseable output returns [] which the caller treats
     as "no passing CI" and refuses to merge — fail closed.
     """
     proc = run(
-        ["gh", "pr", "checks", str(pr), "--repo", REPO, "--json", "name,bucket,link"],
+        ["gh", "pr", "checks", str(pr), "--repo", REPO, "--json", "name,bucket,link,completedAt"],
         check=False,
     )
     try:

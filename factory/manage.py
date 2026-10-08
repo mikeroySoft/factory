@@ -580,6 +580,15 @@ def feedback_packet(items: list[dict]) -> str:
     return "\n".join(lines)
 
 
+CI_KINDS = ("check_run", "commit_status")
+
+
+def released_at(n: int) -> str:
+    """When ticket `n` was last labeled ready-for-agent; "" if never."""
+    return max((i.get("created_at", "") for i in handoff.timeline(n)
+                if i.get("event") == "labeled" and i.get("label", {}).get("name") == LABEL_AGENT), default="")
+
+
 def frontier_pass(dry_run: bool = False) -> None:
     """Shepherd factory-owned `agent/<n>` PRs: CI pending waits; red CI, late feedback and
     staleness escalate once through the ordinary ticket packet; with `manager.review = "all"`
@@ -629,9 +638,20 @@ def frontier_pass(dry_run: bool = False) -> None:
                     continue
                 head = pr["headRefOid"]
                 checks = dispatch.pr_checks(number)
-                failed = [c["name"] for c in checks if c["bucket"] in ("fail", "cancel")]
+                red = [c for c in checks if c["bucket"] in ("fail", "cancel")]
                 late = undelivered(observation, events, n)
-                age = datetime.now(UTC) - datetime.fromisoformat(pr["updatedAt"])
+                # A release to ready-for-agent (owner decision or manager RETRY) answers the red CI
+                # it followed and restarts the stale clock; only CI newer than it escalates (#188).
+                updated = datetime.fromisoformat(pr["updatedAt"])
+                released = released_at(n) if red or any(i["kind"] in CI_KINDS for i in late) \
+                    or (datetime.now(UTC) - updated).days >= cfg.manager_stale_days else ""
+
+                def fresh(at: str, released: str = released) -> bool:  # missing or zero time (gh's commit-status checks) is unknown, so fresh
+                    return not at or at.startswith("0001-") or at > released
+
+                failed = [c["name"] for c in red if fresh(c.get("completedAt", ""))]
+                late = [i for i in late if i["kind"] not in CI_KINDS or fresh(i["source_updated_at"])]
+                age = datetime.now(UTC) - max(updated, datetime.fromisoformat(released or pr["updatedAt"]))
                 stale = age.days >= cfg.manager_stale_days
                 approved = dispatch.FACTORY_APPROVED in {label["name"] for label in pr["labels"]}
                 if failed and approved:
@@ -649,6 +669,9 @@ def frontier_pass(dry_run: bool = False) -> None:
                                         pairs=[[i["evidence_id"], i["source_revision"]] for i in late])
                     dispatch.escalate(n, f"PR #{number}: {reason}", None, extra=feedback_packet(late) if late else "")
                     execution.outcome, execution.reason = "project_escalation", "pr_frontier"
+                    continue
+                if red and not failed:
+                    dispatch.log(f"PR #{number}: red CI predates ticket #{n}'s release to {LABEL_AGENT}; waiting for a worker")
                     continue
                 if any(c["bucket"] == "pending" for c in checks):
                     dispatch.log(f"PR #{number}: CI pending; waiting")
