@@ -20,7 +20,7 @@ cfg: Config
 REPOSITORY = ""
 AGENT_BRANCH = re.compile(r"agent/(\d+)$")
 AGENT_SUBJECT = re.compile(r"agent/(\d+):")
-REGRESSED_BY = re.compile(r"^[ \t]*Regressed-by:[ \t]*#(\d+)\b", re.M)
+REGRESSED_BY = re.compile(r"^[ \t]*Regressed-by:[ \t]*#(\d+)\b", re.MULTILINE)
 HUNK = re.compile(r"@@ -(\d+)(?:,(\d+))? ")
 
 

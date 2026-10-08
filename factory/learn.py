@@ -11,7 +11,9 @@ it. The eval signal is the dashboard's first-gate pass rate before and after.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
+import tomllib
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -80,10 +82,48 @@ def manager_llm(cfg: config.Config) -> Callable[[list[dict]], str]:
 
 CURATE_OFFER = (
     "Optionally, after the JSON, add a line `DECISION: CURATE` followed by a unified diff "
-    "(`git apply` format, against the current main branch) that improves the harness context: "
-    f"only {', '.join(manage.CURATE_PREFIXES)}. Any other path (tests, CI, `.factory.toml`) "
-    "rejects the whole diff. It is opened as a separate chore PR citing the evidence."
+    "(`git apply` format, against the current main branch) that puts each lesson in its strongest "
+    "enforceable form. When the failure is mechanically detectable, prefer a gate check (append a new "
+    f"`[[gate.check]]` table to `{config.CONFIG_NAME}`) or a regression test under a `[gate].protected_paths` "
+    "path such as `tests/`; otherwise a standards entry in `AGENTS.md`; a prose lesson only as a last resort. "
+    f"Allowed paths: {', '.join(manage.CURATE_PREFIXES)}, `{config.CONFIG_NAME}`, and main's "
+    "`[gate].protected_paths`. Changes are add-only: removing or editing an existing gate check or "
+    "protected path, changing `[leak_scan]`, deleting or renaming a protected file, or touching `.github/` "
+    "or any other path rejects the whole diff. It is opened as a separate chore PR citing the evidence, "
+    "merged only by a human."
 )
+HUMAN_MERGE = "Harness change from the meta loop — human merge required."
+
+
+def require_add_only(base: dict, new: dict) -> None:
+    """Raise unless `new` is `base` plus appended `[[gate.check]]` tables (new names) and appended
+    `[gate].protected_paths` entries."""
+    name = config.CONFIG_NAME
+    base_gate, new_gate = base.get("gate", {}), new.get("gate", {})
+    old, cur = base_gate.get("check", []), new_gate.get("check", [])
+    for i, check in enumerate(old):
+        if cur[i:i + 1] != [check]:
+            kept = any(c.get("name") == check.get("name") for c in cur)
+            raise ValueError(f"{name} {'edits' if kept else 'removes'} gate check {check.get('name')!r}")
+    names = [c.get("name") for c in old]
+    for check in cur[len(old):]:
+        if check.get("name") in names:
+            raise ValueError(f"{name} gate check {check.get('name')!r} is not a new name")
+        names.append(check.get("name"))
+    old, cur = base_gate.get("protected_paths", []), new_gate.get("protected_paths", [])
+    if missing := [p for p in old if p not in cur]:
+        raise ValueError(f"{name} removes protected path {missing[0]!r}")
+    if cur[:len(old)] != old:
+        raise ValueError(f"{name} reorders [gate].protected_paths")
+    if base.get("leak_scan") != new.get("leak_scan"):
+        raise ValueError(f"{name} changes [leak_scan]")
+
+    def rest(doc: dict) -> dict:
+        gate = {k: v for k, v in doc.get("gate", {}).items() if k not in ("check", "protected_paths")}
+        return {**doc, "gate": gate}
+
+    if rest(base) != rest(new):
+        raise ValueError(f"{name} changes more than appended gate checks and protected paths")
 
 
 def propose(existing: str, evidence_md: str, repo: str, ask: Callable[[list[dict]], str],
@@ -144,21 +184,36 @@ def curate(cfg: config.Config, diff: str, tickets: list[int], notes: str) -> str
     patch.write_text(diff if diff.endswith("\n") else diff + "\n")
 
     def edit(wt: Path) -> list[str]:
+        toml = wt / config.CONFIG_NAME
+        base = tomllib.loads(toml.read_text()) if toml.is_file() else {}
+        protected = base.get("gate", {}).get("protected_paths", [])
         applied = dispatch.run(["git", "apply", str(patch)], cwd=wt, check=False)
         if applied.returncode:
             raise ValueError(f"diff does not apply: {applied.stderr.strip()}")
-        # Worktree-only apply (no --index): every touched path shows as ` M`/`??`, never `R`.
+        # Worktree-only apply (no --index): every touched path shows as ` M`/` D`/`??`; a rename is ` D` + `??`.
         status = dispatch.run(["git", "status", "--porcelain", "-z", "--untracked-files=all"], cwd=wt).stdout
-        paths = [entry[3:] for entry in status.split("\0") if entry]
-        bad = [p for p in paths if not manage.curate_allowed(p)]
+        entries = [(entry[:2], entry[3:]) for entry in status.split("\0") if entry]
+        paths = [p for _, p in entries]
+        bad = [p for p in paths if not manage.curate_allowed(p, protected)]
         if bad:
-            raise ValueError(", ".join(bad) + " outside " + ", ".join(manage.CURATE_PREFIXES))
+            raise ValueError(", ".join(bad) + " outside " + ", ".join(manage.CURATE_PREFIXES)
+                             + f", {config.CONFIG_NAME} and [gate].protected_paths")
         if not paths:
             raise ValueError("empty diff")
+        if deleted := [p for code, p in entries if "D" in code and any(fnmatch.fnmatchcase(p, g) for g in protected)]:
+            raise ValueError(f"deletes or renames {', '.join(deleted)} under [gate].protected_paths")
+        if config.CONFIG_NAME in paths:
+            try:
+                new = tomllib.loads(toml.read_text()) if toml.is_file() else {}
+                require_add_only(base, new)
+            except tomllib.TOMLDecodeError as exc:
+                raise ValueError(f"{config.CONFIG_NAME}: {exc}") from exc
+            except (AttributeError, TypeError) as exc:  # e.g. a non-table gate check from the model
+                raise ValueError(f"{config.CONFIG_NAME}: malformed [gate]: {exc}") from exc
         return paths
 
     cited = ", ".join(f"#{n}" for n in tickets)
-    pr_body = (f"`factory learn` CURATE proposed by the manager from tickets {cited}.\n\n"
+    pr_body = (f"{HUMAN_MERGE}\n\n`factory learn` CURATE proposed by the manager from tickets {cited}.\n\n"
                f"## Manager notes\n\n{notes or '(none)'}")
     try:
         chore_pr(cfg, branch, edit, f"{branch}: curate harness context", pr_body)
@@ -228,7 +283,7 @@ def main(argv: list[str]) -> int:
         (wt / LESSONS_NAME).write_text(content)
         return [LESSONS_NAME]
 
-    pr_body = f"`factory learn` distilled tickets {', '.join(f'#{n}' for n in tickets)} via the manager.\n\n{body}"
+    pr_body = f"{HUMAN_MERGE}\n\n`factory learn` distilled tickets {', '.join(f'#{n}' for n in tickets)} via the manager.\n\n{body}"
     chore_pr(cfg, branch, edit, f"{branch}: update {LESSONS_NAME}", pr_body)
     print(f"opened a {LABEL_CHORE} PR from {branch}")
     curated = curate(cfg, diff, tickets, notes_md) if diff else None

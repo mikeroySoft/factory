@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import fnmatch
 import json
 import re
 import time
@@ -73,10 +74,14 @@ def split_curate(output: str) -> tuple[str, str | None]:
     return output[:match.start()], match[1]
 
 
-def curate_allowed(path: str) -> bool:
-    """Only harness context; verification config (`.factory.toml`, workflows) is human-only."""
-    if ".." in path.split("/"):
+def curate_allowed(path: str, protected: list[str] | None = None) -> bool:
+    """Harness context only; `factory learn` alone passes the base ref's `[gate].protected_paths`,
+    which also allows `.factory.toml` and those paths. `.github/` is human-only either way."""
+    parts = path.split("/")
+    if ".." in parts or parts[0] == ".github":
         return False
+    if protected is not None and (path == config.CONFIG_NAME or any(fnmatch.fnmatchcase(path, p) for p in protected)):
+        return True
     return any(path.startswith(p) if p.endswith("/") else path == p for p in CURATE_PREFIXES)
 
 

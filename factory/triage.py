@@ -172,6 +172,10 @@ def _record_usage(execution, usage: dict | None) -> None:
     )
 
 
+class EndpointTimeout(SystemExit):
+    """The model timed out on one request; the endpoint is up, so the pass can go on."""
+
+
 def call_llm(messages: list[dict], execution=None) -> str:
     payload = json.dumps(
         {
@@ -189,10 +193,10 @@ def call_llm(messages: list[dict], execution=None) -> str:
         with urllib.request.urlopen(req, timeout=cfg.triage_timeout) as resp:
             body = json.load(resp)
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        timed_out = isinstance(exc, TimeoutError) or (
+            isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError)
+        )
         if execution:
-            timed_out = isinstance(exc, TimeoutError) or (
-                isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError)
-            )
             execution.outcome = "unknown" if timed_out else "mechanism_failure"
             execution.reason = "triage_endpoint_timeout" if timed_out else "triage_endpoint_unavailable"
             execution.emit("result", timed_out=timed_out, timeout_seconds=cfg.triage_timeout)
@@ -201,7 +205,8 @@ def call_llm(messages: list[dict], execution=None) -> str:
             "Is the model server running? Set [triage].url in .factory.toml if the endpoint differs.",
             file=sys.stderr,
         )
-        raise SystemExit(2) from exc
+        # URLError(TimeoutError) is a connect timeout (endpoint unreachable); a bare one is a slow model.
+        raise (EndpointTimeout if isinstance(exc, TimeoutError) else SystemExit)(2) from exc
     _record_usage(execution, _usage_fields(body))
     return body["choices"][0]["message"]["content"]
 
@@ -322,6 +327,15 @@ def list_needs_triage(execution=None) -> list[int]:
     return [item["number"] for item in json.loads(raw)]
 
 
+def timeouts_last(numbers: list[int]) -> list[int]:
+    """Tickets whose last triage attempt timed out go after the rest, so one slow ticket cannot starve older ones."""
+    last = {}
+    for row in lifecycle.read_events(cfg.factory / "events.jsonl"):
+        if row.get("stage") == "triage-ticket" and row.get("kind") == "exit":
+            last[row.get("ticket")] = row.get("reason")
+    return sorted(numbers, key=lambda n: last.get(n) == "triage_endpoint_timeout")
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="factory triage",
@@ -353,7 +367,7 @@ def execute(args: argparse.Namespace, execution) -> int:
     elif args.issue:
         numbers = [args.issue]
     else:
-        numbers = list_needs_triage(execution=execution)
+        numbers = timeouts_last(list_needs_triage(execution=execution))
 
     if not numbers:
         if execution:
@@ -384,7 +398,14 @@ def execute(args: argparse.Namespace, execution) -> int:
                             if ticket_execution:
                                 ticket_execution.outcome, ticket_execution.reason = "not_admitted", "initiative"
                             continue
-                        decision = triage_issue(issue, execution=ticket_execution)
+                        try:
+                            decision = triage_issue(issue, execution=ticket_execution)
+                        except EndpointTimeout:
+                            outcome, reason = "unknown", "triage_endpoint_timeout"
+                            print(f"#{number}: model timed out; skipping, tried after untried tickets next pass",
+                                  file=sys.stderr)
+                            exit_code = 1
+                            continue
                         if decision is None:
                             if ticket_execution:
                                 ticket_execution.outcome = "unknown"
