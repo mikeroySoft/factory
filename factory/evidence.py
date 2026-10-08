@@ -128,7 +128,7 @@ def bounded_output(result: dict) -> tuple[str, bool]:
         } | {"status": "unavailable", "reason": "output_truncated"}
     output = _encode(result)
     over = len(output) - RESPONSE_CAP
-    compact = dict(ensure_ascii=True, allow_nan=False, separators=(",", ":"))
+    compact = {"ensure_ascii": True, "allow_nan": False, "separators": (",", ":")}
     if cases:
         prefix = [0]
         for case in cases:
@@ -181,6 +181,15 @@ def unsafe_text(value: str) -> bool:
     return any(unicodedata.category(c).startswith("C") for c in value)
 
 
+INVESTIGATION_FIELDS = {
+    "workflows": (), "file": ("path", "ref"), "result": ("number", "head", "offset"),
+    "pr": ("number",), "checks": ("number",), "runs": ("number",),
+    "run": ("run_id",), "log": ("run_id",),
+    "roadmap": (), "initiative": ("number",), "drift": ("number",),
+    "experiments": (), "experiment": ("experiment", "run"),
+}
+
+
 def request(deadline: float) -> dict:
     raw = bytearray()
     with selectors.SelectSelector() as selector:
@@ -207,20 +216,10 @@ def request(deadline: float) -> dict:
         expected.add("number")
     elif op == "investigate":
         kind = req.get("kind")
-        if kind == "file":
-            expected.update(("kind", "path", "ref"))
-        elif kind == "result":
-            expected.update(("kind", "number", "head", "offset"))
-        elif kind in ("pr", "checks", "runs", "initiative", "drift"):
-            expected.update(("kind", "number"))
-        elif kind in ("run", "log"):
-            expected.update(("kind", "run_id"))
-        elif kind == "experiment":
-            expected.update(("kind", "experiment", "run"))
-        elif kind in ("workflows", "roadmap", "experiments"):
-            expected.add("kind")
-        else:
-            raise EvidenceError("invalid_request", "Unknown investigation kind.", "request", "request")
+        if not isinstance(kind, str) or kind not in INVESTIGATION_FIELDS:
+            raise EvidenceError("invalid_request", f"Unknown investigation kind {kind!r}; accepted kinds: "
+                                + ", ".join(map(repr, INVESTIGATION_FIELDS)) + ".", "request", "request")
+        expected.update(("kind", *INVESTIGATION_FIELDS[kind]))
     elif op not in ("observe", "capabilities"):
         raise EvidenceError("invalid_request", "Unknown read operation.", "request", "request")
     if set(req) != expected:
@@ -230,9 +229,9 @@ def request(deadline: float) -> dict:
     for field in ("number", "run_id"):
         if field in req and (type(req[field]) is not int or not 0 < req[field] < 2**63):
             raise EvidenceError("invalid_request", f"{field} must be a positive integer below 9223372036854775808.", "request", "request")
-    if op == "investigate" and req["kind"] == "experiment":
-        if not all(isinstance(req[key], str) and EXPERIMENT_NAME.fullmatch(req[key]) for key in ("experiment", "run")):
-            raise EvidenceError("invalid_request", "experiment and run must be single safe directory names.", "request", "request")
+    if (op == "investigate" and req["kind"] == "experiment"
+            and not all(isinstance(req[key], str) and EXPERIMENT_NAME.fullmatch(req[key]) for key in ("experiment", "run"))):
+        raise EvidenceError("invalid_request", "experiment and run must be single safe directory names.", "request", "request")
     if op == "investigate" and req["kind"] == "result":
         head, offset = req["head"], req["offset"]
         if not isinstance(head, str) or not RESULT_SHA.fullmatch(head):
@@ -257,7 +256,7 @@ def request(deadline: float) -> dict:
 def clean_text(text: str) -> str:
     # OSC/DCS strings can carry hyperlinks or terminal commands; strip them as
     # units, including unfinished strings at the bounded prefix boundary.
-    text = re.sub(r"\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\|$)|[PX^_].*?(?:\x1b\\|$)|\[[0-?]*[ -/]*[@-~]?|[@-_])", "", text, flags=re.S)
+    text = re.sub(r"\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\|$)|[PX^_].*?(?:\x1b\\|$)|\[[0-?]*[ -/]*[@-~]?|[@-_])", "", text, flags=re.DOTALL)
     return "".join(c for c in text if c in "\n\t" or not unicodedata.category(c).startswith("C"))
 
 
@@ -345,7 +344,7 @@ def github_read(endpoint: str, deadline: float, *, text: bool = False) -> tuple[
         try:
             proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     start_new_session=True,
-                                    preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, previous),
+                                    preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, previous),  # noqa: PLW1509 — restore inherited signal mask
                                     env={**os.environ, "GH_PROMPT_DISABLED": "1", "GIT_OPTIONAL_LOCKS": "0", "GH_PAGER": "cat"})
         finally:
             signal.pthread_sigmask(signal.SIG_SETMASK, previous)
@@ -1565,7 +1564,7 @@ def main(argv: list[str] | None = None) -> int:
             failed(result, EvidenceError("invalid_scope", "Repository configuration is unavailable.", "configuration", "scope"))
             result["error"] = {"code": "invalid_scope", "message": "Repository configuration could not be loaded; raw diagnostics withheld."}
             exit_code = 2
-        except Exception:
+        except Exception:  # noqa: BLE001 — withhold raw diagnostics at the evidence boundary
             failed(result, EvidenceError("collection_unavailable", "Evidence collection failed."))
             result["error"] = {"code": "collection_unavailable", "message": "Evidence collection failed; raw file, configuration and command errors withheld."}
             exit_code = 1

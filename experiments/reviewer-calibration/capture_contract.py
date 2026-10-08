@@ -7,12 +7,15 @@ a scratch root, never in a live checkout.
 
 usage: capture_contract.py <checkout> <scratch> <issue-number> <gate-report-file> <out-file>
 """
-import inspect, pathlib, subprocess, sys
+import inspect
+import pathlib
+import subprocess
+import sys
 
 checkout, scratch, number, gate_file, out = sys.argv[1:6]
 sys.path.insert(0, checkout)
-from factory import dispatch                      # noqa: E402
-from factory.config import Config                 # noqa: E402
+from factory import dispatch
+from factory.config import Config
 
 scratch = pathlib.Path(scratch)
 capture = str(pathlib.Path(__file__).with_name("capture_prompt.py"))

@@ -15,7 +15,11 @@
 # max_active = 2       # tickets in flight at once
 # max_attempts = 3     # worker+gate rounds before escalating
 # review_rounds = 1    # REVISE -> worker -> re-review cycles before escalating
-# budget_min = 90      # wall-clock budget per ticket
+# budget_min = 90      # wall-clock budget per ticket; overall ceiling, kills a running worker
+# idle_timeout = 30    # minutes with no worker log output and no worktree change = stuck:
+#                      # killed, attempt fails (reason `stuck`) and retries; 0 disables
+# exit_grace = 300     # seconds a worker may stay quiet after committing or writing its
+#                      # handoff without exiting; then terminated and gated; 0 disables
 # signoff = true       # `git commit -s`; Signed-off-by trailer on merges (DCO)
 # Regex with one capture group: dollars spent, read from the worker log after
 # each attempt and summed into .factory/events.jsonl and the dashboard.
@@ -46,6 +50,16 @@
 # [workers.conflict]
 # when = "A rebase conflicts: resolve the rebase, keep both intents, make no semantic changes."
 # command = ["omp", "-p", "--cwd", "{cwd}", "Read the ticket prompt at {prompt}. Resolve the rebase conflicts, preserving both sides' intents with no semantic changes. If the rebase was aborted, restart it against the configured main before resolving. If the intents cannot be preserved without semantic changes, stop and explain in the handoff."]
+#
+# Usage: each attempt journals one `llm-usage` event (stage "worker"); unreported
+# fields are null. A table worker may read them from structured output: dotted
+# JSON paths (or arrays of paths, added) summed over the log's JSON lines that
+# satisfy `match`; `cost` falls back to [dispatch].cost_pattern. Example for
+# Claude Code `--output-format json` (paths checked on 2.1.292; it names the
+# model only as a `modelUsage` key, so no `model` path):
+# usage = { match = { type = "result" }, cost = "total_cost_usd", completion_tokens = "usage.output_tokens", cached_tokens = "usage.cache_read_input_tokens", prompt_tokens = ["usage.input_tokens", "usage.cache_read_input_tokens", "usage.cache_creation_input_tokens"] }
+# Host config `[defaults.prices."<model>"]` (prompt, completion, optional cached;
+# USD per million tokens) prices events that report tokens but no cost.
 
 [review]
 # {prompt} = inline review prompt text. Output must end with `VERDICT: APPROVE` or `VERDICT: REVISE`.
@@ -90,14 +104,16 @@ exclusive = false
 
 [leak_scan]
 # Added lines in `origin/main..HEAD` matching this regex FAIL the gate.
-# Set to "" to disable.
-# pattern = "internal|confidential|proprietary|private|jira|confluence|\\.corp|\\.internal"
+# Set to "" to disable. `extra` regexes are added to it (host config may add more).
+# pattern = "\\.(?:corp|internal|intranet|lan)\\b|\\bconfidential\\b|\\bproprietary\\b|\\bjira\\b|\\bconfluence\\b|\\.atlassian\\.net\\b"
+# extra = ["\\bmyproduct\\b"]
 # exclude = ["skills", "skills-lock.json"]   # pathspecs excluded from the scan
 
 [triage]
 # Any OpenAI-compatible chat endpoint (Ollama, vLLM, llama.cpp, LM Studio, ...).
 # url = "http://127.0.0.1:11434/v1/chat/completions"
 # model = "qwen3:30b"
+# timeout = 60         # seconds per model request; raise for slow local models
 
 [journal]
 # .factory/events.jsonl rolls into events.jsonl.1.gz (older segments shift to

@@ -20,9 +20,15 @@ reviewer mutated its clone.
 
 usage: run_tools.py <out-dir> <samples> [contract ...]
 """
-import json
 import concurrent.futures as cf
-import hashlib, json, pathlib, shutil, subprocess, sys, tempfile, time
+import hashlib
+import json
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
 
 from run_calibration import checkout
 
@@ -84,10 +90,10 @@ def review(contract: str, case: str, sample: int) -> dict:
         proc = subprocess.run(["omp", "-p", "--mode", "text", "--no-session", "--no-title",
                                "--auto-approve", "--max-time", "600", "--model", MODEL, prompt],
                               cwd=wt, capture_output=True, text=True, timeout=TIMEOUT,
-                              stdin=subprocess.DEVNULL)
+                              stdin=subprocess.DEVNULL, check=False)
         elapsed = round(time.monotonic() - started, 1)
         dirty = subprocess.run(["git", "status", "--porcelain"], cwd=wt,
-                               capture_output=True, text=True).stdout.strip()
+                               capture_output=True, text=True, check=False).stdout.strip()
     finally:
         shutil.rmtree(root, ignore_errors=True)
     return {"contract": contract, "contract_commit": CONTRACTS[contract], "case": case,

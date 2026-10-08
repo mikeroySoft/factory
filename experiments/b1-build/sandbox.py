@@ -43,7 +43,7 @@ def available() -> str | None:
     )
     for argv in probes:
         try:
-            done = subprocess.run(argv, capture_output=True, timeout=20)
+            done = subprocess.run(argv, capture_output=True, timeout=20, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
             return f"{Path(argv[0]).name} probe failed: {type(exc).__name__}"
         if done.returncode != 0:

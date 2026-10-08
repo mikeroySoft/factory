@@ -3,16 +3,17 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from urllib.parse import urlencode
 
-from factory import config, lifecycle, onboard, plan
 from test_evidence import GH, READ_GUARD, REPO
+
+from factory import config, lifecycle, onboard, plan
 
 ROOT = Path(__file__).resolve().parents[1]
 PREFIX = f"repos/{REPO}/"
@@ -90,7 +91,7 @@ class CliCase(unittest.TestCase):
     def run_plan(self, *argv, code=0):
         self.responses_path.write_text(json.dumps(self.responses))
         proc = subprocess.run([sys.executable, "-B", "-m", "factory.cli", "plan", *argv], cwd=self.root, env=self.env,
-                              capture_output=True, timeout=60)
+                              capture_output=True, timeout=60, check=False)
         self.assertNotIn(b"EVIDENCE_FORBIDDEN:", proc.stderr, proc.stderr.decode())
         self.assertEqual(proc.returncode, code, (proc.stdout.decode(), proc.stderr.decode()))
         data = json.loads(proc.stdout)

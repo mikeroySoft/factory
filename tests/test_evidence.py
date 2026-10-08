@@ -5,15 +5,15 @@ import base64
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 import time
-from types import SimpleNamespace
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.parse import urlencode
 
@@ -212,7 +212,7 @@ class EvidenceCliTest(unittest.TestCase):
             payload = payload.encode()
         started = time.monotonic()
         proc = subprocess.run([sys.executable, "-B", "-m", "factory.cli", "evidence", "--root", str(root or self.root)],
-                              cwd=self.directory, env=self.env, input=payload, capture_output=True, timeout=timeout)
+                              cwd=self.directory, env=self.env, input=payload, capture_output=True, timeout=timeout, check=False)
         self.elapsed = time.monotonic() - started
         self.assertNotIn(b"EVIDENCE_FORBIDDEN:", proc.stderr, proc.stderr.decode())
         self.assertEqual(before, self.state(), "Evidence read changed the selected checkout")
@@ -459,7 +459,7 @@ class EvidenceCliTest(unittest.TestCase):
         self.responses_path.write_text(json.dumps(self.responses))
         payload = json.dumps({"schema_version": 1, "repository": REPO, "op": "capabilities"}).encode()
         proc = subprocess.run([sys.executable, "-B", "-m", "factory.cli", "evidence", "--root", str(self.root)],
-                              cwd=self.directory, env=env, input=payload, capture_output=True, timeout=60)
+                              cwd=self.directory, env=env, input=payload, capture_output=True, timeout=60, check=False)
         self.assertNotIn(b"EVIDENCE_FORBIDDEN:", proc.stderr, proc.stderr.decode())
         self.assertEqual(proc.returncode, 0, (proc.stdout.decode(), proc.stderr.decode()))
         return json.loads(proc.stdout)["capabilities"]["producers"]["reader"]
@@ -526,6 +526,15 @@ class EvidenceCliTest(unittest.TestCase):
                 self.assertEqual(data["sources"], [])
         self.assertEqual(self.calls(), [])
 
+    def test_unknown_investigation_kind_names_value_and_accepted_kinds(self):
+        kinds = [row["kind"] for row in self.invoke()["capabilities"]["reads"] if row["op"] == "investigate"]
+        data = self.invoke("investigate", kind="experimnts", code=2)
+        self.assertEqual(data["error"]["code"], "invalid_request")
+        self.assertIn("experimnts", data["error"]["message"])
+        for kind in kinds:
+            self.assertIn(f"'{kind}'", data["error"]["message"])
+        self.assertEqual(self.calls(), [])
+
     def test_explicit_main_checkout_and_repository_scope_are_required(self):
         data = self.invoke(repository="other/repository", code=2)
         self.assertIn("scope_mismatch", self.error_codes(data))
@@ -543,7 +552,7 @@ class EvidenceCliTest(unittest.TestCase):
     def test_invalid_cli_invocation_is_a_machine_readable_error(self):
         for arguments in ([], ["--root"], ["--root", str(self.root), "--shell"]):
             proc = subprocess.run([sys.executable, "-B", "-m", "factory.cli", "evidence", *arguments],
-                                  env=self.env, cwd=self.directory, capture_output=True, timeout=5)
+                                  env=self.env, cwd=self.directory, capture_output=True, timeout=5, check=False)
             self.assertEqual(proc.returncode, 2)
             data = json.loads(proc.stdout)
             self.assertFalse(data["ok"])

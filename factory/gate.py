@@ -7,14 +7,14 @@ Writes a short Markdown report (PASS/FAIL per check + failure excerpts).
 from __future__ import annotations
 
 import argparse
-import fnmatch
 import fcntl
+import fnmatch
 import os
 import re
 import signal
 import subprocess
-from pathlib import Path
 import tomllib
+from pathlib import Path
 
 from factory import config, lifecycle
 from factory.config import CONFIG_NAME, Config
@@ -44,9 +44,13 @@ def timed(cmd: list[str]) -> subprocess.CompletedProcess:
     tree (cargo/test grandchildren included), not just the direct child.
     """
     execution = lifecycle.current()
+    # The handoff row is still recorded, but the check never inherits the context:
+    # a repo's own tests would otherwise append their fixture rows to the live ledger.
+    env = execution.env() if execution else dict(os.environ)
+    env.pop(lifecycle.CONTEXT_ENV, None)
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True,
-        env=execution.env() if execution else None,
+        env=env,
     )
     if execution:
         execution.child(proc.pid)
@@ -107,6 +111,8 @@ def check_leaks(base: str) -> tuple[bool, str]:
         [
             "git",
             "diff",
+            "--unified=0",
+            "--no-prefix",
             f"{base}..HEAD",
             "--",
             f":(exclude){CONFIG_NAME}",
@@ -119,11 +125,18 @@ def check_leaks(base: str) -> tuple[bool, str]:
             execution.outcome = "unknown"
             execution.reason = "git_diff_failed"
         return False, proc.stdout + proc.stderr
-    hits = [
-        line
-        for line in proc.stdout.splitlines()
-        if line.startswith("+") and not line.startswith("+++") and LEAK_RE.search(line)
-    ]
+    hits, path, header, n = [], "", True, 0
+    for line in proc.stdout.splitlines():
+        if line.startswith("diff --git "):
+            header = True
+        elif header and line.startswith("+++ "):
+            path = line[4:]
+        elif line.startswith("@@ "):
+            header, n = False, int(re.match(r"@@ -\S+ \+(\d+)", line).group(1))
+        elif not header and line.startswith("+"):
+            if m := LEAK_RE.search(line[1:]):
+                hits.append(f"{path}:{n}: [{m.group(0)}] {line[1:]}")
+            n += 1
     execution = lifecycle.current()
     if hits and execution:
         execution.outcome = "product_feedback"

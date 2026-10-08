@@ -3,14 +3,13 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
-from factory import lifecycle
-
+from factory import __version__, lifecycle
 
 GH = '''#!/usr/bin/env python3
 import json, os, subprocess, sys
@@ -115,7 +114,7 @@ class LocalCLI(unittest.TestCase):
 
     def cli(self, *args, expected=0):
         result = subprocess.run([sys.executable, "-m", "factory", *args], cwd=self.repo,
-                                env=self.env, capture_output=True, text=True, timeout=60)
+                                env=self.env, capture_output=True, text=True, timeout=60, check=False)
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
         return result
 
@@ -201,7 +200,7 @@ class LocalCLI(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, "-m", "factory", "evidence", "--root", str(self.repo)],
             input=json.dumps(request), cwd=self.repo, env=self.env,
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=30, check=False,
         )
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
         return json.loads(result.stdout)
@@ -265,16 +264,17 @@ class LocalCLI(unittest.TestCase):
         self.assertFalse((self.repo / ".factory").exists())
         self.cli("dispatch")
         self.cli("triage")
-        rows = self.rows()
-        dispatcher = [r for r in rows if r["stage"] == "dispatcher" and r["kind"] == "exit"]
-        triage = [r for r in rows if r["stage"] == "triage" and r["kind"] == "exit"]
-        self.assertEqual(len(dispatcher), 1)
-        self.assertEqual(len(triage), 1)
-        self.assertIsNone(dispatcher[0]["ticket"])
-        self.assertIsNotNone(dispatcher[0]["dispatcher_run_id"])
-        self.assertIsNone(triage[0]["dispatcher_run_id"])
-        self.assertIsNone(triage[0]["ticket"])
-        self.assertFalse(any(r["stage"] in {"worker", "gate", "review", "merge"} for r in rows))
+        # Nothing to claim, triage or merge: the idle invocations journal no lifecycle trail (#173).
+        self.assertEqual(self.rows(), [])
+
+    def test_dispatcher_pass_enter_row_records_engine(self):
+        sha = "0123456789abcdef0123456789abcdef01234567"
+        host = self.base / "config" / "factory" / "config.toml"
+        host.parent.mkdir(parents=True)
+        host.write_text(f'[defaults.engine]\nsha = "{sha}"\n')
+        self.cli("dispatch", "--ticket", "7")
+        enter = next(r for r in self.rows() if r["stage"] == "dispatcher" and r["kind"] == "enter")
+        self.assertEqual((enter["engine_commit"], enter["engine_version"]), (sha, __version__))
 
     def test_code_failure_missing_mechanism_and_skipped_check(self):
         self.write_config(check=[sys.executable, "-c", "raise SystemExit(1)"])
@@ -283,7 +283,7 @@ class LocalCLI(unittest.TestCase):
         self.assertEqual(failures[-1]["outcome"], "product_feedback")
         self.write_config(check=[str(self.base / "absent-executable")])
         result = subprocess.run([sys.executable, "-m", "factory", "gate"], cwd=self.repo,
-                                env=self.env, capture_output=True, text=True, timeout=60)
+                                env=self.env, capture_output=True, text=True, timeout=60, check=False)
         self.assertNotEqual(result.returncode, 0)
         failures = [r for r in self.rows() if r["kind"] == "exit" and r["stage"] == "gate"]
         self.assertEqual(failures[-1]["outcome"], "mechanism_failure")

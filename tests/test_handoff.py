@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from factory import config, dispatch, handoff, lifecycle  # noqa: E402
+from factory import config, dispatch, handoff, lifecycle
 
 REPO = "acme/widgets"
 ISSUE_URL = f"https://github.com/{REPO}/issues/7"
@@ -193,7 +193,7 @@ class HandoffCli(unittest.TestCase):
         self.state_path.write_text(json.dumps(self.state))
         self.ran.unlink(missing_ok=True)
         proc = subprocess.run([sys.executable, "-m", "factory", "manage", *argv], cwd=self.repo, capture_output=True,
-                              text=True, env={**self.env, "MANAGER_MODE": mode}, timeout=120)
+                              text=True, env={**self.env, "MANAGER_MODE": mode}, timeout=120, check=False)
         self.assertEqual(proc.returncode, expect, proc.stdout + proc.stderr)
         self.state = json.loads(self.state_path.read_text())
         for key in flags:
@@ -394,12 +394,12 @@ class HandoffCli(unittest.TestCase):
         self.assertIn("routing stays advisory", proc.stdout)
         self.assertEqual((self.requests(), self.events("handoff"), self.calls("issue", "comment")), ([], [], []))
         cases = [
-            ("manager transport failure", dict(mode="fail"),
+            ("manager transport failure", {"mode": "fail"},
              "the manager could not run, so there is no automatic diagnosis"),
-            ("manager configuration error", dict(manager_cmd=["omp", "-p", "{prompt}", "--cwd", "{cwd}"]),
+            ("manager configuration error", {"manager_cmd": ["omp", "-p", "{prompt}", "--cwd", "{cwd}"]},
              "the manager could not run, so there is no automatic diagnosis"),
-            ("rounds exhausted", dict(round_number=2), "the manager's 1 allowed round(s) are exhausted"),
-            ("no manager", dict(manager=False), "no manager is configured, so nothing recovers automatically"),
+            ("rounds exhausted", {"round_number": 2}, "the manager's 1 allowed round(s) are exhausted"),
+            ("no manager", {"manager": False}, "no manager is configured, so nothing recovers automatically"),
         ]
         for name, setup, expected in cases:
             with self.subTest(path=name):

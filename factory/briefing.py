@@ -108,7 +108,7 @@ personality: none
 
 def validate_request(req: object, asking: bool) -> dict:
     if not isinstance(req, dict):
-        raise ValueError("request must be a JSON object")
+        raise ValueError("request must be a JSON object")  # noqa: TRY004 — invalid-request API
     allowed = {"number", "run", "question", "source", "path", "history"} if asking else {"number"}
     if set(req) - allowed:
         raise ValueError("unknown request fields: " + ", ".join(sorted(set(req) - allowed)))

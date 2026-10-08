@@ -42,16 +42,16 @@ class BriefTest(unittest.TestCase):
             (root / "a.py").write_text("first\n")
             (root / "b.py").write_text("second\n")
             with patch.object(brief, "git", return_value=["README.md", "CHANGELOG.md"]), patch.object(brief, "files_for", return_value=["a.py", "b.py"]):
-                with patch.dict("os.environ", {"TYPESAFE_API_KEY": ""}):
-                    with patch.object(brief.urllib.request, "urlopen") as urlopen:
-                        text = brief.compose(root, {"title": "Change `a.py`"}, "")
-                        urlopen.assert_not_called()
+                with patch.dict("os.environ", {"TYPESAFE_API_KEY": ""}), patch.object(brief.urllib.request, "urlopen") as urlopen:
+                    text = brief.compose(root, {"title": "Change `a.py`"}, "")
+                    urlopen.assert_not_called()
                 self.assertLess(text.index("- a.py"), text.index("- b.py"))
                 self.assertIn("- README.md", text)
                 self.assertIn("- CHANGELOG.md", text)
-                with patch.dict("os.environ", {"TYPESAFE_API_KEY": "test-key"}):
-                    with patch.object(brief.urllib.request, "urlopen", side_effect=OSError("offline")):
-                        text = brief.compose(root, {"title": "Change `a.py`"}, "")
+                with patch.dict("os.environ", {"TYPESAFE_API_KEY": "test-key"}), patch.object(
+                    brief.urllib.request, "urlopen", side_effect=OSError("offline")
+                ):
+                    text = brief.compose(root, {"title": "Change `a.py`"}, "")
                 self.assertLess(text.index("- a.py"), text.index("- b.py"))
 
     def test_no_matched_files_does_not_include_docs(self):

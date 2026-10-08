@@ -107,6 +107,8 @@ Done when the issue carries `needs-triage` (or `ready-for-agent`) and every sect
 
 ## Diagnose
 
+Read `factory/architecture.html` for how the pipeline stages connect.
+
 Evidence, in order of authority:
 
 1. `.factory/events.jsonl` filtered to the ticket: the ordered trail of `claimed`,
