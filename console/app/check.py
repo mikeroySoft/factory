@@ -3,13 +3,14 @@
 import argparse
 import hashlib
 import json
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 sys.dont_write_bytecode = True
-import evidence  # The compatibility entry point selects the production source owner.
+import evidence  # noqa: F401 — compatibility entry point selects the production source owner.
+
 from factory import briefing
 
 HERE = Path(__file__).resolve().parent

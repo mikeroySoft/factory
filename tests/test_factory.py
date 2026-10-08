@@ -6,11 +6,11 @@ Run: python -m unittest discover -s tests
 from __future__ import annotations
 
 import json
-import re
 import os
-import subprocess
+import re
 import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -23,7 +23,9 @@ sys.path.insert(0, str(ROOT))
 XDG = Path(tempfile.mkdtemp())
 os.environ["XDG_CONFIG_HOME"] = str(XDG)
 
-from factory import __version__, config, lifecycle, manage, runtime_events  # noqa: E402
+from datetime import UTC
+
+from factory import __version__, config, lifecycle, manage, runtime_events
 
 
 def host_file(text: str) -> None:
@@ -388,7 +390,7 @@ class HostConfigTest(unittest.TestCase):
         host_file('[defaults.leak_scan]\nextra = ["bluefin"]\npattern = ""\n'
                   '[repo."acme/widgets".leak_scan]\nextra = ["redfin"]\n')
         with tempfile.TemporaryDirectory() as d:
-            leak = re.compile(config.load(make_repo(Path(d), '[leak_scan]\nextra = ["greenfin"]\n')).leak_pattern, re.I)
+            leak = re.compile(config.load(make_repo(Path(d), '[leak_scan]\nextra = ["greenfin"]\n')).leak_pattern, re.IGNORECASE)
             for term in ("ship Bluefin", "redfin", "greenfin", "CONFIDENTI\x41L"):
                 self.assertIsNotNone(leak.search(term), term)
             self.assertIsNone(leak.search("### Internal"))
@@ -736,8 +738,8 @@ class HostConfigTest(unittest.TestCase):
             self.assertEqual(launchers, [
                 f'ExecStart=-"{escaped}" -P -m factory triage',
                 f'ExecStart="{escaped}" -P -m factory dispatch',
-                f'ExecStart="{escaped}" -P -m factory dashboard'
-                ' --host 127.0.0.1 --port 8765 --no-open',
+                (f'ExecStart="{escaped}" -P -m factory dashboard'
+                 ' --host 127.0.0.1 --port 8765 --no-open'),
             ])
             accepted = run("install", "--no-dashboard")
             self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
@@ -762,7 +764,7 @@ class HostConfigTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             repo = make_repo(Path(d))
             stubs = stub_bin(Path(d), gh=gh, systemctl="echo inactive")
-            doctor = lambda: {r["label"]: r for r in json.loads(factory(repo, "doctor", "--json", path=stubs).stdout)["rows"]}  # noqa: E731
+            doctor = lambda: {r["label"]: r for r in json.loads(factory(repo, "doctor", "--json", path=stubs).stdout)["rows"]}
             proc = factory(repo, "init", "--no-labels")
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             ci = repo / ".github/workflows/ci.yml"
@@ -872,7 +874,7 @@ class HostConfigTest(unittest.TestCase):
                     target.parent.mkdir(parents=True)
                     target.write_text(original)
                 stubs = stub_bin(Path(d), gh="exit 0", systemctl="echo inactive")
-                def rows():
+                def rows(repo=repo, stubs=stubs):
                     result = factory(repo, "doctor", "--json", path=stubs)
                     return {r["label"]: r for r in json.loads(result.stdout)["rows"]}
                 fix = rows()[str(target.relative_to(repo))]["fix"]
@@ -881,7 +883,7 @@ class HostConfigTest(unittest.TestCase):
                 for args in (["--check"], []):
                     applied = subprocess.run(
                         ["git", "apply", *args], cwd=repo, input=fix["diff"],
-                        text=True, capture_output=True,
+                        text=True, capture_output=True, check=False,
                     )
                     self.assertEqual(applied.returncode, 0, applied.stderr)
                 self.assertEqual(target.read_bytes(), (ROOT / "factory/templates/agent_task.md").read_bytes())
@@ -1220,10 +1222,11 @@ unused = ["agent"]
             self.assertIn("15", table)
             self.assertIn("5", table)
             self.assertIn("0.75", table)
-            from datetime import datetime, timezone
+            from datetime import datetime
+
             from factory import dashboard
 
-            totals = stats.human_touch_metrics([row], datetime(2026, 9, 8, 0, 12, tzinfo=timezone.utc))
+            totals = stats.human_touch_metrics([row], datetime(2026, 9, 8, 0, 12, tzinfo=UTC))
             self.assertEqual(totals, {"escalations_per_week": 2, "human_resolved_pct": 50.0})
             dashboard.configure(stats.cfg)
             ticket_issue = {
@@ -1249,7 +1252,7 @@ class DashboardTest(unittest.TestCase):
         from factory import dashboard
 
         dashboard.MAX_ATTEMPTS = 3
-        att = lambda *ns: [{"attempt": n} for n in ns]  # noqa: E731
+        att = lambda *ns: [{"attempt": n} for n in ns]
         tickets = [
             {"pr": {"number": 1}, "attempts": att(1), "events": []},  # first-gate pass
             {"pr": {"number": 2}, "attempts": att(1, 2, 4), "events": [{"kind": "escalated"}]},  # 2 gate rounds + review bounce
@@ -1495,6 +1498,7 @@ class GateTest(unittest.TestCase):
 class ManageTest(unittest.TestCase):
     def setUp(self) -> None:
         from unittest.mock import patch
+
         from factory import lifecycle
 
         self.enterContext(patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
@@ -1571,6 +1575,7 @@ PY
 
     def test_manager_failure_bounds_stderr_and_records_reason(self) -> None:
         from unittest.mock import patch
+
         from factory import dispatch, stats
 
         repo, _, packet = self.scenario()
@@ -1657,6 +1662,7 @@ PY
 
     def test_manager_failure_preserves_human_takeover_on_next_pass(self) -> None:
         from unittest.mock import patch
+
         from factory import dispatch
 
         repo, _, _ = self.scenario()
@@ -1687,6 +1693,7 @@ PY
 
     def test_terminal_handoff_runs_after_manager_timeline_lookup_fails(self) -> None:
         from unittest.mock import patch
+
         from factory import dispatch, plan
 
         with tempfile.TemporaryDirectory() as d:
@@ -1755,9 +1762,9 @@ PY
 
             with patch.object(dispatch, "gh_json", side_effect=github), \
                     patch.object(dispatch, "run", side_effect=run), \
-                    patch.object(plan, "github_read", side_effect=github_read):
-                with self.assertRaisesRegex(ValueError, "ticket #7 timeline lookup failed"):
-                    manage.manage_pass()
+                    patch.object(plan, "github_read", side_effect=github_read), \
+                    self.assertRaisesRegex(ValueError, "ticket #7 timeline lookup failed"):
+                manage.manage_pass()
 
             self.assertEqual(len(comments), 1)
             self.assertIn("factory-handoff 8/1", comments[0][comments[0].index("--body") + 1])
@@ -1845,12 +1852,12 @@ PY
 
                 with mock.patch.object(dispatch, "gh_json", return_value=pr), \
                         mock.patch.object(dispatch, "run") as run, \
-                        mock.patch.object(dispatch, "worker_round") as worker:
-                    with self.assertRaisesRegex(ValueError, "configured target"):
-                        manage.apply(
-                            7, {"title": "Fix CI"}, "FIX", "",
-                            {"worker": "ci-fix", "guidance": "Fix CI"}, packet,
-                        )
+                        mock.patch.object(dispatch, "worker_round") as worker, \
+                        self.assertRaisesRegex(ValueError, "configured target"):
+                    manage.apply(
+                        7, {"title": "Fix CI"}, "FIX", "",
+                        {"worker": "ci-fix", "guidance": "Fix CI"}, packet,
+                    )
 
                 run.assert_not_called()
                 worker.assert_not_called()
@@ -1892,12 +1899,12 @@ PY
                     ), mock.patch.object(
                         dispatch, "review", return_value=("REVISE", "retargeted"),
                     ), mock.patch.object(dispatch, "pr_comment"), \
-                    mock.patch.object(dispatch, "escalate"):
-                with self.assertRaisesRegex(ValueError, "configured target"):
-                    manage.apply(
-                        7, {"title": "Fix CI"}, "FIX", "",
-                        {"worker": "ci-fix", "guidance": "Fix CI"}, packet,
-                    )
+                    mock.patch.object(dispatch, "escalate"), \
+                    self.assertRaisesRegex(ValueError, "configured target"):
+                manage.apply(
+                    7, {"title": "Fix CI"}, "FIX", "",
+                    {"worker": "ci-fix", "guidance": "Fix CI"}, packet,
+                )
 
             self.assertFalse(any(
                 call.args[0][:2] == ["git", "push"]
@@ -1944,12 +1951,12 @@ PY
                 }
                 original_run = dispatch.run
 
-                def fake_run(cmd, *args, **kwargs):
+                def fake_run(cmd, *args, original_run=original_run, **kwargs):
                     if cmd[:2] == ["git", "push"]:
                         return subprocess.CompletedProcess(cmd, 0, "", "")
                     return original_run(cmd, *args, **kwargs)
 
-                def fake_github(args):
+                def fake_github(args, pr=pr, issue=issue):
                     return pr if args[:2] == ["pr", "view"] else issue
 
                 with mock.patch.dict(os.environ, {"PYTHONPATH": str(ROOT)}), \
@@ -2188,7 +2195,7 @@ esac
         self.assertEqual(status(3), "oversize_rejected")
 
     def test_failed_rewrite_is_not_requeued_or_replayed_and_next_ticket_runs(self) -> None:
-        repo, stubs, packet = self.scenario()
+        repo, stubs, _packet = self.scenario()
         events_path = repo / ".factory/events.jsonl"
         escalation, receipt = map(json.loads, events_path.read_text().splitlines())
         escalation["ticket"] = 8
@@ -2430,7 +2437,7 @@ class DispatchTest(unittest.TestCase):
                 publications, issues = [], []
                 real_run = dispatch.run
 
-                def run(cmd, **kwargs):
+                def run(cmd, *, real_run=real_run, publications=publications, issues=issues, **kwargs):
                     if cmd[0] != "gh":
                         return real_run(cmd, **kwargs)
                     if "--method" in cmd:
@@ -2475,8 +2482,8 @@ class DispatchTest(unittest.TestCase):
             dispatch.configure(config.Config(
                 root=repo, repo="acme/widgets",
                 reviewer=[sys.executable, "-c",
-                          f"import sys; print({output!r}); "
-                          "open('received.txt', 'w').write(sys.argv[1])", "{prompt}"],
+                          (f"import sys; print({output!r}); "
+                           "open('received.txt', 'w').write(sys.argv[1])"), "{prompt}"],
             ))
             pr = {"number": 17, "state": "OPEN", "isDraft": False,
                   "headRefOid": "recorded-head", "baseRefOid": "recorded-base",
@@ -2538,7 +2545,7 @@ class DispatchTest(unittest.TestCase):
                 real_run = dispatch.run
                 publications = []
 
-                def run(cmd, **kwargs):
+                def run(cmd, *, real_run=real_run, publications=publications, **kwargs):
                     if cmd[0] != "gh":
                         return real_run(cmd, **kwargs)
                     if "--method" in cmd:
@@ -2873,8 +2880,8 @@ class DispatchTest(unittest.TestCase):
             source.write_bytes(long_handoff)
             issue = {"title": "t", "body": binding.render(prior_baseline), "comments": []}
             # Accepted within the 90-day payload window, unlike the expired fixtures above.
-            from datetime import datetime, timedelta, timezone
-            recent = datetime.now(timezone.utc) - timedelta(hours=3)
+            from datetime import datetime, timedelta
+            recent = datetime.now(UTC) - timedelta(hours=3)
             at = lambda hours: (recent + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
             events = [
                 {"event": "plan-bound", "ticket": n, "schema_version": 1, "baseline": prior_baseline, "issue": issue},
@@ -3001,8 +3008,8 @@ class DispatchTest(unittest.TestCase):
         prompt = root / "prompt.txt"
         (root / "reply.txt").write_text(reply)
         command = [sys.executable, "-c",
-                   "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(pathlib.Path(sys.argv[2]).read_text()); "
-                   "sys.stdout.write(pathlib.Path(sys.argv[3]).read_text())",
+                   ("import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(pathlib.Path(sys.argv[2]).read_text()); "
+                    "sys.stdout.write(pathlib.Path(sys.argv[3]).read_text())"),
                    str(prompt), "{prompt}", str(root / "reply.txt")]
         (repo / config.CONFIG_NAME).write_text(
             '[repo]\nslug = "acme/widgets"\n[manager]\ncommand = ' + json.dumps(command) + "\n")
@@ -3611,7 +3618,7 @@ class DispatchTest(unittest.TestCase):
                     final["reviewDecision"] = "CHANGES_REQUESTED"
                 views = iter((base, final))
 
-                def query(args):
+                def query(args, base=base, views=views):
                     if args[:2] == ["pr", "list"]:
                         return [base]
                     if args[:2] == ["pr", "view"]:
@@ -3699,7 +3706,7 @@ class DispatchTest(unittest.TestCase):
                 dispatch.merge_pass_locked(False)
 
             self.assertEqual(
-                subprocess.run(["git", "-C", str(origin), "merge-base", "--is-ancestor", u1, "main"]).returncode,
+                subprocess.run(["git", "-C", str(origin), "merge-base", "--is-ancestor", u1, "main"], check=False).returncode,
                 0,
             )
             parents = git(origin, "log", "-1", "--pretty=%P", "main").split()
@@ -3712,7 +3719,7 @@ class DispatchTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
-            root, origin, upstream = build_fork(tmp)
+            root, origin, _upstream = build_fork(tmp)
 
             git(origin, "checkout", "-q", "-b", "agent/99")
             (origin / "feature.txt").write_text("feature")
@@ -3803,12 +3810,12 @@ class DispatchTest(unittest.TestCase):
             )
 
             self.assertEqual(
-                subprocess.run(["git", "-C", str(wt), "merge-base", "--is-ancestor", u1, "HEAD"]).returncode,
+                subprocess.run(["git", "-C", str(wt), "merge-base", "--is-ancestor", u1, "HEAD"], check=False).returncode,
                 0,
             )
             self.assertEqual(
                 subprocess.run(
-                    ["git", "-C", str(origin), "merge-base", "--is-ancestor", u1, "agent/31"]
+                    ["git", "-C", str(origin), "merge-base", "--is-ancestor", u1, "agent/31"], check=False,
                 ).returncode,
                 0,
             )
@@ -3820,7 +3827,7 @@ class DispatchTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
-            root, origin, upstream = build_fork(tmp)
+            root, origin, _upstream = build_fork(tmp)
 
             git(origin, "checkout", "-q", "-b", "agent/7")
             (origin / "feature.txt").write_text("feature")
@@ -3875,7 +3882,7 @@ class DispatchTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
-            root, origin, upstream = build_fork(tmp)
+            root, origin, _upstream = build_fork(tmp)
             git(origin, "checkout", "-qb", "agent/7")
             (origin / "feature.txt").write_text("feature")
             git(origin, "add", "feature.txt")
@@ -3920,7 +3927,7 @@ class DispatchTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
-            root, origin, upstream = build_fork(tmp)
+            root, origin, _upstream = build_fork(tmp)
 
             # agent/8 adds one commit, then main lands the same change (squash).
             git(origin, "checkout", "-q", "-b", "agent/8")
@@ -3972,7 +3979,7 @@ class DispatchTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
-            root, origin, upstream = build_fork(tmp)
+            root, origin, _upstream = build_fork(tmp)
 
             git(origin, "checkout", "-q", "-b", "agent/9")
             (origin / "shared.txt").write_text("agent version")
@@ -4058,12 +4065,12 @@ class DispatchTest(unittest.TestCase):
             git(root, "fetch", "-q", "origin", "main")
             git(root, "rev-parse", "--verify", f"{u2}^{{commit}}")
             self.assertEqual(
-                subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", u1, "origin/main"]).returncode,
+                subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", u1, "origin/main"], check=False).returncode,
                 0,
                 "the conflict-free prefix should have landed",
             )
             self.assertNotEqual(
-                subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", u2, "origin/main"]).returncode,
+                subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", u2, "origin/main"], check=False).returncode,
                 0,
                 "the conflicting commit must not land",
             )
@@ -4110,6 +4117,7 @@ class DispatchTest(unittest.TestCase):
 class FeedbackSnapshotTest(unittest.TestCase):
     def test_external_review_queue_snapshot_states_and_revision_identity(self):
         from unittest import mock
+
         from factory import dashboard, dispatch
 
         with tempfile.TemporaryDirectory() as d:
@@ -4174,17 +4182,21 @@ class FeedbackSnapshotTest(unittest.TestCase):
 
     def test_github_failure_preserves_provider_diagnostic(self):
         from unittest import mock
+
         from factory import dashboard
 
         proc = subprocess.CompletedProcess([], 1, "", "gh: run gh auth login\n")
-        with mock.patch.object(dashboard.subprocess, "run", return_value=proc):
-            with self.assertRaisesRegex(RuntimeError, "gh: run gh auth login"):
-                dashboard.github(query="query { viewer { login } }")
+        with (
+            mock.patch.object(dashboard.subprocess, "run", return_value=proc),
+            self.assertRaisesRegex(RuntimeError, "gh: run gh auth login"),
+        ):
+            dashboard.github(query="query { viewer { login } }")
 
     def test_full_snapshot_preserves_legacy_contract_and_attaches_feedback(self):
         from unittest import mock
+
         from factory import dashboard, dispatch
-        from tests.test_feedback import Provider, REPO, PR, ISSUE, H, AT, factory_events
+        from tests.test_feedback import AT, ISSUE, PR, REPO, H, Provider, factory_events
 
         with tempfile.TemporaryDirectory() as d:
             repo = make_repo(Path(d), '[repo]\nslug = "example/project"\n')
@@ -4255,8 +4267,9 @@ class FeedbackSnapshotTest(unittest.TestCase):
 
     def test_historical_prs_add_no_feedback_reads_but_keep_schema_1(self):
         from unittest import mock
+
         from factory import dashboard, dispatch, feedback
-        from tests.test_feedback import Provider, REPO, PR, ISSUE, H, AT
+        from tests.test_feedback import AT, ISSUE, PR, REPO, H, Provider
 
         def issue_of(number):
             return {"id": f"I_{number}", "number": number, "title": "Historical",
@@ -4323,6 +4336,7 @@ class InitiativeGuardTest(unittest.TestCase):
 
     def setUp(self) -> None:
         from unittest.mock import patch
+
         from factory import lifecycle
 
         self.enterContext(patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
@@ -4398,6 +4412,7 @@ esac
 
     def test_merge_stage_refuses_initiative_pr_without_reading_ci_or_mutating(self) -> None:
         from unittest import mock
+
         from factory import dispatch
 
         repo = make_repo(self.root)

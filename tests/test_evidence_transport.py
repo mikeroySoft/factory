@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import shutil
 import signal
 import subprocess
@@ -37,6 +36,7 @@ import tempfile
 import time
 import unittest
 import uuid
+from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,7 +47,8 @@ PREFIX = f"repos/{REPO}/"
 # (evidence.py RESPONSE_CAP) plus one trailing newline on stdout.
 RESPONSE_TOTAL = 500001
 
-from factory import lifecycle  # noqa: E402
+from factory import lifecycle
+
 try:
     import test_evidence as _base
 except ImportError:  # full-suite discovery imports tests as a package
@@ -156,7 +157,7 @@ class EvidenceTransportTest(unittest.TestCase):
         started = time.monotonic()
         proc = subprocess.run(
             [sys.executable, "-B", "-m", "factory.cli", "evidence", "--root", str(self.root)],
-            cwd=self.root, env=self.env, input=payload, capture_output=True, timeout=timeout)
+            cwd=self.root, env=self.env, input=payload, capture_output=True, timeout=timeout, check=False)
         self.elapsed = time.monotonic() - started
         self.raw = proc.stdout
         self.assertEqual(before, self.state(), "Evidence read changed the selected checkout")

@@ -25,8 +25,8 @@ from factory.config import (
     LABEL_CHORE,
     LABEL_HUMAN,
     LABEL_INFO,
-    LABEL_TRIAGE,
     LABEL_REVIEW,
+    LABEL_TRIAGE,
     LABEL_VIABILITY,
     Config,
 )
@@ -98,7 +98,7 @@ def gh(*args: str, execution=None) -> str:
                 if proc.poll() is not None:
                     execution.child_done(proc.pid)
     else:
-        proc = subprocess.run(command, capture_output=True, text=True)
+        proc = subprocess.run(command, capture_output=True, text=True, check=False)
         out, err = proc.stdout, proc.stderr
     if execution:
         execution.emit("result", command="gh", returncode=proc.returncode)
@@ -365,7 +365,7 @@ def execute(args: argparse.Namespace, execution) -> int:
     outcome, reason = "completed", None
     # One local model serves every repo on this host; hold the host lock so
     # simultaneous timer passes queue on it instead of hammering the endpoint.
-    with open(cfg.lock, "w") as host_lock:  # noqa: SIM115
+    with open(cfg.lock, "w") as host_lock:
         fcntl.flock(host_lock, fcntl.LOCK_EX)
         if execution:
             execution.emit("lock_acquired", lock=str(cfg.lock))

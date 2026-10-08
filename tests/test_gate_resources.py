@@ -3,17 +3,16 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import signal
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from factory import lifecycle
-
 
 CHECK = '''import os, sys, time
 from pathlib import Path

@@ -137,7 +137,7 @@ class BindingCli(unittest.TestCase):
 
     def cli(self, *args):
         return subprocess.run([sys.executable, '-m', 'factory', *args], cwd=self.repo,
-                              env=self.env, capture_output=True, text=True, timeout=60)
+                              env=self.env, capture_output=True, text=True, timeout=60, check=False)
 
     def proposed(self):
         result = self.cli('plan', 'baseline', '50')
@@ -218,8 +218,10 @@ class BindingCli(unittest.TestCase):
         cfg = config.load(self.repo)
         dispatch.configure(cfg)
         issue = self.state['tickets']['7']
-        with mock.patch.object(dispatch, 'gh_json', return_value=issue), \
-                mock.patch.object(binding, 'observe', side_effect=binding.BindingError('incomplete-source')):
-            with self.assertRaisesRegex(binding.BindingError, 'incomplete-source'):
-                dispatch.build_prompt(7, self.repo)
+        with (
+            mock.patch.object(dispatch, 'gh_json', return_value=issue),
+            mock.patch.object(binding, 'observe', side_effect=binding.BindingError('incomplete-source')),
+            self.assertRaisesRegex(binding.BindingError, 'incomplete-source'),
+        ):
+            dispatch.build_prompt(7, self.repo)
         self.assertFalse((self.repo / '.factory/brief-7.md').exists())

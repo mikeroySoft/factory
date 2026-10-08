@@ -10,7 +10,7 @@ import re
 import subprocess
 import time
 import unicodedata
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from urllib.parse import quote
 
 from factory import lifecycle
@@ -68,9 +68,9 @@ def utc(value: object) -> str | None:
     if not isinstance(value, str):
         return None
     try:
-        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        parsed = datetime.fromisoformat(value)
         if parsed.tzinfo is not None:
-            return parsed.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
+            return parsed.astimezone(UTC).isoformat().replace('+00:00', 'Z')
     except ValueError:
         pass
     return None
@@ -88,7 +88,7 @@ def collect(read, *, repository: dict, pr: dict, issue: dict | None = None,
     collect_details=False reads nothing: the caller's independently known identities
     and state are retained and every source is unavailable, never complete-empty.
     """
-    observed_at = utc(observed_at) or datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+    observed_at = utc(observed_at) or datetime.now(UTC).isoformat().replace('+00:00', 'Z')
     repository = {"id": identity(repository.get('id')), "slug": repository['slug'].strip().lower(),
                   "host": repository['host'].strip().lower()}
     result = {'schema_version': 1, 'producer': {'name': 'factory.pr-feedback', 'revision': sha(producer_revision)},
@@ -137,7 +137,7 @@ def collect(read, *, repository: dict, pr: dict, issue: dict | None = None,
             if time.monotonic() > deadline:
                 raise TimeoutError
             if not isinstance(value, (dict, list)):
-                raise ValueError
+                raise ValueError  # noqa: TRY004 — malformed provider response
             return value
         except (TimeoutError, subprocess.TimeoutExpired):
             gap(source, 'timeout', 'Feedback detail group reached its 30-second limit.')
@@ -311,7 +311,7 @@ def collect(read, *, repository: dict, pr: dict, issue: dict | None = None,
                     gap('threads', 'thread_state_missing', 'Thread resolution or outdated state is unavailable.')
                 comments = thread['comments']
                 if not isinstance(comments['nodes'], list):
-                    raise ValueError
+                    raise ValueError  # noqa: TRY004 — malformed provider response
                 for row in comments['nodes'][:ITEM_LIMIT]:
                     item('threads', 'review_comment', row.get('id'), body=row.get('body') or '', updated=row.get('updatedAt'),
                          source_sha=(row.get('commit') or {}).get('oid'), url=row.get('url'), author=row.get('author'),
@@ -344,11 +344,11 @@ def collect(read, *, repository: dict, pr: dict, issue: dict | None = None,
             try:
                 rows = values['check_runs'] if kind == 'check_run' else values
                 if not isinstance(rows, list):
-                    raise ValueError
+                    raise ValueError  # noqa: TRY004 — malformed provider response
                 success('checks')
                 for row in rows[:ITEM_LIMIT]:
                     if not isinstance(row, dict):
-                        raise ValueError
+                        raise ValueError  # noqa: TRY004 — malformed provider response
                     is_run = kind == 'check_run'
                     item('checks', kind, row.get('node_id'), url=row.get('html_url', row.get('target_url')),
                          body='\n\n'.join(v for v in ((row.get('output') or {}).get('summary'), (row.get('output') or {}).get('text')) if isinstance(v, str) and v) if is_run else (row.get('description') or ''),

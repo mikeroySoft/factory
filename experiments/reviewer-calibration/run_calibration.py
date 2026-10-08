@@ -8,7 +8,14 @@ the raw reviewer output. Adjudication against cases/<id>/oracle.json is done sep
 usage: run_calibration.py <out-dir> <samples> [contract ...]
 """
 import concurrent.futures as cf
-import hashlib, json, pathlib, subprocess, sys, tempfile, threading, time
+import hashlib
+import json
+import pathlib
+import subprocess
+import sys
+import tempfile
+import threading
+import time
 
 EXP = pathlib.Path(__file__).parent
 REPO = "/home/mike/dev/mikeroysoft/factory"
@@ -53,7 +60,7 @@ def checkout(commit: str) -> pathlib.Path:
             subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout", REPO, str(dest)],
                            check=True, capture_output=True)
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=dest,
-                              capture_output=True, text=True).stdout.strip()
+                              capture_output=True, text=True, check=False).stdout.strip()
         if head != commit:
             subprocess.run(["git", "checkout", "--quiet", "--detach", commit], cwd=dest,
                            check=True, capture_output=True)
@@ -82,7 +89,7 @@ def review(contract: str, case: str, sample: int) -> dict:
         started = time.monotonic()
         proc = subprocess.run(["omp", *FLAGS, "--model", MODEL, "@" + str(path)],
                               cwd=d, capture_output=True, text=True, timeout=TIMEOUT,
-                              stdin=subprocess.DEVNULL)
+                              stdin=subprocess.DEVNULL, check=False)
         elapsed = round(time.monotonic() - started, 1)
     return {"contract": contract, "contract_commit": CONTRACTS[contract], "case": case,
             "sample": sample, "returncode": proc.returncode, "seconds": elapsed,
