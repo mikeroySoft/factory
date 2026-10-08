@@ -497,8 +497,9 @@ ticket's `human_touch` details. The dashboard retains its existing 100-issue,
    label and escalate. Red CI → label removed, escalated once with the failing
    check names. A check cancelled after running steps is red CI. A check
    cancelled before any runner picked it up (no steps, no runner, or GitHub's
-   "not acquired by Runner" annotation) is infrastructure: once no other check in
-   its run is pending, the run's failed jobs are rerun once (`gh run rerun
+   "not acquired by Runner" annotation) is infrastructure: once its run has
+   finished (no other check pending and GitHub reports the run completed), the
+   run's failed jobs are rerun once (`gh run rerun
    --failed`, journaled as `ci-infra` and `ci-rerun`), the label stays, and the
    PR waits as CI pending. If the rerun is
    also starved, the ticket is escalated once as "CI runner unavailable" with the

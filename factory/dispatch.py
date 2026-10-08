@@ -1343,6 +1343,20 @@ def _infra_cancel(check: dict) -> dict | None:
         return None
 
 
+def _run_in_progress(run_id: int) -> bool:
+    """True while GitHub reports the workflow run active; it refuses to rerun one.
+
+    The caller's check rows can omit sibling jobs (`gh pr checks --required`).
+    Unreadable run data reads as finished: the rerun is attempted and, if refused,
+    escalates visibly instead of waiting forever.
+    """
+    res = run(["gh", "api", f"repos/{REPO}/actions/runs/{run_id}"], check=False)
+    try:
+        return res.returncode == 0 and json.loads(res.stdout).get("status") != "completed"
+    except (ValueError, AttributeError):
+        return False
+
+
 def triage_cancelled(pr: int, checks: list[dict], dry_run: bool = False) -> list[dict]:
     """Rebucket `cancel` rows so a CI runner outage is not a code failure.
 
@@ -1370,7 +1384,7 @@ def triage_cancelled(pr: int, checks: list[dict], dry_run: bool = False) -> list
         evidence = dict(pr=pr, run=run_id, attempt=attempt, checks=names, evidence=[i for _, i in rows])
         rerun = next((e for e in reversed(events) if e.get("event") == "ci-rerun"
                       and e.get("pr") == pr and e.get("run") == run_id), None)
-        if run_id in running:
+        if run_id in running or _run_in_progress(run_id):
             bucket = "pending"  # retry on a later pass once the run has finished
         elif rerun is None and dry_run:
             log(f"PR #{pr}: would rerun CI run {run_id} (runner never acquired: {', '.join(names)})")
