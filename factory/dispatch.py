@@ -1469,7 +1469,8 @@ def triage_cancelled(pr: int, checks: list[dict], dry_run: bool = False) -> list
     for run_id, rows in starved.items():
         names = [c["name"] for c, _ in rows]
         attempt = max(i["attempt"] for _, i in rows)
-        evidence = dict(pr=pr, run=run_id, attempt=attempt, checks=names, evidence=[i for _, i in rows])
+        evidence = {"pr": pr, "run": run_id, "attempt": attempt, "checks": names,
+                    "evidence": [i for _, i in rows]}
         rerun = next((e for e in reversed(events) if e.get("event") == "ci-rerun"
                       and e.get("pr") == pr and e.get("run") == run_id), None)
         if run_id in running or _run_in_progress(run_id):

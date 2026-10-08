@@ -3626,8 +3626,8 @@ class DispatchTest(unittest.TestCase):
         timed_out = {"run_id": 123, "run_attempt": 1, "runner_name": "GitHub Actions 3",
                      "steps": [{"conclusion": "success"}, {"conclusion": "cancelled"}]}
         for annotation, infra in (("", False),
-                                  ("The job was not acquired by Runner of type hosted "
-                                   "even after multiple attempts.", True)):
+                                  (("The job was not acquired by Runner of type hosted "
+                                    "even after multiple attempts."), True)):
             with self.subTest(infra=infra), tempfile.TemporaryDirectory() as d:
                 dispatch.configure(config.Config(root=make_repo(Path(d)), repo="acme/widgets"))
                 escalations, removed, reruns, _ = self.cancelled_ci_pass(
