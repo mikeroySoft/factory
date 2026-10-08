@@ -234,8 +234,9 @@ def decision_route(cfg: Config, ticket: dict) -> dict:
         "notice": (
             "Configured/intended decision-owner destination (ticket Decision owner, initiative Owner, "
             ".factory.toml [collaboration]); not an execution claim, not current runtime routing, and not "
-            "proof that engineering work needs a human. Unassigned or absent means no owner is configured, "
-            "not that no decision exists."
+            "proof that engineering work needs a human. Unassigned means this route selected no owner from "
+            "the available inputs (see provenance: the reason may be unknown and change paths are unavailable "
+            "here). It does not mean no owner is configured or that no decision exists."
         ),
     }
 
