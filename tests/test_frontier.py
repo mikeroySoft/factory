@@ -163,6 +163,16 @@ class FrontierTest(unittest.TestCase):
         self.assertEqual(self.provider.calls, [])
         self.assertEqual(self.mutations, [])
 
+    def test_meta_loop_prs_never_enter_the_frontier(self) -> None:
+        dispatch.record("claimed", ticket=79)
+        self.enterContext(mock.patch.object(dispatch, "pr_checks", return_value=[{"name": "ci", "bucket": "pass"}]))
+        for kind in ("curate", "lessons"):
+            with self.subTest(kind=kind):
+                self.pr = {**pr_row(labels=("factory-approved",)), "headRefName": f"agent/{kind}-2026-10-08"}
+                manage.frontier_pass()
+                self.assertEqual(self.provider.calls, [])
+                self.assertEqual(self.mutations, [])
+
     def test_red_ci_and_stale_escalate_once_and_pending_waits(self) -> None:
         dispatch.record("claimed", ticket=79)
         self.provider.reviews, self.provider.checks = [], []
