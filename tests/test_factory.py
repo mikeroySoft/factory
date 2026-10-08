@@ -2235,19 +2235,21 @@ esac
         self.assertNotIn("issue edit", (Path(stubs) / "gh.log").read_text()[len(calls):])
 
     def test_manage_rejects_curate_from_escalation_packet(self) -> None:
-        repo, stubs, _ = self.scenario()
-        command = ["printf", "%s", "DECISION: CURATE\n" + curate_diff("AGENTS.md")]
-        (repo / config.CONFIG_NAME).write_text("[manager]\ncommand = " + json.dumps(command) + "\n")
-        result = factory(repo, "manage", path=stubs)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        calls = (Path(stubs) / "gh.log").read_text()
-        self.assertIn("Factory manager: Rejected CURATE", calls)
-        self.assertNotIn("--add-label ready-for-agent", calls)
-        self.assertNotIn("pr create", calls)
-        events = list(map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines()))
-        manage = next(e for e in events if e.get("event") == "manage")
-        self.assertEqual(manage["decision"], "HUMAN")
-        self.assertEqual(manage["rejected"], "CURATE")
+        for path in ("AGENTS.md", config.CONFIG_NAME):
+            with self.subTest(path=path):
+                repo, stubs, _ = self.scenario()
+                command = ["printf", "%s", "DECISION: CURATE\n" + curate_diff(path)]
+                (repo / config.CONFIG_NAME).write_text("[manager]\ncommand = " + json.dumps(command) + "\n")
+                result = factory(repo, "manage", path=stubs)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                calls = (Path(stubs) / "gh.log").read_text()
+                self.assertIn("Factory manager: Rejected CURATE", calls)
+                self.assertNotIn("--add-label ready-for-agent", calls)
+                self.assertNotIn("pr create", calls)
+                events = list(map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines()))
+                manage = next(e for e in events if e.get("event") == "manage")
+                self.assertEqual(manage["decision"], "HUMAN")
+                self.assertEqual(manage["rejected"], "CURATE")
 
 
 class DispatchTest(unittest.TestCase):
@@ -3003,7 +3005,7 @@ class DispatchTest(unittest.TestCase):
             with mock.patch.object(dispatch, "gh_json", return_value={"title": "t", "body": "b", "comments": []}):
                 self.assertIn("## Lessons from previous tickets", dispatch.build_prompt(3, wt))
 
-    def learn_scenario(self, root: Path, reply: str) -> tuple[Path, Path, str, Path]:
+    def learn_scenario(self, root: Path, reply: str, toml: str = "") -> tuple[Path, Path, str, Path]:
         """Repo with a bare origin and a fake manager that records its prompt and prints `root/reply.txt`."""
         repo = make_repo(root)
         bare = root / "origin.git"
@@ -3016,7 +3018,7 @@ class DispatchTest(unittest.TestCase):
                     "sys.stdout.write(pathlib.Path(sys.argv[3]).read_text())"),
                    str(prompt), "{prompt}", str(root / "reply.txt")]
         (repo / config.CONFIG_NAME).write_text(
-            '[repo]\nslug = "acme/widgets"\n[manager]\ncommand = ' + json.dumps(command) + "\n")
+            '[repo]\nslug = "acme/widgets"\n[manager]\ncommand = ' + json.dumps(command) + "\n" + toml)
         git(repo, "add", "-A")
         git(repo, "commit", "-q", "-m", "cfg")
         git(repo, "push", "-q", "origin", "main")
@@ -3074,17 +3076,12 @@ class DispatchTest(unittest.TestCase):
             self.assertEqual(next(e for e in events if e.get("event") == "learn")["curate"], branch)
 
     def test_learn_curate_rejects_verification_paths(self) -> None:
-        for bad in (".github/workflows/ci.yml", ".factory.toml", "src/main.py", "AGENTS.mdx"):
+        for bad in (".github/workflows/ci.yml", "src/main.py", "AGENTS.mdx"):
             with self.subTest(path=bad), tempfile.TemporaryDirectory() as d:
                 root = Path(d)
-                repo, bare, stubs, _ = self.learn_scenario(root, "")
-                if bad == config.CONFIG_NAME:  # a real edit to the committed gate config
-                    with (repo / bad).open("a") as f:
-                        f.write('[[gate.check]]\nname = "skip"\nrun = ["true"]\n')
-                    diff = curate_diff("AGENTS.md") + git(repo, "diff") + "\n"
-                    git(repo, "checkout", "--", bad)
-                else:
-                    diff = curate_diff("AGENTS.md", bad)
+                # `.github/` stays human-only even when the base ref protects it.
+                repo, bare, stubs, _ = self.learn_scenario(root, "", '[gate]\nprotected_paths = [".github/**"]\n')
+                diff = curate_diff("AGENTS.md", bad)
                 (root / "reply.txt").write_text(
                     json.dumps({"lessons": ["Run `make test` before the gate."]}) + "\nDECISION: CURATE\n" + diff)
                 result = factory(repo, "learn", path=stubs)
@@ -3098,6 +3095,76 @@ class DispatchTest(unittest.TestCase):
                 self.assertFalse(list((repo / ".factory").glob("curate-*.patch")))
                 events = list(map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines()))
                 self.assertIn(bad, next(e for e in events if e.get("event") == "learn")["curate"])
+
+    HARNESS = ('[gate]\nprotected_paths = ["tests/**"]\n[[gate.check]]\nname = "unit"\nrun = ["true"]\n'
+               '[leak_scan]\nextra = ["codename"]\n')
+
+    def harness_scenario(self, root: Path) -> tuple[Path, Path, str]:
+        """Learn scenario whose base ref has a gate check, a protected `tests/**` and a committed test."""
+        repo, bare, stubs, _ = self.learn_scenario(root, "", self.HARNESS)
+        (repo / "tests").mkdir()
+        (repo / "tests/test_old.py").write_text("assert True\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "test")
+        git(repo, "push", "-q", "origin", "main")
+        return repo, bare, stubs
+
+    def reply_with(self, root: Path, diff: str) -> None:
+        (root / "reply.txt").write_text(
+            json.dumps({"lessons": ["Run `make test` before the gate."]}) + "\nDECISION: CURATE\n" + diff)
+
+    def test_learn_curate_appends_gate_check_and_regression_test(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            repo, bare, stubs = self.harness_scenario(root)
+            toml = repo / config.CONFIG_NAME
+            toml.write_text(toml.read_text().replace('"tests/**"]', '"tests/**", "checks/**"]')
+                            + '[[gate.check]]\nname = "lint"\nrun = ["ruff", "check", "."]\n')
+            self.reply_with(root, git(repo, "diff") + "\n" + curate_diff("tests/test_parser.py"))
+            git(repo, "checkout", "--", config.CONFIG_NAME)
+            result = factory(repo, "learn", path=stubs)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("prefer a gate check", (root / "prompt.txt").read_text())
+            calls = (Path(stubs) / "gh.log").read_text()
+            self.assertIn("--head agent/curate-", calls)
+            branch = git(bare, "branch", "--list", "agent/curate-*").lstrip("* ")
+            self.assertEqual(git(bare, "diff", "--name-only", "main", branch).split(),
+                             [config.CONFIG_NAME, "tests/test_parser.py"])
+            self.assertIn('name = "lint"', git(bare, "show", f"{branch}:{config.CONFIG_NAME}"))
+            for pr in ("curate", "lessons"):
+                name = git(bare, "branch", "--list", f"agent/{pr}-*").lstrip("* ").removeprefix("agent/")
+                body = (repo / ".factory" / f"pr-body-{name}.md").read_text()
+                self.assertIn("Harness change from the meta loop — human merge required.", body)
+
+    def test_learn_curate_rejects_weakening_the_harness(self) -> None:
+        def toml_edit(old: str, new: str):
+            def mutate(repo: Path) -> None:
+                path = repo / config.CONFIG_NAME
+                path.write_text(path.read_text().replace(old, new))
+            return mutate
+
+        cases = {
+            "removes gate check 'unit'": toml_edit('[[gate.check]]\nname = "unit"\nrun = ["true"]\n', ""),
+            "edits gate check 'unit'": toml_edit('run = ["true"]', 'run = ["false"]'),
+            "removes protected path 'tests/**'": toml_edit('["tests/**"]', "[]"),
+            "changes [leak_scan]": toml_edit('extra = ["codename"]', "extra = []"),
+            "is not a new name": toml_edit("[leak_scan]", '[[gate.check]]\nname = "unit"\nrun = ["true"]\n[leak_scan]'),
+            "changes more than appended": toml_edit("[gate]\n", "[gate]\ntimeout = 1\n"),
+            "deletes or renames tests/test_old.py": lambda repo: (repo / "tests/test_old.py").unlink(),
+        }
+        for reason, mutate in cases.items():
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                repo, bare, stubs = self.harness_scenario(root)
+                mutate(repo)
+                self.reply_with(root, curate_diff("AGENTS.md") + git(repo, "diff") + "\n")
+                git(repo, "checkout", "--", ".")
+                result = factory(repo, "learn", path=stubs)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("CURATE rejected: ", result.stdout)
+                self.assertIn(reason, result.stdout)
+                self.assertNotIn("agent/curate-", (Path(stubs) / "gh.log").read_text())
+                self.assertEqual(git(bare, "branch", "--list", "agent/curate-*"), "")
 
     def test_cost_pattern_sums_worker_log(self) -> None:
         from factory import dispatch
@@ -3476,6 +3543,23 @@ class DispatchTest(unittest.TestCase):
                 run.assert_not_called()
                 refresh.assert_not_called()
                 escalate.assert_not_called()
+
+    def test_merge_never_takes_meta_loop_prs(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.configure(config.Config(root=make_repo(Path(d)), repo="acme/widgets"))
+            prs = [{"number": n, "headRefName": f"agent/{kind}-2026-10-08", "headRefOid": "head",
+                    "baseRefName": "main", "isDraft": False, "labels": [{"name": "factory-approved"}],
+                    "reviewDecision": "APPROVED"} for n, kind in ((70, "curate"), (71, "lessons"))]
+            with mock.patch.object(dispatch, "gh_json", return_value=prs), \
+                    mock.patch.object(dispatch, "pr_checks", return_value=[{"name": "ci", "bucket": "pass"}]) as checks, \
+                    mock.patch.object(dispatch, "run") as run:
+                dispatch.merge_pass_locked(False)
+            checks.assert_not_called()
+            run.assert_not_called()
 
     def test_merge_rechecks_base_before_mutating_candidate(self) -> None:
         from unittest import mock
