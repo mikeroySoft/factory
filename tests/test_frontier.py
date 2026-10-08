@@ -43,6 +43,7 @@ class FrontierTest(unittest.TestCase):
         self.provider = Provider()
         self.linked = True
         self.issue_labels = ["ready-for-agent"]
+        self.timeline: list[dict] = []
         self.pr = pr_row()
         self.mutations: list[list[str]] = []
         self.manager_output = "DECISION: HUMAN\nnothing"
@@ -68,6 +69,8 @@ class FrontierTest(unittest.TestCase):
             return self.pr
         if args[:2] == ["api", "repos/example/project"]:
             return {"id": "R_1"}
+        if args[:2] == ["api", "repos/example/project/issues/79/timeline"]:
+            return [self.timeline]
         if args[:2] == ["issue", "view"]:
             return {"id": "I_79", "number": 79, "url": "https://github.com/example/project/issues/79",
                     "title": "Ticket", "body": "Scope", "state": "OPEN",
@@ -179,6 +182,31 @@ class FrontierTest(unittest.TestCase):
         manage.frontier_pass()
         self.assertIn("stale_days = 7", self.escalations()[-1]["reason"])
         self.assertEqual(len(self.escalations()), 2)
+
+    def released_after_red_ci(self) -> None:
+        """#188: gate failed at 18:52; the owner released the ticket to ready-for-agent at 19:45."""
+        dispatch.record("claimed", ticket=79)
+        self.provider.reviews = []
+        self.provider.thread["isResolved"] = True
+        self.provider.checks[0]["updated_at"] = "2026-10-07T18:52:10Z"
+        self.timeline = [{"event": "labeled", "label": {"name": "ready-for-agent"}, "created_at": "2026-10-01T00:00:00Z"},
+                         {"event": "labeled", "label": {"name": "ready-for-agent"}, "created_at": "2026-10-07T19:45:44Z"}]
+
+    def test_red_ci_older_than_the_release_to_ready_for_agent_waits_for_the_worker(self) -> None:
+        self.released_after_red_ci()
+        with mock.patch.object(dispatch, "pr_checks", return_value=[
+                {"name": "gate", "bucket": "fail", "completedAt": "2026-10-07T18:52:10Z"}]):
+            manage.frontier_pass()
+        self.assertEqual(self.escalations(), [])
+        self.assertEqual(self.mutations, [])
+
+    def test_red_ci_newer_than_the_release_still_escalates(self) -> None:
+        self.released_after_red_ci()
+        with mock.patch.object(dispatch, "pr_checks", return_value=[
+                {"name": "gate", "bucket": "fail", "completedAt": "2026-10-07T18:52:10Z"},
+                {"name": "unit", "bucket": "fail", "completedAt": "2026-10-07T20:10:00Z"}]):
+            manage.frontier_pass()
+        self.assertEqual([e["reason"] for e in self.escalations()], ["PR #80: CI failed (unit)"])
 
     def approved_head(self, head):
         dispatch.record("claimed", ticket=79)
