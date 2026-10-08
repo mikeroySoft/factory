@@ -1,7 +1,8 @@
-"""Deterministic per-ticket brief: files, recent PRs, triage brief, lessons. No LLM.
+"""Per-ticket brief: files, recent PRs, triage brief, lessons.
 
 Written once to `<worktree>/.factory/brief-<n>.md` before attempt 1 and appended
-to every worker prompt as `## Brief`. Evidence is grep and git only.
+to every worker prompt as `## Brief`. Evidence is grep and git; when
+`TYPESAFE_API_KEY` is set, Jev reranks the noun-matched files (noun order otherwise).
 """
 
 from __future__ import annotations
@@ -65,7 +66,10 @@ def rerank(cwd: Path, issue: dict, paths: list[str]) -> list[str]:
     try:
         candidates = []
         for path in paths:
-            lines = (cwd / path).read_text(errors="replace").splitlines()
+            try:
+                lines = (cwd / path).read_text(errors="replace").splitlines()
+            except OSError:  # path from git history that no longer exists in the tree
+                lines = []
             summary = next((line.strip()[:200] for line in lines if line.strip()), "")
             candidates.append({"path": path, "summary": summary})
         questions = {
