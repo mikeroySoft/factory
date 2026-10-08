@@ -6,8 +6,8 @@ Run: python -m unittest discover -s tests
 from __future__ import annotations
 
 import json
-import re
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -390,7 +390,7 @@ class HostConfigTest(unittest.TestCase):
         host_file('[defaults.leak_scan]\nextra = ["bluefin"]\npattern = ""\n'
                   '[repo."acme/widgets".leak_scan]\nextra = ["redfin"]\n')
         with tempfile.TemporaryDirectory() as d:
-            leak = re.compile(config.load(make_repo(Path(d), '[leak_scan]\nextra = ["greenfin"]\n')).leak_pattern, re.I)
+            leak = re.compile(config.load(make_repo(Path(d), '[leak_scan]\nextra = ["greenfin"]\n')).leak_pattern, re.IGNORECASE)
             for term in ("ship Bluefin", "redfin", "greenfin", "CONFIDENTI\x41L"):
                 self.assertIsNotNone(leak.search(term), term)
             self.assertIsNone(leak.search("### Internal"))
