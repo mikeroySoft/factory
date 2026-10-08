@@ -441,9 +441,7 @@ re-arm a recorded viability request.
 
 Human-touch metrics are read-only; no manager behavior is required. A
 `ready-for-human` label addition starts an escalation interval; removal ends it
-and attributes the resolution to that removal's actor (`User` → human, `Bot` →
-factory, absent/other → unknown). Resolver logins are retained. Automation using
-a human account is indistinguishable from manual activity under that account.
+and attributes the resolution to that removal's actor. Resolver logins are retained.
 Open intervals accrue until now, or until closure/merge for finished tickets.
 Re-queues count `ready-for-agent` additions after the initial queue entry, with
 repeated `claimed` trace records as a fallback. Trace escalation counts likewise
@@ -452,13 +450,32 @@ Manager command failures are counted separately as `manager_failures` in stats
 JSON and dashboard ticket `human_touch` data, and as `manager failures` in the
 stats table. They do not add an escalation or consume another manager round.
 
+Human corrections that never escalate are counted per agent PR (`agent/<n>`, any
+state, merged included): `human_change_requests` (changes-requested reviews),
+`human_comments` (review-thread and PR conversation comments) and `human_commits`
+(commits whose author or committer account is human). Resolutions and corrections
+share one attribution rule. The actor is **factory** when it is a `Bot` or its login
+is the dispatcher's authenticated login (`gh api user` under `[install].dispatch_env`).
+Any other account is **human**. A missing account is unknown. Every action before
+that login's first observed action (labels, reviews, comments, commits) is
+**unattributable**, so the switch to a separate machine account needs no config. With
+`dispatch_env` unset the factory shares the human's account, so nothing is
+attributable. An agent PR with any unattributable action reports its three counts
+as `null` (`n/a`). Interactive agent sessions and hand edits under a human account both
+count as human.
+
 The stats footer and dashboard KPIs show escalations in the trailing seven days
-and the percentage of attributed resolutions performed by humans; unresolved
-and unknown resolutions are excluded from that denominator (`n/a`/`null` when
-none are attributed). `factory dashboard --json` exposes
-`metrics.escalations_per_week`, `metrics.human_resolved_pct` (0–100), and each
-ticket's `human_touch` details. The dashboard retains its existing 100-issue,
-100-PR, and 100-timeline-item query limits; stats paginates label timelines.
+and the percentage of attributed resolutions performed by humans; unresolved,
+unknown and unattributable resolutions are excluded from that denominator
+(`n/a`/`null` when none are attributed). The stats footer also shows
+`Human-touched PRs`: the share of merged agent PRs with any human correction,
+unattributable PRs excluded. `factory dashboard --json` exposes
+`metrics.escalations_per_week`, `metrics.human_resolved_pct`,
+`metrics.human_touched_pct` (both 0–100), and each ticket's `human_touch` details.
+The dashboard reads each merged agent PR's corrections once per process. It retains
+its existing 100-issue, 100-PR, and 100-timeline-item query limits; stats paginates
+label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
+100 conversation comments and 100 commits per PR.
 
 ## How a ticket moves
 
