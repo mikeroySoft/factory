@@ -75,6 +75,8 @@ flowchart TB
 
   %% Build
   RFA -->|"open, unassigned, no open blockers: dispatch.frontier"| CLAIM
+  RFA -->|"its PR's red CI completed before the release: no escalation, waits for a worker: manage.frontier_pass"| CLAIM
+  RFA -->|"its PR's CI red after the release, or idle stale_days counted from the release: manage.frontier_pass, manage.released_at"| ESC
   CLAIM -->|"dispatch.process_ticket"| WR
   WR -->|"gate FAIL or worker stuck, attempts left, report fed back: dispatch.process_ticket"| WR
   WR -->|"gate FAIL or stuck max_attempts, protected paths, or budget: dispatch.process_ticket"| ESC
@@ -90,6 +92,7 @@ flowchart TB
   %% Approval and merge
   MAPP -->|"manager APPROVE: manage.frontier_pass"| FA
   MAPP -->|"CI fail, late feedback, stale, rounds exhausted, HUMAN: manage.frontier_pass"| ESC
+  FA -->|"late feedback or stale past stale_days, any manager.review mode: manage.frontier_pass"| ESC
   MAPP -.->|"CI cancel still treated as fail before approval: manage.frontier_pass"| ESC
   MAPP -->|"FIX or CLOSE: manage.apply"| MGR
   FA -->|"dispatch.pr_checks"| CI
