@@ -67,7 +67,6 @@ class UsageExtractionTest(unittest.TestCase):
                 "type": "message_end",
                 "message": {
                     "role": "assistant",
-                    "model": "m1",
                     "content": [{"type": "text", "text": "VERDICT: APPROVE"}],
                     "usage": {
                         "input": 3,
@@ -86,8 +85,15 @@ class UsageExtractionTest(unittest.TestCase):
             "prompt_tokens": 22,
             "completion_tokens": 3,
             "prefix_cache_hit_rate": 4 / 22,
-            "model": "m1",
         })
+
+    def test_omp_usage_carries_reported_model_for_pricing(self) -> None:
+        row = {"type": "message_end", "message": {
+            "role": "assistant", "model": "m1", "content": [{"type": "text", "text": "VERDICT: APPROVE"}],
+            "usage": {"input": 3, "output": 1},
+        }}
+
+        self.assertEqual(dispatch._omp_output(json.dumps(row))[1]["model"], "m1")
 
     def test_stats_totals_worker_usage_and_prices_only_from_table(self) -> None:
         def event(stage, **fields):

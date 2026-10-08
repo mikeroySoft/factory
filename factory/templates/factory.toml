@@ -55,7 +55,8 @@
 # fields are null. A table worker may read them from structured output: dotted
 # JSON paths (or arrays of paths, added) summed over the log's JSON lines that
 # satisfy `match`; `cost` falls back to [dispatch].cost_pattern. Example for
-# Claude Code `--output-format json`:
+# Claude Code `--output-format json` (paths checked on 2.1.292; it names the
+# model only as a `modelUsage` key, so no `model` path):
 # usage = { match = { type = "result" }, cost = "total_cost_usd", completion_tokens = "usage.output_tokens", cached_tokens = "usage.cache_read_input_tokens", prompt_tokens = ["usage.input_tokens", "usage.cache_read_input_tokens", "usage.cache_creation_input_tokens"] }
 # Host config `[defaults.prices."<model>"]` (prompt, completion, optional cached;
 # USD per million tokens) prices events that report tokens but no cost.

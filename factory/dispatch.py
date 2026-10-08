@@ -1846,11 +1846,11 @@ def worker_round(
     return ok, report, logfile, head
 
 
-def log_cost(text: str) -> float | None:
+def log_cost(logfile: Path) -> float | None:
     """Sum of `cost_pattern` captures in the worker log; None when unset/absent."""
     if not cfg.cost_pattern:
         return None
-    hits = re.findall(cfg.cost_pattern, text)
+    hits = re.findall(cfg.cost_pattern, logfile.read_text(errors="replace"))
     return round(sum(float(h) for h in hits), 4) if hits else None
 
 
@@ -1869,8 +1869,8 @@ def worker_usage(logfile: Path, spec: dict | None) -> dict:
     line whose `match` paths hold; cost falls back to `cost_pattern` when no path gives one.
     """
     usage: dict = dict.fromkeys(("model", *USAGE_FIELDS))
-    text = logfile.read_text(errors="replace") if logfile.exists() else ""
-    for line in text.splitlines() if spec else ():
+    text = logfile.read_text(errors="replace") if spec else ""
+    for line in text.splitlines():
         try:
             row = json.loads(line) if line.startswith("{") else None
         except json.JSONDecodeError:
@@ -1884,10 +1884,7 @@ def worker_usage(logfile: Path, spec: dict | None) -> dict:
                 value = _json_path(row, path)
                 if type(value) in (int, float) and value >= 0:
                     usage[field] = (usage[field] or 0) + value
-    if usage["cost"] is None:
-        usage["cost"] = log_cost(text)
-    else:
-        usage["cost"] = round(usage["cost"], 4)
+    usage["cost"] = log_cost(logfile) if usage["cost"] is None else round(usage["cost"], 4)
     return usage
 
 

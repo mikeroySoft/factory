@@ -3099,7 +3099,7 @@ class DispatchTest(unittest.TestCase):
             dispatch.configure(cfg)
             log = Path(d) / "w.log"
             log.write_text("... Total cost: $0.25\nmore\nTotal cost: $1.00\n")
-            self.assertEqual(dispatch.worker_usage(log, None)["cost"], 1.25)
+            self.assertEqual(dispatch.log_cost(log), 1.25)
 
     def test_review_fails_closed_unless_one_final_verdict_exits_zero(self) -> None:
         from factory import dispatch

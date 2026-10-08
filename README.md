@@ -660,7 +660,7 @@ attempt log that satisfy `match`. Without a `cost` path hit, `cost` falls back
 to `[dispatch] cost_pattern`.
 
 ```toml
-[workers.claude]   # Claude Code `-p --output-format json` prints one result object
+[workers.claude]   # Claude Code `-p --output-format json` prints one result object (paths checked on 2.1.292)
 command = ["claude-worker", "--output-format", "json", "{prompt}"]
 
 [workers.claude.usage]
