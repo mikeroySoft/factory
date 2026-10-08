@@ -439,3 +439,88 @@ def collect(read, *, repository: dict, pr: dict, issue: dict | None = None,
         'items': [(v['evidence_id'], v['source_revision']) for v in result['items']],
         'coverage': {s: {k: result['coverage'][s][k] for k in ('status', 'truncated', 'reason')} for s in SOURCES}})
     return result
+
+
+# Human corrections (#199) read any PR state, merged included, with author identity.
+# ponytail: first 50 reviews, 50 threads x 50 comments, 100 comments and 100 commits
+# per PR, no cursors; add them if factory PRs outgrow that.
+CORRECTION_FIELDS = '''reviews(first:50){nodes{state submittedAt author{login __typename}}}
+ reviewThreads(first:50){nodes{comments(first:50){nodes{createdAt author{login __typename}}}}}
+ comments(first:100){nodes{createdAt author{login __typename}}}
+ commits(first:100){nodes{commit{committedDate author{user{login}} committer{user{login}}}}}'''
+CORRECTION_BATCH = 20
+CORRECTION_KEYS = {'change_request': 'human_change_requests', 'comment': 'human_comments', 'commit': 'human_commits'}
+
+
+def correction_reads(read, slug: str, numbers) -> dict[int, list[dict]]:
+    """Correction actions per PR number: aliased GraphQL batches through the same
+    read(query=..., variables=...) transport as collect()."""
+    owner, name = slug.split('/', 1)
+    numbers = list(numbers)
+    result = {}
+    for start in range(0, len(numbers), CORRECTION_BATCH):
+        batch = numbers[start:start + CORRECTION_BATCH]
+        query = ('query($owner:String!,$name:String!){repository(owner:$owner,name:$name){'
+                 + ''.join(f'pr{n}:pullRequest(number:{n}){{{CORRECTION_FIELDS}}}' for n in batch) + '}}')
+        repo = read(query=query, variables={'owner': owner, 'name': name})['repository']
+        for n in batch:
+            result[n] = correction_actions(repo[f'pr{n}'] or {})
+    return result
+
+
+def correction_actions(pr: dict) -> list[dict]:
+    """{kind, at, actors}: changes-requested reviews, review-thread and conversation
+    comments, and commits (author and committer accounts)."""
+    nodes = lambda connection: (connection or {}).get('nodes') or []
+    actor = lambda a: {'login': (a or {}).get('login'), 'type': (a or {}).get('__typename')}
+    def user(role):  # GitActor.user is typed User; App accounts are named `<app>[bot]`
+        login = ((role or {}).get('user') or {}).get('login')
+        return {'login': login, 'type': 'Bot' if (login or '').endswith('[bot]') else 'User'}
+    return [
+        *({'kind': 'change_request', 'at': r.get('submittedAt'), 'actors': [actor(r.get('author'))]}
+          for r in nodes(pr.get('reviews')) if r.get('state') == 'CHANGES_REQUESTED'),
+        *({'kind': 'comment', 'at': c.get('createdAt'), 'actors': [actor(c.get('author'))]}
+          for t in nodes(pr.get('reviewThreads')) for c in nodes(t.get('comments'))),
+        *({'kind': 'comment', 'at': c.get('createdAt'), 'actors': [actor(c.get('author'))]}
+          for c in nodes(pr.get('comments'))),
+        *({'kind': 'commit', 'at': c['commit'].get('committedDate'),
+           'actors': [user(c['commit'].get('author')), user(c['commit'].get('committer'))]}
+          for c in nodes(pr.get('commits'))),
+    ]
+
+
+def _when(at: str) -> datetime:
+    return datetime.fromisoformat(at)
+
+
+def first_action(login: str, observed) -> str | None:
+    """Earliest `at` among (actor, at) pairs acted by `login`; None when never observed."""
+    times = [at for actor, at in observed
+             if login and at and ((actor or {}).get('login') or '').casefold() == login.casefold()]
+    return min(times, key=_when, default=None)
+
+
+def attribute(actor: dict | None, at: str | None, login: str, cutover: str | None) -> str:
+    """'factory' for a Bot or the dispatcher's `login`, 'human' for any other actor,
+    'unattributable' before `cutover` (that login's first observed action; none observed
+    means every action), 'unknown' when there is no actor account."""
+    if not cutover or not at or _when(at) < _when(cutover):
+        return 'unattributable'
+    actor = actor or {}
+    name = actor.get('login')
+    if not name:
+        return 'unknown'
+    if actor.get('type', actor.get('__typename')) == 'Bot' or name.casefold() == login.casefold():
+        return 'factory'
+    return 'human'
+
+
+def corrections(actions: list[dict], login: str, cutover: str | None) -> dict:
+    """Human correction counts for one PR; all None when any action is unattributable."""
+    counts = dict.fromkeys(CORRECTION_KEYS.values(), 0)
+    for action in actions:
+        kinds = {attribute(actor, action['at'], login, cutover) for actor in action['actors']}
+        if 'unattributable' in kinds:
+            return dict.fromkeys(counts)
+        counts[CORRECTION_KEYS[action['kind']]] += 'human' in kinds
+    return counts

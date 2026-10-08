@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import json
+import os
 import re
 import subprocess
 import sys
@@ -11,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from factory import config, lifecycle
+from factory import config, feedback, lifecycle, onboard
 from factory.config import LABEL_AGENT, LABEL_HUMAN, USAGE_FIELDS, Config
 
 cfg: Config
@@ -37,6 +39,25 @@ def gh(*args: str) -> Any:
         print(completed.stderr.strip() or "gh command failed", file=sys.stderr)
         raise SystemExit(completed.returncode)
     return json.loads(completed.stdout)
+
+
+def graphql(*, query: str, variables: dict) -> dict:
+    """feedback's read(query=..., variables=...) transport over `gh api graphql`."""
+    return gh("api", "graphql", "-f", f"query={query}",
+              *(arg for key, value in variables.items() for arg in ("-f", f"{key}={value}")))["data"]
+
+
+@functools.cache
+def _login(env: tuple[tuple[str, str], ...]) -> str:
+    return onboard.gh_login({**os.environ, **dict(env)})
+
+
+def dispatcher_login(c: Config) -> str:
+    """The dispatcher's authenticated login under `[install].dispatch_env`; "" when unset,
+    because the factory then shares the human's account and nothing is attributable."""
+    if not c.install.get("dispatch_env"):
+        return ""
+    return _login(tuple({**c.install["env"], **c.install["dispatch_env"]}.items()))
 
 
 def count_comments(comments: list[dict[str, Any]], text: str) -> int:
@@ -170,11 +191,12 @@ def timeline(number: int) -> list[dict]:
     ]
 
 
-def human_touch(items: list[dict], audit: list[dict], end: str | None = None) -> dict:
+def human_touch(items: list[dict], audit: list[dict], end: str | None = None,
+                login: str = "", cutover: str | None = None) -> dict:
     """Label intervals; removal actor, never comment author, resolves an escalation.
 
-    Bot actors are factory, User actors human; missing actors remain unknown.
-    Shared human credentials cannot distinguish automation from manual activity.
+    Actors are attributed by feedback.attribute: Bot or the dispatcher `login` is factory,
+    any other account human, anything before `cutover` unattributable.
     Trace counts supplement missing timeline history without double-counting it.
     """
     starts = []
@@ -199,7 +221,7 @@ def human_touch(items: list[dict], audit: list[dict], end: str | None = None) ->
             actor = item.get("actor") or {}
             resolutions.append({
                 "actor": actor.get("login"),
-                "resolved_by": {"Bot": "factory", "User": "human"}.get(actor.get("__typename"), "unknown"),
+                "resolved_by": feedback.attribute(actor, at, login, cutover),
             })
             opened = None
     if opened:
@@ -233,6 +255,13 @@ def human_touch_metrics(rows: list[dict], now: datetime | None = None) -> dict:
     }
 
 
+def human_touched_pct(merged: list[dict]) -> float | None:
+    """Share of merged agent PRs with any human correction; unattributable PRs left out."""
+    keys = feedback.CORRECTION_KEYS.values()
+    known = [any(pr[k] for k in keys) for pr in merged if all(pr.get(k) is not None for k in keys)]
+    return round(100 * sum(known) / len(known), 1) if known else None
+
+
 def merge_hours(created_at: str, merged_at: str | None) -> float | None:
     if not merged_at:
         return None
@@ -262,6 +291,7 @@ def collect_rows() -> list[dict[str, Any]]:
     rows: dict[int, dict[str, Any]] = {}
     audit = audit_by_ticket(cfg.factory / "events.jsonl")
     details_by_ticket = {}
+    pr_by_ticket: dict[int, int] = {}
     pull_requests = gh(
         "pr",
         "list",
@@ -278,6 +308,7 @@ def collect_rows() -> list[dict[str, Any]]:
             continue
         details = issue(int(match.group(1)))
         details_by_ticket[details["number"]] = details
+        pr_by_ticket[details["number"]] = pull_request["number"]
         review = gh("pr", "view", str(pull_request["number"]), "--json", "comments")
         state = "open PR" if pull_request["state"] == "OPEN" else "merged"
         if not pull_request["mergedAt"] and state != "open PR":
@@ -316,9 +347,18 @@ def collect_rows() -> list[dict[str, Any]]:
             details_by_ticket[number] = details = issue(number)
             merged = next((e["at"] for e in reversed(events) if e.get("event") == "merged"), None)
             rows[number] = make_row(details, "merged" if merged else details["state"].lower(), merged_at=merged)
+    timelines = {number: timeline(number) for number in rows}
+    login = dispatcher_login(cfg)
+    actions = feedback.correction_reads(graphql, REPOSITORY, pr_by_ticket.values()) if pr_by_ticket else {}
+    cutover = feedback.first_action(login, [
+        *((item.get("actor"), item.get("createdAt")) for items in timelines.values() for item in items),
+        *((actor, action["at"]) for acts in actions.values() for action in acts for actor in action["actors"]),
+    ])
     for number, row in rows.items():
         details = details_by_ticket[number]
-        row.update(human_touch(timeline(number), audit.get(number, []), details.get("closedAt")))
+        row.update(human_touch(timelines[number], audit.get(number, []), details.get("closedAt"), login, cutover))
+        if number in pr_by_ticket:
+            row.update(feedback.corrections(actions[pr_by_ticket[number]], login, cutover))
         row["llm_usage"] = llm_usage(audit.get(number, []), cfg.prices)
 
     return [rows[number] for number in sorted(rows)]
@@ -345,6 +385,9 @@ def print_table(rows: list[dict[str, Any]]) -> None:
         total = row["llm_usage"].get("total", {})
         known = [v for v in (total.get("prompt_tokens"), total.get("completion_tokens")) if v is not None]
         return str(sum(known)) if known else ""
+
+    def correction(row: dict, key: str) -> str:
+        return "" if key not in row else "n/a" if row[key] is None else str(row[key])
 
     columns = (
         ("ticket#", lambda row: f"#{row['ticket']}"),
@@ -373,6 +416,9 @@ def print_table(rows: list[dict[str, Any]]) -> None:
             f"{r['resolved_by']} ({r['actor'] or '?'})" for r in row["resolutions"])),
         ("human minutes", lambda row: f"{row['ready_for_human_minutes']:.1f}"),
         ("re-queues", lambda row: str(row["requeue_count"])),
+        ("human CRs", lambda row: correction(row, "human_change_requests")),
+        ("human comments", lambda row: correction(row, "human_comments")),
+        ("human commits", lambda row: correction(row, "human_commits")),
     )
     values = [[render(row) for _, render in columns] for row in rows]
     widths = [
@@ -415,4 +461,6 @@ def main(argv: list[str]) -> int:
         human = totals["human_resolved_pct"]
         print(f"\nEscalations/week (last 7 days): {totals['escalations_per_week']}")
         print(f"Human-resolved: {str(human) + '%' if human is not None else 'n/a'} (attributed resolutions)")
+        touched = human_touched_pct([row for row in rows if row["state"] == "merged"])
+        print(f"Human-touched PRs: {str(touched) + '%' if touched is not None else 'n/a'} (attributed merged agent PRs)")
     return 0

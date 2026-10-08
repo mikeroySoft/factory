@@ -657,7 +657,7 @@ def dispatcher(*, rows: list[dict] | None = None, handle=None) -> dict:
 
 
 def metrics(tickets: list[dict]) -> dict:
-    """Fleet KPIs: fractions except human_resolved_pct (0–100); None when undefined."""
+    """Fleet KPIs: fractions except the *_pct metrics (0–100); None when undefined."""
     bounce = lambda a: a["attempt"] > MAX_ATTEMPTS
     rounds = lambda t: sum(1 for a in t["attempts"] if not bounce(a))
     reached = [t for t in tickets if t["pr"]]
@@ -669,6 +669,8 @@ def metrics(tickets: list[dict]) -> dict:
         "escalations": sum(t["human_touch"]["escalation_count"] for t in tickets),
         "med_attempts": ran[(len(ran) - 1) // 2] if ran else None,
         **stats.human_touch_metrics([t["human_touch"] for t in tickets]),
+        "human_touched_pct": stats.human_touched_pct(
+            [t["pr"].get("corrections") or {} for t in tickets if t["pr"] and t["pr"].get("merged_at")]),
     }
 
 
@@ -751,7 +753,7 @@ def selected_issue(issue: dict, prs: dict, on_disk: set, by_ticket: dict, audit_
 def build_ticket(
     issue: dict, pr: dict | None, disk: dict, spend: dict | None = None,
     executions: list[dict] | None = None, *, audit: list[dict] | None = None,
-    include_worker: bool = True,
+    include_worker: bool = True, login: str = "", cutover: str | None = None,
 ) -> dict:
     labels = {lab["name"] for lab in issue.get("labels", {}).get("nodes") or []}
     events = issue_events(issue)
@@ -822,7 +824,7 @@ def build_ticket(
         "spend": spend or {"seconds": 0, "cost": None, "rounds": 0},
         "human_touch": stats.human_touch(
             issue.get("timelineItems", {}).get("nodes") or [], audit or [],
-            (pr or {}).get("merged_at") or issue.get("closedAt"),
+            (pr or {}).get("merged_at") or issue.get("closedAt"), login, cutover,
         ),
         "llm_usage": stats.llm_usage(audit, cfg.prices) if audit else {},
         "events": events,
@@ -970,6 +972,24 @@ def snapshot() -> dict:
         if (not sh(["git", "ls-files", "--error-unmatch", "--", "feedback.py"], cwd=source_root).strip()
                 or sh(["git", "status", "--porcelain", "--", "."], cwd=source_root).strip()):
             revision = None
+    # Merged PRs' corrections are read once per dashboard process, not on every refresh.
+    global _corrections
+    merged = {raw["number"] for raw in raw_prs.values() if raw.get("mergedAt")}
+    if missing := sorted(merged - _corrections.keys()):
+        try:
+            _corrections = {**_corrections, **feedback.correction_reads(github, REPO, missing)}
+        except (RuntimeError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError) as exc:
+            errors.append(f"corrections: {exc}")
+    login = stats.dispatcher_login(cfg)
+    cutover = feedback.first_action(login, [
+        *((item.get("actor"), item.get("createdAt")) for issue in issues
+          for item in issue.get("timelineItems", {}).get("nodes") or []),
+        *((actor, action["at"]) for number in merged & _corrections.keys()
+          for action in _corrections[number] for actor in action["actors"]),
+    ])
+    for n, raw in raw_prs.items():
+        if raw["number"] in merged & _corrections.keys():
+            prs[n]["corrections"] = feedback.corrections(_corrections[raw["number"]], login, cutover)
     for issue in issues:
         n = issue["number"]
         if not selected_issue(issue, prs, on_disk, by_ticket, audit):
@@ -989,6 +1009,7 @@ def snapshot() -> dict:
             )
         tickets.append(build_ticket(
             issue, prs.get(n), disk_state(n), spend.get(n), by_ticket.get(n), audit=audit.get(n),
+            login=login, cutover=cutover,
         ))
     tickets.sort(key=lambda t: t["number"], reverse=True)
 
@@ -1056,6 +1077,7 @@ def snapshot() -> dict:
 
 _cache: dict = {"at": 0.0, "data": None}
 _cache_lock = threading.Lock()
+_corrections: dict[int, list[dict]] = {}  # merged PR number -> feedback.correction_actions
 
 
 def cached_snapshot(fresh: bool) -> dict:

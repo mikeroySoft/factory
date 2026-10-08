@@ -1154,8 +1154,10 @@ unused = ["agent"]
 
         human = {"login": "maintainer", "type": "User"}
         bot = {"login": "factory[bot]", "type": "Bot"}
+        # The dispatcher login's first action is the cutover; nothing here precedes it.
+        dispatcher = {"login": "factory-agent", "type": "User"}
         timeline = [
-            label("labeled", 0, config.LABEL_AGENT, human),
+            label("labeled", 0, config.LABEL_AGENT, dispatcher),
             label("labeled", 1, config.LABEL_HUMAN, bot),
             label("unlabeled", 11, config.LABEL_HUMAN, human),
             label("labeled", 11, config.LABEL_AGENT, human),
@@ -1194,7 +1196,8 @@ unused = ["agent"]
                  "stage": "triage", "prompt_tokens": 5, "completion_tokens": 3},
             ]
             (stats.cfg.factory / "events.jsonl").write_text("\n".join(map(json.dumps, audit)) + "\npartial")
-            with mock.patch.object(stats, "gh", side_effect=github):
+            with mock.patch.object(stats, "gh", side_effect=github), \
+                 mock.patch.object(stats, "dispatcher_login", return_value="factory-agent"):
                 row, = stats.collect_rows()
             self.assertEqual(row["escalation_count"], 3)
             self.assertEqual(row["resolutions"], [
@@ -1241,7 +1244,7 @@ unused = ["agent"]
             }
             ticket = dashboard.build_ticket(ticket_issue, None, {
                 "attempts": [], "gate": None, "lock_held": False,
-            }, audit=audit)
+            }, audit=audit, login="factory-agent", cutover="2026-09-01T00:00:00Z")
             self.assertEqual(ticket["human_touch"]["ready_for_human_minutes"], 35)
             self.assertEqual(ticket["llm_usage"], row["llm_usage"])
             self.assertEqual(dashboard.metrics([ticket])["human_resolved_pct"], 50.0)
@@ -1263,9 +1266,10 @@ class DashboardTest(unittest.TestCase):
             ticket["human_touch"] = {"escalation_count": count}
         m = dashboard.metrics(tickets)
         self.assertEqual(m, {"first_pass": 0.5, "bounce_rate": 0.5, "escalations": 2, "med_attempts": 2,
-                             "escalations_per_week": 0, "human_resolved_pct": None})
+                             "escalations_per_week": 0, "human_resolved_pct": None, "human_touched_pct": None})
         self.assertEqual(dashboard.metrics([]), {"first_pass": None, "bounce_rate": None, "escalations": 0,
-                                               "med_attempts": None, "escalations_per_week": 0, "human_resolved_pct": None})
+                                               "med_attempts": None, "escalations_per_week": 0,
+                                               "human_resolved_pct": None, "human_touched_pct": None})
 
     def test_consecutive_failures_from_journal(self) -> None:
         from factory import dashboard
@@ -4430,6 +4434,8 @@ class FeedbackSnapshotTest(unittest.TestCase):
                     return provider(**kwargs)
                 return {"repository": {"id": REPO["id"], "issues": {"nodes": issues},
                                        "pullRequests": {"nodes": raw}}}
+            # Merged PRs add only the once-per-process correction read, never feedback detail reads.
+            detail = lambda: [c for c in provider.calls if feedback.CORRECTION_FIELDS not in (c[1] or "")]
             with mock.patch.dict(dashboard.__dict__), mock.patch.dict(dispatch.__dict__):
                 dashboard.configure(config.load(repo))
                 with mock.patch.object(dashboard, "github", side_effect=read), \
@@ -4437,7 +4443,7 @@ class FeedbackSnapshotTest(unittest.TestCase):
                      mock.patch.object(dashboard, "upstream_state", return_value={}), \
                      mock.patch.object(dashboard, "triage_llm_online", return_value=False):
                     mixed = dashboard.snapshot()
-                    with_history = len(provider.calls)
+                    with_history = len(detail())
                     provider.calls.clear()
                     provider.heads = [H, H]
                     raw[:] = raw[:1]
