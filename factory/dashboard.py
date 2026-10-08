@@ -824,7 +824,7 @@ def build_ticket(
             issue.get("timelineItems", {}).get("nodes") or [], audit or [],
             (pr or {}).get("merged_at") or issue.get("closedAt"),
         ),
-        "llm_usage": stats.llm_usage(audit or []),
+        "llm_usage": stats.llm_usage(audit, cfg.prices) if audit else {},
         "events": events,
         "timeline_truncated": issue.get("timelineItems", {}).get("pageInfo", {}).get("hasPreviousPage", False),
         **disk,
