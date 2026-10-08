@@ -2065,12 +2065,14 @@ function updateInbox(force = false, preserveFocus = false) {
   if (!S.snap) return;
   if ($('fm-dialog').open || $('decision-dialog').open || (S.sel != null && narrowDrawer.matches) || (!force && $('inbox').contains(document.activeElement))) { S.inboxDirty = true; return; }
   const active = preserveFocus && $('inbox').contains(document.activeElement) ? document.activeElement : null;
+  const twins = () => [...$('inbox').querySelectorAll('button, a, summary')].filter(el => el.tagName === active.tagName && el.textContent === active.textContent);
+  const nth = active ? twins().indexOf(active) : -1;
   const selection = active?.tagName === 'TEXTAREA' ? [active.selectionStart, active.selectionEnd] : null;
   const expanded = preserveFocus ? [...$('inbox').querySelectorAll('details[open]')].map(el => el.querySelector('summary')?.textContent) : [];
   S.inboxDirty = false;
   renderInbox();
   for (const el of $('inbox').querySelectorAll('details')) if (expanded.includes(el.querySelector('summary')?.textContent)) el.open = true;
-  const replacement = active && (active.id ? $(active.id) : [...$('inbox').querySelectorAll('button, a, summary')].find(el => el.tagName === active.tagName && el.textContent === active.textContent));
+  const replacement = active && (active.id ? $(active.id) : twins()[nth]);
   if (replacement) { replacement.focus({ preventScroll: true }); if (selection) replacement.setSelectionRange(...selection); }
 }
 function renderInboxHealth() {
