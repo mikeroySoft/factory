@@ -404,6 +404,28 @@ class HostConfigTest(unittest.TestCase):
             repo = make_repo(Path(d), '[repo]\nslug = "other/name"\n')
             self.assertEqual(config.load(repo).dashboard_port, 7)
 
+    def test_worker_usage_profile_and_host_price_table(self) -> None:
+        host_file('[defaults.prices."m1"]\nprompt = 3\ncompletion = 15\ncached = 0.3\n')
+        toml = (
+            '[workers.default]\ncommand = ["agent", "{prompt}"]\n'
+            'usage = { prompt_tokens = ["u.in", "u.cache"], cost = "total", model = "model", match = { type = "result" } }\n'
+        )
+        with tempfile.TemporaryDirectory() as d:
+            cfg = config.load(make_repo(Path(d), toml))
+        self.assertEqual(cfg.prices, {"m1": {"prompt": 3, "completion": 15, "cached": 0.3}})
+        self.assertEqual(cfg.worker_usage, {"default": {
+            "prompt_tokens": ["u.in", "u.cache"], "completion_tokens": [], "cached_tokens": [],
+            "cost": ["total"], "model": "model", "match": {"type": "result"},
+        }})
+        for bad_host, bad_repo in (
+            ('[defaults.prices."m1"]\nprompt = 3\n', ""),
+            ("", '[workers.default]\ncommand = ["a"]\nusage = { tokens = "x" }\n'),
+        ):
+            with self.subTest(host=bad_host, repo=bad_repo), tempfile.TemporaryDirectory() as d:
+                host_file(bad_host)
+                with self.assertRaises(config.ConfigError):
+                    config.load(make_repo(Path(d), bad_repo))
+
     def test_worker_wrap_is_host_owned_and_prefixes_every_label(self) -> None:
         host_file(
             '[defaults.worker_wrap]\ncommand = ["dflt"]\n'
@@ -1184,8 +1206,11 @@ unused = ["agent"]
                 "triage": {
                     "prompt_tokens": 15,
                     "completion_tokens": 5,
+                    "cached_tokens": None,
+                    "cost": None,
                     "prefix_cache_hit_rates": [0.75],
                 },
+                "total": {"prompt_tokens": 15, "completion_tokens": 5, "cached_tokens": None, "cost": None},
             })
             with mock.patch("builtins.print") as printed:
                 stats.print_table([row])
@@ -3100,6 +3125,52 @@ class DispatchTest(unittest.TestCase):
                     verdict, findings = dispatch.review(repo, 7, "PASS", head)
                     self.assertEqual(verdict, "REVISE")
                     self.assertIn("Factory rejected reviewer evidence", findings)
+
+    def test_worker_round_records_normalized_worker_usage(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        logs = {
+            "structured": '{"type": "step", "usage": {"in": 99}}\n'
+                          '{"type": "result", "model": "m1", "usage": {"in": 100, "cache": 40, "out": 20}, "total": 0.5}\n',
+            "costonly": "working\nTotal cost: $0.25\nTotal cost: $1.00\n",
+            "silent": "did the thing\n",
+        }
+        nothing = dict.fromkeys(("model", "prompt_tokens", "completion_tokens", "cached_tokens", "cost"))
+        expected = {
+            "structured": {"model": "m1", "prompt_tokens": 100, "completion_tokens": 20, "cached_tokens": 40, "cost": 0.5},
+            "costonly": {**nothing, "cost": 1.25},
+            "silent": nothing,
+        }
+        spec = {"prompt_tokens": ["usage.in"], "completion_tokens": ["usage.out"], "cached_tokens": ["usage.cache"],
+                "cost": ["total"], "model": "model", "match": {"type": "result"}}
+        for label, text in logs.items():
+            with self.subTest(worker=label), tempfile.TemporaryDirectory() as d:
+                repo = make_repo(Path(d))
+                dispatch.configure(config.Config(
+                    root=repo, repo="acme/widgets", cost_pattern=r"Total cost:\s*\$([0-9.]+)",
+                    workers={"default": ["silent"], "structured": ["s"], "costonly": ["c"]},
+                    worker_usage={"structured": spec},
+                ))
+                dispatch.LOGS.mkdir(parents=True)
+
+                def worker(_cmd, _wt, logfile, *_args, text=text):
+                    logfile.write_text(text)
+                    return 0, None
+
+                with mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
+                        mock.patch.object(dispatch, "run_worker", side_effect=worker), \
+                        mock.patch.object(dispatch, "commit_leftovers"), \
+                        mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")):
+                    dispatch.worker_round(7, repo, {label}, "ticket", "", 1, float("inf"))
+                events = lifecycle.read_events(dispatch.EVENTS)
+                usage = [e for e in events if e.get("event") == "llm-usage"]
+                self.assertEqual(len(usage), 1)
+                self.assertEqual({k: usage[0].get(k, "missing") for k in ("ticket", "stage", "attempt", *nothing)},
+                                 {"ticket": 7, "stage": "worker", "attempt": 1, **expected[label]})
+                attempt = next(e for e in events if e.get("event") == "attempt")
+                self.assertEqual(attempt["cost"], expected[label]["cost"])
 
     def test_worker_round_rejects_gate_that_mutates_head(self) -> None:
         from unittest import mock

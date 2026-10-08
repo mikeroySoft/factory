@@ -164,6 +164,7 @@ def _record_usage(execution, usage: dict | None) -> None:
             "event": "llm-usage",
             "ticket": execution.ticket,
             "stage": "triage",
+            "model": LLM_MODEL,
             "execution_id": execution.execution_id,
             "root_execution_id": execution.root_execution_id,
             **usage,
