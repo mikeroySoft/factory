@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import re
 import tomllib
 from collections.abc import Callable
 from datetime import datetime
@@ -26,6 +27,8 @@ MAX_LESSONS = 10
 LOG_TAIL = 40  # lines of a failing attempt log shown to the model
 MAX_EVIDENCE = 24_000  # chars; keeps the prompt inside a local model's window
 MAX_ESCAPES = 10  # most recent candidate-escape bugs carried into evidence
+AUTO_EVERY = 10  # finished tickets between automatic runs at the end of a dispatcher pass
+LESSONS_BRANCH = re.compile(r"agent/(lessons|curate)-")
 
 
 def evidence(last: int) -> tuple[list[int], str]:
@@ -157,7 +160,13 @@ def propose(existing: str, evidence_md: str, repo: str, ask: Callable[[list[dict
                 {"role": "assistant", "content": reply},
                 {"role": "user", "content": "That was not valid JSON of the form {\"lessons\": [...]}. Reply with ONLY that JSON."},
             ]
-    raise SystemExit("factory learn: model returned unparseable JSON twice")
+    raise ValueError("model returned unparseable JSON twice")
+
+
+def branch_name(kind: str, tickets: list[int]) -> str:
+    """`agent/<kind>-<date>-t<N>`, N the newest included ticket: same-day runs never collide,
+    and the merge stage's `agent/(\\d+)` never matches."""
+    return f"agent/{kind}-{datetime.now().astimezone().date().isoformat()}-t{tickets[-1]}"
 
 
 def chore_pr(cfg: config.Config, branch: str, edit: Callable[[Path], list[str]], title: str, pr_body: str) -> None:
@@ -176,10 +185,10 @@ def chore_pr(cfg: config.Config, branch: str, edit: Callable[[Path], list[str]],
 
 
 def curate(cfg: config.Config, diff: str, tickets: list[int], notes: str) -> str:
-    """Apply the manager's CURATE diff on `agent/curate-<date>` and open its chore PR.
+    """Apply the manager's CURATE diff on `agent/curate-<date>-t<N>` and open its chore PR.
 
     Returns the branch, or `rejected: <reason>` when the diff does not apply or leaves the allowlist."""
-    branch = f"agent/curate-{datetime.now().astimezone().date().isoformat()}"
+    branch = branch_name("curate", tickets)
     patch = cfg.factory / f"{branch.removeprefix('agent/')}.patch"
     patch.write_text(diff if diff.endswith("\n") else diff + "\n")
 
@@ -224,6 +233,96 @@ def curate(cfg: config.Config, diff: str, tickets: list[int], notes: str) -> str
     return branch
 
 
+def run(cfg: config.Config, last: int = 10, dry_run: bool = False, **fields: object) -> dict | None:
+    """One `factory learn` over the newest `last` finished tickets; `fields` extend its `learn` event.
+
+    Returns the recorded event's fields, or None when nothing was recorded (no finished tickets,
+    or a dry run). Raises on a model, `git` or `gh` failure."""
+    triage.configure(cfg)
+    stats.configure(cfg)
+    tickets, evidence_md = evidence(last)
+    if not tickets:
+        print("factory learn: no finished tickets in .factory/events.jsonl yet")
+        return None
+    notes_md = ""
+    if cfg.manager:
+        notes = cfg.factory / manage.NOTES_NAME
+        if notes.is_file():
+            notes_md = notes.read_text()
+            evidence_md += f"\n## {notes.name}\n\n{notes_md}"
+    path = cfg.root / LESSONS_NAME
+    existing = path.read_text() if path.exists() else ""
+    ask = manager_llm(cfg) if cfg.manager else triage.call_llm
+    lessons, diff = propose(existing, evidence_md, cfg.repo, ask, curate=bool(cfg.manager))
+    body = "".join(f"- {lesson}\n" for lesson in lessons)
+    print(f"learned from tickets {', '.join(f'#{n}' for n in tickets)}:\n{body}", end="")
+    if diff:
+        print(f"manager CURATE diff:\n{diff}", end="")
+    if dry_run:
+        return None
+    content = f"<!-- Written by `factory learn` from {len(tickets)} finished tickets; edit freely and commit. -->\n{body}"
+    if not cfg.manager:
+        path.write_text(content)
+        event = {"tickets": tickets, "lessons": len(lessons), **fields}
+        dispatch.record("learn", **event)
+        print(f"wrote {path}; review and commit it")
+        return event
+    branch = branch_name("lessons", tickets)
+
+    def edit(wt: Path) -> list[str]:
+        (wt / LESSONS_NAME).write_text(content)
+        return [LESSONS_NAME]
+
+    pr_body = f"{HUMAN_MERGE}\n\n`factory learn` distilled tickets {', '.join(f'#{n}' for n in tickets)} via the manager.\n\n{body}"
+    chore_pr(cfg, branch, edit, f"{branch}: update {LESSONS_NAME}", pr_body)
+    print(f"opened a {LABEL_CHORE} PR from {branch}")
+    curated = curate(cfg, diff, tickets, notes_md) if diff else None
+    if curated:
+        print(f"CURATE {curated}" if curated.startswith("rejected") else f"opened a {LABEL_CHORE} PR from {curated}")
+    event = {"tickets": tickets, "lessons": len(lessons), "branch": branch, "curate": curated, **fields}
+    dispatch.record("learn", **event)
+    return event
+
+
+def finished_since_learn() -> int:
+    """Tickets whose latest `merged`/`escalate` row is newer than the newest non-failed `learn` row
+    (any, if none): failed runs keep the count, so the next pass retries."""
+    rows = [r for r in lifecycle.read_events(dispatch.EVENTS) if isinstance(r.get("at"), str)]
+    since = max((r["at"] for r in rows if r.get("event") == "learn" and r.get("status") != "failed"), default="")
+    return len({r["ticket"] for r in rows
+                if r.get("event") in ("merged", "escalate") and type(r.get("ticket")) is int and r["at"] > since})
+
+
+def learn_pass(dry_run: bool = False) -> None:
+    """End of a dispatcher pass: `factory learn --last 10` once 10 tickets finished since the last `learn`.
+
+    Needs a manager (without one, learn only writes an uncommitted file) and no open lessons or
+    curate PR (lessons rewrite the whole file). A failure is journaled, never raised."""
+    cfg = dispatch.cfg
+    count = finished_since_learn()
+    if count < AUTO_EVERY:
+        return
+    if not cfg.manager:
+        dispatch.log("learn: skipped (no manager)")
+        return
+    try:
+        prs = dispatch.gh_json(["pr", "list", "--repo", cfg.repo, "--state", "open", "--limit", "1000",
+                                "--json", "number,headRefName"])
+        if pr := next((p for p in prs if LESSONS_BRANCH.match(p["headRefName"])), None):
+            dispatch.log(f"learn: skipped (open lessons PR #{pr['number']})")
+            return
+        if dry_run:
+            dispatch.log(f"learn: would run --last {AUTO_EVERY} ({count} tickets finished since the last learn)")
+            return
+        dispatch.log(f"learn: {count} tickets finished since the last learn; running --last {AUTO_EVERY}")
+        run(cfg, AUTO_EVERY, trigger="auto")
+    except Exception as exc:  # isolated: a learn failure never fails the dispatcher pass
+        reason = f"{type(exc).__name__}: {exc}"
+        dispatch.log(f"learn: failed ({reason})")
+        if not dry_run:
+            dispatch.record("learn", trigger="auto", status="failed", reason=reason)
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="factory learn",
@@ -248,46 +347,8 @@ def main(argv: list[str]) -> int:
                             baseline=claim["baseline"], candidate=claim["candidate"],
                             splits=claim["splits"], disposition=disposition, reason=reason)
         return 0
-    triage.configure(cfg)
-    stats.configure(cfg)
-
-    tickets, evidence_md = evidence(args.last)
-    if not tickets:
-        print("factory learn: no finished tickets in .factory/events.jsonl yet")
-        return 0
-    notes_md = ""
-    if cfg.manager:
-        notes = cfg.factory / manage.NOTES_NAME
-        if notes.is_file():
-            notes_md = notes.read_text()
-            evidence_md += f"\n## {notes.name}\n\n{notes_md}"
-    path = cfg.root / LESSONS_NAME
-    existing = path.read_text() if path.exists() else ""
-    ask = manager_llm(cfg) if cfg.manager else triage.call_llm
-    lessons, diff = propose(existing, evidence_md, cfg.repo, ask, curate=bool(cfg.manager))
-    body = "".join(f"- {lesson}\n" for lesson in lessons)
-    print(f"learned from tickets {', '.join(f'#{n}' for n in tickets)}:\n{body}", end="")
-    if diff:
-        print(f"manager CURATE diff:\n{diff}", end="")
-    if args.dry_run:
-        return 0
-    content = f"<!-- Written by `factory learn` from {len(tickets)} finished tickets; edit freely and commit. -->\n{body}"
-    if not cfg.manager:
-        path.write_text(content)
-        dispatch.record("learn", tickets=tickets, lessons=len(lessons))
-        print(f"wrote {path}; review and commit it")
-        return 0
-    branch = f"agent/lessons-{datetime.now().astimezone().date().isoformat()}"
-
-    def edit(wt: Path) -> list[str]:
-        (wt / LESSONS_NAME).write_text(content)
-        return [LESSONS_NAME]
-
-    pr_body = f"{HUMAN_MERGE}\n\n`factory learn` distilled tickets {', '.join(f'#{n}' for n in tickets)} via the manager.\n\n{body}"
-    chore_pr(cfg, branch, edit, f"{branch}: update {LESSONS_NAME}", pr_body)
-    print(f"opened a {LABEL_CHORE} PR from {branch}")
-    curated = curate(cfg, diff, tickets, notes_md) if diff else None
-    if curated:
-        print(f"CURATE {curated}" if curated.startswith("rejected") else f"opened a {LABEL_CHORE} PR from {curated}")
-    dispatch.record("learn", tickets=tickets, lessons=len(lessons), branch=branch, curate=curated)
+    try:
+        run(cfg, args.last, args.dry_run)
+    except ValueError as exc:
+        raise SystemExit(f"factory learn: {exc}")
     return 0
