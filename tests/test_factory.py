@@ -4156,6 +4156,53 @@ class DispatchTest(unittest.TestCase):
                 gh_calls,
             )
 
+    def test_refresh_keeps_concurrent_changelog_unreleased_lines(self) -> None:
+        # #204: two PRs each adding an Unreleased line must not escalate on refresh.
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            root, origin, _upstream = build_fork(tmp)
+            shutil.copy(ROOT / ".gitattributes", origin / ".gitattributes")
+            (origin / "CHANGELOG.md").write_text("# Changelog\n\n## Unreleased\n\n- base\n")
+            git(origin, "add", "-A")
+            git(origin, "commit", "-qm", "changelog")
+            git(root, "fetch", "-q", "origin")
+            git(root, "reset", "-q", "--hard", "origin/main")
+            git(origin, "checkout", "-qb", "agent/9")
+            (origin / "CHANGELOG.md").write_text("# Changelog\n\n## Unreleased\n\n- agent line\n- base\n")
+            git(origin, "commit", "-qam", "agent change")
+            git(origin, "checkout", "-q", "main")
+            (origin / "CHANGELOG.md").write_text("# Changelog\n\n## Unreleased\n\n- main line\n- base\n")
+            git(origin, "commit", "-qam", "other PR landed")
+
+            cfg = config.Config(root=root, repo="acme/widgets", upstream="upstream", main="main")
+            with mock.patch.object(config, "remote_slug", return_value="acme/upstream-widgets"):
+                dispatch.configure(cfg)
+            real_run = dispatch.run
+
+            def run_spy(cmd, *args, **kwargs):
+                if cmd[0] == "gh":
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+                return real_run(cmd, *args, **kwargs)
+
+            with mock.patch.object(dispatch, "gh_json", return_value={"baseRefName": "main"}), \
+                    mock.patch.object(dispatch, "run", side_effect=run_spy), \
+                    mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
+                    mock.patch.object(dispatch, "review", return_value=("APPROVE", "fine")), \
+                    mock.patch.object(dispatch, "pr_comment"), \
+                    mock.patch.object(dispatch, "approve_pr", return_value=True), \
+                    mock.patch.object(dispatch, "escalate") as escalate:
+                self.assertTrue(dispatch.refresh_pr_branch(9, 102, False))
+
+            escalate.assert_not_called()
+            pushed = git(origin, "show", "agent/9:CHANGELOG.md")
+            self.assertIn("- agent line", pushed)
+            self.assertIn("- main line", pushed)
+            self.assertNotIn("<<<<<<<", pushed)
+
     def test_sync_lands_the_clean_prefix_and_escalates_only_the_remainder(self) -> None:
         from unittest import mock
 

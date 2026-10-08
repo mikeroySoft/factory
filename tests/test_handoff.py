@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -240,6 +241,23 @@ class HandoffCli(unittest.TestCase):
         self.assertEqual(len(self.requests()), 1)
         self.assertEqual(len(self.events("handoff")), 1)
         self.assertEqual([i["name"] for i in self.state["issue"]["labels"]], ["ready-for-human"])
+
+    def test_escalation_after_journal_rotation_gets_a_new_request_id(self) -> None:
+        # #204: rotation archived 166's rounds, the next escalation was numbered round 1 again,
+        # mapped to the answered `166/1`, and nothing was posted.
+        self.manage(mode="HUMAN")
+        self.assertEqual([e["request"] for e in self.events("handoff")], ["7/1"])
+        events = self.factory / "events.jsonl"
+        with mock.patch.object(lifecycle, "MAX_BYTES", 0):
+            lifecycle.append(events, {"event": "note"})
+        self.assertNotIn('"escalate"', events.read_text())  # archived to events.jsonl.1.gz
+        dispatch.configure(config.Config(self.repo, REPO))
+        _, round_number = dispatch.escalation_packet(7, "PR #9: rebase onto moved main conflicts", None, self.factory / "wt-7")
+        self.assertEqual(round_number, 2)
+        self.escalate("PR #9: rebase onto moved main conflicts", round_number, at="2026-01-02T00:00:00Z")
+        self.manage(mode="HUMAN")
+        self.assertEqual([e["request"] for e in self.events("handoff")], ["7/1", "7/2"])
+        self.assertIn("Factory handoff request `7/2`", self.requests()[-1]["body"])
 
     def test_crash_after_comment_creation_reconciles_to_the_same_request(self) -> None:
         self.manage(mode="HUMAN", crash_on_comment=True, expect=-9)
