@@ -70,6 +70,13 @@
 .briefing-body .briefing-label { margin-bottom: 8px; }
 .briefing-recommendation { display: grid; gap: 12px; border-left: 3px solid var(--brief-accent); padding: 22px 24px; background: var(--bg2); }
 .briefing-unknown { display: grid; gap: 8px; border-left: 2px solid var(--line2); padding-left: 18px; }
+.briefing-bottom-line { display: grid; gap: 16px; border-top: 1px solid var(--line); padding: 28px 0 32px; }
+.briefing-bottom-line dl { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 14px 24px; margin: 0; }
+.briefing-bottom-line dt { font: 500 13px/1.75 var(--mono); color: var(--brief-muted); }
+.briefing-bottom-line dd { margin: 0; min-width: 0; line-height: 1.75; overflow-wrap: anywhere; }
+.bottom-state { display: inline-block; margin-right: 4px; padding: 0 8px; border: 1px solid var(--line2); border-radius: 4px; font: 600 12px/1.8 var(--mono); }
+.bottom-state.state-decision, .bottom-state.state-awaiting_authorization { color: var(--brief-accent); border-color: var(--brief-accent); }
+.bottom-state.state-unknown { border-style: dashed; }
 .briefing-options { display: grid; gap: 20px; }
 .briefing-option { padding: 22px 24px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg2); display: grid; gap: 16px; }
 .briefing-option > button { justify-self: start; }
@@ -117,6 +124,8 @@ html { scroll-padding-top: 110px; }
   .briefing-body { gap: 20px; }
   .briefing-consequences { grid-template-columns: minmax(0, 1fr); gap: 5px; }
   .briefing-consequences dd { margin-bottom: 10px; }
+  .briefing-bottom-line dl { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .briefing-bottom-line dd { margin-bottom: 12px; }
   .briefing-option, .briefing-recommendation { padding: 18px; }
   .briefing-dialog-head, .briefing-dialog-body { padding: 18px; }
   .briefing-deck { font-size: 15px; }

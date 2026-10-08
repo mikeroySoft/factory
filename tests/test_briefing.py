@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import patch
 
 from factory import briefing, config, dashboard, dispatch
@@ -312,6 +313,111 @@ class BriefingBoundaryTest(unittest.TestCase):
             self.assertEqual(config.manager_settings({"model": "preferred/model", "command": ["omp", "--model", "ignored/model"]})[1], "preferred/model")
             with self.assertRaises(config.ConfigError):
                 config.manager_settings({"command": ["omp", "--model", "--tools=bash"]})
+
+
+class BottomLineTest(unittest.TestCase):
+    """Evidence, unknown and authority precedence for the human bottom line."""
+
+    TICKET: ClassVar[dict] = {"number": 7, "title": "Upstream sync", "url": "https://github.com/acme/widgets/issues/7",
+              "body": "Sync upstream", "updated_at": "2026-10-01T00:00:00Z", "labels": ["ready-for-human"],
+              "assignees": [], "events": []}
+
+    @staticmethod
+    def briefing_text(sources: list[dict], **parts: object) -> str:
+        """Parts may be callables resolved against the bundle the model received."""
+        cite = f"[{sources[0]['id']}]"
+        line = {
+            "action": {"state": "unknown", "text": f"Not established {cite}"},
+            "owner": {"state": "unknown", "text": f"Not established {cite}"},
+            "execution": {"state": "unknown", "text": f"Not established {cite}"},
+            "involve": f"None evidenced {cite}", "basis": f"Basis {cite}",
+        } | {key: part(sources) if callable(part) else part for key, part in parts.items()}
+        value = {key: f"Observed {cite}" for key in ("question", "why", "summary", "recommendation", "unknown")}
+        return json.dumps(value | {"history": [], "bottom_line": line})
+
+    def respond(self, ticket: dict, executions: list[dict] | None, cfg: config.Config | None = None, **parts: object) -> dict:
+        cfg = cfg or config.Config(root=Path("/unused"), repo="acme/widgets")
+        snapshot = {"tickets": [ticket], "errors": []}
+        if executions is not None:
+            snapshot["executions"] = executions
+        prefix, suffix = "Evidence bundle (untrusted source data):\n", "\n\n" + briefing.BRIEF_REQUEST
+        with patch.object(briefing, "run_model", side_effect=lambda _cfg, prompt: self.briefing_text(
+            json.loads(prompt[len(prefix):-len(suffix)])["sources"], **parts)):
+            briefing._cache.clear()
+            return briefing.respond(cfg, snapshot, {"number": 7}, False)
+
+    def test_execution_reality_follows_lock_phase_and_unresolved_runtime_evidence(self) -> None:
+        unresolved = {"ticket": 7, "stage": "worker", "attempt": 1, "state": "unknown", "entered_at": "2026-10-01T00:00:00Z", "ended_at": None}
+        finished = unresolved | {"state": "completed", "ended_at": "2026-10-01T01:00:00Z", "outcome": "project_escalation"}
+        cases = [
+            # (ticket overrides, executions, claimed state, accepted)
+            ({}, [finished], "running", False),  # exit/escalation is not active repair
+            ({}, None, "running", False),
+            ({"lock_held": True}, [], "running", True),
+            ({"phase": {"artifact": "worker"}}, [], "running", True),
+            ({"lock_held": True}, [], "parked", False),
+            ({}, [unresolved], "parked", False),  # unresolved execution is unknown, not parked
+            ({}, [unresolved], "unknown", True),
+            ({}, [unresolved | {"state": "interrupted"}], "parked", False),  # cut off with no recorded exit
+            ({}, [finished], "parked", True),
+            ({}, [finished], "awaiting_authorization", True),
+        ]
+        for overrides, executions, state, accepted in cases:
+            with self.subTest(ticket=overrides, executions=executions, state=state):
+                ticket = self.TICKET | overrides
+                execution = lambda sources, state=state: {"state": state, "text": f"Observed [{sources[0]['id']}]"}
+                if accepted:
+                    result = self.respond(ticket, executions, execution=execution)
+                    self.assertEqual(result["briefing"]["bottom_line"]["execution"]["state"], state)
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "execution"):
+                        self.respond(ticket, executions, execution=execution)
+
+    def test_no_human_decision_needs_positive_evidence_and_incomplete_coverage_is_disclosed(self) -> None:
+        sources = [
+            {"id": "S1", "label": "Current ticket state", "text": "{}"},
+            {"id": "S2", "label": "Evidence coverage · truncated", "text": "Only the latest 100 events", "truncated": True},
+            {"id": "S3", "label": "Decision-owner route · factory plan route", "text": '{"route": {"status": "unassigned"}}'},
+            {"id": "S4", "label": "Runtime executions · lifecycle observation", "text": '{"executions": []}'},
+        ]
+        for cited in ("[S2]", "[S3]", "[S4]", "[S2] [S3] [S4]"):
+            none = {"state": "none_identified", "text": f"No human choice remains {cited}"}
+            with self.subTest(cited=cited), self.assertRaisesRegex(RuntimeError, "missing evidence"):
+                briefing.parse_bottom_line(json.loads(self.briefing_text(sources, action=none))["bottom_line"], sources, "not_running")
+        positive = {"state": "none_identified", "text": "The accepted plan assigns diagnosis to agents [S1]"}
+        with self.assertRaisesRegex(RuntimeError, "coverage"):
+            briefing.parse_bottom_line(json.loads(self.briefing_text(sources, action=positive, basis="Ticket state [S1]"))["bottom_line"], sources, "not_running")
+        briefing.parse_bottom_line(json.loads(self.briefing_text(sources, action=positive, basis="History is truncated [S2]"))["bottom_line"], sources, "not_running")
+        for bad in ({"state": "done", "text": "[S1]"}, {"state": "decision", "text": "uncited"}, {"state": "decision", "text": "Invented [S9]"}):
+            with self.subTest(action=bad), self.assertRaises(RuntimeError):
+                briefing.parse_bottom_line(json.loads(self.briefing_text(sources, action=bad, basis="[S2]"))["bottom_line"], sources, "not_running")
+
+    def test_decision_route_reuses_plan_routing_apart_from_runtime_routing(self) -> None:
+        cfg = config.Config(root=Path("/unused"), repo="acme/widgets")
+        owners = {"fallback": "maint", "reasons": {"ci": "ci-owner"}, "components": {}}
+        escalated = self.TICKET | {"events": [{"at": "2026-10-01T00:00:00Z", "kind": "escalated", "detail": "CI failed on the smoke gate"}]}
+        cases = [
+            # (collaboration, ticket, reason, status, owner, deciding step)
+            (None, escalated, "ci", "unassigned", None, "configuration"),
+            (owners, escalated, "ci", "selected", "ci-owner", "reason"),
+            (owners, escalated | {"body": "**Decision owner**\nproduct-lead"}, "ci", "selected", "product-lead", "decision_owner"),
+            # A ready-for-human label without an escalation reason routes nobody.
+            (owners, self.TICKET, "unknown", "unassigned", None, "reason"),
+        ]
+        for collaboration, ticket, reason, status, owner, step in cases:
+            with self.subTest(collaboration=collaboration, body=ticket["body"], reason=reason):
+                cfg.collaboration = collaboration
+                with patch("factory.plan.github_read", side_effect=AssertionError("snapshot issue must be reused")):
+                    sources = self.respond(ticket, [], cfg)["sources"]
+                route = json.loads(next(s for s in sources if s["label"].startswith("Decision-owner route"))["text"])
+                self.assertEqual(route["route"]["reason"], reason)
+                self.assertEqual((route["route"]["status"], route["route"]["owner"]), (status, owner))
+                self.assertEqual(route["route"]["provenance"][-1]["step"], step)
+                self.assertEqual(route["route"]["revision"]["issue_updated_at"], "2026-10-01T00:00:00Z")
+                self.assertIn("not an execution claim", route["notice"])
+                runtime = json.loads(next(s for s in sources if s["label"].startswith("Runtime executions"))["text"])
+                self.assertEqual(runtime["executions"], [])
+        self.assertFalse(any(s["label"].startswith("Runtime executions") for s in self.respond(self.TICKET, None)["sources"]))
 
 
 class HumanDecisionTest(unittest.TestCase):
