@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import patch
 
 from factory import briefing, config, dashboard, dispatch
@@ -317,7 +318,7 @@ class BriefingBoundaryTest(unittest.TestCase):
 class BottomLineTest(unittest.TestCase):
     """Evidence, unknown and authority precedence for the human bottom line."""
 
-    TICKET = {"number": 7, "title": "Upstream sync", "url": "https://github.com/acme/widgets/issues/7",
+    TICKET: ClassVar[dict] = {"number": 7, "title": "Upstream sync", "url": "https://github.com/acme/widgets/issues/7",
               "body": "Sync upstream", "updated_at": "2026-10-01T00:00:00Z", "labels": ["ready-for-human"],
               "assignees": [], "events": []}
 
@@ -364,7 +365,7 @@ class BottomLineTest(unittest.TestCase):
         for overrides, executions, state, accepted in cases:
             with self.subTest(ticket=overrides, executions=executions, state=state):
                 ticket = self.TICKET | overrides
-                execution = lambda sources: {"state": state, "text": f"Observed [{sources[0]['id']}]"}
+                execution = lambda sources, state=state: {"state": state, "text": f"Observed [{sources[0]['id']}]"}
                 if accepted:
                     result = self.respond(ticket, executions, execution=execution)
                     self.assertEqual(result["briefing"]["bottom_line"]["execution"]["state"], state)
