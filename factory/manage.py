@@ -641,12 +641,17 @@ def frontier_pass(dry_run: bool = False) -> None:
                 red = [c for c in checks if c["bucket"] in ("fail", "cancel")]
                 late = undelivered(observation, events, n)
                 # A release to ready-for-agent (owner decision or manager RETRY) answers the red CI
-                # it followed; only CI newer than the latest release escalates (#188).
-                released = released_at(n) if red or any(i["kind"] in CI_KINDS for i in late) else ""
-                failed = [c["name"] for c in red if not c.get("completedAt") or c["completedAt"] > released]
-                late = [i for i in late if i["kind"] not in CI_KINDS
-                        or not i["source_updated_at"] or i["source_updated_at"] > released]
-                age = datetime.now(UTC) - datetime.fromisoformat(pr["updatedAt"])
+                # it followed and restarts the stale clock; only CI newer than it escalates (#188).
+                updated = datetime.fromisoformat(pr["updatedAt"])
+                released = released_at(n) if red or any(i["kind"] in CI_KINDS for i in late) \
+                    or (datetime.now(UTC) - updated).days >= cfg.manager_stale_days else ""
+
+                def fresh(at: str, released: str = released) -> bool:  # missing or zero time (gh's commit-status checks) is unknown, so fresh
+                    return not at or at.startswith("0001-") or at > released
+
+                failed = [c["name"] for c in red if fresh(c.get("completedAt", ""))]
+                late = [i for i in late if i["kind"] not in CI_KINDS or fresh(i["source_updated_at"])]
+                age = datetime.now(UTC) - max(updated, datetime.fromisoformat(released or pr["updatedAt"]))
                 stale = age.days >= cfg.manager_stale_days
                 approved = dispatch.FACTORY_APPROVED in {label["name"] for label in pr["labels"]}
                 if failed and approved:

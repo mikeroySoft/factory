@@ -208,6 +208,24 @@ class FrontierTest(unittest.TestCase):
             manage.frontier_pass()
         self.assertEqual([e["reason"] for e in self.escalations()], ["PR #80: CI failed (unit)"])
 
+    def test_zero_timestamp_red_check_after_the_release_still_escalates(self) -> None:
+        # `gh pr checks` reports commit-status checks with the zero time; that is unknown, not old.
+        self.released_after_red_ci()
+        with mock.patch.object(dispatch, "pr_checks", return_value=[
+                {"name": "ci", "bucket": "fail", "completedAt": "0001-01-01T00:00:00Z"}]):
+            manage.frontier_pass()
+        self.assertEqual([e["reason"] for e in self.escalations()], ["PR #80: CI failed (ci)"])
+
+    def test_stale_pr_released_recently_is_not_stale(self) -> None:
+        # The owner took longer than stale_days to answer; the release restarts the clock.
+        self.released_after_red_ci()
+        self.provider.checks = []
+        self.pr = pr_row(updated="2026-01-01T00:00:00Z")
+        self.timeline[-1]["created_at"] = NOW
+        manage.frontier_pass()
+        self.assertEqual(self.escalations(), [])
+        self.assertEqual(self.mutations, [])
+
     def approved_head(self, head):
         dispatch.record("claimed", ticket=79)
         dispatch.record("attempt", ticket=79, gate="PASS", head=head, actual_head=head)
