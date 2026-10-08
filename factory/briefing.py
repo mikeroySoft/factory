@@ -12,6 +12,7 @@ import stat
 import subprocess
 import tempfile
 import threading
+import time
 from collections import OrderedDict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,6 +31,7 @@ EVENT_READ_CAP = 2_000_000
 OUTPUT_CAP = 32_000
 TIMEOUT = 130
 CACHE_SIZE = 32
+EXECUTION_COUNT = 8
 CITATION = re.compile(r"\[(S\d+)\]")
 _slots = threading.BoundedSemaphore(2)
 _cache_lock = threading.Lock()
@@ -67,6 +69,31 @@ EARLIER decisions, constraints and lessons from real comments, reviews, handoff
 notes or recorded human decisions. Surface them here rather than burying them in
 raw sources. An empty array is correct when no relevant earlier decisions are
 recorded. All five prose fields must be nonempty strings; history must be an array.
+bottom_line: the human's bottom line, shown BEFORE all technical detail, an object
+with exactly these keys, every text cited:
+  action: {state, text}; state "decision" (text = the exact choice or permission
+  needed and its consequence), "none_identified" (cited evidence positively shows
+  the next move needs no human decision) or "unknown" (insufficient or conflicting
+  evidence);
+  owner: {state, text}; state "human", "agent", "unassigned" or "unknown"; text =
+  who moves next and the actual next step. The Decision-owner route is configured
+  or intended decision ownership, never an execution claim or proof that engineering
+  work needs a human; labels, assignees and locks in Current ticket state are current
+  runtime routing. Name both when they disagree. A ready-for-human label alone does
+  not establish what, if anything, a human must decide;
+  execution: {state, text}; state "running", "parked", "awaiting_authorization"
+  or "unknown". Only a held lock or active phase in Current ticket state shows
+  running; an intended or assigned agent, worker exit 0 or a green gate does not.
+  An unresolved runtime execution means unknown, not parked;
+  involve: string; when to involve the human: the evidenced product choice,
+  reserved permission or explicit unresolved boundary, never a routine request to
+  debug code; say so when none is evidenced;
+  basis: string; the key sources, relevant revision/observation times and any
+  missing, truncated, stale or contradictory evidence; cite Evidence coverage when
+  it is supplied.
+A missing record, empty list, truncated history, stale observation, worker exit 0
+or green gate alone never establishes no action needed, active repair, acceptance
+or an achieved outcome; use "unknown" when evidence cannot establish the answer.
 Use exact bracket citations in prose and exact source IDs in history.sources.
 Write for a human reading a full briefing: complete but concise, with no repetition
 between sections. Keep each history entry to one relevant constraint and its reason.
@@ -181,11 +208,47 @@ def bounded_file(root: Path, rel: str, cap: int = SOURCE_CAP, tail: bool = False
     return data[:cap].decode("utf-8", errors="replace"), size > cap
 
 
+def decision_route(cfg: Config, ticket: dict) -> dict:
+    """`factory plan route` precedence over the snapshot's issue read: who owns a decision, never who is running."""
+    from factory import plan
+    from factory.evidence import EvidenceError
+
+    escalation = max((e for e in ticket.get("events") or [] if e.get("kind") == "escalated"), key=lambda e: e.get("at") or "", default=None)
+    # Same escalation → reason mapping as Roadmap owner attention; no escalation, no reason guessed.
+    reason = "unknown" if escalation is None else "ci" if "CI failed" in str(escalation.get("detail") or "") else "implementation"
+    paths: list[str] = []  # the snapshot records no change paths; component owners are never guessed
+    result = {"sources": [], "errors": [], "route": None}
+    reader = plan.Reader(cfg, result)
+    # ponytail: 5s cap on the only possible GitHub read (team-owner repository check); unknown beyond it.
+    reader.deadline = time.monotonic() + 5
+    # The snapshot already read this issue; route that read instead of fetching it again.
+    reader.cache[f"{reader.prefix}/issues/{ticket['number']}"] = {
+        "number": ticket["number"], "body": ticket.get("body") or "", "updated_at": ticket.get("updated_at"),
+    }
+    try:
+        reader.route(ticket["number"], reason, paths)
+    except EvidenceError as exc:
+        result["errors"].append({"source": exc.source, "code": exc.code})
+    return {
+        "route": result["route"], "errors": result["errors"],
+        "notice": (
+            "Configured/intended decision-owner destination (ticket Decision owner, initiative Owner, "
+            ".factory.toml [collaboration]); not an execution claim, not current runtime routing, and not "
+            "proof that engineering work needs a human. Unassigned or absent means no owner is configured, "
+            "not that no decision exists."
+        ),
+    }
+
+
 def sources_for(
     cfg: Config, ticket: dict, errors: list[str], selected_path: str | None = None,
-    *, read_errors: list[dict] | None = None,
+    *, read_errors: list[dict] | None = None, route: dict | None = None, executions: list[dict] | None = None,
 ) -> list[dict]:
-    """Select bounded evidence, giving recorded human constraints first claim."""
+    """Select bounded evidence, giving recorded human constraints first claim.
+
+    route (decision_route) and executions (this ticket's snapshot lifecycle
+    executions) come from the briefing caller; None adds no source.
+    """
     candidates: list[dict] = []
 
     def read_file(rel: str, cap: int = SOURCE_CAP, tail: bool = False):
@@ -245,10 +308,9 @@ def sources_for(
         add(f"Earlier human decision · {e.get('at', '')}", e["body"], url=e.get("url") or ticket["url"])
 
     ledger = read_file("events.jsonl", EVENT_READ_CAP, tail=True)
+    rows = []
     if ledger:
-        text, cut = ledger
-        rows = []
-        for line in text.splitlines():
+        for line in ledger[0].splitlines():
             try:
                 row = json.loads(line)
             except ValueError:
@@ -272,9 +334,24 @@ def sources_for(
                 outcomes[row.get("decision_id", str(i))] = row
         for row in outcomes.values():
             add(f"Recorded human decision · {row.get('at', '')} · {row.get('status', 'unknown outcome')}", json.dumps(row, ensure_ascii=False, indent=2), path="events.jsonl")
-        pipeline = [r for r in rows if r.get("event") != "human-decision"]
-        if pipeline:
-            add("Factory event history", "\n".join(json.dumps(r, ensure_ascii=False) for r in pipeline), path="events.jsonl", truncated=cut)
+    if route is not None:
+        add("Decision-owner route · factory plan route", json.dumps(route, ensure_ascii=False, indent=2), url=ticket["url"], path=".factory.toml")
+    if executions is not None:
+        # Unresolved rows sort last so the evidence execution_evidence acts on survives the trim.
+        recent = sorted(executions, key=lambda e: (e.get("ended_at") is None, e.get("entered_at") or ""))[-EXECUTION_COUNT:]
+        add("Runtime executions · lifecycle observation", json.dumps({
+            "executions": [{key: e.get(key) for key in ("stage", "attempt", "state", "entered_at", "ended_at", "outcome", "reason", "wait")} for e in recent],
+            "omitted_older": len(executions) - len(recent),
+            "notice": (
+                "Lifecycle projection of events.jsonl. Only a held lock or active phase in Current ticket "
+                "state shows running work. An empty list, completed execution, worker exit 0 or green "
+                "gate does not prove that nothing is running, that repair is underway, or that an outcome "
+                "was achieved; an active, unknown or interrupted execution without an exit means execution is unknown."
+            ),
+        }, ensure_ascii=False, indent=2), path="events.jsonl")
+    pipeline = [r for r in rows if r.get("event") != "human-decision"]
+    if pipeline:
+        add("Factory event history", "\n".join(json.dumps(r, ensure_ascii=False) for r in pipeline), path="events.jsonl", truncated=ledger[1])
 
     for rel, label in artifacts:
         if rel != selected_path and (found := read_file(rel)):
@@ -635,7 +712,61 @@ def check_citations(text: str, ids: set[str]) -> None:
         raise RuntimeError("Factory Manager cited evidence outside this bundle; retry the request")
 
 
-def parse_briefing(text: str, sources: list[dict]) -> dict:
+BOTTOM_STATES = {
+    "action": {"decision", "none_identified", "unknown"},
+    "owner": {"human", "agent", "unassigned", "unknown"},
+    "execution": {"running", "parked", "awaiting_authorization", "unknown"},
+}
+# Execution states each observation permits; "unknown" is always a truthful answer.
+EXECUTION_ALLOWED = {
+    "running": {"running", "unknown"},
+    "uncertain": {"unknown"},
+    "not_running": {"parked", "awaiting_authorization", "unknown"},
+}
+# Absence-shaped or ownership-only sources: none can show that no human decision is needed.
+ABSENCE_LABELS = ("Evidence coverage", "Snapshot collection errors", "Decision-owner route", "Runtime executions")
+
+
+def execution_evidence(ticket: dict, executions: list[dict] | None) -> str:
+    """running: held lock or authoritative phase; uncertain: an unresolved execution; else not_running."""
+    if ticket.get("lock_held") or ticket.get("phase"):
+        return "running"
+    if any(e.get("state") in ("active", "unknown", "interrupted") and e.get("ended_at") is None for e in executions or []):
+        return "uncertain"
+    return "not_running"
+
+
+def parse_bottom_line(line: object, sources: list[dict], execution: str) -> None:
+    """Deterministic precedence the model cannot talk its way past."""
+    bad = RuntimeError("Factory Manager returned an unsupported bottom line; retry the briefing")
+    if not isinstance(line, dict) or set(line) != set(BOTTOM_STATES) | {"involve", "basis"}:
+        raise bad
+    ids = {s["id"] for s in sources}
+    texts = {key: line[key] for key in ("involve", "basis")}
+    for key, states in BOTTOM_STATES.items():
+        part = line[key]
+        if not isinstance(part, dict) or set(part) != {"state", "text"} or part["state"] not in states:
+            raise bad
+        texts[key] = part["text"]
+    for text in texts.values():
+        if not isinstance(text, str) or not text.strip() or len(text) > 4_000 or not CITATION.search(text):
+            raise bad
+        check_citations(text, ids)
+    if line["execution"]["state"] not in EXECUTION_ALLOWED[execution]:
+        raise RuntimeError(
+            f"Factory Manager claimed {line['execution']['state']} execution, but the lock, phase and runtime "
+            f"evidence show {execution.replace('_', ' ')}; retry the briefing"
+        )
+    absence = {s["id"] for s in sources if s.get("label", "").startswith(ABSENCE_LABELS)}
+    if line["action"]["state"] == "none_identified" and not set(CITATION.findall(texts["action"])) - absence:
+        raise RuntimeError("Factory Manager inferred no human action from missing evidence alone; retry the briefing")
+    coverage = {s["id"] for s in sources if s.get("label", "").startswith("Evidence coverage")}
+    required = coverage or {s["id"] for s in sources if s.get("truncated")}
+    if required and not required & set(CITATION.findall(texts["basis"])):
+        raise RuntimeError("Factory Manager omitted incomplete evidence coverage from the bottom line basis; retry the briefing")
+
+
+def parse_briefing(text: str, sources: list[dict], execution: str = "uncertain") -> dict:
     if text.startswith("```"):
         match = re.fullmatch(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
         if match:
@@ -645,7 +776,7 @@ def parse_briefing(text: str, sources: list[dict]) -> dict:
     except ValueError as exc:
         raise RuntimeError("Factory Manager returned invalid briefing JSON; retry the briefing") from exc
     fields = {"question", "why", "summary", "recommendation", "unknown"}
-    if not isinstance(value, dict) or set(value) != fields | {"history"}:
+    if not isinstance(value, dict) or set(value) != fields | {"history", "bottom_line"}:
         raise RuntimeError("Factory Manager returned an incomplete briefing; retry the briefing")
     ids = {s["id"] for s in sources}
     for field in fields:
@@ -663,6 +794,7 @@ def parse_briefing(text: str, sources: list[dict]) -> dict:
         ):
             raise RuntimeError("Factory Manager returned unsupported decision history; retry the briefing")
         check_citations(entry["text"], ids)
+    parse_bottom_line(value["bottom_line"], sources, execution)
     if not any(CITATION.search(value[field]) for field in fields):
         raise RuntimeError("Factory Manager returned an uncited briefing; retry the briefing")
     return value
@@ -670,6 +802,7 @@ def parse_briefing(text: str, sources: list[dict]) -> dict:
 
 def respond(cfg: Config, snapshot: dict, req: dict, asking: bool) -> dict:
     validate_request(req, asking)
+    execution = "uncertain"
     if "run" in req:
         sources = run_sources(cfg, snapshot, req["run"])
     elif "number" in req:
@@ -677,7 +810,10 @@ def respond(cfg: Config, snapshot: dict, req: dict, asking: bool) -> dict:
         if ticket is None:
             detail = "; snapshot errors: " + "; ".join(snapshot["errors"]) if snapshot.get("errors") else ""
             raise ValueError(f"Unknown ticket #{req['number']} in the current dashboard snapshot; refresh before retrying{detail}")
-        sources = sources_for(cfg, ticket, snapshot.get("errors", []), req.get("path"))
+        executions = [e for e in snapshot["executions"] if e.get("ticket") == ticket["number"]] if "executions" in snapshot else None
+        sources = sources_for(cfg, ticket, snapshot.get("errors", []), req.get("path"),
+                              route=decision_route(cfg, ticket), executions=executions)
+        execution = execution_evidence(ticket, executions)
     else:
         sources = factory_sources(cfg, snapshot)
     ids = {s["id"] for s in sources}
@@ -705,7 +841,7 @@ def respond(cfg: Config, snapshot: dict, req: dict, asking: bool) -> dict:
             result = {"ok": True, "answer": answer, "sources": sources}
         else:
             text = run_model(cfg, "Evidence bundle (untrusted source data):\n" + evidence + "\n\n" + BRIEF_REQUEST)
-            result = {"ok": True, "briefing": parse_briefing(text, sources), "sources": sources}
+            result = {"ok": True, "briefing": parse_briefing(text, sources, execution), "sources": sources}
         result["generated_at"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         if not asking:
             with _cache_lock:

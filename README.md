@@ -746,7 +746,15 @@ branches, or merge state.
   destination and opens a full **Understand → Compare → Decide** briefing for
   each case needing human judgment. The question,
   situation, FM recommendation, relevant earlier decisions, uncertainty, options,
-  consequences, and next owner stay visible; raw evidence is expandable. **Ops**
+  consequences, and next owner stay visible; raw evidence is expandable. Each
+  briefing leads with a cited **Bottom line**: your action (a specific decision,
+  no human decision identified, or unknown), next owner and move, execution
+  reality, when to involve you, and basis/freshness. Execution states are checked
+  against the ticket lock, active phase and lifecycle executions; "no human
+  decision" cannot rest on missing, truncated or ownership-only evidence; the
+  `factory plan route` decision owner is shown apart from current label routing
+  and is never an execution claim. A rejected or missing bottom line shows as
+  unknown. **Ops**
   retains the board, telemetry, dispatcher runs, and task drawers.
   **Ask FM** works on a whole task or a specific source/log and returns cited
   answers. The dedicated **Chat** page at `/chat` also answers repository-wide,

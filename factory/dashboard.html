@@ -2087,7 +2087,7 @@ async function ensureBriefing(number, retry = false) {
   let entry = S.briefings[number];
   if (entry?.loading) return entry.promise;
   if (entry && !retry) return entry.data || null;
-  entry = S.briefings[number] = { fingerprint: ticketFingerprint(t), loading: true, data: null, error: '' };
+  entry = S.briefings[number] = { fingerprint: ticketFingerprint(t), observedAt: S.snap.generated_at, loading: true, data: null, error: '' };
   entry.promise = (async () => {
     try { entry.data = await fmRequest('/api/briefing', { number }); }
     catch (e) { entry.error = e.message; }
@@ -2227,7 +2227,7 @@ function decisionForm(item) {
   const options = actionOptions(item);
   if (!options.length) return [
     briefingSection('02', 'Compare', h('p', {}, 'No Inbox mutation is available for this state. Use the task drawer to inspect its live evidence.')),
-    briefingSection('03', 'Decide', h('p', {}, item.t.lock_held ? 'The running pipeline is the next owner. Wait for the lock to release.' : 'No human action is required by the current routing state.'), S.receipts[item.key] ? receiptNode(S.receipts[item.key]) : null)];
+    briefingSection('03', 'Decide', h('p', {}, item.t.lock_held ? 'The running pipeline is the next owner. Wait for the lock to release.' : 'This dashboard has no supported action for this state. The bottom line above states the next owner and move, or why they are unknown.'), S.receipts[item.key] ? receiptNode(S.receipts[item.key]) : null)];
   const form = h('form'), blocked = actionBlocked(item), fingerprint = ticketFingerprint(item.t);
   const comparison = h('fieldset', { class: 'briefing-options', disabled: !!blocked }, h('legend', { class: 'briefing-label' }, 'Choose one option · nothing is sent until you confirm'));
   const choiceText = h('p', { id: 'decision-choice', class: 'briefing-status' });
@@ -2358,11 +2358,25 @@ function renderTaskBriefing(item) {
   if (sources.length) raw.append(...sources.map(source => sourceDetails(t.number, source)));
   else raw.append(h('details', {}, h('summary', {}, 'Issue body'), pre(t.body)), h('button', { onclick: () => openTicket(t.number, 'timeline') }, 'Open task timeline and artifacts'));
   if (t.pr) raw.append(feedbackEvidence(t));
+  const line = briefing?.bottom_line, STATE_LABELS = { decision: 'Decision needed', none_identified: 'No human decision identified', unknown: 'Unknown — insufficient evidence', human: 'Human', agent: 'Agent', unassigned: 'Unassigned', running: 'Running', parked: 'Parked', awaiting_authorization: 'Awaiting authorization' };
+  const badge = state => h('strong', { class: `bottom-state state-${state}` }, STATE_LABELS[state] || STATE_LABELS.unknown);
+  const row = (label, part) => [h('dt', {}, label), h('dd', {}, !line ? [badge('unknown'), ' No grounded FM briefing is current. Inspect the evidence below.']
+    : typeof part === 'object' ? [badge(part.state), ' ', cited(part.text, sources, t.number)] : cited(part, sources, t.number))];
+  // Deterministic provenance beside the FM's cited basis: never model text.
+  const truncated = sources.filter(source => source.truncated).length, snapshotStale = S.failed || Date.now() - S.okAt > 180000;
+  const freshness = h('p', { class: 'briefing-muted' }, line ? `Briefing generated ${fmt(result.generated_at)} from the dashboard snapshot of ${fmt(entry.observedAt)} · issue updated ${fmt(t.updated_at)} · ${sources.length} sources${truncated ? `, ${truncated} truncated` : ''}.` : `Issue updated ${fmt(t.updated_at)} · dashboard snapshot ${fmt(S.snap.generated_at)}.`,
+    snapshotStale ? h('strong', {}, ' The snapshot is stale or its last refresh failed; this bottom line may be out of date.') : null);
+  const bottom = h('section', { class: 'briefing-bottom-line', 'aria-labelledby': 'briefing-bottom-title', 'aria-busy': entry?.loading ? 'true' : 'false' }, h('h3', { id: 'briefing-bottom-title', class: 'briefing-label' }, 'Bottom line · advisory, not an authorization'),
+    entry?.loading ? fmProgress('Waiting for FM · preparing bottom line…') : h('dl', {},
+      ...row('Your action', line?.action), ...row('Next owner and move', line?.owner), ...row('Execution reality', line?.execution),
+      ...row('When to involve you', line?.involve), ...row('Basis and freshness', line?.basis)),
+    entry?.loading ? null : freshness);
   return h('article', {},
     h('header', { class: 'briefing-intro' }, h('p', { class: 'briefing-label' }, `${INBOX_KINDS[item.kind]} · #${t.number} · ${t.title}`),
       h('h2', { id: 'briefing-question', class: 'briefing-question', tabindex: -1 }, briefing ? cited(briefing.question, sources, t.number) : item.kind === 'needs-info' ? item.why : `What should happen next for #${t.number}?`),
       h('p', { class: 'briefing-deck' }, cited(briefing ? briefing.why : item.why, sources, t.number)),
       h('div', { class: 'briefing-actions' }, h('button', { onclick: () => openFM(t.number) }, 'Ask FM about this task'), h('button', { onclick: () => openTicket(t.number) }, 'Open task details'), h('a', { href: t.url, target: '_blank', rel: 'noopener noreferrer' }, 'Issue on GitHub'), t.pr ? h('a', { href: t.pr.url, target: '_blank', rel: 'noopener noreferrer' }, `PR #${t.pr.number}`) : null)),
+    bottom,
     briefingSection('01', 'Understand', state,
       h('div', {}, h('h4', { class: 'briefing-label' }, 'The situation'), h('p', {}, briefing ? cited(briefing.summary, sources, t.number) : item.why), taskFacts(item)),
       h('div', { class: 'briefing-recommendation', 'aria-busy': entry?.loading ? 'true' : 'false' }, h('h4', { class: 'briefing-label' }, 'Factory Manager’s recommendation'), entry?.loading ? fmProgress('Waiting for FM · preparing recommendation…') : h('p', {}, briefing ? cited(briefing.recommendation, sources, t.number) : 'No recommendation is available. Do not treat the ordering of options as advice.')),
