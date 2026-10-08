@@ -97,7 +97,7 @@ def rerank(cwd: Path, issue: dict, paths: list[str]) -> list[str]:
         ):
             raise ValueError("Invalid Jev scores")
         cost = result["usage"]["input_tokens"] * 0.042 / 1_000_000
-        logging.getLogger(__name__).info("Brief Jev rerank cost: $%.8f", cost)
+        print(f"[brief] Jev rerank cost: ${cost:.8f}", flush=True)
         return [paths[i] for i in sorted(range(len(paths)), key=lambda i: (-scores[i], i))]
     except Exception:
         logging.getLogger(__name__).warning("Brief Jev rerank failed; using noun order", exc_info=True)

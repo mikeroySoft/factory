@@ -1,6 +1,8 @@
+import io
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -29,8 +31,9 @@ class BriefTest(unittest.TestCase):
             root = Path(directory)
             (root / "a.py").write_text("first\n")
             (root / "b.py").write_text("second\n")
-            with patch.object(brief, "git", git), patch.object(brief, "files_for", return_value=["a.py", "b.py"]), patch.object(brief.urllib.request, "urlopen", return_value=Response()) as urlopen:
+            with patch.object(brief, "git", git), patch.object(brief, "files_for", return_value=["a.py", "b.py"]), patch.object(brief.urllib.request, "urlopen", return_value=Response()) as urlopen, redirect_stdout(io.StringIO()) as out:
                 text = brief.compose(root, {"title": "Change `a.py`", "body": ""}, "")
+        self.assertIn("[brief] Jev rerank cost: $0.00000420", out.getvalue())
         self.assertLess(text.index("- b.py"), text.index("- a.py"))
         self.assertIn("- README.md", text)
         self.assertIn("- CHANGELOG.md", text)
