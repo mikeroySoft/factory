@@ -398,7 +398,7 @@ def blamed_lines(fix: str) -> list[tuple[str, str]]:
         if line.startswith("diff --git "):
             path, header = None, True
         elif header and line.startswith("--- "):
-            path = None if line == "--- /dev/null" else line[6:]
+            path = None if line == "--- /dev/null" else line[6:].rstrip("\t")  # git appends a TAB to paths with spaces
         elif match := HUNK.match(line):
             header = False
             count = 1 if match.group(2) is None else int(match.group(2))

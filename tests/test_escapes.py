@@ -83,6 +83,15 @@ class EscapesTest(unittest.TestCase):
         row = self.rows()[21]
         self.assertEqual((row["fixes"], row["status"], row["candidates"]), ([fix], "no_candidates", []))
 
+    def test_path_with_a_space_is_blamed(self) -> None:
+        self.commit("agent/5: add spaced", **{"x y.txt": "a\nb\n"})
+        fix = self.commit("agent/22: fix spaced", **{"x y.txt": "a\nB\n"})  # git ends `--- a/x y.txt` with a TAB
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        self.bugs = [self.bug(22)]
+        row = self.rows()[22]
+        self.assertEqual((row["fixes"], row["candidates"]),
+                         ([fix], [{"ticket": 5, "title": "add spaced", "lines": 1, "paths": ["x y.txt"]}]))
+
     def test_regressed_by_overrides_blame(self) -> None:
         self.bugs = [self.bug(9, "Steps...\r\nRegressed-by: #3\nRegressed-by: #5\n")]
         row = self.rows()[9]
