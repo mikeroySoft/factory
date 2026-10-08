@@ -2988,12 +2988,14 @@ class DispatchTest(unittest.TestCase):
             dispatch.record("attempt", ticket=3, attempt=1, gate="FAIL", seconds=5, log=str(repo / "nope.log"))
             dispatch.record("escalate", ticket=3, reason="gate failed 3 times")
             dispatch.record("claimed", ticket=4, title="in flight")  # unfinished: excluded
-            tickets, ev = learn.evidence(10)
+            with mock.patch("factory.stats.gh", return_value=[]):
+                tickets, ev = learn.evidence(10)
             self.assertEqual(tickets, [3])
             self.assertIn("gate failed 3 times", ev)
             reply = json.dumps({"lessons": ["Run `make test` before the gate."]})
             with mock.patch.object(triage, "call_llm", return_value=reply), \
-                 mock.patch.object(config, "load", return_value=cfg):
+                 mock.patch.object(config, "load", return_value=cfg), \
+                 mock.patch("factory.stats.gh", return_value=[]):
                 self.assertEqual(learn.main([]), 0)
             lessons = (repo / config.LESSONS_NAME).read_text()
             self.assertIn("- Run `make test` before the gate.", lessons)
@@ -3028,7 +3030,7 @@ class DispatchTest(unittest.TestCase):
             {"event": "claimed", "ticket": 3, "title": "fix parser", "at": "2026-01-01T00:00:00Z"},
             {"event": "escalate", "ticket": 3, "reason": "gate failed 3 times", "at": "2026-01-01T00:01:00Z"},
         ]))
-        stubs = stub_bin(root, gh='case "$1 $2" in "pr list") echo "[]";; esac')
+        stubs = stub_bin(root, gh='case "$1 $2" in "pr list"|"issue list") echo "[]";; esac')
         return repo, bare, stubs, prompt
 
     def test_learn_with_manager_opens_chore_pr(self) -> None:

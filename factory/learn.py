@@ -2,7 +2,8 @@
 
 The traces -> eval -> improve loop, sized for a repo: evidence is the event
 log (gate results, verdicts, escalation reasons), the latest review findings,
-and the tail of failing attempt logs. The model proposes a short list of
+the tail of failing attempt logs, and candidate escaped defects (closed bugs
+blamed back to a merged agent ticket). The model proposes a short list of
 repo-specific lessons; the file is committed and every worker prompt carries
 it. The eval signal is the dashboard's first-gate pass rate before and after.
 """
@@ -16,16 +17,17 @@ from datetime import datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from factory import config, dispatch, lifecycle, manage, promotion, triage
+from factory import config, dispatch, lifecycle, manage, promotion, stats, triage
 from factory.config import LABEL_CHORE, LESSONS_NAME
 
 MAX_LESSONS = 10
 LOG_TAIL = 40  # lines of a failing attempt log shown to the model
 MAX_EVIDENCE = 24_000  # chars; keeps the prompt inside a local model's window
+MAX_ESCAPES = 10  # most recent candidate-escape bugs carried into evidence
 
 
 def evidence(last: int) -> tuple[list[int], str]:
-    """Evidence per ticket from events.jsonl, newest `last` tickets that finished."""
+    """Evidence per ticket from events.jsonl, newest `last` tickets that finished, then recent candidate escapes."""
     by_ticket: dict[int, list[dict]] = {}
     for row in lifecycle.read_events(dispatch.EVENTS):
         if (
@@ -55,6 +57,13 @@ def evidence(last: int) -> tuple[list[int], str]:
         if review.exists():
             parts.append(f"\nLatest reviewer findings:\n```\n{review.read_text()[-3000:]}\n```")
         parts.append("")
+    recent = sorted((row for row in stats.escapes() if row["candidates"]), key=lambda row: row["closed_at"])
+    if recent:
+        parts.append("## Candidate escapes\n\nClosed bugs whose fix changed lines an earlier agent ticket "
+                     "introduced (SZZ-style blame: candidates, not causes).")
+        parts += [f"- Bug #{row['bug']}: {row['title']} <- candidate #{c['ticket']}: {c['title']} "
+                  f"({row['source']}; {', '.join(c['paths']) or 'no blamed paths'})"
+                  for row in recent[-MAX_ESCAPES:] for c in row["candidates"]]
     return chosen, "\n".join(parts)[-MAX_EVIDENCE:]
 
 
@@ -185,6 +194,7 @@ def main(argv: list[str]) -> int:
                             splits=claim["splits"], disposition=disposition, reason=reason)
         return 0
     triage.configure(cfg)
+    stats.configure(cfg)
 
     tickets, evidence_md = evidence(args.last)
     if not tickets:
