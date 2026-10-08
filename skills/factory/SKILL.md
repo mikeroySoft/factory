@@ -146,7 +146,7 @@ the cause and the evidence path.
 
 ## Invariants the factory relies on
 
-- Only the merge stage moves `main`; workers push `agent/<n>` only.
+- Only the merge stage moves `main`; workers only commit, and the dispatcher pushes `agent/<n>`.
 - A merge needs all four: gate PASS, `factory-approved`, green CI, head contains
   `main`. One PR per pass; behind-main PRs are rebased and re-gated first.
 - `wontfix` is proposed by triage, never applied.

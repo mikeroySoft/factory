@@ -84,7 +84,7 @@ KNOWN_KEYS = {
     "triage": ("url", "model", "timeout"),
     "journal": ("max_mb", "retention"),
     "dashboard": ("port", "theme"),
-    "install": ("every", "dashboard", "host", "python", "env"),
+    "install": ("every", "dashboard", "host", "python", "env", "dispatch_env"),
     "collaboration": ("fallback", "reasons", "components"),
     "prices": None,
 }
@@ -524,6 +524,15 @@ def load(start: Path | None = None) -> Config:
         raise ConfigError("[install].python must be a non-empty path")
     cfg.install["dashboard"] = bool(cfg.install["dashboard"])
     cfg.install["env"] = {k: str(v) for k, v in cfg.install["env"].items()}
+    if "dispatch_env" in cfg.install:  # optional; absent keeps cfg.install as it was
+        cfg.install["dispatch_env"] = {k: str(v) for k, v in cfg.install["dispatch_env"].items()}
     lifecycle.MAX_BYTES = cfg.journal_max_mb * 1024 * 1024
     lifecycle.RETENTION = cfg.journal_retention
     return cfg
+
+
+def dashboard_env(cfg: Config) -> dict[str, str]:
+    """This process's environment as the dashboard unit sees it: `[install].dispatch_env`
+    keys dropped, `[install].env` applied. Its `gh` is the human identity."""
+    env = {k: v for k, v in os.environ.items() if k not in cfg.install.get("dispatch_env", {})}
+    return {**env, **cfg.install["env"]}
