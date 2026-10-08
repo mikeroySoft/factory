@@ -38,7 +38,7 @@ REASONS = {
     "github_command_failed", "triage_endpoint_timeout", "triage_endpoint_unavailable",
     "no_tickets", "unparseable_decision", "triage_feedback", "ci_pending", "no_passing_ci",
     "exclusive_resource", "merge_lock_contended", "ticket_lock_contended", "capacity_reached",
-    "state_changed", "check_failed",
+    "state_changed", "check_failed", "stuck", "hung_after_done", "budget_exceeded",
     "scheduled_next_pass", "scope exited before its registered children were reaped",
     "recorded execution ended according to process and lock evidence",
 }

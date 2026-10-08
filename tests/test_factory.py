@@ -3126,7 +3126,7 @@ class DispatchTest(unittest.TestCase):
                 return True, "PASS"
 
             with mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
-                    mock.patch.object(dispatch, "run_worker", return_value=0), \
+                    mock.patch.object(dispatch, "run_worker", return_value=(0, None)), \
                     mock.patch.object(dispatch, "commit_leftovers"), \
                     mock.patch.object(dispatch, "run_gate", side_effect=mutating_gate):
                 ok, report, _, gate_head = dispatch.worker_round(
@@ -3142,6 +3142,71 @@ class DispatchTest(unittest.TestCase):
             )
             self.assertEqual(attempt["gate"], "FAIL")
             self.assertNotEqual(attempt["head"], attempt["actual_head"])
+
+    def worker_round_with(self, repo: Path, script: str, **cfg) -> tuple:
+        """Run one worker_round with a fake worker; returns (ok, report, gate_calls, elapsed)."""
+        import time
+        from unittest import mock
+
+        from factory import dispatch
+
+        dispatch.configure(config.Config(
+            root=repo, repo="acme/widgets",
+            workers={"default": [sys.executable, "-c", script]}, **cfg,
+        ))
+        dispatch.LOGS.mkdir(parents=True)
+        gate_calls = []
+
+        def gate(*args, **_kwargs):
+            gate_calls.append(args)
+            return True, "PASS"
+
+        started = time.monotonic()
+        with mock.patch.object(dispatch, "WATCH_POLL", 0.05), \
+                mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
+                mock.patch.object(dispatch, "run_gate", side_effect=gate):
+            ok, report, _, _ = dispatch.worker_round(7, repo, set(), "ticket", "", 1, float("inf"))
+        return ok, report, gate_calls, time.monotonic() - started
+
+    def test_stalled_worker_is_killed_as_stuck_without_gate(self) -> None:
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            ok, report, gate_calls, elapsed = self.worker_round_with(
+                repo, "import time; time.sleep(60)", idle_timeout=0.01, exit_grace=60,
+            )
+            self.assertFalse(ok)
+            self.assertLess(elapsed, 30)
+            self.assertEqual(gate_calls, [])
+            self.assertIn("idle_timeout", report)
+            attempt = next(e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("event") == "attempt")
+            self.assertEqual((attempt["timeout"], attempt["reason"]), ("idle_timeout", "stuck"))
+            packet, _ = dispatch.escalation_packet(7, "gate failed", None, repo)
+            self.assertIn("| idle_timeout |", packet.read_text())
+
+    def test_worker_that_finishes_but_never_exits_is_terminated_then_gated(self) -> None:
+        from factory import dispatch
+
+        done = {
+            "handoff": "import pathlib, time; p = pathlib.Path('.factory'); p.mkdir(exist_ok=True); "
+                       "(p / 'handoff-7.md').write_text('done'); time.sleep(60)",
+            "commit": "import pathlib, subprocess, time; pathlib.Path('work.txt').write_text('x'); "
+                      "subprocess.run(['git', 'add', 'work.txt'], check=True); "
+                      "subprocess.run(['git', 'commit', '-qm', 'work'], check=True); time.sleep(60)",
+        }
+        for signal_kind, script in done.items():
+            with self.subTest(signal_kind), tempfile.TemporaryDirectory() as d:
+                repo = make_repo(Path(d))
+                ok, report, gate_calls, elapsed = self.worker_round_with(
+                    repo, script, idle_timeout=60, exit_grace=1,
+                )
+                self.assertLess(elapsed, 30)
+                self.assertEqual(len(gate_calls), 1)
+                self.assertTrue(ok, report)
+                self.assertIn("exit_grace", report)
+                attempt = next(e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("event") == "attempt")
+                self.assertEqual((attempt["timeout"], attempt["reason"]), ("exit_grace", "hung_after_done"))
 
     def test_review_rejects_head_mutation_during_review(self) -> None:
         from unittest import mock
