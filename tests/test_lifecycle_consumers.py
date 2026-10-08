@@ -32,7 +32,8 @@ class LifecycleConsumersTest(unittest.TestCase):
                 None, [], 12, {}, {"ticket": []},
             ]
             events.write_text("\n".join(json.dumps(row) for row in rows) + '\n{"event":"attempt"')
-            with patch.multiple(dispatch, FACTORY=factory, EVENTS=events, create=True):
+            with patch.multiple(dispatch, FACTORY=factory, EVENTS=events, create=True), \
+                 patch("factory.stats.gh", return_value=[]):
                 self.assertEqual(dashboard.spend_by_ticket(), {
                     1: {"seconds": 12, "cost": 0.25, "rounds": 1},
                     2: {"seconds": 8, "cost": None, "rounds": 1},

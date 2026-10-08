@@ -19,6 +19,9 @@ from factory.config import LABEL_AGENT, LABEL_HUMAN, USAGE_FIELDS, Config
 cfg: Config
 REPOSITORY = ""
 AGENT_BRANCH = re.compile(r"agent/(\d+)$")
+AGENT_SUBJECT = re.compile(r"agent/(\d+):")
+REGRESSED_BY = re.compile(r"^[ \t]*Regressed-by:[ \t]*#(\d+)\b", re.MULTILINE)
+HUNK = re.compile(r"@@ -(\d+)(?:,(\d+))? ")
 
 
 def configure(c: Config) -> None:
@@ -372,6 +375,96 @@ def format_hours(hours: float | None) -> str:
     return "" if hours is None else f"{hours:.1f}"
 
 
+def git(*args: str) -> str:
+    return subprocess.run(["git", "-c", "core.quotePath=false", *args], cwd=cfg.root,
+                          text=True, capture_output=True, check=True).stdout
+
+
+def agent_commits() -> list[tuple[str, int, str]]:
+    """(sha, ticket, title) of first-parent `agent/<n>:` commits on origin/<main>, oldest first."""
+    commits = []
+    for line in git("log", "--first-parent", "--reverse", "--format=%H %s", f"origin/{cfg.main}").splitlines():
+        sha, _, subject = line.partition(" ")
+        if match := AGENT_SUBJECT.match(subject):
+            commits.append((sha, int(match.group(1)), subject[match.end():].strip()))
+    return commits
+
+
+def blamed_lines(fix: str) -> list[tuple[str, str]]:
+    """(path, commit subject) per line `fix` modifies or deletes, blamed at its first parent."""
+    lines, path, header = [], None, False
+    diff = git("diff", "-U0", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", f"{fix}^", fix)
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            path, header = None, True
+        elif header and line.startswith("--- "):
+            path = None if line == "--- /dev/null" else line[6:].rstrip("\t")  # git appends a TAB to paths with spaces
+        elif match := HUNK.match(line):
+            header = False
+            count = 1 if match.group(2) is None else int(match.group(2))
+            if path and count:
+                blame = git("blame", "--line-porcelain", "-L", f"{match.group(1)},+{count}", f"{fix}^", "--", path)
+                lines += [(path, row[8:]) for row in blame.splitlines() if row.startswith("summary ")]
+    return lines
+
+
+def escapes() -> list[dict[str, Any]]:
+    """Candidate escaped defects: closed `bug` issues whose fix changed lines an earlier agent ticket wrote.
+    SZZ-style and noisy: refactors yield false candidates, add-only fixes yield none."""
+    bugs = gh("issue", "list", "--state", "closed", "--label", "bug", "--limit", "1000",
+              "--json", "number,title,body,closedAt")
+    if not bugs:
+        return []
+    commits = agent_commits()
+    titles = {n: title for _, n, title in commits}
+    pulls = None
+    rows = []
+    for bug in sorted(bugs, key=lambda b: b["number"]):
+        number = bug["number"]
+        fixes = [sha for sha, n, _ in commits if n == number]
+        if not fixes:
+            if pulls is None:
+                pulls = gh("pr", "list", "--state", "merged", "--limit", "1000",
+                           "--json", "mergeCommit,closingIssuesReferences")
+            fixes = [pr["mergeCommit"]["oid"] for pr in pulls if pr.get("mergeCommit")
+                     and any(ref["number"] == number for ref in pr["closingIssuesReferences"])]
+        declared = sorted({int(n) for n in REGRESSED_BY.findall(bug.get("body") or "")})
+        candidates: dict[int, dict] = {}
+        if declared:
+            status = "candidates"
+            candidates = {n: {"ticket": n, "title": titles.get(n, ""), "lines": None, "paths": []} for n in declared}
+        elif not fixes:
+            status = "unlinked"
+        else:
+            blamed = [line for fix in fixes for line in blamed_lines(fix)]
+            for path, subject in blamed:
+                match = AGENT_SUBJECT.match(subject)
+                if match and int(match.group(1)) != number:
+                    n = int(match.group(1))
+                    candidate = candidates.setdefault(n, {"ticket": n, "title": titles.get(n, ""), "lines": 0, "paths": []})
+                    candidate["lines"] += 1
+                    if path not in candidate["paths"]:
+                        candidate["paths"].append(path)
+            status = "candidates" if candidates else "no_candidates" if blamed else "no_blamed_lines"
+        rows.append({"bug": number, "title": bug["title"], "closed_at": bug["closedAt"], "fixes": fixes,
+                     "source": "declared" if declared else "blame", "status": status,
+                     "candidates": [candidates[n] for n in sorted(candidates)]})
+    return rows
+
+
+def print_escapes(rows: list[dict[str, Any]], merged: set[int]) -> None:
+    print("bug   fix       source   candidates")
+    for row in rows:
+        fixes = ",".join(sha[:7] for sha in row["fixes"]) or "-"
+        result = ", ".join(
+            f"#{c['ticket']}" + ("" if c["lines"] is None else f" ({c['lines']} line{'s' * (c['lines'] != 1)})")
+            for c in row["candidates"]) or row["status"]
+        print(f"#{row['bug']:<4} {fixes:<8} {row['source']:<8} {result}")
+    escaped = len({c["ticket"] for row in rows for c in row["candidates"]} & merged)
+    share = f"{100 * escaped / len(merged):.1f}%" if merged else "n/a"
+    print(f"\nCandidate escapes: {escaped} of {len(merged)} merged agent tickets ({share})")
+
+
 def print_table(rows: list[dict[str, Any]]) -> None:
     def usage(row: dict, stage: str, key: str) -> str:
         value = row["llm_usage"].get(stage, {}).get(key)
@@ -442,15 +535,21 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--json", action="store_true", help="print metric rows as JSON")
     parser.add_argument("--by-worker", action="store_true", help="split gate pass rate, attempts and known cost by claim label")
     parser.add_argument("--by-brief", action="store_true", help="split first-gate pass rate by tickets with/without a brief")
+    parser.add_argument("--escapes", action="store_true",
+                        help="candidate escaped defects: closed bugs whose fix changed lines an earlier agent ticket wrote")
     args = parser.parse_args(argv)
     configure(config.load())
-    if args.by_worker or args.by_brief:
+    if args.escapes:
+        rows = escapes()
+    elif args.by_worker or args.by_brief:
         audit = audit_by_ticket(cfg.factory / "events.jsonl")
         rows = worker_metrics(audit, cfg.workers) if args.by_worker else brief_metrics(audit)
     else:
         rows = collect_rows()
     if args.json:
         print(json.dumps(rows, indent=2))
+    elif args.escapes:
+        print_escapes(rows, {n for _, n, _ in agent_commits()})
     elif args.by_worker:
         print_workers(rows)
     elif args.by_brief:

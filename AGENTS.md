@@ -37,7 +37,7 @@ map or a path in it does not exist; update the map in the same change.
 | Manager console (`chat`) | `factory/chat.py`, `factory/chat.html`, `console/app` | `tests/test_chat.py` | `test` |
 | Codebase history | `factory/codebase.py`, `factory/codebase.html` | `tests/test_codebase.py` | `test` |
 | Accepted handoff retention | `factory/results.py` | `tests/test_results.py` | `test` |
-| Metrics (`stats`) | `factory/stats.py` | `tests/test_factory.py`, `tests/test_human_corrections.py` | `test` |
-| Lessons (`learn`) | `factory/learn.py` | `tests/test_factory.py`, `tests/test_lifecycle_consumers.py` | `test` |
+| Metrics (`stats`) | `factory/stats.py` | `tests/test_factory.py`, `tests/test_human_corrections.py`, `tests/test_escapes.py` | `test` |
+| Lessons (`learn`) | `factory/learn.py` | `tests/test_factory.py`, `tests/test_lifecycle_consumers.py`, `tests/test_escapes.py` | `test` |
 | Eval promotion | `factory/promotion.py`, `docs/eval-promotion-contract.md` | `tests/test_promotion.py` | `test` |
 | Experiments | `experiments/b1-build/build.py`, `experiments/o1-observation/observer.py` | `tests/test_b1_build.py`, `tests/test_o1_observation.py` | `test` |
