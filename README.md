@@ -102,6 +102,19 @@ operator-controlled. Factory neither provisions the environment nor requires its
 version to match the installer. `install --print` only renders the units; like its
 other operational preflights, interpreter validation runs only for a real install.
 
+To act on GitHub under a separate machine account, set host-owned
+`[install].dispatch_env` (same shape as `[install].env`), for example
+`GH_CONFIG_DIR` pointing at a gh config logged in as that account, plus
+`GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_NAME`/`GIT_COMMITTER_EMAIL`.
+Its lines are rendered only into the triage+dispatcher unit, after `[install].env`;
+the dashboard unit keeps the human identity. The token stays in gh's store and is
+never written into a unit. `doctor` then reports both logins (`gh api user`) and
+fails when they are equal; unset, nothing changes. Worker and reviewer agents never
+get a GitHub credential: the dispatcher drops `GH_TOKEN`/`GITHUB_TOKEN` and points
+`GH_CONFIG_DIR` at a fresh empty directory for them. Workers only commit; the
+dispatcher pushes `agent/<n>`. Review-request opt-in accepts requests naming
+either the dispatcher's or the dashboard's login.
+
 Then file an issue with the **Agent task** template (Scope / Touches / Exit
 gate / Out of scope). It gets `needs-triage`; the next pass triages it; if it is
 fully specified it becomes `ready-for-agent` and is picked up.

@@ -20,8 +20,9 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import time
-from contextlib import nullcontext, suppress
+from contextlib import contextmanager, nullcontext, suppress
 from pathlib import Path
 
 from factory import __version__, brief, config, lifecycle
@@ -74,9 +75,9 @@ STANDING_INSTRUCTIONS = """
   edited for the ticket; never `git add -A`, and never commit
   `.factory-prompt.md` or gate reports.
 - NEVER use `git stash` — the stash is shared with the user's other worktrees.
-- Only push `agent/{n}`. NEVER push, merge into, or fast-forward `{main}`, and
-  never close the ticket yourself: the dispatcher opens the PR and the merge
-  stage lands it after review and CI.
+- Commit only; do not push. The dispatcher pushes `agent/{n}`, opens the PR, and
+  the merge stage lands it after review and CI. NEVER merge into or fast-forward
+  `{main}`, and never close the ticket yourself.
 - Finish by running `{python} -m factory gate --report .factory/gate-report-{n}.md`
   and fixing any failures it reports.
 - Last, write `.factory/handoff-{n}.md` (gitignored): what you changed, what is
@@ -91,13 +92,17 @@ def log(msg: str) -> None:
 
 def run(
     cmd: list[str], cwd: Path | None = None, check: bool = True,
-    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    stdout=subprocess.PIPE, stderr=subprocess.PIPE, env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
+    """`env` replaces the inherited environment (lifecycle context is still added)."""
     execution = lifecycle.current()
     if execution is None:
-        return subprocess.run(cmd, cwd=cwd, check=check, stdout=stdout, stderr=stderr, text=True)
+        return subprocess.run(cmd, cwd=cwd, check=check, stdout=stdout, stderr=stderr, text=True, env=env)
+    launch = execution.env()
+    if env is not None:
+        launch = {**env, lifecycle.CONTEXT_ENV: launch[lifecycle.CONTEXT_ENV]}
     with subprocess.Popen(cmd, cwd=cwd, stdout=stdout, stderr=stderr,
-                          text=True, env=execution.env()) as proc:
+                          text=True, env=launch) as proc:
         try:
             execution.child(proc.pid)
             out, err = proc.communicate()
@@ -115,9 +120,17 @@ def run(
     return result
 
 
-def gh_json(args: list[str]) -> object:
-    out = run(["gh", *args]).stdout
+def gh_json(args: list[str], env: dict[str, str] | None = None) -> object:
+    out = run(["gh", *args], env=env).stdout
     return json.loads(out)
+
+
+@contextmanager
+def without_github(env: dict[str, str]):
+    """`env` for worker and reviewer agents: no GitHub token, and gh reads a fresh empty
+    config dir. The dispatcher's own gh and git push keep the configured identity."""
+    with tempfile.TemporaryDirectory(prefix="factory-no-gh-") as empty:
+        yield {k: v for k, v in env.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")} | {"GH_CONFIG_DIR": empty}
 
 
 def _review_command(prompt: str) -> tuple[list[str], bool]:
@@ -307,8 +320,12 @@ def review_intake_pass(dry_run: bool) -> None:
         requests = pr["reviewRequests"]
         if not opted_in and requests:
             if login is None:
-                login = gh_json(["api", "user"])["login"].casefold()
-            opted_in = any(request.get("login", "").casefold() == login for request in requests)
+                # The dispatcher's login, plus the human's (dashboard identity) when
+                # `[install].dispatch_env` runs the dispatcher as a separate account.
+                login = {gh_json(["api", "user"])["login"].casefold()}
+                if cfg.install.get("dispatch_env"):
+                    login.add(gh_json(["api", "user"], env=config.dashboard_env(cfg))["login"].casefold())
+            opted_in = any(request.get("login", "").casefold() in login for request in requests)
         # GitHub consumes review requests on submission; keep tracking admitted PRs.
         if not opted_in and not any(
             e.get("event") == "review-result" and e.get("pr") == pr["number"]
@@ -435,7 +452,8 @@ def review_external_pr(n: int, base: str, head: str) -> None:
             log(f"PR #{n}: diff too large to review at {head}")
             return
         command, structured = _review_command(prompt)
-        proc = run(command, cwd=ROOT, check=False)
+        with without_github(dict(os.environ)) as env:
+            proc = run(command, cwd=ROOT, check=False, env=env)
         findings, usage = (
             _omp_output(proc.stdout) if structured else (proc.stdout.strip(), None)
         )
@@ -699,15 +717,16 @@ def run_worker(cmd: list[str], wt: Path, logfile: Path, handoff: Path,
     with lifecycle.scope(EVENTS, "worker") as execution, logfile.open("a") as out:
         start = _activity(wt, logfile, handoff)  # before launch: a fast handoff must count as done
         # Own session, so a timeout stops the whole tree (tests, servers), not just the agent.
-        proc = subprocess.Popen(cmd, cwd=wt, stdout=out, stderr=subprocess.STDOUT,
-                                env=execution.env(), start_new_session=True)
-        try:
-            execution.child(proc.pid)
-            fired = _watch(proc, wt, logfile, handoff, deadline, start)
-        finally:
-            if proc.poll() is None:
-                _stop(proc)
-            execution.child_done(proc.pid)
+        with without_github(execution.env()) as env:
+            proc = subprocess.Popen(cmd, cwd=wt, stdout=out, stderr=subprocess.STDOUT,
+                                    env=env, start_new_session=True)
+            try:
+                execution.child(proc.pid)
+                fired = _watch(proc, wt, logfile, handoff, deadline, start)
+            finally:
+                if proc.poll() is None:
+                    _stop(proc)
+                execution.child_done(proc.pid)
         code = proc.returncode
         if fired:
             execution.emit("timeout", timeout=fired)
@@ -922,7 +941,8 @@ def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str,
         actual_head = before
         if before == expected_head:
             command, structured = _review_command(prompt)
-            proc = run(command, cwd=wt, check=False)
+            with without_github(dict(os.environ)) as env:
+                proc = run(command, cwd=wt, check=False, env=env)
             findings, usage = (
                 _omp_output(proc.stdout) if structured else (proc.stdout.strip(), None)
             )
@@ -2169,7 +2189,7 @@ def process_ticket(
                         n, f"{failed} after review bounce {bounce}; worktree kept at {wt}", logfile
                     )
                     return
-                run(["git", "push", "origin", f"agent/{n}"], cwd=wt)
+                run(["git", "push", "--force-with-lease", "origin", f"agent/{n}"], cwd=wt)
                 verdict, findings = review(wt, n, report, gate_head)
                 pr_comment(n, findings)
             if verdict != "APPROVE":

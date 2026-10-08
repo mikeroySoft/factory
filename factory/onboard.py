@@ -39,6 +39,12 @@ def sh(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False)
 
 
+def gh_login(env: dict[str, str]) -> str:
+    """`gh api user` login under `env`; empty when gh cannot authenticate."""
+    proc = subprocess.run(["gh", "api", "user", "--jq", ".login"], env=env, capture_output=True, text=True, check=False)
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
 def ensure_line(path: Path, line: str) -> bool:
     text = path.read_text() if path.exists() else ""
     if line in text.splitlines():
@@ -397,6 +403,15 @@ def doctor(argv: list[str]) -> int:
         report(shutil.which(tool) is not None, f"{tool} on PATH")
     auth = sh(["gh", "auth", "status"])
     report(auth.returncode == 0, "gh authenticated", "" if auth.returncode == 0 else (auth.stderr.strip().splitlines() or ["?"])[-1])
+    if dispatch_env := cfg.install.get("dispatch_env"):
+        dispatcher = gh_login({**os.environ, **cfg.install["env"], **dispatch_env})
+        dashboard = gh_login(config.dashboard_env(cfg))
+        same = dispatcher.casefold() == dashboard.casefold()
+        report(
+            bool(dispatcher and dashboard) and not same, "GitHub identities",
+            f"dispatcher {dispatcher or '?'}, dashboard {dashboard or '?'}"
+            + ("; [install].dispatch_env must select a different account" if dispatcher and same else ""),
+        )
     perm = sh(["gh", "repo", "view", cfg.repo, "--json", "viewerPermission", "--jq", ".viewerPermission"])
     level = perm.stdout.strip()
     report(level in ("WRITE", "MAINTAIN", "ADMIN"), f"push access to {cfg.repo}", level or perm.stderr.strip())
@@ -660,13 +675,15 @@ def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
     # At boot the user manager's PATH is the systemd default (no ~/.local/bin),
     # so gh/omp/codex vanish; carry the installing shell's PATH into the units.
     # [install].env (host config) adds one line each: policy such as UV_EXCLUDE_NEWER.
+    # [install].dispatch_env goes only into the triage+dispatcher unit: its GitHub identity.
     env = f"Environment=PATH={os.environ['PATH']}\n"
     env += "".join(f"Environment={k}={v}\n" for k, v in cfg.install["env"].items())
+    dispatch_env = env + "".join(f"Environment={k}={v}\n" for k, v in cfg.install.get("dispatch_env", {}).items())
     return {
         f"{cfg.unit}.service": (
             f"[Unit]\nDescription=factory triage + dispatcher for {cfg.repo} (one pass)\n\n"
             # `-` prefix: an offline triage model must not stop the dispatch pass.
-            f"[Service]\nType=oneshot\nWorkingDirectory={cfg.root}\n{env}"
+            f"[Service]\nType=oneshot\nWorkingDirectory={cfg.root}\n{dispatch_env}"
             f"ExecStart=-{exe} triage\nExecStart={exe} dispatch\n"
         ),
         f"{cfg.unit}.timer": (

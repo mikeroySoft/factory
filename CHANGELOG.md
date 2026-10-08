@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Machine-user dispatcher identity (#198): host `[install].dispatch_env` is rendered only into the triage+dispatcher unit (unset: units unchanged), so the dispatcher's `gh` and `git push` can run as a separate account while the dashboard keeps the human one. `factory doctor` reports both `gh api user` logins and fails when `dispatch_env` is set and they match. Worker and reviewer subprocesses run without `GH_TOKEN`/`GITHUB_TOKEN` and with `GH_CONFIG_DIR` set to a fresh empty directory. Workers only commit; the dispatcher pushes `agent/<n>` (after a review bounce with `--force-with-lease`). Review-request opt-in accepts the dispatcher's and, under `dispatch_env`, the dashboard's login.
 - Worker briefs rerank the noun-matched top-40 file pool with Jev when `TYPESAFE_API_KEY` is set; a missing key or provider error falls back to noun order. Tracked README.md and CHANGELOG.md are added whenever at least one file matched (noun-free issues still get no brief), and successful rerank cost is logged (#166).
 - Gate checks run without `FACTORY_LIFECYCLE_CONTEXT` (#170): a repo's own test suite no longer appends its fixture rows to the live `.factory/events.jsonl`. The gate's own `enter`/`handoff`/`child_start`/`result`/`child_exit`/`exit` rows are unchanged.
 - `factory doctor` resolves worker, worker-wrap, reviewer, manager and gate-check binaries against the installed unit's PATH, honoring the last assignment and naming the PATH source in missing-binary diagnostics (#171).
