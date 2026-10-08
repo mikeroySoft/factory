@@ -1965,6 +1965,10 @@ evidence, chat, onboarding, metrics, and learning surfaces. `factory/cli.py`
 defines the command surface; `factory/config.py` layers host and repository
 configuration.
 
+The [ticket flow map](docs/ticket-flow.md) shows every path a ticket can take:
+triage decisions, build, review, approval, CI, merge, escalation and manager
+recovery, each edge citing the code that implements it.
+
 ## License
 
 MIT
