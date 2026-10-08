@@ -208,6 +208,7 @@ def relocation_fix(cfg: config.Config, *, reveal: bool) -> dict:
 
 def unknown_key_fix(path: Path, unknown: list[str]) -> dict:
     from bisect import bisect_right
+
     from tomlkit.items import AbstractTable
     from tomlkit.parser import Parser
 

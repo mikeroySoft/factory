@@ -7,11 +7,11 @@ Uses the no-tools subprocess pattern from experiments/reviewer-calibration.
 import concurrent.futures
 import hashlib
 import json
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 MODEL = "openai-codex/gpt-6-astra"
@@ -69,7 +69,7 @@ def run_one(job: tuple[str, int], out: Path, sources: list[dict]) -> dict:
     with tempfile.TemporaryDirectory(prefix="handoff-replan-") as cwd:
         try:
             proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True,
-                                  timeout=360, stdin=subprocess.DEVNULL)
+                                  timeout=360, stdin=subprocess.DEVNULL, check=False)
             stdout, stderr, returncode = proc.stdout, proc.stderr, proc.returncode
         except subprocess.TimeoutExpired as exc:
             stdout = exc.stdout or b""

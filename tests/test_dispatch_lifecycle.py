@@ -3,14 +3,13 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 from factory import __version__, lifecycle
-
 
 GH = '''#!/usr/bin/env python3
 import json, os, subprocess, sys
@@ -115,7 +114,7 @@ class LocalCLI(unittest.TestCase):
 
     def cli(self, *args, expected=0):
         result = subprocess.run([sys.executable, "-m", "factory", *args], cwd=self.repo,
-                                env=self.env, capture_output=True, text=True, timeout=60)
+                                env=self.env, capture_output=True, text=True, timeout=60, check=False)
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
         return result
 
@@ -201,7 +200,7 @@ class LocalCLI(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, "-m", "factory", "evidence", "--root", str(self.repo)],
             input=json.dumps(request), cwd=self.repo, env=self.env,
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=30, check=False,
         )
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
         return json.loads(result.stdout)
@@ -284,7 +283,7 @@ class LocalCLI(unittest.TestCase):
         self.assertEqual(failures[-1]["outcome"], "product_feedback")
         self.write_config(check=[str(self.base / "absent-executable")])
         result = subprocess.run([sys.executable, "-m", "factory", "gate"], cwd=self.repo,
-                                env=self.env, capture_output=True, text=True, timeout=60)
+                                env=self.env, capture_output=True, text=True, timeout=60, check=False)
         self.assertNotEqual(result.returncode, 0)
         failures = [r for r in self.rows() if r["kind"] == "exit" and r["stage"] == "gate"]
         self.assertEqual(failures[-1]["outcome"], "mechanism_failure")

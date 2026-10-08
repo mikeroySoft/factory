@@ -14,9 +14,9 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import sys
+from pathlib import Path
 
 VERSION = "0.84.4"
 MODEL = "ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M"

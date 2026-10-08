@@ -15,7 +15,7 @@ import stat
 import subprocess
 import time
 import tomllib
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
@@ -157,7 +157,7 @@ def load(start: Path | None = None) -> Config:
             raise ValueError
         gate = raw.get("gate", {})
         if not isinstance(gate, dict):
-            raise ValueError
+            raise ValueError  # noqa: TRY004 — invalid configuration shares the fallback path
         if "lock" in gate:
             lock = gate["lock"]
             if not isinstance(lock, str) or not lock or "\x00" in lock:
@@ -261,7 +261,7 @@ def dispatcher(cfg: Config, executions: list[dict], history: dict) -> tuple[dict
             if value is not None and (type(value) is not int or value < 0):
                 raise ValueError
             if value not in (None, 0, 2**64 - 1):
-                following = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(microseconds=value)
+                following = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(microseconds=value)
     except _Unavailable as exc:
         error("systemctl", "schedule", str(exc))
     except (ValueError, TypeError, OverflowError, OSError, RecursionError):
@@ -272,7 +272,7 @@ def dispatcher(cfg: Config, executions: list[dict], history: dict) -> tuple[dict
         active_count = _capacity(cfg)
     except _Unavailable as exc:
         error("admission", "repository", str(exc))
-    observed = datetime.now(timezone.utc)
+    observed = datetime.now(UTC)
     next_at = (following.isoformat(timespec="microseconds").replace("+00:00", "Z")
                if timer_active is True and following is not None and following > observed else None)
     run_ids = sorted({execution["dispatcher_run_id"] for execution in executions

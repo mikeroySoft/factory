@@ -7,14 +7,14 @@ Writes a short Markdown report (PASS/FAIL per check + failure excerpts).
 from __future__ import annotations
 
 import argparse
-import fnmatch
 import fcntl
+import fnmatch
 import os
 import re
 import signal
 import subprocess
-from pathlib import Path
 import tomllib
+from pathlib import Path
 
 from factory import config, lifecycle
 from factory.config import CONFIG_NAME, Config

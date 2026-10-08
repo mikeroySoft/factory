@@ -6,14 +6,13 @@ import os
 import shutil
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
 from factory import binding, config, results
 
-
-NOW = datetime(2026, 1, 2, 12, tzinfo=timezone.utc)
+NOW = datetime(2026, 1, 2, 12, tzinfo=UTC)
 REPO = "acme/widgets"
 
 

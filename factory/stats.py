@@ -7,12 +7,12 @@ import json
 import re
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from factory import config, lifecycle
-from factory.config import LABEL_AGENT, LABEL_HUMAN, Config
+from factory.config import LABEL_AGENT, LABEL_HUMAN, USAGE_FIELDS, Config
 
 cfg: Config
 REPOSITORY = ""
@@ -61,21 +61,44 @@ def audit_by_ticket(path: Path, rows: list[dict] | None = None) -> dict[int, lis
             result.setdefault(row["ticket"], []).append(row)
     return result
 
-def llm_usage(events: list[dict]) -> dict[str, dict]:
-    """Sum tokens by stage and preserve each reported cache hit rate."""
+def priced(event: dict, prices: dict[str, dict]) -> float | None:
+    """Dollars for one usage event: its reported cost, else its model's price table entry, else None.
+
+    Cached tokens (or the cache hit rate's share of prompt tokens) bill at `cached` when the entry has it.
+    """
+    def num(key: str) -> float | None:
+        return event[key] if type(event.get(key)) in (int, float) else None
+
+    model = event.get("model")
+    price = prices.get(model) if isinstance(model, str) else None
+    prompt, completion, cached, rate = map(num, ("prompt_tokens", "completion_tokens", "cached_tokens", "prefix_cache_hit_rate"))
+    if num("cost") is not None or price is None or prompt is None and completion is None:
+        return num("cost")
+    prompt, completion = prompt or 0, completion or 0
+    cached = 0 if "cached" not in price else cached if cached is not None else prompt * (rate or 0)
+    return ((prompt - cached) * price["prompt"] + cached * price.get("cached", 0)
+            + completion * price["completion"]) / 1_000_000
+
+
+def llm_usage(events: list[dict], prices: dict[str, dict] | None = None) -> dict[str, dict]:
+    """Sum tokens and dollars by stage plus a ticket `total`; None = no event reported it.
+
+    Dollars come from a reported cost or, for token-only events, the `[prices]` table.
+    """
     usage: dict[str, dict] = {}
     for event in events:
         stage = event.get("stage")
-        if event.get("event") != "llm-usage" or stage not in {"triage", "review"}:
+        if event.get("event") != "llm-usage" or stage not in {"triage", "review", "worker"}:
             continue
-        totals = usage.setdefault(stage, {"prompt_tokens": 0, "completion_tokens": 0})
-        for key in ("prompt_tokens", "completion_tokens"):
-            value = event.get(key)
-            if type(value) in (int, float):
-                totals[key] += value
+        values = {**{key: event.get(key) for key in USAGE_FIELDS}, "cost": priced(event, prices or {})}
+        for totals in (usage.setdefault(stage, dict.fromkeys(USAGE_FIELDS)),
+                       usage.setdefault("total", dict.fromkeys(USAGE_FIELDS))):
+            for key, value in values.items():
+                if type(value) in (int, float):
+                    totals[key] = round((totals[key] or 0) + value, 4)
         rate = event.get("prefix_cache_hit_rate")
         if type(rate) in (int, float):
-            totals.setdefault("prefix_cache_hit_rates", []).append(rate)
+            usage[stage].setdefault("prefix_cache_hit_rates", []).append(rate)
     return usage
 
 
@@ -180,7 +203,7 @@ def human_touch(items: list[dict], audit: list[dict], end: str | None = None) ->
             })
             opened = None
     if opened:
-        minutes += merge_hours(opened, end or datetime.now(timezone.utc).isoformat()) * 60
+        minutes += merge_hours(opened, end or datetime.now(UTC).isoformat()) * 60
     escalated = [e["at"] for e in audit
                  if e.get("event") == "escalate" and e.get("reason") != "manager_failed"]
     claims = sum(e.get("event") == "claimed" for e in audit)
@@ -197,13 +220,13 @@ def human_touch(items: list[dict], audit: list[dict], end: str | None = None) ->
 
 def human_touch_metrics(rows: list[dict], now: datetime | None = None) -> dict:
     """Trailing seven-day escalation count; human share of attributed resolutions."""
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     since = now - timedelta(days=7)
     resolved = [r["resolved_by"] for row in rows for r in row.get("resolutions", [])
                 if r["resolved_by"] in {"human", "factory"}]
     return {
         "escalations_per_week": sum(
-            since <= datetime.fromisoformat(at.replace("Z", "+00:00")) <= now
+            since <= datetime.fromisoformat(at) <= now
             for row in rows for at in row.get("escalation_times", [])
         ),
         "human_resolved_pct": round(100 * resolved.count("human") / len(resolved), 1) if resolved else None,
@@ -213,8 +236,8 @@ def human_touch_metrics(rows: list[dict], now: datetime | None = None) -> dict:
 def merge_hours(created_at: str, merged_at: str | None) -> float | None:
     if not merged_at:
         return None
-    created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-    merged = datetime.fromisoformat(merged_at.replace("Z", "+00:00"))
+    created = datetime.fromisoformat(created_at)
+    merged = datetime.fromisoformat(merged_at)
     return (merged - created).total_seconds() / 3600
 
 
@@ -296,7 +319,7 @@ def collect_rows() -> list[dict[str, Any]]:
     for number, row in rows.items():
         details = details_by_ticket[number]
         row.update(human_touch(timeline(number), audit.get(number, []), details.get("closedAt")))
-        row["llm_usage"] = llm_usage(audit.get(number, []))
+        row["llm_usage"] = llm_usage(audit.get(number, []), cfg.prices)
 
     return [rows[number] for number in sorted(rows)]
 
@@ -314,7 +337,14 @@ def print_table(rows: list[dict[str, Any]]) -> None:
         value = row["llm_usage"].get(stage, {}).get(key)
         if isinstance(value, list):
             return ", ".join(map(str, value))
+        if key == "cost" and value is not None:
+            return f"${value:.4f}"
         return "" if value is None else str(value)
+
+    def tokens(row: dict) -> str:
+        total = row["llm_usage"].get("total", {})
+        known = [v for v in (total.get("prompt_tokens"), total.get("completion_tokens")) if v is not None]
+        return str(sum(known)) if known else ""
 
     columns = (
         ("ticket#", lambda row: f"#{row['ticket']}"),
@@ -326,9 +356,17 @@ def print_table(rows: list[dict[str, Any]]) -> None:
         ("triage prompt", lambda row: usage(row, "triage", "prompt_tokens")),
         ("triage completion", lambda row: usage(row, "triage", "completion_tokens")),
         ("triage cache rates", lambda row: usage(row, "triage", "prefix_cache_hit_rates")),
+        ("triage $", lambda row: usage(row, "triage", "cost")),
         ("review prompt", lambda row: usage(row, "review", "prompt_tokens")),
         ("review completion", lambda row: usage(row, "review", "completion_tokens")),
         ("review cache rates", lambda row: usage(row, "review", "prefix_cache_hit_rates")),
+        ("review $", lambda row: usage(row, "review", "cost")),
+        ("worker prompt", lambda row: usage(row, "worker", "prompt_tokens")),
+        ("worker completion", lambda row: usage(row, "worker", "completion_tokens")),
+        ("worker cached", lambda row: usage(row, "worker", "cached_tokens")),
+        ("worker $", lambda row: usage(row, "worker", "cost")),
+        ("total tokens", tokens),
+        ("total $", lambda row: usage(row, "total", "cost")),
         ("escalations", lambda row: str(row["escalation_count"])),
         ("manager failures", lambda row: str(row["manager_failures"])),
         ("resolved by (actor)", lambda row: ", ".join(

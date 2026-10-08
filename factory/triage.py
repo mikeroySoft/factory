@@ -25,8 +25,8 @@ from factory.config import (
     LABEL_CHORE,
     LABEL_HUMAN,
     LABEL_INFO,
-    LABEL_TRIAGE,
     LABEL_REVIEW,
+    LABEL_TRIAGE,
     LABEL_VIABILITY,
     Config,
 )
@@ -98,7 +98,7 @@ def gh(*args: str, execution=None) -> str:
                 if proc.poll() is not None:
                     execution.child_done(proc.pid)
     else:
-        proc = subprocess.run(command, capture_output=True, text=True)
+        proc = subprocess.run(command, capture_output=True, text=True, check=False)
         out, err = proc.stdout, proc.stderr
     if execution:
         execution.emit("result", command="gh", returncode=proc.returncode)
@@ -164,6 +164,7 @@ def _record_usage(execution, usage: dict | None) -> None:
             "event": "llm-usage",
             "ticket": execution.ticket,
             "stage": "triage",
+            "model": LLM_MODEL,
             "execution_id": execution.execution_id,
             "root_execution_id": execution.root_execution_id,
             **usage,
@@ -185,7 +186,7 @@ def call_llm(messages: list[dict], execution=None) -> str:
         headers={"Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=cfg.triage_timeout) as resp:
             body = json.load(resp)
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
         if execution:
@@ -194,7 +195,7 @@ def call_llm(messages: list[dict], execution=None) -> str:
             )
             execution.outcome = "unknown" if timed_out else "mechanism_failure"
             execution.reason = "triage_endpoint_timeout" if timed_out else "triage_endpoint_unavailable"
-            execution.emit("result", timed_out=timed_out, timeout_seconds=60)
+            execution.emit("result", timed_out=timed_out, timeout_seconds=cfg.triage_timeout)
         print(
             f"cannot reach local model at {LLM_URL}: {exc}\n"
             "Is the model server running? Set [triage].url in .factory.toml if the endpoint differs.",
@@ -364,7 +365,7 @@ def execute(args: argparse.Namespace, execution) -> int:
     outcome, reason = "completed", None
     # One local model serves every repo on this host; hold the host lock so
     # simultaneous timer passes queue on it instead of hammering the endpoint.
-    with open(cfg.lock, "w") as host_lock:  # noqa: SIM115
+    with open(cfg.lock, "w") as host_lock:
         fcntl.flock(host_lock, fcntl.LOCK_EX)
         if execution:
             execution.emit("lock_acquired", lock=str(cfg.lock))

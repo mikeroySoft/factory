@@ -81,8 +81,8 @@ def render(baseline: dict, initiative: int) -> str:
     lines = [
         f"# Initiative #{initiative}: {plan.get('title')}",
         f"revision {revision.get('sha256')} observed {revision.get('observed_at')} [{plan.get('source')}]",
-        f"status {plan.get('status')}; owner {plan.get('owner')}; issue {plan.get('state')}; "
-        f"coverage {coverage.get('status')}; errors {len(baseline.get('errors') or [])} [{plan.get('source')}]",
+        (f"status {plan.get('status')}; owner {plan.get('owner')}; issue {plan.get('state')}; "
+         f"coverage {coverage.get('status')}; errors {len(baseline.get('errors') or [])} [{plan.get('source')}]"),
         f"next {action.get('kind') or 'none'} {target} [{','.join(action.get('sources') or [])}]",
         "## linked tickets",
     ]

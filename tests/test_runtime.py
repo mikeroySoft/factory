@@ -1,15 +1,15 @@
 """Public runtime CLI: local evidence survives without writes or network access."""
 from __future__ import annotations
 
-import json
 import fcntl
+import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from factory import lifecycle
@@ -77,7 +77,7 @@ class RuntimeCliTest(unittest.TestCase):
         before = self.state()
         started = time.monotonic()
         proc = subprocess.run([sys.executable, "-c", GUARD], cwd=self.root, env=self.env,
-                              capture_output=True, text=True, timeout=10)
+                              capture_output=True, text=True, timeout=10, check=False)
         self.last_elapsed = time.monotonic() - started
         self.assertEqual(proc.returncode, 0, proc.stderr)
         audit = json.loads(proc.stderr.split("AUDIT:", 1)[1])
@@ -353,7 +353,7 @@ class RuntimeCliTest(unittest.TestCase):
     def test_runtime_rejects_conflicting_cli_modes(self):
         for options in (["--json"], ["--port", "8765"], ["--host=localhost"], ["--no-open"]):
             proc = subprocess.run([sys.executable, "-m", "factory", "dashboard", "--runtime-json", *options],
-                                  cwd=self.root, env=self.env, capture_output=True, text=True, timeout=5)
+                                  cwd=self.root, env=self.env, capture_output=True, text=True, timeout=5, check=False)
             self.assertEqual(proc.returncode, 2)
             self.assertEqual(proc.stdout, "")
 

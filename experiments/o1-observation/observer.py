@@ -42,7 +42,7 @@ def main_root() -> Path:
 
 
 def now() -> str:
-    return dt.datetime.now(dt.timezone.utc).isoformat()
+    return dt.datetime.now(dt.UTC).isoformat()
 
 
 def parse_at(value) -> dt.datetime | None:
@@ -189,7 +189,7 @@ def _row(line, offset, stats, exits, signals, roots, record_events, protocol, cu
     try:
         row = json.loads(line)
         if not isinstance(row, dict):
-            raise ValueError
+            raise ValueError  # noqa: TRY004 — malformed JSON shares the parse-error path
     except ValueError:
         stats["malformed"] += 1
         if len(stats["malformed_offsets"]) < 100:
@@ -354,7 +354,7 @@ def start(args) -> int:
             print(f"lineage {protocol['lineage']} already has {len(prior)} runs; cap is {protocol['max_iterations']}",
                   file=sys.stderr)
             return 2
-        run_id = f"{protocol['experiment']}-i{iteration}-{dt.datetime.now(dt.timezone.utc):%Y%m%dT%H%M%SZ}-{secrets.token_hex(3)}"
+        run_id = f"{protocol['experiment']}-i{iteration}-{dt.datetime.now(dt.UTC):%Y%m%dT%H%M%SZ}-{secrets.token_hex(3)}"
         (out / run_id).mkdir()
         run = Run(out / run_id, max_output, reserve)
         run.create("protocol.json", protocol_bytes)

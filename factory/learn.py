@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import date
+from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Callable
 
 from factory import config, dispatch, lifecycle, manage, promotion, triage
 from factory.config import LABEL_CHORE, LESSONS_NAME
@@ -130,7 +130,7 @@ def curate(cfg: config.Config, diff: str, tickets: list[int], notes: str) -> str
     """Apply the manager's CURATE diff on `agent/curate-<date>` and open its chore PR.
 
     Returns the branch, or `rejected: <reason>` when the diff does not apply or leaves the allowlist."""
-    branch = f"agent/curate-{date.today().isoformat()}"
+    branch = f"agent/curate-{datetime.now().astimezone().date().isoformat()}"
     patch = cfg.factory / f"{branch.removeprefix('agent/')}.patch"
     patch.write_text(diff if diff.endswith("\n") else diff + "\n")
 
@@ -212,7 +212,7 @@ def main(argv: list[str]) -> int:
         dispatch.record("learn", tickets=tickets, lessons=len(lessons))
         print(f"wrote {path}; review and commit it")
         return 0
-    branch = f"agent/lessons-{date.today().isoformat()}"
+    branch = f"agent/lessons-{datetime.now().astimezone().date().isoformat()}"
 
     def edit(wt: Path) -> list[str]:
         (wt / LESSONS_NAME).write_text(content)

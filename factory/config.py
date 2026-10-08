@@ -66,26 +66,30 @@ DEFAULT_INSTALL = {"every": "10min", "dashboard": False, "host": "127.0.0.1", "p
 # from here. Everything else in the host file is left for other tools (District).
 # `worker_wrap` is host-only: a committed `[worker_wrap]` is refused, never merged.
 # `leak_scan.extra` is read from both and concatenated: host terms only add to the scan.
-HOST_TABLES = frozenset({"triage", "workers", "worker_wrap", "review", "manager", "install"})
+HOST_TABLES = frozenset({"triage", "workers", "worker_wrap", "review", "manager", "install", "prices"})
 HOST_KEYS = {"dashboard": ("port",), "gate": ("lock",)}
 
 # Every key the loader reads, by table; `factory doctor` reports anything else.
 # `workers` is label-keyed, `gate.check` is a list of {name, run, exclusive}.
 KNOWN_KEYS = {
     "repo": ("slug", "upstream", "main"),
-    "dispatch": ("max_active", "max_attempts", "budget_min", "review_rounds", "cost_pattern", "signoff"),
+    "dispatch": ("max_active", "max_attempts", "budget_min", "idle_timeout", "exit_grace",
+                 "review_rounds", "cost_pattern", "signoff"),
     "workers": None,
     "worker_wrap": ("command",),
     "review": ("command",),
     "manager": ("model", "command", "rounds", "review", "stale_days", "max_active_cap", "budget_min_cap"),
     "gate": ("timeout", "lock", "check", "protected_paths"),
     "leak_scan": ("pattern", "exclude", "extra"),
-    "triage": ("url", "model"),
+    "triage": ("url", "model", "timeout"),
     "journal": ("max_mb", "retention"),
     "dashboard": ("port", "theme"),
     "install": ("every", "dashboard", "host", "python", "env"),
     "collaboration": ("fallback", "reasons", "components"),
+    "prices": None,
 }
+# Normalized numeric fields of an `llm-usage` event; a worker profile maps each to JSON paths.
+USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "cached_tokens", "cost")
 CHECK_KEYS = ("name", "run", "exclusive")
 ROUTE_REASONS = ("requirements", "implementation", "ci", "unknown")
 # GitHub login, or `@org/team`. Syntax only: never proof of membership or authorization.
@@ -119,6 +123,8 @@ class Config:
     max_active: int = 2
     max_attempts: int = 3
     budget_min: int = 90
+    idle_timeout: float = 30  # minutes without worker log output or worktree change = stuck; 0 off
+    exit_grace: float = 300  # seconds a done (handoff/commit) worker may stay quiet before termination; 0 off
     review_rounds: int = 1  # REVISE -> worker -> re-review cycles before escalating
     signoff: bool = True  # `git commit -s`; Signed-off-by trailer on merges
     cost_pattern: str | None = None  # regex with one capture: dollars in the worker log
@@ -126,6 +132,10 @@ class Config:
         default_factory=lambda: {"default": DEFAULT_WORKER, LABEL_CHORE: DEFAULT_CHORE_WORKER}
     )
     worker_when: dict[str, str] = field(default_factory=dict)
+    # Per worker label: JSON paths read from its log (see `usage_spec`); absent = cost_pattern only.
+    worker_usage: dict[str, dict] = field(default_factory=dict)
+    # Host `[prices."<model>"]`: USD per million prompt/completion/cached tokens; empty = no priced dollars.
+    prices: dict[str, dict] = field(default_factory=dict)
     # Host-only argv prefix for every worker launch: a trusted operator executable, not a sandbox.
     worker_wrap: list[str] = field(default_factory=list)
     reviewer: list[str] = field(default_factory=lambda: list(DEFAULT_REVIEWER))
@@ -144,6 +154,7 @@ class Config:
     leak_exclude: list[str] = field(default_factory=list)
     llm_url: str = DEFAULT_LLM_URL
     llm_model: str = DEFAULT_LLM_MODEL
+    triage_timeout: int = 60  # seconds per triage model request
     manager_model: str | None = None  # dashboard's no-tools OMP briefing; never a command
     dashboard_port: int = 8765
     dashboard_theme: Path | None = None  # CSS file served after the built-in stylesheet
@@ -168,9 +179,13 @@ class Config:
         """systemd user-unit stem: `<unit>.timer`, `<unit>.service`, `<unit>-dashboard.service`."""
         return f"factory-{self.name}"
 
+    def worker_key(self, labels: set[str]) -> str:
+        """The `[workers]` label that owns these ticket labels (first match wins)."""
+        return next((k for k in self.workers if k in labels), "default")
+
     def worker(self, labels: set[str], prompt: Path, cwd: Path) -> list[str]:
         """argv for the worker that owns these ticket labels (first match wins)."""
-        argv = next((self.workers[k] for k in self.workers if k in labels), self.workers["default"])
+        argv = self.workers[self.worker_key(labels)]
         return expand([*self.worker_wrap, *argv], prompt=str(prompt), cwd=str(cwd),
                       root=str(self.root), repo=self.repo, home=str(Path.home()))
 
@@ -332,6 +347,38 @@ def collaboration_settings(table: object) -> dict:
     return out
 
 
+def usage_spec(label: str, spec: object) -> dict:
+    """Validate `workers.<label>.usage`: dotted JSON paths summed per field, a `model` path, a `match` filter."""
+    where = f"workers.{label}.usage"
+    if not isinstance(spec, dict) or set(spec) - {*USAGE_FIELDS, "model", "match"}:
+        raise ConfigError(f"{where} must be a table of {', '.join(USAGE_FIELDS)}, model, match")
+    out: dict = {}
+    for key in USAGE_FIELDS:
+        paths = spec.get(key, [])
+        out[key] = [paths] if isinstance(paths, str) else paths
+        if not isinstance(out[key], list) or not all(isinstance(p, str) and p for p in out[key]):
+            raise ConfigError(f"{where}.{key} must be a JSON path or an array of paths")
+    out["model"], out["match"] = spec.get("model"), spec.get("match", {})
+    if out["model"] is not None and not (isinstance(out["model"], str) and out["model"]):
+        raise ConfigError(f"{where}.model must be a JSON path")
+    if not isinstance(out["match"], dict):
+        raise ConfigError(f"{where}.match must be a table of JSON path = value")
+    return out
+
+
+def price_table(table: object) -> dict:
+    """Validate `[prices."<model>"]`: nonnegative USD per million `prompt`, `completion`, optional `cached` tokens."""
+    if not isinstance(table, dict):
+        raise ConfigError("[prices] must be a table")
+    for model, price in table.items():
+        if (
+            not isinstance(price, dict) or not {"prompt", "completion"} <= set(price) <= {"prompt", "completion", "cached"}
+            or any(isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0 for v in price.values())
+        ):
+            raise ConfigError(f"prices.{model!r} needs nonnegative prompt and completion (optional cached) USD per million tokens")
+    return table
+
+
 def manager_settings(table: dict) -> tuple[list[str] | None, str | None]:
     """Normalize manager argv and select the read-only briefing model; never execute."""
     if not isinstance(table, dict):
@@ -390,6 +437,10 @@ def load(start: Path | None = None) -> Config:
     cfg.max_active = int(dispatch.get("max_active", cfg.max_active))
     cfg.max_attempts = int(dispatch.get("max_attempts", cfg.max_attempts))
     cfg.budget_min = int(dispatch.get("budget_min", cfg.budget_min))
+    cfg.idle_timeout = float(dispatch.get("idle_timeout", cfg.idle_timeout))
+    cfg.exit_grace = float(dispatch.get("exit_grace", cfg.exit_grace))
+    if cfg.idle_timeout < 0 or cfg.exit_grace < 0:
+        raise ConfigError("dispatch.idle_timeout and dispatch.exit_grace must be >= 0 (0 disables)")
     cfg.review_rounds = int(dispatch.get("review_rounds", cfg.review_rounds))
     cfg.cost_pattern = dispatch.get("cost_pattern") or None
     cfg.signoff = bool(dispatch.get("signoff", cfg.signoff))
@@ -405,6 +456,8 @@ def load(start: Path | None = None) -> Config:
             if not isinstance(when, str):
                 raise ConfigError(f"{path}: workers.{label}.when must be text")
             cfg.workers[label] = command
+            if isinstance(entry, dict) and "usage" in entry:
+                cfg.worker_usage[label] = usage_spec(label, entry["usage"])
             if when:
                 cfg.worker_when[label] = when
     if "worker_wrap" in raw_repo:
@@ -439,6 +492,7 @@ def load(start: Path | None = None) -> Config:
         setattr(cfg, f"journal_{key}", value)
     if "collaboration" in raw:
         cfg.collaboration = collaboration_settings(raw["collaboration"])
+    cfg.prices = price_table(raw.get("prices", {}))
     cfg.check_timeout = int(gate.get("timeout", cfg.check_timeout))
     paths = gate.get("protected_paths", [])
     if not isinstance(paths, list) or any(not isinstance(p, str) or not p for p in paths):
@@ -461,6 +515,7 @@ def load(start: Path | None = None) -> Config:
         cfg.leak_pattern = "|".join(p for p in (cfg.leak_pattern, *terms) if p)
     cfg.llm_url = triage.get("url", cfg.llm_url)
     cfg.llm_model = triage.get("model", cfg.llm_model)
+    cfg.triage_timeout = int(triage.get("timeout", cfg.triage_timeout))
     cfg.dashboard_port = int(dash.get("port", cfg.dashboard_port))
     cfg.dashboard_theme = root / dash["theme"] if dash.get("theme") else None
     cfg.install = merge(DEFAULT_INSTALL, raw.get("install", {}))

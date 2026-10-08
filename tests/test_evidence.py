@@ -5,15 +5,15 @@ import base64
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 import time
-from types import SimpleNamespace
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.parse import urlencode
 
@@ -212,7 +212,7 @@ class EvidenceCliTest(unittest.TestCase):
             payload = payload.encode()
         started = time.monotonic()
         proc = subprocess.run([sys.executable, "-B", "-m", "factory.cli", "evidence", "--root", str(root or self.root)],
-                              cwd=self.directory, env=self.env, input=payload, capture_output=True, timeout=timeout)
+                              cwd=self.directory, env=self.env, input=payload, capture_output=True, timeout=timeout, check=False)
         self.elapsed = time.monotonic() - started
         self.assertNotIn(b"EVIDENCE_FORBIDDEN:", proc.stderr, proc.stderr.decode())
         self.assertEqual(before, self.state(), "Evidence read changed the selected checkout")
@@ -459,7 +459,7 @@ class EvidenceCliTest(unittest.TestCase):
         self.responses_path.write_text(json.dumps(self.responses))
         payload = json.dumps({"schema_version": 1, "repository": REPO, "op": "capabilities"}).encode()
         proc = subprocess.run([sys.executable, "-B", "-m", "factory.cli", "evidence", "--root", str(self.root)],
-                              cwd=self.directory, env=env, input=payload, capture_output=True, timeout=60)
+                              cwd=self.directory, env=env, input=payload, capture_output=True, timeout=60, check=False)
         self.assertNotIn(b"EVIDENCE_FORBIDDEN:", proc.stderr, proc.stderr.decode())
         self.assertEqual(proc.returncode, 0, (proc.stdout.decode(), proc.stderr.decode()))
         return json.loads(proc.stdout)["capabilities"]["producers"]["reader"]
@@ -552,7 +552,7 @@ class EvidenceCliTest(unittest.TestCase):
     def test_invalid_cli_invocation_is_a_machine_readable_error(self):
         for arguments in ([], ["--root"], ["--root", str(self.root), "--shell"]):
             proc = subprocess.run([sys.executable, "-B", "-m", "factory.cli", "evidence", *arguments],
-                                  env=self.env, cwd=self.directory, capture_output=True, timeout=5)
+                                  env=self.env, cwd=self.directory, capture_output=True, timeout=5, check=False)
             self.assertEqual(proc.returncode, 2)
             data = json.loads(proc.stdout)
             self.assertFalse(data["ok"])

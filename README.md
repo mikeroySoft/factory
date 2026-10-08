@@ -455,7 +455,12 @@ ticket's `human_touch` details. The dashboard retains its existing 100-issue,
 3. **Work.** The worker gets the issue, its comments, standing instructions
    (commit incrementally, never touch `main`, never `git stash`, finish with
    `factory gate`), and — on retries — the previous gate report or the
-   reviewer's findings. Up to `max_attempts` rounds within `budget_min`.
+   reviewer's findings. Up to `max_attempts` rounds within `budget_min`, the
+   overall ceiling. A worker with no log output and no worktree change for
+   `[dispatch].idle_timeout` minutes is killed as `stuck` (a failed attempt,
+   retried). One that committed or wrote its handoff, then stayed quiet for
+   `[dispatch].exit_grace` seconds without exiting, is terminated and gated.
+   The attempt journal row and escalation packet name the timeout that fired.
 4. **Gate.** The configured `[gate].protected_paths` globs from the base ref's
    `.factory.toml` are checked against the committed worker diff first, before
    any checks; a hit stops the run and immediately escalates the ticket to
@@ -574,6 +579,8 @@ default model. Gate and safety policy remain file-managed.
 
 [dispatch]
 review_rounds = 1                # REVISE -> worker -> re-review cycles
+# idle_timeout = 30              # minutes quiet mid-work = stuck; 0 disables
+# exit_grace = 300               # seconds quiet after commit/handoff before termination; 0 disables
 # cost_pattern = 'Total cost:\s*\$([0-9.]+)'   # $ from the worker log (Claude Code prints this)
 
 [workers]                        # ticket label -> argv; {prompt} file, {cwd} worktree
@@ -609,6 +616,7 @@ extra = ["\\bmyproduct\\b"]   # regexes ORed onto the pattern
 [triage]
 url = "http://127.0.0.1:11434/v1/chat/completions"
 model = "qwen3:30b"
+# timeout = 60                    # seconds per model request
 
 [journal]
 max_mb = 64      # events.jsonl rolls into events.jsonl.N.gz past this size
@@ -651,6 +659,32 @@ failure lists each hit as `path:line: [matched term] line`.
 extra = ["\\bbluefin\\b", "\\.example-corp\\.com\\b"]
 ```
 
+Each worker attempt journals one `llm-usage` event (`stage = "worker"`) with
+`model`, `prompt_tokens` (cached included), `completion_tokens`,
+`cached_tokens` and `cost`; anything the worker does not report is `null`. A
+table worker reads them from structured output: `usage` maps each field to a
+dotted JSON path (or an array of paths, added) summed over the JSON lines of the
+attempt log that satisfy `match`. Without a `cost` path hit, `cost` falls back
+to `[dispatch] cost_pattern`.
+
+```toml
+[workers.claude]   # Claude Code `-p --output-format json` prints one result object (paths checked on 2.1.292)
+command = ["claude-worker", "--output-format", "json", "{prompt}"]
+
+[workers.claude.usage]
+match = { type = "result" }
+cost = "total_cost_usd"
+completion_tokens = "usage.output_tokens"
+cached_tokens = "usage.cache_read_input_tokens"
+prompt_tokens = ["usage.input_tokens", "usage.cache_read_input_tokens", "usage.cache_creation_input_tokens"]
+```
+
+`[prices."<model>"]` (host config, e.g. `[defaults.prices."qwen3:30b"]`) gives
+USD per million `prompt` and `completion` tokens, optionally `cached`. `factory
+stats` and the dashboard's `llm_usage` use it for triage, review and worker
+events that report tokens and a `model` but no cost (triage: `[triage].model`;
+OMP review: the model id without provider). Without an entry no dollar figure is
+shown. `factory stats` lists per-stage tokens and dollars plus per-ticket totals.
 Labels (`needs-review`, `needs-viability`, `needs-triage`, `needs-info`,
 `ready-for-agent`, `ready-for-human`, `factory-approved`, `chore`, `initiative`)
 and the `agent/<n>` branch scheme are fixed conventions; `factory init` creates
@@ -723,8 +757,8 @@ branches, or merge state.
   for this dashboard origin. Browser storage being unavailable does not prevent
   switching themes for the current page.
 - **Spend**: the *Spend* KPI and each ticket's attempts tab total worker+gate
-  wall clock from `events.jsonl`, plus dollars when `cost_pattern` matches
-  your worker's log.
+  wall clock from `events.jsonl`, plus dollars when the worker reports them
+  (a `[workers.<label>] usage` profile or `cost_pattern`).
 - **Learning loop**: after a batch of tickets, `factory learn --dry-run`,
   read the proposed lessons, then `factory learn` and commit
   `.factory-lessons.md`. Workers see it on every ticket. The eval signal is the
