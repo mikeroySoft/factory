@@ -74,7 +74,7 @@ class TriagePass(unittest.TestCase):
                 if row.get("stage") == "triage-ticket" and row.get("kind") == "exit"}
 
     def test_timeout_skips_only_that_ticket(self):
-        self.failure[3] = urllib.error.URLError(TimeoutError("timed out"))
+        self.failure[3] = TimeoutError("timed out")
         self.assertEqual(self.run_pass(), 1)
         self.assertEqual(self.asked, [3, 2, 1])
         self.assertEqual(self.labels, {3: {LABEL_TRIAGE}, 2: {LABEL_AGENT}, 1: {LABEL_AGENT}})
@@ -101,6 +101,14 @@ class TriagePass(unittest.TestCase):
         self.assertEqual(self.asked, [3])
         self.assertEqual(self.labels, {n: {LABEL_TRIAGE} for n in self.listed})
         self.assertEqual(self.ticket_exits(), {3: "triage_endpoint_unavailable"})
+
+    def test_connect_timeout_ends_the_pass_after_one_attempt(self):
+        self.failure.update(dict.fromkeys(self.listed, urllib.error.URLError(TimeoutError("timed out"))))
+        with self.assertRaises(SystemExit) as ended:
+            self.run_pass()
+        self.assertNotIsInstance(ended.exception, triage.EndpointTimeout)
+        self.assertEqual(self.asked, [3])
+        self.assertEqual(self.ticket_exits(), {3: "triage_endpoint_timeout"})
 
 
 if __name__ == "__main__":

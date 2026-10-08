@@ -205,7 +205,8 @@ def call_llm(messages: list[dict], execution=None) -> str:
             "Is the model server running? Set [triage].url in .factory.toml if the endpoint differs.",
             file=sys.stderr,
         )
-        raise (EndpointTimeout if timed_out else SystemExit)(2) from exc
+        # URLError(TimeoutError) is a connect timeout (endpoint unreachable); a bare one is a slow model.
+        raise (EndpointTimeout if isinstance(exc, TimeoutError) else SystemExit)(2) from exc
     _record_usage(execution, _usage_fields(body))
     return body["choices"][0]["message"]["content"]
 
