@@ -168,5 +168,96 @@ class DoctorIdentityTest(unittest.TestCase):
         self.assertEqual(self.doctor({}), (0, [], 0))
 
 
+class AgentPushLeaseTest(unittest.TestCase):
+    """The dispatcher, the only pusher, force-pushes `agent/<n>` against the sha it last fetched."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        tmp = Path(temporary.name)
+        identity = {f"GIT_{who}_{what}": value for who in ("AUTHOR", "COMMITTER")
+                    for what, value in (("NAME", "t"), ("EMAIL", "t@example.invalid"))}
+        environ = mock.patch.dict(os.environ, identity)
+        environ.start()
+        self.addCleanup(environ.stop)
+        dispatch.configure(make_cfg(tmp))
+        dispatch.FACTORY.mkdir()
+        self.origin, self.wt, self.other = tmp / "origin.git", tmp / "wt", tmp / "other"
+        self.git(tmp, "init", "-q", "--bare", "-b", "main", str(self.origin))
+        self.git(tmp, "clone", "-q", str(self.origin), str(self.wt))
+        self.commit(self.wt, "base")
+        self.git(self.wt, "push", "-q", "origin", "HEAD:main")
+        self.git(self.wt, "checkout", "-q", "-b", "agent/7")
+        self.commit(self.wt, "work")
+        self.git(self.wt, "push", "-q", "origin", "agent/7")  # the dispatcher's earlier push
+        self.fetched, self.main = self.remote("agent/7"), self.remote("main")
+        self.git(tmp, "clone", "-q", "-b", "agent/7", str(self.origin), str(self.other))
+
+    def git(self, cwd: Path, *args: str) -> str:
+        return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+
+    def remote(self, ref: str) -> str:
+        return self.git(self.origin, "rev-parse", ref)
+
+    def commit(self, repo: Path, message: str, *flags: str) -> str:
+        self.git(repo, "commit", "-q", "--allow-empty", *flags, "-m", message)
+        return self.git(repo, "rev-parse", "HEAD")
+
+    def someone_else_pushes(self) -> str:
+        self.commit(self.other, "someone else's push")
+        self.git(self.other, "push", "-q", "origin", "agent/7")
+        return self.remote("agent/7")
+
+    def test_rewritten_worker_history_lands(self) -> None:
+        rebased = self.commit(self.wt, "work, rebased", "--amend")  # not a descendant of the remote head
+        self.assertEqual(dispatch.push_agent(self.wt, 7, self.fetched), rebased)
+        self.assertEqual(self.remote("agent/7"), rebased)
+
+    def test_remote_moved_since_fetch_is_refused_not_overwritten(self) -> None:
+        moved = self.someone_else_pushes()
+        self.git(self.wt, "fetch", "-q", "origin")  # tracking ref now matches; a bare lease would clobber
+        self.commit(self.wt, "work, rebased", "--amend")
+        self.assertIsNone(dispatch.push_agent(self.wt, 7, self.fetched, check=False))
+        with self.assertRaises(subprocess.CalledProcessError):
+            dispatch.push_agent(self.wt, 7, self.fetched)
+        self.assertEqual(self.remote("agent/7"), moved)
+
+    def test_lease_taken_before_the_worker_never_admits_an_unseen_push(self) -> None:
+        self.assertEqual(dispatch.agent_lease(self.wt, 7), self.fetched)
+        self.assertEqual(dispatch.agent_lease(self.wt, 8), "")  # not on the remote: must not exist
+        moved = self.someone_else_pushes()  # e.g. a human fix on a kept, now stale worktree
+        lease = dispatch.agent_lease(self.wt, 7)
+        self.commit(self.wt, "worker commit")
+        self.assertIsNone(dispatch.push_agent(self.wt, 7, lease, check=False))
+        self.assertEqual(self.remote("agent/7"), moved)
+
+    def test_force_push_only_targets_agent_branch(self) -> None:
+        real_run, pushes = dispatch.run, []
+
+        def run(cmd, *args, **kwargs):
+            if cmd[0] == "gh":
+                return subprocess.CompletedProcess(cmd, 0, "https://github.com/acme/widgets/pull/1\n", "")
+            if cmd[:2] == ["git", "push"]:
+                pushes.append(cmd)
+            return real_run(cmd, *args, **kwargs)
+
+        with mock.patch.object(dispatch, "run", side_effect=run), \
+                mock.patch.object(dispatch, "gh_json", return_value=[]):
+            rebased = self.commit(self.wt, "work, rebased", "--amend")
+            self.assertTrue(dispatch.push_and_pr(self.wt, "agent/7", "t", "b", ticket=7, lease=self.fetched))
+            self.assertEqual(self.remote("agent/7"), rebased)
+            # A non-ticket branch is pushed plainly: a rewrite of it is rejected, not forced.
+            self.git(self.wt, "checkout", "-q", "-b", "agent/curate-x")
+            self.git(self.wt, "push", "-q", "origin", "agent/curate-x")
+            curated = self.remote("agent/curate-x")
+            self.commit(self.wt, "curate, rewritten", "--amend")
+            with self.assertRaises(subprocess.CalledProcessError):
+                dispatch.push_and_pr(self.wt, "agent/curate-x", "t", "b")
+        self.assertEqual((self.remote("agent/curate-x"), self.remote("main")), (curated, self.main))
+        forced = [cmd for cmd in pushes if any(arg.startswith("--force") for arg in cmd)]
+        self.assertEqual(forced, [["git", "push", f"--force-with-lease=agent/7:{self.fetched}",
+                                   "origin", f"{rebased}:refs/heads/agent/7"]])
+
+
 if __name__ == "__main__":
     unittest.main()

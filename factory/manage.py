@@ -303,7 +303,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         )
         if fresh.get("baseRefName") != cfg.main:
             raise ValueError(f"FIX requires a PR targeting the configured target `{cfg.main}`")
-        dispatch.run(["git", "push", "--force-with-lease", "origin", f"agent/{n}"], cwd=wt)
+        dispatch.push_agent(wt, n, pr["headRefOid"])
         verdict, findings = dispatch.review(wt, n, report, gate_head)
         dispatch.pr_comment(n, findings)
         if verdict != "APPROVE":

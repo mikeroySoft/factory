@@ -112,8 +112,11 @@ never written into a unit. `doctor` then reports both logins (`gh api user`) and
 fails when they are equal; unset, nothing changes. Worker and reviewer agents never
 get a GitHub credential: the dispatcher drops `GH_TOKEN`/`GITHUB_TOKEN` and points
 `GH_CONFIG_DIR` at a fresh empty directory for them. Workers only commit; the
-dispatcher pushes `agent/<n>`. Review-request opt-in accepts requests naming
-either the dispatcher's or the dashboard's login.
+dispatcher pushes `agent/<n>` with `--force-with-lease=agent/<n>:<sha>`, the remote
+sha it last fetched or pushed, so a worker rewrite (e.g. a rebase) lands but anyone
+else's push since then is refused, never overwritten. No other ref is force-pushed.
+Review-request opt-in accepts requests naming either the dispatcher's or the
+dashboard's login.
 
 Then file an issue with the **Agent task** template (Scope / Touches / Exit
 gate / Out of scope). It gets `needs-triage`; the next pass triages it; if it is

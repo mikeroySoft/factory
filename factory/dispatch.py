@@ -989,9 +989,36 @@ def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str,
     return verdict, findings
 
 
-def push_and_pr(wt: Path, branch: str, title: str, body: str, label: str = "", ticket: int | None = None) -> bool:
+def agent_lease(wt: Path, n: int) -> str:
+    """The remote `agent/<n>` sha to lease the next `push_agent` on, read before the worker runs:
+    "" when the branch is not on the remote. A remote head this worktree lacks (someone else
+    pushed) yields the local head instead, which never matches, so that push is refused."""
+    remote = (run(["git", "ls-remote", "origin", f"refs/heads/agent/{n}"], cwd=wt).stdout.split() or [""])[0]
+    if not remote or run(["git", "merge-base", "--is-ancestor", remote, "HEAD"], cwd=wt, check=False).returncode == 0:
+        return remote
+    return run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+
+
+def push_agent(wt: Path, n: int, lease: str, check: bool = True) -> str | None:
+    """Force-push this worktree's HEAD to `agent/<n>`, never any other ref, only while the remote
+    still holds `lease`, the sha the dispatcher last fetched or pushed. A worker history rewrite
+    lands; anyone else's push since then is refused. Returns the pushed sha (the next lease),
+    or None when refused and `check` is False."""
+    head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    pushed = run(
+        ["git", "push", f"--force-with-lease=agent/{n}:{lease}", "origin", f"{head}:refs/heads/agent/{n}"],
+        cwd=wt, check=check,
+    )
+    return None if pushed.returncode else head
+
+
+def push_and_pr(
+    wt: Path, branch: str, title: str, body: str, label: str = "", ticket: int | None = None,
+    lease: str | None = None,
+) -> bool:
     """Push `branch` and open its PR. False if the branch adds nothing over
-    main (nothing to review; a worker that landed its work elsewhere)."""
+    main (nothing to review; a worker that landed its work elsewhere). With `ticket` and
+    `lease`, `branch` is `agent/<ticket>` and goes through `push_agent`; otherwise a plain push."""
     run(["git", "fetch", "origin", cfg.main], cwd=wt)
     ahead = run(["git", "rev-list", "--count", f"origin/{cfg.main}..HEAD"], cwd=wt).stdout
     if int(ahead) == 0:
@@ -1005,7 +1032,10 @@ def push_and_pr(wt: Path, branch: str, title: str, body: str, label: str = "", t
             f"{existing[0].get('baseRefName')!r}, not {cfg.main!r}; not pushing"
         )
         return False
-    run(["git", "push", "-u", "origin", branch], cwd=wt)
+    if ticket is None or lease is None:
+        run(["git", "push", "-u", "origin", branch], cwd=wt)
+    else:
+        push_agent(wt, ticket, lease)
     if existing:
         log(f"{branch}: PR already exists (#{existing[0]['number']})")
         if ticket is not None:
@@ -1595,11 +1625,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         pr_comment(n, f"Gate failed after {verb} onto current main:\n\n{report}")
         withdraw(f"gate failed after {verb} onto moved main")
         return False
-    pushed = run(
-        ["git", "push", "--force-with-lease", "origin", f"agent/{n}"],
-        cwd=wt, check=False,
-    )
-    if pushed.returncode:
+    if push_agent(wt, n, remote_head, check=False) is None:
         withdraw("remote head changed while refreshed evidence was being produced")
         return False
     record(
@@ -2124,6 +2150,7 @@ def process_ticket(
             run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-assignee", "@me"])
             record("claimed", ticket=n, title=title, labels=sorted(labels))
             wt = ensure_worktree(n)
+            lease = agent_lease(wt, n)
             LOGS.mkdir(parents=True, exist_ok=True)
 
             # Attempts 1..MAX_ATTEMPTS: worker + gate, feeding the failed report back.
@@ -2149,12 +2176,13 @@ def process_ticket(
                 return
 
             body = f"Closes #{n}\n\n## Gate report\n\n{report}\n"
-            if not push_and_pr(wt, f"agent/{n}", f"agent/{n}: {title}", body, ticket=n):
+            if not push_and_pr(wt, f"agent/{n}", f"agent/{n}: {title}", body, ticket=n, lease=lease):
                 escalate(
                     n, f"agent/{n}: PR not published (no commits over {cfg.main} "
                     "or existing PR target mismatch); inspect dispatcher log", logfile,
                 )
                 return
+            lease = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
             execution.review_round = 1
             verdict, findings = review(wt, n, report, gate_head)
             pr_comment(n, findings)
@@ -2189,7 +2217,7 @@ def process_ticket(
                         n, f"{failed} after review bounce {bounce}; worktree kept at {wt}", logfile
                     )
                     return
-                run(["git", "push", "--force-with-lease", "origin", f"agent/{n}"], cwd=wt)
+                lease = push_agent(wt, n, lease)
                 verdict, findings = review(wt, n, report, gate_head)
                 pr_comment(n, findings)
             if verdict != "APPROVE":
