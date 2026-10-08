@@ -370,7 +370,7 @@ def review_readiness(n: int, head: str, history: list[dict]) -> None:
     """Record advisory readiness, never merge authorization, for a confirmed head."""
     checks = run([
         "gh", "pr", "checks", str(n), "--repo", REPO,
-        "--required", "--json", "name,bucket",
+        "--required", "--json", "name,bucket,link",
     ], check=False)
     fresh = run([
         "gh", "pr", "view", str(n), "--repo", REPO, "--json", "headRefOid",
@@ -389,6 +389,8 @@ def review_readiness(n: int, head: str, history: list[dict]) -> None:
         and row.get("bucket") in ("pass", "fail", "pending", "skipping", "cancel")
         for row in rows
     )
+    if valid:
+        rows = triage_cancelled(n, rows)
     review = next((e for e in reversed(history)
                    if e.get("event") == "review-result" and e.get("pr") == n
                    and e.get("head") == head), {})
@@ -397,7 +399,7 @@ def review_readiness(n: int, head: str, history: list[dict]) -> None:
         state = "changes_requested"
     elif review.get("verdict") == "APPROVE":
         state = "ci_pending"
-        if valid and any(row["bucket"] in {"fail", "cancel"} for row in rows):
+        if valid and any(row["bucket"] == "fail" for row in rows):
             state = "ci_failed"
         elif confirmed and valid and checks.returncode == 0 and all(
             row["bucket"] == "pass" for row in rows
@@ -1382,20 +1384,135 @@ def signoff() -> str:
 
 
 def pr_checks(pr: int) -> list[dict]:
-    """gh check rows [{name, bucket}]; bucket: pass/fail/pending/skipping/cancel.
+    """gh check rows [{name, bucket, link, completedAt}]; bucket: pass/fail/pending/skipping/cancel.
 
     `gh pr checks` exits nonzero for failing or pending checks; that is data
     here, not an error. Unparseable output returns [] which the caller treats
     as "no passing CI" and refuses to merge — fail closed.
     """
     proc = run(
-        ["gh", "pr", "checks", str(pr), "--repo", REPO, "--json", "name,bucket"],
+        ["gh", "pr", "checks", str(pr), "--repo", REPO, "--json", "name,bucket,link,completedAt"],
         check=False,
     )
     try:
         return json.loads(proc.stdout)
     except ValueError:
         return []
+
+
+def _infra_cancel(check: dict) -> dict | None:
+    """Evidence that a cancelled Actions job never got a runner; None means a real failure.
+
+    No steps run, no runner assigned, or GitHub's runner-acquisition annotation
+    each mark infra. A job that ran steps (e.g. its own `timeout-minutes`) may
+    be the code's fault. Unreadable job data is a failure: fail closed.
+    """
+    m = re.search(r"/actions/runs/(\d+)/job/(\d+)", check.get("link") or "")
+    if not m:
+        return None
+    try:
+        res = run(["gh", "api", f"repos/{REPO}/actions/jobs/{m[2]}"], check=False)
+        if res.returncode != 0:
+            return None
+        job = json.loads(res.stdout)
+        ran = any(s.get("conclusion") not in (None, "skipped") for s in job.get("steps") or [])
+        runner, note = job.get("runner_name") or None, ""
+        if ran and runner:
+            notes = json.loads(run(
+                ["gh", "api", f"repos/{REPO}/check-runs/{m[2]}/annotations"], check=False,
+            ).stdout)
+            note = next((a["message"] for a in notes
+                         if "not acquired by Runner" in (a.get("message") or "")), "")
+            if not note:
+                return None
+        return {"run": int(m[1]), "attempt": int(job.get("run_attempt") or 1),
+                "check": check["name"], "steps_run": ran, "runner": runner, "annotation": note}
+    except (ValueError, TypeError, AttributeError, KeyError):
+        return None
+
+
+def _run_in_progress(run_id: int) -> bool:
+    """True while GitHub reports the workflow run active; it refuses to rerun one.
+
+    The caller's check rows can omit sibling jobs (`gh pr checks --required`).
+    Unreadable run data reads as finished: the rerun is attempted and, if refused,
+    escalates visibly instead of waiting forever.
+    """
+    res = run(["gh", "api", f"repos/{REPO}/actions/runs/{run_id}"], check=False)
+    try:
+        return res.returncode == 0 and json.loads(res.stdout).get("status") != "completed"
+    except (ValueError, AttributeError):
+        return False
+
+
+def triage_cancelled(pr: int, checks: list[dict], dry_run: bool = False) -> list[dict]:
+    """Rebucket `cancel` rows so a CI runner outage is not a code failure.
+
+    A cancel that ran steps becomes `fail`. An infra cancel reads `pending` while
+    any check in its run is still pending (GitHub refuses to rerun an in-progress
+    run); once the run finishes it reruns the run's failed jobs once (`gh run
+    rerun --failed`) and reads `pending` until the rerun attempt reports;
+    cancelled for infra again, it reads `infra`.
+    """
+    if not any(c.get("bucket") == "cancel" for c in checks):
+        return checks
+    events = lifecycle.read_events(EVENTS)
+    out, starved = [], {}
+    running = {int(m[1]) for c in checks if c.get("bucket") == "pending"
+               and (m := re.search(r"/actions/runs/(\d+)/", c.get("link") or ""))}
+    for c in checks:
+        infra = _infra_cancel(c) if c.get("bucket") == "cancel" else None
+        if infra:
+            starved.setdefault(infra["run"], []).append((c, infra))
+        else:
+            out.append({**c, "bucket": "fail"} if c.get("bucket") == "cancel" else c)
+    for run_id, rows in starved.items():
+        names = [c["name"] for c, _ in rows]
+        attempt = max(i["attempt"] for _, i in rows)
+        evidence = {"pr": pr, "run": run_id, "attempt": attempt, "checks": names,
+                    "evidence": [i for _, i in rows]}
+        rerun = next((e for e in reversed(events) if e.get("event") == "ci-rerun"
+                      and e.get("pr") == pr and e.get("run") == run_id), None)
+        if run_id in running or _run_in_progress(run_id):
+            bucket = "pending"  # retry on a later pass once the run has finished
+        elif rerun is None and dry_run:
+            log(f"PR #{pr}: would rerun CI run {run_id} (runner never acquired: {', '.join(names)})")
+            bucket = "pending"
+        elif rerun is None:
+            record("ci-infra", **evidence)
+            ok = run(["gh", "run", "rerun", str(run_id), "--failed", "--repo", REPO],
+                     check=False).returncode == 0
+            record("ci-rerun", pr=pr, run=run_id, attempt=attempt, checks=names, ok=ok)
+            bucket = "pending" if ok else "infra"
+        elif rerun.get("ok") and attempt <= rerun["attempt"]:
+            bucket = "pending"  # the rerun attempt is not visible yet
+        else:
+            bucket = "infra"
+            if not dry_run and not any(
+                e.get("event") == "ci-infra" and e.get("pr") == pr
+                and e.get("run") == run_id and e.get("attempt") == attempt for e in events
+            ):
+                record("ci-infra", **evidence)
+        out.extend({**c, "bucket": bucket, "run": run_id} for c, _ in rows)
+    return out
+
+
+def runner_unavailable(n: int, pr: int, starved: list[dict], dry_run: bool) -> bool:
+    """Escalate a rerun that still found no runner, once per run; `factory-approved` stays.
+
+    False when this outage is already escalated: the caller waits as if pending.
+    """
+    runs = ", ".join(sorted({str(c["run"]) for c in starved}))
+    reason = (f"PR #{pr}: CI runner unavailable ({', '.join(c['name'] for c in starved)}) "
+              f"in run {runs}; `{FACTORY_APPROVED}` kept")
+    if any(e.get("event") == "escalate" and e.get("ticket") == n and e.get("reason") == reason
+           for e in lifecycle.read_events(EVENTS)):
+        return False
+    if dry_run:
+        log(f"PR #{pr}: would escalate ({reason})")
+    else:
+        escalate(n, reason, None)
+    return True
 
 
 def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
@@ -1581,11 +1698,11 @@ def merge_pass_locked(dry_run: bool) -> None:
                 if execution:
                     execution.outcome, execution.reason = "not_eligible", "initiative"
                 continue
-            checks = pr_checks(pr_num)
+            checks = triage_cancelled(pr_num, pr_checks(pr_num), dry_run)
             buckets: dict[str, int] = {}
             for c in checks:
                 buckets[c["bucket"]] = buckets.get(c["bucket"], 0) + 1
-            failed = [c["name"] for c in checks if c["bucket"] in ("fail", "cancel")]
+            failed = [c["name"] for c in checks if c["bucket"] == "fail"]
             if failed:
                 if dry_run:
                     log(f"PR #{pr_num}: would escalate (CI failed: {', '.join(failed)})")
@@ -1610,7 +1727,10 @@ def merge_pass_locked(dry_run: bool) -> None:
                     None,
                 )
                 continue
-            if buckets.get("pending"):
+            starved = [c for c in checks if c["bucket"] == "infra"]
+            if starved and runner_unavailable(n, pr_num, starved, dry_run):
+                continue
+            if buckets.get("pending") or starved:
                 log(f"PR #{pr_num}: CI pending {buckets}; waiting")
                 if execution:
                     execution.outcome, execution.reason = "not_eligible", "ci_pending"
@@ -1704,10 +1824,9 @@ def merge_pass_locked(dry_run: bool) -> None:
                 )
                 execution.outcome, execution.reason = "project_escalation", "state_changed"
                 continue
-            latest_checks = pr_checks(pr_num)
-            latest_failed = [
-                c["name"] for c in latest_checks if c["bucket"] in ("fail", "cancel")
-            ]
+            latest_checks = triage_cancelled(pr_num, pr_checks(pr_num))
+            latest_failed = [c["name"] for c in latest_checks if c["bucket"] == "fail"]
+            latest_starved = [c for c in latest_checks if c["bucket"] == "infra"]
             if latest_failed:
                 run(
                     ["gh", "pr", "edit", str(pr_num), "--repo", REPO,
@@ -1721,7 +1840,9 @@ def merge_pass_locked(dry_run: bool) -> None:
                     None,
                 )
                 continue
-            if any(c["bucket"] == "pending" for c in latest_checks):
+            if latest_starved and runner_unavailable(n, pr_num, latest_starved, False):
+                continue
+            if any(c["bucket"] in ("pending", "infra") for c in latest_checks):
                 execution.outcome, execution.reason = "not_eligible", "ci_pending"
                 execution.wait("ci_pending", mode="eligibility", pr=pr_num)
                 continue

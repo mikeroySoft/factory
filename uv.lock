@@ -6,6 +6,9 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 
+[options]
+exclude-newer = "2026-10-07T01:57:04Z"
+
 [[package]]
 name = "factory"
 source = { editable = "." }
