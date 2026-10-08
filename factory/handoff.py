@@ -46,7 +46,7 @@ def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
         return "no manager is configured, so nothing recovers automatically"
     if not 1 <= r <= cfg.manager_rounds:
         return f"the manager's {cfg.manager_rounds} allowed round(s) are exhausted"
-    decided = [e for e in events if e.get("event") == "manage" and e.get("round") == r]
+    decided = [e for e in events if e.get("event") == "manage" and e.get("round") == r and not e.get("pr")]
     if not decided:
         if not Path(escalation["packet"]).is_file():
             return "the escalation packet is missing on the runner, so the manager cannot run"
@@ -59,9 +59,6 @@ def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
         return "the manager could not run, so there is no automatic diagnosis; the cause is unknown until a human looks"
     if any(e.get("decision") == "HUMAN" for e in decided):
         return "the manager asked for a human decision"
-    spent = next((e for e in decided if e.get("pr")), None)
-    if spent:  # the escalation loop skips a round its PR frontier already decided (round numbers collide)
-        return f"the manager's round for this escalation was already spent by its PR #{spent['pr']} {spent.get('decision')} decision"
     failed = next((e for e in events if e.get("event") == "lifecycle" and e.get("kind") == "exit"
                    and e.get("outcome") == "mechanism_failure"
                    and e.get("execution_id") in {d.get("execution_id") for d in decided}), None)

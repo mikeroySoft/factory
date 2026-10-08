@@ -259,6 +259,25 @@ class HandoffCli(unittest.TestCase):
         self.assertEqual([e["request"] for e in self.events("handoff")], ["7/1", "7/2"])
         self.assertIn("Factory handoff request `7/2`", self.requests()[-1]["body"])
 
+    def test_open_pr_escalation_is_not_skipped_by_a_frontier_round_collision(self) -> None:
+        # #204 (b): the PR frontier numbers its own `manage` rows per PR; its round 2 must not
+        # consume escalation round 2 of the ticket, or the manager never sees that escalation.
+        self.configure(rounds=2)
+        self.manage(mode="HUMAN")
+        self.assertEqual([e["request"] for e in self.events("handoff")], ["7/1"])
+        with (self.factory / "events.jsonl").open("a") as stream:
+            for round_number, head in ((1, "a" * 40), (2, "b" * 40)):
+                stream.write(json.dumps({"at": "2026-01-02T00:00:00Z", "event": "manage", "ticket": 7, "pr": 9,
+                                         "head": head, "decision": "APPROVE", "round": round_number}) + "\n")
+        self.escalate("PR #9: rebase onto moved main conflicts; `factory-approved` label removed", 2,
+                      at="2026-01-03T00:00:00Z")
+        self.manage(mode="HUMAN")
+        self.assertTrue(self.ran.exists())  # the escalation got its manager round
+        self.assertEqual([e["round"] for e in self.events("manage") if not e.get("pr")], [1, 2])
+        self.assertEqual([e["request"] for e in self.events("handoff")], ["7/1", "7/2"])
+        self.assertIn("Factory handoff request `7/2`", self.requests()[-1]["body"])
+        self.assertIn("the manager asked for a human decision", self.requests()[-1]["body"])
+
     def test_crash_after_comment_creation_reconciles_to_the_same_request(self) -> None:
         self.manage(mode="HUMAN", crash_on_comment=True, expect=-9)
         self.assertEqual(len(self.requests()), 1)
@@ -541,7 +560,7 @@ class ReceiptTest(unittest.TestCase):
             self.assertIn("not journaled", handoff.terminal(cfg, [escalation], escalation))
             self.assertIn("packet is missing", handoff.terminal(cfg, eligible, {**escalation, "packet": packet.name + ".gone"}))
             frontier_row = {"event": "manage", "round": 1, "pr": 9, "decision": "FIX"}
-            self.assertIn("spent by its PR #9 FIX decision", handoff.terminal(cfg, eligible + [frontier_row], escalation))
+            self.assertIsNone(handoff.terminal(cfg, eligible + [frontier_row], escalation))  # #204: frontier rows never spend a round
             self.assertIsNone(handoff.terminal(cfg, eligible + [{**frontier_row, "round": 2}], escalation))
             retry = {"event": "manage", "round": 1, "decision": "RETRY", "execution_id": "x1"}
             self.assertIsNone(handoff.terminal(cfg, eligible + [retry], escalation))
