@@ -814,11 +814,7 @@ def escalation_packet(
     artifact: str | None = None,
     extra: str = "",
 ) -> tuple[Path, int]:
-    events = [
-        json.loads(line)
-        for line in EVENTS.read_text().splitlines()
-        if line.strip()
-    ] if EVENTS.exists() else []
+    events = lifecycle.read_events(EVENTS)
     ticket_events = [event for event in events if event.get("ticket") == n]
     attempts = [event for event in ticket_events if event.get("event") == "attempt"]
     rows = [

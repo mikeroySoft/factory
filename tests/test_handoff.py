@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -240,6 +241,59 @@ class HandoffCli(unittest.TestCase):
         self.assertEqual(len(self.requests()), 1)
         self.assertEqual(len(self.events("handoff")), 1)
         self.assertEqual([i["name"] for i in self.state["issue"]["labels"]], ["ready-for-human"])
+
+    def test_escalation_after_journal_rotation_gets_a_new_request_id(self) -> None:
+        # #204: rotation archived 166's rounds, the next escalation was numbered round 1 again,
+        # mapped to the answered `166/1`, and nothing was posted.
+        self.manage(mode="HUMAN")
+        self.assertEqual([e["request"] for e in self.events("handoff")], ["7/1"])
+        events = self.factory / "events.jsonl"
+        with mock.patch.object(lifecycle, "MAX_BYTES", 0):
+            lifecycle.append(events, {"event": "note"})
+        self.assertNotIn('"escalate"', events.read_text())  # archived to events.jsonl.1.gz
+        dispatch.configure(config.Config(self.repo, REPO))
+        _, round_number = dispatch.escalation_packet(7, "PR #9: rebase onto moved main conflicts", None, self.factory / "wt-7")
+        self.assertEqual(round_number, 2)
+        self.escalate("PR #9: rebase onto moved main conflicts", round_number, at="2026-01-02T00:00:00Z")
+        self.manage(mode="HUMAN")
+        self.assertEqual([e["request"] for e in self.events("handoff")], ["7/1", "7/2"])
+        self.assertIn("Factory handoff request `7/2`", self.requests()[-1]["body"])
+
+    def test_open_pr_escalation_is_not_skipped_by_a_frontier_round_collision(self) -> None:
+        # #204 (b): the PR frontier numbers its own `manage` rows per PR; its round 2 must not
+        # consume escalation round 2 of the ticket, or the manager never sees that escalation.
+        self.configure(rounds=2)
+        self.manage(mode="HUMAN")
+        self.assertEqual([e["request"] for e in self.events("handoff")], ["7/1"])
+        with (self.factory / "events.jsonl").open("a") as stream:
+            for round_number, head in ((1, "a" * 40), (2, "b" * 40)):
+                stream.write(json.dumps({"at": "2026-01-02T00:00:00Z", "event": "manage", "ticket": 7, "pr": 9,
+                                         "head": head, "decision": "APPROVE", "round": round_number}) + "\n")
+        self.escalate("PR #9: rebase onto moved main conflicts; `factory-approved` label removed", 2,
+                      at="2026-01-03T00:00:00Z")
+        self.manage(mode="HUMAN")
+        self.assertTrue(self.ran.exists())  # the escalation got its manager round
+        self.assertEqual([e["round"] for e in self.events("manage") if not e.get("pr")], [1, 2])
+        self.assertEqual([e["request"] for e in self.events("handoff")], ["7/1", "7/2"])
+        self.assertIn("Factory handoff request `7/2`", self.requests()[-1]["body"])
+        self.assertIn("the manager asked for a human decision", self.requests()[-1]["body"])
+
+    def test_review_intake_escalation_gets_a_handoff_request(self) -> None:
+        # #204 (b): `review_intake_pass` escalates an opted-in PR into a new `ready-for-human` issue with a
+        # `pr`-bearing row and no escalation comment; the manager never runs on it, so the handoff pass must post.
+        self.reset()
+        with (self.factory / "events.jsonl").open("a") as stream:
+            stream.write(json.dumps({"at": AT, "event": "escalate", "pr": 9, "head": "a" * 40, "ticket": 7,
+                                     "reason": "PR #9: unresolved after 2 automated review attempt(s)",
+                                     "packet": str(self.packet), "round": 1}) + "\n")
+        for _ in range(2):
+            self.manage(mode="HUMAN")
+            self.assertFalse(self.ran.exists())
+            self.assertEqual([e["request"] for e in self.events("handoff")], ["7/1"])
+            self.assertEqual(len(self.requests()), 1)
+        body = self.requests()[0]["body"]
+        self.assertIn("Factory handoff request `7/1`", body)
+        self.assertIn("review-intake escalations are never managed", body)
 
     def test_crash_after_comment_creation_reconciles_to_the_same_request(self) -> None:
         self.manage(mode="HUMAN", crash_on_comment=True, expect=-9)
@@ -523,7 +577,7 @@ class ReceiptTest(unittest.TestCase):
             self.assertIn("not journaled", handoff.terminal(cfg, [escalation], escalation))
             self.assertIn("packet is missing", handoff.terminal(cfg, eligible, {**escalation, "packet": packet.name + ".gone"}))
             frontier_row = {"event": "manage", "round": 1, "pr": 9, "decision": "FIX"}
-            self.assertIn("spent by its PR #9 FIX decision", handoff.terminal(cfg, eligible + [frontier_row], escalation))
+            self.assertIsNone(handoff.terminal(cfg, eligible + [frontier_row], escalation))  # #204: frontier rows never spend a round
             self.assertIsNone(handoff.terminal(cfg, eligible + [{**frontier_row, "round": 2}], escalation))
             retry = {"event": "manage", "round": 1, "decision": "RETRY", "execution_id": "x1"}
             self.assertIsNone(handoff.terminal(cfg, eligible + [retry], escalation))
