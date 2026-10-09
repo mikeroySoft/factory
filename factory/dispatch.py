@@ -2255,6 +2255,29 @@ def process_ticket(
             execution.resource("released", lock_path, scope="repository")
 
 
+def ticket_pass(budget_min: int, dry_run: bool) -> None:
+    """Claim up to capacity frontier tickets and work each one."""
+    with nullcontext() if dry_run else lifecycle.scope(EVENTS, "scheduling", lazy=True) as execution:
+        active = active_ticket_count()
+        capacity = MAX_ACTIVE - active
+        log(f"active tickets: {active}, capacity: {max(capacity, 0)}")
+        if capacity <= 0:
+            log("at capacity, nothing to do")
+            if execution:
+                execution.wait("capacity_reached", mode="admission", active=active, max_active=MAX_ACTIVE)
+            return
+        ready = frontier()
+        if not ready:
+            log("frontier empty, nothing to do")
+            return
+        if execution:
+            execution.commit()  # claimable work: keep the scheduling trail
+        for issue in ready[:capacity]:
+            log(f"claimable: #{issue['number']} {issue['title']}")
+    for issue in ready[:capacity]:
+        process_ticket(issue, budget_min, dry_run)
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description="AI-factory dispatcher (one pass, stateless)"
@@ -2305,26 +2328,10 @@ def main(argv: list[str]) -> int:
 
         land_pass(args.dry_run)
         review_intake_pass(args.dry_run)
+        from factory.learn import learn_pass
         from factory.manage import manage_pass
 
         manage_pass(args.dry_run)
-        with nullcontext() if args.dry_run else lifecycle.scope(EVENTS, "scheduling", lazy=True) as execution:
-            active = active_ticket_count()
-            capacity = MAX_ACTIVE - active
-            log(f"active tickets: {active}, capacity: {max(capacity, 0)}")
-            if capacity <= 0:
-                log("at capacity, nothing to do")
-                if execution:
-                    execution.wait("capacity_reached", mode="admission", active=active, max_active=MAX_ACTIVE)
-                return 0
-            ready = frontier()
-            if not ready:
-                log("frontier empty, nothing to do")
-                return 0
-            if execution:
-                execution.commit()  # claimable work: keep the scheduling trail
-            for issue in ready[:capacity]:
-                log(f"claimable: #{issue['number']} {issue['title']}")
-        for issue in ready[:capacity]:
-            process_ticket(issue, args.budget_min, args.dry_run)
+        ticket_pass(args.budget_min, args.dry_run)
+        learn_pass(args.dry_run)
         return 0
