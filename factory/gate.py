@@ -293,9 +293,11 @@ def execute(args: argparse.Namespace, execution) -> int:
     for name, status, _ in results:
         lines.append(f"- {name}: {status}")
     for name, status, output in results:
-        if status == "FAIL":
+        # pr-tier checks may be report-only (exit 0, findings on stdout); the reviewer sees
+        # them only through this report, so keep their output when they pass too.
+        if status == "FAIL" or (args.tier == "pr" and status == "PASS" and output.strip()):
             tail = "\n".join(output.splitlines()[-TAIL_LINES:])
-            lines += ["", f"## {name} failure", "```", tail, "```"]
+            lines += ["", f"## {name} {'failure' if status == 'FAIL' else 'output'}", "```", tail, "```"]
     report = Path(args.report)
     report.parent.mkdir(parents=True, exist_ok=True)
     report.write_text("\n".join(lines) + "\n")
