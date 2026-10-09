@@ -194,6 +194,9 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument("--protected-override", action="store_true",
                         help="human-authorized protected-path override")
+    parser.add_argument("--tier", choices=("attempt", "pr"), default="attempt",
+                        help="attempt: every check except `when = \"pr\"` ones (reported SKIP); "
+                        "pr: only the `when = \"pr\"` checks")
     args = parser.parse_args(argv)
     configure(config.load())
     with lifecycle.scope(cfg.factory / "events.jsonl", "gate") as execution:
@@ -227,7 +230,7 @@ def execute(args: argparse.Namespace, execution) -> int:
     if LEAK_RE is None:
         skip.add("leak-scan")
 
-    if not args.protected_override:
+    if not args.protected_override and args.tier == "attempt":
         passed, detail = check_protected_paths(args.base)
         if not passed:
             execution.outcome, execution.reason = "project_escalation", "protected_paths"
@@ -237,11 +240,14 @@ def execute(args: argparse.Namespace, execution) -> int:
                               "## protected-paths failure\n\n```diff\n" + detail + "\n```\n")
             print(f"report: {report}\ngate FAIL: protected-paths")
             return 1
+    configured = [(check.name, (lambda c=check: run(c.run))) for check in cfg.checks
+                  if args.tier == "attempt" or check.when == "pr"]
     checks = [
         ("conflict-markers", check_conflict_markers),
-        *((check.name, (lambda c=check: run(c.run))) for check in cfg.checks),
+        *configured,
         ("leak-scan", lambda: check_leaks(args.base)),
-    ]
+    ] if args.tier == "attempt" else configured
+    pr_tier = {check.name for check in cfg.checks if check.when == "pr"} if args.tier == "attempt" else set()
 
     results: list[tuple[str, str, str]] = []  # (name, status, output)
     outcome, reason = "completed", None
@@ -249,8 +255,8 @@ def execute(args: argparse.Namespace, execution) -> int:
     gpu_acquired = False
     try:
         for name, fn in checks:
-            if name in skip:
-                results.append((name, "SKIP", ""))
+            if name in skip or name in pr_tier:
+                results.append((name, "SKIP (pr tier)" if name in pr_tier else "SKIP", ""))
                 continue
             if name in GPU_CHECKS and gpu_lock is None:
                 gpu_lock = open(GPU_LOCK, "w")  # noqa: SIM115 — lock must outlive the loop
@@ -281,7 +287,7 @@ def execute(args: argparse.Namespace, execution) -> int:
                 execution.resource("released", GPU_LOCK, scope="host", blocking=True)
 
     lines = [
-        "# Gate report", "", "## Host toolchain",
+        "# Gate report" if args.tier == "attempt" else "# Gate report (pr tier)", "", "## Host toolchain",
         f"ROCm: {host['rocm']}", f"Kernel: {host['kernel']}", f"amdgpu: {host['amdgpu']}", "",
     ]
     for name, status, _ in results:
