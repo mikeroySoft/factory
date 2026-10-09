@@ -25,5 +25,22 @@ name = "ruff"
 run = ["uvx", "ruff@0.16.10", "check", "."]
 exclusive = false
 
+# Report-only: lists surviving mutants of changed factory/ files for the reviewer; exits
+# nonzero only when the tool itself fails to run. Runs once per PR head, not per attempt.
+[[gate.check]]
+name = "mutation"
+run = [
+    "uv",
+    "run",
+    "--frozen",
+    "--no-managed-python",
+    "--group",
+    "mutation",
+    "python",
+    "scripts/mutation.py",
+]
+exclusive = false
+when = "pr"
+
 [dashboard]
 theme = ".factory-dashboard.css"

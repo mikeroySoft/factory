@@ -21,6 +21,10 @@ classifiers = [
 [project.optional-dependencies]
 atlas = ["graphifyy==0.9.56"]
 
+[dependency-groups]
+# Dev-only: the `mutation` pr-tier gate check (scripts/mutation.py). Never a runtime dependency.
+mutation = ["cosmic-ray==8.7.0"]
+
 [project.urls]
 Homepage = "https://github.com/mikeroySoft/factory"
 
