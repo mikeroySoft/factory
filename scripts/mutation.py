@@ -1,12 +1,13 @@
 """Report-only mutation testing of changed `factory/` files (pr-tier gate check).
 
-Mutates the Python files under `factory/` that changed in `origin/main...HEAD`, runs
+Mutates the Python files under `factory/` that changed in `origin/main..HEAD`, runs
 the full `python -m unittest discover -s tests` suite against each mutant, and prints
 every survivor as `path:line: <mutation>`. Exit 0 whenever the trial ran, whatever
-survived; nonzero only when the tool itself cannot run (no git, failing baseline,
-cosmic-ray exception). Mutants are sampled deterministically (sorted, then shuffled
-with a fixed seed, capped at CAP) and no mutant starts after a time budget derived from
-TARGET, so the run always finishes inside `[gate].timeout`.
+survived; nonzero only when the tool itself cannot run (no git, failing or overlong
+baseline, cosmic-ray exception). Mutants are sampled deterministically (sorted, then
+shuffled with a fixed seed, capped at CAP). One absolute deadline, min(TARGET,
+`[gate].timeout` - 60), covers preparation, the baseline and every mutant: each run is
+bounded by the time left, and mutants not started or cut short are reported as incomplete.
 
 Each worker runs in its own copy of the tree because cosmic-ray mutates files on disk;
 the worktree itself is never touched.
@@ -29,7 +30,7 @@ from pathlib import Path
 
 CAP = 200
 SEED = 197
-TARGET = 600  # seconds the whole check aims to finish in
+TARGET = 600  # seconds the whole check (copies, baseline, mutants) aims to finish in
 WORKERS = min(16, os.cpu_count() or 1)
 COPY_IGNORE = shutil.ignore_patterns(".git", ".venv", ".factory", "__pycache__", ".ruff_cache")
 
@@ -37,7 +38,7 @@ COPY_IGNORE = shutil.ignore_patterns(".git", ".venv", ".factory", "__pycache__",
 def changed_lines() -> dict[str, set[int]]:
     """Changed `factory/*.py` files (added or modified) -> line numbers added or modified."""
     out = subprocess.run(
-        ["git", "diff", "--unified=0", "--diff-filter=AM", "origin/main...HEAD", "--", "factory/*.py"],
+        ["git", "diff", "--unified=0", "--diff-filter=AM", "origin/main..HEAD", "--", "factory/*.py"],
         capture_output=True, text=True, check=True,
     ).stdout
     lines: dict[str, set[int]] = {}
@@ -101,8 +102,7 @@ def main() -> int:
     from attrs import evolve
     from cosmic_ray.mutating import mutate_and_test
     from cosmic_ray.work_item import TestOutcome
-
-    gate = gate_timeout()
+    deadline = time.monotonic() + min(TARGET, gate_timeout() - 60)
     root = Path.cwd()
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="factory-mutation-") as tmp:
@@ -118,29 +118,40 @@ def main() -> int:
 
         # Baseline once, unmutated, in the first copy: proves the suite passes under this
         # harness and sizes the per-mutant timeout. unittest reports on stderr, so merge it.
-        proc = subprocess.run(shlex.split(test_command(copies[0])), stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT, text=True, timeout=TARGET, check=False)
-        baseline = time.monotonic() - started
+        baseline_started = time.monotonic()
+        try:
+            proc = subprocess.run(shlex.split(test_command(copies[0])), stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, text=True, check=False,
+                                  timeout=max(deadline - baseline_started, 1))
+        except subprocess.TimeoutExpired:
+            print(f"baseline suite did not finish before the {deadline - started:.0f}s deadline")
+            return 1
+        baseline = time.monotonic() - baseline_started
         if proc.returncode:
             print(f"baseline suite failed:\n{proc.stdout[-3000:]}")
             return 1
-        # No mutant starts after `budget`, so the run ends around TARGET seconds and a
-        # hung mutant still cannot push it past the gate's check timeout.
-        budget = min(max(TARGET - baseline, baseline), gate // 2)
-        timeout = min(max(60.0, 3 * baseline), gate - budget - 60)
-        print(f"baseline: {baseline:.0f}s, per-mutant timeout {timeout:.0f}s, budget {budget:.0f}s")
+        timeout = max(60.0, 3 * baseline)
+        print(f"baseline: {baseline:.0f}s, per-mutant timeout {timeout:.0f}s, "
+              f"{deadline - time.monotonic():.0f}s left before the deadline")
 
         queue = collections.deque(mutations)  # popleft is atomic under the GIL
         results = []
+        cut = []  # mutants whose run the deadline cut short: neither killed nor survived
 
         def worker(copy: Path) -> None:
-            while time.monotonic() - started < budget:
+            # Launch while a baseline-length run still fits, bound each run by the time left
+            # so the deadline holds, and keep runs the deadline cut short out of the tally.
+            while (left := deadline - time.monotonic()) >= baseline:
                 try:
                     mutation = queue.popleft()
                 except IndexError:
                     return
                 local = evolve(mutation, module_path=copy / mutation.module_path)
-                results.append((mutation, mutate_and_test([local], test_command(copy), timeout)))
+                result = mutate_and_test([local], test_command(copy), min(timeout, left))
+                if left < timeout and result.output == "timeout":
+                    cut.append(mutation)
+                else:
+                    results.append((mutation, result))
 
         with ThreadPoolExecutor(workers) as pool:
             list(pool.map(worker, copies))
@@ -154,8 +165,11 @@ def main() -> int:
         name = (result.test_outcome or result.worker_outcome).value
         counts[name] = counts.get(name, 0) + 1
     summary = ", ".join(f"{n} {k}" for k, n in sorted(counts.items())) or "none"
-    print(f"ran {len(results)} mutants in {time.monotonic() - started:.0f}s: {summary}; "
-          f"{len(queue)} not run (time budget); {len(survivors)} survived")
+    print(f"ran {len(results)} of {len(mutations)} mutants in {time.monotonic() - started:.0f}s: "
+          f"{summary}; {len(survivors)} survived")
+    if queue or cut:
+        print(f"incomplete: {len(queue)} mutants not started and {len(cut)} cut short by the "
+              f"{deadline - started:.0f}s deadline")
     return 0
 
 
