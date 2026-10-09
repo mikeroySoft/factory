@@ -13,7 +13,7 @@ from __future__ import annotations
 from statistics import mean, pstdev
 
 SPLITS = ("train", "selection", "lockbox", "fresh")
-CHANGE_KINDS = ("prompt", "skill", "rubric", "model", "effort")
+CHANGE_KINDS = ("prompt", "skill", "rubric", "model", "effort", "gate-check")
 MIN_REPEATS = 2
 CONTRACT_VERSION = 1
 

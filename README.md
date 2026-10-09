@@ -259,8 +259,8 @@ merge stage.
 | `factory dispatch` | One stateless pass: upstream sync → merge stage (at most one PR) → review-only PR intake → manager → claim up to `max_active` tickets → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan. |
 | `factory manage` | First recommends directions for `needs-review` PRs, then `needs-viability` issues; then resolves untouched `ready-for-human` escalation packets within `[manager].rounds`; finally publishes one routed human handoff request per escalation whose automatic recovery is terminal (also without a manager). `--dry-run` lists eligible requests without inference or writes. |
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
-| `factory stats` | Ticket table: attempts, review rounds, hours to merge, escalation count, resolver attribution, minutes in `ready-for-human`, re-queues, and triage/review prompt and completion token sums (reported prefix-cache rates listed separately). Reads GitHub plus existing `events.jsonl`. `--by-worker` reads only events and shows every configured worker label: first-attempt gate pass rate, all attempts (including review bounces), and known cost. Attribution uses claim labels with current worker precedence; unclaimed attempts are excluded, missing rates/cost are `n/a`. The dashboard Ops view shows the same worker metrics. `--json`. |
-| `factory learn` | Reads the last N finished tickets' event trail, failing-attempt log tails, reviewer findings, and escalation reasons; asks the local model for ≤10 repo-specific lessons; writes `.factory-lessons.md` (you commit it). Every worker prompt carries it. `--dry-run`, `--last N`. `--promotion claim.json` judges and records a keep/revert claim under the [eval promotion contract](docs/eval-promotion-contract.md). |
+| `factory stats` | Ticket table: attempts, review rounds, hours to merge, escalation count, resolver attribution, minutes in `ready-for-human`, re-queues, and triage/review prompt and completion token sums (reported prefix-cache rates listed separately). Reads GitHub plus existing `events.jsonl`. `--by-worker` reads only events and shows every configured worker label: first-attempt gate pass rate, all attempts (including review bounces), and known cost. Attribution uses claim labels with current worker precedence; unclaimed attempts are excluded, missing rates/cost are `n/a`. The dashboard Ops view shows the same worker metrics. `--escapes` lists candidate escaped defects, one row per closed `bug` issue: its fix commits (first-parent `agent/<bug>:` commits on `origin/<main>`, else the merge commit of a merged PR whose closing references include the bug), and the candidate tickets whose `agent/<m>:` commits `git blame` names for the lines the fix modified or deleted, with blamed line counts. Rows without candidates read `unlinked` (no fix commit), `no_blamed_lines` (the fix only adds lines) or `no_candidates` (blamed lines are not from agent commits). `Regressed-by: #N` lines in the bug body replace blame (`source` is `declared`, else `blame`). The footer reads `Candidate escapes: X of Y merged agent tickets (Z%)`. Blame is SZZ-style and noisy: refactors give false candidates and add-only fixes give none. Read-only. `--json`. |
+| `factory learn` | Reads the last N finished tickets' event trail, failing-attempt log tails, reviewer findings, and escalation reasons, plus the 10 most recently closed bugs with candidate escapes (`factory stats --escapes`); asks the local model for ≤10 repo-specific lessons; writes `.factory-lessons.md` (you commit it). Every worker prompt carries it. With a manager, the lessons land as an `agent/lessons-<date>` chore PR, and the manager may add a CURATE diff, opened as `agent/curate-<date>`, that turns a lesson into a gate check or regression test: `AGENTS.md`, `CONTRIBUTING.md`, `.omp/skills/`, add-only `.factory.toml` (appended `[[gate.check]]` tables and `[gate].protected_paths` entries) and files under the base ref's protected paths; never `.github/`, never a deleted or renamed protected file. Both PRs are human-merge only. `--dry-run`, `--last N`. `--promotion claim.json` judges and records a keep/revert claim under the [eval promotion contract](docs/eval-promotion-contract.md). |
 | `factory dashboard` | Local ops UI: Inbox, Ops, a dedicated read-only Factory Manager Chat with browser-local history, Codebase history, and Atlas; tickets by stage, in-flight phase, gate reports, worker logs, journal heartbeat, and upstream drift. `--json` prints the existing snapshot, including independent executions, per-ticket `llm_usage` stage totals, and local interruption reconciliation. `--host 0.0.0.0` exposes it, its mutating `/api/act`, and local settings writes to your network. |
 | `factory dashboard --runtime-json` | One bounded schema 1 runtime observation using only local read-only evidence; no GitHub, model probe, journal append, lock acquisition, or state creation. Partial source failures remain structured JSON. See [runtime contract](#bounded-runtime-json-schema-1). |
 | `factory evidence --root /path/to/main-checkout` | One explicit-repository schema 1 JSON read: compact cases, selected evidence, workflow/file/PR/CI investigations, or capabilities. Read-only GitHub GETs and F03 local evidence; no model, action execution, or state writes. See [evidence contract](#bounded-project-evidence-json-schema-1). |
@@ -441,9 +441,7 @@ re-arm a recorded viability request.
 
 Human-touch metrics are read-only; no manager behavior is required. A
 `ready-for-human` label addition starts an escalation interval; removal ends it
-and attributes the resolution to that removal's actor (`User` → human, `Bot` →
-factory, absent/other → unknown). Resolver logins are retained. Automation using
-a human account is indistinguishable from manual activity under that account.
+and attributes the resolution to that removal's actor. Resolver logins are retained.
 Open intervals accrue until now, or until closure/merge for finished tickets.
 Re-queues count `ready-for-agent` additions after the initial queue entry, with
 repeated `claimed` trace records as a fallback. Trace escalation counts likewise
@@ -452,13 +450,32 @@ Manager command failures are counted separately as `manager_failures` in stats
 JSON and dashboard ticket `human_touch` data, and as `manager failures` in the
 stats table. They do not add an escalation or consume another manager round.
 
+Human corrections that never escalate are counted per agent PR (`agent/<n>`, any
+state, merged included): `human_change_requests` (changes-requested reviews),
+`human_comments` (review-thread and PR conversation comments) and `human_commits`
+(commits whose author or committer account is human). Resolutions and corrections
+share one attribution rule. The actor is **factory** when it is a `Bot` or its login
+is the dispatcher's authenticated login (`gh api user` under `[install].dispatch_env`).
+Any other account is **human**. A missing account is unknown. Every action before
+that login's first observed action (labels, reviews, comments, commits) is
+**unattributable**, so the switch to a separate machine account needs no config. With
+`dispatch_env` unset the factory shares the human's account, so nothing is
+attributable. An agent PR with any unattributable action reports its three counts
+as `null` (`n/a`). Interactive agent sessions and hand edits under a human account both
+count as human.
+
 The stats footer and dashboard KPIs show escalations in the trailing seven days
-and the percentage of attributed resolutions performed by humans; unresolved
-and unknown resolutions are excluded from that denominator (`n/a`/`null` when
-none are attributed). `factory dashboard --json` exposes
-`metrics.escalations_per_week`, `metrics.human_resolved_pct` (0–100), and each
-ticket's `human_touch` details. The dashboard retains its existing 100-issue,
-100-PR, and 100-timeline-item query limits; stats paginates label timelines.
+and the percentage of attributed resolutions performed by humans; unresolved,
+unknown and unattributable resolutions are excluded from that denominator
+(`n/a`/`null` when none are attributed). The stats footer also shows
+`Human-touched PRs`: the share of merged agent PRs with any human correction,
+unattributable PRs excluded. `factory dashboard --json` exposes
+`metrics.escalations_per_week`, `metrics.human_resolved_pct`,
+`metrics.human_touched_pct` (both 0–100), and each ticket's `human_touch` details.
+The dashboard reads each merged agent PR's corrections once per process. It retains
+its existing 100-issue, 100-PR, and 100-timeline-item query limits; stats paginates
+label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
+100 conversation comments and 100 commits per PR.
 
 ## How a ticket moves
 
@@ -746,7 +763,15 @@ branches, or merge state.
   destination and opens a full **Understand → Compare → Decide** briefing for
   each case needing human judgment. The question,
   situation, FM recommendation, relevant earlier decisions, uncertainty, options,
-  consequences, and next owner stay visible; raw evidence is expandable. **Ops**
+  consequences, and next owner stay visible; raw evidence is expandable. Each
+  briefing leads with a cited **Bottom line**: your action (a specific decision,
+  no human decision identified, or unknown), next owner and move, execution
+  reality, when to involve you, and basis/freshness. Execution states are checked
+  against the ticket lock, active phase and lifecycle executions; "no human
+  decision" cannot rest on missing, truncated or ownership-only evidence; the
+  `factory plan route` decision owner is shown apart from current label routing
+  and is never an execution claim. A rejected or missing bottom line shows as
+  unknown. **Ops**
   retains the board, telemetry, dispatcher runs, and task drawers.
   **Ask FM** works on a whole task or a specific source/log and returns cited
   answers. The dedicated **Chat** page at `/chat` also answers repository-wide,
