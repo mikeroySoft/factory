@@ -425,6 +425,8 @@ class LocalCLI(unittest.TestCase):
             self.assertIn("- slow: SKIP (pr tier)", prompt)
             self.assertIn("# Gate report (pr tier)", prompt)
             self.assertIn("- slow: PASS", prompt)
+            # Report-only pr checks (e.g. mutation survivors) reach the reviewer only through the report.
+            self.assertIn("## slow output\n```\npr-check-output\n```", prompt)
 
     def test_pr_checks_are_not_rerun_for_an_unchanged_head(self):
         self.pr_config(fails=0)

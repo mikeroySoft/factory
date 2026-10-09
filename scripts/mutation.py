@@ -4,7 +4,7 @@ Mutates the Python files under `factory/` that changed in `origin/main..HEAD`, r
 the full `python -m unittest discover -s tests` suite against each mutant, and prints
 every survivor as `path:line: <mutation>`. Exit 0 whenever the trial ran, whatever
 survived; nonzero only when the tool itself cannot run (no git, failing or overlong
-baseline, cosmic-ray exception). Mutants are sampled deterministically (sorted, then
+baseline, a mutant cosmic-ray could not apply or test). Mutants are sampled deterministically (sorted, then
 shuffled with a fixed seed, capped at CAP). One absolute deadline, min(TARGET,
 `[gate].timeout` - 60), covers preparation, the baseline and every mutant: each run is
 bounded by the time left, and mutants not started or cut short are reported as incomplete.
@@ -38,7 +38,7 @@ COPY_IGNORE = shutil.ignore_patterns(".git", ".venv", ".factory", "__pycache__",
 def changed_lines() -> dict[str, set[int]]:
     """Changed `factory/*.py` files (added or modified) -> line numbers added or modified."""
     out = subprocess.run(
-        ["git", "diff", "--unified=0", "--diff-filter=AM", "origin/main..HEAD", "--", "factory/*.py"],
+        ["git", "diff", "--unified=0", "--no-renames", "--diff-filter=AM", "origin/main..HEAD", "--", "factory/*.py"],
         capture_output=True, text=True, check=True,
     ).stdout
     lines: dict[str, set[int]] = {}
@@ -59,7 +59,7 @@ def gate_timeout() -> int:
         return 1200
 
 
-def sample(lines: dict[str, set[int]], scratch: Path) -> list:
+def sample(lines: dict[str, set[int]], scratch: Path) -> tuple[list, int]:
     """Deterministic mutant sample: mutants on changed lines first, then the rest of each
     file; sorted, then shuffled with a fixed seed within each group, capped at CAP."""
     import cosmic_ray.commands
@@ -170,8 +170,16 @@ def main() -> int:
     if queue or cut:
         print(f"incomplete: {len(queue)} mutants not started and {len(cut)} cut short by the "
               f"{deadline - started:.0f}s deadline")
+    # cosmic-ray swallows its own failures (a mutation it could not write, a test command it
+    # could not launch) into INCOMPETENT results; those mean the tool broke, not that a mutant ran.
+    broken = [(m, r) for m, r in results if r.test_outcome == TestOutcome.INCOMPETENT]
+    if broken:
+        mutation, result = broken[0]
+        print(f"mutation check broke on {len(broken)} mutants; first at "
+              f"{mutation.module_path}:{mutation.start_pos[0]}:\n{(result.output or '')[-3000:]}")
+        return 1
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())  # an uncaught exception (tool failed to run) is the only nonzero exit
+    sys.exit(main())

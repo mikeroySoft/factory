@@ -510,7 +510,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
 5. **Review.** After the attempt gate passes, the dispatcher runs the
    `when = "pr"` checks once for the head about to be reviewed (same timeout and
    `exclusive` lock; a head is never re-run) and appends their report to the gate
-   report. A pr-tier FAIL goes back to the worker like a `REVISE`, with that
+   report; that report keeps the output of passing pr checks too (last 80 lines),
+   so report-only checks reach the reviewer. A pr-tier FAIL goes back to the worker like a `REVISE`, with that
    report as the findings, and uses one `review_rounds` slot; when the rounds run
    out (or the head came from a manager FIX) the ticket escalates with `pr checks failed`. Otherwise
    the reviewer runs the diff itself, gets the gate report inline, and
