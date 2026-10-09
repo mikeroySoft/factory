@@ -316,7 +316,7 @@ def learn_pass(dry_run: bool = False) -> None:
             return
         dispatch.log(f"learn: {count} tickets finished since the last learn; running --last {AUTO_EVERY}")
         run(cfg, AUTO_EVERY, trigger="auto")
-    except Exception as exc:  # isolated: a learn failure never fails the dispatcher pass
+    except Exception as exc:  # noqa: BLE001 - isolates learn failures from the dispatcher pass
         reason = f"{type(exc).__name__}: {exc}"
         dispatch.log(f"learn: failed ({reason})")
         if not dry_run:

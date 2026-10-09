@@ -6,7 +6,7 @@ import json
 import os
 import tempfile
 import unittest
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
@@ -61,7 +61,7 @@ class AutoLearnTest(unittest.TestCase):
         [event] = self.learns()
         self.assertEqual(event["trigger"], "auto")
         self.assertEqual(event["tickets"], list(range(1, 11)))
-        self.assertEqual(event["branch"], f"agent/lessons-{date.today().isoformat()}-t10")
+        self.assertEqual(event["branch"], f"agent/lessons-{datetime.now().astimezone().date().isoformat()}-t10")
         learn.learn_pass()  # the count restarts after the recorded run
         self.propose.assert_called_once()
 
@@ -114,7 +114,7 @@ class AutoLearnTest(unittest.TestCase):
         self.finish(range(11, 21), year=2999)
         learn.learn_pass()
         branches = [e["branch"] for e in self.learns()]
-        today = date.today().isoformat()
+        today = datetime.now().astimezone().date().isoformat()
         self.assertEqual(branches, [f"agent/lessons-{today}-t10", f"agent/lessons-{today}-t20"])
         self.assertEqual(learn.branch_name("curate", [3, 20]), f"agent/curate-{today}-t20")
         self.open_prs = [{"number": i, "headRefName": b, "headRefOid": "x", "baseRefName": "main",
