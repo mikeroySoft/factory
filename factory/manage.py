@@ -786,8 +786,9 @@ def escalation_pass(dry_run: bool = False) -> None:
                 if not escalation or escalation.get("upstream") or escalation.get("pr") or not escalation.get("packet"):
                     continue
                 round_number = escalation.get("round", 0)
+                # The PR frontier numbers its own `manage` rows (with `pr`) per PR; they never spend an escalation round.
                 if not 1 <= round_number <= cfg.manager_rounds or any(
-                    e.get("event") == "manage" and e.get("round") == round_number for e in events
+                    e.get("event") == "manage" and e.get("round") == round_number and not e.get("pr") for e in events
                 ):
                     continue
                 packet = Path(escalation["packet"])
