@@ -5,8 +5,8 @@ the full `python -m unittest discover -s tests` suite against each mutant, and p
 every survivor as `path:line: <mutation>`. Exit 0 whenever the trial ran, whatever
 survived; nonzero only when the tool itself cannot run (no git, failing baseline,
 cosmic-ray exception). Mutants are sampled deterministically (sorted, then shuffled
-with a fixed seed, capped at CAP) and no mutant starts after BUDGET seconds, so the
-run always finishes inside `[gate].timeout`.
+with a fixed seed, capped at CAP) and no mutant starts after a time budget derived from
+TARGET, so the run always finishes inside `[gate].timeout`.
 
 Each worker runs in its own copy of the tree because cosmic-ray mutates files on disk;
 the worktree itself is never touched.
@@ -17,6 +17,7 @@ from __future__ import annotations
 import collections
 import os
 import random
+import shlex
 import shutil
 import subprocess
 import sys
@@ -99,7 +100,6 @@ def main() -> int:
         return 0
     from attrs import evolve
     from cosmic_ray.mutating import mutate_and_test
-    from cosmic_ray.testing import run_tests
     from cosmic_ray.work_item import TestOutcome
 
     gate = gate_timeout()
@@ -116,14 +116,13 @@ def main() -> int:
         print(f"mutants: {len(mutations)} sampled (seed {SEED}, cap {CAP}), "
               f"{min(hot, len(mutations))} on changed lines first, {workers} workers")
 
-        # Baseline in every copy at once: proves the suite passes unmutated under this
-        # parallelism and measures the per-mutant timeout under the same load.
-        with ThreadPoolExecutor(workers) as pool:
-            baselines = list(pool.map(lambda c: run_tests(test_command(c), TARGET), copies))
+        # Baseline once, unmutated, in the first copy: proves the suite passes under this
+        # harness and sizes the per-mutant timeout. unittest reports on stderr, so merge it.
+        proc = subprocess.run(shlex.split(test_command(copies[0])), stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True, timeout=TARGET, check=False)
         baseline = time.monotonic() - started
-        failed = [out for outcome, out in baselines if outcome != TestOutcome.SURVIVED]
-        if failed:
-            print(f"baseline suite failed:\n{failed[0][-3000:]}")
+        if proc.returncode:
+            print(f"baseline suite failed:\n{proc.stdout[-3000:]}")
             return 1
         # No mutant starts after `budget`, so the run ends around TARGET seconds and a
         # hung mutant still cannot push it past the gate's check timeout.
