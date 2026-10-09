@@ -426,6 +426,22 @@ class LocalCLI(unittest.TestCase):
             self.assertIn("# Gate report (pr tier)", prompt)
             self.assertIn("- slow: PASS", prompt)
 
+    def test_pr_checks_are_not_rerun_for_an_unchanged_head(self):
+        self.pr_config(fails=0)
+        # The bounce worker commits nothing, so the re-reviewed head is the one already checked.
+        self.worker.write_text(self.worker.read_text().replace(
+            'p.write_text(p.read_text() + "change\\n" if p.exists() else "change\\n")',
+            'p.exists() or p.write_text("change\\n")'))
+        self.cli("dispatch", "--ticket", "7")
+        reviewed = [e["head"] for e in lifecycle.read_events(self.events) if e.get("event") == "review"]
+        self.assertEqual(len(reviewed), 2)
+        self.assertEqual(len(set(reviewed)), 1)
+        self.assertEqual(self.pr_runs(), reviewed[:1])
+        prompts = self.prompts(self.review_prompts)
+        self.assertEqual(len(prompts), 2)
+        for prompt in prompts:
+            self.assertIn("- slow: PASS", prompt)
+
     def test_pr_check_failure_bounces_to_worker_then_reviews_new_head(self):
         self.pr_config(fails=1)
         self.state.write_text(json.dumps({"reviews": 1}))  # the one review APPROVEs
