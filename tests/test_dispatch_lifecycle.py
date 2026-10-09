@@ -465,6 +465,51 @@ class LocalCLI(unittest.TestCase):
         escalations = [e["reason"] for e in lifecycle.read_events(self.events) if e.get("event") == "escalate"]
         self.assertEqual(escalations, ["pr checks failed"])
 
+    def manager_fix(self, fails):
+        """`manage.apply` FIX in-process against the fixture repo; GitHub writes are mocked."""
+        from unittest import mock
+
+        from factory import config, dispatch, manage
+
+        self.pr_config(fails=fails)
+        self.state.write_text(json.dumps({"reviews": 1}))  # the one review APPROVEs
+        self.git("add", ".factory.toml")
+        self.git("commit", "-m", "pr check")
+        wt = self.repo / ".factory" / "wt-7"
+        wt.parent.mkdir(exist_ok=True)
+        self.git("worktree", "add", str(wt), "-b", "agent/7")
+        head = self.git("rev-parse", "HEAD").stdout.strip()
+        packet = self.repo / ".factory" / "packet.md"
+        packet.write_text("fix it")
+        issue = {"title": "local change", "body": "", "comments": [], "labels": []}
+        pr = {"state": "OPEN", "headRefName": "agent/7", "headRefOid": head,
+              "baseRefName": "main", "reviewDecision": ""}
+        with mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(dispatch, "gh_json", side_effect=lambda a: pr if a[:2] == ["pr", "view"] else issue), \
+                mock.patch.object(dispatch, "push_agent", return_value=head), \
+                mock.patch.object(dispatch, "pr_comment"), \
+                mock.patch.object(dispatch, "approve_pr", return_value=True) as approve, \
+                mock.patch.object(dispatch, "escalate") as escalate:
+            dispatch.configure(config.load(self.repo))
+            manage.apply(7, issue, "FIX", "", {"worker": "default", "guidance": "fix"}, packet)
+        return approve, escalate
+
+    def test_manager_fix_runs_pr_checks_before_review(self):
+        approve, escalate = self.manager_fix(fails=0)
+        reviewed = [e["head"] for e in lifecycle.read_events(self.events) if e.get("event") == "review"]
+        self.assertEqual(self.pr_runs(), reviewed)
+        self.assertEqual(len(reviewed), 1)
+        self.assertIn("- slow: PASS", self.prompts(self.review_prompts)[0])
+        approve.assert_called_once()
+        escalate.assert_not_called()
+
+    def test_manager_fix_pr_check_failure_escalates(self):
+        approve, escalate = self.manager_fix(fails=1)
+        self.assertEqual(len(self.pr_runs()), 1)
+        self.assertEqual(self.prompts(self.review_prompts), [])
+        approve.assert_not_called()
+        self.assertEqual(escalate.call_args.args[1], "pr checks failed")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -309,9 +309,11 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         if fresh.get("baseRefName") != cfg.main:
             raise ValueError(f"FIX requires a PR targeting the configured target `{cfg.main}`")
         dispatch.push_agent(wt, n, pr["headRefOid"])
-        verdict, findings = dispatch.review(wt, n, report, gate_head)
+        verdict, findings, pr_failed = dispatch.pr_gate_and_review(wt, n, report, gate_head, {})
         dispatch.pr_comment(n, findings)
-        if verdict != "APPROVE":
+        if pr_failed:
+            dispatch.escalate(n, "pr checks failed", logfile, extra="## PR-tier gate report\n\n" + findings)
+        elif verdict != "APPROVE":
             dispatch.escalate(n, "review requested changes after manager FIX", logfile)
         elif not dispatch.approve_pr(n, gate_head):
             dispatch.escalate(n, "approval evidence, head, or human review state changed before manager FIX approval", logfile)
