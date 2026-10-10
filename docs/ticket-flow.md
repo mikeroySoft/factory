@@ -71,7 +71,7 @@ flowchart TB
   TRI -->|"unparseable twice, label kept: triage.execute"| NT
   TRI -.->|"wontfix-proposal is a comment only, label never applied: triage.apply_decision"| HUMAN
   NI -->|"question comment: triage.apply_decision"| REPORTER
-  REPORTER -.->|"no watcher re-queues needs-info; a human relabels: dashboard.act"| NT
+  REPORTER -.->|"no watcher re-queues needs-info; a human relabels: decisions.apply"| NT
 
   %% Build
   RFA -->|"open, unassigned, no open blockers: dispatch.frontier"| CLAIM
@@ -83,8 +83,8 @@ flowchart TB
   WR -->|"gate PASS: dispatch.worker_round"| PUSH
   PUSH -->|"nothing ahead of main or PR target mismatch: dispatch.push_and_pr"| ESC
   PUSH -->|"dispatch.review"| REV
-  REV -->|"REVISE, review_rounds left: dispatch.process_ticket"| WR
-  REV -->|"REVISE after review_rounds, bounce gate FAIL or stuck, or budget: dispatch.process_ticket"| ESC
+  REV -->|"REVISE or pr-tier gate FAIL, review_rounds left: dispatch.process_ticket"| WR
+  REV -->|"REVISE or pr-tier gate FAIL after review_rounds, bounce gate FAIL or stuck, or budget: dispatch.process_ticket"| ESC
   REV -->|"APPROVE, evidence bound to head: dispatch.approve_pr"| FA
   REV -->|"APPROVE but head or human review changed: dispatch.process_ticket"| ESC
   REV -->|"APPROVE, manager.review = all: dispatch.approve_pr waits"| MAPP
@@ -116,12 +116,12 @@ flowchart TB
   MGR -->|"RETRY, REWRITE, or ROUTE: manage.apply"| RFA
   MGR -->|"SPLIT, children opened, parent stays: manage.apply"| NT
   MGR -->|"FIX: worker round, gate, review: manage.apply"| FA
-  MGR -->|"FIX fails gate or review: manage.apply"| ESC
+  MGR -->|"FIX fails gate, pr-tier gate, or review: manage.apply"| ESC
   MGR -->|"CLOSE PR on an original ticket: manage.apply"| WONT
   MGR -->|"CLOSE PR on a SPLIT child, issue closed not planned: manage.apply"| HUMAN
   MGR -->|"HUMAN or manager failed, label kept: manage.escalation_pass"| HUMAN
   WONT -->|"a human decides: config.LABELS"| HUMAN
-  HUMAN -->|"relabel, comment, close: dashboard.act"| RFA
+  HUMAN -->|"relabel, comment, close, approve: decisions.apply"| RFA
 
   classDef state fill:#e8f5e9,stroke:#2e7d32
   classDef out fill:#fff3e0,stroke:#e65100
@@ -139,10 +139,10 @@ flowchart TB
   and leaves `needs-triage` (`triage.apply_decision`); manager CLOSE applies the
   `wontfix-proposal` label (`manage.apply`).
 - **`needs-info` has no re-entry.** Nothing watches for the reporter's answer; a human
-  puts `needs-triage` back (`dashboard.act` or GitHub).
+  puts `needs-triage` back (`decisions.apply` or GitHub).
 - **Data-driven labels.** Rows marked `*` below edit labels chosen at runtime:
-  the triage decision, manager ROUTE, the viability opt-in label, the dashboard
-  action, and the `chore` PR label `learn.chore_pr` passes.
+  the triage decision, manager ROUTE, the viability opt-in label, the human
+  decision, and the `chore` PR label `learn.chore_pr` passes.
 
 ## Label transitions
 
@@ -151,7 +151,9 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 
 | Code | Removes | Adds | Path |
 |------|---------|------|------|
-| `dashboard.act` | `*` | `*` | Human action; labels limited to `dashboard.ACT_LABELS` |
+| `decisions._approve` | — | `factory-approved` | Human approve step; withdrawn again if the PR changed while labelling |
+| `decisions._plan_request` | `*` | `*` | Human action; labels limited to `decisions.ACT_LABELS`, `factory-approved` routed to `decisions._approve` |
+| `decisions._withdraw_approval` | `factory-approved` | — | Human approve step found the PR changed |
 | `dispatch.approve_pr` | `factory-approved` | `factory-approved` | Approve; withdraw again if the PR changed while labelling |
 | `dispatch.escalate` | `ready-for-agent` | `ready-for-human` | Every escalation |
 | `dispatch.merge_pass_locked` | `factory-approved` | — | CI fail, or cancel after steps ran; missing approval evidence |
@@ -180,6 +182,7 @@ event. `{}` is a runtime value.
 | `dispatch.process_ticket` | ``gate failed after review bounce {}; worktree kept at {}`` | review → escalate |
 | `dispatch.process_ticket` | ``idle_timeout fired (worker stuck) after review bounce {}; worktree kept at {}`` | review → escalate |
 | `dispatch.process_ticket` | ``REVISE verdict after {} review round(s)`` | review → escalate |
+| `dispatch.process_ticket` | ``pr checks failed`` | review → escalate |
 | `dispatch.process_ticket` | ``approval evidence, head, or human review state changed before approval`` | review → escalate |
 | `dispatch.merge_pass_locked` | ``PR #{}: CI failed ({}); `{}` label removed`` | CI fail → escalate |
 | `dispatch.runner_unavailable` | ``PR #{}: CI runner unavailable ({}) in run {}; `{}` kept`` | CI no runner after rerun → escalate |
@@ -204,5 +207,6 @@ event. `{}` is a runtime value.
 | `manage.frontier_pass` | ``PR #{}: manager requires a human: {}`` | manager PR frontier → escalate |
 | `manage.apply` | ``gate failed after manager FIX`` | manager FIX → escalate |
 | `manage.apply` | ``review requested changes after manager FIX`` | manager FIX → escalate |
+| `manage.apply` | ``pr checks failed`` | manager FIX → escalate |
 | `manage.apply` | ``approval evidence, head, or human review state changed before manager FIX approval`` | manager FIX → escalate |
 | `manage.escalation_pass` | ``manager_failed`` | manager decision → human |
