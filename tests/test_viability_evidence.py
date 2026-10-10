@@ -37,7 +37,7 @@ class ViabilityEvidenceTest(unittest.TestCase):
         self.cfg = config.Config(root=self.root, repo="acme/widgets")
         self.calls: list[str] = []
 
-    def github_read(self, endpoint: str, deadline: float, *, text: bool = False):
+    def github_read(self, command: list[str], endpoint: str, deadline: float, *, text: bool = False):
         self.calls.append(endpoint)
         path = endpoint.split("?", 1)[0]
         responses = {
@@ -61,11 +61,16 @@ class ViabilityEvidenceTest(unittest.TestCase):
                 "filename": "src/widget.py", "status": "modified", "additions": 8,
                 "deletions": 2, "changes": 10, "patch": "unbounded diff must not be copied",
             }],
-            "repos/acme/widgets/pulls": [{
-                "number": 5, "title": "Pilot WidgetEngine", "state": "closed",
-                "body": "Earlier implementation direction", "updated_at": "2026-08-31T00:00:00Z",
-                "html_url": "https://github.com/acme/widgets/pull/5", "head": {"sha": "a" * 40},
-            }],
+            "graphql:repos/acme/widgets/pullRequests": {"data": {"repository": {"pullRequests": {
+                "nodes": [{
+                    "number": 5, "title": "Pilot WidgetEngine", "state": "CLOSED",
+                    "body": "Earlier implementation direction", "updated_at": "2026-08-31T00:00:00Z",
+                    "html_url": "https://github.com/acme/widgets/pull/5",
+                    "headRefName": "pilot", "headRefOid": "a" * 40,
+                    "labels": {"nodes": [], "pageInfo": {"hasNextPage": False}},
+                }],
+                "pageInfo": {"hasNextPage": False},
+            }}}},
             "repos/acme/widgets/issues": [{
                 "number": 5, "title": "Pilot WidgetEngine", "state": "closed",
                 "body": "PR wire record", "updated_at": "2026-08-31T00:00:00Z",
@@ -91,7 +96,7 @@ class ViabilityEvidenceTest(unittest.TestCase):
             "state": "OPEN", "labels": [{"name": "needs-viability"}],
             "url": "https://github.com/acme/widgets/issues/7", "updatedAt": "2026-09-04T00:00:00Z",
         }
-        with patch.object(evidence, "github_read", side_effect=self.github_read):
+        with patch.object(evidence, "_github_read", side_effect=self.github_read):
             sources = evidence.viability_sources(self.cfg, issue)
 
         text = "\n".join(item["text"] for item in sources)
@@ -122,7 +127,7 @@ class ViabilityEvidenceTest(unittest.TestCase):
             "state": "OPEN", "labels": [{"name": "needs-viability"}],
             "url": "https://github.com/acme/widgets/issues/7", "updatedAt": "2026-09-04T00:00:00Z",
         }
-        with patch.object(evidence, "github_read", side_effect=self.github_read):
+        with patch.object(evidence, "_github_read", side_effect=self.github_read):
             sources = evidence.viability_sources(self.cfg, issue)
 
         self.assertNotIn("PRIVATE SECRET", json.dumps(sources))
@@ -137,7 +142,7 @@ class ViabilityEvidenceTest(unittest.TestCase):
             "url": "https://github.com/acme/widgets/pull/9", "updatedAt": "2026-09-04T00:00:00Z",
             "headRefOid": "b" * 40,
         }
-        with patch.object(evidence, "github_read", side_effect=self.github_read):
+        with patch.object(evidence, "_github_read", side_effect=self.github_read):
             sources = evidence.viability_sources(self.cfg, pr, kind="pr")
 
         target = next(item for item in sources if item["label"] == "Target PR #9 direction")

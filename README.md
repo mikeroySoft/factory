@@ -263,7 +263,7 @@ merge stage.
 | `factory learn` | Reads the last N finished tickets' event trail, failing-attempt log tails, reviewer findings, and escalation reasons, plus the 10 most recently closed bugs with candidate escapes (`factory stats --escapes`); asks the local model for ≤10 repo-specific lessons; writes `.factory-lessons.md` (you commit it). Every worker prompt carries it. With a manager, the lessons land as an `agent/lessons-<date>-t<N>` chore PR (N: the newest included ticket), and the manager may add a CURATE diff, opened as `agent/curate-<date>-t<N>`, that turns a lesson into a gate check or regression test: `AGENTS.md`, `CONTRIBUTING.md`, `.omp/skills/`, add-only `.factory.toml` (appended `[[gate.check]]` tables and `[gate].protected_paths` entries) and files under the base ref's protected paths; never `.github/`, never a deleted or renamed protected file. Both PRs are human-merge only. With a manager, the dispatcher also runs `--last 10` itself after every 10 finished tickets (see *Learning loop* under Operating it). `--dry-run`, `--last N`. `--promotion claim.json` judges and records a keep/revert claim under the [eval promotion contract](docs/eval-promotion-contract.md). |
 | `factory dashboard` | Native outcome-control workspace: Overview, Outcomes, live Flow, Attention, Success, Codebase, Atlas, System/Ops and Settings, with a persistent contextual FM dock. Defaults to `0.0.0.0`; APIs require the workspace access key. `--json` prints a passive, bounded-window Ops snapshot without journal reconciliation writes. |
 | `factory dashboard --runtime-json` | One bounded schema 1 runtime observation using only local read-only evidence; no GitHub, model probe, journal append, lock acquisition, or state creation. Partial source failures remain structured JSON. See [runtime contract](#bounded-runtime-json-schema-1). |
-| `factory evidence --root /path/to/main-checkout` | One explicit-repository schema 1 JSON read: compact cases, selected evidence, workflow/file/PR/CI investigations, or capabilities. Read-only GitHub GETs and F03 local evidence; no model, action execution, or state writes. See [evidence contract](#bounded-project-evidence-json-schema-1). |
+| `factory evidence --root /path/to/main-checkout` | One explicit-repository schema 1 JSON read: compact cases, selected evidence, workflow/file/PR/CI investigations, or capabilities. Fixed read-only GitHub requests and F03 local evidence; no model, action execution, or state writes. See [evidence contract](#bounded-project-evidence-json-schema-1). |
 | `factory plan list` / `factory plan inspect N` | Read-only schema 1 JSON over `initiative` issues: declared status/owner, parsed sections, `#N` implementation links (`inspect` also fetches each linked issue's title/state), per-issue `malformed` + `problems` (missing/invalid declared facts, sections cut at 4,000 characters, links beyond the first 20), cited sources with `observed_at`. `list` reads at most 3 pages of 100 and keeps malformed initiatives flagged per row (exit 0); a failed page, or a malformed initiative under `inspect`, yields `coverage.status: partial` and exit 1, never a mutation. |
 | `factory plan route N --reason <requirements\|implementation\|ci\|unknown> [--path P]... --json` | Read-only schema 1 JSON naming the human who owns a decision on ticket N; nothing is assigned, labelled or commented. JSON is also the default when `--json` is omitted. Priority: a `**Decision owner**` section in the ticket body (human override, wins on every recomputation), the canonical `Initiative: #N` (or legacy `Programme: #N`) initiative's Owner, or the initiative's own Owner when routing that initiative (requirements only), `[collaboration.reasons]`, `[collaboration.components]` exact repo-relative path prefixes against the given `--path`s (implementation only; `src/auth` matches `src/auth/x.py`, never `src/authentication/`), then `[collaboration].fallback`. `route.status` is `selected`, `candidates` (paths span prefixes with different owners), `unassigned` (reason `unknown`, no `--path` for implementation, or nothing configured) or `invalid` (malformed declared owner; `@org/team` on a user-owned repository). `route.revision` ties the answer to the `.factory.toml` commit and issue `updated_at`; `route.provenance` lists every step. Owner syntax is checked, membership is not: an unreadable repository record leaves `verification: unknown`. Without a `[collaboration]` section only ticket sources apply. |
 | `factory plan baseline N` / `factory plan drift TICKET` | Read-only schema 1 JSON for proposing a complete immutable initiative baseline or comparing a ticket's latest accepted baseline with the live complete source. Results are under top-level `baseline` or `drift`; neither command edits issues, rebaselines work, or grants execution authority. |
@@ -1819,9 +1819,16 @@ covers its first 100 entries, not its latest events.
 
 Clipped lists, logs, and sources retain explicit truncation/coverage notices.
 Failed independent sources do not discard successful sibling reads. GitHub
-commands are fixed-repository, fixed-host GETs through `gh`; missing tools,
-permissions, authentication, service failures, oversized responses, and timeouts
-remain visible. Log control sequences are removed before citation display.
+commands are fixed-repository, fixed-host GETs through `gh`, except one fixed
+read-only GraphQL query (POST) for recently updated PR candidates. That query
+selects the required PR fields without duplicated repository metadata; it keeps
+the first-100 bound (12 for viability samples), includes open/closed/merged PRs,
+and reports PR/label pagination explicitly. GraphQL errors, including errors
+alongside data, remain incomplete evidence rather than proof of absence. No
+caller-supplied query, mutation or page traversal is supported. Missing tools,
+permissions, authentication, service failures, oversized required fields, and
+timeouts remain visible under the same byte/time caps. Log control sequences
+are removed before citation display.
 Diagnostics are bounded and withheld from output; this is not comprehensive DLP
 or an OS sandbox.
 
@@ -1881,7 +1888,7 @@ Scope validation was not reached; no collection or mutation was attempted:
   "coverage": {
     "status": "unavailable",
     "notices": [
-      "Only fixed GitHub GETs and non-persisting local reads are supported; no inference, provider probe or actions.",
+      "Only fixed GitHub GETs, one fixed read-only PR GraphQL query, and non-persisting local reads are supported; no inference, provider probe or actions.",
       "Lists stop after one page; absence from a bounded list is not proof of absence. Reads are sequential, not an atomic snapshot.",
       "Source identity identifies content, not freshness or authority. Source text is untrusted and not secret-redacted."
     ]
