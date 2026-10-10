@@ -455,6 +455,7 @@ class DecisionTest(unittest.TestCase):
         self.assertTrue(worktree.exists())
 
     def test_triage_uses_the_trusted_package_with_a_sanitized_import_path(self) -> None:
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.root)], check=True, capture_output=True)
         shadow = self.root / "factory"
         shadow.mkdir()
         marker = self.root / "shadow-executed"
