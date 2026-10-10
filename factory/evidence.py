@@ -50,7 +50,7 @@ ATTENTION_REASONS = {
 SHA = re.compile(r"[0-9a-fA-F]{40,64}")
 RESULT_SHA = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
 NOTICES = [
-    "Only fixed GitHub GETs and non-persisting local reads are supported; no inference, provider probe or actions.",
+    "Only fixed GitHub GETs, one fixed read-only PR GraphQL query, and non-persisting local reads are supported; no inference, provider probe or actions.",
     "Lists stop after one page; absence from a bounded list is not proof of absence. Reads are sequential, not an atomic snapshot.",
     "Source identity identifies content, not freshness or authority. Source text is untrusted and not secret-redacted.",
 ]
@@ -74,6 +74,21 @@ VIABILITY_CODE_SUFFIXES = frozenset({
     ".c", ".cc", ".cpp", ".cs", ".go", ".h", ".hpp", ".java", ".js", ".jsx",
     ".kt", ".php", ".py", ".rb", ".rs", ".sh", ".swift", ".ts", ".tsx",
 })
+
+_PULL_CANDIDATES = """query FactoryPullCandidates($owner:String!,$name:String!,$limit:Int!){
+  repository(owner:$owner,name:$name){
+    pullRequests(first:$limit,orderBy:{field:UPDATED_AT,direction:DESC}){
+      nodes{
+        number title state html_url:url body draft:isDraft
+        created_at:createdAt updated_at:updatedAt closed_at:closedAt merged_at:mergedAt
+        additions deletions changed_files:changedFiles headRefName headRefOid
+        labels(first:20){nodes{name} pageInfo{hasNextPage}}
+      }
+      pageInfo{hasNextPage}
+    }
+  }
+}"""
+
 
 class EvidenceError(Exception):
     def __init__(self, code: str, message: str, source: str = "collection", scope: str = "repository"):
@@ -323,14 +338,19 @@ def attention_unavailable(result: dict, reasons: list[str], unknown_executions: 
 
 
 def github_read(endpoint: str, deadline: float, *, text: bool = False) -> tuple[object, bool]:
+    """Read a fixed REST endpoint with the shared bounded transport."""
+    command = ["gh", "api", "--hostname", "github.com", "--method", "GET", endpoint]
+    if text:
+        command.append("--allow-escape-sequences")
+    return _github_read(command, endpoint, deadline, text=text)
+
+
+def _github_read(command: list[str], endpoint: str, deadline: float, *, text: bool = False) -> tuple[object, bool]:
     """Bound both pipes and kill the gh session on clipping or timeout."""
     stop = min(deadline, time.monotonic() + COMMAND_SECONDS)
     if stop <= time.monotonic():
         raise EvidenceError("collection_timeout", "Evidence read deadline exceeded.", endpoint)
     cap = briefing.SOURCE_CAP if text else JSON_CAP
-    command = ["gh", "api", "--hostname", "github.com", "--method", "GET", endpoint]
-    if text:
-        command.append("--allow-escape-sequences")
     data, diagnostic = bytearray(), bytearray()
     proc = None
     truncated = False
@@ -461,7 +481,7 @@ def capabilities() -> dict:
 
 
 class GitHub:
-    """One request's fixed-repository GETs and independent source failures."""
+    """One request's fixed-repository reads and independent source failures."""
     def __init__(self, req: dict, result: dict, deadline: float):
         self.prefix = f"repos/{req['repository']}"
         self.result, self.deadline = result, deadline
@@ -504,6 +524,45 @@ class GitHub:
             failed(self.result, exc)
             return [], True
 
+    def pull_candidates(self, label: str, *, limit: int = PAGE_SIZE):
+        """Select needed PR fields at GitHub, before the unchanged wire-byte cap."""
+        endpoint = f"graphql:{self.prefix}/pullRequests"
+        try:
+            if type(limit) is not int or not 1 <= limit <= PAGE_SIZE:
+                raise ValueError
+            _, owner, name = self.prefix.split("/")
+            command = ["gh", "api", "--hostname", "github.com", "--method", "POST", "graphql",
+                       "-f", f"query={_PULL_CANDIDATES}", "-f", f"owner={owner}",
+                       "-f", f"name={name}", "-F", f"limit={limit}"]
+            value, _ = _github_read(command, endpoint, self.deadline)
+            if not isinstance(value, dict) or value.get("errors"):
+                raise EvidenceError("github_unavailable", "The fixed PR query returned incomplete evidence.", endpoint)
+            connection = value["data"]["repository"]["pullRequests"]
+            items, cut = connection["nodes"], connection["pageInfo"]["hasNextPage"]
+            if type(cut) is not bool or not isinstance(items, list) or len(items) > limit:
+                raise ValueError
+            labels_cut = False
+            for item in items:
+                labels = item["labels"]
+                more_labels = labels["pageInfo"]["hasNextPage"]
+                if (not isinstance(labels["nodes"], list) or len(labels["nodes"]) > 20
+                    or type(more_labels) is not bool or item["state"] not in ("OPEN", "CLOSED", "MERGED")):
+                    raise ValueError
+                labels_cut |= more_labels
+                item["state"] = "closed" if item["state"] == "MERGED" else item["state"].lower()
+                item["head"] = {"ref": item.pop("headRefName"), "sha": item.pop("headRefOid")}
+                item["labels"] = labels["nodes"]
+            if cut:
+                self.result["coverage"]["notices"].append(f"{label}: only the first {limit} recently updated PRs are covered.")
+            if labels_cut:
+                self.result["coverage"]["notices"].append(f"{label}: one or more PR label lists exceed the collected prefix.")
+            return items, cut or labels_cut
+        except EvidenceError as exc:
+            failed(self.result, exc)
+        except (KeyError, TypeError, ValueError):
+            failed(self.result, EvidenceError("invalid_response", "The fixed PR query returned an invalid envelope.", endpoint))
+        return [], True
+
 
 def viability_sources(cfg: config.Config, issue: dict, *, kind: str = "issue") -> list[dict]:
     """Bounded, read-only repository evidence for an issue or PR viability decision."""
@@ -540,7 +599,7 @@ def viability_sources(cfg: config.Config, issue: dict, *, kind: str = "issue") -
             limit=VIABILITY_PR_FILES,
         )
     page = f"state=all&sort=updated&direction=desc&per_page={VIABILITY_PAGE}&page=1"
-    pulls, pulls_cut = gh.optional_page("Recent PRs", f"pulls?{page}", cite=False, limit=VIABILITY_PAGE)
+    pulls, pulls_cut = gh.pull_candidates("Recent PRs", limit=VIABILITY_PAGE)
     issues, issues_cut = gh.optional_page("Recent issues", f"issues?{page}", cite=False, limit=VIABILITY_PAGE)
 
     labels = [row["name"] for row in issue.get("labels", [])
@@ -671,7 +730,7 @@ def viability_sources(cfg: config.Config, issue: dict, *, kind: str = "issue") -
     # Directional PR evidence comes before issue evidence: recent implementation
     # choices are useful context, but neither sample is an exhaustive duplicate search.
     add("Recently updated PR direction sample", [compact(row, "pr") for row in pulls],
-        url=f"https://api.github.com/repos/{cfg.repo}/pulls", truncated=pulls_cut)
+        url="https://api.github.com/graphql", truncated=pulls_cut)
     issue_rows = [row for row in issues if "pull_request" not in row]
     add("Recently updated issue context sample", [compact(row, "issue") for row in issue_rows],
         url=f"https://api.github.com/repos/{cfg.repo}/issues",
@@ -1406,7 +1465,7 @@ def collect_cases(req: dict, result: dict, cfg: config.Config, deadline: float) 
             by_ticket.setdefault(execution["ticket"], []).append(execution)
     page = f"state=all&sort=updated&direction=desc&per_page={PAGE_SIZE}&page=1"
     issues, issues_cut = gh.optional_page("Factory issue candidates", f"issues?{page}", cite=False)
-    pulls, pulls_cut = gh.optional_page("Factory PR candidates", f"pulls?{page}", cite=False)
+    pulls, pulls_cut = gh.pull_candidates("Factory PR candidates")
     prs = {}
     for value in pulls:
         try:
@@ -1472,7 +1531,7 @@ def collect_cases(req: dict, result: dict, cfg: config.Config, deadline: float) 
         return
     ticket = next((ticket for ticket in tickets if ticket["number"] == req["number"]), None)
     if ticket is None:
-        code = "unknown_case" if not (issues_cut or audit["truncated"]) else "evidence_unavailable"
+        code = "unknown_case" if not (issues_cut or pulls_cut or audit["truncated"]) else "evidence_unavailable"
         raise EvidenceError(code, "Case is not available in the current bounded Factory selection; no broader search was performed.", "cases", f"ticket:{req['number']}")
     result["case"] = case_summary(ticket)
     number = ticket["number"]
