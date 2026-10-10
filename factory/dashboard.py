@@ -1,12 +1,4 @@
-"""Local dashboard for the AI factory: activity, progress, history.
-
-    factory dashboard [--host 0.0.0.0] [--port 8765] [--no-open]
-
-Serves dashboard.html (loopback by default) plus a JSON snapshot
-assembled from one GitHub GraphQL call (issues, timelines, PRs, CI), the
-.factory/ state dir, git worktrees, systemd, and the journal. Human answers
-go through POST /api/act, which runs the same gh calls the dispatcher does.
-"""
+"""Passive Factory observations and the packaged outcome-control workspace."""
 
 from __future__ import annotations
 
@@ -23,10 +15,8 @@ import urllib.error
 import urllib.request
 import webbrowser
 from datetime import UTC, datetime
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
-from uuid import uuid4
+from urllib.parse import urlparse
 
 from factory import (
     __version__,
@@ -36,7 +26,8 @@ from factory import (
     dispatch,
     feedback,
     lifecycle,
-    settings,
+    runtime_events,
+    runtime_local,
     stats,
 )
 from factory.config import (
@@ -66,29 +57,7 @@ GPU_LOCK: Path
 LLM_URL: str
 LLM_MODEL: str
 GATE_CHECKS: list[str]
-lock_held = dispatch.lock_held
-ticket_lock = dispatch.ticket_lock
 
-TRIAGE = [sys.executable, "-m", "factory", "triage"]
-ACT_LABELS = {
-    LABEL_TRIAGE,
-    LABEL_INFO,
-    LABEL_AGENT,
-    LABEL_HUMAN,
-    "wontfix",
-    FACTORY_APPROVED,
-}
-CLOSE_REASONS = {"completed", "not planned"}
-
-HTML = Path(__file__).with_name("dashboard.html")
-ATLAS = Path(__file__).with_name("architecture.html")
-CODEBASE_HTML = Path(__file__).with_name("codebase.html")
-CHAT_HTML = Path(__file__).with_name("chat.html")
-BRIEFING_CSS = Path(__file__).with_name("briefing.css")
-MOTION = Path(__file__).with_name("motion.js")
-MOTION_LICENSE = Path(__file__).with_name("MOTION-LICENSE.txt")
-NEWSREADER = Path(__file__).with_name("fonts") / "Newsreader.ttf"
-NEWSREADER_LICENSE = Path(__file__).with_name("fonts") / "Newsreader-OFL.txt"
 FACTORY_LABELS = {
     LABEL_VIABILITY,
     LABEL_TRIAGE,
@@ -97,8 +66,6 @@ FACTORY_LABELS = {
     LABEL_HUMAN,
     "wontfix",
 }
-SNAPSHOT_TTL = 15  # seconds; /api/snapshot?fresh=1 bypasses
-FILE_CAP = 2_000_000  # bytes served per /api/file request
 AGENT_BRANCH = re.compile(r"agent/(\d+)$")
 ATTEMPT_LOG = re.compile(r"(\d+)-attempt-(\d+)\.log$")
 GATE_LINE = re.compile(r"^- ([\w-]+): (PASS|FAIL|SKIP)$", re.MULTILINE)
@@ -124,11 +91,6 @@ def configure(c: Config) -> None:
     LLM_MODEL = c.llm_model
     GATE_CHECKS = ["conflict-markers", *(k.name for k in c.checks), "leak-scan"]
 
-def _reload_config() -> None:
-    """Swap the dashboard's config object; existing requests keep their reference."""
-    configure(config.load(ROOT))
-    with _cache_lock:
-        _cache["at"] = 0.0
 
 
 
@@ -427,7 +389,14 @@ def worktree_state(wt: Path) -> dict | None:
     }
 
 
-def disk_state(n: int) -> dict:
+def canonical_path(path: Path) -> str:
+    try:
+        return str(path.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return str(path.absolute())
+
+
+def disk_state(n: int, lock_held: bool | None) -> dict:
     wt = FACTORY / f"wt-{n}"
     attempts = []
     for log in sorted(LOGS.glob(f"{n}-attempt-*.log")):
@@ -453,7 +422,7 @@ def disk_state(n: int) -> dict:
         review = {**meta, "verdict": m.group(1) if m else None, "text": text}
 
     return {
-        "lock_held": lock_held(ticket_lock(n)),
+        "lock_held": lock_held,
         "attempts": attempts,
         "gate": gate,
         "review": review,
@@ -473,9 +442,8 @@ def disk_ticket_numbers() -> set[int]:
     return numbers
 
 
-def spend_by_ticket(rows: list[dict] | None = None) -> dict[int, dict]:
-    """Per-ticket spend from events.jsonl `attempt` rows: seconds, dollars, rounds."""
-    rows = lifecycle.read_events(dispatch.EVENTS) if rows is None else rows
+def spend_by_ticket(rows: list[dict]) -> dict[int, dict]:
+    """Per-ticket spend from bounded `attempt` rows: seconds, dollars, rounds."""
     spend: dict[int, dict] = {}
     for row in rows:
         if (
@@ -610,49 +578,85 @@ def consecutive_failures(runs: list[dict]) -> int:
     return n
 
 
-def dispatcher(*, rows: list[dict] | None = None, handle=None) -> dict:
-    def active(unit: str) -> bool | None:
-        try:
-            proc = subprocess.run(
-                ["systemctl", "--user", "is-active", unit],
-                capture_output=True, text=True, check=False,
-            )
-        except OSError:
+def _timer_last() -> str | None:
+    """Return systemd's bounded LastTriggerUSec observation when available."""
+    try:
+        rows = json.loads(runtime_local._command("schedule", unit=cfg.unit))
+        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
             return None
-        status = proc.stdout.strip()
-        if status == "active" and proc.returncode == 0:
-            return True
-        if status in {"inactive", "failed"} and proc.returncode == 3:
-            return False
+        matches = [row for row in rows if row.get("unit") == f"{cfg.unit}.timer"]
+        if len(matches) != 1:
+            return None
+        value = matches[0].get("last")
+        if type(value) is not int or value in (0, 2**64 - 1) or value < 0:
+            return None
+        return iso(value / 1e6)
+    except (runtime_local._Unavailable, ValueError, TypeError, OverflowError, OSError):
         return None
 
-    timer = {"next": None, "last": None}
-    try:
-        raw = sh(
-            ["systemctl", "--user", "list-timers", f"{cfg.unit}.timer", "--output=json"]
-        )
-        timers = json.loads(raw) if raw else []
-        if isinstance(timers, list) and timers and isinstance(timers[0], dict):
-            timer.update(
-                next=iso(timers[0]["next"] / 1e6) if timers[0].get("next") else None,
-                last=iso(timers[0]["last"] / 1e6) if timers[0].get("last") else None,
-            )
-    except (OSError, ValueError, TypeError, KeyError, IndexError, OverflowError):
-        pass
-    timer["active"] = active(f"{cfg.unit}.timer")
-    service_active = active(f"{cfg.unit}.service")
-    schedule = lifecycle.observe_schedule(
-        dispatch.EVENTS, next_at=timer["next"], timer_active=timer["active"],
-        service_active=service_active, observed_at=lifecycle._now(),
-        rows=rows, handle=handle,
+
+def dispatcher(runtime: dict) -> dict:
+    state, errors = runtime_local.dispatcher(
+        cfg, runtime.get("executions", []), runtime.get("history", {}),
     )
+    wait = (
+        {
+            "reason": "scheduled_next_pass",
+            "mode": "retry_next_pass",
+            "resource": None,
+            "details": {"next_at": state["next_at"]},
+        }
+        if state["timer_active"] is True
+        and state["service_active"] is False
+        and state["next_at"] is not None
+        else None
+    )
+    previous = next(
+        (row for row in reversed(runtime.get("events", []))
+         if row.get("kind") == "scheduling_observation"),
+        None,
+    )
+    matching = (
+        previous is not None
+        and previous.get("timer_active") is state["timer_active"]
+        and previous.get("service_active") is state["service_active"]
+        and (previous.get("wait") is None) == (wait is None)
+    )
+    if matching and wait is not None:
+        try:
+            matching = (
+                previous["wait"].get("reason") == wait["reason"]
+                and previous["wait"].get("mode") == wait["mode"]
+                and datetime.fromisoformat(previous["wait"]["details"]["next_at"])
+                == datetime.fromisoformat(wait["details"]["next_at"])
+            )
+        except (KeyError, TypeError, ValueError, OverflowError):
+            matching = False
+    schedule = {
+        "wait": wait,
+        "timer_active": state["timer_active"],
+        "service_active": state["service_active"],
+        "event_id": previous.get("event_id") if matching else None,
+        "at": previous.get("at") if matching else None,
+        "observed_at": state["observed_at"],
+        "observation": state["observation"],
+    }
     runs = journal_runs()
     return {
-        "timer": timer,
-        "service_active": service_active,
+        "timer": {
+            "next": state["next_at"],
+            "last": _timer_last(),
+            "active": state["timer_active"],
+        },
+        "service_active": state["service_active"],
         "schedule": schedule,
         "consecutive_failures": consecutive_failures(runs),
         "runs": runs,
+        "observation": state["observation"],
+        "observed_at": state["observed_at"],
+        "capacity": state["capacity"],
+        "run_ids": state["run_ids"],
+        "errors": errors,
     }
 
 
@@ -888,11 +892,92 @@ RECENT_EXECUTIONS = 200
 
 
 def recent_executions(executions: list[dict]) -> list[dict]:
-    """Every open execution plus the newest closed ones, without raw event rows."""
+    """Every observed open execution plus the newest observed closed ones."""
     open_ = [e for e in executions if e.get("ended_at") is None]
     closed = sorted((e for e in executions if e.get("ended_at") is not None),
                     key=lambda e: e["ended_at"])[-RECENT_EXECUTIONS:]
     return [{k: v for k, v in e.items() if k != "events"} for e in open_ + closed]
+
+
+DASHBOARD_EVENT_READ_CAP = runtime_events.BYTE_LIMIT
+DASHBOARD_EVENT_ROW_CAP = runtime_events.ROW_LIMIT
+
+
+def bounded_journal_rows() -> tuple[list[dict], dict]:
+    """Read only committed rows from a bounded live-journal window, without flock."""
+    path = FACTORY / "events.jsonl"
+    unavailable = {
+        "source": "events.jsonl",
+        "scope": "retained_live_journal",
+        "status": "unavailable",
+        "complete": False,
+        "window_complete": False,
+        "truncated": False,
+        "rows_returned": 0,
+        "byte_limit": DASHBOARD_EVENT_READ_CAP,
+        "row_limit": DASHBOARD_EVENT_ROW_CAP,
+        "gaps": ["unavailable"],
+    }
+    try:
+        before = path.stat()
+        archived = path.with_name(f"{path.name}.1.gz").exists()
+        entry = briefing.bounded_file(
+            FACTORY, "events.jsonl", DASHBOARD_EVENT_READ_CAP, tail=True,
+        )
+        after = path.stat()
+    except OSError:
+        return [], unavailable
+    if entry is None:
+        return [], unavailable
+
+    text, clipped = entry
+    gaps = []
+    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+        after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns
+    ):
+        gaps.append("changed_during_read")
+    if archived:
+        gaps.append("rotated_history")
+    lines = text.split("\n")
+    if lines.pop():
+        gaps.append("unterminated_tail")
+    if clipped:
+        gaps.append("byte_limit")
+        if lines:
+            lines.pop(0)  # The byte before this bounded tail was not observed.
+    rows = []
+    for line in lines:
+        if not line:
+            continue
+        if "\ufffd" in line:
+            gaps.append("invalid_utf8")
+            continue
+        if len(line.encode()) > DASHBOARD_EVENT_ROW_CAP:
+            gaps.append("row_limit")
+            continue
+        try:
+            row = json.loads(line)
+        except (ValueError, RecursionError):
+            gaps.append("invalid_json")
+            continue
+        if not isinstance(row, dict):
+            gaps.append("invalid_record")
+            continue
+        rows.append(row)
+    gaps = list(dict.fromkeys(gaps))
+    return rows, {
+        "source": "events.jsonl",
+        "scope": "retained_live_journal",
+        "status": "partial" if gaps else "bounded",
+        # This may cover the entire current live file, never rotated/lifetime history.
+        "complete": False,
+        "window_complete": not gaps,
+        "truncated": clipped or archived,
+        "rows_returned": len(rows),
+        "byte_limit": DASHBOARD_EVENT_READ_CAP,
+        "row_limit": DASHBOARD_EVENT_ROW_CAP,
+        "gaps": gaps,
+    }
 
 
 def snapshot() -> dict:
@@ -924,20 +1009,37 @@ def snapshot() -> dict:
         errors.append(f"github: {exc}")
 
     on_disk = disk_ticket_numbers()
+    locks = FACTORY / "locks"
+    ticket_lock_paths = {
+        locks / f"{issue['number']}.lock"
+        for issue in issues
+        if type(issue.get("number")) is int
+    }
+    ticket_lock_paths.update(
+        path for path in locks.glob("*.lock") if path.stem.isdecimal()
+    )
     resource_paths = [
-        (GPU_LOCK, "host"), (FACTORY / "locks" / "merge.lock", "repository"),
-        *((path, "repository") for path in (FACTORY / "locks").glob("*.lock")
-          if path.stem.isdecimal()),
+        (GPU_LOCK, "host"), (locks / "merge.lock", "repository"),
+        *((path, "repository") for path in sorted(ticket_lock_paths, key=str)),
     ]
-    with lifecycle.journal_snapshot(dispatch.EVENTS) as (rows, handle):
-        audit = stats.audit_by_ticket(FACTORY / "events.jsonl", rows)
-        spend = spend_by_ticket(rows)
-        dispatcher_state = dispatcher(rows=rows, handle=handle)
-        executions = lifecycle.observe(dispatch.EVENTS, rows=rows, handle=handle)
-        resources = lifecycle.resources(
-            dispatch.EVENTS, paths=resource_paths, rows=rows, handle=handle,
-        )
-    tickets = []
+    runtime = runtime_events.project(dispatch.EVENTS, resource_paths)
+    rows, legacy_coverage = bounded_journal_rows()
+    audit = stats.audit_by_ticket(FACTORY / "events.jsonl", rows)
+    spend = spend_by_ticket(rows)
+    dispatcher_state = dispatcher(runtime)
+    execution_events: dict[str, list[dict]] = {}
+    for event in runtime["events"]:
+        if event.get("execution_id"):
+            execution_events.setdefault(event["execution_id"], []).append(event)
+    executions = [
+        {**execution, "events": execution_events.get(execution["execution_id"], [])}
+        for execution in runtime["executions"]
+    ]
+    resources = runtime["resources"]
+    lock_states = {
+        row["resource"]["lock"]["path"]: {"held": True, "free": False}.get(row["state"])
+        for row in resources
+    }
     by_ticket: dict[int, list[dict]] = {}
     for execution in executions:
         if execution["ticket"] is not None:
@@ -990,6 +1092,7 @@ def snapshot() -> dict:
     for n, raw in raw_prs.items():
         if raw["number"] in merged & _corrections.keys():
             prs[n]["corrections"] = feedback.corrections(_corrections[raw["number"]], login, cutover)
+    tickets = []
     for issue in issues:
         n = issue["number"]
         if not selected_issue(issue, prs, on_disk, by_ticket, audit):
@@ -1008,10 +1111,32 @@ def snapshot() -> dict:
                 producer_revision=revision, collect_details=raw.get("state") == "OPEN",
             )
         tickets.append(build_ticket(
-            issue, prs.get(n), disk_state(n), spend.get(n), by_ticket.get(n), audit=audit.get(n),
-            login=login, cutover=cutover,
+            issue, prs.get(n),
+            disk_state(n, lock_states.get(canonical_path(locks / f"{n}.lock"))),
+            spend.get(n), by_ticket.get(n), audit=audit.get(n), login=login, cutover=cutover,
         ))
     tickets.sort(key=lambda t: t["number"], reverse=True)
+
+    bounded_executions = recent_executions(executions)
+    retained_count_coverage = {
+        "status": legacy_coverage["status"],
+        "scope": legacy_coverage["scope"],
+        "complete": False,
+    }
+    runtime_history = {
+        **runtime["history"],
+        "scope": "retained_live_journal",
+        "window_complete": runtime["history"].get("complete") is True,
+        "complete": False,
+        "errors": runtime["errors"],
+    }
+    runtime_status = (
+        "unavailable"
+        if runtime["history"].get("status") in {"missing", "unreadable"}
+        else "partial"
+        if not runtime_history["window_complete"] or len(bounded_executions) < len(executions)
+        else "bounded"
+    )
 
     return {
         "generated_at": iso(time.time()),
@@ -1020,6 +1145,23 @@ def snapshot() -> dict:
         "repo": REPO,
         "root": str(ROOT),
         "errors": errors,
+        "coverage": {
+            "legacy": legacy_coverage,
+            "runtime": runtime_history,
+            "counts": {
+                name: dict(retained_count_coverage)
+                for name in ("spend", "worker_metrics", "ticket_audit", "review_queue_history")
+            } | {
+                "executions": {
+                    "status": runtime_status,
+                    "scope": "retained_live_journal",
+                    "complete": False,
+                    "observed": len(executions),
+                    "returned": len(bounded_executions),
+                    "closed_limit": RECENT_EXECUTIONS,
+                },
+            },
+        },
         "config": {
             "name": cfg.name,
             "unit": cfg.unit,
@@ -1054,8 +1196,9 @@ def snapshot() -> dict:
             },
             "state_dir": str(FACTORY),
         },
-        "gpu_lock_held": lock_held(GPU_LOCK),
-        "active": sum(1 for t in tickets if t["lock_held"]),
+        "gpu_lock_held": lock_states.get(canonical_path(GPU_LOCK)),
+        "active": (None if any(t["lock_held"] is None for t in tickets)
+                   else sum(t["lock_held"] is True for t in tickets)),
         "spend": {
             "seconds": sum(s["seconds"] for s in spend.values()),
             "cost": round(sum(s["cost"] for s in spend.values() if s["cost"] is not None), 2)
@@ -1066,7 +1209,7 @@ def snapshot() -> dict:
         "upstream": upstream_state(gh_upstream, issues),
         "metrics": metrics(tickets),
         "workers": stats.worker_metrics(audit, cfg.workers),
-        "executions": recent_executions(executions),
+        "executions": bounded_executions,
         "resources": resources,
         "tickets": tickets,
         "review_queue": review_queue(review_prs, rows, viewer),
@@ -1075,27 +1218,9 @@ def snapshot() -> dict:
 
 # ---------------------------------------------------------------- server
 
-_cache: dict = {"at": 0.0, "data": None}
-_cache_lock = threading.Lock()
 _corrections: dict[int, list[dict]] = {}  # merged PR number -> feedback.correction_actions
 
 
-def cached_snapshot(fresh: bool) -> dict:
-    with _cache_lock:
-        if fresh or _cache["data"] is None or time.time() - _cache["at"] > SNAPSHOT_TTL:
-            _cache["data"] = snapshot()
-            _cache["at"] = time.time()
-        return _cache["data"]
-
-
-def cached_roadmap(fresh: bool) -> dict:
-    from factory import roadmap
-
-    with _cache_lock:
-        if fresh or "roadmap" not in _cache or time.time() - _cache["roadmap_at"] > SNAPSHOT_TTL:
-            _cache["roadmap"] = roadmap.collect(cfg)
-            _cache["roadmap_at"] = time.time()
-        return _cache["roadmap"]
 
 
 class CodebaseMonitor:
@@ -1132,243 +1257,23 @@ class CodebaseMonitor:
 codebase_monitor: CodebaseMonitor | None = None
 
 
-# ---------------------------------------------------------------- actions
-
-
-def step(steps: list[dict], cmd: list[str], cwd: Path | None = None) -> bool:
-    try:
-        proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False, timeout=120)
-        ok, output = proc.returncode == 0, (proc.stdout + proc.stderr).strip()[-4000:]
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        ok, output = False, str(exc)
-    steps.append({"cmd": " ".join(cmd[:4]) + (" …" if len(cmd) > 4 else ""), "ok": ok, "output": output})
-    return ok
-
-
-def labels_arg(req: dict, key: str) -> list[str]:
-    labels = req.get(key, [])
-    if not isinstance(labels, list) or not all(isinstance(label, str) and label in ACT_LABELS for label in labels):
-        raise ValueError(f"{key}: labels must be a subset of {sorted(ACT_LABELS)}")
-    return labels
-
-
-def act(req: dict) -> dict:
-    """Apply exactly one human action, stopping at the first failed step."""
-    if not isinstance(req, dict):
-        raise ValueError("request must be a JSON object")  # noqa: TRY004 — invalid-request API
-    op, number = req.get("op"), req.get("number")
-    if type(number) is not int or not 0 < number < 2**31:
-        raise ValueError("number: positive int required")
-    comment = req.get("comment", "")
-    if not isinstance(comment, str) or len(comment) > 20000 or "\x00" in comment:
-        raise ValueError("comment: string ≤ 20000 chars, without NUL")
-    commands: list[list[str]] = []
-    if op in ("issue", "pr"):
-        add, remove = labels_arg(req, "add"), labels_arg(req, "remove")
-        close = req.get("close")
-        if close is not None and (op != "issue" or not isinstance(close, str) or close not in CLOSE_REASONS):
-            raise ValueError(f"close: issue only, one of {sorted(CLOSE_REASONS)}")
-        for flag in ("assign", "unassign"):
-            if flag in req and type(req[flag]) is not bool:
-                raise ValueError(f"{flag}: boolean required")
-        if comment.strip():
-            commands.append(["gh", op, "comment", str(number), "--repo", REPO, "--body", comment])
-        edit = []
-        for label in add:
-            edit += ["--add-label", label]
-        for label in remove:
-            edit += ["--remove-label", label]
-        if op == "issue" and req.get("unassign"):
-            edit += ["--remove-assignee", "@me"]
-        if op == "issue" and req.get("assign"):
-            edit += ["--add-assignee", "@me"]
-        if edit:
-            commands.append(["gh", op, "edit", str(number), "--repo", REPO, *edit])
-        if close:
-            commands.append(["gh", "issue", "close", str(number), "--repo", REPO, "--reason", close])
-        if not commands:
-            raise ValueError("action has no comment, label, assignment or close change")
-    elif op == "triage":
-        commands.append([*TRIAGE, "--issue", str(number)])
-    elif op == "cleanup":
-        if lock_held(ticket_lock(number)):
-            raise ValueError(f"#{number} is in flight; not removing its worktree")
-    else:
-        raise ValueError(f"op: unknown {op!r}")
-
-    decision_id = uuid4().hex
-    fields = {"decision_id": decision_id, "op": op, "request": req}
-    fields["pr" if op == "pr" else "ticket"] = number
-    # Record intent before touching GitHub. An unwritable audit trail fails closed.
-    dispatch.record("human-decision", status="started", **fields)
-    steps: list[dict] = []
-    try:
-        if op == "cleanup":
-            wt = FACTORY / f"wt-{number}"
-            if not wt.is_dir() or step(steps, ["git", "worktree", "remove", "--force", str(wt)], cwd=ROOT):
-                branch = subprocess.run(["git", "branch", "--list", f"agent/{number}"], cwd=ROOT, capture_output=True, text=True, check=True, timeout=30)
-                if not branch.stdout.strip() or step(steps, ["git", "branch", "-D", f"agent/{number}"], cwd=ROOT):
-                    ticket_lock(number).unlink(missing_ok=True)
-                    steps.append({"cmd": f"remove ticket lock #{number}", "ok": True, "output": ""})
-        else:
-            for command in commands:
-                if not step(steps, command, cwd=ROOT if op == "triage" else None):
-                    break
-    except Exception as exc:  # noqa: BLE001 — return partial action results to the operator
-        steps.append({"cmd": str(op), "ok": False, "output": str(exc)})
-    status = "success" if steps and all(s["ok"] for s in steps) else "partial" if any(s["ok"] for s in steps) or op == "cleanup" else "failure"
-    result = {"ok": status == "success", "status": status, "decision_id": decision_id, "steps": steps}
-    if not result["ok"]:
-        result["error"] = f"Decision {status}: " + (steps[-1]["output"] or "command failed; inspect the recorded steps before retrying")
-    try:
-        dispatch.record("human-decision", status=status, steps=steps, **fields)
-    except OSError as exc:
-        result.update(ok=False, status="partial" if any(s["ok"] for s in steps) else "failure", error=f"Could not record final decision outcome: {exc}. Inspect the completed steps before retrying.")
-    with _cache_lock:
-        _cache["at"] = 0.0  # next snapshot re-reads GitHub
-    return result
-
-
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:
-        url = urlparse(self.path)
-        query = parse_qs(url.query)
-        if url.path == "/":
-            self._send(200, "text/html; charset=utf-8", HTML.read_bytes())
-        elif url.path == "/theme.css":
-            self._send(200, "text/css", cfg.dashboard_theme.read_bytes() if cfg.dashboard_theme else b"")
-        elif url.path in ("/themes.css", "/navigation.css", "/theme-picker.js"):
-            content_type = "text/javascript" if url.path.endswith(".js") else "text/css"
-            content = Path(__file__).with_name(url.path[1:]).read_bytes()
-            if url.path == "/theme-picker.js":
-                default_theme = "repository" if cfg.dashboard_theme else "cyberpunk"
-                content = (
-                    f'document.documentElement.dataset.defaultTheme = "{default_theme}";\n'.encode()
-                    + content
-                )
-            self._send(200, content_type + "; charset=utf-8", content)
-        elif url.path == "/briefing.css":
-            self._send(200, "text/css; charset=utf-8", BRIEFING_CSS.read_bytes())
-        elif url.path == "/fonts/Newsreader.ttf":
-            self._send(200, "font/ttf", NEWSREADER.read_bytes())
-        elif url.path == "/fonts/Newsreader-OFL.txt":
-            self._send(200, "text/plain; charset=utf-8", NEWSREADER_LICENSE.read_bytes())
-        elif url.path == "/atlas":
-            self._send(200, "text/html; charset=utf-8", ATLAS.read_bytes())
-        elif url.path == "/codebase":
-            self._send(200, "text/html; charset=utf-8", CODEBASE_HTML.read_bytes())
-        elif url.path == "/chat":
-            self._send(200, "text/html; charset=utf-8", CHAT_HTML.read_bytes())
-        elif url.path == "/motion.js":
-            self._send(200, "text/javascript; charset=utf-8", MOTION.read_bytes())
-        elif url.path == "/MOTION-LICENSE.txt":
-            self._send(200, "text/plain; charset=utf-8", MOTION_LICENSE.read_bytes())
-        elif url.path == "/api/codebase":
-            state = codebase_monitor.state if codebase_monitor else {
-                "status": "error", "error": "Codebase monitor is not running", "data": None,
-            }
-            self._send(200, "application/json", json.dumps(state).encode())
-        elif url.path == "/api/settings":
-            self._send(200, "application/json", json.dumps(settings.snapshot(ROOT)).encode())
-        elif url.path == "/api/roadmap":
-            values = parse_qs(url.query, keep_blank_values=True).get("initiative", [])
-            if len(values) > 1 or (values and not re.fullmatch(r"[1-9][0-9]{0,8}", values[0])):
-                self._send(
-                    400,
-                    "application/json",
-                    b'{"ok":false,"error":"initiative must be one positive integer"}',
-                )
-                return
-            number = int(values[0]) if values else None
-            from factory import roadmap
-
-            data = roadmap.collect(cfg, number) if number is not None else cached_roadmap("fresh" in query)
-            self._send(200, "application/json", json.dumps(data).encode())
-        elif url.path == "/api/snapshot":
-            data = cached_snapshot("fresh" in query)
-            self._send(200, "application/json", json.dumps(data).encode())
-        elif url.path == "/api/file":
-            self._file(query.get("path", [""])[0])
-        else:
-            self.send_error(404)
-
-    def do_POST(self) -> None:
-        route = urlparse(self.path).path
-        if route not in ("/api/act", "/api/briefing", "/api/ask", "/api/settings"):
-            self._send(404, "application/json", b'{"ok":false,"error":"Unknown API route"}')
-            return
-        # A custom header forces a CORS preflight we never answer. Check Origin
-        # as well so a cross-origin request cannot drive authenticated actions.
-        origin = self.headers.get("Origin")
-        if self.headers.get("X-Factory-Act") != "1" or (origin and urlparse(origin).netloc != self.headers.get("Host")):
-            self._send(403, "application/json", b'{"ok":false,"error":"Same-origin X-Factory-Act: 1 required"}')
-            return
-        try:
-            if self.headers.get("Transfer-Encoding"):
-                raise ValueError("Transfer-Encoding is not supported; send Content-Length")
-            length = int(self.headers.get("Content-Length") or 0)
-            if not 0 < length <= briefing.REQUEST_CAP:
-                raise ValueError(f"request body must be 1–{briefing.REQUEST_CAP} bytes")
-            if self.headers.get_content_type() != "application/json":
-                raise ValueError("Content-Type: application/json required")
-            self.connection.settimeout(15)
-            body = self.rfile.read(length)
-            if len(body) != length:
-                raise ValueError("incomplete request body")
-            req = json.loads(body)
-            if route == "/api/act":
-                result = act(req)
-            elif route == "/api/settings":
-                result = settings.save(ROOT, req)
-                if result.get("ok"):
-                    _reload_config()
-            else:
-                asking = route == "/api/ask"
-                briefing.validate_request(req, asking)
-                result = briefing.respond(cfg, cached_snapshot(False), req, asking)
-        except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
-            result = {"ok": False, "error": str(exc)}
-            if route == "/api/act":
-                result["steps"] = []
-        except Exception as exc:  # noqa: BLE001 — preserve the HTTP error-response boundary
-            result = {"ok": False, "error": f"Dashboard request failed ({type(exc).__name__}): {exc}"}
-        self._send(200, "application/json", json.dumps(result).encode())
-
-    def _file(self, rel: str) -> None:
-        root = FACTORY.resolve()
-        path = (root / rel).resolve()
-        if not rel or not path.is_relative_to(root) or not path.is_file():
-            self.send_error(404)
-            return
-        data = path.read_bytes()
-        if len(data) > FILE_CAP:
-            data = b"[... truncated ...]\n" + data[-FILE_CAP:]
-        self._send(200, "text/plain; charset=utf-8", data)
-
-    def _send(self, status: int, ctype: str, body: bytes) -> None:
-        self.send_response(status)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, *args: object) -> None:
-        pass
 
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
-        prog="factory dashboard", description="Local AI-factory dashboard"
+        prog="factory dashboard", description="Factory outcome-control workspace"
     )
     parser.add_argument(
         "--port", type=int, default=None, help="default: [dashboard].port or 8765"
     )
     parser.add_argument(
         "--host",
-        default="127.0.0.1",
-        help="bind address; 0.0.0.0 exposes the dashboard and mutating APIs "
-        "(GitHub actions with your gh credentials and local settings writes) to the whole network",
+        default="0.0.0.0",
+        help="bind address (default: 0.0.0.0); APIs require the workspace access key",
+    )
+    parser.add_argument(
+        "--allowed-host", action="append", default=[],
+        help="additional trusted HTTP Host name or IP (repeatable)",
     )
     parser.add_argument("--no-open", action="store_true", help="do not open a browser")
     output = parser.add_mutually_exclusive_group()
@@ -1390,10 +1295,9 @@ def main(argv: list[str]) -> int:
         parser.error("--codebase-limit must be positive")
     if args.runtime_json:
         if any(arg == "--no-open" or arg.split("=")[0] in {
-            "--host", "--port", "--codebase-ref", "--codebase-limit"
+            "--host", "--port", "--codebase-ref", "--codebase-limit", "--allowed-host"
         } for arg in argv):
             parser.error("--runtime-json cannot be combined with server options")
-        from factory import runtime_events, runtime_local
 
         runtime_cfg = runtime_local.load()
         data = runtime_events.project(
@@ -1422,15 +1326,27 @@ def main(argv: list[str]) -> int:
         print(json.dumps(snapshot(), indent=2))
         return 0
 
-    try:
-        server = ThreadingHTTPServer((args.host, port), Handler)
-    except OSError as exc:
-        reason = "is in use" if exc.errno == errno.EADDRINUSE else (exc.strerror or str(exc))
-        print(dashboard_port_error(cfg, args.host, port, reason), file=sys.stderr)
-        return 1
+    from factory.workspace import Handler, Server, Workspace
+
     global codebase_monitor
     codebase_monitor = CodebaseMonitor(cfg, args.codebase_ref, args.codebase_limit)
-    threading.Thread(target=codebase_monitor.run, name="factory-codebase", daemon=True).start()
+    try:
+        workspace = Workspace(cfg, codebase_monitor=codebase_monitor)
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"factory dashboard: could not initialize workspace ({type(exc).__name__})",
+              file=sys.stderr)
+        return 1
+    try:
+        server = Server((args.host, port), Handler, workspace,
+                        allowed_hosts=tuple(args.allowed_host))
+    except (OSError, ValueError) as exc:
+        workspace.close()
+        reason = "is in use" if getattr(exc, "errno", None) == errno.EADDRINUSE else str(exc)
+        print(dashboard_port_error(cfg, args.host, port, reason), file=sys.stderr)
+        return 1
+    port = server.server_address[1]
+    if workspace.repository_config(cfg.repo).root.resolve() == cfg.root.resolve():
+        threading.Thread(target=codebase_monitor.run, name="factory-codebase", daemon=True).start()
     url = f"http://127.0.0.1:{port}/"
     print(
         f"factory dashboard: listening on {args.host}:{port}  "

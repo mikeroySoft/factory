@@ -341,7 +341,7 @@ class SettingsTest(unittest.TestCase):
 class SettingsHTTPTest(unittest.TestCase):
 
     def test_malformed_repo_and_host_toml_return_safe_error_envelopes(self) -> None:
-        from factory import dashboard
+        from factory.workspace import Handler, Server, Workspace
 
         cases = (
             ("repo", '[dispatch\nsentinel = "REPO_SENTINEL"\n', "REPO_SENTINEL"),
@@ -354,20 +354,21 @@ class SettingsHTTPTest(unittest.TestCase):
                 case_parent.mkdir()
                 with isolated_xdg(case_parent) as xdg:
                     repo = make_repo(case_parent, "[dispatch]\nmax_active = 2\n")
-                    dashboard.configure(config.load(repo))
+                    workspace = Workspace(config.load(repo))
                     if kind == "repo":
                         path = repo / config.CONFIG_NAME
                         path.write_text(malformed)
                     else:
                         path = write_host(xdg, malformed)
                     before = path.read_bytes()
-                    server = dashboard.ThreadingHTTPServer(("127.0.0.1", 0), dashboard.Handler)
+                    server = Server(("127.0.0.1", 0), Handler, workspace)
                     thread = threading.Thread(target=server.serve_forever, daemon=True)
                     thread.start()
                     try:
                         connection = http.client.HTTPConnection(*server.server_address)
                         try:
-                            connection.request("GET", "/api/settings")
+                            connection.request("GET", "/api/settings?repository=acme%2Fwidgets",
+                                               headers={"X-Factory-Access": workspace.access_key})
                             response = connection.getresponse()
                             result = json.loads(response.read())
                         finally:
@@ -384,15 +385,15 @@ class SettingsHTTPTest(unittest.TestCase):
                     self.assertEqual(path.read_bytes(), before)
 
     def test_concurrent_authorized_saves_share_one_revision(self) -> None:
-        from factory import dashboard
+        from factory.workspace import Handler, Server, Workspace
 
         toml = '[dispatch]\nmax_active = 2\n[unrelated]\nvalue = "preserve me"\n'
         with tempfile.TemporaryDirectory() as directory, isolated_xdg(Path(directory)):
             repo = make_repo(Path(directory), toml)
-            dashboard.configure(config.load(repo))
+            workspace = Workspace(config.load(repo))
             revision = snapshot(repo)["revision"]
             barrier = threading.Barrier(2)
-            server = dashboard.ThreadingHTTPServer(("127.0.0.1", 0), dashboard.Handler)
+            server = Server(("127.0.0.1", 0), Handler, workspace)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
 
@@ -405,9 +406,13 @@ class SettingsHTTPTest(unittest.TestCase):
                     ).encode()
                     connection.request(
                         "POST",
-                        "/api/settings",
+                        "/api/settings?repository=acme%2Fwidgets",
                         body=body,
-                        headers={"Content-Type": "application/json", "X-Factory-Act": "1"},
+                        headers={
+                            "Content-Type": "application/json", "X-Factory-Act": "1",
+                            "X-Factory-Access": workspace.access_key,
+                            "Origin": f"http://127.0.0.1:{server.server_address[1]}",
+                        },
                     )
                     response = connection.getresponse()
                     return value, response.status, json.loads(response.read())
@@ -437,13 +442,13 @@ class SettingsHTTPTest(unittest.TestCase):
             self.assertEqual(config.load(repo).max_active, winner[0])
             self.assertIn(b'[unrelated]\nvalue = "preserve me"', (repo / config.CONFIG_NAME).read_bytes())
 
-    def test_settings_post_requires_the_existing_same_origin_guard(self) -> None:
-        from factory import dashboard
+    def test_settings_post_requires_access_key_and_same_origin_intent(self) -> None:
+        from factory.workspace import Handler, Server, Workspace
 
         with tempfile.TemporaryDirectory() as directory, isolated_xdg(Path(directory)):
             repo = make_repo(Path(directory), "[dispatch]\nmax_active = 2\n")
-            dashboard.configure(config.load(repo))
-            server = dashboard.ThreadingHTTPServer(("127.0.0.1", 0), dashboard.Handler)
+            workspace = Workspace(config.load(repo))
+            server = Server(("127.0.0.1", 0), Handler, workspace)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:
@@ -456,25 +461,26 @@ class SettingsHTTPTest(unittest.TestCase):
                 connection = http.client.HTTPConnection(*server.server_address)
                 connection.request(
                     "POST",
-                    "/api/settings",
+                    "/api/settings?repository=acme%2Fwidgets",
                     body=body,
                     headers={"Content-Type": "application/json"},
                 )
                 response = connection.getresponse()
                 response_body = json.loads(response.read())
                 connection.close()
-                self.assertEqual(response.status, 403)
+                self.assertEqual(response.status, 401)
                 self.assertFalse(response_body["ok"])
                 self.assertEqual(path.read_bytes(), before)
 
                 connection = http.client.HTTPConnection(*server.server_address)
                 connection.request(
                     "POST",
-                    "/api/settings",
+                    "/api/settings?repository=acme%2Fwidgets",
                     body=body,
                     headers={
                         "Content-Type": "application/json",
                         "X-Factory-Act": "1",
+                        "X-Factory-Access": workspace.access_key,
                         "Origin": "http://evil.example",
                     },
                 )
@@ -490,21 +496,18 @@ class SettingsHTTPTest(unittest.TestCase):
 
 
     def test_authorized_save_changes_model_for_next_new_request(self) -> None:
-        from factory import briefing, dashboard
+        from factory.workspace import Handler, Server, Workspace
 
         with tempfile.TemporaryDirectory() as directory, isolated_xdg(Path(directory)):
             repo = make_repo(Path(directory), '[manager]\nmodel = "old/model"\n')
-            dashboard.configure(config.load(repo))
-            run = "2026-01-01T00:00:00Z"
+            workspace = Workspace(config.load(repo))
             evidence = {
-                "errors": [],
-                "dispatcher": {
-                    "runs": [
-                        {"started": run, "finished": run, "result": "done", "lines": ["ok"]}
-                    ]
-                },
+                "schema_version": 1, "ok": True,
+                "scope": {"repository": "acme/widgets", "root": str(repo)},
+                "observed_at": "2026-01-01T00:00:00Z",
+                "coverage": {"complete": True},
+                "sources": [{"id": "S1", "label": "Recorded run", "text": "The run completed."}],
             }
-            source = briefing.run_sources(dashboard.cfg, evidence, run)[0]["id"]
             bindir = Path(directory) / "bin"
             bindir.mkdir()
             args_path = Path(directory) / "omp-args"
@@ -512,14 +515,17 @@ class SettingsHTTPTest(unittest.TestCase):
             omp.write_text(
                 "#!/bin/sh\n"
                 f"printf '%s\\n' \"$@\" > \"{args_path}\"\n"
-                f"printf 'stub answer [{source}]'\n"
+                "printf 'Recorded run completed [S1]'\n"
             )
             omp.chmod(0o755)
             previous_path = os.environ.get("PATH")
             os.environ["PATH"] = f"{bindir}:{previous_path or ''}"
-            previous_snapshot = dashboard.cached_snapshot
-            dashboard.cached_snapshot = lambda fresh: evidence
-            server = dashboard.ThreadingHTTPServer(("127.0.0.1", 0), dashboard.Handler)
+            server = Server(("127.0.0.1", 0), Handler, workspace)
+            headers = {
+                "Content-Type": "application/json", "X-Factory-Act": "1",
+                "X-Factory-Access": workspace.access_key,
+                "Origin": f"http://127.0.0.1:{server.server_address[1]}",
+            }
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:
@@ -530,23 +536,27 @@ class SettingsHTTPTest(unittest.TestCase):
                 connection = http.client.HTTPConnection(*server.server_address)
                 connection.request(
                     "POST",
-                    "/api/settings",
+                    "/api/settings?repository=acme%2Fwidgets",
                     body=body,
-                    headers={"Content-Type": "application/json", "X-Factory-Act": "1"},
+                    headers=headers,
                 )
                 response = connection.getresponse()
                 saved = json.loads(response.read())
                 connection.close()
                 self.assertEqual(response.status, 200)
                 self.assertTrue(saved["ok"], saved)
+                with workspace._lock:
+                    workspace._scopes["acme/widgets"]["observation"] = evidence
 
                 connection = http.client.HTTPConnection(*server.server_address)
-                request = json.dumps({"run": run, "question": "What happened?"}).encode()
+                request = json.dumps({
+                    "repository": "acme/widgets", "question": "What happened?",
+                }).encode()
                 connection.request(
                     "POST",
-                    "/api/ask",
+                    "/api/chat",
                     body=request,
-                    headers={"Content-Type": "application/json", "X-Factory-Act": "1"},
+                    headers=headers,
                 )
                 response = connection.getresponse()
                 asked = json.loads(response.read())
@@ -554,7 +564,6 @@ class SettingsHTTPTest(unittest.TestCase):
                 self.assertEqual(response.status, 200)
                 self.assertTrue(asked["ok"], asked)
             finally:
-                dashboard.cached_snapshot = previous_snapshot
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=2)

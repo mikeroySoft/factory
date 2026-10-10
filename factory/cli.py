@@ -15,7 +15,7 @@ COMMANDS = {
     "gate": ("gate", "main", "run the deterministic quality gate in this worktree"),
     "stats": ("stats", "main", "ticket metrics from GitHub"),
     "learn": ("learn", "main", "distil recent ticket outcomes into .factory-lessons.md"),
-    "dashboard": ("dashboard", "main", "serve the local ops dashboard"),
+    "dashboard": ("dashboard", "main", "serve the authenticated outcome-control workspace"),
     "chat": ("chat", "main", "open the read-only Factory Manager console (needs the installed Pi runtime)"),
     "evidence": ("evidence", "main", "read one bounded schema-1 project/CI evidence request"),
     "plan": ("plan", "main", "read initiatives: `plan list`, `plan inspect N`, `plan baseline N`, `plan drift TICKET`, `plan route N --reason R` (JSON)"),

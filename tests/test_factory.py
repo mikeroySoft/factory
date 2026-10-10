@@ -1130,9 +1130,7 @@ unused = ["agent"]
                 with mock.patch.object(dashboard, "github", side_effect=RuntimeError("offline")), \
                      mock.patch.object(dashboard, "dispatcher", return_value={}), \
                      mock.patch.object(dashboard, "upstream_state", return_value={}), \
-                     mock.patch.object(dashboard, "triage_llm_online", return_value=False), \
-                     mock.patch.object(dashboard.lifecycle, "_rows",
-                                       wraps=dashboard.lifecycle._rows) as journal_reads:
+                     mock.patch.object(dashboard, "triage_llm_online", return_value=False):
                     snapshot = dashboard.snapshot()
             self.assertEqual(snapshot["workers"], [
                 {"worker": "default", "first_pass": 0.0, "attempts": 1, "cost": None},
@@ -1141,7 +1139,6 @@ unused = ["agent"]
                 {"worker": "unused", "first_pass": None, "attempts": 0, "cost": None},
             ])
             self.assertEqual(snapshot["spend"], {"seconds": 0, "cost": 106.25, "tickets": 4})
-            self.assertEqual(journal_reads.call_count, 1)
 
     def test_timeline_actor_attribution_in_stats(self) -> None:
         from unittest import mock

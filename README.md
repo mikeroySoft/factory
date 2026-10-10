@@ -261,7 +261,7 @@ merge stage.
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
 | `factory stats` | Ticket table: attempts, review rounds, hours to merge, escalation count, resolver attribution, minutes in `ready-for-human`, re-queues, and triage/review prompt and completion token sums (reported prefix-cache rates listed separately). Reads GitHub plus existing `events.jsonl`. `--by-worker` reads only events and shows every configured worker label: first-attempt gate pass rate, all attempts (including review bounces), and known cost. Attribution uses claim labels with current worker precedence; unclaimed attempts are excluded, missing rates/cost are `n/a`. The dashboard Ops view shows the same worker metrics. `--escapes` lists candidate escaped defects, one row per closed `bug` issue: its fix commits (first-parent `agent/<bug>:` commits on `origin/<main>`, else the merge commit of a merged PR whose closing references include the bug), and the candidate tickets whose `agent/<m>:` commits `git blame` names for the lines the fix modified or deleted, with blamed line counts. Rows without candidates read `unlinked` (no fix commit), `no_blamed_lines` (the fix only adds lines) or `no_candidates` (blamed lines are not from agent commits). `Regressed-by: #N` lines in the bug body replace blame (`source` is `declared`, else `blame`). The footer reads `Candidate escapes: X of Y merged agent tickets (Z%)`. Blame is SZZ-style and noisy: refactors give false candidates and add-only fixes give none. Read-only. `--json`. |
 | `factory learn` | Reads the last N finished tickets' event trail, failing-attempt log tails, reviewer findings, and escalation reasons, plus the 10 most recently closed bugs with candidate escapes (`factory stats --escapes`); asks the local model for ≤10 repo-specific lessons; writes `.factory-lessons.md` (you commit it). Every worker prompt carries it. With a manager, the lessons land as an `agent/lessons-<date>-t<N>` chore PR (N: the newest included ticket), and the manager may add a CURATE diff, opened as `agent/curate-<date>-t<N>`, that turns a lesson into a gate check or regression test: `AGENTS.md`, `CONTRIBUTING.md`, `.omp/skills/`, add-only `.factory.toml` (appended `[[gate.check]]` tables and `[gate].protected_paths` entries) and files under the base ref's protected paths; never `.github/`, never a deleted or renamed protected file. Both PRs are human-merge only. With a manager, the dispatcher also runs `--last 10` itself after every 10 finished tickets (see *Learning loop* under Operating it). `--dry-run`, `--last N`. `--promotion claim.json` judges and records a keep/revert claim under the [eval promotion contract](docs/eval-promotion-contract.md). |
-| `factory dashboard` | Local ops UI: Inbox, Ops, a dedicated read-only Factory Manager Chat with browser-local history, Codebase history, and Atlas; tickets by stage, in-flight phase, gate reports, worker logs, journal heartbeat, and upstream drift. `--json` prints the existing snapshot, including independent executions, per-ticket `llm_usage` stage totals, and local interruption reconciliation. `--host 0.0.0.0` exposes it, its mutating `/api/act`, and local settings writes to your network. |
+| `factory dashboard` | Native outcome-control workspace: Overview, Outcomes, live Flow, Attention, Success, Codebase, Atlas, System/Ops and Settings, with a persistent contextual FM dock. Defaults to `0.0.0.0`; APIs require the workspace access key. `--json` prints a passive, bounded-window Ops snapshot without journal reconciliation writes. |
 | `factory dashboard --runtime-json` | One bounded schema 1 runtime observation using only local read-only evidence; no GitHub, model probe, journal append, lock acquisition, or state creation. Partial source failures remain structured JSON. See [runtime contract](#bounded-runtime-json-schema-1). |
 | `factory evidence --root /path/to/main-checkout` | One explicit-repository schema 1 JSON read: compact cases, selected evidence, workflow/file/PR/CI investigations, or capabilities. Read-only GitHub GETs and F03 local evidence; no model, action execution, or state writes. See [evidence contract](#bounded-project-evidence-json-schema-1). |
 | `factory plan list` / `factory plan inspect N` | Read-only schema 1 JSON over `initiative` issues: declared status/owner, parsed sections, `#N` implementation links (`inspect` also fetches each linked issue's title/state), per-issue `malformed` + `problems` (missing/invalid declared facts, sections cut at 4,000 characters, links beyond the first 20), cited sources with `observed_at`. `list` reads at most 3 pages of 100 and keeps malformed initiatives flagged per row (exit 0); a failed page, or a malformed initiative under `inspect`, yields `coverage.status: partial` and exit 1, never a mutation. |
@@ -767,45 +767,73 @@ branches, or merge state.
 
 ## Operating it
 
-- **Dashboard** (`factory dashboard`): the root opens **Ops**, showing recorded
-  pipeline state without requesting an LLM briefing. **Inbox** is an explicit
-  destination and opens a full **Understand → Compare → Decide** briefing for
-  each case needing human judgment. The question,
-  situation, FM recommendation, relevant earlier decisions, uncertainty, options,
-  consequences, and next owner stay visible; raw evidence is expandable. Each
-  briefing leads with a cited **Bottom line**: your action (a specific decision,
-  no human decision identified, or unknown), next owner and move, execution
-  reality, when to involve you, and basis/freshness. Execution states are checked
-  against the ticket lock, active phase and lifecycle executions; "no human
-  decision" cannot rest on missing, truncated or ownership-only evidence; the
-  `factory plan route` decision owner is shown apart from current label routing
-  and is never an execution claim. A rejected or missing bottom line shows as
-  unknown. **Ops**
-  retains the board, telemetry, dispatcher runs, and task drawers.
-  **Ask FM** works on a whole task or a specific source/log and returns cited
-  answers. The dedicated **Chat** page at `/chat` also answers repository-wide,
-  case, and dispatcher-run questions; cited evidence is inspectable and
-  conversations persist in that browser. It requires an authenticated `omp`
-  installation; `[manager].model` chooses the model (host-wide:
-  `[defaults.manager]`). If unset, an existing `manager.command` supplies only
-  its `--model` value, otherwise OMP's default model is used. The dashboard never
-  executes that command: questions run a bounded, read-only, no-tools OMP process
-  against server-collected evidence. Evidence is sent to the selected model
-  provider; questions are not posted to GitHub. Errors remain visible and
-  retryable, never replaced with canned advice.
-  Decisions require rationale and an exact mutation preview; stale or incomplete
-  snapshots block execution. Confirmed decisions leave GitHub rationale comments
-  and a local `human-decision` audit event with success, partial, or failed outcome.
-  Drafts and conversations survive refresh within the same browser session.
-  The same navigation row sits below the title/status row on Ops, Inbox, Roadmap,
-  Chat, Codebase and Atlas; the two rows stay together while scrolling.
-  Its **Theme** picker includes Cyberpunk, GPUFlo, District, Factory, ROCm
-  (shared by rocm-cli and rocm-app), Porcelain and Sandstone (light), and Slate
-  and Forest (dark). Cyberpunk is the default for installations
-  without custom CSS; configured `[dashboard].theme` remains the **Repository**
-  default. An explicit choice overrides that CSS and persists in this browser
-  for this dashboard origin. Browser storage being unavailable does not prevent
-  switching themes for the current page.
+- **Workspace** (`factory dashboard`): the root opens **Overview**. The single
+  application follows outcomes, observed flow constraints, attention, decisions and
+  their results. **Flow** contains live cases only; historical completion belongs
+  in **Success**. Selected nonterminal cases, evidenced started WIP and active
+  executions are separate counts. Missing history is unknown, not zero or an exact
+  repository-wide WIP total. Wait durations use recorded wait identities, not an
+  issue's last update time. Return-after-absence comparisons name their browser-local
+  baseline and evidence coverage.
+  **System** retains Ops diagnostics, dispatcher runs, tickets, gate/review evidence,
+  worker logs, upstream state and the supported case-action menu. **Codebase** and
+  **Atlas** are native views, not embedded pages. **Settings** separates browser
+  preferences from the existing revision-checked local repository controls.
+  The theme selector includes the configured repository stylesheet. Atlas prints
+  reference diagrams and source links pinned to the published Codebase revision;
+  unverified or absent source paths are identified rather than invented.
+
+  Serving defaults to `0.0.0.0`; use `--host 127.0.0.1` to restrict it to loopback.
+  The startup checkout owns `.factory/workspace-access.key` (mode `0600`).
+  Every browser, including loopback clients, enters the key in a masked unlock
+  dialog. Cancel suppresses automatic prompts; **Refresh selected** reopens it.
+  Read the file securely on the host; no unauthenticated HTTP endpoint discloses it.
+  Add `--allowed-host NAME` for a trusted DNS name. Use a trusted LAN, Tailscale,
+  or an authenticated encrypted tunnel—not public plain HTTP. The key grants
+  the server's configured GitHub identity and local repository-setting authority;
+  it is not a separate multi-user login or role system.
+
+  The repository selector uses District's existing host registry. A registered
+  main-checkout path wins over a same-slug startup clone, and its root is visible.
+  Clients cannot supply roots or arbitrary service URLs. Host-admin operations
+  remain District-owned. Rendering returns cached data immediately while bounded,
+  admitted background readers refresh it; errors retain useful last-good evidence
+  with timestamps and coverage. Hidden pages do not drive polling.
+
+  **Ask FM** opens the persistent right dock scoped to the selected case; repository
+  chat uses repository scope. Case chat requires a matching cached inspection.
+  It uses authenticated `omp`, `[manager].model` (or the existing configured
+  command's model/default), and bounded cached sources with citations. The transport
+  has no tools and cannot apply decisions. Evidence is sent to the selected model
+  provider; conversations remain browser-local and are not GitHub comments.
+
+  **Direct/Respond** prepares a server-issued exact preview of supported actions.
+  Confirming rechecks the actor and affected state, then persists intent before
+  any effect. Retrieve the durable receipt after refresh/restart and use **Check
+  resulting state** separately. Partial and uncertain results remain explicit;
+  replay never repeats an ambiguous effect. Cancel does not execute the proposal.
+  `/api/act` is removed; authenticated prepare/apply/receipt endpoints own actions.
+  Upstream-sync issues cannot be requeued as ordinary worker tasks. Approval is
+  not fabricated review evidence, and cleanup cannot race an active claim.
+  Triage executes the controller's trusted Python package, not a shadow package
+  in the selected checkout. Cleanup coordinates with both landing and ticket
+  claims, binds local revisions, refuses dirty worktrees, and deletes the branch
+  only if its SHA still matches the preview (including squash-merged branches).
+  A nonzero mutation command
+  can still have applied an external effect: its receipt remains uncertain until
+  separately observed; another confirmation never reruns it.
+
+  Outcomes distinguish implementation/merge from owner attestations of release,
+  installation, health and accepted usefulness. Attestations cite a source revision
+  and evidence URL and bind to the current canonical initiative revision and its
+  declared owner's GitHub identity. They are not machine deployment/health proof
+  or permission to publish/install. Missing, partial, edited or superseded evidence
+  cannot establish current acceptance.
+
+  Theme choices persist in this browser: Cyberpunk, GPUFlo, District, Factory,
+  ROCm, Porcelain, Sandstone, Slate and Forest. Motion respects reduced-motion
+  preferences. The [completion plan](docs/outcome-control-plan.md) records
+  qualification and cutover separately from source implementation.
 - **Spend**: the *Spend* KPI and each ticket's attempts tab total worker+gate
   wall clock from `events.jsonl`, plus dollars when the worker reports them
   (a `[workers.<label>] usage` profile or `cost_pattern`).
@@ -1021,10 +1049,11 @@ are unchanged.
 
 ### Observation, interrupted writes, and CLI semantics
 
-The existing dashboard snapshot (`factory dashboard --json` or
-`/api/snapshot`) includes an additive top-level `executions` array. It retains
-every observed execution, including concurrent stages, no-ticket runs, and local
-evidence when GitHub collection fails. Each entry contains
+The dashboard snapshot (`factory dashboard --json` or authenticated
+`/api/snapshot?repository=<slug>`) includes a bounded `executions` array from the
+passive runtime reader: concurrent stages, no-ticket runs and local evidence remain
+visible when GitHub collection fails. `coverage` names retained-window limits;
+these are not lifetime totals. Each entry contains
 `execution_id`, `parent_execution_id`, `root_execution_id`,
 `dispatcher_run_id`, `ticket`, `attempt`, `review_round`, and `stage` with the
 types above, plus:
@@ -1051,36 +1080,19 @@ types above, plus:
   doing check/worker work. Unknown/dead/terminal executions do not retain a
   current wait; their source wait rows remain historical evidence.
 
-Observation uses Linux `/proc`, boot identity, PID namespace, process start
-ticks, recorded children/causal descendant context, and existing lock inodes.
-A reused PID or an old artifact cannot prove activity. A positively identified
-live owner or descendant is active, even if its parent ended. On the same boot,
-a held lock alone prevents declaring interruption but does not identify an
-active stage.
-Inaccessible/incomplete process evidence, a missing/replaced lock inode, or an
-unresolved launch-registration gap yields unknown when no live process can be
-proven. For an execution that previously launched a process tree (including
-through nested scopes), a same-boot scan cannot rule out a reparented orphan
-that removed its lifecycle environment. It therefore remains unknown after
-the last recorded/tagged survivor disappears; absence from the scan is not
-proof that the entire tree ended. A still-live registered or tagged child
-remains active. An abruptly killed scope that never launched descendants can
-be reconciled when its recorded process is known dead, no pending handoff
-remains, and its recorded locks are free. Interruption requires authoritative
-evidence that every possible descendant ended, not merely that none was found.
-A known boot-ID change proves the previous execution and its descendants ended,
-even with a pending handoff or a lock held by a current-boot process. A same-boot
-PID-namespace mismatch remains unknown. `scan_complete` alone never proves
-descendant absence; this conservative limitation also applies to open ancestor
-scopes of a launched tree.
-Observation does not change scheduling or lock ownership.
+Observation uses the [bounded runtime reader](#bounded-runtime-json-schema-1),
+including its process-identity, lock-evidence and descendant-coverage limitations.
+Inaccessible or incomplete evidence remains unknown; an old artifact or a reused PID
+does not prove activity. Source transitions remain distinct from the observation
+and its time. Dashboard reads neither acquire the lifecycle journal lock nor append
+interruption, recovery or scheduling-observation records. They do not change
+scheduling or lock ownership.
 
-The first conclusive observation appends one stable interruption exit under the
-journal lock. Repeated observations reuse that record and its actual observation
-time; they do not manufacture another transition. Thus dashboard observation can
-write reconciliation evidence locally, but does not mutate GitHub. The existing
-15-second HTTP snapshot cache remains; `?fresh=1` requests a fresh observation.
-No separate lifecycle CLI or additional network probe is introduced.
+HTTP snapshots are collected off request threads with bounded process/time/output
+admission. A cold snapshot returns HTTP 202 with collection status; a retained
+snapshot returns immediately while a due refresh runs. Legacy audit/spend/worker
+metrics read only committed lines from a capped live-journal window and report
+partial coverage when archives, clipping or malformed input are omitted.
 
 The existing ticket `phase` is null unless there is one unambiguous active,
 non-waiting leaf among its unresolved executions. Active wrappers do not hide their child
@@ -1333,11 +1345,11 @@ requires the actual merged producer revision and a separately authorized handoff
 ## Bounded runtime JSON (schema 1)
 
 `factory dashboard --runtime-json` prints one JSON object and exits. It is a
-separate local read path, **not** a filtered full snapshot. `--json`, HTTP
-`/api/snapshot`, and the normal dashboard retain their existing slower GitHub,
-triage-probe, and writable reconciliation behavior described above.
+separate local read path, **not** a filtered full snapshot. `--json` and HTTP Ops
+snapshots still perform GitHub and triage availability reads, but now reuse the
+passive runtime projection and never persist lifecycle reconciliation.
 
-The runtime command accepts no server options (`--host`, `--port`, `--no-open`)
+The runtime command accepts no server options (`--host`, `--port`, `--allowed-host`, `--no-open`)
 and cannot be combined with `--json`. Argument errors exit 2. Fatal repository
 discovery/configuration errors exit nonzero with a sanitized diagnostic on stderr
 and no runtime JSON. A usable projection, including partial or wholly unavailable
@@ -1740,8 +1752,8 @@ These envelope fields are always present, including invalid requests:
 Operation-specific fields appear only where applicable:
 
 - A parsed `observe` request has `cases:[]` and `attention_count` (integer or
-  null). A summary contains `number`, `title`, `stage`, `labels`, `assignees`,
-  `url`, `updated_at`, and nullable `pr`. PR summaries contain `number`, `url`,
+  null). A summary contains `number`, `title`, provider issue `state`, derived
+  pipeline `stage`, `labels`, `assignees`, `url`, `updated_at`, and nullable `pr`. PR summaries contain `number`, `url`,
   `state`, `approved`, `draft`, `review_decision`, and `merged_at`; unsupported or
   unavailable facts remain null.
 - A parsed `inspect` request has nullable `case`; a missing/unavailable selection
@@ -2018,9 +2030,10 @@ Design and acceptance criteria: [codebase history plan](docs/codebase-history-pl
 
 ## Architecture
 
-`factory/architecture.html` (served by the dashboard at `/atlas`) maps the core
-ticket system and lifecycle alongside the manager, operator, codebase, planning,
-evidence, chat, onboarding, metrics, and learning surfaces. `factory/cli.py`
+The native dashboard Atlas (`/?view=atlas`, `factory/workspace-tools.js`) draws
+the Factory pipeline reference structure and prints commit-pinned source links.
+The native Codebase inspector also diagrams actual extracted file relationships.
+`factory/cli.py`
 defines the command surface; `factory/config.py` layers host and repository
 configuration.
 

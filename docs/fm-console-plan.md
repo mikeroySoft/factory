@@ -2,7 +2,7 @@
 
 Status: **C0 read-interface review closed and accepted by the operator, 2026-09-05.** The current disposable harness is retained for continued use. A bounded C1 ticket draft and next-agent handoff are prepared locally; no issue is published or dispatched. This acceptance covers the read interaction and direction, not guarded actions, model qualification, a security boundary, production packaging or deployment. C0–C6 remain planning IDs, not GitHub issue numbers.
 
-**C1 source delivery:** implemented and verified locally after F03/PR31 acceptance; see the [handoff delivery addendum](c1-read-interface-handoff.md) for source ownership, bridge resolution and exact checks. The existing harness now consumes the shared Python reader. C1 is not committed, published, merged, installed or deployed; C2–C6 remain unstarted.
+**Current source reconciliation (2026-10-10):** `factory evidence` and the read-only `factory chat` console are shipped source, not an uncommitted C1 draft. The [outcome-control initiative](outcome-control-plan.md) makes the packaged native workspace the primary human surface and `factory/decisions.py` the guarded human-action owner. It does not enable Pi mutation tools or replace the terminal console's existing read interface. C0–C6 below remain the historical console planning sequence, not current installation evidence.
 
 ## Decision
 
@@ -26,7 +26,7 @@ Completion includes both repository operation and explicit fleet navigation, dur
 
 ## Grounding and existing ownership
 
-These observations describe the inspected checkout, not installed fleet state or current GitHub issue status:
+The following are historical C0 checkout observations, not the current source or installed fleet state. Use the reconciliation above and the outcome-control plan before scheduling work:
 
 - `factory/cli.py:8-18` has no chat or manage entry point. `pyproject.toml:11-12` keeps the Python runtime dependency-free.
 - `factory/dashboard.py:snapshot` and `cached_snapshot` collect operational evidence. `factory/briefing.py:sources_for` selects bounded sources and earlier human decisions, with gaps/truncation reported.

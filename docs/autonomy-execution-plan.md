@@ -16,6 +16,8 @@ for routine engineering and operation by the user's 2026-09-27 delegation. Histo
 statuses are not current status. Preserve actual safety checks and independently reviewed
 changes to action authority; do not reconstruct those historical approval bottlenecks.
 
+The [outcome-control completion plan](outcome-control-plan.md) applies the Toyota/constraint-management assessment to the primary operator workspace, passive observations, guarded human decisions and attributed outcome evidence. It preserves this operating delegation and the existing scheduling/authority owners.
+
 ## 1. Human interaction is a product capability, not a mandatory gate everywhere
 
 Michael owns taste, design direction, overall product direction and personal use cases or

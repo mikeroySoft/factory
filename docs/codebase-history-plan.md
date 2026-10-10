@@ -17,10 +17,10 @@ The implementation preserves the existing `/atlas` architecture diagrams and add
 ## Ownership and data contract
 
 - `factory/codebase.py`: Git extraction, Graphify adapter, cache, command entry point. `build_history(root, ref, repo, cache_dir, limit=80)` returns the complete display dataset and atomically writes `history.json` beneath the cache directory. `default_ref(root, main)` selects an existing remote-tracking default branch, otherwise the local default branch. No network access.
-- `factory/codebase.html`: standalone dashboard page, consuming `GET /api/codebase`.
+- `factory/workspace-codebase.js` and `factory/workspace-codebase.css`: native workspace view, consuming authenticated `GET /api/codebase?repository=<slug>`; the former standalone page is retired without dropping its stable-map, comparison, source-link or relationship-inspection behavior.
 - Dashboard integration, CLI registration, optional dependency, documentation and verification belong to the integration owner.
 
-`GET /api/codebase` returns `{status: "building"|"ready"|"error", error: string|null, data: History|null}`. Existing data remains available while updating or after failure.
+`GET /api/codebase` returns `{status: "building"|"ready"|"error", error: string|null, data: History|null}` plus repository/root provenance. Existing local-monitor data remains available while updating or after failure. Other registered roots use their bounded, atomically published `.factory/codebase/history.json`; its generation time is visible and monitor status is explicitly unknown. Viewing it never starts extraction.
 
 History schema 1:
 
