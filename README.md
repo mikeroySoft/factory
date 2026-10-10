@@ -817,8 +817,9 @@ branches, or merge state.
   not fabricated review evidence, and cleanup cannot race an active claim.
   Triage executes the controller's trusted Python package, not a shadow package
   in the selected checkout. Cleanup coordinates with both landing and ticket
-  claims, binds local revisions, refuses dirty worktrees, and uses Git's guarded
-  deletion rather than forcing away unmerged work. A nonzero mutation command
+  claims, binds local revisions, refuses dirty worktrees, and deletes the branch
+  only if its SHA still matches the preview (including squash-merged branches).
+  A nonzero mutation command
   can still have applied an external effect: its receipt remains uncertain until
   separately observed; another confirmation never reruns it.
 

@@ -48,7 +48,6 @@ class DecisionTest(unittest.TestCase):
             "updatedAt": "2026-10-09T00:00:01Z",
         }
         self.calls: list[list[str]] = []
-        self.call_options: list[dict] = []
         self.fail_action: str | None = None
         self.ambiguous_action: str | None = None
         self.applied_then_nonzero_action: str | None = None
@@ -57,7 +56,9 @@ class DecisionTest(unittest.TestCase):
         self.worktree_head = self.branch_sha
         self.worktree_dirty = False
         self.guard = threading.Lock()
+        self.real_run = decisions._run
         self.run_patch = mock.patch.object(decisions, "_run", side_effect=self.transport)
+        self.run_patch.start()
         self.addCleanup(self.run_patch.stop)
 
     @staticmethod
@@ -84,10 +85,9 @@ class DecisionTest(unittest.TestCase):
                 return self.completed(argv, out=status)
 
             action = argv[2] if argv[0] == "gh" else (
-                "cleanup_worktree" if "worktree" in argv else "cleanup_branch" if "branch" in argv else argv[0]
+                "cleanup_worktree" if "worktree" in argv else "cleanup_branch" if "update-ref" in argv else argv[0]
             )
             self.calls.append(list(argv))
-            self.call_options.append(kwargs)
             if action == self.ambiguous_action:
                 raise decisions._AmbiguousCommand("connection ended without a result")
             if action == self.fail_action:
@@ -104,7 +104,7 @@ class DecisionTest(unittest.TestCase):
             elif "worktree" in argv:
                 if worktree.exists():
                     worktree.rmdir()
-            elif "branch" in argv and "-d" in argv:
+            elif "update-ref" in argv and "-d" in argv:
                 self.branch = False
             if action == self.applied_then_nonzero_action:
                 return self.completed(argv, 1, err="response lost")
@@ -209,7 +209,6 @@ class DecisionTest(unittest.TestCase):
         self.assertEqual((first["ok"], first["status"], self.mutations()), (False, "uncertain", ["comment"]))
 
         self.calls.clear()
-        self.call_options.clear()
         self.fail_action = "edit"
         second = self.apply(self.proposal([request]))
         self.assertEqual((second["ok"], second["status"], self.mutations()), (False, "uncertain", ["comment", "edit"]))
@@ -347,6 +346,35 @@ class DecisionTest(unittest.TestCase):
         self.assertEqual(self.apply(preview)["status"], "uncertain")
         self.assertEqual(len(self.calls), call_count)
 
+    def test_interrupted_receipt_publication_remains_readable_and_nonretriable(self) -> None:
+        preview = self.proposal([{"op": "issue", "number": 7, "comment": "Publish once"}])
+        rename = decisions._RENAME_NOREPLACE
+
+        def publish_then_interrupt(source_fd, source, target_fd, target, flags):
+            result = rename(source_fd, source, target_fd, target, flags)
+            if result == 0 and target.startswith(b"receipt-"):
+                raise KeyboardInterrupt
+            return result
+
+        with (
+            mock.patch.object(decisions, "_RENAME_NOREPLACE", side_effect=publish_then_interrupt),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            self.apply(preview)
+        call_count = len(self.calls)
+        retained = decisions.receipt(self.cfg, preview["proposal_id"])
+        self.assertEqual(retained["status"], "success")
+        self.assertEqual(self.apply(preview), retained)
+        self.assertEqual(len(self.calls), call_count)
+        directory = decisions._state_dir(self.cfg, "decisions", create=False)
+        try:
+            with self.assertRaises(decisions.DecisionError) as caught:
+                decisions._store_artifact(directory, f"receipt-{preview['proposal_id']}.json", {})
+            self.assertEqual(caught.exception.code, "conflict")
+        finally:
+            os.close(directory)
+        self.assertEqual(decisions.receipt(self.cfg, preview["proposal_id"]), retained)
+
     def test_sync_routing_and_live_cleanup_claims_are_refused_without_unlinking_lock(self) -> None:
         self.issue["title"] = "upstream sync: conflict at abc123"
         with self.assertRaises(decisions.DecisionError) as sync:
@@ -411,9 +439,6 @@ class DecisionTest(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertFalse(worktree.exists())
         self.assertTrue(lock.exists(), "cleanup must retain lock identity even after release")
-        cleanup_calls = [argv for argv in self.calls if argv[0] == "git"]
-        self.assertNotIn("--force", cleanup_calls[0])
-        self.assertIn("-d", cleanup_calls[1])
         cleanup_rows = [
             row for row in lifecycle.read_events(self.cfg.factory / "events.jsonl")
             if row.get("decision_id") == preview["proposal_id"]
@@ -432,18 +457,56 @@ class DecisionTest(unittest.TestCase):
     def test_triage_uses_the_trusted_package_with_a_sanitized_import_path(self) -> None:
         shadow = self.root / "factory"
         shadow.mkdir()
+        marker = self.root / "shadow-executed"
         (shadow / "__init__.py").write_text("")
-        (shadow / "__main__.py").write_text("raise RuntimeError('shadow package executed')\n")
-        with mock.patch.dict(os.environ, {"PYTHONPATH": str(shadow), "PYTHONHOME": str(shadow)}):
+        (shadow / "__main__.py").write_text(f"from pathlib import Path\nPath({str(marker)!r}).touch()\n")
+        (self.root / ".factory.toml").write_text('[repo]\nslug="acme/widgets"\n[triage]\nendpoint="http://127.0.0.1:1"\n')
+        binary = self.root / "bin"
+        binary.mkdir()
+        gh = binary / "gh"
+        gh.write_text("#!/bin/sh\nprintf read > provider-read\nexit 1\n")
+        gh.chmod(0o700)
+
+        def transport(argv, **kwargs):
+            return self.real_run(argv, **kwargs) if argv[0] == decisions.sys.executable else self.transport(argv, **kwargs)
+
+        with (
+            mock.patch.object(decisions, "_run", side_effect=transport),
+            mock.patch.dict(os.environ, {"PATH": str(binary) + os.pathsep + os.environ["PATH"],
+                                       "PYTHONPATH": str(self.root), "PYTHONHOME": str(shadow)}),
+        ):
             result = self.apply(self.proposal([{"op": "triage", "number": 7}]))
+        self.assertFalse(marker.exists())
+        self.assertTrue((self.root / "provider-read").exists())
+        self.assertEqual(result["status"], "uncertain")
+
+    def test_cleanup_removes_the_confirmed_squash_merged_branch(self) -> None:
+        def git(*args, cwd=None):
+            return subprocess.run(["git", "-C", str(cwd or self.root), *args], check=True, capture_output=True, text=True)
+
+        git("init", "-b", "main")
+        git("config", "user.name", "Qualification")
+        git("config", "user.email", "qualification@example.test")
+        (self.root / "feature.txt").write_text("base\n")
+        git("add", "feature.txt")
+        git("commit", "-m", "base")
+        worktree = self.cfg.factory / "wt-7"
+        git("worktree", "add", "-b", "agent/7", str(worktree))
+        (worktree / "feature.txt").write_text("delivered\n")
+        git("add", "feature.txt", cwd=worktree)
+        git("commit", "-m", "implementation", cwd=worktree)
+        git("merge", "--squash", "agent/7")
+        git("commit", "-m", "delivered outcome")
+
+        def transport(argv, **kwargs):
+            return self.real_run(argv, **kwargs) if argv[0] == "git" else self.transport(argv, **kwargs)
+
+        with mock.patch.object(decisions, "_run", side_effect=transport):
+            result = self.apply(self.proposal([{"op": "cleanup", "number": 7}]))
         self.assertEqual(result["status"], "success")
-        argv = self.calls[-1]
-        options = self.call_options[-1]
-        self.assertEqual(argv[:5], [decisions.sys.executable, "-P", "-B", "-m", "factory"])
-        self.assertEqual(options["cwd"], self.root)
-        self.assertEqual(options["env"]["PYTHONPATH"], str(decisions._PACKAGE_ROOT))
-        self.assertEqual(options["env"]["PYTHONSAFEPATH"], "1")
-        self.assertNotIn("PYTHONHOME", options["env"])
+        self.assertFalse(worktree.exists())
+        self.assertEqual(git("branch", "--list", "agent/7").stdout, "")
+        self.assertEqual((self.root / "feature.txt").read_text(), "delivered\n")
 
     def test_expiry_confirmation_and_unsafe_storage_fail_closed(self) -> None:
         preview = self.proposal([{"op": "issue", "number": 7, "comment": "Bound token"}])

@@ -306,6 +306,7 @@
 
   function render() {
     const current=route(),repo=currentRepo();
+    if(repo&&['Attention','System'].includes(current.view))ensureOps(repo);
     const viewKey=`${repo?.slug}:${current.view}`;
     const moving=current.view==='Flow'&&state.viewKey===viewKey&&preferences.motion&&!reducedMotion.matches&&document.visibilityState==='visible';
     const positions=new Map(moving?[...app.querySelectorAll('[data-flow-case]')].map(node=>[node.dataset.flowCase,node.dataset.stage]):[]);
@@ -332,8 +333,7 @@
     const host=app.querySelector('[data-native-tool]');
     if(host){host.dataset.repository=repo.slug;if(keep)host.replaceWith(previousTool);else WorkspaceTools.mount(host,host.dataset.nativeTool,repo.slug);}
     if(current.view==='Settings'){if(keepSettings)app.querySelector('.workspace-settings').replaceWith(previousSettings);else WorkspaceSettings.mount(app,repo?.slug);}
-    if(current.view==='Attention'&&repo){ensureOps(repo);WorkspaceDecisions.mountHistory(app.querySelector('[data-decision-history]'),repo.slug);}
-    if(current.view==='System')ensureOps(repo);
+    if(current.view==='Attention'&&repo)WorkspaceDecisions.mountHistory(app.querySelector('[data-decision-history]'),repo.slug);
     applyPreferences();
     renderChat(false);
     if(document.activeElement===document.body)(focused?.isConnected?focused:focusSelector?app.querySelector(focusSelector):null)?.focus({preventScroll:true});

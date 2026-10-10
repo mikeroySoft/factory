@@ -134,7 +134,7 @@ class WorkspaceHTTPTest(unittest.TestCase):
 
         status, headers, _ = self.request("GET", "/chat")
         self.assertEqual((status, headers.get("location")), (302, "/?chat=1"))
-        status, _, routed = self.request("GET", headers["location"])
+        status, _, _ = self.request("GET", headers["location"])
         self.assertEqual(status, 200)
         status, _, _ = self.request("GET", "/api/codebase?repository=acme/widgets")
         self.assertEqual(status, 401)

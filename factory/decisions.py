@@ -1,6 +1,7 @@
 """Restart-safe, confirmed human decisions for one configured repository."""
 from __future__ import annotations
 
+import ctypes
 import errno
 import fcntl
 import hashlib
@@ -63,6 +64,10 @@ _SECRET = re.compile(
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
 _FILE_FLAGS = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
+# Linux no-replace rename publishes one link atomically; link/unlink has a crash window.
+_RENAME_NOREPLACE = ctypes.CDLL(None, use_errno=True).renameat2
+_RENAME_NOREPLACE.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+_RENAME_NOREPLACE.restype = ctypes.c_int
 
 
 class DecisionError(ValueError):
@@ -223,15 +228,11 @@ def _store_artifact(directory: int, name: str, value: dict) -> None:
         finally:
             os.close(fd)
         try:
-            os.link(
-                temporary, name, src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False,
-            )
+            if _RENAME_NOREPLACE(directory, os.fsencode(temporary), directory, os.fsencode(name), 1):
+                error = ctypes.get_errno()
+                raise OSError(error, os.strerror(error), name)
         except FileExistsError as exc:
             raise DecisionError("immutable decision artifact already exists", "conflict") from exc
-        except OSError as exc:
-            raise DecisionError("decision artifact could not be published", "storage_unavailable") from exc
-        try:
-            os.unlink(temporary, dir_fd=directory)
         except OSError as exc:
             raise DecisionError("decision artifact could not be published", "storage_unavailable") from exc
         temporary = ""
@@ -708,7 +709,7 @@ def _plan_request(
         if target.get("branch"):
             steps.append(_command_step(
                 "cleanup_branch",
-                ["git", "-C", str(cfg.root), "branch", "-d", f"agent/{number}"],
+                ["git", "-C", str(cfg.root), "update-ref", "-d", f"refs/heads/agent/{number}", target["branch"]],
                 cwd=cfg.root,
             ))
     elif op == "outcome":
