@@ -198,6 +198,11 @@ class DecisionTest(unittest.TestCase):
         self.assertEqual(stale.exception.code, "stale_target")
         self.assertEqual(self.calls, [])
 
+        self.pr["headRefOid"] = "a" * 40
+        receipt = self.apply(self.proposal([request]))
+        self.assertEqual(receipt["status"], "success")
+        self.assertIn(config.LABEL_APPROVED, {item["name"] for item in self.pr["labels"]})
+
     def test_nonzero_mutations_are_uncertain_and_stop_later_steps(self) -> None:
         comment = "Factory human decision: Retry\n\nRationale: Corrected scope."
         request = {

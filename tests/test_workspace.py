@@ -7,6 +7,7 @@ import os
 import socket
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -122,6 +123,38 @@ class WorkspaceHTTPTest(unittest.TestCase):
         except (UnicodeError, json.JSONDecodeError):
             value = raw
         return response.status, response_headers, value
+
+    def test_reader_accepts_output_at_bound_and_refuses_overflow(self) -> None:
+        payload = '{"answer":42}'
+        for maximum, expected_error in ((len(payload), None), (len(payload) - 1, "response_too_large")):
+            with self.subTest(maximum=maximum):
+                value, error, _ = self.workspace._run_json(
+                    [sys.executable, "-c", f"import sys; sys.stdout.write({payload!r}); sys.stderr.write('diagnostic')"],
+                    cwd=self.root, body=None, timeout=3, maximum=maximum, operation="observe",
+                )
+                if expected_error:
+                    self.assertIsNone(value)
+                    self.assertEqual(error["code"], expected_error)
+                else:
+                    self.assertIsNone(error)
+                    self.assertEqual(value, {"answer": 42})
+
+    def test_evidence_requires_matching_repository_and_root(self) -> None:
+        for repository, root, accepted in (
+            (REPOSITORY, str(self.root), True),
+            ("acme/other", str(self.root), False),
+            (REPOSITORY, str(self.base / "other"), False),
+        ):
+            with self.subTest(repository=repository, root=root):
+                envelope = source_envelope(self.root)
+                envelope["scope"] = {"repository": repository, "root": root}
+                with mock.patch.object(self.workspace, "_run_json", return_value=(envelope, None, 0)):
+                    value, error = self.workspace._read_evidence(REPOSITORY, {"op": "observe"}, "observe")
+                if accepted:
+                    self.assertIsNone(error)
+                else:
+                    self.assertIsNone(value)
+                    self.assertEqual(error["code"], "invalid_response")
 
     def test_public_assets_do_not_disclose_access_and_apis_require_authentication(self) -> None:
         status, headers, body = self.request("GET", "/")
