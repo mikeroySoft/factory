@@ -275,7 +275,7 @@ def source(label: str, value: object, *, url: str | None = None, path: str | Non
 
 
 def case_summary(ticket: dict) -> dict:
-    result = {key: ticket.get(key) for key in ("number", "title", "stage", "labels", "assignees", "url", "updated_at")}
+    result = {key: ticket.get(key) for key in ("number", "title", "state", "stage", "labels", "assignees", "url", "updated_at")}
     pr = ticket.get("pr")
     result["pr"] = {key: pr.get(key) for key in ("number", "url", "state", "approved", "draft", "review_decision", "merged_at")} if pr else None
     for record in (result, result["pr"] or {}):

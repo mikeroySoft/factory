@@ -6,7 +6,7 @@ import time
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from factory import binding, config, lifecycle, plan, runtime_events
+from factory import binding, config, lifecycle, outcomes, plan, runtime_events
 from factory.briefing import CONTEXT_CAP, SOURCE_COUNT
 from factory.evidence import ERROR_CAP, READ_SECONDS, EvidenceError, clean_text, failed, source
 
@@ -16,7 +16,7 @@ HISTORY_CAP = plan.PAGE_SIZE
 NOTICES = [
     "Only bounded GitHub GETs and retained local evidence are read; no issue, assignment, plan or execution state is changed.",
     "Status, owner and plan text are declarations from untrusted issue bodies; owner filters change only attention rows.",
-    "A declared delivered stage, closed child or accepted baseline does not establish owner-confirmed outcome delivery.",
+    "Owner outcome comments are attributed reports; they do not independently verify release, deployment or health.",
     "Reads are sequential rather than an atomic GitHub snapshot; unavailable evidence remains unknown rather than absent.",
 ]
 
@@ -306,6 +306,74 @@ def _canonical(reader: plan.Reader, result: dict, cfg, number: int,
     return cache[number]
 
 
+def _delivery(reader: plan.Reader, result: dict, cfg, issue: dict) -> dict:
+    """Read the bounded newest comment page and preserve its actual coverage."""
+    number = issue["number"]
+    count = issue.get("comments")
+    comments = None
+    complete = False
+    if type(count) is not int or count < 0:
+        _notice(result, f"Initiative #{number} comment count is unavailable; outcome evidence is unknown.")
+    elif count == 0:
+        comments, complete = [], True
+    else:
+        page = max(1, (count + outcomes.COMMENT_CAP - 1) // outcomes.COMMENT_CAP)
+        path = f"issues/{number}/comments?per_page={outcomes.COMMENT_CAP}&page={page}"
+        try:
+            comments = reader.fetch(f"Initiative #{number} outcome comments", path)
+            if (
+                not isinstance(comments, list)
+                or len(comments) > outcomes.COMMENT_CAP
+                or not all(isinstance(item, dict) for item in comments)
+            ):
+                raise EvidenceError(
+                    "invalid_response",
+                    "GitHub outcome-comment response has an unexpected shape.",
+                    f"{reader.prefix}/{path}",
+                )
+            complete = count <= outcomes.COMMENT_CAP and len(comments) == count
+            if count > outcomes.COMMENT_CAP:
+                _notice(
+                    result,
+                    f"Initiative #{number} outcome evidence covers only its newest "
+                    f"{len(comments)} comments; current owner attestations remain unknown.",
+                )
+            elif len(comments) != count:
+                _notice(
+                    result,
+                    f"Initiative #{number} comment count changed during collection; "
+                    "current owner attestations remain unknown.",
+                )
+        except EvidenceError as exc:
+            failed(reader.result, exc)
+            comments = None
+            _notice(
+                result,
+                f"Initiative #{number} outcome comments are unavailable; "
+                "release, installation, health and acceptance remain unknown.",
+            )
+    try:
+        delivery = outcomes.project(cfg, issue, comments, complete=complete)
+    except outcomes.OutcomeError as exc:
+        _error(result, exc.code, f"repos/{cfg.repo}/issues/{number}", f"initiative:{number}")
+        return {
+            "status": "unknown",
+            "detail": f"Owner outcome evidence is unavailable: {exc}",
+        }
+    for item in delivery["evidence"]:
+        citation = _cite(
+            result,
+            f"Initiative #{number} {item.get('kind') or 'invalid'} outcome comment",
+            item,
+            url=item.get("url") or issue.get("html_url"),
+        )
+        if citation:
+            item["source"] = citation
+            if citation not in delivery["sources"]:
+                delivery["sources"].append(citation)
+    return delivery
+
+
 def _admission_readiness(cfg, body: str, accepted: object,
                          observed: object) -> tuple[bool | None, str | None]:
     try:
@@ -591,6 +659,7 @@ def collect(cfg, number: int | None = None, *, deadline: float | None = None) ->
                 for name, text in by_initiative[initiative]["sections"].items()
                 if len(text) > plan.SECTION_CAP
             )
+        raw = None
         try:
             raw = reader.fetch(f"Complete initiative #{initiative}", f"issues/{initiative}")
             observed_row = plan.record(raw, f"issues/{initiative}")
@@ -611,10 +680,22 @@ def collect(cfg, number: int | None = None, *, deadline: float | None = None) ->
         row = {key: discovered_row.get(key) for key in (
             "number", "title", "state", "url", "status", "owner", "sections", "links", "problems", "malformed"
         )}
-        row.update(historical=bool(discovered_row.get("historical")), revision=revision, children=[], blockers=[], drift=[], delivery={
-            "status": "unknown",
-            "detail": "Owner-confirmed success evidence was not established by this producer; declared stage and implementation state do not prove delivery.",
-        })
+        row.update(
+            historical=bool(discovered_row.get("historical")),
+            revision=revision,
+            children=[],
+            blockers=[],
+            drift=[],
+            delivery={
+                "status": "unknown",
+                "detail": (
+                    "Outcome comments are unavailable; declared stage and implementation state "
+                    "do not prove delivery."
+                ),
+            },
+        )
+        if isinstance(raw, dict) and isinstance(canonical, dict):
+            row["delivery"] = _delivery(reader, result, cfg, raw)
         _plan_source(result, row)
 
 

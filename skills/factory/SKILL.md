@@ -107,7 +107,7 @@ Done when the issue carries `needs-triage` (or `ready-for-agent`) and every sect
 
 ## Diagnose
 
-Read `factory/architecture.html` for how the pipeline stages connect.
+Open the workspace Atlas (`/?view=atlas`) for pipeline diagrams and commit-pinned source evidence; its native implementation is `factory/workspace-tools.js`.
 
 Evidence, in order of authority:
 

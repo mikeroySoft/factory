@@ -99,17 +99,29 @@ class IdlePasses(unittest.TestCase):
         self.full_pass()
         self.assertLessEqual(len(lifecycle.read_events(self.events)) - before, 1)
         last = 1_791_000_000_000_000  # systemd timer LastTriggerUSec of this pass
-
-        def systemctl(cmd, **kwargs):
-            if "list-timers" in cmd:
-                return subprocess.CompletedProcess(cmd, 0, json.dumps([{"last": last}]), "")
-            return subprocess.CompletedProcess(cmd, 3, "inactive", "")
-
+        state = {
+            "service_active": False,
+            "timer_active": False,
+            "next_at": None,
+            "paused": None,
+            "observed_at": "2026-10-09T00:00:00.000000Z",
+            "observation": "fresh",
+            "capacity": {"configured": 1, "active": 0, "complete": True},
+            "run_ids": [],
+            "latest_transition": None,
+        }
         with patch.dict(dashboard.__dict__), \
-                patch.object(dashboard.subprocess, "run", side_effect=systemctl), \
-                patch.object(dashboard, "journal_runs", return_value=[]):
+                patch.object(dashboard.runtime_local, "dispatcher", return_value=(state, [])), \
+                patch.object(
+                    dashboard.runtime_local, "_command",
+                    return_value=json.dumps([{"unit": f"{self.cfg.unit}.timer", "last": last}]),
+                ), patch.object(dashboard, "journal_runs", return_value=[]):
             dashboard.configure(self.cfg)
-            self.assertEqual(dashboard.dispatcher()["timer"]["last"], dashboard.iso(last / 1e6))
+            runtime = {"executions": [], "history": {"complete": True}, "events": []}
+            self.assertEqual(
+                dashboard.dispatcher(runtime)["timer"]["last"],
+                dashboard.iso(last / 1e6),
+            )
 
     def test_pass_that_claims_a_ticket_keeps_the_dispatcher_trail(self):
         def work(issue, budget_min, dry_run):

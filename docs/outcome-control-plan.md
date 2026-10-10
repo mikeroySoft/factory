@@ -1,0 +1,88 @@
+# Outcome-controlled Factory: completion and execution plan
+
+Date: 2026-10-10. Integration owner: Astra, under Michael's instruction to plan and execute the complete initiative. Implementation branch: `outcome-control` (not `agent/<n>`), based on current `origin/main` (`eacb791`). This extends [the operating model](autonomy-execution-plan.md), not a replacement scheduler or a claim that all of initiative #119 is implemented.
+
+## Product result and definition of complete
+
+Factory is operated through outcomes, observed constraints, decisions, and their results. One native browser application is the primary human surface; the CLI remains usable for automation and recovery. The accepted prototype A is the interaction direction, not production infrastructure.
+
+Completion requires all of the following:
+
+1. Return after absence: distinguish current observation, newly observed changes, stale/missing evidence, live work, and historical completion without reconstructing multiple tools.
+2. Investigate delay: follow an outcome to contributing cases, actual recorded waits and resources, and the next owner/wake condition; separate active workers, selected nonterminal cases, and evidenced started-but-unfinished work. Missing admission history must not become an exact WIP total.
+3. Resolve attention: inspect evidence, obtain scoped FM advice if useful, prepare one exact supported human action, cancel or confirm it, retrieve its durable receipt after restart, and inspect the actual resulting state. Routing is not execution; execution is not merge or delivery.
+4. Handle abnormalities: show affected scope, existing holds/guards, repeated observed failures and recovery options. No automatic global stop based on matching error strings. Preserve existing bounds, locks, immutable admitted contracts and independent review.
+5. Verify outcomes: retain separate implementation/merge evidence and source-linked owner attestations of release, installation, health and accepted usefulness. An attestation is attributed human evidence, not an automatic deployment or telemetry measurement; a missing or superseded source remains unknown/stale.
+6. Preserve the accepted interface: compact navigation; native Codebase and connected Atlas with printed source-linked evidence; persistent per-case FM dock; themes; user preferences; existing Ops diagnostics/actions and real repository settings. No iframes, simulated pipeline activity, or click-induced vertical bouncing.
+7. Serve the primary surface on the network, default `0.0.0.0`, without exposing the server's GitHub credentials as an unauthenticated mutation proxy. Keep fixed/registered repository scope, same-origin checks, bounded input and explicit confirmation.
+8. Package in Factory, reuse District fleet/registry ownership, prove installed behavior and rollback, and retire the disposable proxy/duplicate primary surfaces only after parity. No installed or delivered claim from a source merge alone.
+
+## Reconciliation and evidence
+
+- Installed Factory reports 0.3.8. Current source includes `evidence`, `chat`, `plan`, retained SHA-bound results, runtime lifecycle/wait projections, settings revision checks and Ops actions. Older C0–C6 status prose is historical, not an instruction to rebuild existing readers or the terminal console.
+- The earlier `docs/outcome-control-preparation.md` cannot be recovered from either checkout or fetched Git history. This tracked plan replaces the missing handoff; it does not invent its underlying measurements.
+- The accepted prototype is `/tmp/factory-outcome-spa-prototype`, last UI commit `60782c5`, with subsequent network binding. It proved the human-facing direction and comment previews, not production control, deployed outcomes, or a bottleneck.
+- Production `dashboard.act` persists intent/results but trusts browser-only freshness checking and has no restart-safe approved-preview binding. This is the first complete production slice.
+- Production cached snapshot/roadmap collection currently performs collection while holding the cache lock. The prototype demonstrates the better boundary: readers return immediately while bounded collection runs separately.
+- Production `dashboard.snapshot` also holds an exclusive lifecycle journal snapshot while persisting reconciliation through `observe`/`resources`; `dispatcher` persists scheduling observations. The root countermeasure is to remove locking/writing from the observation path using existing passive projections, not merely put the same writer behind a new cache.
+- A real `factory stats --json` attempt on 2026-10-10 exceeded 120 seconds without a result. Source walks ticket timelines and PR evidence individually; it is not a live-rendering dependency. Use `runtime_events.project` and the bounded `evidence` reader for live flow facts. Cohort completeness and missing rotated history remain explicit.
+- Existing open owners: #102 priority scheduling, #101 accepted roadmap amendments, #168 ticket-flow reference map, #169 sync-issue requeue exclusion, #151 sync remediation, #181/#182 dispatcher root isolation. Integrate overlapping #169 protection into the action cutover; do not silently take over the other contracts or their active branches. #34 and #140/#163 own reviewer/escalation experiments; no invented result or automatic promotion.
+- District owns host registration, installation and host-management policy. Its local-only host mutation protections are not bypassed by a new HTTP proxy. Fleet navigation may select a registered repository; project actions stay owned by Factory.
+
+## Shared contracts
+
+### Observation and flow
+
+Reuse bounded production observations and lifecycle events, collected off HTTP request threads with single-flight admission, finite deadlines/output, retained last-good data, visible collection status, and visible-page polling. No full `stats` walk, dispatch lock acquisition, event writes, code extraction or model calls caused by rendering. Codebase has one existing owner/cache per served root.
+
+Flow is a read-only projection, not another event store. Preserve repository/time/source/coverage. Count distinct cases rather than summing executions. Closed/merged work leaves live Flow. Admission/start evidence establishes known WIP; unknown starts remain unknown. Pair waits by recorded execution/wait identity, never issue last-update time. Summarize observed repeat attempts and constraint candidates without declaring the largest queue a bottleneck. A real bounded cohort report records denominator, retained-window limits, observations, countermeasure, and a comparable verification result.
+
+### Human decisions
+
+One Python implementation owns prepare, apply, receipt retrieval and post-action observation for the existing issue/PR/triage/cleanup menu and explicit outcome attestations. The browser and any supported adapter use this implementation; the former direct mutation endpoint must not remain a bypass.
+
+Prepare validates closed request shapes, resolves live exact targets and actor, records a server-issued proposal with bounded lifetime, and shows exact effects. Apply accepts only that proposal and its confirmation, revalidates affected state under the existing coordination locks, persists intent before any external effect, and executes the stored steps once. A restart/replay returns the retained receipt or an explicit uncertain state, never repeats an ambiguous effect. Partial success remains partial. Failed durable intent means no action. Upstream-sync issues cannot enter ordinary agent requeue paths. Worktree cleanup cannot race a live claim or remove another actor's lock evidence.
+
+Receipt state and subsequently observed target state are separate. A command exit, a queued label or a comment is not proof that a worker ran. No direct merge, unbounded shell/API proxy, or new automatic authority is added.
+
+### Outcome evidence
+
+Add an explicit bounded, versioned owner-attestation representation in canonical initiative comments, bound to the initiative's current canonical revision and an identified source revision. Record kind (`released`, `installed`, `healthy`, `accepted`), evidence URL, explanation, authenticated author and canonical comment identity/time. Only evidence authored by the declared owner can establish owner attestation. Changes of canonical initiative revision make previous attestations historical, not current acceptance. Surface limitations and truncated comment coverage. Do not modify scope/admitted contracts or trigger release/install from an attestation.
+
+### Network and fleet
+
+Factory owns the packaged SPA and per-repository action implementation. Read the existing host registry; clients cannot submit filesystem roots or arbitrary service URLs. Mutating requests require an access credential plus exact origin/intent checks and a bound confirmation. An access key is a network-control credential, not a model tool; never put it in prompts, evidence or logs. Trusted LAN/Tailscale is the deployment target; no public unauthenticated endpoint. District host-admin actions remain behind their existing controls.
+
+## Delivery sequence and ownership
+
+| Step | Executor | Exit gate |
+|---|---|---|
+| 1. Reconcile and recover the contract | Astra + read-only scouts | This tracked plan, source/installed distinctions, real issue ownership and honest initial evidence |
+| 2. Close the human-action loop | Direct supervised implementation + independent security/correctness review | Real command/HTTP scenario covers preview, cancel, apply, restart/replay, stale state, concurrent attempts, durable-intent failure, partial/uncertain effects and observed postconditions; no legacy bypass |
+| 3. Add truthful flow and outcome projections | Independent bounded implementation slices | Deterministic behavior checks for partial/rotated history, distinct-case WIP, paired waits, repeats, owner/revision binding and absent evidence; actual bounded-reader smoke |
+| 4. Integrate the accepted native SPA | Bounded UI implementation + Astra integration | All five operator journeys, Ops capability parity, persisted context/preferences, scoped chat, native tools, deep links, keyboard/mobile/reduced motion, safe network access |
+| 5. Measure one countermeasure | Astra using recorded evidence | Before/after of the observed collection/action problem with fixed conditions; no unsupported production-throughput claim or arbitrary scheduling change |
+| 6. Review, land, package and qualify | Independent reviewers, repository gates, Astra | Exact-head review, current gates/CI, source PR; packaged assets work; installed revision/health and rollback are independently evidenced |
+| 7. Cut over and close | Astra under applicable deployment authority, Michael for product acceptance | No competing primary surface or lost retained capability; deployment receipt and remaining external product judgments explicit |
+
+Factory is a candidate executor for settled bounded application slices, not its own authority reviewer. This execution uses scoped implementation agents in one isolated integration branch because the action, read and UI contracts must cut over together. No production dispatch, concurrency, merge policy, permission, stable tag, release publication or host-install setting changes are implied by a successful preview.
+
+## Safeguards and acceptance protocol
+
+Run the configured Python tests and pinned Ruff check after integration, plus focused actual CLI/HTTP/browser scenarios. Behavior tests cover public guarantees, not source wording or forwarding echoes. Independent review specifically examines replay after uncertainty, actor/state drift, symlinks and filesystem bounds, lock scope, network authorization, cross-repository leakage, renderer load and dishonest outcome claims.
+
+Exercise production readers against live repositories without mutation. Exercise mutations against a disposable controlled target/transport until independent review clears the exact implementation; no destructive cleanup or real issue requeue merely to demonstrate UI. Record exactly what was and was not exercised. Production release/publication/rollout needs authority for the target and action; unresolved authority blocks only that external step, not implementation, review or packaging.
+
+Rollback retains the prior installed Factory revision and service definition. District remains the installation owner. Source merge, package qualification, installed health, and user acceptance each receive separate evidence; none substitutes for another.
+
+## Execution record
+
+- Reconciliation: current source and installed identity checked; three independent read-only investigations completed. `groma agent-instructions` is unavailable on this host; no Groma-owned architecture was edited.
+- Baseline limitation: `factory stats --json` exceeded its 120-second execution bound; no inferred cohort metrics or bottleneck.
+- The installed passive `factory dashboard --runtime-json` completed in 0.15 seconds at 2026-10-10T00:41:15Z: timer active, service inactive, 0 active of 2 configured admission slots. Its retained window contained 512 events/32 executions, only ticket identities #197 and #7, no reported current waits, and incomplete coverage (byte/event limits, unsupported records, identity conflicts and missing enter evidence). This does not establish a complete cohort, the absence of waits outside the window, or a system bottleneck.
+- Implemented the integrated authority, projection and native UI cutover in the isolated branch. No production install, service restart, dispatch policy change or GitHub test mutation was performed. Superseded standalone HTML/navigation assets were removed after native parity qualification.
+- Actual HTTP/provider-command qualification used a disposable Git repository and fail-closed `gh` transport. Exercised prepare without effects, restart-safe apply/replay, stale actor/target refusal, concurrent confirmation producing one effect, held-lock refusal, failed durable intent, partial failure stopping later effects, and an ambiguous provider result remaining non-retriable across restart. Owner acceptance projected as attributed evidence; machine deployment/health remained unknown.
+- The measured passive-reader countermeasure used the same held exclusive journal lock and committed spend record: the old reader remained blocked at its 3.005-second bound; the new reader returned in 0.110 seconds with spend 2.5, explicit partial coverage and unchanged journal bytes. This proves reader isolation under that condition, not a production-throughput increase. A source-pinned full Ops CLI read against the real repository completed in 15.532 seconds with 75 tickets, 32 executions, no structured errors and explicit retained-window truncation.
+- Browser qualification used the real staging readers plus a separate disposable provider fixture. Exercised native Codebase revision/baseline comparison, symbols, relationships and pinned source links; Atlas diagrams with printed evidence and no expanders/iframes; closed-case exclusion; recorded resource waits and active-only movement; masked authentication/cancel/reopen; contextual real-provider FM with citations; prepare/cancel/confirm/receipt/observe; and the owner-acceptance journey through refreshed Success. Attributed acceptance did not become machine-verified deployment or health.
+- Settings saved and survived reload in the disposable repository. A completed evidence refresh preserved the exact draft input node, caret, text and focus. Cold Settings deep links, desktop lateral panel motion (no vertical displacement), a 390-pixel mobile modal with focus restoration, and reduced motion with zero running animations were exercised. Browser qualification found and fixed duplicate prepare, stale-inspection precedence, receipt-observation confusion, Escape layering and the cold Settings crash.
+- Independent final review, normal exact-head gates, package qualification and authorized production cutover remain separate pending exit gates. Staging on `0.0.0.0:8880` is not an installed-production claim; the earlier prototype remains available until a qualified replacement can be cut over.

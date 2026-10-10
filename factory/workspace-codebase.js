@@ -1,266 +1,8 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Factory — Codebase history</title>
-<link rel="stylesheet" href="/theme.css">
-<style>
-  :root { color-scheme: dark; }
-  body.codebase-page {
-    --cb-bg: var(--bg, #0d0c0a);
-    --cb-sunken: var(--bg2, #151310);
-    --cb-panel: var(--panel, #1a1712);
-    --cb-line: var(--line, #3a2f1e);
-    --cb-line-strong: var(--line2, #4a3d28);
-    --cb-ink: var(--ink, #f0e2c8);
-    --cb-muted: var(--brief-muted, #b5a589);
-    --cb-dim: var(--dim, #725b40);
-    --cb-accent: var(--accent, #9dc26b);
-    --cb-accent-soft: var(--accent-soft, #c4dca0);
-    --cb-accent-tint: var(--accent-tint, rgba(157, 194, 107, .09));
-    --cb-warn: var(--warn, #f0cf8e);
-    --cb-danger: var(--danger, #d64545);
-    --cb-info: var(--info, #b89bd6);
-    --cb-mono: var(--mono, 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
-    display: flex;
-    flex-direction: column;
-    margin: 0;
-    min-width: 320px;
-    height: 100dvh;
-    overflow: hidden;
-    background: var(--cb-bg);
-    color: var(--cb-ink);
-    font: 13px/1.6 var(--cb-mono);
-    -webkit-font-smoothing: antialiased;
-  }
-  .codebase-page *, .codebase-page *::before, .codebase-page *::after { box-sizing: border-box; }
-  .codebase-page a { color: var(--cb-accent); text-decoration: none; }
-  .codebase-page a:hover { color: var(--cb-accent-soft); text-decoration: underline; text-underline-offset: .25em; }
-  .codebase-page button, .codebase-page select, .codebase-page input { font: inherit; color: inherit; }
-  .codebase-page button, .codebase-page select {
-    min-height: 44px;
-    border: 1px solid var(--cb-line-strong);
-    border-radius: 4px;
-    background: var(--cb-sunken);
-  }
-  .codebase-page button {
-    padding: 8px 12px;
-    color: var(--cb-muted);
-    cursor: pointer;
-    letter-spacing: .04em;
-    text-transform: none;
-    white-space: normal;
-    touch-action: manipulation;
-  }
-  .codebase-page button:hover:not(:disabled), .codebase-page select:hover { border-color: var(--cb-accent); color: var(--cb-ink); }
-  .codebase-page button:active:not(:disabled) { background: var(--cb-accent-tint); }
-  .codebase-page button:disabled { cursor: not-allowed; opacity: .42; }
-  .codebase-page :focus-visible { outline: 2px solid var(--cb-accent); outline-offset: 3px; box-shadow: none; }
-  .cb-skip { position: fixed; z-index: 100; left: 12px; top: 8px; transform: translateY(-150%); padding: 8px 12px; background: var(--cb-panel); border: 1px solid var(--cb-accent); }
-  .cb-skip:focus { transform: none; }
-  #codebase-app { flex: 1; min-height: 0; overflow: auto; }
-  .cb-topbar {
-    display: grid;
-    grid-template-columns: minmax(210px, 1fr) auto;
-    gap: 16px 32px;
-    align-items: center;
-    padding: 18px clamp(16px, 3vw, 40px);
-    border-bottom: 1px solid var(--cb-line);
-    background: var(--cb-bg);
-  }
-  .cb-eyebrow, .cb-label {
-    margin: 0;
-    color: var(--cb-muted);
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: .16em;
-    text-transform: uppercase;
-  }
-  .cb-title-row { display: flex; align-items: center; gap: 12px; margin-top: 3px; }
-  .cb-mark { width: 12px; height: 12px; flex: 0 0 auto; border: 1px solid var(--cb-accent); background: var(--cb-accent-tint); transform: rotate(45deg); }
-  .codebase-page .cb-title { margin: 0; color: var(--cb-ink); font: 700 clamp(22px, 3vw, 30px)/1.15 var(--cb-mono); letter-spacing: -.025em; -webkit-text-fill-color: currentColor; background: none; }
-  .cb-meta { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px 24px; color: var(--cb-muted); font-size: 11px; }
-  .cb-meta strong { color: var(--cb-ink); font-weight: 500; overflow-wrap: anywhere; }
-  .cb-health { display: inline-flex; align-items: center; gap: 7px; }
-  .cb-health::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--cb-dim); }
-  .cb-health.ready::before { background: var(--cb-accent); }
-  .cb-health.building::before { background: var(--cb-warn); }
-  .cb-health.error::before { background: var(--cb-danger); }
-  .cb-notice { grid-column: 1 / -1; padding: 10px 12px; border-left: 3px solid var(--cb-line-strong); background: var(--cb-sunken); color: var(--cb-muted); overflow-wrap: anywhere; }
-  .cb-notice:empty { display: none; }
-  .cb-notice.error { border-left-color: var(--cb-danger); color: #efa18f; }
-  .cb-notice.building { border-left-color: var(--cb-warn); }
-  .cb-state {
-    width: min(720px, calc(100% - 32px));
-    margin: 64px auto;
-    padding: 32px;
-    border: 1px solid var(--cb-line);
-    border-left: 3px solid var(--cb-accent);
-    border-radius: 6px;
-    background: var(--cb-panel);
-  }
-  .cb-state.error { border-left-color: var(--cb-danger); }
-  .cb-state.empty { border-left-color: var(--cb-warn); }
-  .cb-state h2 { margin: 0 0 8px; font-size: 18px; }
-  .cb-state p { margin: 0; color: var(--cb-muted); overflow-wrap: anywhere; }
-  .cb-state button { margin-top: 20px; }
-  .cb-shell { display: block; width: min(1680px, 100%); margin: 0 auto; padding: 20px clamp(16px, 3vw, 40px) 64px; }
-  .cb-surface { border: 1px solid var(--cb-line); border-radius: 6px; background: var(--cb-panel); }
-  .cb-timeline { padding: 16px; position: sticky; top: 0; z-index: 5; }
-  .cb-timeline-top { display: grid; grid-template-columns: auto minmax(180px, 1fr) minmax(220px, 1.35fr); gap: 16px; align-items: center; }
-  .cb-stepper { display: flex; flex-wrap: wrap; gap: 8px; }
-  .cb-stepper button { min-width: 44px; }
-  .cb-stepper .cb-latest { color: var(--cb-accent); }
-  .cb-range-wrap { min-width: 0; }
-  .cb-range-wrap label { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 7px; color: var(--cb-muted); font-size: 11px; }
-  #commit-range { width: 100%; height: 28px; margin: 0; cursor: pointer; accent-color: var(--cb-accent); }
-  #commit-range:disabled { cursor: not-allowed; opacity: .55; }
-  .cb-commit { min-width: 0; height: 84px; overflow: auto; padding-left: 16px; border-left: 1px solid var(--cb-line); }
-  .cb-commit-line { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; }
-  .cb-commit time { color: var(--cb-muted); font-size: 11px; }
-  .cb-commit a { font-weight: 600; }
-  .cb-subject { margin: 5px 0 0; color: var(--cb-ink); line-height: 1.45; overflow-wrap: anywhere; }
-  .cb-compare { display: grid; grid-template-columns: minmax(230px, 420px) 1fr; gap: 16px; align-items: end; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--cb-line); }
-  .cb-field { display: grid; gap: 7px; }
-  .cb-field select { width: 100%; min-width: 0; padding: 8px 34px 8px 10px; background: var(--cb-sunken); }
-  .cb-compare-summary { margin: 0; height: 64px; overflow: auto; color: var(--cb-muted); overflow-wrap: anywhere; }
-  .cb-compare-summary strong { color: var(--cb-ink); font-weight: 500; }
-  .cb-warnings { margin-top: 14px; border-top: 1px solid var(--cb-line); }
-  .cb-warnings summary { min-height: 44px; padding: 12px 0; color: var(--cb-muted); cursor: pointer; }
-  .cb-warning-list { max-height: 240px; margin: 0 0 4px; padding: 0 0 12px 24px; overflow-y: auto; color: var(--cb-warn); font-size: 11px; }
-  .cb-warning-list li + li { margin-top: 5px; }
-  .cb-workspace { display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(310px, .8fr); gap: 18px; margin-top: 18px; align-items: start; }
-  .cb-panel-head { display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: baseline; padding: 12px 16px; border-bottom: 1px solid var(--cb-line); }
-  .cb-panel-head h2 { margin: 0; font-size: 13px; font-weight: 600; }
-  .cb-panel-note { margin: 0 0 0 auto; color: var(--cb-muted); font-size: 11px; }
-  .cb-map-key { display: flex; flex-wrap: wrap; gap: 8px 14px; padding: 10px 16px; border-bottom: 1px solid var(--cb-line); color: var(--cb-muted); font-size: 10px; }
-  .cb-key { display: inline-flex; align-items: center; gap: 6px; }
-  .cb-swatch { width: 12px; height: 12px; border: 1px solid var(--cb-line-strong); }
-  .cb-swatch.added { border-color: var(--cb-accent); background: var(--cb-accent-tint); }
-  .cb-swatch.changed { border-color: var(--cb-warn); border-left-width: 4px; }
-  .cb-swatch.moved { border-color: var(--cb-info); transform: rotate(45deg) scale(.76); }
-  .cb-swatch.deleted { border-color: var(--cb-danger); border-style: dashed; background: transparent; }
-  .cb-map { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 12px; padding: 12px; }
-  .cb-group { min-width: 0; border: 1px solid var(--cb-line); border-radius: 5px; background: var(--cb-sunken); }
-  .cb-group.selected { border-color: var(--cb-accent); }
-  .cb-group-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; border-bottom: 1px solid var(--cb-line); padding: 4px 6px 4px 12px; }
-  .cb-group-head button { min-width: 0; padding: 8px 4px; border: 0; background: transparent; color: var(--cb-ink); text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .cb-group-head button:hover { color: var(--cb-accent); }
-  .cb-group-tally { color: var(--cb-muted); font-size: 10px; white-space: nowrap; }
-  .cb-file-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; padding: 8px; }
-  .cb-file-slot { min-width: 0; height: 160px; }
-  .cb-file-card {
-    display: grid;
-    grid-template-rows: auto auto 1fr;
-    gap: 6px;
-    width: 100%;
-    height: 100%;
-    min-height: 118px;
-    padding: 10px;
-    border-left-width: 3px;
-    text-align: left;
-    letter-spacing: 0;
-    background: var(--cb-panel);
-    overflow: hidden;
-  }
-  .cb-file-card:hover:not(:disabled), .cb-file-card.selected { border-color: var(--cb-accent); color: var(--cb-ink); }
-  .cb-file-card.selected { background: var(--cb-accent-tint); }
-  .cb-file-card.added { border-left-color: var(--cb-accent); }
-  .cb-file-card.changed { border-left-color: var(--cb-warn); }
-  .cb-file-card.moved { border-top-color: var(--cb-info); }
-  .cb-file-card.deleted { border: 1px dashed var(--cb-danger); border-left-width: 3px; background: transparent; color: var(--cb-muted); }
-  .cb-file-card.coverage, .cb-swatch.coverage { border: 1px dotted var(--cb-warn); }
-  .cb-file-size { display: block; height: 4px; background: var(--cb-line); }
-  .cb-file-size span { display: block; height: 100%; background: var(--cb-accent); }
-  .cb-neighborhood { margin: 12px 0; }
-  .cb-neighborhood svg { width: 100%; height: auto; }
-  .cb-neighborhood text { font: 12px system-ui, sans-serif; fill: var(--cb-ink); }
-  .cb-neighborhood rect { fill: var(--cb-sunken); stroke: var(--cb-line-strong); }
-  .cb-neighborhood .cb-focus rect { stroke: var(--cb-accent); }
-  .cb-neighborhood path { fill: none; stroke: var(--cb-accent); stroke-width: 1.5; }
-  .cb-neighborhood figcaption { font-size: 11px; color: var(--cb-muted); }
-  .cb-file-slot.vacant { visibility: hidden; pointer-events: none; }
-  .cb-file-name { color: var(--cb-ink); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .cb-file-dir { color: var(--cb-muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .cb-file-foot { align-self: end; display: grid; gap: 5px; color: var(--cb-muted); font-size: 10px; }
-  .cb-file-stats, .cb-badges { display: flex; flex-wrap: wrap; gap: 5px 9px; }
-  .cb-badge { display: inline-flex; align-items: center; min-height: 20px; padding: 1px 5px; border: 1px solid var(--cb-line-strong); border-radius: 3px; color: var(--cb-muted); font-size: 9px; letter-spacing: .06em; text-transform: uppercase; }
-  .cb-badge.added { border-color: var(--cb-accent); color: var(--cb-accent-soft); }
-  .cb-badge.changed { border-color: var(--cb-warn); color: var(--cb-warn); }
-  .cb-badge.moved { border-color: var(--cb-info); color: #cdb9e1; }
-  .cb-badge.deleted, .cb-badge.removed { border-color: var(--cb-danger); border-style: dashed; color: #efa18f; }
-  .cb-inspector { position: sticky; top: calc(var(--timeline-height, 260px) + 18px); min-width: 0; }
-  .cb-return { display: none; margin-bottom: 12px; }
-  .cb-inspector-body { padding: 16px; }
-  .cb-inspector-title { margin: 0; font-size: 17px; overflow-wrap: anywhere; }
-  .cb-inspector-kicker { margin: 4px 0 14px; color: var(--cb-muted); font-size: 11px; overflow-wrap: anywhere; }
-  .cb-kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 5px 12px; margin: 0; font-size: 11px; }
-  .cb-kv dt { color: var(--cb-muted); }
-  .cb-kv dd { margin: 0; overflow-wrap: anywhere; }
-  .cb-section-title { margin: 20px 0 8px; color: var(--cb-accent); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; }
-  .cb-copy { margin: 0; color: var(--cb-muted); overflow-wrap: anywhere; }
-  .cb-symbols, .cb-relations { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
-  .cb-symbols li, .cb-relation { min-width: 0; padding: 9px 10px; border-left: 2px solid var(--cb-line-strong); background: var(--cb-sunken); overflow-wrap: anywhere; }
-  .cb-symbols a { display: block; }
-  .cb-symbol-line { color: var(--cb-muted); font-size: 10px; }
-  .cb-relation.added { border-left-color: var(--cb-accent); }
-  .cb-relation.removed { border-left-color: var(--cb-danger); opacity: .82; }
-  .cb-relation-title { color: var(--cb-ink); font-size: 11px; }
-  .cb-relation-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 4px; color: var(--cb-muted); font-size: 10px; }
-  .cb-evidence { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 6px; font-size: 10px; }
-  .cb-edge-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 10px 0; color: var(--cb-muted); font-size: 11px; }
-  .cb-edge-controls label { display: inline-flex; min-height: 44px; align-items: center; gap: 8px; cursor: pointer; }
-  .cb-edge-controls input { width: 18px; height: 18px; accent-color: var(--cb-accent); }
-  .cb-muted { color: var(--cb-muted); }
-  .cb-empty-inline { padding: 12px; border: 1px dashed var(--cb-line-strong); color: var(--cb-muted); }
-  [hidden] { display: none !important; }
-  @media (max-width: 1040px) {
-    .cb-timeline-top { grid-template-columns: auto minmax(180px, 1fr); }
-    .cb-commit { grid-column: 1 / -1; padding: 12px 0 0; border-left: 0; border-top: 1px solid var(--cb-line); }
-    .cb-workspace { grid-template-columns: minmax(0, 1fr); }
-    .cb-inspector { position: static; }
-    .cb-return { display: inline-block; }
-  }
-  @media (max-width: 680px) {
-    body.codebase-page { font-size: 14px; }
-    .cb-topbar { grid-template-columns: minmax(0, 1fr); padding: 16px; }
-    .cb-meta { grid-column: auto; display: grid; gap: 5px; }
-    .cb-shell { padding: 12px 12px 48px; }
-    .cb-timeline { padding: 12px; position: static; }
-    .cb-timeline-top { grid-template-columns: minmax(0, 1fr); }
-    .cb-stepper { display: grid; grid-template-columns: repeat(3, 1fr); }
-    .cb-stepper button { padding-inline: 6px; }
-    .cb-commit { grid-column: auto; }
-    .cb-compare { grid-template-columns: minmax(0, 1fr); }
-    .cb-compare-summary { font-size: 12px; }
-    .cb-panel-head { align-items: start; }
-    .cb-panel-note { width: 100%; margin-left: 0; }
-    .cb-map { grid-template-columns: minmax(0, 1fr); padding: 8px; }
-    .cb-file-grid { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); }
-    .cb-inspector-body { padding: 14px; }
-    .codebase-page select { font-size: 16px; }
-  }
-  @media (max-width: 390px) {
-    .cb-file-grid { grid-template-columns: minmax(0, 1fr); }
-    .cb-file-slot, .cb-file-card { min-height: 104px; }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .codebase-page *, .codebase-page *::before, .codebase-page *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
-  }
-</style>
-<link rel="stylesheet" href="/themes.css">
-<link rel="stylesheet" href="/navigation.css">
-<script src="/theme-picker.js"></script>
-</head>
-<body class="codebase-page" data-product="factory">
-<a class="cb-skip" href="#codebase-main">Skip to codebase map</a>
-<div class="factory-header">
-  <header class="cb-topbar factory-titlebar">
-    <div>
-      <p class="cb-eyebrow">Factory · repository view</p>
-      <div class="cb-title-row"><span class="cb-mark" aria-hidden="true"></span><h1 class="cb-title">Codebase history</h1></div>
-    </div>
+(() => {
+  'use strict';
+  function mount(host, repository) {
+    host.classList.add('codebase-page');
+    host.innerHTML = `
     <div class="cb-meta" id="history-meta" hidden>
       <span id="health" class="cb-health">Loading</span>
       <span>repository <strong id="meta-repo">—</strong></span>
@@ -270,9 +12,7 @@
       <span>extractor <strong id="meta-extractor">—</strong></span>
     </div>
     <div id="notice" class="cb-notice" aria-live="polite"></div>
-  </header>
-  <nav class="factory-nav" aria-label="Factory views"><a href="/#inbox">Inbox</a><a href="/#roadmap">Roadmap</a><a href="/#ops">Ops</a><a href="/chat">Chat</a><span aria-current="page">Codebase</span><a href="/atlas">Atlas</a></nav>
-</div>
+
 <div id="codebase-app">
 
   <section id="load-state" class="cb-state" role="status" aria-live="polite">
@@ -281,7 +21,7 @@
     <button id="retry" type="button" hidden>Try again</button>
   </section>
 
-  <main id="codebase-main" class="cb-shell" tabindex="-1" hidden>
+  <section id="codebase-main" class="cb-shell" tabindex="-1" hidden>
     <section class="cb-timeline cb-surface" aria-labelledby="timeline-heading">
       <div class="cb-timeline-top">
         <div class="cb-stepper" aria-label="Revision controls">
@@ -332,13 +72,12 @@
         <div id="inspector" class="cb-inspector-body"><p class="cb-copy">Select a folder or file to inspect its structure and relationships.</p></div>
       </aside>
     </div>
-  </main>
+  </section>
 </div>
-<script>
-(() => {
-  'use strict';
 
-  const byId = id => document.getElementById(id);
+`;
+    let disposed = false;
+  const byId = id => host.querySelector('#' + CSS.escape(id));
   const dom = {
     main: byId('codebase-main'), loadState: byId('load-state'), loadTitle: byId('load-title'),
     loadDetail: byId('load-detail'), retry: byId('retry'), meta: byId('history-meta'),
@@ -455,7 +194,7 @@
   }
 
   function applyHistory(data, status, error) {
-    if (!data || !Array.isArray(data.snapshots) || !Array.isArray(data.slots)) throw new Error('The codebase API returned an invalid history payload.');
+    if (!data || data.repo !== repository || !Array.isArray(data.snapshots) || !Array.isArray(data.slots)) throw new Error('The codebase API returned an invalid or differently scoped history payload.');
     const nextVersion = [string(data.generated_at), string(data.tip), data.snapshots.length].join('|');
     envelopeStatus = status;
     envelopeError = string(error);
@@ -984,13 +723,12 @@
   }
 
   async function poll() {
-    if (inFlight) return;
+    if (inFlight || disposed) return;
     inFlight = true;
     dom.retry.disabled = true;
     try {
-      const response = await fetch('/api/codebase', { cache: 'no-store', headers: { Accept: 'application/json' } });
-      if (!response.ok) throw new Error('The codebase API returned HTTP ' + response.status + '.');
-      const envelope = await response.json();
+      const envelope = await WorkspaceAPI.json('/api/codebase?' + new URLSearchParams({repository}));
+      if (disposed) return;
       if (!envelope || !['building', 'ready', 'error'].includes(envelope.status)) throw new Error('The codebase API returned an invalid status envelope.');
       if (envelope.data) applyHistory(envelope.data, envelope.status, envelope.error);
       else if (envelope.status === 'building') {
@@ -1027,13 +765,16 @@
   });
   dom.baseline.addEventListener('blur', () => { if (pendingBaselineSync) syncBaselineOptions(); });
   dom.retry.addEventListener('click', poll);
-  new ResizeObserver(([entry]) => dom.main.style.setProperty('--timeline-height', entry.target.getBoundingClientRect().height + 'px')).observe(document.querySelector('.cb-timeline'));
-  window.setInterval(() => {
+  const observer = new ResizeObserver(([entry]) => dom.main.style.setProperty('--timeline-height', entry.target.getBoundingClientRect().height + 'px'));
+  observer.observe(host.querySelector('.cb-timeline'));
+  const timer = window.setInterval(() => {
+    if (document.hidden) return;
     if (history) renderHeader();
     poll();
   }, 30000);
   poll();
+  return {dispose() { disposed = true; window.clearInterval(timer); observer.disconnect(); }};
+
+  }
+  window.WorkspaceCodebase = Object.freeze({mount});
 })();
-</script>
-</body>
-</html>

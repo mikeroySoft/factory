@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from factory import binding, config, lifecycle, plan, roadmap
+from factory import binding, config, lifecycle, outcomes, plan, roadmap
 from factory.evidence import EvidenceError
 
 REPO = "example/project"
@@ -46,12 +46,14 @@ Owner-confirmed browser and CLI evidence.
 """
 
 
-def issue(number: int, body: str, *, labels=(), title="Issue", state="open", assignees=()):
+def issue(number: int, body: str, *, labels=(), title="Issue", state="open", assignees=(),
+          comments=0):
     return {
         "number": number, "title": title, "state": state,
         "body": body, "html_url": f"https://github.com/{REPO}/issues/{number}",
         "updated_at": AT, "labels": [{"name": value} for value in labels],
         "assignees": [{"login": value} for value in assignees],
+        "comments": comments,
     }
 
 
@@ -390,6 +392,61 @@ class RoadmapTest(unittest.TestCase):
         self.assertEqual(recovered["state"], "OPEN")
         self.assertEqual(recovered["sections"]["Plan"], "Revised live plan")
         self.assertEqual(recovered["drift"][0]["status"], "changed")
+
+    def test_owner_outcomes_keep_comment_coverage_and_machine_verification_separate(self):
+        parent = issue(
+            50,
+            initiative_body("Plan", links=""),
+            labels=("initiative",),
+            title="Parent",
+            comments=1,
+        )
+        body = outcomes.format_comment(self.cfg, parent, "alice", {
+            "op": "outcome",
+            "number": 50,
+            "kind": "accepted",
+            "source_revision": "eacb791",
+            "evidence_url": f"https://github.com/{REPO}/actions/runs/7",
+            "summary": "The owner observed the intended result.",
+        })
+        attestation = {
+            "id": 91,
+            "body": body,
+            "user": {"login": "alice"},
+            "created_at": AT,
+            "updated_at": AT,
+            "html_url": f"https://github.com/{REPO}/issues/50#issuecomment-91",
+        }
+        first_page = f"repos/{REPO}/issues/50/comments?per_page={plan.PAGE_SIZE}&page=1"
+        responses = {
+            f"repos/{REPO}/issues/50": parent,
+            first_page: [attestation],
+        }
+
+        report = self.collect(responses, 50)
+        delivery = report["plans"][0]["delivery"]
+        self.assertEqual(delivery["status"], "owner_attested")
+        self.assertEqual(delivery["attributed"]["accepted"]["status"], "attested")
+        self.assertEqual(delivery["attributed"]["released"]["status"], "unknown")
+        self.assertEqual(delivery["verified"]["deployment"]["status"], "unknown")
+        self.assertEqual(delivery["verified"]["health"]["status"], "unknown")
+        self.assertTrue(delivery["sources"])
+        self.assertIn(delivery["sources"][0], {item["id"] for item in report["sources"]})
+
+        parent["comments"] = plan.PAGE_SIZE + 1
+        last_page = f"repos/{REPO}/issues/50/comments?per_page={plan.PAGE_SIZE}&page=2"
+        responses[last_page] = [attestation]
+        partial = self.collect(responses, 50)["plans"][0]["delivery"]
+        self.assertEqual(partial["coverage"]["status"], "partial")
+        self.assertEqual(partial["attributed"]["accepted"]["status"], "unknown")
+        self.assertEqual(partial["evidence"][0]["status"], "current")
+
+        responses[last_page] = EvidenceError("github_unavailable", "offline")
+        unavailable = self.collect(responses, 50)
+        delivery = unavailable["plans"][0]["delivery"]
+        self.assertEqual(delivery["coverage"]["status"], "unavailable")
+        self.assertEqual(delivery["status"], "unknown")
+        self.assertTrue(any(row["code"] == "github_unavailable" for row in unavailable["errors"]))
 
     def test_failed_list_is_unavailable_not_a_successful_empty_roadmap(self):
         list_path = f"repos/{REPO}/issues?labels=initiative&state=all&sort=updated&direction=desc&per_page={plan.PAGE_SIZE}&page=1"

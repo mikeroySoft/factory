@@ -3,8 +3,8 @@
 Factory is a label-driven ticket pipeline for GitHub repos. Commands, configuration,
 and contracts live in [README.md](README.md); setup, ticket writing, and escalation
 diagnosis live in [skills/factory/SKILL.md](skills/factory/SKILL.md). Read those
-rather than copying them here. `factory/architecture.html` (dashboard `/atlas`)
-draws the system.
+rather than copying them here. The native Atlas (`factory/workspace-tools.js`,
+dashboard `/?view=atlas`) draws the pipeline; Codebase links extracted relationships.
 
 **Evidence of done:** the dispatcher runs the gate itself after every worker attempt
 and before review; that run is the evidence, not a worker's claim to have run
@@ -28,14 +28,15 @@ map or a path in it does not exist; update the map in the same change.
 | Quality gate | `factory/gate.py` | `tests/test_factory.py`, `tests/test_gate_resources.py` | `test`; implements `conflict-markers`, `protected-paths`, `leak-scan` |
 | Manager and human handoffs | `factory/manage.py`, `factory/handoff.py` | `tests/test_viability.py`, `tests/test_handoff.py`, `tests/test_manager_binding.py`, `tests/test_frontier.py` | `test` |
 | Lifecycle journal (`events.jsonl`) | `factory/lifecycle.py` | `tests/test_lifecycle.py`, `tests/test_lifecycle_consumers.py`, `tests/test_events_rotation.py`, `tests/test_resources.py` | `test` |
-| Initiatives, bindings, roadmap | `factory/plan.py`, `factory/binding.py`, `factory/roadmap.py`, `factory/templates/initiative.md` | `tests/test_plan.py`, `tests/test_binding.py`, `tests/test_binding_cli.py`, `tests/test_roadmap.py` | `test` |
+| Initiatives, bindings, roadmap and outcomes | `factory/plan.py`, `factory/binding.py`, `factory/roadmap.py`, `factory/outcomes.py`, `factory/templates/initiative.md` | `tests/test_plan.py`, `tests/test_binding.py`, `tests/test_binding_cli.py`, `tests/test_roadmap.py`, `tests/test_outcomes.py` | `test` |
 | Project evidence and PR feedback | `factory/evidence.py`, `factory/feedback.py` | `tests/test_evidence.py`, `tests/test_evidence_budget.py`, `tests/test_evidence_transport.py`, `tests/test_feedback.py`, `tests/test_viability_evidence.py` | `test` |
-| Dashboard | `factory/dashboard.py`, `factory/dashboard.html`, `factory/architecture.html`, `factory/navigation.css`, `factory/themes.css`, `factory/theme-picker.js`, `factory/motion.js` | `tests/test_dashboard_bind.py`, `tests/test_dashboard_port.py`, `tests/test_factory.py` | `test` |
-| Runtime JSON | `factory/runtime_events.py`, `factory/runtime_local.py` | `tests/test_runtime.py`, `tests/test_factory.py` | `test` |
-| Inbox briefing | `factory/briefing.py`, `factory/briefing.css` | `tests/test_briefing.py`, `tests/test_viability_evidence.py` | `test` |
-| Settings | `factory/settings.py` | `tests/test_settings.py` | `test` |
-| Manager console (`chat`) | `factory/chat.py`, `factory/chat.html`, `console/app` | `tests/test_chat.py` | `test` |
-| Codebase history | `factory/codebase.py`, `factory/codebase.html` | `tests/test_codebase.py` | `test` |
+| Operator workspace | `factory/dashboard.py`, `factory/dashboard.html`, `factory/workspace.py`, `factory/workspace.js`, `factory/workspace-api.js`, `factory/workspace.css`, `factory/themes.css`, `factory/motion.js` | `tests/test_workspace.py`, `tests/test_dashboard_passive.py`, `tests/test_dashboard_bind.py`, `tests/test_dashboard_port.py`, `tests/test_factory.py` | `test` |
+| Guarded human decisions | `factory/decisions.py`, `factory/workspace-decisions.js` | `tests/test_decisions.py` | `test` |
+| Runtime and flow projections | `factory/runtime_events.py`, `factory/runtime_local.py`, `factory/flow.py` | `tests/test_runtime.py`, `tests/test_flow.py`, `tests/test_factory.py` | `test` |
+| Inbox briefing | `factory/briefing.py` | `tests/test_briefing.py`, `tests/test_viability_evidence.py` | `test` |
+| Settings | `factory/settings.py`, `factory/workspace-settings.js` | `tests/test_settings.py` | `test` |
+| Manager console (`chat`) | `factory/chat.py`, `console/app` | `tests/test_chat.py` | `test` |
+| Codebase history and Atlas | `factory/codebase.py`, `factory/workspace-codebase.js`, `factory/workspace-codebase.css`, `factory/workspace-tools.js` | `tests/test_codebase.py` | `test` |
 | Accepted handoff retention | `factory/results.py` | `tests/test_results.py` | `test` |
 | Metrics (`stats`) | `factory/stats.py` | `tests/test_factory.py`, `tests/test_human_corrections.py`, `tests/test_escapes.py` | `test` |
 | Lessons (`learn`) | `factory/learn.py` | `tests/test_factory.py`, `tests/test_lifecycle_consumers.py`, `tests/test_escapes.py`, `tests/test_auto_learn.py` | `test` |

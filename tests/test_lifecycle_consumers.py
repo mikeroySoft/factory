@@ -5,7 +5,6 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -34,7 +33,9 @@ class LifecycleConsumersTest(unittest.TestCase):
             events.write_text("\n".join(json.dumps(row) for row in rows) + '\n{"event":"attempt"')
             with patch.multiple(dispatch, FACTORY=factory, EVENTS=events, create=True), \
                  patch("factory.stats.gh", return_value=[]):
-                self.assertEqual(dashboard.spend_by_ticket(), {
+                self.assertEqual(dashboard.spend_by_ticket(
+                    [row for row in rows if isinstance(row, dict)]
+                ), {
                     1: {"seconds": 12, "cost": 0.25, "rounds": 1},
                     2: {"seconds": 8, "cost": None, "rounds": 1},
                 })
@@ -71,32 +72,68 @@ class LifecycleConsumersTest(unittest.TestCase):
         review["wait"] = {"reason": "exclusive_resource", "mode": "blocking"}
         self.assertIsNone(dashboard.phase_of([ticket, worker, gate, review]))
 
-    def test_schedule_requires_confirmed_idle_timer_and_reuses_transition(self) -> None:
+    def test_schedule_is_read_only_and_reuses_a_retained_transition(self) -> None:
         with tempfile.TemporaryDirectory() as d, patch.dict(dashboard.__dict__), patch.dict(dispatch.__dict__), \
              patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}):
             dashboard.configure(config.Config(Path(d), "acme/widgets"))
-            next_at = 4102444800000000
-            def systemctl(cmd, **kwargs):
-                if "list-timers" in cmd:
-                    return subprocess.CompletedProcess(cmd, 0, json.dumps([{"next": next_at}]), "")
-                status = "active" if cmd[-1].endswith(".timer") else "inactive"
-                return subprocess.CompletedProcess(cmd, 0 if status == "active" else 3, status, "")
-            with patch.object(dashboard.subprocess, "run", side_effect=systemctl), \
+            next_at = "2100-01-01T00:00:00.000000Z"
+            state = {
+                "service_active": False,
+                "timer_active": True,
+                "next_at": next_at,
+                "paused": None,
+                "observed_at": "2026-01-01T00:00:00.000000Z",
+                "observation": "fresh",
+                "capacity": {"configured": 1, "active": 0, "complete": True},
+                "run_ids": [],
+                "latest_transition": None,
+            }
+            wait = {
+                "reason": "scheduled_next_pass",
+                "mode": "retry_next_pass",
+                "resource": None,
+                "details": {"next_at": "2100-01-01T00:00:00Z"},
+            }
+            runtime = {
+                "executions": [],
+                "history": {"complete": True},
+                "events": [{
+                    "kind": "scheduling_observation",
+                    "timer_active": True,
+                    "service_active": False,
+                    "wait": wait,
+                    "event_id": "retained-schedule",
+                    "at": "2025-12-31T23:00:00Z",
+                }],
+            }
+            with patch.object(dashboard.runtime_local, "dispatcher", return_value=(state, [])), \
+                 patch.object(dashboard, "_timer_last", return_value=None), \
                  patch.object(dashboard, "journal_runs", return_value=[]):
-                first = dashboard.dispatcher()
-                rows = lifecycle.read_events(dispatch.EVENTS)
-                second = dashboard.dispatcher()
+                first = dashboard.dispatcher(runtime)
+                second = dashboard.dispatcher(runtime)
             self.assertEqual(first["schedule"]["wait"]["reason"], "scheduled_next_pass")
             self.assertFalse(first["service_active"])
-            self.assertEqual(first["schedule"]["event_id"], second["schedule"]["event_id"])
-            self.assertEqual(rows, lifecycle.read_events(dispatch.EVENTS))
-            with patch.object(dashboard.subprocess, "run", side_effect=FileNotFoundError), \
+            self.assertEqual(first["schedule"]["event_id"], "retained-schedule")
+            self.assertEqual(first["schedule"], second["schedule"])
+            self.assertFalse(dispatch.EVENTS.exists())
+
+            unavailable = {
+                **state,
+                "service_active": None,
+                "timer_active": None,
+                "next_at": None,
+                "observation": "unavailable",
+            }
+            with patch.object(
+                dashboard.runtime_local, "dispatcher",
+                return_value=(unavailable, [{"source": "systemctl", "scope": "timer", "code": "missing"}]),
+            ), patch.object(dashboard, "_timer_last", return_value=None), \
                  patch.object(dashboard, "journal_runs", return_value=[]):
-                unknown = dashboard.dispatcher()
+                unknown = dashboard.dispatcher({"executions": [], "history": {}, "events": []})
             self.assertIsNone(unknown["service_active"])
             self.assertIsNone(unknown["timer"]["active"])
             self.assertIsNone(unknown["schedule"]["wait"])
-            self.assertFalse(any(row["dispatcher_run_id"] for row in lifecycle.read_events(dispatch.EVENTS)))
+            self.assertFalse(dispatch.EVENTS.exists())
 
     def test_held_lock_and_artifacts_do_not_invent_a_phase(self) -> None:
         issue = {
