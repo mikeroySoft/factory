@@ -1,6 +1,7 @@
 # Ticket flow map
 
-Every path a ticket can take through factory. [Atlas](../factory/architecture.html)
+Every path a ticket can take through factory. The native dashboard Atlas
+(`/?view=atlas`, [implementation](../factory/workspace-tools.js))
 shows the pieces; this map shows the paths. Edge labels cite the implementing
 symbol in `factory/`; the tables below are the full index and
 `tests/test_ticket_flow_map.py` fails when they drift from the code in either
