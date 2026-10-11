@@ -264,6 +264,7 @@ merge stage.
 | `factory dashboard` | Native outcome-control workspace: Overview, Outcomes, live Flow, Attention, Success, Codebase, Atlas, System/Ops and Settings, with a persistent contextual FM dock. Defaults to `0.0.0.0`; APIs require the workspace access key. `--json` prints a passive, bounded-window Ops snapshot without journal reconciliation writes. |
 | `factory dashboard --runtime-json` | One bounded schema 1 runtime observation using only local read-only evidence; no GitHub, model probe, journal append, lock acquisition, or state creation. Partial source failures remain structured JSON. See [runtime contract](#bounded-runtime-json-schema-1). |
 | `factory evidence --root /path/to/main-checkout` | One explicit-repository schema 1 JSON read: compact cases, selected evidence, workflow/file/PR/CI investigations, or capabilities. Fixed read-only GitHub requests and F03 local evidence; no model, action execution, or state writes. See [evidence contract](#bounded-project-evidence-json-schema-1). |
+| `factory mcp` | Stdio MCP server (protocol `2025-06-18`) exposing the four evidence reads plus host-registry discovery to one locally launched MCP client, across every repository registered with a `path` in the host config. Each tool call runs one `factory evidence` subprocess; no mutation tools, resources, prompts, or network transport. See [`factory mcp`](#stdio-mcp-server-factory-mcp). |
 | `factory plan list` / `factory plan inspect N` | Read-only schema 1 JSON over `initiative` issues: declared status/owner, parsed sections, `#N` implementation links (`inspect` also fetches each linked issue's title/state), per-issue `malformed` + `problems` (missing/invalid declared facts, sections cut at 4,000 characters, links beyond the first 20), cited sources with `observed_at`. `list` reads at most 3 pages of 100 and keeps malformed initiatives flagged per row (exit 0); a failed page, or a malformed initiative under `inspect`, yields `coverage.status: partial` and exit 1, never a mutation. |
 | `factory plan route N --reason <requirements\|implementation\|ci\|unknown> [--path P]... --json` | Read-only schema 1 JSON naming the human who owns a decision on ticket N; nothing is assigned, labelled or commented. JSON is also the default when `--json` is omitted. Priority: a `**Decision owner**` section in the ticket body (human override, wins on every recomputation), the canonical `Initiative: #N` (or legacy `Programme: #N`) initiative's Owner, or the initiative's own Owner when routing that initiative (requirements only), `[collaboration.reasons]`, `[collaboration.components]` exact repo-relative path prefixes against the given `--path`s (implementation only; `src/auth` matches `src/auth/x.py`, never `src/authentication/`), then `[collaboration].fallback`. `route.status` is `selected`, `candidates` (paths span prefixes with different owners), `unassigned` (reason `unknown`, no `--path` for implementation, or nothing configured) or `invalid` (malformed declared owner; `@org/team` on a user-owned repository). `route.revision` ties the answer to the `.factory.toml` commit and issue `updated_at`; `route.provenance` lists every step. Owner syntax is checked, membership is not: an unreadable repository record leaves `verification: unknown`. Without a `[collaboration]` section only ticket sources apply. |
 | `factory plan baseline N` / `factory plan drift TICKET` | Read-only schema 1 JSON for proposing a complete immutable initiative baseline or comparing a ticket's latest accepted baseline with the live complete source. Results are under top-level `baseline` or `drift`; neither command edits issues, rebaselines work, or grants execution authority. |
@@ -1908,6 +1909,65 @@ valid JSON on nonzero exits. `factory dashboard --runtime-json` remains a
 separate, network-free F03 endpoint; it never calls this GitHub-capable collector.
 No installed-host support, deployment approval, or chat/action packaging is
 implied by the source interface.
+
+## Stdio MCP server (`factory mcp`)
+
+`factory mcp` serves the evidence reads above to one MCP client over stdin/stdout:
+UTF-8 newline-delimited JSON-RPC 2.0, one compact JSON line per response, stdout
+carrying only MCP messages, diagnostics on stderr, clean exit on stdin EOF. Tool
+calls are processed sequentially; there is no cache, retry, polling or HTTP transport.
+
+Repositories come from the host config (`$XDG_CONFIG_HOME/factory/config.toml`),
+read once at startup; restart the server to pick up changes. Only valid
+`owner/name` tables with a nonempty **absolute** `path` are registered; a table
+without `path` is ignored, while a malformed file or a relative/non-string `path`
+fails startup with a one-line stderr diagnostic. A missing file is an empty registry.
+
+```toml
+[repo."example/widgets"]
+path = "/srv/widgets"
+
+[repo."example/tooling"]
+path = "/home/me/src/tooling"
+```
+
+Point a stdio-capable client at the installed command:
+
+```json
+{"mcpServers": {"factory": {"command": "factory", "args": ["mcp"]}}}
+```
+
+`initialize` returns `protocolVersion: "2025-06-18"` (also when the client asked
+for another version), `capabilities: {tools: {}}` and `serverInfo.name: "factory"`.
+`tools/list` advertises exactly five tools, each with an object-root `inputSchema`:
+
+| Tool | Arguments | Runs |
+|---|---|---|
+| `factory_repositories` | none | nothing; returns `{"repositories": [{"repository", "path"}, ...]}` sorted by slug |
+| `factory_observe` | `repository` | `evidence` op `observe` |
+| `factory_inspect` | `repository`, `number` | `evidence` op `inspect` |
+| `factory_investigate` | `repository`, `kind`, plus exactly that kind's fields | `evidence` op `investigate` |
+| `factory_capabilities` | `repository` | `evidence` op `capabilities` |
+
+Each evidence tool resolves `repository` to its registered path, launches
+`python -P -m factory evidence --root <path>` with no shell, writes one request
+(`schema_version: 1`, the tool's `op`, and every caller argument unchanged) and
+closes stdin. The adapter checks only its own fields: `arguments` must be an
+object (else JSON-RPC `-32602`); a missing, non-string or unregistered
+`repository`, a caller-supplied `op` or `schema_version`, or nonempty
+`factory_repositories` arguments return a text tool result with `isError: true`
+without launching anything. Everything else — kinds, required/extra fields, IDs,
+paths, refs, the 4096-byte request cap — is validated by `factory evidence`, whose
+exit-2 JSON comes back verbatim as `isError: true`.
+
+Tool results are always `{content: [{type: "text", text}], isError?}`. `text` is
+the child's stdout as written: evidence exit 0 or 1 is a normal result (exit 1
+already carries `coverage`/`errors`), exit 2 sets `isError: true`. Spawn failure,
+signal termination, other exit codes, or empty/malformed/oversized stdout become a
+short `isError: true` message — never raw stderr or a traceback — and the server
+keeps serving. JSON-RPC errors: `-32700` malformed JSON, `-32600` invalid envelope
+(both with `id: null`), `-32601` unknown method, `-32602` bad params or unknown
+tool. Valid notifications, including `notifications/initialized`, get no response.
 
 ## Read-only Factory Manager console (`factory chat`)
 
