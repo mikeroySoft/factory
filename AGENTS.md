@@ -36,6 +36,7 @@ map or a path in it does not exist; update the map in the same change.
 | Inbox briefing | `factory/briefing.py` | `tests/test_briefing.py`, `tests/test_viability_evidence.py` | `test` |
 | Settings | `factory/settings.py`, `factory/workspace-settings.js` | `tests/test_settings.py` | `test` |
 | Manager console (`chat`) | `factory/chat.py`, `console/app` | `tests/test_chat.py` | `test` |
+| Stdio MCP server (`mcp`) | `factory/mcp.py` | `tests/test_mcp.py` | `test` |
 | Codebase history and Atlas | `factory/codebase.py`, `factory/workspace-codebase.js`, `factory/workspace-codebase.css`, `factory/workspace-tools.js` | `tests/test_codebase.py` | `test` |
 | Accepted handoff retention | `factory/results.py` | `tests/test_results.py` | `test` |
 | Metrics (`stats`) | `factory/stats.py` | `tests/test_factory.py`, `tests/test_human_corrections.py`, `tests/test_escapes.py` | `test` |
