@@ -4,8 +4,9 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from factory.workspace import parse_ticket_flow
+from factory.workspace import parse_ticket_flow, ticket_flow_data
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -72,6 +73,34 @@ class TicketFlowParserTest(unittest.TestCase):
         self.assertTrue(
             all(
                 citation["line"] > 0 and citation["url"] is None
+                for edge in graph["edges"]
+                for citation in edge["citations"]
+            )
+        )
+
+    def test_packaged_graph_does_not_borrow_host_engine_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            packaged = root / "ticket-flow.md"
+            packaged.write_bytes((ROOT / "docs/ticket-flow.md").read_bytes())
+            ticket_flow_data.cache_clear()
+            self.addCleanup(ticket_flow_data.cache_clear)
+            with (
+                mock.patch("factory.workspace.TICKET_FLOW_CHECKOUT", root / "missing"),
+                mock.patch("factory.workspace.TICKET_FLOW_PACKAGED", packaged),
+                mock.patch(
+                    "factory.workspace.config.engine_commit",
+                    return_value="4" * 40,
+                ) as host_revision,
+            ):
+                graph = ticket_flow_data()
+
+        host_revision.assert_not_called()
+        self.assertIsNone(graph["source"]["revision"])
+        self.assertIsNone(graph["source"]["url"])
+        self.assertTrue(
+            all(
+                citation["url"] is None
                 for edge in graph["edges"]
                 for citation in edge["citations"]
             )

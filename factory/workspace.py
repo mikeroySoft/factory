@@ -341,11 +341,6 @@ def _ticket_flow_revision(path: Path) -> str | None:
                 revision = build.get("revision")
         except (OSError, RuntimeError, TypeError, ValueError, subprocess.SubprocessError):
             pass
-    else:
-        try:
-            revision = config.engine_commit()
-        except (OSError, RuntimeError, TypeError, ValueError):
-            pass
     return (
         revision.lower()
         if isinstance(revision, str) and _FLOW_REVISION.fullmatch(revision)
