@@ -213,7 +213,7 @@ class McpServerTest(unittest.TestCase):
         for text in ('[repo."x/y"]\npath = "relative"\n', '[repo."x/y"]\npath = 3\n', '[repo\n'):
             self.register(text)
             proc = subprocess.run([sys.executable, "-B", "-m", "factory", "mcp"], cwd=self.cwd, env=self.env,
-                                  input=b'{"jsonrpc":"2.0","id":1,"method":"ping"}\n', capture_output=True, timeout=WAIT)
+                                  input=b'{"jsonrpc":"2.0","id":1,"method":"ping"}\n', capture_output=True, timeout=WAIT, check=False)
             self.assertNotEqual(proc.returncode, 0, text)
             self.assertEqual(proc.stdout, b"")
             self.assertTrue(proc.stderr.strip(), text)

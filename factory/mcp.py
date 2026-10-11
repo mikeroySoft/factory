@@ -100,9 +100,10 @@ def run_evidence(root: str, request: dict) -> dict:
         return _text("Evidence subprocess produced an oversized result.", error=True)
     try:
         text = out.decode("utf-8")
-        if not isinstance(json.loads(text), dict):
-            raise ValueError
+        parsed = json.loads(text)
     except ValueError:
+        parsed = None
+    if not isinstance(parsed, dict):
         return _text("Evidence subprocess produced no valid JSON result.", error=True)
     return _text(text, error=proc.returncode == 2)
 
