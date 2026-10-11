@@ -189,6 +189,23 @@ class WorkspaceHTTPTest(unittest.TestCase):
         self.assertEqual(codebase["data"]["repo"], REPOSITORY)
         self.assertEqual(codebase["root"], str(self.root.resolve()))
 
+        status, _, ticket_flow = self.request("GET", "/api/ticket-flow", auth=True)
+        self.assertEqual(status, 200)
+        self.assertEqual(set(ticket_flow), {"nodes", "edges", "source"})
+        self.assertEqual(ticket_flow["source"]["path"], "docs/ticket-flow.md")
+        revision = ticket_flow["source"]["revision"]
+        if revision is None:
+            self.assertIsNone(ticket_flow["source"]["url"])
+        else:
+            self.assertIn(revision, ticket_flow["source"]["url"])
+        self.assertTrue(ticket_flow["nodes"])
+        self.assertTrue(ticket_flow["edges"])
+        status, _, body = self.request(
+            "GET", "/api/ticket-flow?repository=acme/widgets", auth=True
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"]["code"], "invalid_query")
+
         status, _, body = self.request(
             "GET",
             "/api/codebase?repository=acme/widgets",
