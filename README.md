@@ -2048,6 +2048,16 @@ The [ticket flow map](docs/ticket-flow.md) shows every path a ticket can take:
 triage decisions, build, review, approval, CI, merge, escalation and manager
 recovery, each edge citing the code that implements it.
 
+Atlas also renders this canonical map as an interactive ticket-flow explorer.
+Select a step in the connected diagram or searchable list to follow incoming,
+outgoing, and retry paths, with transition conditions and source citations.
+Overview and Reset return to the full step index; all transition evidence remains
+printed below. This is a fixed Factory reference, not live activity or the selected
+repository's extracted architecture. The authenticated `/api/ticket-flow` reads
+bounded, cached local documentation; it never dispatches work or locks the pipeline.
+The same Markdown source is included in installed wheels. Source links are pinned
+only when the reference revision is verified; otherwise links are marked unavailable.
+
 ## License
 
 MIT

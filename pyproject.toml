@@ -37,6 +37,9 @@ path = "factory/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["factory"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"docs/ticket-flow.md" = "factory/ticket-flow.md"
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

@@ -1,6 +1,7 @@
 """Authenticated, bounded transport for the native Factory workspace."""
 from __future__ import annotations
 
+import ast
 import hashlib
 import hmac
 import ipaddress
@@ -18,6 +19,7 @@ import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from socketserver import ThreadingMixIn
@@ -43,6 +45,11 @@ STDERR_BYTES = 64 * 1024
 MAX_CHAT_BODY = 8_192
 INSPECTION_CACHE = 16
 CHAT_CACHE = 32
+TICKET_FLOW_BYTES = 64 * 1024
+TICKET_FLOW_CODE_BYTES = 1024 * 1024
+TICKET_FLOW_PATH = "docs/ticket-flow.md"
+TICKET_FLOW_CHECKOUT = PACKAGE_ROOT / TICKET_FLOW_PATH
+TICKET_FLOW_PACKAGED = ASSET_ROOT / "ticket-flow.md"
 
 ASSETS = {
     "/themes.css": ("text/css; charset=utf-8", ASSET_ROOT / "themes.css"),
@@ -117,6 +124,244 @@ DECISION_STATUSES = {
 def _request_error(exc: BaseException) -> WorkspaceError:
     code = str(getattr(exc, "code", "invalid_request"))
     return WorkspaceError(code, str(exc)[:500] or "Request failed", DECISION_STATUSES.get(code, 400))
+
+
+_FLOW_ID = r"[A-Za-z][A-Za-z0-9_]*"
+_FLOW_GROUP = re.compile(rf'subgraph\s+({_FLOW_ID})\["([^"\r\n]*)"\]')
+_FLOW_STATE = re.compile(rf'({_FLOW_ID})\(\["([^"\r\n]*)"\]\)')
+_FLOW_ACTION = re.compile(rf'({_FLOW_ID})\["([^"\r\n]*)"\]')
+_FLOW_OUT = re.compile(rf'({_FLOW_ID})\{{\{{"([^"\r\n]*)"\}}\}}')
+_FLOW_EDGE = re.compile(
+    rf'({_FLOW_ID})\s+(-->|-\.->)\|\s*"([^"\r\n]*)"\s*\|\s+({_FLOW_ID})'
+)
+_FLOW_CITATION = re.compile(r"\b([a-z_][a-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b")
+_FLOW_REVISION = re.compile(r"[0-9a-fA-F]{40,64}")
+
+
+def _bounded_text(path: Path, maximum: int) -> str:
+    with path.open("rb") as source:
+        raw = source.read(maximum + 1)
+    if len(raw) > maximum:
+        raise RuntimeError(f"{path.name} exceeds the supported size")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError(f"{path.name} is not UTF-8") from exc
+
+
+def _flow_symbol_lines(code_root: Path, module: str) -> dict[str, int]:
+    path = code_root / f"{module}.py"
+    if not path.is_file():
+        return {}
+    try:
+        tree = ast.parse(_bounded_text(path, TICKET_FLOW_CODE_BYTES), filename=str(path))
+    except (OSError, RuntimeError, SyntaxError):
+        return {}
+    lines = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            lines[node.name] = node.lineno
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else (
+            [node.target] if isinstance(node, ast.AnnAssign) else []
+        )
+        for target in targets:
+            if isinstance(target, ast.Name):
+                lines[target.id] = node.lineno
+    return lines
+
+
+def parse_ticket_flow(
+    text: str, *, code_root: Path = ASSET_ROOT, revision: str | None = None
+) -> dict:
+    """Parse the supported, canonical Mermaid ticket map into plain graph data."""
+    source_lines = text.splitlines()
+    fences = [index for index, line in enumerate(source_lines) if line.strip() == "```mermaid"]
+    if len(fences) != 1:
+        raise RuntimeError("ticket flow must contain exactly one Mermaid graph")
+    start = fences[0]
+    try:
+        stop = next(
+            index for index in range(start + 1, len(source_lines))
+            if source_lines[index].strip() == "```"
+        )
+    except StopIteration as exc:
+        raise RuntimeError("ticket flow Mermaid graph is not closed") from exc
+
+    nodes = []
+    edges = []
+    known = set()
+    group = ""
+    group_open = False
+    header = False
+    classes: list[tuple[list[str], int]] = []
+    symbol_cache: dict[str, dict[str, int]] = {}
+    pinned_revision = (
+        revision.lower()
+        if isinstance(revision, str) and _FLOW_REVISION.fullmatch(revision)
+        else None
+    )
+    base_url = (
+        f"https://github.com/mikeroySoft/factory/blob/{pinned_revision}/"
+        if pinned_revision
+        else None
+    )
+
+    def add_node(identifier: str, label: str, kind: str, line: int, node_group: str) -> None:
+        if identifier in known:
+            raise RuntimeError(f"duplicate Mermaid node {identifier!r} on line {line}")
+        known.add(identifier)
+        nodes.append(
+            {"id": identifier, "label": label, "kind": kind, "group": node_group, "line": line}
+        )
+
+    for offset in range(start + 1, stop):
+        line_number = offset + 1
+        line = source_lines[offset].strip()
+        if not line or line.startswith("%%"):
+            continue
+        if not header:
+            if line != "flowchart TB":
+                raise RuntimeError(f"unsupported Mermaid syntax on line {line_number}: {line}")
+            header = True
+            continue
+        if match := _FLOW_GROUP.fullmatch(line):
+            if group_open:
+                raise RuntimeError(f"nested Mermaid subgraph on line {line_number}")
+            identifier, label = match.groups()
+            group = label.removeprefix("View: ").strip()
+            group_open = True
+            add_node(identifier, label, "view", line_number, "")
+            continue
+        if line == "end":
+            if not group_open:
+                raise RuntimeError(f"unmatched Mermaid end on line {line_number}")
+            group = ""
+            group_open = False
+            continue
+        matched_node = False
+        for pattern, kind in (
+            (_FLOW_STATE, "state"),
+            (_FLOW_ACTION, "action"),
+            (_FLOW_OUT, "out"),
+        ):
+            if match := pattern.fullmatch(line):
+                add_node(*match.groups(), kind, line_number, group)
+                matched_node = True
+                break
+        if matched_node:
+            continue
+        if match := _FLOW_EDGE.fullmatch(line):
+            source, arrow, label, target = match.groups()
+            citations = []
+            for module, symbol in dict.fromkeys(_FLOW_CITATION.findall(label)):
+                symbols = symbol_cache.get(module)
+                if symbols is None:
+                    symbols = symbol_cache[module] = _flow_symbol_lines(code_root, module)
+                if symbol not in symbols:
+                    continue
+                path = f"factory/{module}.py"
+                symbol_line = symbols[symbol]
+                citations.append(
+                    {
+                        "symbol": f"{module}.{symbol}",
+                        "path": path,
+                        "line": symbol_line,
+                        "url": f"{base_url}{path}#L{symbol_line}" if base_url else None,
+                    }
+                )
+            edges.append(
+                {
+                    "from": source,
+                    "to": target,
+                    "label": label,
+                    "gap": arrow == "-.->",
+                    "line": line_number,
+                    "citations": citations,
+                }
+            )
+            continue
+        if re.fullmatch(r"classDef\s+[A-Za-z_][A-Za-z0-9_]*\s+.+", line):
+            continue
+        if match := re.fullmatch(
+            rf"class\s+({_FLOW_ID}(?:,{_FLOW_ID})*)\s+[A-Za-z_][A-Za-z0-9_]*",
+            line,
+        ):
+            classes.append((match.group(1).split(","), line_number))
+            continue
+        raise RuntimeError(f"unsupported Mermaid syntax on line {line_number}: {line}")
+
+    if not header:
+        raise RuntimeError("ticket flow Mermaid graph is empty")
+    if group_open:
+        raise RuntimeError("ticket flow Mermaid subgraph is not closed")
+    for edge in edges:
+        missing = [
+            identifier for identifier in (edge["from"], edge["to"]) if identifier not in known
+        ]
+        if missing:
+            raise RuntimeError(
+                f"Mermaid edge on line {edge['line']} references unknown node {missing[0]!r}"
+            )
+    for identifiers, line_number in classes:
+        missing = next((identifier for identifier in identifiers if identifier not in known), None)
+        if missing:
+            raise RuntimeError(
+                f"Mermaid class on line {line_number} references unknown node {missing!r}"
+            )
+    return {"nodes": nodes, "edges": edges}
+
+
+def _ticket_flow_revision(path: Path) -> str | None:
+    revision = None
+    if path == TICKET_FLOW_CHECKOUT:
+        try:
+            from factory.evidence import reader_build
+
+            build = reader_build()
+            status = subprocess.run(
+                [
+                    "git",
+                    "--no-optional-locks",
+                    "-C",
+                    str(PACKAGE_ROOT),
+                    "status",
+                    "--porcelain",
+                    "--untracked-files=all",
+                    "--",
+                    TICKET_FLOW_PATH,
+                ],
+                capture_output=True,
+                timeout=10,
+                check=False,
+                env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+            )
+            clean_doc = status.returncode == 0 and status.stdout == b""
+            if build.get("verified") is True and clean_doc:
+                revision = build.get("revision")
+        except (OSError, RuntimeError, TypeError, ValueError, subprocess.SubprocessError):
+            pass
+    return (
+        revision.lower()
+        if isinstance(revision, str) and _FLOW_REVISION.fullmatch(revision)
+        else None
+    )
+
+
+@lru_cache(maxsize=1)
+def ticket_flow_data() -> dict:
+    path = TICKET_FLOW_CHECKOUT if TICKET_FLOW_CHECKOUT.is_file() else TICKET_FLOW_PACKAGED
+    text = _bounded_text(path, TICKET_FLOW_BYTES)
+    revision = _ticket_flow_revision(path)
+    graph = parse_ticket_flow(text, revision=revision)
+    url = (
+        f"https://github.com/mikeroySoft/factory/blob/{revision}/{TICKET_FLOW_PATH}"
+        if revision
+        else None
+    )
+    return {**graph, "source": {"path": TICKET_FLOW_PATH, "revision": revision, "url": url}}
+
+
 
 
 class Workspace:
@@ -1368,6 +1613,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, content_type, path.read_bytes())
                 return
             if target.path.startswith("/api/") and not self._authorized():
+                return
+            if target.path == "/api/ticket-flow":
+                _query(target.query)
+                self._json(200, ticket_flow_data())
                 return
             if target.path == "/api/theme":
                 values = _query(target.query, required={"repository"})
