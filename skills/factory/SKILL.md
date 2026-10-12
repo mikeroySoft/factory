@@ -100,8 +100,12 @@ issue template's four sections are the contract:
 Split anything with two outcomes into two tickets. Order them with a `Blocked by: #N`
 line (the dispatcher skips blocked tickets until the blocker closes). Add the `chore`
 label for mechanical work (renames, doc sync, bumps) to route it to the chore worker.
-File with `gh issue create --label needs-triage`; label `ready-for-agent` directly
-only when the user says to skip triage.
+Before filing, compare **Touches** against `[gate].protected_paths` in `.factory.toml`
+(this repository protects `tests/**`): a ticket that adds or edits a protected file —
+typically any ticket with a new test — must carry `factory-protected-override` at
+filing, or the first attempt escalates at the gate before any check runs.
+File with `gh issue create --label needs-triage` (plus `factory-protected-override`
+when applicable); label `ready-for-agent` directly only when the user says to skip triage.
 
 Done when the issue carries `needs-triage` (or `ready-for-agent`) and every section is filled.
 
