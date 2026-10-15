@@ -15,7 +15,7 @@ the first available of `uv tool install git+https://github.com/mikeroySoft/facto
 `pipx install git+https://github.com/mikeroySoft/factory@stable`, or
 `python3 -m pip install --user git+https://github.com/mikeroySoft/factory@stable`
 (Linux, Python ≥ 3.11; no dependencies). These URLs explicitly select the released
-`stable` channel. Replace `@stable` with `@main` for development or `@v0.3.8`
+`stable` channel. Replace `@stable` with `@main` for development or `@v0.4.0`
 for a fixed release. A bare URL follows the default `main` branch.
 Confirm with `factory --version` before continuing. Then pick the branch:
 
@@ -100,8 +100,12 @@ issue template's four sections are the contract:
 Split anything with two outcomes into two tickets. Order them with a `Blocked by: #N`
 line (the dispatcher skips blocked tickets until the blocker closes). Add the `chore`
 label for mechanical work (renames, doc sync, bumps) to route it to the chore worker.
-File with `gh issue create --label needs-triage`; label `ready-for-agent` directly
-only when the user says to skip triage.
+Before filing, compare **Touches** against `[gate].protected_paths` in `.factory.toml`
+(this repository protects `tests/**`): a ticket that adds or edits a protected file —
+typically any ticket with a new test — must carry `factory-protected-override` at
+filing, or the first attempt escalates at the gate before any check runs.
+File with `gh issue create --label needs-triage` (plus `factory-protected-override`
+when applicable); label `ready-for-agent` directly only when the user says to skip triage.
 
 Done when the issue carries `needs-triage` (or `ready-for-agent`) and every section is filled.
 

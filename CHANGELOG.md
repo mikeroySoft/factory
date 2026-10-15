@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-10-11
+
+Compared against 0.3.8 (`fc264ad`). Released channel `stable` points at `v0.4.0`. Minor bump: the first release that exposes the factory to an external agent (`factory mcp`); `/api/act` is removed and the dashboard is replaced by the outcome-control workspace.
 
 - `factory mcp`: a stdlib-only stdio MCP server (protocol `2025-06-18`) exposing `factory_repositories` plus the four evidence reads (`observe`, `inspect`, `investigate`, `capabilities`) across every repository registered with an absolute `path` in the host config. Each call runs one `factory evidence` subprocess; evidence exit 2 becomes `isError: true`, abnormal children become a short tool error, and no mutation tools, resources, prompts, or network transport are offered.
 - Atlas now includes an interactive ticket-flow reference derived from the canonical map: connected step diagrams, searchable navigation, incoming/outgoing/retry conditions, and printed source evidence. The authenticated read-only graph endpoint uses bounded local documentation included in the package; browsing it does not trigger pipeline work.
