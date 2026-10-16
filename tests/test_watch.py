@@ -170,6 +170,24 @@ class WatchTest(unittest.TestCase):
         with mock.patch.object(subprocess, "run", fake_run), mock.patch.dict("os.environ", {"SERVICE_RESULT": "success"}):
             self.assertEqual([n for n, _ in REAL_FAILED_UNITS(self.cfg)], ["factory-widgets-dashboard.service"])
 
+    def test_failed_units_excludes_other_repositories_with_same_prefix(self) -> None:
+        listed = ("factory-widgets.service loaded failed failed factory pass\n"
+                  "factory-widgets-dashboard.service loaded failed failed factory dashboard\n"
+                  "factory-widgets-api.service loaded failed failed another repo pass\n"
+                  "factory-widgets-api-dashboard.service loaded failed failed another repo dashboard\n")
+
+        def fake_run(cmd, **kwargs):
+            out = listed if "list-units" in cmd else f"● {cmd[-1]}: failed\n"
+            return subprocess.CompletedProcess(cmd, 0, out, "")
+
+        with mock.patch.object(subprocess, "run", side_effect=fake_run) as run, \
+             mock.patch.dict("os.environ", {"SERVICE_RESULT": "success"}):
+            units = REAL_FAILED_UNITS(self.cfg)
+        expected = ["factory-widgets.service", "factory-widgets-dashboard.service"]
+        self.assertCountEqual([name for name, _ in units], expected)
+        status_units = [call.args[0][-1] for call in run.call_args_list if "status" in call.args[0]]
+        self.assertCountEqual(status_units, expected)
+
 
 if __name__ == "__main__":
     unittest.main()

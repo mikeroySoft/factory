@@ -61,7 +61,7 @@ def failed_units(cfg: config.Config) -> list[tuple[str, str]]:
         own = " ".join(f"{k}={os.environ.get(k, '')}" for k in ("SERVICE_RESULT", "EXIT_CODE", "EXIT_STATUS")) + "\n"
     units = []
     for name in names:
-        if name == f"{cfg.unit}.service" or name.startswith(f"{cfg.unit}-"):
+        if name in (f"{cfg.unit}.service", f"{cfg.unit}-dashboard.service"):
             status = subprocess.run(["systemctl", "--user", "status", "--no-pager", "-n", "20", name],
                                     capture_output=True, text=True, check=False)
             prefix = own if name == f"{cfg.unit}.service" else ""
