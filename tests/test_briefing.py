@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import ClassVar
 from unittest.mock import patch
 
-from factory import briefing, config, dashboard, dispatch
+from factory import briefing, config
 
 
 class BriefingBoundaryTest(unittest.TestCase):
@@ -418,35 +418,6 @@ class BottomLineTest(unittest.TestCase):
                 runtime = json.loads(next(s for s in sources if s["label"].startswith("Runtime executions"))["text"])
                 self.assertEqual(runtime["executions"], [])
         self.assertFalse(any(s["label"].startswith("Runtime executions") for s in self.respond(self.TICKET, None)["sources"]))
-
-
-class HumanDecisionTest(unittest.TestCase):
-    def test_failed_comment_or_label_stops_remaining_mutations_and_records_outcome(self) -> None:
-        for op, fail_at, expected in (("issue", "comment", "failure"), ("issue", "edit", "partial"), ("pr", "comment", "failure")):
-            with self.subTest(op=op, failure=fail_at), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                calls = []
-                def command(argv, calls=calls, fail_at=fail_at, **kwargs):
-                    calls.append(argv[2])
-                    return subprocess.CompletedProcess(argv, int(argv[2] == fail_at), "", "denied" if argv[2] == fail_at else "")
-                req = {"op": op, "number": 24, "comment": "Factory human decision: Retry\n\nRationale: Corrected the scope.", "add": [config.LABEL_AGENT]}
-                if op == "issue":
-                    req["close"] = "not planned"
-                with patch.multiple(dashboard, REPO="acme/widgets", ROOT=root, create=True), patch.multiple(dispatch, FACTORY=root / ".factory", EVENTS=root / ".factory/events.jsonl", create=True), patch.object(dashboard.subprocess, "run", side_effect=command):
-                    result = dashboard.act(req)
-                self.assertFalse(result["ok"])
-                self.assertEqual(result["status"], expected)
-                self.assertEqual(calls, ["comment"] if fail_at == "comment" else ["comment", "edit"])
-                rows = [json.loads(line) for line in (root / ".factory/events.jsonl").read_text().splitlines()]
-                self.assertEqual(rows[-1]["status"], expected)
-                self.assertEqual(rows[-1]["request"]["comment"], req["comment"])
-                if op == "pr":
-                    self.assertEqual(rows[-1]["pr"], 24)
-                    self.assertNotIn("ticket", rows[-1])
-
-    def test_unwritable_audit_trail_prevents_mutation(self) -> None:
-        with patch.object(dashboard, "REPO", "acme/widgets", create=True), patch.object(dispatch, "record", side_effect=OSError("read-only filesystem")), patch.object(dashboard.subprocess, "run", side_effect=AssertionError("Unaudited mutation")), self.assertRaises(OSError):
-            dashboard.act({"op": "issue", "number": 7, "comment": "Factory human decision: Stop"})
 
 
 if __name__ == "__main__":

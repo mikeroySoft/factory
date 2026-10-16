@@ -70,7 +70,7 @@ HOST_TABLES = frozenset({"triage", "workers", "worker_wrap", "review", "manager"
 HOST_KEYS = {"dashboard": ("port",), "gate": ("lock",)}
 
 # Every key the loader reads, by table; `factory doctor` reports anything else.
-# `workers` is label-keyed, `gate.check` is a list of {name, run, exclusive}.
+# `workers` is label-keyed, `gate.check` is a list of {name, run, exclusive, when}.
 KNOWN_KEYS = {
     "repo": ("slug", "upstream", "main"),
     "dispatch": ("max_active", "max_attempts", "budget_min", "idle_timeout", "exit_grace",
@@ -79,7 +79,7 @@ KNOWN_KEYS = {
     "worker_wrap": ("command",),
     "review": ("command",),
     "manager": ("model", "command", "rounds", "review", "stale_days", "max_active_cap", "budget_min_cap"),
-    "gate": ("timeout", "lock", "check", "protected_paths"),
+    "gate": ("timeout", "lock", "check", "protected_paths", "add_only_paths"),
     "leak_scan": ("pattern", "exclude", "extra"),
     "triage": ("url", "model", "timeout"),
     "journal": ("max_mb", "retention"),
@@ -90,7 +90,8 @@ KNOWN_KEYS = {
 }
 # Normalized numeric fields of an `llm-usage` event; a worker profile maps each to JSON paths.
 USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "cached_tokens", "cost")
-CHECK_KEYS = ("name", "run", "exclusive")
+CHECK_KEYS = ("name", "run", "exclusive", "when")
+CHECK_TIERS = ("attempt", "pr", "release")
 ROUTE_REASONS = ("requirements", "implementation", "ci", "unknown")
 # GitHub login, or `@org/team`. Syntax only: never proof of membership or authorization.
 OWNER = re.compile(r"@?(?P<login>[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)|(?P<team>@[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9_.-]{1,100})")
@@ -106,12 +107,15 @@ class Check:
     """One gate check: argv run inside the worktree; nonzero exit = FAIL.
 
     `exclusive` checks hold the host lock (shared GPU, licence server, ...)
-    so two worktrees never run them at once.
+    so two worktrees never run them at once. `when = "pr"` checks skip the
+    attempt gate and run once per PR head, before review; `when = "release"`
+    checks run only from `factory gate --tier release` (CI, on a `v*` tag).
     """
 
     name: str
     run: list[str]
     exclusive: bool = False
+    when: str = "attempt"
 
 
 @dataclass
@@ -148,6 +152,7 @@ class Config:
     manager_budget_min_cap: int | None = None
     checks: list[Check] = field(default_factory=list)
     protected_paths: list[str] = field(default_factory=list)
+    add_only_paths: list[str] = field(default_factory=list)
     check_timeout: int = 1200
     lock: Path = Path("/tmp/factory.lock")  # host-wide: one GPU, many repos
     leak_pattern: str | None = DEFAULT_LEAK_PATTERN
@@ -494,14 +499,18 @@ def load(start: Path | None = None) -> Config:
         cfg.collaboration = collaboration_settings(raw["collaboration"])
     cfg.prices = price_table(raw.get("prices", {}))
     cfg.check_timeout = int(gate.get("timeout", cfg.check_timeout))
-    paths = gate.get("protected_paths", [])
-    if not isinstance(paths, list) or any(not isinstance(p, str) or not p for p in paths):
-        raise ConfigError("gate.protected_paths must be an array of nonempty globs")
-    cfg.protected_paths = paths
+    for key in ("protected_paths", "add_only_paths"):
+        paths = gate.get(key, [])
+        if not isinstance(paths, list) or any(not isinstance(p, str) or not p for p in paths):
+            raise ConfigError(f"gate.{key} must be an array of nonempty globs")
+        setattr(cfg, key, paths)
     cfg.lock = Path(gate.get("lock", cfg.lock))
-    cfg.checks = [
-        Check(c["name"], list(c["run"]), bool(c.get("exclusive", False))) for c in gate.get("check", [])
-    ]
+    cfg.checks = []
+    for i, c in enumerate(gate.get("check", [])):
+        when = c.get("when", "attempt")
+        if when not in CHECK_TIERS:
+            raise ConfigError(f'{path}: gate.check[{i}].when ({c.get("name")!r}) must be "attempt", "pr" or "release", got {when!r}')
+        cfg.checks.append(Check(c["name"], list(c["run"]), bool(c.get("exclusive", False)), when))
     names = [c.name for c in cfg.checks]
     if len(set(names)) != len(names) or {"conflict-markers", "leak-scan", "protected-paths"} & set(names):
         raise ConfigError(f"{path}: gate check names must be unique and not conflict-markers/leak-scan/protected-paths")

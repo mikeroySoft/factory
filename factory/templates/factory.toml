@@ -93,6 +93,11 @@
 # Checks run in order inside the worktree; nonzero exit = FAIL. Built-ins
 # `conflict-markers` (first) and `leak-scan` (last) are always on. Mark
 # checks that need the GPU or other single-tenant hardware `exclusive`.
+# `when = "pr"` moves an expensive check (mutation testing, ...) out of the
+# per-attempt gate: it runs once per PR head, after the gate passes and
+# before review. `when = "release"` checks run only from `factory gate
+# --tier release`, which the generated ci.yml runs on a `v*` tag; the
+# attempt and pr gates report them SKIP. Default `when = "attempt"`.
 [[gate.check]]
 name = "tests"
 run = ["true"]  # replace with your test command, e.g. ["cargo", "test", "--workspace"]
@@ -101,6 +106,11 @@ exclusive = false
 # [[gate.check]]
 # name = "lint"
 # run = ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]
+#
+# [[gate.check]]
+# name = "e2e"
+# run = ["make", "e2e"]
+# when = "release"
 
 [leak_scan]
 # Added lines in `origin/main..HEAD` matching this regex FAIL the gate.
