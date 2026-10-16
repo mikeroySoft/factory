@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -40,7 +41,11 @@ def _failing(row: dict) -> bool:
 
 
 def failed_units(cfg: config.Config) -> list[tuple[str, str]]:
-    """This repository's failed user units as (name, `systemctl status` excerpt)."""
+    """This repository's failed user units as (name, `systemctl status` excerpt).
+
+    The pass unit runs `watch` from ExecStopPost=, so it is never listed as failed while
+    watch looks; systemd reports its result through $SERVICE_RESULT instead.
+    """
     try:
         listed = subprocess.run(
             ["systemctl", "--user", "list-units", "--failed", "--plain", "--no-legend", "factory-*"],
@@ -48,13 +53,19 @@ def failed_units(cfg: config.Config) -> list[tuple[str, str]]:
         ).stdout
     except OSError:
         return []
+    names = [line.split()[0] for line in listed.splitlines() if line.split()]
+    result = os.environ.get("SERVICE_RESULT")
+    own = ""
+    if result and result != "success":
+        names.append(f"{cfg.unit}.service")
+        own = " ".join(f"{k}={os.environ.get(k, '')}" for k in ("SERVICE_RESULT", "EXIT_CODE", "EXIT_STATUS")) + "\n"
     units = []
-    for line in listed.splitlines():
-        name = line.split()[0] if line.split() else ""
+    for name in names:
         if name == f"{cfg.unit}.service" or name.startswith(f"{cfg.unit}-"):
             status = subprocess.run(["systemctl", "--user", "status", "--no-pager", "-n", "20", name],
                                     capture_output=True, text=True, check=False)
-            units.append((name, (status.stdout + status.stderr).strip()))
+            prefix = own if name == f"{cfg.unit}.service" else ""
+            units.append((name, (prefix + status.stdout + status.stderr).strip()))
     return units
 
 
@@ -168,8 +179,8 @@ def run_pass(cfg: config.Config, dry_run: bool = False) -> list[dict]:
         if previous is not None and signal["latest"] is not None and signal["latest"] <= previous["at"]:
             continue  # already filed; nothing newer than that filing
         if dry_run:
-            print(f"[watch] would file {signal['fingerprint']}: {title(signal)}"
-                  + (f" (previously #{previous['issue']})" if previous else ""))
+            verb = f"re-check #{previous['issue']} for" if previous else "would file"
+            print(f"[watch] {verb} {signal['fingerprint']}: {title(signal)}")
             filed.append(signal)
             continue
         if previous is not None and not _closed_before(previous["issue"], signal["latest"]):

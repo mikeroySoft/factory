@@ -692,8 +692,9 @@ def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
             # `-` prefix: an offline triage model must not stop the dispatch pass.
             f"[Service]\nType=oneshot\nWorkingDirectory={cfg.root}\n{dispatch_env}"
             f"ExecStart=-{exe} triage\nExecStart={exe} dispatch\n"
-            # Post-pass monitor: files the pass's own runtime failures; never fails the unit.
-            f"ExecStartPost=-{exe} watch\n"
+            # Post-pass monitor, after success or failure: systemd hands it $SERVICE_RESULT,
+            # so a crashed pass files itself. `-`: the monitor never fails the unit.
+            f"ExecStopPost=-{exe} watch\n"
         ),
         f"{cfg.unit}.timer": (
             f"[Unit]\nDescription=Run the factory pass for {cfg.repo} every {every}\n\n"

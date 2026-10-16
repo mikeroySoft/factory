@@ -10,6 +10,7 @@ from unittest import mock
 from factory import config, dispatch, lifecycle, watch
 
 REPO = "acme/widgets"
+REAL_FAILED_UNITS = watch.failed_units  # setUp patches it out for the filing tests
 
 
 def exit_row(stage: str, outcome: str, reason: str | None, at: str | None = None, **fields) -> dict:
@@ -151,6 +152,23 @@ class WatchTest(unittest.TestCase):
         bodies = [c[c.index("--body") + 1] for c in self.gh.created]
         self.assertTrue(any("factory-widgets-dashboard.service" in b and "systemctl --user" in b for b in bodies))
         self.assertTrue(any("unreadable" in b and "--runtime-json" in b for b in bodies))
+
+    def test_failed_units_sees_own_crashed_pass_and_only_this_repo(self) -> None:
+        """Under ExecStopPost= the pass unit is still active, so its failure arrives as $SERVICE_RESULT."""
+        listed = ("factory-widgets-dashboard.service loaded failed failed factory dashboard\n"
+                  "factory-other.service loaded failed failed another repo\n")
+
+        def fake_run(cmd, **kwargs):
+            out = listed if "list-units" in cmd else f"● {cmd[-1]}: code=exited, status=1/FAILURE\n"
+            return subprocess.CompletedProcess(cmd, 0, out, "")
+
+        env = {"SERVICE_RESULT": "exit-code", "EXIT_CODE": "exited", "EXIT_STATUS": "1"}
+        with mock.patch.object(subprocess, "run", fake_run), mock.patch.dict("os.environ", env):
+            units = dict(REAL_FAILED_UNITS(self.cfg))
+        self.assertEqual(set(units), {"factory-widgets-dashboard.service", "factory-widgets.service"})
+        self.assertIn("SERVICE_RESULT=exit-code EXIT_CODE=exited EXIT_STATUS=1", units["factory-widgets.service"])
+        with mock.patch.object(subprocess, "run", fake_run), mock.patch.dict("os.environ", {"SERVICE_RESULT": "success"}):
+            self.assertEqual([n for n, _ in REAL_FAILED_UNITS(self.cfg)], ["factory-widgets-dashboard.service"])
 
 
 if __name__ == "__main__":
