@@ -68,6 +68,7 @@ def sample(lines: dict[str, set[int]], scratch: Path) -> tuple[list, int]:
     with use_db(scratch / "session.sqlite") as db:
         cosmic_ray.commands.init([Path(p) for p in lines], db, {})
         items = list(db.work_items)
+    source = {path: Path(path).read_text().splitlines() for path in lines}
 
     def key(m):
         return (str(m.module_path), m.start_pos, m.end_pos, m.operator_name, m.occurrence)
@@ -75,7 +76,15 @@ def sample(lines: dict[str, set[int]], scratch: Path) -> tuple[list, int]:
     def hot(m):
         return not lines[str(m.module_path)].isdisjoint(range(m.start_pos[0], m.end_pos[0] + 1))
 
-    mutations = sorted((item.mutations[0] for item in items), key=key)
+    def applicable(m):
+        # cosmic-ray 8.7.0's ExceptionReplacer crashes on a dotted name (`config.ConfigError`)
+        # in an except clause; its span is then not a bare identifier.
+        if not m.operator_name.endswith("ExceptionReplacer"):
+            return True
+        (row, start), (_, end) = m.start_pos, m.end_pos
+        return source[str(m.module_path)][row - 1][start:end].isidentifier()
+
+    mutations = sorted((item.mutations[0] for item in items if applicable(item.mutations[0])), key=key)
     rng = random.Random(SEED)
     groups = [[m for m in mutations if hot(m)], [m for m in mutations if not hot(m)]]
     for group in groups:
