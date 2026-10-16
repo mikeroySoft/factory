@@ -91,7 +91,7 @@ KNOWN_KEYS = {
 # Normalized numeric fields of an `llm-usage` event; a worker profile maps each to JSON paths.
 USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "cached_tokens", "cost")
 CHECK_KEYS = ("name", "run", "exclusive", "when")
-CHECK_TIERS = ("attempt", "pr")
+CHECK_TIERS = ("attempt", "pr", "release")
 ROUTE_REASONS = ("requirements", "implementation", "ci", "unknown")
 # GitHub login, or `@org/team`. Syntax only: never proof of membership or authorization.
 OWNER = re.compile(r"@?(?P<login>[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)|(?P<team>@[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9_.-]{1,100})")
@@ -108,7 +108,8 @@ class Check:
 
     `exclusive` checks hold the host lock (shared GPU, licence server, ...)
     so two worktrees never run them at once. `when = "pr"` checks skip the
-    attempt gate and run once per PR head, before review.
+    attempt gate and run once per PR head, before review; `when = "release"`
+    checks run only from `factory gate --tier release` (CI, on a `v*` tag).
     """
 
     name: str
@@ -508,7 +509,7 @@ def load(start: Path | None = None) -> Config:
     for i, c in enumerate(gate.get("check", [])):
         when = c.get("when", "attempt")
         if when not in CHECK_TIERS:
-            raise ConfigError(f'{path}: gate.check[{i}].when must be "attempt" or "pr", got {when!r}')
+            raise ConfigError(f'{path}: gate.check[{i}].when must be "attempt", "pr" or "release", got {when!r}')
         cfg.checks.append(Check(c["name"], list(c["run"]), bool(c.get("exclusive", False)), when))
     names = [c.name for c in cfg.checks]
     if len(set(names)) != len(names) or {"conflict-markers", "leak-scan", "protected-paths"} & set(names):

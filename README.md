@@ -510,9 +510,17 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    make protected changes outside the worker flow. Then `conflict-markers`,
    your `[[gate.check]]` list in order, and a `leak-scan`
    run. Checks marked `exclusive` serialise on a host-wide lock. Every check
-   has a timeout. Checks with `when = "pr"` are skipped here and reported
-   `SKIP (pr tier)`; this attempt gate is what the worker and the dispatcher run
-   after each attempt, and what the merge-stage refresh re-runs.
+   has a timeout. `[[gate.check]]` has three tiers, selected by `when`
+   (`factory gate --tier <tier>`; anything else is a config error naming the
+   check): **attempt** (default) runs here, on every worker attempt; **pr**
+   runs once per PR head, before review (step 5); **release** runs only on a
+   `v*` tag from the `release` job `factory init` writes into
+   `.github/workflows/ci.yml` (`factory doctor` warns when release checks exist
+   but no workflow runs `--tier release`). Checks of a later tier are skipped
+   here and reported `SKIP (pr tier)` / `SKIP (release tier)`; `--tier pr`
+   runs only pr checks (release ones SKIP) and `--tier release` only release
+   checks, with no built-ins. This attempt gate is what the worker and the
+   dispatcher run after each attempt, and what the merge-stage refresh re-runs.
 5. **Review.** After the attempt gate passes, the dispatcher runs the
    `when = "pr"` checks once for the head about to be reviewed (same timeout and
    `exclusive` lock; a head is never re-run) and appends their report to the gate

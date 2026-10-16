@@ -789,6 +789,29 @@ class HostConfigTest(unittest.TestCase):
             row = doctor()["github workflow"]
             self.assertEqual((row["status"], row["detail"].startswith("none")), ("WARN", True))
 
+    def test_init_writes_release_gate_job_and_doctor_warns_when_missing(self) -> None:
+        gh = 'case "$1 $2" in "repo view") echo ADMIN;; "label list") echo "[]";; esac\nexit 0'
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            stubs = stub_bin(Path(d), gh=gh, systemctl="echo inactive")
+            doctor = lambda: {r["label"]: r for r in json.loads(factory(repo, "doctor", "--json", path=stubs).stdout)["rows"]}
+            proc = factory(repo, "init", "--no-labels")
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            ci = repo / ".github/workflows/ci.yml"
+            text = ci.read_text()
+            release = text[text.index("  release:"):]
+            self.assertIn("tags: ['v*']", text[:text.index("jobs:")])
+            self.assertIn("startsWith(github.ref, 'refs/tags/v')", release)
+            self.assertIn("factory gate --tier release", release)
+            self.assertNotIn("release gate workflow", doctor())
+            toml = repo / config.CONFIG_NAME
+            toml.write_text(toml.read_text() + '\n[[gate.check]]\nname = "e2e"\nrun = ["true"]\nwhen = "release"\n')
+            self.assertEqual(doctor()["release gate workflow"]["status"], "PASS")
+            ci.write_text(text[:text.index("  release:")])
+            row = doctor()["release gate workflow"]
+            self.assertEqual(row["status"], "WARN")
+            self.assertIn("--tier release", row["detail"])
+
     def test_doctor_accepts_district_engine_metadata_without_loading_it(self) -> None:
         metadata = (
             '[defaults.triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n'
@@ -1320,6 +1343,49 @@ class GateTest(unittest.TestCase):
             self.assertIn("- leak-scan: FAIL", report)
             self.assertIn("CONFIDENTIAL", report)
             self.assertIn("notes.md:1: [CONFIDENTI\x41L] see the", report)
+
+    def test_release_tier_runs_only_release_checks(self) -> None:
+        toml = (
+            '[[gate.check]]\nname = "unit"\nrun = ["sh", "-c", "touch unit"]\n'
+            '[[gate.check]]\nname = "slow"\nrun = ["sh", "-c", "touch slow"]\nwhen = "pr"\n'
+            '[[gate.check]]\nname = "e2e"\nrun = ["sh", "-c", "touch e2e"]\nwhen = "release"\n'
+        )
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), toml)
+            ran = lambda: sorted(n for n in ("unit", "slow", "e2e") if (repo / n).exists())
+            code, out, report = gate(repo)
+            self.assertEqual(code, 0, out)
+            self.assertIn("- unit: PASS", report)
+            self.assertIn("- slow: SKIP (pr tier)", report)
+            self.assertIn("- e2e: SKIP (release tier)", report)
+            self.assertEqual(ran(), ["unit"])
+            (repo / "unit").unlink()
+
+            code, out, report = gate(repo, "--tier", "pr")
+            self.assertEqual(code, 0, out)
+            self.assertIn("- slow: PASS", report)
+            self.assertIn("- e2e: SKIP (release tier)", report)
+            self.assertNotIn("- unit:", report)
+            self.assertEqual(ran(), ["slow"])
+            (repo / "slow").unlink()
+
+            code, out, report = gate(repo, "--tier", "release")
+            self.assertEqual(code, 0, out)
+            self.assertIn("# Gate report (release tier)", report)
+            self.assertIn("- e2e: PASS", report)
+            self.assertNotIn("- unit:", report)
+            self.assertNotIn("- slow:", report)
+            self.assertNotIn("conflict-markers", report)
+            self.assertNotIn("leak-scan", report)
+            self.assertEqual(ran(), ["e2e"])
+
+    def test_unknown_check_tier_is_a_config_error_naming_the_check(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), '[[gate.check]]\nname = "ok"\nrun = ["true"]\nwhen = "nightly"\n')
+            code, out, _ = gate(repo)
+            self.assertEqual(code, 1)
+            self.assertIn("gate.check[0].when", out)
+            self.assertIn("nightly", out)
 
     # \x escapes keep these fixtures from tripping this repo's own leak scan.
     def test_default_leak_pattern_skips_generic_words(self) -> None:
