@@ -49,6 +49,7 @@ ACT_LABELS = frozenset({
     LABEL_APPROVED,
 })
 CLOSE_REASONS = frozenset({"completed", "not planned"})
+CALLERS = frozenset({"dashboard", "mcp"})
 _OUTCOME_KEYS = frozenset({
     "op", "number", "kind", "source_revision", "evidence_url", "summary",
 })
@@ -726,8 +727,17 @@ def _plan_request(
     return steps
 
 
-def prepare(cfg: Config, requests: object) -> dict:
-    """Resolve and durably store one exact, expiring human-decision preview."""
+def prepare(
+    cfg: Config, requests: object, *, caller: str = "dashboard", action: dict | None = None, guard=None,
+) -> dict:
+    """Resolve and durably store one exact, expiring human-decision preview.
+
+    `caller` is journaled on every event and receipt; `action` records the named
+    action that compiled `requests`; `guard(target)` runs each action's
+    preconditions against the exact target the proposal binds to.
+    """
+    if caller not in CALLERS:
+        raise DecisionError(f"caller must be one of {sorted(CALLERS)}")
     normalized = _normalize_requests(requests)
     deadline = time.monotonic() + PREPARE_SECONDS
     actor = _actor(cfg, deadline)
@@ -756,6 +766,8 @@ def prepare(cfg: Config, requests: object) -> dict:
             target_by_key[key] = target, raw
             targets.append(target)
         target, raw = target_by_key[key]
+        if guard is not None:
+            guard(target)
         if kind == "pr":
             ticket = target.get("ticket") or number
             locks.add(("ticket", ticket))
@@ -780,6 +792,8 @@ def prepare(cfg: Config, requests: object) -> dict:
         "proposal_id": proposal_id,
         "confirmation": confirmation,
         "actor": actor,
+        "caller": caller,
+        **({"action": action} if action is not None else {}),
         "targets": targets,
         "requests": normalized,
         "effects": effects,
@@ -803,6 +817,10 @@ def prepare(cfg: Config, requests: object) -> dict:
             _store_artifact(directory, _artifact_name("proposal", proposal_id), document)
     finally:
         os.close(directory)
+    try:
+        _journal(cfg, document, "prepared")
+    except OSError:
+        pass
     return preview
 
 
@@ -922,6 +940,8 @@ def _journal(cfg: Config, document: dict, status: str, *, result: dict | None = 
         "proposal_id": preview["proposal_id"],
         "repository": cfg.repo,
         "actor": preview["actor"],
+        "caller": preview.get("caller"),
+        **({"action": preview["action"]} if preview.get("action") else {}),
         "targets": preview["targets"],
         "request": preview["requests"][0] if len(preview["requests"]) == 1 else {"batch": preview["requests"]},
         "requests": preview["requests"],
@@ -1054,6 +1074,8 @@ def _receipt_value(document: dict, status: str, steps: list[dict], started_at: s
         "proposal_id": preview["proposal_id"],
         "repository": document["repository"],
         "actor": preview["actor"],
+        "caller": preview.get("caller"),
+        **({"action": preview["action"]} if preview.get("action") else {}),
         "status": status,
         "ok": status == "success",
         "targets": preview["targets"],
@@ -1197,6 +1219,8 @@ def _pending_receipt(document: dict, status: str, error: str | None = None) -> d
         "proposal_id": preview["proposal_id"],
         "repository": document["repository"],
         "actor": preview["actor"],
+        "caller": preview.get("caller"),
+        **({"action": preview["action"]} if preview.get("action") else {}),
         "status": status,
         "ok": False,
         "targets": preview["targets"],

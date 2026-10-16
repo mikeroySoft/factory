@@ -1,8 +1,8 @@
-"""`factory mcp`: stdio MCP server exposing registered factories' evidence reads.
+"""`factory mcp`: stdio MCP server exposing registered factories' evidence reads and named actions.
 
-A thin adapter over `factory evidence`: newline-delimited JSON-RPC 2.0 on
-stdin/stdout, one evidence subprocess per tool call, no state. Stdout carries
-only MCP messages; diagnostics go to stderr.
+A thin adapter: newline-delimited JSON-RPC 2.0 on stdin/stdout, one evidence
+subprocess per read, named actions through `factory.actions` in-process, no
+state. Stdout carries only MCP messages; diagnostics go to stderr.
 """
 
 from __future__ import annotations
@@ -11,8 +11,9 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
-from factory import __version__, config, evidence
+from factory import __version__, actions, config, decisions, evidence
 
 PROTOCOL = "2025-06-18"
 PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS = -32700, -32600, -32601, -32602
@@ -58,9 +59,16 @@ TOOLS = [
      "inputSchema": _investigate_schema()},
     {"name": "factory_capabilities", "description": "Implemented evidence reads and their fields for one registered repository.",
      "inputSchema": _schema()},
+    {"name": "factory_prepare_action", "description": "Validate one named human action against the live issue and store a confirmable proposal; nothing is mutated. Actions: " + "; ".join(f"{name}: {spec['description']}" for name, spec in actions.ACTIONS.items()),
+     "inputSchema": {"type": "object", "properties": {"repository": REPOSITORY, "action": {"type": "string", "enum": list(actions.ACTIONS)}, "args": {"type": "object"}},
+                     "required": ["repository", "action", "args"], "additionalProperties": False,
+                     "oneOf": [{"properties": {"action": {"const": name}, "args": spec["schema"]}} for name, spec in actions.ACTIONS.items()]}},
+    {"name": "factory_apply_action", "description": "Apply one stored proposal exactly once using its id and confirmation; replay returns the same receipt.",
+     "inputSchema": _schema(proposal_id={"type": "string", "pattern": "^[0-9a-f]{32}$"}, confirmation={"type": "string", "minLength": 1, "maxLength": 500})},
 ]
 OPS = {"factory_observe": "observe", "factory_inspect": "inspect",
        "factory_investigate": "investigate", "factory_capabilities": "capabilities"}
+ACTION_TOOLS = {"factory_prepare_action": {"action", "args"}, "factory_apply_action": {"proposal_id", "confirmation"}}
 
 
 def registry() -> dict[str, str]:
@@ -108,6 +116,23 @@ def run_evidence(root: str, request: dict) -> dict:
     return _text(text, error=proc.returncode == 2)
 
 
+def _decision(root: str, slug: str, name: str, arguments: dict) -> dict:
+    """Run a named action in-process on the registered checkout; errors are structured, never raised."""
+    try:
+        cfg = config.load(Path(root))
+        if cfg.repo != slug:
+            raise decisions.DecisionError("registered checkout does not belong to this repository", "scope_mismatch")
+        if name == "factory_prepare_action":
+            value = actions.prepare(cfg, arguments["action"], arguments["args"], caller="mcp")
+        else:
+            value = decisions.apply(cfg, arguments["proposal_id"], arguments["confirmation"])
+    except decisions.DecisionError as exc:
+        return _text(json.dumps({"ok": False, "error": {"code": exc.code, "message": str(exc)}}, separators=(",", ":")), error=True)
+    except (config.ConfigError, OSError, RuntimeError, ValueError) as exc:
+        return _text(json.dumps({"ok": False, "error": {"code": "decision_failed", "message": str(exc)[:500]}}, separators=(",", ":")), error=True)
+    return _text(json.dumps(value, separators=(",", ":")), error=value.get("ok") is False)
+
+
 def call_tool(name: str, arguments: dict, repos: dict[str, str]) -> dict:
     if name == "factory_repositories":
         if arguments:
@@ -120,6 +145,10 @@ def call_tool(name: str, arguments: dict, repos: dict[str, str]) -> dict:
     slug = arguments.get("repository")
     if not isinstance(slug, str) or slug not in repos:
         return _text("repository must be a registered owner/name slug; call factory_repositories.", error=True)
+    if name in ACTION_TOOLS:
+        if set(arguments) != {"repository", *ACTION_TOOLS[name]}:
+            return _text(f"{name} takes exactly repository, {' and '.join(sorted(ACTION_TOOLS[name]))}.", error=True)
+        return _decision(repos[slug], slug, name, arguments)
     return run_evidence(repos[slug], {"schema_version": 1, "op": OPS[name], **arguments})
 
 
@@ -153,7 +182,7 @@ def handle(line: bytes, repos: dict[str, str]) -> dict | None:
         name, arguments = params.get("name"), params.get("arguments", {})
         if not isinstance(name, str) or not isinstance(arguments, dict):
             return _error(id, INVALID_PARAMS, "tools/call needs a string name and object arguments")
-        if name != "factory_repositories" and name not in OPS:
+        if name != "factory_repositories" and name not in OPS and name not in ACTION_TOOLS:
             return _error(id, INVALID_PARAMS, f"Unknown tool {name!r}")
         return {"jsonrpc": "2.0", "id": id, "result": call_tool(name, arguments, repos)}
     return _error(id, METHOD_NOT_FOUND, f"Unknown method {method!r}")
@@ -173,7 +202,7 @@ def serve(repos: dict[str, str]) -> None:
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if argv:
-        print("usage: factory mcp\n\nServe registered repositories' evidence reads over stdio MCP (2025-06-18).", file=sys.stderr)
+        print("usage: factory mcp\n\nServe registered repositories' evidence reads and named human actions over stdio MCP (2025-06-18).", file=sys.stderr)
         return 0 if argv in (["--help"], ["-h"]) else 2
     try:
         repos = registry()
