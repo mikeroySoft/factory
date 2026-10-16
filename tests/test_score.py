@@ -120,6 +120,37 @@ class ScoreTest(unittest.TestCase):
         self.assertEqual(len(self.scores()), 1)
         self.judge.assert_called_once()
 
+    def test_requeued_sessions_are_both_scored(self) -> None:
+        self.journal({"attempt": 1, "gate": "FAIL"}, {"attempt": 1, "gate": "FAIL"}, finished="escalate")
+        second = self.transcript.with_name("requeued.jsonl")
+        second.write_text(FIXTURE)
+        self.journal({"attempt": 1, "gate": "PASS", "transcript": str(second)})
+
+        score.run(self.cfg)
+
+        self.assertEqual([(r["ticket"], r["attempt"], r["transcript"]) for r in self.scores()],
+                         [(7, 1, str(self.transcript)), (7, 1, str(second))])
+        saved = self.scores()
+        self.assertEqual(score.run(self.cfg), [])
+        self.assertEqual(self.scores(), saved)
+
+    def test_requeued_session_is_scored_after_first_session_was_scored(self) -> None:
+        self.journal({"attempt": 1, "gate": "FAIL"}, finished="escalate")
+        score.run(self.cfg)
+        second = self.transcript.with_name("requeued.jsonl")
+        second.write_text(FIXTURE)
+        self.journal({"attempt": 1, "gate": "PASS", "transcript": str(second)})
+
+        rows = score.run(self.cfg)
+
+        self.assertEqual([(r["ticket"], r["attempt"], r["transcript"]) for r in rows],
+                         [(7, 1, str(second))])
+        saved = self.scores()
+        self.assertEqual([(r["ticket"], r["attempt"], r["transcript"]) for r in saved],
+                         [(7, 1, str(self.transcript)), (7, 1, str(second))])
+        self.assertEqual(score.run(self.cfg), [])
+        self.assertEqual(self.scores(), saved)
+
     def test_dry_run_records_nothing(self) -> None:
         self.journal({"attempt": 1, "gate": "PASS"})
         self.assertEqual(len(score.run(self.cfg, dry_run=True)), 1)

@@ -95,9 +95,9 @@ def run(cfg: config.Config, last: int | None = None, dry_run: bool = False) -> l
         if r.get("event") in ("merged", "escalate") and type(r.get("ticket")) is int:
             finished_at[r["ticket"]] = str(r.get("at", ""))
     chosen = set(sorted(finished_at, key=finished_at.get)[-last:] if last else finished_at)
-    scored = {(r.get("ticket"), r.get("attempt")) for r in rows if r.get("event") == "score"}
-    # One row per (ticket, attempt): a stuck/re-run attempt journals twice; the last row wins.
-    attempts = {(r["ticket"], r["attempt"]): r for r in rows if r.get("event") == "attempt"
+    scored = {(r.get("ticket"), r.get("attempt"), r.get("transcript")) for r in rows if r.get("event") == "score"}
+    # Attempt numbers restart on each claim; deduplicate identical sessions, keeping the last row.
+    attempts = {(r["ticket"], r["attempt"], r.get("transcript")): r for r in rows if r.get("event") == "attempt"
                 and r.get("ticket") in chosen and type(r.get("attempt")) is int}
     attempts = [r for key, r in attempts.items() if key not in scored]
     out = []
