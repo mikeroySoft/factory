@@ -79,7 +79,7 @@ KNOWN_KEYS = {
     "worker_wrap": ("command",),
     "review": ("command",),
     "manager": ("model", "command", "rounds", "review", "stale_days", "max_active_cap", "budget_min_cap"),
-    "gate": ("timeout", "lock", "check", "protected_paths"),
+    "gate": ("timeout", "lock", "check", "protected_paths", "add_only_paths"),
     "leak_scan": ("pattern", "exclude", "extra"),
     "triage": ("url", "model", "timeout"),
     "journal": ("max_mb", "retention"),
@@ -91,7 +91,7 @@ KNOWN_KEYS = {
 # Normalized numeric fields of an `llm-usage` event; a worker profile maps each to JSON paths.
 USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "cached_tokens", "cost")
 CHECK_KEYS = ("name", "run", "exclusive", "when")
-CHECK_TIERS = ("attempt", "pr")
+CHECK_TIERS = ("attempt", "pr", "release")
 ROUTE_REASONS = ("requirements", "implementation", "ci", "unknown")
 # GitHub login, or `@org/team`. Syntax only: never proof of membership or authorization.
 OWNER = re.compile(r"@?(?P<login>[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)|(?P<team>@[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9_.-]{1,100})")
@@ -108,7 +108,8 @@ class Check:
 
     `exclusive` checks hold the host lock (shared GPU, licence server, ...)
     so two worktrees never run them at once. `when = "pr"` checks skip the
-    attempt gate and run once per PR head, before review.
+    attempt gate and run once per PR head, before review; `when = "release"`
+    checks run only from `factory gate --tier release` (CI, on a `v*` tag).
     """
 
     name: str
@@ -151,6 +152,7 @@ class Config:
     manager_budget_min_cap: int | None = None
     checks: list[Check] = field(default_factory=list)
     protected_paths: list[str] = field(default_factory=list)
+    add_only_paths: list[str] = field(default_factory=list)
     check_timeout: int = 1200
     lock: Path = Path("/tmp/factory.lock")  # host-wide: one GPU, many repos
     leak_pattern: str | None = DEFAULT_LEAK_PATTERN
@@ -497,16 +499,17 @@ def load(start: Path | None = None) -> Config:
         cfg.collaboration = collaboration_settings(raw["collaboration"])
     cfg.prices = price_table(raw.get("prices", {}))
     cfg.check_timeout = int(gate.get("timeout", cfg.check_timeout))
-    paths = gate.get("protected_paths", [])
-    if not isinstance(paths, list) or any(not isinstance(p, str) or not p for p in paths):
-        raise ConfigError("gate.protected_paths must be an array of nonempty globs")
-    cfg.protected_paths = paths
+    for key in ("protected_paths", "add_only_paths"):
+        paths = gate.get(key, [])
+        if not isinstance(paths, list) or any(not isinstance(p, str) or not p for p in paths):
+            raise ConfigError(f"gate.{key} must be an array of nonempty globs")
+        setattr(cfg, key, paths)
     cfg.lock = Path(gate.get("lock", cfg.lock))
     cfg.checks = []
     for i, c in enumerate(gate.get("check", [])):
         when = c.get("when", "attempt")
         if when not in CHECK_TIERS:
-            raise ConfigError(f'{path}: gate.check[{i}].when must be "attempt" or "pr", got {when!r}')
+            raise ConfigError(f'{path}: gate.check[{i}].when ({c.get("name")!r}) must be "attempt", "pr" or "release", got {when!r}')
         cfg.checks.append(Check(c["name"], list(c["run"]), bool(c.get("exclusive", False)), when))
     names = [c.name for c in cfg.checks]
     if len(set(names)) != len(names) or {"conflict-markers", "leak-scan", "protected-paths"} & set(names):

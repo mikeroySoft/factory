@@ -431,6 +431,13 @@ def doctor(argv: list[str]) -> int:
         "none: the merge stage refuses PRs with no passing check (factory init writes one)" if not flows
         else (f"{CI_WORKFLOW} still runs the placeholder step; make it run the gate commands" if placeholder else ", ".join(p.name for p in flows)),
     )
+    if any(check.when == "release" for check in cfg.checks):
+        release_flows = [p.name for p in flows if "--tier release" in p.read_text()]
+        report(
+            True if release_flows else None, "release gate workflow",
+            ", ".join(release_flows) if release_flows
+            else f'{CONFIG_NAME} has `when = "release"` checks but no workflow runs `factory gate --tier release` on a v* tag',
+        )
 
     if cfg.upstream:
         ok = sh(["git", "remote", "get-url", cfg.upstream], cwd=cfg.root).returncode == 0

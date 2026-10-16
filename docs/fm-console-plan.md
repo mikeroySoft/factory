@@ -204,8 +204,9 @@ plan. Case evidence, procedures and earlier decisions are fetched on demand.
 `file <ref> <path>` reads a regular repository file at a resolved commit;
 `pr|checks|runs <PR>` inspects exact PR heads and matching evidence;
 `run|log <run-id>` reads run/jobs or bounded job-log prefixes.
-`/fm capabilities` reports the implemented menu and limits. Reads are scoped
-GETs, not a generic API proxy or host filesystem tool. Complete negative tree
+`/fm capabilities` reports the implemented menu and limits. Reads are fixed
+GitHub GETs plus one fixed read-only PR GraphQL query, not a generic API proxy
+or host filesystem tool. Complete negative tree
 observations return cited `file_not_found`; truncated trees, inaccessible reads
 and unsupported file types remain distinct. ANSI log styling is removed after
 bounded pipe capture; no raw log escape sequences are emitted to the terminal.

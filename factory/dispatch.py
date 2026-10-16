@@ -148,6 +148,26 @@ def _review_command(prompt: str) -> tuple[list[str], bool]:
         command[1:1] = ["--mode", "json"]
     return command, True
 
+def _with_transcript(argv: list[str], n: int) -> tuple[list[str], Path | None]:
+    """Keep an OMP worker's session under .factory/transcripts/<n> so the full
+    transcript (tool calls, reasoning) survives per ticket for `learn`/scoring.
+    Non-OMP workers, `--no-session`, or an explicit `--session-dir` are left alone."""
+    at = next((i for i, a in enumerate(argv) if Path(a).name == "omp"), None)
+    if at is None or any(a == "--no-session" or a.startswith("--session-dir") for a in argv):
+        return argv, None
+    where = FACTORY / "transcripts" / str(n)
+    where.mkdir(parents=True, exist_ok=True)
+    return [*argv[:at + 1], "--session-dir", str(where), *argv[at + 1:]], where
+
+
+def _transcript(where: Path | None, since: float) -> str | None:
+    """Newest session file written under `where` since wall-clock `since`, if any."""
+    if where is None:
+        return None
+    files = [p for p in where.glob("*.jsonl") if p.stat().st_mtime >= since - 1]
+    return str(max(files, key=lambda p: p.stat().st_mtime)) if files else None
+
+
 
 def _omp_output(stdout: str) -> tuple[str, dict | None]:
     """Recover final text and summed model usage from OMP's JSONL mode."""
@@ -371,7 +391,7 @@ def review_intake_pass(dry_run: bool) -> None:
                     ]).stdout.strip().splitlines()[-1]
                     record("escalate", pr=n, head=head,
                            ticket=int(url.rstrip("/").rsplit("/", 1)[-1]),
-                           reason=reason, packet=str(packet), round=1)
+                           code="review_intake", reason=reason, packet=str(packet), round=1)
                 continue
             if any(e.get("event") == "review-intake" and e.get("head") == head
                    for e in history):
@@ -863,13 +883,25 @@ def escalation_packet(
     return packet, round_number
 
 
-def escalate(n: int, reason: str, log_path: Path | None, extra: str = "") -> None:
-    log(f"#{n}: escalating to human ({reason})")
+# Mechanical origin of every escalation, so `stats` can count failure classes and
+# a repeated code can be filed as a factory bug. `reason` stays the human prose.
+ESCALATION_CODES = frozenset({
+    "protected_paths", "budget", "gate_failed", "worker_stuck", "pr_unpublished",
+    "pr_checks_failed", "review_revise", "approval_drift", "approval_missing",
+    "ci_failed", "ci_runner", "refresh_head", "refresh_conflict", "refresh_empty",
+    "gh_failed", "review_intake", "upstream_sync", "manager_failed", "manager_exhausted",
+    "manager_human", "pr_feedback", "pr_stale",
+})
+
+
+def escalate(n: int, reason: str, log_path: Path | None, extra: str = "", *, code: str) -> None:
+    assert code in ESCALATION_CODES, code
+    log(f"#{n}: escalating to human ({code}: {reason})")
     wt = FACTORY / f"wt-{n}"
     packet, round_number = escalation_packet(n, reason, log_path, wt, extra=extra)
     record(
-        "escalate", ticket=n, reason=reason, log=str(log_path) if log_path else None,
-        packet=str(packet), round=round_number,
+        "escalate", ticket=n, code=code, reason=reason,
+        log=str(log_path) if log_path else None, packet=str(packet), round=round_number,
     )
     run(
         [
@@ -1181,8 +1213,8 @@ def sync_escalate(tip: str, reason: str, detail: str) -> str:
         n, reason, None, FACTORY / "wt-upstream", detail, "upstream"
     )
     record(
-        "escalate", ticket=n, upstream=tip, reason=reason, packet=str(packet),
-        round=round_number,
+        "escalate", ticket=n, upstream=tip, code="upstream_sync", reason=reason,
+        packet=str(packet), round=round_number,
     )
     return url
 
@@ -1579,7 +1611,7 @@ def runner_unavailable(n: int, pr: int, starved: list[dict], dry_run: bool) -> b
     if dry_run:
         log(f"PR #{pr}: would escalate ({reason})")
     else:
-        escalate(n, reason, None)
+        escalate(n, reason, None, code="ci_runner")
     return True
 
 
@@ -1591,21 +1623,21 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         return False
     wt = ensure_worktree(n)
 
-    def withdraw(reason: str) -> None:
-        escalate(n, f"PR #{pr}: {reason}; `{FACTORY_APPROVED}` label removed", None)
+    def withdraw(reason: str, code: str) -> None:
+        escalate(n, f"PR #{pr}: {reason}; `{FACTORY_APPROVED}` label removed", None, code=code)
 
     removed = run(
         ["gh", "pr", "edit", str(pr), "--repo", REPO, "--remove-label", FACTORY_APPROVED],
         check=False,
     )
     if removed.returncode:
-        escalate(n, f"PR #{pr}: could not remove stale `{FACTORY_APPROVED}` approval", None)
+        escalate(n, f"PR #{pr}: could not remove stale `{FACTORY_APPROVED}` approval", None, code="gh_failed")
         return False
     run(["git", "fetch", "origin"], cwd=wt)
     local_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     remote_head = run(["git", "rev-parse", f"origin/agent/{n}"], cwd=wt).stdout.strip()
     if local_head != remote_head:
-        withdraw(f"kept worktree head {local_head} differs from remote head {remote_head}")
+        withdraw(f"kept worktree head {local_head} differs from remote head {remote_head}", "refresh_head")
         return False
     verb, cmd = (
         ("merge", ["git", "merge", f"origin/{cfg.main}", "--no-edit"])
@@ -1614,13 +1646,13 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     )
     if run(cmd, cwd=wt, check=False).returncode != 0:
         run(["git", verb, "--abort"], cwd=wt, check=False)
-        withdraw(f"{verb} onto moved main conflicts; worktree {wt}")
+        withdraw(f"{verb} onto moved main conflicts; worktree {wt}", "refresh_conflict")
         return False
     empty = run(
         ["git", "merge-base", "--is-ancestor", "HEAD", f"origin/{cfg.main}"], cwd=wt, check=False
     ).returncode == 0
     if empty:
-        withdraw(f"nothing ahead of {cfg.main} after {verb}; refusing to push")
+        withdraw(f"nothing ahead of {cfg.main} after {verb}; refusing to push", "refresh_empty")
         return False
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     status_cmd = [
@@ -1641,10 +1673,10 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         report += "\n\nGate evidence rejected: worktree was not clean for the gated commit."
     if not ok:
         pr_comment(n, f"Gate failed after {verb} onto current main:\n\n{report}")
-        withdraw(f"gate failed after {verb} onto moved main")
+        withdraw(f"gate failed after {verb} onto moved main", "gate_failed")
         return False
     if push_agent(wt, n, remote_head, check=False) is None:
-        withdraw("remote head changed while refreshed evidence was being produced")
+        withdraw("remote head changed while refreshed evidence was being produced", "refresh_head")
         return False
     record(
         "refreshed", ticket=n, pr=pr, head=head, gate="PASS",
@@ -1653,10 +1685,10 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     verdict, findings = review(wt, n, report, head)
     pr_comment(n, findings)
     if verdict != "APPROVE":
-        withdraw(f"fresh review requested changes after {verb} onto moved main")
+        withdraw(f"fresh review requested changes after {verb} onto moved main", "review_revise")
         return False
     if not approve_pr(n, head):
-        withdraw("approval evidence, head, or human review state changed before refreshed approval")
+        withdraw("approval evidence, head, or human review state changed before refreshed approval", "approval_drift")
         return False
     log(f"#{n}: PR #{pr} {verb}d onto current main, re-gated, and re-approved at {head[:12]}")
     return True
@@ -1788,7 +1820,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                     n,
                     f"PR #{pr_num}: CI failed ({', '.join(failed)}); "
                     f"`{FACTORY_APPROVED}` label removed",
-                    None,
+                    None, code="ci_failed",
                 )
                 continue
             starved = [c for c in checks if c["bucket"] == "infra"]
@@ -1884,7 +1916,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                     n,
                     f"PR #{pr_num}: missing approval evidence bound to {head}; "
                     f"`{FACTORY_APPROVED}` label removed",
-                    None,
+                    None, code="approval_missing",
                 )
                 execution.outcome, execution.reason = "project_escalation", "state_changed"
                 continue
@@ -1901,7 +1933,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                     n,
                     f"PR #{pr_num}: CI failed ({', '.join(latest_failed)}); "
                     f"`{FACTORY_APPROVED}` label removed",
-                    None,
+                    None, code="ci_failed",
                 )
                 continue
             if latest_starved and runner_unavailable(n, pr_num, latest_starved, False):
@@ -1977,11 +2009,13 @@ def worker_round(
     promptfile.write_text(build_prompt(n, wt, extra))
     logfile = LOGS / f"{n}-attempt-{attempt}.log"
     started = time.monotonic()
+    wall = time.time()
     worker = cfg.worker_key({selected_worker} if selected_worker else labels)
+    argv, session_dir = _with_transcript(cfg.worker({worker}, promptfile, wt), n)
     code, fired = run_worker(
-        cfg.worker({worker}, promptfile, wt),
-        wt, logfile, wt / ".factory" / f"handoff-{n}.md", deadline,
+        argv, wt, logfile, wt / ".factory" / f"handoff-{n}.md", deadline,
     )
+    transcript = _transcript(session_dir, wall)
     timeout = {"timeout": fired, "reason": TIMEOUT_REASONS[fired]} if fired else {}
     usage = worker_usage(logfile, cfg.worker_usage.get(worker))
     record("llm-usage", ticket=n, stage="worker", attempt=attempt, **usage)
@@ -1997,7 +2031,7 @@ def worker_round(
         # Stuck mid-work: a failed attempt for the normal retry path; the gate never ran.
         record(
             "attempt", ticket=n, attempt=attempt, worker_exit=code, gate=None,
-            log=str(logfile), head=head, handoff=handoff, **timeout,
+            log=str(logfile), transcript=transcript, head=head, handoff=handoff, **timeout,
         )
         return False, (
             f"worker stuck: idle_timeout fired ({cfg.idle_timeout:g} min without worker "
@@ -2006,7 +2040,7 @@ def worker_round(
     if time.monotonic() > deadline:
         record(
             "attempt", ticket=n, attempt=attempt, worker_exit=code, gate=None,
-            log=str(logfile), head=head, handoff=handoff, **timeout,
+            log=str(logfile), transcript=transcript, head=head, handoff=handoff, **timeout,
         )
         return False, "budget exceeded before gate", logfile, head
     ok, report = run_gate(wt, n, protected_override=LABEL_PROTECTED_OVERRIDE in labels)
@@ -2026,8 +2060,9 @@ def worker_round(
     record(
         "attempt", ticket=n, attempt=attempt, worker_exit=code, gate="PASS" if ok else "FAIL",
         seconds=int(time.monotonic() - started), cost=usage["cost"], log=str(logfile),
-        brief=brief_path(wt, n).exists(), head=head, actual_head=actual_head,
-        clean=not before_status and not after_status, handoff=handoff, **timeout,
+        transcript=transcript, brief=brief_path(wt, n).exists(), head=head,
+        actual_head=actual_head, clean=not before_status and not after_status,
+        handoff=handoff, **timeout,
     )
     return ok, report, logfile, head
 
@@ -2180,17 +2215,20 @@ def process_ticket(
                 if ok:
                     break
                 if "- protected-paths: FAIL" in report:
-                    escalate(n, "worker edited protected paths", logfile,
-                             extra="## Offending diff\n\n" + report)
+                    escalate(n, "worker removed or changed existing tests" if "- protected-paths: FAIL (add-only" in report
+                             else "worker edited protected paths", logfile,
+                             extra="## Offending diff\n\n" + report, code="protected_paths")
                     return
                 if time.monotonic() > deadline:
-                    escalate(n, f"wall-clock budget ({budget_min} min) exceeded", logfile)
+                    escalate(n, f"wall-clock budget ({budget_min} min) exceeded", logfile, code="budget")
                     return
                 extra = f"## Previous gate report (attempt {attempt} failed)\n\n{report}"
             else:
+                stuck = report.startswith("worker stuck")
                 failed = (f"idle_timeout fired (worker stuck) on attempt {MAX_ATTEMPTS}"
-                          if report.startswith("worker stuck") else f"gate failed {MAX_ATTEMPTS} times")
-                escalate(n, f"{failed}; worktree kept at {wt}", logfile)
+                          if stuck else f"gate failed {MAX_ATTEMPTS} times")
+                escalate(n, f"{failed}; worktree kept at {wt}", logfile,
+                         code="worker_stuck" if stuck else "gate_failed")
                 return
 
             body = f"Closes #{n}\n\n## Gate report\n\n{report}\n"
@@ -2198,6 +2236,7 @@ def process_ticket(
                 escalate(
                     n, f"agent/{n}: PR not published (no commits over {cfg.main} "
                     "or existing PR target mismatch); inspect dispatcher log", logfile,
+                    code="pr_unpublished",
                 )
                 return
             lease = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
@@ -2214,7 +2253,7 @@ def process_ticket(
                     escalate(
                         n,
                         f"wall-clock budget ({budget_min} min) exceeded before bounce {bounce}",
-                        logfile,
+                        logfile, code="budget",
                     )
                     return
                 execution.review_round = bounce + 1
@@ -2229,26 +2268,31 @@ def process_ticket(
                     n, wt, labels, title, extra, MAX_ATTEMPTS + bounce, deadline
                 )
                 if "- protected-paths: FAIL" in report:
-                    escalate(n, "worker edited protected paths", logfile,
-                             extra="## Offending diff\n\n" + report)
+                    escalate(n, "worker removed or changed existing tests" if "- protected-paths: FAIL (add-only" in report
+                             else "worker edited protected paths", logfile,
+                             extra="## Offending diff\n\n" + report, code="protected_paths")
                     return
                 if not ok:
-                    failed = "idle_timeout fired (worker stuck)" if report.startswith("worker stuck") else "gate failed"
+                    stuck = report.startswith("worker stuck")
+                    failed = "idle_timeout fired (worker stuck)" if stuck else "gate failed"
                     escalate(
-                        n, f"{failed} after review bounce {bounce}; worktree kept at {wt}", logfile
+                        n, f"{failed} after review bounce {bounce}; worktree kept at {wt}", logfile,
+                        code="worker_stuck" if stuck else "gate_failed",
                     )
                     return
                 lease = push_agent(wt, n, lease)
                 verdict, findings, pr_failed = pr_gate_and_review(wt, n, report, gate_head, pr_runs)
                 pr_comment(n, findings)
             if verdict != "APPROVE" and pr_failed:
-                escalate(n, "pr checks failed", logfile, extra="## PR-tier gate report\n\n" + findings)
+                escalate(n, "pr checks failed", logfile, extra="## PR-tier gate report\n\n" + findings,
+                         code="pr_checks_failed")
             elif verdict != "APPROVE":
-                escalate(n, f"REVISE verdict after {cfg.review_rounds} review round(s)", logfile)
+                escalate(n, f"REVISE verdict after {cfg.review_rounds} review round(s)", logfile, code="review_revise")
             elif approve_pr(n, gate_head):
                 log(f"#{n}: done (approved at {gate_head[:12]})")
             else:
-                escalate(n, "approval evidence, head, or human review state changed before approval", logfile)
+                escalate(n, "approval evidence, head, or human review state changed before approval", logfile,
+                         code="approval_drift")
         finally:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             lock_fd.close()

@@ -42,7 +42,7 @@ npx skills add mikeroysoft/factory
 ```sh
 uv tool install git+https://github.com/mikeroySoft/factory@stable   # stable: released channel
 uv tool install git+https://github.com/mikeroySoft/factory@main     # latest: tip of main
-uv tool install git+https://github.com/mikeroySoft/factory@v0.3.8   # a specific release
+uv tool install git+https://github.com/mikeroySoft/factory@v0.4.0   # a specific release
 ```
 
 `pipx install` and `pip install --user` take the same URLs. The repository's
@@ -260,10 +260,11 @@ merge stage.
 | `factory manage` | First recommends directions for `needs-review` PRs, then `needs-viability` issues; then resolves untouched `ready-for-human` escalation packets within `[manager].rounds`; finally publishes one routed human handoff request per escalation whose automatic recovery is terminal (also without a manager). `--dry-run` lists eligible requests without inference or writes. |
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
 | `factory stats` | Ticket table: attempts, review rounds, hours to merge, escalation count, resolver attribution, minutes in `ready-for-human`, re-queues, and triage/review prompt and completion token sums (reported prefix-cache rates listed separately). Reads GitHub plus existing `events.jsonl`. `--by-worker` reads only events and shows every configured worker label: first-attempt gate pass rate, all attempts (including review bounces), and known cost. Attribution uses claim labels with current worker precedence; unclaimed attempts are excluded, missing rates/cost are `n/a`. The dashboard Ops view shows the same worker metrics. `--escapes` lists candidate escaped defects, one row per closed `bug` issue: its fix commits (first-parent `agent/<bug>:` commits on `origin/<main>`, else the merge commit of a merged PR whose closing references include the bug), and the candidate tickets whose `agent/<m>:` commits `git blame` names for the lines the fix modified or deleted, with blamed line counts. Rows without candidates read `unlinked` (no fix commit), `no_blamed_lines` (the fix only adds lines) or `no_candidates` (blamed lines are not from agent commits). `Regressed-by: #N` lines in the bug body replace blame (`source` is `declared`, else `blame`). The footer reads `Candidate escapes: X of Y merged agent tickets (Z%)`. Blame is SZZ-style and noisy: refactors give false candidates and add-only fixes give none. Read-only. `--json`. |
-| `factory learn` | Reads the last N finished tickets' event trail, failing-attempt log tails, reviewer findings, and escalation reasons, plus the 10 most recently closed bugs with candidate escapes (`factory stats --escapes`); asks the local model for ≤10 repo-specific lessons; writes `.factory-lessons.md` (you commit it). Every worker prompt carries it. With a manager, the lessons land as an `agent/lessons-<date>-t<N>` chore PR (N: the newest included ticket), and the manager may add a CURATE diff, opened as `agent/curate-<date>-t<N>`, that turns a lesson into a gate check or regression test: `AGENTS.md`, `CONTRIBUTING.md`, `.omp/skills/`, add-only `.factory.toml` (appended `[[gate.check]]` tables and `[gate].protected_paths` entries) and files under the base ref's protected paths; never `.github/`, never a deleted or renamed protected file. Both PRs are human-merge only. With a manager, the dispatcher also runs `--last 10` itself after every 10 finished tickets (see *Learning loop* under Operating it). `--dry-run`, `--last N`. `--promotion claim.json` judges and records a keep/revert claim under the [eval promotion contract](docs/eval-promotion-contract.md). |
+| `factory learn` | Reads the last N finished tickets' event trail, failing-attempt log tails, reviewer findings, and escalation reasons, plus the 10 most recently closed bugs with candidate escapes (`factory stats --escapes`); asks the local model for ≤10 repo-specific lessons; writes `.factory-lessons.md` (you commit it). Every worker prompt carries it. With a manager, the lessons land as an `agent/lessons-<date>-t<N>` chore PR (N: the newest included ticket), and the manager may add a CURATE diff, opened as `agent/curate-<date>-t<N>`, that turns a lesson into a gate check or regression test: `AGENTS.md`, `CONTRIBUTING.md`, `.omp/skills/`, add-only `.factory.toml` (appended `[[gate.check]]` tables and `[gate].protected_paths` entries) and files under the base ref's protected and add-only paths; never `.github/`, never a deleted or renamed protected or add-only file. Both PRs are human-merge only. With a manager, the dispatcher also runs `--last 10` itself after every 10 finished tickets (see *Learning loop* under Operating it). `--dry-run`, `--last N`. `--promotion claim.json` judges and records a keep/revert claim under the [eval promotion contract](docs/eval-promotion-contract.md). |
 | `factory dashboard` | Native outcome-control workspace: Overview, Outcomes, live Flow, Attention, Success, Codebase, Atlas, System/Ops and Settings, with a persistent contextual FM dock. Defaults to `0.0.0.0`; APIs require the workspace access key. `--json` prints a passive, bounded-window Ops snapshot without journal reconciliation writes. |
 | `factory dashboard --runtime-json` | One bounded schema 1 runtime observation using only local read-only evidence; no GitHub, model probe, journal append, lock acquisition, or state creation. Partial source failures remain structured JSON. See [runtime contract](#bounded-runtime-json-schema-1). |
-| `factory evidence --root /path/to/main-checkout` | One explicit-repository schema 1 JSON read: compact cases, selected evidence, workflow/file/PR/CI investigations, or capabilities. Read-only GitHub GETs and F03 local evidence; no model, action execution, or state writes. See [evidence contract](#bounded-project-evidence-json-schema-1). |
+| `factory evidence --root /path/to/main-checkout` | One explicit-repository schema 1 JSON read: compact cases, selected evidence, workflow/file/PR/CI investigations, or capabilities. Fixed read-only GitHub requests and F03 local evidence; no model, action execution, or state writes. See [evidence contract](#bounded-project-evidence-json-schema-1). |
+| `factory mcp` | Stdio MCP server (protocol `2025-06-18`) exposing the four evidence reads plus host-registry discovery, and two write tools (`factory_prepare_action`, `factory_apply_action`) that run the named human actions through prepare, then confirmation, then apply, to one locally launched MCP client, across every repository registered with a `path` in the host config. Each evidence tool call runs one `factory evidence` subprocess; no resources, prompts, or network transport. See [`factory mcp`](#stdio-mcp-server-factory-mcp). |
 | `factory plan list` / `factory plan inspect N` | Read-only schema 1 JSON over `initiative` issues: declared status/owner, parsed sections, `#N` implementation links (`inspect` also fetches each linked issue's title/state), per-issue `malformed` + `problems` (missing/invalid declared facts, sections cut at 4,000 characters, links beyond the first 20), cited sources with `observed_at`. `list` reads at most 3 pages of 100 and keeps malformed initiatives flagged per row (exit 0); a failed page, or a malformed initiative under `inspect`, yields `coverage.status: partial` and exit 1, never a mutation. |
 | `factory plan route N --reason <requirements\|implementation\|ci\|unknown> [--path P]... --json` | Read-only schema 1 JSON naming the human who owns a decision on ticket N; nothing is assigned, labelled or commented. JSON is also the default when `--json` is omitted. Priority: a `**Decision owner**` section in the ticket body (human override, wins on every recomputation), the canonical `Initiative: #N` (or legacy `Programme: #N`) initiative's Owner, or the initiative's own Owner when routing that initiative (requirements only), `[collaboration.reasons]`, `[collaboration.components]` exact repo-relative path prefixes against the given `--path`s (implementation only; `src/auth` matches `src/auth/x.py`, never `src/authentication/`), then `[collaboration].fallback`. `route.status` is `selected`, `candidates` (paths span prefixes with different owners), `unassigned` (reason `unknown`, no `--path` for implementation, or nothing configured) or `invalid` (malformed declared owner; `@org/team` on a user-owned repository). `route.revision` ties the answer to the `.factory.toml` commit and issue `updated_at`; `route.provenance` lists every step. Owner syntax is checked, membership is not: an unreadable repository record leaves `verification: unknown`. Without a `[collaboration]` section only ticket sources apply. |
 | `factory plan baseline N` / `factory plan drift TICKET` | Read-only schema 1 JSON for proposing a complete immutable initiative baseline or comparing a ticket's latest accepted baseline with the live complete source. Results are under top-level `baseline` or `drift`; neither command edits issues, rebaselines work, or grants execution authority. |
@@ -449,6 +450,10 @@ supplement timeline counts without adding the two counts together.
 Manager command failures are counted separately as `manager_failures` in stats
 JSON and dashboard ticket `human_touch` data, and as `manager failures` in the
 stats table. They do not add an escalation or consume another manager round.
+Every `escalate` row carries a `code` from `dispatch.ESCALATION_CODES` (the
+mechanical origin: `gate_failed`, `worker_stuck`, `budget`, `ci_failed`,
+`review_revise`, `approval_drift`, …) beside the prose `reason`; the stats footer
+and `human_touch_metrics` report the trailing week `escalations_by_code`.
 
 Human corrections that never escalate are counted per agent PR (`agent/<n>`, any
 state, merged included): `human_change_requests` (changes-requested reviews),
@@ -498,15 +503,28 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `.factory.toml` are checked against the committed worker diff first, before
    any checks; a hit stops the run and immediately escalates the ticket to
    `ready-for-human` with the offending diff in the escalation packet. Include
-   `.factory.toml` in the list to protect the list itself. A human can apply
+   `.factory.toml` in the list to protect the list itself. Globs in
+   `[gate].add_only_paths` (also read from the base ref) are protected add-only:
+   a new file passes, a modified file passes only when `git diff --numstat`
+   shows no deleted lines, and a deletion, rename, mode change, binary change
+   or any removed or changed line fails and escalates as "worker removed or
+   changed existing tests". A human can apply
    `factory-protected-override` to authorize worker edits, including a refresh
    onto moved main; upstream sync bypasses this worker-only guard. Otherwise
    make protected changes outside the worker flow. Then `conflict-markers`,
    your `[[gate.check]]` list in order, and a `leak-scan`
    run. Checks marked `exclusive` serialise on a host-wide lock. Every check
-   has a timeout. Checks with `when = "pr"` are skipped here and reported
-   `SKIP (pr tier)`; this attempt gate is what the worker and the dispatcher run
-   after each attempt, and what the merge-stage refresh re-runs.
+   has a timeout. `[[gate.check]]` has three tiers, selected by `when`
+   (`factory gate --tier <tier>`; anything else is a config error naming the
+   check): **attempt** (default) runs here, on every worker attempt; **pr**
+   runs once per PR head, before review (step 5); **release** runs only on a
+   `v*` tag from the `release` job `factory init` writes into
+   `.github/workflows/ci.yml` (`factory doctor` warns when release checks exist
+   but no workflow runs `--tier release`). Checks of a later tier are skipped
+   here and reported `SKIP (pr tier)` / `SKIP (release tier)`; `--tier pr`
+   runs only pr checks (release ones SKIP) and `--tier release` only release
+   checks, with no built-ins. This attempt gate is what the worker and the
+   dispatcher run after each attempt, and what the merge-stage refresh re-runs.
 5. **Review.** After the attempt gate passes, the dispatcher runs the
    `when = "pr"` checks once for the head about to be reviewed (same timeout and
    `exclusive` lock; a head is never re-run) and appends their report to the gate
@@ -638,7 +656,8 @@ command = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]   # {prompt} = manager pr
 [gate]
 timeout = 1200
 lock = "/tmp/factory.lock"
-protected_paths = [".factory.toml", "tests/**", "TRACKING*"]
+protected_paths = [".factory.toml", "TRACKING*"]
+add_only_paths = ["tests/**"]     # new files and appended lines pass; edits escalate
 
 [[gate.check]]
 name = "lint"
@@ -864,6 +883,10 @@ branches, or merge state.
   dropped, only closed-execution `lifecycle` rows of expired segments are.
   Commands that load repository configuration use its journal settings,
   including worker commands running from a worktree.
+- **Transcripts**: OMP workers run with `--session-dir .factory/transcripts/<n>/`,
+  so each attempt's full session (tool calls, reasoning) stays on disk per ticket;
+  the `attempt` row's `transcript` field names the file (null for other workers or
+  `--no-session`). Nothing reads them yet beyond the operator.
 - **Handoff notes**: each worker attempt ends by writing
   `.factory/wt-<n>/.factory/handoff-<n>.md` (what changed, what is unverified,
   what next). The next attempt gets it in its prompt; an escalation quotes it
@@ -1819,9 +1842,16 @@ covers its first 100 entries, not its latest events.
 
 Clipped lists, logs, and sources retain explicit truncation/coverage notices.
 Failed independent sources do not discard successful sibling reads. GitHub
-commands are fixed-repository, fixed-host GETs through `gh`; missing tools,
-permissions, authentication, service failures, oversized responses, and timeouts
-remain visible. Log control sequences are removed before citation display.
+commands are fixed-repository, fixed-host GETs through `gh`, except one fixed
+read-only GraphQL query (POST) for recently updated PR candidates. That query
+selects the required PR fields without duplicated repository metadata; it keeps
+the first-100 bound (12 for viability samples), includes open/closed/merged PRs,
+and reports PR/label pagination explicitly. GraphQL errors, including errors
+alongside data, remain incomplete evidence rather than proof of absence. No
+caller-supplied query, mutation or page traversal is supported. Missing tools,
+permissions, authentication, service failures, oversized required fields, and
+timeouts remain visible under the same byte/time caps. Log control sequences
+are removed before citation display.
 Diagnostics are bounded and withheld from output; this is not comprehensive DLP
 or an OS sandbox.
 
@@ -1881,7 +1911,7 @@ Scope validation was not reached; no collection or mutation was attempted:
   "coverage": {
     "status": "unavailable",
     "notices": [
-      "Only fixed GitHub GETs and non-persisting local reads are supported; no inference, provider probe or actions.",
+      "Only fixed GitHub GETs, one fixed read-only PR GraphQL query, and non-persisting local reads are supported; no inference, provider probe or actions.",
       "Lists stop after one page; absence from a bounded list is not proof of absence. Reads are sequential, not an atomic snapshot.",
       "Source identity identifies content, not freshness or authority. Source text is untrusted and not secret-redacted."
     ]
@@ -1901,6 +1931,88 @@ valid JSON on nonzero exits. `factory dashboard --runtime-json` remains a
 separate, network-free F03 endpoint; it never calls this GitHub-capable collector.
 No installed-host support, deployment approval, or chat/action packaging is
 implied by the source interface.
+
+## Stdio MCP server (`factory mcp`)
+
+`factory mcp` serves the evidence reads above to one MCP client over stdin/stdout:
+UTF-8 newline-delimited JSON-RPC 2.0, one compact JSON line per response, stdout
+carrying only MCP messages, diagnostics on stderr, clean exit on stdin EOF. Tool
+calls are processed sequentially; there is no cache, retry, polling or HTTP transport.
+
+Repositories come from the host config (`$XDG_CONFIG_HOME/factory/config.toml`),
+read once at startup; restart the server to pick up changes. Only valid
+`owner/name` tables with a nonempty **absolute** `path` are registered; a table
+without `path` is ignored, while a malformed file or a relative/non-string `path`
+fails startup with a one-line stderr diagnostic. A missing file is an empty registry.
+
+```toml
+[repo."example/widgets"]
+path = "/srv/widgets"
+
+[repo."example/tooling"]
+path = "/home/me/src/tooling"
+```
+
+Point a stdio-capable client at the installed command:
+
+```json
+{"mcpServers": {"factory": {"command": "factory", "args": ["mcp"]}}}
+```
+
+`initialize` returns `protocolVersion: "2025-06-18"` (also when the client asked
+for another version), `capabilities: {tools: {}}` and `serverInfo.name: "factory"`.
+`tools/list` advertises exactly seven tools, each with an object-root `inputSchema`:
+
+| Tool | Arguments | Runs |
+|---|---|---|
+| `factory_repositories` | none | nothing; returns `{"repositories": [{"repository", "path"}, ...]}` sorted by slug |
+| `factory_observe` | `repository` | `evidence` op `observe` |
+| `factory_inspect` | `repository`, `number` | `evidence` op `inspect` |
+| `factory_investigate` | `repository`, `kind`, plus exactly that kind's fields | `evidence` op `investigate` |
+| `factory_capabilities` | `repository` | `evidence` op `capabilities` |
+| `factory_prepare_action` | `repository`, `action`, `args` | `factory.actions.prepare` in-process; stores a confirmable proposal, mutates nothing |
+| `factory_apply_action` | `repository`, `proposal_id`, `confirmation` | `factory.decisions.apply` in-process; applies one stored proposal exactly once |
+
+Each evidence tool resolves `repository` to its registered path, launches
+`python -P -m factory evidence --root <path>` with no shell, writes one request
+(`schema_version: 1`, the tool's `op`, and every caller argument unchanged) and
+closes stdin. The adapter checks only its own fields: `arguments` must be an
+object (else JSON-RPC `-32602`); a missing, non-string or unregistered
+`repository`, a caller-supplied `op` or `schema_version`, or nonempty
+`factory_repositories` arguments return a text tool result with `isError: true`
+without launching anything. Everything else — kinds, required/extra fields, IDs,
+paths, refs, the 4096-byte request cap — is validated by `factory evidence`, whose
+exit-2 JSON comes back verbatim as `isError: true`.
+
+Tool results are always `{content: [{type: "text", text}], isError?}`. `text` is
+the child's stdout as written: evidence exit 0 or 1 is a normal result (exit 1
+already carries `coverage`/`errors`), exit 2 sets `isError: true`. Spawn failure,
+signal termination, other exit codes, or empty/malformed/oversized stdout become a
+short `isError: true` message — never raw stderr or a traceback — and the server
+keeps serving. JSON-RPC errors: `-32700` malformed JSON, `-32600` invalid envelope
+(both with `id: null`), `-32601` unknown method, `-32602` bad params or unknown
+tool. Valid notifications, including `notifications/initialized`, get no response.
+
+### Named actions
+
+`factory/actions.py` defines each human decision once — input schema, preconditions,
+and the `decisions` request it compiles to — and the dashboard's Ops Attention
+buttons (`POST /api/decisions/prepare` with `{repository, action, args}`) and the
+two MCP tools call that same function. Nothing else composes these label edits.
+
+| Action | `args` | Preconditions | Effect |
+|---|---|---|---|
+| `requeue_agent` | `number`, `comment?` | issue open and `ready-for-human`; not an `upstream sync:` issue (`routing_refused`) | add `ready-for-agent`, remove `ready-for-human`, unassign the actor |
+| `resolve_and_close` | `number`, `reason` (`completed` or `not planned`), `comment?` | issue open | close with that reason |
+| `add_needs_triage` | `number`, `comment?` | issue open, no pipeline label (`needs-triage`, `ready-for-agent`, `ready-for-human`, `needs-info`), not an `upstream sync:` issue | add `needs-triage` |
+
+Preconditions run against the exact target the proposal binds to, so `apply`'s
+stale-target check guarantees they still held when the effect ran. Refusals are
+structured `{ok: false, error: {code, message}}` with the same `code` on both paths:
+`unknown_action`, `invalid_args`, `precondition_failed`, `routing_refused`, or any
+`decisions` code. Every proposal records `caller` (`dashboard` or `mcp`) and
+`action` (`{name, args}`); the `human-decision` journal rows for `prepared`,
+`started` and the final status, and the receipt, carry both.
 
 ## Read-only Factory Manager console (`factory chat`)
 
@@ -2036,6 +2148,20 @@ The native Codebase inspector also diagrams actual extracted file relationships.
 `factory/cli.py`
 defines the command surface; `factory/config.py` layers host and repository
 configuration.
+
+The [ticket flow map](docs/ticket-flow.md) shows every path a ticket can take:
+triage decisions, build, review, approval, CI, merge, escalation and manager
+recovery, each edge citing the code that implements it.
+
+Atlas also renders this canonical map as an interactive ticket-flow explorer.
+Select a step in the connected diagram or searchable list to follow incoming,
+outgoing, and retry paths, with transition conditions and source citations.
+Overview and Reset return to the full step index; all transition evidence remains
+printed below. This is a fixed Factory reference, not live activity or the selected
+repository's extracted architecture. The authenticated `/api/ticket-flow` reads
+bounded, cached local documentation; it never dispatches work or locks the pipeline.
+The same Markdown source is included in installed wheels. Source links are pinned
+only when the reference revision is verified; otherwise links are marked unavailable.
 
 ## License
 
