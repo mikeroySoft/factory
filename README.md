@@ -2163,6 +2163,8 @@ bounded, cached local documentation; it never dispatches work or locks the pipel
 The same Markdown source is included in installed wheels. Source links are pinned
 only when the reference revision is verified; otherwise links are marked unavailable.
 
+Operator and agent guide: [docs/guide/index.md](docs/guide/index.md).
+
 ## License
 
 MIT
