@@ -450,6 +450,10 @@ supplement timeline counts without adding the two counts together.
 Manager command failures are counted separately as `manager_failures` in stats
 JSON and dashboard ticket `human_touch` data, and as `manager failures` in the
 stats table. They do not add an escalation or consume another manager round.
+Every `escalate` row carries a `code` from `dispatch.ESCALATION_CODES` (the
+mechanical origin: `gate_failed`, `worker_stuck`, `budget`, `ci_failed`,
+`review_revise`, `approval_drift`, …) beside the prose `reason`; the stats footer
+and `human_touch_metrics` report the trailing week `escalations_by_code`.
 
 Human corrections that never escalate are counted per agent PR (`agent/<n>`, any
 state, merged included): `human_change_requests` (changes-requested reviews),
@@ -879,6 +883,10 @@ branches, or merge state.
   dropped, only closed-execution `lifecycle` rows of expired segments are.
   Commands that load repository configuration use its journal settings,
   including worker commands running from a worktree.
+- **Transcripts**: OMP workers run with `--session-dir .factory/transcripts/<n>/`,
+  so each attempt's full session (tool calls, reasoning) stays on disk per ticket;
+  the `attempt` row's `transcript` field names the file (null for other workers or
+  `--no-session`). Nothing reads them yet beyond the operator.
 - **Handoff notes**: each worker attempt ends by writing
   `.factory/wt-<n>/.factory/handoff-<n>.md` (what changed, what is unverified,
   what next). The next attempt gets it in its prompt; an escalation quotes it

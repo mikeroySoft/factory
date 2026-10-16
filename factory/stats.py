@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -229,12 +230,13 @@ def human_touch(items: list[dict], audit: list[dict], end: str | None = None,
             opened = None
     if opened:
         minutes += merge_hours(opened, end or datetime.now(UTC).isoformat()) * 60
-    escalated = [e["at"] for e in audit
+    escalated = [(e["at"], e.get("code") or "unknown") for e in audit
                  if e.get("event") == "escalate" and e.get("reason") != "manager_failed"]
     claims = sum(e.get("event") == "claimed" for e in audit)
     return {
         "escalation_count": max(len(starts), len(escalated)),
-        "escalation_times": escalated if len(escalated) >= len(starts) else starts,
+        "escalation_times": [at for at, _ in escalated] if len(escalated) >= len(starts) else starts,
+        "escalation_codes": escalated,
         "manager_failures": sum(e.get("event") == "escalate" and e.get("reason") == "manager_failed"
                                 for e in audit),
         "resolutions": resolutions,
@@ -244,16 +246,19 @@ def human_touch(items: list[dict], audit: list[dict], end: str | None = None,
 
 
 def human_touch_metrics(rows: list[dict], now: datetime | None = None) -> dict:
-    """Trailing seven-day escalation count; human share of attributed resolutions."""
+    """Trailing seven-day escalation count, by escalation code; human share of attributed resolutions."""
     now = now or datetime.now(UTC)
     since = now - timedelta(days=7)
     resolved = [r["resolved_by"] for row in rows for r in row.get("resolutions", [])
                 if r["resolved_by"] in {"human", "factory"}]
+    by_code = Counter(code for row in rows for at, code in row.get("escalation_codes", [])
+                      if since <= datetime.fromisoformat(at) <= now)
     return {
         "escalations_per_week": sum(
             since <= datetime.fromisoformat(at) <= now
             for row in rows for at in row.get("escalation_times", [])
         ),
+        "escalations_by_code": dict(by_code.most_common()),
         "human_resolved_pct": round(100 * resolved.count("human") / len(resolved), 1) if resolved else None,
     }
 
@@ -559,6 +564,8 @@ def main(argv: list[str]) -> int:
         totals = human_touch_metrics(rows)
         human = totals["human_resolved_pct"]
         print(f"\nEscalations/week (last 7 days): {totals['escalations_per_week']}")
+        if totals["escalations_by_code"]:
+            print("  by code: " + ", ".join(f"{c} {k}" for c, k in totals["escalations_by_code"].items()))
         print(f"Human-resolved: {str(human) + '%' if human is not None else 'n/a'} (attributed resolutions)")
         touched = human_touched_pct([row for row in rows if row["state"] == "merged"])
         print(f"Human-touched PRs: {str(touched) + '%' if touched is not None else 'n/a'} (attributed merged agent PRs)")
