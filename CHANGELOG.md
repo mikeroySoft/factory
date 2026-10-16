@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add-only protected paths (#228): `[gate].add_only_paths` globs (read from the base ref's `.factory.toml`, like `protected_paths`) let a worker add a file or append lines to an existing one without an override; a deletion, rename, mode change, binary change or any removed or changed line (`git diff --numstat` deleted lines > 0) fails `protected-paths` with the offending diff and escalates as `worker removed or changed existing tests`. This repository moves `tests/**` from `protected_paths` to `add_only_paths`; `.factory.toml`, `**/acceptance/**`, review prompts and TRACKING stay fully protected and `factory-protected-override` still bypasses both. `factory learn`'s CURATE allowlist includes the base ref's `add_only_paths`, so a regression test under `tests/**` is still accepted.
+
 ## 0.4.0 — 2026-10-11
 
 Compared against 0.3.8 (`fc264ad`). Released channel `stable` points at `v0.4.0`. Minor bump: the first release that exposes the factory to an external agent (`factory mcp`); `/api/act` is removed and the dashboard is replaced by the outcome-control workspace.

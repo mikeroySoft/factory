@@ -79,7 +79,7 @@ KNOWN_KEYS = {
     "worker_wrap": ("command",),
     "review": ("command",),
     "manager": ("model", "command", "rounds", "review", "stale_days", "max_active_cap", "budget_min_cap"),
-    "gate": ("timeout", "lock", "check", "protected_paths"),
+    "gate": ("timeout", "lock", "check", "protected_paths", "add_only_paths"),
     "leak_scan": ("pattern", "exclude", "extra"),
     "triage": ("url", "model", "timeout"),
     "journal": ("max_mb", "retention"),
@@ -151,6 +151,7 @@ class Config:
     manager_budget_min_cap: int | None = None
     checks: list[Check] = field(default_factory=list)
     protected_paths: list[str] = field(default_factory=list)
+    add_only_paths: list[str] = field(default_factory=list)
     check_timeout: int = 1200
     lock: Path = Path("/tmp/factory.lock")  # host-wide: one GPU, many repos
     leak_pattern: str | None = DEFAULT_LEAK_PATTERN
@@ -497,10 +498,11 @@ def load(start: Path | None = None) -> Config:
         cfg.collaboration = collaboration_settings(raw["collaboration"])
     cfg.prices = price_table(raw.get("prices", {}))
     cfg.check_timeout = int(gate.get("timeout", cfg.check_timeout))
-    paths = gate.get("protected_paths", [])
-    if not isinstance(paths, list) or any(not isinstance(p, str) or not p for p in paths):
-        raise ConfigError("gate.protected_paths must be an array of nonempty globs")
-    cfg.protected_paths = paths
+    for key in ("protected_paths", "add_only_paths"):
+        paths = gate.get(key, [])
+        if not isinstance(paths, list) or any(not isinstance(p, str) or not p for p in paths):
+            raise ConfigError(f"gate.{key} must be an array of nonempty globs")
+        setattr(cfg, key, paths)
     cfg.lock = Path(gate.get("lock", cfg.lock))
     cfg.checks = []
     for i, c in enumerate(gate.get("check", [])):
