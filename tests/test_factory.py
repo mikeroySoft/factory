@@ -577,7 +577,7 @@ class HostConfigTest(unittest.TestCase):
                     )
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertFalse(marker.exists(), "service imported the checkout package")
-            self.assertEqual(commands, ["triage", "dispatch", "dashboard"])
+            self.assertEqual(commands, ["triage", "dispatch", "watch", "dashboard"])
 
             installed = run("install", "--no-dashboard")
             self.assertEqual(installed.returncode, 0, installed.stderr)
@@ -738,6 +738,7 @@ class HostConfigTest(unittest.TestCase):
             self.assertEqual(launchers, [
                 f'ExecStart=-"{escaped}" -P -m factory triage',
                 f'ExecStart="{escaped}" -P -m factory dispatch',
+                f'ExecStart=-"{escaped}" -P -m factory watch',
                 (f'ExecStart="{escaped}" -P -m factory dashboard'
                  ' --host 127.0.0.1 --port 8765 --no-open'),
             ])

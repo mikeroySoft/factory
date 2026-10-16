@@ -1,0 +1,195 @@
+"""`factory watch`: file the factory's own runtime failures as `bug` issues from local evidence.
+
+One pass reads three local signals (lifecycle exit rows that name a mechanism failure,
+failed `factory-*` systemd units, `dashboard --runtime-json` source errors), fingerprints
+each, and opens one `bug,needs-triage` issue per fingerprint not already covered by an
+open issue. Filing is journaled as a `watch` row so the next pass can skip or refile.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import shlex
+import subprocess
+import sys
+from contextlib import nullcontext
+from datetime import datetime
+from pathlib import Path
+
+from factory import config, dispatch, lifecycle
+
+LABELS = "bug,needs-triage"
+MAX_ISSUES = 5
+MAX_ROWS = 20
+MAX_LOG_LINES = 40
+UNKNOWN_REASONS = ("worker_exit:", "check_timeout")
+
+
+def fingerprint(kind: str, stage: str, key: str) -> str:
+    return hashlib.sha256(f"{kind}\n{stage}\n{key}".encode()).hexdigest()[:12]
+
+
+def _failing(row: dict) -> bool:
+    if row.get("event") != "lifecycle" or row.get("kind") != "exit":
+        return False
+    reason = row.get("reason") or ""
+    return row.get("outcome") == "mechanism_failure" or (
+        row.get("outcome") == "unknown" and reason.startswith(UNKNOWN_REASONS)
+    )
+
+
+def failed_units(cfg: config.Config) -> list[tuple[str, str]]:
+    """This repository's failed user units as (name, `systemctl status` excerpt)."""
+    try:
+        listed = subprocess.run(
+            ["systemctl", "--user", "list-units", "--failed", "--plain", "--no-legend", "factory-*"],
+            capture_output=True, text=True, check=False,
+        ).stdout
+    except OSError:
+        return []
+    units = []
+    for line in listed.splitlines():
+        name = line.split()[0] if line.split() else ""
+        if name == f"{cfg.unit}.service" or name.startswith(f"{cfg.unit}-"):
+            status = subprocess.run(["systemctl", "--user", "status", "--no-pager", "-n", "20", name],
+                                    capture_output=True, text=True, check=False)
+            units.append((name, (status.stdout + status.stderr).strip()))
+    return units
+
+
+def runtime_errors(cfg: config.Config) -> list[dict]:
+    """`errors` from one `factory dashboard --runtime-json`; a broken reader is itself an error."""
+    proc = subprocess.run([sys.executable, "-P", "-m", "factory", "dashboard", "--runtime-json"],
+                          cwd=cfg.root, capture_output=True, text=True, check=False)
+    try:
+        errors = json.loads(proc.stdout)["errors"] if proc.returncode == 0 else None
+    except (ValueError, KeyError, TypeError):
+        errors = None
+    if errors is None:
+        return [{"source": "dashboard", "scope": "runtime-json", "code": f"exit:{proc.returncode}"}]
+    return [e for e in errors if isinstance(e, dict)]
+
+
+def _tail(path: str | None) -> str | None:
+    if not path:
+        return None
+    try:
+        lines = Path(path).read_text(errors="replace").splitlines()
+    except OSError:
+        return None
+    return "\n".join(lines[-MAX_LOG_LINES:])
+
+
+def signals(cfg: config.Config, events: list[dict]) -> list[dict]:
+    """Every observed failure, newest journal evidence first within each fingerprint."""
+    found: dict[str, dict] = {}
+    logs = {(r.get("ticket"), r.get("attempt")): r.get("log") for r in events if r.get("event") == "attempt"}
+    for row in events:
+        if not _failing(row):
+            continue
+        stage, reason = str(row.get("stage")), str(row.get("reason"))
+        key = fingerprint("lifecycle", stage, reason)
+        signal = found.setdefault(key, {
+            "fingerprint": key, "kind": "lifecycle", "stage": stage, "key": reason, "rows": [],
+            "excerpt": None, "log": None, "latest": "",
+            "command": "zcat -f .factory/events.jsonl* | grep -F "
+            f"{shlex.quote(json.dumps({'reason': reason}, separators=(',', ':'))[1:-1])}",
+        })
+        signal["rows"].append(row)
+        signal["latest"] = max(signal["latest"], str(row.get("at") or ""))
+        signal["log"] = logs.get((row.get("ticket"), row.get("attempt"))) or signal["log"]
+    for name, status in failed_units(cfg):
+        key = fingerprint("unit", "systemd", name)
+        found[key] = {"fingerprint": key, "kind": "unit", "stage": "systemd", "key": name, "rows": [],
+                      "excerpt": status, "log": None, "latest": None,
+                      "command": f"systemctl --user status {shlex.quote(name)}"}
+    for error in runtime_errors(cfg):
+        source, code = str(error.get("source")), str(error.get("code"))
+        key = fingerprint("runtime", source, code)
+        found[key] = {"fingerprint": key, "kind": "runtime", "stage": source, "key": code, "rows": [],
+                      "excerpt": json.dumps(error, indent=2), "log": None, "latest": None,
+                      "command": "factory dashboard --runtime-json | jq .errors"}
+    for signal in found.values():
+        signal["rows"] = signal["rows"][-MAX_ROWS:]
+    return list(found.values())
+
+
+def title(signal: dict) -> str:
+    return f"factory runtime failure: {signal['kind']} {signal['stage']} {signal['key']}"[:200]
+
+
+def body(signal: dict) -> str:
+    parts = [
+        f"Fingerprint: {signal['fingerprint']}",
+        "",
+        (f"`factory watch` observed a runtime failure of the factory itself from local evidence: "
+         f"signal `{signal['kind']}`, stage `{signal['stage']}`, `{signal['key']}`. "
+         "Filed automatically; no human has looked at it yet."),
+        "",
+        "## Evidence",
+    ]
+    if signal["rows"]:
+        parts += [f"### Journal rows ({len(signal['rows'])} newest)", "```json",
+                  *(json.dumps(r, separators=(",", ":"), ensure_ascii=False) for r in signal["rows"]), "```"]
+    tail = _tail(signal["log"])
+    if tail is not None:
+        parts += [f"### Attempt log tail (`{signal['log']}`, last {MAX_LOG_LINES} lines)", "```", tail, "```"]
+    if signal["excerpt"]:
+        parts += ["### Observation", "```", signal["excerpt"], "```"]
+    parts += [
+        "## Reproduce", "```", signal["command"], "factory watch --dry-run", "```",
+        "## Expected behavior",
+        (f"The factory pass completes without `{signal['key']}` at stage `{signal['stage']}`, and "
+         f"`factory watch --dry-run` no longer reports fingerprint `{signal['fingerprint']}`."),
+    ]
+    return "\n".join(parts) + "\n"
+
+
+def _closed_before(issue: int, latest: str | None) -> bool:
+    """True when the issue is closed and the newest evidence (None: still present) postdates the close."""
+    state = dispatch.gh_json(["issue", "view", str(issue), "--repo", dispatch.REPO, "--json", "state,closedAt"])
+    if state["state"].upper() == "OPEN":
+        return False
+    # ponytail: gh reports closedAt to the second; a recurrence inside that second refiles once.
+    return latest is None or datetime.fromisoformat(latest) > datetime.fromisoformat(state["closedAt"])
+
+
+def run_pass(cfg: config.Config, dry_run: bool = False) -> list[dict]:
+    """File at most MAX_ISSUES new fingerprints; return the signals filed (or, dry, would be)."""
+    events = lifecycle.read_events(dispatch.EVENTS)
+    filings = {r["fingerprint"]: r for r in events if r.get("event") == "watch"}
+    filed = []
+    for signal in signals(cfg, events):
+        if len(filed) >= MAX_ISSUES:
+            dispatch.log(f"watch: deferring {signal['fingerprint']} to the next pass (cap {MAX_ISSUES})")
+            break
+        previous = filings.get(signal["fingerprint"])
+        if previous is not None and signal["latest"] is not None and signal["latest"] <= previous["at"]:
+            continue  # already filed; nothing newer than that filing
+        if dry_run:
+            print(f"[watch] would file {signal['fingerprint']}: {title(signal)}"
+                  + (f" (previously #{previous['issue']})" if previous else ""))
+            filed.append(signal)
+            continue
+        if previous is not None and not _closed_before(previous["issue"], signal["latest"]):
+            continue
+        url = dispatch.run([
+            "gh", "issue", "create", "--repo", dispatch.REPO, "--title", title(signal),
+            "--label", LABELS, "--body", body(signal),
+        ]).stdout.strip().splitlines()[-1]
+        number = int(url.rstrip("/").rsplit("/", 1)[-1])
+        dispatch.record("watch", fingerprint=signal["fingerprint"], issue=number, at=lifecycle._now())
+        dispatch.log(f"watch: filed #{number} for {signal['fingerprint']} ({title(signal)})")
+        filed.append(signal)
+    return filed
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="factory watch", description=__doc__)
+    parser.add_argument("--dry-run", action="store_true", help="print what would be filed; no gh call, no journal row")
+    args = parser.parse_args(argv)
+    dispatch.configure(config.load())
+    with nullcontext() if args.dry_run else lifecycle.scope(dispatch.EVENTS, "watch", lazy=True):
+        run_pass(dispatch.cfg, args.dry_run)
+    return 0

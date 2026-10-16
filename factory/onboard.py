@@ -691,7 +691,7 @@ def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
             f"[Unit]\nDescription=factory triage + dispatcher for {cfg.repo} (one pass)\n\n"
             # `-` prefix: an offline triage model must not stop the dispatch pass.
             f"[Service]\nType=oneshot\nWorkingDirectory={cfg.root}\n{dispatch_env}"
-            f"ExecStart=-{exe} triage\nExecStart={exe} dispatch\n"
+            f"ExecStart=-{exe} triage\nExecStart={exe} dispatch\nExecStart=-{exe} watch\n"
         ),
         f"{cfg.unit}.timer": (
             f"[Unit]\nDescription=Run the factory pass for {cfg.repo} every {every}\n\n"

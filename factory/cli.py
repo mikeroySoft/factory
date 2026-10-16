@@ -13,6 +13,7 @@ COMMANDS = {
     "dispatch": ("dispatch", "main", "one pass: sync, merge stage, claim and work tickets"),
     "manage": ("manage", "main", "recommend PR/issue viability, resolve untouched escalations, publish terminal human handoffs"),
     "gate": ("gate", "main", "run the deterministic quality gate in this worktree"),
+    "watch": ("watch", "main", "file new factory runtime failures (journal, failed units, runtime-json) as bug issues"),
     "stats": ("stats", "main", "ticket metrics from GitHub"),
     "learn": ("learn", "main", "distil recent ticket outcomes into .factory-lessons.md"),
     "score": ("score", "main", "rubric-score finished tickets' worker attempts from their transcripts"),
