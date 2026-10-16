@@ -6,12 +6,13 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from factory import dispatch, lifecycle, score, triage
+from factory import dispatch, lifecycle, results, score, triage
 from factory.config import Config
 
 PROMPT = (
@@ -146,6 +147,21 @@ class ScoreTest(unittest.TestCase):
         self.journal({"attempt": 1, "gate": "PASS"})
         score.run(self.cfg)
         self.assertIsNone(self.scores()[0]["compliance"])
+
+    def test_out_of_range_judge_answer_is_not_guessed(self) -> None:
+        self.judge.return_value = "1.5"
+        self.journal({"attempt": 1, "gate": "PASS"})
+        score.run(self.cfg)
+        self.assertIsNone(self.scores()[0]["compliance"])
+
+    def test_removed_worktree_falls_back_to_retained_handoff(self) -> None:
+        shutil.rmtree(self.cfg.factory / "wt-7")
+        self.journal({"attempt": 1, "gate": "PASS"})
+        with mock.patch.object(results, "latest_result", return_value={"status": "ok", "text": "Retained handoff."}) as latest:
+            score.run(self.cfg)
+        latest.assert_called_once_with(self.cfg, 7)
+        [messages] = self.judge.call_args.args
+        self.assertIn("Retained handoff.", messages[-1]["content"])
 
 
 if __name__ == "__main__":

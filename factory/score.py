@@ -13,7 +13,7 @@ import re
 from itertools import pairwise
 from pathlib import Path
 
-from factory import config, dispatch, lifecycle, triage
+from factory import config, dispatch, lifecycle, results, triage
 
 MAX_ATTEMPTS = 50  # attempts scored per run
 MAX_TRANSCRIPT = 2_000_000  # bytes read per transcript file
@@ -25,7 +25,7 @@ JUDGE_SYSTEM = (
     "0 and 1: 1 means every scoped item and exit-gate criterion is addressed, 0 means none. "
     "Output only the number."
 )
-_NUMBER = re.compile(r"[01](?:\.\d+)?|\.\d+")
+_NUMBER = re.compile(r"0(?:\.\d+)?|1(?:\.0+)?|\.\d+")
 
 
 def parse(path: Path) -> tuple[list[tuple[str, str]], str, str]:
@@ -79,10 +79,9 @@ def judge(ticket: str, final: str, handoff: str) -> float | None:
                                     f"{final or '(none)'}\n\n## Agent's handoff\n\n{handoff or '(none)'}"},
     ]
     try:
-        answer = triage.call_llm(messages)
+        answer = re.sub(r"<think>.*?</think>", "", triage.call_llm(messages), flags=re.DOTALL).strip()
     except (SystemExit, ValueError, LookupError, TypeError):
         return None
-    answer = re.sub(r"<think>.*?</think>", "", answer, flags=re.DOTALL).strip()
     return float(answer) if _NUMBER.fullmatch(answer) else None
 
 
@@ -111,7 +110,12 @@ def run(cfg: config.Config, last: int | None = None, dry_run: bool = False) -> l
         else:
             calls, prompt, final = parse(path)
             handoff = dispatch.FACTORY / f"wt-{n}" / ".factory" / f"handoff-{n}.md"
-            compliance = judge(scope(prompt), final, handoff.read_text()[-MAX_HANDOFF:] if handoff.is_file() else "")
+            if handoff.is_file():
+                text = handoff.read_text()
+            else:  # the worktree is removed after a clean merge; the accepted handoff is retained
+                prior = results.latest_result(cfg, n)
+                text = prior.get("text", "") if prior else ""
+            compliance = judge(scope(prompt), final, text[-MAX_HANDOFF:])
             row.update(gate_first_pass=a.get("gate") == "PASS" and k == 1, **metrics(calls),
                        compliance=compliance, judge_model=triage.LLM_MODEL if compliance is not None else None)
         print(json.dumps({"event": "score", **row}))
