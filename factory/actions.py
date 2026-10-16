@@ -7,7 +7,14 @@ journaling and receipts come from one path.
 from __future__ import annotations
 
 from factory import decisions, dispatch
-from factory.config import LABEL_AGENT, LABEL_HUMAN, LABEL_INFO, LABEL_INITIATIVE, LABEL_TRIAGE, Config
+from factory.config import (
+    LABEL_AGENT,
+    LABEL_HUMAN,
+    LABEL_INFO,
+    LABEL_INITIATIVE,
+    LABEL_TRIAGE,
+    Config,
+)
 from factory.decisions import DecisionError
 
 PIPELINE_LABELS = frozenset({LABEL_TRIAGE, LABEL_AGENT, LABEL_HUMAN, LABEL_INFO})
