@@ -1987,6 +1987,50 @@ PY
                     review.assert_not_called()
                     escalate.assert_called_once()
 
+    def test_add_only_edit_escalates_with_add_only_reason(self) -> None:
+        """#228 AC3: changing an existing line under `[gate].add_only_paths` escalates with the add-only wording."""
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), '[repo]\nslug = "acme/widgets"\n[gate]\nadd_only_paths = ["tests/**"]\n')
+            (repo / "tests").mkdir()
+            (repo / "tests" / "test_old.py").write_text("assert True\n")
+            git(repo, "add", "tests/test_old.py")
+            git(repo, "commit", "-q", "-m", "add test")
+            git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+            bare = Path(d) / "origin.git"
+            git(repo, "init", "-q", "--bare", str(bare))
+            git(repo, "remote", "set-url", "origin", str(bare))
+            cfg = config.Config(
+                root=repo, repo="acme/widgets",
+                workers={"default": ["sh", "-c", "printf 'assert False\\n' > tests/test_old.py"]},
+            )
+            dispatch.configure(cfg)
+            wt = cfg.factory / "wt-7"
+            wt.parent.mkdir()
+            git(repo, "worktree", "add", "-q", str(wt), "-b", "agent/7")
+            issue = {
+                "number": 7, "title": "Weaken test", "body": "Weaken", "comments": [], "state": "OPEN",
+                "assignees": [], "labels": [{"name": config.LABEL_AGENT}],
+            }
+            original_run = dispatch.run
+
+            def fake_run(cmd, *args, original_run=original_run, **kwargs):
+                if cmd[0] == "gh":
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+                return original_run(cmd, *args, **kwargs)
+
+            with mock.patch.dict(os.environ, {"PYTHONPATH": str(ROOT)}), \
+                    mock.patch.object(dispatch, "gh_json", return_value=issue), \
+                    mock.patch.object(dispatch, "run", side_effect=fake_run), \
+                    mock.patch.object(dispatch, "escalate") as escalate:
+                dispatch.process_ticket(issue, 5, False)
+            escalate.assert_called_once()
+            self.assertEqual(escalate.call_args.args[1], "worker removed or changed existing tests")
+            self.assertIn("-assert True", escalate.call_args.kwargs["extra"])
+
     def test_red_ci_pr_is_fixed_relabelled_and_merged_on_the_next_pass(self) -> None:
         """#15 exit gate: red CI withdrew the label; FIX + green gate + APPROVE relabel; next pass merges."""
         repo, stubs, packet = self.scenario()
@@ -3164,6 +3208,18 @@ class DispatchTest(unittest.TestCase):
                 self.assertIn(reason, result.stdout)
                 self.assertNotIn("agent/curate-", (Path(stubs) / "gh.log").read_text())
                 self.assertEqual(git(bare, "branch", "--list", "agent/curate-*"), "")
+
+    def test_learn_curate_accepts_regression_test_under_add_only_paths(self) -> None:
+        """#228: moving `tests/**` to `[gate].add_only_paths` keeps the CURATE regression-test path open."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            repo, bare, stubs, _ = self.learn_scenario(root, "", '[gate]\nadd_only_paths = ["tests/**"]\n')
+            self.reply_with(root, curate_diff("tests/test_regression.py"))
+            result = factory(repo, "learn", path=stubs)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("CURATE rejected", result.stdout)
+            branch = git(bare, "branch", "--list", "agent/curate-*").lstrip("* ")
+            self.assertEqual(git(bare, "diff", "--name-only", "main", branch).split(), ["tests/test_regression.py"])
 
     def test_cost_pattern_sums_worker_log(self) -> None:
         from factory import dispatch

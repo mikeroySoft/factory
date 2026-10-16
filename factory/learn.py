@@ -88,9 +88,9 @@ CURATE_OFFER = (
     "(`git apply` format, against the current main branch) that puts each lesson in its strongest "
     "enforceable form. When the failure is mechanically detectable, prefer a gate check (append a new "
     f"`[[gate.check]]` table to `{config.CONFIG_NAME}`) or a regression test under a `[gate].protected_paths` "
-    "path such as `tests/`; otherwise a standards entry in `AGENTS.md`; a prose lesson only as a last resort. "
-    f"Allowed paths: {', '.join(manage.CURATE_PREFIXES)}, `{config.CONFIG_NAME}`, and main's "
-    "`[gate].protected_paths`. Changes are add-only: removing or editing an existing gate check or "
+    "or `[gate].add_only_paths` path such as `tests/`; otherwise a standards entry in `AGENTS.md`; a prose "
+    f"lesson only as a last resort. Allowed paths: {', '.join(manage.CURATE_PREFIXES)}, `{config.CONFIG_NAME}`, "
+    "and main's `[gate].protected_paths` and `[gate].add_only_paths`. Changes are add-only: removing or editing an existing gate check or "
     "protected path, changing `[leak_scan]`, deleting or renaming a protected file, or touching `.github/` "
     "or any other path rejects the whole diff. It is opened as a separate chore PR citing the evidence, "
     "merged only by a human."
@@ -195,7 +195,8 @@ def curate(cfg: config.Config, diff: str, tickets: list[int], notes: str) -> str
     def edit(wt: Path) -> list[str]:
         toml = wt / config.CONFIG_NAME
         base = tomllib.loads(toml.read_text()) if toml.is_file() else {}
-        protected = base.get("gate", {}).get("protected_paths", [])
+        gate = base.get("gate", {})
+        protected = gate.get("protected_paths", []) + gate.get("add_only_paths", [])
         applied = dispatch.run(["git", "apply", str(patch)], cwd=wt, check=False)
         if applied.returncode:
             raise ValueError(f"diff does not apply: {applied.stderr.strip()}")
@@ -206,11 +207,11 @@ def curate(cfg: config.Config, diff: str, tickets: list[int], notes: str) -> str
         bad = [p for p in paths if not manage.curate_allowed(p, protected)]
         if bad:
             raise ValueError(", ".join(bad) + " outside " + ", ".join(manage.CURATE_PREFIXES)
-                             + f", {config.CONFIG_NAME} and [gate].protected_paths")
+                             + f", {config.CONFIG_NAME}, [gate].protected_paths and [gate].add_only_paths")
         if not paths:
             raise ValueError("empty diff")
         if deleted := [p for code, p in entries if "D" in code and any(fnmatch.fnmatchcase(p, g) for g in protected)]:
-            raise ValueError(f"deletes or renames {', '.join(deleted)} under [gate].protected_paths")
+            raise ValueError(f"deletes or renames {', '.join(deleted)} under [gate].protected_paths or [gate].add_only_paths")
         if config.CONFIG_NAME in paths:
             try:
                 new = tomllib.loads(toml.read_text()) if toml.is_file() else {}
