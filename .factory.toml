@@ -45,3 +45,9 @@ when = "pr"
 
 [dashboard]
 theme = ".factory-dashboard.css"
+
+[dispatch]
+review_rounds = 3
+
+[manager]
+rounds = 3
