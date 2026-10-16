@@ -1344,7 +1344,7 @@ class GateTest(unittest.TestCase):
             self.assertIn("CONFIDENTIAL", report)
             self.assertIn("notes.md:1: [CONFIDENTI\x41L] see the", report)
 
-    def test_release_tier_runs_only_release_checks(self) -> None:
+    def test_release_gate_tier_runs_only_release_checks(self) -> None:
         toml = (
             '[[gate.check]]\nname = "unit"\nrun = ["sh", "-c", "touch unit"]\n'
             '[[gate.check]]\nname = "slow"\nrun = ["sh", "-c", "touch slow"]\nwhen = "pr"\n'
@@ -1355,6 +1355,7 @@ class GateTest(unittest.TestCase):
             ran = lambda: sorted(n for n in ("unit", "slow", "e2e") if (repo / n).exists())
             code, out, report = gate(repo)
             self.assertEqual(code, 0, out)
+            self.assertTrue(report.startswith("# Gate report\n"), report[:40])
             self.assertIn("- unit: PASS", report)
             self.assertIn("- slow: SKIP (pr tier)", report)
             self.assertIn("- e2e: SKIP (release tier)", report)
@@ -1379,12 +1380,13 @@ class GateTest(unittest.TestCase):
             self.assertNotIn("leak-scan", report)
             self.assertEqual(ran(), ["e2e"])
 
-    def test_unknown_check_tier_is_a_config_error_naming_the_check(self) -> None:
+    def test_unknown_gate_check_tier_is_a_config_error_naming_the_check(self) -> None:
         with tempfile.TemporaryDirectory() as d:
-            repo = make_repo(Path(d), '[[gate.check]]\nname = "ok"\nrun = ["true"]\nwhen = "nightly"\n')
+            repo = make_repo(Path(d), '[[gate.check]]\nname = "dashboard-smoke"\nrun = ["true"]\nwhen = "nightly"\n')
             code, out, _ = gate(repo)
             self.assertEqual(code, 1)
             self.assertIn("gate.check[0].when", out)
+            self.assertIn("dashboard-smoke", out)
             self.assertIn("nightly", out)
 
     # \x escapes keep these fixtures from tripping this repo's own leak scan.

@@ -509,7 +509,7 @@ def load(start: Path | None = None) -> Config:
     for i, c in enumerate(gate.get("check", [])):
         when = c.get("when", "attempt")
         if when not in CHECK_TIERS:
-            raise ConfigError(f'{path}: gate.check[{i}].when must be "attempt", "pr" or "release", got {when!r}')
+            raise ConfigError(f'{path}: gate.check[{i}].when ({c.get("name")!r}) must be "attempt", "pr" or "release", got {when!r}')
         cfg.checks.append(Check(c["name"], list(c["run"]), bool(c.get("exclusive", False)), when))
     names = [c.name for c in cfg.checks]
     if len(set(names)) != len(names) or {"conflict-markers", "leak-scan", "protected-paths"} & set(names):
