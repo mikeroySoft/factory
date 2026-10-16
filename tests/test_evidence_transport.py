@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import shutil
 import signal
 import subprocess
@@ -37,6 +36,7 @@ import tempfile
 import time
 import unittest
 import uuid
+from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,7 +47,8 @@ PREFIX = f"repos/{REPO}/"
 # (evidence.py RESPONSE_CAP) plus one trailing newline on stdout.
 RESPONSE_TOTAL = 500001
 
-from factory import lifecycle  # noqa: E402
+from factory import lifecycle
+
 try:
     import test_evidence as _base
 except ImportError:  # full-suite discovery imports tests as a package
@@ -66,7 +67,7 @@ GH = '''
 import json, os, sys, time
 from urllib.parse import parse_qsl, urlencode, urlsplit
 args = sys.argv[1:]
-endpoint = next((a for a in args if a.startswith("repos/")), "")
+endpoint = next((a for a in args if a.startswith("repos/") or a == "graphql"), "")
 parts = urlsplit(endpoint)
 query = dict(parse_qsl(parts.query))
 with open(os.environ["EVIDENCE_CALLS"], "a") as stream:
@@ -141,7 +142,9 @@ class EvidenceTransportTest(unittest.TestCase):
                        check=True, capture_output=True)
         (self.root / ".factory.toml").write_text(
             f'[repo]\nslug = "{REPO}"\n[gate]\nlock = "{self.root / "gpu.lock"}"\n')
-        self.responses = {}
+        self.responses = {"graphql": {"json": {"data": {"repository": {"pullRequests": {
+            "nodes": [], "pageInfo": {"hasNextPage": False},
+        }}}}}}
         # Narrow bindings of reusable fixture helpers from the shared suite.
         for name in ("executable", "state", "error_codes"):
             setattr(self, name, getattr(_base.EvidenceCliTest, name).__get__(self, type(self)))
@@ -156,7 +159,7 @@ class EvidenceTransportTest(unittest.TestCase):
         started = time.monotonic()
         proc = subprocess.run(
             [sys.executable, "-B", "-m", "factory.cli", "evidence", "--root", str(self.root)],
-            cwd=self.root, env=self.env, input=payload, capture_output=True, timeout=timeout)
+            cwd=self.root, env=self.env, input=payload, capture_output=True, timeout=timeout, check=False)
         self.elapsed = time.monotonic() - started
         self.raw = proc.stdout
         self.assertEqual(before, self.state(), "Evidence read changed the selected checkout")
@@ -203,7 +206,6 @@ class EvidenceTransportTest(unittest.TestCase):
 
     def test_complete_page_reports_known_attention_not_null(self):
         self.responses[PREFIX + "issues"] = {"json": build_issues(8)}
-        self.responses[PREFIX + "pulls"] = {"json": []}
         (self.root / ".factory").mkdir()
         (self.root / ".factory" / "events.jsonl").touch()
         (self.root / ".factory" / "locks").mkdir()
@@ -224,7 +226,6 @@ class EvidenceTransportTest(unittest.TestCase):
 
     def test_hung_read_kills_every_descendant_without_false_success(self):
         self.responses[PREFIX + "issues"] = {"json": [], "sleep": 60, "fork": True}
-        self.responses[PREFIX + "pulls"] = {"json": []}
         data = self.invoke("observe", code=1)
         self.assertLess(self.elapsed, 30, "one hung read must stay within the command bound")
         self.assertIn("collection_timeout", self.error_codes(data))
@@ -239,7 +240,6 @@ class EvidenceTransportTest(unittest.TestCase):
     def test_byte_bounded_partial_preserves_useful_evidence(self):
         issues = build_issues(100)
         self.responses[PREFIX + "issues"] = {"json": issues}
-        self.responses[PREFIX + "pulls"] = {"json": []}
         # The multilingual wire input sits within the per-read 1 MiB bound; the
         # ASCII-escaped producer output alone must exceed the 500000-byte cap.
         self.assertLess(len(json.dumps(self.responses).encode()), 1_048_576)
@@ -275,7 +275,6 @@ class EvidenceTransportTest(unittest.TestCase):
         published envelope, prompt signal exit (-2 unhandled, 130 handled), and
         no orphaned marker descendant in the gh descent."""
         self.responses[PREFIX + "issues"] = {"json": [], "sleep": 60, "fork": True}
-        self.responses[PREFIX + "pulls"] = {"json": []}
         self.responses_path.write_text(json.dumps(self.responses))
         payload = json.dumps({"schema_version": 1, "repository": REPO, "op": "observe"}).encode()
         proc = subprocess.Popen(

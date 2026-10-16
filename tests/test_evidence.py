@@ -5,15 +5,15 @@ import base64
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 import time
-from types import SimpleNamespace
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.parse import urlencode
 
@@ -44,13 +44,18 @@ GH = '''
 import json, os, sys, time
 from urllib.parse import parse_qsl, urlencode, urlsplit
 args = sys.argv[1:]
-endpoint = next((a for a in args if a.startswith("repos/")), "")
+endpoint = next((a for a in args if a.startswith("repos/") or a == "graphql"), "")
 parts = urlsplit(endpoint)
 query = dict(parse_qsl(parts.query))
 method = args[args.index("--method") + 1] if "--method" in args else "GET"
 with open(os.environ["EVIDENCE_CALLS"], "a") as stream:
     stream.write(json.dumps({"path": parts.path, "query": query, "method": method}) + "\\n")
-if not args or args[0] != "api" or method != "GET" or not (parts.path + "/").startswith("repos/example/evidence/"):
+fields = dict(arg.split("=", 1) for arg in args if "=" in arg)
+fixed_query = (endpoint == "graphql" and method == "POST"
+               and fields.get("owner") == "example" and fields.get("name") == "evidence"
+               and 1 <= int(fields.get("limit", "0")) <= 100
+               and fields.get("query", "").startswith("query FactoryPullCandidates("))
+if not args or args[0] != "api" or not (fixed_query or method == "GET" and (parts.path + "/").startswith("repos/example/evidence/")):
     print("forbidden fixture command", file=sys.stderr)
     raise SystemExit(97)
 with open(os.environ["EVIDENCE_RESPONSES"]) as stream:
@@ -134,7 +139,9 @@ class EvidenceCliTest(unittest.TestCase):
                    "base": {"sha": self.main, "ref": "main", "label": "example:main",
                             "repo": {"full_name": REPO}}}
         self.response("issues", [self.issue])
-        self.response("pulls", [])
+        self.responses["graphql"] = {"json": {"data": {"repository": {"pullRequests": {
+            "nodes": [], "pageInfo": {"hasNextPage": False},
+        }}}}}
         self.response("issues/7", self.issue)
         self.response("issues/7/comments", [{"body": "Factory human decision: Preserve compatibility.",
                                            "created_at": AT, "updated_at": AT,
@@ -212,7 +219,7 @@ class EvidenceCliTest(unittest.TestCase):
             payload = payload.encode()
         started = time.monotonic()
         proc = subprocess.run([sys.executable, "-B", "-m", "factory.cli", "evidence", "--root", str(root or self.root)],
-                              cwd=self.directory, env=self.env, input=payload, capture_output=True, timeout=timeout)
+                              cwd=self.directory, env=self.env, input=payload, capture_output=True, timeout=timeout, check=False)
         self.elapsed = time.monotonic() - started
         self.assertNotIn(b"EVIDENCE_FORBIDDEN:", proc.stderr, proc.stderr.decode())
         self.assertEqual(before, self.state(), "Evidence read changed the selected checkout")
@@ -459,7 +466,7 @@ class EvidenceCliTest(unittest.TestCase):
         self.responses_path.write_text(json.dumps(self.responses))
         payload = json.dumps({"schema_version": 1, "repository": REPO, "op": "capabilities"}).encode()
         proc = subprocess.run([sys.executable, "-B", "-m", "factory.cli", "evidence", "--root", str(self.root)],
-                              cwd=self.directory, env=env, input=payload, capture_output=True, timeout=60)
+                              cwd=self.directory, env=env, input=payload, capture_output=True, timeout=60, check=False)
         self.assertNotIn(b"EVIDENCE_FORBIDDEN:", proc.stderr, proc.stderr.decode())
         self.assertEqual(proc.returncode, 0, (proc.stdout.decode(), proc.stderr.decode()))
         return json.loads(proc.stdout)["capabilities"]["producers"]["reader"]
@@ -526,6 +533,15 @@ class EvidenceCliTest(unittest.TestCase):
                 self.assertEqual(data["sources"], [])
         self.assertEqual(self.calls(), [])
 
+    def test_unknown_investigation_kind_names_value_and_accepted_kinds(self):
+        kinds = [row["kind"] for row in self.invoke()["capabilities"]["reads"] if row["op"] == "investigate"]
+        data = self.invoke("investigate", kind="experimnts", code=2)
+        self.assertEqual(data["error"]["code"], "invalid_request")
+        self.assertIn("experimnts", data["error"]["message"])
+        for kind in kinds:
+            self.assertIn(f"'{kind}'", data["error"]["message"])
+        self.assertEqual(self.calls(), [])
+
     def test_explicit_main_checkout_and_repository_scope_are_required(self):
         data = self.invoke(repository="other/repository", code=2)
         self.assertIn("scope_mismatch", self.error_codes(data))
@@ -543,7 +559,7 @@ class EvidenceCliTest(unittest.TestCase):
     def test_invalid_cli_invocation_is_a_machine_readable_error(self):
         for arguments in ([], ["--root"], ["--root", str(self.root), "--shell"]):
             proc = subprocess.run([sys.executable, "-B", "-m", "factory.cli", "evidence", *arguments],
-                                  env=self.env, cwd=self.directory, capture_output=True, timeout=5)
+                                  env=self.env, cwd=self.directory, capture_output=True, timeout=5, check=False)
             self.assertEqual(proc.returncode, 2)
             data = json.loads(proc.stdout)
             self.assertFalse(data["ok"])
@@ -720,23 +736,13 @@ class EvidenceCliTest(unittest.TestCase):
         self.assertEqual([row["event_id"] for row in runtime["events"]], [entered["event_id"], terminal["event_id"]])
 
     def test_candidate_caps_report_which_count_coverage_is_incomplete(self):
-        for endpoint, values, code in (
-            ("issues", [{**self.issue, "number": number} for number in range(1, 102)],
-             "issues_incomplete"),
-            ("pulls", [{**self.pr, "number": number} for number in range(1, 101)],
-             "pulls_incomplete"),
-        ):
-            with self.subTest(endpoint=endpoint):
-                self.response(endpoint, values)
-                before = len([row for row in self.calls()
-                              if row["path"] == PREFIX + endpoint])
-                data = self.invoke("observe", code=1)
-                self.assertIsNone(data["attention_count"])
-                self.count_diagnostic(data, code)
-                after = len([row for row in self.calls()
-                             if row["path"] == PREFIX + endpoint])
-                self.assertEqual(after - before, 1)
-                self.response(endpoint, [self.issue] if endpoint == "issues" else [])
+        self.response("issues", [{**self.issue, "number": number} for number in range(1, 102)])
+        before = len([row for row in self.calls() if row["path"] == PREFIX + "issues"])
+        data = self.invoke("observe", code=1)
+        self.assertIsNone(data["attention_count"])
+        self.count_diagnostic(data, "issues_incomplete")
+        after = len([row for row in self.calls() if row["path"] == PREFIX + "issues"])
+        self.assertEqual(after - before, 1)
 
     def test_clipped_labels_and_inventory_failures_explain_unknown_count(self):
         self.issue["labels"] = [{"name": "ready-for-human"}] + [
@@ -942,6 +948,59 @@ class EvidenceCliTest(unittest.TestCase):
         audit = next(row for row in self.values(observed) if isinstance(row, dict) and "tickets" in row)
         self.assertEqual(audit, {"status": "partial", "truncated": True, "tickets": [9]})
         self.assertEqual(self.invoke("inspect", number=441, code=1)["error"]["code"], "evidence_unavailable")
+
+    def test_pr_repository_metadata_cannot_hide_merge_evidence(self):
+        merged = {**self.pr, "head": {**self.pr["head"], "ref": "agent/7"},
+                  "state": "closed", "merged_at": AT, "closed_at": AT}
+        # The candidate fields fit; repeated repository metadata makes REST exceed 1 MiB.
+        pulls = [{**merged, "number": 17 + index,
+                  "head": {**merged["head"], "ref": "agent/7" if index == 0 else f"topic-{index}",
+                           "repo": {"unused_metadata": "x" * 20_000}}}
+                 for index in range(100)]
+        self.response("pulls", pulls)
+        self.responses["graphql"] = {"json": {"data": {"repository": {"pullRequests": {
+            "nodes": [{"number": row["number"], "title": row["title"], "state": "MERGED",
+                       "html_url": row["html_url"], "body": "", "draft": False,
+                       "created_at": AT, "updated_at": AT, "closed_at": AT, "merged_at": AT,
+                       "additions": 1, "deletions": 0, "changed_files": 1,
+                       "headRefName": row["head"]["ref"], "headRefOid": self.head,
+                       "labels": {"nodes": [], "pageInfo": {"hasNextPage": False}}}
+                      for row in pulls],
+            "pageInfo": {"hasNextPage": False},
+        }}}}}
+        observed = self.invoke("observe", code=1)
+        case = next(case for case in observed["cases"] if case["number"] == 7)
+        self.assertIsNotNone(case["pr"], "Bounded candidate read lost available merge evidence")
+        self.assertEqual((case["stage"], case["pr"]["number"], case["pr"]["merged_at"]), ("merged", 17, AT))
+        self.assertNotIn("response_too_large", self.error_codes(observed))
+        self.assertNotIn("pulls_incomplete", self.error_codes(observed))
+
+    def test_incomplete_pr_selection_cannot_establish_case_absence(self):
+        self.issue["labels"] = []
+        self.response("issues", [self.issue])
+        self.responses["graphql"] = {"json": {
+            "data": {"repository": None}, "errors": [{"message": "unavailable"}],
+        }}
+        observed = self.invoke("inspect", number=7, code=1)
+        self.assertEqual(observed["error"]["code"], "evidence_unavailable")
+
+    def test_pr_query_gaps_and_oversized_required_fields_remain_unknown(self):
+        empty = {"data": {"repository": {"pullRequests": {
+            "nodes": [], "pageInfo": {"hasNextPage": False},
+        }}}}
+        for response, expected in (
+            ({**empty, "errors": [{"message": "partial result"}]}, "github_unavailable"),
+            ({"data": {"repository": None}}, "invalid_response"),
+            ({"data": {"repository": {"pullRequests": {
+                "nodes": [], "pageInfo": {"hasNextPage": True},
+            }}}}, "pulls_incomplete"),
+            ({"data": {"body": "x" * evidence.JSON_CAP}}, "response_too_large"),
+        ):
+            with self.subTest(expected=expected):
+                self.responses["graphql"] = {"json": response}
+                observed = self.invoke("observe", code=1)
+                self.assertIsNone(observed["attention_count"])
+                self.assertIn(expected, self.error_codes(observed))
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ import os
 import re
 import secrets
 import stat
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -70,23 +70,23 @@ class _TooLarge(Exception):
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _format_time(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _parse_time(value: object) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         return None
-    return parsed.astimezone(timezone.utc)
+    return parsed.astimezone(UTC)
 
 
 def _valid_ticket(ticket: object) -> bool:
@@ -339,9 +339,10 @@ def _acceptance(cfg: Any, ticket: int, head: str, events: list[dict]) -> tuple[d
         for evidence in prefix:
             if evidence.get("ticket") != ticket:
                 continue
-            if evidence.get("event") == "attempt" and evidence.get("head") == head:
-                gate = evidence
-            elif evidence.get("event") == "refreshed" and evidence.get("gate_head") == head:
+            if (
+                evidence.get("event") == "attempt" and evidence.get("head") == head
+                or evidence.get("event") == "refreshed" and evidence.get("gate_head") == head
+            ):
                 gate = evidence
             elif evidence.get("event") == "review" and evidence.get("head") == head:
                 review = evidence

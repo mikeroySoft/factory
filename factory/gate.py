@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import fnmatch
 import os
 import re
 import signal
 import subprocess
+import tomllib
 from pathlib import Path
 
 from factory import config, lifecycle
@@ -42,9 +44,13 @@ def timed(cmd: list[str]) -> subprocess.CompletedProcess:
     tree (cargo/test grandchildren included), not just the direct child.
     """
     execution = lifecycle.current()
+    # The handoff row is still recorded, but the check never inherits the context:
+    # a repo's own tests would otherwise append their fixture rows to the live ledger.
+    env = execution.env() if execution else dict(os.environ)
+    env.pop(lifecycle.CONTEXT_ENV, None)
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True,
-        env=execution.env() if execution else None,
+        env=env,
     )
     if execution:
         execution.child(proc.pid)
@@ -105,6 +111,8 @@ def check_leaks(base: str) -> tuple[bool, str]:
         [
             "git",
             "diff",
+            "--unified=0",
+            "--no-prefix",
             f"{base}..HEAD",
             "--",
             f":(exclude){CONFIG_NAME}",
@@ -117,16 +125,77 @@ def check_leaks(base: str) -> tuple[bool, str]:
             execution.outcome = "unknown"
             execution.reason = "git_diff_failed"
         return False, proc.stdout + proc.stderr
-    hits = [
-        line
-        for line in proc.stdout.splitlines()
-        if line.startswith("+") and not line.startswith("+++") and LEAK_RE.search(line)
-    ]
+    hits, path, header, n = [], "", True, 0
+    for line in proc.stdout.splitlines():
+        if line.startswith("diff --git "):
+            header = True
+        elif header and line.startswith("+++ "):
+            path = line[4:]
+        elif line.startswith("@@ "):
+            header, n = False, int(re.match(r"@@ -\S+ \+(\d+)", line).group(1))
+        elif not header and line.startswith("+"):
+            if m := LEAK_RE.search(line[1:]):
+                hits.append(f"{path}:{n}: [{m.group(0)}] {line[1:]}")
+            n += 1
     execution = lifecycle.current()
     if hits and execution:
         execution.outcome = "product_feedback"
         execution.reason = "leak_scan_matches"
     return not hits, "\n".join(hits)
+
+
+ADD_ONLY_NOTE = "add-only path removed or changed existing lines"
+
+
+def check_protected_paths(base: str) -> tuple[bool, str, str]:
+    """(passed, reason, detail): reason is `protected_paths`, or `add_only_paths` when
+    every hit is an add-only glob whose change was not purely additive."""
+    listing = timed(["git", "ls-tree", "--name-only", base, "--", CONFIG_NAME])
+    if listing.returncode:
+        # A new repository has no base commit yet; no worker diff exists to guard.
+        unborn = timed(["git", "rev-parse", "--verify", "HEAD"])
+        return (True, "", "") if unborn.returncode else (False, "protected_paths", listing.stdout + listing.stderr)
+    protected, add_only = [], []
+    if listing.stdout.strip():
+        source = timed(["git", "show", f"{base}:{CONFIG_NAME}"])
+        if source.returncode:
+            return False, "protected_paths", source.stdout + source.stderr
+        try:
+            gate = tomllib.loads(source.stdout).get("gate", {})
+        except tomllib.TOMLDecodeError as exc:
+            return False, "protected_paths", f"base {CONFIG_NAME}: {exc}"
+        protected, add_only = gate.get("protected_paths", []), gate.get("add_only_paths", [])
+        for key, globs in (("protected_paths", protected), ("add_only_paths", add_only)):
+            if not isinstance(globs, list) or any(not isinstance(p, str) or not p for p in globs):
+                return False, "protected_paths", f"base gate.{key} must be an array of nonempty globs"
+    proc = timed(["git", "diff", "--no-renames", "--raw", "-z", f"{base}...HEAD"])
+    if proc.returncode:
+        return False, "protected_paths", proc.stdout + proc.stderr
+    fields = proc.stdout.split("\0")
+    hits, not_additive, additive = [], [], []  # additive: add-only files modified in place, pending numstat
+    for meta, path in zip(fields[::2], fields[1::2]):
+        old_mode, new_mode, _, _, status = meta.lstrip(":").split()
+        if any(fnmatch.fnmatchcase(path, g) for g in add_only):
+            if status == "M" and old_mode == new_mode:
+                additive.append(path)
+            elif status != "A":
+                not_additive.append(path)
+        elif any(fnmatch.fnmatchcase(path, g) for g in protected):
+            hits.append(path)
+    if additive:
+        numstat = timed(["git", "diff", "--no-renames", "--numstat", "-z", f"{base}...HEAD", "--", *additive])
+        if numstat.returncode:
+            return False, "protected_paths", numstat.stdout + numstat.stderr
+        for line in numstat.stdout.split("\0"):
+            if line:
+                _, deleted, path = line.split("\t")
+                if deleted != "0":  # `-` for binary: not provably additive
+                    not_additive.append(path)
+    if not hits and not not_additive:
+        return True, "", ""
+    reason = "protected_paths" if hits else "add_only_paths"
+    diff = timed(["git", "diff", "--no-renames", "--binary", f"{base}...HEAD", "--", *hits, *not_additive])
+    return False, reason, diff.stdout + diff.stderr
 
 
 def main(argv: list[str]) -> int:
@@ -147,14 +216,37 @@ def main(argv: list[str]) -> int:
         default=None,
         help="per-check timeout in seconds",
     )
+    parser.add_argument("--protected-override", action="store_true",
+                        help="human-authorized protected-path override")
+    parser.add_argument("--tier", choices=config.CHECK_TIERS, default="attempt",
+                        help="attempt: every check except `when = \"pr\"`/`\"release\"` ones (reported SKIP); "
+                        "pr: only the `when = \"pr\"` checks (release ones reported SKIP); "
+                        "release: only the `when = \"release\"` checks")
     args = parser.parse_args(argv)
     configure(config.load())
     with lifecycle.scope(cfg.factory / "events.jsonl", "gate") as execution:
         return execute(args, execution)
 
 
+def toolchain() -> dict[str, str]:
+    values = {}
+    for name, command in (
+        ("rocm", ["hipconfig", "--version"]),
+        ("kernel", ["uname", "-r"]),
+        ("amdgpu", ["modinfo", "-F", "version", "amdgpu"]),
+    ):
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=5, check=False)
+            values[name] = result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else "unavailable"
+        except (OSError, subprocess.TimeoutExpired):
+            values[name] = "unavailable"
+    return values
+
+
 def execute(args: argparse.Namespace, execution) -> int:
     global CHECK_TIMEOUT
+    host = toolchain()
+    execution.emit("toolchain", **host)
     if args.base is None:
         args.base = f"origin/{cfg.main}"
     if args.check_timeout is not None:
@@ -163,11 +255,28 @@ def execute(args: argparse.Namespace, execution) -> int:
     if LEAK_RE is None:
         skip.add("leak-scan")
 
+    if not args.protected_override and args.tier == "attempt":
+        passed, reason, detail = check_protected_paths(args.base)
+        if not passed:
+            execution.outcome, execution.reason = "project_escalation", reason
+            report = Path(args.report)
+            report.parent.mkdir(parents=True, exist_ok=True)
+            note = f" ({ADD_ONLY_NOTE})" if reason == "add_only_paths" else ""
+            report.write_text(f"# Gate report\n\n- protected-paths: FAIL{note}\n\n"
+                              "## protected-paths failure\n\n```diff\n" + detail + "\n```\n")
+            print(f"report: {report}\ngate FAIL: protected-paths")
+            return 1
+    # attempt lists every configured check, pr the pr+release ones, release only its own;
+    # listed checks of a later tier are reported `SKIP (<tier> tier)` instead of run.
+    rank = config.CHECK_TIERS.index(args.tier)
+    listed = [check for check in cfg.checks if config.CHECK_TIERS.index(check.when) >= rank]
+    configured = [(check.name, (lambda c=check: run(c.run))) for check in listed]
     checks = [
         ("conflict-markers", check_conflict_markers),
-        *((check.name, (lambda c=check: run(c.run))) for check in cfg.checks),
+        *configured,
         ("leak-scan", lambda: check_leaks(args.base)),
-    ]
+    ] if args.tier == "attempt" else configured
+    later_tier = {check.name: check.when for check in listed if check.when != args.tier}
 
     results: list[tuple[str, str, str]] = []  # (name, status, output)
     outcome, reason = "completed", None
@@ -175,8 +284,8 @@ def execute(args: argparse.Namespace, execution) -> int:
     gpu_acquired = False
     try:
         for name, fn in checks:
-            if name in skip:
-                results.append((name, "SKIP", ""))
+            if name in skip or name in later_tier:
+                results.append((name, f"SKIP ({later_tier[name]} tier)" if name in later_tier else "SKIP", ""))
                 continue
             if name in GPU_CHECKS and gpu_lock is None:
                 gpu_lock = open(GPU_LOCK, "w")  # noqa: SIM115 — lock must outlive the loop
@@ -206,13 +315,18 @@ def execute(args: argparse.Namespace, execution) -> int:
             if gpu_acquired:
                 execution.resource("released", GPU_LOCK, scope="host", blocking=True)
 
-    lines = ["# Gate report", ""]
+    lines = [
+        "# Gate report" if args.tier == "attempt" else f"# Gate report ({args.tier} tier)", "", "## Host toolchain",
+        f"ROCm: {host['rocm']}", f"Kernel: {host['kernel']}", f"amdgpu: {host['amdgpu']}", "",
+    ]
     for name, status, _ in results:
         lines.append(f"- {name}: {status}")
     for name, status, output in results:
-        if status == "FAIL":
+        # pr-tier checks may be report-only (exit 0, findings on stdout); the reviewer sees
+        # them only through this report, so keep their output when they pass too.
+        if status == "FAIL" or (args.tier == "pr" and status == "PASS" and output.strip()):
             tail = "\n".join(output.splitlines()[-TAIL_LINES:])
-            lines += ["", f"## {name} failure", "```", tail, "```"]
+            lines += ["", f"## {name} {'failure' if status == 'FAIL' else 'output'}", "```", tail, "```"]
     report = Path(args.report)
     report.parent.mkdir(parents=True, exist_ok=True)
     report.write_text("\n".join(lines) + "\n")

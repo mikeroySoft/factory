@@ -10,12 +10,11 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import stat
-import sys
 import tempfile
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from factory import chat, cli
@@ -80,7 +79,7 @@ class ChatLauncherTest(unittest.TestCase):
     # ---- read-only, isolated launch argv -------------------------------------
 
     def test_read_only_isolated_argv(self):
-        argv, env, work = self.prepare(args(self.root, repository="o/r"))
+        argv, _env, work = self.prepare(args(self.root, repository="o/r"))
         for flag in ("--offline", "--no-approve", "--no-context-files", "--no-extensions",
                      "--no-skills", "--no-prompt-templates", "--no-themes"):
             self.assertIn(flag, argv)
@@ -92,7 +91,7 @@ class ChatLauncherTest(unittest.TestCase):
         self.assertTrue(work.is_dir() and work.name == "work")
 
     def test_environment_scrubbed(self):
-        argv, env, work = self.prepare(args(self.root, repository="o/r"),
+        _argv, env, _work = self.prepare(args(self.root, repository="o/r"),
                                        env={"OPENAI_API_KEY": "sk-secret", "MY_SECRET": "leak"})
         self.assertNotIn("OPENAI_API_KEY", env, "ornith must not carry provider secrets")
         self.assertNotIn("MY_SECRET", env)

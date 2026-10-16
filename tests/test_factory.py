@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
+import re
 import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -22,7 +23,9 @@ sys.path.insert(0, str(ROOT))
 XDG = Path(tempfile.mkdtemp())
 os.environ["XDG_CONFIG_HOME"] = str(XDG)
 
-from factory import __version__, config, lifecycle, manage  # noqa: E402
+from datetime import UTC
+
+from factory import __version__, config, lifecycle, manage, runtime_events
 
 
 def host_file(text: str) -> None:
@@ -383,6 +386,15 @@ class HostConfigTest(unittest.TestCase):
                 {"triage": {"model": "f"}, "install": {"python": "/committed/python"}},
             )
 
+    def test_leak_extra_adds_to_the_default(self) -> None:
+        host_file('[defaults.leak_scan]\nextra = ["bluefin"]\npattern = ""\n'
+                  '[repo."acme/widgets".leak_scan]\nextra = ["redfin"]\n')
+        with tempfile.TemporaryDirectory() as d:
+            leak = re.compile(config.load(make_repo(Path(d), '[leak_scan]\nextra = ["greenfin"]\n')).leak_pattern, re.IGNORECASE)
+            for term in ("ship Bluefin", "redfin", "greenfin", "CONFIDENTI\x41L"):
+                self.assertIsNotNone(leak.search(term), term)
+            self.assertIsNone(leak.search("### Internal"))
+
     def test_missing_host_file_is_current_behaviour(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             cfg = config.load(make_repo(Path(d)))
@@ -393,6 +405,28 @@ class HostConfigTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             repo = make_repo(Path(d), '[repo]\nslug = "other/name"\n')
             self.assertEqual(config.load(repo).dashboard_port, 7)
+
+    def test_worker_usage_profile_and_host_price_table(self) -> None:
+        host_file('[defaults.prices."m1"]\nprompt = 3\ncompletion = 15\ncached = 0.3\n')
+        toml = (
+            '[workers.default]\ncommand = ["agent", "{prompt}"]\n'
+            'usage = { prompt_tokens = ["u.in", "u.cache"], cost = "total", model = "model", match = { type = "result" } }\n'
+        )
+        with tempfile.TemporaryDirectory() as d:
+            cfg = config.load(make_repo(Path(d), toml))
+        self.assertEqual(cfg.prices, {"m1": {"prompt": 3, "completion": 15, "cached": 0.3}})
+        self.assertEqual(cfg.worker_usage, {"default": {
+            "prompt_tokens": ["u.in", "u.cache"], "completion_tokens": [], "cached_tokens": [],
+            "cost": ["total"], "model": "model", "match": {"type": "result"},
+        }})
+        for bad_host, bad_repo in (
+            ('[defaults.prices."m1"]\nprompt = 3\n', ""),
+            ("", '[workers.default]\ncommand = ["a"]\nusage = { tokens = "x" }\n'),
+        ):
+            with self.subTest(host=bad_host, repo=bad_repo), tempfile.TemporaryDirectory() as d:
+                host_file(bad_host)
+                with self.assertRaises(config.ConfigError):
+                    config.load(make_repo(Path(d), bad_repo))
 
     def test_worker_wrap_is_host_owned_and_prefixes_every_label(self) -> None:
         host_file(
@@ -704,8 +738,8 @@ class HostConfigTest(unittest.TestCase):
             self.assertEqual(launchers, [
                 f'ExecStart=-"{escaped}" -P -m factory triage',
                 f'ExecStart="{escaped}" -P -m factory dispatch',
-                f'ExecStart="{escaped}" -P -m factory dashboard'
-                ' --host 127.0.0.1 --port 8765 --no-open',
+                (f'ExecStart="{escaped}" -P -m factory dashboard'
+                 ' --host 127.0.0.1 --port 8765 --no-open'),
             ])
             accepted = run("install", "--no-dashboard")
             self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
@@ -719,6 +753,7 @@ class HostConfigTest(unittest.TestCase):
             self.assertEqual(git(repo, "status", "--porcelain"), "")
             calls = (Path(d) / "bin" / "gh.log").read_text().splitlines()
             self.assertEqual(len(calls), len(config.LABELS))
+            self.assertTrue(any(c.startswith("label create chore ") for c in calls))
             self.assertTrue(all(c.startswith("label create ") and "--repo acme/widgets" in c for c in calls))
             proc = factory(repo, "init", "--labels-only", path=stub_bin(Path(d), gh="echo nope >&2; exit 1"))
             self.assertEqual(proc.returncode, 1)
@@ -729,7 +764,7 @@ class HostConfigTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             repo = make_repo(Path(d))
             stubs = stub_bin(Path(d), gh=gh, systemctl="echo inactive")
-            doctor = lambda: {r["label"]: r for r in json.loads(factory(repo, "doctor", "--json", path=stubs).stdout)["rows"]}  # noqa: E731
+            doctor = lambda: {r["label"]: r for r in json.loads(factory(repo, "doctor", "--json", path=stubs).stdout)["rows"]}
             proc = factory(repo, "init", "--no-labels")
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             ci = repo / ".github/workflows/ci.yml"
@@ -753,6 +788,29 @@ class HostConfigTest(unittest.TestCase):
             ci.unlink()
             row = doctor()["github workflow"]
             self.assertEqual((row["status"], row["detail"].startswith("none")), ("WARN", True))
+
+    def test_init_writes_release_gate_job_and_doctor_warns_when_missing(self) -> None:
+        gh = 'case "$1 $2" in "repo view") echo ADMIN;; "label list") echo "[]";; esac\nexit 0'
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            stubs = stub_bin(Path(d), gh=gh, systemctl="echo inactive")
+            doctor = lambda: {r["label"]: r for r in json.loads(factory(repo, "doctor", "--json", path=stubs).stdout)["rows"]}
+            proc = factory(repo, "init", "--no-labels")
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            ci = repo / ".github/workflows/ci.yml"
+            text = ci.read_text()
+            release = text[text.index("  release:"):]
+            self.assertIn("tags: ['v*']", text[:text.index("jobs:")])
+            self.assertIn("startsWith(github.ref, 'refs/tags/v')", release)
+            self.assertIn("factory gate --tier release", release)
+            self.assertNotIn("release gate workflow", doctor())
+            toml = repo / config.CONFIG_NAME
+            toml.write_text(toml.read_text() + '\n[[gate.check]]\nname = "e2e"\nrun = ["true"]\nwhen = "release"\n')
+            self.assertEqual(doctor()["release gate workflow"]["status"], "PASS")
+            ci.write_text(text[:text.index("  release:")])
+            row = doctor()["release gate workflow"]
+            self.assertEqual(row["status"], "WARN")
+            self.assertIn("--tier release", row["detail"])
 
     def test_doctor_accepts_district_engine_metadata_without_loading_it(self) -> None:
         metadata = (
@@ -781,6 +839,26 @@ class HostConfigTest(unittest.TestCase):
             self.assertIn("defaults.engien", rows["host config"]["detail"])
             self.assertIn('repo."acme/widgets".engine', rows["host config"]["detail"])
             self.assertNotIn("defaults.engine", rows["host config"]["detail"])
+
+    def test_doctor_warns_when_self_hosted_engine_differs_from_main(self) -> None:
+        gh = 'case "$1 $2" in "repo view") echo ADMIN;; "label list") echo "[]";; esac\nexit 0'
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            stubs = stub_bin(Path(d), gh=gh, systemctl="echo inactive")
+
+            def engine_rows(sha: str) -> list[dict]:
+                host_file('[defaults.triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n'
+                          f'[defaults.engine]\nsha = "{sha}"\n')
+                rows = json.loads(factory(repo, "doctor", "--json", path=stubs).stdout)["rows"]
+                return [r for r in rows if r["label"] == "installed engine"]
+
+            stale = "0" * 40
+            self.assertEqual(engine_rows(stale), [])  # not factory's own repository
+            (repo / "pyproject.toml").write_text('[project]\nname = "factory"\n')
+            [row] = engine_rows(stale)
+            self.assertEqual(row["status"], "WARN")
+            self.assertIn(stale[:12], row["detail"])
+            self.assertEqual(engine_rows(git(repo, "rev-parse", "origin/main")), [])
 
     def test_doctor_json_reports_drift(self) -> None:
         host_file('[defaults.triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n[defaults.leak_scan]\npattern = ""\n[repo."acme/widgets"]\npath = "/x"\n[repo."acme/widgets".dashboard]\nport = 1\ntheme = "no"\n')
@@ -819,7 +897,7 @@ class HostConfigTest(unittest.TestCase):
                     target.parent.mkdir(parents=True)
                     target.write_text(original)
                 stubs = stub_bin(Path(d), gh="exit 0", systemctl="echo inactive")
-                def rows():
+                def rows(repo=repo, stubs=stubs):
                     result = factory(repo, "doctor", "--json", path=stubs)
                     return {r["label"]: r for r in json.loads(result.stdout)["rows"]}
                 fix = rows()[str(target.relative_to(repo))]["fix"]
@@ -828,7 +906,7 @@ class HostConfigTest(unittest.TestCase):
                 for args in (["--check"], []):
                     applied = subprocess.run(
                         ["git", "apply", *args], cwd=repo, input=fix["diff"],
-                        text=True, capture_output=True,
+                        text=True, capture_output=True, check=False,
                     )
                     self.assertEqual(applied.returncode, 0, applied.stderr)
                 self.assertEqual(target.read_bytes(), (ROOT / "factory/templates/agent_task.md").read_bytes())
@@ -976,6 +1054,38 @@ class HostConfigTest(unittest.TestCase):
                 text = factory(repo, "doctor", path=stubs)
                 self.assertIn(f"{status}  manager command", text.stdout)
 
+    def test_doctor_resolves_binaries_on_installed_unit_path(self) -> None:
+        host_file('[defaults.triage]\nurl = "http://127.0.0.1:1/v1/chat/completions"\n')
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), '[workers]\ndefault = ["unitworker", "{prompt}"]\n')
+            stubs = stub_bin(Path(d), gh="exit 0", systemctl="echo inactive", unitworker="exit 0")
+            unit = XDG / "systemd" / "user" / f"{config.load(repo).unit}.service"
+            label = "worker `default`: unitworker"
+
+            def row() -> dict:
+                result = factory(repo, "doctor", "--json", path=stubs)
+                return {r["label"]: r for r in json.loads(result.stdout)["rows"]}[label]
+
+            self.assertEqual(row()["status"], "PASS")  # no unit: caller PATH, as before
+            unit.parent.mkdir(parents=True, exist_ok=True)
+            self.addCleanup(unit.unlink, missing_ok=True)
+            unit.write_text(f"[Service]\nEnvironment=PATH={Path(d) / 'empty'}:/nonexistent\n")
+            missing = row()
+            self.assertEqual(missing["status"], "FAIL")
+            self.assertIn(str(unit), missing["detail"])
+            unit.write_text(f"[Service]\nEnvironment=PATH={stubs}\n")
+            self.assertEqual(row()["status"], "PASS")
+            missing_path = f"{Path(d) / 'empty'}:/nonexistent"
+            for first, last, status in (
+                (stubs, missing_path, "FAIL"),
+                (missing_path, stubs, "PASS"),
+            ):
+                with self.subTest(first=first, last=last):
+                    unit.write_text(f"[Service]\nEnvironment=PATH={first}\nEnvironment=PATH={last}\n")
+                    resolved = row()
+                    self.assertEqual(resolved["status"], status)
+                    self.assertIn(str(unit), resolved["detail"])
+
 
 class StatsTest(unittest.TestCase):
     def test_stats_by_worker_uses_claim_labels(self) -> None:
@@ -1043,9 +1153,7 @@ unused = ["agent"]
                 with mock.patch.object(dashboard, "github", side_effect=RuntimeError("offline")), \
                      mock.patch.object(dashboard, "dispatcher", return_value={}), \
                      mock.patch.object(dashboard, "upstream_state", return_value={}), \
-                     mock.patch.object(dashboard, "triage_llm_online", return_value=False), \
-                     mock.patch.object(dashboard.lifecycle, "_rows",
-                                       wraps=dashboard.lifecycle._rows) as journal_reads:
+                     mock.patch.object(dashboard, "triage_llm_online", return_value=False):
                     snapshot = dashboard.snapshot()
             self.assertEqual(snapshot["workers"], [
                 {"worker": "default", "first_pass": 0.0, "attempts": 1, "cost": None},
@@ -1054,7 +1162,6 @@ unused = ["agent"]
                 {"worker": "unused", "first_pass": None, "attempts": 0, "cost": None},
             ])
             self.assertEqual(snapshot["spend"], {"seconds": 0, "cost": 106.25, "tickets": 4})
-            self.assertEqual(journal_reads.call_count, 1)
 
     def test_timeline_actor_attribution_in_stats(self) -> None:
         from unittest import mock
@@ -1067,8 +1174,10 @@ unused = ["agent"]
 
         human = {"login": "maintainer", "type": "User"}
         bot = {"login": "factory[bot]", "type": "Bot"}
+        # The dispatcher login's first action is the cutover; nothing here precedes it.
+        dispatcher = {"login": "factory-agent", "type": "User"}
         timeline = [
-            label("labeled", 0, config.LABEL_AGENT, human),
+            label("labeled", 0, config.LABEL_AGENT, dispatcher),
             label("labeled", 1, config.LABEL_HUMAN, bot),
             label("unlabeled", 11, config.LABEL_HUMAN, human),
             label("labeled", 11, config.LABEL_AGENT, human),
@@ -1100,9 +1209,15 @@ unused = ["agent"]
                 {"at": "2026-09-01T00:00:00Z", "event": "claimed", "ticket": 7},
                 *({"at": f"2026-09-01T00:{m:02}:00Z", "event": "escalate", "ticket": 7} for m in (1, 12, 33)),
                 {"at": "2026-09-01T01:00:00Z", "event": "merged", "ticket": 7},
+                {"at": "2026-09-01T00:40:00Z", "event": "llm-usage", "ticket": 7,
+                 "stage": "triage", "prompt_tokens": 10, "completion_tokens": 2,
+                 "prefix_cache_hit_rate": 0.75},
+                {"at": "2026-09-01T00:41:00Z", "event": "llm-usage", "ticket": 7,
+                 "stage": "triage", "prompt_tokens": 5, "completion_tokens": 3},
             ]
             (stats.cfg.factory / "events.jsonl").write_text("\n".join(map(json.dumps, audit)) + "\npartial")
-            with mock.patch.object(stats, "gh", side_effect=github):
+            with mock.patch.object(stats, "gh", side_effect=github), \
+                 mock.patch.object(stats, "dispatcher_login", return_value="factory-agent"):
                 row, = stats.collect_rows()
             self.assertEqual(row["escalation_count"], 3)
             self.assertEqual(row["resolutions"], [
@@ -1112,11 +1227,31 @@ unused = ["agent"]
             ])
             self.assertEqual(row["ready_for_human_minutes"], 35)
             self.assertEqual(row["requeue_count"], 2)
-            from datetime import datetime, timezone
+            self.assertEqual(row["llm_usage"], {
+                "triage": {
+                    "prompt_tokens": 15,
+                    "completion_tokens": 5,
+                    "cached_tokens": None,
+                    "cost": None,
+                    "prefix_cache_hit_rates": [0.75],
+                },
+                "total": {"prompt_tokens": 15, "completion_tokens": 5, "cached_tokens": None, "cost": None},
+            })
+            with mock.patch("builtins.print") as printed:
+                stats.print_table([row])
+            table = "\n".join(call.args[0] for call in printed.call_args_list)
+            self.assertIn("triage prompt", table)
+            self.assertIn("triage completion", table)
+            self.assertIn("15", table)
+            self.assertIn("5", table)
+            self.assertIn("0.75", table)
+            from datetime import datetime
+
             from factory import dashboard
 
-            totals = stats.human_touch_metrics([row], datetime(2026, 9, 8, 0, 12, tzinfo=timezone.utc))
-            self.assertEqual(totals, {"escalations_per_week": 2, "human_resolved_pct": 50.0})
+            totals = stats.human_touch_metrics([row], datetime(2026, 9, 8, 0, 12, tzinfo=UTC))
+            self.assertEqual(totals, {"escalations_per_week": 2, "escalations_by_code": {"unknown": 2},
+                                      "human_resolved_pct": 50.0})
             dashboard.configure(stats.cfg)
             ticket_issue = {
                 **details, "url": "", "updatedAt": details["closedAt"],
@@ -1130,8 +1265,9 @@ unused = ["agent"]
             }
             ticket = dashboard.build_ticket(ticket_issue, None, {
                 "attempts": [], "gate": None, "lock_held": False,
-            }, audit=audit)
+            }, audit=audit, login="factory-agent", cutover="2026-09-01T00:00:00Z")
             self.assertEqual(ticket["human_touch"]["ready_for_human_minutes"], 35)
+            self.assertEqual(ticket["llm_usage"], row["llm_usage"])
             self.assertEqual(dashboard.metrics([ticket])["human_resolved_pct"], 50.0)
 
 
@@ -1140,7 +1276,7 @@ class DashboardTest(unittest.TestCase):
         from factory import dashboard
 
         dashboard.MAX_ATTEMPTS = 3
-        att = lambda *ns: [{"attempt": n} for n in ns]  # noqa: E731
+        att = lambda *ns: [{"attempt": n} for n in ns]
         tickets = [
             {"pr": {"number": 1}, "attempts": att(1), "events": []},  # first-gate pass
             {"pr": {"number": 2}, "attempts": att(1, 2, 4), "events": [{"kind": "escalated"}]},  # 2 gate rounds + review bounce
@@ -1151,9 +1287,12 @@ class DashboardTest(unittest.TestCase):
             ticket["human_touch"] = {"escalation_count": count}
         m = dashboard.metrics(tickets)
         self.assertEqual(m, {"first_pass": 0.5, "bounce_rate": 0.5, "escalations": 2, "med_attempts": 2,
-                             "escalations_per_week": 0, "human_resolved_pct": None})
+                             "escalations_per_week": 0, "escalations_by_code": {}, "human_resolved_pct": None,
+                             "human_touched_pct": None})
         self.assertEqual(dashboard.metrics([]), {"first_pass": None, "bounce_rate": None, "escalations": 0,
-                                               "med_attempts": None, "escalations_per_week": 0, "human_resolved_pct": None})
+                                               "med_attempts": None, "escalations_per_week": 0,
+                                               "escalations_by_code": {}, "human_resolved_pct": None,
+                                               "human_touched_pct": None})
 
     def test_consecutive_failures_from_journal(self) -> None:
         from factory import dashboard
@@ -1206,6 +1345,198 @@ class GateTest(unittest.TestCase):
             self.assertEqual(code, 1, out)
             self.assertIn("- leak-scan: FAIL", report)
             self.assertIn("CONFIDENTIAL", report)
+            self.assertIn("notes.md:1: [CONFIDENTI\x41L] see the", report)
+
+    def test_release_gate_tier_runs_only_release_checks(self) -> None:
+        toml = (
+            '[[gate.check]]\nname = "unit"\nrun = ["sh", "-c", "touch unit"]\n'
+            '[[gate.check]]\nname = "slow"\nrun = ["sh", "-c", "touch slow"]\nwhen = "pr"\n'
+            '[[gate.check]]\nname = "e2e"\nrun = ["sh", "-c", "touch e2e"]\nwhen = "release"\n'
+        )
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), toml)
+            ran = lambda: sorted(n for n in ("unit", "slow", "e2e") if (repo / n).exists())
+            code, out, report = gate(repo)
+            self.assertEqual(code, 0, out)
+            self.assertTrue(report.startswith("# Gate report\n"), report[:40])
+            self.assertIn("- unit: PASS", report)
+            self.assertIn("- slow: SKIP (pr tier)", report)
+            self.assertIn("- e2e: SKIP (release tier)", report)
+            self.assertEqual(ran(), ["unit"])
+            (repo / "unit").unlink()
+
+            code, out, report = gate(repo, "--tier", "pr")
+            self.assertEqual(code, 0, out)
+            self.assertIn("- slow: PASS", report)
+            self.assertIn("- e2e: SKIP (release tier)", report)
+            self.assertNotIn("- unit:", report)
+            self.assertEqual(ran(), ["slow"])
+            (repo / "slow").unlink()
+
+            code, out, report = gate(repo, "--tier", "release")
+            self.assertEqual(code, 0, out)
+            self.assertIn("# Gate report (release tier)", report)
+            self.assertIn("- e2e: PASS", report)
+            self.assertNotIn("- unit:", report)
+            self.assertNotIn("- slow:", report)
+            self.assertNotIn("conflict-markers", report)
+            self.assertNotIn("leak-scan", report)
+            self.assertEqual(ran(), ["e2e"])
+
+    def test_unknown_gate_check_tier_is_a_config_error_naming_the_check(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), '[[gate.check]]\nname = "dashboard-smoke"\nrun = ["true"]\nwhen = "nightly"\n')
+            code, out, _ = gate(repo)
+            self.assertEqual(code, 1)
+            self.assertIn("gate.check[0].when", out)
+            self.assertIn("dashboard-smoke", out)
+            self.assertIn("nightly", out)
+
+    # \x escapes keep these fixtures from tripping this repo's own leak scan.
+    def test_default_leak_pattern_skips_generic_words(self) -> None:
+        leak = re.compile(config.DEFAULT_LEAK_PATTERN, re.IGNORECASE)
+        for clean in ("### Internal", "a private discussion", "handled internally", "stored privately"):
+            self.assertIsNone(leak.search(clean), clean)
+        for dirty in ("ssh build01.amd.int\x65rnal", "foo.c\x6frp", "https://j\x69ra.example.com/browse/GPU-1",
+                      "https://acme.atl\x61ssian.net/browse/GPU-1", "CONFIDENTI\x41L"):
+            self.assertIsNotNone(leak.search(dirty), dirty)
+
+    def test_protected_edit_stops_gate_before_checks(self) -> None:
+        toml = ('[gate]\nprotected_paths = [".factory.toml", "checks/**"]\n'
+                '[[gate.check]]\nname = "ran"\nrun = ["sh", "-c", "touch ran"]\n')
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), toml)
+            (repo / "checks").mkdir()
+            (repo / "checks" / "oracle.txt").write_text("changed\n")
+            git(repo, "add", "checks/oracle.txt")
+            git(repo, "commit", "-q", "-m", "tamper")
+            code, _, report = gate(repo)
+            self.assertEqual(code, 1)
+            self.assertIn("- protected-paths: FAIL", report)
+            self.assertIn("+changed", report)
+            self.assertNotIn("- ran:", report)
+            self.assertFalse((repo / "ran").exists())
+
+    def test_worker_cannot_remove_protected_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), '[gate]\nprotected_paths = [".factory.toml", "checks/**"]\n')
+            (repo / config.CONFIG_NAME).write_text("[gate]\n")
+            (repo / "checks").mkdir()
+            (repo / "checks" / "oracle.txt").write_text("tampered\n")
+            git(repo, "add", "-A")
+            git(repo, "commit", "-q", "-m", "remove guard")
+            code, _, report = gate(repo)
+            self.assertEqual(code, 1)
+            self.assertIn("- protected-paths: FAIL", report)
+            self.assertIn("protected_paths", report)
+
+    def test_main_protected_edit_does_not_block_unrelated_worker_change(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), '[gate]\nprotected_paths = ["checks/**"]\n')
+            (repo / "checks").mkdir()
+            (repo / "checks" / "oracle.txt").write_text("original\n")
+            git(repo, "add", "checks/oracle.txt")
+            git(repo, "commit", "-q", "-m", "add oracle")
+            git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+            git(repo, "switch", "-q", "-c", "agent/1")
+            (repo / "README.md").write_text("worker edit\n")
+            git(repo, "add", "README.md")
+            git(repo, "commit", "-q", "-m", "worker edit")
+            git(repo, "switch", "-q", "main")
+            (repo / "checks" / "oracle.txt").write_text("main edit\n")
+            git(repo, "add", "checks/oracle.txt")
+            git(repo, "commit", "-q", "-m", "main edit")
+            git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+            git(repo, "switch", "-q", "agent/1")
+
+            code, out, report = gate(repo)
+            self.assertEqual(code, 0, report + out)
+            self.assertNotIn("- protected-paths: FAIL", report)
+
+    def test_worker_protected_edit_reports_only_changes_since_fork(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), '[gate]\nprotected_paths = ["checks/**"]\n')
+            (repo / "checks").mkdir()
+            (repo / "checks" / "oracle.txt").write_text("original\n")
+            git(repo, "add", "checks/oracle.txt")
+            git(repo, "commit", "-q", "-m", "add oracle")
+            git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+            git(repo, "switch", "-q", "-c", "agent/1")
+            (repo / "checks" / "oracle.txt").write_text("worker edit\n")
+            git(repo, "add", "checks/oracle.txt")
+            git(repo, "commit", "-q", "-m", "worker edit")
+            git(repo, "switch", "-q", "main")
+            (repo / "checks" / "oracle.txt").write_text("main edit\n")
+            git(repo, "add", "checks/oracle.txt")
+            git(repo, "commit", "-q", "-m", "main edit")
+            git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+            git(repo, "switch", "-q", "agent/1")
+
+            code, _, report = gate(repo)
+            self.assertEqual(code, 1)
+            self.assertIn("- protected-paths: FAIL", report)
+            self.assertIn("-original\n+worker edit", report)
+            self.assertNotIn("-main edit", report)
+
+    def test_renaming_protected_file_is_blocked_unless_overridden(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), '[gate]\nprotected_paths = ["checks/**"]\n')
+            (repo / "checks").mkdir()
+            (repo / "checks" / "oracle.txt").write_text("reference\n")
+            git(repo, "add", "checks/oracle.txt")
+            git(repo, "commit", "-q", "-m", "oracle")
+            git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+            git(repo, "mv", "checks/oracle.txt", "renamed.txt")
+            git(repo, "commit", "-q", "-m", "rename")
+            code, _, report = gate(repo)
+            self.assertEqual(code, 1)
+            self.assertIn("deleted file mode", report)
+            code, _, report = gate(repo, "--protected-override")
+            self.assertEqual(code, 0, report)
+
+    def test_toolchain_is_recorded_once_and_in_report(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            repo = make_repo(root)
+            path = stub_bin(root, hipconfig='echo 10.0', uname='echo 7.2-test')
+            (Path(path) / "git").symlink_to(shutil.which("git"))
+            # Restrict PATH so modinfo is genuinely absent.
+            import unittest.mock
+            with unittest.mock.patch.dict(os.environ, {"PATH": path, lifecycle.CONTEXT_ENV: ""}):
+                code, out, report = gate(repo)
+            self.assertEqual(code, 0, out)
+            rows = [json.loads(line) for line in (repo / ".factory/events.jsonl").read_text().splitlines()]
+            toolchains = [row for row in rows if row.get("kind") == "toolchain"]
+            self.assertEqual(len(toolchains), 1)
+            self.assertEqual(
+                {key: toolchains[0][key] for key in ("rocm", "kernel", "amdgpu")},
+                {"rocm": "10.0", "kernel": "7.2-test", "amdgpu": "unavailable"},
+            )
+            for line in ("ROCm: 10.0", "Kernel: 7.2-test", "amdgpu: unavailable"):
+                self.assertIn(line, report)
+            projected = runtime_events.project(repo / ".factory/events.jsonl")
+            self.assertTrue(projected["history"]["complete"])
+            self.assertEqual(projected["history"]["gaps"], [])
+            self.assertEqual(projected["executions"][0]["observation"], "fresh")
+
+    def test_check_commands_run_without_inherited_lifecycle_context(self) -> None:
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as d:
+            dump = Path(d) / "check-env.txt"
+            toml = f'[[gate.check]]\nname = "env"\nrun = ["sh", "-c", "env > {dump}"]\n'
+            repo = make_repo(Path(d), toml)
+            live = Path(d) / "live" / "events.jsonl"
+            context = json.dumps({"schema_version": 1, "path": str(live), "ticket": 170, "attempt": 1})
+            with mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: context}):
+                code, out, _ = gate(repo)
+            self.assertEqual(code, 0, out)
+            self.assertNotIn(f"{lifecycle.CONTEXT_ENV}=", dump.read_text())
+            rows = [json.loads(line) for line in live.read_text().splitlines()]
+            kinds = [row["kind"] for row in rows if row.get("stage") == "gate"]
+            self.assertEqual((kinds[0], kinds[-1]), ("enter", "exit"))
+            self.assertLessEqual({"handoff", "child_start", "result", "child_exit"}, set(kinds))
+            self.assertTrue(all(row["ticket"] == 170 for row in rows))
 
     def test_timeout_fails_instead_of_hanging(self) -> None:
         toml = '[gate]\ntimeout = 1\n[[gate.check]]\nname = "slow"\nrun = ["sleep", "5"]\n'
@@ -1239,6 +1570,7 @@ class GateTest(unittest.TestCase):
 class ManageTest(unittest.TestCase):
     def setUp(self) -> None:
         from unittest.mock import patch
+
         from factory import lifecycle
 
         self.enterContext(patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
@@ -1315,6 +1647,7 @@ PY
 
     def test_manager_failure_bounds_stderr_and_records_reason(self) -> None:
         from unittest.mock import patch
+
         from factory import dispatch, stats
 
         repo, _, packet = self.scenario()
@@ -1401,6 +1734,7 @@ PY
 
     def test_manager_failure_preserves_human_takeover_on_next_pass(self) -> None:
         from unittest.mock import patch
+
         from factory import dispatch
 
         repo, _, _ = self.scenario()
@@ -1431,6 +1765,7 @@ PY
 
     def test_terminal_handoff_runs_after_manager_timeline_lookup_fails(self) -> None:
         from unittest.mock import patch
+
         from factory import dispatch, plan
 
         with tempfile.TemporaryDirectory() as d:
@@ -1499,9 +1834,9 @@ PY
 
             with patch.object(dispatch, "gh_json", side_effect=github), \
                     patch.object(dispatch, "run", side_effect=run), \
-                    patch.object(plan, "github_read", side_effect=github_read):
-                with self.assertRaisesRegex(ValueError, "ticket #7 timeline lookup failed"):
-                    manage.manage_pass()
+                    patch.object(plan, "github_read", side_effect=github_read), \
+                    self.assertRaisesRegex(ValueError, "ticket #7 timeline lookup failed"):
+                manage.manage_pass()
 
             self.assertEqual(len(comments), 1)
             self.assertIn("factory-handoff 8/1", comments[0][comments[0].index("--body") + 1])
@@ -1589,12 +1924,12 @@ PY
 
                 with mock.patch.object(dispatch, "gh_json", return_value=pr), \
                         mock.patch.object(dispatch, "run") as run, \
-                        mock.patch.object(dispatch, "worker_round") as worker:
-                    with self.assertRaisesRegex(ValueError, "configured target"):
-                        manage.apply(
-                            7, {"title": "Fix CI"}, "FIX", "",
-                            {"worker": "ci-fix", "guidance": "Fix CI"}, packet,
-                        )
+                        mock.patch.object(dispatch, "worker_round") as worker, \
+                        self.assertRaisesRegex(ValueError, "configured target"):
+                    manage.apply(
+                        7, {"title": "Fix CI"}, "FIX", "",
+                        {"worker": "ci-fix", "guidance": "Fix CI"}, packet,
+                    )
 
                 run.assert_not_called()
                 worker.assert_not_called()
@@ -1636,17 +1971,136 @@ PY
                     ), mock.patch.object(
                         dispatch, "review", return_value=("REVISE", "retargeted"),
                     ), mock.patch.object(dispatch, "pr_comment"), \
-                    mock.patch.object(dispatch, "escalate"):
-                with self.assertRaisesRegex(ValueError, "configured target"):
-                    manage.apply(
-                        7, {"title": "Fix CI"}, "FIX", "",
-                        {"worker": "ci-fix", "guidance": "Fix CI"}, packet,
-                    )
+                    mock.patch.object(dispatch, "escalate"), \
+                    self.assertRaisesRegex(ValueError, "configured target"):
+                manage.apply(
+                    7, {"title": "Fix CI"}, "FIX", "",
+                    {"worker": "ci-fix", "guidance": "Fix CI"}, packet,
+                )
 
             self.assertFalse(any(
                 call.args[0][:2] == ["git", "push"]
                 for call in run.call_args_list
             ))
+
+    def test_fix_protected_edit_requires_issue_override_label(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        for authorized in (False, True):
+            with self.subTest(authorized=authorized), tempfile.TemporaryDirectory() as d:
+                repo = make_repo(Path(d), '[gate]\nprotected_paths = ["checks/**"]\n')
+                (repo / "checks").mkdir()
+                (repo / "checks" / "oracle.txt").write_text("original\n")
+                git(repo, "add", "checks/oracle.txt")
+                git(repo, "commit", "-q", "-m", "add oracle")
+                git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+                cfg = config.Config(
+                    root=repo, repo="acme/widgets",
+                    workers={
+                        "default": ["false"],
+                        "chore": ["false"],
+                        "ci-fix": ["sh", "-c", "printf 'worker edit\\n' > checks/oracle.txt"],
+                    },
+                )
+                dispatch.configure(cfg)
+                wt = cfg.factory / "wt-7"
+                wt.parent.mkdir()
+                git(repo, "worktree", "add", "-q", str(wt), "-b", "agent/7")
+                head = git(wt, "rev-parse", "HEAD")
+                packet = cfg.factory / "packet.md"
+                packet.write_text("fix the gate")
+                issue = {
+                    "title": "Fix oracle", "body": "Fix the oracle", "comments": [],
+                    "labels": [{"name": "chore"}] + (
+                        [{"name": config.LABEL_PROTECTED_OVERRIDE}] if authorized else []
+                    ),
+                }
+                pr = {
+                    "state": "OPEN", "headRefName": "agent/7",
+                    "headRefOid": head, "baseRefName": "main", "reviewDecision": "",
+                }
+                original_run = dispatch.run
+
+                def fake_run(cmd, *args, original_run=original_run, **kwargs):
+                    if cmd[:2] == ["git", "push"]:
+                        return subprocess.CompletedProcess(cmd, 0, "", "")
+                    return original_run(cmd, *args, **kwargs)
+
+                def fake_github(args, pr=pr, issue=issue):
+                    return pr if args[:2] == ["pr", "view"] else issue
+
+                with mock.patch.dict(os.environ, {"PYTHONPATH": str(ROOT)}), \
+                        mock.patch.object(dispatch, "gh_json", side_effect=fake_github), \
+                        mock.patch.object(dispatch, "run", side_effect=fake_run) as run, \
+                        mock.patch.object(dispatch, "review", return_value=("APPROVE", "approved")) as review, \
+                        mock.patch.object(dispatch, "pr_comment"), \
+                        mock.patch.object(dispatch, "approve_pr", return_value=True), \
+                        mock.patch.object(dispatch, "escalate") as escalate:
+                    manage.apply(
+                        7, issue, "FIX", "", {"worker": "ci-fix", "guidance": "Fix oracle"}, packet,
+                    )
+
+                report = (wt / ".factory/gate-report-7.md").read_text()
+                if authorized:
+                    self.assertIn("- conflict-markers: PASS", report)
+                    self.assertNotIn("- protected-paths: FAIL", report)
+                    self.assertTrue(any(call.args[0][:2] == ["git", "push"]
+                                        for call in run.call_args_list))
+                    review.assert_called_once()
+                    escalate.assert_not_called()
+                else:
+                    self.assertIn("- protected-paths: FAIL", report)
+                    self.assertIn("+worker edit", report)
+                    self.assertFalse(any(call.args[0][:2] == ["git", "push"]
+                                         for call in run.call_args_list))
+                    review.assert_not_called()
+                    escalate.assert_called_once()
+
+    def test_add_only_edit_escalates_with_add_only_reason(self) -> None:
+        """#228 AC3: changing an existing line under `[gate].add_only_paths` escalates with the add-only wording."""
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), '[repo]\nslug = "acme/widgets"\n[gate]\nadd_only_paths = ["tests/**"]\n')
+            (repo / "tests").mkdir()
+            (repo / "tests" / "test_old.py").write_text("assert True\n")
+            git(repo, "add", "tests/test_old.py")
+            git(repo, "commit", "-q", "-m", "add test")
+            git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+            bare = Path(d) / "origin.git"
+            git(repo, "init", "-q", "--bare", str(bare))
+            git(repo, "remote", "set-url", "origin", str(bare))
+            cfg = config.Config(
+                root=repo, repo="acme/widgets",
+                workers={"default": ["sh", "-c", "printf 'assert False\\n' > tests/test_old.py"]},
+            )
+            dispatch.configure(cfg)
+            wt = cfg.factory / "wt-7"
+            wt.parent.mkdir()
+            git(repo, "worktree", "add", "-q", str(wt), "-b", "agent/7")
+            issue = {
+                "number": 7, "title": "Weaken test", "body": "Weaken", "comments": [], "state": "OPEN",
+                "assignees": [], "labels": [{"name": config.LABEL_AGENT}],
+            }
+            original_run = dispatch.run
+
+            def fake_run(cmd, *args, original_run=original_run, **kwargs):
+                if cmd[0] == "gh":
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+                return original_run(cmd, *args, **kwargs)
+
+            with mock.patch.dict(os.environ, {"PYTHONPATH": str(ROOT)}), \
+                    mock.patch.object(dispatch, "gh_json", return_value=issue), \
+                    mock.patch.object(dispatch, "run", side_effect=fake_run), \
+                    mock.patch.object(dispatch, "escalate") as escalate:
+                dispatch.process_ticket(issue, 5, False)
+            escalate.assert_called_once()
+            self.assertEqual(escalate.call_args.args[1], "worker removed or changed existing tests")
+            self.assertIn("-assert True", escalate.call_args.kwargs["extra"])
 
     def test_red_ci_pr_is_fixed_relabelled_and_merged_on_the_next_pass(self) -> None:
         """#15 exit gate: red CI withdrew the label; FIX + green gate + APPROVE relabel; next pass merges."""
@@ -1857,7 +2311,7 @@ esac
         self.assertEqual(status(3), "oversize_rejected")
 
     def test_failed_rewrite_is_not_requeued_or_replayed_and_next_ticket_runs(self) -> None:
-        repo, stubs, packet = self.scenario()
+        repo, stubs, _packet = self.scenario()
         events_path = repo / ".factory/events.jsonl"
         escalation, receipt = map(json.loads, events_path.read_text().splitlines())
         escalation["ticket"] = 8
@@ -1893,19 +2347,21 @@ esac
         self.assertNotIn("issue edit", (Path(stubs) / "gh.log").read_text()[len(calls):])
 
     def test_manage_rejects_curate_from_escalation_packet(self) -> None:
-        repo, stubs, _ = self.scenario()
-        command = ["printf", "%s", "DECISION: CURATE\n" + curate_diff("AGENTS.md")]
-        (repo / config.CONFIG_NAME).write_text("[manager]\ncommand = " + json.dumps(command) + "\n")
-        result = factory(repo, "manage", path=stubs)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        calls = (Path(stubs) / "gh.log").read_text()
-        self.assertIn("Factory manager: Rejected CURATE", calls)
-        self.assertNotIn("--add-label ready-for-agent", calls)
-        self.assertNotIn("pr create", calls)
-        events = list(map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines()))
-        manage = next(e for e in events if e.get("event") == "manage")
-        self.assertEqual(manage["decision"], "HUMAN")
-        self.assertEqual(manage["rejected"], "CURATE")
+        for path in ("AGENTS.md", config.CONFIG_NAME):
+            with self.subTest(path=path):
+                repo, stubs, _ = self.scenario()
+                command = ["printf", "%s", "DECISION: CURATE\n" + curate_diff(path)]
+                (repo / config.CONFIG_NAME).write_text("[manager]\ncommand = " + json.dumps(command) + "\n")
+                result = factory(repo, "manage", path=stubs)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                calls = (Path(stubs) / "gh.log").read_text()
+                self.assertIn("Factory manager: Rejected CURATE", calls)
+                self.assertNotIn("--add-label ready-for-agent", calls)
+                self.assertNotIn("pr create", calls)
+                events = list(map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines()))
+                manage = next(e for e in events if e.get("event") == "manage")
+                self.assertEqual(manage["decision"], "HUMAN")
+                self.assertEqual(manage["rejected"], "CURATE")
 
 
 class DispatchTest(unittest.TestCase):
@@ -2099,7 +2555,7 @@ class DispatchTest(unittest.TestCase):
                 publications, issues = [], []
                 real_run = dispatch.run
 
-                def run(cmd, **kwargs):
+                def run(cmd, *, real_run=real_run, publications=publications, issues=issues, **kwargs):
                     if cmd[0] != "gh":
                         return real_run(cmd, **kwargs)
                     if "--method" in cmd:
@@ -2144,8 +2600,8 @@ class DispatchTest(unittest.TestCase):
             dispatch.configure(config.Config(
                 root=repo, repo="acme/widgets",
                 reviewer=[sys.executable, "-c",
-                          f"import sys; print({output!r}); "
-                          "open('received.txt', 'w').write(sys.argv[1])", "{prompt}"],
+                          (f"import sys; print({output!r}); "
+                           "open('received.txt', 'w').write(sys.argv[1])"), "{prompt}"],
             ))
             pr = {"number": 17, "state": "OPEN", "isDraft": False,
                   "headRefOid": "recorded-head", "baseRefOid": "recorded-base",
@@ -2207,7 +2663,7 @@ class DispatchTest(unittest.TestCase):
                 real_run = dispatch.run
                 publications = []
 
-                def run(cmd, **kwargs):
+                def run(cmd, *, real_run=real_run, publications=publications, **kwargs):
                     if cmd[0] != "gh":
                         return real_run(cmd, **kwargs)
                     if "--method" in cmd:
@@ -2365,7 +2821,7 @@ class DispatchTest(unittest.TestCase):
             worker_log.parent.mkdir()
             worker_log.write_text("worker detail\n")
             with mock.patch.object(dispatch, "run"):
-                dispatch.escalate(7, "gate failed", worker_log)
+                dispatch.escalate(7, "gate failed", worker_log, code="gate_failed")
 
             packet = dispatch.FACTORY / "escalations" / "7.md"
             text = packet.read_text()
@@ -2380,7 +2836,7 @@ class DispatchTest(unittest.TestCase):
             self.assertEqual(escalation["packet"], str(packet))
             self.assertEqual(escalation["round"], 1)
             with mock.patch.object(dispatch, "run"):
-                dispatch.escalate(7, "gate failed again", worker_log)
+                dispatch.escalate(7, "gate failed again", worker_log, code="gate_failed")
             escalation = json.loads(dispatch.EVENTS.read_text().splitlines()[-1])
             self.assertEqual(escalation["round"], 2)
 
@@ -2542,8 +2998,8 @@ class DispatchTest(unittest.TestCase):
             source.write_bytes(long_handoff)
             issue = {"title": "t", "body": binding.render(prior_baseline), "comments": []}
             # Accepted within the 90-day payload window, unlike the expired fixtures above.
-            from datetime import datetime, timedelta, timezone
-            recent = datetime.now(timezone.utc) - timedelta(hours=3)
+            from datetime import datetime, timedelta
+            recent = datetime.now(UTC) - timedelta(hours=3)
             at = lambda hours: (recent + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
             events = [
                 {"event": "plan-bound", "ticket": n, "schema_version": 1, "baseline": prior_baseline, "issue": issue},
@@ -2646,12 +3102,14 @@ class DispatchTest(unittest.TestCase):
             dispatch.record("attempt", ticket=3, attempt=1, gate="FAIL", seconds=5, log=str(repo / "nope.log"))
             dispatch.record("escalate", ticket=3, reason="gate failed 3 times")
             dispatch.record("claimed", ticket=4, title="in flight")  # unfinished: excluded
-            tickets, ev = learn.evidence(10)
+            with mock.patch("factory.stats.gh", return_value=[]):
+                tickets, ev = learn.evidence(10)
             self.assertEqual(tickets, [3])
             self.assertIn("gate failed 3 times", ev)
             reply = json.dumps({"lessons": ["Run `make test` before the gate."]})
             with mock.patch.object(triage, "call_llm", return_value=reply), \
-                 mock.patch.object(config, "load", return_value=cfg):
+                 mock.patch.object(config, "load", return_value=cfg), \
+                 mock.patch("factory.stats.gh", return_value=[]):
                 self.assertEqual(learn.main([]), 0)
             lessons = (repo / config.LESSONS_NAME).read_text()
             self.assertIn("- Run `make test` before the gate.", lessons)
@@ -2661,7 +3119,7 @@ class DispatchTest(unittest.TestCase):
             with mock.patch.object(dispatch, "gh_json", return_value={"title": "t", "body": "b", "comments": []}):
                 self.assertIn("## Lessons from previous tickets", dispatch.build_prompt(3, wt))
 
-    def learn_scenario(self, root: Path, reply: str) -> tuple[Path, Path, str, Path]:
+    def learn_scenario(self, root: Path, reply: str, toml: str = "") -> tuple[Path, Path, str, Path]:
         """Repo with a bare origin and a fake manager that records its prompt and prints `root/reply.txt`."""
         repo = make_repo(root)
         bare = root / "origin.git"
@@ -2670,11 +3128,11 @@ class DispatchTest(unittest.TestCase):
         prompt = root / "prompt.txt"
         (root / "reply.txt").write_text(reply)
         command = [sys.executable, "-c",
-                   "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(pathlib.Path(sys.argv[2]).read_text()); "
-                   "sys.stdout.write(pathlib.Path(sys.argv[3]).read_text())",
+                   ("import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(pathlib.Path(sys.argv[2]).read_text()); "
+                    "sys.stdout.write(pathlib.Path(sys.argv[3]).read_text())"),
                    str(prompt), "{prompt}", str(root / "reply.txt")]
         (repo / config.CONFIG_NAME).write_text(
-            '[repo]\nslug = "acme/widgets"\n[manager]\ncommand = ' + json.dumps(command) + "\n")
+            '[repo]\nslug = "acme/widgets"\n[manager]\ncommand = ' + json.dumps(command) + "\n" + toml)
         git(repo, "add", "-A")
         git(repo, "commit", "-q", "-m", "cfg")
         git(repo, "push", "-q", "origin", "main")
@@ -2686,7 +3144,7 @@ class DispatchTest(unittest.TestCase):
             {"event": "claimed", "ticket": 3, "title": "fix parser", "at": "2026-01-01T00:00:00Z"},
             {"event": "escalate", "ticket": 3, "reason": "gate failed 3 times", "at": "2026-01-01T00:01:00Z"},
         ]))
-        stubs = stub_bin(root, gh='case "$1 $2" in "pr list") echo "[]";; esac')
+        stubs = stub_bin(root, gh='case "$1 $2" in "pr list"|"issue list") echo "[]";; esac')
         return repo, bare, stubs, prompt
 
     def test_learn_with_manager_opens_chore_pr(self) -> None:
@@ -2732,17 +3190,12 @@ class DispatchTest(unittest.TestCase):
             self.assertEqual(next(e for e in events if e.get("event") == "learn")["curate"], branch)
 
     def test_learn_curate_rejects_verification_paths(self) -> None:
-        for bad in (".github/workflows/ci.yml", ".factory.toml", "src/main.py", "AGENTS.mdx"):
+        for bad in (".github/workflows/ci.yml", "src/main.py", "AGENTS.mdx"):
             with self.subTest(path=bad), tempfile.TemporaryDirectory() as d:
                 root = Path(d)
-                repo, bare, stubs, _ = self.learn_scenario(root, "")
-                if bad == config.CONFIG_NAME:  # a real edit to the committed gate config
-                    with (repo / bad).open("a") as f:
-                        f.write('[[gate.check]]\nname = "skip"\nrun = ["true"]\n')
-                    diff = curate_diff("AGENTS.md") + git(repo, "diff") + "\n"
-                    git(repo, "checkout", "--", bad)
-                else:
-                    diff = curate_diff("AGENTS.md", bad)
+                # `.github/` stays human-only even when the base ref protects it.
+                repo, bare, stubs, _ = self.learn_scenario(root, "", '[gate]\nprotected_paths = [".github/**"]\n')
+                diff = curate_diff("AGENTS.md", bad)
                 (root / "reply.txt").write_text(
                     json.dumps({"lessons": ["Run `make test` before the gate."]}) + "\nDECISION: CURATE\n" + diff)
                 result = factory(repo, "learn", path=stubs)
@@ -2756,6 +3209,88 @@ class DispatchTest(unittest.TestCase):
                 self.assertFalse(list((repo / ".factory").glob("curate-*.patch")))
                 events = list(map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines()))
                 self.assertIn(bad, next(e for e in events if e.get("event") == "learn")["curate"])
+
+    HARNESS = ('[gate]\nprotected_paths = ["tests/**"]\n[[gate.check]]\nname = "unit"\nrun = ["true"]\n'
+               '[leak_scan]\nextra = ["codename"]\n')
+
+    def harness_scenario(self, root: Path) -> tuple[Path, Path, str]:
+        """Learn scenario whose base ref has a gate check, a protected `tests/**` and a committed test."""
+        repo, bare, stubs, _ = self.learn_scenario(root, "", self.HARNESS)
+        (repo / "tests").mkdir()
+        (repo / "tests/test_old.py").write_text("assert True\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "test")
+        git(repo, "push", "-q", "origin", "main")
+        return repo, bare, stubs
+
+    def reply_with(self, root: Path, diff: str) -> None:
+        (root / "reply.txt").write_text(
+            json.dumps({"lessons": ["Run `make test` before the gate."]}) + "\nDECISION: CURATE\n" + diff)
+
+    def test_learn_curate_appends_gate_check_and_regression_test(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            repo, bare, stubs = self.harness_scenario(root)
+            toml = repo / config.CONFIG_NAME
+            toml.write_text(toml.read_text().replace('"tests/**"]', '"tests/**", "checks/**"]')
+                            + '[[gate.check]]\nname = "lint"\nrun = ["ruff", "check", "."]\n')
+            self.reply_with(root, git(repo, "diff") + "\n" + curate_diff("tests/test_parser.py"))
+            git(repo, "checkout", "--", config.CONFIG_NAME)
+            result = factory(repo, "learn", path=stubs)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("prefer a gate check", (root / "prompt.txt").read_text())
+            calls = (Path(stubs) / "gh.log").read_text()
+            self.assertIn("--head agent/curate-", calls)
+            branch = git(bare, "branch", "--list", "agent/curate-*").lstrip("* ")
+            self.assertEqual(git(bare, "diff", "--name-only", "main", branch).split(),
+                             [config.CONFIG_NAME, "tests/test_parser.py"])
+            self.assertIn('name = "lint"', git(bare, "show", f"{branch}:{config.CONFIG_NAME}"))
+            for pr in ("curate", "lessons"):
+                name = git(bare, "branch", "--list", f"agent/{pr}-*").lstrip("* ").removeprefix("agent/")
+                body = (repo / ".factory" / f"pr-body-{name}.md").read_text()
+                self.assertIn("Harness change from the meta loop — human merge required.", body)
+
+    def test_learn_curate_rejects_weakening_the_harness(self) -> None:
+        def toml_edit(old: str, new: str):
+            def mutate(repo: Path) -> None:
+                path = repo / config.CONFIG_NAME
+                path.write_text(path.read_text().replace(old, new))
+            return mutate
+
+        cases = {
+            "removes gate check 'unit'": toml_edit('[[gate.check]]\nname = "unit"\nrun = ["true"]\n', ""),
+            "edits gate check 'unit'": toml_edit('run = ["true"]', 'run = ["false"]'),
+            "removes protected path 'tests/**'": toml_edit('["tests/**"]', "[]"),
+            "changes [leak_scan]": toml_edit('extra = ["codename"]', "extra = []"),
+            "is not a new name": toml_edit("[leak_scan]", '[[gate.check]]\nname = "unit"\nrun = ["true"]\n[leak_scan]'),
+            "changes more than appended": toml_edit("[gate]\n", "[gate]\ntimeout = 1\n"),
+            "deletes or renames tests/test_old.py": lambda repo: (repo / "tests/test_old.py").unlink(),
+        }
+        for reason, mutate in cases.items():
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                repo, bare, stubs = self.harness_scenario(root)
+                mutate(repo)
+                self.reply_with(root, curate_diff("AGENTS.md") + git(repo, "diff") + "\n")
+                git(repo, "checkout", "--", ".")
+                result = factory(repo, "learn", path=stubs)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("CURATE rejected: ", result.stdout)
+                self.assertIn(reason, result.stdout)
+                self.assertNotIn("agent/curate-", (Path(stubs) / "gh.log").read_text())
+                self.assertEqual(git(bare, "branch", "--list", "agent/curate-*"), "")
+
+    def test_learn_curate_accepts_regression_test_under_add_only_paths(self) -> None:
+        """#228: moving `tests/**` to `[gate].add_only_paths` keeps the CURATE regression-test path open."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            repo, bare, stubs, _ = self.learn_scenario(root, "", '[gate]\nadd_only_paths = ["tests/**"]\n')
+            self.reply_with(root, curate_diff("tests/test_regression.py"))
+            result = factory(repo, "learn", path=stubs)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("CURATE rejected", result.stdout)
+            branch = git(bare, "branch", "--list", "agent/curate-*").lstrip("* ")
+            self.assertEqual(git(bare, "diff", "--name-only", "main", branch).split(), ["tests/test_regression.py"])
 
     def test_cost_pattern_sums_worker_log(self) -> None:
         from factory import dispatch
@@ -2795,6 +3330,87 @@ class DispatchTest(unittest.TestCase):
                     self.assertEqual(verdict, "REVISE")
                     self.assertIn("Factory rejected reviewer evidence", findings)
 
+    def test_worker_round_records_normalized_worker_usage(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        logs = {
+            "structured": '{"type": "step", "usage": {"in": 99}}\n'
+                          '{"type": "result", "model": "m1", "usage": {"in": 100, "cache": 40, "out": 20}, "total": 0.5}\n',
+            "costonly": "working\nTotal cost: $0.25\nTotal cost: $1.00\n",
+            "silent": "did the thing\n",
+        }
+        nothing = dict.fromkeys(("model", "prompt_tokens", "completion_tokens", "cached_tokens", "cost"))
+        expected = {
+            "structured": {"model": "m1", "prompt_tokens": 100, "completion_tokens": 20, "cached_tokens": 40, "cost": 0.5},
+            "costonly": {**nothing, "cost": 1.25},
+            "silent": nothing,
+        }
+        spec = {"prompt_tokens": ["usage.in"], "completion_tokens": ["usage.out"], "cached_tokens": ["usage.cache"],
+                "cost": ["total"], "model": "model", "match": {"type": "result"}}
+        for label, text in logs.items():
+            with self.subTest(worker=label), tempfile.TemporaryDirectory() as d:
+                repo = make_repo(Path(d))
+                dispatch.configure(config.Config(
+                    root=repo, repo="acme/widgets", cost_pattern=r"Total cost:\s*\$([0-9.]+)",
+                    workers={"default": ["silent"], "structured": ["s"], "costonly": ["c"]},
+                    worker_usage={"structured": spec},
+                ))
+                dispatch.LOGS.mkdir(parents=True)
+
+                def worker(_cmd, _wt, logfile, *_args, text=text):
+                    logfile.write_text(text)
+                    return 0, None
+
+                with mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
+                        mock.patch.object(dispatch, "run_worker", side_effect=worker), \
+                        mock.patch.object(dispatch, "commit_leftovers"), \
+                        mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")):
+                    dispatch.worker_round(7, repo, {label}, "ticket", "", 1, float("inf"))
+                events = lifecycle.read_events(dispatch.EVENTS)
+                usage = [e for e in events if e.get("event") == "llm-usage"]
+                self.assertEqual(len(usage), 1)
+                self.assertEqual({k: usage[0].get(k, "missing") for k in ("ticket", "stage", "attempt", *nothing)},
+                                 {"ticket": 7, "stage": "worker", "attempt": 1, **expected[label]})
+                attempt = next(e for e in events if e.get("event") == "attempt")
+                self.assertEqual(attempt["cost"], expected[label]["cost"])
+
+    def test_worker_round_keeps_omp_transcript_per_ticket(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        cases = {  # worker argv -> session file expected under .factory/transcripts/7
+            "omp": (["nice", "omp", "-p", "@{prompt}"], True),
+            "ephemeral": (["omp", "-p", "--no-session", "@{prompt}"], False),
+            "other": (["droid", "exec", "{prompt}"], False),
+        }
+        for label, (argv, kept) in cases.items():
+            with self.subTest(worker=label), tempfile.TemporaryDirectory() as d:
+                repo = make_repo(Path(d))
+                dispatch.configure(config.Config(root=repo, repo="acme/widgets", workers={"default": argv}))
+                dispatch.LOGS.mkdir(parents=True)
+
+                def worker(cmd, _wt, logfile, *_args):
+                    logfile.write_text("Working...\n")
+                    if "--session-dir" in cmd:
+                        where = Path(cmd[cmd.index("--session-dir") + 1])
+                        self.assertEqual(cmd[cmd.index("--session-dir") - 1], "omp")
+                        (where / "2026-10-16T00-00-00-000Z_abc.jsonl").write_text('{"type": "session"}\n')
+                    return 0, None
+
+                with mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
+                        mock.patch.object(dispatch, "run_worker", side_effect=worker), \
+                        mock.patch.object(dispatch, "commit_leftovers"), \
+                        mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")):
+                    dispatch.worker_round(7, repo, set(), "ticket", "", 1, float("inf"))
+                attempt = next(e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("event") == "attempt")
+                if kept:
+                    self.assertEqual(Path(attempt["transcript"]).parent, dispatch.FACTORY / "transcripts" / "7")
+                else:
+                    self.assertIsNone(attempt["transcript"])
+
     def test_worker_round_rejects_gate_that_mutates_head(self) -> None:
         from unittest import mock
 
@@ -2806,14 +3422,14 @@ class DispatchTest(unittest.TestCase):
             dispatch.LOGS.mkdir(parents=True)
             expected = git(repo, "rev-parse", "HEAD")
 
-            def mutating_gate(*_args):
+            def mutating_gate(*_args, **_kwargs):
                 (repo / "gate-race.txt").write_text("changed by gate\n")
                 git(repo, "add", "gate-race.txt")
                 git(repo, "commit", "-qm", "gate changed head")
                 return True, "PASS"
 
             with mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
-                    mock.patch.object(dispatch, "run_worker", return_value=0), \
+                    mock.patch.object(dispatch, "run_worker", return_value=(0, None)), \
                     mock.patch.object(dispatch, "commit_leftovers"), \
                     mock.patch.object(dispatch, "run_gate", side_effect=mutating_gate):
                 ok, report, _, gate_head = dispatch.worker_round(
@@ -2829,6 +3445,71 @@ class DispatchTest(unittest.TestCase):
             )
             self.assertEqual(attempt["gate"], "FAIL")
             self.assertNotEqual(attempt["head"], attempt["actual_head"])
+
+    def worker_round_with(self, repo: Path, script: str, **cfg) -> tuple:
+        """Run one worker_round with a fake worker; returns (ok, report, gate_calls, elapsed)."""
+        import time
+        from unittest import mock
+
+        from factory import dispatch
+
+        dispatch.configure(config.Config(
+            root=repo, repo="acme/widgets",
+            workers={"default": [sys.executable, "-c", script]}, **cfg,
+        ))
+        dispatch.LOGS.mkdir(parents=True)
+        gate_calls = []
+
+        def gate(*args, **_kwargs):
+            gate_calls.append(args)
+            return True, "PASS"
+
+        started = time.monotonic()
+        with mock.patch.object(dispatch, "WATCH_POLL", 0.05), \
+                mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
+                mock.patch.object(dispatch, "run_gate", side_effect=gate):
+            ok, report, _, _ = dispatch.worker_round(7, repo, set(), "ticket", "", 1, float("inf"))
+        return ok, report, gate_calls, time.monotonic() - started
+
+    def test_stalled_worker_is_killed_as_stuck_without_gate(self) -> None:
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            ok, report, gate_calls, elapsed = self.worker_round_with(
+                repo, "import time; time.sleep(60)", idle_timeout=0.01, exit_grace=60,
+            )
+            self.assertFalse(ok)
+            self.assertLess(elapsed, 30)
+            self.assertEqual(gate_calls, [])
+            self.assertIn("idle_timeout", report)
+            attempt = next(e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("event") == "attempt")
+            self.assertEqual((attempt["timeout"], attempt["reason"]), ("idle_timeout", "stuck"))
+            packet, _ = dispatch.escalation_packet(7, "gate failed", None, repo)
+            self.assertIn("| idle_timeout |", packet.read_text())
+
+    def test_worker_that_finishes_but_never_exits_is_terminated_then_gated(self) -> None:
+        from factory import dispatch
+
+        done = {
+            "handoff": "import pathlib, time; p = pathlib.Path('.factory'); p.mkdir(exist_ok=True); "
+                       "(p / 'handoff-7.md').write_text('done'); time.sleep(60)",
+            "commit": "import pathlib, subprocess, time; pathlib.Path('work.txt').write_text('x'); "
+                      "subprocess.run(['git', 'add', 'work.txt'], check=True); "
+                      "subprocess.run(['git', 'commit', '-qm', 'work'], check=True); time.sleep(60)",
+        }
+        for signal_kind, script in done.items():
+            with self.subTest(signal_kind), tempfile.TemporaryDirectory() as d:
+                repo = make_repo(Path(d))
+                ok, report, gate_calls, elapsed = self.worker_round_with(
+                    repo, script, idle_timeout=60, exit_grace=1,
+                )
+                self.assertLess(elapsed, 30)
+                self.assertEqual(len(gate_calls), 1)
+                self.assertTrue(ok, report)
+                self.assertIn("exit_grace", report)
+                attempt = next(e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("event") == "attempt")
+                self.assertEqual((attempt["timeout"], attempt["reason"]), ("exit_grace", "hung_after_done"))
 
     def test_review_rejects_head_mutation_during_review(self) -> None:
         from unittest import mock
@@ -3024,6 +3705,23 @@ class DispatchTest(unittest.TestCase):
                 refresh.assert_not_called()
                 escalate.assert_not_called()
 
+    def test_merge_never_takes_meta_loop_prs(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.configure(config.Config(root=make_repo(Path(d)), repo="acme/widgets"))
+            prs = [{"number": n, "headRefName": f"agent/{kind}-2026-10-08", "headRefOid": "head",
+                    "baseRefName": "main", "isDraft": False, "labels": [{"name": "factory-approved"}],
+                    "reviewDecision": "APPROVED"} for n, kind in ((70, "curate"), (71, "lessons"))]
+            with mock.patch.object(dispatch, "gh_json", return_value=prs), \
+                    mock.patch.object(dispatch, "pr_checks", return_value=[{"name": "ci", "bucket": "pass"}]) as checks, \
+                    mock.patch.object(dispatch, "run") as run:
+                dispatch.merge_pass_locked(False)
+            checks.assert_not_called()
+            run.assert_not_called()
+
     def test_merge_rechecks_base_before_mutating_candidate(self) -> None:
         from unittest import mock
 
@@ -3066,6 +3764,139 @@ class DispatchTest(unittest.TestCase):
             run.assert_not_called()
             refresh.assert_not_called()
             escalate.assert_not_called()
+
+    def cancelled_ci_pass(self, checks, jobs, annotations=()):
+        """One merge pass over PR #70 (ticket 7) with stubbed CI, job, and annotation reads."""
+        from unittest import mock
+
+        from factory import dispatch
+
+        pr = {
+            "number": 70, "headRefName": "agent/7", "headRefOid": "head",
+            "baseRefName": "main", "isDraft": False,
+            "labels": [{"name": "factory-approved"}],
+            "reviewDecision": "APPROVED", "state": "CLOSED", "title": "feature",
+        }
+
+        def query(args):
+            if args[:2] in (["pr", "list"], ["pr", "view"]):
+                return [pr] if args[1] == "list" else pr
+            if args[:2] == ["issue", "view"]:
+                return {"labels": []}
+            raise AssertionError(args)
+
+        calls = []
+
+        def gh(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[:2] == ["gh", "api"] and "/actions/jobs/" in cmd[2]:
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(jobs), "")
+            if cmd[:2] == ["gh", "api"] and cmd[2].endswith("/annotations"):
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(list(annotations)), "")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        def escalate(n, reason, log_path, extra="", *, code):
+            dispatch.record("escalate", ticket=n, code=code, reason=reason)
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=query), \
+                mock.patch.object(dispatch, "pr_checks", return_value=checks), \
+                mock.patch.object(dispatch, "run", side_effect=gh), \
+                mock.patch.object(dispatch, "escalate", side_effect=escalate) as esc:
+            dispatch.merge_pass_locked(False)
+        removed = any("--remove-label" in cmd for cmd in calls)
+        reruns = [cmd for cmd in calls if cmd[:3] == ["gh", "run", "rerun"]]
+        return [c.args[1] for c in esc.call_args_list], removed, reruns, calls
+
+    def cancelled(self, name="compile"):
+        return {"name": name, "bucket": "cancel",
+                "link": "https://github.com/acme/widgets/actions/runs/123/job/456"}
+
+    def test_merge_reruns_unacquired_runner_once_then_merges_on_pass(self) -> None:
+        from factory import dispatch
+
+        starved = {"run_id": 123, "run_attempt": 1, "steps": [], "runner_name": None}
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.configure(config.Config(root=make_repo(Path(d)), repo="acme/widgets"))
+            ok = {"name": "unit", "bucket": "pass"}
+            escalations, removed, reruns, _ = self.cancelled_ci_pass([ok, self.cancelled()], starved)
+            self.assertEqual((escalations, removed), ([], False))
+            self.assertEqual(reruns, [["gh", "run", "rerun", "123", "--failed", "--repo", "acme/widgets"]])
+            events = lifecycle.read_events(dispatch.EVENTS)
+            infra = next(e for e in events if e.get("event") == "ci-infra")
+            self.assertEqual((infra["pr"], infra["run"], infra["checks"]), (70, 123, ["compile"]))
+            self.assertEqual(infra["evidence"][0]["steps_run"], False)
+            self.assertTrue(any(e.get("event") == "ci-rerun" and e.get("ok") for e in events))
+            # GitHub has not surfaced the rerun yet: still attempt 1, so wait, never rerun twice.
+            escalations, removed, reruns, _ = self.cancelled_ci_pass([ok, self.cancelled()], starved)
+            self.assertEqual((escalations, removed, reruns), ([], False, []))
+            # The rerun passes: the PR proceeds past the CI gate to the fresh PR read.
+            escalations, removed, reruns, _ = self.cancelled_ci_pass([ok, {**ok, "name": "compile"}], starved)
+            self.assertEqual((escalations, removed, reruns), ([], False, []))
+
+    def test_merge_escalates_runner_unavailable_after_failed_rerun(self) -> None:
+        from factory import dispatch
+
+        starved = {"run_id": 123, "run_attempt": 1, "steps": [], "runner_name": None}
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.configure(config.Config(root=make_repo(Path(d)), repo="acme/widgets"))
+            checks = [self.cancelled("gate"), self.cancelled("compile")]
+            self.cancelled_ci_pass(checks, starved)
+            again = {**starved, "run_attempt": 2}
+            escalations, removed, reruns, _ = self.cancelled_ci_pass(checks, again)
+            self.assertEqual((removed, reruns), (False, []))
+            self.assertEqual(len(escalations), 1)
+            self.assertIn("CI runner unavailable (gate, compile)", escalations[0])
+            self.assertNotIn("CI failed", escalations[0])
+            self.assertTrue(any(e.get("event") == "ci-infra" and e.get("attempt") == 2
+                                for e in lifecycle.read_events(dispatch.EVENTS)))
+            # Later passes wait on the open escalation instead of repeating it.
+            escalations, removed, reruns, _ = self.cancelled_ci_pass(checks, again)
+            self.assertEqual((escalations, removed, reruns), ([], False, []))
+
+    def test_merge_waits_on_infra_cancel_while_run_still_pending(self) -> None:
+        from factory import dispatch
+
+        starved = {"run_id": 123, "run_attempt": 1, "steps": [], "runner_name": None}
+        running = {"name": "unit", "bucket": "pending",
+                   "link": "https://github.com/acme/widgets/actions/runs/123/job/789"}
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.configure(config.Config(root=make_repo(Path(d)), repo="acme/widgets"))
+            escalations, removed, reruns, _ = self.cancelled_ci_pass([running, self.cancelled()], starved)
+            self.assertEqual((escalations, removed, reruns), ([], False, []))
+            self.assertFalse(any(e.get("event") == "ci-rerun"
+                                 for e in lifecycle.read_events(dispatch.EVENTS)))
+            # The run finished: a later pass spends the single rerun.
+            _, _, reruns, _ = self.cancelled_ci_pass([{**running, "bucket": "pass"}, self.cancelled()], starved)
+            self.assertEqual(len(reruns), 1)
+
+    def test_merge_treats_cancel_after_steps_ran_as_failure(self) -> None:
+        from factory import dispatch
+
+        timed_out = {"run_id": 123, "run_attempt": 1, "runner_name": "GitHub Actions 3",
+                     "steps": [{"conclusion": "success"}, {"conclusion": "cancelled"}]}
+        for annotation, infra in (("", False),
+                                  (("The job was not acquired by Runner of type hosted "
+                                    "even after multiple attempts."), True)):
+            with self.subTest(infra=infra), tempfile.TemporaryDirectory() as d:
+                dispatch.configure(config.Config(root=make_repo(Path(d)), repo="acme/widgets"))
+                escalations, removed, reruns, _ = self.cancelled_ci_pass(
+                    [self.cancelled()], timed_out, [{"message": annotation}])
+                if infra:
+                    self.assertEqual((escalations, removed, len(reruns)), ([], False, 1))
+                else:
+                    self.assertEqual(escalations, ["PR #70: CI failed (compile); `factory-approved` label removed"])
+                    self.assertEqual((removed, reruns), (True, []))
+
+    def test_merge_plain_ci_failure_unchanged(self) -> None:
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.configure(config.Config(root=make_repo(Path(d)), repo="acme/widgets"))
+            escalations, removed, reruns, calls = self.cancelled_ci_pass(
+                [{"name": "unit", "bucket": "fail"}], {})
+            self.assertEqual(escalations, ["PR #70: CI failed (unit); `factory-approved` label removed"])
+            self.assertEqual((removed, reruns), (True, []))
+            self.assertFalse(any(cmd[:2] == ["gh", "api"] for cmd in calls))
 
     def test_merge_refuses_legacy_approval_without_sha_evidence(self) -> None:
         from unittest import mock
@@ -3169,7 +4000,7 @@ class DispatchTest(unittest.TestCase):
                     final["reviewDecision"] = "CHANGES_REQUESTED"
                 views = iter((base, final))
 
-                def query(args):
+                def query(args, base=base, views=views):
                     if args[:2] == ["pr", "list"]:
                         return [base]
                     if args[:2] == ["pr", "view"]:
@@ -3257,7 +4088,7 @@ class DispatchTest(unittest.TestCase):
                 dispatch.merge_pass_locked(False)
 
             self.assertEqual(
-                subprocess.run(["git", "-C", str(origin), "merge-base", "--is-ancestor", u1, "main"]).returncode,
+                subprocess.run(["git", "-C", str(origin), "merge-base", "--is-ancestor", u1, "main"], check=False).returncode,
                 0,
             )
             parents = git(origin, "log", "-1", "--pretty=%P", "main").split()
@@ -3270,7 +4101,7 @@ class DispatchTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
-            root, origin, upstream = build_fork(tmp)
+            root, origin, _upstream = build_fork(tmp)
 
             git(origin, "checkout", "-q", "-b", "agent/99")
             (origin / "feature.txt").write_text("feature")
@@ -3361,12 +4192,12 @@ class DispatchTest(unittest.TestCase):
             )
 
             self.assertEqual(
-                subprocess.run(["git", "-C", str(wt), "merge-base", "--is-ancestor", u1, "HEAD"]).returncode,
+                subprocess.run(["git", "-C", str(wt), "merge-base", "--is-ancestor", u1, "HEAD"], check=False).returncode,
                 0,
             )
             self.assertEqual(
                 subprocess.run(
-                    ["git", "-C", str(origin), "merge-base", "--is-ancestor", u1, "agent/31"]
+                    ["git", "-C", str(origin), "merge-base", "--is-ancestor", u1, "agent/31"], check=False,
                 ).returncode,
                 0,
             )
@@ -3378,7 +4209,7 @@ class DispatchTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
-            root, origin, upstream = build_fork(tmp)
+            root, origin, _upstream = build_fork(tmp)
 
             git(origin, "checkout", "-q", "-b", "agent/7")
             (origin / "feature.txt").write_text("feature")
@@ -3401,10 +4232,13 @@ class DispatchTest(unittest.TestCase):
                 return real_run(cmd, *args, **kwargs)
 
             with mock.patch.object(
-                    dispatch, "gh_json", return_value={"baseRefName": "main"},
+                    dispatch, "gh_json", side_effect=lambda args: (
+                        {"baseRefName": "main"} if args[0] == "pr"
+                        else {"labels": [{"name": config.LABEL_PROTECTED_OVERRIDE}]}
+                    ),
             ), \
                     mock.patch.object(dispatch, "run", side_effect=run_spy), \
-                    mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
+                    mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")) as gated, \
                     mock.patch.object(
                         dispatch, "review", return_value=("APPROVE", "fresh findings"),
                     ) as review, \
@@ -3412,6 +4246,7 @@ class DispatchTest(unittest.TestCase):
                     mock.patch.object(dispatch, "approve_pr", return_value=True) as approve, \
                     mock.patch.object(dispatch, "escalate") as esc:
                 dispatch.refresh_pr_branch(7, 100, False)
+            gated.assert_called_once_with(dispatch.FACTORY / "wt-7", 7, protected_override=True)
 
             refreshed_head = git(dispatch.FACTORY / "wt-7", "rev-parse", "HEAD")
             review.assert_called_once_with(dispatch.FACTORY / "wt-7", 7, "ok", refreshed_head)
@@ -3429,7 +4264,7 @@ class DispatchTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
-            root, origin, upstream = build_fork(tmp)
+            root, origin, _upstream = build_fork(tmp)
             git(origin, "checkout", "-qb", "agent/7")
             (origin / "feature.txt").write_text("feature")
             git(origin, "add", "feature.txt")
@@ -3474,7 +4309,7 @@ class DispatchTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
-            root, origin, upstream = build_fork(tmp)
+            root, origin, _upstream = build_fork(tmp)
 
             # agent/8 adds one commit, then main lands the same change (squash).
             git(origin, "checkout", "-q", "-b", "agent/8")
@@ -3526,7 +4361,7 @@ class DispatchTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
-            root, origin, upstream = build_fork(tmp)
+            root, origin, _upstream = build_fork(tmp)
 
             git(origin, "checkout", "-q", "-b", "agent/9")
             (origin / "shared.txt").write_text("agent version")
@@ -3570,6 +4405,53 @@ class DispatchTest(unittest.TestCase):
                 gh_calls,
             )
 
+    def test_refresh_keeps_concurrent_changelog_unreleased_lines(self) -> None:
+        # #204: two PRs each adding an Unreleased line must not escalate on refresh.
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            root, origin, _upstream = build_fork(tmp)
+            shutil.copy(ROOT / ".gitattributes", origin / ".gitattributes")
+            (origin / "CHANGELOG.md").write_text("# Changelog\n\n## Unreleased\n\n- base\n")
+            git(origin, "add", "-A")
+            git(origin, "commit", "-qm", "changelog")
+            git(root, "fetch", "-q", "origin")
+            git(root, "reset", "-q", "--hard", "origin/main")
+            git(origin, "checkout", "-qb", "agent/9")
+            (origin / "CHANGELOG.md").write_text("# Changelog\n\n## Unreleased\n\n- agent line\n- base\n")
+            git(origin, "commit", "-qam", "agent change")
+            git(origin, "checkout", "-q", "main")
+            (origin / "CHANGELOG.md").write_text("# Changelog\n\n## Unreleased\n\n- main line\n- base\n")
+            git(origin, "commit", "-qam", "other PR landed")
+
+            cfg = config.Config(root=root, repo="acme/widgets", upstream="upstream", main="main")
+            with mock.patch.object(config, "remote_slug", return_value="acme/upstream-widgets"):
+                dispatch.configure(cfg)
+            real_run = dispatch.run
+
+            def run_spy(cmd, *args, **kwargs):
+                if cmd[0] == "gh":
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+                return real_run(cmd, *args, **kwargs)
+
+            with mock.patch.object(dispatch, "gh_json", return_value={"baseRefName": "main"}), \
+                    mock.patch.object(dispatch, "run", side_effect=run_spy), \
+                    mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
+                    mock.patch.object(dispatch, "review", return_value=("APPROVE", "fine")), \
+                    mock.patch.object(dispatch, "pr_comment"), \
+                    mock.patch.object(dispatch, "approve_pr", return_value=True), \
+                    mock.patch.object(dispatch, "escalate") as escalate:
+                self.assertTrue(dispatch.refresh_pr_branch(9, 102, False))
+
+            escalate.assert_not_called()
+            pushed = git(origin, "show", "agent/9:CHANGELOG.md")
+            self.assertIn("- agent line", pushed)
+            self.assertIn("- main line", pushed)
+            self.assertNotIn("<<<<<<<", pushed)
+
     def test_sync_lands_the_clean_prefix_and_escalates_only_the_remainder(self) -> None:
         from unittest import mock
 
@@ -3600,23 +4482,24 @@ class DispatchTest(unittest.TestCase):
                 dispatch.configure(cfg)
 
             with mock.patch.object(dispatch, "gh_json", return_value=[]), \
-                 mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
+                 mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")) as gated, \
                  mock.patch.object(
                      dispatch, "sync_escalate", return_value="https://x/issues/1",
                  ) as escalate:
                 dispatch.sync_pass(False)
+            gated.assert_called_once_with(mock.ANY, "upstream", skip="leak-scan", protected_override=True)
 
             # Assert in root: it has every upstream object, so a missing commit
             # cannot make the negative check pass for the wrong reason.
             git(root, "fetch", "-q", "origin", "main")
             git(root, "rev-parse", "--verify", f"{u2}^{{commit}}")
             self.assertEqual(
-                subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", u1, "origin/main"]).returncode,
+                subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", u1, "origin/main"], check=False).returncode,
                 0,
                 "the conflict-free prefix should have landed",
             )
             self.assertNotEqual(
-                subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", u2, "origin/main"]).returncode,
+                subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", u2, "origin/main"], check=False).returncode,
                 0,
                 "the conflicting commit must not land",
             )
@@ -3663,6 +4546,7 @@ class DispatchTest(unittest.TestCase):
 class FeedbackSnapshotTest(unittest.TestCase):
     def test_external_review_queue_snapshot_states_and_revision_identity(self):
         from unittest import mock
+
         from factory import dashboard, dispatch
 
         with tempfile.TemporaryDirectory() as d:
@@ -3727,17 +4611,21 @@ class FeedbackSnapshotTest(unittest.TestCase):
 
     def test_github_failure_preserves_provider_diagnostic(self):
         from unittest import mock
+
         from factory import dashboard
 
         proc = subprocess.CompletedProcess([], 1, "", "gh: run gh auth login\n")
-        with mock.patch.object(dashboard.subprocess, "run", return_value=proc):
-            with self.assertRaisesRegex(RuntimeError, "gh: run gh auth login"):
-                dashboard.github(query="query { viewer { login } }")
+        with (
+            mock.patch.object(dashboard.subprocess, "run", return_value=proc),
+            self.assertRaisesRegex(RuntimeError, "gh: run gh auth login"),
+        ):
+            dashboard.github(query="query { viewer { login } }")
 
     def test_full_snapshot_preserves_legacy_contract_and_attaches_feedback(self):
         from unittest import mock
+
         from factory import dashboard, dispatch
-        from tests.test_feedback import Provider, REPO, PR, ISSUE, H, AT, factory_events
+        from tests.test_feedback import AT, ISSUE, PR, REPO, H, Provider, factory_events
 
         with tempfile.TemporaryDirectory() as d:
             repo = make_repo(Path(d), '[repo]\nslug = "example/project"\n')
@@ -3808,8 +4696,9 @@ class FeedbackSnapshotTest(unittest.TestCase):
 
     def test_historical_prs_add_no_feedback_reads_but_keep_schema_1(self):
         from unittest import mock
+
         from factory import dashboard, dispatch, feedback
-        from tests.test_feedback import Provider, REPO, PR, ISSUE, H, AT
+        from tests.test_feedback import AT, ISSUE, PR, REPO, H, Provider
 
         def issue_of(number):
             return {"id": f"I_{number}", "number": number, "title": "Historical",
@@ -3837,6 +4726,8 @@ class FeedbackSnapshotTest(unittest.TestCase):
                     return provider(**kwargs)
                 return {"repository": {"id": REPO["id"], "issues": {"nodes": issues},
                                        "pullRequests": {"nodes": raw}}}
+            # Merged PRs add only the once-per-process correction read, never feedback detail reads.
+            detail = lambda: [c for c in provider.calls if feedback.CORRECTION_FIELDS not in (c[1] or "")]
             with mock.patch.dict(dashboard.__dict__), mock.patch.dict(dispatch.__dict__):
                 dashboard.configure(config.load(repo))
                 with mock.patch.object(dashboard, "github", side_effect=read), \
@@ -3844,7 +4735,7 @@ class FeedbackSnapshotTest(unittest.TestCase):
                      mock.patch.object(dashboard, "upstream_state", return_value={}), \
                      mock.patch.object(dashboard, "triage_llm_online", return_value=False):
                     mixed = dashboard.snapshot()
-                    with_history = len(provider.calls)
+                    with_history = len(detail())
                     provider.calls.clear()
                     provider.heads = [H, H]
                     raw[:] = raw[:1]
@@ -3876,6 +4767,7 @@ class InitiativeGuardTest(unittest.TestCase):
 
     def setUp(self) -> None:
         from unittest.mock import patch
+
         from factory import lifecycle
 
         self.enterContext(patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
@@ -3951,6 +4843,7 @@ esac
 
     def test_merge_stage_refuses_initiative_pr_without_reading_ci_or_mutating(self) -> None:
         from unittest import mock
+
         from factory import dispatch
 
         repo = make_repo(self.root)

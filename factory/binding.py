@@ -5,10 +5,10 @@ import hashlib
 import json
 import re
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from factory import config, lifecycle
-from factory.evidence import EvidenceError, READ_SECONDS, github_read
+from factory.evidence import READ_SECONDS, EvidenceError, github_read
 
 SECTIONS = ("Outcome", "Boundaries", "Plan", "Success evidence")
 _PLAN_HEADINGS = {
@@ -18,7 +18,7 @@ _PLAN_HEADINGS = {
 _KEYS = {"schema_version", "initiative", "sections", "sha256", "source_url", "observed_at"}
 _DECLARATION = re.compile(r"^[ \t]{0,3}Initiative[ \t]*:[ \t]*#([1-9]\d{0,8})[ \t]*$")
 _DECLARATION_CANDIDATE = re.compile(
-    r"^[ \t]{0,3}Initiative(?:[ \t]*:|[ \t]+#|[ \t]*$)", re.I
+    r"^[ \t]{0,3}Initiative(?:[ \t]*:|[ \t]+#|[ \t]*$)", re.IGNORECASE
 )
 _BOLD_HEADING = re.compile(r"^[ \t]{0,3}\*\*([^*\r\n]+)\*\*[ \t]*$")
 _BASELINE_HEADING = re.compile(
@@ -126,7 +126,7 @@ def _timestamp(value: object) -> bool:
     if not isinstance(value, str) or not value:
         return False
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
         return parsed.tzinfo is not None and parsed.utcoffset() is not None
     except ValueError:
         return False
@@ -198,7 +198,7 @@ def baseline(body: str, repo: str) -> dict | None:
         index += 1
     if index == len(lines):
         raise BindingError("invalid Plan baseline: fenced JSON object is missing")
-    opening = re.fullmatch(r"[ ]{0,3}(`{3,}|~{3,})[ \t]*(?:json)?[ \t]*", _line_text(lines[index]), re.I)
+    opening = re.fullmatch(r"[ ]{0,3}(`{3,}|~{3,})[ \t]*(?:json)?[ \t]*", _line_text(lines[index]), re.IGNORECASE)
     if not opening:
         raise BindingError("invalid Plan baseline: expected a JSON code fence immediately under the heading")
     char, width = opening[1][0], len(opening[1])
@@ -268,7 +268,7 @@ def from_issue(cfg: config.Config, number: int, issue: object) -> dict:
         "sections": sections,
         "sha256": _digest(sections),
         "source_url": f"https://github.com/{cfg.repo}/issues/{number}",
-        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "observed_at": datetime.now(UTC).isoformat(),
     }
 
 

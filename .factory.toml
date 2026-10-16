@@ -1,6 +1,10 @@
 # agent-factory configuration. Docs: https://github.com/mikeroySoft/factory
 # Gate checks proposed by District from: --check
 
+[gate]
+protected_paths = [".factory.toml", "**/acceptance/**", "**/*review*prompt*", "TRACKING*", "**/TRACKING*"]
+add_only_paths = ["tests/**"]
+
 [[gate.check]]
 name = "test"
 run = [
@@ -16,6 +20,28 @@ run = [
     "tests",
 ]
 exclusive = false
+
+[[gate.check]]
+name = "ruff"
+run = ["uvx", "ruff@0.16.10", "check", "."]
+exclusive = false
+
+# Report-only: lists surviving mutants of changed factory/ files for the reviewer; exits
+# nonzero only when the tool itself fails to run. Runs once per PR head, not per attempt.
+[[gate.check]]
+name = "mutation"
+run = [
+    "uv",
+    "run",
+    "--frozen",
+    "--no-managed-python",
+    "--group",
+    "mutation",
+    "python",
+    "scripts/mutation.py",
+]
+exclusive = false
+when = "pr"
 
 [dashboard]
 theme = ".factory-dashboard.css"

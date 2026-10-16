@@ -35,6 +35,9 @@ class DecideTest(unittest.TestCase):
         # train beats noise; lockbox mean up but delta < lockbox noise → still keep
         self.assertEqual(decide(claim(([.5, .5], [.8, .8]), ([.5, .7], [.55, .75])))[0], "keep")
 
+    def test_gate_check_is_a_change_kind(self):
+        self.assertEqual(decide(claim(([.5, .5], [.8, .8]), ([.6, .6], [.65, .65]), kind="gate-check"))[0], "keep")
+
     def test_contract_violations_rejected(self):
         for bad in (claim(([.5], [.8]), ([.6, .6], [.6, .6])),            # no repeats
                     claim(([.5, .5], [.8, .8]), ([.6, .6], [.6, .6]), "selection"),  # no held-out

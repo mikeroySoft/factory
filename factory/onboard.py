@@ -39,6 +39,12 @@ def sh(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False)
 
 
+def gh_login(env: dict[str, str]) -> str:
+    """`gh api user` login under `env`; empty when gh cannot authenticate."""
+    proc = subprocess.run(["gh", "api", "user", "--jq", ".login"], env=env, capture_output=True, text=True, check=False)
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
 def ensure_line(path: Path, line: str) -> bool:
     text = path.read_text() if path.exists() else ""
     if line in text.splitlines():
@@ -158,7 +164,7 @@ def foreign_host_keys(section: dict, *, defaults: bool = False) -> list[str]:
     out = [
         k for k, v in section.items()
         if isinstance(v, dict) and k not in config.HOST_TABLES and k not in config.HOST_KEYS
-        and not (defaults and k == "engine")
+        and not (defaults and k == "engine") and not (k == "leak_scan" and set(v) <= {"extra"})
     ]
     out += [f"{t}.{k}" for t, keys in config.HOST_KEYS.items() for k in section.get(t, {}) if k not in keys]
     return out + config.unknown_keys(config.host_filter(section))
@@ -208,6 +214,7 @@ def relocation_fix(cfg: config.Config, *, reveal: bool) -> dict:
 
 def unknown_key_fix(path: Path, unknown: list[str]) -> dict:
     from bisect import bisect_right
+
     from tomlkit.items import AbstractTable
     from tomlkit.parser import Parser
 
@@ -388,12 +395,23 @@ def doctor(argv: list[str]) -> int:
     if cfg.install.get("python") is not None:
         ok, detail = interpreter_probe(cfg)
         report(ok, "service interpreter", detail)
+    if drift := config.engine_drift(cfg):
+        report(None, "installed engine", drift)
 
 
     for tool in ("git", "gh"):
         report(shutil.which(tool) is not None, f"{tool} on PATH")
     auth = sh(["gh", "auth", "status"])
     report(auth.returncode == 0, "gh authenticated", "" if auth.returncode == 0 else (auth.stderr.strip().splitlines() or ["?"])[-1])
+    if dispatch_env := cfg.install.get("dispatch_env"):
+        dispatcher = gh_login({**os.environ, **cfg.install["env"], **dispatch_env})
+        dashboard = gh_login(config.dashboard_env(cfg))
+        same = dispatcher.casefold() == dashboard.casefold()
+        report(
+            bool(dispatcher and dashboard) and not same, "GitHub identities",
+            f"dispatcher {dispatcher or '?'}, dashboard {dashboard or '?'}"
+            + ("; [install].dispatch_env must select a different account" if dispatcher and same else ""),
+        )
     perm = sh(["gh", "repo", "view", cfg.repo, "--json", "viewerPermission", "--jq", ".viewerPermission"])
     level = perm.stdout.strip()
     report(level in ("WRITE", "MAINTAIN", "ADMIN"), f"push access to {cfg.repo}", level or perm.stderr.strip())
@@ -413,16 +431,32 @@ def doctor(argv: list[str]) -> int:
         "none: the merge stage refuses PRs with no passing check (factory init writes one)" if not flows
         else (f"{CI_WORKFLOW} still runs the placeholder step; make it run the gate commands" if placeholder else ", ".join(p.name for p in flows)),
     )
+    if any(check.when == "release" for check in cfg.checks):
+        release_flows = [p.name for p in flows if "--tier release" in p.read_text()]
+        report(
+            True if release_flows else None, "release gate workflow",
+            ", ".join(release_flows) if release_flows
+            else f'{CONFIG_NAME} has `when = "release"` checks but no workflow runs `factory gate --tier release` on a v* tag',
+        )
 
     if cfg.upstream:
         ok = sh(["git", "remote", "get-url", cfg.upstream], cwd=cfg.root).returncode == 0
         report(ok, f"upstream remote `{cfg.upstream}`", "" if ok else "add it or unset [repo].upstream")
 
+    # The installed service runs with the PATH baked into its unit, not the caller's.
+    unit_file = unit_dir() / f"{cfg.unit}.service"
+    lines = unit_file.read_text().splitlines() if unit_file.exists() else []
+    unit_path = next((ln.removeprefix("Environment=PATH=") for ln in reversed(lines) if ln.startswith("Environment=PATH=")), None)
+    on_path = "" if unit_path is None else f"PATH from {unit_file}"
+
+    def which(exe: str) -> str | None:
+        return shutil.which(exe, path=unit_path)
+
     for label, argv_t in cfg.workers.items():
-        report(shutil.which(argv_t[0]) is not None, f"worker `{label}`: {argv_t[0]}")
+        report(which(argv_t[0]) is not None, f"worker `{label}`: {argv_t[0]}", on_path)
     if cfg.worker_wrap:
-        report(shutil.which(cfg.worker_wrap[0]) is not None, f"worker wrap: {cfg.worker_wrap[0]}")
-    report(shutil.which(cfg.reviewer[0]) is not None, f"reviewer: {cfg.reviewer[0]}")
+        report(which(cfg.worker_wrap[0]) is not None, f"worker wrap: {cfg.worker_wrap[0]}", on_path)
+    report(which(cfg.reviewer[0]) is not None, f"reviewer: {cfg.reviewer[0]}", on_path)
     if not cfg.manager:
         report(None, "manager command", "[manager].command is unset; escalations get no automated diagnosis")
     else:
@@ -433,15 +467,15 @@ def doctor(argv: list[str]) -> int:
         ]
         if Path(cfg.manager[0]).name == "omp" and "{prompt}" in cfg.manager:
             problems.append('omp needs a prompt file; use "@{prompt}"')
-        if shutil.which(cfg.manager[0]) is None:
-            problems.append(f"executable not on PATH: {cfg.manager[0]}")
+        if which(cfg.manager[0]) is None:
+            problems.append(f"executable not on {on_path or 'PATH'}: {cfg.manager[0]}")
         report(not problems, "manager command", "; ".join(problems) if problems else cfg.manager[0])
 
     if cfg.checks:
         for check in cfg.checks:
             exe = check.run[0]
-            found = shutil.which(exe) is not None or (cfg.root / exe).exists()
-            report(found, f"gate check `{check.name}`: {exe}{' (exclusive)' if check.exclusive else ''}")
+            found = which(exe) is not None or (cfg.root / exe).exists()
+            report(found, f"gate check `{check.name}`: {exe}{' (exclusive)' if check.exclusive else ''}", on_path)
     else:
         report(None, "gate checks", "none configured; only conflict-markers and leak-scan run")
 
@@ -648,13 +682,15 @@ def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
     # At boot the user manager's PATH is the systemd default (no ~/.local/bin),
     # so gh/omp/codex vanish; carry the installing shell's PATH into the units.
     # [install].env (host config) adds one line each: policy such as UV_EXCLUDE_NEWER.
+    # [install].dispatch_env goes only into the triage+dispatcher unit: its GitHub identity.
     env = f"Environment=PATH={os.environ['PATH']}\n"
     env += "".join(f"Environment={k}={v}\n" for k, v in cfg.install["env"].items())
+    dispatch_env = env + "".join(f"Environment={k}={v}\n" for k, v in cfg.install.get("dispatch_env", {}).items())
     return {
         f"{cfg.unit}.service": (
             f"[Unit]\nDescription=factory triage + dispatcher for {cfg.repo} (one pass)\n\n"
             # `-` prefix: an offline triage model must not stop the dispatch pass.
-            f"[Service]\nType=oneshot\nWorkingDirectory={cfg.root}\n{env}"
+            f"[Service]\nType=oneshot\nWorkingDirectory={cfg.root}\n{dispatch_env}"
             f"ExecStart=-{exe} triage\nExecStart={exe} dispatch\n"
         ),
         f"{cfg.unit}.timer": (

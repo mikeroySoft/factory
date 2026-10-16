@@ -1,0 +1,90 @@
+{
+  "kind": "repeatability-check",
+  "not_a_new_contract": true,
+  "not_a_new_model": true,
+  "promotion": false,
+  "why": "After #148, the scored pair is still baseline vs issue36. docs/eval-promotion-contract.md names a later model comparison (current vs Opus / Sonnet 5.5) only after corpus and noise are adequate, and REPORT.md still says the corpus is too small for a rate and that the honest next step for a rate is more cases, not a new contract head. Issue #141 is a held Jev pre-screen, not a reviewer contract. No next contract or prompt candidate is named, so this arm re-runs the current best contract against the frozen oracles.",
+  "current_best": {
+    "contract": "issue36",
+    "commit": "1947fc4e3de23e71f64342f2c9cd2570d845db5e",
+    "prompt_stands_for": "07861b1dd0f04c0c5b8d5d6ba5f9bad1fadbe061",
+    "reason": "Train mean quality 0.8333 vs baseline 0.75; lockbox mean equal at 0.6. Same CONTRACTS entry; not added as a third default arm."
+  },
+  "frozen": {
+    "repo_head": "5484cc7b3c77f30a57e69e68e3b516aa997af371",
+    "splits": "experiments/reviewer-calibration/splits.json",
+    "splits_version": 2,
+    "oracles": "experiments/reviewer-calibration/cases/*/oracle.json",
+    "oracles_unchanged": true,
+    "compare_to": "experiments/reviewer-calibration/runs/main/adjudication.json"
+  },
+  "noise_reference_runs_main_after_148": {
+    "source": "score.py on runs/main/adjudication.json as recorded in REPORT.md and PR #148",
+    "baseline": {
+      "train": {
+        "quality_per_repeat": [
+          0.8333333333333334,
+          0.6666666666666667
+        ],
+        "noise_pstdev": 0.0833,
+        "mean": 0.75
+      },
+      "lockbox": {
+        "quality_per_repeat": [
+          0.6,
+          0.6
+        ],
+        "noise_pstdev": 0.0,
+        "mean": 0.6
+      }
+    },
+    "issue36": {
+      "train": {
+        "quality_per_repeat": [
+          0.8333333333333334,
+          0.8333333333333334
+        ],
+        "noise_pstdev": 0.0,
+        "mean": 0.8333333333333334
+      },
+      "lockbox": {
+        "quality_per_repeat": [
+          0.6,
+          0.6
+        ],
+        "noise_pstdev": 0.0,
+        "mean": 0.6
+      }
+    }
+  },
+  "decision_rule": {
+    "contract": "docs/eval-promotion-contract.md section 3 and factory/promotion.py decide()",
+    "train": "mean(candidate) - mean(baseline train) must be greater than the larger per-arm population stdev. The frozen baseline train margin to beat is 0.0833. If this arm's own train pstdev is larger, that larger margin applies.",
+    "lockbox": "keep needs lockbox mean delta > 0. A lockbox noise of 0 is not a win while both means stay at 0.6 (delta 0 reverts as flat).",
+    "not_a_promotion_claim": "A same-contract repeat is not an attributable change (prompt/skill/rubric/model/effort). Do not pass these scores to factory learn --promotion. Do not change production reviewer policy or the gate."
+  },
+  "runner": {
+    "script": "experiments/reviewer-calibration/run_calibration.py",
+    "model": "anthropic/claude-fable-5-1",
+    "samples": 2,
+    "cases": 11,
+    "calls": 22,
+    "contracts_argv": [
+      "issue36"
+    ],
+    "do_not_pass_baseline": true,
+    "note": "Passing only issue36 avoids re-measuring baseline and avoids editing CONTRACTS, which would change the default two-arm run.",
+    "command": "python3 experiments/reviewer-calibration/run_calibration.py experiments/reviewer-calibration/runs/issue36-repeatability 2 issue36",
+    "cwd": "repository root on rocm-tank",
+    "checkout_repo": "/home/mike/dev/mikeroysoft/factory",
+    "started": true,
+    "blocker": "results.json is raw reviewer output only. adjudication.json is still a separate read of each output against the frozen oracles (score.py does not parse reviews). Do not invent rows. Then: python3 experiments/reviewer-calibration/score.py experiments/reviewer-calibration/runs/issue36-repeatability/adjudication.json",
+    "completed": "2026-10-02 PT",
+    "returncode_0": 22,
+    "calls_completed": 22,
+    "timeouts": 0,
+    "retries": 0,
+    "results": "experiments/reviewer-calibration/runs/issue36-repeatability/results.json",
+    "adjudication": null
+  }
+}

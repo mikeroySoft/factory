@@ -44,9 +44,11 @@ def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
     r = escalation.get("round", 0)
     if not cfg.manager:
         return "no manager is configured, so nothing recovers automatically"
+    if escalation.get("pr"):
+        return "review-intake escalations are never managed; the opted-in PR needs a human review decision"
     if not 1 <= r <= cfg.manager_rounds:
         return f"the manager's {cfg.manager_rounds} allowed round(s) are exhausted"
-    decided = [e for e in events if e.get("event") == "manage" and e.get("round") == r]
+    decided = [e for e in events if e.get("event") == "manage" and e.get("round") == r and not e.get("pr")]
     if not decided:
         if not Path(escalation["packet"]).is_file():
             return "the escalation packet is missing on the runner, so the manager cannot run"
@@ -59,9 +61,6 @@ def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
         return "the manager could not run, so there is no automatic diagnosis; the cause is unknown until a human looks"
     if any(e.get("decision") == "HUMAN" for e in decided):
         return "the manager asked for a human decision"
-    spent = next((e for e in decided if e.get("pr")), None)
-    if spent:  # the escalation loop skips a round its PR frontier already decided (round numbers collide)
-        return f"the manager's round for this escalation was already spent by its PR #{spent['pr']} {spent.get('decision')} decision"
     failed = next((e for e in events if e.get("event") == "lifecycle" and e.get("kind") == "exit"
                    and e.get("outcome") == "mechanism_failure"
                    and e.get("execution_id") in {d.get("execution_id") for d in decided}), None)
@@ -75,7 +74,8 @@ def observe(cfg, n: int, escalation: dict) -> dict | None:
     from factory import plan
     from factory.evidence import EvidenceError
 
-    reason = "ci" if "CI failed" in (escalation.get("reason") or "") else "implementation"
+    code = escalation.get("code") or ("ci_failed" if "CI failed" in (escalation.get("reason") or "") else "")
+    reason = "ci" if code == "ci_failed" else "implementation"
     pr, paths = None, []
     try:
         pr = dispatch.gh_json(["pr", "view", f"agent/{n}", "--repo", cfg.repo, "--json", "url,files"])
@@ -129,20 +129,20 @@ def compose(n: int, request: str, token: str, escalation: dict, why: str, observ
         owner,
         "",
         "**Question**",
-        f"How should #{n} proceed? It escalated with: {public(escalation.get('reason') or 'unknown reason')}. "
-        f"Automatic recovery stopped because {why}.",
+        (f"How should #{n} proceed? It escalated with: {public(escalation.get('reason') or 'unknown reason')}. "
+         f"Automatic recovery stopped because {why}."),
         "",
         "**Evidence** (bounded links; worker logs and the escalation packet stay on the runner)",
         *evidence,
         "",
         "**Proposed next step**",
-        f"Read the evidence, then amend the ticket and relabel `{LABEL_AGENT}` for another attempt, fix the branch by hand, "
-        "request changes on the PR, or close it. Replying here is context for humans; nothing here retries, approves or merges.",
+        (f"Read the evidence, then amend the ticket and relabel `{LABEL_AGENT}` for another attempt, fix the branch by hand, "
+         "request changes on the PR, or close it. Replying here is context for humans; nothing here retries, approves or merges."),
         "",
         "**Routing**",
         *routing,
-        "To claim or reassign this decision, set a `**Decision owner**` section (a GitHub login) in the issue body; "
-        "the next pass reflects it and never overwrites it.",
+        ("To claim or reassign this decision, set a `**Decision owner**` section (a GitHub login) in the issue body; "
+         "the next pass reflects it and never overwrites it."),
         "",
         f"<!-- {token} -->",
     ])
@@ -158,91 +158,95 @@ def handoff_pass(dry_run: bool = False) -> None:
         lock_path = cfg.factory / "locks" / f"{n}.lock"
         if dry_run and dispatch.lock_held(lock_path):
             continue
-        with nullcontext() if dry_run else lifecycle.scope(dispatch.EVENTS, "manage", ticket=n, lazy=True) as execution:
-            with nullcontext() if dry_run else dispatch.ticket_lock(n).open("w") as lock:
-                if not dry_run:
-                    request = execution.resource("requested", lock_path, scope="repository")
-                    try:
-                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    except BlockingIOError:
-                        execution.wait("ticket_lock_contended", mode="retry_next_pass", resource=request["resource"])
-                        continue
-                    execution.resource("acquired", lock_path, scope="repository")
+        with (
+            (nullcontext() if dry_run else lifecycle.scope(
+                dispatch.EVENTS, "manage", ticket=n, lazy=True
+            )) as execution,
+            (nullcontext() if dry_run else dispatch.ticket_lock(n).open("w")) as lock,
+        ):
+            if not dry_run:
+                request = execution.resource("requested", lock_path, scope="repository")
                 try:
-                    events = [e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("ticket") == n]
-                    escalation = next((e for e in reversed(events) if e.get("event") == "escalate"
-                                       and e.get("reason") != "manager_failed"), None)
-                    if not escalation or escalation.get("upstream") or escalation.get("pr") or not escalation.get("packet"):
-                        continue
-                    why = terminal(cfg, events, escalation)
-                    if why is None:
-                        if dry_run:
-                            dispatch.log(f"#{n}: automatic recovery still eligible; routing stays advisory (`factory plan route {n}`)")
-                        continue
-                    if dispatch.initiative_kind(n):
-                        dispatch.log(f"#{n}: refused (initiative records never receive handoff requests)")
-                        continue
-                    r = escalation.get("round", 0)
-                    request = f"{n}/{r}"
-                    receipts = [e for e in events if e.get("event") == "comment" and e.get("kind") == "handoff" and e.get("request") == request]
-                    intents = [e for e in events if e.get("event") == "handoff" and e.get("request") == request]
-                    pending = [i for i in intents if not any(p.get("token") == i["token"] for p in receipts)]
-                    if pending:
-                        # Uncertain publication: only GitHub can say whether the comment exists.
-                        try:
-                            items = timeline(n)
-                        except (CalledProcessError, ValueError):
-                            dispatch.log(f"#{n}: handoff publication uncertain and GitHub could not be read; nothing posted")
-                            continue
-                        for intent in pending:
-                            found = next((item for item in items if item.get("event") == "commented"
-                                          and type(item.get("id")) is int and intent["token"] in (item.get("body") or "")), None)
-                            if found:
-                                if not dry_run:
-                                    dispatch.record("comment", ticket=n, kind="handoff", round=r, request=request,
-                                                    token=intent["token"], target=intent["target"], comment=found["id"],
-                                                    url=found.get("html_url"), reconciled=True)
-                                receipts.append({"token": intent["token"], "target": intent["target"]})
-                    # ponytail: ~2 GETs per parked terminal ticket per pass to notice owner changes;
-                    # add an issue-updatedAt short-circuit if rate limits ever bite.
-                    observed = observe(cfg, n, escalation)
-                    if observed is None:
-                        dispatch.log(f"#{n}: handoff request {request} deferred; the ticket could not be read for routing")
-                        continue
-                    route = observed["route"]
-                    current = target(route)
-                    previous = receipts[-1]["target"] if receipts else None
-                    if previous is not None and (previous == current or not mentions(route)):
-                        if dry_run:
-                            dispatch.log(f"#{n}: handoff request {request} already published to {previous}; nothing to notify")
-                        continue  # same owner, or a transition to nobody
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    execution.wait("ticket_lock_contended", mode="retry_next_pass", resource=request["resource"])
+                    continue
+                execution.resource("acquired", lock_path, scope="repository")
+            try:
+                events = [e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("ticket") == n]
+                escalation = next((e for e in reversed(events) if e.get("event") == "escalate"
+                                   and e.get("reason") != "manager_failed"), None)
+                if not escalation or escalation.get("upstream") or not escalation.get("packet"):
+                    continue
+                why = terminal(cfg, events, escalation)
+                if why is None:
                     if dry_run:
-                        dispatch.log(f"#{n}: would publish handoff request {request} to {current} ({why})")
+                        dispatch.log(f"#{n}: automatic recovery still eligible; routing stays advisory (`factory plan route {n}`)")
+                    continue
+                if dispatch.initiative_kind(n):
+                    dispatch.log(f"#{n}: refused (initiative records never receive handoff requests)")
+                    continue
+                r = escalation.get("round", 0)
+                request = f"{n}/{r}"
+                receipts = [e for e in events if e.get("event") == "comment" and e.get("kind") == "handoff" and e.get("request") == request]
+                intents = [e for e in events if e.get("event") == "handoff" and e.get("request") == request]
+                pending = [i for i in intents if not any(p.get("token") == i["token"] for p in receipts)]
+                if pending:
+                    # Uncertain publication: only GitHub can say whether the comment exists.
+                    try:
+                        items = timeline(n)
+                    except (CalledProcessError, ValueError):
+                        dispatch.log(f"#{n}: handoff publication uncertain and GitHub could not be read; nothing posted")
                         continue
-                    intent = next((i for i in pending if i["target"] == current), None)
-                    if intent is None:
-                        token = f"{MARK} {request} #{len(intents) + 1}"
-                        dispatch.record("handoff", ticket=n, round=r, request=request, token=token, target=current, why=why,
-                                        route={k: route.get(k) for k in ("status", "owner", "candidates", "source", "reason")})
-                    else:
-                        token = intent["token"]
-                    links = {"Pull request": observed["pr_url"]}
-                    for kind, label in (("escalation", "Escalation"), ("manager", "Manager")):
-                        row = next((e for e in reversed(events) if e.get("event") == "comment" and e.get("kind") == kind
-                                    and e.get("at", "") >= escalation["at"]), None)
-                        links[label] = row.get("url") if row else None
-                    body = compose(n, request, token, escalation, why, observed, links, previous)
-                    proc = dispatch.run(["gh", "issue", "comment", str(n), "--repo", cfg.repo, "--body", body], check=False)
-                    if dispatch.comment_receipt(n, "handoff", proc.stdout if proc.returncode == 0 else "",
-                                                round=r, request=request, token=token, target=current):
-                        dispatch.log(f"#{n}: handoff request {request} published to {current}")
-                    else:
-                        dispatch.log(f"#{n}: handoff request {request} publication uncertain; reconciled on the next pass")
-                except (CalledProcessError, OSError, ValueError) as exc:
-                    if not dry_run:
-                        execution.outcome, execution.reason = "mechanism_failure", "github_command_failed"
-                    dispatch.log(f"#{n}: handoff failed: {exc}; leaving for human")
-                finally:
-                    if not dry_run:
-                        lock.close()
-                        execution.resource("released", lock_path, scope="repository")
+                    for intent in pending:
+                        found = next((item for item in items if item.get("event") == "commented"
+                                      and type(item.get("id")) is int and intent["token"] in (item.get("body") or "")), None)
+                        if found:
+                            if not dry_run:
+                                dispatch.record("comment", ticket=n, kind="handoff", round=r, request=request,
+                                                token=intent["token"], target=intent["target"], comment=found["id"],
+                                                url=found.get("html_url"), reconciled=True)
+                            receipts.append({"token": intent["token"], "target": intent["target"]})
+                # ponytail: ~2 GETs per parked terminal ticket per pass to notice owner changes;
+                # add an issue-updatedAt short-circuit if rate limits ever bite.
+                observed = observe(cfg, n, escalation)
+                if observed is None:
+                    dispatch.log(f"#{n}: handoff request {request} deferred; the ticket could not be read for routing")
+                    continue
+                route = observed["route"]
+                current = target(route)
+                previous = receipts[-1]["target"] if receipts else None
+                if previous is not None and (previous == current or not mentions(route)):
+                    if dry_run:
+                        dispatch.log(f"#{n}: handoff request {request} already published to {previous}; nothing to notify")
+                    continue  # same owner, or a transition to nobody
+                if dry_run:
+                    dispatch.log(f"#{n}: would publish handoff request {request} to {current} ({why})")
+                    continue
+                intent = next((i for i in pending if i["target"] == current), None)
+                if intent is None:
+                    token = f"{MARK} {request} #{len(intents) + 1}"
+                    dispatch.record("handoff", ticket=n, round=r, request=request, token=token, target=current, why=why,
+                                    route={k: route.get(k) for k in ("status", "owner", "candidates", "source", "reason")})
+                else:
+                    token = intent["token"]
+                links = {"Pull request": observed["pr_url"]}
+                for kind, label in (("escalation", "Escalation"), ("manager", "Manager")):
+                    row = next((e for e in reversed(events) if e.get("event") == "comment" and e.get("kind") == kind
+                                and e.get("at", "") >= escalation["at"]), None)
+                    links[label] = row.get("url") if row else None
+                body = compose(n, request, token, escalation, why, observed, links, previous)
+                proc = dispatch.run(["gh", "issue", "comment", str(n), "--repo", cfg.repo, "--body", body], check=False)
+                if dispatch.comment_receipt(n, "handoff", proc.stdout if proc.returncode == 0 else "",
+                                            round=r, request=request, token=token, target=current):
+                    dispatch.log(f"#{n}: handoff request {request} published to {current}")
+                else:
+                    dispatch.log(f"#{n}: handoff request {request} publication uncertain; reconciled on the next pass")
+            except (CalledProcessError, OSError, ValueError) as exc:
+                if not dry_run:
+                    execution.outcome, execution.reason = "mechanism_failure", "github_command_failed"
+                dispatch.log(f"#{n}: handoff failed: {exc}; leaving for human")
+            finally:
+                if not dry_run:
+                    lock.close()
+                    execution.resource("released", lock_path, scope="repository")

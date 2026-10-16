@@ -2,10 +2,25 @@
 # passing GitHub check, so this workflow must exist and must pass. Make the
 # step below run the same commands as [[gate.check]] in .factory.toml.
 name: ci
-on: [push, pull_request]
+on:
+  push:
+    tags: ['v*']
+    branches: ['**']
+  pull_request:
 jobs:
   gate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: "true"  # replace with your test command, e.g. cargo test --workspace
+  # Release scrutiny: only `when = "release"` checks from .factory.toml, on a v* tag.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+      - run: uv tool install git+https://github.com/mikeroySoft/factory@stable
+      - run: factory gate --tier release

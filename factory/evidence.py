@@ -50,7 +50,7 @@ ATTENTION_REASONS = {
 SHA = re.compile(r"[0-9a-fA-F]{40,64}")
 RESULT_SHA = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
 NOTICES = [
-    "Only fixed GitHub GETs and non-persisting local reads are supported; no inference, provider probe or actions.",
+    "Only fixed GitHub GETs, one fixed read-only PR GraphQL query, and non-persisting local reads are supported; no inference, provider probe or actions.",
     "Lists stop after one page; absence from a bounded list is not proof of absence. Reads are sequential, not an atomic snapshot.",
     "Source identity identifies content, not freshness or authority. Source text is untrusted and not secret-redacted.",
 ]
@@ -74,6 +74,21 @@ VIABILITY_CODE_SUFFIXES = frozenset({
     ".c", ".cc", ".cpp", ".cs", ".go", ".h", ".hpp", ".java", ".js", ".jsx",
     ".kt", ".php", ".py", ".rb", ".rs", ".sh", ".swift", ".ts", ".tsx",
 })
+
+_PULL_CANDIDATES = """query FactoryPullCandidates($owner:String!,$name:String!,$limit:Int!){
+  repository(owner:$owner,name:$name){
+    pullRequests(first:$limit,orderBy:{field:UPDATED_AT,direction:DESC}){
+      nodes{
+        number title state html_url:url body draft:isDraft
+        created_at:createdAt updated_at:updatedAt closed_at:closedAt merged_at:mergedAt
+        additions deletions changed_files:changedFiles headRefName headRefOid
+        labels(first:20){nodes{name} pageInfo{hasNextPage}}
+      }
+      pageInfo{hasNextPage}
+    }
+  }
+}"""
+
 
 class EvidenceError(Exception):
     def __init__(self, code: str, message: str, source: str = "collection", scope: str = "repository"):
@@ -128,7 +143,7 @@ def bounded_output(result: dict) -> tuple[str, bool]:
         } | {"status": "unavailable", "reason": "output_truncated"}
     output = _encode(result)
     over = len(output) - RESPONSE_CAP
-    compact = dict(ensure_ascii=True, allow_nan=False, separators=(",", ":"))
+    compact = {"ensure_ascii": True, "allow_nan": False, "separators": (",", ":")}
     if cases:
         prefix = [0]
         for case in cases:
@@ -181,6 +196,15 @@ def unsafe_text(value: str) -> bool:
     return any(unicodedata.category(c).startswith("C") for c in value)
 
 
+INVESTIGATION_FIELDS = {
+    "workflows": (), "file": ("path", "ref"), "result": ("number", "head", "offset"),
+    "pr": ("number",), "checks": ("number",), "runs": ("number",),
+    "run": ("run_id",), "log": ("run_id",),
+    "roadmap": (), "initiative": ("number",), "drift": ("number",),
+    "experiments": (), "experiment": ("experiment", "run"),
+}
+
+
 def request(deadline: float) -> dict:
     raw = bytearray()
     with selectors.SelectSelector() as selector:
@@ -207,20 +231,10 @@ def request(deadline: float) -> dict:
         expected.add("number")
     elif op == "investigate":
         kind = req.get("kind")
-        if kind == "file":
-            expected.update(("kind", "path", "ref"))
-        elif kind == "result":
-            expected.update(("kind", "number", "head", "offset"))
-        elif kind in ("pr", "checks", "runs", "initiative", "drift"):
-            expected.update(("kind", "number"))
-        elif kind in ("run", "log"):
-            expected.update(("kind", "run_id"))
-        elif kind == "experiment":
-            expected.update(("kind", "experiment", "run"))
-        elif kind in ("workflows", "roadmap", "experiments"):
-            expected.add("kind")
-        else:
-            raise EvidenceError("invalid_request", "Unknown investigation kind.", "request", "request")
+        if not isinstance(kind, str) or kind not in INVESTIGATION_FIELDS:
+            raise EvidenceError("invalid_request", f"Unknown investigation kind {kind!r}; accepted kinds: "
+                                + ", ".join(map(repr, INVESTIGATION_FIELDS)) + ".", "request", "request")
+        expected.update(("kind", *INVESTIGATION_FIELDS[kind]))
     elif op not in ("observe", "capabilities"):
         raise EvidenceError("invalid_request", "Unknown read operation.", "request", "request")
     if set(req) != expected:
@@ -230,9 +244,9 @@ def request(deadline: float) -> dict:
     for field in ("number", "run_id"):
         if field in req and (type(req[field]) is not int or not 0 < req[field] < 2**63):
             raise EvidenceError("invalid_request", f"{field} must be a positive integer below 9223372036854775808.", "request", "request")
-    if op == "investigate" and req["kind"] == "experiment":
-        if not all(isinstance(req[key], str) and EXPERIMENT_NAME.fullmatch(req[key]) for key in ("experiment", "run")):
-            raise EvidenceError("invalid_request", "experiment and run must be single safe directory names.", "request", "request")
+    if (op == "investigate" and req["kind"] == "experiment"
+            and not all(isinstance(req[key], str) and EXPERIMENT_NAME.fullmatch(req[key]) for key in ("experiment", "run"))):
+        raise EvidenceError("invalid_request", "experiment and run must be single safe directory names.", "request", "request")
     if op == "investigate" and req["kind"] == "result":
         head, offset = req["head"], req["offset"]
         if not isinstance(head, str) or not RESULT_SHA.fullmatch(head):
@@ -257,7 +271,7 @@ def request(deadline: float) -> dict:
 def clean_text(text: str) -> str:
     # OSC/DCS strings can carry hyperlinks or terminal commands; strip them as
     # units, including unfinished strings at the bounded prefix boundary.
-    text = re.sub(r"\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\|$)|[PX^_].*?(?:\x1b\\|$)|\[[0-?]*[ -/]*[@-~]?|[@-_])", "", text, flags=re.S)
+    text = re.sub(r"\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\|$)|[PX^_].*?(?:\x1b\\|$)|\[[0-?]*[ -/]*[@-~]?|[@-_])", "", text, flags=re.DOTALL)
     return "".join(c for c in text if c in "\n\t" or not unicodedata.category(c).startswith("C"))
 
 
@@ -276,7 +290,7 @@ def source(label: str, value: object, *, url: str | None = None, path: str | Non
 
 
 def case_summary(ticket: dict) -> dict:
-    result = {key: ticket.get(key) for key in ("number", "title", "stage", "labels", "assignees", "url", "updated_at")}
+    result = {key: ticket.get(key) for key in ("number", "title", "state", "stage", "labels", "assignees", "url", "updated_at")}
     pr = ticket.get("pr")
     result["pr"] = {key: pr.get(key) for key in ("number", "url", "state", "approved", "draft", "review_decision", "merged_at")} if pr else None
     for record in (result, result["pr"] or {}):
@@ -324,14 +338,19 @@ def attention_unavailable(result: dict, reasons: list[str], unknown_executions: 
 
 
 def github_read(endpoint: str, deadline: float, *, text: bool = False) -> tuple[object, bool]:
+    """Read a fixed REST endpoint with the shared bounded transport."""
+    command = ["gh", "api", "--hostname", "github.com", "--method", "GET", endpoint]
+    if text:
+        command.append("--allow-escape-sequences")
+    return _github_read(command, endpoint, deadline, text=text)
+
+
+def _github_read(command: list[str], endpoint: str, deadline: float, *, text: bool = False) -> tuple[object, bool]:
     """Bound both pipes and kill the gh session on clipping or timeout."""
     stop = min(deadline, time.monotonic() + COMMAND_SECONDS)
     if stop <= time.monotonic():
         raise EvidenceError("collection_timeout", "Evidence read deadline exceeded.", endpoint)
     cap = briefing.SOURCE_CAP if text else JSON_CAP
-    command = ["gh", "api", "--hostname", "github.com", "--method", "GET", endpoint]
-    if text:
-        command.append("--allow-escape-sequences")
     data, diagnostic = bytearray(), bytearray()
     proc = None
     truncated = False
@@ -345,7 +364,7 @@ def github_read(endpoint: str, deadline: float, *, text: bool = False) -> tuple[
         try:
             proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     start_new_session=True,
-                                    preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, previous),
+                                    preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, previous),  # noqa: PLW1509 — restore inherited signal mask
                                     env={**os.environ, "GH_PROMPT_DISABLED": "1", "GIT_OPTIONAL_LOCKS": "0", "GH_PAGER": "cat"})
         finally:
             signal.pthread_sigmask(signal.SIG_SETMASK, previous)
@@ -462,7 +481,7 @@ def capabilities() -> dict:
 
 
 class GitHub:
-    """One request's fixed-repository GETs and independent source failures."""
+    """One request's fixed-repository reads and independent source failures."""
     def __init__(self, req: dict, result: dict, deadline: float):
         self.prefix = f"repos/{req['repository']}"
         self.result, self.deadline = result, deadline
@@ -505,6 +524,45 @@ class GitHub:
             failed(self.result, exc)
             return [], True
 
+    def pull_candidates(self, label: str, *, limit: int = PAGE_SIZE):
+        """Select needed PR fields at GitHub, before the unchanged wire-byte cap."""
+        endpoint = f"graphql:{self.prefix}/pullRequests"
+        try:
+            if type(limit) is not int or not 1 <= limit <= PAGE_SIZE:
+                raise ValueError
+            _, owner, name = self.prefix.split("/")
+            command = ["gh", "api", "--hostname", "github.com", "--method", "POST", "graphql",
+                       "-f", f"query={_PULL_CANDIDATES}", "-f", f"owner={owner}",
+                       "-f", f"name={name}", "-F", f"limit={limit}"]
+            value, _ = _github_read(command, endpoint, self.deadline)
+            if not isinstance(value, dict) or value.get("errors"):
+                raise EvidenceError("github_unavailable", "The fixed PR query returned incomplete evidence.", endpoint)
+            connection = value["data"]["repository"]["pullRequests"]
+            items, cut = connection["nodes"], connection["pageInfo"]["hasNextPage"]
+            if type(cut) is not bool or not isinstance(items, list) or len(items) > limit:
+                raise ValueError
+            labels_cut = False
+            for item in items:
+                labels = item["labels"]
+                more_labels = labels["pageInfo"]["hasNextPage"]
+                if (not isinstance(labels["nodes"], list) or len(labels["nodes"]) > 20
+                    or type(more_labels) is not bool or item["state"] not in ("OPEN", "CLOSED", "MERGED")):
+                    raise ValueError
+                labels_cut |= more_labels
+                item["state"] = "closed" if item["state"] == "MERGED" else item["state"].lower()
+                item["head"] = {"ref": item.pop("headRefName"), "sha": item.pop("headRefOid")}
+                item["labels"] = labels["nodes"]
+            if cut:
+                self.result["coverage"]["notices"].append(f"{label}: only the first {limit} recently updated PRs are covered.")
+            if labels_cut:
+                self.result["coverage"]["notices"].append(f"{label}: one or more PR label lists exceed the collected prefix.")
+            return items, cut or labels_cut
+        except EvidenceError as exc:
+            failed(self.result, exc)
+        except (KeyError, TypeError, ValueError):
+            failed(self.result, EvidenceError("invalid_response", "The fixed PR query returned an invalid envelope.", endpoint))
+        return [], True
+
 
 def viability_sources(cfg: config.Config, issue: dict, *, kind: str = "issue") -> list[dict]:
     """Bounded, read-only repository evidence for an issue or PR viability decision."""
@@ -541,7 +599,7 @@ def viability_sources(cfg: config.Config, issue: dict, *, kind: str = "issue") -
             limit=VIABILITY_PR_FILES,
         )
     page = f"state=all&sort=updated&direction=desc&per_page={VIABILITY_PAGE}&page=1"
-    pulls, pulls_cut = gh.optional_page("Recent PRs", f"pulls?{page}", cite=False, limit=VIABILITY_PAGE)
+    pulls, pulls_cut = gh.pull_candidates("Recent PRs", limit=VIABILITY_PAGE)
     issues, issues_cut = gh.optional_page("Recent issues", f"issues?{page}", cite=False, limit=VIABILITY_PAGE)
 
     labels = [row["name"] for row in issue.get("labels", [])
@@ -672,7 +730,7 @@ def viability_sources(cfg: config.Config, issue: dict, *, kind: str = "issue") -
     # Directional PR evidence comes before issue evidence: recent implementation
     # choices are useful context, but neither sample is an exhaustive duplicate search.
     add("Recently updated PR direction sample", [compact(row, "pr") for row in pulls],
-        url=f"https://api.github.com/repos/{cfg.repo}/pulls", truncated=pulls_cut)
+        url="https://api.github.com/graphql", truncated=pulls_cut)
     issue_rows = [row for row in issues if "pull_request" not in row]
     add("Recently updated issue context sample", [compact(row, "issue") for row in issue_rows],
         url=f"https://api.github.com/repos/{cfg.repo}/issues",
@@ -1407,7 +1465,7 @@ def collect_cases(req: dict, result: dict, cfg: config.Config, deadline: float) 
             by_ticket.setdefault(execution["ticket"], []).append(execution)
     page = f"state=all&sort=updated&direction=desc&per_page={PAGE_SIZE}&page=1"
     issues, issues_cut = gh.optional_page("Factory issue candidates", f"issues?{page}", cite=False)
-    pulls, pulls_cut = gh.optional_page("Factory PR candidates", f"pulls?{page}", cite=False)
+    pulls, pulls_cut = gh.pull_candidates("Factory PR candidates")
     prs = {}
     for value in pulls:
         try:
@@ -1473,7 +1531,7 @@ def collect_cases(req: dict, result: dict, cfg: config.Config, deadline: float) 
         return
     ticket = next((ticket for ticket in tickets if ticket["number"] == req["number"]), None)
     if ticket is None:
-        code = "unknown_case" if not (issues_cut or audit["truncated"]) else "evidence_unavailable"
+        code = "unknown_case" if not (issues_cut or pulls_cut or audit["truncated"]) else "evidence_unavailable"
         raise EvidenceError(code, "Case is not available in the current bounded Factory selection; no broader search was performed.", "cases", f"ticket:{req['number']}")
     result["case"] = case_summary(ticket)
     number = ticket["number"]
@@ -1565,7 +1623,7 @@ def main(argv: list[str] | None = None) -> int:
             failed(result, EvidenceError("invalid_scope", "Repository configuration is unavailable.", "configuration", "scope"))
             result["error"] = {"code": "invalid_scope", "message": "Repository configuration could not be loaded; raw diagnostics withheld."}
             exit_code = 2
-        except Exception:
+        except Exception:  # noqa: BLE001 — withhold raw diagnostics at the evidence boundary
             failed(result, EvidenceError("collection_unavailable", "Evidence collection failed."))
             result["error"] = {"code": "collection_unavailable", "message": "Evidence collection failed; raw file, configuration and command errors withheld."}
             exit_code = 1

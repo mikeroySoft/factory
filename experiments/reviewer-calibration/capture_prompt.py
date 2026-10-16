@@ -3,7 +3,8 @@
 The printed verdict only lets dispatch.review() finish its capture call; it is never
 scored as a review result.
 """
-import pathlib, sys
+import pathlib
+import sys
 
 pathlib.Path(sys.argv[2]).write_text(sys.argv[1])
 print("VERDICT: APPROVE")

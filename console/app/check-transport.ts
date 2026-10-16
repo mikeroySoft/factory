@@ -51,7 +51,7 @@ const gh = `#!/usr/bin/env python3
 import json, os, sys, time
 from urllib.parse import parse_qsl, urlencode, urlsplit
 args = sys.argv[1:]
-endpoint = next((a for a in args if a.startswith("repos/")), "")
+endpoint = next((a for a in args if a.startswith("repos/") or a == "graphql"), "")
 parts = urlsplit(endpoint)
 query = dict(parse_qsl(parts.query))
 with open(os.environ["EVIDENCE_CALLS"], "a") as stream:
@@ -236,7 +236,7 @@ try {
       labels: [{ name: "ready-for-human" }, { name: `multilingual-εä中한${number}` }],
       created_at: "2026-01-02T03:04:05Z", updated_at: "2026-01-02T03:04:05Z",
     })) },
-    [PREFIX + "pulls"]: { json: [] },
+    graphql: { json: { data: { repository: { pullRequests: { nodes: [], pageInfo: { hasNextPage: false } } } } } },
   });
   const healthy = await settledWithin(30_000, observe("op-healthy", request, new AbortController().signal, () => undefined, ctxStub), "healthy read exceeded 30s").then(
     (value) => ({ ok: true as const, value, error: undefined }),
@@ -304,7 +304,7 @@ try {
   const blockerIssue = issue(54, "Prepare storage schema", "Required before #53.", ["ready-for-human"]);
   writeResponses({
     [PREFIX + "issues"]: { json: [initiativeIssue] },
-    [PREFIX + "pulls"]: { json: [] },
+    graphql: { json: { data: { repository: { pullRequests: { nodes: [], pageInfo: { hasNextPage: false } } } } } },
     [PREFIX + "issues/52"]: { json: initiativeIssue },
     [PREFIX + "issues/52/comments"]: { json: [] },
     [PREFIX + "issues/52/timeline"]: { json: [] },
@@ -378,7 +378,7 @@ try {
   // the bridge such that the producer reaps the whole gh descent.
   writeResponses({
     [PREFIX + "issues"]: { json: [], sleep: 60, fork: true },
-    [PREFIX + "pulls"]: { json: [] },
+    graphql: { json: { data: { repository: { pullRequests: { nodes: [], pageInfo: { hasNextPage: false } } } } } },
   });
   const controller = new AbortController();
   const hungPromise = observe("op-hung", request, controller.signal, () => undefined, ctxStub);
@@ -421,7 +421,7 @@ try {
   });
   const boundaryValues: Record<string, unknown> = {
     [PREFIX + "issues"]: { json: boundaryIssues },
-    [PREFIX + "pulls"]: { json: [] },
+    graphql: { json: { data: { repository: { pullRequests: { nodes: [], pageInfo: { hasNextPage: false } } } } } },
   };
   const wireBytes = Buffer.byteLength(JSON.stringify(boundaryValues));
   // All label characters are BMP: every non-ASCII character escapes to six

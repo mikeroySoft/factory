@@ -14,7 +14,16 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from factory import binding, config
-from factory.evidence import PAGE_SIZE, READ_SECONDS, EvidenceError, _encode, clean_text, failed, github_read, source
+from factory.evidence import (
+    PAGE_SIZE,
+    READ_SECONDS,
+    EvidenceError,
+    _encode,
+    clean_text,
+    failed,
+    github_read,
+    source,
+)
 
 LABEL = config.LABEL_INITIATIVE
 PAGES = 3          # ponytail: bounded list; raise or add `--page` if repos exceed 300 initiatives
@@ -23,10 +32,10 @@ SECTION_CAP = 4000
 STATUSES = ("proposed", "shaping", "ready", "underway", "delivered")
 SECTIONS = ("Status", "Outcome", "Owner", "Areas", "Boundaries", "Plan",
             "Open decisions", "Success evidence", "Implementation links")
-HEADER = re.compile(r"^\*\*([^*\n]+)\*\*[ \t]*$", re.M)
+HEADER = re.compile(r"^\*\*([^*\n]+)\*\*[ \t]*$", re.MULTILINE)
 LOGIN = re.compile(r"@?([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)")
 LINK = re.compile(r"(?<![\w/#])#(\d{1,9})\b")
-PROGRAMME = re.compile(r"^Programme:[ \t]*#(\d{1,9})\b", re.M | re.I)
+PROGRAMME = re.compile(r"^Programme:[ \t]*#(\d{1,9})\b", re.MULTILINE | re.IGNORECASE)
 PATHS = 200
 NOTICES = [
     "Only fixed GitHub GETs are used; no inference, mutation or dispatch decision.",

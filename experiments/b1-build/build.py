@@ -34,7 +34,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 PROTOCOL = HERE / "protocol.json"
 sys.path.insert(0, str(HERE))
-import sandbox  # noqa: E402
+import sandbox
 
 
 def _load_o1():
@@ -47,7 +47,7 @@ def _load_o1():
 
 o1 = _load_o1()
 Run, dumps, now, sha256 = o1.Run, o1.dumps, o1.now, o1.sha256
-HEADER = re.compile(r"^\*\*([^*\n]+)\*\*[ \t]*$", re.M)
+HEADER = re.compile(r"^\*\*([^*\n]+)\*\*[ \t]*$", re.MULTILINE)
 TIER = re.compile(r"\s*(NOW|NEXT|THEN|LATER)\b")
 ISSUE_FIELDS = "number,title,state,labels,body,updatedAt"
 STDERR_KEEP = 65536
@@ -106,7 +106,7 @@ def derive_oracle(issues: dict, revision: str) -> list[list]:
 
 def gh_issue(repository: str, number: int) -> dict:
     out = subprocess.run(["gh", "issue", "view", str(number), "--repo", repository, "--json", ISSUE_FIELDS],
-                         capture_output=True, text=True, timeout=60)
+                         capture_output=True, text=True, timeout=60, check=False)
     if out.returncode != 0:
         raise Invalid(f"github_read_failed:#{number}")
     return json.loads(out.stdout)
@@ -132,7 +132,7 @@ def capture_baseline(src: Path, main_root: Path, repository: str, initiative: in
     request = {"schema_version": 1, "repository": repository, "op": "investigate", "kind": "initiative",
                "number": initiative}
     out = subprocess.run([sys.executable, "-B", "-m", "factory.cli", "evidence", "--root", str(main_root)],
-                         cwd=src, input=json.dumps(request).encode(), capture_output=True, timeout=300)
+                         cwd=src, input=json.dumps(request).encode(), capture_output=True, timeout=300, check=False)
     try:
         parsed = json.loads(out.stdout)
     except ValueError:
@@ -147,7 +147,7 @@ def canonical_revision(src: Path, body: str, initiative: int) -> str:
     code = ("import json,sys\nfrom factory import binding\nd=json.load(sys.stdin)\n"
             "print(binding._digest(binding._sections(d['body'], d['n'])))")
     out = subprocess.run([sys.executable, "-B", "-c", code], cwd=src, capture_output=True, text=True, timeout=60,
-                         input=json.dumps({"body": body, "n": initiative}))
+                         input=json.dumps({"body": body, "n": initiative}), check=False)
     if out.returncode != 0 or not re.fullmatch(r"[0-9a-f]{64}", out.stdout.strip()):
         raise Invalid("revision_digest_failed")
     return out.stdout.strip()
@@ -179,7 +179,7 @@ def new_run(out: Path, protocol: dict, protocol_bytes: bytes, limits: dict) -> t
         iteration = len(prior) + 1
         if iteration > protocol["max_iterations"]:
             raise SystemExit(f"lineage {protocol['lineage']} already has {len(prior)} runs; cap is {protocol['max_iterations']}")
-        run_id = f"{protocol['experiment']}-i{iteration}-{dt.datetime.now(dt.timezone.utc):%Y%m%dT%H%M%SZ}-{secrets.token_hex(3)}"
+        run_id = f"{protocol['experiment']}-i{iteration}-{dt.datetime.now(dt.UTC):%Y%m%dT%H%M%SZ}-{secrets.token_hex(3)}"
         (out / run_id).mkdir()
         run = Run(out / run_id, limits["max_output_bytes"], limits["output_reserve_bytes"])
         run.create("protocol.json", protocol_bytes)
@@ -257,7 +257,7 @@ def start(args) -> int:
         state, reason = "invalid", exc.reason
     except o1.Stop as stop:
         state, reason = stop.state, stop.reason
-    except Exception as exc:  # host-side freeze/settle failure: retain an invalid run, never an unsettled one
+    except Exception as exc:  # noqa: BLE001 — retain an invalid run for any host-side failure
         state, reason = "invalid", f"producer_error:{type(exc).__name__}"
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
@@ -321,15 +321,15 @@ def build_report(run, protocol, outcome, result, state, reason, started) -> dict
     limitations = [
         "One initiative and one frozen observation; descriptive only, no population claim.",
         "Baseline and raw issues are sequential GitHub reads, not an atomic snapshot.",
-        "The candidate renders from the frozen baseline, so it cannot state a fact the baseline lacks; "
-        "it tests compaction, not better retrieval.",
-        "Oracle facts cover revision, tier, state, held and open blockers only; other sequencing context "
-        "(experiments, drift, owner attention) is not scored.",
-        "Output volume inside the sandbox is bounded per file (RLIMIT_FSIZE) and by the memory cgroup "
-        "(tmpfs pages), then checked against the output cap before retention.",
+        ("The candidate renders from the frozen baseline, so it cannot state a fact the baseline lacks; "
+         "it tests compaction, not better retrieval."),
+        ("Oracle facts cover revision, tier, state, held and open blockers only; other sequencing context "
+         "(experiments, drift, owner attention) is not scored."),
+        ("Output volume inside the sandbox is bounded per file (RLIMIT_FSIZE) and by the memory cgroup "
+         "(tmpfs pages), then checked against the output cap before retention."),
         "Loopback probes cover two known service ports; the private network namespace is the actual denial.",
-        "The baseline is captured after this run's directory exists, so it may list this run as an "
-        "unfinished experiment; that entry is not an oracle fact.",
+        ("The baseline is captured after this run's directory exists, so it may list this run as an "
+         "unfinished experiment; that entry is not an oracle fact."),
     ]
     return {
         "schema_version": 1, "experiment": protocol["experiment"], "run_id": status["run_id"],

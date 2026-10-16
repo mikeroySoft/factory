@@ -4,14 +4,13 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-from pathlib import Path
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from factory import config, dispatch, evidence, manage
-
 
 GH = r'''#!/usr/bin/env python3
 import json, os, sys

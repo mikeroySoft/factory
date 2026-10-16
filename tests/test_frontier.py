@@ -1,13 +1,11 @@
 """#15: the manager PR frontier shepherds factory-owned `agent/<n>` PRs to a terminal state."""
 from __future__ import annotations
 
-import json
 import os
 import subprocess
-import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -21,7 +19,7 @@ H2 = "c" * 40
 # stale the moment wall time passed 2026-09-12 + manager_stale_days (7), which
 # turned the suite red on 2026-09-19 with no code change. Anchor "recently
 # updated" to now; the stale case passes its own explicit old date.
-NOW = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+NOW = (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def pr_row(head=H, labels=(), updated=NOW):
@@ -45,6 +43,7 @@ class FrontierTest(unittest.TestCase):
         self.provider = Provider()
         self.linked = True
         self.issue_labels = ["ready-for-agent"]
+        self.timeline: list[dict] = []
         self.pr = pr_row()
         self.mutations: list[list[str]] = []
         self.manager_output = "DECISION: HUMAN\nnothing"
@@ -70,6 +69,8 @@ class FrontierTest(unittest.TestCase):
             return self.pr
         if args[:2] == ["api", "repos/example/project"]:
             return {"id": "R_1"}
+        if args[:2] == ["api", "repos/example/project/issues/79/timeline"]:
+            return [self.timeline]
         if args[:2] == ["issue", "view"]:
             return {"id": "I_79", "number": 79, "url": "https://github.com/example/project/issues/79",
                     "title": "Ticket", "body": "Scope", "state": "OPEN",
@@ -162,6 +163,16 @@ class FrontierTest(unittest.TestCase):
         self.assertEqual(self.provider.calls, [])
         self.assertEqual(self.mutations, [])
 
+    def test_meta_loop_prs_never_enter_the_frontier(self) -> None:
+        dispatch.record("claimed", ticket=79)
+        self.enterContext(mock.patch.object(dispatch, "pr_checks", return_value=[{"name": "ci", "bucket": "pass"}]))
+        for kind in ("curate", "lessons"):
+            with self.subTest(kind=kind):
+                self.pr = {**pr_row(labels=("factory-approved",)), "headRefName": f"agent/{kind}-2026-10-08"}
+                manage.frontier_pass()
+                self.assertEqual(self.provider.calls, [])
+                self.assertEqual(self.mutations, [])
+
     def test_red_ci_and_stale_escalate_once_and_pending_waits(self) -> None:
         dispatch.record("claimed", ticket=79)
         self.provider.reviews, self.provider.checks = [], []
@@ -181,6 +192,49 @@ class FrontierTest(unittest.TestCase):
         manage.frontier_pass()
         self.assertIn("stale_days = 7", self.escalations()[-1]["reason"])
         self.assertEqual(len(self.escalations()), 2)
+
+    def released_after_red_ci(self) -> None:
+        """#188: gate failed at 18:52; the owner released the ticket to ready-for-agent at 19:45."""
+        dispatch.record("claimed", ticket=79)
+        self.provider.reviews = []
+        self.provider.thread["isResolved"] = True
+        self.provider.checks[0]["updated_at"] = "2026-10-07T18:52:10Z"
+        self.timeline = [{"event": "labeled", "label": {"name": "ready-for-agent"}, "created_at": "2026-10-01T00:00:00Z"},
+                         {"event": "labeled", "label": {"name": "ready-for-agent"}, "created_at": "2026-10-07T19:45:44Z"}]
+
+    def test_red_ci_older_than_the_release_to_ready_for_agent_waits_for_the_worker(self) -> None:
+        self.released_after_red_ci()
+        with mock.patch.object(dispatch, "pr_checks", return_value=[
+                {"name": "gate", "bucket": "fail", "completedAt": "2026-10-07T18:52:10Z"}]):
+            manage.frontier_pass()
+        self.assertEqual(self.escalations(), [])
+        self.assertEqual(self.mutations, [])
+
+    def test_red_ci_newer_than_the_release_still_escalates(self) -> None:
+        self.released_after_red_ci()
+        with mock.patch.object(dispatch, "pr_checks", return_value=[
+                {"name": "gate", "bucket": "fail", "completedAt": "2026-10-07T18:52:10Z"},
+                {"name": "unit", "bucket": "fail", "completedAt": "2026-10-07T20:10:00Z"}]):
+            manage.frontier_pass()
+        self.assertEqual([e["reason"] for e in self.escalations()], ["PR #80: CI failed (unit)"])
+
+    def test_zero_timestamp_red_check_after_the_release_still_escalates(self) -> None:
+        # `gh pr checks` reports commit-status checks with the zero time; that is unknown, not old.
+        self.released_after_red_ci()
+        with mock.patch.object(dispatch, "pr_checks", return_value=[
+                {"name": "ci", "bucket": "fail", "completedAt": "0001-01-01T00:00:00Z"}]):
+            manage.frontier_pass()
+        self.assertEqual([e["reason"] for e in self.escalations()], ["PR #80: CI failed (ci)"])
+
+    def test_stale_pr_released_recently_is_not_stale(self) -> None:
+        # The owner took longer than stale_days to answer; the release restarts the clock.
+        self.released_after_red_ci()
+        self.provider.checks = []
+        self.pr = pr_row(updated="2026-01-01T00:00:00Z")
+        self.timeline[-1]["created_at"] = NOW
+        manage.frontier_pass()
+        self.assertEqual(self.escalations(), [])
+        self.assertEqual(self.mutations, [])
 
     def approved_head(self, head):
         dispatch.record("claimed", ticket=79)
@@ -289,7 +343,7 @@ class CloseDecisionTest(unittest.TestCase):
                     dispatch.record("issue-created", ticket=79, parent=70)
                 calls = []
 
-                def run(cmd, *args, **kwargs):
+                def run(cmd, *args, calls=calls, **kwargs):
                     calls.append(cmd)
                     stdout = (
                         "https://github.com/example/project/pull/80#issuecomment-8001"
@@ -306,7 +360,7 @@ class CloseDecisionTest(unittest.TestCase):
                 ), mock.patch.object(dispatch, "run", side_effect=run):
                     manage.apply(79, {"title": "t", "body": "b"}, "CLOSE", "Not worth landing", None, repo / "packet.md")
 
-                def actions(subject, action):
+                def actions(subject, action, calls=calls):
                     return [cmd for cmd in calls if cmd[1:3] == [subject, action]]
 
                 self.assertEqual(len(actions("pr", "comment")), 1)

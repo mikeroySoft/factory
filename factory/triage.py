@@ -13,6 +13,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from contextlib import nullcontext
@@ -24,8 +25,8 @@ from factory.config import (
     LABEL_CHORE,
     LABEL_HUMAN,
     LABEL_INFO,
-    LABEL_TRIAGE,
     LABEL_REVIEW,
+    LABEL_TRIAGE,
     LABEL_VIABILITY,
     Config,
 )
@@ -97,7 +98,7 @@ def gh(*args: str, execution=None) -> str:
                 if proc.poll() is not None:
                     execution.child_done(proc.pid)
     else:
-        proc = subprocess.run(command, capture_output=True, text=True)
+        proc = subprocess.run(command, capture_output=True, text=True, check=False)
         out, err = proc.stdout, proc.stderr
     if execution:
         execution.emit("result", command="gh", returncode=proc.returncode)
@@ -127,6 +128,54 @@ Respond with strict JSON only, no markdown, no prose outside the JSON:
 {{"decision": "<one of ready-for-agent|needs-info|ready-for-human|wontfix-proposal>", "rationale": "<one short paragraph>", "question": "<the question for the reporter, or empty string if decision is not needs-info>", "brief": "<agent brief for ready-for-agent, else empty string>"}}"""
 
 
+def _usage_fields(body: object) -> dict | None:
+    if not isinstance(body, dict) or not isinstance(body.get("usage"), dict):
+        return None
+    usage = body["usage"]
+    prompt = usage.get("prompt_tokens")
+    completion = usage.get("completion_tokens")
+    if (
+        type(prompt) is not int
+        or type(completion) is not int
+        or prompt < 0
+        or completion < 0
+    ):
+        return None
+    fields = {"prompt_tokens": prompt, "completion_tokens": completion}
+    rate = usage.get("prefix_cache_hit_rate")
+    if type(rate) in (int, float) and 0 <= rate <= 1:
+        fields["prefix_cache_hit_rate"] = rate
+    else:
+        details = usage.get("prompt_tokens_details")
+        cached = details.get("cached_tokens") if isinstance(details, dict) else None
+        if type(cached) is int and 0 <= cached <= prompt and prompt:
+            fields["prefix_cache_hit_rate"] = cached / prompt
+    return fields
+
+
+def _record_usage(execution, usage: dict | None) -> None:
+    if execution is None or execution.ticket is None or usage is None:
+        return
+    execution.commit()
+    lifecycle.append(
+        execution.path,
+        {
+            "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "event": "llm-usage",
+            "ticket": execution.ticket,
+            "stage": "triage",
+            "model": LLM_MODEL,
+            "execution_id": execution.execution_id,
+            "root_execution_id": execution.root_execution_id,
+            **usage,
+        },
+    )
+
+
+class EndpointTimeout(SystemExit):
+    """The model timed out on one request; the endpoint is up, so the pass can go on."""
+
+
 def call_llm(messages: list[dict], execution=None) -> str:
     payload = json.dumps(
         {
@@ -141,22 +190,24 @@ def call_llm(messages: list[dict], execution=None) -> str:
         headers={"Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=cfg.triage_timeout) as resp:
             body = json.load(resp)
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        timed_out = isinstance(exc, TimeoutError) or (
+            isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError)
+        )
         if execution:
-            timed_out = isinstance(exc, TimeoutError) or (
-                isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError)
-            )
             execution.outcome = "unknown" if timed_out else "mechanism_failure"
             execution.reason = "triage_endpoint_timeout" if timed_out else "triage_endpoint_unavailable"
-            execution.emit("result", timed_out=timed_out, timeout_seconds=60)
+            execution.emit("result", timed_out=timed_out, timeout_seconds=cfg.triage_timeout)
         print(
             f"cannot reach local model at {LLM_URL}: {exc}\n"
             "Is the model server running? Set [triage].url in .factory.toml if the endpoint differs.",
             file=sys.stderr,
         )
-        raise SystemExit(2) from exc
+        # URLError(TimeoutError) is a connect timeout (endpoint unreachable); a bare one is a slow model.
+        raise (EndpointTimeout if isinstance(exc, TimeoutError) else SystemExit)(2) from exc
+    _record_usage(execution, _usage_fields(body))
     return body["choices"][0]["message"]["content"]
 
 
@@ -276,6 +327,15 @@ def list_needs_triage(execution=None) -> list[int]:
     return [item["number"] for item in json.loads(raw)]
 
 
+def timeouts_last(numbers: list[int]) -> list[int]:
+    """Tickets whose last triage attempt timed out go after the rest, so one slow ticket cannot starve older ones."""
+    last = {}
+    for row in lifecycle.read_events(cfg.factory / "events.jsonl"):
+        if row.get("stage") == "triage-ticket" and row.get("kind") == "exit":
+            last[row.get("ticket")] = row.get("reason")
+    return sorted(numbers, key=lambda n: last.get(n) == "triage_endpoint_timeout")
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="factory triage",
@@ -293,7 +353,7 @@ def main(argv: list[str]) -> int:
 
     recording = not (args.replay or args.dry_run)
     with (
-        lifecycle.scope(cfg.factory / "events.jsonl", "triage") if recording else nullcontext()
+        lifecycle.scope(cfg.factory / "events.jsonl", "triage", lazy=True) if recording else nullcontext()
     ) as execution:
         return execute(args, execution)
 
@@ -307,7 +367,7 @@ def execute(args: argparse.Namespace, execution) -> int:
     elif args.issue:
         numbers = [args.issue]
     else:
-        numbers = list_needs_triage(execution=execution)
+        numbers = timeouts_last(list_needs_triage(execution=execution))
 
     if not numbers:
         if execution:
@@ -319,7 +379,7 @@ def execute(args: argparse.Namespace, execution) -> int:
     outcome, reason = "completed", None
     # One local model serves every repo on this host; hold the host lock so
     # simultaneous timer passes queue on it instead of hammering the endpoint.
-    with open(cfg.lock, "w") as host_lock:  # noqa: SIM115
+    with open(cfg.lock, "w") as host_lock:
         fcntl.flock(host_lock, fcntl.LOCK_EX)
         if execution:
             execution.emit("lock_acquired", lock=str(cfg.lock))
@@ -338,7 +398,14 @@ def execute(args: argparse.Namespace, execution) -> int:
                             if ticket_execution:
                                 ticket_execution.outcome, ticket_execution.reason = "not_admitted", "initiative"
                             continue
-                        decision = triage_issue(issue, execution=ticket_execution)
+                        try:
+                            decision = triage_issue(issue, execution=ticket_execution)
+                        except EndpointTimeout:
+                            outcome, reason = "unknown", "triage_endpoint_timeout"
+                            print(f"#{number}: model timed out; skipping, tried after untried tickets next pass",
+                                  file=sys.stderr)
+                            exit_code = 1
+                            continue
                         if decision is None:
                             if ticket_execution:
                                 ticket_execution.outcome = "unknown"

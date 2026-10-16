@@ -2,7 +2,8 @@
 
 The traces -> eval -> improve loop, sized for a repo: evidence is the event
 log (gate results, verdicts, escalation reasons), the latest review findings,
-and the tail of failing attempt logs. The model proposes a short list of
+the tail of failing attempt logs, and candidate escaped defects (closed bugs
+blamed back to a merged agent ticket). The model proposes a short list of
 repo-specific lessons; the file is committed and every worker prompt carries
 it. The eval signal is the dashboard's first-gate pass rate before and after.
 """
@@ -10,22 +11,28 @@ it. The eval signal is the dashboard's first-gate pass rate before and after.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
-from datetime import date
+import re
+import tomllib
+from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Callable
 
-from factory import config, dispatch, lifecycle, manage, promotion, triage
+from factory import config, dispatch, lifecycle, manage, promotion, stats, triage
 from factory.config import LABEL_CHORE, LESSONS_NAME
 
 MAX_LESSONS = 10
 LOG_TAIL = 40  # lines of a failing attempt log shown to the model
 MAX_EVIDENCE = 24_000  # chars; keeps the prompt inside a local model's window
+MAX_ESCAPES = 10  # most recent candidate-escape bugs carried into evidence
+AUTO_EVERY = 10  # finished tickets between automatic runs at the end of a dispatcher pass
+LESSONS_BRANCH = re.compile(r"agent/(lessons|curate)-")
 
 
 def evidence(last: int) -> tuple[list[int], str]:
-    """Evidence per ticket from events.jsonl, newest `last` tickets that finished."""
+    """Evidence per ticket from events.jsonl, newest `last` tickets that finished, then recent candidate escapes."""
     by_ticket: dict[int, list[dict]] = {}
     for row in lifecycle.read_events(dispatch.EVENTS):
         if (
@@ -55,6 +62,13 @@ def evidence(last: int) -> tuple[list[int], str]:
         if review.exists():
             parts.append(f"\nLatest reviewer findings:\n```\n{review.read_text()[-3000:]}\n```")
         parts.append("")
+    recent = sorted((row for row in stats.escapes() if row["candidates"]), key=lambda row: row["closed_at"])
+    if recent:
+        parts.append("## Candidate escapes\n\nClosed bugs whose fix changed lines an earlier agent ticket "
+                     "introduced (SZZ-style blame: candidates, not causes).")
+        parts += [f"- Bug #{row['bug']}: {row['title']} <- candidate #{c['ticket']}: {c['title']} "
+                  f"({row['source']}; {', '.join(c['paths']) or 'no blamed paths'})"
+                  for row in recent[-MAX_ESCAPES:] for c in row["candidates"]]
     return chosen, "\n".join(parts)[-MAX_EVIDENCE:]
 
 
@@ -71,10 +85,48 @@ def manager_llm(cfg: config.Config) -> Callable[[list[dict]], str]:
 
 CURATE_OFFER = (
     "Optionally, after the JSON, add a line `DECISION: CURATE` followed by a unified diff "
-    "(`git apply` format, against the current main branch) that improves the harness context: "
-    f"only {', '.join(manage.CURATE_PREFIXES)}. Any other path (tests, CI, `.factory.toml`) "
-    "rejects the whole diff. It is opened as a separate chore PR citing the evidence."
+    "(`git apply` format, against the current main branch) that puts each lesson in its strongest "
+    "enforceable form. When the failure is mechanically detectable, prefer a gate check (append a new "
+    f"`[[gate.check]]` table to `{config.CONFIG_NAME}`) or a regression test under a `[gate].protected_paths` "
+    "or `[gate].add_only_paths` path such as `tests/`; otherwise a standards entry in `AGENTS.md`; a prose "
+    f"lesson only as a last resort. Allowed paths: {', '.join(manage.CURATE_PREFIXES)}, `{config.CONFIG_NAME}`, "
+    "and main's `[gate].protected_paths` and `[gate].add_only_paths`. Changes are add-only: removing or editing an existing gate check or "
+    "protected path, changing `[leak_scan]`, deleting or renaming a protected file, or touching `.github/` "
+    "or any other path rejects the whole diff. It is opened as a separate chore PR citing the evidence, "
+    "merged only by a human."
 )
+HUMAN_MERGE = "Harness change from the meta loop — human merge required."
+
+
+def require_add_only(base: dict, new: dict) -> None:
+    """Raise unless `new` is `base` plus appended `[[gate.check]]` tables (new names) and appended
+    `[gate].protected_paths` entries."""
+    name = config.CONFIG_NAME
+    base_gate, new_gate = base.get("gate", {}), new.get("gate", {})
+    old, cur = base_gate.get("check", []), new_gate.get("check", [])
+    for i, check in enumerate(old):
+        if cur[i:i + 1] != [check]:
+            kept = any(c.get("name") == check.get("name") for c in cur)
+            raise ValueError(f"{name} {'edits' if kept else 'removes'} gate check {check.get('name')!r}")
+    names = [c.get("name") for c in old]
+    for check in cur[len(old):]:
+        if check.get("name") in names:
+            raise ValueError(f"{name} gate check {check.get('name')!r} is not a new name")
+        names.append(check.get("name"))
+    old, cur = base_gate.get("protected_paths", []), new_gate.get("protected_paths", [])
+    if missing := [p for p in old if p not in cur]:
+        raise ValueError(f"{name} removes protected path {missing[0]!r}")
+    if cur[:len(old)] != old:
+        raise ValueError(f"{name} reorders [gate].protected_paths")
+    if base.get("leak_scan") != new.get("leak_scan"):
+        raise ValueError(f"{name} changes [leak_scan]")
+
+    def rest(doc: dict) -> dict:
+        gate = {k: v for k, v in doc.get("gate", {}).items() if k not in ("check", "protected_paths")}
+        return {**doc, "gate": gate}
+
+    if rest(base) != rest(new):
+        raise ValueError(f"{name} changes more than appended gate checks and protected paths")
 
 
 def propose(existing: str, evidence_md: str, repo: str, ask: Callable[[list[dict]], str],
@@ -108,7 +160,13 @@ def propose(existing: str, evidence_md: str, repo: str, ask: Callable[[list[dict
                 {"role": "assistant", "content": reply},
                 {"role": "user", "content": "That was not valid JSON of the form {\"lessons\": [...]}. Reply with ONLY that JSON."},
             ]
-    raise SystemExit("factory learn: model returned unparseable JSON twice")
+    raise ValueError("model returned unparseable JSON twice")
+
+
+def branch_name(kind: str, tickets: list[int]) -> str:
+    """`agent/<kind>-<date>-t<N>`, N the newest included ticket: same-day runs never collide,
+    and the merge stage's `agent/(\\d+)` never matches."""
+    return f"agent/{kind}-{datetime.now().astimezone().date().isoformat()}-t{tickets[-1]}"
 
 
 def chore_pr(cfg: config.Config, branch: str, edit: Callable[[Path], list[str]], title: str, pr_body: str) -> None:
@@ -127,29 +185,45 @@ def chore_pr(cfg: config.Config, branch: str, edit: Callable[[Path], list[str]],
 
 
 def curate(cfg: config.Config, diff: str, tickets: list[int], notes: str) -> str:
-    """Apply the manager's CURATE diff on `agent/curate-<date>` and open its chore PR.
+    """Apply the manager's CURATE diff on `agent/curate-<date>-t<N>` and open its chore PR.
 
     Returns the branch, or `rejected: <reason>` when the diff does not apply or leaves the allowlist."""
-    branch = f"agent/curate-{date.today().isoformat()}"
+    branch = branch_name("curate", tickets)
     patch = cfg.factory / f"{branch.removeprefix('agent/')}.patch"
     patch.write_text(diff if diff.endswith("\n") else diff + "\n")
 
     def edit(wt: Path) -> list[str]:
+        toml = wt / config.CONFIG_NAME
+        base = tomllib.loads(toml.read_text()) if toml.is_file() else {}
+        gate = base.get("gate", {})
+        protected = gate.get("protected_paths", []) + gate.get("add_only_paths", [])
         applied = dispatch.run(["git", "apply", str(patch)], cwd=wt, check=False)
         if applied.returncode:
             raise ValueError(f"diff does not apply: {applied.stderr.strip()}")
-        # Worktree-only apply (no --index): every touched path shows as ` M`/`??`, never `R`.
+        # Worktree-only apply (no --index): every touched path shows as ` M`/` D`/`??`; a rename is ` D` + `??`.
         status = dispatch.run(["git", "status", "--porcelain", "-z", "--untracked-files=all"], cwd=wt).stdout
-        paths = [entry[3:] for entry in status.split("\0") if entry]
-        bad = [p for p in paths if not manage.curate_allowed(p)]
+        entries = [(entry[:2], entry[3:]) for entry in status.split("\0") if entry]
+        paths = [p for _, p in entries]
+        bad = [p for p in paths if not manage.curate_allowed(p, protected)]
         if bad:
-            raise ValueError(", ".join(bad) + " outside " + ", ".join(manage.CURATE_PREFIXES))
+            raise ValueError(", ".join(bad) + " outside " + ", ".join(manage.CURATE_PREFIXES)
+                             + f", {config.CONFIG_NAME}, [gate].protected_paths and [gate].add_only_paths")
         if not paths:
             raise ValueError("empty diff")
+        if deleted := [p for code, p in entries if "D" in code and any(fnmatch.fnmatchcase(p, g) for g in protected)]:
+            raise ValueError(f"deletes or renames {', '.join(deleted)} under [gate].protected_paths or [gate].add_only_paths")
+        if config.CONFIG_NAME in paths:
+            try:
+                new = tomllib.loads(toml.read_text()) if toml.is_file() else {}
+                require_add_only(base, new)
+            except tomllib.TOMLDecodeError as exc:
+                raise ValueError(f"{config.CONFIG_NAME}: {exc}") from exc
+            except (AttributeError, TypeError) as exc:  # e.g. a non-table gate check from the model
+                raise ValueError(f"{config.CONFIG_NAME}: malformed [gate]: {exc}") from exc
         return paths
 
     cited = ", ".join(f"#{n}" for n in tickets)
-    pr_body = (f"`factory learn` CURATE proposed by the manager from tickets {cited}.\n\n"
+    pr_body = (f"{HUMAN_MERGE}\n\n`factory learn` CURATE proposed by the manager from tickets {cited}.\n\n"
                f"## Manager notes\n\n{notes or '(none)'}")
     try:
         chore_pr(cfg, branch, edit, f"{branch}: curate harness context", pr_body)
@@ -158,6 +232,96 @@ def curate(cfg: config.Config, diff: str, tickets: list[int], notes: str) -> str
     finally:
         patch.unlink(missing_ok=True)
     return branch
+
+
+def run(cfg: config.Config, last: int = 10, dry_run: bool = False, **fields: object) -> dict | None:
+    """One `factory learn` over the newest `last` finished tickets; `fields` extend its `learn` event.
+
+    Returns the recorded event's fields, or None when nothing was recorded (no finished tickets,
+    or a dry run). Raises on a model, `git` or `gh` failure."""
+    triage.configure(cfg)
+    stats.configure(cfg)
+    tickets, evidence_md = evidence(last)
+    if not tickets:
+        print("factory learn: no finished tickets in .factory/events.jsonl yet")
+        return None
+    notes_md = ""
+    if cfg.manager:
+        notes = cfg.factory / manage.NOTES_NAME
+        if notes.is_file():
+            notes_md = notes.read_text()
+            evidence_md += f"\n## {notes.name}\n\n{notes_md}"
+    path = cfg.root / LESSONS_NAME
+    existing = path.read_text() if path.exists() else ""
+    ask = manager_llm(cfg) if cfg.manager else triage.call_llm
+    lessons, diff = propose(existing, evidence_md, cfg.repo, ask, curate=bool(cfg.manager))
+    body = "".join(f"- {lesson}\n" for lesson in lessons)
+    print(f"learned from tickets {', '.join(f'#{n}' for n in tickets)}:\n{body}", end="")
+    if diff:
+        print(f"manager CURATE diff:\n{diff}", end="")
+    if dry_run:
+        return None
+    content = f"<!-- Written by `factory learn` from {len(tickets)} finished tickets; edit freely and commit. -->\n{body}"
+    if not cfg.manager:
+        path.write_text(content)
+        event = {"tickets": tickets, "lessons": len(lessons), **fields}
+        dispatch.record("learn", **event)
+        print(f"wrote {path}; review and commit it")
+        return event
+    branch = branch_name("lessons", tickets)
+
+    def edit(wt: Path) -> list[str]:
+        (wt / LESSONS_NAME).write_text(content)
+        return [LESSONS_NAME]
+
+    pr_body = f"{HUMAN_MERGE}\n\n`factory learn` distilled tickets {', '.join(f'#{n}' for n in tickets)} via the manager.\n\n{body}"
+    chore_pr(cfg, branch, edit, f"{branch}: update {LESSONS_NAME}", pr_body)
+    print(f"opened a {LABEL_CHORE} PR from {branch}")
+    curated = curate(cfg, diff, tickets, notes_md) if diff else None
+    if curated:
+        print(f"CURATE {curated}" if curated.startswith("rejected") else f"opened a {LABEL_CHORE} PR from {curated}")
+    event = {"tickets": tickets, "lessons": len(lessons), "branch": branch, "curate": curated, **fields}
+    dispatch.record("learn", **event)
+    return event
+
+
+def finished_since_learn() -> int:
+    """Tickets whose latest `merged`/`escalate` row is newer than the newest non-failed `learn` row
+    (any, if none): failed runs keep the count, so the next pass retries."""
+    rows = [r for r in lifecycle.read_events(dispatch.EVENTS) if isinstance(r.get("at"), str)]
+    since = max((r["at"] for r in rows if r.get("event") == "learn" and r.get("status") != "failed"), default="")
+    return len({r["ticket"] for r in rows
+                if r.get("event") in ("merged", "escalate") and type(r.get("ticket")) is int and r["at"] > since})
+
+
+def learn_pass(dry_run: bool = False) -> None:
+    """End of a dispatcher pass: `factory learn --last 10` once 10 tickets finished since the last `learn`.
+
+    Needs a manager (without one, learn only writes an uncommitted file) and no open lessons or
+    curate PR (lessons rewrite the whole file). A failure is journaled, never raised."""
+    cfg = dispatch.cfg
+    count = finished_since_learn()
+    if count < AUTO_EVERY:
+        return
+    if not cfg.manager:
+        dispatch.log("learn: skipped (no manager)")
+        return
+    try:
+        prs = dispatch.gh_json(["pr", "list", "--repo", cfg.repo, "--state", "open", "--limit", "1000",
+                                "--json", "number,headRefName"])
+        if pr := next((p for p in prs if LESSONS_BRANCH.match(p["headRefName"])), None):
+            dispatch.log(f"learn: skipped (open lessons PR #{pr['number']})")
+            return
+        if dry_run:
+            dispatch.log(f"learn: would run --last {AUTO_EVERY} ({count} tickets finished since the last learn)")
+            return
+        dispatch.log(f"learn: {count} tickets finished since the last learn; running --last {AUTO_EVERY}")
+        run(cfg, AUTO_EVERY, trigger="auto")
+    except Exception as exc:  # noqa: BLE001 - isolates learn failures from the dispatcher pass
+        reason = f"{type(exc).__name__}: {exc}"
+        dispatch.log(f"learn: failed ({reason})")
+        if not dry_run:
+            dispatch.record("learn", trigger="auto", status="failed", reason=reason)
 
 
 def main(argv: list[str]) -> int:
@@ -184,45 +348,8 @@ def main(argv: list[str]) -> int:
                             baseline=claim["baseline"], candidate=claim["candidate"],
                             splits=claim["splits"], disposition=disposition, reason=reason)
         return 0
-    triage.configure(cfg)
-
-    tickets, evidence_md = evidence(args.last)
-    if not tickets:
-        print("factory learn: no finished tickets in .factory/events.jsonl yet")
-        return 0
-    notes_md = ""
-    if cfg.manager:
-        notes = cfg.factory / manage.NOTES_NAME
-        if notes.is_file():
-            notes_md = notes.read_text()
-            evidence_md += f"\n## {notes.name}\n\n{notes_md}"
-    path = cfg.root / LESSONS_NAME
-    existing = path.read_text() if path.exists() else ""
-    ask = manager_llm(cfg) if cfg.manager else triage.call_llm
-    lessons, diff = propose(existing, evidence_md, cfg.repo, ask, curate=bool(cfg.manager))
-    body = "".join(f"- {lesson}\n" for lesson in lessons)
-    print(f"learned from tickets {', '.join(f'#{n}' for n in tickets)}:\n{body}", end="")
-    if diff:
-        print(f"manager CURATE diff:\n{diff}", end="")
-    if args.dry_run:
-        return 0
-    content = f"<!-- Written by `factory learn` from {len(tickets)} finished tickets; edit freely and commit. -->\n{body}"
-    if not cfg.manager:
-        path.write_text(content)
-        dispatch.record("learn", tickets=tickets, lessons=len(lessons))
-        print(f"wrote {path}; review and commit it")
-        return 0
-    branch = f"agent/lessons-{date.today().isoformat()}"
-
-    def edit(wt: Path) -> list[str]:
-        (wt / LESSONS_NAME).write_text(content)
-        return [LESSONS_NAME]
-
-    pr_body = f"`factory learn` distilled tickets {', '.join(f'#{n}' for n in tickets)} via the manager.\n\n{body}"
-    chore_pr(cfg, branch, edit, f"{branch}: update {LESSONS_NAME}", pr_body)
-    print(f"opened a {LABEL_CHORE} PR from {branch}")
-    curated = curate(cfg, diff, tickets, notes_md) if diff else None
-    if curated:
-        print(f"CURATE {curated}" if curated.startswith("rejected") else f"opened a {LABEL_CHORE} PR from {curated}")
-    dispatch.record("learn", tickets=tickets, lessons=len(lessons), branch=branch, curate=curated)
+    try:
+        run(cfg, args.last, args.dry_run)
+    except ValueError as exc:
+        raise SystemExit(f"factory learn: {exc}")
     return 0

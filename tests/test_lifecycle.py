@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import fcntl
-import json
 import os
 import subprocess
 import sys
@@ -189,24 +188,26 @@ with lifecycle.scope(Path(sys.argv[1]), 'worker') as execution:
         self.assertEqual([row["event"] for row in lifecycle.read_events(self.path)], ["attempt", "approved", "merged"])
 
     def test_nested_and_subprocess_scopes_preserve_causal_association(self) -> None:
-        with lifecycle.scope(self.path, "dispatcher", dispatcher=True) as dispatcher:
-            with lifecycle.scope(self.path, "ticket", ticket=17) as ticket:
-                ticket.attempt = 2
-                ticket.review_round = 1
-                with lifecycle.scope(self.path, "worker") as worker:
-                    env = worker.env()
-                    proc = self.spawn("""
+        with (
+            lifecycle.scope(self.path, "dispatcher", dispatcher=True) as dispatcher,
+            lifecycle.scope(self.path, "ticket", ticket=17) as ticket,
+        ):
+            ticket.attempt = 2
+            ticket.review_round = 1
+            with lifecycle.scope(self.path, "worker") as worker:
+                env = worker.env()
+                proc = self.spawn("""
 from pathlib import Path
 from factory import lifecycle
 with lifecycle.scope(Path('/unused/events.jsonl'), 'gate'):
     pass
 """, env=env)
-                    worker.child(proc.pid)
-                    self.assertEqual(proc.wait(timeout=10), 0)
-                    worker.child_done(proc.pid)
-                    states = lifecycle.observe(self.path)
-                    active = {state["stage"] for state in states if state["state"] == "active"}
-                    self.assertEqual(active, {"dispatcher", "ticket", "worker"})
+                worker.child(proc.pid)
+                self.assertEqual(proc.wait(timeout=10), 0)
+                worker.child_done(proc.pid)
+                states = lifecycle.observe(self.path)
+                active = {state["stage"] for state in states if state["state"] == "active"}
+                self.assertEqual(active, {"dispatcher", "ticket", "worker"})
         states = {state["stage"]: state for state in lifecycle.observe(self.path)}
         gate = states["gate"]
         self.assertEqual(gate["parent_execution_id"], worker.execution_id)
@@ -217,14 +218,12 @@ with lifecycle.scope(Path('/unused/events.jsonl'), 'gate'):
             self.assertEqual(triage.root_execution_id, triage.execution_id)
 
     def test_mechanism_failure_and_product_feedback_remain_distinct(self) -> None:
-        with self.assertRaises(FileNotFoundError):
-            with lifecycle.scope(self.path, "gate"):
-                raise FileNotFoundError("configured executable missing")
+        with self.assertRaises(FileNotFoundError), lifecycle.scope(self.path, "gate"):
+            raise FileNotFoundError("configured executable missing")
         with lifecycle.scope(self.path, "gate") as execution:
             execution.outcome = "check_failed"
-        with self.assertRaises(ValueError):
-            with lifecycle.scope(self.path, "review"):
-                raise ValueError("unclassified")
+        with self.assertRaises(ValueError), lifecycle.scope(self.path, "review"):
+            raise ValueError("unclassified")
         states = lifecycle.observe(self.path)
         self.assertEqual([state["state"] for state in states], ["failed", "completed", "unknown"])
         self.assertEqual([state["outcome"] for state in states], ["mechanism_failure", "check_failed", "unknown"])
@@ -256,11 +255,10 @@ with lifecycle.scope(Path(sys.argv[1]), 'dispatcher', dispatcher=True):
                          {"dispatcher": "active", "worker": "active"})
 
     def test_exception_does_not_hide_unreaped_child(self) -> None:
-        with self.assertRaises(KeyboardInterrupt):
-            with lifecycle.scope(self.path, "worker") as execution:
-                child = self.spawn("import time; time.sleep(120)", env=execution.env())
-                execution.child(child.pid)
-                raise KeyboardInterrupt()
+        with self.assertRaises(KeyboardInterrupt), lifecycle.scope(self.path, "worker") as execution:
+            child = self.spawn("import time; time.sleep(120)", env=execution.env())
+            execution.child(child.pid)
+            raise KeyboardInterrupt()
         state = lifecycle.observe(self.path)[0]
         self.assertEqual(state["state"], "unknown")
         self.assertEqual(state["evidence"]["children"][0]["state"], "alive")

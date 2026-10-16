@@ -1,7 +1,6 @@
 import importlib.util
 import json
 import shutil
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -205,7 +204,7 @@ class StartFailureTest(unittest.TestCase):
 @unittest.skipIf(SANDBOX_UNAVAILABLE, f"bubblewrap/systemd user scope unavailable: {SANDBOX_UNAVAILABLE}")
 class SandboxTest(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(dir="/run/user/%d" % __import__("os").getuid()))
+        self.tmp = Path(tempfile.mkdtemp(dir=f"/run/user/{__import__('os').getuid():d}"))
         self.addCleanup(shutil.rmtree, self.tmp)
         for name in ("in", "out", "ev"):
             (self.tmp / name).mkdir()

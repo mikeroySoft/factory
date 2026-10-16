@@ -1,6 +1,6 @@
 """C0 compatibility entry point for Factory's shared read-only evidence CLI."""
-from pathlib import Path
 import sys
+from pathlib import Path
 
 # Resolve this source checkout, never the selected evidence root or installed package.
 sys.dont_write_bytecode = True

@@ -48,7 +48,7 @@ class O1ObservationTest(unittest.TestCase):
         return Path(json.loads(text)["run"])
 
     def fresh(self, cmd, run):
-        proc = subprocess.run([sys.executable, str(SCRIPT), cmd, str(run)], capture_output=True, text=True)
+        proc = subprocess.run([sys.executable, str(SCRIPT), cmd, str(run)], capture_output=True, text=True, check=False)
         return proc.returncode, json.loads(proc.stdout)
 
     def twelve_plus(self):
