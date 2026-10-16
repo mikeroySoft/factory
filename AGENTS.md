@@ -31,12 +31,12 @@ map or a path in it does not exist; update the map in the same change.
 | Initiatives, bindings, roadmap and outcomes | `factory/plan.py`, `factory/binding.py`, `factory/roadmap.py`, `factory/outcomes.py`, `factory/templates/initiative.md` | `tests/test_plan.py`, `tests/test_binding.py`, `tests/test_binding_cli.py`, `tests/test_roadmap.py`, `tests/test_outcomes.py` | `test` |
 | Project evidence and PR feedback | `factory/evidence.py`, `factory/feedback.py` | `tests/test_evidence.py`, `tests/test_evidence_budget.py`, `tests/test_evidence_transport.py`, `tests/test_feedback.py`, `tests/test_viability_evidence.py` | `test` |
 | Operator workspace | `factory/dashboard.py`, `factory/dashboard.html`, `factory/workspace.py`, `factory/workspace.js`, `factory/workspace-api.js`, `factory/workspace.css`, `factory/themes.css`, `factory/motion.js` | `tests/test_workspace.py`, `tests/test_dashboard_passive.py`, `tests/test_dashboard_bind.py`, `tests/test_dashboard_port.py`, `tests/test_factory.py` | `test` |
-| Guarded human decisions | `factory/decisions.py`, `factory/workspace-decisions.js` | `tests/test_decisions.py` | `test` |
+| Guarded human decisions and named actions | `factory/decisions.py`, `factory/actions.py`, `factory/workspace-decisions.js` | `tests/test_decisions.py`, `tests/test_actions.py` | `test` |
 | Runtime and flow projections | `factory/runtime_events.py`, `factory/runtime_local.py`, `factory/flow.py` | `tests/test_runtime.py`, `tests/test_flow.py`, `tests/test_factory.py` | `test` |
 | Inbox briefing | `factory/briefing.py` | `tests/test_briefing.py`, `tests/test_viability_evidence.py` | `test` |
 | Settings | `factory/settings.py`, `factory/workspace-settings.js` | `tests/test_settings.py` | `test` |
 | Manager console (`chat`) | `factory/chat.py`, `console/app` | `tests/test_chat.py` | `test` |
-| Stdio MCP server (`mcp`) | `factory/mcp.py` | `tests/test_mcp.py` | `test` |
+| Stdio MCP server (`mcp`) | `factory/mcp.py` | `tests/test_mcp.py`, `tests/test_actions.py` | `test` |
 | Codebase history and Atlas | `factory/codebase.py`, `factory/workspace-codebase.js`, `factory/workspace-codebase.css`, `factory/workspace-tools.js` | `tests/test_codebase.py` | `test` |
 | Accepted handoff retention | `factory/results.py` | `tests/test_results.py` | `test` |
 | Metrics (`stats`) | `factory/stats.py` | `tests/test_factory.py`, `tests/test_human_corrections.py`, `tests/test_escapes.py` | `test` |

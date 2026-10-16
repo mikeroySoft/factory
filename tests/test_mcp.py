@@ -175,12 +175,13 @@ class McpServerTest(unittest.TestCase):
         self.assertEqual(other["result"]["protocolVersion"], "2025-06-18")
         self.assertEqual(self.request("ping", {}, id=0)["result"], {})
 
-    def test_tools_list_is_exactly_five_object_rooted_tools(self):
+    def test_tools_list_is_exactly_seven_object_rooted_tools(self):
         self.start()
         result = self.request("tools/list", {})["result"]
         self.assertEqual(set(result), {"tools"})
         self.assertEqual([tool["name"] for tool in result["tools"]],
-                         ["factory_repositories", "factory_observe", "factory_inspect", "factory_investigate", "factory_capabilities"])
+                         ["factory_repositories", "factory_observe", "factory_inspect", "factory_investigate", "factory_capabilities",
+                          "factory_prepare_action", "factory_apply_action"])
         for tool in result["tools"]:
             self.assertEqual(set(tool), {"name", "description", "inputSchema"})
             self.assertEqual(tool["inputSchema"]["type"], "object")

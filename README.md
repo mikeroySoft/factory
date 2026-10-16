@@ -1945,7 +1945,7 @@ Point a stdio-capable client at the installed command:
 
 `initialize` returns `protocolVersion: "2025-06-18"` (also when the client asked
 for another version), `capabilities: {tools: {}}` and `serverInfo.name: "factory"`.
-`tools/list` advertises exactly five tools, each with an object-root `inputSchema`:
+`tools/list` advertises exactly seven tools, each with an object-root `inputSchema`:
 
 | Tool | Arguments | Runs |
 |---|---|---|
@@ -1954,6 +1954,8 @@ for another version), `capabilities: {tools: {}}` and `serverInfo.name: "factory
 | `factory_inspect` | `repository`, `number` | `evidence` op `inspect` |
 | `factory_investigate` | `repository`, `kind`, plus exactly that kind's fields | `evidence` op `investigate` |
 | `factory_capabilities` | `repository` | `evidence` op `capabilities` |
+| `factory_prepare_action` | `repository`, `action`, `args` | `factory.actions.prepare` in-process; stores a confirmable proposal, mutates nothing |
+| `factory_apply_action` | `repository`, `proposal_id`, `confirmation` | `factory.decisions.apply` in-process; applies one stored proposal exactly once |
 
 Each evidence tool resolves `repository` to its registered path, launches
 `python -P -m factory evidence --root <path>` with no shell, writes one request
@@ -1974,6 +1976,27 @@ short `isError: true` message — never raw stderr or a traceback — and the se
 keeps serving. JSON-RPC errors: `-32700` malformed JSON, `-32600` invalid envelope
 (both with `id: null`), `-32601` unknown method, `-32602` bad params or unknown
 tool. Valid notifications, including `notifications/initialized`, get no response.
+
+### Named actions
+
+`factory/actions.py` defines each human decision once — input schema, preconditions,
+and the `decisions` request it compiles to — and the dashboard's Ops Attention
+buttons (`POST /api/decisions/prepare` with `{repository, action, args}`) and the
+two MCP tools call that same function. Nothing else composes these label edits.
+
+| Action | `args` | Preconditions | Effect |
+|---|---|---|---|
+| `requeue_agent` | `number`, `comment?` | issue open and `ready-for-human`; not an `upstream sync:` issue (`routing_refused`) | add `ready-for-agent`, remove `ready-for-human`, unassign the actor |
+| `resolve_and_close` | `number`, `reason` (`completed` or `not planned`), `comment?` | issue open | close with that reason |
+| `add_needs_triage` | `number`, `comment?` | issue open, no pipeline label (`needs-triage`, `ready-for-agent`, `ready-for-human`, `needs-info`), not an `upstream sync:` issue | add `needs-triage` |
+
+Preconditions run against the exact target the proposal binds to, so `apply`'s
+stale-target check guarantees they still held when the effect ran. Refusals are
+structured `{ok: false, error: {code, message}}` with the same `code` on both paths:
+`unknown_action`, `invalid_args`, `precondition_failed`, `routing_refused`, or any
+`decisions` code. Every proposal records `caller` (`dashboard` or `mcp`) and
+`action` (`{name, args}`); the `human-decision` journal rows for `prepared`,
+`started` and the final status, and the receipt, carry both.
 
 ## Read-only Factory Manager console (`factory chat`)
 

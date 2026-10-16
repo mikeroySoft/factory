@@ -16,7 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from factory import briefing, config, decisions
+from factory import actions, briefing, config, decisions
 from factory.workspace import ACCESS_FILE, MAX_CHAT_BODY, Handler, Server, Workspace
 
 REPOSITORY = "acme/widgets"
@@ -309,6 +309,18 @@ class WorkspaceHTTPTest(unittest.TestCase):
             called_cfg, called_requests = prepare.call_args.args
             self.assertEqual(called_cfg.root, self.root.resolve())
             self.assertEqual(called_requests, preview["requests"])
+            self.assertEqual(prepare.call_args.kwargs, {"caller": "dashboard"})
+        with mock.patch.object(actions, "prepare", return_value=preview) as prepare:
+            action_body = {"repository": REPOSITORY, "action": "requeue_agent", "args": {"number": 7}}
+            status, _, result = self.request("POST", "/api/decisions/prepare", action_body, auth=True, intent=True)
+            self.assertEqual((status, result["proposal_id"]), (200, "a" * 32))
+            self.assertEqual(prepare.call_args.args[1:], ("requeue_agent", {"number": 7}))
+            self.assertEqual(prepare.call_args.kwargs, {"caller": "dashboard"})
+            prepare.side_effect = decisions.DecisionError("issue is not open", "precondition_failed")
+            status, _, result = self.request("POST", "/api/decisions/prepare", action_body, auth=True, intent=True)
+            self.assertEqual((status, result["error"]["code"]), (409, "precondition_failed"))
+            status, _, result = self.request("POST", "/api/decisions/prepare", {**action_body, "requests": []}, auth=True, intent=True)
+            self.assertEqual((status, result["error"]["code"]), (400, "invalid_request"))
 
         receipt = {"proposal_id": "a" * 32, "status": "success", "ok": True}
         with mock.patch.object(decisions, "apply", return_value=receipt) as apply:

@@ -187,6 +187,7 @@
     if (stage === 'triage') return array(ticket.events).some(event => /^Triage proposal: wontfix/.test(event.body || '')) ? 'wontfix' : 'triage';
     if (stage === 'queued' && array(ticket.assignees).length && !ticket.lock_held) return 'stuck';
     if (stage === 'pr-open' && ticket.pr) return 'pr';
+    if (stage === 'other' && normalize(ticket.state) === 'open') return 'untriaged';
     return '';
   }
   function actionOptions(ticket,kind,snapshot) {
@@ -196,16 +197,17 @@
     const approved = snapshot?.config?.approved_label || 'factory-approved';
     const result=[];
     const add=(title,effect,next,requests,danger=false)=>result.push({title,effect,next,requests,danger});
+    const named=(title,effect,next,action,args={},danger=false)=>result.push({title,effect,next,action,args:{number:ticket.number,...args},danger});
     if (['escalated'].includes(kind)) {
-      add('Re-queue agent','Add ready-for-agent, remove ready-for-human, and remove only the authenticated actor assignment. Other assignees remain.','Dispatcher may claim once no assignees remain.',[issue({add:['ready-for-agent'],remove:['ready-for-human'],unassign:true})]);
+      named('Re-queue agent','Add ready-for-agent, remove ready-for-human, and remove only the authenticated actor assignment. Other assignees remain. Upstream-sync issues are refused.','Dispatcher may claim once no assignees remain.','requeue_agent');
       add('I will take it','Assign the authenticated actor; keep labels and other assignees.','Authenticated maintainer.',[issue({assign:true})]);
       if (ticket.pr && !ticket.pr.approved) add('Re-approve PR for merge',`Add ${approved} to PR #${ticket.pr.number}; remove ready-for-human from issue. This does not rerun gate or review.`,'Merge stage only after CI and current-main checks.',[pr({add:[approved]}),issue({remove:['ready-for-human']})]);
-      add('Close · not planned','Close the issue as not planned. Associated PR and local work remain.','Maintainer owns remaining PR/worktree.',[issue({close:'not planned'})],true);
+      named('Close · not planned','Close the issue as not planned. Associated PR and local work remain.','Maintainer owns remaining PR/worktree.','resolve_and_close',{reason:'not planned'},true);
     } else if (kind === 'needs-info') {
       add('Answer → re-triage','Replace needs-info with needs-triage after recording guidance.','Configured triage service on a later pass.',[issue({add:['needs-triage'],remove:['needs-info']})]);
       add('Answer → queue agent','Replace needs-info with ready-for-agent.','Dispatcher when claimable.',[issue({add:['ready-for-agent'],remove:['needs-info']})]);
       add('Answer → human','Replace needs-info with ready-for-human; assign nobody.','Human maintainer.',[issue({add:['ready-for-human'],remove:['needs-info']})]);
-      add('Close · not planned','Close the issue as not planned. An associated PR, approval, and local work remain unchanged.','No issue worker; a maintainer owns any remaining PR or worktree.',[issue({close:'not planned'})],true);
+      named('Close · not planned','Close the issue as not planned. An associated PR, approval, and local work remain unchanged.','No issue worker; a maintainer owns any remaining PR or worktree.','resolve_and_close',{reason:'not planned'},true);
     } else if (kind === 'wontfix') {
       add('Accept · close wontfix','Add wontfix, remove needs-triage, close not planned.','No issue worker.',[issue({add:['wontfix'],remove:['needs-triage'],close:'not planned'})],true);
       add('Reject → queue agent','Replace needs-triage with ready-for-agent.','Dispatcher when claimable.',[issue({add:['ready-for-agent'],remove:['needs-triage']})]);
@@ -215,7 +217,7 @@
       add('Queue agent','Replace needs-triage with ready-for-agent.','Dispatcher when claimable.',[issue({add:['ready-for-agent'],remove:['needs-triage']})]);
       add('Needs human','Replace needs-triage with ready-for-human.','Human maintainer.',[issue({add:['ready-for-human'],remove:['needs-triage']})]);
       add('Needs info','Replace needs-triage with needs-info.','Issue reporter.',[issue({add:['needs-info'],remove:['needs-triage']})]);
-      add('Close · not planned','Close the issue as not planned. An associated PR, approval, and local work remain unchanged.','No issue worker; a maintainer owns any remaining PR or worktree.',[issue({close:'not planned'})],true);
+      named('Close · not planned','Close the issue as not planned. An associated PR, approval, and local work remain unchanged.','No issue worker; a maintainer owns any remaining PR or worktree.','resolve_and_close',{reason:'not planned'},true);
     } else if (kind === 'stuck') {
       add('Release my claim','Remove only the authenticated actor assignment.','Dispatcher after no assignees remain.',[issue({unassign:true})]);
       add('Send to human','Replace ready-for-agent with ready-for-human; preserve assignees.','Current assignee.',[issue({add:['ready-for-human'],remove:['ready-for-agent']})]);
@@ -223,6 +225,7 @@
       ticket.pr.approved ? add('Hold merge',`Remove ${approved} from PR #${ticket.pr.number}.`,'Maintainer must re-approve before merge.',[pr({remove:[approved]})]) : add('Approve for merge',`Add ${approved}. This does not run gate/review or bypass CI.`,'Merge stage after all existing gates.',[pr({add:[approved]})]);
       add('Send back to agent','Add ready-for-agent and remove only the authenticated actor issue assignment; existing PR approval remains.','Dispatcher when claimable.',[issue({add:['ready-for-agent'],unassign:true})]);
     } else if (kind === 'stale') add('Remove worktree + branch',`Delete ${ticket.worktree.path} and the issue branch. GitHub remains unchanged.`,'No worker. Remote history and retained artifacts remain.',[{op:'cleanup',number:ticket.number}],true);
+    else if (kind === 'untriaged') named('Send to triage','Add needs-triage. Refused when any pipeline label is present or the issue is an upstream-sync blocker.','Configured triage service on a later pass.','add_needs_triage');
     return result;
   }
   function attention(repo) {
@@ -496,7 +499,7 @@
   function closeChat(){state.chatOpen=false;render();(app.querySelector(`[data-chat-case="${state.chatCase}"]`)||app.querySelector('[data-chat]'))?.focus({preventScroll:true});}
   function closeDrawer(){const number=route().caseNumber;setRoute({case:null});const target=narrow.matches&&state.chatOpen?document.querySelector('#fm-question'):app.querySelector(`[data-case="${number}"]`)||app.querySelector('#main');target?.focus({preventScroll:true});}
   function closePalette(){state.palette=false;renderPalette();app.querySelector('[data-palette]')?.focus({preventScroll:true});}
-  function openAction(button){const repo=currentRepo(),number=positive(button.dataset.prepareAction),card=button.closest('.attention-card'),select=card?.querySelector('[data-action-choice]');if(!repo||!number||select?.value==='')return;let options=[];try{options=JSON.parse(select.dataset.actionOptions);}catch{return;}const option=options[Number(select.value)];if(!option)return;WorkspaceDecisions.open({repository:repo.slug,number,title:option.title,effect:option.effect,next:option.next,requests:option.requests,mode:'action'});}
+  function openAction(button){const repo=currentRepo(),number=positive(button.dataset.prepareAction),card=button.closest('.attention-card'),select=card?.querySelector('[data-action-choice]');if(!repo||!number||select?.value==='')return;let options=[];try{options=JSON.parse(select.dataset.actionOptions);}catch{return;}const option=options[Number(select.value)];if(!option)return;WorkspaceDecisions.open({repository:repo.slug,number,title:option.title,effect:option.effect,next:option.next,requests:option.requests,action:option.action,args:option.args,mode:'action'});}
   function openPalette(){state.palette=true;state.paletteQuery='';renderPalette();}
   function renderPalette(){
     let root=document.querySelector('#palette');syncModalState();
