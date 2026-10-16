@@ -143,6 +143,8 @@ class ActionPathsTest(unittest.TestCase):
         for label in (config.LABEL_TRIAGE, config.LABEL_INFO, config.LABEL_AGENT, config.LABEL_HUMAN):
             self.issue["labels"] = [{"name": label}]
             self.assertEqual(self.refusals("add_needs_triage", {"number": 7})[0], "precondition_failed")
+        self.issue["labels"] = [{"name": config.LABEL_INITIATIVE}]
+        self.assertEqual(self.refusals("add_needs_triage", {"number": 7})[0], "routing_refused")
         self.issue["labels"] = []
         self.issue["title"] = dispatch.SYNC_TITLE + "main drifted"
         self.assertEqual(self.refusals("add_needs_triage", {"number": 7})[0], "routing_refused")

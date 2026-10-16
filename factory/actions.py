@@ -7,7 +7,7 @@ journaling and receipts come from one path.
 from __future__ import annotations
 
 from factory import decisions, dispatch
-from factory.config import LABEL_AGENT, LABEL_HUMAN, LABEL_INFO, LABEL_TRIAGE, Config
+from factory.config import LABEL_AGENT, LABEL_HUMAN, LABEL_INFO, LABEL_INITIATIVE, LABEL_TRIAGE, Config
 from factory.decisions import DecisionError
 
 PIPELINE_LABELS = frozenset({LABEL_TRIAGE, LABEL_AGENT, LABEL_HUMAN, LABEL_INFO})
@@ -61,6 +61,8 @@ def _triage_check(target: dict) -> None:
     held = sorted(PIPELINE_LABELS & set(target["labels"]))
     if held:
         raise DecisionError(f"issue is already in the pipeline: {held}", "precondition_failed")
+    if LABEL_INITIATIVE in target["labels"]:
+        raise DecisionError("initiative issues are plans read by `factory plan`, never triaged", "routing_refused")
     if target["title"].startswith(dispatch.SYNC_TITLE):
         raise DecisionError("upstream-sync issues are maintainer operations, not triage", "routing_refused")
 
