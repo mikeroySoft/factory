@@ -2180,7 +2180,8 @@ def process_ticket(
                 if ok:
                     break
                 if "- protected-paths: FAIL" in report:
-                    escalate(n, "worker edited protected paths", logfile,
+                    escalate(n, "worker removed or changed existing tests" if "- protected-paths: FAIL (add-only" in report
+                             else "worker edited protected paths", logfile,
                              extra="## Offending diff\n\n" + report)
                     return
                 if time.monotonic() > deadline:
@@ -2229,7 +2230,8 @@ def process_ticket(
                     n, wt, labels, title, extra, MAX_ATTEMPTS + bounce, deadline
                 )
                 if "- protected-paths: FAIL" in report:
-                    escalate(n, "worker edited protected paths", logfile,
+                    escalate(n, "worker removed or changed existing tests" if "- protected-paths: FAIL (add-only" in report
+                             else "worker edited protected paths", logfile,
                              extra="## Offending diff\n\n" + report)
                     return
                 if not ok:
