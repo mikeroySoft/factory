@@ -301,7 +301,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
             time.monotonic() + cfg.budget_min * 60, selected_worker=data["worker"],
         )
         if not ok:
-            dispatch.escalate(n, "gate failed after manager FIX", logfile)
+            dispatch.escalate(n, "gate failed after manager FIX", logfile, code="gate_failed")
             return
         fresh = dispatch.gh_json(
             ["pr", "view", f"agent/{n}", "--repo", dispatch.REPO, "--json", "baseRefName"]
@@ -312,11 +312,13 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         verdict, findings, pr_failed = dispatch.pr_gate_and_review(wt, n, report, gate_head, {})
         dispatch.pr_comment(n, findings)
         if pr_failed:
-            dispatch.escalate(n, "pr checks failed", logfile, extra="## PR-tier gate report\n\n" + findings)
+            dispatch.escalate(n, "pr checks failed", logfile, extra="## PR-tier gate report\n\n" + findings,
+                              code="pr_checks_failed")
         elif verdict != "APPROVE":
-            dispatch.escalate(n, "review requested changes after manager FIX", logfile)
+            dispatch.escalate(n, "review requested changes after manager FIX", logfile, code="review_revise")
         elif not dispatch.approve_pr(n, gate_head):
-            dispatch.escalate(n, "approval evidence, head, or human review state changed before manager FIX approval", logfile)
+            dispatch.escalate(n, "approval evidence, head, or human review state changed before manager FIX approval",
+                              logfile, code="approval_drift")
         return
 
     if decision == "REWRITE":
@@ -666,6 +668,7 @@ def frontier_pass(dry_run: bool = False) -> None:
                 reason = (f"CI failed ({', '.join(failed)})" if failed else
                           f"{len(late)} unresolved feedback item(s) on head {head[:12]}" if late else
                           f"no activity for {age.days} days (stale_days = {cfg.manager_stale_days})" if stale else "")
+                code = "ci_failed" if failed else "pr_feedback" if late else "pr_stale"
                 if reason:
                     if dry_run:
                         dispatch.log(f"PR #{number}: would escalate ({reason})")
@@ -674,7 +677,8 @@ def frontier_pass(dry_run: bool = False) -> None:
                         dispatch.record("feedback-delivered", ticket=n, pr=number, head=head,
                                         observation_id=observation["observation_id"],
                                         pairs=[[i["evidence_id"], i["source_revision"]] for i in late])
-                    dispatch.escalate(n, f"PR #{number}: {reason}", None, extra=feedback_packet(late) if late else "")
+                    dispatch.escalate(n, f"PR #{number}: {reason}", None, extra=feedback_packet(late) if late else "",
+                                      code=code)
                     execution.outcome, execution.reason = "project_escalation", "pr_frontier"
                     continue
                 if red and not failed:
@@ -695,7 +699,8 @@ def frontier_pass(dry_run: bool = False) -> None:
                     if dry_run:
                         dispatch.log(f"PR #{number}: would escalate (manager rounds exhausted)")
                     else:
-                        dispatch.escalate(n, f"PR #{number}: manager rounds exhausted before approval", None)
+                        dispatch.escalate(n, f"PR #{number}: manager rounds exhausted before approval", None,
+                                          code="manager_exhausted")
                     continue
                 if dry_run:
                     dispatch.log(f"PR #{number}: would request manager approval for {head[:12]}")
@@ -732,11 +737,12 @@ def frontier_pass(dry_run: bool = False) -> None:
                     dispatch.run(["gh", "pr", "comment", str(number), "--repo", cfg.repo, "--body", "Factory manager: " + body])
                 if decision == "APPROVE":
                     if not dispatch.approve_pr(n, head):
-                        dispatch.escalate(n, f"PR #{number}: approval evidence, head, or human review state changed before manager approval", None)
+                        dispatch.escalate(n, f"PR #{number}: approval evidence, head, or human review state changed before manager approval", None,
+                                          code="approval_drift")
                 elif decision in {"FIX", "CLOSE"}:
                     apply(n, issue, decision, body, data, packet)
                 else:
-                    dispatch.escalate(n, f"PR #{number}: manager requires a human: {body}", None)
+                    dispatch.escalate(n, f"PR #{number}: manager requires a human: {body}", None, code="manager_human")
             except (CalledProcessError, OSError, ValueError) as exc:
                 if not dry_run:
                     execution.outcome, execution.reason = "mechanism_failure", "pr_frontier_failed"
@@ -825,7 +831,7 @@ def escalation_pass(dry_run: bool = False) -> None:
                             body += "\n" + tail
                         decision, data = "HUMAN", None
                         dispatch.record("escalate", ticket=n, round=round_number,
-                                        packet=str(packet), reason="manager_failed")
+                                        packet=str(packet), code="manager_failed", reason="manager_failed")
                     else:
                         output, notes = split_notes(proc.stdout)
                         rejected = "CURATE" if split_curate(output)[1] is not None else None
@@ -833,7 +839,7 @@ def escalation_pass(dry_run: bool = False) -> None:
                 except (OSError, config.ConfigError) as exc:
                     decision, body, data = "HUMAN", f"Manager command failed: {exc}", None
                     dispatch.record("escalate", ticket=n, round=round_number,
-                                    packet=str(packet), reason="manager_failed")
+                                    packet=str(packet), code="manager_failed", reason="manager_failed")
                 # A human may have taken over while the model was thinking.
                 if human_activity(n, escalation, events):
                     continue

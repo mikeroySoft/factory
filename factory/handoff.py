@@ -74,7 +74,8 @@ def observe(cfg, n: int, escalation: dict) -> dict | None:
     from factory import plan
     from factory.evidence import EvidenceError
 
-    reason = "ci" if "CI failed" in (escalation.get("reason") or "") else "implementation"
+    code = escalation.get("code") or ("ci_failed" if "CI failed" in (escalation.get("reason") or "") else "")
+    reason = "ci" if code == "ci_failed" else "implementation"
     pr, paths = None, []
     try:
         pr = dispatch.gh_json(["pr", "view", f"agent/{n}", "--repo", cfg.repo, "--json", "url,files"])
