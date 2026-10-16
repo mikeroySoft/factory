@@ -4,23 +4,44 @@ Run: python -m unittest discover -s tests
 """
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from tests.test_factory import gate, git, make_repo
+ROOT = Path(__file__).resolve().parents[1]
 
 TOML = '[gate]\nprotected_paths = [".factory.toml", "checks/**"]\nadd_only_paths = ["tests/**"]\n'
 ADD_ONLY = "- protected-paths: FAIL (add-only path removed or changed existing lines)"
 
 
+def git(cwd: Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def gate(cwd: Path, *args: str) -> tuple[int, str, str]:
+    env = {**os.environ, "PYTHONPATH": str(ROOT)}
+    proc = subprocess.run([sys.executable, "-m", "factory", "gate", *args],
+                          cwd=cwd, capture_output=True, text=True, env=env, check=False)
+    report = cwd / ".factory" / "gate-report.md"
+    return proc.returncode, proc.stdout + proc.stderr, report.read_text() if report.exists() else ""
+
+
 def repo_with_test(tmp: Path, toml: str = TOML) -> Path:
-    """A base ref with one committed test file of two lines."""
-    repo = make_repo(tmp, toml)
+    """A base ref (`origin/main`) with `toml` and one committed test file of two lines."""
+    repo = tmp / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "config", "user.email", "t@example.com")
+    git(repo, "config", "user.name", "T")
+    git(repo, "remote", "add", "origin", "git@github.com:acme/widgets.git")
+    (repo / ".factory.toml").write_text(toml)
     (repo / "tests").mkdir()
     (repo / "tests" / "test_old.py").write_text("def test_a():\n    assert True\n")
-    git(repo, "add", "tests/test_old.py")
-    git(repo, "commit", "-q", "-m", "existing test")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "init")
     git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
     return repo
 
