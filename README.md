@@ -499,7 +499,12 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `.factory.toml` are checked against the committed worker diff first, before
    any checks; a hit stops the run and immediately escalates the ticket to
    `ready-for-human` with the offending diff in the escalation packet. Include
-   `.factory.toml` in the list to protect the list itself. A human can apply
+   `.factory.toml` in the list to protect the list itself. Globs in
+   `[gate].add_only_paths` (also read from the base ref) are protected add-only:
+   a new file passes, a modified file passes only when `git diff --numstat`
+   shows no deleted lines, and a deletion, rename, mode change, binary change
+   or any removed or changed line fails and escalates as "worker removed or
+   changed existing tests". A human can apply
    `factory-protected-override` to authorize worker edits, including a refresh
    onto moved main; upstream sync bypasses this worker-only guard. Otherwise
    make protected changes outside the worker flow. Then `conflict-markers`,
@@ -639,7 +644,8 @@ command = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]   # {prompt} = manager pr
 [gate]
 timeout = 1200
 lock = "/tmp/factory.lock"
-protected_paths = [".factory.toml", "tests/**", "TRACKING*"]
+protected_paths = [".factory.toml", "TRACKING*"]
+add_only_paths = ["tests/**"]     # new files and appended lines pass; edits escalate
 
 [[gate.check]]
 name = "lint"
