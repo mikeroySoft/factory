@@ -140,17 +140,20 @@
     const form = node('form', {class: 'decision-form'},
       node('p', {class: 'decision-boundary', text: current.effect}),
       node('label', {for: 'decision-rationale', text: 'Decision rationale / guidance'}), rationale,
-      node('h3', {text: 'Requested operations'}), node('pre', {class: 'exact-preview', text: JSON.stringify(current.baseRequests, null, 2)}),
+      node('h3', {text: current.action ? 'Named action' : 'Requested operations'}), node('pre', {class: 'exact-preview', text: JSON.stringify(current.action ? {action: current.action, args: current.args} : current.baseRequests, null, 2)}),
       current.error ? notice(current.error, 'error') : null,
       node('footer', {class: 'decision-actions'}, node('button', {class: 'btn', type: 'button', disabled: current.busy, onclick: close}, 'Cancel'), node('button', {class: 'btn btn-accent', type: 'submit', disabled: current.busy}, current.busy ? 'Preparing…' : 'Prepare exact preview')));
     form.addEventListener('submit', event => {
       event.preventDefault();
       if (!form.reportValidity()) return;
       const comment = `Factory human decision: ${current.title}\n\nRationale: ${rationale.value.trim()}\n\nNext: ${current.next || 'Inspect the resulting target state.'}`;
-      current.requests = current.baseRequests.map(request => ({...request}));
-      if (current.requests[0]?.op === 'issue') current.requests[0].comment = comment;
-      else current.requests.unshift({op: 'issue', number: current.number, comment});
-      for (const request of current.requests) if (request.op === 'pr') request.comment = comment;
+      if (current.action) current.args = {...current.args, comment};
+      else {
+        current.requests = current.baseRequests.map(request => ({...request}));
+        if (current.requests[0]?.op === 'issue') current.requests[0].comment = comment;
+        else current.requests.unshift({op: 'issue', number: current.number, comment});
+        for (const request of current.requests) if (request.op === 'pr') request.comment = comment;
+      }
       prepare();
     });
     return form;
@@ -163,7 +166,8 @@
     snapshot.error = '';
     render();
     try {
-      const value = await WorkspaceAPI.json('/api/decisions/prepare', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({repository: snapshot.repository, requests: snapshot.requests})});
+      const body = snapshot.action ? {repository: snapshot.repository, action: snapshot.action, args: snapshot.args} : {repository: snapshot.repository, requests: snapshot.requests};
+      const value = await WorkspaceAPI.json('/api/decisions/prepare', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
       if (!value?.proposal_id || !value?.confirmation || !Array.isArray(value.requests)) throw new Error('The server returned an incomplete bound proposal.');
       snapshot.preview = value;
     } catch (error) { snapshot.error = error.message || String(error); }
@@ -226,6 +230,7 @@
       effect: text(options.effect),
       next: text(options.next),
       baseRequests: array(options.requests).map(request => ({...request})),
+      action: text(options.action) || null, args: object(options.args),
       requests: [], values: {}, preview: null, receipt: null, observation: null, error: '', busy: false
     };
     render();

@@ -112,6 +112,7 @@ DECISION_STATUSES = {
     "scope_changed": 409,
     "conflict": 409,
     "target_busy": 409,
+    "precondition_failed": 409,
     "provider_unavailable": 503,
     "deadline_exceeded": 503,
     "command_unavailable": 503,
@@ -1386,16 +1387,22 @@ class Workspace:
         return 200, result
 
     def prepare(self, slug: str, request: object) -> dict:
-        if not isinstance(request, dict) or set(request) != {"repository", "requests"}:
+        if not isinstance(request, dict) or set(request) not in (
+            {"repository", "requests"}, {"repository", "action", "args"},
+        ):
             raise WorkspaceError(
-                "invalid_request", "decision body must contain exactly repository and requests"
+                "invalid_request",
+                "decision body must contain exactly repository and requests, or repository, action and args",
             )
-        if request["repository"] != slug or not isinstance(request["requests"], list):
+        if request["repository"] != slug or ("requests" in request and not isinstance(request["requests"], list)):
             raise WorkspaceError("scope_mismatch", "decision body does not match the selected repository")
         cfg = self.repository_config(slug, recheck=True)
-        from factory import decisions
+        from factory import actions, decisions
 
-        value = decisions.prepare(cfg, request["requests"])
+        if "action" in request:
+            value = actions.prepare(cfg, request["action"], request["args"], caller="dashboard")
+        else:
+            value = decisions.prepare(cfg, request["requests"], caller="dashboard")
         if not isinstance(value, dict):
             raise WorkspaceError("decision_failed", "Decision preparation returned no valid proposal.", 502)
         return value
