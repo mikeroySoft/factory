@@ -1250,7 +1250,8 @@ unused = ["agent"]
             from factory import dashboard
 
             totals = stats.human_touch_metrics([row], datetime(2026, 9, 8, 0, 12, tzinfo=UTC))
-            self.assertEqual(totals, {"escalations_per_week": 2, "human_resolved_pct": 50.0})
+            self.assertEqual(totals, {"escalations_per_week": 2, "escalations_by_code": {"unknown": 2},
+                                      "human_resolved_pct": 50.0})
             dashboard.configure(stats.cfg)
             ticket_issue = {
                 **details, "url": "", "updatedAt": details["closedAt"],
@@ -1286,10 +1287,12 @@ class DashboardTest(unittest.TestCase):
             ticket["human_touch"] = {"escalation_count": count}
         m = dashboard.metrics(tickets)
         self.assertEqual(m, {"first_pass": 0.5, "bounce_rate": 0.5, "escalations": 2, "med_attempts": 2,
-                             "escalations_per_week": 0, "human_resolved_pct": None, "human_touched_pct": None})
+                             "escalations_per_week": 0, "escalations_by_code": {}, "human_resolved_pct": None,
+                             "human_touched_pct": None})
         self.assertEqual(dashboard.metrics([]), {"first_pass": None, "bounce_rate": None, "escalations": 0,
                                                "med_attempts": None, "escalations_per_week": 0,
-                                               "human_resolved_pct": None, "human_touched_pct": None})
+                                               "escalations_by_code": {}, "human_resolved_pct": None,
+                                               "human_touched_pct": None})
 
     def test_consecutive_failures_from_journal(self) -> None:
         from factory import dashboard
@@ -2818,7 +2821,7 @@ class DispatchTest(unittest.TestCase):
             worker_log.parent.mkdir()
             worker_log.write_text("worker detail\n")
             with mock.patch.object(dispatch, "run"):
-                dispatch.escalate(7, "gate failed", worker_log)
+                dispatch.escalate(7, "gate failed", worker_log, code="gate_failed")
 
             packet = dispatch.FACTORY / "escalations" / "7.md"
             text = packet.read_text()
@@ -2833,7 +2836,7 @@ class DispatchTest(unittest.TestCase):
             self.assertEqual(escalation["packet"], str(packet))
             self.assertEqual(escalation["round"], 1)
             with mock.patch.object(dispatch, "run"):
-                dispatch.escalate(7, "gate failed again", worker_log)
+                dispatch.escalate(7, "gate failed again", worker_log, code="gate_failed")
             escalation = json.loads(dispatch.EVENTS.read_text().splitlines()[-1])
             self.assertEqual(escalation["round"], 2)
 
@@ -3373,6 +3376,41 @@ class DispatchTest(unittest.TestCase):
                 attempt = next(e for e in events if e.get("event") == "attempt")
                 self.assertEqual(attempt["cost"], expected[label]["cost"])
 
+    def test_worker_round_keeps_omp_transcript_per_ticket(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        cases = {  # worker argv -> session file expected under .factory/transcripts/7
+            "omp": (["nice", "omp", "-p", "@{prompt}"], True),
+            "ephemeral": (["omp", "-p", "--no-session", "@{prompt}"], False),
+            "other": (["droid", "exec", "{prompt}"], False),
+        }
+        for label, (argv, kept) in cases.items():
+            with self.subTest(worker=label), tempfile.TemporaryDirectory() as d:
+                repo = make_repo(Path(d))
+                dispatch.configure(config.Config(root=repo, repo="acme/widgets", workers={"default": argv}))
+                dispatch.LOGS.mkdir(parents=True)
+
+                def worker(cmd, _wt, logfile, *_args):
+                    logfile.write_text("Working...\n")
+                    if "--session-dir" in cmd:
+                        where = Path(cmd[cmd.index("--session-dir") + 1])
+                        self.assertEqual(cmd[cmd.index("--session-dir") - 1], "omp")
+                        (where / "2026-10-16T00-00-00-000Z_abc.jsonl").write_text('{"type": "session"}\n')
+                    return 0, None
+
+                with mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
+                        mock.patch.object(dispatch, "run_worker", side_effect=worker), \
+                        mock.patch.object(dispatch, "commit_leftovers"), \
+                        mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")):
+                    dispatch.worker_round(7, repo, set(), "ticket", "", 1, float("inf"))
+                attempt = next(e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("event") == "attempt")
+                if kept:
+                    self.assertEqual(Path(attempt["transcript"]).parent, dispatch.FACTORY / "transcripts" / "7")
+                else:
+                    self.assertIsNone(attempt["transcript"])
+
     def test_worker_round_rejects_gate_that_mutates_head(self) -> None:
         from unittest import mock
 
@@ -3757,8 +3795,8 @@ class DispatchTest(unittest.TestCase):
                 return subprocess.CompletedProcess(cmd, 0, json.dumps(list(annotations)), "")
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
-        def escalate(n, reason, log_path, extra=""):
-            dispatch.record("escalate", ticket=n, reason=reason)
+        def escalate(n, reason, log_path, extra="", *, code):
+            dispatch.record("escalate", ticket=n, code=code, reason=reason)
 
         with mock.patch.object(dispatch, "gh_json", side_effect=query), \
                 mock.patch.object(dispatch, "pr_checks", return_value=checks), \
