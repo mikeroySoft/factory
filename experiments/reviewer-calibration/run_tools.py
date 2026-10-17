@@ -18,7 +18,8 @@ Deliberate deviations from production, applied identically to every run: `--mode
 otherwise hang the run and confound the measurement). Each run reports whether the
 reviewer mutated its clone.
 
-usage: run_tools.py <out-dir> <samples> [contract ...]
+usage: run_tools.py [--all] <out-dir> <samples> [contract ...]
+  --all  score every frozen case, not just REVISE-oracle heads
 """
 import concurrent.futures as cf
 import hashlib

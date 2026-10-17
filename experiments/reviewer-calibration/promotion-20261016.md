@@ -108,7 +108,7 @@ revert: train gain -0.250 within noise 0.083
 
 Recorded (non-dry) as a `promotion` event in the configured root's `.factory/events.jsonl`,
 same line. Train mean fell 0.917 → 0.667; the contract stops there (train must beat noise
-before the lockbox is consulted). For the record the lockbox mean was flat (0.700 → 0.600,
+before the lockbox is consulted). For the record the lockbox mean was down (0.700 → 0.600,
 within its 0.2 noise), which would also have been a revert.
 
 ## Per-cell adjudication (REVISE-oracle cases and every wrong verdict)
@@ -148,11 +148,11 @@ Every `current` APPROVE-oracle cell returned APPROVE with "Required fixes: none"
    argument's interaction with a profile that rewrites history (0/2 → 0/2 by verdict; the
    one candidate run that saw it filed it as Optional), `62-before` D2 is a consumer that
    *does* appear in the trace and was judged to hold, `79-before` D1 is a REST field name
-   (0/4 blocking across both arms; the candidate found it once and approved anyway). Both
-   arms: 4 misses of 22 REVISE-oracle cells. The lever moved where the misses sit, not how
+   (0/4 blocking across both arms; the candidate found it once and approved anyway). Each
+   arm: 4 misses of its 8 REVISE-oracle cells. The lever moved where the misses sit, not how
    many there are.
-2. **It bought unnecessary REVISEs with the extra reading.** 0 → 4 across 28 APPROVE-oracle
-   cells. Each was a plausible cross-file or doc-contract finding the reviewer was now
+2. **It bought unnecessary REVISEs with the extra reading.** 0/14 → 4/14 per arm across the
+   APPROVE-oracle cells. Each was a plausible cross-file or doc-contract finding the reviewer was now
    instructed to go looking for, promoted to Required with a cited rule. Two of them
    (`20-after` s2, `62-after` s1) are the same findings the candidate raised on the matching
    `-before` heads, i.e. they are head-independent claims about `main`, outside the diff's
