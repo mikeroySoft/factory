@@ -208,6 +208,17 @@ class WatchTest(unittest.TestCase):
             errors = REAL_RUNTIME_ERRORS(self.cfg)
         self.assertEqual([e["code"] for e in errors], ["unreadable"])
 
+    def test_runtime_errors_skip_audit_rows_in_the_shared_journal(self) -> None:
+        # `dispatch.record` audit rows share events.jsonl with lifecycle rows by design, so
+        # every live journal reports `unsupported_record`; it is steady state, not a failure.
+        payload = json.dumps({"errors": [
+            {"source": "events.jsonl", "scope": "history", "code": "unsupported_record"},
+            {"source": "events.jsonl", "scope": "history", "code": "invalid_json"},
+        ]})
+        with mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, payload, "")):
+            errors = REAL_RUNTIME_ERRORS(self.cfg)
+        self.assertEqual([e["code"] for e in errors], ["invalid_json"])
+
     def test_repeated_escalation_code_files_one_bug_listing_every_ticket(self) -> None:
         self.journal(*(escalate_row(n, "gate_failed", f"gate failed on #{n}") for n in (1, 2, 3)))
         watch.run_pass(self.cfg)
