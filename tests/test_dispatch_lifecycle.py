@@ -524,9 +524,12 @@ class LocalCLI(unittest.TestCase):
         marker = self.base / "new-worker-ran"
         new_worker = self.base / "new_worker.py"
         new_worker.write_text(f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n{WORKER}")
+        good = (self.repo / ".factory.toml").read_text()
+        (self.repo / ".factory.toml").write_text(good + "[worker_wrap]\n")  # host-only table: the engine rejects it
+        self.commit_config()
         other = self.base / "other"
         subprocess.run(["git", "clone", "-q", "-b", "main", str(self.base / "origin.git"), str(other)], env=self.env, check=True)
-        toml = (self.repo / ".factory.toml").read_text().replace(
+        toml = good.replace(
             json.dumps([sys.executable, str(self.worker)]), json.dumps([sys.executable, str(new_worker)]))
         self.assertNotEqual(toml, (self.repo / ".factory.toml").read_text())
         (other / ".factory.toml").write_text(toml)
@@ -544,7 +547,7 @@ class LocalCLI(unittest.TestCase):
     def test_dirty_root_exits_nonzero_and_claims_nothing(self):
         (self.repo / "junk.txt").write_text("untracked\n")
         with (self.repo / ".factory.toml").open("a") as f:
-            f.write("# local edit\n")
+            f.write("garbage = [\n")  # local edit that does not even parse
         (self.repo / ".factory").mkdir()
         (self.repo / ".factory" / "scratch.txt").write_text("ignored state\n")
         result = self.cli("dispatch", "--ticket", "7", expected=1)

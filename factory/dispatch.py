@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 from contextlib import contextmanager, nullcontext, suppress
 from pathlib import Path
 
@@ -2322,15 +2323,20 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
         process_ticket(issue, budget_min, dry_run)
 
 
-def pin_root() -> list[str]:
+def pin_root(root: Path) -> list[str]:
     """Fetch and detach the root at origin/<main> so the pass reads committed config, not
     whatever branch or edits the checkout carries. A root with tracked or untracked changes
-    outside `.factory/` is left alone; its paths come back and the caller refuses the pass."""
-    run(["git", "fetch", "origin", cfg.main], cwd=ROOT)
-    status = run(["git", "status", "--porcelain", "--", ".", ":!.factory"], cwd=ROOT).stdout
+    outside `.factory/` is left alone; its paths come back and the caller refuses the pass.
+    Runs before `config.load`: only `[repo].main` is read, from the raw file, so a root whose
+    config the engine rejects still pins (and picks up the fix from origin/main)."""
+    main = "main"
+    with suppress(OSError, tomllib.TOMLDecodeError):
+        main = tomllib.loads((root / config.CONFIG_NAME).read_text()).get("repo", {}).get("main", main)
+    run(["git", "fetch", "origin", main], cwd=root)
+    status = run(["git", "status", "--porcelain", "--", ".", ":!.factory"], cwd=root).stdout
     paths = [line[3:] for line in status.splitlines()]
     if not paths:
-        run(["git", "checkout", "--quiet", "--detach", f"origin/{cfg.main}"], cwd=ROOT)
+        run(["git", "checkout", "--quiet", "--detach", f"origin/{main}"], cwd=root)
     return paths
 
 
@@ -2349,12 +2355,17 @@ def main(argv: list[str]) -> int:
         "--dry-run", action="store_true", help="print planned actions; no side effects"
     )
     args = parser.parse_args(argv)
-    configure(config.load())
-    dirty: list[str] = []
     if not args.dry_run:
-        dirty = pin_root()
-        if not dirty:
-            configure(config.load())  # re-read from the tree now pinned at origin/<main>
+        root = config.repo_root()
+        dirty = pin_root(root)
+        if dirty:
+            log(f"root {root} has changes outside .factory/ ({', '.join(dirty)}); root_dirty, nothing dispatched")
+            with lifecycle.scope(root / ".factory" / "events.jsonl", "dispatcher", dispatcher=True,
+                                 engine_version=__version__, engine_commit=config.engine_commit()) as execution:
+                execution.outcome, execution.reason = "project_escalation", "root_dirty"
+                execution.emit("result", paths=dirty)
+            return 1
+    configure(config.load())  # from the tree now pinned at origin/<main>
     if args.budget_min is None:
         args.budget_min = cfg.budget_min
 
@@ -2363,11 +2374,6 @@ def main(argv: list[str]) -> int:
         EVENTS, "dispatcher", dispatcher=True, lazy=True,
         engine_version=__version__, engine_commit=config.engine_commit(),
     ) as execution:
-        if dirty:
-            log(f"root {ROOT} has changes outside .factory/ ({', '.join(dirty)}); root_dirty, nothing dispatched")
-            execution.outcome, execution.reason = "project_escalation", "root_dirty"
-            execution.emit("result", paths=dirty)
-            return 1
         if not args.dry_run:
             from factory import results
 
