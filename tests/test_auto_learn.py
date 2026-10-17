@@ -135,6 +135,16 @@ class AutoLearnTest(unittest.TestCase):
         self.assertEqual(len(learn.score.excerpt(transcript)), learn.score.EXCERPT_CHARS)
         self.assertLessEqual(len(learn.evidence(10)[1]), learn.MAX_EVIDENCE)
 
+    def test_repeated_calls_survive_the_cap_when_flagged_results_overflow_it(self) -> None:
+        noisy = "\n".join(_call(f"e{i}", "bash", command=f"grep error file{i}") + "\n"
+                          + _result(f"e{i}", "\n".join(f"error line {j}" for j in range(10))) for i in range(40))
+        text = learn.score.excerpt(self.session(10, text=TRANSCRIPT + noisy + "\n"))
+        self.assertEqual(len(text), learn.score.EXCERPT_CHARS)
+        self.assertIn('Repeated tool calls:\n- read {"path": "tests/test_thing.py"}', text)
+        self.assertIn("Fixed the assertion; tests pass.", text)
+        self.assertIn("grep error file0", text)
+        self.assertNotIn("grep error file39", text)
+
     def test_learn_pass_scores_unscored_tickets_first(self) -> None:
         self.finish(range(1, 11))
         self.session(10, {"attempt": 1, "gate": "PASS"})

@@ -67,9 +67,10 @@ def parse(path: Path) -> tuple[list[tuple[str, str]], str, str]:
 
 
 def excerpt(path: Path, max_chars: int = EXCERPT_CHARS) -> str:
-    """Where the session spun, for `factory learn`: the final assistant message, every tool call
-    whose result mentioned an error/Traceback/FAIL (the call plus the result's first RESULT_LINES
-    lines) and every call repeated back to back; cut to `max_chars`."""
+    """Where the session spun, for `factory learn`: every call repeated back to back, the final
+    assistant message, then every tool call whose result mentioned an error/Traceback/FAIL (the
+    call plus the result's first RESULT_LINES lines); cut to `max_chars`. The repeated calls come
+    first because the flagged list routinely overflows the cap on real sessions."""
     calls: list[tuple[str, str, str]] = []  # (call id, canonical call, rendered call)
     results: dict[str, tuple[bool, str]] = {}
     final = ""
@@ -89,11 +90,10 @@ def excerpt(path: Path, max_chars: int = EXCERPT_CHARS) -> str:
         if is_error or FAILED.search(text):
             failed.append(f"- {shown}\n" + "".join(f"  {line}\n" for line in text.splitlines()[:RESULT_LINES]))
     repeated = [f"- {b[2]}\n" for a, b in pairwise(calls) if a[1] == b[1]]
-    out = f"Final assistant message:\n{final or '(none)'}\n"
+    out = "Repeated tool calls:\n" + "".join(repeated) if repeated else ""
+    out += f"Final assistant message:\n{final or '(none)'}\n"
     if failed:
         out += "Tool calls whose result mentioned an error:\n" + "".join(failed)
-    if repeated:
-        out += "Repeated tool calls:\n" + "".join(repeated)
     return out[:max_chars]
 
 
