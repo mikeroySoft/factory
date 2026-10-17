@@ -6,6 +6,10 @@ lockbox (or fresh production) mean also rises (delta > 0); held-out keep does
 not require beating lockbox/fresh noise. Flat or down reverts. Higher score
 is better. Claims must set contract_version to 1. The deterministic gate is
 untouched: this only judges eval claims.
+
+Online form (`window`, `drift`): a merged lessons/curate PR is the candidate, the
+`score` rows of the PROMOTION_N attempts before the merge are the baseline and the
+next PROMOTION_N scored attempts the fresh split; the same pstdev noise margin applies.
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ SPLITS = ("train", "selection", "lockbox", "fresh")
 CHANGE_KINDS = ("prompt", "skill", "rubric", "model", "effort", "gate-check")
 MIN_REPEATS = 2
 CONTRACT_VERSION = 1
+PROMOTION_N = 10  # scored attempts per window on each side of a lessons/curate merge
 
 
 def noise(scores: list[float]) -> float:
@@ -56,3 +61,36 @@ def decide(claim: dict) -> tuple[str, str]:
     if delta <= 0:
         return "revert", f"train-only win: {held} {delta:+.3f} flat or down (noise {margin:.3f})"
     return "keep", f"train {gain:+.3f}; {held} {delta:+.3f} (noise {margin:.3f})"
+
+
+def scored(rows: list[dict]) -> list[dict]:
+    """Journal `score` rows that carry a number (a missing transcript journals `skipped`)."""
+    return [r for r in rows if r.get("event") == "score" and type(r.get("efficiency")) in (int, float)]
+
+
+def window(scores: list[dict]) -> dict:
+    """Means of one side of a merge: `efficiency_mean`, `compliance_mean` (judged rows only,
+    None when none), `gate_first_pass_rate`, `n`; the means are None for an empty window."""
+    judged = [s["compliance"] for s in scores if type(s.get("compliance")) in (int, float)]
+    return {
+        "efficiency_mean": mean(s["efficiency"] for s in scores) if scores else None,
+        "compliance_mean": mean(judged) if judged else None,
+        "gate_first_pass_rate": mean(float(bool(s.get("gate_first_pass"))) for s in scores) if scores else None,
+        "n": len(scores),
+    }
+
+
+def drift(before: list[dict], after: list[dict]) -> tuple[str, str]:
+    """(`keep` | `revert`, reason) for a merged change: revert when `efficiency_mean` or
+    `gate_first_pass_rate` fell by more than the baseline window's noise (`pstdev`)."""
+    if not before:
+        return "keep", "no scored attempts before the merge; nothing to compare against"
+    base, cand = window(before), window(after)
+    notes = []
+    for key, values in (("efficiency_mean", [s["efficiency"] for s in before]),
+                        ("gate_first_pass_rate", [float(bool(s.get("gate_first_pass"))) for s in before])):
+        delta, margin = cand[key] - base[key], noise(values)
+        notes.append(f"{key} {base[key]:.3f} -> {cand[key]:.3f} ({delta:+.3f}, noise {margin:.3f})")
+        if delta < -margin:
+            return "revert", notes[-1] + " beyond noise"
+    return "keep", "; ".join(notes)
