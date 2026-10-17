@@ -449,7 +449,8 @@ def revert(cfg: config.Config, opened: dict, reason: str, after: dict) -> str:
 
     def edit(wt: Path) -> list[str]:
         dispatch.run(["git", "revert", "--no-commit", merge], cwd=wt)
-        return dispatch.run(["git", "diff", "--cached", "--name-only"], cwd=wt).stdout.split()
+        # The revert staged everything already; `git add` rejects a pathspec for a file it deleted.
+        return dispatch.run(["git", "diff", "--cached", "--name-only", "--diff-filter=d"], cwd=wt).stdout.split()
 
     base = opened.get("baseline") or {}
     table = "\n".join(f"| {k} | {base.get(k):.3f} | {after.get(k):.3f} |" if None not in (base.get(k), after.get(k))

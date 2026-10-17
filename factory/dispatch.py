@@ -406,7 +406,7 @@ def review_intake_pass(dry_run: bool) -> None:
             log(f"PR #{n}: {'would record' if dry_run else 'recording'} review intake at {head}")
             if not dry_run:
                 record("review-intake", pr=n, head=head)
-                review_external_pr(n, pr["baseRefOid"], head)
+                review_external_pr(n, pr["baseRefOid"], head, pr.get("headRefName") or "")
                 review_readiness(n, head, lifecycle.read_events(EVENTS))
 
 
@@ -453,8 +453,10 @@ def review_readiness(n: int, head: str, history: list[dict]) -> None:
            review_head=review.get("head"), checks=rows if valid else [])
 
 
-def review_external_pr(n: int, base: str, head: str) -> None:
-    """Publish findings against the immutable revision admitted by intake."""
+def review_external_pr(n: int, base: str, head: str, branch: str = "") -> None:
+    """Publish findings against the immutable revision admitted by intake. `factory learn` PRs are
+    the dispatcher's own, and GitHub rejects self-approval: their findings post as a COMMENT review
+    while the journal keeps the verdict `promote_pass` reads."""
     diff = run([
         "gh", "api", f"repos/{REPO}/compare/{base}...{head}",
         "-H", "Accept: application/vnd.github.diff",
@@ -504,7 +506,7 @@ def review_external_pr(n: int, base: str, head: str) -> None:
         event = "APPROVE" if lines[-1] == "VERDICT: APPROVE" else "REQUEST_CHANGES"
         run([
             "gh", "api", "--method", "POST", f"repos/{REPO}/pulls/{n}/reviews",
-            "-f", f"commit_id={head}", "-f", f"event={event}",
+            "-f", f"commit_id={head}", "-f", f"event={'COMMENT' if LESSONS_BRANCH.match(branch) else event}",
             "-f", f"body={findings}",
         ])
         record("review-result", pr=n, head=head, verdict=event, findings=findings)

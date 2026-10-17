@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from datetime import datetime
@@ -13,6 +14,8 @@ from unittest import mock
 
 from factory import dispatch, learn, lifecycle
 from factory.config import Config
+
+REAL_RUN, REAL_CHORE_PR = dispatch.run, learn.chore_pr  # captured before any test patches them
 
 
 def _msg(role: str, *content: dict, **fields: object) -> str:
@@ -396,6 +399,54 @@ class PromotionTest(unittest.TestCase):
         dispatch.review_intake_pass(dry_run=True)
         self.assertEqual([c.args[0] for c in self.log.call_args_list],
                          ["PR #42: would record review intake at h", "PR #44: would record review intake at h"])
+
+    def test_lessons_pr_review_posts_a_comment_but_journals_the_verdict(self) -> None:
+        # The dispatcher authored the PR; GitHub refuses APPROVE/REQUEST_CHANGES from the author (422).
+        self.cfg.reviewer = ["reviewer", "{prompt}"]
+        self.open_prs = [{"number": 42, "state": "OPEN", "isDraft": False, "headRefName": self.BRANCH, "headRefOid": "h",
+                          "baseRefOid": "b", "labels": [], "reviewRequests": []}]
+        self.run.side_effect = lambda cmd, **kw: subprocess.CompletedProcess(
+            cmd, 0, "VERDICT: APPROVE" if cmd[0] == "reviewer" else "{}", "")
+        dispatch.review_intake_pass(dry_run=False)
+        [post] = [c.args[0] for c in self.run.call_args_list if c.args[0][:4] == ["gh", "api", "--method", "POST"]]
+        self.assertEqual(post[4:8], ["repos/acme/widgets/pulls/42/reviews", "-f", "commit_id=h", "-f"])
+        self.assertEqual(post[8], "event=COMMENT")
+        [result] = self.rows("review-result")
+        self.assertEqual((result["pr"], result["head"], result["verdict"]), (42, "h", "APPROVE"))
+
+    def test_revert_of_a_merge_that_added_a_file_commits_the_deletion(self) -> None:
+        # Real git: the first lessons PR creates .factory-lessons.md, so its revert deletes it.
+        self.enterContext(mock.patch.object(dispatch, "run", REAL_RUN))
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        origin, repo = root / "origin.git", root / "repo"
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
+        subprocess.run(["git", "clone", "-q", str(origin), str(repo)], check=True, capture_output=True)
+
+        def git(*args: str) -> str:
+            return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True).stdout.strip()
+
+        git("config", "user.email", "t@example.com")
+        git("config", "user.name", "T")
+        (repo / "README.md").write_text("hello\n")
+        git("add", "README.md")
+        git("commit", "-qm", "init")
+        (repo / ".factory-lessons.md").write_text("- lesson\n")
+        git("add", ".factory-lessons.md")
+        git("commit", "-qm", "lessons")
+        merge = git("rev-parse", "HEAD")
+        git("push", "-q", "origin", "main")
+        cfg = Config(root=repo, repo="acme/widgets", signoff=False)
+        cfg.factory.mkdir()
+        self.gh.side_effect = lambda _: {"mergeCommit": {"oid": merge}}
+        self.enterContext(mock.patch.object(learn, "chore_pr", REAL_CHORE_PR))
+        with mock.patch.multiple(dispatch, cfg=cfg, ROOT=repo, EVENTS=cfg.factory / "events.jsonl"), \
+                mock.patch.object(dispatch, "run_gate", return_value=(True, "")), \
+                mock.patch.object(dispatch, "push_and_pr") as push:
+            window = learn.promotion.window([])
+            learn.revert(cfg, {"pr": 42, "head": merge, "baseline": window}, "efficiency_mean fell", window)
+        push.assert_called_once()
+        self.assertEqual(git("ls-tree", "--name-only", "agent/revert-lessons-42"), "README.md")
+        self.assertEqual(git("log", "-1", "--format=%s", "agent/revert-lessons-42"), "agent/revert-lessons-42: revert #42")
 
     def test_stats_promotions_joins_open_and_decision_rows(self) -> None:
         from factory import stats
