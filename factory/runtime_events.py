@@ -537,8 +537,11 @@ def _executions(retained: list, history: dict, gaps: list, observation: _Observa
             any(row[field] != events[0][field] for field in IDENTITY) for row in events
         )
         causal_gap = sequences != list(range(sequences[0], sequences[0] + len(sequences)))
-        if inconsistent or causal_gap or entry is None or entry["sequence"] != 1:
-            code = "identity_conflict" if inconsistent else "missing_enter" if entry is None else "sequence_gap"
+        # A clipped window hides the entry of executions that began before it; that is
+        # already reported as byte_limit/event_limit, not a missing enter.
+        clipped = entry is None and history["truncated"] and sequences[0] > 1
+        if inconsistent or causal_gap or entry is None and not clipped or entry is not None and entry["sequence"] != 1:
+            code = "identity_conflict" if inconsistent else "missing_enter" if entry is None and not clipped else "sequence_gap"
             if code not in history["gaps"]:
                 history["gaps"].append(code)
             history["complete"] = False
