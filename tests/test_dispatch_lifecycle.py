@@ -563,5 +563,79 @@ class LocalCLI(unittest.TestCase):
         self.assertEqual(self.git("symbolic-ref", "HEAD").stdout.strip(), "refs/heads/main")
 
 
+class LeaseRefusedCLI(unittest.TestCase):
+    """A refused `agent/7` push (the remote gained a commit the worktree lacks) escalates
+    with `lease_refused`, un-assigns the ticket, and keeps the worktree: never a crash."""
+
+    git, cli, write_config = LocalCLI.git, LocalCLI.cli, LocalCLI.write_config
+
+    def setUp(self):
+        LocalCLI.setUp(self)
+        gh = self.bin / "gh"
+        gh.write_text(GH.replace(
+            'elif a[:2] not in (["issue", "edit"]',
+            'elif a[:2] in (["issue", "edit"], ["issue", "comment"]):\n'
+            '    s.setdefault("gh", []).append(a)\n'
+            '    p.write_text(json.dumps(s))\n'
+            'elif a[:2] not in (["issue", "edit"]'))
+        wt = self.repo / ".factory" / "wt-7"
+        wt.parent.mkdir(exist_ok=True)
+        self.git("worktree", "add", str(wt), "-b", "agent/7")
+        self.wt = wt
+
+    def push_foreign(self):
+        """Land a commit on origin's `agent/7` that no worktree has, like GitHub "Update branch"."""
+        tree = self.git("rev-parse", "HEAD^{tree}").stdout.strip()
+        sha = self.git("commit-tree", tree, "-p", "HEAD", "-m", "Update branch").stdout.strip()
+        self.git("push", "--force", "origin", f"{sha}:refs/heads/agent/7")
+        return sha
+
+    def gh_calls(self, *prefix):
+        calls = json.loads(self.state.read_text()).get("gh", [])
+        return [c for c in calls if c[:len(prefix)] == list(prefix)]
+
+    def assert_escalated(self, foreign):
+        edits = self.gh_calls("issue", "edit")
+        self.assertEqual(edits[0][-2:], ["--add-assignee", "@me"])
+        self.assertEqual(edits[-1][5:], ["--remove-assignee", "@me", "--remove-label", "ready-for-agent",
+                                         "--add-label", "ready-for-human"])
+        comments = self.gh_calls("issue", "comment")
+        self.assertEqual(len(comments), 1)
+        self.assertIn("Factory dispatcher escalating: agent/7 push refused", comments[0][-1])
+        escalations = [e for e in lifecycle.read_events(self.events) if e.get("event") == "escalate"]
+        self.assertEqual([e["code"] for e in escalations], ["lease_refused"])
+        self.assertTrue(self.wt.is_dir())
+        subjects = subprocess.run(["git", "-C", str(self.wt), "log", "--format=%s"], env=self.env,
+                                  check=True, capture_output=True, text=True).stdout
+        self.assertIn("agent/7: local change", subjects)
+        remote = self.git("ls-remote", "origin", "refs/heads/agent/7").stdout.split()[0]
+        self.assertEqual(remote, foreign)
+
+    def test_refused_first_push_escalates_and_unassigns(self):
+        foreign = self.push_foreign()
+        self.cli("dispatch", "--ticket", "7")
+        self.assert_escalated(foreign)
+        self.assertFalse(json.loads(self.state.read_text()).get("pr"))
+
+    def test_refused_review_bounce_push_escalates_and_unassigns(self):
+        # The first review REVISEs and moves origin's agent/7 underneath the dispatcher, so the
+        # bounce push (leased on the first pushed head) is refused.
+        foreign_file = self.base / "foreign"
+        self.reviewer.write_text(REVIEWER.replace(
+            'print(',
+            'if s["reviews"] == 1:\n'
+            '    import subprocess\n'
+            '    tree = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], check=True, capture_output=True, text=True).stdout.strip()\n'
+            '    sha = subprocess.run(["git", "commit-tree", tree, "-p", "HEAD", "-m", "Update branch"], check=True, capture_output=True, text=True).stdout.strip()\n'
+            '    subprocess.run(["git", "push", "--force", "origin", sha + ":refs/heads/agent/7"], check=True, capture_output=True)\n'
+            f'    Path({str(foreign_file)!r}).write_text(sha)\n'
+            'print('))
+        self.cli("dispatch", "--ticket", "7")
+        self.assert_escalated(foreign_file.read_text())
+        self.assertTrue(json.loads(self.state.read_text()).get("pr"))
+        reviews = [e for e in lifecycle.read_events(self.events) if e.get("event") == "review"]
+        self.assertEqual(len(reviews), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

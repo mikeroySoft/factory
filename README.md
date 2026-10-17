@@ -114,7 +114,8 @@ get a GitHub credential: the dispatcher drops `GH_TOKEN`/`GITHUB_TOKEN` and poin
 `GH_CONFIG_DIR` at a fresh empty directory for them. Workers only commit; the
 dispatcher pushes `agent/<n>` with `--force-with-lease=agent/<n>:<sha>`, the remote
 sha it last fetched or pushed, so a worker rewrite (e.g. a rebase) lands but anyone
-else's push since then is refused, never overwritten. No other ref is force-pushed.
+else's push since then is refused, never overwritten (the ticket escalates with
+`lease_refused`, worktree kept). No other ref is force-pushed.
 Review-request opt-in accepts requests naming either the dispatcher's or the
 dashboard's login.
 
@@ -586,7 +587,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    late human veto. Protect release branches on GitHub; the final reads alone
    cannot prevent a retarget after the last check.
 7. **Escalation.** Budget exceeded, gate failed thrice, second `REVISE`,
-   nothing to PR, rebase conflict, red CI: the issue gets `ready-for-human`,
+   nothing to PR, refused `agent/<n>` push, rebase conflict, red CI, or any
+   dispatcher crash after the claim: the issue gets `ready-for-human`,
    loses the assignee and `ready-for-agent`, and receives a comment with the
    reason and the worker log path (its comment id is journaled). The worktree
    is kept for forensics. When no automatic manager recovery remains, one routed

@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Dispatcher root pinning (#181): every non-dry-run pass starts with `git fetch origin <main>` and `git checkout --detach origin/<main>` in the main checkout, and only then loads `.factory.toml` (the pin reads just `[repo].main` from the raw file, so a stale root whose config the engine rejects still picks up the fix from origin/main), so config, lessons and the dashboard theme come from the committed tip rather than whatever branch or edits the root carries. A root with tracked or untracked changes outside `.factory/` is left untouched: the pass exits 1 with a `project_escalation`/`root_dirty` dispatcher exit row and a `result` row listing the paths, and claims nothing.
+- Refused `agent/<n>` push no longer strands the ticket (#244): when the remote branch gained a commit the worktree lacks (GitHub "Update branch"), the refused lease is escalated with `code="lease_refused"` — issue un-assigned, `ready-for-human`, one comment — and the worktree is kept, on both the first push and review-bounce pushes. Any other exception after the `@me` claim escalates with `code="dispatcher_error"` before re-raising, so a dispatcher crash hands the ticket back instead of leaving it assigned + `ready-for-agent` to be skipped forever.
 
 ## 0.4.1 — 2026-10-16
 
