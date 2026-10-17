@@ -454,6 +454,7 @@ class LocalCLI(unittest.TestCase):
         # ticket defect. The ticket journals it and gives its claim back; the dispatcher
         # pass itself must not die with that FileNotFoundError.
         self.write_config(worker=[str(self.base / "absent-worker")])
+        self.commit_config()
         result = self.cli("dispatch", "--ticket", "7", expected=1)
         self.assertIn("#7: worker launch failed", result.stdout + result.stderr)
         self.assertNotIn("Traceback", result.stdout + result.stderr)
@@ -475,6 +476,7 @@ class LocalCLI(unittest.TestCase):
             f"os.execv({str(real)!r}, ['gh', *sys.argv[1:]])\n"
         )
         self.write_config(worker=[str(self.base / "absent-worker")])
+        self.commit_config()
         self.cli("dispatch", "--ticket", "7", expected=1)
         self.assertIn("issue edit 7 --repo local/smoke --remove-assignee @me", calls.read_text().splitlines())
 
@@ -485,6 +487,7 @@ class LocalCLI(unittest.TestCase):
         vanish.write_text('#!/bin/sh\nrm "$0"\necho change >> change.txt\n')
         vanish.chmod(0o755)
         self.write_config(worker=[str(vanish)])
+        self.commit_config()
         result = self.cli("dispatch", "--ticket", "7", expected=1)
         self.assertIn("#7: worker launch failed", result.stdout + result.stderr)
         self.assertNotIn("Traceback", result.stdout + result.stderr)
@@ -501,6 +504,7 @@ class LocalCLI(unittest.TestCase):
         # #260: a reviewer executable missing from the host PATH is unaccepted evidence
         # (REVISE, reason FileNotFoundError); the ticket escalates and the pass completes.
         self.write_config(reviewer=[str(self.base / "absent-reviewer")])
+        self.commit_config()
         result = self.cli("dispatch", "--ticket", "7")
         self.assertIn("#7: reviewer launch failed", result.stdout + result.stderr)
         self.assertNotIn("Traceback", result.stdout + result.stderr)
