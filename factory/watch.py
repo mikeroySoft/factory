@@ -2,9 +2,10 @@
 
 One pass reads four local signals (lifecycle exit rows that name a mechanism failure,
 failed `factory-*` systemd units, `dashboard --runtime-json` source errors, one escalation
-code repeating across REPEAT_MIN tickets within REPEAT_DAYS days), fingerprints
-each, and opens one `bug,needs-triage` issue per fingerprint not already covered by an
-open issue. Filing is journaled as a `watch` row so the next pass can skip or refile.
+code repeating across REPEAT_MIN tickets within REPEAT_DAYS days), fingerprints each by
+reason, unit or journal source (not by stage or reader code: one defect is one issue), and
+opens one `bug,needs-triage` issue per fingerprint not already covered by an open issue.
+Filing is journaled as a `watch` row so the next pass can skip or refile.
 """
 from __future__ import annotations
 
@@ -25,19 +26,24 @@ LABELS = "bug,needs-triage"
 MAX_ISSUES = 5
 MAX_ROWS = 20
 MAX_LOG_LINES = 40
-UNKNOWN_REASONS = ("worker_exit:", "check_timeout")
+UNKNOWN_REASONS = ("check_timeout",)
+# Host conditions the dispatcher already retries or escalates and `factory doctor` reports:
+# the worker process exiting, the local triage model, GitHub. Not factory defects.
+ENVIRONMENT_REASONS = ("worker_exit:", "triage_endpoint_", "github_command_failed")
 REPEAT_MIN = 3  # distinct tickets one escalation code must hit...
 REPEAT_DAYS = 7  # ...inside this trailing window to count as a factory defect
 
 
-def fingerprint(kind: str, stage: str, key: str) -> str:
-    return hashlib.sha256(f"{kind}\n{stage}\n{key}".encode()).hexdigest()[:12]
+def fingerprint(kind: str, key: str) -> str:
+    return hashlib.sha256(f"{kind}\n{key}".encode()).hexdigest()[:12]
 
 
 def _failing(row: dict) -> bool:
     if row.get("event") != "lifecycle" or row.get("kind") != "exit":
         return False
     reason = row.get("reason") or ""
+    if reason.startswith(ENVIRONMENT_REASONS):
+        return False
     return row.get("outcome") == "mechanism_failure" or (
         row.get("outcome") == "unknown" and reason.startswith(UNKNOWN_REASONS)
     )
@@ -119,26 +125,30 @@ def signals(cfg: config.Config, events: list[dict]) -> list[dict]:
         if not _failing(row):
             continue
         stage, reason = str(row.get("stage")), str(row.get("reason"))
-        key = fingerprint("lifecycle", stage, reason)
+        key = fingerprint("lifecycle", reason)
         signal = found.setdefault(key, {
-            "fingerprint": key, "kind": "lifecycle", "stage": stage, "key": reason, "rows": [],
+            "fingerprint": key, "kind": "lifecycle", "stage": {}, "key": reason, "rows": [],
             "excerpt": None, "log": None, "latest": "",
             "command": "zcat -f .factory/events.jsonl* | grep -F "
             f"{shlex.quote(json.dumps({'reason': reason}, separators=(',', ':'))[1:-1])}",
         })
+        signal["stage"][stage] = None  # ordered set of every stage the reason hit
         signal["rows"].append(row)
         signal["latest"] = max(signal["latest"], str(row.get("at") or ""))
         signal["log"] = logs.get((row.get("ticket"), row.get("attempt"))) or signal["log"]
     for name, status in failed_units(cfg):
-        key = fingerprint("unit", "systemd", name)
+        key = fingerprint("unit", name)
         found[key] = {"fingerprint": key, "kind": "unit", "stage": "systemd", "key": name, "rows": [],
                       "excerpt": status, "log": None, "latest": None,
                       "command": f"systemctl --user status {shlex.quote(name)}"}
+    by_source: dict[str, list[dict]] = {}
     for error in runtime_errors(cfg):
-        source, code = str(error.get("source")), str(error.get("code"))
-        key = fingerprint("runtime", source, code)
-        found[key] = {"fingerprint": key, "kind": "runtime", "stage": source, "key": code, "rows": [],
-                      "excerpt": json.dumps(error, indent=2), "log": None, "latest": None,
+        by_source.setdefault(str(error.get("source")), []).append(error)
+    for source, errors in by_source.items():
+        key = fingerprint("runtime", source)
+        found[key] = {"fingerprint": key, "kind": "runtime", "stage": source, "rows": [],
+                      "key": ", ".join(sorted({str(e.get("code")) for e in errors})),
+                      "excerpt": json.dumps(errors, indent=2), "log": None, "latest": None,
                       "command": "factory dashboard --runtime-json | jq .errors"}
     for code, rows in repeated_escalations(events).items():
         key = f"escalation:{code}"
@@ -150,6 +160,8 @@ def signals(cfg: config.Config, events: list[dict]) -> list[dict]:
                       f"{shlex.quote(json.dumps({'code': code}, separators=(',', ':'))[1:-1])}"}
     for signal in found.values():
         signal["rows"] = signal["rows"][-MAX_ROWS:]
+        if signal["kind"] == "lifecycle":
+            signal["stage"] = ", ".join(signal["stage"])
     return list(found.values())
 
 
