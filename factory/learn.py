@@ -344,6 +344,9 @@ def auto_learn(cfg: config.Config, dry_run: bool) -> None:
         return
     dispatch.log(f"learn: {count} tickets finished since the last learn; running --last {AUTO_EVERY}")
     score.run(cfg, AUTO_EVERY)  # unscored attempts of the same tickets, so evidence has session excerpts
+    if reverts := decide_promotions(cfg):  # a lessons PR from this pass would conflict with the revert
+        dispatch.log(f"learn: skipped (revert PR opened: {', '.join(reverts)})")
+        return
     run(cfg, AUTO_EVERY, trigger="auto")
 
 
@@ -361,10 +364,7 @@ def learn_pass(dry_run: bool = False) -> None:
         dispatch.log(f"learn: failed ({reason})")
         if not dry_run:
             dispatch.record("learn", trigger="auto", status="failed", reason=reason)
-    try:
-        decide_promotions(cfg, dry_run)
-    except Exception as exc:  # noqa: BLE001 - an undecided promotion is retried next pass
-        dispatch.log(f"promotion: failed ({type(exc).__name__}: {exc})")
+    decide_promotions(cfg, dry_run)  # attempts scored by hand since the last pass
 
 
 def promote_pass(prs: list[dict], dry_run: bool = False) -> None:
@@ -409,30 +409,37 @@ def promote_pass(prs: list[dict], dry_run: bool = False) -> None:
         dispatch.log(f"PR #{n}: promotion open (baseline n={baseline['n']})")
 
 
-def decide_promotions(cfg: config.Config, dry_run: bool = False) -> None:
+def decide_promotions(cfg: config.Config, dry_run: bool = False) -> list[str]:
     """One decision per `promotion-open` row, never replayed: once PROMOTION_N attempts are scored after
     the merge, `promotion-keep`, or `promotion-revert` with `agent/revert-lessons-<pr>` opened against the
-    merge commit when efficiency or the first-pass rate fell beyond the baseline window's noise."""
+    merge commit when efficiency or the first-pass rate fell beyond the baseline window's noise.
+    Returns the revert branches opened; a failure is logged and the promotion retried next pass."""
     rows = lifecycle.read_events(dispatch.EVENTS)
     decided = {r.get("pr") for r in rows if r.get("event") in ("promotion-keep", "promotion-revert")}
-    for i, opened in enumerate(rows):
-        if opened.get("event") != "promotion-open" or opened.get("pr") in decided:
-            continue
-        after = promotion.scored(rows[i + 1:])[:promotion.PROMOTION_N]
-        if len(after) < promotion.PROMOTION_N:
-            continue
-        before = promotion.scored(rows[:i])[-promotion.PROMOTION_N:]
-        verdict, reason = promotion.drift(before, after)
-        candidate = promotion.window(after)
-        if dry_run:
-            dispatch.log(f"promotion #{opened['pr']}: would {verdict} ({reason})")
-            continue
-        fields = {}
-        if verdict == "revert":
-            fields["branch"] = revert(cfg, opened, reason, candidate)
-        dispatch.record(f"promotion-{verdict}", pr=opened["pr"], head=opened.get("head"),
-                        baseline=opened.get("baseline"), after=candidate, reason=reason, **fields)
-        dispatch.log(f"promotion #{opened['pr']}: {verdict} ({reason})")
+    reverts = []
+    try:
+        for i, opened in enumerate(rows):
+            if opened.get("event") != "promotion-open" or opened.get("pr") in decided:
+                continue
+            after = promotion.scored(rows[i + 1:])[:promotion.PROMOTION_N]
+            if len(after) < promotion.PROMOTION_N:
+                continue
+            before = promotion.scored(rows[:i])[-promotion.PROMOTION_N:]
+            verdict, reason = promotion.drift(before, after)
+            candidate = promotion.window(after)
+            if dry_run:
+                dispatch.log(f"promotion #{opened['pr']}: would {verdict} ({reason})")
+                continue
+            fields = {}
+            if verdict == "revert":
+                fields["branch"] = revert(cfg, opened, reason, candidate)
+                reverts.append(fields["branch"])
+            dispatch.record(f"promotion-{verdict}", pr=opened["pr"], head=opened.get("head"),
+                            baseline=opened.get("baseline"), after=candidate, reason=reason, **fields)
+            dispatch.log(f"promotion #{opened['pr']}: {verdict} ({reason})")
+    except Exception as exc:  # noqa: BLE001 - an undecided promotion is retried next pass
+        dispatch.log(f"promotion: failed ({type(exc).__name__}: {exc})")
+    return reverts
 
 
 def revert(cfg: config.Config, opened: dict, reason: str, after: dict) -> str:
