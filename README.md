@@ -955,8 +955,11 @@ branches, or merge state.
   configured the dispatcher does this itself: at the end of a pass, once 10
   tickets have finished (latest `merged`/`escalate` row) since the last `learn`
   event (manual or automatic; from the journal start if none), it runs
-  `factory score --last 10` (so every chosen ticket has session excerpts), then
-  `factory learn --last 10` once and journals `learn` with `trigger: "auto"`.
+  `factory score --last 10` (so every chosen ticket has session excerpts),
+  decides open promotions on the new scores (below), then, unless that opened a
+  revert (`learn: skipped (revert PR opened: ...)`; a lessons PR would conflict
+  with it), `factory learn --last 10` once and journals `learn` with
+  `trigger: "auto"`.
   It skips while an `agent/lessons-*`, `agent/curate-*` or
   `agent/revert-lessons-*` PR is open (`learn:
   skipped (open lessons PR #N)`; the count is kept), and without a manager logs
