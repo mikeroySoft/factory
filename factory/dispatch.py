@@ -70,6 +70,10 @@ def configure(c: Config) -> None:
     MAX_ATTEMPTS = cfg.max_attempts
 
 
+# `factory learn` branches: lessons, CURATE and the revert a failed promotion opens.
+# `promote_pass` merges them; the ticket merge stage's `agent/(\d+)` never matches.
+LESSONS_BRANCH = re.compile(r"agent/(lessons|curate|revert-lessons)-")
+
 STANDING_INSTRUCTIONS = """
 ## Instructions
 
@@ -330,16 +334,16 @@ def frontier() -> list[dict]:
 
 
 def review_intake_pass(dry_run: bool) -> None:
-    """Review opted-in PR revisions without running the issue/merge pipeline."""
+    """Review opted-in PR revisions, and `factory learn` PRs, without running the issue/merge pipeline."""
     prs = gh_json([
         "pr", "list", "--repo", REPO, "--state", "open", "--limit", "1000",
-        "--json", "number,state,isDraft,headRefOid,baseRefOid,labels,reviewRequests",
+        "--json", "number,state,isDraft,headRefName,headRefOid,baseRefOid,labels,reviewRequests",
     ])
     login = None
     for pr in prs:
         if pr["state"] != "OPEN" or pr["isDraft"]:
             continue
-        opted_in = any(label["name"] == LABEL_REVIEW for label in pr["labels"])
+        opted_in = any(label["name"] == LABEL_REVIEW for label in pr["labels"]) or bool(LESSONS_BRANCH.match(pr.get("headRefName") or ""))
         requests = pr["reviewRequests"]
         if not opted_in and requests:
             if login is None:
@@ -1777,6 +1781,9 @@ def land_pass(dry_run: bool) -> None:
             execution.resource("acquired", lock_path, scope="repository")
             sync_pass(dry_run)
             merge_pass_locked(dry_run)
+            from factory.learn import promote_pass
+
+            promote_pass(dry_run)
         finally:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             lock_fd.close()

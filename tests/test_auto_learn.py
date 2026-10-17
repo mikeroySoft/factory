@@ -238,5 +238,151 @@ class AutoLearnTest(unittest.TestCase):
         candidate.assert_not_called()
 
 
+class PromotionTest(unittest.TestCase):
+    """Lessons/curate PRs merge through gate + review + CI and are kept or reverted by score drift (#238)."""
+
+    BRANCH, HEAD = "agent/lessons-2026-10-17-t10", "a" * 40
+
+    def setUp(self) -> None:
+        AutoLearnTest.setUp(self)
+        self.checks = [{"name": "gate", "bucket": "pass"}]
+        self.enterContext(mock.patch.object(dispatch, "pr_checks", side_effect=lambda _: self.checks))
+        self.run = self.enterContext(mock.patch.object(dispatch, "run"))
+        self.open_prs = [{"number": 42, "headRefName": self.BRANCH, "headRefOid": self.HEAD, "baseRefName": "main",
+                          "isDraft": False, "reviewDecision": ""}]
+
+    def journal(self, *rows: dict) -> None:
+        with self.events.open("a") as f:
+            for i, row in enumerate(rows):
+                f.write(json.dumps({"at": f"2000-01-01T00:00:{i % 60:02d}Z", **row}) + "\n")
+
+    def scores(self, efficiency: float, n: int = 10, gate_first_pass: bool = True) -> list[dict]:
+        return [{"event": "score", "ticket": i, "attempt": 1, "efficiency": efficiency, "compliance": 0.5,
+                 "gate_first_pass": gate_first_pass} for i in range(n)]
+
+    def evidence(self) -> list[dict]:
+        return [{"event": "gate", "branch": self.BRANCH, "head": self.HEAD, "gate": "PASS"},
+                {"event": "review-result", "pr": 42, "head": self.HEAD, "verdict": "APPROVE"}]
+
+    def rows(self, *events: str) -> list[dict]:
+        return [e for e in lifecycle.read_events(self.events) if e.get("event") in events]
+
+    def gh_calls(self) -> list[str]:
+        return [" ".join(c.args[0]) for c in self.run.call_args_list if c.args[0][0] == "gh"]
+
+    def test_lessons_pr_merges_after_gate_review_and_ci_and_opens_a_promotion(self) -> None:
+        self.journal(*self.scores(0.5, 3), {"event": "score", "ticket": 9, "skipped": "missing"},
+                     *self.scores(0.9, 10), *self.evidence())
+        learn.promote_pass()
+        self.assertEqual(self.gh_calls(), [
+            "gh pr edit 42 --repo acme/widgets --add-label factory-approved",
+            f"gh pr merge 42 --repo acme/widgets --squash --match-head-commit {self.HEAD}",
+        ])
+        approved, merged, opened = self.rows("approved", "merged", "promotion-open")
+        self.assertEqual((approved["pr"], approved["head"], approved["gate_head"], approved["review_head"]),
+                         (42, self.HEAD, self.HEAD, self.HEAD))
+        self.assertEqual((merged["pr"], merged["branch"], merged["method"]), (42, self.BRANCH, "squash"))
+        self.assertEqual(opened["baseline"], {"efficiency_mean": 0.9, "compliance_mean": 0.5,
+                                              "gate_first_pass_rate": 1.0, "n": 10})
+        self.assertNotIn("human merge", learn.PIPELINE + learn.CURATE_OFFER)
+
+    def test_merge_waits_for_head_bound_gate_and_review_and_green_ci(self) -> None:
+        learn.promote_pass()  # no evidence at all
+        self.journal({"event": "gate", "branch": self.BRANCH, "head": "b" * 40, "gate": "PASS"},
+                     {"event": "review-result", "pr": 42, "head": self.HEAD, "verdict": "APPROVE"})
+        learn.promote_pass()  # gate bound to another head
+        self.journal({"event": "gate", "branch": self.BRANCH, "head": self.HEAD, "gate": "FAIL"})
+        learn.promote_pass()  # gate failed at this head
+        self.journal({"event": "gate", "branch": self.BRANCH, "head": self.HEAD, "gate": "PASS"})
+        self.checks = [{"name": "gate", "bucket": "pending"}, {"name": "lint", "bucket": "pass"}]
+        learn.promote_pass()  # CI pending
+        self.checks = []
+        learn.promote_pass()  # no CI reported
+        self.open_prs[0]["reviewDecision"] = "CHANGES_REQUESTED"
+        self.checks = [{"name": "gate", "bucket": "pass"}]
+        learn.promote_pass()  # human veto
+        self.open_prs[0]["reviewDecision"] = ""
+        learn.promote_pass(dry_run=True)
+        self.assertEqual(self.gh_calls(), [])
+        self.assertEqual(self.rows("approved", "merged", "promotion-open"), [])
+        self.assertIn("PR #42: would merge agent/lessons-2026-10-17-t10", [c.args[0] for c in self.log.call_args_list])
+        self.open_prs[0]["headRefName"] = "agent/7"
+        learn.promote_pass()  # ticket PRs belong to the ticket merge stage
+        self.assertEqual(self.gh_calls(), [])
+
+    def test_revert_merge_opens_no_promotion(self) -> None:
+        self.open_prs[0]["headRefName"] = branch = "agent/revert-lessons-42"
+        self.journal({"event": "gate", "branch": branch, "head": self.HEAD, "gate": "PASS"},
+                     {"event": "review-result", "pr": 42, "head": self.HEAD, "verdict": "APPROVE"})
+        learn.promote_pass()
+        self.assertEqual(len(self.gh_calls()), 2)
+        self.assertEqual(self.rows("promotion-open"), [])
+
+    def open_promotion(self, after: list[dict]) -> None:
+        self.journal(*self.scores(0.9), {"event": "promotion-open", "pr": 42, "head": self.HEAD, "branch": self.BRANCH,
+                                         "baseline": learn.promotion.window(self.scores(0.9))}, *after)
+
+    def test_drop_beyond_noise_opens_one_revert_pr(self) -> None:
+        self.open_promotion(self.scores(0.5))
+        self.gh.side_effect = lambda args: {"mergeCommit": {"oid": "c" * 40}} if args[:2] == ["pr", "view"] else []
+        learn.learn_pass()
+        learn.learn_pass()
+        self.chore_pr.assert_called_once()
+        _, branch, edit, title, body = self.chore_pr.call_args.args
+        self.assertEqual((branch, title), ("agent/revert-lessons-42", "agent/revert-lessons-42: revert #42"))
+        self.assertTrue(self.chore_pr.call_args.kwargs["protected_override"])
+        self.assertIn(f"Reverts #42 ({'c' * 12}): efficiency_mean 0.900 -> 0.500 (-0.400, noise 0.000) beyond noise", body)
+        self.assertIn("| efficiency_mean | 0.900 | 0.500 |", body)
+        self.assertIn("| gate_first_pass_rate | 1.000 | 1.000 |", body)
+        [row] = self.rows("promotion-keep", "promotion-revert")
+        self.assertEqual((row["event"], row["pr"], row["branch"], row["after"]["efficiency_mean"], row["baseline"]["n"]),
+                         ("promotion-revert", 42, "agent/revert-lessons-42", 0.5, 10))
+        wt = self.cfg.factory / "wt"
+        self.run.return_value.stdout = ".factory-lessons.md\n"
+        self.assertEqual(edit(wt), [".factory-lessons.md"])
+        self.assertEqual(self.run.call_args_list[-2].args[0], ["git", "revert", "--no-commit", "c" * 40])
+
+    def test_within_noise_keeps_once(self) -> None:
+        self.open_promotion(self.scores(0.9, 9))
+        learn.learn_pass()
+        self.assertEqual(self.rows("promotion-keep", "promotion-revert"), [])  # fewer than 10 scored after the merge
+        self.journal(*self.scores(0.9, 1))
+        learn.learn_pass()
+        learn.learn_pass()
+        [row] = self.rows("promotion-keep", "promotion-revert")
+        self.assertEqual((row["event"], row["pr"], row["after"]["n"]), ("promotion-keep", 42, 10))
+        self.chore_pr.assert_not_called()
+        self.gh.assert_not_called()
+
+    def test_first_pass_drop_reverts_and_failed_revert_is_retried_not_replayed(self) -> None:
+        self.open_promotion(self.scores(0.9, gate_first_pass=False))
+        self.gh.side_effect = RuntimeError("gh down")
+        learn.learn_pass()
+        self.assertIn("promotion: failed (RuntimeError: gh down)", [c.args[0] for c in self.log.call_args_list])
+        self.assertEqual(self.rows("promotion-keep", "promotion-revert"), [])
+        self.gh.side_effect = lambda args: {"mergeCommit": {"oid": "c" * 40}}
+        learn.learn_pass()
+        [row] = self.rows("promotion-revert")
+        self.assertIn("gate_first_pass_rate 1.000 -> 0.000", row["reason"])
+
+    def test_lessons_pr_is_admitted_to_review_intake_without_a_label(self) -> None:
+        self.open_prs = [{"number": n, "state": "OPEN", "isDraft": False, "headRefName": b, "headRefOid": "h", "baseRefOid": "b",
+                          "labels": [], "reviewRequests": []} for n, b in ((42, self.BRANCH), (43, "agent/7"), (44, "agent/revert-lessons-42"))]
+        dispatch.review_intake_pass(dry_run=True)
+        self.assertEqual([c.args[0] for c in self.log.call_args_list],
+                         ["PR #42: would record review intake at h", "PR #44: would record review intake at h"])
+
+    def test_stats_promotions_joins_open_and_decision_rows(self) -> None:
+        from factory import stats
+
+        self.open_promotion(self.scores(0.5))
+        self.gh.side_effect = lambda args: {"mergeCommit": {"oid": "c" * 40}}
+        learn.learn_pass()
+        [row] = stats.promotions(self.events)
+        self.assertEqual((row["pr"], row["branch"], row["decision"], row["revert"], row["baseline"]["n"], row["after"]["efficiency_mean"]),
+                         (42, self.BRANCH, "revert", "agent/revert-lessons-42", 10, 0.5))
+        self.assertTrue(row["opened_at"] < row["decided_at"])
+
+
 if __name__ == "__main__":
     unittest.main()
