@@ -2323,12 +2323,13 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
         process_ticket(issue, budget_min, dry_run)
 
 
-def pin_root(root: Path) -> list[str]:
+def pin_root() -> list[str]:
     """Fetch and detach the root at origin/<main> so the pass reads committed config, not
     whatever branch or edits the checkout carries. A root with tracked or untracked changes
     outside `.factory/` is left alone; its paths come back and the caller refuses the pass.
     Runs before `config.load`: only `[repo].main` is read, from the raw file, so a root whose
     config the engine rejects still pins (and picks up the fix from origin/main)."""
+    root = config.repo_root()
     main = "main"
     with suppress(OSError, tomllib.TOMLDecodeError):
         main = tomllib.loads((root / config.CONFIG_NAME).read_text()).get("repo", {}).get("main", main)
@@ -2356,9 +2357,9 @@ def main(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
     if not args.dry_run:
-        root = config.repo_root()
-        dirty = pin_root(root)
+        dirty = pin_root()
         if dirty:
+            root = config.repo_root()
             log(f"root {root} has changes outside .factory/ ({', '.join(dirty)}); root_dirty, nothing dispatched")
             with lifecycle.scope(root / ".factory" / "events.jsonl", "dispatcher", dispatcher=True,
                                  engine_version=__version__, engine_commit=config.engine_commit()) as execution:
