@@ -403,7 +403,7 @@ class LocalCLI(unittest.TestCase):
 
     def test_clean_upstream_candidate_needs_no_worker_before_its_pr(self):
         self.worker.write_text('from pathlib import Path\nPath("worker-ran").write_text("no")\n')
-        tip, fork_main = self.upstream_fixture()
+        _tip, fork_main = self.upstream_fixture()
         self.cli("dispatch")
         rows = self.rows()
         self.assertFalse(any(r["stage"] in {"worker", "merge"} for r in rows))

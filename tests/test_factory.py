@@ -4576,7 +4576,7 @@ class DispatchTest(unittest.TestCase):
     def test_sync_waits_on_an_open_sync_ticket_whoever_owns_it(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
-            root, origin, upstream = build_fork(tmp)
+            root, _origin, upstream = build_fork(tmp)
             (upstream / "u1.txt").write_text("u1")
             git(upstream, "add", "-A")
             git(upstream, "commit", "-q", "-m", "u1")
