@@ -83,8 +83,6 @@ flowchart TB
   WR -->|"gate FAIL or stuck max_attempts, protected paths, or budget: dispatch.process_ticket"| ESC
   WR -->|"gate PASS: dispatch.worker_round"| PUSH
   PUSH -->|"nothing ahead of main or PR target mismatch: dispatch.push_and_pr"| ESC
-  PUSH -->|"agent/<n> push refused, remote moved since the lease was read: dispatch.push_agent"| ESC
-  CLAIM -->|"any other dispatcher exception after the claim, then re-raised: dispatch.process_ticket"| ESC
   PUSH -->|"dispatch.review"| REV
   REV -->|"REVISE or pr-tier gate FAIL, review_rounds left: dispatch.process_ticket"| WR
   REV -->|"REVISE or pr-tier gate FAIL after review_rounds, bounce gate FAIL or stuck, or budget: dispatch.process_ticket"| ESC
@@ -97,6 +95,8 @@ flowchart TB
   MAPP -->|"CI fail, late feedback, stale, rounds exhausted, HUMAN: manage.frontier_pass"| ESC
   FA -->|"late feedback or stale past stale_days, any manager.review mode: manage.frontier_pass"| ESC
   MAPP -.->|"CI cancel still treated as fail before approval: manage.frontier_pass"| ESC
+  PUSH -->|"agent/<n> push refused, remote moved since the lease was read: dispatch.push_agent"| ESC
+  CLAIM -->|"any other dispatcher exception after the claim, then re-raised: dispatch.process_ticket"| ESC
   MAPP -->|"FIX or CLOSE: manage.apply"| MGR
   FA -->|"dispatch.pr_checks"| CI
   CI -->|"pending: dispatch.merge_pass_locked waits"| FA
