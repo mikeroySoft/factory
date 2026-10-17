@@ -970,6 +970,7 @@ def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str,
     with lifecycle.scope(EVENTS, "review", ticket=n) as execution:
         before = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
         proc = None
+        launch_error = None
         findings = ""
         parsed = False
         matches = []
@@ -977,7 +978,14 @@ def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str,
         if before == expected_head:
             command, structured = _review_command(prompt)
             with without_github(dict(os.environ)) as env:
-                proc = run(command, cwd=wt, check=False, env=env)
+                try:
+                    proc = run(command, cwd=wt, check=False, env=env)
+                except FileNotFoundError as exc:
+                    # Host defect (reviewer executable not on PATH, #260): unaccepted evidence,
+                    # never a dispatcher crash; callers withdraw or escalate as for any REVISE.
+                    launch_error = f"{type(exc).__name__}: {exc}"
+                    log(f"#{n}: reviewer launch failed ({exc}); fix PATH or [review] (`factory doctor`)")
+        if proc is not None:
             findings, usage = (
                 _omp_output(proc.stdout) if structured else (proc.stdout.strip(), None)
             )
@@ -1007,6 +1015,8 @@ def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str,
             execution.outcome = "unknown"
             if before != expected_head or actual_head != expected_head:
                 execution.reason = "state_changed"
+            elif launch_error:
+                execution.reason = launch_error
             elif proc is not None and proc.returncode:
                 execution.reason = f"review_exit:{proc.returncode}"
             else:
@@ -2238,17 +2248,9 @@ def process_ticket(
             if staged is not None:
                 report, gate_head = staged
             for attempt in range(1, MAX_ATTEMPTS + 1 if staged is None else 1):
-                try:
-                    ok, report, logfile, gate_head = worker_round(
-                        n, wt, labels, title, extra, attempt, deadline
-                    )
-                except FileNotFoundError as exc:
-                    # Host defect (worker executable not on PATH), not a ticket defect: give the
-                    # claim back so the frontier retries once the host is fixed; the pass goes on.
-                    execution.outcome, execution.reason = "mechanism_failure", f"{type(exc).__name__}: {exc}"
-                    log(f"#{n}: worker launch failed ({exc}); unclaimed, fix PATH or [workers] (`factory doctor`)")
-                    run(["gh", "issue", "edit", str(n), "--repo", REPO, "--remove-assignee", "@me"], check=False)
-                    return False
+                ok, report, logfile, gate_head = worker_round(
+                    n, wt, labels, title, extra, attempt, deadline
+                )
                 if ok:
                     break
                 if "- protected-paths: FAIL" in report:
@@ -2333,6 +2335,14 @@ def process_ticket(
                          code="approval_drift")
         except LeaseRefused as exc:
             escalate(n, str(exc), None, code="lease_refused")
+        except FileNotFoundError as exc:
+            # Host defect (worker executable not on PATH, #260), not a ticket defect: give the
+            # claim back so the frontier retries once the host is fixed; the pass goes on.
+            # Covers every worker launch of this ticket, first attempt and review bounces alike.
+            execution.outcome, execution.reason = "mechanism_failure", f"{type(exc).__name__}: {exc}"
+            log(f"#{n}: worker launch failed ({exc}); unclaimed, fix PATH or [workers] (`factory doctor`)")
+            run(["gh", "issue", "edit", str(n), "--repo", REPO, "--remove-assignee", "@me"], check=False)
+            return False
         except Exception as exc:
             # A crash after the claim strands the ticket assigned + ready-for-agent, which every
             # later pass skips forever; hand it back to a human first, worktree intact, then

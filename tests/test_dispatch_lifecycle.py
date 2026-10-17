@@ -463,6 +463,58 @@ class LocalCLI(unittest.TestCase):
         self.assertEqual(exits["ticket"], "mechanism_failure")
         self.assertEqual(exits["dispatcher"], "completed")
 
+    def test_worker_launch_failure_hands_back_the_claim(self):
+        # #260: the unclaim is what lets the frontier retry once the host is fixed.
+        calls = self.base / "gh-calls.log"
+        real = self.bin / "gh-real"
+        real.write_text(GH)
+        real.chmod(0o755)
+        (self.bin / "gh").write_text(
+            "#!/usr/bin/env python3\nimport os, sys\n"
+            f"open({str(calls)!r}, 'a').write(' '.join(sys.argv[1:]) + '\\n')\n"
+            f"os.execv({str(real)!r}, ['gh', *sys.argv[1:]])\n"
+        )
+        self.write_config(worker=[str(self.base / "absent-worker")])
+        self.cli("dispatch", "--ticket", "7", expected=1)
+        self.assertIn("issue edit 7 --repo local/smoke --remove-assignee @me", calls.read_text().splitlines())
+
+    def test_worker_launch_failure_on_review_bounce_unclaims_and_completes_the_pass(self):
+        # #260: the worker that vanishes between the first attempt and the review bounce
+        # must take the same path as one missing from the start.
+        vanish = self.bin / "vanish"
+        vanish.write_text('#!/bin/sh\nrm "$0"\necho change >> change.txt\n')
+        vanish.chmod(0o755)
+        self.write_config(worker=[str(vanish)])
+        result = self.cli("dispatch", "--ticket", "7", expected=1)
+        self.assertIn("#7: worker launch failed", result.stdout + result.stderr)
+        self.assertNotIn("Traceback", result.stdout + result.stderr)
+        rows = self.rows()
+        reviews = [r for r in rows if r["stage"] == "review" and r["kind"] == "exit"]
+        self.assertEqual([r["outcome"] for r in reviews], ["product_feedback"])
+        workers = [r["outcome"] for r in rows if r["stage"] == "worker" and r["kind"] == "exit"]
+        self.assertEqual(workers, ["completed", "mechanism_failure"])
+        exits = {r["stage"]: r["outcome"] for r in rows if r["kind"] == "exit"}
+        self.assertEqual(exits["ticket"], "mechanism_failure")
+        self.assertEqual(exits["dispatcher"], "completed")
+
+    def test_reviewer_launch_failure_is_rejected_evidence_not_a_crash(self):
+        # #260: a reviewer executable missing from the host PATH is unaccepted evidence
+        # (REVISE, reason FileNotFoundError); the ticket escalates and the pass completes.
+        self.write_config(reviewer=[str(self.base / "absent-reviewer")])
+        result = self.cli("dispatch", "--ticket", "7")
+        self.assertIn("#7: reviewer launch failed", result.stdout + result.stderr)
+        self.assertNotIn("Traceback", result.stdout + result.stderr)
+        rows = self.rows()
+        reviews = [r for r in rows if r["stage"] == "review" and r["kind"] == "exit"]
+        self.assertTrue(reviews)
+        for row in reviews:
+            self.assertEqual(row["outcome"], "unknown")
+            self.assertIn("FileNotFoundError", row["reason"])
+        exits = {r["stage"]: r["outcome"] for r in rows if r["kind"] == "exit"}
+        self.assertEqual(exits["ticket"], "project_escalation")
+        self.assertEqual(exits["dispatcher"], "completed")
+        self.assertIn("REVISE verdict after 1 review round(s)", result.stdout + result.stderr)
+
     def pr_config(self, fails, when="pr"):
         """One attempt check (`code`) plus one pr check (`slow`); prompts of worker and reviewer are kept."""
         self.pr_log = self.base / "pr-runs.log"
