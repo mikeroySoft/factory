@@ -27,6 +27,11 @@ from datetime import UTC
 
 from factory import __version__, config, lifecycle, manage, runtime_events
 
+# A worker runs this suite inside the dispatcher's handoff env; an inherited context would
+# redirect every fixture's lifecycle rows (gate timeouts, review verdicts...) into the live
+# journal, where `factory watch` files them as factory bugs. Tests that need a context set one.
+os.environ.pop(lifecycle.CONTEXT_ENV, None)
+
 
 def host_file(text: str) -> None:
     path = XDG / "factory" / "config.toml"
