@@ -33,7 +33,7 @@ OUTCOMES = {
 }
 REASONS = {
     "APPROVE", "REVISE", "unparsed_verdict", "merge_conflict", "upstream_gate_failed",
-    "upstream_sync", "check_terminated_by_signal", "check_timeout", "configured_check_failed",
+    "upstream_sync", "upstream_staged", "check_terminated_by_signal", "check_timeout", "configured_check_failed",
     "conflict_markers", "git_grep_failed", "git_diff_failed", "leak_scan_matches",
     "github_command_failed", "triage_endpoint_timeout", "triage_endpoint_unavailable",
     "no_tickets", "unparseable_decision", "triage_feedback", "ci_pending", "no_passing_ci",

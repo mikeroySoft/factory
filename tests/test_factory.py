@@ -3063,35 +3063,49 @@ class DispatchTest(unittest.TestCase):
                 self.assertNotIn("## Brief", dispatch.build_prompt(8, repo))
             self.assertFalse((repo / ".factory" / "brief-8.md").exists())
 
-    def test_sync_escalation_writes_same_packet_shape(self) -> None:
+    def test_worker_gate_rejects_a_sync_head_without_the_upstream_tip(self) -> None:
         from unittest import mock
 
         from factory import dispatch
 
         with tempfile.TemporaryDirectory() as d:
             repo = make_repo(Path(d))
-            dispatch.configure(config.load(repo))
-            wt = dispatch.FACTORY / "wt-upstream"
-            (wt / ".factory").mkdir(parents=True)
-            response = subprocess.CompletedProcess([], 0, "https://github.com/acme/widgets/issues/42\n", "")
-            with mock.patch.object(dispatch, "run", return_value=response):
-                url = dispatch.sync_escalate("abc123", "gate failed", "upstream gate detail")
+            dispatch.configure(config.Config(root=repo, repo="acme/widgets"))
+            dispatch.LOGS.mkdir(parents=True)
+            base = git(repo, "rev-parse", "HEAD")
+            (repo / "u1.txt").write_text("u1")
+            git(repo, "add", "-A")
+            git(repo, "commit", "-qm", "upstream u1")
+            tip = git(repo, "rev-parse", "HEAD")
+            git(repo, "reset", "-q", "--hard", base)  # the worker "fixed" the gate by dropping upstream
+            dispatch.sync_record(ticket=7, upstream=tip, commits="1", result="staged", head=base, gate="FAIL")
+            gates: list[dict] = []
 
-            self.assertEqual(url, "https://github.com/acme/widgets/issues/42")
-            packet = dispatch.FACTORY / "escalations" / "42.md"
-            text = packet.read_text()
-            self.assertIn("## Reason\n\ngate failed", text)
-            self.assertIn("## Attempts", text)
-            self.assertIn("## Last gate report\n\nupstream gate detail", text)
-            self.assertIn("## Latest review findings\n\n(none recorded)", text)
-            self.assertIn("## Handoff\n\n(none recorded)", text)
-            self.assertIn("## Log paths\n\n- none recorded", text)
-            self.assertIn(f"## Worktree path\n\n`{wt}`", text)
-            escalation = json.loads(dispatch.EVENTS.read_text().splitlines()[-1])
-            self.assertEqual(escalation["ticket"], 42)
-            self.assertEqual(escalation["upstream"], "abc123")
-            self.assertEqual(escalation["packet"], str(packet))
-            self.assertEqual(escalation["round"], 1)
+            def gate(*_args, **kwargs):
+                gates.append(kwargs)
+                return True, "PASS"
+
+            def worker_round(attempt: int) -> tuple:
+                with mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
+                        mock.patch.object(dispatch, "run_worker", return_value=(0, None)), \
+                        mock.patch.object(dispatch, "commit_leftovers"), \
+                        mock.patch.object(dispatch, "run_gate", side_effect=gate):
+                    return dispatch.worker_round(7, repo, set(), "ticket", "", attempt, float("inf"))
+
+            ok, report, _, _ = worker_round(1)
+            self.assertFalse(ok)
+            self.assertIn(f"does not contain upstream tip {tip}", report)
+            # No bypass for the worker: the human label still gates protected paths; the gate
+            # exempts only content equal to the tip or the staged candidate and leak-scans from the tip.
+            self.assertEqual(gates, [{"protected_override": False, "upstream": [tip, base]}])
+            attempt = [e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("event") == "attempt"][-1]
+            self.assertEqual((attempt["gate"], attempt["head"], attempt["actual_head"]), ("FAIL", base, base))
+
+            git(repo, "merge", "-q", "--no-ff", "-m", "merge upstream tip", tip)
+            ok, report, _, head = worker_round(2)
+            self.assertTrue(ok)
+            self.assertEqual(head, git(repo, "rev-parse", "HEAD"))
+            self.assertNotIn("Gate evidence rejected", report)
 
     def test_learn_writes_lessons_from_events(self) -> None:
         from unittest import mock
@@ -4457,7 +4471,31 @@ class DispatchTest(unittest.TestCase):
             self.assertIn("- main line", pushed)
             self.assertNotIn("<<<<<<<", pushed)
 
-    def test_sync_lands_the_clean_prefix_and_escalates_only_the_remainder(self) -> None:
+    def sync_pass_with(self, root: Path, open_issues: list[dict]) -> tuple[list[list[str]], object]:
+        """Run sync_pass with `gh` stubbed: issue creation returns #42; returns (gh argv list, run_gate mock)."""
+        from unittest import mock
+
+        from factory import dispatch
+
+        cfg = config.Config(root=root, repo="acme/widgets", upstream="upstream", main="main")
+        with mock.patch.object(config, "remote_slug", return_value="acme/upstream-widgets"):
+            dispatch.configure(cfg)
+        real_run = dispatch.run
+        gh_calls: list[list[str]] = []
+
+        def run_spy(cmd, **kw):
+            if cmd[0] == "gh":
+                gh_calls.append(cmd)
+                return subprocess.CompletedProcess(cmd, 0, "https://github.com/acme/widgets/issues/42\n", "")
+            return real_run(cmd, **kw)
+
+        with mock.patch.object(dispatch, "gh_json", return_value=open_issues), \
+             mock.patch.object(dispatch, "run", side_effect=run_spy), \
+             mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")) as gated:
+            dispatch.sync_pass(False)
+        return gh_calls, gated
+
+    def test_sync_stages_the_clean_tip_as_a_sync_ticket_without_moving_main(self) -> None:
         from unittest import mock
 
         from factory import dispatch
@@ -4465,13 +4503,50 @@ class DispatchTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
             root, origin, upstream = build_fork(tmp)
-            # origin can be pushed to even though main is checked out there.
+            git(origin, "config", "receive.denyCurrentBranch", "ignore")
+            (upstream / "u1.txt").write_text("u1")
+            git(upstream, "add", "-A")
+            git(upstream, "commit", "-q", "-m", "u1")
+            u1 = git(upstream, "rev-parse", "HEAD")
+            fork_main = git(origin, "rev-parse", "main")
+
+            gh_calls, gated = self.sync_pass_with(root, [])
+
+            gated.assert_called_once_with(mock.ANY, "upstream", skip="leak-scan", protected_override=True)
+            self.assertEqual(git(origin, "rev-parse", "main"), fork_main, "a clean tip must not move main")
+            create = next(c for c in gh_calls if c[:3] == ["gh", "issue", "create"])
+            self.assertEqual(create[create.index("--label") + 1], "ready-for-agent")
+            body = Path(create[create.index("--body-file") + 1]).read_text()
+            self.assertIn(u1, body)
+            self.assertIn("gate on it passed", body)
+            wt = root / ".factory" / "wt-42"
+            self.assertEqual(git(wt, "branch", "--show-current"), "agent/42")
+            self.assertEqual(
+                subprocess.run(["git", "-C", str(wt), "merge-base", "--is-ancestor", u1, "HEAD"], check=False).returncode, 0,
+            )
+            head = git(wt, "rev-parse", "HEAD")
+            self.assertEqual(dispatch.sync_event(42)["upstream"], u1)
+            self.assertEqual(dispatch.sync_staged(42, wt), ("ok", head))
+            attempt = next(e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("event") == "attempt")
+            self.assertEqual(
+                (attempt["ticket"], attempt["attempt"], attempt["gate"], attempt["head"], attempt["actual_head"]),
+                (42, 0, "PASS", head, head),
+            )
+            self.assertFalse((root / ".factory" / "wt-upstream").exists())
+
+    def test_sync_stages_the_clean_prefix_but_never_lands_it(self) -> None:
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            root, origin, upstream = build_fork(tmp)
             git(origin, "config", "receive.denyCurrentBranch", "ignore")
 
             # The fork edits shared.txt; upstream later edits the same line.
             (origin / "shared.txt").write_text("fork\n")
             git(origin, "add", "-A")
             git(origin, "commit", "-q", "-m", "fork edit")
+            fork_main = git(origin, "rev-parse", "main")
 
             (upstream / "u1.txt").write_text("u1")
             git(upstream, "add", "-A")
@@ -4482,70 +4557,44 @@ class DispatchTest(unittest.TestCase):
             git(upstream, "commit", "-q", "-m", "u2 conflicting")
             u2 = git(upstream, "rev-parse", "HEAD")
 
-            cfg = config.Config(root=root, repo="acme/widgets", upstream="upstream", main="main")
-            with mock.patch.object(config, "remote_slug", return_value="acme/upstream-widgets"):
-                dispatch.configure(cfg)
+            gh_calls, gated = self.sync_pass_with(root, [])
 
-            with mock.patch.object(dispatch, "gh_json", return_value=[]), \
-                 mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")) as gated, \
-                 mock.patch.object(
-                     dispatch, "sync_escalate", return_value="https://x/issues/1",
-                 ) as escalate:
-                dispatch.sync_pass(False)
-            gated.assert_called_once_with(mock.ANY, "upstream", skip="leak-scan", protected_override=True)
+            gated.assert_not_called()  # a conflicted candidate is the worker's evidence, not a gate run
+            self.assertEqual(git(origin, "rev-parse", "main"), fork_main, "a staged prefix must not land")
+            wt = root / ".factory" / "wt-42"
+            ancestor = lambda rev: subprocess.run(
+                ["git", "-C", str(wt), "merge-base", "--is-ancestor", rev, "HEAD"], check=False,
+            ).returncode == 0
+            self.assertTrue(ancestor(u1), "the conflict-free prefix is staged on the candidate")
+            self.assertFalse(ancestor(u2), "the conflicting tip is left for the worker")
+            create = next(c for c in gh_calls if c[:3] == ["gh", "issue", "create"])
+            body = Path(create[create.index("--body-file") + 1]).read_text()
+            self.assertIn(f"conflict-free prefix through `{u1}`", body)
+            self.assertIn("shared.txt", body)
+            self.assertIn(u2, body)
+            self.assertEqual(dispatch.sync_event(42)["upstream"], u2)
+            self.assertIsNone(dispatch.sync_staged(42, wt))
+            attempt = next(e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("event") == "attempt")
+            self.assertEqual((attempt["attempt"], attempt["gate"]), (0, None))
 
-            # Assert in root: it has every upstream object, so a missing commit
-            # cannot make the negative check pass for the wrong reason.
-            git(root, "fetch", "-q", "origin", "main")
-            git(root, "rev-parse", "--verify", f"{u2}^{{commit}}")
-            self.assertEqual(
-                subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", u1, "origin/main"], check=False).returncode,
-                0,
-                "the conflict-free prefix should have landed",
-            )
-            self.assertNotEqual(
-                subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", u2, "origin/main"], check=False).returncode,
-                0,
-                "the conflicting commit must not land",
-            )
-            escalate.assert_called_once()
-            self.assertIn("1 upstream commit(s) remain", escalate.call_args.args[2])
-            self.assertIn("shared.txt", escalate.call_args.args[2])
-
-    def test_sync_escalation_is_not_duplicated_when_the_search_index_lags(self) -> None:
-        from unittest import mock
-
-        from factory import dispatch
-
+    def test_sync_waits_on_an_open_sync_ticket_whoever_owns_it(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             tmp = Path(d)
-            root, origin, upstream = build_fork(tmp)
-
-            (origin / "shared.txt").write_text("fork\n")
-            git(origin, "add", "-A")
-            git(origin, "commit", "-q", "-m", "fork edit")
-            (upstream / "shared.txt").write_text("upstream\n")
+            root, _origin, upstream = build_fork(tmp)
+            (upstream / "u1.txt").write_text("u1")
             git(upstream, "add", "-A")
-            git(upstream, "commit", "-q", "-m", "u1 conflicting")
+            git(upstream, "commit", "-q", "-m", "u1")
 
-            cfg = config.Config(root=root, repo="acme/widgets", upstream="upstream", main="main")
-            with mock.patch.object(config, "remote_slug", return_value="acme/upstream-widgets"):
-                dispatch.configure(cfg)
+            # A human-owned escalation from an earlier release is still a sync ticket:
+            # it is never re-claimed or duplicated while open.
+            gh_calls, gated = self.sync_pass_with(
+                root, [{"number": 7, "title": "upstream sync: merge conflict at abc123456789"}],
+            )
 
-            # GitHub's search index has not picked the escalation up yet; the
-            # issue list has. Reading the index would open a second issue for a
-            # conflict a human is already looking at.
-            def lagging_gh_json(cmd, *args, **kwargs):
-                if "--search" in cmd:
-                    return []
-                return [{"number": 7, "title": "upstream sync: merge conflict at abc123456789"}]
-
-            with mock.patch.object(dispatch, "gh_json", side_effect=lagging_gh_json), \
-                 mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
-                 mock.patch.object(dispatch, "sync_escalate") as escalate:
-                dispatch.sync_pass(False)
-
-            escalate.assert_not_called()
+            gated.assert_not_called()
+            self.assertEqual(gh_calls, [])
+            self.assertFalse((root / ".factory" / "wt-7").exists())
+            self.assertFalse((root / ".factory" / "wt-upstream").exists())
 
 
 class FeedbackSnapshotTest(unittest.TestCase):

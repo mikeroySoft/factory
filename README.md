@@ -248,16 +248,36 @@ before editing and use discussion to propose revisions first. The pinned
 snapshot protects admitted execution; it is not concurrency control for
 simultaneous human edits.
 
-For a fork that tracks an upstream, set `[repo].upstream = "upstream"` and the
-dispatcher merges new upstream commits into your `main` (gated) before each
-merge stage.
+For a fork that tracks an upstream, set `[repo].upstream = "upstream"`. When
+upstream `main` moves, the dispatcher stages a candidate in a detached worktree
+(the upstream tip merged with `--no-ff`, or, when the tip conflicts, the newest
+conflict-free prefix) and runs the host gate on it, then files one
+`upstream sync:` issue labelled `ready-for-agent` with the exact merge and gate
+evidence and hands the candidate to that issue's `agent/<n>` branch. From there
+it is an ordinary ticket: a clean candidate whose staged gate passed goes
+straight to the PR and review; otherwise the worker repairs it within
+`max_attempts`/`budget_min`, the gate reruns after every attempt, and exhausted
+attempts escalate like any ticket. The worker gets no bypass: its gate
+(`factory gate --upstream <tip> --upstream <staged head>`, also on refresh)
+ignores only protected-path hits whose content equals the dispatcher's staged
+candidate's, or the upstream tip's for a path upstream itself changed; a
+fork-only protected or add-only file the worker deletes, resets to upstream's
+version, or edits still fails `protected-paths` unless a human applies
+`factory-protected-override`. It leak-scans the diff from the tip, so
+anything the worker writes is scanned while upstream's already-public content
+is not. A passing gate is rejected unless the head still contains the recorded
+upstream tip. Nothing moves `main` before the merge stage lands the reviewed,
+CI-green PR, which merges (never squashes) the upstream ancestry. One open sync
+issue, worker- or human-owned, parks the stage until it closes. A persistent
+conflict therefore delays the whole upstream batch: a staged prefix is not
+landed on its own, and partial progress needs its own reviewed PR.
 
 ## Commands
 
 | Command | What one invocation does |
 |---|---|
 | `factory triage` | Labels every `needs-triage` issue via the local model: `ready-for-agent` (with an agent brief), `needs-info` (with the question), `ready-for-human`, or a `wontfix` proposal comment. `--dry-run`, `--issue N`, `--replay a,b,c`. |
-| `factory dispatch` | One stateless pass: fetch and detach the main checkout at `origin/<main>` before `.factory.toml` is read (a root with tracked or untracked changes outside `.factory/` exits 1 with a `root_dirty` dispatcher exit row naming the paths and does nothing, even when its config does not load) → upstream sync → merge stage (at most one PR) → review-only PR intake → manager → claim up to `max_active` tickets → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan from the checkout as it is. |
+| `factory dispatch` | One stateless pass: fetch and detach the main checkout at `origin/<main>` before `.factory.toml` is read (a root with tracked or untracked changes outside `.factory/` exits 1 with a `root_dirty` dispatcher exit row naming the paths and does nothing, even when its config does not load) → upstream sync (stage a sync ticket) → merge stage (at most one PR) → review-only PR intake → manager → claim up to `max_active` tickets → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan from the checkout as it is. |
 | `factory manage` | First recommends directions for `needs-review` PRs, then `needs-viability` issues; then resolves untouched `ready-for-human` escalation packets within `[manager].rounds`; finally publishes one routed human handoff request per escalation whose automatic recovery is terminal (also without a manager). `--dry-run` lists eligible requests without inference or writes. |
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
 | `factory watch` | Post-ship monitor from local evidence only: lifecycle exit rows with `mechanism_failure` (or `unknown` with a `worker_exit:`/`check_timeout` reason), failed `factory-*` user units for this repository, `factory dashboard --runtime-json` source errors, and one escalation `code` repeating on ≥3 distinct tickets in the trailing 7 days. Each distinct fingerprint (sha256 of kind, stage, reason/unit, 12 hex; `escalation:<code>` for repeats) files one `bug,needs-triage` issue carrying the fingerprint, the triggering journal rows, the newest attempt log tail, the unit status or runtime excerpt (for repeats: each ticket, its prose `reason` and escalation packet path), the reproducing command and an "Expected behavior" section; the filing is journaled as a `watch` row. `escalate` rows without a `code` are `unknown` and never filed. Never refiles while that issue is open; refiles once it is closed and the signal recurs. At most 5 issues per pass. `--dry-run` prints what would be filed without `gh`. `factory install` runs it from the pass unit's `ExecStopPost=`, after every `dispatch`, crashed or not. |
@@ -516,7 +536,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    or any removed or changed line fails and escalates as "worker removed or
    changed existing tests". A human can apply
    `factory-protected-override` to authorize worker edits, including a refresh
-   onto moved main; upstream sync bypasses this worker-only guard. Otherwise
+   onto moved main; an `upstream sync:` ticket's worker gets no such override,
+   only upstream-authored content is exempt (`--upstream`, above). Otherwise
    make protected changes outside the worker flow. Then `conflict-markers`,
    your `[[gate.check]]` list in order, and a `leak-scan`
    run. Checks marked `exclusive` serialise on a host-wide lock. Every check
@@ -1034,14 +1055,15 @@ versions are not interpreted as version 1 by the existing observer.
 |---|---|
 | `dispatcher` | One real dispatcher pass; idle passes with nothing claimed, triaged, merged, waited on or failed leave no lifecycle rows. Completion means the pass ended, not that any ticket merged. |
 | `scheduling` | Frontier/capacity evaluation and scheduling; separate from ticket execution and merge eligibility. |
-| `landing` | The existing nonblocking merge-lock request and, when acquired, upstream sync/merge pass through actual unlock. |
+| `landing` | The existing nonblocking merge-lock request and, when acquired, upstream sync staging and the merge pass through actual unlock. |
 | `ticket` | A ticket admission/invocation, including nonblocking lock request and admission re-read. Admission refusal is not worker time. Later PR passes have separate `merge-eligibility` executions. |
 | `triage`, `triage-ticket` | Whole triage invocation and each actual ticket decision; uneventful invocations with no issues to triage leave no lifecycle rows. Standalone triage retains its own root identity and null dispatcher association. |
 | `worker` | One worker subprocess attempt. |
 | `gate`, `gate-check` | An invoked gate and each actually executed check. Skipped checks and a disabled leak scan do not enter a check scope. |
 | `review` | One reviewer invocation, attributed to its review round. |
 | `merge-eligibility` | Assessment/refresh of one candidate in this dispatcher pass; not a merge. |
-| `merge` | Actual PR merge or upstream integration (which may contain a gate child). Only a successful PR merge or upstream push records `merged`. Approval alone does not. |
+| `upstream-sync` | Staging one upstream candidate in a detached worktree (merge, then a gate child when the merge is clean) and filing its sync ticket; exits `completed` with reason `upstream_staged`. Never moves main. |
+| `merge` | Actual PR merge. Only a successful PR merge records `merged`. Approval alone does not. |
 | `resource-observation`, `scheduling-observation` | Change-only local evidence records, not pipeline invocations. They have stable observation-scope execution/root IDs, no `enter`/`exit`, and null parent/dispatcher/ticket/attempt/round fields; execution occupancy excludes them. |
 
 Evidence kinds retain the common keys above and add these kind-specific keys:

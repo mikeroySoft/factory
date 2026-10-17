@@ -18,10 +18,16 @@ p = Path(os.environ["SMOKE_STATE"])
 s = json.loads(p.read_text())
 a = sys.argv[1:]
 issue = {"number": 7, "title": "local change", "body": "Acceptance: make the local change", "comments": [], "labels": [{"name": "ready-for-agent"}], "assignees": [], "state": "OPEN"}
+if s.get("sync"):  # the dispatcher filed a sync ticket; the only open issue until its PR merges
+    issue = {**issue, "title": "upstream sync: 1 commit(s) at local", "body": s["sync"], "state": "CLOSED" if s.get("merged") else "OPEN"}
 if a[:2] == ["issue", "view"]:
     print(json.dumps(issue))
+elif a[:2] == ["issue", "create"]:
+    s["sync"] = Path(a[a.index("--body-file") + 1]).read_text()
+    p.write_text(json.dumps(s))
+    print("https://example.invalid/issues/7")
 elif a[:2] == ["issue", "list"]:
-    print("[]")
+    print(json.dumps([issue]) if s.get("sync") and not s.get("merged") else "[]")
 elif a[:2] == ["pr", "list"]:
     if s.get("pr") and not s.get("merged"):
         head = subprocess.run(["git", "-C", ".factory/wt-7", "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
@@ -38,7 +44,7 @@ elif a[:2] == ["pr", "view"]:
 elif a[:2] == ["pr", "checks"]:
     print(json.dumps([{"name": "ci", "bucket": "pass" if s.get("merge_ready") else "pending"}]))
 elif a[:2] == ["pr", "merge"]:
-    s["merged"] = True
+    s["merged"] = a
     p.write_text(json.dumps(s))
 elif a[0] == "api" and "/compare/" in a[1]:
     print(json.dumps({"behind_by": 0}))
@@ -329,7 +335,8 @@ class LocalCLI(unittest.TestCase):
         self.assertFalse((self.repo / ".factory").exists())
         self.assertFalse((self.repo / ".git" / "FETCH_HEAD").exists())
 
-    def test_upstream_merge_records_completion_only_after_local_push(self):
+    def upstream_fixture(self, check=None, worker=None):
+        """A local upstream one commit ahead of the fork; returns its tip and the fork's main."""
         import shutil
         upstream = self.base / "upstream.git"
         source = self.base / "upstream-source"
@@ -343,7 +350,9 @@ class LocalCLI(unittest.TestCase):
         git("-C", str(source), "add", "upstream.txt")
         git("-C", str(source), "commit", "-m", "local upstream change")
         git("-C", str(source), "push", "origin", "main")
+        tip = git("-C", str(source), "rev-parse", "HEAD").stdout.strip()
         self.git("remote", "add", "upstream", str(upstream))
+        self.write_config(check=check, worker=worker, reviewer=[sys.executable, "-c", "print('VERDICT: APPROVE')"])
         path = self.repo / ".factory.toml"
         path.write_text(path.read_text().replace('slug = "local/smoke"', 'slug = "local/smoke"\nupstream = "upstream"'))
         self.commit_config()
@@ -355,14 +364,68 @@ class LocalCLI(unittest.TestCase):
             f"os.execv({shutil.which('git')!r}, ['git', *sys.argv[1:]])\n"
         )
         wrapper.chmod(0o755)
+        return tip, self.git("rev-parse", "origin/main").stdout.strip()
+
+    def test_failed_upstream_gate_is_repaired_on_the_candidate_branch_and_merged_as_a_pr(self):
+        # The gate fails until a worker adds fix.txt; the detached candidate cannot have it.
+        self.worker.write_text(
+            'import subprocess\nfrom pathlib import Path\n'
+            'Path("fix.txt").write_text("fixed\\n")\n'
+            'subprocess.run(["git", "add", "fix.txt"], check=True)\n'
+            'subprocess.run(["git", "commit", "-qm", "repair upstream gate"], check=True)\n'
+        )
+        tip, fork_main = self.upstream_fixture(
+            check=[sys.executable, "-c", "import sys, pathlib; sys.exit(0 if pathlib.Path('fix.txt').exists() else 1)"],
+        )
         self.cli("dispatch")
         rows = self.rows()
-        merges = [r for r in rows if r["stage"] == "merge" and r["kind"] == "exit"]
-        self.assertEqual([(r["ticket"], r["outcome"], r["reason"]) for r in merges],
-                         [(None, "merged", "upstream_sync")])
-        gates = [r for r in rows if r["stage"] == "gate" and r["kind"] == "enter"]
-        self.assertEqual(gates[0]["parent_execution_id"], merges[0]["execution_id"])
-        self.assertEqual(self.git("show", "origin/main:upstream.txt").stdout, "upstream change\n")
+        staged = [r for r in rows if r["stage"] == "upstream-sync" and r["kind"] == "exit"]
+        self.assertEqual([(r["ticket"], r["outcome"], r["reason"]) for r in staged], [(None, "completed", "upstream_staged")])
+        self.assertFalse(any(r["stage"] == "merge" for r in rows))
+        gates = [r for r in rows if r["stage"] == "gate" and r["kind"] == "exit"]
+        self.assertEqual([r["outcome"] for r in gates], ["product_feedback", "completed"])
+        self.assertEqual(gates[0]["parent_execution_id"], staged[0]["execution_id"])
+        events = lifecycle.read_events(self.events)
+        attempts = [r for r in events if r.get("event") == "attempt"]
+        self.assertEqual([(r["ticket"], r["attempt"], r["gate"]) for r in attempts], [(7, 0, "FAIL"), (7, 1, "PASS")])
+        self.assertNotEqual(attempts[0]["head"], attempts[1]["head"])
+        state = json.loads(self.state.read_text())
+        self.assertIn("gate on it FAILED", state["sync"])
+        self.assertIn(tip, state["sync"])
+        self.assertTrue(state["pr"])
+        approval = next(r for r in events if r.get("event") == "approved")
+        wt = self.repo / ".factory" / "wt-7"
+        head = subprocess.run(["git", "-C", str(wt), "rev-parse", "HEAD"], env=self.env, check=True, capture_output=True, text=True).stdout.strip()
+        self.assertEqual(approval["head"], head)
+        self.assertEqual(subprocess.run(["git", "-C", str(wt), "branch", "--show-current"], env=self.env, check=True, capture_output=True, text=True).stdout.strip(), "agent/7")
+        self.assertEqual(subprocess.run(["git", "-C", str(wt), "merge-base", "--is-ancestor", tip, "HEAD"], env=self.env, check=False).returncode, 0)
+        self.git("fetch", "origin", "main")
+        self.assertEqual(self.git("rev-parse", "origin/main").stdout.strip(), fork_main)  # no main movement
+        self.merge_accepted()
+        merged = json.loads(self.state.read_text())["merged"]
+        self.assertIn("--merge", merged)  # upstream ancestry kept, not squashed
+        self.assertIn(head, merged)
+        self.git("fetch", "origin", "main")
+        self.assertEqual(self.git("rev-parse", "origin/main").stdout.strip(), fork_main)  # only the merge stage moves main
+
+    def test_clean_upstream_candidate_needs_no_worker_before_its_pr(self):
+        self.worker.write_text('from pathlib import Path\nPath("worker-ran").write_text("no")\n')
+        _tip, fork_main = self.upstream_fixture()
+        self.cli("dispatch")
+        rows = self.rows()
+        self.assertFalse(any(r["stage"] in {"worker", "merge"} for r in rows))
+        self.assertFalse((self.repo / ".factory" / "wt-7" / "worker-ran").exists())
+        events = lifecycle.read_events(self.events)
+        attempts = [(r["ticket"], r["attempt"], r["gate"]) for r in events if r.get("event") == "attempt"]
+        self.assertEqual(attempts, [(7, 0, "PASS")])
+        approval = next(r for r in events if r.get("event") == "approved")
+        attempt = next(r for r in events if r.get("event") == "attempt")
+        self.assertEqual(approval["head"], attempt["head"])
+        self.assertTrue(json.loads(self.state.read_text())["pr"])
+        self.git("fetch", "origin", "main")
+        self.assertEqual(self.git("rev-parse", "origin/main").stdout.strip(), fork_main)
+        self.merge_accepted()
+        self.assertIn("--merge", json.loads(self.state.read_text())["merged"])
 
     def test_worker_launch_failure_releases_ticket_lock_and_skips_downstream(self):
         self.write_config(worker=[str(self.base / "absent-worker")])

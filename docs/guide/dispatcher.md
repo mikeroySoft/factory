@@ -10,7 +10,7 @@ Running it again is safe. Held locks are skipped. The merge lock is not waited o
 
 When `factory dispatch` is invoked without `--ticket` (`factory/dispatch.py` `main`):
 
-1. **Landing.** `land_pass` takes `.factory/locks/merge.lock` or skips. Under that lock: upstream sync if `[repo].upstream` is set, then the merge stage. At most one pull request merges. A refresh of a behind pull request also returns after that one PR.
+1. **Landing.** `land_pass` takes `.factory/locks/merge.lock` or skips. Under that lock: upstream sync if `[repo].upstream` is set, then the merge stage. Upstream sync never moves `main`: when upstream moved and no `upstream sync:` issue is open, it stages the merge (or the conflict-free prefix) in a detached worktree, gates it, files one `ready-for-agent` sync ticket with that evidence, and hands the candidate to `agent/<n>`; the ticket then runs the claim, worker, gate, review, PR, and merge steps like any other. At most one pull request merges. A refresh of a behind pull request also returns after that one PR.
 2. **Review intake.** `review_intake_pass` reviews opted-in pull requests. It does not merge them.
 3. **Manager.** `manage_pass` from `factory/manage.py`. Viability, pull-request frontier, and escalation recovery run only when `manager.command` is set. Terminal human handoffs run either way.
 4. **Claim.** Count held ticket locks. Capacity is `dispatch.max_active` minus that count (default `max_active` is 2). Claim that many open, unassigned, unblocked `ready-for-agent` issues that are not initiatives.
