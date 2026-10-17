@@ -371,7 +371,7 @@ hit `--max-time 300` and was retried once through the same `review()` path, as o
 and `62-before` D2 cross-file compositions were missed 4/4 each in this run (`12-before`
 D1 also 4/4 in `runs/main`; `62-before` D2 only 1/4 there); `20-before` D1 was detected
 once (`issue36` s1), the first packet-limited detection of that defect in any run (0/4 in
-`runs/main`, 0/4 in `runs/issue36-repeatability`).
+`runs/main`, 0/2 in `runs/issue36-repeatability`).
 
 **Unnecessary blocking demands** (7 APPROVE-oracle cases × 2 samples per arm):
 
