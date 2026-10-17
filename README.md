@@ -258,10 +258,11 @@ straight to the PR and review; otherwise the worker repairs it within
 `max_attempts`/`budget_min`, the gate reruns after every attempt, and exhausted
 attempts escalate like any ticket. The worker gets no bypass: its gate
 (`factory gate --upstream <tip> --upstream <staged head>`, also on refresh)
-ignores only protected-path hits whose content equals the upstream tip's or
-the dispatcher's staged candidate's, so a worker edit to a protected or
-add-only path still fails `protected-paths` unless a human applies
-`factory-protected-override`, and leak-scans the diff from the tip, so
+ignores only protected-path hits whose content equals the dispatcher's staged
+candidate's, or the upstream tip's for a path upstream itself changed; a
+fork-only protected or add-only file the worker deletes, resets to upstream's
+version, or edits still fails `protected-paths` unless a human applies
+`factory-protected-override`. It leak-scans the diff from the tip, so
 anything the worker writes is scanned while upstream's already-public content
 is not. A passing gate is rejected unless the head still contains the recorded
 upstream tip. Nothing moves `main` before the merge stage lands the reviewed,

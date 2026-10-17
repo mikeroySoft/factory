@@ -155,6 +155,33 @@ class AddOnlyPathsTest(unittest.TestCase):
             self.assertIn("worker.md:1: [codename]", report)
             self.assertNotIn("NOTES.md", report)
 
+    def test_upstream_tip_does_not_exempt_fork_only_files(self) -> None:
+        """#151 round 2: a path upstream never changed is the fork's. Matching the tip
+        (both absent, or reset to upstream's version) does not make a worker edit upstream's."""
+        with tempfile.TemporaryDirectory() as d:
+            repo = repo_with_test(Path(d))
+            root = git(repo, "rev-parse", "HEAD")
+            (repo / "tests" / "test_fork.py").write_text("def test_fork():\n    assert True\n")
+            (repo / "tests" / "test_old.py").write_text("def test_a():\n    assert True\n# fork line\n")
+            commit(repo, "fork")
+            git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+            git(repo, "checkout", "-q", root)
+            (repo / "NOTES.md").write_text("upstream\n")
+            commit(repo, "upstream")
+            tip = git(repo, "rev-parse", "HEAD")
+            git(repo, "checkout", "-q", "main")
+            git(repo, "merge", "-q", "--no-ff", "-m", "sync", tip)
+            code, _, report = gate(repo, "--upstream", tip)
+            self.assertEqual(code, 0, report)
+            git(repo, "rm", "-q", "tests/test_fork.py")
+            git(repo, "checkout", "-q", tip, "--", "tests/test_old.py")
+            git(repo, "commit", "-q", "-m", "worker drops fork tests")
+            code, _, report = gate(repo, "--upstream", tip)
+            self.assertEqual(code, 1, report)
+            self.assertIn(ADD_ONLY, report)
+            self.assertIn("--- a/tests/test_fork.py", report)
+            self.assertIn("-# fork line", report)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -149,8 +149,10 @@ ADD_ONLY_NOTE = "add-only path removed or changed existing lines"
 
 def check_protected_paths(base: str, upstream: list[str] = ()) -> tuple[bool, str, str]:
     """(passed, reason, detail): reason is `protected_paths`, or `add_only_paths` when
-    every hit is an add-only glob whose change was not purely additive. A hit whose HEAD
-    content equals an `upstream` ref's was not written by the worker and is ignored."""
+    every hit is an add-only glob whose change was not purely additive. With `upstream`
+    (the tip, then the staged head) a hit is ignored when its HEAD content equals the
+    staged head's, or equals the tip's for a path upstream itself changed since it
+    diverged from `base`; fork-only paths the worker deletes or resets still count."""
     listing = timed(["git", "ls-tree", "--name-only", base, "--", CONFIG_NAME])
     if listing.returncode:
         # A new repository has no base commit yet; no worker diff exists to guard.
@@ -184,12 +186,24 @@ def check_protected_paths(base: str, upstream: list[str] = ()) -> tuple[bool, st
         elif any(fnmatch.fnmatchcase(path, g) for g in protected):
             hits.append(path)
     if upstream and (candidates := hits + not_additive + additive):
-        authored = set(candidates)  # paths differing from every upstream ref
+        tip = upstream[0]
+        fork_point = timed(["git", "merge-base", base, tip])
+        if fork_point.returncode:
+            return False, "protected_paths", fork_point.stdout + fork_point.stderr
+        changed = timed(["git", "diff", "--no-renames", "--name-only", "-z",
+                         fork_point.stdout.strip(), tip, "--", *candidates])
+        if changed.returncode:
+            return False, "protected_paths", changed.stdout + changed.stderr
+        upstream_changed = set(changed.stdout.split("\0"))
+        authored = set(candidates)
         for ref in upstream:
             diff = timed(["git", "diff", "--no-renames", "--name-only", "-z", ref, "HEAD", "--", *candidates])
             if diff.returncode:
                 return False, "protected_paths", diff.stdout + diff.stderr
-            authored &= set(diff.stdout.split("\0"))
+            same = authored - set(diff.stdout.split("\0"))
+            if ref == tip:  # absent-at-both or reset-to-upstream is not upstream authorship
+                same &= upstream_changed
+            authored -= same
         hits, not_additive, additive = ([p for p in group if p in authored] for group in (hits, not_additive, additive))
     if additive:
         numstat = timed(["git", "diff", "--no-renames", "--numstat", "-z", f"{base}...HEAD", "--", *additive])
@@ -228,8 +242,9 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--protected-override", action="store_true",
                         help="human-authorized protected-path override")
     parser.add_argument("--upstream", action="append", default=[], metavar="REF",
-                        help="upstream sync: protected-path hits whose HEAD content equals REF's are "
-                        "upstream-authored, not worker edits (repeatable); the leak scan diffs from the first REF")
+                        help="upstream sync: first REF is the tip, later REFs the staged head (repeatable); "
+                        "protected-path hits equal to the staged head, or to the tip for paths upstream changed, "
+                        "are upstream-authored, not worker edits; the leak scan diffs from the tip")
     parser.add_argument("--tier", choices=config.CHECK_TIERS, default="attempt",
                         help="attempt: every check except `when = \"pr\"`/`\"release\"` ones (reported SKIP); "
                         "pr: only the `when = \"pr\"` checks (release ones reported SKIP); "
