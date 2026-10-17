@@ -35,6 +35,7 @@ LABEL_PROTECTED_OVERRIDE = "factory-protected-override"
 LABEL_CHORE = "chore"
 LABEL_INITIATIVE = "initiative"
 LABEL_WONTFIX = "wontfix-proposal"
+LABEL_EXPERIMENT = "experiment"
 LABELS = {
     LABEL_VIABILITY: ("D4C5F9", "Opt in to a manager build/defer recommendation before triage"),
     LABEL_REVIEW: ("D4C5F9", "Opt in to a manager PR direction recommendation before review"),
@@ -47,6 +48,7 @@ LABELS = {
     LABEL_PROTECTED_OVERRIDE: ("B60205", "Human authorization for worker edits to protected paths"),
     LABEL_WONTFIX: ("EDEDED", "Triage or manager proposes not to action this; a human decides"),
     LABEL_INITIATIVE: ("1D76DB", "Shared initiative plan read by `factory plan`; never triaged, dispatched, managed or merged"),
+    LABEL_EXPERIMENT: ("5319E7", "Experiment ticket: at most one active at a time; never ranks by its results"),
 }
 
 # Word-bounded strong signals only: bare words like "internal"/"private" are ordinary English.
