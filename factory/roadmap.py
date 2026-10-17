@@ -9,6 +9,7 @@ from uuid import uuid4
 from factory import binding, config, lifecycle, outcomes, plan, runtime_events
 from factory.briefing import CONTEXT_CAP, SOURCE_COUNT
 from factory.evidence import ERROR_CAP, READ_SECONDS, EvidenceError, clean_text, failed, source
+from factory.schedule import PRIORITY_TIERS, priorities
 
 ATTENTION_CAP = plan.PAGES * plan.PAGE_SIZE
 BLOCKER_CAP = plan.LINKS
@@ -402,20 +403,9 @@ def _admission_readiness(cfg, body: str, accepted: object,
         return None, f"Plan binding is invalid; admission would refuse it: {exc}"
 
 
-PRIORITY_TIERS = ("NOW", "NEXT", "THEN", "LATER")
 # #96 dispositions grouped for display; the recorded value is always kept beside it.
 DISPOSITION_OUTCOMES = {"adopt": "accepted", "amend": "accepted", "reject": "rejected",
                         "no-change": "rejected", "defer": "deferred", "pending": "pending"}
-
-
-def _priorities(plan_text: str | None) -> dict[int, str]:
-    """Accepted priority tier per ticket: first `NOW`/`NEXT`/`THEN`/`LATER` Plan line naming `#N`."""
-    tiers: dict[int, str] = {}
-    for line in (plan_text or "").splitlines():
-        match = re.match(r"\s*(NOW|NEXT|THEN|LATER)\b", line)
-        for number in re.findall(r"#(\d+)", line) if match else ():
-            tiers.setdefault(int(number), match.group(1))
-    return tiers
 
 
 def _experiments(result: dict, cfg) -> dict[int, list[dict]]:
@@ -481,7 +471,7 @@ def _experiments(result: dict, cfg) -> dict[int, list[dict]]:
 
 def _sequence(row: dict) -> dict:
     """Explain the next initiative action from accepted priority, eligibility and real blockers."""
-    tiers = _priorities((row["sections"] or {}).get("Plan"))
+    tiers = priorities((row["sections"] or {}).get("Plan"))
 
     def rank(item: dict) -> int:
         # A pending experiment disposition is current evidence under the accepted protocol.
