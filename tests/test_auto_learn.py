@@ -396,6 +396,8 @@ class PromotionTest(unittest.TestCase):
     def test_lessons_pr_is_admitted_to_review_intake_without_a_label(self) -> None:
         self.open_prs = [{"number": n, "state": "OPEN", "isDraft": False, "headRefName": b, "headRefOid": "h", "baseRefOid": "b",
                           "labels": [], "reviewRequests": []} for n, b in ((42, self.BRANCH), (43, "agent/7"), (44, "agent/revert-lessons-42"))]
+        self.open_prs.append({"number": 45, "state": "OPEN", "isDraft": False, "isCrossRepository": True, "headRefName": self.BRANCH,
+                              "headRefOid": "h", "baseRefOid": "b", "labels": [], "reviewRequests": []})
         dispatch.review_intake_pass(dry_run=True)
         self.assertEqual([c.args[0] for c in self.log.call_args_list],
                          ["PR #42: would record review intake at h", "PR #44: would record review intake at h"])
