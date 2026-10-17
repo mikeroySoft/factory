@@ -202,6 +202,7 @@ class WatchTest(unittest.TestCase):
         payload = json.dumps({"errors": [
             {"source": "unit", "scope": "systemd", "code": "transitioning"},
             {"source": "events.jsonl", "scope": "journal", "code": "byte_limit"},
+            {"source": "events.jsonl", "scope": "history", "code": "event_limit"},
             {"source": "events.jsonl", "scope": "journal", "code": "unreadable"},
         ]})
         with mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, payload, "")):

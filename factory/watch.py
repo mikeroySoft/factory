@@ -74,7 +74,7 @@ def failed_units(cfg: config.Config) -> list[tuple[str, str]]:
 
 # Expected, not failures: unit mid-state, journal clipped, and `dispatch.record` audit rows
 # sharing events.jsonl with lifecycle rows (always reported as `unsupported_record`).
-STEADY_CODES = {"transitioning", "byte_limit", "unsupported_record"}
+STEADY_CODES = {"transitioning", "byte_limit", "event_limit", "unsupported_record"}
 
 
 def runtime_errors(cfg: config.Config) -> list[dict]:
