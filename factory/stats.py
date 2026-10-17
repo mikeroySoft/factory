@@ -388,16 +388,14 @@ def promotions(path: Path) -> list[dict]:
 
 
 def print_promotions(rows: list[dict]) -> None:
+    def pair(r: dict, key: str) -> str:
+        left, right = (r["baseline"] or {}).get(key), (r["after"] or {}).get(key)
+        return f"{'n/a' if left is None else f'{left:.2f}'} -> {'n/a' if right is None else f'{right:.2f}'}"
+
     print(f"{'PR':>5}  {'branch':40}  {'decision':8}  efficiency        first-pass")
     for r in rows:
-        base, after = r["baseline"] or {}, r["after"] or {}
-
-        def pair(key: str) -> str:
-            left, right = base.get(key), after.get(key)
-            return f"{'n/a' if left is None else f'{left:.2f}'} -> {'n/a' if right is None else f'{right:.2f}'}"
-
         print(f"#{r['pr']:<4}  {r['branch'] or '':40}  {r['decision'] or 'open':8}  "
-              f"{pair('efficiency_mean'):16}  {pair('gate_first_pass_rate')}"
+              f"{pair(r, 'efficiency_mean'):16}  {pair(r, 'gate_first_pass_rate')}"
               + (f"  {r['revert']}" if r["revert"] else ""))
 
 
