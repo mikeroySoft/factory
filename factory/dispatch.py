@@ -2374,7 +2374,7 @@ def main(argv: list[str]) -> int:
     with nullcontext() if args.dry_run else lifecycle.scope(
         EVENTS, "dispatcher", dispatcher=True, lazy=True,
         engine_version=__version__, engine_commit=config.engine_commit(),
-    ) as execution:
+    ):
         if not args.dry_run:
             from factory import results
 

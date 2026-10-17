@@ -629,10 +629,12 @@ Review the explicit before/after summary and choose **Save changes**. The
 dashboard writes only changed keys to the local `.factory.toml`, preserving
 unrelated settings and comments; changes remain uncommitted (they never commit
 or push). If another process changes the configuration first, stale edits are
-rejected: reload and review the latest values before saving. Work-limit changes
-apply to the next dispatcher invocation; the selected model applies to the next
-new Factory Manager request. Running work and in-flight requests keep their
-captured configuration unchanged.
+rejected: reload and review the latest values before saving. A saved change
+leaves `.factory.toml` modified in the root, so every `factory dispatch` pass is
+refused with `root_dirty` until the edit lands on `origin/<main>` through a PR
+(or is reverted); it takes effect on the first pass after it lands. The selected
+model applies to the next new Factory Manager request. Running work and
+in-flight requests keep their captured configuration unchanged.
 
 Clearing `manager.model` removes the repository override and restores the
 existing host value, a legacy `manager.command --model` fallback, or OMP's
