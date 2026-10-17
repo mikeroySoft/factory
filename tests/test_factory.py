@@ -2115,6 +2115,8 @@ PY
             + '\n[review]\ncommand = ["printf", "VERDICT: APPROVE"]'
             + '\n[[gate.check]]\nname = "unit"\nrun = ["true"]\n[repo]\nslug = "acme/widgets"\n'
         )
+        git(repo, "add", config.CONFIG_NAME)
+        git(repo, "commit", "-qm", "config")
         wt = repo / ".factory/wt-7"
         git(repo, "worktree", "add", "-q", str(wt), "-b", "agent/7")
         remote = repo.parent / "origin.git"
@@ -2774,6 +2776,7 @@ class DispatchTest(unittest.TestCase):
             cfg = config.load(repo)
             dispatch.configure(cfg)
             with mock.patch.object(config, "load", return_value=cfg), \
+                    mock.patch.object(dispatch, "pin_root", return_value=[]), \
                     mock.patch.object(dispatch, "gh_json", side_effect=github), \
                     mock.patch.object(dispatch, "land_pass"), \
                     mock.patch.object(dispatch, "review_external_pr"), \
@@ -4804,13 +4807,17 @@ esac
                                  and r.get("at", "") > "2026-01-01T00:00:00Z" for r in rows))
 
     def test_forced_ticket_and_stale_frontier_never_claim_an_initiative(self) -> None:
-        toml = '[workers]\ndefault = ["worker-stub", "{prompt}"]\n'
+        toml = '[repo]\nslug = "acme/widgets"\n[workers]\ndefault = ["worker-stub", "{prompt}"]\n'
         for argv, listed in ((("--ticket", "9"), '{"name":"ready-for-agent"}'),
                              (("--ticket", "9", "--dry-run"), '{"name":"ready-for-agent"}'),
                              ((), '{"name":"ready-for-agent"}'),                       # frontier row lags the label
                              ((), '{"name":"ready-for-agent"},{"name":"initiative"}')):  # accidentally ready-labelled
             with self.subTest(argv=argv, listed=listed), tempfile.TemporaryDirectory() as d:
                 repo = make_repo(Path(d), toml)
+                remote = Path(d) / "origin.git"
+                git(repo, "init", "-q", "--bare", str(remote))
+                git(repo, "remote", "set-url", "origin", str(remote))
+                git(repo, "push", "-q", "origin", "main")
                 stubs = self.stubs(listed)
                 result = factory(repo, "dispatch", *argv, path=stubs)
                 if "initiative" in listed:

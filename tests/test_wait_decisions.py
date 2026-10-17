@@ -40,6 +40,7 @@ class WaitDecisions(unittest.TestCase):
     def test_capacity_uses_existing_live_ticket_count_without_frontier_query(self):
         self.hold(dispatch.ticket_lock(7))
         with patch.object(dispatch.config, "load", return_value=self.cfg), \
+                patch.object(dispatch, "pin_root", return_value=[]), \
                 patch.object(dispatch, "sync_pass") as sync, \
                 patch.object(dispatch, "merge_pass_locked") as merge, \
                 patch.object(dispatch, "frontier") as frontier, \

@@ -2322,6 +2322,18 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
         process_ticket(issue, budget_min, dry_run)
 
 
+def pin_root() -> list[str]:
+    """Fetch and detach the root at origin/<main> so the pass reads committed config, not
+    whatever branch or edits the checkout carries. A root with tracked or untracked changes
+    outside `.factory/` is left alone; its paths come back and the caller refuses the pass."""
+    run(["git", "fetch", "origin", cfg.main], cwd=ROOT)
+    status = run(["git", "status", "--porcelain", "--", ".", ":!.factory"], cwd=ROOT).stdout
+    paths = [line[3:] for line in status.splitlines()]
+    if not paths:
+        run(["git", "checkout", "--quiet", "--detach", f"origin/{cfg.main}"], cwd=ROOT)
+    return paths
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description="AI-factory dispatcher (one pass, stateless)"
@@ -2338,6 +2350,11 @@ def main(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
     configure(config.load())
+    dirty: list[str] = []
+    if not args.dry_run:
+        dirty = pin_root()
+        if not dirty:
+            configure(config.load())  # re-read from the tree now pinned at origin/<main>
     if args.budget_min is None:
         args.budget_min = cfg.budget_min
 
@@ -2345,7 +2362,12 @@ def main(argv: list[str]) -> int:
     with nullcontext() if args.dry_run else lifecycle.scope(
         EVENTS, "dispatcher", dispatcher=True, lazy=True,
         engine_version=__version__, engine_commit=config.engine_commit(),
-    ):
+    ) as execution:
+        if dirty:
+            log(f"root {ROOT} has changes outside .factory/ ({', '.join(dirty)}); root_dirty, nothing dispatched")
+            execution.outcome, execution.reason = "project_escalation", "root_dirty"
+            execution.emit("result", paths=dirty)
+            return 1
         if not args.dry_run:
             from factory import results
 
