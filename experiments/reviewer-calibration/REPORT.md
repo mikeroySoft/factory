@@ -368,9 +368,10 @@ hit `--max-time 300` and was retried once through the same `review()` path, as o
 
 `score.py` `missed_blocking` (REVISE case returned APPROVE, or a primary defect labelled
 `missed`): `baseline` train 4, lockbox 3; `issue36` train 4, lockbox 1. The `12-before` D1
-and `62-before` D2 cross-file compositions were missed 8/8 each; `20-before` D1 was
-detected once (`issue36` s1), the first packet-limited detection of that defect in any
-run (0/8 in `runs/main`, 0/4 in `runs/issue36-repeatability`).
+and `62-before` D2 cross-file compositions were missed 4/4 each in this run (`12-before`
+D1 also 4/4 in `runs/main`; `62-before` D2 only 1/4 there); `20-before` D1 was detected
+once (`issue36` s1), the first packet-limited detection of that defect in any run (0/4 in
+`runs/main`, 0/4 in `runs/issue36-repeatability`).
 
 **Unnecessary blocking demands** (7 APPROVE-oracle cases × 2 samples per arm):
 
@@ -406,7 +407,7 @@ is the repeat noise any contract comparison on this corpus has to clear.
 no-tools packet. `runs/tools` (§8) is unchanged and remains the only tool-enabled
 evidence: it showed the `12-before` miss is withheld evidence (`manager_model()` is outside
 the diff; found 4/4 with repo access) while the `20-before` miss survives repo access. The
-8/8 `12-before` misses here therefore say nothing new about the deployed reviewer, and
+4/4 `12-before` misses here therefore say nothing new about the deployed reviewer, and
 the `62-before` D2 miss has the same confound (`stats.py` is not in the packet). No
 tool-enabled run was made for the grown corpus.
 
