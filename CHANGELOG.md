@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Accepted-priority scheduling (#102): `factory dispatch` admits frontier tickets by policy instead of issue-list order (`factory/schedule.py`). Existing eligibility (open, `ready-for-agent`, not an initiative, unassigned, no open `Blocked by`), capacity and locks come first; a ticket whose Plan binding admission would refuse (ambiguous or malformed, or linked without a baseline) is `held` with that reason and never ranked. At most one `experiment`-labelled ticket (new label, created by `factory init`) is active at a time and production delivery has the remaining capacity. Priority is read only from the ticket's pinned Plan baseline (the accepted scope binding): `NOW` > `NEXT` > `THEN` > `LATER`, then unknown priority, oldest ticket first within a class; after three consecutive explicit-priority claims the oldest eligible unknown-priority ticket is admitted. Triage briefs, manager recommendations and experiment results never set priority. Each pass with eligible work logs `selected`/`deferred`/`held` with a reason per ticket and journals a `scheduling` row; `claimed` rows gain `priority`, `priority_source` and `experiment`. `--dry-run` logs the plan and writes nothing; `--ticket N` is unchanged.
+
 ## 0.4.1 — 2026-10-16
 
 Compared against 0.4.0 (`9a83868`). Released channel `stable` points at `v0.4.1`. Patch bump: the closed-loop groundwork — every escalation carries a mechanical `code`, OMP worker transcripts persist per ticket, `factory watch` files the factory's own runtime failures as bugs, `factory score` rates sessions from those transcripts, and a release gate tier runs only on tags.

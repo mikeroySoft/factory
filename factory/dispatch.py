@@ -255,10 +255,11 @@ def ticket_lock(n: int) -> Path:
     return locks / f"{n}.lock"
 
 
-def active_ticket_count() -> int:
+def active_tickets() -> list[int]:
+    """Ticket numbers whose pipeline lock is held right now."""
     if not FACTORY.is_dir():
-        return 0
-    return sum(1 for f in (FACTORY / "locks").glob("*.lock") if lock_held(f))
+        return []
+    return [int(f.stem) for f in (FACTORY / "locks").glob("*.lock") if f.stem.isdigit() and lock_held(f)]
 
 
 def issue_is_open(number: int) -> bool:
@@ -295,6 +296,7 @@ def open_blockers(number: int, body: str) -> list[int]:
 
 
 def frontier() -> list[dict]:
+    """Open `ready-for-agent` issues; an ineligible one carries `held` naming why, never ranked."""
     issues = gh_json(
         [
             "issue",
@@ -306,24 +308,21 @@ def frontier() -> list[dict]:
             "--label",
             LABEL_AGENT,
             "--json",
-            "number,title,body,labels,assignees",
+            "number,title,body,labels,assignees,createdAt",
         ]
     )
-    ready = []
     for issue in issues:
         n = issue["number"]
         if any(label.get("name") == config.LABEL_INITIATIVE for label in issue.get("labels", [])):
-            log(f"#{n}: skipped (initiative record)")
+            issue["held"] = "initiative record"
+        elif issue["assignees"]:
+            issue["held"] = "assigned"
+        elif blockers := open_blockers(n, issue.get("body", "")):
+            issue["held"] = f"blocked by {', '.join(f'#{b}' for b in blockers)}"
+        else:
             continue
-        if issue["assignees"]:
-            log(f"#{n}: skipped (assigned)")
-            continue
-        blockers = open_blockers(n, issue.get("body", ""))
-        if blockers:
-            log(f"#{n}: skipped (blocked by {', '.join(f'#{b}' for b in blockers)})")
-            continue
-        ready.append(issue)
-    return ready
+        log(f"#{n}: skipped ({issue['held']})")
+    return issues
 
 
 def review_intake_pass(dry_run: bool) -> None:
@@ -2201,7 +2200,11 @@ def process_ticket(
                        issue={key: fresh.get(key) for key in ("title", "body", "comments")})
 
             run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-assignee", "@me"])
-            record("claimed", ticket=n, title=title, labels=sorted(labels))
+            from factory import schedule
+
+            tier, why = schedule.priority(n, fresh.get("body"), REPO)
+            record("claimed", ticket=n, title=title, labels=sorted(labels), priority=tier,
+                   priority_source=why, experiment=schedule.is_experiment(fresh))
             wt = ensure_worktree(n)
             lease = agent_lease(wt, n)
             LOGS.mkdir(parents=True, exist_ok=True)
@@ -2300,25 +2303,30 @@ def process_ticket(
 
 
 def ticket_pass(budget_min: int, dry_run: bool) -> None:
-    """Claim up to capacity frontier tickets and work each one."""
+    """Claim up to capacity frontier tickets in accepted-priority order and work each one."""
+    from factory import schedule
+
     with nullcontext() if dry_run else lifecycle.scope(EVENTS, "scheduling", lazy=True) as execution:
-        active = active_ticket_count()
-        capacity = MAX_ACTIVE - active
-        log(f"active tickets: {active}, capacity: {max(capacity, 0)}")
+        active = active_tickets()
+        capacity = MAX_ACTIVE - len(active)
+        log(f"active tickets: {len(active)}, capacity: {max(capacity, 0)}")
         if capacity <= 0:
             log("at capacity, nothing to do")
             if execution:
-                execution.wait("capacity_reached", mode="admission", active=active, max_active=MAX_ACTIVE)
+                execution.wait("capacity_reached", mode="admission", active=len(active), max_active=MAX_ACTIVE)
             return
-        ready = frontier()
-        if not ready:
+        rows = frontier()
+        if all(issue.get("held") for issue in rows):
             log("frontier empty, nothing to do")
             return
-        if execution:
-            execution.commit()  # claimable work: keep the scheduling trail
-        for issue in ready[:capacity]:
-            log(f"claimable: #{issue['number']} {issue['title']}")
-    for issue in ready[:capacity]:
+        events = lifecycle.read_events(EVENTS)
+        decided = schedule.plan(rows, capacity, repo=REPO, streak=schedule.explicit_streak(events),
+                                experiments=schedule.active_experiments(events, set(active)))
+        for row in decided["explained"]:
+            log(f"#{row['ticket']}: {row['decision']} ({row['reason']})")
+        if not dry_run:
+            record("scheduling", capacity=capacity, active=active, explained=decided["explained"])
+    for issue in decided["selected"]:
         process_ticket(issue, budget_min, dry_run)
 
 
