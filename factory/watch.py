@@ -1,7 +1,8 @@
 """`factory watch`: file the factory's own runtime failures as `bug` issues from local evidence.
 
-One pass reads three local signals (lifecycle exit rows that name a mechanism failure,
-failed `factory-*` systemd units, `dashboard --runtime-json` source errors), fingerprints
+One pass reads four local signals (lifecycle exit rows that name a mechanism failure,
+failed `factory-*` systemd units, `dashboard --runtime-json` source errors, one escalation
+code repeating across REPEAT_MIN tickets within REPEAT_DAYS days), fingerprints
 each, and opens one `bug,needs-triage` issue per fingerprint not already covered by an
 open issue. Filing is journaled as a `watch` row so the next pass can skip or refile.
 """
@@ -15,7 +16,7 @@ import shlex
 import subprocess
 import sys
 from contextlib import nullcontext
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from factory import config, dispatch, lifecycle
@@ -25,6 +26,8 @@ MAX_ISSUES = 5
 MAX_ROWS = 20
 MAX_LOG_LINES = 40
 UNKNOWN_REASONS = ("worker_exit:", "check_timeout")
+REPEAT_MIN = 3  # distinct tickets one escalation code must hit...
+REPEAT_DAYS = 7  # ...inside this trailing window to count as a factory defect
 
 
 def fingerprint(kind: str, stage: str, key: str) -> str:
@@ -95,6 +98,17 @@ def _tail(path: str | None) -> str | None:
     return "\n".join(lines[-MAX_LOG_LINES:])
 
 
+def repeated_escalations(events: list[dict]) -> dict[str, list[dict]]:
+    """Escalation rows per code that fired on >= REPEAT_MIN distinct tickets in the last REPEAT_DAYS days."""
+    cutoff = (datetime.now(UTC) - timedelta(days=REPEAT_DAYS)).isoformat().replace("+00:00", "Z")
+    by_code: dict[str, list[dict]] = {}
+    for row in events:
+        if row.get("event") == "escalate" and "code" in row and str(row.get("at") or "") >= cutoff:
+            by_code.setdefault(row["code"], []).append(row)  # rows without a code are `unknown`: never filed
+    return {code: rows for code, rows in by_code.items()
+            if len({r.get("ticket") for r in rows}) >= REPEAT_MIN}
+
+
 def signals(cfg: config.Config, events: list[dict]) -> list[dict]:
     """Every observed failure, newest journal evidence first within each fingerprint."""
     found: dict[str, dict] = {}
@@ -124,6 +138,14 @@ def signals(cfg: config.Config, events: list[dict]) -> list[dict]:
         found[key] = {"fingerprint": key, "kind": "runtime", "stage": source, "key": code, "rows": [],
                       "excerpt": json.dumps(error, indent=2), "log": None, "latest": None,
                       "command": "factory dashboard --runtime-json | jq .errors"}
+    for code, rows in repeated_escalations(events).items():
+        key = f"escalation:{code}"
+        found[key] = {"fingerprint": key, "kind": "escalation", "stage": "repeated", "key": code,
+                      "rows": rows, "log": None,
+                      "latest": max(str(r.get("at") or "") for r in rows),
+                      "excerpt": "\n".join(f"- #{r.get('ticket')}: {r.get('reason')} ({r.get('packet')})" for r in rows),
+                      "command": "zcat -f .factory/events.jsonl* | grep -F "
+                      f"{shlex.quote(json.dumps({'code': code}, separators=(',', ':'))[1:-1])}"}
     for signal in found.values():
         signal["rows"] = signal["rows"][-MAX_ROWS:]
     return list(found.values())
