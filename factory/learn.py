@@ -2,10 +2,11 @@
 
 The traces -> eval -> improve loop, sized for a repo: evidence is the event
 log (gate results, verdicts, escalation reasons), the latest review findings,
-the tail of failing attempt logs, and candidate escaped defects (closed bugs
-blamed back to a merged agent ticket). The model proposes a short list of
-repo-specific lessons; the file is committed and every worker prompt carries
-it. The eval signal is the dashboard's first-gate pass rate before and after.
+each ticket's lowest-scored session excerpt (`factory score`; the tail of a
+failing attempt log for tickets without one), and candidate escaped defects
+(closed bugs blamed back to a merged agent ticket). The model proposes a short
+list of repo-specific lessons; the file is committed and every worker prompt
+carries it. The eval signal is the dashboard's first-gate pass rate before and after.
 """
 
 from __future__ import annotations
@@ -20,15 +21,27 @@ from datetime import datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from factory import config, dispatch, lifecycle, manage, promotion, stats, triage
+from factory import config, dispatch, lifecycle, manage, promotion, score, stats, triage
 from factory.config import LABEL_CHORE, LESSONS_NAME
 
 MAX_LESSONS = 10
-LOG_TAIL = 40  # lines of a failing attempt log shown to the model
+LOG_TAIL = 40  # lines of a failing attempt log shown to the model when the ticket has no score row
 MAX_EVIDENCE = 24_000  # chars; keeps the prompt inside a local model's window
 MAX_ESCAPES = 10  # most recent candidate-escape bugs carried into evidence
 AUTO_EVERY = 10  # finished tickets between automatic runs at the end of a dispatcher pass
 LESSONS_BRANCH = re.compile(r"agent/(lessons|curate)-")
+
+
+def worst_session(evs: list[dict]) -> tuple[dict, dict] | None:
+    """(score row, its attempt row) for the ticket's lowest-efficiency scored session: ties go
+    to the lowest compliance (unknown last), then to a gate FAIL; None when nothing was scored."""
+    attempts = {(e.get("attempt"), e.get("transcript")): e for e in evs if e["event"] == "attempt"}
+    scored = [(s, attempts.get((s.get("attempt"), s.get("transcript")), {}))
+              for s in evs if s["event"] == "score" and isinstance(s.get("efficiency"), (int, float))]
+    if not scored:
+        return None
+    return min(scored, key=lambda pair: (pair[0]["efficiency"], pair[0].get("compliance") is None,
+                                         pair[0].get("compliance") or 0, pair[1].get("gate") != "FAIL"))
 
 
 def evidence(last: int) -> tuple[list[int], str]:
@@ -53,11 +66,19 @@ def evidence(last: int) -> tuple[list[int], str]:
         for e in evs:
             fields = {k: v for k, v in e.items() if k not in ("ticket", "title", "log")}
             parts.append(f"- {json.dumps(fields)}")
-        for e in evs:
-            if e["event"] == "attempt" and e.get("gate") == "FAIL" and isinstance(e.get("log"), str) and e["log"]:
-                tail = "\n".join(Path(e["log"]).read_text(errors="replace").splitlines()[-LOG_TAIL:]) if Path(e["log"]).exists() else ""
-                if tail:
-                    parts.append(f"\nAttempt {e.get('attempt', '?')} log tail (gate FAILED after it):\n```\n{tail}\n```")
+        worst = worst_session(evs)
+        transcript = Path(worst[0]["transcript"]) if worst and isinstance(worst[0].get("transcript"), str) else None
+        if transcript is not None and transcript.is_file():
+            row, attempt = worst
+            parts.append(f"\nAttempt {row.get('attempt', '?')} session excerpt (efficiency {row['efficiency']:.2f}, "
+                         f"compliance {row.get('compliance')}, gate {attempt.get('gate')}):\n```\n"
+                         f"{score.excerpt(transcript)}\n```")
+        else:
+            for e in evs:
+                if e["event"] == "attempt" and e.get("gate") == "FAIL" and isinstance(e.get("log"), str) and e["log"]:
+                    tail = "\n".join(Path(e["log"]).read_text(errors="replace").splitlines()[-LOG_TAIL:]) if Path(e["log"]).exists() else ""
+                    if tail:
+                        parts.append(f"\nAttempt {e.get('attempt', '?')} log tail (gate FAILED after it):\n```\n{tail}\n```")
         review = dispatch.FACTORY / f"review-{n}.md"
         if review.exists():
             parts.append(f"\nLatest reviewer findings:\n```\n{review.read_text()[-3000:]}\n```")
@@ -139,7 +160,8 @@ def propose(existing: str, evidence_md: str, repo: str, ask: Callable[[list[dict
         f"traps in the test suite. Each lesson is one imperative sentence, specific to this "
         f"repository, with the concrete file/command/check when known. Merge with the existing "
         f"list: keep lessons still supported, drop ones the evidence contradicts, never exceed "
-        f"{MAX_LESSONS}. Respond with strict JSON only: {{\"lessons\": [\"...\"]}}"
+        f"{MAX_LESSONS}. Each session's failure excerpts show where the worker spun; prefer lessons "
+        f"that remove the cause of a repeated tool call. Respond with strict JSON only: {{\"lessons\": [\"...\"]}}"
     )
     if curate:
         system += " " + CURATE_OFFER
@@ -316,6 +338,7 @@ def learn_pass(dry_run: bool = False) -> None:
             dispatch.log(f"learn: would run --last {AUTO_EVERY} ({count} tickets finished since the last learn)")
             return
         dispatch.log(f"learn: {count} tickets finished since the last learn; running --last {AUTO_EVERY}")
+        score.run(cfg, AUTO_EVERY)  # unscored attempts of the same tickets, so evidence has session excerpts
         run(cfg, AUTO_EVERY, trigger="auto")
     except Exception as exc:  # noqa: BLE001 - isolates learn failures from the dispatcher pass
         reason = f"{type(exc).__name__}: {exc}"
