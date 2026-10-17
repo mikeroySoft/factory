@@ -1781,9 +1781,6 @@ def land_pass(dry_run: bool) -> None:
             execution.resource("acquired", lock_path, scope="repository")
             sync_pass(dry_run)
             merge_pass_locked(dry_run)
-            from factory.learn import promote_pass
-
-            promote_pass(dry_run)
         finally:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             lock_fd.close()
@@ -1791,6 +1788,7 @@ def land_pass(dry_run: bool) -> None:
 
 
 def merge_pass_locked(dry_run: bool) -> None:
+    """Ticket PR merge stage; `factory learn` PRs in the same listing go to `learn.promote_pass` first."""
     prs = gh_json(
         [
             "pr",
@@ -1803,6 +1801,12 @@ def merge_pass_locked(dry_run: bool) -> None:
             "number,headRefName,headRefOid,baseRefName,isDraft,labels,reviewDecision",
         ]
     )
+    from factory.learn import promote_pass
+
+    try:
+        promote_pass(prs, dry_run)
+    except Exception as exc:  # noqa: BLE001 - a lessons merge failure never blocks ticket merges
+        log(f"promotion: failed ({type(exc).__name__}: {exc})")
     candidates = []
     for pr in prs:
         m = re.fullmatch(r"agent/(\d+)", pr["headRefName"])

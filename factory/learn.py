@@ -367,21 +367,21 @@ def learn_pass(dry_run: bool = False) -> None:
         dispatch.log(f"promotion: failed ({type(exc).__name__}: {exc})")
 
 
-def promote_pass(dry_run: bool = False) -> None:
-    """Merge stage for `factory learn` PRs (`LESSONS_BRANCH`), under the landing lock after the ticket
-    merge stage: a journaled `gate` PASS and reviewer `review-result` APPROVE bound to the PR head and
-    only passing (or skipped) CI checks earn `factory-approved` and a squash merge. A lessons or curate
-    merge journals `promotion-open` with the baseline means of the last PROMOTION_N scored attempts;
-    a revert merge closes the loop and opens nothing."""
+def promote_pass(prs: list[dict], dry_run: bool = False) -> None:
+    """Merge stage for `factory learn` PRs (`LESSONS_BRANCH`) in the ticket merge stage's open-PR listing,
+    under the landing lock: a journaled `gate` PASS and reviewer `review-result` APPROVE bound to the PR
+    head and only passing (or skipped) CI checks earn `factory-approved` and a squash merge. A lessons or
+    curate merge journals `promotion-open` with the baseline means of the last PROMOTION_N scored
+    attempts; a revert merge closes the loop and opens nothing."""
     cfg = dispatch.cfg
-    prs = dispatch.gh_json(["pr", "list", "--repo", cfg.repo, "--state", "open", "--limit", "1000",
-                            "--json", "number,headRefName,headRefOid,baseRefName,isDraft,reviewDecision"])
-    events = lifecycle.read_events(dispatch.EVENTS)
+    events = None
     for pr in sorted(prs, key=lambda p: p["number"]):
         n, branch, head = pr["number"], pr["headRefName"], pr["headRefOid"]
         if (not LESSONS_BRANCH.match(branch) or pr["isDraft"] or pr["baseRefName"] != cfg.main
                 or pr["reviewDecision"] == "CHANGES_REQUESTED"):
             continue
+        if events is None:
+            events = lifecycle.read_events(dispatch.EVENTS)
         gated = any(e.get("event") == "gate" and e.get("branch") == branch and e.get("head") == head
                     and e.get("gate") == "PASS" for e in events)
         reviewed = any(e.get("event") == "review-result" and e.get("pr") == n and e.get("head") == head
