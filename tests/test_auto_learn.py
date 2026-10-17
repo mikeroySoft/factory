@@ -350,6 +350,23 @@ class PromotionTest(unittest.TestCase):
         self.assertEqual(edit(wt), [".factory-lessons.md"])
         self.assertEqual(self.run.call_args_list[-2].args[0], ["git", "revert", "--no-commit", "c" * 40])
 
+    def test_scoring_that_reverts_skips_the_lessons_pr_in_the_same_pass(self) -> None:
+        self.open_promotion([])
+        AutoLearnTest.finish(self, range(1, 11))
+        for n in range(1, 11):
+            AutoLearnTest.session(self, n, {"attempt": 1, "gate": "PASS"})  # scores at efficiency 0.50
+        self.gh.side_effect = lambda args: {"mergeCommit": {"oid": "c" * 40}} if args[:2] == ["pr", "view"] else []
+        with mock.patch.object(learn.triage, "call_llm", return_value="0.7"):
+            learn.learn_pass()
+        self.assertEqual(len(self.rows("score")), 20)
+        self.chore_pr.assert_called_once()
+        self.assertEqual(self.chore_pr.call_args.args[1], "agent/revert-lessons-42")
+        self.propose.assert_not_called()  # the lessons PR would collide with the revert
+        self.assertEqual(self.rows("learn"), [])
+        [row] = self.rows("promotion-keep", "promotion-revert")
+        self.assertEqual(row["event"], "promotion-revert")
+        self.assertIn("learn: skipped (revert PR opened: agent/revert-lessons-42)", [c.args[0] for c in self.log.call_args_list])
+
     def test_within_noise_keeps_once(self) -> None:
         self.open_promotion(self.scores(0.9, 9))
         learn.learn_pass()
