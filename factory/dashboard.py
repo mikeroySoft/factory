@@ -823,6 +823,7 @@ def build_ticket(
         "closed_at": issue["closedAt"],
         "worker": worker_name(labels) if include_worker else None,
         "stage": stage_of(labels, issue["state"], pr, lock),
+        "sync": issue["title"].startswith(dispatch.SYNC_TITLE),
         "phase": phase_of(executions or []),
         "pr": pr,
         "spend": spend or {"seconds": 0, "cost": None, "rounds": 0},
