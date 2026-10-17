@@ -204,7 +204,7 @@ but concentrated: every row behind it is decided by `code` alone (`protected_pat
 - Adopt: the tag as a fixed `code → tag` map (rule 1 above) reported next to
   `escalations_by_code` in `factory stats`, and two routing rules on codes, not on
   text: `protected_paths` skips the manager and goes straight to the owner with the
-  override request (16/16 manager calls on those rows were HUMAN), and a second `ci_failed` within
+  override request (14/14 manager calls on those rows were HUMAN), and a second `ci_failed` within
   a day files one gate ticket instead of another escalation. Both are code-driven and
   need no new journal field. This is a proposal; nothing here changes routing.
 - Drop: text-signature classification in production. 34 rows needed packet or log
@@ -215,8 +215,11 @@ but concentrated: every row behind it is decided by `code` alone (`protected_pat
   index, `knowledge` promotion kind). 0 primary and 3 secondary `knowledge` labels out
   of 62 (4.8%) is far under the 30% gate, and the three cases were each fixed by the
   reviewer's citation in the next round. The `kb_loaded` attempt field was not added:
-  it only matters if `knowledge` is worth tracking, and it is a production
-  `dispatch.py` change the exit gate excludes.
-- The one structural lesson is not about tags: the biggest class (`requirement`,
-  15 rows) was already removed by #228, and the `eval` cluster by #207. Both were
-  visible as a repeated `code`, which is the signal `stats` now reports.
+  it only matters if `knowledge` is worth tracking, and neither the exit gate nor the
+  brief lists it.
+- The one structural lesson is not about tags: the two largest `requirement`
+  clusters were removed by code changes, not by routing. #228 (`add_only_paths`)
+  removed the cause for the six add-only `protected_paths` tickets (#125, #160, #168,
+  #188, #196, #224; 8 of the 14 `protected_paths` rows still need the label, as do
+  #166 and #177), and #207 removed the `eval` cluster. Both were visible as a
+  repeated `code`, which is the signal `stats` now reports.
