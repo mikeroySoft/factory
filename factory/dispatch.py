@@ -69,6 +69,10 @@ def configure(c: Config) -> None:
     MAX_ATTEMPTS = cfg.max_attempts
 
 
+# `factory learn` branches: lessons, CURATE and the revert a failed promotion opens.
+# `promote_pass` merges them; the ticket merge stage's `agent/(\d+)` never matches.
+LESSONS_BRANCH = re.compile(r"agent/(lessons|curate|revert-lessons)-")
+
 STANDING_INSTRUCTIONS = """
 ## Instructions
 
@@ -330,16 +334,16 @@ def frontier() -> list[dict]:
 
 
 def review_intake_pass(dry_run: bool) -> None:
-    """Review opted-in PR revisions without running the issue/merge pipeline."""
+    """Review opted-in PR revisions, and `factory learn` PRs, without running the issue/merge pipeline."""
     prs = gh_json([
         "pr", "list", "--repo", REPO, "--state", "open", "--limit", "1000",
-        "--json", "number,state,isDraft,headRefOid,baseRefOid,labels,reviewRequests",
+        "--json", "number,state,isDraft,headRefName,headRefOid,baseRefOid,labels,reviewRequests",
     ])
     login = None
     for pr in prs:
         if pr["state"] != "OPEN" or pr["isDraft"]:
             continue
-        opted_in = any(label["name"] == LABEL_REVIEW for label in pr["labels"])
+        opted_in = any(label["name"] == LABEL_REVIEW for label in pr["labels"]) or bool(LESSONS_BRANCH.match(pr.get("headRefName") or ""))
         requests = pr["reviewRequests"]
         if not opted_in and requests:
             if login is None:
@@ -402,7 +406,7 @@ def review_intake_pass(dry_run: bool) -> None:
             log(f"PR #{n}: {'would record' if dry_run else 'recording'} review intake at {head}")
             if not dry_run:
                 record("review-intake", pr=n, head=head)
-                review_external_pr(n, pr["baseRefOid"], head)
+                review_external_pr(n, pr["baseRefOid"], head, pr.get("headRefName") or "")
                 review_readiness(n, head, lifecycle.read_events(EVENTS))
 
 
@@ -449,8 +453,10 @@ def review_readiness(n: int, head: str, history: list[dict]) -> None:
            review_head=review.get("head"), checks=rows if valid else [])
 
 
-def review_external_pr(n: int, base: str, head: str) -> None:
-    """Publish findings against the immutable revision admitted by intake."""
+def review_external_pr(n: int, base: str, head: str, branch: str = "") -> None:
+    """Publish findings against the immutable revision admitted by intake. `factory learn` PRs are
+    the dispatcher's own, and GitHub rejects self-approval: their findings post as a COMMENT review
+    while the journal keeps the verdict `promote_pass` reads."""
     diff = run([
         "gh", "api", f"repos/{REPO}/compare/{base}...{head}",
         "-H", "Accept: application/vnd.github.diff",
@@ -500,7 +506,7 @@ def review_external_pr(n: int, base: str, head: str) -> None:
         event = "APPROVE" if lines[-1] == "VERDICT: APPROVE" else "REQUEST_CHANGES"
         run([
             "gh", "api", "--method", "POST", f"repos/{REPO}/pulls/{n}/reviews",
-            "-f", f"commit_id={head}", "-f", f"event={event}",
+            "-f", f"commit_id={head}", "-f", f"event={'COMMENT' if LESSONS_BRANCH.match(branch) else event}",
             "-f", f"body={findings}",
         ])
         record("review-result", pr=n, head=head, verdict=event, findings=findings)
@@ -1779,6 +1785,7 @@ def land_pass(dry_run: bool) -> None:
 
 
 def merge_pass_locked(dry_run: bool) -> None:
+    """Ticket PR merge stage; `factory learn` PRs in the same listing go to `learn.promote_pass` first."""
     prs = gh_json(
         [
             "pr",
@@ -1791,6 +1798,12 @@ def merge_pass_locked(dry_run: bool) -> None:
             "number,headRefName,headRefOid,baseRefName,isDraft,labels,reviewDecision",
         ]
     )
+    from factory.learn import promote_pass
+
+    try:
+        promote_pass(prs, dry_run)
+    except Exception as exc:  # noqa: BLE001 - a lessons merge failure never blocks ticket merges
+        log(f"promotion: failed ({type(exc).__name__}: {exc})")
     candidates = []
     for pr in prs:
         m = re.fullmatch(r"agent/(\d+)", pr["headRefName"])
