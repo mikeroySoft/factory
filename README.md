@@ -999,8 +999,10 @@ branches, or merge state.
   `learn: skipped (no manager)` and records nothing. A failure is journaled as
   `learn` with `status: "failed"` and a `reason`, never fails the pass, and
   keeps the count, so the next pass retries. Those PRs merge without a human:
-  gate, reviewer APPROVE, CI, `factory-approved`, squash (see `factory learn`
-  in the command table). The guard is measurement, not a person: each merge
+  gate, reviewer APPROVE (posted as a GitHub `COMMENT` review, since the
+  dispatcher authored the PR and cannot approve its own; the journaled
+  `review-result` carries the verdict), CI, `factory-approved`, squash (see
+  `factory learn` in the command table). The guard is measurement, not a person: each merge
   journals `promotion-open` with the score means of the 10 attempts before it,
   and after the next 10 scored attempts the same pass journals
   `promotion-keep` or `promotion-revert` (opening `agent/revert-lessons-<pr>`)
