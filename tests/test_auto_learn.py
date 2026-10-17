@@ -273,7 +273,10 @@ class PromotionTest(unittest.TestCase):
     def test_lessons_pr_merges_after_gate_review_and_ci_and_opens_a_promotion(self) -> None:
         self.journal(*self.scores(0.5, 3), {"event": "score", "ticket": 9, "skipped": "missing"},
                      *self.scores(0.9, 10), *self.evidence())
-        learn.promote_pass()
+        self.open_prs[0]["labels"] = []
+        with mock.patch.object(dispatch, "initiative_kind") as ticket_stage:
+            dispatch.merge_pass_locked(dry_run=False)  # the ticket merge stage hands the listing to promote_pass
+        ticket_stage.assert_not_called()
         self.assertEqual(self.gh_calls(), [
             "gh pr edit 42 --repo acme/widgets --add-label factory-approved",
             f"gh pr merge 42 --repo acme/widgets --squash --match-head-commit {self.HEAD}",
@@ -287,34 +290,39 @@ class PromotionTest(unittest.TestCase):
         self.assertNotIn("human merge", learn.PIPELINE + learn.CURATE_OFFER)
 
     def test_merge_waits_for_head_bound_gate_and_review_and_green_ci(self) -> None:
-        learn.promote_pass()  # no evidence at all
+        learn.promote_pass(self.open_prs)  # no evidence at all
         self.journal({"event": "gate", "branch": self.BRANCH, "head": "b" * 40, "gate": "PASS"},
                      {"event": "review-result", "pr": 42, "head": self.HEAD, "verdict": "APPROVE"})
-        learn.promote_pass()  # gate bound to another head
+        learn.promote_pass(self.open_prs)  # gate bound to another head
         self.journal({"event": "gate", "branch": self.BRANCH, "head": self.HEAD, "gate": "FAIL"})
-        learn.promote_pass()  # gate failed at this head
+        learn.promote_pass(self.open_prs)  # gate failed at this head
         self.journal({"event": "gate", "branch": self.BRANCH, "head": self.HEAD, "gate": "PASS"})
         self.checks = [{"name": "gate", "bucket": "pending"}, {"name": "lint", "bucket": "pass"}]
-        learn.promote_pass()  # CI pending
+        learn.promote_pass(self.open_prs)  # CI pending
         self.checks = []
-        learn.promote_pass()  # no CI reported
+        learn.promote_pass(self.open_prs)  # no CI reported
         self.open_prs[0]["reviewDecision"] = "CHANGES_REQUESTED"
         self.checks = [{"name": "gate", "bucket": "pass"}]
-        learn.promote_pass()  # human veto
+        learn.promote_pass(self.open_prs)  # human veto
         self.open_prs[0]["reviewDecision"] = ""
-        learn.promote_pass(dry_run=True)
+        learn.promote_pass(self.open_prs, dry_run=True)
         self.assertEqual(self.gh_calls(), [])
         self.assertEqual(self.rows("approved", "merged", "promotion-open"), [])
         self.assertIn("PR #42: would merge agent/lessons-2026-10-17-t10", [c.args[0] for c in self.log.call_args_list])
         self.open_prs[0]["headRefName"] = "agent/7"
-        learn.promote_pass()  # ticket PRs belong to the ticket merge stage
+        learn.promote_pass(self.open_prs)  # ticket PRs belong to the ticket merge stage
         self.assertEqual(self.gh_calls(), [])
+        self.open_prs[0]["headRefName"] = self.BRANCH
+        self.run.side_effect = RuntimeError("gh down")
+        with mock.patch.object(dispatch, "initiative_kind"):
+            dispatch.merge_pass_locked(dry_run=False)  # a failing lessons merge never blocks the ticket stage
+        self.assertIn("promotion: failed (RuntimeError: gh down)", [c.args[0] for c in self.log.call_args_list])
 
     def test_revert_merge_opens_no_promotion(self) -> None:
         self.open_prs[0]["headRefName"] = branch = "agent/revert-lessons-42"
         self.journal({"event": "gate", "branch": branch, "head": self.HEAD, "gate": "PASS"},
                      {"event": "review-result", "pr": 42, "head": self.HEAD, "verdict": "APPROVE"})
-        learn.promote_pass()
+        learn.promote_pass(self.open_prs)
         self.assertEqual(len(self.gh_calls()), 2)
         self.assertEqual(self.rows("promotion-open"), [])
 
