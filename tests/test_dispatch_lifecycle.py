@@ -449,6 +449,20 @@ class LocalCLI(unittest.TestCase):
         from factory.dispatch import lock_held
         self.assertFalse(lock_held(self.repo / ".factory" / "locks" / "7.lock"))
 
+    def test_worker_launch_failure_unclaims_ticket_and_completes_the_pass(self):
+        # #260: a worker executable missing from the host PATH is a host defect, not a
+        # ticket defect. The ticket journals it and gives its claim back; the dispatcher
+        # pass itself must not die with that FileNotFoundError.
+        self.write_config(worker=[str(self.base / "absent-worker")])
+        result = self.cli("dispatch", "--ticket", "7", expected=1)
+        self.assertIn("#7: worker launch failed", result.stdout + result.stderr)
+        self.assertNotIn("Traceback", result.stdout + result.stderr)
+        rows = self.rows()
+        exits = {r["stage"]: r["outcome"] for r in rows if r["kind"] == "exit"}
+        self.assertEqual(exits["worker"], "mechanism_failure")
+        self.assertEqual(exits["ticket"], "mechanism_failure")
+        self.assertEqual(exits["dispatcher"], "completed")
+
     def pr_config(self, fails, when="pr"):
         """One attempt check (`code`) plus one pr check (`slow`); prompts of worker and reviewer are kept."""
         self.pr_log = self.base / "pr-runs.log"

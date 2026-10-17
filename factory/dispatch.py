@@ -2126,7 +2126,8 @@ def worker_usage(logfile: Path, spec: dict | None) -> dict:
 
 def process_ticket(
     issue: dict, budget_min: int, dry_run: bool, forced: bool = False
-) -> None:
+) -> bool | None:
+    """None when the ticket was processed or skipped; False when the host could not launch its worker."""
     n, title = issue["number"], issue["title"]
     labels = {label["name"] for label in issue.get("labels", [])}
     wt = FACTORY / f"wt-{n}"
@@ -2237,9 +2238,17 @@ def process_ticket(
             if staged is not None:
                 report, gate_head = staged
             for attempt in range(1, MAX_ATTEMPTS + 1 if staged is None else 1):
-                ok, report, logfile, gate_head = worker_round(
-                    n, wt, labels, title, extra, attempt, deadline
-                )
+                try:
+                    ok, report, logfile, gate_head = worker_round(
+                        n, wt, labels, title, extra, attempt, deadline
+                    )
+                except FileNotFoundError as exc:
+                    # Host defect (worker executable not on PATH), not a ticket defect: give the
+                    # claim back so the frontier retries once the host is fixed; the pass goes on.
+                    execution.outcome, execution.reason = "mechanism_failure", f"{type(exc).__name__}: {exc}"
+                    log(f"#{n}: worker launch failed ({exc}); unclaimed, fix PATH or [workers] (`factory doctor`)")
+                    run(["gh", "issue", "edit", str(n), "--repo", REPO, "--remove-assignee", "@me"], check=False)
+                    return False
                 if ok:
                     break
                 if "- protected-paths: FAIL" in report:
@@ -2434,8 +2443,7 @@ def main(argv: list[str]) -> int:
                     "number,title,body,labels,assignees",
                 ]
             )
-            process_ticket(issue, args.budget_min, args.dry_run, forced=True)
-            return 0
+            return 1 if process_ticket(issue, args.budget_min, args.dry_run, forced=True) is False else 0
 
         land_pass(args.dry_run)
         review_intake_pass(args.dry_run)
