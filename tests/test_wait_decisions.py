@@ -151,6 +151,24 @@ class WaitDecisions(unittest.TestCase):
         self.assertLess(released["sequence"], exit_row["sequence"])
         self.assertFalse(any(row["kind"] == "wait" for row in rows))
 
+    def test_missing_worker_executable_waits_without_claiming(self):
+        self.cfg.workers = {"default": ["no-such-worker-7f3a", "{prompt}"]}
+        fresh = {"state": "OPEN", "labels": [{"name": "ready-for-agent"}], "assignees": [],
+                 "title": "local ticket", "body": "", "comments": []}
+        with patch.object(dispatch, "gh_json", return_value=fresh), \
+                patch.object(dispatch, "admit_plan", return_value=None), \
+                patch.object(dispatch, "run") as run:
+            dispatch.process_ticket(self.issue, 1, False)
+        run.assert_not_called()  # never assigned @me: the ticket stays claimable next pass
+        rows = self.rows()
+        self.assertEqual([(row["wait"]["reason"], row["wait"]["mode"], row["wait"]["details"])
+                          for row in rows if row["kind"] == "wait"],
+                         [("worker_unavailable", "retry_next_pass", {"executable": "no-such-worker-7f3a"})])
+        exit_row = next(row for row in rows if row["kind"] == "exit")
+        self.assertEqual((exit_row["outcome"], exit_row["reason"]), ("completed", None))
+        self.assertFalse(dispatch.lock_held(dispatch.ticket_lock(7)))
+        self.assertFalse(any(row.get("event") == "claimed" for row in lifecycle.read_events(self.events)))
+
     def test_ci_waits_reuse_single_query_per_candidate_and_preserve_eligibility(self):
         prs = [{"number": n * 10, "headRefName": f"agent/{n}", "headRefOid": f"head-{n}",
                 "baseRefName": "main", "isDraft": False,

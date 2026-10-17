@@ -18,6 +18,7 @@ import fcntl
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -2201,6 +2202,13 @@ def process_ticket(
                 log(f"#{n}: skipped (state changed since frontier query)")
                 execution.outcome = "not_admitted"
                 execution.reason = "state_changed"
+                return
+            if not forced and shutil.which(worker) is None:
+                # Frontier claims only: `--ticket` is an operator's explicit ask and fails loudly.
+                # ponytail: PATH probe only; a binary swapped out between here and Popen still
+                # fails the launch. Not claimed, so the next pass retries once it is back.
+                log(f"#{n}: skipped (worker executable not on PATH: {worker}); retry next pass")
+                execution.wait("worker_unavailable", mode="retry_next_pass", executable=worker)
                 return
             from factory import binding
 
