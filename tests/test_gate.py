@@ -23,6 +23,7 @@ def git(cwd: Path, *args: str) -> str:
 
 def gate(cwd: Path, *args: str) -> tuple[int, str, str]:
     env = {**os.environ, "PYTHONPATH": str(ROOT)}
+    env.pop("FACTORY_LIFECYCLE_CONTEXT", None)  # #253: never journal into a worker's live ledger
     proc = subprocess.run([sys.executable, "-m", "factory", "gate", *args],
                           cwd=cwd, capture_output=True, text=True, env=env, check=False)
     report = cwd / ".factory" / "gate-report.md"
