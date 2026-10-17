@@ -25,6 +25,7 @@ def ticket(number: int, created: str, *, body: str = BOUND, labels=("ready-for-a
 
 # Issue-list order is deliberately not priority order.
 QUEUE = [
+    ticket(8, "2025-12-31T00:00:00Z", body="Initiative: #50\n\nno baseline"),  # admission would refuse it
     ticket(1, "2026-01-01T00:00:00Z", body="Scope\n\nNOW #1 says the brief"),  # unknown: no baseline
     ticket(3, "2026-01-03T00:00:00Z"),                                        # NOW, newer than #5
     ticket(7, "2026-01-02T00:00:00Z", body="unbound", labels=("ready-for-agent", "experiment")),
@@ -48,15 +49,16 @@ class PolicyTest(unittest.TestCase):
         tier, why = schedule.priority(9, BOUND, REPO)
         self.assertIsNone(tier)
         self.assertIn("initiative #50 Plan baseline names no tier for #9", why)
-        tier, why = schedule.priority(3, BOUND.replace("Initiative: #50", "Initiative: #51"), REPO)
-        self.assertIsNone(tier)
-        self.assertIn("invalid Plan baseline", why)
+        with self.assertRaisesRegex(binding.BindingError, "initiative #50 is missing a Plan baseline"):
+            schedule.priority(8, QUEUE[0]["body"], REPO)
+        with self.assertRaises(binding.BindingError):
+            schedule.priority(3, BOUND.replace("Initiative: #50", "Initiative: #51"), REPO)
 
     def test_controlled_queue_ranks_after_eligibility_capacity_and_the_experiment_slot(self):
         decided = schedule.plan(QUEUE, 3, repo=REPO, streak=0, experiments=0)
         self.assertEqual([row["number"] for row in decided["selected"]], [5, 3, 2])
         self.assertEqual(decisions(decided), {5: "selected", 3: "selected", 2: "selected", 7: "deferred",
-                                              4: "deferred", 1: "deferred", 6: "held"})
+                                              4: "deferred", 1: "deferred", 8: "held", 6: "held"})
         by = {row["ticket"]: row for row in decided["explained"]}
         self.assertIn("highest accepted priority NOW, oldest first", by[5]["reason"])
         self.assertTrue(by[5]["experiment"])
@@ -64,6 +66,8 @@ class PolicyTest(unittest.TestCase):
         self.assertIn("accepted priority LATER ranks after", by[4]["reason"])
         self.assertIn("unknown priority ranks after explicit priorities (unknown priority: no Plan baseline", by[1]["reason"])
         self.assertEqual(by[6], {"ticket": 6, "decision": "held", "reason": "blocked by #9"})
+        self.assertEqual(by[8]["reason"], "Plan binding is invalid; admission would refuse it: "
+                                          "linked ticket for initiative #50 is missing a Plan baseline")
 
         # One experiment already active: the NOW experiment is deferred, production fills capacity.
         decided = schedule.plan(QUEUE, 3, repo=REPO, streak=0, experiments=1)
@@ -77,16 +81,18 @@ class PolicyTest(unittest.TestCase):
 
     def test_bounded_starvation_carries_over_from_the_journal_and_never_bypasses_the_slot(self):
         # Three explicit admissions in earlier passes: the oldest unknown-priority ticket goes first now.
+        # #8 is older still, but admission would refuse it, so fairness never picks it.
         decided = schedule.plan(QUEUE, 2, repo=REPO, streak=3, experiments=1)
         self.assertEqual([row["number"] for row in decided["selected"]], [1, 3])
+        self.assertEqual(decisions(decided)[8], "held")
         # #7 is the oldest unknown-priority ticket by age but the experiment slot holds; #1 is next oldest.
         self.assertEqual(decisions(decided)[7], "deferred")
         # Without any explicit-priority candidate, unknown-priority work is admitted oldest first.
-        decided = schedule.plan([QUEUE[0], QUEUE[2]], 2, repo=REPO, streak=0, experiments=0)
+        decided = schedule.plan([QUEUE[1], QUEUE[3]], 2, repo=REPO, streak=0, experiments=0)
         self.assertEqual([row["number"] for row in decided["selected"]], [1, 7])
         self.assertIn("no explicit priority is eligible", decided["explained"][0]["reason"])
         # Nothing eligible but a second experiment: no admission, the reason says why.
-        decided = schedule.plan([QUEUE[2]], 2, repo=REPO, streak=0, experiments=1)
+        decided = schedule.plan([QUEUE[3]], 2, repo=REPO, streak=0, experiments=1)
         self.assertEqual(decided["selected"], [])
         self.assertEqual(decisions(decided), {7: "deferred"})
 
@@ -129,7 +135,7 @@ class DispatcherPassTest(unittest.TestCase):
         self.assertEqual((row["capacity"], row["active"]), (3, []))
         self.assertEqual([(e["ticket"], e["decision"]) for e in row["explained"]],
                          [(1, "selected"), (5, "selected"), (3, "selected"), (2, "deferred"), (4, "deferred"),
-                          (7, "deferred"), (6, "held")])
+                          (7, "deferred"), (8, "held"), (6, "held")])
         self.assertIn("fairness after 3 consecutive", row["explained"][0]["reason"])
 
     def test_dry_run_explains_without_journaling_and_held_only_frontier_is_idle(self):
