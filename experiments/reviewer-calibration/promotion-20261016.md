@@ -144,13 +144,14 @@ Every `current` APPROVE-oracle cell returned APPROVE with "Required fixes: none"
 ## What the lever did not fix
 
 1. **It did not close the compositional miss.** The instruction names "flag, profile, default
-   or signature". The three persistent misses are none of those: `20-before` D1 is a push
-   argument's interaction with a profile that rewrites history (0/2 → 0/2 by verdict; the
-   one candidate run that saw it filed it as Optional), `62-before` D2 is a consumer that
-   *does* appear in the trace and was judged to hold, `79-before` D1 is a REST field name
-   (0/4 blocking across both arms; the candidate found it once and approved anyway). Each
-   arm: 4 misses of its 8 REVISE-oracle cells. The lever moved where the misses sit, not how
-   many there are.
+   or signature". The three misses it left are none of those: `20-before` D1 is a push
+   argument's interaction with a profile that rewrites history (1/2 → 0/2 by blocking
+   detection — `current` s2 caught it as Required, the one candidate run that saw it filed
+   it as Optional; 1/2 → 1/2 by verdict, candidate s1's REVISE being for an unrelated
+   label finding), `62-before` D2 is a consumer that *does* appear in the trace and was
+   judged to hold (0/2 → 0/2), `79-before` D1 is a REST field name (0/4 blocking across both
+   arms; the candidate found it once and approved anyway). Each arm: 4 misses of its 8
+   REVISE-oracle cells. The lever moved where the misses sit, not how many there are.
 2. **It bought unnecessary REVISEs with the extra reading.** 0/14 → 4/14 per arm across the
    APPROVE-oracle cells. Each was a plausible cross-file or doc-contract finding the reviewer was now
    instructed to go looking for, promoted to Required with a cited rule. Two of them
