@@ -117,7 +117,7 @@ flowchart TB
   ESC -->|"ready-for-agent swapped for ready-for-human: dispatch.escalate"| RFH
   UPSTREAM -->|"new sync ticket on a staged agent/N candidate; never moves main: dispatch.sync_pass"| RFA
   EXTPR -->|"review attempts exhausted, new issue: dispatch.review_intake_pass"| RFH
-  EXTPR -->|"agent/lessons-*, agent/curate-*, agent/revert-lessons-* admitted without a label: dispatch.review_intake_pass"| EXTPR
+  EXTPR -->|"agent/lessons-*, agent/curate-*, agent/revert-lessons-* (same repository) admitted without a label: dispatch.review_intake_pass"| EXTPR
   EXTPR -->|"gate PASS + APPROVE bound to head, CI green: learn.promote_pass"| MERGED
   RFH -->|"packet and manager rounds left: manage.escalation_pass"| MGR
   RFH -->|"terminal, routed request published: handoff.handoff_pass"| HUMAN

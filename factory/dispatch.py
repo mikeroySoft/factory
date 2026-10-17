@@ -338,13 +338,15 @@ def review_intake_pass(dry_run: bool) -> None:
     """Review opted-in PR revisions, and `factory learn` PRs, without running the issue/merge pipeline."""
     prs = gh_json([
         "pr", "list", "--repo", REPO, "--state", "open", "--limit", "1000",
-        "--json", "number,state,isDraft,headRefName,headRefOid,baseRefOid,labels,reviewRequests",
+        "--json", "number,state,isDraft,isCrossRepository,headRefName,headRefOid,baseRefOid,labels,reviewRequests",
     ])
     login = None
     for pr in prs:
         if pr["state"] != "OPEN" or pr["isDraft"]:
             continue
-        opted_in = any(label["name"] == LABEL_REVIEW for label in pr["labels"]) or bool(LESSONS_BRANCH.match(pr.get("headRefName") or ""))
+        # Branch-name admission is for the dispatcher's own chore PRs; a fork can name its branch anything.
+        opted_in = any(label["name"] == LABEL_REVIEW for label in pr["labels"]) or (
+            not pr.get("isCrossRepository") and bool(LESSONS_BRANCH.match(pr.get("headRefName") or "")))
         requests = pr["reviewRequests"]
         if not opted_in and requests:
             if login is None:
