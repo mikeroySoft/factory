@@ -123,6 +123,12 @@ class LocalCLI(unittest.TestCase):
             '[[gate.check]]\nname = "code"\nrun = ' + json.dumps(argv) + '\n' + extra
         )
 
+    def commit_config(self):
+        """Land the fixture's `.factory.toml` on origin/main: the dispatcher reads the pinned tip, not local edits."""
+        self.git("add", ".factory.toml")
+        self.git("commit", "-qm", "config")
+        self.git("push", "-q", "origin", "main")
+
     def cli(self, *args, expected=0):
         result = subprocess.run([sys.executable, "-m", "factory", *args], cwd=self.repo,
                                 env=self.env, capture_output=True, text=True, timeout=60, check=False)
@@ -340,6 +346,7 @@ class LocalCLI(unittest.TestCase):
         self.git("remote", "add", "upstream", str(upstream))
         path = self.repo / ".factory.toml"
         path.write_text(path.read_text().replace('slug = "local/smoke"', 'slug = "local/smoke"\nupstream = "upstream"'))
+        self.commit_config()
         wrapper = self.bin / "git"
         wrapper.write_text(
             "#!/usr/bin/env python3\nimport os, sys\n"
@@ -359,6 +366,7 @@ class LocalCLI(unittest.TestCase):
 
     def test_worker_launch_failure_releases_ticket_lock_and_skips_downstream(self):
         self.write_config(worker=[str(self.base / "absent-worker")])
+        self.commit_config()
         self.cli("dispatch", "--ticket", "7", expected=1)
         rows = self.rows()
         self.assertFalse(any(r["stage"] in {"gate", "review"} for r in rows))
@@ -368,7 +376,8 @@ class LocalCLI(unittest.TestCase):
         self.assertFalse(lock_held(self.repo / ".factory" / "locks" / "7.lock"))
 
     def test_setup_exception_records_unknown_and_releases_claim_lock(self):
-        self.git("remote", "set-url", "origin", str(self.base / "absent-origin"))
+        (self.repo / ".factory").mkdir()
+        (self.repo / ".factory" / "wt-7").write_text("")  # `git worktree add` refuses an existing path
         self.cli("dispatch", "--ticket", "7", expected=1)
         rows = self.rows()
         self.assertFalse(any(r["stage"] in {"worker", "gate", "review"} for r in rows))
@@ -393,6 +402,7 @@ class LocalCLI(unittest.TestCase):
             extra='[[gate.check]]\nname = "slow"\nrun = '
             + json.dumps([sys.executable, str(check), str(self.pr_log), str(fails)]) + f'\nwhen = "{when}"\n',
         )
+        self.commit_config()
 
     def pr_runs(self):
         return self.pr_log.read_text().split() if self.pr_log.exists() else []
@@ -475,8 +485,6 @@ class LocalCLI(unittest.TestCase):
 
         self.pr_config(fails=fails)
         self.state.write_text(json.dumps({"reviews": 1}))  # the one review APPROVEs
-        self.git("add", ".factory.toml")
-        self.git("commit", "-m", "pr check")
         wt = self.repo / ".factory" / "wt-7"
         wt.parent.mkdir(exist_ok=True)
         self.git("worktree", "add", str(wt), "-b", "agent/7")
@@ -511,6 +519,48 @@ class LocalCLI(unittest.TestCase):
         self.assertEqual(self.prompts(self.review_prompts), [])
         approve.assert_not_called()
         self.assertEqual(escalate.call_args.args[1], "pr checks failed")
+
+    def test_pass_pins_root_to_origin_main_before_reading_config(self):
+        marker = self.base / "new-worker-ran"
+        new_worker = self.base / "new_worker.py"
+        new_worker.write_text(f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n{WORKER}")
+        good = (self.repo / ".factory.toml").read_text()
+        (self.repo / ".factory.toml").write_text(good + "[worker_wrap]\n")  # host-only table: the engine rejects it
+        self.commit_config()
+        other = self.base / "other"
+        subprocess.run(["git", "clone", "-q", "-b", "main", str(self.base / "origin.git"), str(other)], env=self.env, check=True)
+        toml = good.replace(
+            json.dumps([sys.executable, str(self.worker)]), json.dumps([sys.executable, str(new_worker)]))
+        self.assertNotEqual(toml, (self.repo / ".factory.toml").read_text())
+        (other / ".factory.toml").write_text(toml)
+        subprocess.run(["git", "-c", "user.name=O", "-c", "user.email=o@example.invalid", "commit", "-qam", "switch worker"],
+                       cwd=other, env=self.env, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=other, env=self.env, check=True)
+        self.cli("dispatch", "--ticket", "7")
+        self.assertTrue(marker.exists())
+        self.assertEqual(self.git("rev-parse", "HEAD").stdout, self.git("rev-parse", "origin/main").stdout)
+        detached = subprocess.run(["git", "symbolic-ref", "-q", "HEAD"], cwd=self.repo, env=self.env,
+                                  capture_output=True, text=True, check=False)
+        self.assertNotEqual(detached.returncode, 0)
+        self.assertNotIn("switch worker", self.git("log", "--format=%s", "main").stdout)
+
+    def test_dirty_root_exits_nonzero_and_claims_nothing(self):
+        (self.repo / "junk.txt").write_text("untracked\n")
+        with (self.repo / ".factory.toml").open("a") as f:
+            f.write("garbage = [\n")  # local edit that does not even parse
+        (self.repo / ".factory").mkdir()
+        (self.repo / ".factory" / "scratch.txt").write_text("ignored state\n")
+        result = self.cli("dispatch", "--ticket", "7", expected=1)
+        self.assertIn("root_dirty", result.stdout + result.stderr)
+        events = lifecycle.read_events(self.events)
+        exits = [r for r in self.rows() if r["kind"] == "exit"]
+        self.assertEqual([(r["stage"], r["outcome"], r["reason"]) for r in exits],
+                         [("dispatcher", "project_escalation", "root_dirty")])
+        [named] = [r for r in self.rows() if r["kind"] == "result"]
+        self.assertEqual(named["paths"], [".factory.toml", "junk.txt"])
+        self.assertFalse(any(r.get("event") == "claimed" for r in events))
+        self.assertFalse((self.repo / ".factory" / "wt-7").exists())
+        self.assertEqual(self.git("symbolic-ref", "HEAD").stdout.strip(), "refs/heads/main")
 
 
 if __name__ == "__main__":

@@ -256,7 +256,7 @@ merge stage.
 | Command | What one invocation does |
 |---|---|
 | `factory triage` | Labels every `needs-triage` issue via the local model: `ready-for-agent` (with an agent brief), `needs-info` (with the question), `ready-for-human`, or a `wontfix` proposal comment. `--dry-run`, `--issue N`, `--replay a,b,c`. |
-| `factory dispatch` | One stateless pass: upstream sync → merge stage (at most one PR) → review-only PR intake → manager → claim up to `max_active` tickets → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan. |
+| `factory dispatch` | One stateless pass: fetch and detach the main checkout at `origin/<main>` before `.factory.toml` is read (a root with tracked or untracked changes outside `.factory/` exits 1 with a `root_dirty` dispatcher exit row naming the paths and does nothing, even when its config does not load) → upstream sync → merge stage (at most one PR) → review-only PR intake → manager → claim up to `max_active` tickets → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan from the checkout as it is. |
 | `factory manage` | First recommends directions for `needs-review` PRs, then `needs-viability` issues; then resolves untouched `ready-for-human` escalation packets within `[manager].rounds`; finally publishes one routed human handoff request per escalation whose automatic recovery is terminal (also without a manager). `--dry-run` lists eligible requests without inference or writes. |
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
 | `factory watch` | Post-ship monitor from local evidence only: lifecycle exit rows with `mechanism_failure` (or `unknown` with a `worker_exit:`/`check_timeout` reason), failed `factory-*` user units for this repository, `factory dashboard --runtime-json` source errors, and one escalation `code` repeating on ≥3 distinct tickets in the trailing 7 days. Each distinct fingerprint (sha256 of kind, stage, reason/unit, 12 hex; `escalation:<code>` for repeats) files one `bug,needs-triage` issue carrying the fingerprint, the triggering journal rows, the newest attempt log tail, the unit status or runtime excerpt (for repeats: each ticket, its prose `reason` and escalation packet path), the reproducing command and an "Expected behavior" section; the filing is journaled as a `watch` row. `escalate` rows without a `code` are `unknown` and never filed. Never refiles while that issue is open; refiles once it is closed and the signal recurs. At most 5 issues per pass. `--dry-run` prints what would be filed without `gh`. `factory install` runs it from the pass unit's `ExecStopPost=`, after every `dispatch`, crashed or not. |
@@ -283,7 +283,10 @@ diagnosis. Unavailable verification remains unknown, never authorization.
 key are configuration errors; `--reason unknown` remains a valid non-guessing request.
 
 Every command reads `.factory.toml` from the main checkout, even when run
-inside one of its worktrees.
+inside one of its worktrees. A dispatch pass first pins that checkout to
+`origin/<main>` (`git fetch`, `git checkout --detach`), so `.factory.toml` and
+`.factory-lessons.md` come from the committed tip, never from a local branch or
+uncommitted edit; keep the root clean and land config through PRs.
 
 Worker and manager commands receive `{prompt}` as a prompt-file path and `{cwd}`
 as the worktree (or repository root); reviewers receive `{prompt}` as inline
@@ -626,10 +629,12 @@ Review the explicit before/after summary and choose **Save changes**. The
 dashboard writes only changed keys to the local `.factory.toml`, preserving
 unrelated settings and comments; changes remain uncommitted (they never commit
 or push). If another process changes the configuration first, stale edits are
-rejected: reload and review the latest values before saving. Work-limit changes
-apply to the next dispatcher invocation; the selected model applies to the next
-new Factory Manager request. Running work and in-flight requests keep their
-captured configuration unchanged.
+rejected: reload and review the latest values before saving. A saved change
+leaves `.factory.toml` modified in the root, so every `factory dispatch` pass is
+refused with `root_dirty` until the edit lands on `origin/<main>` through a PR
+(or is reverted); it takes effect on the first pass after it lands. The selected
+model applies to the next new Factory Manager request. Running work and
+in-flight requests keep their captured configuration unchanged.
 
 Clearing `manager.model` removes the repository override and restores the
 existing host value, a legacy `manager.command --model` fallback, or OMP's

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Dispatcher root pinning (#181): every non-dry-run pass starts with `git fetch origin <main>` and `git checkout --detach origin/<main>` in the main checkout, and only then loads `.factory.toml` (the pin reads just `[repo].main` from the raw file, so a stale root whose config the engine rejects still picks up the fix from origin/main), so config, lessons and the dashboard theme come from the committed tip rather than whatever branch or edits the root carries. A root with tracked or untracked changes outside `.factory/` is left untouched: the pass exits 1 with a `project_escalation`/`root_dirty` dispatcher exit row and a `result` row listing the paths, and claims nothing.
+
 ## 0.4.1 — 2026-10-16
 
 Compared against 0.4.0 (`9a83868`). Released channel `stable` points at `v0.4.1`. Patch bump: the closed-loop groundwork — every escalation carries a mechanical `code`, OMP worker transcripts persist per ticket, `factory watch` files the factory's own runtime failures as bugs, `factory score` rates sessions from those transcripts, and a release gate tier runs only on tags.
