@@ -217,6 +217,23 @@ class RuntimeCliTest(unittest.TestCase):
         self.assertIsNone(data["executions"][0]["entered_at"])
         self.assertEqual(data["events"][0]["event_id"], waiting["event_id"])
 
+    def test_clipped_entry_is_not_a_missing_enter_error(self):
+        execution = lifecycle.Execution(self.journal, "worker", ticket=12)
+        execution.emit("enter")
+        waiting = execution.wait("capacity_reached", mode="admission", active=2, max_active=2)
+        row = json.dumps(waiting).encode() + b"\n"
+        self.journal.write_bytes(row)
+        unclipped = self.invoke()
+        self.assertIn({"source": "events.jsonl", "scope": "executions", "code": "missing_enter"}, unclipped["errors"])
+        with self.journal.open("wb") as handle:
+            handle.write(b" " * (2 * 1024 * 1024) + b"\n")
+            handle.write(row)
+        clipped = self.invoke()
+        self.assertTrue(clipped["history"]["truncated"])
+        self.assertNotIn("missing_enter", clipped["history"]["gaps"])
+        self.assertNotIn("missing_enter", [error["code"] for error in clipped["errors"]])
+        self.assertEqual(clipped["executions"][0]["observation"], "partial")
+
     def test_truncated_old_history_does_not_poison_current_observations(self):
         import shutil
 

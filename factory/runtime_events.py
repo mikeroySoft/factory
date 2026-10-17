@@ -33,12 +33,12 @@ OUTCOMES = {
 }
 REASONS = {
     "APPROVE", "REVISE", "unparsed_verdict", "merge_conflict", "upstream_gate_failed",
-    "upstream_sync", "check_terminated_by_signal", "check_timeout", "configured_check_failed",
+    "upstream_sync", "upstream_staged", "check_terminated_by_signal", "check_timeout", "configured_check_failed",
     "conflict_markers", "git_grep_failed", "git_diff_failed", "leak_scan_matches",
     "github_command_failed", "triage_endpoint_timeout", "triage_endpoint_unavailable",
     "no_tickets", "unparseable_decision", "triage_feedback", "ci_pending", "no_passing_ci",
-    "exclusive_resource", "merge_lock_contended", "ticket_lock_contended", "capacity_reached",
-    "state_changed", "check_failed", "stuck", "hung_after_done", "budget_exceeded",
+    "exclusive_resource", "merge_lock_contended", "ticket_lock_contended", "capacity_reached", "worker_unavailable",
+    "state_changed", "check_failed", "stuck", "hung_after_done", "budget_exceeded", "root_dirty",
     "scheduled_next_pass", "scope exited before its registered children were reaped",
     "recorded execution ended according to process and lock evidence",
 }
@@ -537,8 +537,11 @@ def _executions(retained: list, history: dict, gaps: list, observation: _Observa
             any(row[field] != events[0][field] for field in IDENTITY) for row in events
         )
         causal_gap = sequences != list(range(sequences[0], sequences[0] + len(sequences)))
-        if inconsistent or causal_gap or entry is None or entry["sequence"] != 1:
-            code = "identity_conflict" if inconsistent else "missing_enter" if entry is None else "sequence_gap"
+        # A clipped window hides the entry of executions that began before it; that is
+        # already reported as byte_limit/event_limit, not a missing enter.
+        clipped = entry is None and history["truncated"] and sequences[0] > 1
+        if inconsistent or causal_gap or entry is None and not clipped or entry is not None and entry["sequence"] != 1:
+            code = "identity_conflict" if inconsistent else "missing_enter" if entry is None and not clipped else "sequence_gap"
             if code not in history["gaps"]:
                 history["gaps"].append(code)
             history["complete"] = False

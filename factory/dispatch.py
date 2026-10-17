@@ -1,8 +1,9 @@
 """Stateless AI-factory dispatcher.
 
-One pass per invocation: first the upstream sync merges any new upstream main
-commits into the fork's main (host gate, no CI), then the merge stage lands
-at most one approved, green, up-to-date factory PR on main; then pick
+One pass per invocation: first the upstream sync stages any new upstream main
+commits as a `ready-for-agent` sync ticket on an `agent/<issue>` candidate
+(never moving main), then the merge stage lands at most one approved, green,
+up-to-date factory PR on main; then pick
 claimable issues (or --ticket N), run a worker agent in a git worktree, gate,
 open a PR, review with the reviewer model, and bounce once. Approval and merge
 require the gate, review, durable approval event, CI, and remote PR to agree on
@@ -17,11 +18,13 @@ import fcntl
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 from contextlib import contextmanager, nullcontext, suppress
 from pathlib import Path
 
@@ -801,6 +804,7 @@ def commit_leftovers(wt: Path, n: int, title: str) -> None:
 
 def run_gate(
     wt: Path, n: int | str, skip: str = "", protected_override: bool = False, tier: str = "attempt",
+    upstream: list[str] = (),
 ) -> tuple[bool, str]:
     report_rel = f".factory/gate-report-{n}.md"
     (wt / ".factory").mkdir(exist_ok=True)
@@ -821,6 +825,8 @@ def run_gate(
     # The gate process records its own stage and check boundaries.
     if protected_override:
         cmd.append("--protected-override")
+    for ref in upstream:
+        cmd += ["--upstream", ref]
     if tier != "attempt":
         cmd += ["--tier", tier]
     proc = run(cmd, cwd=wt, check=False)
@@ -834,8 +840,6 @@ def escalation_packet(
     reason: str,
     log_path: Path | None,
     wt: Path,
-    gate_detail: str = "",
-    artifact: str | None = None,
     extra: str = "",
 ) -> tuple[Path, int]:
     events = lifecycle.read_events(EVENTS)
@@ -847,10 +851,9 @@ def escalation_packet(
         f"`{event.get('log') or ''}` |"
         for event in attempts
     ] or ["| — | — | — | — | — | none recorded |"]
-    artifact = artifact or str(n)
-    gate = wt / ".factory" / f"gate-report-{artifact}.md"
-    review = FACTORY / f"review-{artifact}.md"
-    handoff = wt / ".factory" / f"handoff-{artifact}.md"
+    gate = wt / ".factory" / f"gate-report-{n}.md"
+    review = FACTORY / f"review-{n}.md"
+    handoff = wt / ".factory" / f"handoff-{n}.md"
     logs = list(dict.fromkeys(
         str(event["log"]) for event in attempts if event.get("log")
     ))
@@ -866,7 +869,7 @@ def escalation_packet(
         "|---:|---|---:|---|---:|---|\n"
         + "\n".join(rows)
         + "\n\n## Last gate report\n\n"
-        + ((gate.read_text() if gate.exists() else gate_detail).strip()[-6000:] or "(none recorded)")
+        + ((gate.read_text() if gate.exists() else "").strip()[-6000:] or "(none recorded)")
         + "\n\n## Latest review findings\n\n"
         + (review.read_text().strip()[-6000:] if review.exists() else "(none recorded)")
         + "\n\n## Handoff\n\n"
@@ -889,8 +892,8 @@ ESCALATION_CODES = frozenset({
     "protected_paths", "budget", "gate_failed", "worker_stuck", "pr_unpublished",
     "pr_checks_failed", "review_revise", "approval_drift", "approval_missing",
     "ci_failed", "ci_runner", "refresh_head", "refresh_conflict", "refresh_empty",
-    "gh_failed", "review_intake", "upstream_sync", "manager_failed", "manager_exhausted",
-    "manager_human", "pr_feedback", "pr_stale",
+    "gh_failed", "review_intake", "manager_failed", "manager_exhausted",
+    "manager_human", "pr_feedback", "pr_stale", "lease_refused", "dispatcher_error",
 })
 
 
@@ -967,6 +970,7 @@ def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str,
     with lifecycle.scope(EVENTS, "review", ticket=n) as execution:
         before = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
         proc = None
+        launch_error = None
         findings = ""
         parsed = False
         matches = []
@@ -974,7 +978,14 @@ def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str,
         if before == expected_head:
             command, structured = _review_command(prompt)
             with without_github(dict(os.environ)) as env:
-                proc = run(command, cwd=wt, check=False, env=env)
+                try:
+                    proc = run(command, cwd=wt, check=False, env=env)
+                except FileNotFoundError as exc:
+                    # Host defect (reviewer executable not on PATH, #260): unaccepted evidence,
+                    # never a dispatcher crash; callers withdraw or escalate as for any REVISE.
+                    launch_error = f"{type(exc).__name__}: {exc}"
+                    log(f"#{n}: reviewer launch failed ({exc}); fix PATH or [review] (`factory doctor`)")
+        if proc is not None:
             findings, usage = (
                 _omp_output(proc.stdout) if structured else (proc.stdout.strip(), None)
             )
@@ -1004,6 +1015,8 @@ def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str,
             execution.outcome = "unknown"
             if before != expected_head or actual_head != expected_head:
                 execution.reason = "state_changed"
+            elif launch_error:
+                execution.reason = launch_error
             elif proc is not None and proc.returncode:
                 execution.reason = f"review_exit:{proc.returncode}"
             else:
@@ -1049,16 +1062,37 @@ def agent_lease(wt: Path, n: int) -> str:
     return run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
 
 
+class LeaseRefused(subprocess.CalledProcessError):
+    """`push_agent` refused: the remote `agent/<n>` moved since its lease was read. Still the
+    `CalledProcessError` a checked push always raised; `str()` is the escalation reason."""
+
+    def __init__(self, pushed: subprocess.CompletedProcess, reason: str) -> None:
+        super().__init__(pushed.returncode, pushed.args, pushed.stdout, pushed.stderr)
+        self.reason = reason
+
+    def __str__(self) -> str:
+        return self.reason
+
+
 def push_agent(wt: Path, n: int, lease: str, check: bool = True) -> str | None:
     """Force-push this worktree's HEAD to `agent/<n>`, never any other ref, only while the remote
     still holds `lease`, the sha the dispatcher last fetched or pushed. A worker history rewrite
     lands; anyone else's push since then is refused. Returns the pushed sha (the next lease),
-    or None when refused and `check` is False."""
+    or None when refused and `check` is False; with `check`, a refusal raises `LeaseRefused`
+    and any other push failure a plain `CalledProcessError`."""
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     pushed = run(
         ["git", "push", f"--force-with-lease=agent/{n}:{lease}", "origin", f"{head}:refs/heads/agent/{n}"],
-        cwd=wt, check=check,
+        cwd=wt, check=False,
     )
+    if pushed.returncode and check:
+        if "stale info" not in pushed.stderr:
+            pushed.check_returncode()
+        raise LeaseRefused(
+            pushed,
+            f"agent/{n} push refused: origin/agent/{n} moved since lease {lease[:12] or '(none)'} "
+            f"was read (GitHub \"Update branch\" or another push); worktree kept at {wt}",
+        )
     return None if pushed.returncode else head
 
 
@@ -1136,7 +1170,8 @@ def pr_comment(n: int, text: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Upstream sync: merge new upstream main commits into the fork's main.
+# Upstream sync: stage new upstream main commits as a sync ticket. Only the
+# merge stage moves main, once the ticket's PR is gated, reviewed and green.
 # ---------------------------------------------------------------------------
 
 SYNC_TITLE = "upstream sync: "
@@ -1151,11 +1186,11 @@ def sync_record(**rec: object) -> None:
 
 
 def open_sync_issue() -> int | None:
-    """The open sync escalation, if one exists.
+    """The open sync ticket, worker- or human-owned, if one exists.
 
     Reads the issue list rather than `--search`: the search index is
-    eventually consistent, so an escalation opened minutes ago can still be
-    missing from it. That miss duplicates the escalation — mikeroySoft/rocm-cli
+    eventually consistent, so a ticket opened minutes ago can still be
+    missing from it. That miss duplicates the ticket — mikeroySoft/rocm-cli
     #35/#36/#37 are the same conflict opened three times. The list endpoint is
     read-through, so the title match below is authoritative.
     """
@@ -1179,16 +1214,46 @@ def open_sync_issue() -> int | None:
     return None
 
 
-def sync_escalate(tip: str, reason: str, detail: str) -> str:
-    """Open one ready-for-human issue for a failed sync; returns its URL."""
+def sync_event(n: int) -> dict | None:
+    """The `upstream-sync` row that staged ticket n (`upstream` tip, staged `head`);
+    None for ordinary tickets."""
+    return next((e for e in reversed(lifecycle.read_events(EVENTS))
+                 if e.get("event") == "upstream-sync" and e.get("ticket") == n), None)
+
+
+def gate_flags(sync: dict | None, labels: set[str]) -> dict:
+    """`run_gate` keywords for a ticket. Only the human label overrides protected paths.
+    A sync ticket's gate ignores protected-path hits whose content is upstream's (equal to
+    the recorded tip or the dispatcher's staged candidate) and leak-scans from the tip, so
+    both checks judge what the worker wrote."""
+    flags = {"protected_override": LABEL_PROTECTED_OVERRIDE in labels}
+    if sync:
+        flags["upstream"] = [sync["upstream"], sync["head"]]
+    return flags
+
+
+def sync_staged(n: int, wt: Path) -> tuple[str, str] | None:
+    """(gate report, head) when the dispatcher's own staged candidate passed the gate and
+    is still this worktree's exact head: nothing for a worker to fix."""
+    head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    staged = next((e for e in reversed(lifecycle.read_events(EVENTS))
+                   if e.get("event") == "attempt" and e.get("ticket") == n and e.get("attempt") == 0), None)
+    report = wt / ".factory" / f"gate-report-{n}.md"
+    if not staged or staged.get("gate") != "PASS" or staged.get("head") != head or not report.exists():
+        return None
+    return report.read_text(), head
+
+
+def sync_issue(tip: str, count: str, staged: str, evidence: str) -> int:
+    """File the sync ticket; the ordinary worker pipeline owns it from here."""
     body = (
-        f"Automatic sync of `{UPSTREAM_REPO}` {cfg.main} ({tip}) into `{cfg.main}` failed: "
-        f"{reason}.\n\n```\n{detail.strip()[-6000:]}\n```\n\n"
-        f"Resolve through the normal flow: a PR onto `{cfg.main}` that contains the "
-        "upstream tip (merge, do not squash or rebase it away), gated and reviewed "
-        f"like any factory PR. Never push `{cfg.main}` directly. Close this issue once "
-        f"`{cfg.main}` contains the tip; the dispatcher skips upstream sync while it is "
-        "open."
+        f"Automatic sync of `{UPSTREAM_REPO}` {cfg.main} into `{cfg.main}`: {count} new upstream "
+        f"commit(s), tip `{tip}`.\n\n"
+        f"The candidate branch (this ticket's `agent/` branch, your worktree) starts from "
+        f"`{cfg.main}` and {staged}.\n\n{evidence}\n\n"
+        f"Exit gate: HEAD contains upstream tip `{tip}` (merge it; never squash or rebase it away) "
+        "and the gate passes. The dispatcher rejects a passing gate whose HEAD does not contain "
+        f"the tip. Never push `{cfg.main}`; the merge stage lands the reviewed PR."
     )
     body_file = FACTORY / "sync-issue.md"
     body_file.write_text(body)
@@ -1200,23 +1265,15 @@ def sync_escalate(tip: str, reason: str, detail: str) -> str:
             "--repo",
             REPO,
             "--title",
-            f"{SYNC_TITLE}{reason} at {tip[:12]}",
+            f"{SYNC_TITLE}{count} commit(s) at {tip[:12]}",
             "--label",
-            LABEL_HUMAN,
+            LABEL_AGENT,
             "--body-file",
             str(body_file),
         ]
     ).stdout
     url = out.strip().splitlines()[-1]
-    n = int(url.rstrip("/").rsplit("/", 1)[-1])
-    packet, round_number = escalation_packet(
-        n, reason, None, FACTORY / "wt-upstream", detail, "upstream"
-    )
-    record(
-        "escalate", ticket=n, upstream=tip, code="upstream_sync", reason=reason,
-        packet=str(packet), round=round_number,
-    )
-    return url
+    return int(url.rstrip("/").rsplit("/", 1)[-1])
 
 
 def merge_upstream_rev(wt: Path, rev: str, label: str, count: str) -> subprocess.CompletedProcess[str]:
@@ -1239,19 +1296,15 @@ def merge_upstream_rev(wt: Path, rev: str, label: str, count: str) -> subprocess
 def newest_clean_upstream_commit(wt: Path, tip: str) -> str | None:
     """The newest upstream commit below `tip` that merges without conflicts.
 
-    Called only after the tip itself conflicted. Without this the whole
-    backlog parks behind one bad commit: mikeroySoft/rocm-cli sat 36 commits
-    behind for ten days because a single-commit conflict escalated and every
-    later upstream commit queued behind it, so the conflict a human eventually
-    resolved was far larger than the one that caused the park. Landing the
-    conflict-free prefix bounds the escalation to the commits that genuinely
-    conflict, and bounds how far the fork drifts while a human gets to it.
+    Called only after the tip itself conflicted, so the candidate carries as
+    much of upstream as merges cleanly and the worker's conflict is bounded to
+    the commits that genuinely conflict. Staging the prefix never lands it:
+    only the reviewed PR moves main.
 
     Walks back from the tip, newest first, so the prefix is the longest one
     available. Each probe is a real merge, immediately undone — conflict-freeness
     is a property of the individual merge, so probing is the only honest test.
-    Returns None when even the oldest unmerged commit conflicts, which is the
-    old all-or-nothing case.
+    Returns None when even the oldest unmerged commit conflicts.
     """
     revs = run(["git", "rev-list", f"HEAD..{tip}"], cwd=wt).stdout.split()
     for rev in revs:
@@ -1268,12 +1321,15 @@ def newest_clean_upstream_commit(wt: Path, tip: str) -> str | None:
 
 
 def sync_pass(dry_run: bool) -> None:
-    """Merge upstream main into fork main when upstream moved; one merge per pass.
+    """Stage upstream main as a sync ticket when upstream moved; one ticket at a time.
 
-    Evidence is the host gate (minus the leak scan: upstream is already
-    public). Conflicts or a failed gate open one ready-for-human issue and the
-    stage stays parked until that issue closes. Runs under the merge lock:
-    it moves main, so it must not race the merge stage.
+    The candidate is built in a detached worktree: the tip merged (or, when it
+    conflicts, the newest conflict-free prefix) and the host gate run (minus the
+    leak scan: upstream is already public). Whatever the result, it is handed to
+    an `agent/<issue>` branch and a `ready-for-agent` issue carrying the exact
+    merge and gate evidence; the ordinary worker → gate → review → PR → CI →
+    merge pipeline owns it from there. Nothing here moves main. One open sync
+    issue, worker- or human-owned, parks the stage until it closes.
     """
     if UPSTREAM is None:
         return
@@ -1297,7 +1353,7 @@ def sync_pass(dry_run: bool) -> None:
     ).stdout.strip()
     issue = open_sync_issue()
     if issue:
-        log(f"upstream sync: {count} commit(s) behind; waiting on human (#{issue})")
+        log(f"upstream sync: {count} commit(s) behind; waiting on sync ticket #{issue}")
         return
     wt = FACTORY / "wt-upstream"
     if wt.is_dir():
@@ -1306,78 +1362,42 @@ def sync_pass(dry_run: bool) -> None:
         ["git", "worktree", "add", "--detach", str(wt), f"origin/{cfg.main}"], cwd=ROOT
     )
     try:
-        with lifecycle.scope(EVENTS, "merge", lock=FACTORY / "locks" / "merge.lock") as execution:
-            target, conflicts = tip, ""
+        with lifecycle.scope(EVENTS, "upstream-sync") as execution:
+            gate = report = None
             merge = merge_upstream_rev(wt, f"{UPSTREAM}/{cfg.main}", tip, count)
-            if merge.returncode != 0:
+            if merge.returncode == 0:
+                ok, report = run_gate(wt, "upstream", skip="leak-scan", protected_override=True)
+                gate = "PASS" if ok else "FAIL"
+                staged = f"contains the merge of the tip; the dispatcher's gate on it {'passed' if ok else 'FAILED'}"
+                evidence = f"## Gate report (detached candidate)\n\n{report.strip()[-6000:]}"
+            else:
                 conflicts = run(
                     ["git", "diff", "--name-only", "--diff-filter=U"], cwd=wt, check=False
                 ).stdout
                 run(["git", "merge", "--abort"], cwd=wt, check=False)
                 prefix = newest_clean_upstream_commit(wt, tip)
                 if prefix is not None:
-                    count = run(
-                        ["git", "rev-list", "--count", f"HEAD..{prefix}"], cwd=wt
-                    ).stdout.strip()
-                    merge = merge_upstream_rev(wt, prefix, prefix, count)
-                    target = prefix
-                if prefix is None or merge.returncode != 0:
+                    staged_count = run(["git", "rev-list", "--count", f"HEAD..{prefix}"], cwd=wt).stdout.strip()
+                    prefix = prefix if merge_upstream_rev(wt, prefix, prefix, staged_count).returncode == 0 else None
+                if prefix is None:
                     run(["git", "merge", "--abort"], cwd=wt, check=False)
-                    execution.outcome = "product_feedback" if conflicts.strip() else "unknown"
-                    execution.reason = "merge_conflict" if conflicts.strip() else f"merge_exit:{merge.returncode}"
-                    url = sync_escalate(tip, "merge conflict", conflicts or merge.stderr)
-                    sync_record(upstream=tip, commits=count, result="conflict", issue=url)
-                    log(f"upstream sync: merge conflict at {tip[:12]}; escalated {url}")
-                    return
-            ok, report = run_gate(wt, "upstream", skip="leak-scan", protected_override=True)
-            if not ok:
-                execution.outcome, execution.reason = "project_escalation", "upstream_gate_failed"
-                url = sync_escalate(tip, "gate failed", report)
-                sync_record(upstream=tip, commits=count, result="gate-failed", issue=url)
-                log(f"upstream sync: gate failed at {tip[:12]}; escalated {url}")
-                return
-            merged = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
-            push = run(["git", "push", "origin", f"HEAD:{cfg.main}"], cwd=wt, check=False)
-            if push.returncode != 0:
-                execution.outcome, execution.reason = "unknown", f"push_exit:{push.returncode}"
-                # main moved under us; the next pass retries from the new tip.
-                sync_record(
-                    upstream=tip,
-                    commits=count,
-                    result="push-rejected",
-                    detail=push.stderr[-500:],
+                staged = (
+                    f"contains the conflict-free prefix through `{prefix}`; merging the tip conflicts"
+                    if prefix else "contains no upstream commits: even the oldest unmerged one conflicts"
                 )
-                log(f"upstream sync: push rejected; retry next pass\n{push.stderr}")
-                return
-            execution.outcome, execution.reason = "merged", "upstream_sync"
-            if target == tip:
-                sync_record(upstream=tip, commits=count, result="synced", merge=merged)
-                log(f"upstream sync: merged {count} commit(s) at {tip[:12]} -> {merged[:12]}")
-                return
-            # A prefix landed. Escalate only what is left, so the human sees the
-            # conflict that actually blocked and the fork stops drifting behind it.
-            remaining = run(
-                ["git", "rev-list", "--count", f"{target}..{tip}"], cwd=ROOT
-            ).stdout.strip()
-            url = sync_escalate(
-                tip,
-                "merge conflict",
-                f"Merged the conflict-free prefix through {target[:12]} ({count} commits). "
-                f"{remaining} upstream commit(s) remain; the oldest of them conflicts.\n\n"
-                f"Conflicted files when merging the tip {tip[:12]}:\n{conflicts}",
-            )
-            sync_record(
-                upstream=tip,
-                commits=count,
-                result="partial",
-                merge=merged,
-                remaining=remaining,
-                issue=url,
-            )
-            log(
-                f"upstream sync: merged prefix through {target[:12]} ({count} commits) "
-                f"-> {merged[:12]}; {remaining} left, escalated {url}"
-            )
+                detail = (conflicts.strip() or merge.stderr.strip())[-6000:]
+                evidence = f"## Conflicted files when merging the tip\n\n```\n{detail}\n```"
+            head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+            n = sync_issue(tip, count, staged, evidence)
+            wt_n = FACTORY / f"wt-{n}"
+            run(["git", "worktree", "add", str(wt_n), "-b", f"agent/{n}", head], cwd=ROOT)
+            if report is not None:
+                (wt_n / ".factory").mkdir(exist_ok=True)
+                (wt_n / ".factory" / f"gate-report-{n}.md").write_text(report)
+            record("attempt", ticket=n, attempt=0, gate=gate, head=head, actual_head=head, clean=True)
+            sync_record(ticket=n, upstream=tip, commits=count, result="staged", head=head, gate=gate)
+            execution.reason = "upstream_staged"
+            log(f"upstream sync: staged {count} commit(s) at {tip[:12]} as #{n} (agent/{n} at {head[:12]}, gate {gate or 'not run: merge conflict'})")
     finally:
         run(["git", "worktree", "remove", "--force", str(wt)], cwd=ROOT, check=False)
 
@@ -1661,8 +1681,8 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     ]
     before_status = run(status_cmd, cwd=wt).stdout.strip()
     issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels"])
-    override = LABEL_PROTECTED_OVERRIDE in {label["name"] for label in issue.get("labels", [])}
-    ok, report = run_gate(wt, n, protected_override=override)
+    labels = {label["name"] for label in issue.get("labels", [])}
+    ok, report = run_gate(wt, n, **gate_flags(sync_event(n), labels))
     actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     after_status = run(status_cmd, cwd=wt).stdout.strip()
     if actual_head != head:
@@ -1719,8 +1739,8 @@ def cleanup_after_merge(n: int, head: str) -> None:
 
 
 def land_pass(dry_run: bool) -> None:
-    """Everything that moves main, under one lock: upstream sync, then the
-    merge stage (at most ONE approved, green, up-to-date factory PR per pass).
+    """Under one lock: upstream sync (stages a sync ticket, never moves main), then
+    the merge stage (at most ONE approved, green, up-to-date factory PR per pass).
 
     A merge requires independently produced gate and reviewer evidence bound
     to the same head, a matching durable approval plus `factory-approved`,
@@ -2043,7 +2063,9 @@ def worker_round(
             log=str(logfile), transcript=transcript, head=head, handoff=handoff, **timeout,
         )
         return False, "budget exceeded before gate", logfile, head
-    ok, report = run_gate(wt, n, protected_override=LABEL_PROTECTED_OVERRIDE in labels)
+    sync = sync_event(n)
+    tip = sync["upstream"] if sync else None
+    ok, report = run_gate(wt, n, **gate_flags(sync, labels))
     actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     after_status = run(status_cmd, cwd=wt).stdout.strip()
     if actual_head != head:
@@ -2052,6 +2074,9 @@ def worker_round(
     if before_status or after_status:
         ok = False
         report += "\n\nGate evidence rejected: worktree was not clean for the gated commit."
+    if ok and tip and run(["git", "merge-base", "--is-ancestor", tip, head], cwd=wt, check=False).returncode:
+        ok = False
+        report += f"\n\nGate evidence rejected: HEAD {head} does not contain upstream tip {tip}."
     if fired == "exit_grace":
         report += (
             f"\n\nWorker hung after done: exit_grace fired ({cfg.exit_grace:g} s quiet after "
@@ -2111,7 +2136,8 @@ def worker_usage(logfile: Path, spec: dict | None) -> dict:
 
 def process_ticket(
     issue: dict, budget_min: int, dry_run: bool, forced: bool = False
-) -> None:
+) -> bool | None:
+    """None when the ticket was processed or skipped; False when the host could not launch its worker."""
     n, title = issue["number"], issue["title"]
     labels = {label["name"] for label in issue.get("labels", [])}
     wt = FACTORY / f"wt-{n}"
@@ -2155,6 +2181,7 @@ def process_ticket(
             lock_fd.close()
             return
 
+        claimed = False  # once True, nothing may leave this block without releasing the ticket
         try:
             execution.resource("acquired", lock_path, scope="repository")
             # Strong re-read before claiming: `issue list` is search-backed and lags
@@ -2187,6 +2214,13 @@ def process_ticket(
                 execution.outcome = "not_admitted"
                 execution.reason = "state_changed"
                 return
+            if not forced and shutil.which(worker) is None:
+                # Frontier claims only: `--ticket` is an operator's explicit ask and fails loudly.
+                # ponytail: PATH probe only; a binary swapped out between here and Popen still
+                # fails the launch. Not claimed, so the next pass retries once it is back.
+                log(f"#{n}: skipped (worker executable not on PATH: {worker}); retry next pass")
+                execution.wait("worker_unavailable", mode="retry_next_pass", executable=worker)
+                return
             from factory import binding
 
             try:
@@ -2201,14 +2235,19 @@ def process_ticket(
                        issue={key: fresh.get(key) for key in ("title", "body", "comments")})
 
             run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-assignee", "@me"])
+            claimed = True
             record("claimed", ticket=n, title=title, labels=sorted(labels))
             wt = ensure_worktree(n)
             lease = agent_lease(wt, n)
             LOGS.mkdir(parents=True, exist_ok=True)
 
-            # Attempts 1..MAX_ATTEMPTS: worker + gate, feeding the failed report back.
+            # Attempts 1..MAX_ATTEMPTS: worker + gate, feeding the failed report back. A sync
+            # candidate the dispatcher's own gate passed at this exact head needs no worker.
             extra, logfile, report = "", None, ""
-            for attempt in range(1, MAX_ATTEMPTS + 1):
+            staged = sync_staged(n, wt)
+            if staged is not None:
+                report, gate_head = staged
+            for attempt in range(1, MAX_ATTEMPTS + 1 if staged is None else 1):
                 ok, report, logfile, gate_head = worker_round(
                     n, wt, labels, title, extra, attempt, deadline
                 )
@@ -2224,12 +2263,13 @@ def process_ticket(
                     return
                 extra = f"## Previous gate report (attempt {attempt} failed)\n\n{report}"
             else:
-                stuck = report.startswith("worker stuck")
-                failed = (f"idle_timeout fired (worker stuck) on attempt {MAX_ATTEMPTS}"
-                          if stuck else f"gate failed {MAX_ATTEMPTS} times")
-                escalate(n, f"{failed}; worktree kept at {wt}", logfile,
-                         code="worker_stuck" if stuck else "gate_failed")
-                return
+                if staged is None:
+                    stuck = report.startswith("worker stuck")
+                    failed = (f"idle_timeout fired (worker stuck) on attempt {MAX_ATTEMPTS}"
+                              if stuck else f"gate failed {MAX_ATTEMPTS} times")
+                    escalate(n, f"{failed}; worktree kept at {wt}", logfile,
+                             code="worker_stuck" if stuck else "gate_failed")
+                    return
 
             body = f"Closes #{n}\n\n## Gate report\n\n{report}\n"
             if not push_and_pr(wt, f"agent/{n}", f"agent/{n}: {title}", body, ticket=n, lease=lease):
@@ -2293,6 +2333,24 @@ def process_ticket(
             else:
                 escalate(n, "approval evidence, head, or human review state changed before approval", logfile,
                          code="approval_drift")
+        except LeaseRefused as exc:
+            escalate(n, str(exc), None, code="lease_refused")
+        except FileNotFoundError as exc:
+            # Host defect (worker executable not on PATH, #260), not a ticket defect: give the
+            # claim back so the frontier retries once the host is fixed; the pass goes on.
+            # Covers every worker launch of this ticket, first attempt and review bounces alike.
+            execution.outcome, execution.reason = "mechanism_failure", f"{type(exc).__name__}: {exc}"
+            log(f"#{n}: worker launch failed ({exc}); unclaimed, fix PATH or [workers] (`factory doctor`)")
+            run(["gh", "issue", "edit", str(n), "--repo", REPO, "--remove-assignee", "@me"], check=False)
+            return False
+        except Exception as exc:
+            # A crash after the claim strands the ticket assigned + ready-for-agent, which every
+            # later pass skips forever; hand it back to a human first, worktree intact, then
+            # still surface the crash.
+            if claimed:
+                escalate(n, f"dispatcher error: {exc!r}; worktree kept at {wt}", None, code="dispatcher_error")
+                execution.outcome, execution.reason = "unknown", f"{type(exc).__name__}: {exc}"
+            raise
         finally:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             lock_fd.close()
@@ -2322,6 +2380,24 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
         process_ticket(issue, budget_min, dry_run)
 
 
+def pin_root() -> list[str]:
+    """Fetch and detach the root at origin/<main> so the pass reads committed config, not
+    whatever branch or edits the checkout carries. A root with tracked or untracked changes
+    outside `.factory/` is left alone; its paths come back and the caller refuses the pass.
+    Runs before `config.load`: only `[repo].main` is read, from the raw file, so a root whose
+    config the engine rejects still pins (and picks up the fix from origin/main)."""
+    root = config.repo_root()
+    main = "main"
+    with suppress(OSError, tomllib.TOMLDecodeError):
+        main = tomllib.loads((root / config.CONFIG_NAME).read_text()).get("repo", {}).get("main", main)
+    run(["git", "fetch", "origin", main], cwd=root)
+    status = run(["git", "status", "--porcelain", "--", ".", ":!.factory"], cwd=root).stdout
+    paths = [line[3:] for line in status.splitlines()]
+    if not paths:
+        run(["git", "checkout", "--quiet", "--detach", f"origin/{main}"], cwd=root)
+    return paths
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description="AI-factory dispatcher (one pass, stateless)"
@@ -2337,7 +2413,17 @@ def main(argv: list[str]) -> int:
         "--dry-run", action="store_true", help="print planned actions; no side effects"
     )
     args = parser.parse_args(argv)
-    configure(config.load())
+    if not args.dry_run:
+        dirty = pin_root()
+        if dirty:
+            root = config.repo_root()
+            log(f"root {root} has changes outside .factory/ ({', '.join(dirty)}); root_dirty, nothing dispatched")
+            with lifecycle.scope(root / ".factory" / "events.jsonl", "dispatcher", dispatcher=True,
+                                 engine_version=__version__, engine_commit=config.engine_commit()) as execution:
+                execution.outcome, execution.reason = "project_escalation", "root_dirty"
+                execution.emit("result", paths=dirty)
+            return 1
+    configure(config.load())  # from the tree now pinned at origin/<main>
     if args.budget_min is None:
         args.budget_min = cfg.budget_min
 
@@ -2367,8 +2453,7 @@ def main(argv: list[str]) -> int:
                     "number,title,body,labels,assignees",
                 ]
             )
-            process_ticket(issue, args.budget_min, args.dry_run, forced=True)
-            return 0
+            return 1 if process_ticket(issue, args.budget_min, args.dry_run, forced=True) is False else 0
 
         land_pass(args.dry_run)
         review_intake_pass(args.dry_run)

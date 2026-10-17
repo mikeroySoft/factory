@@ -25,7 +25,7 @@ unassigns, and comments. The trigger set is closed:
 | rebase onto moved main conflicts | `refresh_pr_branch` | worktree kept |
 | gate FAIL after rebase | `refresh_pr_branch` | gate report |
 | CI red on approved PR | `merge_pass_locked` | `gh pr checks`; label removed |
-| upstream sync conflict / gate fail | `sync_escalate` | separate `ready-for-human` issue |
+| upstream sync conflict / gate fail | `sync_pass` → `process_ticket` | sync ticket on a staged `agent/N` candidate; ordinary worker/gate escalations |
 
 Plus non-`escalate()` human points: `needs-info` answers, `wontfix-proposal` confirmation,
 `ready-for-human` triage decisions, dashboard inbox answers, committing `.factory-lessons.md`.

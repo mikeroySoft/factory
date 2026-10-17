@@ -147,9 +147,12 @@ def check_leaks(base: str) -> tuple[bool, str]:
 ADD_ONLY_NOTE = "add-only path removed or changed existing lines"
 
 
-def check_protected_paths(base: str) -> tuple[bool, str, str]:
+def check_protected_paths(base: str, upstream: list[str] = ()) -> tuple[bool, str, str]:
     """(passed, reason, detail): reason is `protected_paths`, or `add_only_paths` when
-    every hit is an add-only glob whose change was not purely additive."""
+    every hit is an add-only glob whose change was not purely additive. With `upstream`
+    (the tip, then the staged head) a hit is ignored when its HEAD content equals the
+    staged head's, or equals the tip's for a path upstream itself changed since it
+    diverged from `base`; fork-only paths the worker deletes or resets still count."""
     listing = timed(["git", "ls-tree", "--name-only", base, "--", CONFIG_NAME])
     if listing.returncode:
         # A new repository has no base commit yet; no worker diff exists to guard.
@@ -182,6 +185,26 @@ def check_protected_paths(base: str) -> tuple[bool, str, str]:
                 not_additive.append(path)
         elif any(fnmatch.fnmatchcase(path, g) for g in protected):
             hits.append(path)
+    if upstream and (candidates := hits + not_additive + additive):
+        tip = upstream[0]
+        fork_point = timed(["git", "merge-base", base, tip])
+        if fork_point.returncode:
+            return False, "protected_paths", fork_point.stdout + fork_point.stderr
+        changed = timed(["git", "diff", "--no-renames", "--name-only", "-z",
+                         fork_point.stdout.strip(), tip, "--", *candidates])
+        if changed.returncode:
+            return False, "protected_paths", changed.stdout + changed.stderr
+        upstream_changed = set(changed.stdout.split("\0"))
+        authored = set(candidates)
+        for ref in upstream:
+            diff = timed(["git", "diff", "--no-renames", "--name-only", "-z", ref, "HEAD", "--", *candidates])
+            if diff.returncode:
+                return False, "protected_paths", diff.stdout + diff.stderr
+            same = authored - set(diff.stdout.split("\0"))
+            if ref == tip:  # absent-at-both or reset-to-upstream is not upstream authorship
+                same &= upstream_changed
+            authored -= same
+        hits, not_additive, additive = ([p for p in group if p in authored] for group in (hits, not_additive, additive))
     if additive:
         numstat = timed(["git", "diff", "--no-renames", "--numstat", "-z", f"{base}...HEAD", "--", *additive])
         if numstat.returncode:
@@ -200,7 +223,7 @@ def check_protected_paths(base: str) -> tuple[bool, str, str]:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Quality gate for agent worktrees.")
-    parser.add_argument("--base", default=None, help="base ref for leak scan")
+    parser.add_argument("--base", default=None, help="base ref for leak scan and protected paths")
     parser.add_argument(
         "--report", default=".factory/gate-report.md", help="report output path"
     )
@@ -218,6 +241,10 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument("--protected-override", action="store_true",
                         help="human-authorized protected-path override")
+    parser.add_argument("--upstream", action="append", default=[], metavar="REF",
+                        help="upstream sync: first REF is the tip, later REFs the staged head (repeatable); "
+                        "protected-path hits equal to the staged head, or to the tip for paths upstream changed, "
+                        "are upstream-authored, not worker edits; the leak scan diffs from the tip")
     parser.add_argument("--tier", choices=config.CHECK_TIERS, default="attempt",
                         help="attempt: every check except `when = \"pr\"`/`\"release\"` ones (reported SKIP); "
                         "pr: only the `when = \"pr\"` checks (release ones reported SKIP); "
@@ -256,7 +283,7 @@ def execute(args: argparse.Namespace, execution) -> int:
         skip.add("leak-scan")
 
     if not args.protected_override and args.tier == "attempt":
-        passed, reason, detail = check_protected_paths(args.base)
+        passed, reason, detail = check_protected_paths(args.base, args.upstream)
         if not passed:
             execution.outcome, execution.reason = "project_escalation", reason
             report = Path(args.report)
@@ -274,7 +301,7 @@ def execute(args: argparse.Namespace, execution) -> int:
     checks = [
         ("conflict-markers", check_conflict_markers),
         *configured,
-        ("leak-scan", lambda: check_leaks(args.base)),
+        ("leak-scan", lambda: check_leaks(args.upstream[0] if args.upstream else args.base)),
     ] if args.tier == "attempt" else configured
     later_tier = {check.name: check.when for check in listed if check.when != args.tier}
 

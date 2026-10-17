@@ -56,7 +56,7 @@ flowchart TB
   REPORTER{{"Reporter answers"}}
   HUMAN{{"Human decides"}}
   CI{{"GitHub CI checks"}}
-  UPSTREAM{{"Upstream sync failure"}}
+  UPSTREAM{{"Upstream main moved"}}
   EXTPR{{"Opted-in external PR"}}
 
   %% Intake and triage
@@ -95,6 +95,8 @@ flowchart TB
   MAPP -->|"CI fail, late feedback, stale, rounds exhausted, HUMAN: manage.frontier_pass"| ESC
   FA -->|"late feedback or stale past stale_days, any manager.review mode: manage.frontier_pass"| ESC
   MAPP -.->|"CI cancel still treated as fail before approval: manage.frontier_pass"| ESC
+  PUSH -->|"agent/<n> push refused, remote moved since the lease was read: dispatch.push_agent"| ESC
+  CLAIM -->|"any other dispatcher exception after the claim, then re-raised: dispatch.process_ticket"| ESC
   MAPP -->|"FIX or CLOSE: manage.apply"| MGR
   FA -->|"dispatch.pr_checks"| CI
   CI -->|"pending: dispatch.merge_pass_locked waits"| FA
@@ -110,7 +112,7 @@ flowchart TB
 
   %% Recovery
   ESC -->|"ready-for-agent swapped for ready-for-human: dispatch.escalate"| RFH
-  UPSTREAM -->|"new issue: dispatch.sync_escalate"| RFH
+  UPSTREAM -->|"new sync ticket on a staged agent/N candidate; never moves main: dispatch.sync_pass"| RFA
   EXTPR -->|"review attempts exhausted, new issue: dispatch.review_intake_pass"| RFH
   RFH -->|"packet and manager rounds left: manage.escalation_pass"| MGR
   RFH -->|"terminal, routed request published: handoff.handoff_pass"| HUMAN
@@ -161,7 +163,7 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 | `dispatch.push_and_pr` | — | `*` | Caller's PR label; ticket PRs pass none |
 | `dispatch.refresh_pr_branch` | `factory-approved` | — | Behind main: approval withdrawn before refresh |
 | `dispatch.review_intake_pass` | — | `ready-for-human` | New issue for an unresolved opted-in PR review |
-| `dispatch.sync_escalate` | — | `ready-for-human` | New issue for a failed upstream sync |
+| `dispatch.sync_issue` | — | `ready-for-agent` | New sync ticket for new upstream commits; its `agent/N` candidate carries the merge and gate evidence |
 | `manage.apply` | `ready-for-human`, `*` | `ready-for-agent`, `needs-triage`, `wontfix-proposal`, `*` | RETRY/REWRITE/ROUTE back to agent; SPLIT children; CLOSE; ROUTE labels |
 | `manage.viability_pass` | `*` | `needs-triage` | Opt-in label removed; BUILD queues triage |
 | `triage.apply_decision` | `needs-triage` | `*` | `*` is the decision: `ready-for-agent`, `needs-info`, or `ready-for-human` |
@@ -169,7 +171,7 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 
 ## Escalate reasons
 
-Every reason string passed to `dispatch.escalate`, `dispatch.sync_escalate`, the
+Every reason string passed to `dispatch.escalate`, the
 `withdraw` helper in `dispatch.refresh_pr_branch`, or recorded as an `escalate`
 event. `{}` is a runtime value.
 
@@ -187,6 +189,7 @@ event. `{}` is a runtime value.
 | `dispatch.process_ticket` | ``REVISE verdict after {} review round(s)`` | review → escalate |
 | `dispatch.process_ticket` | ``pr checks failed`` | review → escalate |
 | `dispatch.process_ticket` | ``approval evidence, head, or human review state changed before approval`` | review → escalate |
+| `dispatch.process_ticket` | ``dispatcher error: {}; worktree kept at {}`` | any post-claim exception → escalate (`dispatcher_error`), then re-raised; a `LeaseRefused` from `dispatch.push_agent` escalates as `lease_refused` with its own message |
 | `dispatch.merge_pass_locked` | ``PR #{}: CI failed ({}); `{}` label removed`` | CI fail → escalate |
 | `dispatch.runner_unavailable` | ``PR #{}: CI runner unavailable ({}) in run {}; `{}` kept`` | CI no runner after rerun → escalate |
 | `dispatch.merge_pass_locked` | ``PR #{}: missing approval evidence bound to {}; `{}` label removed`` | CI pass, missing evidence → escalate |
@@ -200,8 +203,6 @@ event. `{}` is a runtime value.
 | `dispatch.refresh_pr_branch` | ``fresh review requested changes after {} onto moved main`` | refresh → escalate |
 | `dispatch.refresh_pr_branch` | ``approval evidence, head, or human review state changed before refreshed approval`` | refresh → escalate |
 | `dispatch.review_intake_pass` | ``PR #{}: unresolved after {} automated review attempt(s)`` | external PR → ready-for-human |
-| `dispatch.sync_pass` | ``merge conflict`` | upstream → ready-for-human |
-| `dispatch.sync_pass` | ``gate failed`` | upstream → ready-for-human |
 | `manage.frontier_pass` | ``PR #{}: CI failed ({})`` | manager PR frontier → escalate |
 | `manage.frontier_pass` | ``PR #{}: {} unresolved feedback item(s) on head {}`` | manager PR frontier → escalate |
 | `manage.frontier_pass` | ``PR #{}: no activity for {} days (stale_days = {})`` | manager PR frontier → escalate |

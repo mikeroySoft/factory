@@ -25,13 +25,13 @@ map or a path in it does not exist; update the map in the same change.
 | Onboarding (`init`, `doctor`, `install`) | `factory/onboard.py`, `factory/templates/ci.yml` | `tests/test_factory.py`, `tests/test_dashboard_port.py`, `tests/test_plan.py` | `test` |
 | Triage | `factory/triage.py` | `tests/test_factory.py`, `tests/test_llm_usage.py`, `tests/test_idle_lifecycle.py`, `tests/test_triage.py` | `test` |
 | Dispatcher and worker brief | `factory/dispatch.py`, `factory/brief.py`, `factory/templates/agent_task.md` | `tests/test_factory.py`, `tests/test_dispatch_lifecycle.py`, `tests/test_wait_decisions.py`, `tests/test_idle_lifecycle.py`, `tests/test_frontier.py` | `test` |
-| Quality gate | `factory/gate.py` | `tests/test_factory.py`, `tests/test_gate.py`, `tests/test_gate_resources.py` | `test`; implements `conflict-markers`, `protected-paths` (with `[gate].add_only_paths`), `leak-scan` |
+| Quality gate | `factory/gate.py` | `tests/test_factory.py`, `tests/test_gate.py`, `tests/test_gate_resources.py`, `tests/test_fixture_isolation.py` | `test`; implements `conflict-markers`, `protected-paths` (with `[gate].add_only_paths`), `leak-scan` |
 | Post-ship monitor (`watch`) | `factory/watch.py` | `tests/test_watch.py`, `tests/test_factory.py` | `test` |
 | Manager and human handoffs | `factory/manage.py`, `factory/handoff.py` | `tests/test_viability.py`, `tests/test_handoff.py`, `tests/test_manager_binding.py`, `tests/test_frontier.py` | `test` |
 | Lifecycle journal (`events.jsonl`) | `factory/lifecycle.py` | `tests/test_lifecycle.py`, `tests/test_lifecycle_consumers.py`, `tests/test_events_rotation.py`, `tests/test_resources.py` | `test` |
 | Initiatives, bindings, roadmap and outcomes | `factory/plan.py`, `factory/binding.py`, `factory/roadmap.py`, `factory/outcomes.py`, `factory/templates/initiative.md` | `tests/test_plan.py`, `tests/test_binding.py`, `tests/test_binding_cli.py`, `tests/test_roadmap.py`, `tests/test_outcomes.py` | `test` |
 | Project evidence and PR feedback | `factory/evidence.py`, `factory/feedback.py` | `tests/test_evidence.py`, `tests/test_evidence_budget.py`, `tests/test_evidence_transport.py`, `tests/test_feedback.py`, `tests/test_viability_evidence.py` | `test` |
-| Operator workspace | `factory/dashboard.py`, `factory/dashboard.html`, `factory/workspace.py`, `factory/workspace.js`, `factory/workspace-api.js`, `factory/workspace.css`, `factory/themes.css`, `factory/motion.js` | `tests/test_workspace.py`, `tests/test_dashboard_passive.py`, `tests/test_dashboard_bind.py`, `tests/test_dashboard_port.py`, `tests/test_factory.py` | `test` |
+| Operator workspace | `factory/dashboard.py`, `factory/dashboard.html`, `factory/workspace.py`, `factory/workspace.js`, `factory/workspace-api.js`, `factory/workspace.css`, `factory/themes.css`, `factory/motion.js` | `tests/test_workspace.py`, `tests/test_dashboard_passive.py`, `tests/test_dashboard_bind.py`, `tests/test_dashboard_port.py`, `tests/test_factory.py`, `tests/test_sync_requeue.py` | `test` |
 | Guarded human decisions and named actions | `factory/decisions.py`, `factory/actions.py`, `factory/workspace-decisions.js` | `tests/test_decisions.py`, `tests/test_actions.py` | `test` |
 | Runtime and flow projections | `factory/runtime_events.py`, `factory/runtime_local.py`, `factory/flow.py` | `tests/test_runtime.py`, `tests/test_flow.py`, `tests/test_factory.py` | `test` |
 | Inbox briefing | `factory/briefing.py` | `tests/test_briefing.py`, `tests/test_viability_evidence.py` | `test` |
@@ -44,4 +44,4 @@ map or a path in it does not exist; update the map in the same change.
 | Lessons (`learn`) | `factory/learn.py` | `tests/test_factory.py`, `tests/test_lifecycle_consumers.py`, `tests/test_escapes.py`, `tests/test_auto_learn.py` | `test` |
 | Attempt scoring (`score`) | `factory/score.py` | `tests/test_score.py` | `test` |
 | Eval promotion | `factory/promotion.py`, `docs/eval-promotion-contract.md` | `tests/test_promotion.py` | `test` |
-| Experiments | `experiments/b1-build/build.py`, `experiments/o1-observation/observer.py` | `tests/test_b1_build.py`, `tests/test_o1_observation.py` | `test` |
+| Experiments | `experiments/b1-build/build.py`, `experiments/o1-observation/observer.py`, `experiments/escalation-reasons/classify.py` | `tests/test_b1_build.py`, `tests/test_o1_observation.py`, `tests/test_escalation_reasons.py` | `test` |
