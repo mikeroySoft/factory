@@ -4,6 +4,7 @@ import json
 import subprocess
 import tempfile
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -18,6 +19,14 @@ def exit_row(stage: str, outcome: str, reason: str | None, at: str | None = None
     at = at or lifecycle._now()
     return {"event": "lifecycle", "kind": "exit", "stage": stage, "outcome": outcome, "reason": reason,
             "at": at, "execution_id": f"exec-{stage}-{reason}-{at}", "ticket": None, "attempt": None, **fields}
+
+
+def escalate_row(ticket: int, code: str | None, reason: str, at: str | None = None) -> dict:
+    row = {"event": "escalate", "ticket": ticket, "reason": reason, "at": at or lifecycle._now(),
+           "packet": f".factory/escalations/{ticket}.md", "round": 1}
+    if code is not None:
+        row["code"] = code
+    return row
 
 
 class FakeGh:
@@ -198,6 +207,31 @@ class WatchTest(unittest.TestCase):
         with mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, payload, "")):
             errors = REAL_RUNTIME_ERRORS(self.cfg)
         self.assertEqual([e["code"] for e in errors], ["unreadable"])
+
+    def test_repeated_escalation_code_files_one_bug_listing_every_ticket(self) -> None:
+        self.journal(*(escalate_row(n, "gate_failed", f"gate failed on #{n}") for n in (1, 2, 3)))
+        watch.run_pass(self.cfg)
+        self.assertEqual(len(self.gh.created), 1)
+        body = self.gh.created[0][self.gh.created[0].index("--body") + 1]
+        self.assertIn("Fingerprint: escalation:gate_failed", body)
+        for n in (1, 2, 3):
+            self.assertIn(f"#{n}", body)
+            self.assertIn(f"gate failed on #{n}", body)
+            self.assertIn(f".factory/escalations/{n}.md", body)
+        self.assertEqual([r["fingerprint"] for r in self.events("watch")], ["escalation:gate_failed"])
+
+    def test_repeated_escalation_needs_distinct_tickets_inside_the_window(self) -> None:
+        old = (datetime.now(UTC) - timedelta(days=watch.REPEAT_DAYS + 1)).isoformat().replace("+00:00", "Z")
+        self.journal(
+            escalate_row(1, "gate_failed", "two tickets"), escalate_row(2, "gate_failed", "two tickets"),
+            *(escalate_row(5, "budget", f"same ticket {i}") for i in range(3)),
+            escalate_row(7, "worker_stuck", "stale", at=old),
+            escalate_row(8, "worker_stuck", "fresh"), escalate_row(9, "worker_stuck", "fresh"),
+            *(escalate_row(n, None, "pre-code row") for n in (11, 12, 13)),
+        )
+        watch.run_pass(self.cfg)
+        self.assertEqual(self.gh.created, [])
+        self.assertEqual(self.events("watch"), [])
 
 
 if __name__ == "__main__":

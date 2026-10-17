@@ -1,0 +1,21 @@
+{
+  "contract_version": 1,
+  "stage": "review",
+  "change": {
+    "kind": "prompt",
+    "detail": "dispatch.review(): append cross-file tracing instruction (read each caller/consumer outside the diff for every changed flag, profile, default or signature; cite path:line). Issue #237; candidate commit 70fea0e9cc314916acbe4494e4dc0d0dff21b361 on top of 4390f481ed6743694d35193049dc0242eb4c7784."
+  },
+  "baseline": "reviewer@4390f48",
+  "candidate": "reviewer@4390f48+cross-file-tracing(70fea0e)",
+  "evidence": "experiments/reviewer-calibration/runs/promotion-20261016/adjudication.json scored by score.py (tools-enabled run_tools.py --all, 2 repeats, splits.json v2)",
+  "splits": {
+    "train": {
+      "baseline": [0.8333333333333334, 1.0],
+      "candidate": [0.6666666666666667, 0.6666666666666667]
+    },
+    "lockbox": {
+      "baseline": [0.6, 0.8],
+      "candidate": [0.8, 0.4]
+    }
+  }
+}

@@ -136,10 +136,10 @@
             </div>
             <div class="install-line">
               <span class="install-label">CLI</span>
-              <pre><code>uv tool install git+https://github.com/mikeroySoft/factory@v0.4.0</code></pre>
+              <pre><code>uv tool install git+https://github.com/mikeroySoft/factory@v0.4.1</code></pre>
             </div>
           </div>
-          <p class="release-note"><a href="#changelog">Latest release: v0.4.0 · October 11, 2026</a><br>CLI command pins this release. Use <code>@stable</code> for the released channel or <code>@main</code> for development; the bare URL follows the default <code>main</code> branch.</p>
+          <p class="release-note"><a href="#changelog">Latest release: v0.4.1 · October 16, 2026</a><br>CLI command pins this release. Use <code>@stable</code> for the released channel or <code>@main</code> for development; the bare URL follows the default <code>main</code> branch.</p>
 
           <div class="hero-actions">
             <a class="button" href="https://github.com/mikeroySoft/factory">
@@ -445,6 +445,23 @@ model = "qwen3:30b"</code></pre>
           <li class="release">
             <div class="release-meta">
               <span class="chip chip-success">Latest release</span>
+              <a href="https://github.com/mikeroySoft/factory/releases/tag/v0.4.1">v0.4.1</a>
+              <time datetime="2026-10-16">October 16, 2026</time>
+            </div>
+            <div>
+              <h3>The factory watches itself.</h3>
+              <ul>
+                <li><strong>Post-ship monitor:</strong> <code>factory watch</code> turns the factory's own runtime failures into <code>bug</code> issues that enter ordinary triage; nothing waits for a human to notice.</li>
+                <li><strong>Session evidence:</strong> every OMP worker transcript is kept per ticket and <code>factory score</code> rates it for efficiency and compliance, the raw material for self-improvement.</li>
+                <li><strong>Escalations as data:</strong> every escalation carries a mechanical code; <code>factory stats</code> counts failure classes per week so a repeated code becomes a factory defect, not another human decision.</li>
+                <li><strong>Release tier:</strong> <code>when = "release"</code> gate checks run only on tags, so main and a release get different scrutiny.</li>
+              </ul>
+              <p class="decision"><strong>The decision:</strong> every routine escalation that lands on a human is a bug. The loop now records enough to find and fix them.</p>
+            </div>
+          </li>
+          <li class="release">
+            <div class="release-meta">
+              <span class="chip">Release</span>
               <a href="https://github.com/mikeroySoft/factory/releases/tag/v0.4.0">v0.4.0</a>
               <time datetime="2026-10-11">October 11, 2026</time>
             </div>
