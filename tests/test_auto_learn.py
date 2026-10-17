@@ -1,5 +1,5 @@
-"""`factory learn` runs at the end of a dispatcher pass after every 10 finished tickets (#212) and
-mines each ticket's lowest-scored session instead of a log tail (#235)."""
+"""`factory learn` runs at the end of a dispatcher pass after every 10 finished tickets (#212)."""
+# Also: `learn` mines each ticket's lowest-scored session instead of a log tail (#235).
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
-from factory import dispatch, learn, lifecycle, score, triage
+from factory import dispatch, learn, lifecycle
 from factory.config import Config
 
 
@@ -132,13 +132,13 @@ class AutoLearnTest(unittest.TestCase):
         for n in range(1, 11):
             transcript = self.session(n, {"attempt": 1, "gate": "PASS"},
                                       scores=({"attempt": 1, "efficiency": 0.5, "compliance": 1},), text=huge)
-        self.assertEqual(len(score.excerpt(transcript)), score.EXCERPT_CHARS)
+        self.assertEqual(len(learn.score.excerpt(transcript)), learn.score.EXCERPT_CHARS)
         self.assertLessEqual(len(learn.evidence(10)[1]), learn.MAX_EVIDENCE)
 
     def test_learn_pass_scores_unscored_tickets_first(self) -> None:
         self.finish(range(1, 11))
         self.session(10, {"attempt": 1, "gate": "PASS"})
-        with mock.patch.object(triage, "call_llm", return_value="0.7"):
+        with mock.patch.object(learn.triage, "call_llm", return_value="0.7"):
             learn.learn_pass()
         [row] = [e for e in lifecycle.read_events(self.events) if e.get("event") == "score"]
         self.assertEqual((row["ticket"], row["attempt"], row["compliance"], row["retries"]), (10, 1, 0.7, 1))
