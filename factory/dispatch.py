@@ -891,7 +891,7 @@ ESCALATION_CODES = frozenset({
     "pr_checks_failed", "review_revise", "approval_drift", "approval_missing",
     "ci_failed", "ci_runner", "refresh_head", "refresh_conflict", "refresh_empty",
     "gh_failed", "review_intake", "upstream_sync", "manager_failed", "manager_exhausted",
-    "manager_human", "pr_feedback", "pr_stale",
+    "manager_human", "pr_feedback", "pr_stale", "lease_refused", "dispatcher_error",
 })
 
 
@@ -1050,16 +1050,37 @@ def agent_lease(wt: Path, n: int) -> str:
     return run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
 
 
+class LeaseRefused(subprocess.CalledProcessError):
+    """`push_agent` refused: the remote `agent/<n>` moved since its lease was read. Still the
+    `CalledProcessError` a checked push always raised; `str()` is the escalation reason."""
+
+    def __init__(self, pushed: subprocess.CompletedProcess, reason: str) -> None:
+        super().__init__(pushed.returncode, pushed.args, pushed.stdout, pushed.stderr)
+        self.reason = reason
+
+    def __str__(self) -> str:
+        return self.reason
+
+
 def push_agent(wt: Path, n: int, lease: str, check: bool = True) -> str | None:
     """Force-push this worktree's HEAD to `agent/<n>`, never any other ref, only while the remote
     still holds `lease`, the sha the dispatcher last fetched or pushed. A worker history rewrite
     lands; anyone else's push since then is refused. Returns the pushed sha (the next lease),
-    or None when refused and `check` is False."""
+    or None when refused and `check` is False; with `check`, a refusal raises `LeaseRefused`
+    and any other push failure a plain `CalledProcessError`."""
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     pushed = run(
         ["git", "push", f"--force-with-lease=agent/{n}:{lease}", "origin", f"{head}:refs/heads/agent/{n}"],
-        cwd=wt, check=check,
+        cwd=wt, check=False,
     )
+    if pushed.returncode and check:
+        if "stale info" not in pushed.stderr:
+            pushed.check_returncode()
+        raise LeaseRefused(
+            pushed,
+            f"agent/{n} push refused: origin/agent/{n} moved since lease {lease[:12] or '(none)'} "
+            f"was read (GitHub \"Update branch\" or another push); worktree kept at {wt}",
+        )
     return None if pushed.returncode else head
 
 
@@ -2156,6 +2177,7 @@ def process_ticket(
             lock_fd.close()
             return
 
+        claimed = False  # once True, nothing may leave this block without releasing the ticket
         try:
             execution.resource("acquired", lock_path, scope="repository")
             # Strong re-read before claiming: `issue list` is search-backed and lags
@@ -2202,6 +2224,7 @@ def process_ticket(
                        issue={key: fresh.get(key) for key in ("title", "body", "comments")})
 
             run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-assignee", "@me"])
+            claimed = True
             record("claimed", ticket=n, title=title, labels=sorted(labels))
             wt = ensure_worktree(n)
             lease = agent_lease(wt, n)
@@ -2294,6 +2317,16 @@ def process_ticket(
             else:
                 escalate(n, "approval evidence, head, or human review state changed before approval", logfile,
                          code="approval_drift")
+        except LeaseRefused as exc:
+            escalate(n, str(exc), None, code="lease_refused")
+        except Exception as exc:
+            # A crash after the claim strands the ticket assigned + ready-for-agent, which every
+            # later pass skips forever; hand it back to a human first, worktree intact, then
+            # still surface the crash.
+            if claimed:
+                escalate(n, f"dispatcher error: {exc!r}; worktree kept at {wt}", None, code="dispatcher_error")
+                execution.outcome, execution.reason = "unknown", f"{type(exc).__name__}: {exc}"
+            raise
         finally:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             lock_fd.close()
