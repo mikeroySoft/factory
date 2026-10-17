@@ -3092,8 +3092,9 @@ class DispatchTest(unittest.TestCase):
             ok, report, _, _ = worker_round(1)
             self.assertFalse(ok)
             self.assertIn(f"does not contain upstream tip {tip}", report)
-            # The upstream gate reruns unchanged: no leak scan, protected paths overridden.
-            self.assertEqual(gates, [{"skip": "leak-scan", "protected_override": True}])
+            # No bypass for the worker: the human label still gates protected paths; the gate
+            # exempts only content equal to the tip or the staged candidate and leak-scans from the tip.
+            self.assertEqual(gates, [{"protected_override": False, "upstream": [tip, base]}])
             attempt = [e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("event") == "attempt"][-1]
             self.assertEqual((attempt["gate"], attempt["head"], attempt["actual_head"]), ("FAIL", base, base))
 
@@ -4521,7 +4522,7 @@ class DispatchTest(unittest.TestCase):
                 subprocess.run(["git", "-C", str(wt), "merge-base", "--is-ancestor", u1, "HEAD"], check=False).returncode, 0,
             )
             head = git(wt, "rev-parse", "HEAD")
-            self.assertEqual(dispatch.sync_tip(42), u1)
+            self.assertEqual(dispatch.sync_event(42)["upstream"], u1)
             self.assertEqual(dispatch.sync_staged(42, wt), ("ok", head))
             attempt = next(e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("event") == "attempt")
             self.assertEqual(
@@ -4568,7 +4569,7 @@ class DispatchTest(unittest.TestCase):
             self.assertIn(f"conflict-free prefix through `{u1}`", body)
             self.assertIn("shared.txt", body)
             self.assertIn(u2, body)
-            self.assertEqual(dispatch.sync_tip(42), u2)
+            self.assertEqual(dispatch.sync_event(42)["upstream"], u2)
             self.assertIsNone(dispatch.sync_staged(42, wt))
             attempt = next(e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("event") == "attempt")
             self.assertEqual((attempt["attempt"], attempt["gate"]), (0, None))

@@ -120,6 +120,41 @@ class AddOnlyPathsTest(unittest.TestCase):
             # A pure addition under the worker's own add-only glob is still a full-protection hit.
             self.assertIn("+++ b/checks/new.txt", report)
 
+    def test_upstream_refs_exempt_upstream_content_but_not_worker_edits(self) -> None:
+        """#151: a sync worker gets no bypass. Content equal to an `--upstream` ref is
+        upstream's; anything else under a protected path is the worker's and still fails."""
+        with tempfile.TemporaryDirectory() as d:
+            repo = repo_with_test(Path(d))
+            # Upstream rewrote an existing test (not additive) and ships a word the leak scan flags.
+            (repo / "tests" / "test_old.py").write_text("def test_a():\n    assert 1\n")
+            (repo / "NOTES.md").write_text("confidential upstream notes\n")
+            commit(repo, "upstream")
+            tip = git(repo, "rev-parse", "HEAD")
+            code, _, report = gate(repo)
+            self.assertEqual(code, 1, report)
+            self.assertIn(ADD_ONLY, report)
+            code, out, report = gate(repo, "--upstream", tip)
+            self.assertEqual(code, 0, report + out)
+            self.assertIn("- leak-scan: PASS", report)
+            # The worker edits the same test and adds its own flagged word: both are caught.
+            (repo / "tests" / "test_old.py").write_text("def test_a():\n    assert 2\n")
+            commit(repo)
+            code, _, report = gate(repo, "--upstream", tip)
+            self.assertEqual(code, 1, report)
+            self.assertIn(ADD_ONLY, report)
+            self.assertIn("+    assert 2", report)
+            # An unknown ref fails closed instead of silently exempting nothing.
+            code, _, report = gate(repo, "--upstream", "0" * 40)
+            self.assertEqual(code, 1, report)
+            self.assertIn("- protected-paths: FAIL\n", report)
+            git(repo, "reset", "-q", "--hard", tip)
+            (repo / "worker.md").write_text("proprietary\n")
+            commit(repo)
+            code, _, report = gate(repo, "--upstream", tip)
+            self.assertEqual(code, 1, report)
+            self.assertIn("worker.md:1: [proprietary]", report)
+            self.assertNotIn("NOTES.md", report)
+
 
 if __name__ == "__main__":
     unittest.main()

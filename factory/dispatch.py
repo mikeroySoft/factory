@@ -802,6 +802,7 @@ def commit_leftovers(wt: Path, n: int, title: str) -> None:
 
 def run_gate(
     wt: Path, n: int | str, skip: str = "", protected_override: bool = False, tier: str = "attempt",
+    upstream: list[str] = (),
 ) -> tuple[bool, str]:
     report_rel = f".factory/gate-report-{n}.md"
     (wt / ".factory").mkdir(exist_ok=True)
@@ -822,6 +823,8 @@ def run_gate(
     # The gate process records its own stage and check boundaries.
     if protected_override:
         cmd.append("--protected-override")
+    for ref in upstream:
+        cmd += ["--upstream", ref]
     if tier != "attempt":
         cmd += ["--tier", tier]
     proc = run(cmd, cwd=wt, check=False)
@@ -1178,19 +1181,22 @@ def open_sync_issue() -> int | None:
     return None
 
 
-def sync_tip(n: int) -> str | None:
-    """The upstream tip a sync ticket's head must contain; None for ordinary tickets."""
-    return next((e["upstream"] for e in reversed(lifecycle.read_events(EVENTS))
+def sync_event(n: int) -> dict | None:
+    """The `upstream-sync` row that staged ticket n (`upstream` tip, staged `head`);
+    None for ordinary tickets."""
+    return next((e for e in reversed(lifecycle.read_events(EVENTS))
                  if e.get("event") == "upstream-sync" and e.get("ticket") == n), None)
 
 
-def gate_flags(sync: bool, labels: set[str]) -> dict:
-    """`run_gate` keywords for a ticket. A sync ticket reruns the upstream gate unchanged:
-    no leak scan (upstream is already public) and protected paths overridden (upstream
-    edits them); its worker cannot weaken either further."""
+def gate_flags(sync: dict | None, labels: set[str]) -> dict:
+    """`run_gate` keywords for a ticket. Only the human label overrides protected paths.
+    A sync ticket's gate ignores protected-path hits whose content is upstream's (equal to
+    the recorded tip or the dispatcher's staged candidate) and leak-scans from the tip, so
+    both checks judge what the worker wrote."""
+    flags = {"protected_override": LABEL_PROTECTED_OVERRIDE in labels}
     if sync:
-        return {"skip": "leak-scan", "protected_override": True}
-    return {"protected_override": LABEL_PROTECTED_OVERRIDE in labels}
+        flags["upstream"] = [sync["upstream"], sync["head"]]
+    return flags
 
 
 def sync_staged(n: int, wt: Path) -> tuple[str, str] | None:
@@ -1643,7 +1649,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     before_status = run(status_cmd, cwd=wt).stdout.strip()
     issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels"])
     labels = {label["name"] for label in issue.get("labels", [])}
-    ok, report = run_gate(wt, n, **gate_flags(sync_tip(n) is not None, labels))
+    ok, report = run_gate(wt, n, **gate_flags(sync_event(n), labels))
     actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     after_status = run(status_cmd, cwd=wt).stdout.strip()
     if actual_head != head:
@@ -2024,8 +2030,9 @@ def worker_round(
             log=str(logfile), transcript=transcript, head=head, handoff=handoff, **timeout,
         )
         return False, "budget exceeded before gate", logfile, head
-    tip = sync_tip(n)
-    ok, report = run_gate(wt, n, **gate_flags(tip is not None, labels))
+    sync = sync_event(n)
+    tip = sync["upstream"] if sync else None
+    ok, report = run_gate(wt, n, **gate_flags(sync, labels))
     actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     after_status = run(status_cmd, cwd=wt).stdout.strip()
     if actual_head != head:

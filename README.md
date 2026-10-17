@@ -255,10 +255,15 @@ conflict-free prefix) and runs the host gate on it, then files one
 evidence and hands the candidate to that issue's `agent/<n>` branch. From there
 it is an ordinary ticket: a clean candidate whose staged gate passed goes
 straight to the PR and review; otherwise the worker repairs it within
-`max_attempts`/`budget_min`, the gate reruns unchanged after every attempt
-(the sync gate skips `leak-scan`, upstream is already public, and overrides
-protected paths, upstream edits them), and exhausted attempts escalate like any
-ticket. A passing gate is rejected unless the head still contains the recorded
+`max_attempts`/`budget_min`, the gate reruns after every attempt, and exhausted
+attempts escalate like any ticket. The worker gets no bypass: its gate
+(`factory gate --upstream <tip> --upstream <staged head>`, also on refresh)
+ignores only protected-path hits whose content equals the upstream tip's or
+the dispatcher's staged candidate's, so a worker edit to a protected or
+add-only path still fails `protected-paths` unless a human applies
+`factory-protected-override`, and leak-scans the diff from the tip, so
+anything the worker writes is scanned while upstream's already-public content
+is not. A passing gate is rejected unless the head still contains the recorded
 upstream tip. Nothing moves `main` before the merge stage lands the reviewed,
 CI-green PR, which merges (never squashes) the upstream ancestry. One open sync
 issue, worker- or human-owned, parks the stage until it closes. A persistent
@@ -526,7 +531,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    or any removed or changed line fails and escalates as "worker removed or
    changed existing tests". A human can apply
    `factory-protected-override` to authorize worker edits, including a refresh
-   onto moved main; `upstream sync:` tickets carry the override implicitly. Otherwise
+   onto moved main; an `upstream sync:` ticket's worker gets no such override,
+   only upstream-authored content is exempt (`--upstream`, above). Otherwise
    make protected changes outside the worker flow. Then `conflict-markers`,
    your `[[gate.check]]` list in order, and a `leak-scan`
    run. Checks marked `exclusive` serialise on a host-wide lock. Every check
