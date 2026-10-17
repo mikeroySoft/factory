@@ -576,16 +576,19 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    are not initiatives, not assigned and have no open `Blocked by` edge; then
    capacity (`max_active` minus held ticket locks) and the experiment slot (at
    most one `experiment`-labelled ticket active; production delivery gets the
-   rest). Within that, admission order is accepted priority: the first
+   rest). A ticket whose Plan binding admission would refuse (ambiguous or
+   malformed, or linked without a baseline) is held with that reason, never
+   ranked. Within that, admission order is accepted priority: the first
    `NOW`/`NEXT`/`THEN`/`LATER` line of the ticket's own pinned Plan baseline that
-   names it, tiers in that order, then unknown priority (no baseline, no tier
-   line, or an invalid baseline), oldest ticket first within a class. After three
-   consecutive explicit-priority claims (`claimed` rows carry `priority`) the
-   oldest eligible unknown-priority ticket is admitted instead. Triage briefs,
-   manager recommendations and experiment results never set priority. Every
-   pass with eligible work logs one line per frontier ticket (`selected`,
-   `deferred`, `held`, each with its reason) and journals them as a `scheduling`
-   row; `--dry-run` logs the same plan and writes nothing. Capacity, locks and
+   names it, tiers in that order, then unknown priority (no baseline or no tier
+   line), oldest ticket first within a class. After three consecutive
+   explicit-priority claims (`claimed` rows carry `priority`) the oldest
+   eligible unknown-priority ticket is admitted instead. Triage briefs, manager
+   recommendations and experiment results never set priority. A pass with
+   eligible work and spare capacity logs one line per frontier ticket
+   (`selected`, `deferred`, `held`, each with its reason) and journals them as a
+   `scheduling` row; `--dry-run` logs the same plan and writes nothing.
+   Capacity, locks and
    dependencies are never overridden. The dispatcher then re-reads the issue
    (search-backed listings lag), assigns itself, takes a per-ticket `flock`,
    and creates the worktree `.factory/wt-<n>` on branch `agent/<n>`.

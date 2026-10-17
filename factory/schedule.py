@@ -30,17 +30,22 @@ def priorities(plan_text: str | None) -> dict[int, str]:
 
 
 def priority(number: int, body: object, repo: str) -> tuple[str | None, str]:
-    """(tier, why) for one ticket from its pinned Plan baseline; a None tier is unknown priority."""
-    try:
-        pinned = binding.baseline(body if isinstance(body, str) else "", repo)
-    except binding.BindingError as exc:
-        return None, f"unknown priority: {exc}"
-    if pinned is None:
+    """(tier, why) for one ticket from its pinned Plan baseline; a None tier is unknown priority.
+
+    Raises BindingError exactly when `binding.admit` would refuse the ticket (ambiguous or
+    malformed binding, linked without a baseline), so a scheduler never ranks such work.
+    """
+    body = body or ""  # admit_plan reads a null body the same way
+    initiative = binding.linked(body)
+    if initiative is None:
         return None, "unknown priority: no Plan baseline (ticket is not bound to an initiative)"
+    pinned = binding.baseline(body, repo)
+    if pinned is None:
+        raise binding.BindingError(f"linked ticket for initiative #{initiative} is missing a Plan baseline")
     tier = priorities(pinned["sections"]["Plan"]).get(number)
     if tier is None:
-        return None, f"unknown priority: initiative #{pinned['initiative']} Plan baseline names no tier for #{number}"
-    return tier, f"{tier} in initiative #{pinned['initiative']} Plan baseline"
+        return None, f"unknown priority: initiative #{initiative} Plan baseline names no tier for #{number}"
+    return tier, f"{tier} in initiative #{initiative} Plan baseline"
 
 
 def is_experiment(issue: dict) -> bool:
@@ -87,7 +92,12 @@ def plan(rows: list[dict], capacity: int, *, repo: str, streak: int, experiments
         if issue.get("held"):
             held.append({"ticket": n, "decision": "held", "reason": issue["held"]})
             continue
-        tier, why = priority(n, issue.get("body"), repo)
+        try:
+            tier, why = priority(n, issue.get("body"), repo)
+        except binding.BindingError as exc:
+            held.append({"ticket": n, "decision": "held",
+                         "reason": f"Plan binding is invalid; admission would refuse it: {exc}"})
+            continue
         pool.append({"issue": issue, "ticket": n, "priority": tier, "why": why,
                      "experiment": is_experiment(issue), "age": (issue.get("createdAt") or "", n)})
 
