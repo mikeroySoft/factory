@@ -44,4 +44,4 @@ map or a path in it does not exist; update the map in the same change.
 | Lessons (`learn`) | `factory/learn.py` | `tests/test_factory.py`, `tests/test_lifecycle_consumers.py`, `tests/test_escapes.py`, `tests/test_auto_learn.py` | `test` |
 | Attempt scoring (`score`) | `factory/score.py` | `tests/test_score.py` | `test` |
 | Eval promotion | `factory/promotion.py`, `docs/eval-promotion-contract.md` | `tests/test_promotion.py` | `test` |
-| Experiments | `experiments/b1-build/build.py`, `experiments/o1-observation/observer.py` | `tests/test_b1_build.py`, `tests/test_o1_observation.py` | `test` |
+| Experiments | `experiments/b1-build/build.py`, `experiments/o1-observation/observer.py`, `experiments/escalation-reasons/classify.py` | `tests/test_b1_build.py`, `tests/test_o1_observation.py`, `tests/test_escalation_reasons.py` | `test` |
