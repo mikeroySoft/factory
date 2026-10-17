@@ -176,7 +176,7 @@
   function opsRecord(repo) { return state.ops.get(repo.slug) || {status:'idle',data:null,error:''}; }
   function isSyncIssue(ticket,snapshot) {
     const blocker = object(object(snapshot?.upstream).blocker);
-    return Number(blocker.number) === Number(ticket.number) || array(ticket.labels).some(label => /upstream[-_ ]sync|sync[-_ ]issue/i.test(String(label)));
+    return ticket.sync === true || Number(blocker.number) === Number(ticket.number) || array(ticket.labels).some(label => /upstream[-_ ]sync|sync[-_ ]issue/i.test(String(label)));
   }
   function attentionKind(ticket,snapshot) {
     if (isTerminal(ticket)) return ticket.worktree ? 'stale' : '';
