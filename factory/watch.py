@@ -69,8 +69,11 @@ def failed_units(cfg: config.Config) -> list[tuple[str, str]]:
     return units
 
 
+STEADY_CODES = {"transitioning", "byte_limit"}  # unit mid-state / journal clipped: expected, not failures
+
+
 def runtime_errors(cfg: config.Config) -> list[dict]:
-    """`errors` from one `factory dashboard --runtime-json`; a broken reader is itself an error."""
+    """`errors` from one `factory dashboard --runtime-json`, minus steady states; a broken reader is itself an error."""
     proc = subprocess.run([sys.executable, "-P", "-m", "factory", "dashboard", "--runtime-json"],
                           cwd=cfg.root, capture_output=True, text=True, check=False)
     try:
@@ -79,7 +82,7 @@ def runtime_errors(cfg: config.Config) -> list[dict]:
         errors = None
     if errors is None:
         return [{"source": "dashboard", "scope": "runtime-json", "code": f"exit:{proc.returncode}"}]
-    return [e for e in errors if isinstance(e, dict)]
+    return [e for e in errors if isinstance(e, dict) and e.get("code") not in STEADY_CODES]
 
 
 def _tail(path: str | None) -> str | None:

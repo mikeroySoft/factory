@@ -10,7 +10,8 @@ from unittest import mock
 from factory import config, dispatch, lifecycle, watch
 
 REPO = "acme/widgets"
-REAL_FAILED_UNITS = watch.failed_units  # setUp patches it out for the filing tests
+REAL_FAILED_UNITS = watch.failed_units  # setUp patches these out for the filing tests
+REAL_RUNTIME_ERRORS = watch.runtime_errors
 
 
 def exit_row(stage: str, outcome: str, reason: str | None, at: str | None = None, **fields) -> dict:
@@ -187,6 +188,16 @@ class WatchTest(unittest.TestCase):
         self.assertCountEqual([name for name, _ in units], expected)
         status_units = [call.args[0][-1] for call in run.call_args_list if "status" in call.args[0]]
         self.assertCountEqual(status_units, expected)
+
+    def test_runtime_errors_skip_steady_state_codes(self) -> None:
+        payload = json.dumps({"errors": [
+            {"source": "unit", "scope": "systemd", "code": "transitioning"},
+            {"source": "events.jsonl", "scope": "journal", "code": "byte_limit"},
+            {"source": "events.jsonl", "scope": "journal", "code": "unreadable"},
+        ]})
+        with mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, payload, "")):
+            errors = REAL_RUNTIME_ERRORS(self.cfg)
+        self.assertEqual([e["code"] for e in errors], ["unreadable"])
 
 
 if __name__ == "__main__":
