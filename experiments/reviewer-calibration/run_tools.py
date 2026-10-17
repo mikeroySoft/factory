@@ -30,13 +30,20 @@ import sys
 import tempfile
 import time
 
+from run_calibration import CASES as CORPUS
 from run_calibration import checkout
 
 EXP = pathlib.Path(__file__).parent
 REPO = "/home/mike/dev/mikeroysoft/factory"
 CONTRACTS = {"baseline": "cadb9981524ab5506693e27f56ff8ac4ef911da6",
-             "landed": "29d21d625bd92b9f3aa6d8ac0c8da1386233f284"}
+             "landed": "29d21d625bd92b9f3aa6d8ac0c8da1386233f284",
+             # #237: the deployed contract at the time of the claim, and that contract plus
+             # one appended cross-file tracing sentence in dispatch.review() (nothing else).
+             "current": "4390f481ed6743694d35193049dc0242eb4c7784",
+             "candidate": "70fea0e9cc314916acbe4494e4dc0d0dff21b361"}
 CHECKOUT_ROOT = pathlib.Path("/tmp/cal-checkout")
+
+
 def _defect_cases() -> list[str]:
     """Heads whose oracle expects REVISE (primary defects)."""
     cases = []
@@ -47,10 +54,11 @@ def _defect_cases() -> list[str]:
     return cases
 
 
-CASES = _defect_cases()  # defect-bearing heads only
+# Defect-bearing heads only by default (the §6 question); `--all` scores the whole frozen
+# corpus so APPROVE cases feed `unnecessary_revise` for a promotion claim (#237).
+CASES = CORPUS if "--all" in sys.argv else _defect_cases()
 MODEL = "anthropic/claude-fable-5-1"               # the repo's configured reviewer model
 TIMEOUT = 900
-
 
 def sha(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
@@ -103,12 +111,13 @@ def review(contract: str, case: str, sample: int) -> dict:
 
 
 def main() -> int:
-    out_dir = pathlib.Path(sys.argv[1]); out_dir.mkdir(parents=True, exist_ok=True)
-    samples = int(sys.argv[2])
-    contracts = sys.argv[3:] or list(CONTRACTS)
+    args = [a for a in sys.argv[1:] if a != "--all"]
+    out_dir = pathlib.Path(args[0]); out_dir.mkdir(parents=True, exist_ok=True)
+    samples = int(args[1])
+    contracts = args[2:] or list(CONTRACTS)
     jobs = [(c, case, s) for c in contracts for case in CASES for s in range(1, samples + 1)]
     results = []
-    with cf.ThreadPoolExecutor(max_workers=4) as pool:
+    with cf.ThreadPoolExecutor(max_workers=6) as pool:
         for r in pool.map(lambda j: review(*j), jobs):
             results.append(r)
             (out_dir / f"{r['contract']}.{r['case']}.s{r['sample']}.md").write_text(r["output"] + "\n")
