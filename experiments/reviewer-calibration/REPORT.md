@@ -345,3 +345,74 @@ would otherwise hang a run and confound the measurement).
 Consequence for #34: a coverage line remains undefensible (§6), and the deployed
 reviewer's real weakness on this evidence is **multi-file compositional defects**, which
 neither more contract text nor a coverage counter addresses.
+
+## 9. Grown-corpus re-run (2026-10-16, packet-limited)
+
+Owner-approved re-run of §3's no-tools harness on the frozen v2 corpus after the seven
+contestable oracles were confirmed (2026-10-02). `runs/rerun-20261016/` holds raw outputs,
+`results.json`, `adjudication.json` and a README with the exact commands, the retry and
+the labelling rules. Oracles, packets, splits and both contract commits are unchanged; all
+44 `input_sha256` values equal the `runs/main` values. One cell (`issue36`/`79-before`/s1)
+hit `--max-time 300` and was retried once through the same `review()` path, as on
+2026-10-02. 44 cells, 2 contracts × 11 cases × 2 samples, every cell rc 0 after that retry.
+
+**Missed defects** (primary findings; 4 defect-bearing cases × 2 samples per arm):
+
+| Case | Defect | `baseline` s1 / s2 | `issue36` s1 / s2 |
+|---|---|---|---|
+| `12-before` (train) | D1 string `[manager] command` → per-char argv | missed / missed | missed / missed |
+| `62-before` (train) | D1 `ci-fix`/`conflict` guidance dropped | **reported** / missed | **reported** / non-blocking |
+| `62-before` (train) | D2 `stats` counts `manager_failed` | missed / missed | missed / missed |
+| `20-before` (lockbox) | D1 non-force push after `conflict` FIX | missed / missed | **reported** / missed |
+| `79-before` (lockbox) | D1 REST reviews have no `updated_at` | **reported** / missed | non-blocking / non-blocking |
+
+`score.py` `missed_blocking` (REVISE case returned APPROVE, or a primary defect labelled
+`missed`): `baseline` train 4, lockbox 3; `issue36` train 4, lockbox 1. The `12-before` D1
+and `62-before` D2 cross-file compositions were missed 4/4 each in this run (`12-before`
+D1 also 4/4 in `runs/main`; `62-before` D2 only 1/4 there); `20-before` D1 was detected
+once (`issue36` s1), the first packet-limited detection of that defect in any run (0/4 in
+`runs/main`, 0/2 in `runs/issue36-repeatability`).
+
+**Unnecessary blocking demands** (7 APPROVE-oracle cases × 2 samples per arm):
+
+| Case | `baseline` s1 / s2 | `issue36` s1 / s2 |
+|---|---|---|
+| `12-after`, `62-after`, `9-approve`, `8-approve` (train) | APPROVE, 0 / 0 each | APPROVE, 0 / 0 each |
+| `20-after`, `87-approve` (lockbox) | APPROVE, 0 / 0 each | APPROVE, 0 / 0 each |
+| `79-after` (lockbox) | REVISE, 2 / 4 | REVISE, 2 / 2 |
+
+`unnecessary_revise`: both arms 0 on train, 2 on lockbox — all from `79-after`, as in
+`runs/main`. The three correct-but-narrow heads (`9`, `8`, `87`) drew zero blocking
+demands in 12/12 cells; the over-strictness axis is still only ever triggered by
+`79-after`.
+
+**Contested oracle, not revised.** Every `79-after` REVISE in this run (4/4), in
+`runs/main` (4/4) and in `runs/issue36-repeatability` (2/2) blocks on the same finding:
+`snapshot()` declares `repo: dict = {}` (`cases/79-after/sources/diff.patch` +546) and
+passes `repo.get("id")` to `feedback.collect` (+601) but no hunk assigns `repo` in that
+scope — the `repo = data['repository']` at +770 is inside `feedback.head()`. The reviewer's
+reading of the frozen diff is correct; whether it is an in-scope defect under #79's
+"use the GitHub native repository ID" is an adjudication question. Per the owner's
+instruction the oracle stays as confirmed, so these cells are scored as unnecessary
+demands; the item should go through `ADJUDICATION-CHECKLIST.md` before the next
+comparison, because it is the sole source of `unnecessary_revise` on both arms.
+
+**Against the 2026-10-02 run** (`runs/main`, same inputs): `baseline` quality moved from
+train [0.83, 0.67] / lockbox [0.6, 0.6] to train [0.67, 0.67] / lockbox [0.6, 0.4];
+`issue36` from train [0.83, 0.83] / lockbox [0.6, 0.6] to train [0.67, 0.67] / lockbox
+[0.8, 0.6]. Same-contract, same-input repeats differ by up to 0.2 on a 5-case split; that
+is the repeat noise any contract comparison on this corpus has to clear.
+
+**Packet-limited, not tool-enabled.** This section and `runs/main` measure the §3
+no-tools packet. `runs/tools` (§8) is unchanged and remains the only tool-enabled
+evidence: it showed the `12-before` miss is withheld evidence (`manager_model()` is outside
+the diff; found 4/4 with repo access) while the `20-before` miss survives repo access. The
+4/4 `12-before` misses here therefore say nothing new about the deployed reviewer, and
+the `62-before` D2 miss has the same confound (`stats.py` is not in the packet). No
+tool-enabled run was made for the grown corpus.
+
+**Limitations.** Counts, not rates: 11 cases from five tickets, two samples, one model
+and thinking level, one adjudicator (labelling rules and per-cell judgement calls are in
+the run README). `issue36`'s lockbox gain comes from one `20-before` sample and from
+`79-before` D1 being raised as non-blocking, which `score.py` does not count as missed.
+No production reviewer, gate or policy change; not a promotion claim.
