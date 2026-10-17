@@ -124,10 +124,10 @@ class AddOnlyPathsTest(unittest.TestCase):
         """#151: a sync worker gets no bypass. Content equal to an `--upstream` ref is
         upstream's; anything else under a protected path is the worker's and still fails."""
         with tempfile.TemporaryDirectory() as d:
-            repo = repo_with_test(Path(d))
+            repo = repo_with_test(Path(d), TOML + '[leak_scan]\nextra = ["codename"]\n')
             # Upstream rewrote an existing test (not additive) and ships a word the leak scan flags.
             (repo / "tests" / "test_old.py").write_text("def test_a():\n    assert 1\n")
-            (repo / "NOTES.md").write_text("confidential upstream notes\n")
+            (repo / "NOTES.md").write_text("codename upstream notes\n")
             commit(repo, "upstream")
             tip = git(repo, "rev-parse", "HEAD")
             code, _, report = gate(repo)
@@ -148,11 +148,11 @@ class AddOnlyPathsTest(unittest.TestCase):
             self.assertEqual(code, 1, report)
             self.assertIn("- protected-paths: FAIL\n", report)
             git(repo, "reset", "-q", "--hard", tip)
-            (repo / "worker.md").write_text("proprietary\n")
+            (repo / "worker.md").write_text("codename\n")
             commit(repo)
             code, _, report = gate(repo, "--upstream", tip)
             self.assertEqual(code, 1, report)
-            self.assertIn("worker.md:1: [proprietary]", report)
+            self.assertIn("worker.md:1: [codename]", report)
             self.assertNotIn("NOTES.md", report)
 
 
