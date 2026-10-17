@@ -26,6 +26,7 @@ map or a path in it does not exist; update the map in the same change.
 | Triage | `factory/triage.py` | `tests/test_factory.py`, `tests/test_llm_usage.py`, `tests/test_idle_lifecycle.py`, `tests/test_triage.py` | `test` |
 | Dispatcher and worker brief | `factory/dispatch.py`, `factory/brief.py`, `factory/templates/agent_task.md` | `tests/test_factory.py`, `tests/test_dispatch_lifecycle.py`, `tests/test_wait_decisions.py`, `tests/test_idle_lifecycle.py`, `tests/test_frontier.py` | `test` |
 | Quality gate | `factory/gate.py` | `tests/test_factory.py`, `tests/test_gate.py`, `tests/test_gate_resources.py` | `test`; implements `conflict-markers`, `protected-paths` (with `[gate].add_only_paths`), `leak-scan` |
+| Post-ship monitor (`watch`) | `factory/watch.py` | `tests/test_watch.py`, `tests/test_factory.py` | `test` |
 | Manager and human handoffs | `factory/manage.py`, `factory/handoff.py` | `tests/test_viability.py`, `tests/test_handoff.py`, `tests/test_manager_binding.py`, `tests/test_frontier.py` | `test` |
 | Lifecycle journal (`events.jsonl`) | `factory/lifecycle.py` | `tests/test_lifecycle.py`, `tests/test_lifecycle_consumers.py`, `tests/test_events_rotation.py`, `tests/test_resources.py` | `test` |
 | Initiatives, bindings, roadmap and outcomes | `factory/plan.py`, `factory/binding.py`, `factory/roadmap.py`, `factory/outcomes.py`, `factory/templates/initiative.md` | `tests/test_plan.py`, `tests/test_binding.py`, `tests/test_binding_cli.py`, `tests/test_roadmap.py`, `tests/test_outcomes.py` | `test` |
