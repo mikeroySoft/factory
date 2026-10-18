@@ -4,6 +4,7 @@
 
 - Managers can `RESOLVE` a no-change escalation when evidence shows the requested outcome is already on main or the ticket is a duplicate. Factory records the evidence before closing the issue as completed and removing `ready-for-human`; it closes an empty open agent PR too, but refuses if that PR contains commits.
 - Watch-filed runtime failures bypass model triage for a fixed agent investigation, and `factory watch` closes open filings after their fingerprint has been absent for 24 hours.
+- Watch-filed runtime failures bypass model triage for a fixed agent investigation, and `factory watch` closes open, unassigned filings whose newest evidence is at least 24 hours old.
 
 ## 0.4.2 — 2026-10-18
 

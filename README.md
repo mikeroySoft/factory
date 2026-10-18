@@ -297,9 +297,10 @@ landed on its own, and partial progress needs its own reviewed PR.
 | `factory plan baseline N` / `factory plan drift TICKET` | Read-only schema 1 JSON for proposing a complete immutable initiative baseline or comparing a ticket's latest accepted baseline with the live complete source. Results are under top-level `baseline` or `drift`; neither command edits issues, rebaselines work, or grants execution authority. |
 | `factory doctor` / `init` / `install` | Onboarding, above. |
 
-`factory watch` also closes an open tracked issue as completed when its fingerprint
-has been absent for at least 24 hours since the latest evidence (or filing time).
-Each pass closes at most five; `--dry-run` reports closures without applying them.
+`factory watch` also closes an open, unassigned tracked issue as completed when its
+newest evidence (or its filing time) is at least 24 hours old and the failure is not
+happening now. Each pass closes at most five; `--dry-run` reports closures without
+applying them.
 
 ## Automatic releases
 
