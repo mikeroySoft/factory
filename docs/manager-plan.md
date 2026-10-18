@@ -19,7 +19,8 @@ unassigns, and comments. The trigger set is closed:
 |---|---|---|
 | gate FAIL × `max_attempts` | `process_ticket` | gate report, attempt logs, handoff |
 | wall-clock budget exceeded | `process_ticket` | attempt logs |
-| worker committed nothing over main (`no_change`) | `process_ticket` | worker log, handoff |
+| worker committed nothing over main and wrote its handoff (`no_change`) | `process_ticket` | worker log, handoff |
+| worker committed nothing and wrote no handoff (`pr_unpublished`) | `process_ticket` | worker log |
 | REVISE after `review_rounds` | `process_ticket` | PR comments with `path:line` findings |
 | gate FAIL after review bounce | `process_ticket` | gate report |
 | rebase onto moved main conflicts | `refresh_pr_branch` | worktree kept |
