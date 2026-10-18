@@ -177,7 +177,7 @@ def check_protected_paths(
     if proc.returncode:
         return False, "protected_paths", proc.stdout + proc.stderr
     fields = proc.stdout.split("\0")
-    hits, not_additive, additive = [], [], []
+    hits, not_additive, additive = [], [], []  # additive: add-only files modified in place, pending numstat
     for meta, path in zip(fields[::2], fields[1::2]):
         old_mode, new_mode, _, _, status = meta.lstrip(":").split()
         if any(fnmatch.fnmatchcase(path, g) for g in protected):
