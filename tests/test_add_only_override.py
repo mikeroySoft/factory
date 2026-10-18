@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
+from unittest import mock
 
 from factory import config, dispatch, gate, manage
 
@@ -68,23 +69,52 @@ class AddOnlyOverrideTest(unittest.TestCase):
             self.assertFalse(passed)
             self.assertEqual(reason, "protected_paths")
 
-    def test_manager_fix_parses_add_only_authorization(self) -> None:
-        workers = {"ci-fix": ["fix"]}
-        decision, _, data = manage.parse(
-            'DECISION: FIX\n{"worker":"ci-fix","guidance":"Fix it",'
-            '"authorize_add_only":"Ticket requires this assertion change"}',
-            workers,
+    def test_manager_parses_add_only_authorization(self) -> None:
+        output = (
+            'DECISION: AUTHORIZE\n{"justification":"Ticket requires this assertion change",'
+            '"guidance":"Update the obsolete assertion"}'
         )
-        self.assertEqual(decision, "FIX")
-        self.assertEqual(data["authorize_add_only"], "Ticket requires this assertion change")
-        self.assertEqual(
-            manage.parse(
-                'DECISION: FIX\n{"worker":"ci-fix","guidance":"Fix it",'
-                '"authorize_add_only":true}',
-                workers,
-            )[0],
-            "HUMAN",
+        decision, _, data = manage.parse(output, {})
+        self.assertEqual(decision, "AUTHORIZE")
+        self.assertEqual(data, {
+            "justification": "Ticket requires this assertion change",
+            "guidance": "Update the obsolete assertion",
+        })
+        for justification in (None, ""):
+            payload = '{"guidance":"Update it"}' if justification is None else (
+                '{"justification":"","guidance":"Update it"}'
+            )
+            with self.subTest(justification=justification):
+                self.assertEqual(manage.parse(f"DECISION: AUTHORIZE\n{payload}", {})[0], "HUMAN")
+
+    def test_manager_authorization_adds_override_and_requeues(self) -> None:
+        result = subprocess.CompletedProcess([], 0, stdout="https://example.test/comment\n")
+        with mock.patch.object(dispatch, "run", return_value=result) as run, \
+                mock.patch.object(dispatch, "comment_receipt"):
+            manage.apply(
+                7,
+                {"title": "Update obsolete test", "labels": [{"name": config.LABEL_HUMAN}]},
+                "AUTHORIZE",
+                "",
+                {"justification": "The ticket requires it", "guidance": "Remove the old assertion"},
+                Path("unused"),
+            )
+
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertIn(
+            ["gh", "issue", "edit", "7", "--repo", dispatch.REPO,
+             "--add-label", config.LABEL_ADD_ONLY_OVERRIDE],
+            commands,
         )
+        self.assertIn(
+            ["gh", "issue", "edit", "7", "--repo", dispatch.REPO,
+             "--remove-label", config.LABEL_HUMAN, "--add-label", config.LABEL_AGENT],
+            commands,
+        )
+        comments = [command for command in commands if command[1:3] == ["issue", "comment"]]
+        self.assertEqual(len(comments), 1)
+        self.assertIn("Justification: The ticket requires it", comments[0][-1])
+        self.assertIn("Guidance: Remove the old assertion", comments[0][-1])
 
     def test_gate_flags_maps_add_only_override_label(self) -> None:
         self.assertEqual(

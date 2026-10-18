@@ -321,22 +321,23 @@ read-only/no-tools mode: the prompt prohibits file edits, but an arbitrary
 configured executable is trusted, not sandboxed by factory. The manager reads
 the packet, `.factory-lessons.md`, and optional `.factory/manager/notes.md`.
 Its last `DECISION:` header
-selects `RETRY`, `REWRITE`, `SPLIT`, `ROUTE`, `FIX`, or `HUMAN`, followed by the decision
-body. RETRY/HUMAN use plain text; REWRITE uses the complete replacement issue body.
-SPLIT uses a JSON array of `{title, body, blocked_by}` children, with `blocked_by`
-containing 1-based indexes of earlier children. ROUTE uses `{add, remove, guidance}`,
-with label arrays restricted to configured worker labels (not `default`).
+selects `RETRY`, `REWRITE`, `SPLIT`, `ROUTE`, `AUTHORIZE`, `FIX`, `CLOSE`, or `HUMAN`,
+followed by the decision body. RETRY/HUMAN use plain text; REWRITE uses the
+complete replacement issue body. SPLIT uses a JSON array of
+`{title, body, blocked_by}` children, with `blocked_by` containing 1-based
+indexes of earlier children. ROUTE uses `{add, remove, guidance}`, with label
+arrays restricted to configured worker labels (not `default`).
 Workers can use either the legacy argv array or a `[workers.<label>]` table with
 `command = [...]` and optional `when = "..."`. The prompt lists routable labels
 with their `when` rules; neither ROUTE nor FIX accepts unlisted labels.
-FIX uses `{"worker":"ci-fix","guidance":"...","authorize_add_only":"optional justification"}`
-to run exactly one selected worker round in the kept `agent/<n>` worktree for
-its open PR, ignoring other ticket labels and refusing a kept head that no
-longer matches the remote PR. `authorize_add_only`, when present, records the
-justification in a manager comment and adds `factory-add-only-override` before
-the worker runs. The manager may use it only for an add-only gate failure when
-the ticket requires changing an existing add-only file or removes an obsolete
-wording-only assertion; fully protected paths remain human-only. FIX passes
+AUTHORIZE uses `{"justification":"...","guidance":"..."}` to record why an
+existing add-only file must change, add `factory-add-only-override`, and return
+the ticket to `ready-for-agent`. It is limited to required add-only edits or
+removal of obsolete wording-only assertions, and never authorizes protected
+paths. The normal gate and independent review run again. FIX uses
+`{"worker":"ci-fix","guidance":"..."}` to run exactly one selected worker round
+in the kept `agent/<n>` worktree for its open PR, ignoring other ticket labels
+and refusing a kept head that no longer matches the remote PR. FIX passes
 guidance and the escalation packet to the worker, re-gates, pushes only on a
 gate PASS bound to the resulting commit, and independently re-reviews that
 same commit. Only a zero-exit, well-formed fresh APPROVE whose remote PR head
@@ -541,10 +542,10 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    a new file passes, a modified file passes only when `git diff --numstat`
    shows no deleted lines, and a deletion, rename, mode change, binary change
    or any removed or changed line fails and escalates as "worker removed or
-   changed existing tests". The manager may apply
-   `factory-add-only-override` through FIX, with an auditable justification,
-   only when the ticket requires the existing add-only edit or an obsolete
-   wording-only assertion must be removed; a human may apply it directly.
+   changed existing tests". The manager may use `AUTHORIZE`, with an auditable
+   justification and worker guidance, to apply `factory-add-only-override` and
+   requeue the ticket when the ticket requires the existing add-only edit or an
+   obsolete wording-only assertion must be removed; a human may apply it directly.
    It does not authorize `[gate].protected_paths`. Only a human can apply
    `factory-protected-override` to bypass both classes, including during a
    refresh onto moved main. An `upstream sync:` ticket's worker otherwise gets
