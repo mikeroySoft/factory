@@ -59,7 +59,14 @@ def measure(cfg: config.Config, since: str | datetime) -> dict[str, float | int 
 
 def _latest(cfg: config.Config) -> dict[str, Any] | None:
     tags = _git(cfg.root, "tag", "--merged", f"origin/{cfg.main}", "--list", "v*").stdout.splitlines()
-    versions = [(tuple(map(int, match.groups())), tag) for tag in tags if (match := SEMVER.fullmatch(tag))]
+    remote = {
+        ref.removesuffix("^{}").removeprefix("refs/tags/")
+        for line in _git(cfg.root, "ls-remote", "--tags", "origin").stdout.splitlines()
+        if len(line.split(maxsplit=1)) == 2
+        for ref in [line.split(maxsplit=1)[1]]
+    }
+    versions = [(tuple(map(int, match.groups())), tag) for tag in tags
+                if tag in remote and (match := SEMVER.fullmatch(tag))]
     if not versions:
         return None
     version, tag = max(versions)
@@ -96,7 +103,43 @@ def _gh(cfg: config.Config, endpoint: str, *args: str) -> Any:
     proc = subprocess.run(["gh", "api", *args, endpoint], text=True, capture_output=True, check=False)
     if proc.returncode:
         raise RuntimeError(proc.stderr.strip() or f"gh api {endpoint} failed")
-    return json.loads(proc.stdout)
+    return json.loads(proc.stdout) if proc.stdout.strip() else None
+
+
+def _pulls(cfg: config.Config, branch: str) -> list[dict[str, Any]]:
+    return _gh(
+        cfg,
+        f"repos/{cfg.repo}/pulls?state=open&base={cfg.main}&head={cfg.repo.split('/')[0]}:{branch}",
+    )
+
+def _pull(cfg: config.Config, number: int) -> dict[str, Any]:
+    return _gh(cfg, f"repos/{cfg.repo}/pulls/{number}")
+
+
+def _open_pull(cfg: config.Config, branch: str, title: str, body: str) -> dict[str, Any]:
+    return _gh(
+        cfg, f"repos/{cfg.repo}/pulls", "-X", "POST",
+        "-f", f"title={title}", "-f", f"head={branch}", "-f", f"base={cfg.main}", "-f", f"body={body}",
+    )
+
+
+def _merge_pull(cfg: config.Config, number: int, title: str) -> dict[str, Any]:
+    return _gh(
+        cfg, f"repos/{cfg.repo}/pulls/{number}/merge", "-X", "PUT",
+        "-f", "merge_method=squash", "-f", f"commit_title={title}",
+    )
+
+
+def _version_at(cfg: config.Config, ref: str) -> tuple[int, int, int]:
+    text = _git(cfg.root, "show", f"{ref}:{cfg.release_version_file}").stdout
+    match = next(
+        (match for line in text.splitlines() if "version" in line.lower()
+         if (match := re.search(r"(?<![0-9.])(\d+)\.(\d+)\.(\d+)(?![0-9.])", line))),
+        None,
+    )
+    if not match:
+        raise ValueError(f"{cfg.release_version_file} has no semantic version at {ref}")
+    return tuple(map(int, match.groups()))
 
 
 def ci_passes(cfg: config.Config, sha: str) -> bool:
@@ -162,7 +205,7 @@ def _update_release_files(cfg: config.Config, worktree: Path, old: str, new: str
 
 
 def run(cfg: config.Config, dry_run: bool = False) -> str:
-    """Release the next patch when the ticket window clears the previous quality bar."""
+    """Advance the release PR, merge, tag, and stable branch from remote state."""
     metrics: dict[str, float | int | None] | None = None
     bar: dict[str, float | int] | None = None
     latest_tag: str | None = None
@@ -173,67 +216,146 @@ def run(cfg: config.Config, dry_run: bool = False) -> str:
             return _finish(cfg, dry_run, _reason("no semver release tag reachable from origin/main", None, None),
                            None, None, None)
         latest_tag = latest["tag"]
-        metrics = measure(cfg, latest["date"])
         bar = _bar(latest["message"])
+        current = _version_at(cfg, f"origin/{cfg.main}")
+        if current > latest["version"]:
+            version = ".".join(map(str, current))
+            tag = f"v{version}"
+            metrics = measure(cfg, latest["date"])
+            commits = _git(
+                cfg.root, "log", "--reverse", "--format=%H",
+                f"{latest_tag}..origin/{cfg.main}", f"-G{re.escape(version)}",
+                "--", cfg.release_version_file,
+            ).stdout.splitlines()
+            commit = commits[0] if commits else ""
+            if not commit:
+                raise ValueError(f"cannot find commit that set version {version}")
+            reason = _reason(
+                f"would tag {tag} and advance stable" if dry_run else f"released {tag}", metrics, bar)
+            if dry_run:
+                return _finish(cfg, True, reason, metrics, bar, latest_tag)
+            message = (f"Release {version}: {metrics['tickets']} tickets, human rate "
+                       f"{metrics['human_rate']}, first pass {metrics['first_pass']}.\n\n"
+                       f"```json\n{json.dumps(next_bar(bar, metrics), separators=(',', ':'))}\n```")
+            _git(cfg.root, "tag", "-d", tag, check=False)
+            _git(cfg.root, "tag", "-a", tag, commit, "-m", message)
+            pushed = False
+            try:
+                result = _git(cfg.root, "push", "--atomic", "origin", tag,
+                              f"{commit}:refs/heads/stable", check=False)
+                pushed = result.returncode == 0
+                if not pushed:
+                    detail = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "git push failed"
+                    return _finish(cfg, False, _reason(f"atomic push failed: {detail}", metrics, bar),
+                                   metrics, bar, latest_tag)
+                return _finish(cfg, False, f"released {tag}", metrics, bar, tag, released=True)
+            finally:
+                if not pushed:
+                    _git(cfg.root, "tag", "-d", tag, check=False)
+
+        metrics = measure(cfg, latest["date"])
         head = _git(cfg.root, "rev-parse", f"origin/{cfg.main}").stdout.strip()
         if head == latest["sha"] or not _git(
                 cfg.root, "rev-list", "--count", f"{latest_tag}..origin/{cfg.main}").stdout.strip().lstrip("0"):
-            reason = _reason(f"no changes since {latest_tag}", metrics, bar)
-            return _finish(cfg, dry_run, reason, metrics, bar, latest_tag)
+            return _finish(cfg, dry_run, _reason(f"no changes since {latest_tag}", metrics, bar),
+                           metrics, bar, latest_tag)
+        next_version = ".".join(map(str, (*latest["version"][:2], latest["version"][2] + 1)))
+        branch = f"release/v{next_version}"
+        pulls = _pulls(cfg, branch)
+        if pulls:
+            pull = _pull(cfg, pulls[0]["number"])
+            number = pull["number"]
+            state = pull.get("mergeable_state")
+            mergeable = pull.get("mergeable")
+            if state == "behind":
+                action = f"updated release PR #{number} from main"
+            elif state == "dirty" or mergeable is False:
+                action = f"closed conflicting release PR #{number}; next pass rebuilds it"
+            elif mergeable is None or state == "unknown":
+                return _finish(cfg, dry_run, _reason("waiting for GitHub mergeability", metrics, bar),
+                               metrics, bar, latest_tag)
+            elif not ci_passes(cfg, pull["head"]["sha"]):
+                return _finish(cfg, dry_run, _reason("waiting for CI", metrics, bar),
+                               metrics, bar, latest_tag)
+            else:
+                action = f"would squash-merge release PR #{number}"
+            if dry_run:
+                return _finish(cfg, True, _reason(action, metrics, bar), metrics, bar, latest_tag)
+            if state == "behind":
+                _gh(cfg, f"repos/{cfg.repo}/pulls/{number}/update-branch", "-X", "PUT")
+                return _finish(cfg, False, _reason(action, metrics, bar), metrics, bar, latest_tag)
+            if state == "dirty" or mergeable is False:
+                _gh(cfg, f"repos/{cfg.repo}/pulls/{number}", "-X", "PATCH", "-f", "state=closed")
+                try:
+                    _gh(cfg, f"repos/{cfg.repo}/git/refs/heads/{branch}", "-X", "DELETE")
+                except RuntimeError as exc:
+                    if "404" not in str(exc) and "422" not in str(exc):
+                        raise
+                return _finish(cfg, False, _reason(action, metrics, bar), metrics, bar, latest_tag)
+            try:
+                merged = _merge_pull(cfg, number, f"Release {next_version}")
+            except RuntimeError as exc:
+                if "405" in str(exc) or "409" in str(exc):
+                    return _finish(cfg, False, _reason(str(exc), metrics, bar),
+                                   metrics, bar, latest_tag)
+                raise
+            if not merged.get("merged"):
+                return _finish(cfg, False, _reason(
+                    str(merged.get("message") or f"release PR #{number} merge refused"), metrics, bar),
+                    metrics, bar, latest_tag)
+            return _finish(cfg, False, _reason(f"merged release PR #{number}", metrics, bar),
+                           metrics, bar, latest_tag)
+
         if metrics["tickets"] < cfg.release_min_tickets:
-            reason = _reason(f"tickets {metrics['tickets']} below min_tickets {cfg.release_min_tickets}", metrics, bar)
-            return _finish(cfg, dry_run, reason, metrics, bar, latest_tag)
+            return _finish(cfg, dry_run, _reason(
+                f"tickets {metrics['tickets']} below min_tickets {cfg.release_min_tickets}", metrics, bar),
+                metrics, bar, latest_tag)
         if metrics["first_pass"] is None:
-            reason = _reason(f"no first-attempt evidence since {latest_tag}", metrics, bar)
-            return _finish(cfg, dry_run, reason, metrics, bar, latest_tag)
+            return _finish(cfg, dry_run, _reason(
+                f"no first-attempt evidence since {latest_tag}", metrics, bar), metrics, bar, latest_tag)
         if bar:
             for metric, direction in BAR:
                 worse = metrics[metric] > bar[metric] if direction == "lower" else metrics[metric] < bar[metric]
                 if worse:
-                    reason = _reason(
-                        f"{metric} {metrics[metric]} is worse than {bar[metric]} ({direction} is better)", metrics, bar)
-                    return _finish(cfg, dry_run, reason, metrics, bar, latest_tag)
+                    return _finish(cfg, dry_run, _reason(
+                        f"{metric} {metrics[metric]} is worse than {bar[metric]} ({direction} is better)",
+                        metrics, bar), metrics, bar, latest_tag)
         if not ci_passes(cfg, head):
-            reason = _reason(f"CI statuses/check-runs are not all successful for {head}", metrics, bar)
-            return _finish(cfg, dry_run, reason, metrics, bar, latest_tag)
-        new_version = ".".join(map(str, (*latest["version"][:2], latest["version"][2] + 1)))
-        new_tag = f"v{new_version}"
+            return _finish(cfg, dry_run, _reason(
+                f"CI statuses/check-runs are not all successful for {head}", metrics, bar),
+                metrics, bar, latest_tag)
         if dry_run:
-            reason = _reason(f"would release {new_tag} (release gate is not run by --dry-run)", metrics, bar)
-            return _finish(cfg, True, reason, metrics, bar, latest_tag)
+            return _finish(cfg, True, _reason(
+                f"would open release PR for v{next_version} (release gate is not run by --dry-run)",
+                metrics, bar), metrics, bar, latest_tag)
 
         cfg.factory.mkdir(parents=True, exist_ok=True)
         temporary = Path(tempfile.mkdtemp(prefix="release-", dir=cfg.factory))
         worktree = temporary / "worktree"
-        added = created_tag = pushed = False
+        added = False
         try:
             _git(cfg.root, "worktree", "prune", check=False)
             _git(cfg.root, "worktree", "add", "--detach", str(worktree), head)
             added = True
-            _update_release_files(cfg, worktree, latest_tag.removeprefix("v"), new_version)
+            _update_release_files(cfg, worktree, latest_tag.removeprefix("v"), next_version)
             if not gate_passes(worktree):
-                reason = _reason("factory gate --tier release failed", metrics, bar)
-                return _finish(cfg, False, reason, metrics, bar, latest_tag)
+                return _finish(cfg, False, _reason("factory gate --tier release failed", metrics, bar),
+                               metrics, bar, latest_tag)
             _git(worktree, "add", cfg.release_version_file, "CHANGELOG.md")
-            _git(worktree, "commit", "-m", f"Release {new_version}")
-            message = (f"Release {new_version}: {metrics['tickets']} tickets, human rate "
-                       f"{metrics['human_rate']}, first pass {metrics['first_pass']}.\n\n"
-                       f"```json\n{json.dumps(next_bar(bar, metrics), separators=(',', ':'))}\n```")
-            _git(worktree, "tag", "-d", new_tag, check=False)
-            _git(worktree, "tag", "-a", new_tag, "-m", message)
-            created_tag = True
-            pushed_result = _git(worktree, "push", "--atomic", "origin",
-                                 f"HEAD:refs/heads/{cfg.main}", new_tag, "HEAD:refs/heads/stable", check=False)
-            if pushed_result.returncode:
-                detail = pushed_result.stderr.strip().splitlines()[-1] if pushed_result.stderr.strip() else "git push failed"
-                reason = _reason(f"atomic push failed: {detail}", metrics, bar)
-                return _finish(cfg, False, reason, metrics, bar, latest_tag)
-            pushed = True
-            reason = _reason(f"released {new_tag}", metrics, bar)
-            return _finish(cfg, False, reason, metrics, bar, new_tag, released=True)
+            _git(worktree, "commit", "-m", f"Release {next_version}")
+            pushed = _git(worktree, "push", "--force", "origin",
+                          f"HEAD:refs/heads/{branch}", check=False)
+            if pushed.returncode:
+                detail = pushed.stderr.strip().splitlines()[-1] if pushed.stderr.strip() else "git push failed"
+                return _finish(cfg, False, _reason(f"release branch push failed: {detail}", metrics, bar),
+                               metrics, bar, latest_tag)
+            body = (f"Automated patch release from {latest_tag}.\n\n"
+                    f"Metrics: `{json.dumps(metrics, sort_keys=True)}`\n\n"
+                    f"Bar: `{json.dumps(bar, sort_keys=True)}`")
+            pull = _open_pull(cfg, branch, f"Release {next_version}", body)
+            return _finish(cfg, False, f"opened release PR #{pull['number']} for v{next_version}",
+                           metrics, bar, latest_tag)
         finally:
-            if created_tag and not pushed:
-                _git(cfg.root, "tag", "-d", new_tag, check=False)
             if added:
                 _git(cfg.root, "worktree", "remove", "--force", str(worktree), check=False)
             shutil.rmtree(temporary, ignore_errors=True)
