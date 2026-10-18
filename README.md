@@ -319,7 +319,9 @@ succeeds, respecting the required `gate` check on protected `main`. Once the
 version bump is present on `main`, a final pass creates the annotated tag on
 the first commit that introduced that version and atomically advances `stable`;
 a release therefore takes up to three dispatcher passes when no branch refresh
-is needed. Each pass derives its state from remote branches, remote tags, and
+is needed. The dispatcher advances an open release PR at the start of a pass,
+before it lands a ticket (every ticket edits `CHANGELOG.md`, which GitHub cannot
+union-merge), and opens a new one only at the end of a pass. Each pass derives its state from remote branches, remote tags, and
 PRs, so crashes need no local recovery file. Temporary worktrees are removed,
 and local-only or stale local tags are ignored and removed before reuse. A
 completed release journals one `release` row; held reasons go to the dispatcher

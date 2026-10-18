@@ -124,6 +124,18 @@ class ReleaseTest(unittest.TestCase):
                          r"## Unreleased\n\n## 0\.0\.2 — \d{4}-\d{2}-\d{2}\n\n- shipped work")
         self.assertEqual(opened.call_args.args[1:3], ("release/v0.0.2", "Release 0.0.2"))
 
+    def test_start_of_pass_call_never_opens_a_release_pr(self) -> None:
+        self.tag_and_advance({"human_rate": 0.0, "first_pass": 1.0, "tickets": 1})
+        self.events()
+        with mock.patch.object(release, "_pulls", return_value=[]), \
+                mock.patch.object(release, "_open_pull") as opened, \
+                mock.patch.object(release, "ci_passes", return_value=True), \
+                mock.patch.object(release, "gate_passes", return_value=True):
+            reason = release.run(self.cfg, open_pr=False)
+        self.assertIn("no release PR open", reason)
+        opened.assert_not_called()
+        self.assertNotIn("release/v0.0.2", self.git(self.origin, "branch", "--list", "release/*"))
+
     def test_pending_green_pr_is_squash_merged(self) -> None:
         self.tag_and_advance(None)
         pull = {"number": 7, "head": {"sha": "abc"}, "mergeable": True,

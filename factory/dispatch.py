@@ -2470,6 +2470,19 @@ def main(argv: list[str]) -> int:
             )
             return 1 if process_ticket(issue, args.budget_min, args.dry_run, forced=True) is False else 0
 
+        def release_step(open_pr: bool) -> None:
+            if not cfg.release_auto or args.dry_run:
+                return
+            try:
+                from factory import release
+
+                log(f"release: {release.run(cfg, open_pr=open_pr)}")
+            except Exception as exc:  # noqa: BLE001 - release failure never fails the dispatcher pass
+                log(f"release: failed ({type(exc).__name__}: {exc})")
+
+        # A release PR merges before this pass lands a ticket (every ticket edits CHANGELOG.md,
+        # which GitHub cannot union-merge), and a new one opens only after landing.
+        release_step(open_pr=False)
         land_pass(args.dry_run)
         review_intake_pass(args.dry_run)
         from factory.learn import learn_pass
@@ -2478,11 +2491,5 @@ def main(argv: list[str]) -> int:
         manage_pass(args.dry_run)
         ticket_pass(args.budget_min, args.dry_run)
         learn_pass(args.dry_run)
-        if cfg.release_auto and not args.dry_run:
-            try:
-                from factory import release
-
-                log(f"release: {release.run(cfg, dry_run=False)}")
-            except Exception as exc:  # noqa: BLE001 - release failure never fails the dispatcher pass
-                log(f"release: failed ({type(exc).__name__}: {exc})")
+        release_step(open_pr=True)
         return 0
