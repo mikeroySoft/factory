@@ -147,7 +147,9 @@ def check_leaks(base: str) -> tuple[bool, str]:
 ADD_ONLY_NOTE = "add-only path removed or changed existing lines"
 
 
-def check_protected_paths(base: str, upstream: list[str] = ()) -> tuple[bool, str, str]:
+def check_protected_paths(
+    base: str, upstream: list[str] = (), add_only_override: bool = False
+) -> tuple[bool, str, str]:
     """(passed, reason, detail): reason is `protected_paths`, or `add_only_paths` when
     every hit is an add-only glob whose change was not purely additive. With `upstream`
     (the tip, then the staged head) a hit is ignored when its HEAD content equals the
@@ -178,13 +180,13 @@ def check_protected_paths(base: str, upstream: list[str] = ()) -> tuple[bool, st
     hits, not_additive, additive = [], [], []  # additive: add-only files modified in place, pending numstat
     for meta, path in zip(fields[::2], fields[1::2]):
         old_mode, new_mode, _, _, status = meta.lstrip(":").split()
-        if any(fnmatch.fnmatchcase(path, g) for g in add_only):
+        if any(fnmatch.fnmatchcase(path, g) for g in protected):
+            hits.append(path)
+        elif any(fnmatch.fnmatchcase(path, g) for g in add_only):
             if status == "M" and old_mode == new_mode:
                 additive.append(path)
             elif status != "A":
                 not_additive.append(path)
-        elif any(fnmatch.fnmatchcase(path, g) for g in protected):
-            hits.append(path)
     if upstream and (candidates := hits + not_additive + additive):
         tip = upstream[0]
         fork_point = timed(["git", "merge-base", base, tip])
@@ -211,8 +213,8 @@ def check_protected_paths(base: str, upstream: list[str] = ()) -> tuple[bool, st
             return False, "protected_paths", numstat.stdout + numstat.stderr
         for line in numstat.stdout.split("\0"):
             if line:
-                _, deleted, path = line.split("\t")
-                if deleted != "0":  # `-` for binary: not provably additive
+                added, deleted, path = line.split("\t")
+                if added == "-" or deleted == "-" or (not add_only_override and deleted != "0"):
                     not_additive.append(path)
     if not hits and not not_additive:
         return True, "", ""
@@ -241,6 +243,8 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument("--protected-override", action="store_true",
                         help="human-authorized protected-path override")
+    parser.add_argument("--add-only-override", action="store_true",
+                        help="manager- or human-authorized edits to add-only paths")
     parser.add_argument("--upstream", action="append", default=[], metavar="REF",
                         help="upstream sync: first REF is the tip, later REFs the staged head (repeatable); "
                         "protected-path hits equal to the staged head, or to the tip for paths upstream changed, "
@@ -283,7 +287,9 @@ def execute(args: argparse.Namespace, execution) -> int:
         skip.add("leak-scan")
 
     if not args.protected_override and args.tier == "attempt":
-        passed, reason, detail = check_protected_paths(args.base, args.upstream)
+        passed, reason, detail = check_protected_paths(
+            args.base, args.upstream, args.add_only_override
+        )
         if not passed:
             execution.outcome, execution.reason = "project_escalation", reason
             report = Path(args.report)

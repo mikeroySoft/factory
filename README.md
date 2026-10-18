@@ -261,9 +261,11 @@ attempts escalate like any ticket. The worker gets no bypass: its gate
 (`factory gate --upstream <tip> --upstream <staged head>`, also on refresh)
 ignores only protected-path hits whose content equals the dispatcher's staged
 candidate's, or the upstream tip's for a path upstream itself changed; a
-fork-only protected or add-only file the worker deletes, resets to upstream's
-version, or edits still fails `protected-paths` unless a human applies
-`factory-protected-override`. It leak-scans the diff from the tip, so
+fork-only protected file the worker deletes, resets to upstream's version, or
+edits still fails `protected-paths` unless a human applies
+`factory-protected-override`. Add-only edits require
+`factory-add-only-override`, which the manager or a human may grant.
+It leak-scans the diff from the tip, so
 anything the worker writes is scanned while upstream's already-public content
 is not. A passing gate is rejected unless the head still contains the recorded
 upstream tip. Nothing moves `main` before the merge stage lands the reviewed,
@@ -319,19 +321,25 @@ read-only/no-tools mode: the prompt prohibits file edits, but an arbitrary
 configured executable is trusted, not sandboxed by factory. The manager reads
 the packet, `.factory-lessons.md`, and optional `.factory/manager/notes.md`.
 Its last `DECISION:` header
-selects `RETRY`, `REWRITE`, `SPLIT`, `ROUTE`, `FIX`, or `HUMAN`, followed by the decision
-body. RETRY/HUMAN use plain text; REWRITE uses the complete replacement issue body.
-SPLIT uses a JSON array of `{title, body, blocked_by}` children, with `blocked_by`
-containing 1-based indexes of earlier children. ROUTE uses `{add, remove, guidance}`,
-with label arrays restricted to configured worker labels (not `default`).
+selects `RETRY`, `REWRITE`, `SPLIT`, `ROUTE`, `AUTHORIZE`, `FIX`, `CLOSE`, or `HUMAN`,
+followed by the decision body. RETRY/HUMAN use plain text; REWRITE uses the
+complete replacement issue body. SPLIT uses a JSON array of
+`{title, body, blocked_by}` children, with `blocked_by` containing 1-based
+indexes of earlier children. ROUTE uses `{add, remove, guidance}`, with label
+arrays restricted to configured worker labels (not `default`).
 Workers can use either the legacy argv array or a `[workers.<label>]` table with
 `command = [...]` and optional `when = "..."`. The prompt lists routable labels
 with their `when` rules; neither ROUTE nor FIX accepts unlisted labels.
-FIX uses `{"worker":"ci-fix","guidance":"..."}` to run exactly one selected worker
-round in the kept `agent/<n>` worktree for its open PR, ignoring other ticket
-labels and refusing a kept head that no longer matches the remote PR. It passes
+AUTHORIZE uses `{"justification":"...","guidance":"..."}` to record why an
+existing add-only file must change, add `factory-add-only-override`, and return
+the ticket to `ready-for-agent`. It is limited to required add-only edits or
+removal of obsolete wording-only assertions, and never authorizes protected
+paths. The normal gate and independent review run again. FIX uses
+`{"worker":"ci-fix","guidance":"..."}` to run exactly one selected worker round
+in the kept `agent/<n>` worktree for its open PR, ignoring other ticket labels
+and refusing a kept head that no longer matches the remote PR. FIX passes
 guidance and the escalation packet to the worker, re-gates, pushes only on a
-gate PASS bound to the resulting commit, and re-reviews that
+gate PASS bound to the resulting commit, and independently re-reviews that
 same commit. Only a zero-exit, well-formed fresh APPROVE whose remote PR head
 still matches restores `factory-approved`; failure stays with the human. FIX
 does not merge or requeue the issue.
@@ -534,11 +542,15 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    a new file passes, a modified file passes only when `git diff --numstat`
    shows no deleted lines, and a deletion, rename, mode change, binary change
    or any removed or changed line fails and escalates as "worker removed or
-   changed existing tests". A human can apply
-   `factory-protected-override` to authorize worker edits, including a refresh
-   onto moved main; an `upstream sync:` ticket's worker gets no such override,
-   only upstream-authored content is exempt (`--upstream`, above). Otherwise
-   make protected changes outside the worker flow. Then `conflict-markers`,
+   changed existing tests". The manager may use `AUTHORIZE`, with an auditable
+   justification and worker guidance, to apply `factory-add-only-override` and
+   requeue the ticket when the ticket requires the existing add-only edit or an
+   obsolete wording-only assertion must be removed; a human may apply it directly.
+   It does not authorize `[gate].protected_paths`. Only a human can apply
+   `factory-protected-override` to bypass both classes, including during a
+   refresh onto moved main. An `upstream sync:` ticket's worker otherwise gets
+   no override, only upstream-authored content is exempt (`--upstream`, above).
+   Otherwise make protected changes outside the worker flow. Then `conflict-markers`,
    your `[[gate.check]]` list in order, and a `leak-scan`
    run. Checks marked `exclusive` serialise on a host-wide lock. Every check
    has a timeout. `[[gate.check]]` has three tiers, selected by `when`
