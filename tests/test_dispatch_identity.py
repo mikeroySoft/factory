@@ -48,13 +48,13 @@ class UnitEnvTest(unittest.TestCase):
             self.assertIn(line, after[service])
             self.assertNotIn(line, after[dashboard])
         # [install].env stays in both; dispatch_env comes after it so it wins.
-        self.assertIn("Environment=UV_EXCLUDE_NEWER=7 days\nEnvironment=GH_CONFIG_DIR", after[service])
+        self.assertIn('Environment="UV_EXCLUDE_NEWER=7 days"\nEnvironment=GH_CONFIG_DIR', after[service])
         self.assertEqual(after[dashboard], before[dashboard])
         # Empty or absent (base) renders as before: both units carry the same environment lines.
         self.assertEqual(onboard.units(unset, "10min", "127.0.0.1"), before)
         lines = [[ln for ln in before[u].splitlines() if ln.startswith("Environment=")] for u in (service, dashboard)]
         self.assertEqual(lines[0], lines[1])
-        self.assertIn("Environment=UV_EXCLUDE_NEWER=7 days", lines[0])
+        self.assertIn('Environment="UV_EXCLUDE_NEWER=7 days"', lines[0])
 
 
 class AgentCredentialTest(unittest.TestCase):
