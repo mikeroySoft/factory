@@ -70,7 +70,7 @@ flowchart TB
   TRI -->|"triage.apply_decision"| RFA
   TRI -->|"triage.apply_decision"| RFH
   TRI -->|"unparseable twice, label kept: triage.execute"| NT
-  TRI -.->|"wontfix-proposal is a comment only, label never applied: triage.apply_decision"| HUMAN
+  TRI -->|"triage.apply_decision"| WONT
   NI -->|"question comment: triage.apply_decision"| REPORTER
   REPORTER -.->|"no watcher re-queues needs-info; a human relabels: decisions.apply"| NT
 
@@ -143,9 +143,6 @@ flowchart TB
   check cancelled before any runner picked it up (`dispatch.triage_cancelled`), but
   `manage.frontier_pass` still buckets `cancel` with `fail`, so an infrastructure
   cancel on an unapproved PR escalates as "CI failed".
-- **`wontfix-proposal` means two things.** Triage only comments a wontfix proposal
-  and leaves `needs-triage` (`triage.apply_decision`); manager CLOSE applies the
-  `wontfix-proposal` label (`manage.apply`).
 - **`needs-info` has no re-entry.** Nothing watches for the reporter's answer; a human
   puts `needs-triage` back (`decisions.apply` or GitHub).
 - **Data-driven labels.** Rows marked `*` below edit labels chosen at runtime:
@@ -171,7 +168,7 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 | `dispatch.sync_issue` | — | `ready-for-agent` | New sync ticket for new upstream commits; its `agent/N` candidate carries the merge and gate evidence |
 | `manage.apply` | `ready-for-human`, `*` | `factory-add-only-override`, `ready-for-agent`, `needs-triage`, `wontfix-proposal`, `*` | AUTHORIZE grants add-only authority and requeues; RETRY/REWRITE/ROUTE return to agent; SPLIT children; CLOSE; RESOLVE closes completed; ROUTE labels |
 | `manage.viability_pass` | `*` | `needs-triage` | Opt-in label removed; BUILD queues triage |
-| `triage.apply_decision` | `needs-triage` | `*` | `*` is the decision: `ready-for-agent`, `needs-info`, or `ready-for-human` |
+| `triage.apply_decision` | `needs-triage` | `*` | `*` is the decision: `ready-for-agent`, `needs-info`, `ready-for-human`, or `wontfix-proposal` |
 | `watch.run_pass` | — | `*` | New `bug` + `needs-triage` issue per runtime-failure fingerprint (`watch.LABELS`) |
 
 ## Escalate reasons
