@@ -88,6 +88,9 @@ class AddOnlyOverrideTest(unittest.TestCase):
                 self.assertEqual(manage.parse(f"DECISION: AUTHORIZE\n{payload}", {})[0], "HUMAN")
 
     def test_manager_authorization_adds_override_and_requeues(self) -> None:
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        dispatch.configure(config.Config(Path(root.name), "acme/widgets"))
         result = subprocess.CompletedProcess([], 0, stdout="https://example.test/comment\n")
         with mock.patch.object(dispatch, "run", return_value=result) as run, \
                 mock.patch.object(dispatch, "comment_receipt"):

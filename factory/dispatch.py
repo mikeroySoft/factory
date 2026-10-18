@@ -30,8 +30,8 @@ from pathlib import Path
 
 from factory import __version__, brief, config, lifecycle
 from factory.config import (
-    LABEL_AGENT,
     LABEL_ADD_ONLY_OVERRIDE,
+    LABEL_AGENT,
     LABEL_APPROVED,
     LABEL_HUMAN,
     LABEL_PROTECTED_OVERRIDE,

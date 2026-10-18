@@ -45,6 +45,7 @@ wording-only assertion. It grants only add-only authority, never protected paths
 The ticket returns to ready-for-agent; the normal gate and independent review run again.
 FIX: JSON object {"worker": "label", "guidance": "..."}.
 Dispatch exactly one round of that listed worker in the kept agent worktree for its open PR.
+Code re-gates, pushes and re-reviews; approval requires a passing gate and fresh APPROVE.
 HUMAN: plain-text diagnosis; leave the ticket with the human.
 CLOSE: plain-text diagnosis; closes the ticket's open PR. A human's issue stays open and
 gets `wontfix-proposal`; an issue the factory created by SPLIT is closed as not planned.
@@ -306,11 +307,10 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         dispatch.LOGS.mkdir(parents=True, exist_ok=True)
         attempts = [e.get("attempt", 0) for e in lifecycle.read_events(dispatch.EVENTS)
                     if e.get("event") == "attempt" and e.get("ticket") == n]
-        labels = {label["name"] for label in issue.get("labels", [])}
         extra = f"## Manager FIX guidance\n\n{data['guidance']}\n\n{packet.read_text()}"
         ok, report, logfile, gate_head = dispatch.worker_round(
-            n, wt, {data["worker"]} | labels, issue["title"], extra,
-            max(attempts, default=0) + 1,
+            n, wt, {data["worker"]} | {label["name"] for label in issue.get("labels", [])},
+            issue["title"], extra, max(attempts, default=0) + 1,
             time.monotonic() + cfg.budget_min * 60, selected_worker=data["worker"],
         )
         if not ok:
@@ -342,7 +342,6 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
             f"Justification: {data['justification']}\n\nGuidance: {data['guidance']}",
             authorization="add_only",
         )
-
     elif decision == "REWRITE":
         post_comment("issue", n, "Factory manager: Replacing the issue body. Previous body:\n\n" + (issue.get("body") or ""))
         issue_action("edit", "--body", body)
