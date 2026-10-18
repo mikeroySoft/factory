@@ -288,6 +288,7 @@ landed on its own, and partial progress needs its own reviewed PR.
 | `factory score` | Scores every finished ticket's worker attempts from their persisted OMP transcripts (`attempt.transcript`) and journals one `score` row per attempt: `tool_calls`, `edits` (edit/write calls), `retries` (identical consecutive calls), `gate_first_pass` (attempt 1 with gate PASS), `efficiency = 1 / (1 + retries + max(0, tool_calls - 40) / 40)`, and `compliance`, a 0–1 LLM-as-judge score from the local triage model given the ticket's Scope and Exit gate sections against the worker's final message and handoff (`null`, never a guess, when the model is unreachable or answers with anything but a number; `judge_model` names the model that answered). Already-scored attempts are skipped; a transcript missing on disk journals `{"skipped": "missing"}`. At most 50 attempts per run, 2 MB read per transcript. `--last N` limits to the newest N finished tickets; `--dry-run` prints without journaling. |
 | `factory release [--dry-run]` | Converges a patch release across up to three passes: opens a `release/vX.Y.Z` PR after the ticket, quality-bar, `main` CI, and release-tier gate checks pass; squash-merges it after its CI succeeds; then annotates the merged commit and advances `stable`. This respects the required `gate` check on protected `main`; `--dry-run` reports the current state and next action without writing. |
 | `factory dashboard` | Native outcome-control workspace: Overview, Outcomes, live Flow, Attention, Success, Codebase, Atlas, System/Ops and Settings, with a persistent contextual FM dock. Defaults to `0.0.0.0`; APIs require the workspace access key. `--json` prints a passive, bounded-window Ops snapshot without journal reconciliation writes. |
+
 | `factory dashboard --runtime-json` | One bounded schema 1 runtime observation using only local read-only evidence; no GitHub, model probe, journal append, lock acquisition, or state creation. Partial source failures remain structured JSON. See [runtime contract](#bounded-runtime-json-schema-1). |
 | `factory evidence --root /path/to/main-checkout` | One explicit-repository schema 1 JSON read: compact cases, selected evidence, workflow/file/PR/CI investigations, or capabilities. Fixed read-only GitHub requests and F03 local evidence; no model, action execution, or state writes. See [evidence contract](#bounded-project-evidence-json-schema-1). |
 | `factory mcp` | Stdio MCP server (protocol `2025-06-18`) exposing the four evidence reads plus host-registry discovery, and two write tools (`factory_prepare_action`, `factory_apply_action`) that run the named human actions through prepare, then confirmation, then apply, to one locally launched MCP client, across every repository registered with a `path` in the host config. Each evidence tool call runs one `factory evidence` subprocess; no resources, prompts, or network transport. See [`factory mcp`](#stdio-mcp-server-factory-mcp). |
@@ -295,6 +296,12 @@ landed on its own, and partial progress needs its own reviewed PR.
 | `factory plan route N --reason <requirements\|implementation\|ci\|unknown> [--path P]... --json` | Read-only schema 1 JSON naming the human who owns a decision on ticket N; nothing is assigned, labelled or commented. JSON is also the default when `--json` is omitted. Priority: a `**Decision owner**` section in the ticket body (human override, wins on every recomputation), the canonical `Initiative: #N` (or legacy `Programme: #N`) initiative's Owner, or the initiative's own Owner when routing that initiative (requirements only), `[collaboration.reasons]`, `[collaboration.components]` exact repo-relative path prefixes against the given `--path`s (implementation only; `src/auth` matches `src/auth/x.py`, never `src/authentication/`), then `[collaboration].fallback`. `route.status` is `selected`, `candidates` (paths span prefixes with different owners), `unassigned` (reason `unknown`, no `--path` for implementation, or nothing configured) or `invalid` (malformed declared owner; `@org/team` on a user-owned repository). `route.revision` ties the answer to the `.factory.toml` commit and issue `updated_at`; `route.provenance` lists every step. Owner syntax is checked, membership is not: an unreadable repository record leaves `verification: unknown`. Without a `[collaboration]` section only ticket sources apply. |
 | `factory plan baseline N` / `factory plan drift TICKET` | Read-only schema 1 JSON for proposing a complete immutable initiative baseline or comparing a ticket's latest accepted baseline with the live complete source. Results are under top-level `baseline` or `drift`; neither command edits issues, rebaselines work, or grants execution authority. |
 | `factory doctor` / `init` / `install` | Onboarding, above. |
+
+`factory watch` also closes an open, unassigned tracked issue still at `needs-triage`
+or `ready-for-agent` (never one handed to a human) as completed when its
+newest evidence (or its filing time) is at least 24 hours old and the failure is not
+happening now. Each pass closes at most five; `--dry-run` reports closures without
+applying them.
 
 ## Automatic releases
 
@@ -557,9 +564,14 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
 
 ## How a ticket moves
 
-1. **Triage.** A deterministic lint rejects bodies under 80 characters or
-   without acceptance criteria (`needs-info` with a specific question). The
-   model then decides between the four labels; `wontfix` is only ever proposed.
+1. **Triage.** Runtime bugs filed by `factory watch` (the issue number is in a
+   journaled `watch` row, with a first-line `Fingerprint:`, the
+   `factory runtime failure:` title, and `bug` label) bypass the model and go
+   directly to `ready-for-agent` with a reproduce-or-handoff investigation
+   brief. Other issues first pass a deterministic lint that rejects bodies
+   under 80 characters or without acceptance criteria (`needs-info` with a
+   specific question); the model then decides between the four labels, and
+   `wontfix` is only ever proposed.
 2. **Claim.** The dispatcher re-reads the issue (search-backed listings lag),
    assigns itself, takes a per-ticket `flock`, and creates the worktree
    `.factory/wt-<n>` on branch `agent/<n>`.

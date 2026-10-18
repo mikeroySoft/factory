@@ -24,6 +24,8 @@ from factory import config, dispatch, lifecycle
 
 LABELS = "bug,needs-triage"
 MAX_ISSUES = 5
+QUIET_PERIOD = timedelta(hours=24)
+CLOSABLE = {config.LABEL_TRIAGE, config.LABEL_AGENT}
 MAX_ROWS = 20
 MAX_LOG_LINES = 40
 UNKNOWN_REASONS = ("check_timeout",)
@@ -212,17 +214,19 @@ def _closed_before(issue: int, latest: str | None) -> bool:
 
 
 def run_pass(cfg: config.Config, dry_run: bool = False) -> list[dict]:
-    """File at most MAX_ISSUES new fingerprints; return the signals filed (or, dry, would be)."""
+    """File and close at most MAX_ISSUES fingerprints apiece; return signals filed."""
     events = lifecycle.read_events(dispatch.EVENTS)
     filings = {r["fingerprint"]: r for r in events if r.get("event") == "watch"}
+    current = signals(cfg, events)
+    latest_by_fingerprint = {signal["fingerprint"]: signal["latest"] for signal in current}
     filed = []
-    for signal in signals(cfg, events):
+    for signal in current:
         if len(filed) >= MAX_ISSUES:
             dispatch.log(f"watch: deferring {signal['fingerprint']} to the next pass (cap {MAX_ISSUES})")
             break
         previous = filings.get(signal["fingerprint"])
         if previous is not None and signal["latest"] is not None and signal["latest"] <= previous["at"]:
-            continue  # already filed; nothing newer than that filing
+            continue
         if dry_run:
             verb = f"re-check #{previous['issue']} for" if previous else "would file"
             print(f"[watch] {verb} {signal['fingerprint']}: {title(signal)}")
@@ -235,15 +239,64 @@ def run_pass(cfg: config.Config, dry_run: bool = False) -> list[dict]:
             "--label", LABELS, "--body", body(signal),
         ]).stdout.strip().splitlines()[-1]
         number = int(url.rstrip("/").rsplit("/", 1)[-1])
-        dispatch.record("watch", fingerprint=signal["fingerprint"], issue=number, at=lifecycle._now())
+        dispatch.record("watch", fingerprint=signal["fingerprint"], issue=number,
+                        latest=signal["latest"], at=lifecycle._now())
         dispatch.log(f"watch: filed #{number} for {signal['fingerprint']} ({title(signal)})")
         filed.append(signal)
+
+    now = datetime.now(UTC)
+    closed = 0
+    for fp, previous in filings.items():
+        if closed >= MAX_ISSUES:
+            break
+        if previous.get("closed"):
+            continue
+        # A signal stays in the journal window long after it stops happening, so judge by the
+        # newest evidence, not presence; `latest is None` means it is failing right now.
+        if fp in latest_by_fingerprint and latest_by_fingerprint[fp] is None:
+            continue
+        evidence_at = max(latest_by_fingerprint.get(fp) or "", previous.get("latest") or "", previous["at"])
+        if now - datetime.fromisoformat(evidence_at) < QUIET_PERIOD:
+            continue
+        if dry_run:
+            print(f"[watch] would close #{previous['issue']} for {fp} if it is still open, unassigned "
+                  f"and not with a human (no newer evidence than {evidence_at})")
+            closed += 1
+            continue
+        try:
+            state = dispatch.gh_json([
+                "issue", "view", str(previous["issue"]), "--repo", dispatch.REPO,
+                "--json", "state,assignees,labels",
+            ])
+            labels = {label["name"] for label in state.get("labels", [])}
+            if state["state"].upper() != "OPEN":
+                # Closed by its fix or a human: stop re-checking it every pass.
+                dispatch.record("watch", fingerprint=fp, issue=previous["issue"], latest=evidence_at,
+                                closed=True, at=lifecycle._now())
+                continue
+            if state.get("assignees") or not labels & CLOSABLE:
+                continue  # claimed by a worker, or handed to a human
+            commit = (config.engine_commit() or "unknown")[:12]
+            comment = (
+                f"factory watch: fingerprint {fp} has not recurred since {evidence_at} on engine "
+                f"{commit}; closing. A recurrence reopens tracking with a new issue."
+            )
+            dispatch.run([
+                "gh", "issue", "close", str(previous["issue"]), "--repo", dispatch.REPO,
+                "--reason", "completed", "--comment", comment,
+            ])
+            dispatch.record("watch", fingerprint=fp, issue=previous["issue"], latest=evidence_at,
+                            closed=True, at=lifecycle._now())
+            dispatch.log(f"watch: closed #{previous['issue']} for {fp}")
+            closed += 1
+        except (OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError) as exc:
+            dispatch.log(f"watch: could not close #{previous['issue']} for {fp}: {exc}")
     return filed
 
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="factory watch", description=__doc__)
-    parser.add_argument("--dry-run", action="store_true", help="print what would be filed; no gh call, no journal row")
+    parser.add_argument("--dry-run", action="store_true", help="print what would be filed or closed; no gh call, no journal row")
     args = parser.parse_args(argv)
     dispatch.configure(config.load())
     with nullcontext() if args.dry_run else lifecycle.scope(dispatch.EVENTS, "watch", lazy=True):

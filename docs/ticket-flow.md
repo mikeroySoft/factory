@@ -109,6 +109,9 @@ flowchart TB
   CI -->|"pass, missing SHA-bound approval evidence: dispatch.merge_pass_locked"| ESC
   CI -->|"pass, up to date, no human CHANGES_REQUESTED: dispatch.merge_pass_locked"| MERGE
   MERGE -->|"dispatch.cleanup_after_merge"| MERGED
+  TRI -->|"bug filed by factory watch (journaled issue, fingerprint, runtime title), no model, fixed investigation brief: triage.triage_issue"| RFA
+  RFA -->|"unclaimed watch issue, newest evidence 24 hours old, issue closed completed: watch.run_pass"| HUMAN
+  NT -->|"untriaged watch issue, newest evidence 24 hours old, issue closed completed: watch.run_pass"| HUMAN
 
   %% Recovery
   ESC -->|"ready-for-agent swapped for ready-for-human: dispatch.escalate"| RFH
