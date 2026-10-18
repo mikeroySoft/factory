@@ -137,8 +137,14 @@ class ReleaseTest(unittest.TestCase):
         self.assertIn("tickets 1 below min_tickets 2", reason)
         self.assertEqual(self.git(self.origin, "rev-parse", "main"), before)
         rows = lifecycle.read_events(self.cfg.factory / "events.jsonl")
-        self.assertEqual(rows[-1]["event"], "release")
-        self.assertEqual(rows[-1]["outcome"], "held")
+        self.assertNotIn("release", {row["event"] for row in rows})
+
+    def test_bar_rises_halfway_and_never_past_the_release(self) -> None:
+        measured = {"human_rate": 0.2, "first_pass": 1.0, "tickets": 17}
+        first = release.next_bar(None, measured)
+        self.assertEqual(first, {"human_rate": 0.6, "first_pass": 0.5, "tickets": 17})
+        second = release.next_bar(first, measured)
+        self.assertEqual(second, {"human_rate": 0.4, "first_pass": 0.75, "tickets": 17})
 
 
 if __name__ == "__main__":

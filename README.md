@@ -302,13 +302,16 @@ landed on its own, and partial progress needs its own reviewed PR.
 pass. `version_file` defaults to `factory/__init__.py` and `min_tickets` to 5.
 The annotated tag's fenced JSON records `human_rate` (lower is better),
 `first_pass` (higher is better), and `tickets`; a tag without that block resets
-the comparison bar. Factory requires every bar metric to be no worse, all CI
+the comparison bar. Each release records a bar halfway between the previous bar
+(or the worst values, human rate 1 and first pass 0) and what it measured, so the
+bar only rises and never jumps to one lucky window. Factory requires every bar
+metric to be no worse, all CI
 statuses and check runs on `origin/<main>` to succeed, and
 `factory gate --tier release` to pass in a temporary worktree. It then bumps
 the patch version, moves the current Unreleased changelog entries under the
 dated release heading, and uses one non-force atomic push for `main`, the tag,
 and `stable`. A concurrent remote move rejects the whole push and the next pass
-retries. Every real check journals a released or held `release` row.
+retries. A release journals one `release` row; held reasons go to the dispatcher log.
 
 Routing distinguishes absent optional information from invalid declarations. A missing
 ticket `Decision owner` section permits fallback; an empty or malformed section stops

@@ -18,6 +18,15 @@ from factory import config, lifecycle, stats
 SEMVER = re.compile(r"v(\d+)\.(\d+)\.(\d+)\Z")
 JSON_BAR = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
 BAR = (("human_rate", "lower"), ("first_pass", "higher"))
+WORST = {"human_rate": 1.0, "first_pass": 0.0}
+
+
+def next_bar(bar: dict[str, float | int] | None, metrics: dict[str, float | int]) -> dict[str, float | int]:
+    """The bar moves halfway from the old bar (or the worst value) toward the measured release,
+    so it only rises, never jumps to one lucky window, and stays reachable."""
+    old = bar or WORST
+    return {**{metric: round((old[metric] + metrics[metric]) / 2, 6) for metric, _ in BAR},
+            "tickets": metrics["tickets"]}
 
 
 def _git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -27,7 +36,7 @@ def _git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProc
 def _at(value: str | datetime) -> datetime:
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=UTC)
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return datetime.fromisoformat(value)
 
 
 def measure(cfg: config.Config, since: str | datetime) -> dict[str, float | int]:
@@ -133,9 +142,8 @@ def _finish(cfg: config.Config, dry_run: bool, reason: str, metrics: dict[str, f
             bar: dict[str, float | int] | None, latest: str | None, *, released: bool = False) -> str:
     if dry_run:
         print(json.dumps({"metrics": metrics, "bar": bar, "latest": latest, "verdict": reason}, sort_keys=True))
-    else:
-        _record(cfg, "released" if released else "held", reason, metrics, bar,
-                **({"tag": latest} if released else {}))
+    elif released:
+        _record(cfg, "released", reason, metrics, bar, tag=latest)
     return reason
 
 
@@ -161,6 +169,7 @@ def run(cfg: config.Config, dry_run: bool = False) -> str:
     bar: dict[str, float | int] | None = None
     latest_tag: str | None = None
     try:
+        _git(cfg.root, "fetch", "--quiet", "--tags", "origin")
         latest = _latest(cfg)
         if latest is None:
             return _finish(cfg, dry_run, _reason("no semver release tag reachable from origin/main", None, None),
@@ -176,7 +185,6 @@ def run(cfg: config.Config, dry_run: bool = False) -> str:
         if metrics["tickets"] < cfg.release_min_tickets:
             reason = _reason(f"tickets {metrics['tickets']} below min_tickets {cfg.release_min_tickets}", metrics, bar)
             return _finish(cfg, dry_run, reason, metrics, bar, latest_tag)
-        # ponytail: a lucky release window can freeze the bar; reset it by cutting a tag without a JSON block.
         if bar:
             for metric, direction in BAR:
                 worse = metrics[metric] > bar[metric] if direction == "lower" else metrics[metric] < bar[metric]
@@ -208,7 +216,7 @@ def run(cfg: config.Config, dry_run: bool = False) -> str:
             _git(worktree, "commit", "-m", f"Release {new_version}")
             message = (f"Release {new_version}: {metrics['tickets']} tickets, human rate "
                        f"{metrics['human_rate']}, first pass {metrics['first_pass']}.\n\n"
-                       f"```json\n{json.dumps(metrics, separators=(',', ':'))}\n```")
+                       f"```json\n{json.dumps(next_bar(bar, metrics), separators=(',', ':'))}\n```")
             _git(worktree, "tag", "-a", new_tag, "-m", message)
             created_tag = True
             pushed_result = _git(worktree, "push", "--atomic", "origin",
