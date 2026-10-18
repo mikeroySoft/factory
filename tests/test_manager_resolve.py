@@ -25,7 +25,7 @@ class ManagerResolveTest(unittest.TestCase):
 
     def test_apply_comments_before_close_and_does_not_requeue(self) -> None:
         result = subprocess.CompletedProcess([], 0, stdout="https://example.test/comment\n")
-        with mock.patch.object(dispatch, "gh_json", return_value={"state": "CLOSED"}), \
+        with mock.patch.object(dispatch, "gh_json", side_effect=subprocess.CalledProcessError(1, ["gh"], stderr="no pull requests found for branch \"agent/7\"")), \
                 mock.patch.object(dispatch, "run", return_value=result) as run, \
                 mock.patch.object(dispatch, "comment_receipt"):
             manage.apply(
@@ -45,22 +45,21 @@ class ManagerResolveTest(unittest.TestCase):
         self.assertFalse(any("--add-label" in command and config.LABEL_AGENT in command
                              for command in commands))
 
-    def test_apply_refuses_open_pr_with_commits(self) -> None:
-        pr = {"number": 17, "state": "OPEN", "headRefOid": "deadbeef"}
-        result = subprocess.CompletedProcess([], 0, stdout="1\n")
+    def test_apply_refuses_open_pr_with_changes(self) -> None:
+        pr = {"number": 17, "state": "OPEN", "changedFiles": 2}
         with mock.patch.object(dispatch, "gh_json", return_value=pr), \
-                mock.patch.object(dispatch, "run", return_value=result) as run:
-            with self.assertRaisesRegex(ValueError, "commits over main"):
-                manage.apply(
-                    7, {"title": "Not fixed"}, "RESOLVE",
-                    "Claimed present on main.", None, Path("unused"),
-                )
+                mock.patch.object(dispatch, "run") as run, \
+                self.assertRaisesRegex(ValueError, "commits over main"):
+            manage.apply(7, {"title": "Not fixed"}, "RESOLVE", "Claimed present on main.", None, Path("unused"))
+        run.assert_not_called()
 
-        self.assertEqual(run.call_args_list[0].args[0], [
-            "git", "rev-list", "--count", "origin/main..deadbeef",
-        ])
-        self.assertFalse(any(call.args[0][1:3] in (["issue", "comment"], ["issue", "close"])
-                             for call in run.call_args_list))
+    def test_apply_does_not_close_when_pr_lookup_fails_for_another_reason(self) -> None:
+        error = subprocess.CalledProcessError(1, ["gh"], stderr="error connecting to api.github.com")
+        with mock.patch.object(dispatch, "gh_json", side_effect=error), \
+                mock.patch.object(dispatch, "run") as run, \
+                self.assertRaises(subprocess.CalledProcessError):
+            manage.apply(7, {"title": "Already fixed"}, "RESOLVE", "Present on main.", None, Path("unused"))
+        run.assert_not_called()
 
 
 if __name__ == "__main__":

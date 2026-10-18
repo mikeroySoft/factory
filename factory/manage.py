@@ -367,19 +367,16 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         try:
             candidate = dispatch.gh_json([
                 "pr", "view", f"agent/{n}", "--repo", dispatch.REPO,
-                "--json", "number,state,headRefOid",
+                "--json", "number,state,changedFiles",
             ])
             if candidate.get("state") == "OPEN":
                 pr = candidate
-        except CalledProcessError:
-            pass
+        except CalledProcessError as exc:
+            if "no pull requests found" not in (exc.stderr or "").lower():
+                raise
         message = "Factory manager: Resolved without a code change.\n\n" + body
         if pr is not None:
-            ahead = dispatch.run([
-                "git", "rev-list", "--count",
-                f"origin/{dispatch.cfg.main}..{pr['headRefOid']}",
-            ], cwd=dispatch.cfg.root).stdout.strip()
-            if int(ahead):
+            if pr.get("changedFiles") != 0:
                 raise ValueError("RESOLVE refuses an open agent PR with commits over main")
             post_comment("pr", pr["number"], message, pr=pr["number"])
             dispatch.run(["gh", "pr", "close", str(pr["number"]), "--repo", dispatch.REPO])
