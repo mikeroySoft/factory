@@ -7,7 +7,7 @@ This is the happy path through `factory dispatch`. Stage detail and operator rec
 ## Issue in
 
 1. A human or another tool opens an issue. The template sections are Scope, Touches, Exit gate, and Out of scope (`.github/ISSUE_TEMPLATE/agent_task.md`).
-2. `needs-triage` is the normal entry. `factory triage` either applies `ready-for-agent`, `needs-info`, or `ready-for-human`, or comments a `wontfix-proposal`. Bodies under 80 characters or without acceptance criteria become `needs-info` before the model runs (`factory/triage.py`).
+2. `needs-triage` is the normal entry. `factory triage` swaps it for `ready-for-agent`, `needs-info`, `ready-for-human`, or `wontfix-proposal` (a proposal only; a human closes). Bodies under 80 characters or without acceptance criteria become `needs-info` before the model runs (`factory/triage.py`).
 3. Optional `needs-viability` is a manager recommendation. A BUILD adds `needs-triage`. It does not add `ready-for-agent`.
 4. The dispatcher claims only `ready-for-agent` issues that are open, unassigned, unblocked, and not initiatives.
 

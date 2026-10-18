@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from factory import lifecycle, triage
-from factory.config import LABEL_AGENT, LABEL_TRIAGE, Config
+from factory.config import LABEL_AGENT, LABEL_TRIAGE, LABEL_WONTFIX, Config
 
 BODY = "Change the parser so empty input is rejected.\n\nExit gate: `python -m unittest` passes with a new test."
 DECISION = json.dumps({"decision": LABEL_AGENT, "rationale": "clear", "question": "", "brief": "do it"})
@@ -41,10 +41,11 @@ class TriagePass(unittest.TestCase):
         self.labels = {n: {LABEL_TRIAGE} for n in self.listed}
         self.asked: list[int] = []
         self.failure: dict[int, BaseException] = {}
+        self.decision: dict[int, str] = {}
 
     def gh(self, *args, execution=None):
         if args[:2] == ("issue", "list"):
-            return json.dumps([{"number": n} for n in self.listed])
+            return json.dumps([{"number": n} for n in self.listed if LABEL_TRIAGE in self.labels[n]])
         n = int(args[2])
         if args[:2] == ("issue", "view"):
             return json.dumps({"number": n, "title": f"t{n}", "body": BODY, "comments": [],
@@ -59,7 +60,9 @@ class TriagePass(unittest.TestCase):
         self.asked.append(n)
         if n in self.failure:
             raise self.failure[n]
-        return Reply(json.dumps({"choices": [{"message": {"content": DECISION}}]}).encode())
+        decision = json.dumps({"decision": self.decision[n], "rationale": "no", "question": "", "brief": ""}) \
+            if n in self.decision else DECISION
+        return Reply(json.dumps({"choices": [{"message": {"content": decision}}]}).encode())
 
     def run_pass(self) -> int:
         args = argparse.Namespace(issue=None, replay=None, dry_run=False)
@@ -91,6 +94,14 @@ class TriagePass(unittest.TestCase):
         self.asked.clear()
         self.run_pass()
         self.assertEqual(self.asked, [4, 2, 1, 3])
+
+    def test_wontfix_proposal_is_labelled_and_not_retriaged(self):
+        self.decision[2] = LABEL_WONTFIX
+        self.run_pass()
+        self.assertEqual(self.labels[2], {LABEL_WONTFIX})
+        self.asked.clear()
+        self.run_pass()
+        self.assertEqual(self.asked, [])
 
     def test_connection_refused_ends_the_pass_after_one_attempt(self):
         refused = urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))

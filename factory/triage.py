@@ -328,8 +328,6 @@ def apply_decision(number: int, decision: dict, dry_run: bool, execution=None) -
         return
 
     gh("issue", "comment", str(number), "--body", comment, execution=execution)
-    if label == "wontfix-proposal":
-        return  # never apply wontfix; leave needs-triage for a human
     gh(
         "issue",
         "edit",
