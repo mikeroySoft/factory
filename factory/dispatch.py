@@ -2469,4 +2469,11 @@ def main(argv: list[str]) -> int:
         manage_pass(args.dry_run)
         ticket_pass(args.budget_min, args.dry_run)
         learn_pass(args.dry_run)
+        if cfg.release_auto and not args.dry_run:
+            try:
+                from factory import release
+
+                log(f"release: {release.run(cfg, dry_run=False)}")
+            except Exception as exc:  # noqa: BLE001 - release failure never fails the dispatcher pass
+                log(f"release: failed ({type(exc).__name__}: {exc})")
         return 0

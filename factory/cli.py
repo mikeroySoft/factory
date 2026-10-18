@@ -17,6 +17,7 @@ COMMANDS = {
     "stats": ("stats", "main", "ticket metrics from GitHub"),
     "learn": ("learn", "main", "distil recent ticket outcomes into .factory-lessons.md"),
     "score": ("score", "main", "rubric-score finished tickets' worker attempts from their transcripts"),
+    "release": ("release", "main", "measure the quality bar and cut an atomic patch release"),
     "dashboard": ("dashboard", "main", "serve the authenticated outcome-control workspace"),
     "chat": ("chat", "main", "open the read-only Factory Manager console (needs the installed Pi runtime)"),
     "evidence": ("evidence", "main", "read one bounded schema-1 project/CI evidence request"),

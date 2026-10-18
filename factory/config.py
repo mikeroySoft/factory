@@ -81,6 +81,7 @@ KNOWN_KEYS = {
     "worker_wrap": ("command",),
     "review": ("command",),
     "manager": ("model", "command", "rounds", "review", "stale_days", "max_active_cap", "budget_min_cap"),
+    "release": ("auto", "version_file", "min_tickets"),
     "gate": ("timeout", "lock", "check", "protected_paths", "add_only_paths"),
     "leak_scan": ("pattern", "exclude", "extra"),
     "triage": ("url", "model", "timeout"),
@@ -152,6 +153,9 @@ class Config:
     # Ceilings for the fleet manager (`district manage`) raising `max_active`/`budget_min`; None = no cap.
     manager_max_active_cap: int | None = None
     manager_budget_min_cap: int | None = None
+    release_auto: bool = False
+    release_version_file: str = "factory/__init__.py"
+    release_min_tickets: int = 5
     checks: list[Check] = field(default_factory=list)
     protected_paths: list[str] = field(default_factory=list)
     add_only_paths: list[str] = field(default_factory=list)
@@ -438,6 +442,9 @@ def load(start: Path | None = None) -> Config:
     repo_t, dispatch, workers = raw.get("repo", {}), raw.get("dispatch", {}), raw.get("workers", {})
     gate, leak, triage, dash = raw.get("gate", {}), raw.get("leak_scan", {}), raw.get("triage", {}), raw.get("dashboard", {})
     manager = raw.get("manager", {})
+    release = raw.get("release", {})
+    if not isinstance(release, dict):
+        raise ConfigError("[release] must be a table")
     cfg = Config(root=root, repo=slug, raw_repo=raw_repo)
     cfg.upstream = repo_t.get("upstream") or None
     cfg.main = repo_t.get("main", cfg.main)
@@ -491,6 +498,16 @@ def load(start: Path | None = None) -> Config:
         if cap is not None and (isinstance(cap, bool) or not isinstance(cap, int) or cap < 1):
             raise ConfigError(f"manager.{key} must be a positive integer")
         setattr(cfg, f"manager_{key}", cap)
+    auto = release.get("auto", cfg.release_auto)
+    version_file = release.get("version_file", cfg.release_version_file)
+    min_tickets = release.get("min_tickets", cfg.release_min_tickets)
+    if type(auto) is not bool:
+        raise ConfigError("release.auto must be true or false")
+    if not isinstance(version_file, str) or not version_file or Path(version_file).is_absolute() or ".." in Path(version_file).parts:
+        raise ConfigError("release.version_file must be a nonempty repository-relative path")
+    if isinstance(min_tickets, bool) or not isinstance(min_tickets, int) or min_tickets < 1:
+        raise ConfigError("release.min_tickets must be a positive integer")
+    cfg.release_auto, cfg.release_version_file, cfg.release_min_tickets = auto, version_file, min_tickets
     journal = raw.get("journal", {})
     for key in ("max_mb", "retention"):
         value = journal.get(key, getattr(cfg, f"journal_{key}"))
