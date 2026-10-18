@@ -59,7 +59,14 @@ def measure(cfg: config.Config, since: str | datetime) -> dict[str, float | int 
 
 def _latest(cfg: config.Config) -> dict[str, Any] | None:
     tags = _git(cfg.root, "tag", "--merged", f"origin/{cfg.main}", "--list", "v*").stdout.splitlines()
-    versions = [(tuple(map(int, match.groups())), tag) for tag in tags if (match := SEMVER.fullmatch(tag))]
+    remote = {
+        ref.removesuffix("^{}").removeprefix("refs/tags/")
+        for line in _git(cfg.root, "ls-remote", "--tags", "origin").stdout.splitlines()
+        if len(line.split(maxsplit=1)) == 2
+        for ref in [line.split(maxsplit=1)[1]]
+    }
+    versions = [(tuple(map(int, match.groups())), tag) for tag in tags
+                if tag in remote and (match := SEMVER.fullmatch(tag))]
     if not versions:
         return None
     version, tag = max(versions)
@@ -124,7 +131,11 @@ def _merge_pull(cfg: config.Config, number: int, title: str) -> dict[str, Any]:
 
 def _version_at(cfg: config.Config, ref: str) -> tuple[int, int, int]:
     text = _git(cfg.root, "show", f"{ref}:{cfg.release_version_file}").stdout
-    match = re.search(r"(?<![0-9.])(\d+)\.(\d+)\.(\d+)(?![0-9.])", text)
+    match = next(
+        (match for line in text.splitlines() if "version" in line.lower()
+         if (match := re.search(r"(?<![0-9.])(\d+)\.(\d+)\.(\d+)(?![0-9.])", line))),
+        None,
+    )
     if not match:
         raise ValueError(f"{cfg.release_version_file} has no semantic version at {ref}")
     return tuple(map(int, match.groups()))
@@ -210,10 +221,12 @@ def run(cfg: config.Config, dry_run: bool = False) -> str:
             version = ".".join(map(str, current))
             tag = f"v{version}"
             metrics = measure(cfg, latest["date"])
-            commit = _git(
-                cfg.root, "log", "-1", "--format=%H", f"origin/{cfg.main}",
-                f"-G{re.escape(version)}", "--", cfg.release_version_file,
-            ).stdout.strip()
+            commits = _git(
+                cfg.root, "log", "--reverse", "--format=%H",
+                f"{latest_tag}..origin/{cfg.main}", f"-G{re.escape(version)}",
+                "--", cfg.release_version_file,
+            ).stdout.splitlines()
+            commit = commits[0] if commits else ""
             if not commit:
                 raise ValueError(f"cannot find commit that set version {version}")
             reason = _reason(
@@ -225,13 +238,19 @@ def run(cfg: config.Config, dry_run: bool = False) -> str:
                        f"```json\n{json.dumps(next_bar(bar, metrics), separators=(',', ':'))}\n```")
             _git(cfg.root, "tag", "-d", tag, check=False)
             _git(cfg.root, "tag", "-a", tag, commit, "-m", message)
-            pushed = _git(cfg.root, "push", "--atomic", "origin", tag, f"{commit}:refs/heads/stable", check=False)
-            if pushed.returncode:
-                _git(cfg.root, "tag", "-d", tag, check=False)
-                detail = pushed.stderr.strip().splitlines()[-1] if pushed.stderr.strip() else "git push failed"
-                return _finish(cfg, False, _reason(f"atomic push failed: {detail}", metrics, bar),
-                               metrics, bar, latest_tag)
-            return _finish(cfg, False, f"released {tag}", metrics, bar, tag, released=True)
+            pushed = False
+            try:
+                result = _git(cfg.root, "push", "--atomic", "origin", tag,
+                              f"{commit}:refs/heads/stable", check=False)
+                pushed = result.returncode == 0
+                if not pushed:
+                    detail = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "git push failed"
+                    return _finish(cfg, False, _reason(f"atomic push failed: {detail}", metrics, bar),
+                                   metrics, bar, latest_tag)
+                return _finish(cfg, False, f"released {tag}", metrics, bar, tag, released=True)
+            finally:
+                if not pushed:
+                    _git(cfg.root, "tag", "-d", tag, check=False)
 
         metrics = measure(cfg, latest["date"])
         head = _git(cfg.root, "rev-parse", f"origin/{cfg.main}").stdout.strip()
@@ -245,25 +264,46 @@ def run(cfg: config.Config, dry_run: bool = False) -> str:
         if pulls:
             pull = _pull(cfg, pulls[0]["number"])
             number = pull["number"]
-            ready = ci_passes(cfg, pull["head"]["sha"]) and pull.get("mergeable") is True
+            state = pull.get("mergeable_state")
+            mergeable = pull.get("mergeable")
+            if state == "behind":
+                action = f"updated release PR #{number} from main"
+            elif state == "dirty" or mergeable is False:
+                action = f"closed conflicting release PR #{number}; next pass rebuilds it"
+            elif mergeable is None or state == "unknown":
+                return _finish(cfg, dry_run, _reason("waiting for GitHub mergeability", metrics, bar),
+                               metrics, bar, latest_tag)
+            elif not ci_passes(cfg, pull["head"]["sha"]):
+                return _finish(cfg, dry_run, _reason("waiting for CI", metrics, bar),
+                               metrics, bar, latest_tag)
+            else:
+                action = f"would squash-merge release PR #{number}"
             if dry_run:
-                action = f"would squash-merge release PR #{number}" if ready else f"release PR #{number} waiting for CI"
-                return _finish(cfg, True, _reason(action, None, bar), None, bar, latest_tag)
-            if not ready:
-                return _finish(cfg, False, _reason(f"release PR #{number} waiting for CI", None, bar),
-                               None, bar, latest_tag)
+                return _finish(cfg, True, _reason(action, metrics, bar), metrics, bar, latest_tag)
+            if state == "behind":
+                _gh(cfg, f"repos/{cfg.repo}/pulls/{number}/update-branch", "-X", "PUT")
+                return _finish(cfg, False, _reason(action, metrics, bar), metrics, bar, latest_tag)
+            if state == "dirty" or mergeable is False:
+                _gh(cfg, f"repos/{cfg.repo}/pulls/{number}", "-X", "PATCH", "-f", "state=closed")
+                try:
+                    _gh(cfg, f"repos/{cfg.repo}/git/refs/heads/{branch}", "-X", "DELETE")
+                except RuntimeError as exc:
+                    if "404" not in str(exc) and "422" not in str(exc):
+                        raise
+                return _finish(cfg, False, _reason(action, metrics, bar), metrics, bar, latest_tag)
             try:
                 merged = _merge_pull(cfg, number, f"Release {next_version}")
             except RuntimeError as exc:
                 if "405" in str(exc) or "409" in str(exc):
-                    return _finish(cfg, False, _reason(str(exc), None, bar), None, bar, latest_tag)
+                    return _finish(cfg, False, _reason(str(exc), metrics, bar),
+                                   metrics, bar, latest_tag)
                 raise
             if not merged.get("merged"):
                 return _finish(cfg, False, _reason(
-                    str(merged.get("message") or f"release PR #{number} merge refused"), None, bar),
-                    None, bar, latest_tag)
-            return _finish(cfg, False, _reason(f"merged release PR #{number}", None, bar),
-                           None, bar, latest_tag)
+                    str(merged.get("message") or f"release PR #{number} merge refused"), metrics, bar),
+                    metrics, bar, latest_tag)
+            return _finish(cfg, False, _reason(f"merged release PR #{number}", metrics, bar),
+                           metrics, bar, latest_tag)
 
         if metrics["tickets"] < cfg.release_min_tickets:
             return _finish(cfg, dry_run, _reason(

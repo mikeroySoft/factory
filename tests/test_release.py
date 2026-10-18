@@ -126,7 +126,8 @@ class ReleaseTest(unittest.TestCase):
 
     def test_pending_green_pr_is_squash_merged(self) -> None:
         self.tag_and_advance(None)
-        pull = {"number": 7, "head": {"sha": "abc"}, "mergeable": True}
+        pull = {"number": 7, "head": {"sha": "abc"}, "mergeable": True,
+                "mergeable_state": "clean"}
         with mock.patch.object(release, "_pulls", return_value=[{"number": 7}]), \
                 mock.patch.object(release, "_pull", return_value=pull), \
                 mock.patch.object(release, "ci_passes", return_value=True), \
@@ -134,6 +135,68 @@ class ReleaseTest(unittest.TestCase):
             reason = release.run(self.cfg)
         self.assertIn("merged release PR #7", reason)
         merged.assert_called_once_with(self.cfg, 7, "Release 0.0.2")
+
+    def test_pending_behind_pr_updates_branch_without_merging(self) -> None:
+        self.tag_and_advance(None)
+        pull = {"number": 7, "head": {"sha": "abc"}, "mergeable": True,
+                "mergeable_state": "behind"}
+        with mock.patch.object(release, "_pulls", return_value=[{"number": 7}]), \
+                mock.patch.object(release, "_pull", return_value=pull), \
+                mock.patch.object(release, "_gh", return_value={}) as gh, \
+                mock.patch.object(release, "_merge_pull") as merged:
+            reason = release.run(self.cfg)
+        self.assertIn("updated release PR #7 from main", reason)
+        gh.assert_called_once_with(
+            self.cfg, "repos/acme/widgets/pulls/7/update-branch", "-X", "PUT")
+        merged.assert_not_called()
+
+    def test_pending_dirty_pr_is_closed_and_branch_deleted(self) -> None:
+        self.tag_and_advance(None)
+        pull = {"number": 7, "head": {"sha": "abc"}, "mergeable": False,
+                "mergeable_state": "dirty"}
+        with mock.patch.object(release, "_pulls", return_value=[{"number": 7}]), \
+                mock.patch.object(release, "_pull", return_value=pull), \
+                mock.patch.object(release, "_gh", return_value={}) as gh, \
+                mock.patch.object(release, "_merge_pull") as merged:
+            reason = release.run(self.cfg)
+        self.assertIn("closed conflicting release PR #7; next pass rebuilds it", reason)
+        self.assertEqual(
+            gh.call_args_list,
+            [
+                mock.call(self.cfg, "repos/acme/widgets/pulls/7", "-X", "PATCH",
+                          "-f", "state=closed"),
+                mock.call(self.cfg, "repos/acme/widgets/git/refs/heads/release/v0.0.2",
+                          "-X", "DELETE"),
+            ],
+        )
+        merged.assert_not_called()
+
+    def test_pending_unknown_mergeability_holds_without_writes(self) -> None:
+        self.tag_and_advance(None)
+        pull = {"number": 7, "head": {"sha": "abc"}, "mergeable": None,
+                "mergeable_state": "unknown"}
+        with mock.patch.object(release, "_pulls", return_value=[{"number": 7}]), \
+                mock.patch.object(release, "_pull", return_value=pull), \
+                mock.patch.object(release, "_gh") as gh, \
+                mock.patch.object(release, "ci_passes") as ci, \
+                mock.patch.object(release, "_merge_pull") as merged:
+            reason = release.run(self.cfg)
+        self.assertIn("waiting for GitHub mergeability", reason)
+        gh.assert_not_called()
+        ci.assert_not_called()
+        merged.assert_not_called()
+
+    def test_pending_merge_refusal_holds(self) -> None:
+        self.tag_and_advance(None)
+        pull = {"number": 7, "head": {"sha": "abc"}, "mergeable": True,
+                "mergeable_state": "clean"}
+        with mock.patch.object(release, "_pulls", return_value=[{"number": 7}]), \
+                mock.patch.object(release, "_pull", return_value=pull), \
+                mock.patch.object(release, "ci_passes", return_value=True), \
+                mock.patch.object(release, "_merge_pull",
+                                  side_effect=RuntimeError("HTTP 405: merge refused")):
+            reason = release.run(self.cfg)
+        self.assertIn("HTTP 405: merge refused", reason)
 
     def test_landed_tags_release_moves_stable_and_next_run_is_noop(self) -> None:
         self.tag_and_advance({"human_rate": 0.0, "first_pass": 1.0, "tickets": 1})
@@ -144,8 +207,7 @@ class ReleaseTest(unittest.TestCase):
         landed = self.git(self.repo, "rev-parse", "HEAD")
         self.git(self.repo, "push", "-q", "origin", "HEAD:release/v0.0.2")
         self.git(self.repo, "push", "-q", "origin", "HEAD:main")
-        stale = self.git(self.repo, "commit-tree", "HEAD^{tree}", "-p", "v0.0.1^{commit}", "-m", "stale")
-        self.git(self.repo, "tag", "-a", "v0.0.2", stale, "-m", "stale")
+        self.git(self.repo, "tag", "-a", "v0.0.2", landed, "-m", "local only")
         reason = release.run(self.cfg)
         second = release.run(self.cfg)
         self.assertIn("released v0.0.2", reason)
@@ -162,7 +224,8 @@ class ReleaseTest(unittest.TestCase):
         with mock.patch.object(release, "_pulls", return_value=[]), \
                 mock.patch.object(release, "ci_passes", return_value=True):
             self.assertIn("would open release PR", release.run(self.cfg, dry_run=True))
-        pull = {"number": 8, "head": {"sha": "abc"}, "mergeable": True}
+        pull = {"number": 8, "head": {"sha": "abc"}, "mergeable": True,
+                "mergeable_state": "clean"}
         with mock.patch.object(release, "_pulls", return_value=[{"number": 8}]), \
                 mock.patch.object(release, "_pull", return_value=pull), \
                 mock.patch.object(release, "ci_passes", return_value=True), \

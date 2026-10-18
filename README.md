@@ -313,14 +313,17 @@ worse, all completed CI statuses and check runs on `origin/<main>` to pass
 --tier release` to pass in a temporary worktree. It then bumps the patch
 version, moves the current Unreleased changelog entries under the dated release
 heading, pushes the factory-owned `release/vX.Y.Z` branch, and opens a PR. A
-later pass squash-merges that PR only after its CI succeeds and GitHub reports
-it mergeable, respecting the required `gate` check on protected `main`. Once
-the version bump is present on `main`, a final pass creates the annotated tag
-on that merged commit and atomically advances `stable`; a release therefore
-takes up to three dispatcher passes. Each pass derives its state from remote
-branches, tags, and PRs, so crashes need no local recovery file. Temporary
-worktrees and stale local tags are removed before reuse. A completed release
-journals one `release` row; held reasons go to the dispatcher log.
+later pass updates a behind release branch from `main`, closes and deletes a
+conflicting one for rebuilding, or squash-merges a clean PR after its CI
+succeeds, respecting the required `gate` check on protected `main`. Once the
+version bump is present on `main`, a final pass creates the annotated tag on
+the first commit that introduced that version and atomically advances `stable`;
+a release therefore takes up to three dispatcher passes when no branch refresh
+is needed. Each pass derives its state from remote branches, remote tags, and
+PRs, so crashes need no local recovery file. Temporary worktrees are removed,
+and local-only or stale local tags are ignored and removed before reuse. A
+completed release journals one `release` row; held reasons go to the dispatcher
+log.
 
 Routing distinguishes absent optional information from invalid declarations. A missing
 ticket `Decision owner` section permits fallback; an empty or malformed section stops
