@@ -335,13 +335,13 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         return
 
     if decision == "AUTHORIZE":
-        issue_action("edit", "--add-label", LABEL_ADD_ONLY_OVERRIDE)
         post_comment(
             "issue", n,
             "Factory manager: Authorized edits to existing add-only files.\n\n"
             f"Justification: {data['justification']}\n\nGuidance: {data['guidance']}",
             authorization="add_only",
         )
+        issue_action("edit", "--add-label", LABEL_ADD_ONLY_OVERRIDE)
     elif decision == "REWRITE":
         post_comment("issue", n, "Factory manager: Replacing the issue body. Previous body:\n\n" + (issue.get("body") or ""))
         issue_action("edit", "--body", body)

@@ -69,6 +69,51 @@ class AddOnlyOverrideTest(unittest.TestCase):
             self.assertFalse(passed)
             self.assertEqual(reason, "protected_paths")
 
+    def test_override_rejects_deletion_and_mode_change(self) -> None:
+        for change in ("delete", "chmod"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                repo = repository(Path(directory))
+                path = repo / "tests" / "test_old.py"
+                if change == "delete":
+                    path.unlink()
+                else:
+                    path.chmod(0o755)
+                git(repo, "add", "-A")
+                git(repo, "commit", "-q", "-m", change)
+                with working_directory(repo):
+                    passed, reason, _ = gate.check_protected_paths(
+                        "origin/main", add_only_override=True
+                    )
+                self.assertFalse(passed)
+                self.assertEqual(reason, "add_only_paths")
+
+    def test_dual_match_is_protected_with_or_without_override(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repository(Path(directory))
+            path = repo / "tests" / "acceptance" / "x.py"
+            path.parent.mkdir()
+            path.write_text("def test_x():\n    assert True\n")
+            (repo / config.CONFIG_NAME).write_text(
+                '[gate]\nprotected_paths = ["**/acceptance/**"]\n'
+                'add_only_paths = ["tests/**"]\n'
+            )
+            git(repo, "add", "-A")
+            git(repo, "commit", "-q", "-m", "add acceptance test")
+            git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+            with path.open("a") as stream:
+                stream.write("\n# additive change\n")
+            git(repo, "add", "-A")
+            git(repo, "commit", "-q", "-m", "append acceptance test")
+
+            with working_directory(repo):
+                for override in (False, True):
+                    with self.subTest(override=override):
+                        passed, reason, _ = gate.check_protected_paths(
+                            "origin/main", add_only_override=override
+                        )
+                        self.assertFalse(passed)
+                        self.assertEqual(reason, "protected_paths")
+
     def test_manager_parses_add_only_authorization(self) -> None:
         output = (
             'DECISION: AUTHORIZE\n{"justification":"Ticket requires this assertion change",'
@@ -118,6 +163,15 @@ class AddOnlyOverrideTest(unittest.TestCase):
         self.assertEqual(len(comments), 1)
         self.assertIn("Justification: The ticket requires it", comments[0][-1])
         self.assertIn("Guidance: Remove the old assertion", comments[0][-1])
+        comment_index = next(
+            i for i, command in enumerate(commands)
+            if command[1:3] == ["issue", "comment"]
+        )
+        grant_index = commands.index(
+            ["gh", "issue", "edit", "7", "--repo", dispatch.REPO,
+             "--add-label", config.LABEL_ADD_ONLY_OVERRIDE]
+        )
+        self.assertLess(comment_index, grant_index)
 
     def test_gate_flags_maps_add_only_override_label(self) -> None:
         self.assertEqual(

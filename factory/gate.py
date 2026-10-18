@@ -173,22 +173,20 @@ def check_protected_paths(
         for key, globs in (("protected_paths", protected), ("add_only_paths", add_only)):
             if not isinstance(globs, list) or any(not isinstance(p, str) or not p for p in globs):
                 return False, "protected_paths", f"base gate.{key} must be an array of nonempty globs"
-        if add_only_override:
-            add_only = []
     proc = timed(["git", "diff", "--no-renames", "--raw", "-z", f"{base}...HEAD"])
     if proc.returncode:
         return False, "protected_paths", proc.stdout + proc.stderr
     fields = proc.stdout.split("\0")
-    hits, not_additive, additive = [], [], []  # additive: add-only files modified in place, pending numstat
+    hits, not_additive, additive = [], [], []
     for meta, path in zip(fields[::2], fields[1::2]):
         old_mode, new_mode, _, _, status = meta.lstrip(":").split()
-        if any(fnmatch.fnmatchcase(path, g) for g in add_only):
+        if any(fnmatch.fnmatchcase(path, g) for g in protected):
+            hits.append(path)
+        elif any(fnmatch.fnmatchcase(path, g) for g in add_only):
             if status == "M" and old_mode == new_mode:
                 additive.append(path)
             elif status != "A":
                 not_additive.append(path)
-        elif any(fnmatch.fnmatchcase(path, g) for g in protected):
-            hits.append(path)
     if upstream and (candidates := hits + not_additive + additive):
         tip = upstream[0]
         fork_point = timed(["git", "merge-base", base, tip])
@@ -215,8 +213,8 @@ def check_protected_paths(
             return False, "protected_paths", numstat.stdout + numstat.stderr
         for line in numstat.stdout.split("\0"):
             if line:
-                _, deleted, path = line.split("\t")
-                if deleted != "0":  # `-` for binary: not provably additive
+                added, deleted, path = line.split("\t")
+                if added == "-" or deleted == "-" or (not add_only_override and deleted != "0"):
                     not_additive.append(path)
     if not hits and not not_additive:
         return True, "", ""
