@@ -58,7 +58,7 @@ Order inside `manage_pass`:
 3. Escalation recovery, if a manager is configured, for untouched `ready-for-human` packets within `manager.rounds` (default 1).
 4. Routed human handoff. This runs even when no manager is configured.
 
-Escalation decisions the parser accepts: `RETRY`, `REWRITE`, `SPLIT`, `ROUTE`, `AUTHORIZE`, `FIX`, `HUMAN`, `CLOSE`. `APPROVE` is accepted only on the frontier when `manager.review` is `"all"`. Default `manager.review` is `"escalated"`, which does not add that approval gate.
+Escalation decisions the parser accepts: `RETRY`, `REWRITE`, `SPLIT`, `ROUTE`, `AUTHORIZE`, `FIX`, `HUMAN`, `CLOSE`, `RESOLVE`. RESOLVE closes an already-satisfied or duplicate ticket with evidence and refuses an open agent PR containing commits. `APPROVE` is accepted only on the frontier when `manager.review` is `"all"`; RESOLVE is rejected there. Default `manager.review` is `"escalated"`, which does not add that approval gate.
 
 Unparseable manager output becomes `HUMAN`. A nonzero manager exit is recorded as `manager_failed` and does not consume another product round. A failed GitHub mutation after a decision is not replayed. Human timeline activity after the escalation stops the manager from applying a decision.
 
