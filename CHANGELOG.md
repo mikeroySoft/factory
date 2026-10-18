@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Managers can `RESOLVE` a no-change escalation when evidence shows the requested outcome is already on main or the ticket is a duplicate. Factory records the evidence before closing the issue as completed and removing `ready-for-human`; it closes an empty open agent PR too, but refuses if that PR contains commits.
+
 ## 0.4.2 — 2026-10-18
 
 - The dispatcher advances an open release PR at the start of a pass, before landing a ticket, and opens new release PRs only at the end of a pass: a release PR opened at the end of one pass used to turn conflicting on `CHANGELOG.md` as soon as the next pass landed a ticket, and was closed and rebuilt forever.

@@ -352,9 +352,9 @@ Keep `{cwd}` in worker and manager commands, and configure the manager CLI in
 read-only/no-tools mode: the prompt prohibits file edits, but an arbitrary
 configured executable is trusted, not sandboxed by factory. The manager reads
 the packet, `.factory-lessons.md`, and optional `.factory/manager/notes.md`.
-Its last `DECISION:` header
-selects `RETRY`, `REWRITE`, `SPLIT`, `ROUTE`, `AUTHORIZE`, `FIX`, `CLOSE`, or `HUMAN`,
-followed by the decision body. RETRY/HUMAN use plain text; REWRITE uses the
+Its last `DECISION:` header selects `RETRY`, `REWRITE`, `SPLIT`, `ROUTE`,
+`AUTHORIZE`, `FIX`, `CLOSE`, `RESOLVE`, or `HUMAN`, followed by the decision
+body. RETRY/HUMAN/RESOLVE use plain text; REWRITE uses the
 complete replacement issue body. SPLIT uses a JSON array of
 `{title, body, blocked_by}` children, with `blocked_by` containing 1-based
 indexes of earlier children. ROUTE uses `{add, remove, guidance}`, with label
@@ -375,6 +375,11 @@ gate PASS bound to the resulting commit, and independently re-reviews that
 same commit. Only a zero-exit, well-formed fresh APPROVE whose remote PR head
 still matches restores `factory-approved`; failure stays with the human. FIX
 does not merge or requeue the issue.
+RESOLVE is escalation-only evidence that the requested outcome is already on
+the configured main branch (by commit or PR), or that the ticket duplicates
+another issue. It comments before closing the issue as completed and removes
+`ready-for-human`; an open empty `agent/<n>` PR is also commented and closed,
+while any commits over main make RESOLVE fail closed for human handling.
 The template includes opt-in `ci-fix` and `conflict` profiles for a
 human to apply in host config; the manager cannot add profiles or edit config.
 Code validates the output, records a `manage` event before GitHub mutations, and
@@ -436,9 +441,9 @@ never trusted. Without the current escalation's recorded comment on the timeline
 the manager fails closed: even a failed escalation post leads to a routed handoff,
 not an exemption for later human label or assignee changes. A handoff receipt cannot
 substitute for the missing escalation receipt on a later pass.
-Manager `CLOSE` comments are posted explicitly before closing their respective PR
-or issue, with each receipt scoped to the timeline that owns the comment. A partial
-close failure does not replay the consumed manager decision.
+Manager `CLOSE` and `RESOLVE` comments are posted explicitly before closing
+their respective PR or issue, with each receipt scoped to the timeline that owns
+the comment. A partial close failure does not replay the consumed manager decision.
 A reply is context for humans, not a retry, approval or merge command;
 use the documented labels for that.
 
