@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.2 — 2026-10-18
+
 - Generated units quote `[install].env` / `dispatch_env` values that contain spaces or other systemd-significant characters: an unquoted `Environment=UV_EXCLUDE_NEWER=24 hours` set `UV_EXCLUDE_NEWER=24`, which made every `uv` command in the dispatcher and gate exit with a usage error.
 - Managers may use `AUTHORIZE` with an auditable justification and worker guidance to permit a required edit to an existing `[gate].add_only_paths` file, whether or not a PR exists. Factory adds `factory-add-only-override` and requeues the ticket through the normal gate and independent review. The label permits in-place edits only: deleting, renaming or changing the mode of an add-only file still fails, and a path matching both a protected and an add-only glob is protected (an additive change to it no longer passes without a label). Fully protected paths such as `.factory.toml` still require the human-only `factory-protected-override`.
 - Automatic patch releases ratchet quality from the latest reachable semver tag: `factory release` measures merged-ticket human and first-pass rates, requires enough tickets, new CI-green `main` commits, a no-worse recorded bar, and the release-tier gate, then converges in up to three dispatcher passes by opening a factory-owned release PR, squash-merging it after its required `gate` check passes, and annotating the merged commit while advancing `stable`; `[release].auto` runs it after successful dispatcher passes and `--dry-run` reports the remote-derived state and next action without writes.
