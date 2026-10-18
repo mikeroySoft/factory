@@ -126,6 +126,42 @@ class ReleaseTest(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertEqual(json.loads(match.group(1)), {"human_rate": 0.0, "first_pass": 1.0, "tickets": 1})
 
+    def test_stale_local_tag_does_not_block_release(self) -> None:
+        self.tag_and_advance({"human_rate": 0.0, "first_pass": 1.0, "tickets": 1})
+        self.events()
+        stale = self.git(self.repo, "commit-tree", "HEAD^{tree}", "-p", "v0.0.1", "-m", "crashed release")
+        self.git(self.repo, "tag", "-a", "v0.0.2", stale, "-m", "stale")
+        with mock.patch.object(release, "ci_passes", return_value=True), \
+                mock.patch.object(release, "gate_passes", return_value=True):
+            reason = release.run(self.cfg)
+        self.assertIn("released v0.0.2", reason)
+        self.assertEqual(self.git(self.origin, "rev-parse", "v0.0.2^{}"),
+                         self.git(self.origin, "rev-parse", "main"))
+
+    def test_human_rate_counts_distinct_tickets_and_is_clamped(self) -> None:
+        path = self.cfg.factory / "events.jsonl"
+        for ticket in (1, 1, 2):
+            lifecycle.append(path, {"at": "2099-01-01T00:00:00Z", "event": "manage",
+                                    "ticket": ticket, "decision": "HUMAN"})
+        lifecycle.append(path, {"at": "2099-01-01T00:00:01Z", "event": "merged", "ticket": 1})
+        measured = release.measure(self.cfg, "2098-01-01T00:00:00")
+        self.assertEqual(measured["human_rate"], 1.0)
+
+    def test_no_first_attempt_evidence_holds(self) -> None:
+        self.tag_and_advance(None)
+        lifecycle.append(self.cfg.factory / "events.jsonl",
+                         {"at": "2099-01-01T00:00:00Z", "event": "merged", "ticket": 1})
+        reason, report = self.verdict()
+        self.assertIn("no first-attempt evidence since v0.0.1", reason)
+        self.assertIsNone(report["metrics"]["first_pass"])
+
+    def test_skipped_check_run_passes_ci(self) -> None:
+        status = {"state": "success", "statuses": []}
+        pages = [{"check_runs": [{"status": "completed", "conclusion": "skipped"}]}]
+        with mock.patch.object(release, "_gh", side_effect=(status, pages)) as gh:
+            self.assertTrue(release.ci_passes(self.cfg, "abc"))
+        self.assertEqual(gh.call_args_list[1].args[2:], ("--paginate", "--slurp"))
+
     def test_below_minimum_tickets_holds(self) -> None:
         self.cfg.release_min_tickets = 2
         self.tag_and_advance(None)

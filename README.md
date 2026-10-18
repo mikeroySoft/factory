@@ -286,7 +286,7 @@ landed on its own, and partial progress needs its own reviewed PR.
 | `factory stats` | Ticket table: attempts, review rounds, hours to merge, escalation count, resolver attribution, minutes in `ready-for-human`, re-queues, and triage/review prompt and completion token sums (reported prefix-cache rates listed separately). Reads GitHub plus existing `events.jsonl`. `--by-worker` reads only events and shows every configured worker label: first-attempt gate pass rate, all attempts (including review bounces), and known cost. Attribution uses claim labels with current worker precedence; unclaimed attempts are excluded, missing rates/cost are `n/a`. The dashboard Ops view shows the same worker metrics. `--escapes` lists candidate escaped defects, one row per closed `bug` issue: its fix commits (first-parent `agent/<bug>:` commits on `origin/<main>`, else the merge commit of a merged PR whose closing references include the bug), and the candidate tickets whose `agent/<m>:` commits `git blame` names for the lines the fix modified or deleted, with blamed line counts. Rows without candidates read `unlinked` (no fix commit), `no_blamed_lines` (the fix only adds lines) or `no_candidates` (blamed lines are not from agent commits). `Regressed-by: #N` lines in the bug body replace blame (`source` is `declared`, else `blame`). The footer reads `Candidate escapes: X of Y merged agent tickets (Z%)`. Blame is SZZ-style and noisy: refactors give false candidates and add-only fixes give none. Read-only. `--json`. |
 | `factory learn` | Reads the last N finished tickets' event trail, reviewer findings, and escalation reasons, plus for each ticket an excerpt of its lowest-scored session (`factory score` rows: lowest `efficiency`, ties to the lowest `compliance`, then a gate FAIL): every call repeated back to back, the worker's final message, then every tool call whose result mentioned `error`/`Traceback`/`FAIL` (the call and the result's first 10 lines), at most 3,000 characters per ticket, so the cap only shortens the flagged-call list; a ticket with no `score` row falls back to its failing-attempt log tails. Adds the 10 most recently closed bugs with candidate escapes (`factory stats --escapes`); asks the local model for ≤10 repo-specific lessons; writes `.factory-lessons.md` (you commit it). Every worker prompt carries it. With a manager, the lessons land as an `agent/lessons-<date>-t<N>` chore PR (N: the newest included ticket), and the manager may add a CURATE diff, opened as `agent/curate-<date>-t<N>`, that turns a lesson into a gate check or regression test: `AGENTS.md`, `CONTRIBUTING.md`, `.omp/skills/`, add-only `.factory.toml` (appended `[[gate.check]]` tables and `[gate].protected_paths` entries) and files under the base ref's protected and add-only paths; never `.github/`, never a deleted or renamed protected or add-only file. Both PRs are human-merge only. With a manager, the dispatcher also runs `--last 10` itself after every 10 finished tickets, scoring those tickets' unscored attempts first (see *Learning loop* under Operating it). `--dry-run`, `--last N`. `--promotion claim.json` judges and records a keep/revert claim under the [eval promotion contract](docs/eval-promotion-contract.md). |
 | `factory score` | Scores every finished ticket's worker attempts from their persisted OMP transcripts (`attempt.transcript`) and journals one `score` row per attempt: `tool_calls`, `edits` (edit/write calls), `retries` (identical consecutive calls), `gate_first_pass` (attempt 1 with gate PASS), `efficiency = 1 / (1 + retries + max(0, tool_calls - 40) / 40)`, and `compliance`, a 0–1 LLM-as-judge score from the local triage model given the ticket's Scope and Exit gate sections against the worker's final message and handoff (`null`, never a guess, when the model is unreachable or answers with anything but a number; `judge_model` names the model that answered). Already-scored attempts are skipped; a transcript missing on disk journals `{"skipped": "missing"}`. At most 50 attempts per run, 2 MB read per transcript. `--last N` limits to the newest N finished tickets; `--dry-run` prints without journaling. |
-| `factory release [--dry-run]` | Measures merged tickets, manager HUMAN decisions, and first-attempt gate passes since the highest reachable `vX.Y.Z` tag; holds unless the configured minimum, previous tag's quality bar, CI, new commits, and the release-tier gate all pass. A real run atomically pushes the patch release commit, annotated tag, `main`, and `stable`; `--dry-run` prints metrics, bar, and verdict JSON without writing. |
+| `factory release [--dry-run]` | Measures distinct merged tickets, the share with manager HUMAN decisions, and first-attempt gate passes since the highest reachable `vX.Y.Z` tag; holds without first-attempt evidence or unless the configured minimum, previous tag's quality bar, CI, new commits, and the release-tier gate all pass. A real run atomically pushes the patch release commit, annotated tag, `main`, and `stable`; `--dry-run` prints metrics, bar, and verdict JSON without writing. |
 | `factory dashboard` | Native outcome-control workspace: Overview, Outcomes, live Flow, Attention, Success, Codebase, Atlas, System/Ops and Settings, with a persistent contextual FM dock. Defaults to `0.0.0.0`; APIs require the workspace access key. `--json` prints a passive, bounded-window Ops snapshot without journal reconciliation writes. |
 | `factory dashboard --runtime-json` | One bounded schema 1 runtime observation using only local read-only evidence; no GitHub, model probe, journal append, lock acquisition, or state creation. Partial source failures remain structured JSON. See [runtime contract](#bounded-runtime-json-schema-1). |
 | `factory evidence --root /path/to/main-checkout` | One explicit-repository schema 1 JSON read: compact cases, selected evidence, workflow/file/PR/CI investigations, or capabilities. Fixed read-only GitHub requests and F03 local evidence; no model, action execution, or state writes. See [evidence contract](#bounded-project-evidence-json-schema-1). |
@@ -300,18 +300,23 @@ landed on its own, and partial progress needs its own reviewed PR.
 
 `[release] auto = true` runs the release check after a successful dispatcher
 pass. `version_file` defaults to `factory/__init__.py` and `min_tickets` to 5.
-The annotated tag's fenced JSON records `human_rate` (lower is better),
-`first_pass` (higher is better), and `tickets`; a tag without that block resets
-the comparison bar. Each release records a bar halfway between the previous bar
-(or the worst values, human rate 1 and first pass 0) and what it measured, so the
-bar only rises and never jumps to one lucky window. Factory requires every bar
-metric to be no worse, all CI
-statuses and check runs on `origin/<main>` to succeed, and
-`factory gate --tier release` to pass in a temporary worktree. It then bumps
-the patch version, moves the current Unreleased changelog entries under the
-dated release heading, and uses one non-force atomic push for `main`, the tag,
-and `stable`. A concurrent remote move rejects the whole push and the next pass
-retries. A release journals one `release` row; held reasons go to the dispatcher log.
+The annotated tag's fenced JSON records `human_rate` (distinct tickets with a
+manager HUMAN decision divided by distinct merged tickets, capped at 1; lower
+is better), `first_pass` (PASS journal rows among attempt-1 rows; higher is
+better), and `tickets`; a tag without that block resets the comparison bar. A
+window without attempt-1 evidence is held rather than scored as zero. Each
+release records a bar halfway between the previous bar (or the worst values,
+human rate 1 and first pass 0) and what it measured, so the bar only rises and
+never jumps to one lucky window. Factory requires every bar metric to be no
+worse, all completed CI statuses and check runs on `origin/<main>` to pass
+(`success`, `skipped`, and `neutral` check conclusions pass), and `factory gate
+--tier release` to pass in a temporary worktree. It then bumps the patch
+version, moves the current Unreleased changelog entries under the dated release
+heading, and uses one non-force atomic push for `main`, the tag, and `stable`.
+A concurrent remote move rejects the whole push and the next pass retries.
+Stale local tags and registered temporary worktrees from crashed runs are
+removed before reuse. A release journals one `release` row; held reasons go to
+the dispatcher log.
 
 Routing distinguishes absent optional information from invalid declarations. A missing
 ticket `Decision owner` section permits fallback; an empty or malformed section stops

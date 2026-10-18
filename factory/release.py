@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from factory import config, lifecycle, stats
+from factory import config, lifecycle
 
 SEMVER = re.compile(r"v(\d+)\.(\d+)\.(\d+)\Z")
 JSON_BAR = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
@@ -34,28 +34,25 @@ def _git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProc
 
 
 def _at(value: str | datetime) -> datetime:
-    if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=UTC)
-    return datetime.fromisoformat(value)
+    parsed = value if isinstance(value, datetime) else datetime.fromisoformat(value)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
-def measure(cfg: config.Config, since: str | datetime) -> dict[str, float | int]:
+def measure(cfg: config.Config, since: str | datetime) -> dict[str, float | int | None]:
     """Measure the journal window strictly after ``since``."""
     start = _at(since)
     rows = [row for row in lifecycle.read_events(cfg.factory / "events.jsonl")
             if isinstance(row.get("at"), str) and _at(row["at"]) > start]
     tickets = {row["ticket"] for row in rows
                if row.get("event") == "merged" and type(row.get("ticket")) is int}
-    humans = sum(row.get("event") == "manage" and row.get("decision") == "HUMAN" for row in rows)
-    audit = stats.audit_by_ticket(cfg.factory / "events.jsonl", rows)
-    claimed = {ticket: events for ticket, events in audit.items()
-               if any(event.get("event") == "claimed" for event in events)}
-    brief_rows = stats.brief_metrics(claimed)
-    attempts = sum(row["attempts"] for row in brief_rows)
-    passed = sum((row["first_pass"] or 0) * row["attempts"] for row in brief_rows)
+    humans = {row["ticket"] for row in rows
+              if row.get("event") == "manage" and row.get("decision") == "HUMAN"
+              and type(row.get("ticket")) is int}
+    attempts = [row for row in rows if row.get("event") == "attempt" and row.get("attempt") == 1]
     return {
-        "human_rate": round(humans / max(len(tickets), 1), 6),
-        "first_pass": round(passed / attempts, 6) if attempts else 0.0,
+        "human_rate": round(min(len(humans) / max(len(tickets), 1), 1.0), 6),
+        "first_pass": round(sum(row.get("gate") == "PASS" for row in attempts) / len(attempts), 6)
+        if attempts else None,
         "tickets": len(tickets),
     }
 
@@ -95,23 +92,24 @@ def _bar(message: str) -> dict[str, float | int] | None:
             "tickets": value["tickets"]}
 
 
-def _gh(cfg: config.Config, endpoint: str) -> Any:
-    proc = subprocess.run(["gh", "api", endpoint], text=True, capture_output=True, check=False)
+def _gh(cfg: config.Config, endpoint: str, *args: str) -> Any:
+    proc = subprocess.run(["gh", "api", *args, endpoint], text=True, capture_output=True, check=False)
     if proc.returncode:
         raise RuntimeError(proc.stderr.strip() or f"gh api {endpoint} failed")
     return json.loads(proc.stdout)
 
 
 def ci_passes(cfg: config.Config, sha: str) -> bool:
-    """True when every reported status and check run for ``sha`` succeeded."""
+    """True when every reported status and check run for ``sha`` passed."""
     prefix = f"repos/{cfg.repo}/commits/{sha}"
     status = _gh(cfg, f"{prefix}/status?per_page=100")
-    checks = _gh(cfg, f"{prefix}/check-runs?per_page=100")
+    pages = _gh(cfg, f"{prefix}/check-runs?per_page=100", "--paginate", "--slurp")
+    runs = [run for page in pages for run in page.get("check_runs", [])]
     statuses = status.get("statuses", [])
-    runs = checks.get("check_runs", [])
     return bool(statuses or runs) and (not statuses or status.get("state") == "success") and all(
         row.get("state") == "success" for row in statuses
-    ) and all(row.get("status") == "completed" and row.get("conclusion") == "success" for row in runs)
+    ) and all(row.get("status") == "completed"
+              and row.get("conclusion") in {"success", "skipped", "neutral"} for row in runs)
 
 
 def gate_passes(worktree: Path) -> bool:
@@ -124,12 +122,12 @@ def gate_passes(worktree: Path) -> bool:
     ).returncode == 0
 
 
-def _reason(condition: str, metrics: dict[str, float | int] | None,
+def _reason(condition: str, metrics: dict[str, float | int | None] | None,
             bar: dict[str, float | int] | None) -> str:
     return f"{condition}; measured={json.dumps(metrics, sort_keys=True)} bar={json.dumps(bar, sort_keys=True)}"
 
 
-def _record(cfg: config.Config, outcome: str, reason: str, metrics: dict[str, float | int] | None,
+def _record(cfg: config.Config, outcome: str, reason: str, metrics: dict[str, float | int | None] | None,
             bar: dict[str, float | int] | None, **fields: object) -> None:
     from factory import dispatch
 
@@ -138,7 +136,7 @@ def _record(cfg: config.Config, outcome: str, reason: str, metrics: dict[str, fl
     dispatch.record("release", outcome=outcome, reason=reason, metrics=metrics, bar=bar, **fields)
 
 
-def _finish(cfg: config.Config, dry_run: bool, reason: str, metrics: dict[str, float | int] | None,
+def _finish(cfg: config.Config, dry_run: bool, reason: str, metrics: dict[str, float | int | None] | None,
             bar: dict[str, float | int] | None, latest: str | None, *, released: bool = False) -> str:
     if dry_run:
         print(json.dumps({"metrics": metrics, "bar": bar, "latest": latest, "verdict": reason}, sort_keys=True))
@@ -165,7 +163,7 @@ def _update_release_files(cfg: config.Config, worktree: Path, old: str, new: str
 
 def run(cfg: config.Config, dry_run: bool = False) -> str:
     """Release the next patch when the ticket window clears the previous quality bar."""
-    metrics: dict[str, float | int] | None = None
+    metrics: dict[str, float | int | None] | None = None
     bar: dict[str, float | int] | None = None
     latest_tag: str | None = None
     try:
@@ -184,6 +182,9 @@ def run(cfg: config.Config, dry_run: bool = False) -> str:
             return _finish(cfg, dry_run, reason, metrics, bar, latest_tag)
         if metrics["tickets"] < cfg.release_min_tickets:
             reason = _reason(f"tickets {metrics['tickets']} below min_tickets {cfg.release_min_tickets}", metrics, bar)
+            return _finish(cfg, dry_run, reason, metrics, bar, latest_tag)
+        if metrics["first_pass"] is None:
+            reason = _reason(f"no first-attempt evidence since {latest_tag}", metrics, bar)
             return _finish(cfg, dry_run, reason, metrics, bar, latest_tag)
         if bar:
             for metric, direction in BAR:
@@ -206,6 +207,7 @@ def run(cfg: config.Config, dry_run: bool = False) -> str:
         worktree = temporary / "worktree"
         added = created_tag = pushed = False
         try:
+            _git(cfg.root, "worktree", "prune", check=False)
             _git(cfg.root, "worktree", "add", "--detach", str(worktree), head)
             added = True
             _update_release_files(cfg, worktree, latest_tag.removeprefix("v"), new_version)
@@ -217,6 +219,7 @@ def run(cfg: config.Config, dry_run: bool = False) -> str:
             message = (f"Release {new_version}: {metrics['tickets']} tickets, human rate "
                        f"{metrics['human_rate']}, first pass {metrics['first_pass']}.\n\n"
                        f"```json\n{json.dumps(next_bar(bar, metrics), separators=(',', ':'))}\n```")
+            _git(worktree, "tag", "-d", new_tag, check=False)
             _git(worktree, "tag", "-a", new_tag, "-m", message)
             created_tag = True
             pushed_result = _git(worktree, "push", "--atomic", "origin",
