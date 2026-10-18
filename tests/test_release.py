@@ -65,7 +65,8 @@ class ReleaseTest(unittest.TestCase):
 
     def verdict(self) -> tuple[str, dict]:
         output = io.StringIO()
-        with mock.patch.object(release, "ci_passes", return_value=True), redirect_stdout(output):
+        with mock.patch.object(release, "ci_passes", return_value=True), \
+                mock.patch.object(release, "_pulls", return_value=[]), redirect_stdout(output):
             reason = release.run(self.cfg, dry_run=True)
         return reason, json.loads(output.getvalue())
 
@@ -89,9 +90,9 @@ class ReleaseTest(unittest.TestCase):
     def test_bar_comparison_is_directional_and_missing_bar_resets_it(self) -> None:
         cases = (
             ({"human_rate": 0.0, "first_pass": 1.0, "tickets": 1}, True, "human_rate", False),
-            ({"human_rate": 1.0, "first_pass": 1.0, "tickets": 1}, True, "would release", True),
-            ({"human_rate": 0.5, "first_pass": 0.5, "tickets": 1}, False, "would release", True),
-            (None, True, "would release", True),
+            ({"human_rate": 1.0, "first_pass": 1.0, "tickets": 1}, True, "would open", True),
+            ({"human_rate": 0.5, "first_pass": 0.5, "tickets": 1}, False, "would open", True),
+            (None, True, "would open", True),
         )
         for bar, human, expected, eligible in cases:
             with self.subTest(bar=bar, human=human):
@@ -101,42 +102,81 @@ class ReleaseTest(unittest.TestCase):
                 before = self.git(self.origin, "rev-parse", "main")
                 reason, report = self.verdict()
                 self.assertIn(expected, reason)
-                self.assertEqual("would release" in report["verdict"], eligible)
+                self.assertEqual("would open" in report["verdict"], eligible)
                 self.assertEqual(report["bar"], bar)
                 self.assertEqual(self.git(self.origin, "rev-parse", "main"), before)
                 self.assertFalse((self.cfg.factory / "events.jsonl").read_text().count('"event":"release"'))
 
-    def test_end_to_end_release_and_second_run_is_noop(self) -> None:
+    def test_candidate_opens_release_pr_without_moving_main(self) -> None:
         self.tag_and_advance({"human_rate": 0.0, "first_pass": 1.0, "tickets": 1})
         self.events()
-        with mock.patch.object(release, "ci_passes", return_value=True), \
-                mock.patch.object(release, "gate_passes", return_value=True):
-            reason = release.run(self.cfg, dry_run=False)
-            second = release.run(self.cfg, dry_run=False)
-        self.assertIn("released v0.0.2", reason)
-        self.assertIn("no changes since v0.0.2", second)
-        main = self.git(self.origin, "rev-parse", "main")
-        self.assertEqual(self.git(self.origin, "rev-parse", "stable"), main)
-        self.assertEqual(self.git(self.origin, "rev-parse", "v0.0.2^{}"), main)
-        self.assertIn('__version__ = "0.0.2"', self.git(self.origin, "show", "main:factory/__init__.py"))
-        changelog = self.git(self.origin, "show", "main:CHANGELOG.md")
-        self.assertRegex(changelog, r"## Unreleased\n\n## 0\.0\.2 — \d{4}-\d{2}-\d{2}\n\n- shipped work")
-        annotation = self.git(self.origin, "for-each-ref", "--format=%(contents)", "refs/tags/v0.0.2")
-        match = release.JSON_BAR.search(annotation)
-        self.assertIsNotNone(match)
-        self.assertEqual(json.loads(match.group(1)), {"human_rate": 0.0, "first_pass": 1.0, "tickets": 1})
-
-    def test_stale_local_tag_does_not_block_release(self) -> None:
-        self.tag_and_advance({"human_rate": 0.0, "first_pass": 1.0, "tickets": 1})
-        self.events()
-        stale = self.git(self.repo, "commit-tree", "HEAD^{tree}", "-p", "v0.0.1^{commit}", "-m", "crashed release")
-        self.git(self.repo, "tag", "-a", "v0.0.2", stale, "-m", "stale")
-        with mock.patch.object(release, "ci_passes", return_value=True), \
+        before = self.git(self.origin, "rev-parse", "main")
+        with mock.patch.object(release, "_pulls", return_value=[]), \
+                mock.patch.object(release, "_open_pull", return_value={"number": 12}) as opened, \
+                mock.patch.object(release, "ci_passes", return_value=True), \
                 mock.patch.object(release, "gate_passes", return_value=True):
             reason = release.run(self.cfg)
+        self.assertIn("opened release PR #12 for v0.0.2", reason)
+        self.assertEqual(self.git(self.origin, "rev-parse", "main"), before)
+        self.assertIn('__version__ = "0.0.2"',
+                      self.git(self.origin, "show", "release/v0.0.2:factory/__init__.py"))
+        self.assertRegex(self.git(self.origin, "show", "release/v0.0.2:CHANGELOG.md"),
+                         r"## Unreleased\n\n## 0\.0\.2 — \d{4}-\d{2}-\d{2}\n\n- shipped work")
+        self.assertEqual(opened.call_args.args[1:3], ("release/v0.0.2", "Release 0.0.2"))
+
+    def test_pending_green_pr_is_squash_merged(self) -> None:
+        self.tag_and_advance(None)
+        pull = {"number": 7, "head": {"sha": "abc"}, "mergeable": True}
+        with mock.patch.object(release, "_pulls", return_value=[{"number": 7}]), \
+                mock.patch.object(release, "_pull", return_value=pull), \
+                mock.patch.object(release, "ci_passes", return_value=True), \
+                mock.patch.object(release, "_merge_pull", return_value={"merged": True}) as merged:
+            reason = release.run(self.cfg)
+        self.assertIn("merged release PR #7", reason)
+        merged.assert_called_once_with(self.cfg, 7, "Release 0.0.2")
+
+    def test_landed_tags_release_moves_stable_and_next_run_is_noop(self) -> None:
+        self.tag_and_advance({"human_rate": 0.0, "first_pass": 1.0, "tickets": 1})
+        self.events()
+        release._update_release_files(self.cfg, self.repo, "0.0.1", "0.0.2")
+        self.git(self.repo, "add", "factory/__init__.py", "CHANGELOG.md")
+        self.git(self.repo, "commit", "-q", "-m", "Release 0.0.2")
+        landed = self.git(self.repo, "rev-parse", "HEAD")
+        self.git(self.repo, "push", "-q", "origin", "HEAD:release/v0.0.2")
+        self.git(self.repo, "push", "-q", "origin", "HEAD:main")
+        stale = self.git(self.repo, "commit-tree", "HEAD^{tree}", "-p", "v0.0.1^{commit}", "-m", "stale")
+        self.git(self.repo, "tag", "-a", "v0.0.2", stale, "-m", "stale")
+        reason = release.run(self.cfg)
+        second = release.run(self.cfg)
         self.assertIn("released v0.0.2", reason)
-        self.assertEqual(self.git(self.origin, "rev-parse", "v0.0.2^{}"),
-                         self.git(self.origin, "rev-parse", "main"))
+        self.assertIn("no changes since v0.0.2", second)
+        self.assertEqual(self.git(self.origin, "rev-parse", "stable"), landed)
+        self.assertEqual(self.git(self.origin, "rev-parse", "v0.0.2^{}"), landed)
+        annotation = self.git(self.origin, "for-each-ref", "--format=%(contents)", "refs/tags/v0.0.2")
+        self.assertIsNotNone(release.JSON_BAR.search(annotation))
+
+    def test_dry_run_writes_nothing_in_candidate_pending_and_landed_states(self) -> None:
+        self.tag_and_advance(None)
+        self.events()
+        before = self.git(self.origin, "show-ref")
+        with mock.patch.object(release, "_pulls", return_value=[]), \
+                mock.patch.object(release, "ci_passes", return_value=True):
+            self.assertIn("would open release PR", release.run(self.cfg, dry_run=True))
+        pull = {"number": 8, "head": {"sha": "abc"}, "mergeable": True}
+        with mock.patch.object(release, "_pulls", return_value=[{"number": 8}]), \
+                mock.patch.object(release, "_pull", return_value=pull), \
+                mock.patch.object(release, "ci_passes", return_value=True), \
+                mock.patch.object(release, "_merge_pull") as merged:
+            self.assertIn("would squash-merge", release.run(self.cfg, dry_run=True))
+            merged.assert_not_called()
+        (self.repo / "factory" / "__init__.py").write_text('__version__ = "0.0.2"\n')
+        self.git(self.repo, "add", "factory/__init__.py")
+        self.git(self.repo, "commit", "-q", "-m", "Release 0.0.2")
+        self.git(self.repo, "push", "-q", "origin", "HEAD:main")
+        landed_before = self.git(self.origin, "show-ref")
+        self.assertIn("would tag v0.0.2", release.run(self.cfg, dry_run=True))
+        self.assertEqual(self.git(self.origin, "show-ref"), landed_before)
+        self.assertNotEqual(before, landed_before)
 
     def test_human_rate_counts_distinct_tickets_and_is_clamped(self) -> None:
         path = self.cfg.factory / "events.jsonl"
@@ -167,7 +207,8 @@ class ReleaseTest(unittest.TestCase):
         self.tag_and_advance(None)
         self.events(tickets=1)
         before = self.git(self.origin, "rev-parse", "main")
-        with mock.patch.object(release, "ci_passes", return_value=True), \
+        with mock.patch.object(release, "_pulls", return_value=[]), \
+                mock.patch.object(release, "ci_passes", return_value=True), \
                 mock.patch.object(release, "gate_passes", return_value=True):
             reason = release.run(self.cfg, dry_run=False)
         self.assertIn("tickets 1 below min_tickets 2", reason)
