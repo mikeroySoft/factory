@@ -461,12 +461,24 @@ class PromotionTest(unittest.TestCase):
         self.open_promotion(self.scores(0.9, gate_first_pass=False))
         self.gh.side_effect = RuntimeError("gh down")
         learn.learn_pass()
-        self.assertIn("promotion: failed (RuntimeError: gh down)", [c.args[0] for c in self.log.call_args_list])
+        self.assertIn("promotion #42: failed (RuntimeError: gh down)", [c.args[0] for c in self.log.call_args_list])
         self.assertEqual(self.rows("promotion-keep", "promotion-revert"), [])
         self.gh.side_effect = lambda args: {"mergeCommit": {"oid": "c" * 40}}
         learn.learn_pass()
         [row] = self.rows("promotion-revert")
         self.assertIn("gate_first_pass_rate 1.000 -> 0.000", row["reason"])
+
+    def test_a_revert_that_keeps_failing_never_blocks_later_promotion_decisions(self) -> None:
+        self.open_promotion(self.scores(0.5))  # #42 drops: its revert conflicts with the later lessons merge
+        self.journal({"event": "promotion-open", "pr": 43, "head": self.HEAD, "branch": self.BRANCH,
+                      "baseline": learn.promotion.window(self.scores(0.5))}, *self.ran(self.scores(0.9)))
+        self.gh.side_effect = lambda args: {"mergeCommit": {"oid": "c" * 40}}
+        self.chore_pr.side_effect = RuntimeError("revert conflicts")
+        learn.learn_pass()
+        learn.learn_pass()
+        [row] = self.rows("promotion-keep", "promotion-revert")
+        self.assertEqual((row["event"], row["pr"]), ("promotion-keep", 43))
+        self.assertEqual([c.args[0] for c in self.log.call_args_list].count("promotion #42: failed (RuntimeError: revert conflicts)"), 2)
 
     def test_lessons_pr_is_admitted_to_review_intake_without_a_label(self) -> None:
         self.open_prs = [{"number": n, "state": "OPEN", "isDraft": False, "headRefName": b, "headRefOid": "h", "baseRefOid": "b",
