@@ -28,7 +28,9 @@ class WatchLifecycleTest(unittest.TestCase):
             "number": 7,
             "title": "factory runtime failure: lifecycle worker boom" if watched else "parser bug",
             "body": "Fingerprint: abc123\n\nevidence" if watched else
-                    "Fix the parser failure.\n\nExit gate: `python -m unittest` passes.",
+                    ("## Problem\nThe config parser raises KeyError on an empty [gate] table instead of using defaults.\n\n"
+                     "## Acceptance criteria\n- [ ] An empty [gate] table loads with default checks.\n\n"
+                     "## Exit gate\n`python -m unittest tests.test_config` passes."),
             "comments": [],
             "labels": [{"name": "bug"}],
         }
@@ -59,7 +61,11 @@ class WatchLifecycleTest(unittest.TestCase):
         def run(command, **kwargs):
             calls.append(command)
             if command[:3] == ["gh", "issue", "view"]:
-                return subprocess.CompletedProcess(command, 0, json.dumps({"state": states[int(command[3])]}), "")
+                state = states[int(command[3])]
+                assignees = [{"login": "agent"}] if state == "CLAIMED" else []
+                return subprocess.CompletedProcess(
+                    command, 0, json.dumps({"state": "OPEN" if state == "CLAIMED" else state,
+                                            "assignees": assignees}), "")
             if command[:3] == ["gh", "issue", "close"]:
                 return subprocess.CompletedProcess(command, 0, "", "")
             raise AssertionError(command)
@@ -86,6 +92,17 @@ class WatchLifecycleTest(unittest.TestCase):
         self.journal("young", 12, timedelta(hours=23))
         signal = {"fingerprint": "recurs", "latest": None}
         calls = self.run_watch({11: "OPEN", 12: "OPEN"}, signals=[signal])
+        self.assertFalse(any(call[:3] == ["gh", "issue", "close"] for call in calls))
+
+    def test_signal_with_only_old_evidence_still_closes(self):
+        self.journal("stale", 14, timedelta(days=3))
+        old = (datetime.now(UTC) - timedelta(days=2)).isoformat().replace("+00:00", "Z")
+        calls = self.run_watch({14: "OPEN"}, signals=[{"fingerprint": "stale", "latest": old}])
+        self.assertTrue(any(call[:4] == ["gh", "issue", "close", "14"] for call in calls))
+
+    def test_claimed_issue_is_not_closed(self):
+        self.journal("claimed", 15, timedelta(days=3))
+        calls = self.run_watch({15: "CLAIMED"})
         self.assertFalse(any(call[:3] == ["gh", "issue", "close"] for call in calls))
 
     def test_dry_run_closes_nothing(self):

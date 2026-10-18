@@ -217,7 +217,7 @@ def run_pass(cfg: config.Config, dry_run: bool = False) -> list[dict]:
     events = lifecycle.read_events(dispatch.EVENTS)
     filings = {r["fingerprint"]: r for r in events if r.get("event") == "watch"}
     current = signals(cfg, events)
-    current_fingerprints = {signal["fingerprint"] for signal in current}
+    latest_by_fingerprint = {signal["fingerprint"]: signal["latest"] for signal in current}
     filed = []
     for signal in current:
         if len(filed) >= MAX_ISSUES:
@@ -248,17 +248,21 @@ def run_pass(cfg: config.Config, dry_run: bool = False) -> list[dict]:
     for fp, previous in filings.items():
         if closed >= MAX_ISSUES:
             break
-        if previous.get("closed") or fp in current_fingerprints:
+        if previous.get("closed"):
             continue
-        evidence_at = previous.get("latest") or previous["at"]
+        # A signal stays in the journal window long after it stops happening, so judge by the
+        # newest evidence, not presence; `latest is None` means it is failing right now.
+        if fp in latest_by_fingerprint and latest_by_fingerprint[fp] is None:
+            continue
+        evidence_at = max(latest_by_fingerprint.get(fp) or "", previous.get("latest") or "", previous["at"])
         if now - datetime.fromisoformat(evidence_at) < QUIET_PERIOD:
             continue
         try:
             state = dispatch.gh_json([
-                "issue", "view", str(previous["issue"]), "--repo", dispatch.REPO, "--json", "state",
+                "issue", "view", str(previous["issue"]), "--repo", dispatch.REPO, "--json", "state,assignees",
             ])
-            if state["state"].upper() != "OPEN":
-                continue
+            if state["state"].upper() != "OPEN" or state.get("assignees"):
+                continue  # closed already, or a worker has claimed it
             commit = (config.engine_commit() or "unknown")[:12]
             comment = (
                 f"factory watch: fingerprint {fp} has not recurred since {evidence_at} on engine "
