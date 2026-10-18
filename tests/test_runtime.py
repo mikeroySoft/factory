@@ -347,6 +347,21 @@ class RuntimeCliTest(unittest.TestCase):
         self.assertEqual(data["executions"][0]["observation"], "partial")
         self.assertIn("duplicate_conflict", data["history"]["gaps"])
 
+    def test_ticket_scope_advancing_attempt_and_round_is_not_an_identity_conflict(self):
+        # The dispatcher's ticket scope advances attempt/review_round so children inherit them.
+        ticket = lifecycle.Execution(self.journal, "ticket", ticket=15)
+        ticket.emit("enter")
+        ticket.attempt = 1
+        ticket.emit("check", check="compile")
+        ticket.attempt, ticket.review_round = 2, 1
+        ticket.emit("exit")
+        data = self.invoke()
+        self.assertNotIn({"source": "events.jsonl", "scope": "executions", "code": "identity_conflict"},
+                         data["errors"])
+        self.assertTrue(data["history"]["complete"])
+        self.assertEqual([(row["state"], row["attempt"], row["review_round"]) for row in data["executions"]],
+                         [("completed", 2, 1)])
+
     def test_accepted_check_and_admission_outcomes_remain_supported(self):
         execution = lifecycle.Execution(self.journal, "gate-check", ticket=14)
         execution.emit("enter")
