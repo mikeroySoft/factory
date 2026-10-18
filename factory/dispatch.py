@@ -31,6 +31,7 @@ from pathlib import Path
 from factory import __version__, brief, config, lifecycle
 from factory.config import (
     LABEL_AGENT,
+    LABEL_ADD_ONLY_OVERRIDE,
     LABEL_APPROVED,
     LABEL_HUMAN,
     LABEL_PROTECTED_OVERRIDE,
@@ -803,8 +804,8 @@ def commit_leftovers(wt: Path, n: int, title: str) -> None:
 
 
 def run_gate(
-    wt: Path, n: int | str, skip: str = "", protected_override: bool = False, tier: str = "attempt",
-    upstream: list[str] = (),
+    wt: Path, n: int | str, skip: str = "", protected_override: bool = False,
+    add_only_override: bool = False, tier: str = "attempt", upstream: list[str] = (),
 ) -> tuple[bool, str]:
     report_rel = f".factory/gate-report-{n}.md"
     (wt / ".factory").mkdir(exist_ok=True)
@@ -825,6 +826,8 @@ def run_gate(
     # The gate process records its own stage and check boundaries.
     if protected_override:
         cmd.append("--protected-override")
+    if add_only_override:
+        cmd.append("--add-only-override")
     for ref in upstream:
         cmd += ["--upstream", ref]
     if tier != "attempt":
@@ -1222,11 +1225,14 @@ def sync_event(n: int) -> dict | None:
 
 
 def gate_flags(sync: dict | None, labels: set[str]) -> dict:
-    """`run_gate` keywords for a ticket. Only the human label overrides protected paths.
-    A sync ticket's gate ignores protected-path hits whose content is upstream's (equal to
-    the recorded tip or the dispatcher's staged candidate) and leak-scans from the tip, so
-    both checks judge what the worker wrote."""
+    """`run_gate` keywords for a ticket. Human authority overrides all protected paths;
+    manager or human add-only authority overrides only add-only paths. A sync ticket's
+    gate ignores protected-path hits whose content is upstream's (equal to the recorded
+    tip or the dispatcher's staged candidate) and leak-scans from the tip, so both checks
+    judge what the worker wrote."""
     flags = {"protected_override": LABEL_PROTECTED_OVERRIDE in labels}
+    if LABEL_ADD_ONLY_OVERRIDE in labels:
+        flags["add_only_override"] = True
     if sync:
         flags["upstream"] = [sync["upstream"], sync["head"]]
     return flags

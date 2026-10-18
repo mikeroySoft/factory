@@ -16,6 +16,7 @@ from tempfile import NamedTemporaryFile
 
 from factory import binding, config, dispatch, handoff, lifecycle
 from factory.config import (
+    LABEL_ADD_ONLY_OVERRIDE,
     LABEL_AGENT,
     LABEL_APPROVED,
     LABEL_HUMAN,
@@ -37,9 +38,11 @@ For an initiative-linked issue, REWRITE must preserve its exact Initiative and P
 baseline; SPLIT children inherit that binding. Never propose a replacement baseline.
 ROUTE: JSON object {"add": ["label"], "remove": ["label"], "guidance": "..."}.
 Only configured worker labels listed below may be added or removed.
-FIX: JSON object {"worker": "label", "guidance": "..."}.
+FIX: JSON object {"worker": "label", "guidance": "...", "authorize_add_only": "optional justification"}.
 Dispatch exactly one round of that listed worker in the kept agent worktree for its open PR.
-Code re-gates, pushes and re-reviews; approval requires a passing gate and fresh APPROVE.
+Set authorize_add_only only when the gate failure is an add-only violation and the ticket
+requires changing an existing add-only file, or removes an obsolete wording-only assertion.
+Never use it for protected_paths failures. The fresh gate and independent review still run.
 HUMAN: plain-text diagnosis; leave the ticket with the human.
 CLOSE: plain-text diagnosis; closes the ticket's open PR. A human's issue stays open and
 gets `wontfix-proposal`; an issue the factory created by SPLIT is closed as not planned.
@@ -140,6 +143,11 @@ def parse(output: str, workers: dict, *, approval: bool = False) -> tuple[str, s
                     raise ValueError("unknown worker label")
                 if not isinstance(data.get("guidance"), str) or not data["guidance"].strip():
                     raise ValueError("fix needs guidance")
+                authorization = data.get("authorize_add_only")
+                if authorization is not None and (
+                    not isinstance(authorization, str) or not authorization.strip()
+                ):
+                    raise ValueError("add-only authorization needs a justification")
                 return decision, body, data
         except (ValueError, TypeError):
             pass
@@ -294,10 +302,20 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         dispatch.LOGS.mkdir(parents=True, exist_ok=True)
         attempts = [e.get("attempt", 0) for e in lifecycle.read_events(dispatch.EVENTS)
                     if e.get("event") == "attempt" and e.get("ticket") == n]
+        labels = {label["name"] for label in issue.get("labels", [])}
+        if authorization := data.get("authorize_add_only"):
+            issue_action("edit", "--add-label", LABEL_ADD_ONLY_OVERRIDE)
+            labels.add(LABEL_ADD_ONLY_OVERRIDE)
+            post_comment(
+                "issue", n,
+                "Factory manager: Authorized edits to existing add-only files.\n\n"
+                f"Justification: {authorization}",
+                authorization="add_only",
+            )
         extra = f"## Manager FIX guidance\n\n{data['guidance']}\n\n{packet.read_text()}"
         ok, report, logfile, gate_head = dispatch.worker_round(
-            n, wt, {data["worker"]} | {label["name"] for label in issue.get("labels", [])},
-            issue["title"], extra, max(attempts, default=0) + 1,
+            n, wt, {data["worker"]} | labels, issue["title"], extra,
+            max(attempts, default=0) + 1,
             time.monotonic() + cfg.budget_min * 60, selected_worker=data["worker"],
         )
         if not ok:

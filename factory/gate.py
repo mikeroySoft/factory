@@ -147,7 +147,9 @@ def check_leaks(base: str) -> tuple[bool, str]:
 ADD_ONLY_NOTE = "add-only path removed or changed existing lines"
 
 
-def check_protected_paths(base: str, upstream: list[str] = ()) -> tuple[bool, str, str]:
+def check_protected_paths(
+    base: str, upstream: list[str] = (), add_only_override: bool = False
+) -> tuple[bool, str, str]:
     """(passed, reason, detail): reason is `protected_paths`, or `add_only_paths` when
     every hit is an add-only glob whose change was not purely additive. With `upstream`
     (the tip, then the staged head) a hit is ignored when its HEAD content equals the
@@ -171,6 +173,8 @@ def check_protected_paths(base: str, upstream: list[str] = ()) -> tuple[bool, st
         for key, globs in (("protected_paths", protected), ("add_only_paths", add_only)):
             if not isinstance(globs, list) or any(not isinstance(p, str) or not p for p in globs):
                 return False, "protected_paths", f"base gate.{key} must be an array of nonempty globs"
+        if add_only_override:
+            add_only = []
     proc = timed(["git", "diff", "--no-renames", "--raw", "-z", f"{base}...HEAD"])
     if proc.returncode:
         return False, "protected_paths", proc.stdout + proc.stderr
@@ -241,6 +245,8 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument("--protected-override", action="store_true",
                         help="human-authorized protected-path override")
+    parser.add_argument("--add-only-override", action="store_true",
+                        help="manager- or human-authorized edits to add-only paths")
     parser.add_argument("--upstream", action="append", default=[], metavar="REF",
                         help="upstream sync: first REF is the tip, later REFs the staged head (repeatable); "
                         "protected-path hits equal to the staged head, or to the tip for paths upstream changed, "
@@ -283,7 +289,9 @@ def execute(args: argparse.Namespace, execution) -> int:
         skip.add("leak-scan")
 
     if not args.protected_override and args.tier == "attempt":
-        passed, reason, detail = check_protected_paths(args.base, args.upstream)
+        passed, reason, detail = check_protected_paths(
+            args.base, args.upstream, args.add_only_override
+        )
         if not passed:
             execution.outcome, execution.reason = "project_escalation", reason
             report = Path(args.report)
