@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.2 — 2026-10-18
+
 - A worker that passes the gate, commits nothing and writes its handoff (its ticket was already fixed or a duplicate) now escalates as `no_change` with "worker committed nothing over <main>; read the handoff", not `pr_unpublished`, and `factory watch` never files repeated `no_change` escalations as a factory defect (#300: #278, #279 and #291 were watch-filed tickets already fixed on main). A worker that commits nothing and writes no handoff (it crashed or exited early) still escalates as `pr_unpublished`, which watch keeps counting. The workspace capacity test now waits for request admission before probing the only client slot, so its probe cannot make the server reject the connection under CI scheduling.
 - Generated units quote `[install].env` / `dispatch_env` values that contain spaces or other systemd-significant characters: an unquoted `Environment=UV_EXCLUDE_NEWER=24 hours` set `UV_EXCLUDE_NEWER=24`, which made every `uv` command in the dispatcher and gate exit with a usage error.
 - Runtime projection no longer reports `identity_conflict` for the dispatcher's ticket scope (#293): that scope advances `attempt` and `review_round` in place so worker, gate and review children inherit them, so every live journal with a retried or reviewed ticket tripped the check. Only fields fixed at scope creation (`dispatcher_run_id`, `root_execution_id`, `execution_id`, `parent_execution_id`, `ticket`, `stage`) must agree across an execution's rows; the projected execution reports its latest `attempt`/`review_round`.
