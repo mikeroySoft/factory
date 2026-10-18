@@ -218,6 +218,14 @@ class WorkspaceHTTPTest(unittest.TestCase):
     def test_idle_and_partial_headers_release_client_capacity(self) -> None:
         self.server.header_timeout = 0.3
         self.server._clients = threading.BoundedSemaphore(1)
+        admitted = threading.Event()
+        bounded_request = self.server._bounded_request
+
+        def observe_admission(request, address) -> None:
+            admitted.set()
+            bounded_request(request, address)
+
+        self.server._bounded_request = observe_admission
 
         def slot_available() -> bool:
             if not self.server._clients.acquire(blocking=False):
@@ -230,10 +238,16 @@ class WorkspaceHTTPTest(unittest.TestCase):
             ("partial headers", b"GET / HTTP/1.1\r\nHost: localhost"),
         ):
             with self.subTest(client=label):
+                # A complete response can arrive before its handler releases the slot.
+                self.assertTrue(self.server._clients.acquire(timeout=2))
+                self.server._clients.release()
+                admitted.clear()
                 client = socket.create_connection(self.server.server_address, timeout=1)
                 try:
                     if prefix:
                         client.sendall(prefix)
+                    # Probing before admission can take the only slot and cause a 503.
+                    self.assertTrue(admitted.wait(2), f"{label} client was not admitted")
                     occupied = False
                     deadline = time.monotonic() + 2
                     while time.monotonic() < deadline:

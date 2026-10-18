@@ -272,6 +272,13 @@ class WatchTest(unittest.TestCase):
         self.assertEqual(self.gh.created, [])
         self.assertEqual(self.events("watch"), [])
 
+    def test_repeated_no_change_outcome_is_not_filed(self) -> None:
+        # #300: a worker that finds its ticket already fixed commits nothing; filing that as a
+        # factory bug would feed watch the next no-change ticket.
+        self.journal(*(escalate_row(n, "no_change", "committed nothing") for n in (1, 2, 3)))
+        watch.run_pass(self.cfg)
+        self.assertEqual(self.gh.created, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -32,6 +32,9 @@ UNKNOWN_REASONS = ("check_timeout",)
 ENVIRONMENT_REASONS = ("worker_exit:", "triage_endpoint_", "github_command_failed")
 REPEAT_MIN = 3  # distinct tickets one escalation code must hit...
 REPEAT_DAYS = 7  # ...inside this trailing window to count as a factory defect
+# Ticket outcomes, not factory defects: a worker that finds its ticket already fixed commits
+# nothing, and filing that would hand the next pass another already-fixed ticket.
+OUTCOME_CODES = {"no_change"}
 
 
 def fingerprint(kind: str, key: str) -> str:
@@ -113,7 +116,8 @@ def repeated_escalations(events: list[dict]) -> dict[str, list[dict]]:
     cutoff = (datetime.now(UTC) - timedelta(days=REPEAT_DAYS)).isoformat().replace("+00:00", "Z")
     by_code: dict[str, list[dict]] = {}
     for row in events:
-        if row.get("event") == "escalate" and "code" in row and str(row.get("at") or "") >= cutoff:
+        if (row.get("event") == "escalate" and "code" in row and row["code"] not in OUTCOME_CODES
+                and str(row.get("at") or "") >= cutoff):
             by_code.setdefault(row["code"], []).append(row)  # rows without a code are `unknown`: never filed
     return {code: rows for code, rows in by_code.items()
             if len({r.get("ticket") for r in rows}) >= REPEAT_MIN}
