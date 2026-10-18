@@ -103,7 +103,8 @@ def _gh(cfg: config.Config, endpoint: str, *args: str) -> Any:
     proc = subprocess.run(["gh", "api", *args, endpoint], text=True, capture_output=True, check=False)
     if proc.returncode:
         raise RuntimeError(proc.stderr.strip() or f"gh api {endpoint} failed")
-    return json.loads(proc.stdout)
+    return json.loads(proc.stdout) if proc.stdout.strip() else None
+
 
 def _pulls(cfg: config.Config, branch: str) -> list[dict[str, Any]]:
     return _gh(
