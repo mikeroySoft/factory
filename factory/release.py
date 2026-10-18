@@ -204,8 +204,9 @@ def _update_release_files(cfg: config.Config, worktree: Path, old: str, new: str
     changelog.write_text(changed)
 
 
-def run(cfg: config.Config, dry_run: bool = False) -> str:
-    """Advance the release PR, merge, tag, and stable branch from remote state."""
+def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
+    """Advance the release PR, merge, tag, and stable branch from remote state. With
+    `open_pr=False` (the dispatcher's start-of-pass call) a new release PR is never opened."""
     metrics: dict[str, float | int | None] | None = None
     bar: dict[str, float | int] | None = None
     latest_tag: str | None = None
@@ -305,6 +306,9 @@ def run(cfg: config.Config, dry_run: bool = False) -> str:
                     metrics, bar, latest_tag)
             return _finish(cfg, False, _reason(f"merged release PR #{number}", metrics, bar),
                            metrics, bar, latest_tag)
+
+        if not open_pr:
+            return _finish(cfg, dry_run, _reason("no release PR open", metrics, bar), metrics, bar, latest_tag)
 
         if metrics["tickets"] < cfg.release_min_tickets:
             return _finish(cfg, dry_run, _reason(
