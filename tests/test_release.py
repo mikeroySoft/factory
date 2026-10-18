@@ -129,7 +129,7 @@ class ReleaseTest(unittest.TestCase):
     def test_stale_local_tag_does_not_block_release(self) -> None:
         self.tag_and_advance({"human_rate": 0.0, "first_pass": 1.0, "tickets": 1})
         self.events()
-        stale = self.git(self.repo, "commit-tree", "HEAD^{tree}", "-p", "v0.0.1", "-m", "crashed release")
+        stale = self.git(self.repo, "commit-tree", "HEAD^{tree}", "-p", "v0.0.1^{commit}", "-m", "crashed release")
         self.git(self.repo, "tag", "-a", "v0.0.2", stale, "-m", "stale")
         with mock.patch.object(release, "ci_passes", return_value=True), \
                 mock.patch.object(release, "gate_passes", return_value=True):
