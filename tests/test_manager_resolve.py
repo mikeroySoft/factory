@@ -25,7 +25,9 @@ class ManagerResolveTest(unittest.TestCase):
 
     def test_apply_comments_before_close_and_does_not_requeue(self) -> None:
         result = subprocess.CompletedProcess([], 0, stdout="https://example.test/comment\n")
-        with mock.patch.object(dispatch, "gh_json", side_effect=subprocess.CalledProcessError(1, ["gh"], stderr="no pull requests found for branch \"agent/7\"")), \
+        no_pr = subprocess.CalledProcessError(1, ["gh"], stderr='no pull requests found for branch "agent/7"')
+        no_branch = subprocess.CalledProcessError(1, ["gh"], stderr="gh: Not Found (HTTP 404)")
+        with mock.patch.object(dispatch, "gh_json", side_effect=[no_pr, no_branch]), \
                 mock.patch.object(dispatch, "run", return_value=result) as run, \
                 mock.patch.object(dispatch, "comment_receipt"):
             manage.apply(
@@ -46,11 +48,27 @@ class ManagerResolveTest(unittest.TestCase):
                              for command in commands))
 
     def test_apply_refuses_open_pr_with_changes(self) -> None:
-        pr = {"number": 17, "state": "OPEN", "changedFiles": 2}
+        pr = {"number": 17, "state": "OPEN", "changedFiles": 2, "baseRefName": "main"}
         with mock.patch.object(dispatch, "gh_json", return_value=pr), \
                 mock.patch.object(dispatch, "run") as run, \
-                self.assertRaisesRegex(ValueError, "commits over main"):
+                self.assertRaisesRegex(ValueError, "with changes"):
             manage.apply(7, {"title": "Not fixed"}, "RESOLVE", "Claimed present on main.", None, Path("unused"))
+        run.assert_not_called()
+
+    def test_apply_refuses_pushed_branch_without_pr(self) -> None:
+        no_pr = subprocess.CalledProcessError(1, ["gh"], stderr='no pull requests found for branch "agent/7"')
+        with mock.patch.object(dispatch, "gh_json", side_effect=[no_pr, {"ahead_by": 2}]), \
+                mock.patch.object(dispatch, "run") as run, \
+                self.assertRaisesRegex(ValueError, "no PR"):
+            manage.apply(7, {"title": "Already fixed"}, "RESOLVE", "Present on main.", None, Path("unused"))
+        run.assert_not_called()
+
+    def test_apply_refuses_empty_pr_on_another_base(self) -> None:
+        pr = {"number": 17, "state": "OPEN", "changedFiles": 0, "baseRefName": "release"}
+        with mock.patch.object(dispatch, "gh_json", return_value=pr), \
+                mock.patch.object(dispatch, "run") as run, \
+                self.assertRaisesRegex(ValueError, "another base"):
+            manage.apply(7, {"title": "Already fixed"}, "RESOLVE", "Present on main.", None, Path("unused"))
         run.assert_not_called()
 
     def test_apply_does_not_close_when_pr_lookup_fails_for_another_reason(self) -> None:

@@ -378,8 +378,10 @@ does not merge or requeue the issue.
 RESOLVE is escalation-only evidence that the requested outcome is already on
 the configured main branch (by commit or PR), or that the ticket duplicates
 another issue. It comments before closing the issue as completed and removes
-`ready-for-human`; an open empty `agent/<n>` PR is also commented and closed,
-while any commits over main make RESOLVE fail closed for human handling.
+`ready-for-human`; an open `agent/<n>` PR into main with no changed files is
+also commented and closed. RESOLVE fails closed for human handling when that PR
+has changed files or another base, or when an `agent/<n>` branch without a PR is
+ahead of main.
 The template includes opt-in `ci-fix` and `conflict` profiles for a
 human to apply in host config; the manager cannot add profiles or edit config.
 Code validates the output, records a `manage` event before GitHub mutations, and
