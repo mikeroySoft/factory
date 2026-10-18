@@ -451,36 +451,38 @@ def decide_promotions(cfg: config.Config, dry_run: bool = False) -> list[str]:
     """One decision per `promotion-open` row, never replayed: once PROMOTION_N attempts are scored after
     the merge, `promotion-keep`, or `promotion-revert` with `agent/revert-lessons-<pr>` opened against the
     merge commit when efficiency or the first-pass rate fell beyond the baseline window's noise.
-    Returns the revert branches opened; a failure is logged and the promotion retried next pass."""
+    Returns the revert branches opened; a failing promotion is logged and retried next pass while later
+    promotions are still decided."""
     rows = lifecycle.read_events(dispatch.EVENTS)
     decided = {r.get("pr") for r in rows if r.get("event") in ("promotion-keep", "promotion-revert")}
     reverts = []
-    try:
-        for i, opened in enumerate(rows):
-            if opened.get("event") != "promotion-open" or opened.get("pr") in decided:
-                continue
-            # Attempts journaled after the merge; a pre-merge attempt scored late ran on the old prompt.
-            ran = {(r.get("ticket"), r.get("attempt"), r.get("transcript")) for r in rows[i + 1:]
-                   if r.get("event") == "attempt"}
-            after = [s for s in promotion.scored(rows[i + 1:])
-                     if (s.get("ticket"), s.get("attempt"), s.get("transcript")) in ran][:promotion.PROMOTION_N]
-            if len(after) < promotion.PROMOTION_N:
-                continue
-            before = promotion.scored(rows[:i])[-promotion.PROMOTION_N:]
-            verdict, reason = promotion.drift(before, after)
-            candidate = promotion.window(after)
-            if dry_run:
-                dispatch.log(f"promotion #{opened['pr']}: would {verdict} ({reason})")
-                continue
-            fields = {}
+    for i, opened in enumerate(rows):
+        if opened.get("event") != "promotion-open" or opened.get("pr") in decided:
+            continue
+        # Attempts journaled after the merge; a pre-merge attempt scored late ran on the old prompt.
+        ran = {(r.get("ticket"), r.get("attempt"), r.get("transcript")) for r in rows[i + 1:]
+               if r.get("event") == "attempt"}
+        after = [s for s in promotion.scored(rows[i + 1:])
+                 if (s.get("ticket"), s.get("attempt"), s.get("transcript")) in ran][:promotion.PROMOTION_N]
+        if len(after) < promotion.PROMOTION_N:
+            continue
+        before = promotion.scored(rows[:i])[-promotion.PROMOTION_N:]
+        verdict, reason = promotion.drift(before, after)
+        candidate = promotion.window(after)
+        if dry_run:
+            dispatch.log(f"promotion #{opened['pr']}: would {verdict} ({reason})")
+            continue
+        fields = {}
+        try:
             if verdict == "revert":
                 fields["branch"] = revert(cfg, opened, reason, candidate)
                 reverts.append(fields["branch"])
-            dispatch.record(f"promotion-{verdict}", pr=opened["pr"], head=opened.get("head"),
-                            baseline=opened.get("baseline"), after=candidate, reason=reason, **fields)
-            dispatch.log(f"promotion #{opened['pr']}: {verdict} ({reason})")
-    except Exception as exc:  # noqa: BLE001 - an undecided promotion is retried next pass
-        dispatch.log(f"promotion: failed ({type(exc).__name__}: {exc})")
+        except Exception as exc:  # noqa: BLE001 - e.g. a conflicting revert; never blocks later promotions
+            dispatch.log(f"promotion #{opened['pr']}: failed ({type(exc).__name__}: {exc})")
+            continue
+        dispatch.record(f"promotion-{verdict}", pr=opened["pr"], head=opened.get("head"),
+                        baseline=opened.get("baseline"), after=candidate, reason=reason, **fields)
+        dispatch.log(f"promotion #{opened['pr']}: {verdict} ({reason})")
     return reverts
 
 
