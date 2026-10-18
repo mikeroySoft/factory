@@ -25,6 +25,7 @@ from factory import config, dispatch, lifecycle
 LABELS = "bug,needs-triage"
 MAX_ISSUES = 5
 QUIET_PERIOD = timedelta(hours=24)
+CLOSABLE = {config.LABEL_TRIAGE, config.LABEL_AGENT}
 MAX_ROWS = 20
 MAX_LOG_LINES = 40
 UNKNOWN_REASONS = ("check_timeout",)
@@ -257,27 +258,36 @@ def run_pass(cfg: config.Config, dry_run: bool = False) -> list[dict]:
         evidence_at = max(latest_by_fingerprint.get(fp) or "", previous.get("latest") or "", previous["at"])
         if now - datetime.fromisoformat(evidence_at) < QUIET_PERIOD:
             continue
+        if dry_run:
+            print(f"[watch] would close #{previous['issue']} for {fp} if it is still open, unassigned "
+                  f"and not with a human (no newer evidence than {evidence_at})")
+            closed += 1
+            continue
         try:
             state = dispatch.gh_json([
-                "issue", "view", str(previous["issue"]), "--repo", dispatch.REPO, "--json", "state,assignees",
+                "issue", "view", str(previous["issue"]), "--repo", dispatch.REPO,
+                "--json", "state,assignees,labels",
             ])
-            if state["state"].upper() != "OPEN" or state.get("assignees"):
-                continue  # closed already, or a worker has claimed it
+            labels = {label["name"] for label in state.get("labels", [])}
+            if state["state"].upper() != "OPEN":
+                # Closed by its fix or a human: stop re-checking it every pass.
+                dispatch.record("watch", fingerprint=fp, issue=previous["issue"], latest=evidence_at,
+                                closed=True, at=lifecycle._now())
+                continue
+            if state.get("assignees") or not labels & CLOSABLE:
+                continue  # claimed by a worker, or handed to a human
             commit = (config.engine_commit() or "unknown")[:12]
             comment = (
                 f"factory watch: fingerprint {fp} has not recurred since {evidence_at} on engine "
                 f"{commit}; closing. A recurrence reopens tracking with a new issue."
             )
-            if dry_run:
-                print(f"[watch] would close #{previous['issue']}: {comment}")
-            else:
-                dispatch.run([
-                    "gh", "issue", "close", str(previous["issue"]), "--repo", dispatch.REPO,
-                    "--reason", "completed", "--comment", comment,
-                ])
-                dispatch.record("watch", fingerprint=fp, issue=previous["issue"], latest=evidence_at,
-                                closed=True, at=lifecycle._now())
-                dispatch.log(f"watch: closed #{previous['issue']} for {fp}")
+            dispatch.run([
+                "gh", "issue", "close", str(previous["issue"]), "--repo", dispatch.REPO,
+                "--reason", "completed", "--comment", comment,
+            ])
+            dispatch.record("watch", fingerprint=fp, issue=previous["issue"], latest=evidence_at,
+                            closed=True, at=lifecycle._now())
+            dispatch.log(f"watch: closed #{previous['issue']} for {fp}")
             closed += 1
         except (OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError) as exc:
             dispatch.log(f"watch: could not close #{previous['issue']} for {fp}: {exc}")
@@ -286,7 +296,7 @@ def run_pass(cfg: config.Config, dry_run: bool = False) -> list[dict]:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="factory watch", description=__doc__)
-    parser.add_argument("--dry-run", action="store_true", help="print what would be filed; no gh call, no journal row")
+    parser.add_argument("--dry-run", action="store_true", help="print what would be filed or closed; no gh call, no journal row")
     args = parser.parse_args(argv)
     dispatch.configure(config.load())
     with nullcontext() if args.dry_run else lifecycle.scope(dispatch.EVENTS, "watch", lazy=True):

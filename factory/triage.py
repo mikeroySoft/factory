@@ -76,9 +76,13 @@ WATCH_BRIEF = (
 
 
 def watch_filed(issue: dict) -> bool:
+    """Filed by this repository's `factory watch`: its journal recorded the issue number, so a
+    hand-written issue cannot copy the format to skip triage."""
     labels = {label.get("name") for label in issue.get("labels", [])}
     return (
-        bool(WATCH_FINGERPRINT.match(issue.get("body") or ""))
+        issue.get("number") in {row.get("issue") for row in lifecycle.read_events(cfg.factory / "events.jsonl")
+                                if row.get("event") == "watch"}
+        and bool(WATCH_FINGERPRINT.match(issue.get("body") or ""))
         and str(issue.get("title") or "").startswith(WATCH_TITLE)
         and "bug" in labels
     )

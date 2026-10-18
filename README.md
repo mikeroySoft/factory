@@ -297,7 +297,8 @@ landed on its own, and partial progress needs its own reviewed PR.
 | `factory plan baseline N` / `factory plan drift TICKET` | Read-only schema 1 JSON for proposing a complete immutable initiative baseline or comparing a ticket's latest accepted baseline with the live complete source. Results are under top-level `baseline` or `drift`; neither command edits issues, rebaselines work, or grants execution authority. |
 | `factory doctor` / `init` / `install` | Onboarding, above. |
 
-`factory watch` also closes an open, unassigned tracked issue as completed when its
+`factory watch` also closes an open, unassigned tracked issue still at `needs-triage`
+or `ready-for-agent` (never one handed to a human) as completed when its
 newest evidence (or its filing time) is at least 24 hours old and the failure is not
 happening now. Each pass closes at most five; `--dry-run` reports closures without
 applying them.
@@ -563,7 +564,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
 
 ## How a ticket moves
 
-1. **Triage.** Watch-filed runtime bugs (a first-line `Fingerprint:`, the
+1. **Triage.** Runtime bugs filed by `factory watch` (the issue number is in a
+   journaled `watch` row, with a first-line `Fingerprint:`, the
    `factory runtime failure:` title, and `bug` label) bypass the model and go
    directly to `ready-for-agent` with a reproduce-or-handoff investigation
    brief. Other issues first pass a deterministic lint that rejects bodies
