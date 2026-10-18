@@ -64,6 +64,25 @@ ACCEPTANCE_HINTS = re.compile(
 )
 
 
+WATCH_TITLE = "factory runtime failure:"
+WATCH_FINGERPRINT = re.compile(r"^Fingerprint: \S+(?:\n|$)")
+WATCH_BRIEF = (
+    "Reproduce the failure against current main and the installed engine using the evidence in "
+    "the issue. If it still occurs, fix the root cause with a regression test. If it does not "
+    "reproduce, or the evidence is a host condition outside the repository (network, a missing "
+    "executable on PATH, model endpoint down, or SIGTERM from a systemd stop), commit nothing "
+    "and state that in the handoff so the manager can resolve it."
+)
+
+
+def watch_filed(issue: dict) -> bool:
+    labels = {label.get("name") for label in issue.get("labels", [])}
+    return (
+        bool(WATCH_FINGERPRINT.match(issue.get("body") or ""))
+        and str(issue.get("title") or "").startswith(WATCH_TITLE)
+        and "bug" in labels
+    )
+
 def deterministic_needs_info(body: str, comments: str) -> str | None:
     """Cheap lint before the LLM: obviously under-specified -> needs-info."""
     if len(body.strip()) < 80:
@@ -241,7 +260,14 @@ def fetch_issue(number: int, execution=None) -> dict:
 
 
 def triage_issue(issue: dict, execution=None) -> dict | None:
-    """Ask the model for a decision. One retry on bad JSON, then None."""
+    """Choose a deterministic route where possible, otherwise ask the model."""
+    if watch_filed(issue):
+        return {
+            "decision": LABEL_AGENT,
+            "rationale": "Factory watch evidence requires an agent investigation.",
+            "question": "",
+            "brief": WATCH_BRIEF,
+        }
     comments = "\n\n".join(
         f"Comment by {c.get('author', {}).get('login', '?')}:\n{c.get('body', '')}"
         for c in issue.get("comments", [])

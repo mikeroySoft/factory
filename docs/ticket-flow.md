@@ -28,6 +28,7 @@ flowchart TB
     INIT(["initiative"])
     VIA["manager viability verdict"]
     TRI["triage: deterministic pre-check, then model decision"]
+    WTRI["watch-filed runtime investigation"]
   end
 
   subgraph build["View: Build"]
@@ -44,6 +45,7 @@ flowchart TB
     REF["refresh onto main: re-gate, re-review, re-approve"]
     MERGE["merge one PR per pass"]
     MERGED(["merged, issue closed by PR"])
+    WCLOSED(["watch issue closed"])
   end
 
   subgraph recover["View: Recovery"]
@@ -66,6 +68,8 @@ flowchart TB
   INIT -->|"refused at every stage: plan.is_initiative"| HUMAN
   NT -->|"triage.execute"| TRI
   TRI -->|"too short or no acceptance: triage.deterministic_needs_info"| NI
+  TRI -->|"watch fingerprint + runtime title + bug, no model: triage.triage_issue"| WTRI
+  WTRI -->|"fixed agent brief: triage.apply_decision"| RFA
   TRI -->|"triage.apply_decision"| NI
   TRI -->|"triage.apply_decision"| RFA
   TRI -->|"triage.apply_decision"| RFH
@@ -109,6 +113,7 @@ flowchart TB
   CI -->|"pass, missing SHA-bound approval evidence: dispatch.merge_pass_locked"| ESC
   CI -->|"pass, up to date, no human CHANGES_REQUESTED: dispatch.merge_pass_locked"| MERGE
   MERGE -->|"dispatch.cleanup_after_merge"| MERGED
+  RFA -->|"fingerprint absent for 24 hours: watch.run_pass"| WCLOSED
 
   %% Recovery
   ESC -->|"ready-for-agent swapped for ready-for-human: dispatch.escalate"| RFH
@@ -130,7 +135,7 @@ flowchart TB
 
   classDef state fill:#e8f5e9,stroke:#2e7d32
   classDef out fill:#fff3e0,stroke:#e65100
-  class NV,NT,NI,INIT,RFA,FA,MERGED,RFH,WONT state
+  class NV,NT,NI,INIT,RFA,FA,MERGED,WCLOSED,RFH,WONT state
   class REPORTER,HUMAN,CI,UPSTREAM,EXTPR out
 ```
 
