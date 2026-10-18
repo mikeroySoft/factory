@@ -896,7 +896,7 @@ ESCALATION_CODES = frozenset({
     "pr_checks_failed", "review_revise", "approval_drift", "approval_missing",
     "ci_failed", "ci_runner", "refresh_head", "refresh_conflict", "refresh_empty",
     "gh_failed", "review_intake", "manager_failed", "manager_exhausted",
-    "manager_human", "pr_feedback", "pr_stale", "lease_refused", "dispatcher_error",
+    "manager_human", "pr_feedback", "pr_stale", "lease_refused", "dispatcher_error", "no_change",
 })
 
 
@@ -2277,11 +2277,18 @@ def process_ticket(
                              code="worker_stuck" if stuck else "gate_failed")
                     return
 
+            run(["git", "fetch", "origin", cfg.main], cwd=wt)
+            if run(["git", "rev-list", "--count", f"origin/{cfg.main}..HEAD"], cwd=wt).stdout.strip() == "0":
+                # A ticket outcome, not a publish failure: the worker found nothing to change
+                # (already fixed, duplicate, or blocked); its handoff says which.
+                escalate(n, f"agent/{n}: worker committed nothing over {cfg.main}; read the handoff",
+                         logfile, code="no_change")
+                return
             body = f"Closes #{n}\n\n## Gate report\n\n{report}\n"
             if not push_and_pr(wt, f"agent/{n}", f"agent/{n}: {title}", body, ticket=n, lease=lease):
                 escalate(
-                    n, f"agent/{n}: PR not published (no commits over {cfg.main} "
-                    "or existing PR target mismatch); inspect dispatcher log", logfile,
+                    n, f"agent/{n}: PR not published (existing PR targets a base other than "
+                    f"{cfg.main}); inspect dispatcher log", logfile,
                     code="pr_unpublished",
                 )
                 return
