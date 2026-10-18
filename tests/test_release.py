@@ -144,7 +144,7 @@ class ReleaseTest(unittest.TestCase):
                 mock.patch.object(release, "_pull", return_value=pull), \
                 mock.patch.object(release, "ci_passes", return_value=True), \
                 mock.patch.object(release, "_merge_pull", return_value={"merged": True}) as merged:
-            reason = release.run(self.cfg)
+            reason = release.run(self.cfg, open_pr=False)
         self.assertIn("merged release PR #7", reason)
         merged.assert_called_once_with(self.cfg, 7, "Release 0.0.2")
 

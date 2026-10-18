@@ -298,8 +298,8 @@ landed on its own, and partial progress needs its own reviewed PR.
 
 ## Automatic releases
 
-`[release] auto = true` runs the release check after a successful dispatcher
-pass. `version_file` defaults to `factory/__init__.py` and `min_tickets` to 5.
+`[release] auto = true` runs the release check at the start and end of each
+dispatcher pass. `version_file` defaults to `factory/__init__.py` and `min_tickets` to 5.
 The annotated tag's fenced JSON records `human_rate` (distinct tickets with a
 manager HUMAN decision divided by distinct merged tickets, capped at 1; lower
 is better), `first_pass` (PASS journal rows among attempt-1 rows; higher is
@@ -321,8 +321,8 @@ the first commit that introduced that version and atomically advances `stable`;
 a release therefore takes up to three dispatcher passes when no branch refresh
 is needed. The dispatcher advances an open release PR at the start of a pass,
 before it lands a ticket (every ticket edits `CHANGELOG.md`, which GitHub cannot
-union-merge), and opens a new one only at the end of a pass. Each pass derives its state from remote branches, remote tags, and
-PRs, so crashes need no local recovery file. Temporary worktrees are removed,
+union-merge), and opens a new one only at the end of a pass. Each pass derives
+its state from remote branches, remote tags, and PRs, so crashes need no local recovery file. Temporary worktrees are removed,
 and local-only or stale local tags are ignored and removed before reuse. A
 completed release journals one `release` row; held reasons go to the dispatcher
 log.
