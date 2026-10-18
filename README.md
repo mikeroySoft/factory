@@ -1644,7 +1644,10 @@ History errors use source `events.jsonl`, scope `history` or `executions`:
 `event_limit`, `row_limit`, `unterminated_tail`, `invalid_json`, `invalid_record`,
 `unsupported_record`, `unsupported_version`, `unsupported_kind`,
 `invalid_lifecycle`, `duplicate_conflict`, `identity_conflict`, `sequence_gap`,
-`missing_enter`, `sequence_conflict`. Legacy/unversioned records are explicitly
+`missing_enter`, `sequence_conflict`. `identity_conflict` compares only the fields
+fixed when a scope opens (run, root, execution and parent IDs, ticket, stage); a
+ticket scope advances `attempt`/`review_round` in place for its children, and the
+projected execution reports the latest values. Legacy/unversioned records are explicitly
 unsupported for lifecycle coverage, not an empty valid lifecycle history.
 Known legacy rows cannot hide a lifecycle exit, so they do not independently
 invalidate supported open scopes.
