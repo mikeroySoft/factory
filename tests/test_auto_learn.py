@@ -253,6 +253,8 @@ class PromotionTest(unittest.TestCase):
         self.run = self.enterContext(mock.patch.object(dispatch, "run"))
         self.open_prs = [{"number": 42, "headRefName": self.BRANCH, "headRefOid": self.HEAD, "baseRefName": "main",
                           "isDraft": False, "reviewDecision": ""}]
+        self.compare = {"behind_by": 0, "files": [{"filename": ".factory-lessons.md"}]}
+        self.gh.side_effect = lambda args: self.compare if "/compare/" in args[1] else self.open_prs
 
     def journal(self, *rows: dict) -> None:
         with self.events.open("a") as f:
@@ -319,7 +321,7 @@ class PromotionTest(unittest.TestCase):
         self.run.side_effect = RuntimeError("gh down")
         with mock.patch.object(dispatch, "initiative_kind"):
             dispatch.merge_pass_locked(dry_run=False)  # a failing lessons merge never blocks the ticket stage
-        self.assertIn("promotion: failed (RuntimeError: gh down)", [c.args[0] for c in self.log.call_args_list])
+        self.assertIn(f"PR #42: {self.BRANCH} promotion failed (RuntimeError: gh down)", [c.args[0] for c in self.log.call_args_list])
 
     def test_revert_merge_opens_no_promotion(self) -> None:
         self.open_prs[0]["headRefName"] = branch = "agent/revert-lessons-42"
@@ -329,9 +331,82 @@ class PromotionTest(unittest.TestCase):
         self.assertEqual(len(self.gh_calls()), 2)
         self.assertEqual(self.rows("promotion-open"), [])
 
+    def ran(self, scores: list[dict]) -> list[dict]:
+        """Each score row preceded by the `attempt` row it scores."""
+        return [row for s in scores for row in ({"event": "attempt", "ticket": s["ticket"], "attempt": s["attempt"]}, s)]
+
     def open_promotion(self, after: list[dict]) -> None:
         self.journal(*self.scores(0.9), {"event": "promotion-open", "pr": 42, "head": self.HEAD, "branch": self.BRANCH,
-                                         "baseline": learn.promotion.window(self.scores(0.9))}, *after)
+                                         "baseline": learn.promotion.window(self.scores(0.9))}, *self.ran(after))
+
+    def test_late_scored_pre_merge_attempts_never_fill_the_after_window(self) -> None:
+        self.journal(*({"event": "attempt", "ticket": 100 + i, "attempt": 1} for i in range(10)))  # old prompt
+        self.open_promotion([])
+        self.journal(*({**s, "ticket": 100 + s["ticket"]} for s in self.scores(0.1)))  # scored after the merge
+        learn.learn_pass()
+        self.assertEqual(self.rows("promotion-keep", "promotion-revert"), [])
+        self.journal(*self.ran(self.scores(0.9)))
+        learn.learn_pass()
+        [row] = self.rows("promotion-keep", "promotion-revert")
+        self.assertEqual((row["event"], row["after"]["efficiency_mean"]), ("promotion-keep", 0.9))
+
+    def test_behind_head_changing_more_than_lessons_is_refreshed_not_merged(self) -> None:
+        self.journal(*self.evidence())
+        self.compare = {"behind_by": 3, "files": [{"filename": ".factory-lessons.md"}, {"filename": "tests/test_parser.py"}]}
+        with mock.patch.object(learn, "refresh") as refresh:
+            learn.promote_pass(self.open_prs)
+        refresh.assert_called_once_with(self.cfg, 42, self.BRANCH, self.HEAD)
+        self.assertEqual(self.gh_calls(), [])
+        self.compare["files"] = [{"filename": ".factory-lessons.md"}]
+        learn.promote_pass(self.open_prs)  # no check reads the lessons file: it merges behind main
+        self.assertEqual(len(self.gh_calls()), 2)
+
+    def test_refresh_rebases_gates_pushes_with_a_lease_and_reviews_the_new_head(self) -> None:
+        self.enterContext(mock.patch.object(dispatch, "run", REAL_RUN))
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        origin, repo = root / "origin.git", root / "repo"
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
+        subprocess.run(["git", "clone", "-q", str(origin), str(repo)], check=True, capture_output=True)
+
+        def git(*args: str) -> str:
+            return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True).stdout.strip()
+
+        def commit(path: str) -> str:
+            (repo / path).parent.mkdir(exist_ok=True)
+            (repo / path).write_text(f"{path}\n")
+            git("add", path)
+            git("commit", "-qm", path)
+            return git("rev-parse", "HEAD")
+
+        git("config", "user.email", "t@example.com")
+        git("config", "user.name", "T")
+        commit("README.md")
+        branch = "agent/curate-2026-10-17-t10"
+        git("checkout", "-qb", branch)
+        head = commit("tests/test_parser.py")
+        git("push", "-q", "origin", branch)
+        git("checkout", "-q", "main")
+        tip = commit("factory/landed.py")  # a ticket landed after the curate PR opened
+        git("push", "-q", "origin", "main")
+        cfg = Config(root=repo, repo="acme/widgets", signoff=False)
+        cfg.factory.mkdir()
+        with mock.patch.multiple(dispatch, cfg=cfg, ROOT=repo, EVENTS=cfg.factory / "events.jsonl"), \
+                mock.patch.object(dispatch, "run_gate", return_value=(True, "")), \
+                mock.patch.object(dispatch, "review_external_pr") as review:
+            learn.refresh(cfg, 42, branch, head)
+            git("fetch", "-q", "origin")
+            new = git("rev-parse", f"origin/{branch}")
+            self.assertEqual(git("rev-parse", f"{new}~1"), tip)
+            self.assertEqual(git("ls-tree", "-r", "--name-only", new).split(),
+                             ["README.md", "factory/landed.py", "tests/test_parser.py"])
+            self.assertEqual([(r["branch"], r["head"], r["gate"]) for r in lifecycle.read_events(cfg.factory / "events.jsonl")
+                              if r.get("event") == "gate"], [(branch, new, "PASS")])
+            review.assert_called_once_with(42, tip, new, branch)
+            git("push", "-q", "--force", "origin", f"main:{branch}")  # someone else moved the branch
+            with self.assertRaises(subprocess.CalledProcessError):
+                learn.refresh(cfg, 42, branch, new)  # the lease on the head promote_pass saw refuses
+        self.assertEqual(git("ls-remote", "origin", branch).split()[0], tip)
+        review.assert_called_once()
 
     def test_drop_beyond_noise_opens_one_revert_pr(self) -> None:
         self.open_promotion(self.scores(0.5))
@@ -374,7 +449,7 @@ class PromotionTest(unittest.TestCase):
         self.open_promotion(self.scores(0.9, 9))
         learn.learn_pass()
         self.assertEqual(self.rows("promotion-keep", "promotion-revert"), [])  # fewer than 10 scored after the merge
-        self.journal(*self.scores(0.9, 1))
+        self.journal(*self.ran(self.scores(0.9, 1)))
         learn.learn_pass()
         learn.learn_pass()
         [row] = self.rows("promotion-keep", "promotion-revert")

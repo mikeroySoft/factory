@@ -9,7 +9,7 @@ untouched: this only judges eval claims.
 
 Online form (`window`, `drift`): a merged lessons/curate PR is the candidate, the
 `score` rows of the PROMOTION_N attempts before the merge are the baseline and the
-next PROMOTION_N scored attempts the fresh split; the same pstdev noise margin applies.
+first PROMOTION_N scored attempts journaled after it the fresh split; the same pstdev noise margin applies.
 """
 
 from __future__ import annotations

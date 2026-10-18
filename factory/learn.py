@@ -207,13 +207,36 @@ def chore_pr(cfg: config.Config, branch: str, edit: Callable[[Path], list[str]],
         dispatch.run(["git", "add", "--", *paths], cwd=wt)
         flags = ["-s"] if cfg.signoff else []
         dispatch.run(["git", "commit", *flags, "-m", title], cwd=wt)
-        head = dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
-        ok, report = dispatch.run_gate(wt, branch.removeprefix("agent/"), protected_override=protected_override)
-        dispatch.record("gate", branch=branch, head=head, gate="PASS" if ok else "FAIL")
-        if not ok:
-            raise ValueError(f"gate FAIL on {branch}:\n{report.strip()[-2000:]}")
+        gate_head(wt, branch, protected_override)
         dispatch.push_and_pr(wt, branch, title, pr_body, label=LABEL_CHORE)
     finally:
+        dispatch.run(["git", "worktree", "remove", "--force", str(wt)], cwd=cfg.root, check=False)
+
+
+def gate_head(wt: Path, branch: str, protected_override: bool) -> str:
+    """Run the attempt gate on `wt`'s HEAD and journal it as `gate` bound to that head; a FAIL raises ValueError."""
+    head = dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    ok, report = dispatch.run_gate(wt, branch.removeprefix("agent/"), protected_override=protected_override)
+    dispatch.record("gate", branch=branch, head=head, gate="PASS" if ok else "FAIL")
+    if not ok:
+        raise ValueError(f"gate FAIL on {branch}:\n{report.strip()[-2000:]}")
+    return head
+
+
+def refresh(cfg: config.Config, n: int, branch: str, head: str) -> None:
+    """Rebase a chore PR that is behind main onto it, gate the new head, push it with a lease on `head`,
+    and review it: the evidence `promote_pass` reads is then bound to a head containing the main tip."""
+    wt = cfg.factory / f"wt-{branch.removeprefix('agent/')}"
+    dispatch.run(["git", "fetch", "origin", cfg.main, branch], cwd=cfg.root)
+    dispatch.run(["git", "worktree", "add", "--force", "-B", branch, str(wt), head], cwd=cfg.root)
+    try:
+        dispatch.run(["git", "rebase", f"origin/{cfg.main}"], cwd=wt)
+        new = gate_head(wt, branch, protected_override=True)  # the diff `chore_pr` gated, now on main
+        dispatch.run(["git", "push", f"--force-with-lease={branch}:{head}", "origin", f"HEAD:{branch}"], cwd=wt)
+        base = dispatch.run(["git", "rev-parse", f"origin/{cfg.main}"], cwd=wt).stdout.strip()
+        dispatch.review_external_pr(n, base, new, branch)
+    finally:
+        dispatch.run(["git", "rebase", "--abort"], cwd=wt, check=False)
         dispatch.run(["git", "worktree", "remove", "--force", str(wt)], cwd=cfg.root, check=False)
 
 
@@ -370,43 +393,58 @@ def learn_pass(dry_run: bool = False) -> None:
 def promote_pass(prs: list[dict], dry_run: bool = False) -> None:
     """Merge stage for `factory learn` PRs (`LESSONS_BRANCH`) in the ticket merge stage's open-PR listing,
     under the landing lock: a journaled `gate` PASS and reviewer `review-result` APPROVE bound to the PR
-    head and only passing (or skipped) CI checks earn `factory-approved` and a squash merge. A lessons or
-    curate merge journals `promotion-open` with the baseline means of the last PROMOTION_N scored
-    attempts; a revert merge closes the loop and opens nothing."""
+    head and only passing (or skipped) CI checks earn `factory-approved` and a squash merge. A head behind
+    main that changes more than LESSONS_NAME (which no check reads) is refreshed instead (`refresh`).
+    A lessons or curate merge journals `promotion-open` with the baseline means of the last PROMOTION_N
+    scored attempts; a revert merge closes the loop and opens nothing. A failing PR is logged and skipped."""
     cfg = dispatch.cfg
     events = None
     for pr in sorted(prs, key=lambda p: p["number"]):
-        n, branch, head = pr["number"], pr["headRefName"], pr["headRefOid"]
+        n, branch = pr["number"], pr["headRefName"]
         if (not LESSONS_BRANCH.match(branch) or pr["isDraft"] or pr["baseRefName"] != cfg.main
                 or pr["reviewDecision"] == "CHANGES_REQUESTED"):
             continue
         if events is None:
             events = lifecycle.read_events(dispatch.EVENTS)
-        gated = any(e.get("event") == "gate" and e.get("branch") == branch and e.get("head") == head
-                    and e.get("gate") == "PASS" for e in events)
-        reviewed = any(e.get("event") == "review-result" and e.get("pr") == n and e.get("head") == head
-                       and e.get("verdict") == "APPROVE" for e in events)
-        if not (gated and reviewed):
-            dispatch.log(f"PR #{n}: {branch} waiting for {'review' if gated else 'gate evidence'} at {head[:12]}")
-            continue
-        buckets = {c["bucket"] for c in dispatch.pr_checks(n)}
-        if "pass" not in buckets or buckets - {"pass", "skipping"}:
-            dispatch.log(f"PR #{n}: {branch} CI {sorted(buckets) or 'missing'}; not merging")
-            continue
-        if dry_run:
-            dispatch.log(f"PR #{n}: would merge {branch}")
-            continue
-        with lifecycle.scope(dispatch.EVENTS, "merge"):
-            dispatch.run(["gh", "pr", "edit", str(n), "--repo", cfg.repo, "--add-label", dispatch.FACTORY_APPROVED])
-            dispatch.record("approved", pr=n, head=head, branch=branch, gate_head=head, review_head=head)
-            dispatch.run(["gh", "pr", "merge", str(n), "--repo", cfg.repo, "--squash", "--match-head-commit", head])
-            dispatch.record("merged", pr=n, head=head, branch=branch, method="squash")
-        dispatch.log(f"PR #{n}: merged {branch} into {cfg.main}")
-        if branch.startswith(REVERT_BRANCH):
-            continue
-        baseline = promotion.window(promotion.scored(events)[-promotion.PROMOTION_N:])
-        dispatch.record("promotion-open", pr=n, head=head, branch=branch, baseline=baseline)
-        dispatch.log(f"PR #{n}: promotion open (baseline n={baseline['n']})")
+        try:
+            promote(cfg, pr, events, dry_run)
+        except Exception as exc:  # noqa: BLE001 - one stuck chore PR never blocks the others
+            dispatch.log(f"PR #{n}: {branch} promotion failed ({type(exc).__name__}: {exc})")
+
+
+def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> None:
+    n, branch, head = pr["number"], pr["headRefName"], pr["headRefOid"]
+    gated = any(e.get("event") == "gate" and e.get("branch") == branch and e.get("head") == head
+                and e.get("gate") == "PASS" for e in events)
+    reviewed = any(e.get("event") == "review-result" and e.get("pr") == n and e.get("head") == head
+                   and e.get("verdict") == "APPROVE" for e in events)
+    if not (gated and reviewed):
+        dispatch.log(f"PR #{n}: {branch} waiting for {'review' if gated else 'gate evidence'} at {head[:12]}")
+        return
+    buckets = {c["bucket"] for c in dispatch.pr_checks(n)}
+    if "pass" not in buckets or buckets - {"pass", "skipping"}:
+        dispatch.log(f"PR #{n}: {branch} CI {sorted(buckets) or 'missing'}; not merging")
+        return
+    compare = dispatch.gh_json(["api", f"repos/{cfg.repo}/compare/{cfg.main}...{head}"])
+    if compare["behind_by"] and {f["filename"] for f in compare["files"]} - {LESSONS_NAME}:
+        dispatch.log(f"PR #{n}: {'would refresh' if dry_run else 'refreshing'} {branch} (behind {cfg.main})")
+        if not dry_run:
+            refresh(cfg, n, branch, head)
+        return
+    if dry_run:
+        dispatch.log(f"PR #{n}: would merge {branch}")
+        return
+    with lifecycle.scope(dispatch.EVENTS, "merge"):
+        dispatch.run(["gh", "pr", "edit", str(n), "--repo", cfg.repo, "--add-label", dispatch.FACTORY_APPROVED])
+        dispatch.record("approved", pr=n, head=head, branch=branch, gate_head=head, review_head=head)
+        dispatch.run(["gh", "pr", "merge", str(n), "--repo", cfg.repo, "--squash", "--match-head-commit", head])
+        dispatch.record("merged", pr=n, head=head, branch=branch, method="squash")
+    dispatch.log(f"PR #{n}: merged {branch} into {cfg.main}")
+    if branch.startswith(REVERT_BRANCH):
+        return
+    baseline = promotion.window(promotion.scored(events)[-promotion.PROMOTION_N:])
+    dispatch.record("promotion-open", pr=n, head=head, branch=branch, baseline=baseline)
+    dispatch.log(f"PR #{n}: promotion open (baseline n={baseline['n']})")
 
 
 def decide_promotions(cfg: config.Config, dry_run: bool = False) -> list[str]:
@@ -421,7 +459,11 @@ def decide_promotions(cfg: config.Config, dry_run: bool = False) -> list[str]:
         for i, opened in enumerate(rows):
             if opened.get("event") != "promotion-open" or opened.get("pr") in decided:
                 continue
-            after = promotion.scored(rows[i + 1:])[:promotion.PROMOTION_N]
+            # Attempts journaled after the merge; a pre-merge attempt scored late ran on the old prompt.
+            ran = {(r.get("ticket"), r.get("attempt"), r.get("transcript")) for r in rows[i + 1:]
+                   if r.get("event") == "attempt"}
+            after = [s for s in promotion.scored(rows[i + 1:])
+                     if (s.get("ticket"), s.get("attempt"), s.get("transcript")) in ran][:promotion.PROMOTION_N]
             if len(after) < promotion.PROMOTION_N:
                 continue
             before = promotion.scored(rows[:i])[-promotion.PROMOTION_N:]
