@@ -233,14 +233,19 @@ def run(cfg: config.Config, dry_run: bool = False) -> str:
                                metrics, bar, latest_tag)
             return _finish(cfg, False, f"released {tag}", metrics, bar, tag, released=True)
 
+        metrics = measure(cfg, latest["date"])
+        head = _git(cfg.root, "rev-parse", f"origin/{cfg.main}").stdout.strip()
+        if head == latest["sha"] or not _git(
+                cfg.root, "rev-list", "--count", f"{latest_tag}..origin/{cfg.main}").stdout.strip().lstrip("0"):
+            return _finish(cfg, dry_run, _reason(f"no changes since {latest_tag}", metrics, bar),
+                           metrics, bar, latest_tag)
         next_version = ".".join(map(str, (*latest["version"][:2], latest["version"][2] + 1)))
         branch = f"release/v{next_version}"
         pulls = _pulls(cfg, branch)
         if pulls:
             pull = _pull(cfg, pulls[0]["number"])
             number = pull["number"]
-            head = pull["head"]["sha"]
-            ready = ci_passes(cfg, head) and pull.get("mergeable") is True
+            ready = ci_passes(cfg, pull["head"]["sha"]) and pull.get("mergeable") is True
             if dry_run:
                 action = f"would squash-merge release PR #{number}" if ready else f"release PR #{number} waiting for CI"
                 return _finish(cfg, True, _reason(action, None, bar), None, bar, latest_tag)
@@ -260,12 +265,6 @@ def run(cfg: config.Config, dry_run: bool = False) -> str:
             return _finish(cfg, False, _reason(f"merged release PR #{number}", None, bar),
                            None, bar, latest_tag)
 
-        metrics = measure(cfg, latest["date"])
-        head = _git(cfg.root, "rev-parse", f"origin/{cfg.main}").stdout.strip()
-        if head == latest["sha"] or not _git(
-                cfg.root, "rev-list", "--count", f"{latest_tag}..origin/{cfg.main}").stdout.strip().lstrip("0"):
-            return _finish(cfg, dry_run, _reason(f"no changes since {latest_tag}", metrics, bar),
-                           metrics, bar, latest_tag)
         if metrics["tickets"] < cfg.release_min_tickets:
             return _finish(cfg, dry_run, _reason(
                 f"tickets {metrics['tickets']} below min_tickets {cfg.release_min_tickets}", metrics, bar),
@@ -303,7 +302,7 @@ def run(cfg: config.Config, dry_run: bool = False) -> str:
                                metrics, bar, latest_tag)
             _git(worktree, "add", cfg.release_version_file, "CHANGELOG.md")
             _git(worktree, "commit", "-m", f"Release {next_version}")
-            pushed = _git(worktree, "push", "--force-with-lease", "origin",
+            pushed = _git(worktree, "push", "--force", "origin",
                           f"HEAD:refs/heads/{branch}", check=False)
             if pushed.returncode:
                 detail = pushed.stderr.strip().splitlines()[-1] if pushed.stderr.strip() else "git push failed"
