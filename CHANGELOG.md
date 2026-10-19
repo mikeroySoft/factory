@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Triage posts at most one comment per issue state (#288): a `needs-triage` issue whose last comment is its own triage comment and whose `updatedAt` is within a minute of it (no comment, body or title edit, or label change since) is skipped without asking the model, journaled as `not_admitted`/`unchanged_since_triage`. A failed label swap after the comment used to leave `needs-triage` and repost every pass; a new comment or any label change, including putting `needs-triage` back, still gets a fresh triage.
 - Managers can `RESOLVE` a no-change escalation when evidence shows the requested outcome is already on main or the ticket is a duplicate. Factory records the evidence before closing the issue as completed and removing `ready-for-human`; it closes an empty open agent PR too, but refuses if that PR contains commits.
 - Watch-filed runtime failures bypass model triage for a fixed agent investigation, and `factory watch` closes open filings after their fingerprint has been absent for 24 hours.
 - Watch-filed runtime failures bypass model triage for a fixed agent investigation, and `factory watch` closes open, unassigned filings whose newest evidence is at least 24 hours old.

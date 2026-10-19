@@ -17,6 +17,7 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import nullcontext
+from datetime import datetime, timedelta
 
 from factory import config, lifecycle
 from factory.config import (
@@ -257,10 +258,25 @@ def fetch_issue(number: int, execution=None) -> dict:
         "view",
         str(number),
         "--json",
-        "number,title,body,comments,labels,state",
+        "number,title,body,comments,labels,state,updatedAt",
         execution=execution,
     )
     return json.loads(raw)
+
+
+# ponytail: our own label swap lands seconds after the comment; a human change inside this
+# window goes unnoticed until the next change. Read the issue timeline if that ever matters.
+SETTLE = timedelta(minutes=1)
+
+
+def unchanged_since_triage(issue: dict) -> bool:
+    """The last comment is ours and the issue has not been updated since (no comment, body
+    or title edit, label change): triaging again would only repeat the same comment."""
+    comments = issue.get("comments") or []
+    if not comments or not comments[-1].get("body", "").startswith(("Triage: ", "Triage proposal: ")):
+        return False
+    posted = datetime.fromisoformat(comments[-1]["createdAt"])
+    return datetime.fromisoformat(issue["updatedAt"]) - posted < SETTLE
 
 
 def triage_issue(issue: dict, execution=None) -> dict | None:
@@ -425,6 +441,12 @@ def execute(args: argparse.Namespace, execution) -> int:
                             print(f"#{number}: initiative record; triage refused (never promoted to {LABEL_AGENT})")
                             if ticket_execution:
                                 ticket_execution.outcome, ticket_execution.reason = "not_admitted", "initiative"
+                            continue
+                        if not replay and unchanged_since_triage(issue):
+                            print(f"#{number}: unchanged since its triage comment; skipping")
+                            if ticket_execution:
+                                ticket_execution.outcome = "not_admitted"
+                                ticket_execution.reason = "unchanged_since_triage"
                             continue
                         try:
                             decision = triage_issue(issue, execution=ticket_execution)
