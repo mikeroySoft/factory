@@ -45,9 +45,13 @@ class FakeGh:
         if cmd[:3] == ["gh", "issue", "create"]:
             self.next_issue += 1
             self.issues[self.next_issue] = {"state": "OPEN", "closedAt": None}
+            self.issues[self.next_issue]["body"] = cmd[cmd.index("--body") + 1]
             return subprocess.CompletedProcess(cmd, 0, f"https://github.com/{REPO}/issues/{self.next_issue}\n", "")
         if cmd[:3] == ["gh", "issue", "view"]:
             return subprocess.CompletedProcess(cmd, 0, json.dumps(self.issues[int(cmd[3])]), "")
+        if cmd[:3] == ["gh", "issue", "list"]:  # open filings: fingerprint dedupe before filing
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(
+                [{"number": n, "body": i.get("body", "")} for n, i in self.issues.items() if i["state"] == "OPEN"]), "")
         raise AssertionError(f"unexpected command {cmd}")
 
     @property

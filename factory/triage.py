@@ -19,7 +19,7 @@ import urllib.request
 from contextlib import nullcontext
 from datetime import datetime, timedelta
 
-from factory import config, lifecycle
+from factory import config, lifecycle, onboard
 from factory.config import (
     LABEL_AGENT,
     LABEL_APPROVED,
@@ -35,6 +35,7 @@ from factory.config import (
 cfg: Config
 LLM_URL = os.environ.get("FACTORY_LLM_URL", config.DEFAULT_LLM_URL)
 LLM_MODEL = os.environ.get("FACTORY_LLM_MODEL", config.DEFAULT_LLM_MODEL)
+LOGIN: str | None = None  # `gh` login this process posts as; read once per process
 
 
 def configure(c: Config) -> None:
@@ -42,6 +43,26 @@ def configure(c: Config) -> None:
     cfg = c
     LLM_URL = os.environ.get("FACTORY_LLM_URL", cfg.llm_url)
     LLM_MODEL = os.environ.get("FACTORY_LLM_MODEL", cfg.llm_model)
+
+
+def login() -> str:
+    global LOGIN
+    if LOGIN is None:
+        LOGIN = onboard.gh_login(dict(os.environ))
+    return LOGIN
+
+
+def identity_mismatch() -> str | None:
+    """Why this process must not post, or None. With `[install].dispatch_env` the factory
+    posts as the dispatcher account; a triage whose `gh` authenticates as anyone else (an
+    owner shell, a unit installed without that env) would post triage as the wrong login."""
+    dispatch_env = cfg.install.get("dispatch_env")
+    if not dispatch_env:
+        return None  # no separate dispatcher identity is configured
+    expected = onboard.gh_login({**os.environ, **cfg.install["env"], **dispatch_env})
+    if expected and login().casefold() == expected.casefold():
+        return None
+    return f"gh authenticates as {login() or 'nobody'}, not the configured dispatcher {expected or '(unknown)'}"
 
 
 LABEL_TABLE = "\n".join(
@@ -78,16 +99,18 @@ WATCH_BRIEF = (
 
 
 def watch_filed(issue: dict) -> bool:
-    """Filed by this repository's `factory watch`: its journal recorded the issue number, so a
+    """Filed by `factory watch`: this repository's journal recorded the issue number, or the
+    account this triage posts as wrote it (another install's watch routed it here), so a
     hand-written issue cannot copy the format to skip triage."""
     labels = {label.get("name") for label in issue.get("labels", [])}
-    return (
-        issue.get("number") in {row.get("issue") for row in lifecycle.read_events(cfg.factory / "events.jsonl")
-                                if row.get("event") == "watch"}
-        and bool(WATCH_FINGERPRINT.match(issue.get("body") or ""))
-        and str(issue.get("title") or "").startswith(WATCH_TITLE)
-        and "bug" in labels
-    )
+    if not (WATCH_FINGERPRINT.match(issue.get("body") or "")
+            and str(issue.get("title") or "").startswith(WATCH_TITLE) and "bug" in labels):
+        return False
+    if issue.get("number") in {row.get("issue") for row in lifecycle.read_events(cfg.factory / "events.jsonl")
+                               if row.get("event") == "watch"}:
+        return True
+    author = (issue.get("author") or {}).get("login") or ""
+    return bool(author) and author.casefold() == login().casefold()
 
 def deterministic_needs_info(body: str, comments: str) -> str | None:
     """Cheap lint before the LLM: obviously under-specified -> needs-info."""
@@ -259,7 +282,7 @@ def fetch_issue(number: int, execution=None) -> dict:
         "view",
         str(number),
         "--json",
-        "number,title,body,comments,labels,state,updatedAt",
+        "number,title,body,comments,labels,state,updatedAt,author",
         execution=execution,
     )
     return json.loads(raw)
@@ -406,6 +429,13 @@ def main(argv: list[str]) -> int:
 def execute(args: argparse.Namespace, execution) -> int:
     replay = bool(args.replay)
     from factory.plan import is_initiative  # plan -> evidence -> dashboard: import lazily
+
+    if not (replay or args.dry_run) and (refused := identity_mismatch()):
+        print(f"triage refused to post: {refused}. Run it from the factory unit, whose "
+              "[install].dispatch_env selects the dispatcher's gh config.", file=sys.stderr)
+        if execution:
+            execution.outcome, execution.reason = "not_admitted", "identity_mismatch"
+        return 1
 
     if replay:
         numbers = [int(n) for n in args.replay.split(",")]
