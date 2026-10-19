@@ -471,6 +471,8 @@ class _Observation:
                     value.update(device=info.st_dev, inode=info.st_ino)
                 else:
                     _error(self.errors, "filesystem", "resources", "not_regular")
+            except FileNotFoundError:
+                pass  # Not created yet, or unlinked by ticket cleanup: absent, so state stays unknown.
             except OSError:
                 _error(self.errors, "filesystem", "resources", "lock_unavailable")
             self.lock_files[path] = value

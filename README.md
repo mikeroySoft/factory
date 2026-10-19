@@ -1694,7 +1694,9 @@ Other source/scope pairs are `proc`/`identity` (`boot_unavailable`,
 `proc/locks`/`resources` (`locks_unavailable`, `holder_limit`),
 `filesystem`/`resources` (`lock_limit`, `not_regular`, `lock_unavailable`,
 `canonical_path_unavailable`), and `configuration`/`resources`
-(`lock_limit`, `invalid_scope`, `host_identity_unavailable`).
+(`lock_limit`, `invalid_scope`, `host_identity_unavailable`). A lock file that
+does not exist (not yet created, or unlinked by ticket cleanup) is not an error:
+its resource reports state `unknown` with no `lock_unavailable`.
 Errors are deduplicated by source/scope/code; the first 32 are retained in
 deterministic discovery order, lifecycle/resource errors before service errors.
 Per-source quality/history flags remain authoritative even if the error cap is
@@ -1753,7 +1755,6 @@ and resource authority.
     "byte_limit": 1048576, "event_limit": 512, "retained_events": 0
   },
   "errors": [
-    {"source": "filesystem", "scope": "resources", "code": "lock_unavailable"},
     {"source": "systemctl", "scope": "service", "code": "unit_unavailable"},
     {"source": "systemctl", "scope": "timer", "code": "unit_unavailable"}
   ]
