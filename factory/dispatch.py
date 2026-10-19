@@ -2043,7 +2043,7 @@ def worker_round(
     )
     transcript = _transcript(session_dir, wall)
     timeout = {"timeout": fired, "reason": TIMEOUT_REASONS[fired]} if fired else {}
-    usage = worker_usage(logfile, cfg.worker_usage.get(worker))
+    usage = worker_usage(logfile, cfg.worker_usage.get(worker), transcript)
     record("llm-usage", ticket=n, stage="worker", attempt=attempt, **usage)
     commit_leftovers(wt, n, title)
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
@@ -2114,11 +2114,12 @@ def _json_path(row: object, path: str) -> object:
     return row
 
 
-def worker_usage(logfile: Path, spec: dict | None) -> dict:
+def worker_usage(logfile: Path, spec: dict | None, transcript: str | None = None) -> dict:
     """Normalized usage the worker reported in its log; None = not reported, never guessed.
 
     `spec` (a `[workers]` profile's `usage`) sums its JSON paths over every JSON-object
     line whose `match` paths hold; cost falls back to `cost_pattern` when no path gives one.
+    Tokens fall back to the OMP session `transcript` totals when the log reported none.
     """
     usage: dict = dict.fromkeys(("model", *USAGE_FIELDS))
     text = logfile.read_text(errors="replace") if spec else ""
@@ -2137,6 +2138,32 @@ def worker_usage(logfile: Path, spec: dict | None) -> dict:
                 if type(value) in (int, float) and value >= 0:
                     usage[field] = (usage[field] or 0) + value
     usage["cost"] = log_cost(logfile) if usage["cost"] is None else round(usage["cost"], 4)
+    if transcript and usage["prompt_tokens"] is None and usage["completion_tokens"] is None:
+        usage.update(transcript_usage(Path(transcript)))
+    return usage
+
+
+def transcript_usage(path: Path) -> dict:
+    """Token totals over an OMP session file's assistant messages (the `_omp_output` sums); {} when none."""
+    usage: dict = {}
+    for line in path.read_text(errors="replace").splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        message = row.get("message") if isinstance(row, dict) and row.get("type") == "message" else None
+        counts = message.get("usage") if isinstance(message, dict) and message.get("role") == "assistant" else None
+        if not isinstance(counts, dict):
+            continue
+        values = (counts.get("input"), counts.get("output"), counts.get("cacheRead", 0), counts.get("cacheWrite", 0))
+        if not all(type(value) is int and value >= 0 for value in values):
+            continue
+        prompt, completion, read, write = values
+        for key, value in (("prompt_tokens", prompt + read + write), ("completion_tokens", completion),
+                           ("cached_tokens", read)):
+            usage[key] = usage.get(key, 0) + value
+        if isinstance(message.get("model"), str):
+            usage["model"] = message["model"]
     return usage
 
 
