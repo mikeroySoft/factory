@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import io
 import json
 import os
@@ -9,7 +10,6 @@ import tempfile
 import unittest
 import urllib.error
 from contextlib import redirect_stderr
-from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -178,7 +178,7 @@ class Reproposal(unittest.TestCase):
         args = argparse.Namespace(issue=None, replay=None, dry_run=False)
         with patch.object(triage, "gh", self.gh), \
                 patch.object(triage.urllib.request, "urlopen", self.urlopen), \
-                redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()), \
+                redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()), \
                 lifecycle.scope(self.events, "triage", lazy=True) as execution:
             return triage.execute(args, execution)
 
