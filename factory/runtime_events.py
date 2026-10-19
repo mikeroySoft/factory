@@ -1,6 +1,7 @@
 """Bounded, read-only projections of the lifecycle journal and local evidence."""
 from __future__ import annotations
 
+import errno
 import json
 import math
 import os
@@ -47,10 +48,11 @@ REASONS = {
 PROCESS_FIELDS = ("pid", "boot_id", "start_ticks", "pid_namespace", "uid", "state", "ppid")
 
 
-def _error(errors: list, source: str, scope: str, code: str) -> None:
-    value = {"source": source, "scope": scope, "code": code}
-    if value not in errors and len(errors) < ERROR_LIMIT:
-        errors.append(value)
+def _error(errors: list, source: str, scope: str, code: str, detail: str | None = None) -> None:
+    if len(errors) < ERROR_LIMIT and not any(
+            (error["source"], error["scope"], error["code"]) == (source, scope, code) for error in errors):
+        value = {"source": source, "scope": scope, "code": code}
+        errors.append(value if detail is None else {**value, "detail": detail})
 
 
 def _text(value, limit=256) -> bool:
@@ -389,6 +391,7 @@ class _Observation:
         self.at = lifecycle._now()
         self.processes = {}
         self.lock_files = {}
+        self.missing = set()
         self.kernel = None
         self.kernel_read = False
         try:
@@ -471,8 +474,11 @@ class _Observation:
                     value.update(device=info.st_dev, inode=info.st_ino)
                 else:
                     _error(self.errors, "filesystem", "resources", "not_regular")
-            except OSError:
-                _error(self.errors, "filesystem", "resources", "lock_unavailable")
+            except FileNotFoundError:
+                self.missing.add(path)  # Nothing can flock a missing path; only its recorded inode can still be held.
+            except OSError as exc:
+                _error(self.errors, "filesystem", "resources", "lock_unavailable",
+                       errno.errorcode.get(exc.errno, str(exc.errno)))
             self.lock_files[path] = value
         return self.lock_files[path]
 
@@ -508,9 +514,12 @@ class _Observation:
 
     def lock_state(self, lock: dict) -> tuple[str, list | None]:
         current = self.lock_file(lock["path"])
-        if (lock["device"], lock["inode"]) != (current["device"], current["inode"]):
+        if lock["path"] in self.missing:
+            holders = self.holders(lock) if lock["device"] is not None else []
+        elif (lock["device"], lock["inode"]) != (current["device"], current["inode"]):
             return "unknown", None
-        holders = self.holders(current)
+        else:
+            holders = self.holders(current)
         return ("unknown", None) if holders is None else ("held" if holders else "free", holders)
 
 
@@ -667,12 +676,15 @@ def _resources(path: Path, paths, retained: list, executions: list, groups: dict
         host = observation.host
         resource = {"id": lifecycle._resource_id(host, repository, canonical), "scope": scope,
                     "host_id": host, "repository": repository, "lock": observation.lock_file(canonical)}
-        descriptors[resource["id"]] = resource
+        descriptors.setdefault(resource["id"], resource)  # A journaled descriptor keeps its recorded inode.
     active = {row["execution_id"] for row in executions if row["state"] == "active"}
     result = []
     for resource_id, descriptor in descriptors.items():
         local = observation.host is not None and descriptor["host_id"] == observation.host
-        resource = {**descriptor, "lock": observation.lock_file(descriptor["lock"]["path"])} if local else descriptor
+        current = observation.lock_file(descriptor["lock"]["path"]) if local else descriptor["lock"]
+        # A missing path keeps its recorded device:inode, the only identity a holder can still have.
+        missing = local and current["path"] in observation.missing
+        resource = {**descriptor, "lock": descriptor["lock"] if missing else current}
         state, holders = observation.lock_state(resource["lock"]) if local else ("unknown", None)
         candidates = []
         for (candidate_id, key, _), event in acquisitions.items():
@@ -703,7 +715,8 @@ def _resources(path: Path, paths, retained: list, executions: list, groups: dict
         quality = "unavailable" if state == "unknown" else "partial" if state == "held" and owner is None else "fresh"
         result.append({**value, "event_id": previous["event_id"] if matching else None,
                        "at": previous["at"] if matching else None,
-                       "observed_at": observation.at, "observation": quality})
+                       "observed_at": observation.at, "observation": quality,
+                       "note": "lock_path_missing" if missing else None})
     return result
 
 

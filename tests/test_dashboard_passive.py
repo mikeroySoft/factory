@@ -165,9 +165,9 @@ class PassiveDashboardTest(unittest.TestCase):
 
             tickets = {ticket["number"]: ticket for ticket in snapshot["tickets"]}
             self.assertIs(tickets[7]["lock_held"], True)
-            self.assertIsNone(tickets[8]["lock_held"])
+            self.assertIs(tickets[8]["lock_held"], False)  # no lock file yet: nothing holds it
             self.assertIs(snapshot["gpu_lock_held"], False)
-            self.assertIsNone(snapshot["active"])
+            self.assertEqual(snapshot["active"], 1)
 
 
 if __name__ == "__main__":

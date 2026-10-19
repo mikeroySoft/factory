@@ -1,6 +1,7 @@
 """Public runtime CLI: local evidence survives without writes or network access."""
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
@@ -12,6 +13,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import factory.runtime_events
 from factory import lifecycle
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -388,6 +390,81 @@ class RuntimeCliTest(unittest.TestCase):
                                   cwd=self.root, env=self.env, capture_output=True, text=True, timeout=5, check=False)
             self.assertEqual(proc.returncode, 2)
             self.assertEqual(proc.stdout, "")
+
+
+class MissingLockPathTest(unittest.TestCase):
+    """A lock path that no longer exists is evidence the lock is free, not a reader failure."""
+
+    def setUp(self):
+        context = patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""})
+        context.start()
+        self.addCleanup(context.stop)
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.journal = self.root / ".factory/events.jsonl"
+        self.journal.parent.mkdir()
+        self.lock = self.root / ".factory/9.lock"
+
+    def project(self, proc_locks: str = ""):
+        real = factory.runtime_events._small
+
+        def small(path, limit):
+            return proc_locks.encode() if str(path) == "/proc/locks" else real(path, limit)
+
+        with patch.object(factory.runtime_events, "_small", side_effect=small):
+            return factory.runtime_events.project(self.journal, [(self.lock, "repository")])
+
+    def journaled(self, *, release: bool) -> os.stat_result:
+        self.lock.touch()
+        recorded = self.lock.stat()
+        execution = lifecycle.Execution(self.journal, "worker", ticket=9, attempt=1)
+        execution.emit("enter")
+        execution.resource("acquired", self.lock, scope="repository")
+        if release:
+            execution.resource("released", self.lock, scope="repository")
+            execution.emit("exit")
+        self.lock.unlink()
+        return recorded
+
+    def row(self, data):
+        rows = [row for row in data["resources"] if row["resource"]["lock"]["path"] == str(self.lock)]
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("lock_unavailable", [error["code"] for error in data["errors"]])
+        return rows[0]
+
+    def test_never_created_lock_path_is_free(self):
+        row = self.row(self.project())
+        self.assertEqual((row["state"], row["ownership"], row["note"]), ("free", "none", "lock_path_missing"))
+
+    def test_unlinked_journaled_lock_path_is_free(self):
+        self.journaled(release=True)
+        row = self.row(self.project())
+        self.assertEqual((row["state"], row["ownership"], row["note"]), ("free", "none", "lock_path_missing"))
+        self.assertEqual(row["observation"], "fresh")
+
+    def test_unlinked_lock_path_whose_recorded_inode_is_held_is_held(self):
+        recorded = self.journaled(release=False)
+        device = f"{os.major(recorded.st_dev):02x}:{os.minor(recorded.st_dev):02x}:{recorded.st_ino}"
+        row = self.row(self.project(f"1: FLOCK  ADVISORY  WRITE {os.getpid()} {device} 0 EOF\n"))
+        self.assertEqual((row["state"], row["evidence"]["holder_pids"]), ("held", [os.getpid()]))
+        self.assertEqual(row["ownership"], "confirmed")
+        self.assertEqual(row["resource"]["lock"]["inode"], recorded.st_ino)
+
+    def test_permission_denied_is_lock_unavailable_with_errno(self):
+        real = Path.stat
+
+        def stat(path, *args, **kwargs):
+            if path == self.lock:
+                raise PermissionError(errno.EACCES, "Permission denied", str(path))
+            return real(path, *args, **kwargs)
+
+        with patch.object(Path, "stat", stat):
+            data = factory.runtime_events.project(self.journal, [(self.lock, "repository")])
+        self.assertIn({"source": "filesystem", "scope": "resources", "code": "lock_unavailable",
+                       "detail": "EACCES"}, data["errors"])
+        rows = [row for row in data["resources"] if row["resource"]["lock"]["path"] == str(self.lock)]
+        self.assertEqual((rows[0]["state"], rows[0]["note"]), ("unknown", None))
 
 
 if __name__ == "__main__":

@@ -1328,6 +1328,7 @@ holder identity. `wait_end.wait_event_id` names the ended wait's event UUID.
 | `evidence` | Object: `lock_state` (`held`/`free`/`unknown`), `attribution` (`proc_locks`/`unavailable`), `holder_pids` (integer array or null). Kernel PIDs alone are not confirmed execution identity. |
 | `event_id`, `at` | Stable identity and source time of the last distinct local resource observation. |
 | `observed_at` | UTC time of this local evidence collection, distinct from transition time. |
+| `note` | `lock_path_missing` when the lock path does not exist (never created, removed after release, or recorded before the repository moved); otherwise null. Nothing can flock a missing path, so the resource is `free` unless `/proc/locks` still shows the recorded device:inode held, then `held`. |
 
 Changes are persisted as `kind: "resource_observation"` in the same lifecycle
 journal, carrying `resource`, `state`, `ownership`, `owner`, `requests`, and
@@ -1680,6 +1681,9 @@ Other source/scope pairs are `proc`/`identity` (`boot_unavailable`,
 `filesystem`/`resources` (`lock_limit`, `not_regular`, `lock_unavailable`,
 `canonical_path_unavailable`), and `configuration`/`resources`
 (`lock_limit`, `invalid_scope`, `host_identity_unavailable`).
+`lock_unavailable` means an existing lock path could not be inspected (for
+example `EACCES` or an I/O error); its `detail` names the errno. A missing lock
+path is not an error: see `note` above.
 Errors are deduplicated by source/scope/code; the first 32 are retained in
 deterministic discovery order, lifecycle/resource errors before service errors.
 Per-source quality/history flags remain authoritative even if the error cap is
@@ -1713,10 +1717,10 @@ and resource authority.
         "host_id": "96359d9e-9be6-5980-985b-650f726a8115", "repository": null,
         "lock": {"path": "/tmp/tmp531zga_5/gpu.lock", "device": null, "inode": null}
       },
-      "state": "unknown", "ownership": "unknown", "owner": null, "requests": [],
-      "evidence": {"lock_state": "unknown", "attribution": "unavailable", "holder_pids": null},
+      "state": "free", "ownership": "none", "owner": null, "requests": [],
+      "evidence": {"lock_state": "free", "attribution": "proc_locks", "holder_pids": []},
       "event_id": null, "at": null,
-      "observed_at": "2026-09-05T23:15:55.975966Z", "observation": "unavailable"
+      "observed_at": "2026-09-05T23:15:55.975966Z", "observation": "fresh", "note": "lock_path_missing"
     },
     {
       "resource": {
@@ -1725,10 +1729,10 @@ and resource authority.
         "repository": "/tmp/tmp531zga_5/.factory",
         "lock": {"path": "/tmp/tmp531zga_5/.factory/locks/merge.lock", "device": null, "inode": null}
       },
-      "state": "unknown", "ownership": "unknown", "owner": null, "requests": [],
-      "evidence": {"lock_state": "unknown", "attribution": "unavailable", "holder_pids": null},
+      "state": "free", "ownership": "none", "owner": null, "requests": [],
+      "evidence": {"lock_state": "free", "attribution": "proc_locks", "holder_pids": []},
       "event_id": null, "at": null,
-      "observed_at": "2026-09-05T23:15:55.975966Z", "observation": "unavailable"
+      "observed_at": "2026-09-05T23:15:55.975966Z", "observation": "fresh", "note": "lock_path_missing"
     }
   ],
   "events": [],
@@ -1738,7 +1742,6 @@ and resource authority.
     "byte_limit": 1048576, "event_limit": 512, "retained_events": 0
   },
   "errors": [
-    {"source": "filesystem", "scope": "resources", "code": "lock_unavailable"},
     {"source": "systemctl", "scope": "service", "code": "unit_unavailable"},
     {"source": "systemctl", "scope": "timer", "code": "unit_unavailable"}
   ]
