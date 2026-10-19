@@ -17,6 +17,7 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import nullcontext
+from datetime import datetime, timedelta
 
 from factory import config, lifecycle
 from factory.config import (
@@ -63,6 +64,29 @@ ACCEPTANCE_HINTS = re.compile(
     re.IGNORECASE,
 )
 
+
+WATCH_TITLE = "factory runtime failure:"
+WATCH_FINGERPRINT = re.compile(r"^Fingerprint: \S+(?:\n|$)")
+WATCH_BRIEF = (
+    "Reproduce the failure against current main and the installed engine using the evidence in "
+    "the issue. If it still occurs, fix the root cause with a regression test. If it does not "
+    "reproduce, or the evidence is a host condition outside the repository (network, a missing "
+    "executable on PATH, model endpoint down, or SIGTERM from a systemd stop), commit nothing "
+    "and state that in the handoff so the manager can resolve it."
+)
+
+
+def watch_filed(issue: dict) -> bool:
+    """Filed by this repository's `factory watch`: its journal recorded the issue number, so a
+    hand-written issue cannot copy the format to skip triage."""
+    labels = {label.get("name") for label in issue.get("labels", [])}
+    return (
+        issue.get("number") in {row.get("issue") for row in lifecycle.read_events(cfg.factory / "events.jsonl")
+                                if row.get("event") == "watch"}
+        and bool(WATCH_FINGERPRINT.match(issue.get("body") or ""))
+        and str(issue.get("title") or "").startswith(WATCH_TITLE)
+        and "bug" in labels
+    )
 
 def deterministic_needs_info(body: str, comments: str) -> str | None:
     """Cheap lint before the LLM: obviously under-specified -> needs-info."""
@@ -234,14 +258,36 @@ def fetch_issue(number: int, execution=None) -> dict:
         "view",
         str(number),
         "--json",
-        "number,title,body,comments,labels,state",
+        "number,title,body,comments,labels,state,updatedAt",
         execution=execution,
     )
     return json.loads(raw)
 
 
+# ponytail: our own label swap lands seconds after the comment; a human change inside this
+# window goes unnoticed until the next change. Read the issue timeline if that ever matters.
+SETTLE = timedelta(minutes=1)
+
+
+def unchanged_since_triage(issue: dict) -> bool:
+    """The last comment is ours and the issue has not been updated since (no comment, body
+    or title edit, label change): triaging again would only repeat the same comment."""
+    comments = issue.get("comments") or []
+    if not comments or not comments[-1].get("body", "").startswith(("Triage: ", "Triage proposal: ")):
+        return False
+    posted = datetime.fromisoformat(comments[-1]["createdAt"])
+    return datetime.fromisoformat(issue["updatedAt"]) - posted < SETTLE
+
+
 def triage_issue(issue: dict, execution=None) -> dict | None:
-    """Ask the model for a decision. One retry on bad JSON, then None."""
+    """Choose a deterministic route where possible, otherwise ask the model."""
+    if watch_filed(issue):
+        return {
+            "decision": LABEL_AGENT,
+            "rationale": "Factory watch evidence requires an agent investigation.",
+            "question": "",
+            "brief": WATCH_BRIEF,
+        }
     comments = "\n\n".join(
         f"Comment by {c.get('author', {}).get('login', '?')}:\n{c.get('body', '')}"
         for c in issue.get("comments", [])
@@ -298,8 +344,6 @@ def apply_decision(number: int, decision: dict, dry_run: bool, execution=None) -
         return
 
     gh("issue", "comment", str(number), "--body", comment, execution=execution)
-    if label == "wontfix-proposal":
-        return  # never apply wontfix; leave needs-triage for a human
     gh(
         "issue",
         "edit",
@@ -397,6 +441,12 @@ def execute(args: argparse.Namespace, execution) -> int:
                             print(f"#{number}: initiative record; triage refused (never promoted to {LABEL_AGENT})")
                             if ticket_execution:
                                 ticket_execution.outcome, ticket_execution.reason = "not_admitted", "initiative"
+                            continue
+                        if not replay and unchanged_since_triage(issue):
+                            print(f"#{number}: unchanged since its triage comment; skipping")
+                            if ticket_execution:
+                                ticket_execution.outcome = "not_admitted"
+                                ticket_execution.reason = "unchanged_since_triage"
                             continue
                         try:
                             decision = triage_issue(issue, execution=ticket_execution)

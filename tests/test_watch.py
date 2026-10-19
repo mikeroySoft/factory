@@ -81,7 +81,7 @@ class WatchTest(unittest.TestCase):
         return [r for r in lifecycle.read_events(dispatch.EVENTS) if r.get("event") == kind]
 
     def test_new_fingerprint_files_one_bug_and_journals_it(self) -> None:
-        self.journal(exit_row("manage", "mechanism_failure", "github_command_failed"))
+        self.journal(exit_row("manage", "mechanism_failure", "KeyError: 'state'"))
         filed = watch.run_pass(self.cfg)
         self.assertEqual(len(filed), 1)
         self.assertEqual(len(self.gh.created), 1)
@@ -90,19 +90,19 @@ class WatchTest(unittest.TestCase):
         body = create[create.index("--body") + 1]
         self.assertIn(f"Fingerprint: {filed[0]['fingerprint']}", body)
         self.assertIn("## Expected behavior", body)
-        self.assertIn("github_command_failed", body)
+        self.assertIn("KeyError: 'state'", body)
         self.assertGreaterEqual(len(body.strip()), 80)
         rows = self.events("watch")
         self.assertEqual([(r["fingerprint"], r["issue"]) for r in rows], [(filed[0]["fingerprint"], 101)])
         self.assertIn("at", rows[0])
 
     def test_open_issue_is_not_refiled_closed_issue_with_recurrence_is(self) -> None:
-        self.journal(exit_row("manage", "mechanism_failure", "github_command_failed"))
+        self.journal(exit_row("manage", "mechanism_failure", "KeyError: 'state'"))
         watch.run_pass(self.cfg)
         self.assertEqual(len(self.gh.created), 1)
 
         watch.run_pass(self.cfg)
-        self.journal(exit_row("manage", "mechanism_failure", "github_command_failed"))
+        self.journal(exit_row("manage", "mechanism_failure", "KeyError: 'state'"))
         watch.run_pass(self.cfg)
         self.assertEqual(len(self.gh.created), 1, "open issue must not be refiled")
 
@@ -110,7 +110,7 @@ class WatchTest(unittest.TestCase):
         watch.run_pass(self.cfg)
         self.assertEqual(len(self.gh.created), 1, "closed issue without recurrence stays closed")
 
-        self.journal(exit_row("manage", "mechanism_failure", "github_command_failed"))
+        self.journal(exit_row("manage", "mechanism_failure", "KeyError: 'state'"))
         watch.run_pass(self.cfg)
         self.assertEqual(len(self.gh.created), 2, "recurrence after close refiles")
         self.assertEqual([r["issue"] for r in self.events("watch")], [101, 102])
@@ -123,7 +123,7 @@ class WatchTest(unittest.TestCase):
         self.assertEqual(self.events("watch"), [])
 
     def test_sixth_fingerprint_waits_for_the_next_pass(self) -> None:
-        self.journal(*(exit_row("worker", "unknown", f"worker_exit:{code}") for code in range(1, 7)))
+        self.journal(*(exit_row("worker", "mechanism_failure", f"RuntimeError: boom {code}") for code in range(1, 7)))
         first = watch.run_pass(self.cfg)
         self.assertEqual(len(first), 5)
         self.assertEqual(len(self.gh.created), 5)
@@ -145,13 +145,39 @@ class WatchTest(unittest.TestCase):
         log.write_text("".join(f"line {i}\n" for i in range(60)))
         self.journal(
             {"event": "attempt", "at": "2026-01-02T11:59:00Z", "ticket": 7, "attempt": 1, "log": str(log)},
-            exit_row("worker", "unknown", "worker_exit:2", ticket=7, attempt=1),
+            exit_row("worker", "mechanism_failure", "FileNotFoundError: 'omp'", ticket=7, attempt=1),
         )
         watch.run_pass(self.cfg)
         body = self.gh.created[0][self.gh.created[0].index("--body") + 1]
         self.assertIn("line 59", body)
         self.assertNotIn("line 19\n", body)
         self.assertIn("events.jsonl", body)
+
+    def test_host_conditions_are_not_filed(self) -> None:
+        self.journal(exit_row("worker", "unknown", "worker_exit:1"), exit_row("worker", "unknown", "worker_exit:-15"),
+                     exit_row("triage", "mechanism_failure", "triage_endpoint_unavailable"),
+                     exit_row("triage-ticket", "unknown", "triage_endpoint_timeout"),
+                     exit_row("manage", "mechanism_failure", "github_command_failed"))
+        self.assertEqual(watch.run_pass(self.cfg), [])
+        self.assertEqual(self.gh.calls, [])
+
+    def test_one_issue_per_reason_across_stages_and_per_journal_source_across_codes(self) -> None:
+        self.journal(*(exit_row(stage, "mechanism_failure", "FileNotFoundError: 'omp'")
+                       for stage in ("worker", "ticket", "dispatcher")))
+        errors = [{"source": "events.jsonl", "scope": "executions", "code": "missing_enter"},
+                  {"source": "events.jsonl", "scope": "executions", "code": "identity_conflict"},
+                  {"source": "filesystem", "scope": "resources", "code": "lock_unavailable"}]
+        with mock.patch.object(watch, "runtime_errors", return_value=errors):
+            filed = watch.run_pass(self.cfg)
+        titles = sorted(watch.title(s) for s in filed)
+        self.assertEqual(titles, [
+            "factory runtime failure: lifecycle worker, ticket, dispatcher FileNotFoundError: 'omp'",
+            "factory runtime failure: runtime events.jsonl identity_conflict, missing_enter",
+            "factory runtime failure: runtime filesystem lock_unavailable",
+        ])
+        self.assertEqual(len(self.gh.created), 3)
+        journal = next(b for b in (c[c.index("--body") + 1] for c in self.gh.created) if "identity_conflict" in b)
+        self.assertIn("missing_enter", journal)
 
     def test_unit_and_runtime_signals_are_fingerprinted(self) -> None:
         with mock.patch.object(watch, "failed_units", return_value=[("factory-widgets-dashboard.service", "● failed")]), \
@@ -203,6 +229,7 @@ class WatchTest(unittest.TestCase):
             {"source": "unit", "scope": "systemd", "code": "transitioning"},
             {"source": "events.jsonl", "scope": "journal", "code": "byte_limit"},
             {"source": "events.jsonl", "scope": "history", "code": "event_limit"},
+            {"source": "proc", "scope": "executions", "code": "descendants_not_scanned"},
             {"source": "events.jsonl", "scope": "journal", "code": "unreadable"},
         ]})
         with mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, payload, "")):
@@ -244,6 +271,13 @@ class WatchTest(unittest.TestCase):
         watch.run_pass(self.cfg)
         self.assertEqual(self.gh.created, [])
         self.assertEqual(self.events("watch"), [])
+
+    def test_repeated_no_change_outcome_is_not_filed(self) -> None:
+        # #300: a worker that finds its ticket already fixed commits nothing; filing that as a
+        # factory bug would feed watch the next no-change ticket.
+        self.journal(*(escalate_row(n, "no_change", "committed nothing") for n in (1, 2, 3)))
+        watch.run_pass(self.cfg)
+        self.assertEqual(self.gh.created, [])
 
 
 if __name__ == "__main__":

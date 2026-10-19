@@ -347,6 +347,21 @@ class RuntimeCliTest(unittest.TestCase):
         self.assertEqual(data["executions"][0]["observation"], "partial")
         self.assertIn("duplicate_conflict", data["history"]["gaps"])
 
+    def test_ticket_scope_advancing_attempt_and_round_is_not_an_identity_conflict(self):
+        # The dispatcher's ticket scope advances attempt/review_round so children inherit them.
+        ticket = lifecycle.Execution(self.journal, "ticket", ticket=15)
+        ticket.emit("enter")
+        ticket.attempt = 1
+        ticket.emit("check", check="compile")
+        ticket.attempt, ticket.review_round = 2, 1
+        ticket.emit("exit")
+        data = self.invoke()
+        self.assertNotIn({"source": "events.jsonl", "scope": "executions", "code": "identity_conflict"},
+                         data["errors"])
+        self.assertTrue(data["history"]["complete"])
+        self.assertEqual([(row["state"], row["attempt"], row["review_round"]) for row in data["executions"]],
+                         [("completed", 2, 1)])
+
     def test_accepted_check_and_admission_outcomes_remain_supported(self):
         execution = lifecycle.Execution(self.journal, "gate-check", ticket=14)
         execution.emit("enter")
@@ -373,6 +388,25 @@ class RuntimeCliTest(unittest.TestCase):
                                   cwd=self.root, env=self.env, capture_output=True, text=True, timeout=5, check=False)
             self.assertEqual(proc.returncode, 2)
             self.assertEqual(proc.stdout, "")
+
+    def test_lock_file_removed_after_release_is_not_a_reader_error(self):
+        # Ticket cleanup unlinks `.factory/locks/N.lock` after landing, and merge.lock
+        # does not exist before the first merge; neither is a runtime failure.
+        self.journal.parent.mkdir()
+        (self.journal.parent / "locks").mkdir()
+        ticket_lock = self.journal.parent / "locks/9.lock"
+        ticket_lock.touch()
+        worker = lifecycle.Execution(self.journal, "worker", ticket=9, attempt=1)
+        worker.emit("enter")
+        worker.resource("acquired", ticket_lock, scope="repository")
+        worker.resource("released", ticket_lock, scope="repository")
+        worker.emit("exit")
+        ticket_lock.unlink()
+        data = self.invoke()
+        self.assertNotIn("lock_unavailable", [error["code"] for error in data["errors"]])
+        removed = next(row for row in data["resources"]
+                       if row["resource"]["lock"]["path"] == str(ticket_lock))
+        self.assertEqual(removed["state"], "unknown")
 
 
 if __name__ == "__main__":

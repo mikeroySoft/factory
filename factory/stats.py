@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,8 @@ AGENT_BRANCH = re.compile(r"agent/(\d+)$")
 AGENT_SUBJECT = re.compile(r"agent/(\d+):")
 REGRESSED_BY = re.compile(r"^[ \t]*Regressed-by:[ \t]*#(\d+)\b", re.MULTILINE)
 HUNK = re.compile(r"@@ -(\d+)(?:,(\d+))? ")
+WORKERS = 8  # concurrent per-ticket gh reads
+NOT_REPORTED = "n/a (not reported)"
 
 
 def configure(c: Config) -> None:
@@ -156,12 +159,14 @@ def worker_metrics(audit: dict[int, list[dict]], workers: dict[str, list[str]]) 
 
 
 def print_workers(rows: list[dict]) -> None:
+    """The cost column only when some worker reported a cost, never a column of n/a."""
     width = max(len("worker"), *(len(row["worker"]) for row in rows))
-    print(f"{'worker':<{width}}  first-gate pass  attempts  cost")
+    costs = any(row["cost"] is not None for row in rows)
+    print(f"{'worker':<{width}}  first-gate pass  attempts" + "  cost" * costs)
     for row in rows:
         rate = "n/a" if row["first_pass"] is None else f"{row['first_pass']:.1%}"
         cost = "n/a" if row["cost"] is None else f"${row['cost']:.2f}"
-        print(f"{row['worker']:<{width}}  {rate:>15}  {row['attempts']:>8}  {cost}")
+        print(f"{row['worker']:<{width}}  {rate:>15}  {row['attempts']:>8}" + f"  {cost}" * costs)
 
 
 def brief_metrics(audit: dict[int, list[dict]]) -> list[dict]:
@@ -295,76 +300,64 @@ def make_row(
     }
 
 
-def collect_rows() -> list[dict[str, Any]]:
-    rows: dict[int, dict[str, Any]] = {}
+def collect_rows(progress: bool = False) -> list[dict[str, Any]]:
+    """One row per agent PR, open escalated/queued issue, and journaled ticket. Per-ticket
+    reads (issue, PR comments, timeline) run on WORKERS threads; `progress` counts them on stderr."""
     audit = audit_by_ticket(cfg.factory / "events.jsonl")
-    details_by_ticket = {}
-    pr_by_ticket: dict[int, int] = {}
-    pull_requests = gh(
-        "pr",
-        "list",
-        "--state",
-        "all",
-        "--limit",
-        "1000",
-        "--json",
-        "number,state,headRefName,mergedAt",
-    )
-    for pull_request in pull_requests:
-        match = AGENT_BRANCH.fullmatch(pull_request["headRefName"])
-        if not match:
-            continue
-        details = issue(int(match.group(1)))
-        details_by_ticket[details["number"]] = details
-        pr_by_ticket[details["number"]] = pull_request["number"]
-        review = gh("pr", "view", str(pull_request["number"]), "--json", "comments")
-        state = "open PR" if pull_request["state"] == "OPEN" else "merged"
-        if not pull_request["mergedAt"] and state != "open PR":
-            state = "escalated"
-        rows[details["number"]] = make_row(
-            details,
-            state,
-            review_rounds=count_comments(review["comments"], "VERDICT:"),
-            merged_at=pull_request["mergedAt"],
-        )
+    pulls: dict[int, dict] = {}
+    for pull_request in gh("pr", "list", "--state", "all", "--limit", "1000",
+                           "--json", "number,state,headRefName,mergedAt"):
+        if match := AGENT_BRANCH.fullmatch(pull_request["headRefName"]):
+            pulls[int(match.group(1))] = pull_request
+    listed: dict[int, str | None] = dict.fromkeys(pulls)
+    for label, state in ((LABEL_HUMAN, "escalated"), (LABEL_AGENT, "queued")):
+        for listed_issue in gh("issue", "list", "--state", "open", "--label", label,
+                               "--limit", "1000", "--json", "number"):
+            listed.setdefault(listed_issue["number"], state)
+    for number in audit:
+        listed.setdefault(number, None)
 
-    for label, state in (
-        (LABEL_HUMAN, "escalated"),
-        (LABEL_AGENT, "queued"),
-    ):
-        issues = gh(
-            "issue",
-            "list",
-            "--state",
-            "open",
-            "--label",
-            label,
-            "--limit",
-            "1000",
-            "--json",
-            "number",
-        )
-        for listed_issue in issues:
-            number = listed_issue["number"]
-            if number not in rows:
-                details_by_ticket[number] = details = issue(number)
-                rows[number] = make_row(details, state)
+    def read(number: int) -> tuple[dict, dict | None, list[dict]]:
+        review = gh("pr", "view", str(pulls[number]["number"]), "--json", "comments") if number in pulls else None
+        return issue(number), review, timeline(number)
 
-    for number, events in audit.items():
-        if number not in rows:
-            details_by_ticket[number] = details = issue(number)
-            merged = next((e["at"] for e in reversed(events) if e.get("event") == "merged"), None)
+    fetched = {}
+    with ThreadPoolExecutor(WORKERS) as pool:
+        futures = {pool.submit(read, number): number for number in listed}
+        try:
+            for done, future in enumerate(as_completed(futures), 1):
+                fetched[futures[future]] = future.result()
+                if progress:
+                    sys.stderr.write(f"\rstats: {done}/{len(futures)} tickets")
+        except BaseException:
+            pool.shutdown(cancel_futures=True)
+            raise
+    if progress and futures:
+        sys.stderr.write("\n")
+
+    rows: dict[int, dict[str, Any]] = {}
+    for number, state in listed.items():
+        details, review, _ = fetched[number]
+        if number in pulls:
+            pull_request = pulls[number]
+            state = "open PR" if pull_request["state"] == "OPEN" else "merged" if pull_request["mergedAt"] else "escalated"
+            rows[number] = make_row(details, state, review_rounds=count_comments(review["comments"], "VERDICT:"),
+                                    merged_at=pull_request["mergedAt"])
+        elif state:
+            rows[number] = make_row(details, state)
+        else:
+            merged = next((e["at"] for e in reversed(audit[number]) if e.get("event") == "merged"), None)
             rows[number] = make_row(details, "merged" if merged else details["state"].lower(), merged_at=merged)
-    timelines = {number: timeline(number) for number in rows}
+    pr_by_ticket = {number: pull_request["number"] for number, pull_request in pulls.items()}
     login = dispatcher_login(cfg)
     actions = feedback.correction_reads(graphql, REPOSITORY, pr_by_ticket.values()) if pr_by_ticket else {}
     cutover = feedback.first_action(login, [
-        *((item.get("actor"), item.get("createdAt")) for items in timelines.values() for item in items),
+        *((item.get("actor"), item.get("createdAt")) for _, _, items in fetched.values() for item in items),
         *((actor, action["at"]) for acts in actions.values() for action in acts for actor in action["actors"]),
     ])
     for number, row in rows.items():
-        details = details_by_ticket[number]
-        row.update(human_touch(timelines[number], audit.get(number, []), details.get("closedAt"), login, cutover))
+        details, _, items = fetched[number]
+        row.update(human_touch(items, audit.get(number, []), details.get("closedAt"), login, cutover))
         if number in pr_by_ticket:
             row.update(feedback.corrections(actions[pr_by_ticket[number]], login, cutover))
         row["llm_usage"] = llm_usage(audit.get(number, []), cfg.prices)
@@ -413,6 +406,16 @@ def blamed_lines(fix: str) -> list[tuple[str, str]]:
     return lines
 
 
+def present(fix: str) -> bool:
+    """True when `fix` and its first parent are in this clone, after one `git fetch origin <fix>` if not."""
+    def have() -> bool:
+        return subprocess.run(["git", "cat-file", "-e", f"{fix}^"], cwd=cfg.root,
+                              capture_output=True, check=False).returncode == 0
+    if not have():
+        subprocess.run(["git", "fetch", "-q", "origin", fix], cwd=cfg.root, capture_output=True, check=False)
+    return have()
+
+
 def escapes() -> list[dict[str, Any]]:
     """Candidate escaped defects: closed `bug` issues whose fix changed lines an earlier agent ticket wrote.
     SZZ-style and noisy: refactors yield false candidates, add-only fixes yield none."""
@@ -435,13 +438,18 @@ def escapes() -> list[dict[str, Any]]:
                      and any(ref["number"] == number for ref in pr["closingIssuesReferences"])]
         declared = sorted({int(n) for n in REGRESSED_BY.findall(bug.get("body") or "")})
         candidates: dict[int, dict] = {}
+        skipped: list[str] = []
         if declared:
             status = "candidates"
             candidates = {n: {"ticket": n, "title": titles.get(n, ""), "lines": None, "paths": []} for n in declared}
         elif not fixes:
             status = "unlinked"
         else:
-            blamed = [line for fix in fixes for line in blamed_lines(fix)]
+            skipped = [fix for fix in fixes if not present(fix)]
+            for fix in skipped:
+                print(f"factory stats: skipped fix {fix[:7]} of bug #{number}: not in this clone or on origin",
+                      file=sys.stderr)
+            blamed = [line for fix in fixes if fix not in skipped for line in blamed_lines(fix)]
             for path, subject in blamed:
                 match = AGENT_SUBJECT.match(subject)
                 if match and int(match.group(1)) != number:
@@ -450,9 +458,10 @@ def escapes() -> list[dict[str, Any]]:
                     candidate["lines"] += 1
                     if path not in candidate["paths"]:
                         candidate["paths"].append(path)
-            status = "candidates" if candidates else "no_candidates" if blamed else "no_blamed_lines"
+            status = ("candidates" if candidates else "skipped" if len(skipped) == len(fixes)
+                      else "no_candidates" if blamed else "no_blamed_lines")
         rows.append({"bug": number, "title": bug["title"], "closed_at": bug["closedAt"], "fixes": fixes,
-                     "source": "declared" if declared else "blame", "status": status,
+                     "source": "declared" if declared else "blame", "status": status, "skipped": skipped,
                      "candidates": [candidates[n] for n in sorted(candidates)]})
     return rows
 
@@ -468,15 +477,20 @@ def print_escapes(rows: list[dict[str, Any]], merged: set[int]) -> None:
     escaped = len({c["ticket"] for row in rows for c in row["candidates"]} & merged)
     share = f"{100 * escaped / len(merged):.1f}%" if merged else "n/a"
     print(f"\nCandidate escapes: {escaped} of {len(merged)} merged agent tickets ({share})")
+    if skipped := [sha[:7] for row in rows for sha in row["skipped"]]:
+        print(f"Skipped fixes: {len(skipped)} not in this clone or on origin ({', '.join(skipped)})")
 
 
 def print_table(rows: list[dict[str, Any]]) -> None:
+    """Dollar columns only when some row has a cost; main notes missing prices once."""
     def usage(row: dict, stage: str, key: str) -> str:
         value = row["llm_usage"].get(stage, {}).get(key)
         if isinstance(value, list):
             return ", ".join(map(str, value))
         if key == "cost" and value is not None:
             return f"${value:.4f}"
+        if value is None and stage == "worker" and key != "cost":
+            return NOT_REPORTED
         return "" if value is None else str(value)
 
     def tokens(row: dict) -> str:
@@ -518,6 +532,8 @@ def print_table(rows: list[dict[str, Any]]) -> None:
         ("human comments", lambda row: correction(row, "human_comments")),
         ("human commits", lambda row: correction(row, "human_commits")),
     )
+    if not any(row["llm_usage"].get("total", {}).get("cost") is not None for row in rows):
+        columns = tuple(column for column in columns if not column[0].endswith("$"))
     values = [[render(row) for _, render in columns] for row in rows]
     widths = [
         max([len(name), *(len(row[index]) for row in values)])
@@ -535,6 +551,40 @@ def print_table(rows: list[dict[str, Any]]) -> None:
         print(line(row))
 
 
+def worker_tokens(rows: list[dict[str, Any]]) -> str:
+    """Summed worker tokens over the tickets whose worker reported any."""
+    reported = [usage for row in rows if (usage := row["llm_usage"].get("worker", {}))
+                and (usage["prompt_tokens"] is not None or usage["completion_tokens"] is not None)]
+    if not reported:
+        return NOT_REPORTED
+    prompt, completion = (sum(usage[key] or 0 for usage in reported) for key in ("prompt_tokens", "completion_tokens"))
+    return f"{prompt} prompt, {completion} completion ({len(reported)} of {len(rows)} tickets reported)"
+
+
+def resolve(repo: str | None) -> Config:
+    """The factory root the dispatcher runs in: host `[repo."<slug>"].path` for `repo` (else this
+    checkout's slug), falling back to this checkout when it is that repository."""
+    try:
+        local = config.load()
+    except config.ConfigError as exc:
+        if not repo:
+            raise SystemExit(f"factory stats: {exc}; run inside a checkout or pass --repo owner/name") from exc
+        local = None
+    slug = repo or local.repo
+    table = config.host_config().get("repo", {}).get(slug)
+    if isinstance(table, dict) and table.get("path"):
+        try:
+            root = config.load(Path(table["path"]))
+        except config.ConfigError as exc:
+            raise SystemExit(f'factory stats: [repo."{slug}"].path in {config.host_config_path()}: {exc}') from exc
+        if root.repo != slug:
+            raise SystemExit(f'factory stats: [repo."{slug}"].path {table["path"]} is a checkout of {root.repo}')
+        return root
+    if local is None or local.repo != slug:
+        raise SystemExit(f'factory stats: no [repo."{slug}"].path in {config.host_config_path()}')
+    return local
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="factory stats", description=__doc__)
     parser.add_argument("--json", action="store_true", help="print metric rows as JSON")
@@ -542,15 +592,22 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--by-brief", action="store_true", help="split first-gate pass rate by tickets with/without a brief")
     parser.add_argument("--escapes", action="store_true",
                         help="candidate escaped defects: closed bugs whose fix changed lines an earlier agent ticket wrote")
+    parser.add_argument("--repo", metavar="OWNER/NAME",
+                        help='read the root registered as [repo."OWNER/NAME"].path in the host config (default: this checkout\'s repository)')
+    parser.add_argument("--quiet", action="store_true", help="no progress on stderr")
     args = parser.parse_args(argv)
-    configure(config.load())
+    configure(resolve(args.repo))
+    journal = cfg.factory / "events.jsonl"
+    if not args.escapes and not journal.is_file():
+        raise SystemExit(f"factory stats: no journal at {journal}; this is not the dispatcher's root. "
+                         f'Set [repo."{cfg.repo}"].path in {config.host_config_path()} or pass --repo owner/name')
     if args.escapes:
         rows = escapes()
     elif args.by_worker or args.by_brief:
-        audit = audit_by_ticket(cfg.factory / "events.jsonl")
+        audit = audit_by_ticket(journal)
         rows = worker_metrics(audit, cfg.workers) if args.by_worker else brief_metrics(audit)
     else:
-        rows = collect_rows()
+        rows = collect_rows(progress=not args.quiet)
     if args.json:
         print(json.dumps(rows, indent=2))
     elif args.escapes:
@@ -563,10 +620,14 @@ def main(argv: list[str]) -> int:
         print_table(rows)
         totals = human_touch_metrics(rows)
         human = totals["human_resolved_pct"]
-        print(f"\nEscalations/week (last 7 days): {totals['escalations_per_week']}")
+        print(f"\nWorker tokens: {worker_tokens(rows)}")
+        print(f"Escalations/week (last 7 days): {totals['escalations_per_week']}")
         if totals["escalations_by_code"]:
             print("  by code: " + ", ".join(f"{c} {k}" for c, k in totals["escalations_by_code"].items()))
         print(f"Human-resolved: {str(human) + '%' if human is not None else 'n/a'} (attributed resolutions)")
         touched = human_touched_pct([row for row in rows if row["state"] == "merged"])
         print(f"Human-touched PRs: {str(touched) + '%' if touched is not None else 'n/a'} (attributed merged agent PRs)")
+        if not cfg.prices:
+            print("Prices: none configured, so tokens without a reported cost have no dollars "
+                  '(host config [prices."<model>"], see README)')
     return 0

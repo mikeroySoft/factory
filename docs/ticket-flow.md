@@ -70,7 +70,7 @@ flowchart TB
   TRI -->|"triage.apply_decision"| RFA
   TRI -->|"triage.apply_decision"| RFH
   TRI -->|"unparseable twice, label kept: triage.execute"| NT
-  TRI -.->|"wontfix-proposal is a comment only, label never applied: triage.apply_decision"| HUMAN
+  TRI -->|"triage.apply_decision"| WONT
   NI -->|"question comment: triage.apply_decision"| REPORTER
   REPORTER -.->|"no watcher re-queues needs-info; a human relabels: decisions.apply"| NT
 
@@ -109,6 +109,9 @@ flowchart TB
   CI -->|"pass, missing SHA-bound approval evidence: dispatch.merge_pass_locked"| ESC
   CI -->|"pass, up to date, no human CHANGES_REQUESTED: dispatch.merge_pass_locked"| MERGE
   MERGE -->|"dispatch.cleanup_after_merge"| MERGED
+  TRI -->|"bug filed by factory watch (journaled issue, fingerprint, runtime title), no model, fixed investigation brief: triage.triage_issue"| RFA
+  RFA -->|"unclaimed watch issue, newest evidence 24 hours old, issue closed completed: watch.run_pass"| HUMAN
+  NT -->|"untriaged watch issue, newest evidence 24 hours old, issue closed completed: watch.run_pass"| HUMAN
 
   %% Recovery
   ESC -->|"ready-for-agent swapped for ready-for-human: dispatch.escalate"| RFH
@@ -117,11 +120,13 @@ flowchart TB
   RFH -->|"packet and manager rounds left: manage.escalation_pass"| MGR
   RFH -->|"terminal, routed request published: handoff.handoff_pass"| HUMAN
   MGR -->|"RETRY, REWRITE, or ROUTE: manage.apply"| RFA
+  MGR -->|"AUTHORIZE adds add-only authority before requeue: manage.apply"| RFA
   MGR -->|"SPLIT, children opened, parent stays: manage.apply"| NT
   MGR -->|"FIX: worker round, gate, review: manage.apply"| FA
   MGR -->|"FIX fails gate, pr-tier gate, or review: manage.apply"| ESC
   MGR -->|"CLOSE PR on an original ticket: manage.apply"| WONT
   MGR -->|"CLOSE PR on a SPLIT child, issue closed not planned: manage.apply"| HUMAN
+  MGR -->|"RESOLVE: evidence comment, issue closed completed: manage.apply"| HUMAN
   MGR -->|"HUMAN or manager failed, label kept: manage.escalation_pass"| HUMAN
   WONT -->|"a human decides: config.LABELS"| HUMAN
   HUMAN -->|"relabel, comment, close, approve: decisions.apply"| RFA
@@ -138,9 +143,6 @@ flowchart TB
   check cancelled before any runner picked it up (`dispatch.triage_cancelled`), but
   `manage.frontier_pass` still buckets `cancel` with `fail`, so an infrastructure
   cancel on an unapproved PR escalates as "CI failed".
-- **`wontfix-proposal` means two things.** Triage only comments a wontfix proposal
-  and leaves `needs-triage` (`triage.apply_decision`); manager CLOSE applies the
-  `wontfix-proposal` label (`manage.apply`).
 - **`needs-info` has no re-entry.** Nothing watches for the reporter's answer; a human
   puts `needs-triage` back (`decisions.apply` or GitHub).
 - **Data-driven labels.** Rows marked `*` below edit labels chosen at runtime:
@@ -164,9 +166,9 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 | `dispatch.refresh_pr_branch` | `factory-approved` | — | Behind main: approval withdrawn before refresh |
 | `dispatch.review_intake_pass` | — | `ready-for-human` | New issue for an unresolved opted-in PR review |
 | `dispatch.sync_issue` | — | `ready-for-agent` | New sync ticket for new upstream commits; its `agent/N` candidate carries the merge and gate evidence |
-| `manage.apply` | `ready-for-human`, `*` | `ready-for-agent`, `needs-triage`, `wontfix-proposal`, `*` | RETRY/REWRITE/ROUTE back to agent; SPLIT children; CLOSE; ROUTE labels |
+| `manage.apply` | `ready-for-human`, `*` | `factory-add-only-override`, `ready-for-agent`, `needs-triage`, `wontfix-proposal`, `*` | AUTHORIZE grants add-only authority and requeues; RETRY/REWRITE/ROUTE return to agent; SPLIT children; CLOSE; RESOLVE closes completed; ROUTE labels |
 | `manage.viability_pass` | `*` | `needs-triage` | Opt-in label removed; BUILD queues triage |
-| `triage.apply_decision` | `needs-triage` | `*` | `*` is the decision: `ready-for-agent`, `needs-info`, or `ready-for-human` |
+| `triage.apply_decision` | `needs-triage` | `*` | `*` is the decision: `ready-for-agent`, `needs-info`, `ready-for-human`, or `wontfix-proposal` |
 | `watch.run_pass` | — | `*` | New `bug` + `needs-triage` issue per runtime-failure fingerprint (`watch.LABELS`) |
 
 ## Escalate reasons
@@ -182,7 +184,8 @@ event. `{}` is a runtime value.
 | `dispatch.process_ticket` | ``wall-clock budget ({} min) exceeded`` | worker round → escalate |
 | `dispatch.process_ticket` | ``gate failed {} times; worktree kept at {}`` | worker round → escalate |
 | `dispatch.process_ticket` | ``idle_timeout fired (worker stuck) on attempt {}; worktree kept at {}`` | worker round → escalate |
-| `dispatch.process_ticket` | ``agent/{}: PR not published (no commits over {} or existing PR target mismatch); inspect dispatcher log`` | push → escalate |
+| `dispatch.process_ticket` | ``agent/{}: worker committed nothing over {}; read the handoff`` | push → escalate (`no_change`, only when the handoff exists; `factory watch` never files it) |
+| `dispatch.process_ticket` | ``agent/{}: PR not published (no commits over main and no handoff, or existing PR targets a base other than {}); inspect dispatcher log`` | push → escalate |
 | `dispatch.process_ticket` | ``wall-clock budget ({} min) exceeded before bounce {}`` | review → escalate |
 | `dispatch.process_ticket` | ``gate failed after review bounce {}; worktree kept at {}`` | review → escalate |
 | `dispatch.process_ticket` | ``idle_timeout fired (worker stuck) after review bounce {}; worktree kept at {}`` | review → escalate |

@@ -55,7 +55,7 @@ class TicketFlowParserTest(unittest.TestCase):
                 for edge in graph["edges"]
                 if edge["gap"]
             },
-            {("TRI", "HUMAN", 73), ("REPORTER", "NT", 75), ("MAPP", "ESC", 97)},
+            {("REPORTER", "NT", 75), ("MAPP", "ESC", 97)},
         )
         self.assertEqual(
             [node["label"] for node in graph["nodes"] if node["kind"] == "view"],

@@ -1,4 +1,5 @@
 """`factory learn` runs at the end of a dispatcher pass after every 10 finished tickets (#212)."""
+# Also: `learn` mines each ticket's lowest-scored session instead of a log tail (#235).
 
 from __future__ import annotations
 
@@ -12,6 +13,36 @@ from unittest import mock
 
 from factory import dispatch, learn, lifecycle
 from factory.config import Config
+
+
+def _msg(role: str, *content: dict, **fields: object) -> str:
+    return json.dumps({"type": "message", "message": {"role": role, "content": list(content), **fields}})
+
+
+def _call(call_id: str, name: str, **arguments: object) -> str:
+    return _msg("assistant", {"type": "toolCall", "id": call_id, "name": name, "arguments": arguments})
+
+
+def _result(call_id: str, text: str) -> str:
+    return _msg("toolResult", {"type": "text", "text": text}, toolCallId=call_id)
+
+
+# One session: a failing test run (its result holds a Traceback), the same read twice in a row
+# (a retry pair), a benign call, and a final message.
+TRANSCRIPT = "\n".join([
+    json.dumps({"type": "session", "version": 3}),
+    _msg("user", {"type": "text", "text": "# Issue #10: t10\n\n## Scope\nx\n\n## Instructions\n\n- y\n"}),
+    _call("c1", "bash", command="python -m unittest tests.test_thing"),
+    _result("c1", "Traceback (most recent call last):\n  File \"tests/test_thing.py\"\nAssertionError: 1 != 2\n"
+                  + "\n".join(f"noise {i}" for i in range(20))),
+    _call("c2", "read", path="tests/test_thing.py"),
+    _result("c2", "contents"),
+    _call("c3", "read", path="tests/test_thing.py"),
+    _result("c3", "contents"),
+    _call("c4", "bash", command="git status"),
+    _result("c4", "clean"),
+    _msg("assistant", {"type": "text", "text": "Fixed the assertion; tests pass."}),
+]) + "\n"
 
 
 class AutoLearnTest(unittest.TestCase):
@@ -42,6 +73,87 @@ class AutoLearnTest(unittest.TestCase):
             for n in tickets:
                 f.write(json.dumps({"event": "claimed", "ticket": n, "title": f"t{n}", "at": f"{year}-01-01T00:00:00Z"}) + "\n")
                 f.write(json.dumps({"event": "merged", "ticket": n, "at": f"{year}-01-01T00:{n % 60:02d}:00Z"}) + "\n")
+
+    def session(self, n: int, *attempts: dict, scores: tuple[dict, ...] = (), text: str = TRANSCRIPT) -> Path:
+        """Journal `attempt` rows (each with a `Working...` log and the transcript) and `score` rows for ticket `n`."""
+        transcript = self.cfg.factory / "transcripts" / str(n) / "s.jsonl"
+        transcript.parent.mkdir(parents=True, exist_ok=True)
+        transcript.write_text(text)
+        log = self.cfg.factory / "logs" / f"{n}.log"
+        log.parent.mkdir(exist_ok=True)
+        log.write_text("Working...\n" * 50)
+        with self.events.open("a") as f:
+            for a in attempts:
+                f.write(json.dumps({"event": "attempt", "ticket": n, "at": "2000-01-01T00:00:30Z", "log": str(log),
+                                    "transcript": str(transcript), **a}) + "\n")
+            for s in scores:
+                f.write(json.dumps({"event": "score", "ticket": n, "at": "2000-01-01T00:00:40Z",
+                                    "transcript": str(transcript), **s}) + "\n")
+        return transcript
+
+    def test_evidence_excerpts_the_lowest_scored_session_instead_of_the_log_tail(self) -> None:
+        self.finish(range(10, 11))
+        self.session(10, {"attempt": 1, "gate": "FAIL"}, {"attempt": 2, "gate": "PASS"}, scores=(
+            {"attempt": 1, "efficiency": 0.5, "compliance": 0.9},
+            {"attempt": 2, "efficiency": 0.5, "compliance": 0.4},
+        ))
+        tickets, text = learn.evidence(10)
+        self.assertEqual(tickets, [10])
+        self.assertIn("Attempt 2 session excerpt (efficiency 0.50, compliance 0.4, gate PASS)", text)
+        self.assertIn('- bash {"command": "python -m unittest tests.test_thing"}\n  Traceback (most recent call last):', text)
+        self.assertIn("AssertionError: 1 != 2", text)
+        self.assertNotIn("noise 10", text)  # first 10 result lines only
+        self.assertIn('Repeated tool calls:\n- read {"path": "tests/test_thing.py"}', text)
+        self.assertNotIn("git status", text)  # a clean, unrepeated call is not evidence
+        self.assertIn("Fixed the assertion; tests pass.", text)
+        self.assertNotIn("Working...", text)
+        self.assertNotIn("log tail", text)
+
+    def test_lowest_efficiency_wins_then_gate_fail_breaks_the_tie(self) -> None:
+        self.finish(range(10, 11))
+        self.session(10, {"attempt": 1, "gate": "PASS"}, {"attempt": 2, "gate": "FAIL"}, {"attempt": 3, "gate": "PASS"}, scores=(
+            {"attempt": 1, "efficiency": 0.3, "compliance": None},
+            {"attempt": 2, "efficiency": 0.3, "compliance": None},
+            {"attempt": 3, "efficiency": 0.9, "compliance": 0.1},
+        ))
+        self.assertIn("Attempt 2 session excerpt", learn.evidence(10)[1])
+
+    def test_ticket_without_a_score_row_keeps_the_log_tail(self) -> None:
+        self.finish(range(10, 11))
+        self.session(10, {"attempt": 1, "gate": "FAIL"})
+        text = learn.evidence(10)[1]
+        self.assertIn("Attempt 1 log tail (gate FAILED after it)", text)
+        self.assertIn("Working...", text)
+        self.assertNotIn("session excerpt", text)
+
+    def test_session_excerpts_stay_bounded(self) -> None:
+        self.finish(range(1, 11))
+        huge = TRANSCRIPT + _msg("assistant", {"type": "text", "text": "x" * 50_000}) + "\n"
+        for n in range(1, 11):
+            transcript = self.session(n, {"attempt": 1, "gate": "PASS"},
+                                      scores=({"attempt": 1, "efficiency": 0.5, "compliance": 1},), text=huge)
+        self.assertEqual(len(learn.score.excerpt(transcript)), learn.score.EXCERPT_CHARS)
+        self.assertLessEqual(len(learn.evidence(10)[1]), learn.MAX_EVIDENCE)
+
+    def test_repeated_calls_survive_the_cap_when_flagged_results_overflow_it(self) -> None:
+        noisy = "\n".join(_call(f"e{i}", "bash", command=f"grep error file{i}") + "\n"
+                          + _result(f"e{i}", "\n".join(f"error line {j}" for j in range(10))) for i in range(40))
+        text = learn.score.excerpt(self.session(10, text=TRANSCRIPT + noisy + "\n"))
+        self.assertEqual(len(text), learn.score.EXCERPT_CHARS)
+        self.assertIn('Repeated tool calls:\n- read {"path": "tests/test_thing.py"}', text)
+        self.assertIn("Fixed the assertion; tests pass.", text)
+        self.assertIn("grep error file0", text)
+        self.assertNotIn("grep error file39", text)
+
+    def test_learn_pass_scores_unscored_tickets_first(self) -> None:
+        self.finish(range(1, 11))
+        self.session(10, {"attempt": 1, "gate": "PASS"})
+        with mock.patch.object(learn.triage, "call_llm", return_value="0.7"):
+            learn.learn_pass()
+        [row] = [e for e in lifecycle.read_events(self.events) if e.get("event") == "score"]
+        self.assertEqual((row["ticket"], row["attempt"], row["compliance"], row["retries"]), (10, 1, 0.7, 1))
+        self.assertIn("Attempt 1 session excerpt (efficiency 0.50, compliance 0.7, gate PASS)", self.propose.call_args.args[1])
+        self.assertNotIn("Working...", self.propose.call_args.args[1])
 
     def learns(self) -> list[dict]:
         return [e for e in lifecycle.read_events(self.events) if e.get("event") == "learn"]

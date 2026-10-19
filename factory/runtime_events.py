@@ -21,6 +21,8 @@ LOCK_LIMIT = 512
 LOCK_BYTES = 1024 * 1024
 ERROR_LIMIT = 32
 IDENTITY = lifecycle._IDENTITY_FIELDS
+# A ticket scope advances attempt/review_round in place so its children inherit them.
+FIXED_IDENTITY = tuple(field for field in IDENTITY if field not in {"attempt", "review_round"})
 KINDS = {
     "enter", "exit", "handoff", "child_start", "child_exit", "check", "result", "timeout",
     "lock_acquired", "lock_released", "resource_requested", "wait", "wait_end",
@@ -469,6 +471,8 @@ class _Observation:
                     value.update(device=info.st_dev, inode=info.st_ino)
                 else:
                     _error(self.errors, "filesystem", "resources", "not_regular")
+            except FileNotFoundError:
+                pass  # Not created yet, or unlinked by ticket cleanup: absent, so state stays unknown.
             except OSError:
                 _error(self.errors, "filesystem", "resources", "lock_unavailable")
             self.lock_files[path] = value
@@ -534,7 +538,7 @@ def _executions(retained: list, history: dict, gaps: list, observation: _Observa
         terminal = next((row for row in events if row["kind"] == "exit"), None)
         sequences = [row["sequence"] for row in events]
         inconsistent = any(
-            any(row[field] != events[0][field] for field in IDENTITY) for row in events
+            any(row[field] != events[0][field] for field in FIXED_IDENTITY) for row in events
         )
         causal_gap = sequences != list(range(sequences[0], sequences[0] + len(sequences)))
         # A clipped window hides the entry of executions that began before it; that is

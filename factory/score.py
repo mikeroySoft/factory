@@ -19,6 +19,9 @@ MAX_ATTEMPTS = 50  # attempts scored per run
 MAX_TRANSCRIPT = 2_000_000  # bytes read per transcript file
 MAX_HANDOFF = 4_000  # chars of the worker handoff shown to the judge
 EDIT_TOOLS = {"edit", "write"}
+EXCERPT_CHARS = 3000  # per-session excerpt handed to `factory learn`
+RESULT_LINES = 10  # lines of a failing tool result kept in the excerpt
+FAILED = re.compile(r"(?i:error)|Traceback|FAIL")
 JUDGE_SYSTEM = (
     "You grade whether a coding agent delivered a ticket. You are given the ticket's scope and "
     "exit gate, then the agent's final message and handoff note. Answer with one number between "
@@ -28,22 +31,32 @@ JUDGE_SYSTEM = (
 _NUMBER = re.compile(r"0(?:\.\d+)?|1(?:\.0+)?|\.\d+")
 
 
-def parse(path: Path) -> tuple[list[tuple[str, str]], str, str]:
-    """(tool calls as (name, canonical arguments), first user text, last assistant text) from the
-    first MAX_TRANSCRIPT bytes of one OMP session file; a truncated final line is dropped."""
+def _messages(path: Path) -> list[dict]:
+    """`message` rows from the first MAX_TRANSCRIPT bytes of one OMP session file; a truncated
+    final line is dropped."""
     with path.open("rb") as handle:
         data = handle.read(MAX_TRANSCRIPT)
-    calls, prompt, final = [], "", ""
+    out = []
     for line in data.splitlines():
         try:
             row = json.loads(line)
         except ValueError:
             continue
-        if not isinstance(row, dict) or row.get("type") != "message":
-            continue
-        message = row.get("message") or {}
-        parts = [p for p in message.get("content") or [] if isinstance(p, dict)]
-        text = "".join(p.get("text", "") for p in parts if p.get("type") == "text")
+        if isinstance(row, dict) and row.get("type") == "message" and isinstance(row.get("message"), dict):
+            out.append(row["message"])
+    return out
+
+
+def _parts(message: dict) -> tuple[list[dict], str]:
+    parts = [p for p in message.get("content") or [] if isinstance(p, dict)]
+    return parts, "".join(p.get("text", "") for p in parts if p.get("type") == "text")
+
+
+def parse(path: Path) -> tuple[list[tuple[str, str]], str, str]:
+    """(tool calls as (name, canonical arguments), first user text, last assistant text)."""
+    calls, prompt, final = [], "", ""
+    for message in _messages(path):
+        parts, text = _parts(message)
         if message.get("role") == "user":
             prompt = prompt or text
         elif message.get("role") == "assistant":
@@ -51,6 +64,37 @@ def parse(path: Path) -> tuple[list[tuple[str, str]], str, str]:
                       for p in parts if p.get("type") == "toolCall"]
             final = text or final
     return calls, prompt, final
+
+
+def excerpt(path: Path, max_chars: int = EXCERPT_CHARS) -> str:
+    """Where the session spun, for `factory learn`: every call repeated back to back, the final
+    assistant message, then every tool call whose result mentioned an error/Traceback/FAIL (the
+    call plus the result's first RESULT_LINES lines); cut to `max_chars`. The repeated calls come
+    first because the flagged list routinely overflows the cap on real sessions."""
+    calls: list[tuple[str, str, str]] = []  # (call id, canonical call, rendered call)
+    results: dict[str, tuple[bool, str]] = {}
+    final = ""
+    for message in _messages(path):
+        parts, text = _parts(message)
+        if message.get("role") == "assistant":
+            final = text or final
+            for p in parts:
+                if p.get("type") == "toolCall":
+                    key = f"{p.get('name')} {json.dumps(p.get('arguments'), sort_keys=True)}"
+                    calls.append((p.get("id"), key, key[:300]))
+        elif message.get("role") == "toolResult":
+            results[message.get("toolCallId")] = (bool(message.get("isError")), text)
+    failed = []
+    for call_id, _, shown in calls:
+        is_error, text = results.get(call_id, (False, ""))
+        if is_error or FAILED.search(text):
+            failed.append(f"- {shown}\n" + "".join(f"  {line}\n" for line in text.splitlines()[:RESULT_LINES]))
+    repeated = [f"- {b[2]}\n" for a, b in pairwise(calls) if a[1] == b[1]]
+    out = "Repeated tool calls:\n" + "".join(repeated) if repeated else ""
+    out += f"Final assistant message:\n{final or '(none)'}\n"
+    if failed:
+        out += "Tool calls whose result mentioned an error:\n" + "".join(failed)
+    return out[:max_chars]
 
 
 def metrics(calls: list[tuple[str, str]]) -> dict:

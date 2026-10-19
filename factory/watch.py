@@ -2,9 +2,10 @@
 
 One pass reads four local signals (lifecycle exit rows that name a mechanism failure,
 failed `factory-*` systemd units, `dashboard --runtime-json` source errors, one escalation
-code repeating across REPEAT_MIN tickets within REPEAT_DAYS days), fingerprints
-each, and opens one `bug,needs-triage` issue per fingerprint not already covered by an
-open issue. Filing is journaled as a `watch` row so the next pass can skip or refile.
+code repeating across REPEAT_MIN tickets within REPEAT_DAYS days), fingerprints each by
+reason, unit or journal source (not by stage or reader code: one defect is one issue), and
+opens one `bug,needs-triage` issue per fingerprint not already covered by an open issue.
+Filing is journaled as a `watch` row so the next pass can skip or refile.
 """
 from __future__ import annotations
 
@@ -23,21 +24,31 @@ from factory import config, dispatch, lifecycle
 
 LABELS = "bug,needs-triage"
 MAX_ISSUES = 5
+QUIET_PERIOD = timedelta(hours=24)
+CLOSABLE = {config.LABEL_TRIAGE, config.LABEL_AGENT}
 MAX_ROWS = 20
 MAX_LOG_LINES = 40
-UNKNOWN_REASONS = ("worker_exit:", "check_timeout")
+UNKNOWN_REASONS = ("check_timeout",)
+# Host conditions the dispatcher already retries or escalates and `factory doctor` reports:
+# the worker process exiting, the local triage model, GitHub. Not factory defects.
+ENVIRONMENT_REASONS = ("worker_exit:", "triage_endpoint_", "github_command_failed")
 REPEAT_MIN = 3  # distinct tickets one escalation code must hit...
 REPEAT_DAYS = 7  # ...inside this trailing window to count as a factory defect
+# Ticket outcomes, not factory defects: a worker that finds its ticket already fixed commits
+# nothing, and filing that would hand the next pass another already-fixed ticket.
+OUTCOME_CODES = {"no_change"}
 
 
-def fingerprint(kind: str, stage: str, key: str) -> str:
-    return hashlib.sha256(f"{kind}\n{stage}\n{key}".encode()).hexdigest()[:12]
+def fingerprint(kind: str, key: str) -> str:
+    return hashlib.sha256(f"{kind}\n{key}".encode()).hexdigest()[:12]
 
 
 def _failing(row: dict) -> bool:
     if row.get("event") != "lifecycle" or row.get("kind") != "exit":
         return False
     reason = row.get("reason") or ""
+    if reason.startswith(ENVIRONMENT_REASONS):
+        return False
     return row.get("outcome") == "mechanism_failure" or (
         row.get("outcome") == "unknown" and reason.startswith(UNKNOWN_REASONS)
     )
@@ -72,9 +83,11 @@ def failed_units(cfg: config.Config) -> list[tuple[str, str]]:
     return units
 
 
-# Expected, not failures: unit mid-state, journal clipped, and `dispatch.record` audit rows
-# sharing events.jsonl with lifecycle rows (always reported as `unsupported_record`).
-STEADY_CODES = {"transitioning", "byte_limit", "event_limit", "unsupported_record"}
+# Expected, not failures: unit mid-state, journal clipped, `dispatch.record` audit rows
+# sharing events.jsonl with lifecycle rows (always reported as `unsupported_record`), and
+# the passive runtime reader never enumerating /proc, so every open execution that launched
+# a child reports `descendants_not_scanned`.
+STEADY_CODES = {"transitioning", "byte_limit", "event_limit", "unsupported_record", "descendants_not_scanned"}
 
 
 def runtime_errors(cfg: config.Config) -> list[dict]:
@@ -105,7 +118,8 @@ def repeated_escalations(events: list[dict]) -> dict[str, list[dict]]:
     cutoff = (datetime.now(UTC) - timedelta(days=REPEAT_DAYS)).isoformat().replace("+00:00", "Z")
     by_code: dict[str, list[dict]] = {}
     for row in events:
-        if row.get("event") == "escalate" and "code" in row and str(row.get("at") or "") >= cutoff:
+        if (row.get("event") == "escalate" and "code" in row and row["code"] not in OUTCOME_CODES
+                and str(row.get("at") or "") >= cutoff):
             by_code.setdefault(row["code"], []).append(row)  # rows without a code are `unknown`: never filed
     return {code: rows for code, rows in by_code.items()
             if len({r.get("ticket") for r in rows}) >= REPEAT_MIN}
@@ -119,26 +133,30 @@ def signals(cfg: config.Config, events: list[dict]) -> list[dict]:
         if not _failing(row):
             continue
         stage, reason = str(row.get("stage")), str(row.get("reason"))
-        key = fingerprint("lifecycle", stage, reason)
+        key = fingerprint("lifecycle", reason)
         signal = found.setdefault(key, {
-            "fingerprint": key, "kind": "lifecycle", "stage": stage, "key": reason, "rows": [],
+            "fingerprint": key, "kind": "lifecycle", "stage": {}, "key": reason, "rows": [],
             "excerpt": None, "log": None, "latest": "",
             "command": "zcat -f .factory/events.jsonl* | grep -F "
             f"{shlex.quote(json.dumps({'reason': reason}, separators=(',', ':'))[1:-1])}",
         })
+        signal["stage"][stage] = None  # ordered set of every stage the reason hit
         signal["rows"].append(row)
         signal["latest"] = max(signal["latest"], str(row.get("at") or ""))
         signal["log"] = logs.get((row.get("ticket"), row.get("attempt"))) or signal["log"]
     for name, status in failed_units(cfg):
-        key = fingerprint("unit", "systemd", name)
+        key = fingerprint("unit", name)
         found[key] = {"fingerprint": key, "kind": "unit", "stage": "systemd", "key": name, "rows": [],
                       "excerpt": status, "log": None, "latest": None,
                       "command": f"systemctl --user status {shlex.quote(name)}"}
+    by_source: dict[str, list[dict]] = {}
     for error in runtime_errors(cfg):
-        source, code = str(error.get("source")), str(error.get("code"))
-        key = fingerprint("runtime", source, code)
-        found[key] = {"fingerprint": key, "kind": "runtime", "stage": source, "key": code, "rows": [],
-                      "excerpt": json.dumps(error, indent=2), "log": None, "latest": None,
+        by_source.setdefault(str(error.get("source")), []).append(error)
+    for source, errors in by_source.items():
+        key = fingerprint("runtime", source)
+        found[key] = {"fingerprint": key, "kind": "runtime", "stage": source, "rows": [],
+                      "key": ", ".join(sorted({str(e.get("code")) for e in errors})),
+                      "excerpt": json.dumps(errors, indent=2), "log": None, "latest": None,
                       "command": "factory dashboard --runtime-json | jq .errors"}
     for code, rows in repeated_escalations(events).items():
         key = f"escalation:{code}"
@@ -150,6 +168,8 @@ def signals(cfg: config.Config, events: list[dict]) -> list[dict]:
                       f"{shlex.quote(json.dumps({'code': code}, separators=(',', ':'))[1:-1])}"}
     for signal in found.values():
         signal["rows"] = signal["rows"][-MAX_ROWS:]
+        if signal["kind"] == "lifecycle":
+            signal["stage"] = ", ".join(signal["stage"])
     return list(found.values())
 
 
@@ -194,17 +214,19 @@ def _closed_before(issue: int, latest: str | None) -> bool:
 
 
 def run_pass(cfg: config.Config, dry_run: bool = False) -> list[dict]:
-    """File at most MAX_ISSUES new fingerprints; return the signals filed (or, dry, would be)."""
+    """File and close at most MAX_ISSUES fingerprints apiece; return signals filed."""
     events = lifecycle.read_events(dispatch.EVENTS)
     filings = {r["fingerprint"]: r for r in events if r.get("event") == "watch"}
+    current = signals(cfg, events)
+    latest_by_fingerprint = {signal["fingerprint"]: signal["latest"] for signal in current}
     filed = []
-    for signal in signals(cfg, events):
+    for signal in current:
         if len(filed) >= MAX_ISSUES:
             dispatch.log(f"watch: deferring {signal['fingerprint']} to the next pass (cap {MAX_ISSUES})")
             break
         previous = filings.get(signal["fingerprint"])
         if previous is not None and signal["latest"] is not None and signal["latest"] <= previous["at"]:
-            continue  # already filed; nothing newer than that filing
+            continue
         if dry_run:
             verb = f"re-check #{previous['issue']} for" if previous else "would file"
             print(f"[watch] {verb} {signal['fingerprint']}: {title(signal)}")
@@ -217,15 +239,64 @@ def run_pass(cfg: config.Config, dry_run: bool = False) -> list[dict]:
             "--label", LABELS, "--body", body(signal),
         ]).stdout.strip().splitlines()[-1]
         number = int(url.rstrip("/").rsplit("/", 1)[-1])
-        dispatch.record("watch", fingerprint=signal["fingerprint"], issue=number, at=lifecycle._now())
+        dispatch.record("watch", fingerprint=signal["fingerprint"], issue=number,
+                        latest=signal["latest"], at=lifecycle._now())
         dispatch.log(f"watch: filed #{number} for {signal['fingerprint']} ({title(signal)})")
         filed.append(signal)
+
+    now = datetime.now(UTC)
+    closed = 0
+    for fp, previous in filings.items():
+        if closed >= MAX_ISSUES:
+            break
+        if previous.get("closed"):
+            continue
+        # A signal stays in the journal window long after it stops happening, so judge by the
+        # newest evidence, not presence; `latest is None` means it is failing right now.
+        if fp in latest_by_fingerprint and latest_by_fingerprint[fp] is None:
+            continue
+        evidence_at = max(latest_by_fingerprint.get(fp) or "", previous.get("latest") or "", previous["at"])
+        if now - datetime.fromisoformat(evidence_at) < QUIET_PERIOD:
+            continue
+        if dry_run:
+            print(f"[watch] would close #{previous['issue']} for {fp} if it is still open, unassigned "
+                  f"and not with a human (no newer evidence than {evidence_at})")
+            closed += 1
+            continue
+        try:
+            state = dispatch.gh_json([
+                "issue", "view", str(previous["issue"]), "--repo", dispatch.REPO,
+                "--json", "state,assignees,labels",
+            ])
+            labels = {label["name"] for label in state.get("labels", [])}
+            if state["state"].upper() != "OPEN":
+                # Closed by its fix or a human: stop re-checking it every pass.
+                dispatch.record("watch", fingerprint=fp, issue=previous["issue"], latest=evidence_at,
+                                closed=True, at=lifecycle._now())
+                continue
+            if state.get("assignees") or not labels & CLOSABLE:
+                continue  # claimed by a worker, or handed to a human
+            commit = (config.engine_commit() or "unknown")[:12]
+            comment = (
+                f"factory watch: fingerprint {fp} has not recurred since {evidence_at} on engine "
+                f"{commit}; closing. A recurrence reopens tracking with a new issue."
+            )
+            dispatch.run([
+                "gh", "issue", "close", str(previous["issue"]), "--repo", dispatch.REPO,
+                "--reason", "completed", "--comment", comment,
+            ])
+            dispatch.record("watch", fingerprint=fp, issue=previous["issue"], latest=evidence_at,
+                            closed=True, at=lifecycle._now())
+            dispatch.log(f"watch: closed #{previous['issue']} for {fp}")
+            closed += 1
+        except (OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError) as exc:
+            dispatch.log(f"watch: could not close #{previous['issue']} for {fp}: {exc}")
     return filed
 
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="factory watch", description=__doc__)
-    parser.add_argument("--dry-run", action="store_true", help="print what would be filed; no gh call, no journal row")
+    parser.add_argument("--dry-run", action="store_true", help="print what would be filed or closed; no gh call, no journal row")
     args = parser.parse_args(argv)
     dispatch.configure(config.load())
     with nullcontext() if args.dry_run else lifecycle.scope(dispatch.EVENTS, "watch", lazy=True):

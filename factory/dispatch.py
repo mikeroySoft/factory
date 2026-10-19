@@ -30,6 +30,7 @@ from pathlib import Path
 
 from factory import __version__, brief, config, lifecycle
 from factory.config import (
+    LABEL_ADD_ONLY_OVERRIDE,
     LABEL_AGENT,
     LABEL_APPROVED,
     LABEL_HUMAN,
@@ -803,8 +804,8 @@ def commit_leftovers(wt: Path, n: int, title: str) -> None:
 
 
 def run_gate(
-    wt: Path, n: int | str, skip: str = "", protected_override: bool = False, tier: str = "attempt",
-    upstream: list[str] = (),
+    wt: Path, n: int | str, skip: str = "", protected_override: bool = False,
+    add_only_override: bool = False, tier: str = "attempt", upstream: list[str] = (),
 ) -> tuple[bool, str]:
     report_rel = f".factory/gate-report-{n}.md"
     (wt / ".factory").mkdir(exist_ok=True)
@@ -825,6 +826,8 @@ def run_gate(
     # The gate process records its own stage and check boundaries.
     if protected_override:
         cmd.append("--protected-override")
+    if add_only_override:
+        cmd.append("--add-only-override")
     for ref in upstream:
         cmd += ["--upstream", ref]
     if tier != "attempt":
@@ -893,7 +896,7 @@ ESCALATION_CODES = frozenset({
     "pr_checks_failed", "review_revise", "approval_drift", "approval_missing",
     "ci_failed", "ci_runner", "refresh_head", "refresh_conflict", "refresh_empty",
     "gh_failed", "review_intake", "manager_failed", "manager_exhausted",
-    "manager_human", "pr_feedback", "pr_stale", "lease_refused", "dispatcher_error",
+    "manager_human", "pr_feedback", "pr_stale", "lease_refused", "dispatcher_error", "no_change",
 })
 
 
@@ -1222,11 +1225,14 @@ def sync_event(n: int) -> dict | None:
 
 
 def gate_flags(sync: dict | None, labels: set[str]) -> dict:
-    """`run_gate` keywords for a ticket. Only the human label overrides protected paths.
-    A sync ticket's gate ignores protected-path hits whose content is upstream's (equal to
-    the recorded tip or the dispatcher's staged candidate) and leak-scans from the tip, so
-    both checks judge what the worker wrote."""
+    """`run_gate` keywords for a ticket. Human authority overrides all protected paths;
+    manager or human add-only authority overrides only add-only paths. A sync ticket's
+    gate ignores protected-path hits whose content is upstream's (equal to the recorded
+    tip or the dispatcher's staged candidate) and leak-scans from the tip, so both checks
+    judge what the worker wrote."""
     flags = {"protected_override": LABEL_PROTECTED_OVERRIDE in labels}
+    if LABEL_ADD_ONLY_OVERRIDE in labels:
+        flags["add_only_override"] = True
     if sync:
         flags["upstream"] = [sync["upstream"], sync["head"]]
     return flags
@@ -2037,7 +2043,7 @@ def worker_round(
     )
     transcript = _transcript(session_dir, wall)
     timeout = {"timeout": fired, "reason": TIMEOUT_REASONS[fired]} if fired else {}
-    usage = worker_usage(logfile, cfg.worker_usage.get(worker))
+    usage = worker_usage(logfile, cfg.worker_usage.get(worker), transcript)
     record("llm-usage", ticket=n, stage="worker", attempt=attempt, **usage)
     commit_leftovers(wt, n, title)
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
@@ -2108,11 +2114,12 @@ def _json_path(row: object, path: str) -> object:
     return row
 
 
-def worker_usage(logfile: Path, spec: dict | None) -> dict:
+def worker_usage(logfile: Path, spec: dict | None, transcript: str | None = None) -> dict:
     """Normalized usage the worker reported in its log; None = not reported, never guessed.
 
     `spec` (a `[workers]` profile's `usage`) sums its JSON paths over every JSON-object
     line whose `match` paths hold; cost falls back to `cost_pattern` when no path gives one.
+    Tokens fall back to the OMP session `transcript` totals when the log reported none.
     """
     usage: dict = dict.fromkeys(("model", *USAGE_FIELDS))
     text = logfile.read_text(errors="replace") if spec else ""
@@ -2131,6 +2138,32 @@ def worker_usage(logfile: Path, spec: dict | None) -> dict:
                 if type(value) in (int, float) and value >= 0:
                     usage[field] = (usage[field] or 0) + value
     usage["cost"] = log_cost(logfile) if usage["cost"] is None else round(usage["cost"], 4)
+    if transcript and usage["prompt_tokens"] is None and usage["completion_tokens"] is None:
+        usage.update(transcript_usage(Path(transcript)))
+    return usage
+
+
+def transcript_usage(path: Path) -> dict:
+    """Token totals over an OMP session file's assistant messages (the `_omp_output` sums); {} when none."""
+    usage: dict = {}
+    for line in path.read_text(errors="replace").splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        message = row.get("message") if isinstance(row, dict) and row.get("type") == "message" else None
+        counts = message.get("usage") if isinstance(message, dict) and message.get("role") == "assistant" else None
+        if not isinstance(counts, dict):
+            continue
+        values = (counts.get("input"), counts.get("output"), counts.get("cacheRead", 0), counts.get("cacheWrite", 0))
+        if not all(type(value) is int and value >= 0 for value in values):
+            continue
+        prompt, completion, read, write = values
+        for key, value in (("prompt_tokens", prompt + read + write), ("completion_tokens", completion),
+                           ("cached_tokens", read)):
+            usage[key] = usage.get(key, 0) + value
+        if isinstance(message.get("model"), str):
+            usage["model"] = message["model"]
     return usage
 
 
@@ -2271,11 +2304,20 @@ def process_ticket(
                              code="worker_stuck" if stuck else "gate_failed")
                     return
 
+            run(["git", "fetch", "origin", cfg.main], cwd=wt)
+            ahead = run(["git", "rev-list", "--count", f"origin/{cfg.main}..HEAD"], cwd=wt).stdout.strip()
+            if ahead == "0" and (wt / ".factory" / f"handoff-{n}.md").exists():
+                # A ticket outcome, not a publish failure: the worker finished and found nothing
+                # to change (already fixed, duplicate, or blocked); its handoff says which. Without
+                # a handoff the worker died, which stays `pr_unpublished` so watch still counts it.
+                escalate(n, f"agent/{n}: worker committed nothing over {cfg.main}; read the handoff",
+                         logfile, code="no_change")
+                return
             body = f"Closes #{n}\n\n## Gate report\n\n{report}\n"
             if not push_and_pr(wt, f"agent/{n}", f"agent/{n}: {title}", body, ticket=n, lease=lease):
                 escalate(
-                    n, f"agent/{n}: PR not published (no commits over {cfg.main} "
-                    "or existing PR target mismatch); inspect dispatcher log", logfile,
+                    n, f"agent/{n}: PR not published (no commits over main and no handoff, or existing "
+                    f"PR targets a base other than {cfg.main}); inspect dispatcher log", logfile,
                     code="pr_unpublished",
                 )
                 return
@@ -2455,6 +2497,19 @@ def main(argv: list[str]) -> int:
             )
             return 1 if process_ticket(issue, args.budget_min, args.dry_run, forced=True) is False else 0
 
+        def release_step(open_pr: bool) -> None:
+            if not cfg.release_auto or args.dry_run:
+                return
+            try:
+                from factory import release
+
+                log(f"release: {release.run(cfg, open_pr=open_pr)}")
+            except Exception as exc:  # noqa: BLE001 - release failure never fails the dispatcher pass
+                log(f"release: failed ({type(exc).__name__}: {exc})")
+
+        # A release PR merges before this pass lands a ticket (every ticket edits CHANGELOG.md,
+        # which GitHub cannot union-merge), and a new one opens only after landing.
+        release_step(open_pr=False)
         land_pass(args.dry_run)
         review_intake_pass(args.dry_run)
         from factory.learn import learn_pass
@@ -2463,4 +2518,5 @@ def main(argv: list[str]) -> int:
         manage_pass(args.dry_run)
         ticket_pass(args.budget_min, args.dry_run)
         learn_pass(args.dry_run)
+        release_step(open_pr=True)
         return 0

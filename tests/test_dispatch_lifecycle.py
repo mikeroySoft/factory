@@ -587,6 +587,24 @@ class LocalCLI(unittest.TestCase):
         for prompt in prompts:
             self.assertIn("- slow: PASS", prompt)
 
+    def test_worker_that_commits_nothing_escalates_no_change_not_pr_unpublished(self):
+        # #300: a passing worker that finds the ticket already fixed leaves nothing to publish.
+        self.worker.write_text("from pathlib import Path\nPath('.factory').mkdir(exist_ok=True)\n"
+                               "Path('.factory/handoff-7.md').write_text('already fixed')\n")
+        self.cli("dispatch", "--ticket", "7")
+        escalations = [e for e in lifecycle.read_events(self.events) if e.get("event") == "escalate"]
+        self.assertEqual([e["code"] for e in escalations], ["no_change"])
+        self.assertIn("committed nothing", escalations[0]["reason"])
+        self.assertFalse(json.loads(self.state.read_text()).get("pr"))
+
+    def test_worker_that_dies_without_commits_or_handoff_stays_pr_unpublished(self):
+        # A crashed worker is a factory failure watch must still count, not a ticket outcome.
+        self.worker.write_text("raise SystemExit(1)\n")
+        self.cli("dispatch", "--ticket", "7")
+        escalations = [e for e in lifecycle.read_events(self.events) if e.get("event") == "escalate"]
+        self.assertEqual([e["code"] for e in escalations], ["pr_unpublished"])
+        self.assertFalse(json.loads(self.state.read_text()).get("pr"))
+
     def test_pr_check_failure_bounces_to_worker_then_reviews_new_head(self):
         self.pr_config(fails=1)
         self.state.write_text(json.dumps({"reviews": 1}))  # the one review APPROVEs
