@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import io
 import json
 import os
@@ -120,6 +121,104 @@ class TriagePass(unittest.TestCase):
         self.assertNotIsInstance(ended.exception, triage.EndpointTimeout)
         self.assertEqual(self.asked, [3])
         self.assertEqual(self.ticket_exits(), {3: "triage_endpoint_timeout"})
+
+
+class Reproposal(unittest.TestCase):
+    """At most one triage comment per issue state: only a change after it earns another."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.enterContext(patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
+        self.enterContext(patch.dict(triage.__dict__))
+        cfg = Config(root=Path(temp.name), repo="local/triage")
+        cfg.factory.mkdir(parents=True)
+        triage.configure(cfg)
+        self.events = cfg.factory / "events.jsonl"
+        self.clock = 0  # seconds; every GitHub write advances it and bumps updatedAt
+        self.updated = 0
+        self.labels = {LABEL_TRIAGE}
+        self.comments: list[dict] = []
+        self.edit_fails = False
+        self.asked = 0
+
+    def stamp(self, seconds: int) -> str:
+        return f"2026-10-17T{seconds // 3600:02}:{seconds // 60 % 60:02}:{seconds % 60:02}Z"
+
+    def write(self):
+        self.clock += 1
+        self.updated = self.clock
+
+    def gh(self, *args, execution=None):
+        if args[:2] == ("issue", "list"):
+            return json.dumps([{"number": 7}] if LABEL_TRIAGE in self.labels else [])
+        if args[:2] == ("issue", "view"):
+            return json.dumps({"number": 7, "title": "t7", "body": BODY, "comments": self.comments,
+                               "labels": [{"name": label} for label in self.labels], "state": "OPEN",
+                               "updatedAt": self.stamp(self.updated)})
+        if args[:2] == ("issue", "comment"):
+            self.write()
+            self.comments.append({"author": {"login": "bot"}, "body": args[args.index("--body") + 1],
+                                  "createdAt": self.stamp(self.clock)})
+        if args[:2] == ("issue", "edit"):
+            if self.edit_fails:
+                raise SystemExit(1)
+            self.write()
+            self.labels = (self.labels - {args[args.index("--remove-label") + 1]}) | {
+                args[args.index("--add-label") + 1]}
+        return ""
+
+    def urlopen(self, req, timeout):
+        self.asked += 1
+        decision = json.dumps({"decision": LABEL_WONTFIX, "rationale": "no", "question": "", "brief": ""})
+        return Reply(json.dumps({"choices": [{"message": {"content": decision}}]}).encode())
+
+    def run_pass(self) -> int:
+        self.clock += 660  # the next timer pass
+        args = argparse.Namespace(issue=None, replay=None, dry_run=False)
+        with patch.object(triage, "gh", self.gh), \
+                patch.object(triage.urllib.request, "urlopen", self.urlopen), \
+                redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()), \
+                lifecycle.scope(self.events, "triage", lazy=True) as execution:
+            return triage.execute(args, execution)
+
+    def human(self, comment: str | None = None, labels: set[str] | None = None):
+        self.clock += 300
+        self.write()
+        if comment:
+            self.comments.append({"author": {"login": "owner"}, "body": comment,
+                                  "createdAt": self.stamp(self.clock)})
+        if labels is not None:
+            self.labels = labels
+
+    def test_unchanged_needs_triage_issue_gets_one_proposal(self):
+        self.edit_fails = True  # the comment lands, the label swap does not: still needs-triage
+        with self.assertRaises(SystemExit):
+            self.run_pass()
+        self.assertEqual(self.run_pass(), 0)
+        self.assertEqual(self.run_pass(), 0)
+        self.assertEqual(len(self.comments), 1)
+        self.assertEqual(self.asked, 1)
+        self.assertEqual(self.labels, {LABEL_TRIAGE})
+
+    def test_new_human_comment_allows_another_proposal(self):
+        self.edit_fails = True
+        with self.assertRaises(SystemExit):
+            self.run_pass()
+        self.human(comment="It is still broken on main.")
+        self.edit_fails = False
+        self.run_pass()
+        self.assertEqual([c["author"]["login"] for c in self.comments], ["bot", "owner", "bot"])
+        self.assertEqual(self.labels, {LABEL_WONTFIX})
+
+    def test_label_change_after_proposal_allows_another_proposal(self):
+        self.run_pass()
+        self.assertEqual(self.labels, {LABEL_WONTFIX})
+        self.human(labels={LABEL_TRIAGE})  # the owner disagrees and puts needs-triage back
+        self.run_pass()
+        self.assertEqual(len(self.comments), 2)
+        self.assertEqual(self.asked, 2)
+        self.assertEqual(self.labels, {LABEL_WONTFIX})
 
 
 if __name__ == "__main__":
