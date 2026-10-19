@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
-from factory import config, dispatch, lifecycle, onboard, runtime_events, triage, watch
+from factory import config, decisions, dispatch, lifecycle, onboard, runtime_events, triage, watch
 from factory.config import LABEL_AGENT, LABEL_TRIAGE
 
 ENGINE = config.ENGINE_REPO
@@ -277,6 +277,17 @@ class TriageIdentityTest(unittest.TestCase):
         os.environ["GH_CONFIG_DIR"] = "/agent"
         self.assertEqual(triage.triage_issue(self.issue("factory-bot"))["brief"], triage.WATCH_BRIEF)
         self.assertFalse(triage.watch_filed(self.issue("owner")), "a copied format by another author is triaged")
+
+    def test_dashboard_triage_runs_as_the_dispatcher(self) -> None:
+        # The dashboard keeps the human identity; its "Run LLM triage" step must not trip the guard.
+        self.cfg.install["dispatch_env"] = {"GH_CONFIG_DIR": "/agent"}
+        seen: list[dict] = []
+        run = lambda argv, env, **kwargs: seen.append(env) or subprocess.CompletedProcess(argv, 0, "", "")
+        step = {"action": "triage", "request": 0, "argv": ["factory", "triage", "--issue", "7"]}
+        with mock.patch.object(decisions, "_run", side_effect=run):
+            decisions._mutation(self.cfg, step, deadline=float("inf"))
+        with mock.patch.dict(os.environ, seen[0], clear=True):
+            self.assertIsNone(triage.identity_mismatch())
 
 
 if __name__ == "__main__":

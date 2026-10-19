@@ -578,7 +578,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    With `[install].dispatch_env` set, triage refuses to post (exit 1, reason
    `identity_mismatch`) unless `gh` authenticates as the login that environment
    selects, so a shell or unit without the dispatcher's `GH_CONFIG_DIR` cannot
-   triage under the owner's account.
+   triage under the owner's account. The dashboard's "Run LLM triage" decision
+   runs its triage step with `dispatch_env` applied, so it posts as the dispatcher.
 2. **Schedule and claim.** Eligibility first: open `ready-for-agent` issues that
    are not initiatives, not assigned and have no open `Blocked by` edge; then
    capacity (`max_active` minus held ticket locks) and the experiment slot (at
