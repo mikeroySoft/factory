@@ -139,6 +139,11 @@ exclusive = false
 # port = 8765
 # theme = ".factory-dashboard.css"   # repo-relative CSS loaded after the built-in stylesheet
 
+[watch]
+# `factory watch` files the factory's own runtime failures (engine bugs) here, from
+# every install, and comments on the open issue another install already filed.
+# engine_repo = "mikeroySoft/factory"
+
 # Human decision owners for `factory plan route N --reason R` (read-only; nothing
 # is ever assigned). Omit the whole section to keep legacy behaviour. Owners are
 # GitHub logins or `@org/team`; syntax is checked, membership is not. Team

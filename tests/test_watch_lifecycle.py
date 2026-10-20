@@ -77,6 +77,8 @@ class WatchLifecycleTest(unittest.TestCase):
                                             "assignees": assignees, "labels": [{"name": label}]}), "")
             if command[:3] == ["gh", "issue", "close"]:
                 return subprocess.CompletedProcess(command, 0, "", "")
+            if command[:3] == ["gh", "issue", "list"]:  # no open engine filing shares the fingerprint
+                return subprocess.CompletedProcess(command, 0, "[]", "")
             raise AssertionError(command)
 
         with mock.patch.object(dispatch, "run", side_effect=run), \

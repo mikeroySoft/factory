@@ -62,6 +62,7 @@ DEFAULT_REVIEWER = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fa
 DEFAULT_LLM_URL = "http://127.0.0.1:11434/v1/chat/completions"
 DEFAULT_LLM_MODEL = "qwen3:30b"
 DEFAULT_INSTALL = {"every": "10min", "dashboard": False, "host": "127.0.0.1", "python": None, "env": {}}
+ENGINE_REPO = "mikeroySoft/factory"  # factory's own source repo: `[watch].engine_repo` default
 
 # Host-side layer: `$XDG_CONFIG_HOME/factory/config.toml`, same table shapes
 # as `.factory.toml`. `[defaults.*]` < `[repo."owner/name".*]` < the repo file.
@@ -92,6 +93,7 @@ KNOWN_KEYS = {
     "install": ("every", "dashboard", "host", "python", "env", "dispatch_env"),
     "collaboration": ("fallback", "reasons", "components"),
     "prices": None,
+    "watch": ("engine_repo",),
 }
 # Normalized numeric fields of an `llm-usage` event; a worker profile maps each to JSON paths.
 USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "cached_tokens", "cost")
@@ -176,6 +178,8 @@ class Config:
     install: dict = field(default_factory=lambda: dict(DEFAULT_INSTALL))  # `factory install` defaults
     # `[collaboration]`: human decision owners for `factory plan route`; None = section absent (legacy behaviour).
     collaboration: dict | None = None
+    # `[watch].engine_repo`: where `factory watch` files engine/runtime failures from every install.
+    watch_engine_repo: str = ENGINE_REPO
     raw_repo: dict = field(default_factory=dict)  # the committed file alone, before host layering
 
     @property
@@ -546,6 +550,10 @@ def load(start: Path | None = None) -> Config:
     cfg.llm_url = triage.get("url", cfg.llm_url)
     cfg.llm_model = triage.get("model", cfg.llm_model)
     cfg.triage_timeout = int(triage.get("timeout", cfg.triage_timeout))
+    engine_repo = raw.get("watch", {}).get("engine_repo", cfg.watch_engine_repo)
+    if not isinstance(engine_repo, str) or not re.fullmatch(r"[\w.-]+/[\w.-]+", engine_repo):
+        raise ConfigError(f'watch.engine_repo must be a GitHub "owner/name", got {engine_repo!r}')
+    cfg.watch_engine_repo = engine_repo
     cfg.dashboard_port = int(dash.get("port", cfg.dashboard_port))
     cfg.dashboard_theme = root / dash["theme"] if dash.get("theme") else None
     cfg.install = merge(DEFAULT_INSTALL, raw.get("install", {}))

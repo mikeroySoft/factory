@@ -972,6 +972,8 @@ def _mutation(cfg: Config, step: dict, deadline: float) -> dict:
             "PYTHONSAFEPATH": "1",
             "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONNOUSERSITE": "1",
+            # triage posts as the dispatcher; under the human identity its guard refuses
+            **cfg.install.get("dispatch_env", {}),
         })
     try:
         result = _run(
