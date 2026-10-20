@@ -283,6 +283,11 @@ class WatchTest(unittest.TestCase):
         watch.run_pass(self.cfg)
         self.assertEqual(self.gh.created, [])
 
+    def test_repeated_review_revise_outcome_is_not_filed(self) -> None:
+        self.journal(*(escalate_row(n, "review_revise", "review requested changes") for n in (1, 2, 3)))
+        watch.run_pass(self.cfg)
+        self.assertEqual(self.gh.created, [])
+
 
 if __name__ == "__main__":
     unittest.main()
