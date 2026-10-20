@@ -998,7 +998,7 @@ branches, or merge state.
   skipped (open lessons PR #N)`; the count is kept), and without a manager logs
   `learn: skipped (no manager)` and records nothing. A failure is journaled as
   `learn` with `status: "failed"` and a `reason`, never fails the pass, and
-  keeps the count, so the next pass retries. Those PRs merge without a human:
+  keeps the count, so the next pass retries. Lessons, CURATE, and their revert PRs auto-merge:
   gate, reviewer APPROVE (posted as a GitHub `COMMENT` review, since the
   dispatcher authored the PR and cannot approve its own; the journaled
   `review-result` carries the verdict), CI, `factory-approved`, squash (see

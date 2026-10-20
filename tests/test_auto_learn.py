@@ -474,6 +474,12 @@ class PromotionTest(unittest.TestCase):
                       "baseline": learn.promotion.window(self.scores(0.5))}, *self.ran(self.scores(0.9)))
         self.gh.side_effect = lambda args: {"mergeCommit": {"oid": "c" * 40}}
         self.chore_pr.side_effect = RuntimeError("revert conflicts")
+        learn.learn_pass(dry_run=True)
+        self.assertEqual(
+            [c.args[0].split(" (", 1)[0] for c in self.log.call_args_list if c.args[0].startswith("promotion #")],
+            ["promotion #42: would revert", "promotion #43: would keep"],
+        )
+        self.log.reset_mock()
         learn.learn_pass()
         learn.learn_pass()
         [row] = self.rows("promotion-keep", "promotion-revert")
