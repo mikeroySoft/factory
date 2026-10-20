@@ -183,6 +183,70 @@ class RefreshConflictTest(unittest.TestCase):
         self.assertEqual(self.events("escalate"), [])
         self.assertNotIn(config.LABEL_HUMAN, self.github.issue_labels)
 
+    def test_fix_approved_conflict_restores_agent_labels_then_resolves_and_merges(self) -> None:
+        # Successful manager FIX approves the PR but leaves the issue ready-for-human.
+        self.github.issue_labels = {config.LABEL_HUMAN}
+        self.assertEqual(self.github.issue()["state"], "OPEN")
+        self.assertIn(config.LABEL_APPROVED, self.github.pr_labels)
+        wt = dispatch.ensure_worktree(9)
+        with self.patched(), \
+                mock.patch.object(dispatch, "run_gate", return_value=(True, "fresh gate ok")) as gate, \
+                mock.patch.object(dispatch, "review", wraps=dispatch.review) as review:
+            dispatch.merge_pass_locked(False)
+
+            self.assertEqual(self.events("escalate"), [])
+            self.assertNotIn(config.LABEL_HUMAN, self.github.issue_labels)
+            self.assertIn(config.LABEL_AGENT, self.github.issue_labels)
+            self.assertEqual(self.github.assignees, [])
+            self.assertNotIn(config.LABEL_APPROVED, self.github.pr_labels)
+            self.assertFalse(any(cmd[1:3] == ["issue", "comment"] for cmd in self.github.calls))
+            [requeue] = self.events("conflict-requeue")
+            self.assertEqual((requeue["head"], requeue["files"], requeue["round"]),
+                             (self.approved_head, ["shared.txt"], 1))
+            self.assertEqual(git(wt, "branch", "--show-current"), "agent/9")
+            gate.assert_not_called()
+            review.assert_not_called()
+
+            [ready] = dispatch.frontier()
+            dispatch.process_ticket(ready, 30, False)
+
+            resolved = self.github.head()
+            self.assertNotEqual(resolved, self.approved_head)
+            self.assertEqual(git(wt, "rev-parse", "HEAD"), resolved)
+            self.assertEqual(git(wt, "branch", "--show-current"), "agent/9")
+            self.assertIn("## Refresh conflict, round 1", self.prompt_seen.read_text())
+            gate.assert_called_once()
+            self.assertEqual(gate.call_args.args[:2], (wt, 9))
+            review.assert_called_once_with(wt, 9, "fresh gate ok", resolved)
+            [attempt] = self.events("attempt")
+            self.assertEqual((attempt["head"], attempt["gate"]), (resolved, "PASS"))
+            [review_event] = self.events("review")
+            self.assertEqual((review_event["head"], review_event["verdict"]), (resolved, "APPROVE"))
+            rows = lifecycle.read_events(dispatch.EVENTS)
+            self.assertLess(rows.index(attempt), rows.index(review_event))
+            self.assertIn(config.LABEL_APPROVED, self.github.pr_labels)
+
+            dispatch.merge_pass_locked(False)
+
+        self.assertTrue(self.github.merged)
+        self.assertEqual([e["head"] for e in self.events("merged")], [resolved])
+        self.assertEqual(git(self.origin, "show", "main:shared.txt"), "main version\nagent version")
+        self.assertEqual(self.events("escalate"), [])
+        self.assertNotIn(config.LABEL_HUMAN, self.github.issue_labels)
+        self.assertIn(config.LABEL_AGENT, self.github.issue_labels)
+
+    def test_closed_ticket_conflict_still_escalates_without_requeue(self) -> None:
+        closed_issue = {**self.github.issue(), "state": "CLOSED"}
+        with self.patched(), mock.patch.object(self.github, "issue", return_value=closed_issue):
+            self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+        [escalation] = self.events("escalate")
+        self.assertEqual(escalation["code"], "refresh_conflict")
+        self.assertIn("ticket is not open", escalation["reason"])
+        self.assertIn("- `shared.txt`", Path(escalation["packet"]).read_text())
+        self.assertEqual(self.events("conflict-requeue"), [])
+        self.assertIn(config.LABEL_HUMAN, self.github.issue_labels)
+        self.assertNotIn(config.LABEL_AGENT, self.github.issue_labels)
+
     def test_conflict_after_the_round_limit_escalates_with_the_file_list(self) -> None:
         for round_number in range(1, self.cfg.review_rounds + 1):
             dispatch.record("conflict-requeue", ticket=9, pr=102, round=round_number, files=["shared.txt"])

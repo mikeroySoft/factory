@@ -1676,7 +1676,8 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         run(["git", verb, "--abort"], cwd=wt, check=False)
         # Routine worker work (#295): the ticket goes back to the frontier on the same worktree and
         # branch, bounded by `review_rounds` conflict rounds. A human gets it only for a protected
-        # path without authority, rounds used up, or a ticket a human already owns.
+        # path without authority, rounds used up, or a ticket that is no longer open.
+        # A manager-FIX-approved PR may still have a ready-for-human issue; restore agent flow.
         issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "state,labels"])
         labels = {label["name"] for label in issue.get("labels", [])}
         rounds = sum(e.get("event") == "conflict-requeue" and e.get("ticket") == n for e in lifecycle.read_events(EVENTS))
@@ -1686,7 +1687,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         why = (
             f"protected paths without `{LABEL_PROTECTED_OVERRIDE}`" if protected
             else f"after {rounds} conflict-resolution round(s)" if rounds >= cfg.review_rounds
-            else "ticket is not ready-for-agent" if issue.get("state") != "OPEN" or LABEL_AGENT not in labels
+            else "ticket is not open" if issue.get("state") != "OPEN"
             else ""
         )
         if why:
@@ -1694,7 +1695,8 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             withdraw(f"{verb} onto moved main conflicts ({why}); worktree {wt}", "refresh_conflict", extra=files)
             return False
         record("conflict-requeue", ticket=n, pr=pr, head=remote_head, verb=verb, files=conflicts, round=rounds + 1)
-        run(["gh", "issue", "edit", str(n), "--repo", REPO, "--remove-assignee", "@me"], check=False)
+        run(["gh", "issue", "edit", str(n), "--repo", REPO,
+             "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT, "--remove-assignee", "@me"], check=False)
         log(f"#{n}: PR #{pr} {verb} onto {cfg.main} conflicts in {', '.join(conflicts)}; requeued to a worker")
         return False
     empty = run(

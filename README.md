@@ -679,8 +679,9 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    post its findings, and either reapprove the resulting head or withdraw the
    label and escalate. A rebase (or sync-merge) conflict is routine work: the
    label is withdrawn, a `conflict-requeue` row records the PR, head and
-   conflicting files, and the ticket is released (unassigned, still
-   `ready-for-agent`) so the next claim runs a worker in the same worktree on
+   conflicting files, and the ticket is released (unassigned, `ready-for-human`
+   removed, `ready-for-agent` added, including after a manager `FIX`) so the
+   next claim runs a worker in the same worktree on
    the same `agent/<n>` branch with a brief to rebase onto current
    `origin/main`, resolve the conflicts, keep the approved intent, and not widen
    scope. That attempt counts as a worker round; the normal gate, push (lease
@@ -689,7 +690,7 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    conflict escalates as `refresh_conflict`, with the conflicting files in the
    packet, when it touches `gate.protected_paths` without
    `factory-protected-override`, when `review_rounds` conflict requeues are
-   already used up, or when the ticket is not open and `ready-for-agent`.
+   already used up, or when the ticket is not open.
    Conflicts in `add_only_paths` go to the worker; the gate's add-only check
    judges the resolution (`factory-add-only-override` or manager `AUTHORIZE`
    to rewrite existing lines). Red CI → label removed, escalated once with the failing

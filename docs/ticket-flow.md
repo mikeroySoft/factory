@@ -105,8 +105,8 @@ flowchart TB
   CI -->|"rerun still found no runner, approval kept: dispatch.runner_unavailable"| ESC
   CI -->|"pass, behind main, approval removed: dispatch.refresh_pr_branch"| REF
   REF -->|"dispatch.approve_pr"| FA
-  REF -->|"conflict, rounds left, no unauthorized protected path: claim released, stays ready-for-agent, worker rebases on agent/N: dispatch.refresh_pr_branch"| RFA
-  REF -->|"conflict on a protected path without override, after review_rounds conflict rounds, or ticket not ready-for-agent; gate FAIL, REVISE, or head moved: dispatch.refresh_pr_branch"| ESC
+  REF -->|"conflict, open ticket, rounds left, no unauthorized protected path: claim released, ready-for-human removed, ready-for-agent added, worker rebases on agent/N: dispatch.refresh_pr_branch"| RFA
+  REF -->|"conflict on a protected path without override, after review_rounds conflict rounds, or ticket not open; gate FAIL, REVISE, or head moved: dispatch.refresh_pr_branch"| ESC
   CI -->|"pass, missing SHA-bound approval evidence: dispatch.merge_pass_locked"| ESC
   CI -->|"pass, up to date, no human CHANGES_REQUESTED: dispatch.merge_pass_locked"| MERGE
   MERGE -->|"dispatch.cleanup_after_merge"| MERGED
@@ -202,7 +202,7 @@ event. `{}` is a runtime value.
 | `dispatch.refresh_pr_branch` | ``kept worktree head {} differs from remote head {}`` | refresh → escalate |
 | `dispatch.refresh_pr_branch` | ``{} onto moved main conflicts (protected paths without `{}`); worktree {}`` | refresh → escalate immediately, conflict file list in the packet |
 | `dispatch.refresh_pr_branch` | ``{} onto moved main conflicts (after {} conflict-resolution round(s)); worktree {}`` | refresh → escalate once `review_rounds` conflict requeues are used up, conflict file list in the packet |
-| `dispatch.refresh_pr_branch` | ``{} onto moved main conflicts (ticket is not ready-for-agent); worktree {}`` | refresh → escalate (a human already owns the ticket) |
+| `dispatch.refresh_pr_branch` | ``{} onto moved main conflicts (ticket is not open); worktree {}`` | refresh → escalate (ticket is no longer open) |
 | `dispatch.refresh_pr_branch` | ``nothing ahead of {} after {}; refusing to push`` | refresh → escalate |
 | `dispatch.refresh_pr_branch` | ``gate failed after {} onto moved main`` | refresh → escalate |
 | `dispatch.refresh_pr_branch` | ``remote head changed while refreshed evidence was being produced`` | refresh → escalate |
