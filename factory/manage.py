@@ -305,10 +305,25 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
             raise ValueError("FIX requires a kept factory worktree and an open PR without requested changes")
         if dispatch.run(["git", "branch", "--show-current"], cwd=wt).stdout.strip() != f"agent/{n}":
             raise ValueError("FIX worktree is not on the ticket branch")
-        if dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip() != pr.get("headRefOid"):
-            raise ValueError("FIX worktree head does not match the remote PR head")
+        lease = pr.get("headRefOid")
+        local = dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+        events = lifecycle.read_events(dispatch.EVENTS)
+        if local != lease:
+            # Ahead of the PR head only with the worker's own journaled head (#264): push it on a
+            # lease against the recorded PR head and go on. Anything else is a human's call.
+            own = any(e.get("event") == "attempt" and e.get("ticket") == n and e.get("head") == local for e in events)
+            ahead = dispatch.run(["git", "merge-base", "--is-ancestor", lease or "", "HEAD"], cwd=wt, check=False).returncode == 0
+            if not (own and ahead):
+                dispatch.escalate(n, f"FIX worktree head {local} is not the PR head {lease} plus the worker's own commits; "
+                                  f"worktree kept at {wt}", None, code="refresh_head")
+                return
+            if dispatch.push_agent(wt, n, lease, check=False) is None:
+                dispatch.escalate(n, f"FIX could not push the worker's own commits: origin/agent/{n} moved since {lease}; "
+                                  f"worktree kept at {wt}", None, code="lease_refused")
+                return
+            lease = local
         dispatch.LOGS.mkdir(parents=True, exist_ok=True)
-        attempts = [e.get("attempt", 0) for e in lifecycle.read_events(dispatch.EVENTS)
+        attempts = [e.get("attempt", 0) for e in events
                     if e.get("event") == "attempt" and e.get("ticket") == n]
         extra = f"## Manager FIX guidance\n\n{data['guidance']}\n\n{packet.read_text()}"
         ok, report, logfile, gate_head = dispatch.worker_round(
@@ -324,7 +339,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         )
         if fresh.get("baseRefName") != cfg.main:
             raise ValueError(f"FIX requires a PR targeting the configured target `{cfg.main}`")
-        dispatch.push_agent(wt, n, pr["headRefOid"])
+        dispatch.push_agent(wt, n, lease)
         verdict, findings, pr_failed = dispatch.pr_gate_and_review(wt, n, report, gate_head, {})
         dispatch.pr_comment(n, findings)
         if pr_failed:
