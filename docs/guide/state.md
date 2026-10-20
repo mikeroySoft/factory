@@ -20,6 +20,7 @@ Labels are the control plane. `factory init` creates them. Names are fixed in `f
 | `chore` | Selects the chore worker. |
 | `wontfix-proposal` | Proposal only. Triage never applies `wontfix`. |
 | `initiative` | Plan record. Never triaged, dispatched, managed, or merged. |
+| `experiment` | Experiment ticket. At most one active at a time; its results never rank work. |
 
 Comments are receipts: triage briefs, escalation reasons, reviewer findings, manager decisions, handoff requests.
 

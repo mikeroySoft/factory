@@ -51,7 +51,8 @@ LABEL_TABLE = "\n".join(
         *(
             f"| {label} | {meaning} |"
             for label, (_color, meaning) in config.LABELS.items()
-            if label not in (LABEL_APPROVED, LABEL_CHORE, LABEL_REVIEW, LABEL_VIABILITY, config.LABEL_WONTFIX)
+            if label not in (LABEL_APPROVED, LABEL_CHORE, LABEL_REVIEW, LABEL_VIABILITY, config.LABEL_WONTFIX,
+                             config.LABEL_EXPERIMENT)
         ),
         "| wontfix | Will not be actioned |",
     ]
