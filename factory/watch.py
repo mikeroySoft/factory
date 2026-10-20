@@ -39,9 +39,9 @@ UNKNOWN_REASONS = ("check_timeout",)
 ENVIRONMENT_REASONS = ("worker_exit:", "triage_endpoint_", "github_command_failed")
 REPEAT_MIN = 3  # distinct tickets one escalation code must hit...
 REPEAT_DAYS = 7  # ...inside this trailing window to count as a factory defect
-# Ticket outcomes, not factory defects: a worker that finds its ticket already fixed commits
-# nothing, and filing that would hand the next pass another already-fixed ticket.
-OUTCOME_CODES = {"no_change"}
+# Ticket outcomes, not factory defects: an already-fixed ticket may produce `no_change`;
+# exhausted independent-review rounds may produce `review_revise`.
+OUTCOME_CODES = {"no_change", "review_revise"}
 OBSERVED = "## Observed by"
 COMMENT_PREFIX = "factory watch: observed in `"
 MAX_OPEN = 200  # newest open `bug` issues of the engine repo searched for a fingerprint
