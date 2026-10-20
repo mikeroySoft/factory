@@ -220,6 +220,7 @@ class ReleaseTest(unittest.TestCase):
         self.git(self.repo, "push", "-q", "origin", "HEAD:release/v0.0.2")
         self.git(self.repo, "push", "-q", "origin", "HEAD:main")
         self.git(self.repo, "tag", "-a", "v0.0.2", landed, "-m", "local only")
+        self.enterContext(mock.patch.object(release, "_gh_release", return_value=subprocess.CompletedProcess([], 1, "", "")))
         reason = release.run(self.cfg)
         second = release.run(self.cfg)
         self.assertIn("released v0.0.2", reason)
@@ -297,6 +298,63 @@ class ReleaseTest(unittest.TestCase):
         self.assertEqual(first, {"human_rate": 0.6, "first_pass": 0.5, "tickets": 17})
         second = release.next_bar(first, measured)
         self.assertEqual(second, {"human_rate": 0.4, "first_pass": 0.75, "tickets": 17})
+
+    def land_release(self) -> None:
+        self.tag_and_advance({"human_rate": 0.0, "first_pass": 1.0, "tickets": 1})
+        self.events()
+        release._update_release_files(self.cfg, self.repo, "0.0.1", "0.0.2")
+        self.git(self.repo, "add", "factory/__init__.py", "CHANGELOG.md")
+        self.git(self.repo, "commit", "-q", "-m", "Release 0.0.2")
+        self.git(self.repo, "push", "-q", "origin", "HEAD:main")
+
+    def release_rows(self) -> list[tuple[str, str]]:
+        return [(row["outcome"], row["tag"]) for row in lifecycle.read_events(self.cfg.factory / "events.jsonl")
+                if row["event"] == "release"]
+
+    @staticmethod
+    def gh_result(code: int, stderr: str = "") -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess([], code, "", stderr)
+
+    def test_tag_publishes_github_release_with_changelog_section(self) -> None:
+        self.land_release()
+        with mock.patch.object(release, "_gh_release",
+                               side_effect=[self.gh_result(1, "release not found"), self.gh_result(0)]) as gh:
+            reason = release.run(self.cfg)
+        self.assertIn("released v0.0.2", reason)
+        self.assertEqual(gh.call_args_list, [
+            mock.call(self.cfg, "view", "v0.0.2"),
+            mock.call(self.cfg, "create", "v0.0.2", "--verify-tag", "--latest", "--title", "v0.0.2",
+                      "--notes-file", "-", notes="- shipped work"),
+        ])
+        self.assertEqual(self.release_rows(), [("released", "v0.0.2"), ("published", "v0.0.2")])
+        with mock.patch.object(release, "_gh_release") as gh:
+            self.assertIn("no changes since v0.0.2", release.run(self.cfg))
+        gh.assert_not_called()
+
+    def test_existing_github_release_is_left_alone(self) -> None:
+        self.land_release()
+        with mock.patch.object(release, "_gh_release", return_value=self.gh_result(0)) as gh:
+            self.assertIn("released v0.0.2", release.run(self.cfg))
+        gh.assert_called_once_with(self.cfg, "view", "v0.0.2")
+        self.assertEqual(self.release_rows(), [("released", "v0.0.2"), ("published", "v0.0.2")])
+
+    def test_failed_github_release_is_journaled_and_retried_next_pass(self) -> None:
+        self.land_release()
+        with mock.patch.object(release, "_gh_release",
+                               side_effect=[self.gh_result(1), self.gh_result(1, "HTTP 502")]):
+            reason = release.run(self.cfg)
+        self.assertIn("released v0.0.2", reason)
+        self.assertIn("HTTP 502", reason)
+        self.assertTrue(self.git(self.origin, "rev-parse", "v0.0.2"))
+        self.assertEqual(self.release_rows(), [("released", "v0.0.2"), ("publish_failed", "v0.0.2")])
+        with mock.patch.object(release, "_gh_release",
+                               side_effect=[self.gh_result(1), self.gh_result(0)]) as gh:
+            self.assertIn("no changes since v0.0.2", release.run(self.cfg))
+        self.assertEqual(gh.call_args_list[1].args[1:3], ("create", "v0.0.2"))
+        self.assertEqual(self.release_rows()[-1], ("published", "v0.0.2"))
+        with mock.patch.object(release, "_gh_release") as gh:
+            release.run(self.cfg)
+        gh.assert_not_called()
 
 
 if __name__ == "__main__":

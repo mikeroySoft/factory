@@ -188,6 +188,44 @@ def _finish(cfg: config.Config, dry_run: bool, reason: str, metrics: dict[str, f
     return reason
 
 
+def _gh_release(cfg: config.Config, *args: str, notes: str | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["gh", "release", *args, "--repo", cfg.repo], input=notes,
+                          text=True, capture_output=True, check=False)
+
+
+def _notes(cfg: config.Config, tag: str) -> str:
+    """The tag's ``## X.Y.Z`` section of its own CHANGELOG.md, empty when it has none."""
+    text = _git(cfg.root, "show", f"{tag}:CHANGELOG.md", check=False).stdout
+    match = re.search(rf"(?ms)^## {re.escape(tag.removeprefix('v'))}(?![0-9.]).*?\n(.*?)(?=^## |\Z)", text)
+    return match.group(1).strip() if match else ""
+
+
+def _unpublished(cfg: config.Config, tag: str) -> bool:
+    outcomes = {row.get("outcome") for row in lifecycle.read_events(cfg.factory / "events.jsonl")
+                if row.get("event") == "release" and row.get("tag") == tag}
+    return "released" in outcomes and "published" not in outcomes
+
+
+def _publish(cfg: config.Config, tag: str) -> str:
+    """Create the GitHub Release for a pushed tag unless one exists. A failure is journaled
+    as ``publish_failed`` and retried by the next pass; the tag stays."""
+    try:
+        if _gh_release(cfg, "view", tag).returncode == 0:
+            reason = f"GitHub Release {tag} already exists"
+        else:
+            proc = _gh_release(cfg, "create", tag, "--verify-tag", "--latest", "--title", tag,
+                               "--notes-file", "-", notes=_notes(cfg, tag))
+            if proc.returncode:
+                raise RuntimeError(proc.stderr.strip() or f"gh release create {tag} failed")
+            reason = f"created GitHub Release {tag}"
+    except Exception as exc:  # noqa: BLE001 - journaled and retried next pass
+        reason = f"GitHub Release {tag} failed: {type(exc).__name__}: {exc}"
+        _record(cfg, "publish_failed", reason, None, None, tag=tag)
+        return reason
+    _record(cfg, "published", reason, None, None, tag=tag)
+    return reason
+
+
 def _update_release_files(cfg: config.Config, worktree: Path, old: str, new: str) -> None:
     version = worktree / cfg.release_version_file
     text = version.read_text()
@@ -217,6 +255,8 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
             return _finish(cfg, dry_run, _reason("no semver release tag reachable from origin/main", None, None),
                            None, None, None)
         latest_tag = latest["tag"]
+        if not dry_run and _unpublished(cfg, latest_tag):
+            _publish(cfg, latest_tag)
         bar = _bar(latest["message"])
         current = _version_at(cfg, f"origin/{cfg.main}")
         if current > latest["version"]:
@@ -249,7 +289,8 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
                     detail = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "git push failed"
                     return _finish(cfg, False, _reason(f"atomic push failed: {detail}", metrics, bar),
                                    metrics, bar, latest_tag)
-                return _finish(cfg, False, f"released {tag}", metrics, bar, tag, released=True)
+                released = _finish(cfg, False, f"released {tag}", metrics, bar, tag, released=True)
+                return f"{released}; {_publish(cfg, tag)}"
             finally:
                 if not pushed:
                     _git(cfg.root, "tag", "-d", tag, check=False)
