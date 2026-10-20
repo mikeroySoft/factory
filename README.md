@@ -376,8 +376,11 @@ the ticket to `ready-for-agent`. It is limited to required add-only edits or
 removal of obsolete wording-only assertions, and never authorizes protected
 paths. The normal gate and independent review run again. FIX uses
 `{"worker":"ci-fix","guidance":"..."}` to run exactly one selected worker round
-in the kept `agent/<n>` worktree for its open PR, ignoring other ticket labels
-and refusing a kept head that no longer matches the remote PR. FIX passes
+in the kept `agent/<n>` worktree for its open PR, ignoring other ticket labels.
+A kept head ahead of the remote PR head is pushed first
+(`--force-with-lease` against the recorded PR head) when it is a head a
+journaled worker attempt of this ticket produced; any other kept head
+escalates with `refresh_head`, and a refused lease with `lease_refused`. FIX passes
 guidance and the escalation packet to the worker, re-gates, pushes only on a
 gate PASS bound to the resulting commit, and independently re-reviews that
 same commit. Only a zero-exit, well-formed fresh APPROVE whose remote PR head
@@ -674,7 +677,23 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    unbound, legacy, or stale approval evidence never merges. Behind `main` →
    refresh, re-gate on this host, force-push, run a fresh independent review,
    post its findings, and either reapprove the resulting head or withdraw the
-   label and escalate. Red CI → label removed, escalated once with the failing
+   label and escalate. A rebase (or sync-merge) conflict is routine work: the
+   label is withdrawn, a `conflict-requeue` row records the PR, head and
+   conflicting files, and the ticket is released (unassigned, `ready-for-human`
+   removed, `ready-for-agent` added, including after a manager `FIX`) so the
+   next claim runs a worker in the same worktree on
+   the same `agent/<n>` branch with a brief to rebase onto current
+   `origin/main`, resolve the conflicts, keep the approved intent, and not widen
+   scope. That attempt counts as a worker round; the normal gate, push (lease
+   on the recorded PR head), independent review, `review_rounds` and
+   `manager.rounds` follow, and only a fresh approval restores the label. The
+   conflict escalates as `refresh_conflict`, with the conflicting files in the
+   packet, when it touches `gate.protected_paths` without
+   `factory-protected-override`, when `review_rounds` conflict requeues are
+   already used up, or when the ticket is not open.
+   Conflicts in `add_only_paths` go to the worker; the gate's add-only check
+   judges the resolution (`factory-add-only-override` or manager `AUTHORIZE`
+   to rewrite existing lines). Red CI → label removed, escalated once with the failing
    check names. A check cancelled after running steps is red CI. A check
    cancelled before any runner picked it up (no steps, no runner, or GitHub's
    "not acquired by Runner" annotation) is infrastructure: once its run has
@@ -696,7 +715,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    late human veto. Protect release branches on GitHub; the final reads alone
    cannot prevent a retarget after the last check.
 7. **Escalation.** Budget exceeded, gate failed thrice, second `REVISE`,
-   nothing to PR, refused `agent/<n>` push, rebase conflict, red CI, or any
+   nothing to PR, refused `agent/<n>` push, a refresh conflict that is not
+   routine (step 6), red CI, or any
    dispatcher crash after the claim: the issue gets `ready-for-human`,
    loses the assignee and `ready-for-agent`, and receives a comment with the
    reason and the worker log path (its comment id is journaled). The worktree
@@ -1009,7 +1029,7 @@ branches, or merge state.
   [eval promotion contract](docs/eval-promotion-contract.md) (train/lockbox
   splits, repeat scores, keep/revert).
 - **Audit trail**: `.factory/events.jsonl` retains the ticket outcome events
-  (`claimed`, `attempt`, `pr-opened`, `review`, `approved`, `refreshed`,
+  (`claimed`, `attempt`, `pr-opened`, `review`, `approved`, `refreshed`, `conflict-requeue`,
   `merged`, `escalate`, `upstream-sync`, and `human-decision`) alongside
   versioned `lifecycle` records. See the [event contract](#execution-event-contract)
   below. A ticket's history is local; no GitHub call is needed. Past

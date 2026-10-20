@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import fnmatch
 import json
 import os
 import re
@@ -1648,8 +1649,8 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         return False
     wt = ensure_worktree(n)
 
-    def withdraw(reason: str, code: str) -> None:
-        escalate(n, f"PR #{pr}: {reason}; `{FACTORY_APPROVED}` label removed", None, code=code)
+    def withdraw(reason: str, code: str, extra: str = "") -> None:
+        escalate(n, f"PR #{pr}: {reason}; `{FACTORY_APPROVED}` label removed", None, extra=extra, code=code)
 
     removed = run(
         ["gh", "pr", "edit", str(pr), "--repo", REPO, "--remove-label", FACTORY_APPROVED],
@@ -1670,8 +1671,33 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         else ("rebase", ["git", "rebase", f"origin/{cfg.main}"])
     )
     if run(cmd, cwd=wt, check=False).returncode != 0:
+        unmerged = run(["git", "diff", "--name-only", "-z", "--diff-filter=U"], cwd=wt, check=False).stdout
+        conflicts = [path for path in unmerged.split("\0") if path]
         run(["git", verb, "--abort"], cwd=wt, check=False)
-        withdraw(f"{verb} onto moved main conflicts; worktree {wt}", "refresh_conflict")
+        # Routine worker work (#295): the ticket goes back to the frontier on the same worktree and
+        # branch, bounded by `review_rounds` conflict rounds. A human gets it only for a protected
+        # path without authority, rounds used up, or a ticket that is no longer open.
+        # A manager-FIX-approved PR may still have a ready-for-human issue; restore agent flow.
+        issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "state,labels"])
+        labels = {label["name"] for label in issue.get("labels", [])}
+        rounds = sum(e.get("event") == "conflict-requeue" and e.get("ticket") == n for e in lifecycle.read_events(EVENTS))
+        protected = [] if LABEL_PROTECTED_OVERRIDE in labels else [
+            path for path in conflicts if any(fnmatch.fnmatchcase(path, glob) for glob in cfg.protected_paths)
+        ]
+        why = (
+            f"protected paths without `{LABEL_PROTECTED_OVERRIDE}`" if protected
+            else f"after {rounds} conflict-resolution round(s)" if rounds >= cfg.review_rounds
+            else "ticket is not open" if issue.get("state") != "OPEN"
+            else ""
+        )
+        if why:
+            files = "## Conflicting files\n\n" + ("\n".join(f"- `{path}`" for path in conflicts) or "(none listed)")
+            withdraw(f"{verb} onto moved main conflicts ({why}); worktree {wt}", "refresh_conflict", extra=files)
+            return False
+        record("conflict-requeue", ticket=n, pr=pr, head=remote_head, verb=verb, files=conflicts, round=rounds + 1)
+        run(["gh", "issue", "edit", str(n), "--repo", REPO,
+             "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT, "--remove-assignee", "@me"], check=False)
+        log(f"#{n}: PR #{pr} {verb} onto {cfg.main} conflicts in {', '.join(conflicts)}; requeued to a worker")
         return False
     empty = run(
         ["git", "merge-base", "--is-ancestor", "HEAD", f"origin/{cfg.main}"], cwd=wt, check=False
@@ -2278,9 +2304,21 @@ def process_ticket(
             LOGS.mkdir(parents=True, exist_ok=True)
 
             # Attempts 1..MAX_ATTEMPTS: worker + gate, feeding the failed report back. A sync
-            # candidate the dispatcher's own gate passed at this exact head needs no worker.
-            extra, logfile, report = "", None, ""
-            staged = sync_staged(n, wt)
+            # candidate the dispatcher's own gate passed at this exact head needs no worker,
+            # unless a refresh conflict requeued it (no attempt since its `conflict-requeue`).
+            rows = [e for e in lifecycle.read_events(EVENTS)
+                    if e.get("ticket") == n and e.get("event") in {"attempt", "conflict-requeue"}]
+            conflict = rows[-1] if rows and rows[-1]["event"] == "conflict-requeue" else None
+            resolve = "" if conflict is None else (
+                f"## Refresh conflict, round {conflict['round']}\n\n"
+                f"PR #{conflict['pr']} was approved, but `git {conflict['verb']} origin/{cfg.main}` conflicts in:\n\n"
+                + "".join(f"- `{path}`\n" for path in conflict["files"])
+                + f"\nRun `git fetch origin && git {conflict['verb']} origin/{cfg.main}` in this worktree, resolve "
+                "the conflicts, and commit. Keep the already-approved intent of the change; do not widen scope. "
+                "The approval does not carry over: the gate and an independent review run again.\n\n"
+            )
+            extra, logfile, report = resolve, None, ""
+            staged = None if conflict else sync_staged(n, wt)
             if staged is not None:
                 report, gate_head = staged
             for attempt in range(1, MAX_ATTEMPTS + 1 if staged is None else 1):
@@ -2297,7 +2335,7 @@ def process_ticket(
                 if time.monotonic() > deadline:
                     escalate(n, f"wall-clock budget ({budget_min} min) exceeded", logfile, code="budget")
                     return
-                extra = f"## Previous gate report (attempt {attempt} failed)\n\n{report}"
+                extra = f"{resolve}## Previous gate report (attempt {attempt} failed)\n\n{report}"
             else:
                 if staged is None:
                     stuck = report.startswith("worker stuck")
