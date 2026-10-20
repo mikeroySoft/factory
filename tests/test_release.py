@@ -220,6 +220,7 @@ class ReleaseTest(unittest.TestCase):
         self.git(self.repo, "push", "-q", "origin", "HEAD:release/v0.0.2")
         self.git(self.repo, "push", "-q", "origin", "HEAD:main")
         self.git(self.repo, "tag", "-a", "v0.0.2", landed, "-m", "local only")
+        self.enterContext(mock.patch.object(release, "_gh_release", return_value=subprocess.CompletedProcess([], 1, "", "")))
         reason = release.run(self.cfg)
         second = release.run(self.cfg)
         self.assertIn("released v0.0.2", reason)
