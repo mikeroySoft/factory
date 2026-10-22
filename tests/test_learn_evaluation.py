@@ -381,6 +381,78 @@ VERDICT: REVISE
 
         self.assertEqual(learn._finding_count(findings), 2)
 
+    def test_evidence_excludes_frozen_issue_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            cfg = config.Config(root=root, repo="acme/widgets")
+            cfg.factory.mkdir()
+            dispatch.configure(cfg)
+            lifecycle.append(
+                cfg.factory / "events.jsonl",
+                {
+                    "event": "claimed",
+                    "ticket": 7,
+                    "title": "fix parser",
+                    "at": "2026-01-01T00:00:00Z",
+                    "issue": {
+                        "title": "fix parser",
+                        "body": "frozen-body-must-not-enter-lessons",
+                        "comments": ["frozen-comment-must-not-enter-lessons"],
+                    },
+                },
+            )
+            lifecycle.append(
+                cfg.factory / "events.jsonl",
+                {"event": "merged", "ticket": 7, "title": "fix parser", "at": "2026-01-02T00:00:00Z"},
+            )
+
+            with mock.patch.object(learn.stats, "escapes", return_value=[]):
+                _, prompt_evidence = learn.evidence(1)
+
+            self.assertNotIn("frozen-body-must-not-enter-lessons", prompt_evidence)
+            self.assertNotIn("frozen-comment-must-not-enter-lessons", prompt_evidence)
+
+    def test_reported_partial_usage_counts_toward_token_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            cfg = config.Config(
+                root=root,
+                repo="acme/widgets",
+                learn_max_tickets=1,
+                learn_max_tokens=50,
+                learn_budget_min=1,
+            )
+            cfg.factory.mkdir()
+            dispatch.configure(cfg)
+            case = learn.ReplayCase(
+                7,
+                "a" * 40,
+                "fix parser",
+                (),
+                {"title": "fix parser", "body": "Make it pass.", "comments": []},
+            )
+            replay = mock.Mock(return_value={
+                "first_gate_pass": True,
+                "approved": True,
+                "review_rounds": 1,
+                "revise_findings": 0,
+                "tokens": None,
+                "reported_tokens": 60,
+                "cost": None,
+                "seconds": 1.0,
+            })
+
+            with mock.patch.object(learn, "replay_ticket", replay):
+                result = learn.evaluate_candidates(
+                    cfg,
+                    [case],
+                    [learn.Candidate("lessons", "candidate")],
+                )["lessons"]
+
+            self.assertEqual(result["status"], "not_tested")
+            self.assertIn("token budget", result["reason"])
+
+
 
 if __name__ == "__main__":
     unittest.main()

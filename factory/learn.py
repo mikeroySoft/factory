@@ -83,7 +83,7 @@ def evidence(last: int) -> tuple[list[int], str]:
         title = next((e.get("title") for e in evs if e["event"] == "claimed"), "")
         parts.append(f"### Ticket #{n}: {title}")
         for e in evs:
-            fields = {k: v for k, v in e.items() if k not in ("ticket", "title", "log")}
+            fields = {k: v for k, v in e.items() if k not in ("ticket", "title", "log", "issue")}
             parts.append(f"- {json.dumps(fields)}")
         worst = worst_session(evs)
         transcript = Path(worst[0]["transcript"]) if worst and isinstance(worst[0].get("transcript"), str) else None
@@ -376,6 +376,7 @@ def replay_ticket(
             "tokens": sum(value for value in tokens if value is not None) if all(
                 value is not None for value in tokens
             ) else None,
+            "reported_tokens": sum(value for value in tokens if value is not None),
             "cost": round(sum(costs), 4) if costs else None,
             "seconds": round(time.monotonic() - started, 3),
         }
@@ -458,8 +459,9 @@ def evaluate_candidates(
                 baseline_error = f"baseline replay failed for #{case.ticket}: {type(exc).__name__}: {exc}"
                 break
             baseline.append({"ticket": case.ticket, "base": case.base, **row})
-            if isinstance(row.get("tokens"), (int, float)):
-                used_tokens += row["tokens"]
+            reported_tokens = row.get("reported_tokens", row.get("tokens"))
+            if isinstance(reported_tokens, (int, float)):
+                used_tokens += reported_tokens
             if used_tokens > cfg.learn_max_tokens:
                 baseline_error = f"learn token budget exceeded ({used_tokens} > {cfg.learn_max_tokens})"
                 break
@@ -485,8 +487,9 @@ def evaluate_candidates(
                     reason = f"variant replay failed for #{case.ticket}: {type(exc).__name__}: {exc}"
                     break
                 variant.append({"ticket": case.ticket, "base": case.base, **row})
-                if isinstance(row.get("tokens"), (int, float)):
-                    used_tokens += row["tokens"]
+                reported_tokens = row.get("reported_tokens", row.get("tokens"))
+                if isinstance(reported_tokens, (int, float)):
+                    used_tokens += reported_tokens
                 if used_tokens > cfg.learn_max_tokens:
                     reason = f"learn token budget exceeded ({used_tokens} > {cfg.learn_max_tokens})"
                     break
