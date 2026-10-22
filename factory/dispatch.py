@@ -2151,7 +2151,7 @@ def worker_round(
     identity = {"worker": worker, "worker_version": worker_version}
     transcript_mode = cfg.worker_transcript.get(worker)
     argv, session_dir = _with_transcript(
-        cfg.worker({worker}, promptfile, wt), n, transcript_mode,
+        cfg.worker_command(worker, promptfile, wt), n, transcript_mode,
         len(cfg.worker_wrap) if transcript_mode else None,
     )
     run_options = {}
@@ -2298,7 +2298,7 @@ def process_ticket(
     labels = {label["name"] for label in issue.get("labels", [])}
     wt = FACTORY / f"wt-{n}"
     worker_key = cfg.worker_key(labels)
-    worker = cfg.worker({worker_key}, wt / ".factory-prompt.md", wt)[0]
+    worker = cfg.worker_command(worker_key, wt / ".factory-prompt.md", wt)[0]
     lock_path = FACTORY / "locks" / f"{n}.lock"
     if lock_held(lock_path):
         log(f"#{n}: skipped (in flight, lock held on {lock_path})")

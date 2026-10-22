@@ -6,7 +6,7 @@ chore = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"
 
 [repo."mikeroySoft/rocm-cli".workers.prime]
 when = { label = "harness-pilot" }
-command = ["{home}/.local/bin/factory-prime-agent", "-p", "--cwd", "{cwd}", "@{prompt}", "--mode", "json"]
+command = ["factory-prime-agent", "-p", "--cwd", "{cwd}", "@{prompt}", "--mode", "json"]
 transcript = "omp-session"
 version = "0.10.0"
 env = { DO_NOT_TRACK = "1", PRIME_AGENT_TELEMETRY = "0", PRIME_AGENT_CODING_AGENT_DIR = "{root}/.factory/prime-agent", PRIME_AGENT_SESSION_DIR = "{root}/.factory/prime-agent/sessions", PRIME_AGENT_DAEMON_SOCKET = "{root}/.factory/prime-agent/daemon.sock" }

@@ -211,15 +211,18 @@ class Config:
         return next(
             (
                 key for key in self.workers
-                if key in labels or self.worker_select_label.get(key) in labels
+                if (key in labels and key not in self.worker_select_label) or self.worker_select_label.get(key) in labels
             ),
             "default",
         )
 
     def worker(self, labels: set[str], prompt: Path, cwd: Path) -> list[str]:
         """argv for the worker profile that owns these ticket labels."""
-        argv = self.workers[self.worker_key(labels)]
-        return expand([*self.worker_wrap, *argv], prompt=str(prompt), cwd=str(cwd),
+        return self.worker_command(self.worker_key(labels), prompt, cwd)
+
+    def worker_command(self, worker: str, prompt: Path, cwd: Path) -> list[str]:
+        """Expanded argv for an already selected worker profile."""
+        return expand([*self.worker_wrap, *self.workers[worker]], prompt=str(prompt), cwd=str(cwd),
                       root=str(self.root), repo=self.repo, home=str(Path.home()))
 
     def worker_environment(self, worker: str, prompt: Path, cwd: Path) -> dict[str, str]:

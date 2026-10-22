@@ -37,6 +37,7 @@ class PrimePilotConfigTest(unittest.TestCase):
 
             self.assertEqual(loaded.worker_key({"ready-for-agent", "harness-pilot"}), "prime")
             self.assertEqual(loaded.worker_key({"ready-for-agent"}), "default")
+            self.assertEqual(loaded.worker_key({"ready-for-agent", "prime"}), "default")
             self.assertEqual(loaded.worker_version["prime"], "0.10.0")
             self.assertEqual(
                 loaded.worker({"harness-pilot"}, Path("/prompt"), Path("/worktree")),
