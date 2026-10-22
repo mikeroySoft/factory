@@ -24,6 +24,9 @@ class WorkerModesTest(unittest.TestCase):
         (self.root / "README.md").write_text("fixture\n")
         subprocess.run(["git", "add", "README.md"], cwd=self.root, check=True)
         subprocess.run(["git", "commit", "-qm", "fixture"], cwd=self.root, check=True)
+        subprocess.run(
+            ["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=self.root, check=True,
+        )
         self.write_config()
         subprocess.run(["git", "add", config.CONFIG_NAME], cwd=self.root, check=True)
         subprocess.run(["git", "commit", "-qm", "config"], cwd=self.root, check=True)
