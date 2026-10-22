@@ -21,7 +21,7 @@ import tempfile
 import time
 import tomllib
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -49,7 +49,6 @@ class ReplayCase:
 class Candidate:
     kind: str
     content: str
-    evidence: str = ""
 
 
 def worst_session(evs: list[dict]) -> tuple[dict, dict] | None:
@@ -121,7 +120,7 @@ def replay_cases(tickets: list[int], maximum: int) -> list[ReplayCase]:
     cases = []
     for ticket in tickets:
         claimed = next((
-            row for row in reversed(by_ticket.get(ticket, []))
+            row for row in by_ticket.get(ticket, [])
             if row.get("event") == "claimed"
             and isinstance(row.get("base"), str)
             and re.fullmatch(r"[0-9a-f]{40}", row["base"])
@@ -200,10 +199,18 @@ def _pr_checks(wt: Path) -> bool:
 
 
 def _finding_count(findings: str) -> int:
-    return sum(
-        bool(line.strip()) and not line.lstrip().startswith("#") and not line.startswith("VERDICT:")
-        for line in findings.splitlines()
-    )
+    required_level = 0
+    count = 0
+    for line in findings.splitlines():
+        heading = re.match(r"^(#{1,6})\s+(.+?)\s*$", line)
+        if required_level:
+            if heading and len(heading.group(1)) <= required_level:
+                break
+            if re.match(r"^(?:[-*+]|\d+[.)])\s+", line):
+                count += 1
+        elif heading and heading.group(2).strip("*_ :").casefold() == "required fixes":
+            required_level = len(heading.group(1))
+    return count
 
 
 def _candidate_base(wt: Path, state: Path, candidate: Candidate | None) -> str:
@@ -308,10 +315,8 @@ def replay_ticket(
                     break
             context = (
                 "## Learn evaluation evidence\n\n"
-                f"Candidate arm: `{candidate.kind if candidate else 'baseline'}`. "
-                f"Ticket set and recorded baseline evidence:\n\n{candidate.evidence}"
-                if candidate and candidate.evidence else
-                "## Learn evaluation evidence\n\nBaseline replay at the recorded ticket revision."
+                f"Ticket #{case.ticket} is replayed at recorded base `{case.base}`. "
+                "Judge only this diff and the gate report above."
             )
             result = dispatch.run_reviewer(
                 wt,
@@ -453,10 +458,8 @@ def evaluate_candidates(
                 baseline_error = f"baseline replay failed for #{case.ticket}: {type(exc).__name__}: {exc}"
                 break
             baseline.append({"ticket": case.ticket, "base": case.base, **row})
-            if row.get("tokens") is None:
-                baseline_error = f"baseline replay for #{case.ticket} did not report token usage"
-                break
-            used_tokens += row["tokens"]
+            if isinstance(row.get("tokens"), (int, float)):
+                used_tokens += row["tokens"]
             if used_tokens > cfg.learn_max_tokens:
                 baseline_error = f"learn token budget exceeded ({used_tokens} > {cfg.learn_max_tokens})"
                 break
@@ -469,12 +472,6 @@ def evaluate_candidates(
         variant: list[dict] = []
         reason = baseline_error
         if not reason:
-            baseline_evidence = "\n".join(
-                f"- Ticket #{row['ticket']} at `{row['base']}`: first gate "
-                f"{'PASS' if row['first_gate_pass'] else 'FAIL'}, {row['review_rounds']} review round(s), "
-                f"{row['revise_findings']} REVISE finding(s)."
-                for row in baseline
-            )
             for case in cases:
                 if used_tokens >= cfg.learn_max_tokens:
                     reason = f"learn token budget exhausted ({used_tokens} >= {cfg.learn_max_tokens})"
@@ -483,15 +480,13 @@ def evaluate_candidates(
                     reason = f"learn wall-time budget exhausted ({cfg.learn_budget_min} min)"
                     break
                 try:
-                    row = replay_ticket(cfg, case, replace(candidate, evidence=baseline_evidence), deadline)
+                    row = replay_ticket(cfg, case, candidate, deadline)
                 except Exception as exc:  # noqa: BLE001 - report and skip the proposal
                     reason = f"variant replay failed for #{case.ticket}: {type(exc).__name__}: {exc}"
                     break
                 variant.append({"ticket": case.ticket, "base": case.base, **row})
-                if row.get("tokens") is None:
-                    reason = f"variant replay for #{case.ticket} did not report token usage"
-                    break
-                used_tokens += row["tokens"]
+                if isinstance(row.get("tokens"), (int, float)):
+                    used_tokens += row["tokens"]
                 if used_tokens > cfg.learn_max_tokens:
                     reason = f"learn token budget exceeded ({used_tokens} > {cfg.learn_max_tokens})"
                     break

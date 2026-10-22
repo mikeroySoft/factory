@@ -277,9 +277,109 @@ class LearnEvaluationTest(unittest.TestCase):
             self.assertNotIn("refs/heads/replay-leak", git("show-ref", check=False).stdout)
             self.assertFalse((repo / "solution.txt").exists())
             self.assertIn("## Learn evaluation evidence", prompts.read_text())
+            self.assertNotIn("Candidate arm:", prompts.read_text())
+            self.assertNotIn("recorded baseline evidence", prompts.read_text())
             rows = lifecycle.read_events(cfg.factory / "events.jsonl")
             self.assertEqual([row["event"] for row in rows], ["learn-evaluation", "learn-evaluation"])
             self.assertFalse(any(row.get("event") == "escalate" for row in rows))
+
+    def test_replay_cases_keep_the_first_claimed_pre_work_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            cfg = config.Config(root=root, repo="acme/widgets")
+            cfg.factory.mkdir()
+            dispatch.configure(cfg)
+            issue = {"title": "fix parser", "body": "Make it pass.", "comments": []}
+            for base in ("a" * 40, "b" * 40):
+                lifecycle.append(
+                    cfg.factory / "events.jsonl",
+                    {
+                        "event": "claimed",
+                        "ticket": 7,
+                        "title": "fix parser",
+                        "labels": ["default"],
+                        "base": base,
+                        "issue": issue,
+                    },
+                )
+
+            [case] = learn.replay_cases([7], 1)
+
+            self.assertEqual(case.base, "a" * 40)
+
+    def test_unreported_token_usage_does_not_disqualify_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            cfg = config.Config(
+                root=root,
+                repo="acme/widgets",
+                learn_max_tickets=1,
+                learn_max_tokens=1000,
+                learn_budget_min=1,
+            )
+            cfg.factory.mkdir()
+            dispatch.configure(cfg)
+            case = learn.ReplayCase(
+                7,
+                "a" * 40,
+                "fix parser",
+                (),
+                {"title": "fix parser", "body": "Make it pass.", "comments": []},
+            )
+            baseline = {
+                "first_gate_pass": False,
+                "approved": True,
+                "review_rounds": 2,
+                "revise_findings": 1,
+                "tokens": None,
+                "cost": None,
+                "seconds": 1.0,
+            }
+            variant = {
+                **baseline,
+                "first_gate_pass": True,
+                "review_rounds": 1,
+                "revise_findings": 0,
+            }
+
+            with mock.patch.object(
+                learn,
+                "replay_ticket",
+                side_effect=lambda _cfg, _case, candidate, _deadline: (
+                    baseline if candidate is None else variant
+                ),
+            ):
+                result = learn.evaluate_candidates(
+                    cfg,
+                    [case],
+                    [learn.Candidate("lessons", "helpful")],
+                )["lessons"]
+
+            self.assertEqual(result["status"], "kept")
+            self.assertIsNone(result["cost"]["tokens"])
+
+    def test_revise_finding_count_ignores_prose_and_optional_items(self) -> None:
+        findings = """Review summary.
+
+## Required fixes
+
+1. **Reject empty input** (`parser.py:12`)
+
+   Empty values currently reach the decoder.
+
+2. **Preserve the error** (`parser.py:30`)
+
+   The replacement loses the original context.
+
+## Optional suggestions
+
+1. Rename the helper (`parser.py:8`).
+2. Add an explanatory comment (`parser.py:9`).
+
+VERDICT: REVISE
+"""
+
+        self.assertEqual(learn._finding_count(findings), 2)
 
 
 if __name__ == "__main__":

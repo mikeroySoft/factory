@@ -1041,11 +1041,13 @@ branches, or merge state.
   lessons-file or CURATE candidate. Replays have no GitHub credentials and a
   rejecting `pre-push` hook. The candidate is kept only when first-gate passes
   are no lower, review rounds and REVISE findings are no higher, and at least one
-  metric improves. `max_tokens` and `budget_min` cap the whole learn pass; missing
-  token usage, an unavailable replay, or exhaustion records `learn-evaluation`
-  as `not_tested`, opens no PR and never escalates. Kept PR bodies include the
-  ticket/base set, both arms, and token/dollar/wall-time cost; the replay reviewer
-  prompt receives the recorded baseline evidence. Evaluation is off by default,
+  metric improves. Reported usage counts toward `max_tokens`; reviewers that do
+  not report usage still run, remain bounded by `max_tickets` and `budget_min`,
+  and show `tokens not reported` in the evidence. An unavailable replay or budget
+  exhaustion records `learn-evaluation` as `not_tested`, opens no PR and never
+  escalates. Kept PR bodies include the ticket/base set, both arms, and
+  token/dollar/wall-time cost. Both arms' reviewer prompts receive the same
+  neutral ticket and recorded-base context. Evaluation is off by default,
   so existing learning behavior is unchanged.
 - **Audit trail**: `.factory/events.jsonl` retains the ticket outcome events
   (`claimed`, `attempt`, `pr-opened`, `review`, `approved`, `refreshed`, `conflict-requeue`,
