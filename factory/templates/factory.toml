@@ -34,11 +34,15 @@
 # default = ["claude", "-p", "--dangerously-skip-permissions", "{prompt}"]  # reads the path as text: use a wrapper
 # default = ["codex", "exec", "--full-auto", "-C", "{cwd}", "@{prompt}"]
 #
-# A worker may also be a table with `command` argv, an optional natural-language
-# `when` rule, and `transcript = "omp-session"` when its differently named binary
-# accepts OMP's `--session-dir` and writes compatible JSONL. Commands containing
-# a binary named `omp` default to that mode. Array and table forms can coexist;
-# do not define a label twice. The manager lists configured labels and their rules;
+# A worker may also be a table with `command` argv, an optional `when`, and
+# `transcript = "omp-session"` when its differently named binary accepts OMP's
+# `--session-dir` and writes compatible JSONL. A text `when` is manager guidance;
+# `when = { label = "name" }` directly selects this profile for that ticket label.
+# Optional `env = { NAME = "value" }` applies only to that worker and expands
+# command placeholders; `version = "..."` records a pinned worker release in
+# claim, usage, attempt, and lifecycle evidence. Commands containing a binary
+# named `omp` default to transcript mode. Array and table forms can coexist; do
+# not define a label twice. The manager lists configured profiles and their rules;
 # ROUTE and FIX cannot invent profiles or write host config. FIX uses
 # {"worker": "ci-fix", "guidance": "..."}.
 #

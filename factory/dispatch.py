@@ -803,7 +803,8 @@ def _stop(proc: subprocess.Popen) -> None:
 
 
 def run_worker(cmd: list[str], wt: Path, logfile: Path, handoff: Path,
-               deadline: float = float("inf")) -> tuple[int, str | None]:
+               deadline: float = float("inf"), *, env_overrides: dict[str, str] | None = None,
+               worker: str | None = None, worker_version: str | None = None) -> tuple[int, str | None]:
     """Run the worker; return its exit code and the timeout that stopped it, if any.
 
     `idle_timeout`: no log output and no worktree change (stuck mid-work).
@@ -812,10 +813,15 @@ def run_worker(cmd: list[str], wt: Path, logfile: Path, handoff: Path,
     """
     log(f"worker: {' '.join(cmd)} -> {logfile}")
     started = time.monotonic()
-    with lifecycle.scope(EVENTS, "worker") as execution, logfile.open("a") as out:
+    identity = {"worker": worker, "worker_version": worker_version} if worker else {}
+    with lifecycle.scope(EVENTS, "worker", **identity) as execution, logfile.open("a") as out:
         start = _activity(wt, logfile, handoff)  # before launch: a fast handoff must count as done
         # Own session, so a timeout stops the whole tree (tests, servers), not just the agent.
-        with without_github(execution.env()) as env:
+        child_env = execution.env()
+        context = child_env[lifecycle.CONTEXT_ENV]
+        child_env.update(env_overrides or {})
+        child_env[lifecycle.CONTEXT_ENV] = context
+        with without_github(child_env) as env:
             proc = subprocess.Popen(cmd, cwd=wt, stdout=out, stderr=subprocess.STDOUT,
                                     env=env, start_new_session=True)
             try:
@@ -2141,18 +2147,25 @@ def worker_round(
     started = time.monotonic()
     wall = time.time()
     worker = cfg.worker_key({selected_worker} if selected_worker else labels)
+    worker_version = cfg.worker_version.get(worker)
+    identity = {"worker": worker, "worker_version": worker_version}
     transcript_mode = cfg.worker_transcript.get(worker)
     argv, session_dir = _with_transcript(
         cfg.worker({worker}, promptfile, wt), n, transcript_mode,
         len(cfg.worker_wrap) if transcript_mode else None,
     )
+    run_options = {}
+    if environment := cfg.worker_environment(worker, promptfile, wt):
+        run_options["env_overrides"] = environment
+    if worker_version:
+        run_options.update(worker=worker, worker_version=worker_version)
     code, fired = run_worker(
-        argv, wt, logfile, wt / ".factory" / f"handoff-{n}.md", deadline,
+        argv, wt, logfile, wt / ".factory" / f"handoff-{n}.md", deadline, **run_options,
     )
     transcript = _transcript(session_dir, wall)
     timeout = {"timeout": fired, "reason": TIMEOUT_REASONS[fired]} if fired else {}
     usage = worker_usage(logfile, cfg.worker_usage.get(worker), transcript)
-    record("llm-usage", ticket=n, stage="worker", attempt=attempt, **usage)
+    record("llm-usage", ticket=n, stage="worker", attempt=attempt, **identity, **usage)
     commit_leftovers(wt, n, title)
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     handoff = results.source_metadata(cfg, n)
@@ -2165,7 +2178,8 @@ def worker_round(
         # Stuck mid-work: a failed attempt for the normal retry path; the gate never ran.
         record(
             "attempt", ticket=n, attempt=attempt, worker_exit=code, gate=None,
-            log=str(logfile), transcript=transcript, head=head, handoff=handoff, **timeout,
+            log=str(logfile), transcript=transcript, head=head, handoff=handoff,
+            **identity, **timeout,
         )
         return False, (
             f"worker stuck: idle_timeout fired ({cfg.idle_timeout:g} min without worker "
@@ -2174,7 +2188,8 @@ def worker_round(
     if time.monotonic() > deadline:
         record(
             "attempt", ticket=n, attempt=attempt, worker_exit=code, gate=None,
-            log=str(logfile), transcript=transcript, head=head, handoff=handoff, **timeout,
+            log=str(logfile), transcript=transcript, head=head, handoff=handoff,
+            **identity, **timeout,
         )
         return False, "budget exceeded before gate", logfile, head
     sync = sync_event(n)
@@ -2201,7 +2216,7 @@ def worker_round(
         seconds=int(time.monotonic() - started), cost=usage["cost"], log=str(logfile),
         transcript=transcript, brief=brief_path(wt, n).exists(), head=head,
         actual_head=actual_head, clean=not before_status and not after_status,
-        handoff=handoff, **timeout,
+        handoff=handoff, **identity, **timeout,
     )
     return ok, report, logfile, head
 
@@ -2282,8 +2297,8 @@ def process_ticket(
     n, title = issue["number"], issue["title"]
     labels = {label["name"] for label in issue.get("labels", [])}
     wt = FACTORY / f"wt-{n}"
-    worker = cfg.worker(labels, wt / ".factory-prompt.md", wt)[0]
-
+    worker_key = cfg.worker_key(labels)
+    worker = cfg.worker({worker_key}, wt / ".factory-prompt.md", wt)[0]
     lock_path = FACTORY / "locks" / f"{n}.lock"
     if lock_held(lock_path):
         log(f"#{n}: skipped (in flight, lock held on {lock_path})")
@@ -2388,8 +2403,9 @@ def process_ticket(
             from factory import schedule
 
             tier, why = schedule.priority(n, fresh.get("body"), REPO)
-            record("claimed", ticket=n, title=title, labels=sorted(labels), priority=tier,
-                   priority_source=why, experiment=schedule.is_experiment(fresh))
+            record("claimed", ticket=n, title=title, labels=sorted(labels),
+                   worker=worker_key, worker_version=cfg.worker_version.get(worker_key),
+                   priority=tier, priority_source=why, experiment=schedule.is_experiment(fresh))
             wt = ensure_worktree(n)
             lease = agent_lease(wt, n)
             LOGS.mkdir(parents=True, exist_ok=True)

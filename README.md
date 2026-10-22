@@ -382,17 +382,25 @@ complete replacement issue body. SPLIT uses a JSON array of
 `{title, body, blocked_by}` children, with `blocked_by` containing 1-based
 indexes of earlier children. ROUTE uses `{add, remove, guidance}`, with label
 arrays restricted to configured worker labels (not `default`).
-Workers can use either the legacy argv array or a `[workers.<label>]` table with
-`command = [...]`, optional `when = "..."`, and optional
-`transcript = "omp-session"`. The transcript mode declares that the worker
-accepts OMP's `--session-dir` option and writes compatible JSONL; Factory then
-captures the session for token usage, `factory score`, and `factory learn`.
-Commands containing a binary named `omp` keep this behavior without the key.
-The prompt lists routable labels with their `when` rules; neither ROUTE nor FIX
-accepts unlisted labels. `[review].json_mode = true` similarly declares an
-OMP-compatible reviewer: Factory adds or replaces `--mode json` and parses its
-JSONL verdict and usage. It defaults to true only when the reviewer program is
-named `omp`; set it to false to disable that default.
+Workers can use either the legacy argv array or a `[workers.<profile>]` table with
+`command = [...]`, optional `when`, and optional `transcript = "omp-session"`.
+A text `when` value is manager routing guidance. `when = { label = "name" }`
+selects the profile directly when that ticket label is present, while keeping
+the profile name stable for `factory stats --by-worker`; otherwise the profile
+name itself remains its ticket label. First configured match wins.
+The transcript mode declares that the worker accepts OMP's `--session-dir`
+option and writes compatible JSONL; Factory then captures the session for token
+usage, `factory score`, and `factory learn`. Commands containing a binary named
+`omp` keep this behavior without the key. A table may also set `env = { ... }`;
+values accept the command placeholders and apply only to that worker after
+Factory restores its lifecycle context and strips GitHub credentials. A pinned
+`version = "..."` is recorded with the claim, usage, attempt, and worker
+lifecycle entry. The prompt lists routable profiles with their `when` rules;
+neither ROUTE nor FIX accepts unlisted profiles.
+`[review].json_mode = true` similarly declares an OMP-compatible reviewer:
+Factory adds or replaces `--mode json` and parses its JSONL verdict and usage.
+It defaults to true only when the reviewer program is named `omp`; set it to
+false to disable that default.
 AUTHORIZE uses `{"justification":"...","guidance":"..."}` to record why an
 existing add-only file must change, add `factory-add-only-override`, and return
 the ticket to `ready-for-agent`. It is limited to required add-only edits or
@@ -804,15 +812,17 @@ review_rounds = 1                # REVISE -> worker -> re-review cycles
 # exit_grace = 300               # seconds quiet after commit/handoff before termination; 0 disables
 # cost_pattern = 'Total cost:\s*\$([0-9.]+)'   # $ from the worker log (Claude Code prints this)
 
-[workers]                        # ticket label -> argv; {prompt} file, {cwd} worktree
+[workers]                        # ticket label/profile -> argv; {prompt} file, {cwd} worktree
 default = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]
 chore   = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
 
-# A differently named OMP-compatible worker opts in explicitly:
-# [workers.renamed]
-# command = ["company-agent", "-p", "--cwd", "{cwd}", "@{prompt}"]
+# A differently named OMP-compatible worker selected by a separate pilot label:
+# [workers.prime]
+# when = { label = "harness-pilot" }
+# command = ["factory-prime-agent", "-p", "--cwd", "{cwd}", "@{prompt}", "--mode", "json"]
 # transcript = "omp-session"
-
+# version = "0.10.0"
+# env = { DO_NOT_TRACK = "1", PRIME_AGENT_TELEMETRY = "0", PRIME_AGENT_CODING_AGENT_DIR = "{root}/.factory/prime-agent" }
 [review]
 command = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1", "{prompt}"]   # {prompt} = review prompt text
 # json_mode = true   # required for an OMP-compatible reviewer not named `omp`

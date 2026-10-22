@@ -131,10 +131,11 @@ def llm_usage(events: list[dict], prices: dict[str, dict] | None = None) -> dict
 
 
 def worker_metrics(audit: dict[int, list[dict]], workers: dict[str, list[str]]) -> list[dict]:
-    """Claim-label attribution, using Config.worker's first-match precedence.
+    """Claim attribution, using the recorded worker profile when available.
 
     First-pass denominators are attempt-1 gate outcomes per claim. All attempts,
-    reported worker tokens and costs count; unclaimed history does not.
+    reported worker tokens and costs count; unclaimed history does not. Older
+    claims fall back to their labels.
     """
     rows = {key: {"worker": key, "first_pass": None, "attempts": 0, "cost": None} for key in workers}
     outcomes: dict[str, list[bool]] = {key: [] for key in workers}
@@ -143,7 +144,10 @@ def worker_metrics(audit: dict[int, list[dict]], workers: dict[str, list[str]]) 
         for event in events:
             if event.get("event") == "claimed":
                 labels = event.get("labels", [])
-                worker = next((key for key in workers if key in labels), "default")
+                recorded = event.get("worker")
+                worker = recorded if recorded in workers else next(
+                    (key for key in workers if key in labels), "default"
+                )
             elif event.get("event") == "llm-usage" and event.get("stage") == "worker" and worker is not None:
                 row = rows[worker]
                 for field in USAGE_FIELDS[:-1]:

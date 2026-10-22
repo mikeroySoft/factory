@@ -143,6 +143,12 @@ class Config:
         default_factory=lambda: {"default": DEFAULT_WORKER, LABEL_CHORE: DEFAULT_CHORE_WORKER}
     )
     worker_when: dict[str, str] = field(default_factory=dict)
+    # Per worker profile: a ticket label selected by a structured `when` rule.
+    worker_select_label: dict[str, str] = field(default_factory=dict)
+    # Per worker profile: environment applied only to that worker process.
+    worker_env: dict[str, dict[str, str]] = field(default_factory=dict)
+    # Per worker profile: pinned release version recorded with its lifecycle evidence.
+    worker_version: dict[str, str] = field(default_factory=dict)
     # Per worker label: JSON paths read from its log (see `usage_spec`); absent = cost_pattern only.
     worker_usage: dict[str, dict] = field(default_factory=dict)
     # Per worker label: compatible persisted transcript format; absent defaults by executable.
@@ -201,14 +207,26 @@ class Config:
         return f"factory-{self.name}"
 
     def worker_key(self, labels: set[str]) -> str:
-        """The `[workers]` label that owns these ticket labels (first match wins)."""
-        return next((k for k in self.workers if k in labels), "default")
+        """The `[workers]` profile that owns these ticket labels (first match wins)."""
+        return next(
+            (
+                key for key in self.workers
+                if key in labels or self.worker_select_label.get(key) in labels
+            ),
+            "default",
+        )
 
     def worker(self, labels: set[str], prompt: Path, cwd: Path) -> list[str]:
-        """argv for the worker that owns these ticket labels (first match wins)."""
+        """argv for the worker profile that owns these ticket labels."""
         argv = self.workers[self.worker_key(labels)]
         return expand([*self.worker_wrap, *argv], prompt=str(prompt), cwd=str(cwd),
                       root=str(self.root), repo=self.repo, home=str(Path.home()))
+
+    def worker_environment(self, worker: str, prompt: Path, cwd: Path) -> dict[str, str]:
+        """Expanded environment overrides for one selected worker profile."""
+        values = {"prompt": str(prompt), "cwd": str(cwd), "root": str(self.root),
+                  "repo": self.repo, "home": str(Path.home())}
+        return {key: expand([value], **values)[0] for key, value in self.worker_env.get(worker, {}).items()}
 
     def review_cmd(self, prompt: str) -> list[str]:
         return expand(self.reviewer, prompt=prompt)
@@ -477,9 +495,31 @@ def load(start: Path | None = None) -> Config:
             when = entry.get("when", "") if isinstance(entry, dict) else ""
             if not isinstance(command, list) or not command or any(not isinstance(arg, str) for arg in command) or not command[0]:
                 raise ConfigError(f"{path}: workers.{label} needs a non-empty command argv")
-            if not isinstance(when, str):
-                raise ConfigError(f"{path}: workers.{label}.when must be text")
+            if isinstance(when, dict):
+                if set(when) != {"label"} or not isinstance(when.get("label"), str) or not when["label"].strip():
+                    raise ConfigError(f"{path}: workers.{label}.when needs exactly one non-empty label")
+                cfg.worker_select_label[label] = when["label"]
+                when = f"Ticket has label `{when['label']}`."
+            elif not isinstance(when, str):
+                raise ConfigError(f"{path}: workers.{label}.when must be text or {{ label = \"...\" }}")
             cfg.workers[label] = command
+            if isinstance(entry, dict) and "env" in entry:
+                environment = entry["env"]
+                if (
+                    not isinstance(environment, dict)
+                    or any(
+                        not isinstance(key, str) or not key or "=" in key or "\0" in key
+                        or not isinstance(value, str) or "\0" in value
+                        for key, value in environment.items()
+                    )
+                ):
+                    raise ConfigError(f"workers.{label}.env must map valid environment names to text")
+                cfg.worker_env[label] = environment
+            if isinstance(entry, dict) and "version" in entry:
+                version = entry["version"]
+                if not isinstance(version, str) or not version.strip() or any(ord(char) < 32 for char in version):
+                    raise ConfigError(f"workers.{label}.version must be non-empty text without control characters")
+                cfg.worker_version[label] = version
             if isinstance(entry, dict) and "usage" in entry:
                 cfg.worker_usage[label] = usage_spec(label, entry["usage"])
             if isinstance(entry, dict) and "transcript" in entry:

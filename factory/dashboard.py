@@ -735,9 +735,8 @@ def phase_of(executions: list[dict]) -> dict | None:
 
 
 def worker_name(labels: set[str]) -> str:
-    """Program name of the worker that owns these labels (same first-match
-    rule as Config.worker)."""
-    argv = next((cfg.workers[k] for k in cfg.workers if k in labels), cfg.workers["default"])
+    """Program name of the worker that owns these labels."""
+    argv = cfg.workers[cfg.worker_key(labels)]
     return Path(argv[0]).name
 
 
