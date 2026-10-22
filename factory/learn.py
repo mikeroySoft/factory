@@ -493,6 +493,9 @@ def evaluate_candidates(
                 if used_tokens > cfg.learn_max_tokens:
                     reason = f"learn token budget exceeded ({used_tokens} > {cfg.learn_max_tokens})"
                     break
+                if time.monotonic() >= deadline:
+                    reason = f"learn wall-time budget exhausted ({cfg.learn_budget_min} min)"
+                    break
         if reason:
             status = "not_tested"
         else:

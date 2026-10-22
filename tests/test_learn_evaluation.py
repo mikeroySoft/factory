@@ -118,6 +118,41 @@ class LearnEvaluationTest(unittest.TestCase):
             self.assertEqual(rows[-1]["status"], "not_tested")
             self.assertFalse(any(row.get("event") == "escalate" for row in rows))
 
+    def test_wall_time_exhaustion_after_variant_replay_is_not_tested(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            cfg = config.Config(
+                root=root,
+                repo="acme/widgets",
+                learn_evaluate=True,
+                learn_max_tickets=1,
+                learn_max_tokens=1000,
+                learn_budget_min=1,
+            )
+            cfg.factory.mkdir()
+            dispatch.configure(cfg)
+            case = learn.ReplayCase(7, "b" * 40, "t", (), {"title": "t", "body": "b", "comments": []})
+            metrics = {
+                "first_gate_pass": True,
+                "approved": True,
+                "review_rounds": 1,
+                "revise_findings": 0,
+                "tokens": 10,
+                "cost": None,
+                "seconds": 60.0,
+            }
+
+            with mock.patch.object(learn, "replay_ticket", return_value=metrics), \
+                 mock.patch.object(learn.time, "monotonic", side_effect=[0, 0, 0, 61]):
+                result = learn.evaluate_candidates(
+                    cfg,
+                    [case],
+                    [learn.Candidate("lessons", "candidate")],
+                )["lessons"]
+
+            self.assertEqual(result["status"], "not_tested")
+            self.assertIn("wall-time budget", result["reason"])
+
     def test_learn_proposes_only_helpful_curate_with_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
