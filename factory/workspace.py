@@ -363,6 +363,71 @@ def ticket_flow_data() -> dict:
     return {**graph, "source": {"path": TICKET_FLOW_PATH, "revision": revision, "url": url}}
 
 
+class KeyStorageError(RuntimeError):
+    """Fixed-string, secret-free reason the key directory cannot be used."""
+
+
+def key_directory_problem(
+    factory: Path, info: os.stat_result | None = None
+) -> str | None:
+    """Reason and remedy when the access-key directory is unsafe."""
+    if info is None:
+        try:
+            info = os.lstat(factory)
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return f"Factory workspace key directory is unavailable: {factory}"
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        return (
+            "Factory workspace key directory is not a real directory: "
+            f"replace {factory} with a plain directory"
+        )
+    if info.st_uid != os.geteuid():
+        return (
+            "Factory workspace key directory is not owned by the service user: "
+            f"chown the directory {factory}"
+        )
+    if stat.S_IMODE(info.st_mode) & 0o022:
+        return (
+            "Factory workspace key directory is unsafe (group/other-writable): "
+            f"chmod go-w {factory}"
+        )
+    return None
+
+
+def access_file_problem(
+    factory: Path, info: os.stat_result | None = None
+) -> str | None:
+    """Reason and remedy when an existing workspace access key is unsafe."""
+    path = factory / ACCESS_FILE
+    if info is None:
+        try:
+            info = os.lstat(path)
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return f"Factory workspace access key is unavailable: {path}"
+    if not stat.S_ISREG(info.st_mode):
+        return (
+            "Factory workspace access key is not a regular file: "
+            f"remove {path} (a new key is created on start)"
+        )
+    if info.st_uid != os.geteuid():
+        return (
+            "Factory workspace access key is not owned by the service user: "
+            f"chown {path}"
+        )
+    if stat.S_IMODE(info.st_mode) != 0o600:
+        return f"Factory workspace access key has unsafe mode: chmod 600 {path}"
+    if info.st_nlink != 1:
+        return (
+            "Factory workspace access key has extra hard links: "
+            f"remove {path} (a new key is created on start)"
+        )
+    return None
+
+
 
 
 class Workspace:
@@ -467,14 +532,12 @@ class Workspace:
             factory.mkdir(mode=0o700, parents=True, exist_ok=True)
             directory = os.lstat(factory)
         except OSError as exc:
-            raise RuntimeError("Factory workspace key directory is unavailable") from exc
-        if (
-            not stat.S_ISDIR(directory.st_mode)
-            or stat.S_ISLNK(directory.st_mode)
-            or directory.st_uid != os.geteuid()
-            or stat.S_IMODE(directory.st_mode) & 0o022
-        ):
-            raise RuntimeError("Factory workspace key directory is unsafe")
+            raise RuntimeError(
+                "Factory workspace key directory is unavailable"
+            ) from exc
+        problem = key_directory_problem(factory, directory)
+        if problem:
+            raise KeyStorageError(problem)
         path = factory / ACCESS_FILE
         flags = os.O_RDWR | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
         try:
@@ -483,21 +546,22 @@ class Workspace:
             try:
                 fd = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o600)
             except OSError as exc:
-                raise RuntimeError("Factory workspace access key could not be created safely") from exc
+                raise RuntimeError(
+                    "Factory workspace access key could not be created safely"
+                ) from exc
             created = True
         except OSError as exc:
+            problem = access_file_problem(factory)
+            if problem:
+                raise KeyStorageError(problem) from exc
             raise RuntimeError("Factory workspace access key is unsafe") from exc
         else:
             created = False
         try:
             info = os.fstat(fd)
-            if (
-                not stat.S_ISREG(info.st_mode)
-                or info.st_uid != os.geteuid()
-                or stat.S_IMODE(info.st_mode) != 0o600
-                or info.st_nlink != 1
-            ):
-                raise RuntimeError("Factory workspace access key is unsafe")
+            problem = access_file_problem(factory, info)
+            if problem:
+                raise KeyStorageError(problem)
             if created:
                 raw = secrets.token_urlsafe(32).encode("ascii")
                 os.write(fd, raw)
