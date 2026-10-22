@@ -962,30 +962,41 @@ def escalate(n: int, reason: str, log_path: Path | None, extra: str = "", *, cod
 
 
 def review_prompt(
-    n: int,
+    n: int | None,
     gate_report: str,
     *,
     base_ref: str | None = None,
     context: str = "",
+    proposal: str = "",
 ) -> str:
-    """The normal reviewer contract, optionally pinned to a replay base with evaluation context."""
+    """The normal reviewer contract, against an issue or a supplied learning proposal."""
     base_ref = base_ref or f"origin/{cfg.main}"
+    spec = (
+        "2. Spec: does the diff implement the learning proposal below, with "
+        "the completed evaluation evidence supporting the proposed guidance? "
+        "The cited tickets are replay evidence, not this change's implementation "
+        "specification. Review the learning proposal, not those incident tickets.\n"
+        if proposal else
+        f"2. Spec: does the diff satisfy the text and acceptance criteria of "
+        f"GitHub issue #{n} in {REPO}?\n"
+        f"Read the issue comments for the agent brief and approved scope changes.\n"
+    )
+    requirement = "learning proposal requirement" if proposal else "issue acceptance criterion"
     return (
         f"Review `git diff {base_ref}..HEAD` in this repository on two axes:\n"
         f"1. Standards: does the code follow this repo's documented conventions "
         f"(AGENTS.md, CONTRIBUTING.md, docs/)?\n"
-        f"2. Spec: does the diff satisfy the text and acceptance criteria of "
-        f"GitHub issue #{n} in {REPO}?\n"
-        f"Read the issue comments for the agent brief and approved scope changes.\n"
+        f"{spec}"
         f"Review the DIFF only. Do NOT execute builds or tests: your sandbox "
         f"differs from the target host, so your results are not evidence. The "
         f"deterministic gate already ran on the target host; its report is "
         f"authoritative for build/test/scan status:\n\n"
         f"```\n{gate_report}\n```\n\n"
+        + (f"## Learning proposal\n\n{proposal.strip()}\n\n" if proposal else "")
         + (f"{context.strip()}\n\n" if context.strip() else "")
         + "Every finding MUST cite evidence as `path:line` from the diff. Separate "
         "Required fixes (blocking) from Optional suggestions (non-blocking). "
-        "For each required fix, cite the specific issue acceptance criterion or "
+        f"For each required fix, cite the specific {requirement} or "
         "documented rule (source and rule), or explain a concrete correctness/"
         "security defect with its trigger and impact. A preference is not a rule.\n"
         "Do not report style preferences, hypothetical extensibility, or repeat "

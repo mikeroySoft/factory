@@ -616,16 +616,41 @@ def branch_name(kind: str, tickets: list[int]) -> str:
     return f"agent/{kind}-{datetime.now().astimezone().date().isoformat()}-t{tickets[-1]}"
 
 
-def chore_pr(cfg: config.Config, branch: str, edit: Callable[[Path], list[str]], title: str, pr_body: str) -> None:
-    """Branch from origin/main in a throwaway worktree, let `edit` return the paths it changed, commit, open the PR."""
+def chore_pr(
+    cfg: config.Config, branch: str, edit: Callable[[Path], list[str]], title: str, pr_body: str,
+    *, review_candidate: bool = False,
+) -> None:
+    """Commit and publish a proposal; evaluated candidates also need their own gate and review."""
     wt = cfg.factory / f"wt-{branch.removeprefix('agent/')}"
     dispatch.run(["git", "fetch", "origin", cfg.main], cwd=cfg.root)
     dispatch.run(["git", "worktree", "add", "--force", "-B", branch, str(wt), f"origin/{cfg.main}"], cwd=cfg.root)
     try:
+        base = dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip() if review_candidate else ""
         paths = edit(wt)
         dispatch.run(["git", "add", "--", *paths], cwd=wt)
         flags = ["-s"] if cfg.signoff else []
         dispatch.run(["git", "commit", *flags, "-m", title], cwd=wt)
+        if review_candidate:
+            head = dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+            name = branch.removeprefix("agent/")
+            ok, report = dispatch.run_gate(wt, name, base=base)
+            if ok and _pr_checks(wt):
+                ok, pr_report = dispatch.run_gate(wt, f"{name}-pr", tier="pr", base=base)
+                report = f"{report}\n{pr_report}"
+            result = dispatch.run_reviewer(
+                wt, dispatch.review_prompt(None, report, base_ref=base, proposal=pr_body),
+                head, subject=f"learn candidate {branch}",
+            ) if ok else {
+                "verdict": "REVISE", "findings": report, "accepted": False,
+                "parsed": False, "reason": "gate_failed", "usage": None,
+            }
+            dispatch.record(
+                "learn-candidate-review", branch=branch, title=title, proposal=pr_body,
+                base=base, head=head, gate="PASS" if ok else "FAIL", **result,
+            )
+            if not result["accepted"] or result["verdict"] != "APPROVE":
+                raise ValueError(f"candidate review {result['reason']} (see learn-candidate-review journal row)")
+            pr_body += f"\n\n## Candidate review\n\nHead: `{head}`\n\n{result['findings']}"
         dispatch.push_and_pr(wt, branch, title, pr_body, label=LABEL_CHORE)
     finally:
         dispatch.run(["git", "worktree", "remove", "--force", str(wt)], cwd=cfg.root, check=False)
@@ -694,7 +719,10 @@ def curate(
         + f"## Manager notes\n\n{notes or '(none)'}"
     )
     try:
-        chore_pr(cfg, branch, edit, f"{branch}: curate harness context", pr_body)
+        chore_pr(
+            cfg, branch, edit, f"{branch}: curate harness context", pr_body,
+            **({"review_candidate": True} if evaluation else {}),
+        )
     except ValueError as exc:
         return f"rejected: {exc}"
     finally:
@@ -786,8 +814,18 @@ def run(
                 f"{HUMAN_MERGE}\n\n`factory learn` distilled tickets "
                 f"{', '.join(f'#{n}' for n in tickets)} via the manager.\n\n{body}"
             )
-        chore_pr(cfg, branch, edit, f"{branch}: update {LESSONS_NAME}", pr_body)
-        print(f"opened a {LABEL_CHORE} PR from {branch}")
+        try:
+            chore_pr(
+                cfg, branch, edit, f"{branch}: update {LESSONS_NAME}", pr_body,
+                **({"review_candidate": True} if enabled else {}),
+            )
+        except ValueError as exc:
+            if not enabled:
+                raise
+            print(f"lessons rejected: {exc}")
+            branch = None
+        else:
+            print(f"opened a {LABEL_CHORE} PR from {branch}")
     curated = (
         curate(
             cfg, diff, tickets, notes_md,

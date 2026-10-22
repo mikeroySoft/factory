@@ -1047,8 +1047,17 @@ branches, or merge state.
   exhaustion records `learn-evaluation` as `not_tested`, opens no PR and never
   escalates. Kept PR bodies include the ticket/base set, both arms, and
   token/dollar/wall-time cost. Both arms' reviewer prompts receive the same
-  neutral ticket and recorded-base context. Evaluation is off by default,
-  so existing learning behavior is unchanged.
+  neutral ticket and recorded-base context, without completed evaluation results.
+  Before publishing a kept lessons or CURATE PR, the actual candidate diff runs
+  the normal attempt and PR-tier gates and the configured reviewer, pinned to
+  the gated head. This separate candidate review receives the completed ticket/base
+  set, both arms' results and costs, and judges the learning proposal rather than
+  the incident tickets' implementation criteria. A `learn-candidate-review` row
+  retains the proposal, head, verdict, findings and reported reviewer usage.
+  Gate failure, REVISE or invalid reviewer evidence publishes nothing and does
+  not escalate; approved PR bodies include the candidate review and still require
+  human merge. Evaluation is off by default, so existing learning behavior is
+  unchanged.
 - **Audit trail**: `.factory/events.jsonl` retains the ticket outcome events
   (`claimed`, `attempt`, `pr-opened`, `review`, `approved`, `refreshed`, `conflict-requeue`,
   `merged`, `escalate`, `upstream-sync`, and `human-decision`) alongside
