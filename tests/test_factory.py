@@ -2610,6 +2610,7 @@ class DispatchTest(unittest.TestCase):
                 root=repo, repo="acme/widgets",
                 reviewer=[sys.executable, "-c",
                           (f"import sys; print({output!r}); "
+                           f"import os; os.chdir({str(repo)!r}); "
                            "open('received.txt', 'w').write(sys.argv[1])"), "{prompt}"],
             ))
             pr = {"number": 17, "state": "OPEN", "isDraft": False,

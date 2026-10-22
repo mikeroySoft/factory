@@ -38,18 +38,37 @@ REASONS = {
     "upstream_sync", "upstream_staged", "check_terminated_by_signal", "check_timeout", "configured_check_failed",
     "conflict_markers", "git_grep_failed", "git_diff_failed", "leak_scan_matches",
     "github_command_failed", "triage_endpoint_timeout", "triage_endpoint_unavailable",
-    "no_tickets", "unparseable_decision", "triage_feedback", "ci_pending", "no_passing_ci",
+    "no_tickets", "unparseable_decision", "triage_feedback", "identity_mismatch", "ci_pending", "no_passing_ci",
     "exclusive_resource", "merge_lock_contended", "ticket_lock_contended", "capacity_reached", "worker_unavailable",
     "state_changed", "check_failed", "stuck", "hung_after_done", "budget_exceeded", "root_dirty",
     "scheduled_next_pass", "scope exited before its registered children were reaped",
     "recorded execution ended according to process and lock evidence",
 }
 PROCESS_FIELDS = ("pid", "boot_id", "start_ticks", "pid_namespace", "uid", "state", "ppid")
+# (source, code) pairs only a defect in the factory's own journal writer produces; `factory
+# watch` files these. Every other code is coverage (a reader bound, a clipped or rotated
+# window, a host condition), never a filing, and a new code stays coverage until it is added
+# here deliberately. Codes a reader bound can also produce (row_limit, missing_enter,
+# sequence_gap, invalid_record, invalid_lifecycle, unsupported_*) are coverage.
+FAILURES = frozenset(("events.jsonl", code) for code in (
+    "unreadable", "not_regular", "invalid_json", "duplicate_conflict", "identity_conflict", "sequence_conflict",
+))
 
 
-def _error(errors: list, source: str, scope: str, code: str) -> None:
+def failure(error: dict) -> bool:
+    return (error.get("source"), error.get("code")) in FAILURES
+
+
+def _error(errors: list, source: str, scope: str, code: str, **detail) -> None:
+    """One entry per (source, scope, code); failures keep `detail` (journal byte `offset`,
+    `execution_id`, `error`) so a filing can quote the offending rows, and are never cut by
+    ERROR_LIMIT: FAILURES is finite, so they stay bounded."""
     value = {"source": source, "scope": scope, "code": code}
-    if value not in errors and len(errors) < ERROR_LIMIT:
+    if any(all(e[k] == v for k, v in value.items()) for e in errors):
+        return
+    if failure(value):
+        errors.append({**value, **detail})
+    elif len(errors) < ERROR_LIMIT:
         errors.append(value)
 
 
@@ -262,7 +281,7 @@ def _journal(path: Path, errors: list) -> tuple[list, dict, list]:
                "byte_limit": BYTE_LIMIT, "event_limit": EVENT_LIMIT, "retained_events": 0}
     gaps = []
 
-    def gap(code, position):
+    def gap(code, position, **detail):
         if code not in history["gaps"]:
             history["gaps"].append(code)
         if gaps:
@@ -270,7 +289,7 @@ def _journal(path: Path, errors: list) -> tuple[list, dict, list]:
         else:
             gaps.append(position)
         history["complete"] = False
-        _error(errors, "events.jsonl", "history", code)
+        _error(errors, "events.jsonl", "history", code, **detail)
 
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
@@ -289,21 +308,27 @@ def _journal(path: Path, errors: list) -> tuple[list, dict, list]:
         history["status"] = "missing"
         gap("missing", 0)
         return [], history, gaps
-    except OSError:
+    except OSError as exc:
         history["status"] = "unreadable"
-        gap("unreadable", 0)
+        gap("unreadable", 0, error=exc.strerror or type(exc).__name__)
         return [], history, gaps
     history["bytes_read"] = len(data)
     if before.st_size != after.st_size or before.st_mtime_ns != after.st_mtime_ns or len(data) != min(before.st_size, BYTE_LIMIT):
         gap("changed_during_read", len(data) + 1)
+    skipped = 0
     if offset:
         history["truncated"] = True
         gap("byte_limit", -1)
         # The preceding byte was not read; never promote a clipped beginning to a record.
         first = data.find(b"\n")
-        data = data[first + 1:] if first >= 0 else b""
+        skipped = first + 1 if first >= 0 else len(data)
+        data = data[skipped:]
     rows = []
     lines = data.split(b"\n")
+    starts, start = [], offset + skipped  # file byte offset of each line, for failure evidence
+    for line in lines:
+        starts.append(start)
+        start += len(line) + 1
     if lines[-1]:
         gap("unterminated_tail", len(lines))
     for position, line in enumerate(lines[:-1]):
@@ -313,7 +338,7 @@ def _journal(path: Path, errors: list) -> tuple[list, dict, list]:
         try:
             row = json.loads(line)
         except (ValueError, UnicodeError, RecursionError):
-            gap("invalid_json", position)
+            gap("invalid_json", position, offset=starts[position])
             continue
         if not isinstance(row, dict) or not _valid_json(row):
             gap("invalid_record", position)
@@ -351,7 +376,7 @@ def _journal(path: Path, errors: list) -> tuple[list, dict, list]:
         previous = identities.get(event["event_id"], sequences.get(sequence))
         if previous is not None:
             if previous != raw:
-                gap("duplicate_conflict", position)
+                gap("duplicate_conflict", position, offset=starts[position])
             continue
         identities[event["event_id"]] = raw
         sequences[sequence] = raw
@@ -549,13 +574,13 @@ def _executions(retained: list, history: dict, gaps: list, observation: _Observa
             if code not in history["gaps"]:
                 history["gaps"].append(code)
             history["complete"] = False
-            _error(observation.errors, "events.jsonl", "executions", code)
+            _error(observation.errors, "events.jsonl", "executions", code, execution_id=key)
         if terminal is not None and terminal != latest or sum(row["kind"] == "enter" for row in events) > 1:
             inconsistent = True
             if "sequence_conflict" not in history["gaps"]:
                 history["gaps"].append("sequence_conflict")
             history["complete"] = False
-            _error(observation.errors, "events.jsonl", "executions", "sequence_conflict")
+            _error(observation.errors, "events.jsonl", "executions", "sequence_conflict", execution_id=key)
         uncertain = inconsistent or causal_gap or entry is None or entry["sequence"] != 1
         # A corrupt/unsupported suffix could contain an exit even while its process lives.
         uncertain = uncertain or any(position >= min(position for position, _ in rows) for position in gaps)
@@ -710,7 +735,10 @@ def _resources(path: Path, paths, retained: list, executions: list, groups: dict
 
 
 def project(path: Path, paths=()) -> dict:
-    """Read at most 1 MiB/512 events; never append, take a flock, or scan processes."""
+    """Read at most 1 MiB/512 events; never append, take a flock, or scan processes.
+
+    `errors` lists every gap as {source, scope, code}; `failures` repeats the ones in FAILURES
+    with their evidence pointers. Everything in `errors` but not in `failures` is coverage."""
     path = Path(path)
     errors = []
     retained, history, gaps = _journal(path, errors)
@@ -718,4 +746,6 @@ def project(path: Path, paths=()) -> dict:
     executions, groups = _executions(retained, history, gaps, observation)
     resources = _resources(path, paths, retained, executions, groups, observation)
     return {"executions": executions, "resources": resources,
-            "events": [event for _, event in retained], "history": history, "errors": errors}
+            "events": [event for _, event in retained], "history": history,
+            "errors": [{k: e[k] for k in ("source", "scope", "code")} for e in errors][:ERROR_LIMIT],
+            "failures": [e for e in errors if failure(e)]}

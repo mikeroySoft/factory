@@ -34,10 +34,13 @@
 # default = ["claude", "-p", "--dangerously-skip-permissions", "{prompt}"]  # reads the path as text: use a wrapper
 # default = ["codex", "exec", "--full-auto", "-C", "{cwd}", "@{prompt}"]
 #
-# A worker may also be a table with `command` argv and an optional natural-language
-# `when` rule. Array and table forms can coexist; do not define a label twice.
-# The manager lists configured labels and their rules; ROUTE and FIX cannot invent
-# profiles or write host config. FIX uses {"worker": "ci-fix", "guidance": "..."}.
+# A worker may also be a table with `command` argv, an optional natural-language
+# `when` rule, and `transcript = "omp-session"` when its differently named binary
+# accepts OMP's `--session-dir` and writes compatible JSONL. Commands containing
+# a binary named `omp` default to that mode. Array and table forms can coexist;
+# do not define a label twice. The manager lists configured labels and their rules;
+# ROUTE and FIX cannot invent profiles or write host config. FIX uses
+# {"worker": "ci-fix", "guidance": "..."}.
 #
 # Human-applied host profiles: copy these into the host config under
 # [defaults.workers.<label>] or [repo."owner/name".workers.<label>].
@@ -65,6 +68,8 @@
 # {prompt} = inline review prompt text. Output must end with `VERDICT: APPROVE` or `VERDICT: REVISE`.
 # Keep the reviewer on a different model family than [manager] so the two verdicts are independent.
 # command = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1", "{prompt}"]
+# json_mode = true  # add/replace `--mode json` for an OMP-compatible reviewer not named `omp`
+# Defaults to true when the reviewer program is named `omp`; false disables that default.
 # command = ["codex", "exec", "{prompt}"]
 
 [manager]
@@ -138,6 +143,11 @@ exclusive = false
 [dashboard]
 # port = 8765
 # theme = ".factory-dashboard.css"   # repo-relative CSS loaded after the built-in stylesheet
+
+[watch]
+# `factory watch` files the factory's own runtime failures (engine bugs) here, from
+# every install, and comments on the open issue another install already filed.
+# engine_repo = "mikeroySoft/factory"
 
 # Human decision owners for `factory plan route N --reason R` (read-only; nothing
 # is ever assigned). Omit the whole section to keep legacy behaviour. Owners are

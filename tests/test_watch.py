@@ -45,9 +45,13 @@ class FakeGh:
         if cmd[:3] == ["gh", "issue", "create"]:
             self.next_issue += 1
             self.issues[self.next_issue] = {"state": "OPEN", "closedAt": None}
+            self.issues[self.next_issue]["body"] = cmd[cmd.index("--body") + 1]
             return subprocess.CompletedProcess(cmd, 0, f"https://github.com/{REPO}/issues/{self.next_issue}\n", "")
         if cmd[:3] == ["gh", "issue", "view"]:
             return subprocess.CompletedProcess(cmd, 0, json.dumps(self.issues[int(cmd[3])]), "")
+        if cmd[:3] == ["gh", "issue", "list"]:  # open filings: fingerprint dedupe before filing
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(
+                [{"number": n, "body": i.get("body", "")} for n, i in self.issues.items() if i["state"] == "OPEN"]), "")
         raise AssertionError(f"unexpected command {cmd}")
 
     @property
@@ -276,6 +280,11 @@ class WatchTest(unittest.TestCase):
         # #300: a worker that finds its ticket already fixed commits nothing; filing that as a
         # factory bug would feed watch the next no-change ticket.
         self.journal(*(escalate_row(n, "no_change", "committed nothing") for n in (1, 2, 3)))
+        watch.run_pass(self.cfg)
+        self.assertEqual(self.gh.created, [])
+
+    def test_repeated_review_revise_outcome_is_not_filed(self) -> None:
+        self.journal(*(escalate_row(n, "review_revise", "review requested changes") for n in (1, 2, 3)))
         watch.run_pass(self.cfg)
         self.assertEqual(self.gh.created, [])
 

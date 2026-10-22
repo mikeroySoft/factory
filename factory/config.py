@@ -36,6 +36,7 @@ LABEL_ADD_ONLY_OVERRIDE = "factory-add-only-override"
 LABEL_CHORE = "chore"
 LABEL_INITIATIVE = "initiative"
 LABEL_WONTFIX = "wontfix-proposal"
+LABEL_EXPERIMENT = "experiment"
 LABELS = {
     LABEL_VIABILITY: ("D4C5F9", "Opt in to a manager build/defer recommendation before triage"),
     LABEL_REVIEW: ("D4C5F9", "Opt in to a manager PR direction recommendation before review"),
@@ -49,6 +50,7 @@ LABELS = {
     LABEL_ADD_ONLY_OVERRIDE: ("B60205", "Manager or human authorization for edits to existing files under gate.add_only_paths"),
     LABEL_WONTFIX: ("EDEDED", "Triage or manager proposes not to action this; a human decides"),
     LABEL_INITIATIVE: ("1D76DB", "Shared initiative plan read by `factory plan`; never triaged, dispatched, managed or merged"),
+    LABEL_EXPERIMENT: ("5319E7", "Experiment ticket: at most one active at a time; never ranks by its results"),
 }
 
 # Word-bounded strong signals only: bare words like "internal"/"private" are ordinary English.
@@ -60,6 +62,7 @@ DEFAULT_REVIEWER = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fa
 DEFAULT_LLM_URL = "http://127.0.0.1:11434/v1/chat/completions"
 DEFAULT_LLM_MODEL = "qwen3:30b"
 DEFAULT_INSTALL = {"every": "10min", "dashboard": False, "host": "127.0.0.1", "python": None, "env": {}}
+ENGINE_REPO = "mikeroySoft/factory"  # factory's own source repo: `[watch].engine_repo` default
 
 # Host-side layer: `$XDG_CONFIG_HOME/factory/config.toml`, same table shapes
 # as `.factory.toml`. `[defaults.*]` < `[repo."owner/name".*]` < the repo file.
@@ -79,7 +82,7 @@ KNOWN_KEYS = {
                  "review_rounds", "cost_pattern", "signoff"),
     "workers": None,
     "worker_wrap": ("command",),
-    "review": ("command",),
+    "review": ("command", "json_mode"),
     "manager": ("model", "command", "rounds", "review", "stale_days", "max_active_cap", "budget_min_cap"),
     "release": ("auto", "version_file", "min_tickets"),
     "gate": ("timeout", "lock", "check", "protected_paths", "add_only_paths"),
@@ -90,6 +93,7 @@ KNOWN_KEYS = {
     "install": ("every", "dashboard", "host", "python", "env", "dispatch_env"),
     "collaboration": ("fallback", "reasons", "components"),
     "prices": None,
+    "watch": ("engine_repo",),
 }
 # Normalized numeric fields of an `llm-usage` event; a worker profile maps each to JSON paths.
 USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "cached_tokens", "cost")
@@ -141,11 +145,15 @@ class Config:
     worker_when: dict[str, str] = field(default_factory=dict)
     # Per worker label: JSON paths read from its log (see `usage_spec`); absent = cost_pattern only.
     worker_usage: dict[str, dict] = field(default_factory=dict)
+    # Per worker label: compatible persisted transcript format; absent defaults by executable.
+    worker_transcript: dict[str, str] = field(default_factory=dict)
     # Host `[prices."<model>"]`: USD per million prompt/completion/cached tokens; empty = no priced dollars.
     prices: dict[str, dict] = field(default_factory=dict)
     # Host-only argv prefix for every worker launch: a trusted operator executable, not a sandbox.
     worker_wrap: list[str] = field(default_factory=list)
     reviewer: list[str] = field(default_factory=lambda: list(DEFAULT_REVIEWER))
+    # None preserves executable-based compatibility for the built-in OMP reviewer.
+    reviewer_json_mode: bool | None = None
     manager: list[str] | None = None
     manager_rounds: int = 1
     manager_review: str = "escalated"
@@ -174,6 +182,8 @@ class Config:
     install: dict = field(default_factory=lambda: dict(DEFAULT_INSTALL))  # `factory install` defaults
     # `[collaboration]`: human decision owners for `factory plan route`; None = section absent (legacy behaviour).
     collaboration: dict | None = None
+    # `[watch].engine_repo`: where `factory watch` files engine/runtime failures from every install.
+    watch_engine_repo: str = ENGINE_REPO
     raw_repo: dict = field(default_factory=dict)  # the committed file alone, before host layering
 
     @property
@@ -472,6 +482,11 @@ def load(start: Path | None = None) -> Config:
             cfg.workers[label] = command
             if isinstance(entry, dict) and "usage" in entry:
                 cfg.worker_usage[label] = usage_spec(label, entry["usage"])
+            if isinstance(entry, dict) and "transcript" in entry:
+                transcript = entry["transcript"]
+                if transcript != "omp-session":
+                    raise ConfigError(f"workers.{label}.transcript must be \"omp-session\"")
+                cfg.worker_transcript[label] = transcript
             if when:
                 cfg.worker_when[label] = when
     if "worker_wrap" in raw_repo:
@@ -483,8 +498,13 @@ def load(start: Path | None = None) -> Config:
         if not isinstance(command, list) or not command or any(not isinstance(a, str) for a in command) or not command[0]:
             raise ConfigError("worker_wrap.command needs a non-empty argv array of strings")
         cfg.worker_wrap = command
-    if "command" in raw.get("review", {}):
-        cfg.reviewer = list(raw["review"]["command"])
+    review = raw.get("review", {})
+    if "command" in review:
+        cfg.reviewer = list(review["command"])
+    json_mode = review.get("json_mode")
+    if json_mode is not None and type(json_mode) is not bool:
+        raise ConfigError("review.json_mode must be true or false")
+    cfg.reviewer_json_mode = json_mode
     cfg.manager, cfg.manager_model = manager_settings(manager)
     cfg.manager_rounds = int(manager.get("rounds", cfg.manager_rounds))
     cfg.manager_review = manager.get("review", cfg.manager_review)
@@ -544,6 +564,10 @@ def load(start: Path | None = None) -> Config:
     cfg.llm_url = triage.get("url", cfg.llm_url)
     cfg.llm_model = triage.get("model", cfg.llm_model)
     cfg.triage_timeout = int(triage.get("timeout", cfg.triage_timeout))
+    engine_repo = raw.get("watch", {}).get("engine_repo", cfg.watch_engine_repo)
+    if not isinstance(engine_repo, str) or not re.fullmatch(r"[\w.-]+/[\w.-]+", engine_repo):
+        raise ConfigError(f'watch.engine_repo must be a GitHub "owner/name", got {engine_repo!r}')
+    cfg.watch_engine_repo = engine_repo
     cfg.dashboard_port = int(dash.get("port", cfg.dashboard_port))
     cfg.dashboard_theme = root / dash["theme"] if dash.get("theme") else None
     cfg.install = merge(DEFAULT_INSTALL, raw.get("install", {}))
