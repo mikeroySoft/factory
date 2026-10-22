@@ -82,7 +82,7 @@ KNOWN_KEYS = {
                  "review_rounds", "cost_pattern", "signoff"),
     "workers": None,
     "worker_wrap": ("command",),
-    "review": ("command",),
+    "review": ("command", "json_mode"),
     "manager": ("model", "command", "rounds", "review", "stale_days", "max_active_cap", "budget_min_cap"),
     "release": ("auto", "version_file", "min_tickets"),
     "gate": ("timeout", "lock", "check", "protected_paths", "add_only_paths"),
@@ -145,11 +145,15 @@ class Config:
     worker_when: dict[str, str] = field(default_factory=dict)
     # Per worker label: JSON paths read from its log (see `usage_spec`); absent = cost_pattern only.
     worker_usage: dict[str, dict] = field(default_factory=dict)
+    # Per worker label: compatible persisted transcript format; absent defaults by executable.
+    worker_transcript: dict[str, str] = field(default_factory=dict)
     # Host `[prices."<model>"]`: USD per million prompt/completion/cached tokens; empty = no priced dollars.
     prices: dict[str, dict] = field(default_factory=dict)
     # Host-only argv prefix for every worker launch: a trusted operator executable, not a sandbox.
     worker_wrap: list[str] = field(default_factory=list)
     reviewer: list[str] = field(default_factory=lambda: list(DEFAULT_REVIEWER))
+    # None preserves executable-based compatibility for the built-in OMP reviewer.
+    reviewer_json_mode: bool | None = None
     manager: list[str] | None = None
     manager_rounds: int = 1
     manager_review: str = "escalated"
@@ -478,6 +482,11 @@ def load(start: Path | None = None) -> Config:
             cfg.workers[label] = command
             if isinstance(entry, dict) and "usage" in entry:
                 cfg.worker_usage[label] = usage_spec(label, entry["usage"])
+            if isinstance(entry, dict) and "transcript" in entry:
+                transcript = entry["transcript"]
+                if transcript != "omp-session":
+                    raise ConfigError(f"workers.{label}.transcript must be \"omp-session\"")
+                cfg.worker_transcript[label] = transcript
             if when:
                 cfg.worker_when[label] = when
     if "worker_wrap" in raw_repo:
@@ -489,8 +498,13 @@ def load(start: Path | None = None) -> Config:
         if not isinstance(command, list) or not command or any(not isinstance(a, str) for a in command) or not command[0]:
             raise ConfigError("worker_wrap.command needs a non-empty argv array of strings")
         cfg.worker_wrap = command
-    if "command" in raw.get("review", {}):
-        cfg.reviewer = list(raw["review"]["command"])
+    review = raw.get("review", {})
+    if "command" in review:
+        cfg.reviewer = list(review["command"])
+    json_mode = review.get("json_mode")
+    if json_mode is not None and type(json_mode) is not bool:
+        raise ConfigError("review.json_mode must be true or false")
+    cfg.reviewer_json_mode = json_mode
     cfg.manager, cfg.manager_model = manager_settings(manager)
     cfg.manager_rounds = int(manager.get("rounds", cfg.manager_rounds))
     cfg.manager_review = manager.get("review", cfg.manager_review)

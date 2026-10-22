@@ -140,7 +140,10 @@ def without_github(env: dict[str, str]):
 
 def _review_command(prompt: str) -> tuple[list[str], bool]:
     command = cfg.review_cmd(prompt)
-    if Path(command[0]).name != "omp":
+    structured = cfg.reviewer_json_mode
+    if structured is None:
+        structured = Path(command[0]).name == "omp"
+    if not structured:
         return command, False
     for index, arg in enumerate(command[1:], 1):
         if arg == "--mode" and index + 1 < len(command):
@@ -153,11 +156,18 @@ def _review_command(prompt: str) -> tuple[list[str], bool]:
         command[1:1] = ["--mode", "json"]
     return command, True
 
-def _with_transcript(argv: list[str], n: int) -> tuple[list[str], Path | None]:
-    """Keep an OMP worker's session under .factory/transcripts/<n> so the full
-    transcript (tool calls, reasoning) survives per ticket for `learn`/scoring.
-    Non-OMP workers, `--no-session`, or an explicit `--session-dir` are left alone."""
-    at = next((i for i, a in enumerate(argv) if Path(a).name == "omp"), None)
+
+def _with_transcript(
+    argv: list[str], n: int, mode: str | None = None, worker_at: int | None = None,
+) -> tuple[list[str], Path | None]:
+    """Keep an OMP-compatible worker session for usage, learning, and scoring.
+
+    Undeclared non-OMP workers, `--no-session`, and explicit session directories
+    are left alone. Legacy commands still opt in when an argv element is `omp`.
+    """
+    at = worker_at if mode == "omp-session" else next(
+        (i for i, arg in enumerate(argv) if Path(arg).name == "omp"), None,
+    )
     if at is None or any(a == "--no-session" or a.startswith("--session-dir") for a in argv):
         return argv, None
     where = FACTORY / "transcripts" / str(n)
@@ -2062,7 +2072,11 @@ def worker_round(
     started = time.monotonic()
     wall = time.time()
     worker = cfg.worker_key({selected_worker} if selected_worker else labels)
-    argv, session_dir = _with_transcript(cfg.worker({worker}, promptfile, wt), n)
+    transcript_mode = cfg.worker_transcript.get(worker)
+    argv, session_dir = _with_transcript(
+        cfg.worker({worker}, promptfile, wt), n, transcript_mode,
+        len(cfg.worker_wrap) if transcript_mode else None,
+    )
     code, fired = run_worker(
         argv, wt, logfile, wt / ".factory" / f"handoff-{n}.md", deadline,
     )
@@ -2144,7 +2158,7 @@ def worker_usage(logfile: Path, spec: dict | None, transcript: str | None = None
 
     `spec` (a `[workers]` profile's `usage`) sums its JSON paths over every JSON-object
     line whose `match` paths hold; cost falls back to `cost_pattern` when no path gives one.
-    Tokens fall back to the OMP session `transcript` totals when the log reported none.
+    Tokens fall back to an OMP-compatible session `transcript` when the log reported none.
     """
     usage: dict = dict.fromkeys(("model", *USAGE_FIELDS))
     text = logfile.read_text(errors="replace") if spec else ""
@@ -2169,7 +2183,7 @@ def worker_usage(logfile: Path, spec: dict | None, transcript: str | None = None
 
 
 def transcript_usage(path: Path) -> dict:
-    """Token totals over an OMP session file's assistant messages (the `_omp_output` sums); {} when none."""
+    """Token totals over an OMP-compatible session's assistant messages; {} when none."""
     usage: dict = {}
     for line in path.read_text(errors="replace").splitlines():
         try:
