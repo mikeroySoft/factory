@@ -1034,6 +1034,19 @@ branches, or merge state.
   prompt, skill, rubric, model, or effort follow the
   [eval promotion contract](docs/eval-promotion-contract.md) (train/lockbox
   splits, repeat scores, keep/revert).
+  `[learn] evaluate = true` (or one manual `factory learn --evaluate`) changes
+  proposal into a paired replay: up to `max_tickets` recent tickets that recorded
+  a frozen issue snapshot and pre-work revision run in isolated checkouts with
+  the configured worker, gate and reviewer, first without and then with each
+  lessons-file or CURATE candidate. Replays have no GitHub credentials and a
+  rejecting `pre-push` hook. The candidate is kept only when first-gate passes
+  are no lower, review rounds and REVISE findings are no higher, and at least one
+  metric improves. `max_tokens` and `budget_min` cap the whole learn pass; missing
+  token usage, an unavailable replay, or exhaustion records `learn-evaluation`
+  as `not_tested`, opens no PR and never escalates. Kept PR bodies include the
+  ticket/base set, both arms, and token/dollar/wall-time cost; the replay reviewer
+  prompt receives the recorded baseline evidence. Evaluation is off by default,
+  so existing learning behavior is unchanged.
 - **Audit trail**: `.factory/events.jsonl` retains the ticket outcome events
   (`claimed`, `attempt`, `pr-opened`, `review`, `approved`, `refreshed`, `conflict-requeue`,
   `merged`, `escalate`, `upstream-sync`, and `human-decision`) alongside

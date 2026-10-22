@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- `factory learn` can test changes before review (#333): `[learn] evaluate = true` (or `factory learn --evaluate`) replays a bounded set of recent tickets at their recorded base revisions with the configured worker, normal gate and reviewer, paired without/with each lessons-file or CURATE candidate. It keeps only variants no worse on first-gate pass, review rounds and REVISE findings and better on at least one; journals `kept`, `rejected` or budget/unavailable `not_tested` outcomes; blocks replay pushes and strips GitHub credentials; and adds the ticket/base, both-arm metrics and token/dollar/wall-time cost to kept PR bodies and baseline evidence to reviewer prompts. Evaluation defaults off; ticket/token/wall-time caps are `[learn].max_tickets`, `max_tokens` and `budget_min`.
 
 - `factory watch` no longer reports repeated `review_revise` escalations as engine defects (#324): every `review_revise` is a ticket outcome, whether bounded review rounds are exhausted, review after a manager `FIX` still requests changes, or fresh review after a merge-stage refresh/rebase requests changes.
 
