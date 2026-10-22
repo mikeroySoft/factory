@@ -467,6 +467,8 @@ class DecisionTest(unittest.TestCase):
         (shadow / "__init__.py").write_text("")
         (shadow / "__main__.py").write_text(f"from pathlib import Path\nPath({str(marker)!r}).touch()\n")
         (self.root / ".factory.toml").write_text('[repo]\nslug="acme/widgets"\n[triage]\nendpoint="http://127.0.0.1:1"\n')
+        with (self.root / ".factory.toml").open("a") as settings:
+            settings.write(f"[gate]\nlock = {json.dumps(str(self.root / 'gate.lock'))}\n")
         binary = self.root / "bin"
         binary.mkdir()
         gh = binary / "gh"
@@ -479,12 +481,34 @@ class DecisionTest(unittest.TestCase):
         with (
             mock.patch.object(decisions, "_run", side_effect=transport),
             mock.patch.dict(os.environ, {"PATH": str(binary) + os.pathsep + os.environ["PATH"],
+                                       "XDG_CONFIG_HOME": str(self.root / "host"), lifecycle.CONTEXT_ENV: "",
                                        "PYTHONPATH": str(self.root), "PYTHONHOME": str(shadow)}),
         ):
             result = self.apply(self.proposal([{"op": "triage", "number": 7}]))
         self.assertFalse(marker.exists())
+        if not (self.root / "provider-read").exists():
+            self.fail(f"trusted triage did not reach fake gh; subprocess receipt: {result!r}")
         self.assertTrue((self.root / "provider-read").exists())
         self.assertEqual(result["status"], "uncertain")
+
+    def test_triage_import_fixture_isolates_host_lock_config_and_lifecycle(self) -> None:
+        host = Path(self.temp.name) / "host"
+        (host / "factory").mkdir(parents=True)
+        lock = host / "busy.lock"
+        (host / "factory" / "config.toml").write_text(
+            f"[defaults.gate]\nlock = {json.dumps(str(lock))}\n"
+        )
+        live = host / "live-events.jsonl"
+        context = json.dumps({"schema_version": 1, "path": str(live), "ticket": 333})
+        with (
+            lock.open("w") as held,
+            mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(host), lifecycle.CONTEXT_ENV: context}),
+            mock.patch.object(decisions, "COMMAND_SECONDS", 5),
+        ):
+            fcntl.flock(held, fcntl.LOCK_EX)
+            self.test_triage_uses_the_trusted_package_with_a_sanitized_import_path()
+        self.assertTrue((self.root / "gate.lock").exists())
+        self.assertFalse(live.exists())
 
     def test_cleanup_removes_the_confirmed_squash_merged_branch(self) -> None:
         def git(*args, cwd=None):
