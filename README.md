@@ -374,8 +374,16 @@ complete replacement issue body. SPLIT uses a JSON array of
 indexes of earlier children. ROUTE uses `{add, remove, guidance}`, with label
 arrays restricted to configured worker labels (not `default`).
 Workers can use either the legacy argv array or a `[workers.<label>]` table with
-`command = [...]` and optional `when = "..."`. The prompt lists routable labels
-with their `when` rules; neither ROUTE nor FIX accepts unlisted labels.
+`command = [...]`, optional `when = "..."`, and optional
+`transcript = "omp-session"`. The transcript mode declares that the worker
+accepts OMP's `--session-dir` option and writes compatible JSONL; Factory then
+captures the session for token usage, `factory score`, and `factory learn`.
+Commands containing a binary named `omp` keep this behavior without the key.
+The prompt lists routable labels with their `when` rules; neither ROUTE nor FIX
+accepts unlisted labels. `[review].json_mode = true` similarly declares an
+OMP-compatible reviewer: Factory adds or replaces `--mode json` and parses its
+JSONL verdict and usage. It defaults to true only when the reviewer program is
+named `omp`; set it to false to disable that default.
 AUTHORIZE uses `{"justification":"...","guidance":"..."}` to record why an
 existing add-only file must change, add `factory-add-only-override`, and return
 the ticket to `ready-for-agent`. It is limited to required add-only edits or
@@ -791,8 +799,14 @@ review_rounds = 1                # REVISE -> worker -> re-review cycles
 default = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]
 chore   = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
 
+# A differently named OMP-compatible worker opts in explicitly:
+# [workers.renamed]
+# command = ["company-agent", "-p", "--cwd", "{cwd}", "@{prompt}"]
+# transcript = "omp-session"
+
 [review]
 command = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1", "{prompt}"]   # {prompt} = review prompt text
+# json_mode = true   # required for an OMP-compatible reviewer not named `omp`
 
 [manager]                         # optional; unset command disables it
 command = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]   # {prompt} = manager prompt file
@@ -870,7 +884,10 @@ Each worker attempt journals one `llm-usage` event (`stage = "worker"`) with
 table worker reads them from structured output: `usage` maps each field to a
 dotted JSON path (or an array of paths, added) summed over the JSON lines of the
 attempt log that satisfy `match`. Without a `cost` path hit, `cost` falls back
-to `[dispatch] cost_pattern`.
+to `[dispatch] cost_pattern`. When log paths report no tokens, an
+`omp-session` transcript supplies the OMP-compatible session totals instead.
+`factory stats --by-worker` attributes those totals to the worker's claim
+label; workers with neither source remain `n/a (not reported)`.
 
 ```toml
 [workers.claude]   # Claude Code `-p --output-format json` prints one result object (paths checked on 2.1.292)
@@ -1044,10 +1061,12 @@ branches, or merge state.
   dropped, only closed-execution `lifecycle` rows of expired segments are.
   Commands that load repository configuration use its journal settings,
   including worker commands running from a worktree.
-- **Transcripts**: OMP workers run with `--session-dir .factory/transcripts/<n>/`,
-  so each attempt's full session (tool calls, reasoning) stays on disk per ticket;
-  the `attempt` row's `transcript` field names the file (null for other workers or
-  `--no-session`). Nothing reads them yet beyond the operator.
+- **Transcripts**: OMP workers and table workers declaring
+  `transcript = "omp-session"` run with
+  `--session-dir .factory/transcripts/<n>/`, so each attempt's compatible JSONL
+  session stays on disk per ticket. The `attempt` row's `transcript` field
+  names the file (null for undeclared workers or `--no-session`). Worker usage,
+  `factory score`, and `factory learn` consume these sessions.
 - **Handoff notes**: each worker attempt ends by writing
   `.factory/wt-<n>/.factory/handoff-<n>.md` (what changed, what is unverified,
   what next). The next attempt gets it in its prompt; an escalation quotes it
