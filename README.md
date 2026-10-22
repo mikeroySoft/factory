@@ -362,6 +362,15 @@ as the worktree (or repository root); reviewers receive `{prompt}` as inline
 text. OMP loads a prompt file only when it is prefixed with `@`, so use
 `@{prompt}`: bare `omp {prompt}` passes the path as prompt text. Factory rejects
 that bare argument for manager commands, not worker commands.
+
+Reviewers never start in a checkout: both review lanes launch the command in a fresh
+temporary directory, so project config written by a worker or PR author (OMP
+`.omp/extensions`, Claude Code `.claude/settings.json`, `.mcp.json`) is not discovered.
+Ticket review gets `./review.diff` (base to gated head) and a read-only `git archive`
+snapshot of the gated head in `./snapshot`; PR review gets the diff inline. `GIT_*` and
+GitHub credentials are stripped from the reviewer's environment. Snapshot, diff, or
+reviewer launch failures reject the review evidence instead of escaping the review lane.
+
 Keep `{cwd}` in worker and manager commands, and configure the manager CLI in
 read-only/no-tools mode: the prompt prohibits file edits, but an arbitrary
 configured executable is trusted, not sandboxed by factory. The manager reads
