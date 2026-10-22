@@ -96,13 +96,21 @@ def log(msg: str) -> None:
 
 
 def run(
-    cmd: list[str], cwd: Path | None = None, check: bool = True,
-    stdout=subprocess.PIPE, stderr=subprocess.PIPE, env: dict[str, str] | None = None,
+    cmd: list[str],
+    cwd: Path | None = None,
+    check: bool = True,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    env: dict[str, str] | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess:
     """`env` replaces the inherited environment (lifecycle context is still added)."""
     execution = lifecycle.current()
     if execution is None:
-        return subprocess.run(cmd, cwd=cwd, check=check, stdout=stdout, stderr=stderr, text=True, env=env)
+        return subprocess.run(
+            cmd, cwd=cwd, check=check, stdout=stdout, stderr=stderr,
+            text=True, env=env, timeout=timeout,
+        )
     launch = execution.env()
     if env is not None:
         launch = {**env, lifecycle.CONTEXT_ENV: launch[lifecycle.CONTEXT_ENV]}
@@ -110,7 +118,7 @@ def run(
                           text=True, env=launch) as proc:
         try:
             execution.child(proc.pid)
-            out, err = proc.communicate()
+            out, err = proc.communicate(timeout=timeout)
         except BaseException:
             # Preserve subprocess.run's kill/reap behavior on normal exceptions.
             proc.kill()
@@ -728,38 +736,54 @@ def _stop(proc: subprocess.Popen) -> None:
     proc.wait()
 
 
-def run_worker(cmd: list[str], wt: Path, logfile: Path, handoff: Path,
-               deadline: float = float("inf")) -> tuple[int, str | None]:
+def run_worker(
+    cmd: list[str],
+    wt: Path,
+    logfile: Path,
+    handoff: Path,
+    deadline: float = float("inf"),
+    *,
+    journal: bool = True,
+    env: dict[str, str] | None = None,
+) -> tuple[int, str | None]:
     """Run the worker; return its exit code and the timeout that stopped it, if any.
 
     `idle_timeout`: no log output and no worktree change (stuck mid-work).
     `exit_grace`: committed or wrote `handoff`, then stayed quiet without exiting.
     `budget_min`: the ticket's overall wall-clock deadline passed.
+    Evaluation replays set `journal=False`; their aggregate result is the durable evidence.
     """
     log(f"worker: {' '.join(cmd)} -> {logfile}")
     started = time.monotonic()
-    with lifecycle.scope(EVENTS, "worker") as execution, logfile.open("a") as out:
+    scope = lifecycle.scope(EVENTS, "worker") if journal else nullcontext(None)
+    with scope as execution, logfile.open("a") as out:
         start = _activity(wt, logfile, handoff)  # before launch: a fast handoff must count as done
+        launch = execution.env() if execution is not None else dict(os.environ)
+        if env:
+            launch.update(env)
         # Own session, so a timeout stops the whole tree (tests, servers), not just the agent.
-        with without_github(execution.env()) as env:
+        with without_github(launch) as isolated:
             proc = subprocess.Popen(cmd, cwd=wt, stdout=out, stderr=subprocess.STDOUT,
-                                    env=env, start_new_session=True)
+                                    env=isolated, start_new_session=True)
             try:
-                execution.child(proc.pid)
+                if execution is not None:
+                    execution.child(proc.pid)
                 fired = _watch(proc, wt, logfile, handoff, deadline, start)
             finally:
                 if proc.poll() is None:
                     _stop(proc)
-                execution.child_done(proc.pid)
+                if execution is not None:
+                    execution.child_done(proc.pid)
         code = proc.returncode
-        if fired:
-            execution.emit("timeout", timeout=fired)
-        execution.emit("result", returncode=code)
-        if fired:
-            execution.outcome, execution.reason = "interrupted", TIMEOUT_REASONS[fired]
-        else:
-            execution.outcome = "completed" if code == 0 else "unknown"
-            execution.reason = None if code == 0 else f"worker_exit:{code}"
+        if execution is not None:
+            if fired:
+                execution.emit("timeout", timeout=fired)
+            execution.emit("result", returncode=code)
+            if fired:
+                execution.outcome, execution.reason = "interrupted", TIMEOUT_REASONS[fired]
+            else:
+                execution.outcome = "completed" if code == 0 else "unknown"
+                execution.reason = None if code == 0 else f"worker_exit:{code}"
     log(f"worker exited {code} after {int(time.monotonic() - started)}s"
         + (f" ({fired} fired: {TIMEOUT_REASONS[fired]})" if fired else ""))
     return code, fired
@@ -806,6 +830,7 @@ def commit_leftovers(wt: Path, n: int, title: str) -> None:
 def run_gate(
     wt: Path, n: int | str, skip: str = "", protected_override: bool = False,
     add_only_override: bool = False, tier: str = "attempt", upstream: list[str] = (),
+    base: str | None = None, timeout: float | None = None,
 ) -> tuple[bool, str]:
     report_rel = f".factory/gate-report-{n}.md"
     (wt / ".factory").mkdir(exist_ok=True)
@@ -817,7 +842,7 @@ def run_gate(
         "factory",
         "gate",
         "--base",
-        f"origin/{cfg.main}",
+        base or f"origin/{cfg.main}",
         "--report",
         report_rel,
     ]
@@ -832,7 +857,7 @@ def run_gate(
         cmd += ["--upstream", ref]
     if tier != "attempt":
         cmd += ["--tier", tier]
-    proc = run(cmd, cwd=wt, check=False)
+    proc = run(cmd, cwd=wt, check=False, timeout=timeout)
     report = wt / report_rel
     text = report.read_text() if report.exists() else proc.stdout + proc.stderr
     return proc.returncode == 0, text
@@ -936,10 +961,17 @@ def escalate(n: int, reason: str, log_path: Path | None, extra: str = "", *, cod
     comment_receipt(n, "escalation", posted.stdout if posted.returncode == 0 else "", round=round_number)
 
 
-def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str, str]:
-    """Run the two-axis diff review against the exact head that passed the gate."""
-    prompt = (
-        f"Review `git diff origin/{cfg.main}..HEAD` in this repository on two axes:\n"
+def review_prompt(
+    n: int,
+    gate_report: str,
+    *,
+    base_ref: str | None = None,
+    context: str = "",
+) -> str:
+    """The normal reviewer contract, optionally pinned to a replay base with evaluation context."""
+    base_ref = base_ref or f"origin/{cfg.main}"
+    return (
+        f"Review `git diff {base_ref}..HEAD` in this repository on two axes:\n"
         f"1. Standards: does the code follow this repo's documented conventions "
         f"(AGENTS.md, CONTRIBUTING.md, docs/)?\n"
         f"2. Spec: does the diff satisfy the text and acceptance criteria of "
@@ -950,91 +982,111 @@ def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str,
         f"deterministic gate already ran on the target host; its report is "
         f"authoritative for build/test/scan status:\n\n"
         f"```\n{gate_report}\n```\n\n"
-        f"Every finding MUST cite evidence as `path:line` from the diff. Separate "
-        f"Required fixes (blocking) from Optional suggestions (non-blocking). "
-        f"For each required fix, cite the specific issue acceptance criterion or "
-        f"documented rule (source and rule), or explain a concrete correctness/"
-        f"security defect with its trigger and impact. A preference is not a rule.\n"
-        f"Do not report style preferences, hypothetical extensibility, or repeat "
-        f"failures already established by the gate. A passing gate does not "
-        f"exclude concrete defects it did not detect.\n"
-        f"Discourage unrequested abstractions. For any net-new abstraction beyond "
-        f"the brief, whether introduced by the diff or requested in your review, "
-        f"explicitly justify why it is needed for an acceptance criterion, "
-        f"documented rule, or concrete correctness/security defect and why a "
-        f"simpler change is insufficient. Missing justification alone is not a "
-        f"blocking defect; requests to add or remove abstractions must meet the "
-        f"same required-fix standard. Do not turn optional suggestions into "
-        f"requirements or demand speculative refactoring.\n"
-        f"Output findings as markdown. REVISE only when required fixes remain; "
-        f"optional suggestions alone mean APPROVE. End with exactly one line: "
-        f"`VERDICT: APPROVE` or `VERDICT: REVISE`."
+        + (f"{context.strip()}\n\n" if context.strip() else "")
+        + "Every finding MUST cite evidence as `path:line` from the diff. Separate "
+        "Required fixes (blocking) from Optional suggestions (non-blocking). "
+        "For each required fix, cite the specific issue acceptance criterion or "
+        "documented rule (source and rule), or explain a concrete correctness/"
+        "security defect with its trigger and impact. A preference is not a rule.\n"
+        "Do not report style preferences, hypothetical extensibility, or repeat "
+        "failures already established by the gate. A passing gate does not "
+        "exclude concrete defects it did not detect.\n"
+        "Discourage unrequested abstractions. For any net-new abstraction beyond "
+        "the brief, whether introduced by the diff or requested in your review, "
+        "explicitly justify why it is needed for an acceptance criterion, "
+        "documented rule, or concrete correctness/security defect and why a "
+        "simpler change is insufficient. Missing justification alone is not a "
+        "blocking defect; requests to add or remove abstractions must meet the "
+        "same required-fix standard. Do not turn optional suggestions into "
+        "requirements or demand speculative refactoring.\n"
+        "Output findings as markdown. REVISE only when required fixes remain; "
+        "optional suggestions alone mean APPROVE. End with exactly one line: "
+        "`VERDICT: APPROVE` or `VERDICT: REVISE`."
     )
+
+
+def run_reviewer(
+    wt: Path,
+    prompt: str,
+    expected_head: str,
+    *,
+    env: dict[str, str] | None = None,
+    subject: str = "review",
+    timeout: float | None = None,
+) -> dict:
+    """Run and validate the configured reviewer without recording lifecycle or audit rows."""
+    before = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    proc = None
+    launch_error = None
+    findings = ""
+    parsed = False
+    matches = []
+    usage = None
+    actual_head = before
+    if before == expected_head:
+        command, structured = _review_command(prompt)
+        launch = dict(os.environ)
+        if env:
+            launch.update(env)
+        with without_github(launch) as isolated:
+            try:
+                proc = run(command, cwd=wt, check=False, env=isolated, timeout=timeout)
+            except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+                launch_error = f"{type(exc).__name__}: {exc}"
+                log(f"{subject}: reviewer launch failed ({exc}); fix PATH or [review] (`factory doctor`)")
+    if proc is not None:
+        findings, usage = _omp_output(proc.stdout) if structured else (proc.stdout.strip(), None)
+        findings = findings or proc.stderr.strip()
+        matches = list(re.finditer(r"(?m)^VERDICT: (APPROVE|REVISE)[ \t]*$", findings))
+        verdict_lines = re.findall(r"(?m)^VERDICT:.*$", findings)
+        parsed = len(verdict_lines) == 1 and len(matches) == 1 and matches[0].end() == len(findings)
+        actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    accepted = proc is not None and proc.returncode == 0 and parsed and actual_head == expected_head
+    verdict = matches[0].group(1) if accepted else "REVISE"
+    if accepted:
+        reason = verdict
+    elif before != expected_head or actual_head != expected_head:
+        reason = "state_changed"
+    elif launch_error:
+        reason = launch_error
+    elif proc is not None and proc.returncode:
+        reason = f"review_exit:{proc.returncode}"
+    else:
+        reason = "unparsed_verdict"
+    if not accepted:
+        diagnostic = f"Factory rejected reviewer evidence: {reason}."
+        findings = f"{findings}\n\n{diagnostic}" if findings else diagnostic
+    return {
+        "verdict": verdict,
+        "findings": findings,
+        "usage": usage,
+        "accepted": accepted,
+        "parsed": parsed,
+        "reason": reason,
+        "returncode": proc.returncode if proc is not None else None,
+        "actual_head": actual_head,
+    }
+
+
+def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str, str]:
+    """Run the two-axis diff review against the exact head that passed the gate."""
     with lifecycle.scope(EVENTS, "review", ticket=n) as execution:
-        before = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
-        proc = None
-        launch_error = None
-        findings = ""
-        parsed = False
-        matches = []
-        actual_head = before
-        if before == expected_head:
-            command, structured = _review_command(prompt)
-            with without_github(dict(os.environ)) as env:
-                try:
-                    proc = run(command, cwd=wt, check=False, env=env)
-                except FileNotFoundError as exc:
-                    # Host defect (reviewer executable not on PATH, #260): unaccepted evidence,
-                    # never a dispatcher crash; callers withdraw or escalate as for any REVISE.
-                    launch_error = f"{type(exc).__name__}: {exc}"
-                    log(f"#{n}: reviewer launch failed ({exc}); fix PATH or [review] (`factory doctor`)")
-        if proc is not None:
-            findings, usage = (
-                _omp_output(proc.stdout) if structured else (proc.stdout.strip(), None)
-            )
-            if usage is not None:
-                record("llm-usage", ticket=n, stage="review", **usage)
-            findings = findings or proc.stderr.strip()
-            matches = list(re.finditer(r"(?m)^VERDICT: (APPROVE|REVISE)[ \t]*$", findings))
-            verdict_lines = re.findall(r"(?m)^VERDICT:.*$", findings)
-            parsed = (
-                len(verdict_lines) == 1
-                and len(matches) == 1
-                and matches[0].end() == len(findings)
-            )
-            actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
-        accepted = (
-            proc is not None
-            and proc.returncode == 0
-            and parsed
-            and actual_head == expected_head
-        )
-        model_verdict = matches[0].group(1) if parsed else "REVISE"
-        verdict = model_verdict if accepted else "REVISE"
-        if accepted:
-            execution.outcome = "approved" if verdict == "APPROVE" else "product_feedback"
-            execution.reason = verdict
-        else:
-            execution.outcome = "unknown"
-            if before != expected_head or actual_head != expected_head:
-                execution.reason = "state_changed"
-            elif launch_error:
-                execution.reason = launch_error
-            elif proc is not None and proc.returncode:
-                execution.reason = f"review_exit:{proc.returncode}"
-            else:
-                execution.reason = "unparsed_verdict"
-            diagnostic = f"Factory rejected reviewer evidence: {execution.reason}."
-            findings = f"{findings}\n\n{diagnostic}" if findings else diagnostic
+        result = run_reviewer(wt, review_prompt(n, gate_report), expected_head, subject=f"#{n}")
+        if result["usage"] is not None:
+            record("llm-usage", ticket=n, stage="review", **result["usage"])
+        execution.outcome = (
+            "approved" if result["verdict"] == "APPROVE" else "product_feedback"
+        ) if result["accepted"] else "unknown"
+        execution.reason = result["reason"]
         execution.emit(
-            "result", returncode=proc.returncode if proc is not None else None,
-            verdict=verdict, parsed=parsed, head=expected_head, actual_head=actual_head,
+            "result", returncode=result["returncode"], verdict=result["verdict"],
+            parsed=result["parsed"], head=expected_head, actual_head=result["actual_head"],
         )
         record(
-            "review", ticket=n, verdict=verdict, parsed=parsed, accepted=accepted,
-            head=expected_head, actual_head=actual_head,
+            "review", ticket=n, verdict=result["verdict"], parsed=result["parsed"],
+            accepted=result["accepted"], head=expected_head, actual_head=result["actual_head"],
         )
-    return verdict, findings
+    return result["verdict"], result["findings"]
 
 
 def pr_gate_and_review(
@@ -2297,9 +2349,13 @@ def process_ticket(
             from factory import schedule
 
             tier, why = schedule.priority(n, fresh.get("body"), REPO)
-            record("claimed", ticket=n, title=title, labels=sorted(labels), priority=tier,
-                   priority_source=why, experiment=schedule.is_experiment(fresh))
             wt = ensure_worktree(n)
+            replay_base = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+            record(
+                "claimed", ticket=n, title=title, labels=sorted(labels), priority=tier,
+                priority_source=why, experiment=schedule.is_experiment(fresh), base=replay_base,
+                issue={key: fresh.get(key) for key in ("title", "body", "comments")},
+            )
             lease = agent_lease(wt, n)
             LOGS.mkdir(parents=True, exist_ok=True)
 
