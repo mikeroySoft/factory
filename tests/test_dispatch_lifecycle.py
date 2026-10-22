@@ -776,10 +776,10 @@ class LeaseRefusedCLI(unittest.TestCase):
             'print(',
             'if s["reviews"] == 1:\n'
             '    import subprocess\n'
-            f'    WT = {str(self.wt)!r}\n'
-            '    tree = subprocess.run(["git", "-C", WT, "rev-parse", "HEAD^{tree}"], check=True, capture_output=True, text=True).stdout.strip()\n'
-            '    sha = subprocess.run(["git", "-C", WT, "commit-tree", tree, "-p", "HEAD", "-m", "Update branch"], check=True, capture_output=True, text=True).stdout.strip()\n'
-            '    subprocess.run(["git", "-C", WT, "push", "--force", "origin", sha + ":refs/heads/agent/7"], check=True, capture_output=True)\n'
+            f'    os.chdir({str(self.wt)!r})\n'
+            '    tree = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], check=True, capture_output=True, text=True).stdout.strip()\n'
+            '    sha = subprocess.run(["git", "commit-tree", tree, "-p", "HEAD", "-m", "Update branch"], check=True, capture_output=True, text=True).stdout.strip()\n'
+            '    subprocess.run(["git", "push", "--force", "origin", sha + ":refs/heads/agent/7"], check=True, capture_output=True)\n'
             f'    Path({str(foreign_file)!r}).write_text(sha)\n'
             'print('))
         self.cli("dispatch", "--ticket", "7")
