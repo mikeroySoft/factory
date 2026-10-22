@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- `factory learn` can test changes before review (#333): `[learn] evaluate = true` (or `factory learn --evaluate`) replays a bounded set of recent tickets at their recorded base revisions with the configured worker, normal gate and reviewer, paired without/with each lessons-file or CURATE candidate. It keeps only variants no worse on first-gate pass, review rounds and required REVISE findings and better on at least one; journals `kept`, `rejected` or budget/unavailable `not_tested` outcomes; blocks replay pushes and strips GitHub credentials; and adds the ticket/base, both-arm metrics and reported token/dollar/wall-time cost to kept PR bodies. Both replay arms receive the same neutral reviewer context; unreported token usage is shown as such and remains bounded by the ticket and wall-time caps. Evaluation defaults off; ticket/token/wall-time caps are `[learn].max_tickets`, `max_tokens` and `budget_min`.
 
 - Worker and reviewer capabilities are explicit instead of tied to an `omp` executable name (#334): `[workers.<label>].transcript = "omp-session"` captures compatible JSONL for token usage, scoring and learning, while `[review].json_mode = true` enables OMP-compatible JSON review parsing. Commands named `omp` retain both defaults, undeclared workers still report usage as `n/a (not reported)`, and `factory stats --by-worker` now includes reported worker token totals.
 

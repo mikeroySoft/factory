@@ -84,6 +84,7 @@ KNOWN_KEYS = {
     "worker_wrap": ("command",),
     "review": ("command", "json_mode"),
     "manager": ("model", "command", "rounds", "review", "stale_days", "max_active_cap", "budget_min_cap"),
+    "learn": ("evaluate", "max_tickets", "max_tokens", "budget_min"),
     "release": ("auto", "version_file", "min_tickets"),
     "gate": ("timeout", "lock", "check", "protected_paths", "add_only_paths"),
     "leak_scan": ("pattern", "exclude", "extra"),
@@ -161,6 +162,10 @@ class Config:
     # Ceilings for the fleet manager (`district manage`) raising `max_active`/`budget_min`; None = no cap.
     manager_max_active_cap: int | None = None
     manager_budget_min_cap: int | None = None
+    learn_evaluate: bool = False
+    learn_max_tickets: int = 3
+    learn_max_tokens: int = 100_000
+    learn_budget_min: int = 30
     release_auto: bool = False
     release_version_file: str = "factory/__init__.py"
     release_min_tickets: int = 5
@@ -453,6 +458,9 @@ def load(start: Path | None = None) -> Config:
     gate, leak, triage, dash = raw.get("gate", {}), raw.get("leak_scan", {}), raw.get("triage", {}), raw.get("dashboard", {})
     manager = raw.get("manager", {})
     release = raw.get("release", {})
+    learn = raw.get("learn", {})
+    if not isinstance(learn, dict):
+        raise ConfigError("[learn] must be a table")
     if not isinstance(release, dict):
         raise ConfigError("[release] must be a table")
     cfg = Config(root=root, repo=slug, raw_repo=raw_repo)
@@ -518,6 +526,14 @@ def load(start: Path | None = None) -> Config:
         if cap is not None and (isinstance(cap, bool) or not isinstance(cap, int) or cap < 1):
             raise ConfigError(f"manager.{key} must be a positive integer")
         setattr(cfg, f"manager_{key}", cap)
+    cfg.learn_evaluate = learn.get("evaluate", cfg.learn_evaluate)
+    if type(cfg.learn_evaluate) is not bool:
+        raise ConfigError("learn.evaluate must be true or false")
+    for key in ("max_tickets", "max_tokens", "budget_min"):
+        value = learn.get(key, getattr(cfg, f"learn_{key}"))
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ConfigError(f"learn.{key} must be a positive integer")
+        setattr(cfg, f"learn_{key}", value)
     auto = release.get("auto", cfg.release_auto)
     version_file = release.get("version_file", cfg.release_version_file)
     min_tickets = release.get("min_tickets", cfg.release_min_tickets)

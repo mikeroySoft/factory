@@ -15,8 +15,13 @@ import argparse
 import fnmatch
 import json
 import re
+import shutil
+import sys
+import tempfile
+import time
 import tomllib
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -30,6 +35,20 @@ MAX_EVIDENCE = 24_000  # chars; keeps the prompt inside a local model's window
 MAX_ESCAPES = 10  # most recent candidate-escape bugs carried into evidence
 AUTO_EVERY = 10  # finished tickets between automatic runs at the end of a dispatcher pass
 LESSONS_BRANCH = re.compile(r"agent/(lessons|curate)-")
+
+@dataclass(frozen=True)
+class ReplayCase:
+    ticket: int
+    base: str
+    title: str
+    labels: tuple[str, ...]
+    issue: dict
+
+
+@dataclass(frozen=True)
+class Candidate:
+    kind: str
+    content: str
 
 
 def worst_session(evs: list[dict]) -> tuple[dict, dict] | None:
@@ -64,7 +83,7 @@ def evidence(last: int) -> tuple[list[int], str]:
         title = next((e.get("title") for e in evs if e["event"] == "claimed"), "")
         parts.append(f"### Ticket #{n}: {title}")
         for e in evs:
-            fields = {k: v for k, v in e.items() if k not in ("ticket", "title", "log")}
+            fields = {k: v for k, v in e.items() if k not in ("ticket", "title", "log", "issue")}
             parts.append(f"- {json.dumps(fields)}")
         worst = worst_session(evs)
         transcript = Path(worst[0]["transcript"]) if worst and isinstance(worst[0].get("transcript"), str) else None
@@ -91,6 +110,412 @@ def evidence(last: int) -> tuple[list[int], str]:
                   f"({row['source']}; {', '.join(c['paths']) or 'no blamed paths'})"
                   for row in recent[-MAX_ESCAPES:] for c in row["candidates"]]
     return chosen, "\n".join(parts)[-MAX_EVIDENCE:]
+
+def replay_cases(tickets: list[int], maximum: int) -> list[ReplayCase]:
+    """Newest finished tickets with a frozen issue snapshot and exact pre-work revision."""
+    by_ticket: dict[int, list[dict]] = {}
+    for row in lifecycle.read_events(dispatch.EVENTS):
+        if type(row.get("ticket")) is int:
+            by_ticket.setdefault(row["ticket"], []).append(row)
+    cases = []
+    for ticket in tickets:
+        claimed = next((
+            row for row in by_ticket.get(ticket, [])
+            if row.get("event") == "claimed"
+            and isinstance(row.get("base"), str)
+            and re.fullmatch(r"[0-9a-f]{40}", row["base"])
+            and isinstance(row.get("issue"), dict)
+            and isinstance(row.get("labels"), list)
+        ), None)
+        if claimed is not None:
+            cases.append(ReplayCase(
+                ticket=ticket,
+                base=claimed["base"],
+                title=str(claimed.get("title") or claimed["issue"].get("title") or f"ticket {ticket}"),
+                labels=tuple(str(label) for label in claimed["labels"]),
+                issue=claimed["issue"],
+            ))
+    return cases[-maximum:]
+
+
+def _tokens(usage: dict | None) -> int | None:
+    if not usage:
+        return None
+    values = [usage.get("prompt_tokens"), usage.get("completion_tokens")]
+    return sum(value or 0 for value in values) if any(isinstance(value, (int, float)) for value in values) else None
+
+
+def _replay_prompt(cfg: config.Config, case: ReplayCase, wt: Path, extra: str = "") -> str:
+    issue = case.issue
+    parts = [f"# Issue #{case.ticket}: {issue.get('title') or case.title}", "", issue.get("body") or "(no body)"]
+    for comment in issue.get("comments") or []:
+        author = (comment.get("author") or {}).get("login", "unknown")
+        parts += ["", f"## Comment by {author}", "", comment.get("body", "")]
+    parts.append(dispatch.STANDING_INSTRUCTIONS.format(
+        n=case.ticket,
+        commit_flag=" -s" if cfg.signoff else "",
+        main=cfg.main,
+        python=sys.executable,
+    ))
+    lessons = wt / LESSONS_NAME
+    if lessons.is_file():
+        parts += ["", "## Lessons from previous tickets in this repository", "", lessons.read_text()]
+    parts += [
+        "",
+        "## Learn evaluation replay",
+        "",
+        (
+            "This is an isolated replay at the ticket's recorded base revision. Never access or mutate "
+            "the original GitHub issue, labels, comments, branches, or pull requests."
+        ),
+    ]
+    if extra:
+        parts += ["", extra]
+    return "\n".join(parts) + "\n"
+
+
+def _no_push_env(directory: Path) -> dict[str, str]:
+    hooks = directory / "hooks"
+    hooks.mkdir()
+    hook = hooks / "pre-push"
+    hook.write_text("#!/bin/sh\necho 'factory learn replay: pushes are disabled' >&2\nexit 1\n")
+    hook.chmod(0o755)
+    return {
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "core.hooksPath",
+        "GIT_CONFIG_VALUE_0": str(hooks),
+    }
+
+
+def _pr_checks(wt: Path) -> bool:
+    path = wt / config.CONFIG_NAME
+    if not path.is_file():
+        return False
+    try:
+        checks = tomllib.loads(path.read_text()).get("gate", {}).get("check", [])
+    except (tomllib.TOMLDecodeError, AttributeError):
+        return False
+    return any(isinstance(check, dict) and check.get("when") == "pr" for check in checks)
+
+
+def _finding_count(findings: str) -> int:
+    required_level = 0
+    count = 0
+    for line in findings.splitlines():
+        heading = re.match(r"^(#{1,6})\s+(.+?)\s*$", line)
+        if required_level:
+            if heading and len(heading.group(1)) <= required_level:
+                break
+            if re.match(r"^(?:[-*+]|\d+[.)])\s+", line):
+                count += 1
+        elif heading and heading.group(2).strip("*_ :").casefold() == "required fixes":
+            required_level = len(heading.group(1))
+    return count
+
+
+def _candidate_base(wt: Path, state: Path, candidate: Candidate | None) -> str:
+    if candidate is None:
+        return dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    if candidate.kind == "lessons":
+        (wt / LESSONS_NAME).write_text(candidate.content)
+        paths = [LESSONS_NAME]
+    elif candidate.kind == "curate":
+        patch = state / "candidate.patch"
+        patch.write_text(candidate.content if candidate.content.endswith("\n") else candidate.content + "\n")
+        paths = apply_curate_change(wt, patch)
+    else:
+        raise ValueError(f"unknown learn candidate {candidate.kind!r}")
+    dispatch.run(["git", "add", "--", *paths], cwd=wt)
+    dispatch.run([
+        "git", "-c", "user.name=Factory replay", "-c", "user.email=factory@localhost",
+        "commit", "-m", f"factory learn {candidate.kind} candidate",
+    ], cwd=wt)
+    return dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+
+
+def replay_ticket(
+    cfg: config.Config,
+    case: ReplayCase,
+    candidate: Candidate | None,
+    deadline: float,
+) -> dict:
+    """Replay one frozen ticket arm in an isolated checkout; no GitHub or push operation is available."""
+    cfg.factory.mkdir(parents=True, exist_ok=True)
+    state = Path(tempfile.mkdtemp(prefix=f"learn-{case.ticket}-", dir=cfg.factory))
+    wt = state / "worktree"
+    started = time.monotonic()
+    tokens: list[int | None] = []
+    costs: list[float] = []
+    first_gate_pass = False
+    review_rounds = revise_findings = 0
+    approved = False
+    try:
+        dispatch.run(["git", "clone", "--quiet", "--no-checkout", "--shared", str(cfg.root), str(wt)])
+        dispatch.run(["git", "checkout", "--quiet", "--detach", case.base], cwd=wt)
+        dispatch.run(["git", "config", "user.name", "Factory replay"], cwd=wt)
+        dispatch.run(["git", "config", "user.email", "factory@localhost"], cwd=wt)
+        base = _candidate_base(wt, state, candidate)
+        isolated = _no_push_env(state)
+        extra = ""
+        attempt = 0
+        report = ""
+        gate_head = base
+        promptfile = wt / ".factory-prompt.md"
+
+        for attempt in range(1, cfg.max_attempts + 1):
+            logfile = state / f"worker-{attempt}.log"
+            promptfile.write_text(_replay_prompt(cfg, case, wt, extra))
+            wall = time.time()
+            argv, session_dir = dispatch._with_transcript(
+                cfg.worker(set(case.labels), promptfile, wt),
+                f"learn-{case.ticket}-{state.name}-{candidate.kind if candidate else 'baseline'}-{attempt}",
+            )
+            _, fired = dispatch.run_worker(
+                argv, wt, logfile, wt / ".factory" / f"handoff-{case.ticket}.md",
+                deadline, journal=False, env=isolated,
+            )
+            transcript = dispatch._transcript(session_dir, wall)
+            usage = dispatch.worker_usage(
+                logfile, cfg.worker_usage.get(cfg.worker_key(set(case.labels))), transcript,
+            )
+            tokens.append(_tokens(usage))
+            if isinstance(usage.get("cost"), (int, float)):
+                costs.append(usage["cost"])
+            dispatch.commit_leftovers(wt, case.ticket, case.title)
+            gate_head = dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+            if fired or time.monotonic() >= deadline:
+                report = f"worker replay stopped by {fired or 'budget_min'}"
+                ok = False
+            else:
+                ok, report = dispatch.run_gate(
+                    wt, f"learn-{case.ticket}-{attempt}", base=base,
+                    timeout=max(0.001, deadline - time.monotonic()),
+                )
+            if attempt == 1:
+                first_gate_pass = ok
+            if ok:
+                break
+            extra = f"## Previous gate report (attempt {attempt} failed)\n\n{report}"
+        else:
+            ok = False
+
+        for bounce in range(cfg.review_rounds + 1):
+            if not ok or time.monotonic() >= deadline:
+                break
+            review_report = report
+            if _pr_checks(wt):
+                pr_ok, pr_report = dispatch.run_gate(
+                    wt, f"learn-{case.ticket}-pr-{bounce + 1}", tier="pr", base=base,
+                    timeout=max(0.001, deadline - time.monotonic()),
+                )
+                review_report = f"{report}\n{pr_report}"
+                if not pr_ok:
+                    revise_findings += 1
+                    ok = False
+                    break
+            context = (
+                "## Learn evaluation evidence\n\n"
+                f"Ticket #{case.ticket} is replayed at recorded base `{case.base}`. "
+                "Judge only this diff and the gate report above."
+            )
+            result = dispatch.run_reviewer(
+                wt,
+                dispatch.review_prompt(case.ticket, review_report, base_ref=base, context=context),
+                gate_head,
+                env=isolated,
+                subject=f"learn replay #{case.ticket}",
+                timeout=max(0.001, deadline - time.monotonic()),
+            )
+            review_rounds += 1
+            tokens.append(_tokens(result["usage"]))
+            if isinstance((result["usage"] or {}).get("cost"), (int, float)):
+                costs.append(result["usage"]["cost"])
+            if result["verdict"] == "APPROVE":
+                approved = True
+                break
+            revise_findings += max(1, _finding_count(result["findings"]))
+            if bounce == cfg.review_rounds:
+                break
+            promptfile.write_text(_replay_prompt(
+                cfg, case, wt,
+                f"## Reviewer findings, round {bounce + 1}\n\n"
+                "Address required fixes only; optional suggestions are not requirements.\n\n"
+                f"{result['findings']}",
+            ))
+            logfile = state / f"worker-review-{bounce + 1}.log"
+            wall = time.time()
+            argv, session_dir = dispatch._with_transcript(
+                cfg.worker(set(case.labels), promptfile, wt),
+                f"learn-{case.ticket}-{state.name}-{candidate.kind if candidate else 'baseline'}-review-{bounce + 1}",
+            )
+            _, fired = dispatch.run_worker(
+                argv, wt, logfile, wt / ".factory" / f"handoff-{case.ticket}.md",
+                deadline, journal=False, env=isolated,
+            )
+            transcript = dispatch._transcript(session_dir, wall)
+            usage = dispatch.worker_usage(
+                logfile, cfg.worker_usage.get(cfg.worker_key(set(case.labels))), transcript,
+            )
+            tokens.append(_tokens(usage))
+            if isinstance(usage.get("cost"), (int, float)):
+                costs.append(usage["cost"])
+            dispatch.commit_leftovers(wt, case.ticket, case.title)
+            gate_head = dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+            ok, report = (False, f"worker replay stopped by {fired or 'budget_min'}") if (
+                fired or time.monotonic() >= deadline
+            ) else dispatch.run_gate(
+                wt, f"learn-{case.ticket}-review-{bounce + 1}", base=base,
+                timeout=max(0.001, deadline - time.monotonic()),
+            )
+
+        return {
+            "first_gate_pass": first_gate_pass,
+            "approved": approved,
+            "review_rounds": review_rounds,
+            "revise_findings": revise_findings,
+            "tokens": sum(value for value in tokens if value is not None) if all(
+                value is not None for value in tokens
+            ) else None,
+            "reported_tokens": sum(value for value in tokens if value is not None),
+            "cost": round(sum(costs), 4) if costs else None,
+            "seconds": round(time.monotonic() - started, 3),
+        }
+    finally:
+        shutil.rmtree(state, ignore_errors=True)
+
+
+def _aggregate(rows: list[dict], cfg: config.Config) -> dict:
+    return {
+        "first_gate_pass": sum(bool(row["first_gate_pass"]) for row in rows),
+        "review_rounds": sum(
+            row["review_rounds"] if row["approved"] else cfg.review_rounds + 2 for row in rows
+        ),
+        "revise_findings": sum(row["revise_findings"] for row in rows),
+    }
+
+
+def _better(baseline: dict, variant: dict) -> bool:
+    no_worse = (
+        variant["first_gate_pass"] >= baseline["first_gate_pass"]
+        and variant["review_rounds"] <= baseline["review_rounds"]
+        and variant["revise_findings"] <= baseline["revise_findings"]
+    )
+    return no_worse and variant != baseline
+
+
+def _evaluation_cost(baseline: list[dict], variant: list[dict]) -> dict:
+    rows = baseline + variant
+    tokens = [row.get("tokens") for row in rows]
+    costs = [row.get("cost") for row in rows if isinstance(row.get("cost"), (int, float))]
+    return {
+        "tokens": sum(tokens) if all(isinstance(value, int) for value in tokens) else None,
+        "cost": round(sum(costs), 4) if costs else None,
+        "seconds": round(sum(float(row.get("seconds", 0)) for row in rows), 3),
+    }
+
+
+def evaluation_markdown(result: dict) -> str:
+    lines = [
+        "## Learn evaluation evidence",
+        "",
+        f"Disposition: **{result['status']}**"
+        + (f" — {result['reason']}" if result.get("reason") else ""),
+        "",
+        "| Ticket | Recorded base | Arm | First gate | Approved | Review rounds | REVISE findings |",
+        "|---:|---|---|---:|---:|---:|---:|",
+    ]
+    for arm in ("baseline", "variant"):
+        for row in result.get(arm, []):
+            lines.append(
+                f"| #{row['ticket']} | `{row['base'][:12]}` | {arm} | "
+                f"{'yes' if row['first_gate_pass'] else 'no'} | "
+                f"{'yes' if row['approved'] else 'no'} | {row['review_rounds']} | "
+                f"{row['revise_findings']} |"
+            )
+    cost = result.get("cost", {})
+    tokens = f"{cost['tokens']} tokens" if cost.get("tokens") is not None else "tokens not reported"
+    dollars = f", ${cost['cost']:.4f}" if cost.get("cost") is not None else ""
+    lines += ["", f"Cost: {tokens}{dollars}, {cost.get('seconds', 0):g} seconds."]
+    return "\n".join(lines)
+
+
+def evaluate_candidates(
+    cfg: config.Config,
+    cases: list[ReplayCase],
+    candidates: list[Candidate],
+) -> dict[str, dict]:
+    """Paired baseline/variant replay; journal one terminal outcome per candidate."""
+    deadline = time.monotonic() + cfg.learn_budget_min * 60
+    used_tokens = 0
+    baseline: list[dict] = []
+    baseline_error = ""
+    if not cases:
+        baseline_error = "no recent ticket has a recorded replay base and frozen issue snapshot"
+    else:
+        for case in cases:
+            try:
+                row = replay_ticket(cfg, case, None, deadline)
+            except Exception as exc:  # noqa: BLE001 - an unavailable replay is evidence, not escalation
+                baseline_error = f"baseline replay failed for #{case.ticket}: {type(exc).__name__}: {exc}"
+                break
+            baseline.append({"ticket": case.ticket, "base": case.base, **row})
+            reported_tokens = row.get("reported_tokens", row.get("tokens"))
+            if isinstance(reported_tokens, (int, float)):
+                used_tokens += reported_tokens
+            if used_tokens > cfg.learn_max_tokens:
+                baseline_error = f"learn token budget exceeded ({used_tokens} > {cfg.learn_max_tokens})"
+                break
+            if time.monotonic() >= deadline:
+                baseline_error = f"learn wall-time budget exhausted ({cfg.learn_budget_min} min)"
+                break
+
+    results = {}
+    for candidate in candidates:
+        variant: list[dict] = []
+        reason = baseline_error
+        if not reason:
+            for case in cases:
+                if used_tokens >= cfg.learn_max_tokens:
+                    reason = f"learn token budget exhausted ({used_tokens} >= {cfg.learn_max_tokens})"
+                    break
+                if time.monotonic() >= deadline:
+                    reason = f"learn wall-time budget exhausted ({cfg.learn_budget_min} min)"
+                    break
+                try:
+                    row = replay_ticket(cfg, case, candidate, deadline)
+                except Exception as exc:  # noqa: BLE001 - report and skip the proposal
+                    reason = f"variant replay failed for #{case.ticket}: {type(exc).__name__}: {exc}"
+                    break
+                variant.append({"ticket": case.ticket, "base": case.base, **row})
+                reported_tokens = row.get("reported_tokens", row.get("tokens"))
+                if isinstance(reported_tokens, (int, float)):
+                    used_tokens += reported_tokens
+                if used_tokens > cfg.learn_max_tokens:
+                    reason = f"learn token budget exceeded ({used_tokens} > {cfg.learn_max_tokens})"
+                    break
+                if time.monotonic() >= deadline:
+                    reason = f"learn wall-time budget exhausted ({cfg.learn_budget_min} min)"
+                    break
+        if reason:
+            status = "not_tested"
+        else:
+            status = "kept" if _better(_aggregate(baseline, cfg), _aggregate(variant, cfg)) else "rejected"
+            reason = "" if status == "kept" else "variant was not no-worse on every metric and better on one"
+        result = {
+            "candidate": candidate.kind,
+            "status": status,
+            "reason": reason,
+            "tickets": [case.ticket for case in cases],
+            "baseline": baseline,
+            "variant": variant,
+            "cost": _evaluation_cost(baseline, variant),
+        }
+        results[candidate.kind] = result
+        dispatch.record(
+            "learn-evaluation", candidate=candidate.kind, status=status, reason=reason,
+            tickets=result["tickets"], baseline=baseline, variant=variant, cost=result["cost"],
+        )
+    return results
 
 
 def manager_llm(cfg: config.Config) -> Callable[[list[dict]], str]:
@@ -206,7 +631,52 @@ def chore_pr(cfg: config.Config, branch: str, edit: Callable[[Path], list[str]],
         dispatch.run(["git", "worktree", "remove", "--force", str(wt)], cwd=cfg.root, check=False)
 
 
-def curate(cfg: config.Config, diff: str, tickets: list[int], notes: str) -> str:
+def apply_curate_change(wt: Path, patch: Path) -> list[str]:
+    """Apply and validate one manager CURATE patch in a disposable checkout."""
+    toml = wt / config.CONFIG_NAME
+    base = tomllib.loads(toml.read_text()) if toml.is_file() else {}
+    gate = base.get("gate", {})
+    protected = gate.get("protected_paths", []) + gate.get("add_only_paths", [])
+    applied = dispatch.run(["git", "apply", str(patch)], cwd=wt, check=False)
+    if applied.returncode:
+        raise ValueError(f"diff does not apply: {applied.stderr.strip()}")
+    # Worktree-only apply (no --index): every touched path shows as ` M`/` D`/`??`; a rename is ` D` + `??`.
+    status = dispatch.run(["git", "status", "--porcelain", "-z", "--untracked-files=all"], cwd=wt).stdout
+    entries = [(entry[:2], entry[3:]) for entry in status.split("\0") if entry]
+    paths = [path for _, path in entries]
+    bad = [path for path in paths if not manage.curate_allowed(path, protected)]
+    if bad:
+        raise ValueError(", ".join(bad) + " outside " + ", ".join(manage.CURATE_PREFIXES)
+                         + f", {config.CONFIG_NAME}, [gate].protected_paths and [gate].add_only_paths")
+    if not paths:
+        raise ValueError("empty diff")
+    deleted = [
+        path for code, path in entries
+        if "D" in code and any(fnmatch.fnmatchcase(path, glob) for glob in protected)
+    ]
+    if deleted:
+        raise ValueError(
+            f"deletes or renames {', '.join(deleted)} under "
+            "[gate].protected_paths or [gate].add_only_paths"
+        )
+    if config.CONFIG_NAME in paths:
+        try:
+            new = tomllib.loads(toml.read_text()) if toml.is_file() else {}
+            require_add_only(base, new)
+        except tomllib.TOMLDecodeError as exc:
+            raise ValueError(f"{config.CONFIG_NAME}: {exc}") from exc
+        except (AttributeError, TypeError) as exc:
+            raise ValueError(f"{config.CONFIG_NAME}: malformed [gate]: {exc}") from exc
+    return paths
+
+
+def curate(
+    cfg: config.Config,
+    diff: str,
+    tickets: list[int],
+    notes: str,
+    evaluation: str = "",
+) -> str:
     """Apply the manager's CURATE diff on `agent/curate-<date>-t<N>` and open its chore PR.
 
     Returns the branch, or `rejected: <reason>` when the diff does not apply or leaves the allowlist."""
@@ -215,38 +685,14 @@ def curate(cfg: config.Config, diff: str, tickets: list[int], notes: str) -> str
     patch.write_text(diff if diff.endswith("\n") else diff + "\n")
 
     def edit(wt: Path) -> list[str]:
-        toml = wt / config.CONFIG_NAME
-        base = tomllib.loads(toml.read_text()) if toml.is_file() else {}
-        gate = base.get("gate", {})
-        protected = gate.get("protected_paths", []) + gate.get("add_only_paths", [])
-        applied = dispatch.run(["git", "apply", str(patch)], cwd=wt, check=False)
-        if applied.returncode:
-            raise ValueError(f"diff does not apply: {applied.stderr.strip()}")
-        # Worktree-only apply (no --index): every touched path shows as ` M`/` D`/`??`; a rename is ` D` + `??`.
-        status = dispatch.run(["git", "status", "--porcelain", "-z", "--untracked-files=all"], cwd=wt).stdout
-        entries = [(entry[:2], entry[3:]) for entry in status.split("\0") if entry]
-        paths = [p for _, p in entries]
-        bad = [p for p in paths if not manage.curate_allowed(p, protected)]
-        if bad:
-            raise ValueError(", ".join(bad) + " outside " + ", ".join(manage.CURATE_PREFIXES)
-                             + f", {config.CONFIG_NAME}, [gate].protected_paths and [gate].add_only_paths")
-        if not paths:
-            raise ValueError("empty diff")
-        if deleted := [p for code, p in entries if "D" in code and any(fnmatch.fnmatchcase(p, g) for g in protected)]:
-            raise ValueError(f"deletes or renames {', '.join(deleted)} under [gate].protected_paths or [gate].add_only_paths")
-        if config.CONFIG_NAME in paths:
-            try:
-                new = tomllib.loads(toml.read_text()) if toml.is_file() else {}
-                require_add_only(base, new)
-            except tomllib.TOMLDecodeError as exc:
-                raise ValueError(f"{config.CONFIG_NAME}: {exc}") from exc
-            except (AttributeError, TypeError) as exc:  # e.g. a non-table gate check from the model
-                raise ValueError(f"{config.CONFIG_NAME}: malformed [gate]: {exc}") from exc
-        return paths
+        return apply_curate_change(wt, patch)
 
     cited = ", ".join(f"#{n}" for n in tickets)
-    pr_body = (f"{HUMAN_MERGE}\n\n`factory learn` CURATE proposed by the manager from tickets {cited}.\n\n"
-               f"## Manager notes\n\n{notes or '(none)'}")
+    pr_body = (
+        f"{HUMAN_MERGE}\n\n`factory learn` CURATE proposed by the manager from tickets {cited}.\n\n"
+        + (f"{evaluation.strip()}\n\n" if evaluation.strip() else "")
+        + f"## Manager notes\n\n{notes or '(none)'}"
+    )
     try:
         chore_pr(cfg, branch, edit, f"{branch}: curate harness context", pr_body)
     except ValueError as exc:
@@ -256,7 +702,13 @@ def curate(cfg: config.Config, diff: str, tickets: list[int], notes: str) -> str
     return branch
 
 
-def run(cfg: config.Config, last: int = 10, dry_run: bool = False, **fields: object) -> dict | None:
+def run(
+    cfg: config.Config,
+    last: int = 10,
+    dry_run: bool = False,
+    evaluate: bool | None = None,
+    **fields: object,
+) -> dict | None:
     """One `factory learn` over the newest `last` finished tickets; `fields` extend its `learn` event.
 
     Returns the recorded event's fields, or None when nothing was recorded (no finished tickets,
@@ -284,25 +736,78 @@ def run(cfg: config.Config, last: int = 10, dry_run: bool = False, **fields: obj
     if dry_run:
         return None
     content = f"<!-- Written by `factory learn` from {len(tickets)} finished tickets; edit freely and commit. -->\n{body}"
+    enabled = cfg.learn_evaluate if evaluate is None else evaluate
+    evaluations: dict[str, dict] = {}
+    if enabled:
+        candidates = []
+        if content != existing:
+            candidates.append(Candidate("lessons", content))
+        if diff:
+            candidates.append(Candidate("curate", diff))
+        evaluations = evaluate_candidates(
+            cfg, replay_cases(tickets, cfg.learn_max_tickets), candidates,
+        )
+        for kind, result in evaluations.items():
+            print(f"{kind} evaluation: {result['status']}"
+                  + (f" ({result['reason']})" if result["reason"] else ""))
+
+    keep_lessons = not enabled or evaluations.get("lessons", {}).get("status") == "kept"
+    keep_curate = bool(diff) and (
+        not enabled or evaluations.get("curate", {}).get("status") == "kept"
+    )
     if not cfg.manager:
-        path.write_text(content)
+        if keep_lessons:
+            path.write_text(content)
+            print(f"wrote {path}; review and commit it")
         event = {"tickets": tickets, "lessons": len(lessons), **fields}
+        if enabled:
+            event["evaluation"] = {
+                kind: result["status"] for kind, result in evaluations.items()
+            }
         dispatch.record("learn", **event)
-        print(f"wrote {path}; review and commit it")
         return event
-    branch = branch_name("lessons", tickets)
 
-    def edit(wt: Path) -> list[str]:
-        (wt / LESSONS_NAME).write_text(content)
-        return [LESSONS_NAME]
+    branch = None
+    if keep_lessons:
+        branch = branch_name("lessons", tickets)
 
-    pr_body = f"{HUMAN_MERGE}\n\n`factory learn` distilled tickets {', '.join(f'#{n}' for n in tickets)} via the manager.\n\n{body}"
-    chore_pr(cfg, branch, edit, f"{branch}: update {LESSONS_NAME}", pr_body)
-    print(f"opened a {LABEL_CHORE} PR from {branch}")
-    curated = curate(cfg, diff, tickets, notes_md) if diff else None
+        def edit(wt: Path) -> list[str]:
+            (wt / LESSONS_NAME).write_text(content)
+            return [LESSONS_NAME]
+
+        if enabled:
+            pr_body = (
+                f"{HUMAN_MERGE}\n\n`factory learn` distilled tickets "
+                f"{', '.join(f'#{n}' for n in tickets)} via the manager.\n\n"
+                f"{evaluation_markdown(evaluations['lessons'])}\n\n{body}"
+            )
+        else:
+            pr_body = (
+                f"{HUMAN_MERGE}\n\n`factory learn` distilled tickets "
+                f"{', '.join(f'#{n}' for n in tickets)} via the manager.\n\n{body}"
+            )
+        chore_pr(cfg, branch, edit, f"{branch}: update {LESSONS_NAME}", pr_body)
+        print(f"opened a {LABEL_CHORE} PR from {branch}")
+    curated = (
+        curate(
+            cfg, diff, tickets, notes_md,
+            evaluation_markdown(evaluations["curate"]) if enabled else "",
+        )
+        if keep_curate else None
+    )
     if curated:
         print(f"CURATE {curated}" if curated.startswith("rejected") else f"opened a {LABEL_CHORE} PR from {curated}")
-    event = {"tickets": tickets, "lessons": len(lessons), "branch": branch, "curate": curated, **fields}
+    event = {
+        "tickets": tickets,
+        "lessons": len(lessons),
+        "branch": branch,
+        "curate": curated,
+        **fields,
+    }
+    if enabled:
+        event["evaluation"] = {
+            kind: result["status"] for kind, result in evaluations.items()
+        }
     dispatch.record("learn", **event)
     return event
 
@@ -354,6 +859,10 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument("--last", type=int, default=10, help="finished tickets to learn from (default 10)")
     parser.add_argument("--dry-run", action="store_true", help="print the proposed lessons; do not write")
+    parser.add_argument(
+        "--evaluate", action="store_true",
+        help="replay recorded tickets before proposing changes (also enabled by [learn] evaluate = true)",
+    )
     parser.add_argument("--promotion", metavar="CLAIM.json",
                         help="judge and record an eval promotion claim (docs/eval-promotion-contract.md) instead")
     args = parser.parse_args(argv)
@@ -372,7 +881,7 @@ def main(argv: list[str]) -> int:
                             splits=claim["splits"], disposition=disposition, reason=reason)
         return 0
     try:
-        run(cfg, args.last, args.dry_run)
+        run(cfg, args.last, args.dry_run, True if args.evaluate else None)
     except ValueError as exc:
         raise SystemExit(f"factory learn: {exc}")
     return 0
