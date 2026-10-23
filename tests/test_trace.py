@@ -423,3 +423,30 @@ class TracePartTwoTest(unittest.TestCase):
         graph = trace.explain(lifecycle.read_events(self.events), 7)
         self.assertEqual(graph["nodes"][-1]["stage"], "wontfix")
         self.assertIsNone(graph["frontier"])
+
+    def test_review_comment_and_merge_sha_are_decision_inputs(self):
+        comment_url = "https://github.com/acme/widgets/pull/9#issuecomment-123"
+        dispatch._PENDING_REVIEWS[7] = {
+            "verdict": "APPROVE",
+            "findings": "VERDICT: APPROVE",
+            "head": "a" * 40,
+            "parsed": True,
+            "accepted": True,
+            "usage": {"model": "reviewer", "prompt_tokens": 4, "completion_tokens": 1},
+            "seconds": 2,
+        }
+        posted = mock.Mock(returncode=0, stdout=comment_url + "\n", stderr="")
+        with mock.patch.object(dispatch, "run", return_value=posted):
+            dispatch.pr_comment(7, "VERDICT: APPROVE")
+        dispatch.record_merge_decision(
+            7, 9, "merge now", "eligible", "a" * 40, "a" * 40, [],
+            merge_sha="b" * 40,
+        )
+
+        rows = [
+            row for row in lifecycle.read_events(self.events)
+            if row.get("event") == "decision"
+        ]
+        review, merge = rows
+        self.assertIn(comment_url, {value["ref"] for value in review["inputs"]})
+        self.assertIn("b" * 40, {value["summary"].removeprefix("merge SHA ") for value in merge["inputs"]})

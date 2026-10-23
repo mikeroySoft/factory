@@ -53,6 +53,7 @@ SYNC_LOG: Path
 EVENTS: Path
 MAX_ACTIVE: int
 MAX_ATTEMPTS: int
+_PENDING_REVIEWS: dict[int, dict] = {}
 
 
 def configure(c: Config) -> None:
@@ -69,6 +70,7 @@ def configure(c: Config) -> None:
     EVENTS = FACTORY / "events.jsonl"
     MAX_ACTIVE = cfg.max_active
     MAX_ATTEMPTS = cfg.max_attempts
+    _PENDING_REVIEWS.clear()
 
 
 STANDING_INSTRUCTIONS = """
@@ -841,7 +843,7 @@ def _reviewer_model(usage: dict | None) -> str | None:
 
 def _record_review_decision(
     n: int, verdict: str, findings: str, head: str, parsed: bool, accepted: bool,
-    usage: dict | None, seconds: float,
+    usage: dict | None, seconds: float, comment_url: str | None = None,
 ) -> str:
     from factory import trace
 
@@ -855,8 +857,8 @@ def _record_review_decision(
     inputs = [
         {"kind": "head", "ref": f"https://github.com/{REPO}/commit/{head}", "summary": f"reviewed head {head}"},
         {"kind": "review_comment",
-         "ref": f"https://github.com/{REPO}/pull/{pr}" if pr else f".factory/review-{n}.md",
-         "summary": "review comment target"},
+         "ref": comment_url or (f"https://github.com/{REPO}/pull/{pr}" if pr else f".factory/review-{n}.md"),
+         "summary": "published review comment" if comment_url else "review comment target"},
         *_required_fixes(n, findings),
     ]
     payload = trace.decision(
@@ -884,7 +886,7 @@ def _record_review_decision(
 
 def record_merge_decision(
     n: int, pr: int, chosen: str, rationale: str, head: str | None,
-    approval_head: str | None, checks: list[dict],
+    approval_head: str | None, checks: list[dict], merge_sha: str | None = None,
 ) -> str:
     from factory import trace
 
@@ -904,6 +906,12 @@ def record_merge_decision(
         {"kind": "approval_head", "ref": ".factory/events.jsonl",
          "summary": f"approval head {approval_head or 'missing'}"},
     ]
+    if merge_sha:
+        inputs.append({
+            "kind": "merge_sha",
+            "ref": f"https://github.com/{REPO}/commit/{merge_sha}",
+            "summary": f"merge SHA {merge_sha}",
+        })
     inputs += [
         {"kind": "ci_run", "ref": str(check.get("url") or check.get("id") or ".factory/events.jsonl"),
          "summary": f"{check.get('name', 'check')}: {check.get('bucket', 'unknown')}"}
@@ -1493,10 +1501,11 @@ def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str,
             "review", ticket=n, verdict=verdict, parsed=parsed, accepted=accepted,
             head=expected_head, actual_head=actual_head,
         )
-        _record_review_decision(
-            n, verdict, findings, expected_head, parsed, accepted, usage,
-            time.monotonic() - started,
-        )
+        _PENDING_REVIEWS[n] = {
+            "verdict": verdict, "findings": findings, "head": expected_head,
+            "parsed": parsed, "accepted": accepted, "usage": usage,
+            "seconds": time.monotonic() - started,
+        }
     return verdict, findings
 
 
@@ -1620,7 +1629,7 @@ def push_and_pr(
 def pr_comment(n: int, text: str) -> None:
     body_file = FACTORY / f"review-{n}.md"
     body_file.write_text(text + "\n")
-    run(
+    posted = run(
         [
             "gh",
             "pr",
@@ -1633,6 +1642,10 @@ def pr_comment(n: int, text: str) -> None:
         ],
         check=False,
     )
+    pending = _PENDING_REVIEWS.pop(n, None)
+    if pending is not None:
+        match = re.search(r"https://\S+", posted.stdout or "")
+        _record_review_decision(n, **pending, comment_url=match[0] if match else None)
 
 
 # ---------------------------------------------------------------------------
@@ -2560,10 +2573,21 @@ def merge_pass_locked(dry_run: bool) -> None:
                         body,
                     ]
                 )
-                record("merged", ticket=n, pr=pr_num, method=method[2:], head=head)
+                try:
+                    merged_pr = gh_json([
+                        "pr", "view", str(pr_num), "--repo", REPO, "--json", "mergeCommit",
+                    ])
+                    merge_commit = merged_pr.get("mergeCommit") if isinstance(merged_pr, dict) else None
+                    merge_sha = merge_commit.get("oid") if isinstance(merge_commit, dict) else None
+                except (subprocess.CalledProcessError, json.JSONDecodeError, OSError):
+                    merge_sha = None
+                record(
+                    "merged", ticket=n, pr=pr_num, method=method[2:], head=head,
+                    merge_sha=merge_sha,
+                )
                 record_merge_decision(
                     n, pr_num, "merge now", f"gate, review, approval, and CI passed for {head}",
-                    head, head, latest_checks,
+                    head, head, latest_checks, merge_sha=merge_sha,
                 )
             execution.outcome = "merged"
             log(f"PR #{pr_num}: merged into {cfg.main} ({method[2:]}, ticket #{n})")
