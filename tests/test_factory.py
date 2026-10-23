@@ -1907,6 +1907,33 @@ PY
                 else:
                     self.assertNotIn("issue edit", calls)
 
+    def test_manager_cannot_route_or_fix_a_label_selected_worker(self) -> None:
+        decisions = (
+            'DECISION: ROUTE\n{"add":["prime"],"guidance":"Use Prime"}',
+            'DECISION: FIX\n{"worker":"prime","guidance":"Use Prime"}',
+        )
+        for output in decisions:
+            with self.subTest(output=output):
+                repo, stubs, _ = self.scenario()
+                prompt = repo / ".factory/manager-prompt.txt"
+                command = [
+                    sys.executable, "-c",
+                    "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(pathlib.Path(sys.argv[2]).read_text()); print(sys.argv[3])",
+                    str(prompt), "{prompt}", output,
+                ]
+                (repo / config.CONFIG_NAME).write_text(
+                    "[manager]\ncommand = " + json.dumps(command)
+                    + '\n[workers]\ndefault = ["false"]\n'
+                    + '[workers.prime]\nwhen = { label = "harness-pilot" }\ncommand = ["true"]\n'
+                )
+
+                result = factory(repo, "manage", path=stubs)
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                events = list(map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines()))
+                self.assertEqual(next(e["decision"] for e in events if e.get("event") == "manage"), "HUMAN")
+                self.assertNotIn("- prime:", prompt.read_text())
+
     def test_fix_rejects_wrong_or_missing_base_before_mutation(self) -> None:
         from unittest import mock
 

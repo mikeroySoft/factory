@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Opt-in worker profiles can select a stable profile name from a separate ticket label with `when = { label = "..." }`, apply profile-local environment variables, and record a pinned worker version. The Prime Agent pilot uses these fields to isolate telemetry-disabled state beneath the target repository's `.factory/`, retain OMP-compatible transcripts, and leave every non-pilot worker unchanged (#332).
+
 
 - A transient GitHub issue-claim failure no longer aborts the dispatcher pass or strands the ticket (#327): the unmodified, unassigned ticket is retried next pass after a `claim-failed` journal row and lifecycle wait. Failed checked commands log only the last 2,000 characters of stderr after redacting token-shaped strings across the complete stderr first.
 

@@ -778,7 +778,8 @@ def frontier_pass(dry_run: bool = False) -> None:
                     continue
                 wt = cfg.factory / f"wt-{n}"
                 packet, _ = dispatch.escalation_packet(n, "Manager final review (manager.review = all)", None, wt)
-                workers = {k: v for k, v in cfg.workers.items() if k not in RESERVED_LABELS}
+                workers = {k: v for k, v in cfg.workers.items()
+                           if k not in RESERVED_LABELS and k not in cfg.worker_select_label}
                 parts = [APPROVAL_MENU, "Worker labels:\n" + "\n".join(
                     f"- {k}: {cfg.worker_when.get(k) or '(no when rule)'}" for k in workers),
                          f"PR #{number} head {head}\n\n{json.dumps(pr)}",
@@ -879,7 +880,8 @@ def escalation_pass(dry_run: bool = False) -> None:
                 if dry_run:
                     dispatch.log(f"#{n}: would manage escalation round {round_number}")
                     continue
-                workers = {k: v for k, v in cfg.workers.items() if k not in RESERVED_LABELS}
+                workers = {k: v for k, v in cfg.workers.items()
+                           if k not in RESERVED_LABELS and k not in cfg.worker_select_label}
                 parts = [MENU, "Worker labels:\n" + "\n".join(
                     f"- {k}: {cfg.worker_when.get(k) or '(no when rule)'}" for k in workers),
                          f"Issue #{n}: {issue['title']}\n\n{issue.get('body') or ''}", packet.read_text()]
