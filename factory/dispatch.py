@@ -589,9 +589,25 @@ def admit_plan(n: int, issue: dict) -> dict | None:
 
     if not isinstance(issue, dict) or "body" not in issue:
         raise binding.BindingError("incomplete-source: ticket body was not returned")
-    baseline = binding.admit(cfg, issue.get("body") or "")
-    if baseline is None and binding.accepted(cfg, n) is not None:
-        raise binding.BindingError("missing baseline for previously bound ticket; human review must retain an explicit revision")
+    body = issue.get("body") or ""
+    linked = binding.linked(body)
+    try:
+        baseline = binding.admit(cfg, body)
+        if baseline is None and binding.accepted(cfg, n) is not None:
+            raise binding.BindingError(
+                "missing baseline for previously bound ticket; human review must retain an explicit revision"
+            )
+    except binding.BindingError as exc:
+        if lifecycle.current() is not None:
+            record_binding_decision(n, body, linked, "refused", str(exc))
+        raise
+    if lifecycle.current() is not None:
+        chosen = "bound" if baseline is not None else "unbound"
+        record_binding_decision(
+            n, body, linked, chosen,
+            f"Initiative #{linked} baseline matched." if baseline is not None
+            else "Ticket has no Initiative link.",
+        )
     return baseline
 
 
@@ -734,7 +750,164 @@ def record(event: str, **fields: object) -> None:
             execution.outcome = {"escalate": "project_escalation",
                                  "approved": "approved", "merged": "merged"}[event]
             execution.reason = fields.get("reason")
+    if event == "decision":
+        from factory import trace
+
+        trace.validate(row)
     lifecycle.append(EVENTS, row)
+
+
+def _decision_actor(kind: str, name: str, *, model: str | None = None) -> dict:
+    return {"kind": kind, "name": name, "model": model, "version": __version__}
+
+
+def _decision_parent(rows: list[dict], ticket: int) -> int | None:
+    return next((row.get("parent") for row in reversed(rows)
+                 if row.get("event") == "issue-created" and row.get("ticket") == ticket
+                 and type(row.get("parent")) is int), None)
+
+
+def record_binding_decision(n: int, body: str, linked: int | None, chosen: str, rationale: str) -> str:
+    from factory import trace
+
+    ref = f"https://github.com/{REPO}/issues/{linked}" if linked else ".factory/events.jsonl"
+    payload = trace.decision(
+        ticket=n,
+        stage="binding",
+        inputs=[{"kind": "initiative", "ref": ref,
+                 "summary": f"Initiative #{linked} link" if linked else "no Initiative link"}],
+        options=[
+            {"option": "bound", "eligible": chosen == "bound",
+             "reason": rationale if chosen == "bound" else "no valid matching baseline"},
+            {"option": "unbound", "eligible": chosen == "unbound",
+             "reason": rationale if chosen == "unbound" else "ticket has an Initiative link"},
+            {"option": "refused", "eligible": chosen == "refused",
+             "reason": rationale if chosen == "refused" else "binding is valid"},
+        ],
+        chosen=chosen,
+        rationale=rationale,
+        causes=trace.ticket_causes(body=body),
+        cost=None,
+        actor=_decision_actor("deterministic", "binding.admit"),
+    )
+    record("decision", **payload)
+    return payload["decision_id"]
+
+
+def record_direct_admission(issue: dict) -> str:
+    from factory import trace
+
+    rows = lifecycle.read_events(EVENTS)
+    scheduler = next((
+        explained for row in reversed(rows) if row.get("event") == "scheduling"
+        for explained in row.get("explained", []) if explained.get("decision") == "selected"
+    ), None)
+    options = [{"option": "operator_direct", "eligible": True,
+                "reason": "operator explicitly selected this ticket with factory dispatch --ticket"}]
+    if scheduler is not None:
+        options.append({"option": f"ticket:{scheduler['ticket']}", "eligible": True,
+                        "reason": scheduler.get("reason") or "scheduler selected this frontier ticket"})
+    n = issue["number"]
+    payload = trace.decision(
+        ticket=n,
+        stage="admission",
+        inputs=[{"kind": "operator", "ref": ".factory/events.jsonl",
+                 "summary": f"factory dispatch --ticket {n}"}],
+        options=options,
+        chosen="operator_direct",
+        rationale="An explicit operator request bypassed normal frontier scheduling.",
+        causes=trace.ticket_causes(
+            issue.get("title"), issue.get("body"), parent=_decision_parent(rows, n),
+        ),
+        cost=None,
+        actor=_decision_actor("human", "factory dispatch --ticket"),
+    )
+    record("decision", **payload)
+    return payload["decision_id"]
+
+
+def _worker_options(labels: set[str], chosen: str, selected_worker: str | None) -> list[dict]:
+    options = []
+    prior_match = None
+    for worker in cfg.workers:
+        label = cfg.worker_select_label.get(worker, worker)
+        matched = label in ({selected_worker} if selected_worker else labels)
+        if worker == chosen:
+            if selected_worker:
+                reason = f"manager selected_worker override `{selected_worker}` resolved to this profile"
+            elif matched:
+                source = "worker_select_label" if worker in cfg.worker_select_label else "label"
+                reason = f"{source} `{label}` matched"
+            else:
+                reason = "default fallback; no configured worker label matched"
+        elif matched and prior_match is not None:
+            reason = f"label `{label}` matched, but earlier profile `{prior_match}` won"
+        elif selected_worker and worker == selected_worker:
+            reason = f"manager selected_worker `{selected_worker}` did not match worker_select_label `{label}`"
+        elif worker == "default":
+            reason = f"default fallback not used because profile `{chosen}` matched"
+        else:
+            reason = f"label `{label}` was not present"
+        options.append({"option": worker, "eligible": matched or worker == "default", "reason": reason})
+        if matched and prior_match is None:
+            prior_match = worker
+    return options
+
+
+def record_worker_selection(
+    n: int, labels: set[str], *, selected_worker: str | None = None, cause: str | None = None,
+) -> str:
+    from factory import trace
+
+    chosen = cfg.worker_key({selected_worker} if selected_worker else labels)
+    causes = [{"decision_id": cause, "relation": "follows"}] if cause else []
+    version = cfg.worker_version.get(chosen)
+    payload = trace.decision(
+        ticket=n,
+        stage="worker_select",
+        inputs=[
+            {"kind": "labels", "ref": ".factory.toml",
+             "summary": ", ".join(sorted(labels)) or "no worker labels"},
+            {"kind": "worker_version", "ref": ".factory.toml",
+             "summary": f"worker version {version}" if version else "worker version not configured"},
+        ],
+        options=_worker_options(labels, chosen, selected_worker),
+        chosen=chosen,
+        rationale=next(option["reason"] for option in _worker_options(labels, chosen, selected_worker)
+                       if option["option"] == chosen),
+        causes=causes,
+        cost=None,
+        actor=_decision_actor("deterministic", "Config.worker_key"),
+    )
+    record("decision", **payload)
+    return chosen
+
+
+def record_claim_decision(n: int, claimed: bool, admission_id: str | None, *, returncode: int | None = None) -> str:
+    from factory import trace
+
+    chosen = "claimed" if claimed else "claim_failed"
+    rationale = ("GitHub accepted the @me assignment."
+                 if claimed else f"GitHub rejected the @me assignment with exit {returncode}.")
+    payload = trace.decision(
+        ticket=n,
+        stage="claim",
+        inputs=[{"kind": "github_issue", "ref": f"https://github.com/{REPO}/issues/{n}",
+                 "summary": "current issue assignment"}],
+        options=[
+            {"option": "claimed", "eligible": claimed,
+             "reason": rationale if claimed else "assignment command failed"},
+            {"option": "claim_failed", "eligible": not claimed,
+             "reason": rationale if not claimed else "assignment command succeeded"},
+        ],
+        chosen=chosen,
+        rationale=rationale,
+        causes=([{"decision_id": admission_id, "relation": "follows"}] if admission_id else []),
+        cost=None,
+        actor=_decision_actor("deterministic", "GitHub issue claim"),
+    )
+    record("decision", **payload)
+    return payload["decision_id"]
 
 
 def comment_receipt(n: int, kind: str, stdout: str, **fields: object) -> bool:
@@ -2146,7 +2319,7 @@ def worker_round(
     logfile = LOGS / f"{n}-attempt-{attempt}.log"
     started = time.monotonic()
     wall = time.time()
-    worker = cfg.worker_key({selected_worker} if selected_worker else labels)
+    worker = record_worker_selection(n, labels, selected_worker=selected_worker)
     worker_version = cfg.worker_version.get(worker)
     identity = {"worker": worker, "worker_version": worker_version}
     transcript_mode = cfg.worker_transcript.get(worker)
@@ -2291,7 +2464,8 @@ def transcript_usage(path: Path) -> dict:
 
 
 def process_ticket(
-    issue: dict, budget_min: int, dry_run: bool, forced: bool = False
+    issue: dict, budget_min: int, dry_run: bool, forced: bool = False,
+    admission_id: str | None = None,
 ) -> bool | None:
     """None when the ticket was processed or skipped; False when the host could not launch its worker."""
     n, title = issue["number"], issue["title"]
@@ -2377,6 +2551,9 @@ def process_ticket(
                 log(f"#{n}: skipped (worker executable not on PATH: {worker}); retry next pass")
                 execution.wait("worker_unavailable", mode="retry_next_pass", executable=worker)
                 return
+            if forced and admission_id is None:
+                admission_id = record_direct_admission({**fresh, "number": n})
+            worker_key = record_worker_selection(n, labels, cause=admission_id)
             from factory import binding
 
             try:
@@ -2395,11 +2572,13 @@ def process_ticket(
             except subprocess.CalledProcessError as exc:
                 # Nothing was claimed: skip this pass; the ticket stays claimable.
                 log(f"#{n}: skipped (claim failed, exit {exc.returncode}); retry next pass")
+                record_claim_decision(n, False, admission_id, returncode=exc.returncode)
                 record("claim-failed", ticket=n, returncode=exc.returncode,
                        stderr_tail=stderr_tail(exc.stderr))
                 execution.wait("claim_failed", mode="retry_next_pass")
                 return
             claimed = True
+            record_claim_decision(n, True, admission_id)
             from factory import schedule
 
             tier, why = schedule.priority(n, fresh.get("body"), REPO)
@@ -2565,14 +2744,31 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
             log("frontier empty, nothing to do")
             return
         events = lifecycle.read_events(EVENTS)
-        decided = schedule.plan(rows, capacity, repo=REPO, streak=schedule.explicit_streak(events),
-                                experiments=schedule.active_experiments(events, set(active)))
+        parents = {
+            row["ticket"]: row["parent"] for row in events
+            if row.get("event") == "issue-created" and type(row.get("ticket")) is int
+            and type(row.get("parent")) is int
+        }
+        decided = schedule.plan(
+            rows,
+            capacity,
+            repo=REPO,
+            streak=schedule.explicit_streak(events),
+            experiments=schedule.active_experiments(events, set(active)),
+            parents=parents,
+        )
         for row in decided["explained"]:
             log(f"#{row['ticket']}: {row['decision']} ({row['reason']})")
+        admissions = {}
         if not dry_run:
+            for payload in decided["decisions"]:
+                record("decision", **payload)
+                admissions[payload["ticket"]] = payload["decision_id"]
             record("scheduling", capacity=capacity, active=active, explained=decided["explained"])
     for issue in decided["selected"]:
-        process_ticket(issue, budget_min, dry_run)
+        process_ticket(
+            issue, budget_min, dry_run, admission_id=admissions.get(issue["number"]),
+        )
 
 
 def pin_root() -> list[str]:

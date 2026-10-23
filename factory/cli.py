@@ -16,6 +16,7 @@ COMMANDS = {
     "gate": ("gate", "main", "run the deterministic quality gate in this worktree"),
     "watch": ("watch", "main", "file new factory runtime failures (journal, failed units, runtime-json) as bug issues"),
     "stats": ("stats", "main", "ticket metrics from GitHub"),
+    "explain": ("trace", "main", "explain one ticket's routing decisions from the local journal"),
     "learn": ("learn", "main", "distil recent ticket outcomes into .factory-lessons.md"),
     "score": ("score", "main", "rubric-score finished tickets' worker attempts from their transcripts"),
     "release": ("release", "main", "measure the quality bar and cut an atomic patch release"),
