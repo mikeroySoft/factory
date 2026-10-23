@@ -291,11 +291,13 @@ def _frontier_stage(node: dict) -> str | None:
     if stage == "review" or node.get("event") == "review":
         return "merge eligibility" if chosen == "APPROVE" or "APPROVE" in str(node.get("rationale", "")) else "gate"
     if stage == "manager":
+        if chosen in {"RETRY", "REWRITE", "ROUTE", "AUTHORIZE", "FIX"}:
+            return "gate"
         return "human" if chosen == "HUMAN" else "merge eligibility" if chosen == "APPROVE" else "manager"
     if stage == "escalate" or node.get("event") == "escalate":
         return "human"
     if stage == "merge":
-        return "gate" if chosen == "refresh branch" else "merge eligibility"
+        return "gate" if chosen in {"refresh branch", "conflict-requeue"} else "merge eligibility"
     if node.get("event") == "approved":
         return "merge eligibility"
     return stage

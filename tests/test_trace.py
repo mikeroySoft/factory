@@ -809,7 +809,7 @@ class TraceRetryLoopBoundaryRegressionTest(unittest.TestCase):
             ([revise, *retry, failed_gate], 6),
         ], total_seconds=21)
         self.assertEqual(graph["frontier"], manager["decision_id"])
-        self.assertEqual(graph["frontier_stage"], "manager")
+        self.assertEqual(graph["frontier_stage"], "gate")
 
 
 class TraceBlockerFrontierRegressionTest(unittest.TestCase):
@@ -853,3 +853,48 @@ class TraceBlockerFrontierRegressionTest(unittest.TestCase):
                 graph = trace.explain([triage_row, terminal], 7)
                 self.assertIsNone(graph["frontier"])
                 self.assertIsNone(graph["frontier_stage"])
+
+
+class TraceRequeueFrontierRegressionTest(unittest.TestCase):
+    def test_conflict_and_manager_requeues_wait_on_gate(self):
+        requeues = [
+            ("merge", "conflict-requeue"),
+            *(("manager", chosen) for chosen in ("RETRY", "REWRITE", "ROUTE", "AUTHORIZE", "FIX")),
+        ]
+        for stage, chosen in requeues:
+            with self.subTest(stage=stage, chosen=chosen):
+                graph = trace.explain([
+                    decision(7, stage, chosen, "2026-10-23T10:00:00Z"),
+                ], 7)
+                self.assertEqual(graph["frontier_stage"], "gate")
+
+
+class RequiredFixesParserRegressionTest(unittest.TestCase):
+    def test_all_suffixed_sections_are_parsed_and_none_sections_are_empty(self):
+        findings = (
+            "## Required fixes (blocking)\n"
+            "1. `factory/a.py:4`: Handle the missing value.\n\n"
+            "## Optional suggestions\n"
+            "- Rename the local.\n\n"
+            "### Required fixes (second pass)\n"
+            "- Explain why the branch needs refreshing.\n\n"
+            "## Required fixes\n"
+            "None.\n\n"
+            "## Required fixes (empty)\n"
+            "None\n\n"
+            "## Verdict\n"
+            "VERDICT: REVISE\n"
+        )
+
+        self.assertEqual(dispatch._required_fixes(findings, "https://review.example/1"), [
+            {
+                "kind": "finding",
+                "ref": "factory/a.py:4",
+                "summary": "`factory/a.py:4`: Handle the missing value.",
+            },
+            {
+                "kind": "finding",
+                "ref": "https://review.example/1",
+                "summary": "Explain why the branch needs refreshing.",
+            },
+        ])

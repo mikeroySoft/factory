@@ -813,20 +813,22 @@ def _record_gate_decision(
 
 
 def _required_fixes(findings: str, review_ref: str) -> list[dict]:
-    match = re.search(r"(?ims)^#{1,6}\s+Required fixes\s*$\n(.*?)(?=^#{1,6}\s|\Z)", findings)
-    if not match:
-        return []
     fixes = []
-    for line in match[1].splitlines():
-        summary = re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", line).strip()
-        if not summary:
-            continue
-        location = re.search(r"`?([A-Za-z0-9_.\-/]+:\d+)`?", summary)
-        fixes.append({
-            "kind": "finding",
-            "ref": location.group(1) if location else review_ref,
-            "summary": summary,
-        })
+    sections = re.finditer(
+        r"(?ims)^#{1,6}\s+Required fixes[^\r\n]*\r?\n(.*?)(?=^#{1,6}\s|\Z)",
+        findings,
+    )
+    for section in sections:
+        for line in section[1].splitlines():
+            summary = re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", line).strip()
+            if not summary or summary.rstrip(".").casefold() == "none":
+                continue
+            location = re.search(r"`?([A-Za-z0-9_.\-/]+:\d+)`?", summary)
+            fixes.append({
+                "kind": "finding",
+                "ref": location.group(1) if location else review_ref,
+                "summary": summary,
+            })
     return fixes
 
 
