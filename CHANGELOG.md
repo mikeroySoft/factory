@@ -7,6 +7,8 @@
 - Gate checks replace invalid UTF-8 bytes in captured output instead of crashing before the gate report is written (#361).
 
 - Structured schema-1 decision records now capture triage, initiative binding, scheduler admission, worker selection, and claim alternatives, inputs, rationale, causes, actor, and model cost in the rotating journal. `factory explain N [--json] [--since ISO]` projects those rows plus legacy audit events into a bounded decision graph with cross-ticket edges and coverage gaps (#356).
+- Post-claim schema-1 decision records now cover every gate run, reviewer verdict, manager action, merge/refresh choice, wontfix terminal, escalation, learning pass, and CURATE proposal. `factory explain --json` groups review retries into costed loops, totals ticket cost, links findings and cross-ticket evidence, and reports a stage-aware frontier through merge or wontfix (#357).
+
 
 - Automatic release PRs now keep public installation guidance current (#351): `factory release` updates and stages the version file, `CHANGELOG.md`, the fixed-version install pins in `README.md` and `docs/index.html`, the project page's latest-release date, and a new page history entry built from that version's changelog notes. Every expected documentation spot must match exactly once or the release is refused.
 

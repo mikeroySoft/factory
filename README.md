@@ -301,7 +301,7 @@ landed on its own, and partial progress needs its own reviewed PR.
 | `factory triage` | Labels every `needs-triage` issue via the local model: `ready-for-agent` (with an agent brief), `needs-info` (with the question), `ready-for-human`, or `wontfix-proposal` (proposal comment and label; a human closes). An issue unchanged since its last triage comment is skipped. `--dry-run`, `--issue N`, `--replay a,b,c`. |
 | `factory triage-probe` | Sends `GET <triage base>/models` with a three-second timeout. A 503 `Loading model` response is alive. After three consecutive failures it restarts `[triage].service` at most once per 15 minutes; failures and restarts are lifecycle-journaled. With no service configured it reports only. |
 | `factory dispatch` | One stateless pass: fetch and detach the main checkout at `origin/<main>` before `.factory.toml` is read (a root with tracked or untracked changes outside `.factory/` exits 1 with a `root_dirty` dispatcher exit row naming the paths and does nothing, even when its config does not load) → upstream sync (stage a sync ticket) → merge stage (at most one PR) → review-only PR intake → manager → claim up to `max_active` tickets → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan from the checkout as it is. |
-| `factory explain N [--json] [--since ISO]` | Reads the live `.factory/events.jsonl` and retained `events.jsonl.N.gz` segments without writing. JSON mode returns `{ticket,nodes,edges,frontier,coverage}`; text mode prints a compact decision tree. Legacy `claimed`, `attempt`, `review`, `approved`, `merged`, and `escalate` rows become `synthesized: true` nodes, while `coverage` names part-1 stages with no structured record. Output is bounded to the runtime projection's 1 MiB limit. |
+| `factory explain N [--json] [--since ISO]` | Reads the live `.factory/events.jsonl` and retained `events.jsonl.N.gz` segments without writing. JSON mode returns `{ticket,nodes,edges,loops,cost,frontier,frontier_stage,coverage}`; `cost` totals the ticket and each retry loop has its own total. `frontier_stage` distinguishes gate, review, manager, human, merge eligibility, and blocker waits; merged and wontfix tickets have a null frontier. Text mode prints a compact decision tree. Legacy `claimed`, `attempt`, `review`, `approved`, `merged`, and `escalate` rows become `synthesized: true` nodes. Output is bounded to the runtime projection's 1 MiB limit. |
 | `factory manage` | First recommends directions for `needs-review` PRs, then `needs-viability` issues; then resolves untouched `ready-for-human` escalation packets within `[manager].rounds`; finally publishes one routed human handoff request per escalation whose automatic recovery is terminal (also without a manager). `--dry-run` lists eligible requests without inference or writes. |
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
 | `factory watch` | Post-ship monitor from local evidence only: lifecycle exit rows with `mechanism_failure` (or `unknown` with a `check_timeout` reason), failed `factory-*` user units for this repository, `factory dashboard --runtime-json` **failures** (only the reader's failure-severity journal defects, `runtime_events.FAILURES`; every other reader code is coverage and never filed, see [runtime contract](#bounded-runtime-json-schema-1)), and one escalation `code` repeating on ≥3 distinct tickets in the trailing 7 days (except ticket outcomes: `ci_failed`, when a ticket PR's checks fail; `no_change`, when a worker committed nothing and wrote its handoff because its ticket was already fixed or a duplicate; and `review_revise`, when review still requests changes after bounded review rounds, a manager `FIX`, or a merge-stage refresh/rebase). A no-commit worker without a handoff stays `pr_unpublished` and counts. Host conditions (`worker_exit:*`, `triage_endpoint_*`, `github_command_failed`) remain ignored until their current uninterrupted streak spans `[watch].host_failure_minutes` (default 60), then file as `host`; a later successful pass clears the streak. A gap between failures longer than that threshold starts a new streak, since idle successes may leave no journal row. Every signal files into one engine repository, `[watch].engine_repo` (default `mikeroySoft/factory`), never into the repository it runs in. Each distinct fingerprint (sha256 of kind and reason/unit role/source, 12 hex, so one reason hitting several stages, one journal source reporting several codes, or the same host condition or unit failure in several installs is one issue; `escalation:<code>` for repeats) files one `bug,needs-triage` issue, plus `host` for a host condition, carrying the fingerprint, an `Observed by` list of installs, the triggering journal rows, the newest attempt log tail, the unit status or the runtime failures with what they point at (the offending journal line, the conflicting execution's rows, the reader's stderr; for repeats: each ticket, its prose `reason` and escalation packet path), the reproducing command and an "Expected behavior" section; the filing is journaled as a `watch` row. Before filing it lists the engine repository's open `bug` issues: when one already carries the fingerprint (another install filed it), the install comments its newest evidence there, at most once per 24 hours per install, and adds itself to `Observed by` instead of opening a duplicate. `escalate` rows without a `code` are `unknown` and never filed. Never refiles while that issue is open; refiles once it is closed and the signal recurs. An unassigned filing still at `needs-triage` or `ready-for-agent` closes after 24 hours without newer evidence, including after a successful pass clears a host condition. At most 5 filings or comments and 5 closures per pass. `--dry-run` prints what would be filed or closed without `gh`. `factory install` runs it from the pass unit's `ExecStopPost=`, after every `dispatch`, crashed or not. |
@@ -321,8 +321,8 @@ landed on its own, and partial progress needs its own reviewed PR.
 
 ### Decision records and explanations
 
-Routing from triage through claim writes `event: "decision"` rows through the
-same flocked, rotating journal writer as other audit events. Schema 1 has:
+Routing from triage through merge or wontfix writes `event: "decision"` rows
+through the same flocked, rotating journal writer as other audit events. Schema 1 has:
 
 ```json
 {
@@ -331,7 +331,7 @@ same flocked, rotating journal writer as other audit events. Schema 1 has:
   "decision_id": "uuid4",
   "ticket": 7,
   "pr": 12,
-  "stage": "triage|binding|admission|worker_select|claim",
+  "stage": "triage|binding|admission|worker_select|claim|gate|review|manager|merge|wontfix|escalate|learn|curate",
   "at": "2026-10-23T10:00:00Z",
   "inputs": [{"kind": "github_issue", "ref": "https://github.com/owner/repo/issues/7", "summary": "bounded text"}],
   "options": [{"option": "ready-for-agent", "eligible": true, "reason": "bounded text"}],
@@ -349,7 +349,10 @@ relation `follows`, `retries`, `blocked_by`, `split_from`, `unblocked_by`, or
 `overrides`. Inputs are limited to 16 entries and 256 characters per value;
 rationale is limited to 2,000 characters. Token-shaped credentials are removed
 before append. `factory explain` adds time-ordered `follows` edges within the
-ticket and cross-ticket nodes for ticket causes.
+ticket, cross-ticket nodes for ticket causes, and collapsible groups beginning at
+`retries` edges. Gate records carry the gated SHA, report and duration; review
+records carry required findings and model usage; manager, merge, escalation,
+learning and CURATE records retain the alternatives and evidence used.
 
 Successful non-dry-run `triage`, `dispatch`, and `watch` invocations atomically
 update `.factory/stage-success.json` with that repository's last successful pass
