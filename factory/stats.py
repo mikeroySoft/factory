@@ -618,6 +618,9 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     configure(resolve(args.repo))
     journal = cfg.factory / "events.jsonl"
+    if not args.escapes and not journal.is_file():
+        raise SystemExit(f"factory stats: no journal at {journal}; this is not the dispatcher's root. "
+                         f'Set [repo."{cfg.repo}"].path in {config.host_config_path()} or pass --repo owner/name')
     if args.stages:
         passes = lifecycle.last_successful_passes(journal)
         result = {"repository": cfg.repo, "last_successful_pass": passes}
@@ -628,9 +631,6 @@ def main(argv: list[str]) -> int:
             for stage, timestamp in passes.items():
                 print(f"{stage}: {timestamp or 'never'}")
         return 0
-    if not args.escapes and not journal.is_file():
-        raise SystemExit(f"factory stats: no journal at {journal}; this is not the dispatcher's root. "
-                         f'Set [repo."{cfg.repo}"].path in {config.host_config_path()} or pass --repo owner/name')
     if args.escapes:
         rows = escapes()
     elif args.by_worker or args.by_brief:

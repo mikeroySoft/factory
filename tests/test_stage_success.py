@@ -83,6 +83,11 @@ class StageSuccessTest(unittest.TestCase):
 
         self.assertTrue(all(lifecycle.last_successful_passes(self.journal).values()))
 
+    def test_stats_stages_rejects_a_checkout_without_the_dispatcher_journal(self) -> None:
+        with mock.patch.object(stats, "resolve", return_value=self.cfg), self.assertRaises(SystemExit) as raised:
+            stats.main(["--stages", "--json"])
+        self.assertIn(str(self.journal), str(raised.exception))
+
 if __name__ == "__main__":
     unittest.main()
 
