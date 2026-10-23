@@ -77,10 +77,20 @@ def _host_family(row: dict) -> str:
 
 def persistent_host_conditions(events: list[dict], minutes: int) -> dict[str, list[dict]]:
     """Current uninterrupted host-failure streaks old enough to file."""
+    threshold = timedelta(minutes=minutes)
     streaks: dict[str, list[dict]] = {}
     for row in events:
         if reason := _host_reason(row):
-            streaks.setdefault(reason, []).append(row)
+            rows = streaks.setdefault(reason, [])
+            if rows:
+                try:
+                    gap = datetime.fromisoformat(str(row["at"])) - datetime.fromisoformat(str(rows[-1]["at"]))
+                except (KeyError, TypeError, ValueError):
+                    rows.clear()
+                else:
+                    if gap >= threshold:
+                        rows.clear()
+            rows.append(row)
             continue
         if (row.get("event") != "lifecycle" or row.get("kind") != "exit"
                 or row.get("outcome") not in {"completed", "product_feedback"}
@@ -90,7 +100,6 @@ def persistent_host_conditions(events: list[dict], minutes: int) -> dict[str, li
         for reason, rows in streaks.items():
             if rows and any(_host_family(failure) == family for failure in rows):
                 streaks[reason] = []
-    threshold = timedelta(minutes=minutes)
     persistent = {}
     for reason, rows in streaks.items():
         if len(rows) < 2:

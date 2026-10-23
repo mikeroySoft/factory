@@ -342,9 +342,11 @@ class PersistentHostConditionTest(unittest.TestCase):
     def ago(minutes: int) -> str:
         return (datetime.now(UTC) - timedelta(minutes=minutes)).isoformat().replace("+00:00", "Z")
 
-    def failures(self, first: int, last: int) -> tuple[dict, dict]:
+    def failures(self, first: int, last: int) -> tuple[dict, ...]:
         return (
             exit_row("triage", "mechanism_failure", "triage_endpoint_unavailable", at=self.ago(first)),
+            exit_row("triage", "mechanism_failure", "triage_endpoint_unavailable",
+                     at=self.ago((first + last) // 2)),
             exit_row("triage", "mechanism_failure", "triage_endpoint_unavailable", at=self.ago(last)),
         )
 
@@ -426,6 +428,16 @@ class PersistentHostConditionTest(unittest.TestCase):
                 self.cfg, lifecycle.read_events(dispatch.EVENTS)
             )},
         )
+
+    def test_separated_host_blips_do_not_form_streak(self) -> None:
+        self.journal(
+            exit_row("manage", "mechanism_failure", "github_command_failed", at=self.ago(3 * 24 * 60)),
+            exit_row("manage", "mechanism_failure", "github_command_failed", at=self.ago(1)),
+        )
+
+        self.assertEqual(watch.run_pass(self.cfg), [])
+        self.assertEqual(self.gh.calls, [])
+
 
 
 
