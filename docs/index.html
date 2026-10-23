@@ -136,10 +136,10 @@
             </div>
             <div class="install-line">
               <span class="install-label">CLI</span>
-              <pre><code>uv tool install git+https://github.com/mikeroySoft/factory@v0.4.4</code></pre>
+              <pre><code>uv tool install git+https://github.com/mikeroySoft/factory@v0.4.6</code></pre>
             </div>
           </div>
-          <p class="release-note"><a href="#changelog">Latest release: v0.4.4 · October 22, 2026</a><br>CLI command pins this release. Use <code>@stable</code> for the released channel or <code>@main</code> for development; the bare URL follows the default <code>main</code> branch.</p>
+          <p class="release-note"><a href="#changelog">Latest release: v0.4.6 · October 23, 2026</a><br>CLI command pins this release. Use <code>@stable</code> for the released channel or <code>@main</code> for development; the bare URL follows the default <code>main</code> branch.</p>
 
           <div class="hero-actions">
             <a class="button" href="https://github.com/mikeroySoft/factory">
@@ -445,6 +445,21 @@ model = "qwen3:30b"</code></pre>
           <li class="release">
             <div class="release-meta">
               <span class="chip chip-success">Latest release</span>
+              <a href="https://github.com/mikeroySoft/factory/releases/tag/v0.4.6">v0.4.6</a>
+              <time datetime="2026-10-23">October 23, 2026</time>
+            </div>
+            <div>
+              <h3>v0.4.6 release notes.</h3>
+              <ul>
+                <li>Gate checks replace invalid UTF-8 bytes in captured output instead of crashing before the gate report is written (#361).</li>
+                <li>Structured schema-1 decision records now capture triage, initiative binding, scheduler admission, worker selection, and claim alternatives, inputs, rationale, causes, actor, and model cost in the rotating journal. `factory explain N [--json] [--since ISO]` projects those rows plus legacy audit events into a bounded decision graph with cross-ticket edges and coverage gaps (#356).</li>
+                <li>Automatic release PRs now keep public installation guidance current (#351): `factory release` updates and stages the version file, `CHANGELOG.md`, the fixed-version install pins in `README.md` and `docs/index.html`, the project page&#x27;s latest-release date, and a new page history entry built from that version&#x27;s changelog notes. Every expected documentation spot must match exactly once or the release is refused.</li>
+              </ul>
+            </div>
+          </li>
+          <li class="release">
+            <div class="release-meta">
+              <span class="chip">Release</span>
               <a href="https://github.com/mikeroySoft/factory/releases/tag/v0.4.4">v0.4.4</a>
               <time datetime="2026-10-22">October 22, 2026</time>
             </div>

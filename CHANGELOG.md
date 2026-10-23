@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.6 — 2026-10-23
+
 - Gate checks replace invalid UTF-8 bytes in captured output instead of crashing before the gate report is written (#361).
 
 - Structured schema-1 decision records now capture triage, initiative binding, scheduler admission, worker selection, and claim alternatives, inputs, rationale, causes, actor, and model cost in the rotating journal. `factory explain N [--json] [--since ISO]` projects those rows plus legacy audit events into a bounded decision graph with cross-ticket edges and coverage gaps (#356).
