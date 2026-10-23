@@ -284,9 +284,9 @@ def body(signal: dict, install: str) -> str:
     parts = [
         f"Fingerprint: {signal['fingerprint']}",
         "",
-        (f"`factory watch` observed a persistent host condition from local evidence: "
+        ("`factory watch` observed a persistent host condition from local evidence: "
          if signal["kind"] == "host" else
-         f"`factory watch` observed a runtime failure of the factory itself from local evidence: "),
+         "`factory watch` observed a runtime failure of the factory itself from local evidence: "),
         (f"signal `{signal['kind']}`, stage `{signal['stage']}`, `{signal['key']}`. "
          "Filed automatically; no human has looked at it yet."),
         "",
