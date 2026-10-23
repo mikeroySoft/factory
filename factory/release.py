@@ -308,12 +308,11 @@ def _update_release_files(cfg: config.Config, worktree: Path, old: str, new: str
         '<span class="chip">Release</span>',
         "docs/index.html changelog history",
     )
-    page_text = _replace_once(
-        page_text,
-        r'<ol class="history">\n',
-        f'<ol class="history">\n{entry}',
-        "docs/index.html changelog history",
-    )
+    history = '<ol class="history">\n'
+    count = page_text.count(history)
+    if count != 1:
+        raise ValueError(f"docs/index.html changelog history must appear exactly once (found {count})")
+    page_text = page_text.replace(history, f"{history}{entry}", 1)
 
     version.write_text(version_text)
     changelog.write_text(changelog_text)

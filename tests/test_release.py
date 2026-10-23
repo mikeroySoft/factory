@@ -378,6 +378,10 @@ class ReleaseTest(unittest.TestCase):
         )
 
     def test_release_bump_updates_and_stages_public_documentation(self) -> None:
+        with (self.repo / "CHANGELOG.md").open("a") as changelog:
+            changelog.write(r"- matches \d and C:\new" + "\n")
+        self.git(self.repo, "add", "CHANGELOG.md")
+        self.git(self.repo, "commit", "-q", "-m", "add release notes")
         self.tag_and_advance({"human_rate": 0.0, "first_pass": 1.0, "tickets": 1})
         self.events()
         with mock.patch.object(release, "_pulls", return_value=[]), \
@@ -398,6 +402,7 @@ class ReleaseTest(unittest.TestCase):
         self.assertRegex(page, r"Latest release: v0\.0\.2 · [A-Z][a-z]+ \d{1,2}, \d{4}")
         self.assertLess(page.index(">v0.0.2</a>"), page.index(">v0.0.1</a>"))
         self.assertIn("<li>shipped work</li>", page)
+        self.assertIn(r"<li>matches \d and C:\new</li>", page)
         self.assertEqual(page.count('<span class="chip chip-success">Latest release</span>'), 1)
 
     def test_release_bump_fails_when_a_documentation_spot_is_missing(self) -> None:
