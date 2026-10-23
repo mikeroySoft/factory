@@ -616,3 +616,55 @@ class TracePartTwoTest(unittest.TestCase):
             dispatch.merge_pass_locked(False)
 
         record.assert_not_called()
+
+
+class TraceCoverageRegressionTest(unittest.TestCase):
+    CLAIM_STAGES = ("triage", "binding", "admission", "worker_select", "claim")
+    AT = "2026-10-23T10:00:00Z"
+
+    def test_claim_stage_contract_preserves_post_claim_validation(self):
+        self.assertEqual(trace.STAGES, self.CLAIM_STAGES)
+        for stage in ("gate", "review", "manager", "merge", "wontfix", "escalate", "learn", "curate"):
+            with self.subTest(stage=stage):
+                row = decision(7, stage, "selected", self.AT)
+                self.assertIs(trace.validate(row), row)
+        with self.assertRaises(ValueError):
+            decision(7, "unknown", "selected", self.AT)
+
+    def test_completed_ticket_reports_only_missing_claim_stage_coverage(self):
+        for missing in (None, "binding"):
+            with self.subTest(missing=missing):
+                rows = [
+                    decision(7, stage, "selected", self.AT)
+                    for stage in self.CLAIM_STAGES if stage != missing
+                ]
+                rows.extend([
+                    decision(7, "gate", "pass", self.AT),
+                    decision(7, "review", "APPROVE", self.AT),
+                    decision(7, "merge", "merge now", self.AT),
+                ])
+                graph = trace.explain(rows, 7)
+                self.assertEqual(graph["coverage"], [missing] if missing else [])
+                self.assertIsNone(graph["frontier"])
+
+    def test_gate_escalation_has_no_spurious_post_claim_coverage_gaps(self):
+        rows = [
+            decision(7, stage, "selected", self.AT)
+            for stage in self.CLAIM_STAGES if stage != "binding"
+        ]
+        rows.extend([
+            decision(7, "gate", "test", self.AT),
+            decision(7, "escalate", "gate_failed", self.AT),
+        ])
+        graph = trace.explain(rows, 7)
+        self.assertEqual(graph["coverage"], ["binding"])
+        self.assertEqual(graph["frontier_stage"], "human")
+
+    def test_triaged_wontfix_coverage_names_only_missing_claim_stages(self):
+        rows = [
+            decision(7, "triage", "wontfix-proposal", self.AT),
+            decision(7, "wontfix", "wontfix-proposal", self.AT),
+        ]
+        graph = trace.explain(rows, 7)
+        self.assertEqual(graph["coverage"], ["binding", "admission", "worker_select", "claim"])
+        self.assertIsNone(graph["frontier"])

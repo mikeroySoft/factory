@@ -13,8 +13,9 @@ from pathlib import Path
 from factory import config, lifecycle, runtime_events
 from factory.decisions import _SECRET
 
-STAGES = (
-    "triage", "binding", "admission", "worker_select", "claim",
+STAGES = ("triage", "binding", "admission", "worker_select", "claim")
+ALL_STAGES = (
+    *STAGES,
     "gate", "review", "manager", "merge", "wontfix", "escalate", "learn", "curate",
 )
 RELATIONS = frozenset({"follows", "retries", "blocked_by", "split_from", "unblocked_by", "overrides"})
@@ -178,7 +179,7 @@ def validate(row: dict) -> dict:
         raise ValueError("invalid decision record fields")
     if row["schema_version"] != 1 or not _uuid4(row["decision_id"]):
         raise ValueError("invalid decision record identity")
-    if type(row["ticket"]) is not int or row["ticket"] <= 0 or row["stage"] not in STAGES or not _utc(row["at"]):
+    if type(row["ticket"]) is not int or row["ticket"] <= 0 or row["stage"] not in ALL_STAGES or not _utc(row["at"]):
         raise ValueError("invalid decision ticket, stage, or timestamp")
     if "pr" in row and (type(row["pr"]) is not int or row["pr"] <= 0):
         raise ValueError("invalid decision PR")
