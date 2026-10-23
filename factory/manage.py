@@ -171,6 +171,7 @@ MANAGER_DECISIONS = (
 def record_manager_decision(
     n: int, chosen: str, body: str, data: object, output: str, workers: dict,
     packet: Path, *, pr: int | None = None, head: str | None = None,
+    approval: bool = False, viability: bool = False,
 ) -> str:
     from factory import __version__, trace
 
@@ -193,11 +194,22 @@ def record_manager_decision(
             rejected_reason = (
                 f"{requested} target is filtered out by worker_select_label and is ineligible for manager handoff"
             )
+    accepted = (
+        set()
+        if viability
+        else set(MANAGER_DECISIONS) - ({"RESOLVE", "AUTHORIZE"} if approval else {"APPROVE"})
+    )
+    context_reason = (
+        "not accepted by the viability parser"
+        if viability
+        else f"not accepted by the {'approval' if approval else 'escalation'} manager parser"
+    )
     options = []
     for option in MANAGER_DECISIONS:
-        eligible = option != requested or requested == chosen
+        eligible = option in accepted and (option != requested or requested == chosen)
         reason = (
             body if option == chosen
+            else context_reason if option not in accepted
             else rejected_reason if option == requested and requested != chosen
             else "available but not selected"
         )
@@ -669,7 +681,7 @@ def viability_pass(dry_run: bool = False) -> None:
                     record_manager_decision(
                         n, verdict, body, None, output, {},
                         cfg.factory / "events.jsonl", pr=n if kind == "pr" else None,
-                        head=issue.get("headRefOid"),
+                        head=issue.get("headRefOid"), viability=True,
                     )
                     # At-most-once: an ambiguous/partial GitHub mutation requires human recovery.
                     dispatch.record("viability", **identity, kind=kind, request=request, verdict=verdict, comment=comment)
@@ -909,6 +921,7 @@ def frontier_pass(dry_run: bool = False) -> None:
                     continue
                 record_manager_decision(
                     n, decision, body, data, output, workers, packet, pr=number, head=head,
+                    approval=True,
                 )
                 dispatch.record("manage", ticket=n, pr=number, head=head, decision=decision,
                                 round=len(decided) + 1, packet=str(packet))

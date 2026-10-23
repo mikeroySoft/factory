@@ -245,14 +245,22 @@ def chore_pr(cfg: config.Config, branch: str, edit: Callable[[Path], list[str]],
 
 
 def _record_curate_decision(
-    cfg: config.Config, tickets: list[int], paths: list[str], result: str,
+    cfg: config.Config, tickets: list[int], paths: list[str],
+    allowed: dict[str, bool], result: str,
 ) -> str:
     from factory import __version__, trace
 
     accepted = not result.startswith("rejected:")
     options = [
-        {"option": path, "eligible": accepted,
-         "reason": "curate_allowed accepted this path" if accepted else result}
+        {
+            "option": path,
+            "eligible": allowed.get(path, False),
+            "reason": (
+                "curate_allowed accepted this path"
+                if allowed.get(path, False)
+                else "curate_allowed rejected this path"
+            ),
+        }
         for path in paths
     ]
     options.append({
@@ -290,6 +298,7 @@ def curate(cfg: config.Config, diff: str, tickets: list[int], notes: str) -> str
     patch = cfg.factory / f"{branch.removeprefix('agent/')}.patch"
     patch.write_text(diff if diff.endswith("\n") else diff + "\n")
     observed_paths: list[str] = []
+    allowed: dict[str, bool] = {}
 
     def edit(wt: Path) -> list[str]:
         toml = wt / config.CONFIG_NAME
@@ -304,7 +313,8 @@ def curate(cfg: config.Config, diff: str, tickets: list[int], notes: str) -> str
         entries = [(entry[:2], entry[3:]) for entry in status.split("\0") if entry]
         paths = [p for _, p in entries]
         observed_paths.extend(paths)
-        bad = [p for p in paths if not manage.curate_allowed(p, protected)]
+        allowed.update((path, manage.curate_allowed(path, protected)) for path in paths)
+        bad = [path for path in paths if not allowed[path]]
         if bad:
             raise ValueError(", ".join(bad) + " outside " + ", ".join(manage.CURATE_PREFIXES)
                              + f", {config.CONFIG_NAME}, [gate].protected_paths and [gate].add_only_paths")
@@ -332,7 +342,7 @@ def curate(cfg: config.Config, diff: str, tickets: list[int], notes: str) -> str
         result = f"rejected: {exc}"
     finally:
         patch.unlink(missing_ok=True)
-    _record_curate_decision(cfg, tickets, observed_paths, result)
+    _record_curate_decision(cfg, tickets, observed_paths, allowed, result)
     return result
 
 

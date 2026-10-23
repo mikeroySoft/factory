@@ -25,7 +25,6 @@ OPTION_LIMIT = 512
 TEXT_LIMIT = 256
 RATIONALE_LIMIT = 2_000
 LEGACY = frozenset({"claimed", "attempt", "review", "approved", "merged", "escalate"})
-_TERMINAL = frozenset({"merge", "wontfix"})
 _SPLIT = re.compile(r"(?i)(?:\(|\b)split from\s+#([1-9][0-9]*)")
 _BLOCKED = re.compile(r"(?im)^blocked by:(.*)$")
 _REF = re.compile(r"#([1-9][0-9]*)")
@@ -271,10 +270,18 @@ def _sum_cost(nodes: list[dict]) -> dict:
     return total
 
 
+def _terminal(node: dict) -> bool:
+    return (
+        node.get("stage") == "wontfix"
+        or node.get("stage") == "merge" and node.get("chosen") == "merge now"
+        or node.get("event") == "merged"
+    )
+
+
 def _frontier_stage(node: dict) -> str | None:
     stage = node.get("stage")
     chosen = node.get("chosen")
-    if stage in _TERMINAL or node.get("event") == "merged":
+    if _terminal(node):
         return None
     if stage in {"admission", "worker_select", "claim"} or node.get("event") == "claimed":
         return "gate"
@@ -365,7 +372,7 @@ def explain(rows: list[dict], ticket: int) -> dict:
     present = {row["stage"] for row in decisions}
     flow = [node for node in ordered if node.get("stage") not in {"learn", "curate"}]
     last = flow[-1] if flow else None
-    terminal = bool(last and (last.get("stage") in _TERMINAL or last.get("event") == "merged"))
+    terminal = bool(last and _terminal(last))
     if terminal or not decisions:
         expected = STAGES
     else:

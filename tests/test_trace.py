@@ -450,3 +450,86 @@ class TracePartTwoTest(unittest.TestCase):
         review, merge = rows
         self.assertIn(comment_url, {value["ref"] for value in review["inputs"]})
         self.assertIn("b" * 40, {value["summary"].removeprefix("merge SHA ") for value in merge["inputs"]})
+
+    def test_nonfinal_merge_decision_keeps_frontier_open(self):
+        waiting = decision(7, "merge", "ci-infra", "2026-10-23T10:00:00Z")
+
+        graph = trace.explain([waiting], 7)
+
+        self.assertEqual(graph["frontier"], waiting["decision_id"])
+        self.assertEqual(graph["frontier_stage"], "merge eligibility")
+
+    def test_merge_record_carries_ci_run_and_stale_head_reason(self):
+        reason = "approval head abc is stale because the branch is behind main"
+        link = "https://github.com/acme/widgets/actions/runs/123/job/456"
+        dispatch.record_merge_decision(
+            7, 9, "refresh branch", reason, "a" * 40, "a" * 40,
+            [{"name": "test", "bucket": "pass", "link": link}],
+        )
+
+        [row] = [
+            row for row in lifecycle.read_events(self.events)
+            if row.get("event") == "decision" and row.get("stage") == "merge"
+        ]
+        options = {option["option"]: option for option in row["options"]}
+        self.assertFalse(options["merge now"]["eligible"])
+        self.assertEqual(options["merge now"]["reason"], reason)
+        self.assertTrue(options["refresh branch"]["eligible"])
+        self.assertIn(link, {value["ref"] for value in row["inputs"]})
+
+    def test_manager_options_follow_parser_context(self):
+        from factory import manage
+
+        manage.record_manager_decision(
+            7, "APPROVE", "approved", None, "DECISION: APPROVE\napproved", {},
+            self.root / "approval.md", approval=True,
+        )
+        manage.record_manager_decision(
+            7, "HUMAN", "needs a human", None, "DECISION: HUMAN\nneeds a human", {},
+            self.root / "escalation.md",
+        )
+        manage.record_manager_decision(
+            7, "BUILD", "useful", None, "useful [S1]\nVERDICT: BUILD", {},
+            self.root / "viability.md", viability=True,
+        )
+
+        rows = [
+            row for row in lifecycle.read_events(self.events)
+            if row.get("event") == "decision" and row.get("stage") == "manager"
+        ]
+        approval, escalation, viability = (
+            {option["option"]: option for option in row["options"]}
+            for row in rows
+        )
+        self.assertFalse(approval["RESOLVE"]["eligible"])
+        self.assertFalse(approval["AUTHORIZE"]["eligible"])
+        self.assertFalse(escalation["APPROVE"]["eligible"])
+        self.assertTrue(all(not viability[option]["eligible"] for option in manage.MANAGER_DECISIONS))
+        self.assertTrue(viability["BUILD"]["eligible"])
+
+    def test_curate_records_each_paths_allowlist_verdict(self):
+        from factory import learn
+
+        worktree = self.root / "curate"
+        worktree.mkdir()
+
+        def run(args, **kwargs):
+            if args[1] == "status":
+                return mock.Mock(returncode=0, stdout=" M AGENTS.md\0 M .github/workflows/ci.yml\0")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        def invoke_edit(cfg, branch, edit, title, body):
+            edit(worktree)
+
+        with mock.patch.object(dispatch, "run", side_effect=run), \
+                mock.patch.object(learn, "chore_pr", side_effect=invoke_edit):
+            result = learn.curate(self.cfg, "diff", [7], "notes")
+
+        self.assertTrue(result.startswith("rejected:"))
+        [row] = [
+            row for row in lifecycle.read_events(self.events)
+            if row.get("event") == "decision" and row.get("stage") == "curate"
+        ]
+        options = {option["option"]: option for option in row["options"]}
+        self.assertTrue(options["AGENTS.md"]["eligible"])
+        self.assertFalse(options[".github/workflows/ci.yml"]["eligible"])

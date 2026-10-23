@@ -891,7 +891,10 @@ def record_merge_decision(
     from factory import trace
 
     reasons = {
-        "merge now": rationale if chosen == "merge now" else "head, approval, or CI is not currently mergeable",
+        "merge now": (
+            rationale if chosen in {"merge now", "refresh branch"}
+            else "head, approval, or CI is not currently mergeable"
+        ),
         "refresh branch": rationale if chosen == "refresh branch" else "head contains current main",
         "remove stale factory-approved label": (
             rationale if chosen == "remove stale factory-approved label" else "approval remains current"
@@ -913,7 +916,8 @@ def record_merge_decision(
             "summary": f"merge SHA {merge_sha}",
         })
     inputs += [
-        {"kind": "ci_run", "ref": str(check.get("url") or check.get("id") or ".factory/events.jsonl"),
+        {"kind": "ci_run",
+         "ref": str(check.get("link") or check.get("run") or check.get("id") or ".factory/events.jsonl"),
          "summary": f"{check.get('name', 'check')}: {check.get('bucket', 'unknown')}"}
         for check in checks[:14]
     ]
