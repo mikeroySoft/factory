@@ -2,8 +2,9 @@
 
 ## Unreleased
 
-## 0.4.4 — 2026-10-23
 - A transient GitHub issue-claim failure no longer aborts the dispatcher pass or strands the ticket (#327): the unmodified, unassigned ticket is retried next pass after a `claim-failed` journal row and lifecycle wait. Failed checked commands log only the last 2,000 characters of stderr after redacting token-shaped strings across the complete stderr first.
+
+## 0.4.4 — 2026-10-23
 
 - Worker and reviewer capabilities are explicit instead of tied to an `omp` executable name (#334): `[workers.<label>].transcript = "omp-session"` captures compatible JSONL for token usage, scoring and learning, while `[review].json_mode = true` enables OMP-compatible JSON review parsing. Commands named `omp` retain both defaults, undeclared workers still report usage as `n/a (not reported)`, and `factory stats --by-worker` now includes reported worker token totals.
 
