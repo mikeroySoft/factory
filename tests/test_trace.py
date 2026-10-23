@@ -288,3 +288,138 @@ class TraceEmissionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TracePartTwoTest(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.enterContext(mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
+        self.root = Path(temp.name)
+        self.cfg = config.Config(
+            root=self.root,
+            repo="acme/widgets",
+            workers={"gpu": ["gpu-worker"], "default": ["worker"]},
+            worker_select_label={"gpu": "needs-gpu"},
+        )
+        self.cfg.factory.mkdir()
+        self.events = self.cfg.factory / "events.jsonl"
+        dispatch.configure(self.cfg)
+        triage.configure(self.cfg)
+
+    @staticmethod
+    def cost(seconds):
+        return {"seconds": seconds}
+
+    def test_two_round_trace_folds_retry_and_sums_costs(self):
+        first = decision(7, "worker_select", "default", "2026-10-23T10:00:00Z", cost=self.cost(1))
+        gate_one = decision(7, "gate", "pass", "2026-10-23T10:01:00Z", cost=self.cost(2))
+        revise = decision(
+            7,
+            "review",
+            "REVISE",
+            "2026-10-23T10:02:00Z",
+            cost=self.cost(3),
+            inputs=[
+                {"kind": "finding", "ref": "factory/a.py:4", "summary": "fix A"},
+                {"kind": "finding", "ref": "factory/b.py:8", "summary": "fix B"},
+            ],
+        )
+        fixing_worker = decision(
+            7,
+            "worker_select",
+            "default",
+            "2026-10-23T10:03:00Z",
+            cost=self.cost(4),
+            causes=[{"decision_id": revise["decision_id"], "relation": "retries"}],
+        )
+        fixing_claim = decision(
+            7,
+            "claim",
+            "claimed",
+            "2026-10-23T10:03:01Z",
+            causes=[{"decision_id": revise["decision_id"], "relation": "retries"}],
+        )
+        gate_two = decision(7, "gate", "pass", "2026-10-23T10:04:00Z", cost=self.cost(5))
+        approve = decision(7, "review", "APPROVE", "2026-10-23T10:05:00Z", cost=self.cost(6))
+        refresh = decision(
+            7,
+            "merge",
+            "refresh branch",
+            "2026-10-23T10:06:00Z",
+            cost=self.cost(1),
+            options=[
+                {"option": "merge now", "eligible": False, "reason": "approval head is stale"},
+                {"option": "refresh branch", "eligible": True, "reason": "head is behind main"},
+            ],
+        )
+        reapprove = decision(7, "review", "APPROVE", "2026-10-23T10:07:00Z", cost=self.cost(2))
+        merged = decision(7, "merge", "merge now", "2026-10-23T10:08:00Z", cost=self.cost(3))
+
+        graph = trace.explain(
+            [first, gate_one, revise, fixing_worker, fixing_claim, gate_two, approve, refresh, reapprove, merged],
+            7,
+        )
+
+        self.assertEqual(len(graph["loops"]), 1)
+        self.assertEqual(
+            graph["loops"][0]["nodes"],
+            [revise["decision_id"], fixing_worker["decision_id"], fixing_claim["decision_id"], gate_two["decision_id"]],
+        )
+        self.assertEqual(graph["loops"][0]["cost"]["seconds"], 12)
+        self.assertEqual(graph["cost"]["seconds"], 27)
+        retries = {(edge["from"], edge["to"]) for edge in graph["edges"] if edge["relation"] == "retries"}
+        self.assertEqual(
+            retries,
+            {(revise["decision_id"], fixing_worker["decision_id"]),
+             (revise["decision_id"], fixing_claim["decision_id"])},
+        )
+        refresh_options = {option["option"]: option for option in refresh["options"]}
+        self.assertFalse(refresh_options["merge now"]["eligible"])
+        self.assertTrue(refresh_options["refresh branch"]["eligible"])
+        self.assertIsNone(graph["frontier"])
+
+    def test_rejected_label_gated_route_records_ineligible_manager_option(self):
+        from factory import manage
+
+        output = 'DECISION: ROUTE\n{"add":["needs-gpu"],"guidance":"Use the GPU worker"}'
+        chosen, body, data = manage.parse(output, {"default": ["worker"]})
+        self.assertEqual(chosen, "HUMAN")
+        manage.record_manager_decision(
+            7, chosen, body, data, output, {"default": ["worker"]}, self.root / "packet.md"
+        )
+
+        [row] = [
+            row for row in lifecycle.read_events(self.events)
+            if row.get("event") == "decision" and row.get("stage") == "manager"
+        ]
+        options = {option["option"]: option for option in row["options"]}
+        self.assertFalse(options["ROUTE"]["eligible"])
+        self.assertIn("worker_select_label", options["ROUTE"]["reason"])
+
+    def test_learn_decision_cites_every_evidence_ticket(self):
+        from factory import learn
+
+        with mock.patch.object(learn, "evidence", return_value=([1, 2, 3], "evidence")), \
+                mock.patch.object(learn, "propose", return_value=(["Run the gate."], None)):
+            learn.run(self.cfg)
+
+        [row] = [
+            row for row in lifecycle.read_events(self.events)
+            if row.get("event") == "decision" and row.get("stage") == "learn"
+        ]
+        self.assertEqual(
+            row["causes"],
+            [{"ticket": 1, "relation": "follows"}, {"ticket": 2, "relation": "follows"},
+             {"ticket": 3, "relation": "follows"}],
+        )
+
+    def test_triage_wontfix_is_terminal(self):
+        issue = {"number": 7, "title": "Do not build", "body": "No longer needed"}
+        route = {"decision": config.LABEL_WONTFIX, "rationale": "Superseded", "question": "", "brief": ""}
+        with mock.patch.object(triage, "gh", return_value=""):
+            triage.apply_decision(7, route, False, issue=issue)
+
+        graph = trace.explain(lifecycle.read_events(self.events), 7)
+        self.assertEqual(graph["nodes"][-1]["stage"], "wontfix")
+        self.assertIsNone(graph["frontier"])

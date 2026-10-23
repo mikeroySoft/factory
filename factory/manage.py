@@ -162,6 +162,97 @@ def parse(output: str, workers: dict, *, approval: bool = False) -> tuple[str, s
     return "HUMAN", "Unparseable manager output:\n\n" + (output.strip() or "(empty output)"), None
 
 
+MANAGER_DECISIONS = (
+    "RETRY", "REWRITE", "HUMAN", "CLOSE", "RESOLVE",
+    "APPROVE", "SPLIT", "ROUTE", "AUTHORIZE", "FIX",
+)
+
+
+def record_manager_decision(
+    n: int, chosen: str, body: str, data: object, output: str, workers: dict,
+    packet: Path, *, pr: int | None = None, head: str | None = None,
+) -> str:
+    from factory import __version__, trace
+
+    matches = list(re.finditer(r"(?m)^DECISION: ([A-Z]+)[ \t]*$", output))
+    requested = matches[-1][1] if matches else None
+    rejected_reason = "manager output failed to parse and fell back to HUMAN"
+    if requested in {"ROUTE", "FIX"} and requested != chosen:
+        requested_body = output[matches[-1].end():].strip()
+        try:
+            requested_data = json.loads(requested_body)
+        except (ValueError, TypeError):
+            requested_data = {}
+        targets = (
+            requested_data.get("add", []) + requested_data.get("remove", [])
+            if requested == "ROUTE" and isinstance(requested_data, dict)
+            else [requested_data.get("worker")] if isinstance(requested_data, dict) else []
+        )
+        gated = set(dispatch.cfg.worker_select_label) | set(dispatch.cfg.worker_select_label.values())
+        if any(isinstance(target, str) and target in gated for target in targets):
+            rejected_reason = (
+                f"{requested} target is filtered out by worker_select_label and is ineligible for manager handoff"
+            )
+    options = []
+    for option in MANAGER_DECISIONS:
+        eligible = option != requested or requested == chosen
+        reason = (
+            body if option == chosen
+            else rejected_reason if option == requested and requested != chosen
+            else "available but not selected"
+        )
+        options.append({"option": option, "eligible": eligible, "reason": reason})
+    selected_worker = data.get("worker") if chosen == "FIX" and isinstance(data, dict) else None
+    cause = dispatch._latest_decision_id(n, {"escalate", "review", "gate"})
+    payload = trace.decision(
+        ticket=n,
+        stage="manager",
+        pr=pr,
+        inputs=[
+            {"kind": "manager_packet", "ref": str(packet), "summary": f"manager evidence for ticket #{n}"},
+            *([{"kind": "head", "ref": f"https://github.com/{dispatch.REPO}/commit/{head}",
+                "summary": f"managed PR head {head}"}] if head else []),
+            *([{"kind": "selected_worker", "ref": config.CONFIG_NAME,
+                "summary": f"selected_worker={selected_worker}"}] if selected_worker else []),
+        ],
+        options=options,
+        chosen=chosen,
+        rationale=body,
+        causes=[{"decision_id": cause, "relation": "follows"}] if cause else [],
+        cost=None,
+        actor={
+            "kind": "model", "name": "factory manage",
+            "model": dispatch.cfg.manager_model, "version": __version__,
+        },
+    )
+    dispatch.record("decision", **payload)
+    return payload["decision_id"]
+
+
+def _record_wontfix(n: int, chosen: str, rationale: str, *, pr: int | None = None) -> str:
+    from factory import __version__, trace
+
+    cause = dispatch._latest_decision_id(n, {"manager"})
+    payload = trace.decision(
+        ticket=n,
+        stage="wontfix",
+        pr=pr,
+        inputs=[{"kind": "github_issue", "ref": f"https://github.com/{dispatch.REPO}/issues/{n}",
+                 "summary": rationale}],
+        options=[
+            {"option": chosen, "eligible": True, "reason": rationale},
+            {"option": "continue", "eligible": False, "reason": f"{chosen} was applied"},
+        ],
+        chosen=chosen,
+        rationale=rationale,
+        causes=[{"decision_id": cause, "relation": "follows"}] if cause else [],
+        cost=None,
+        actor={"kind": "deterministic", "name": "manage.apply", "model": None, "version": __version__},
+    )
+    dispatch.record("decision", **payload)
+    return payload["decision_id"]
+
+
 def human_activity(n: int, escalation: dict, events: list[dict]) -> bool:
     """Timeline activity since the escalation that the factory did not journal itself.
 
@@ -408,6 +499,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         post_comment("issue", n, message, **({"pr": pr["number"]} if pr else {}))
         issue_action("close", "--reason", "completed")
         issue_action("edit", "--remove-label", LABEL_HUMAN)
+        _record_wontfix(n, "RESOLVE", body, pr=pr["number"] if pr else None)
         return
     elif decision == "CLOSE":
         pr = dispatch.gh_json(["pr", "view", f"agent/{n}", "--repo", dispatch.REPO, "--json", "number,state,baseRefName"])
@@ -421,6 +513,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
             issue_action("close", "--reason", "not planned")
         else:
             issue_action("edit", "--add-label", config.LABEL_WONTFIX)
+        _record_wontfix(n, "CLOSE", body, pr=pr["number"])
         return
     elif decision == "ROUTE":
         args = []
@@ -540,18 +633,21 @@ def viability_pass(dry_run: bool = False) -> None:
                         continue
                     sources = evidence.viability_sources(cfg, issue, kind=kind)
                     execution.commit()
+                    output = ""
                     try:
                         with NamedTemporaryFile(mode="w", dir=cfg.factory, prefix="manager-viability-", suffix=".md") as prompt:
                             prompt.write(VIABILITY_MENU + f"\nTarget: {kind} #{n} in {cfg.repo}\n\n"
                                          + json.dumps(sources, ensure_ascii=False))
                             prompt.flush()
                             proc = dispatch.run(cfg.manager_cmd(Path(prompt.name), cfg.root), cwd=cfg.root, check=False)
+                        output = proc.stdout
                         if proc.returncode:
                             verdict, body = "DEFER", f"Manager command exited {proc.returncode}; no direction recommendation is available."
                         else:
                             verdict, body = parse_viability(proc.stdout, sources)
                     except (OSError, config.ConfigError) as exc:
                         verdict, body = "DEFER", f"Manager command failed: {exc}"
+                        output = body
                     # Compare full issue/head and timeline: even same-second human edits win.
                     if viability_snapshot(kind, n, label) != snapshot:
                         dispatch.log(f"{kind} #{n}: changed during viability assessment; leaving untouched")
@@ -570,6 +666,11 @@ def viability_pass(dry_run: bool = False) -> None:
                     if references:
                         comment += "\n\nSources:\n" + references
                     comment += f"\n\n{note}\n\nVERDICT: {verdict}"
+                    record_manager_decision(
+                        n, verdict, body, None, output, {},
+                        cfg.factory / "events.jsonl", pr=n if kind == "pr" else None,
+                        head=issue.get("headRefOid"),
+                    )
                     # At-most-once: an ambiguous/partial GitHub mutation requires human recovery.
                     dispatch.record("viability", **identity, kind=kind, request=request, verdict=verdict, comment=comment)
                     dispatch.run(["gh", kind, "comment", str(n), "--repo", cfg.repo, "--body", comment])
@@ -789,20 +890,26 @@ def frontier_pass(dry_run: bool = False) -> None:
                         parts.append(f"## {path.name}\n\n{path.read_text()}")
                 cwd = wt if wt.is_dir() else cfg.root
                 execution.commit()
+                output = ""
                 try:
                     prompt_path = cfg.factory / f"manager-prompt-{n}.md"
                     prompt_path.write_text("\n\n".join(parts))
                     proc = dispatch.run(cfg.manager_cmd(prompt_path, cwd), cwd=cwd, check=False)
+                    output = proc.stdout
                     if proc.returncode:
                         decision, body, data = "HUMAN", f"Manager command exited {proc.returncode}", None
                     else:
                         decision, body, data = parse(split_notes(split_curate(proc.stdout)[0])[0], workers, approval=True)
                 except (OSError, config.ConfigError) as exc:
                     decision, body, data = "HUMAN", f"Manager command failed: {exc}", None
+                    output = body
                 fresh = dispatch.gh_json(["pr", "view", str(number), "--repo", cfg.repo, "--json", "state,headRefOid,reviewDecision"])
                 if fresh.get("state") != "OPEN" or fresh.get("headRefOid") != head or fresh.get("reviewDecision") == "CHANGES_REQUESTED":
                     dispatch.log(f"PR #{number}: changed while the manager was thinking; decision discarded")
                     continue
+                record_manager_decision(
+                    n, decision, body, data, output, workers, packet, pr=number, head=head,
+                )
                 dispatch.record("manage", ticket=n, pr=number, head=head, decision=decision,
                                 round=len(decided) + 1, packet=str(packet))
                 if decision != "CLOSE":
@@ -892,11 +999,13 @@ def escalation_pass(dry_run: bool = False) -> None:
                 wt = cfg.factory / f"wt-{n}"
                 cwd = wt if wt.is_dir() else cfg.root
                 notes = rejected = None
+                output = ""
                 execution.commit()
                 try:
                     prompt_path = cfg.factory / f"manager-prompt-{n}.md"
                     prompt_path.write_text("\n\n".join(parts))
                     proc = dispatch.run(cfg.manager_cmd(prompt_path, cwd), cwd=cwd, check=False)
+                    output = proc.stdout
                     if proc.returncode:
                         body = f"Manager command exited {proc.returncode} (argv: {json.dumps(cfg.manager)})"
                         tail = "\n".join(proc.stderr.splitlines()[-5:])
@@ -913,12 +1022,16 @@ def escalation_pass(dry_run: bool = False) -> None:
                     decision, body, data = "HUMAN", f"Manager command failed: {exc}", None
                     dispatch.record("escalate", ticket=n, round=round_number,
                                     packet=str(packet), code="manager_failed", reason="manager_failed")
+                    output = body
                 # A human may have taken over while the model was thinking.
                 if human_activity(n, escalation, events):
                     continue
                 status = write_notes(notes_path, notes) if notes is not None else None
                 if status is not None and status != "written":
                     dispatch.log(f"#{n}: manager notes {status}; keeping the existing file")
+                record_manager_decision(
+                    n, decision, body, data, output, workers, packet,
+                )
                 dispatch.record("manage", ticket=n, decision=decision, round=round_number,
                                 packet=str(packet), notes=status, rejected=rejected)
                 try:
