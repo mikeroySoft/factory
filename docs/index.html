@@ -136,10 +136,10 @@
             </div>
             <div class="install-line">
               <span class="install-label">CLI</span>
-              <pre><code>uv tool install git+https://github.com/mikeroySoft/factory@v0.4.1</code></pre>
+              <pre><code>uv tool install git+https://github.com/mikeroySoft/factory@v0.4.4</code></pre>
             </div>
           </div>
-          <p class="release-note"><a href="#changelog">Latest release: v0.4.1 · October 16, 2026</a><br>CLI command pins this release. Use <code>@stable</code> for the released channel or <code>@main</code> for development; the bare URL follows the default <code>main</code> branch.</p>
+          <p class="release-note"><a href="#changelog">Latest release: v0.4.4 · October 22, 2026</a><br>CLI command pins this release. Use <code>@stable</code> for the released channel or <code>@main</code> for development; the bare URL follows the default <code>main</code> branch.</p>
 
           <div class="hero-actions">
             <a class="button" href="https://github.com/mikeroySoft/factory">
@@ -445,6 +445,22 @@ model = "qwen3:30b"</code></pre>
           <li class="release">
             <div class="release-meta">
               <span class="chip chip-success">Latest release</span>
+              <a href="https://github.com/mikeroySoft/factory/releases/tag/v0.4.4">v0.4.4</a>
+              <time datetime="2026-10-22">October 22, 2026</time>
+            </div>
+            <div>
+              <h3>v0.4.4 release notes.</h3>
+              <ul>
+                <li>Worker and reviewer capabilities are explicit instead of tied to an `omp` executable name (#334): `[workers.&lt;label&gt;].transcript = "omp-session"` captures compatible JSONL for token usage, scoring and learning, while `[review].json_mode = true` enables OMP-compatible JSON review parsing. Commands named `omp` retain both defaults, undeclared workers still report usage as `n/a (not reported)`, and `factory stats --by-worker` now includes reported worker token totals.</li>
+                <li>`factory watch` no longer reports repeated `review_revise` escalations as engine defects (#324): every `review_revise` is a ticket outcome, whether bounded review rounds are exhausted, review after a manager `FIX` still requests changes, or fresh review after a merge-stage refresh/rebase requests changes.</li>
+                <li>A refresh conflict onto moved `main` no longer escalates (#295): the merge stage withdraws `factory-approved`, journals a `conflict-requeue` row (PR, head, conflicting files, round) and releases the ticket, removing `ready-for-human` and adding `ready-for-agent` (including after a manager `FIX`), so the next claim runs a worker in the same worktree on the same `agent/&lt;n&gt;` branch with a brief to rebase onto current `origin/main`, resolve the conflicts, keep the approved intent and not widen scope; the normal gate, lease push, independent review and round limits follow, and only a fresh approval restores the label. It still escalates as `refresh_conflict`, with the conflicting files in the packet, for a protected path without `factory-protected-override`, after `review_rounds` conflict requeues, or when the ticket is not open. A manager `FIX` whose kept worktree is ahead of the PR head with a head a journaled worker attempt produced (#264) pushes it with a lease on the recorded PR head and goes on; any other head escalates as `refresh_head`, a refused lease as `lease_refused`.</li>
+                <li>Automatic releases publish the GitHub Release (#320): after pushing the `v*` tag and `stable`, `factory release` runs `gh release create &lt;tag&gt; --verify-tag --latest` titled with the tag, with that version's `CHANGELOG.md` section as notes. A Release that already exists is left alone; a `gh` failure is journaled as a `release` row with outcome `publish_failed` and retried at the start of the next pass without rolling back the tag. v0.4.2 had stayed behind v0.4.1 as GitHub's latest until it was published by hand.</li>
+              </ul>
+            </div>
+          </li>
+          <li class="release">
+            <div class="release-meta">
+              <span class="chip">Release</span>
               <a href="https://github.com/mikeroySoft/factory/releases/tag/v0.4.1">v0.4.1</a>
               <time datetime="2026-10-16">October 16, 2026</time>
             </div>
