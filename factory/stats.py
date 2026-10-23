@@ -608,6 +608,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--by-worker", action="store_true",
                         help="split gate pass rate, attempts, reported token usage and known cost by claim label")
     parser.add_argument("--by-brief", action="store_true", help="split first-gate pass rate by tickets with/without a brief")
+    parser.add_argument("--stages", action="store_true",
+                        help="last successful triage, dispatch and watch pass for this repository")
     parser.add_argument("--escapes", action="store_true",
                         help="candidate escaped defects: closed bugs whose fix changed lines an earlier agent ticket wrote")
     parser.add_argument("--repo", metavar="OWNER/NAME",
@@ -619,6 +621,16 @@ def main(argv: list[str]) -> int:
     if not args.escapes and not journal.is_file():
         raise SystemExit(f"factory stats: no journal at {journal}; this is not the dispatcher's root. "
                          f'Set [repo."{cfg.repo}"].path in {config.host_config_path()} or pass --repo owner/name')
+    if args.stages:
+        passes = lifecycle.last_successful_passes(journal)
+        result = {"repository": cfg.repo, "last_successful_pass": passes}
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            print(f"repository: {cfg.repo}")
+            for stage, timestamp in passes.items():
+                print(f"{stage}: {timestamp or 'never'}")
+        return 0
     if args.escapes:
         rows = escapes()
     elif args.by_worker or args.by_brief:

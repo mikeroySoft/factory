@@ -553,7 +553,10 @@ def main(argv: list[str]) -> int:
     with (
         lifecycle.scope(cfg.factory / "events.jsonl", "triage", lazy=True) if recording else nullcontext()
     ) as execution:
-        return execute(args, execution)
+        result = execute(args, execution)
+    if recording and result == 0:
+        lifecycle.record_stage_success(cfg.factory / "events.jsonl", "triage")
+    return result
 
 
 def execute(args: argparse.Namespace, execution) -> int:

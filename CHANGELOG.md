@@ -15,6 +15,7 @@
 - Jev reviewer-coverage experiment (#141): 33 no-retry `jev-latest` calls over the frozen 11-packet reviewer corpus asked one Noul per acceptance-criterion/file pair and one per whole diff. Resolved model `jev-1.14.0` flagged none of the primary defects the retained reviewer baseline missed and averaged 1.333 false flags per clean `after` packet, so the fixed decision is `no-change`; raw requests/responses, split/repeat noise, cost/latency, pre-call mapping, and the schema-1 record are retained under `experiments/jev-review-coverage/`.
 
 - Optional triage endpoint recovery (#335): host `[triage].service` makes `factory install` add a two-minute `GET <base>/models` liveness timer. Three consecutive failures restart the systemd user service, with a shared 15-minute cooldown across repositories; 503 `Loading model` remains healthy. Probe failures and restarts are lifecycle-journaled, while an unset service remains report-only and installs no probe timer. `factory doctor` reports the probe state.
+- Factory now exposes each repository's last successful `triage`, `dispatch`, and `watch` pass for District alerting (#337): successful non-dry-run passes atomically update `.factory/stage-success.json`; `factory stats --stages`, evidence `observe`/`inspect`, and `factory doctor` report the same timestamps without a GitHub read.
 
 ## 0.4.4 — 2026-10-23
 

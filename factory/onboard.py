@@ -19,7 +19,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-from factory import __version__, config
+from factory import __version__, config, lifecycle
 from factory.config import CONFIG_NAME, LABELS, ConfigError
 
 TEMPLATES = Path(__file__).with_name("templates")
@@ -342,6 +342,16 @@ def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[boo
     return True, f"owned by {unit} (pid {main_pid})"
 
 
+def report_stage_success(cfg: config.Config, report) -> None:
+    try:
+        passes = lifecycle.last_successful_passes(cfg.factory / "events.jsonl")
+    except (OSError, ValueError) as exc:
+        report(None, "last successful pass", f"unavailable: {exc}")
+        return
+    detail = "; ".join(f"{stage} {timestamp or 'never'}" for stage, timestamp in passes.items())
+    report(True, "last successful pass", detail, info=True)
+
+
 def doctor(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="factory doctor", description="Check tools, auth, remotes, config drift, and the triage model."
@@ -378,6 +388,7 @@ def doctor(argv: list[str]) -> int:
     unset = unset_repo_keys(cfg.raw_repo)
     if unset:
         report(None, "defaults in effect", ", ".join(unset), info=True)
+    report_stage_success(cfg, report)
 
     for tmpl in (ISSUE_TEMPLATE, INITIATIVE_TEMPLATE):
         shipped, ours = sha256(TEMPLATES / tmpl.name), sha256(cfg.root / tmpl)
