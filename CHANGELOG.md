@@ -5,6 +5,7 @@
 
 
 - A transient GitHub issue-claim failure no longer aborts the dispatcher pass or strands the ticket (#327): the unmodified, unassigned ticket is retried next pass after a `claim-failed` journal row and lifecycle wait. Failed checked commands log only the last 2,000 characters of stderr after redacting token-shaped strings across the complete stderr first.
+- `factory watch` now files a `bug,host,needs-triage` issue when `worker_exit:*`, `triage_endpoint_*`, or `github_command_failed` persists uninterrupted for `[watch].host_failure_minutes` (default 60), while shorter blips remain ignored (#336). A gap between failures longer than that threshold starts a new streak, since idle successes may leave no journal row. The host-condition fingerprint is shared across installs, its issue carries the failure rows, and a later successful pass clears the streak so normal stale-close behavior closes the filing.
 
 - Dashboard startup now reports actionable, secret-free remedies when `.factory` or its workspace access key is unsafe, and `factory doctor` checks the same safety rules before the dashboard service enters a restart loop (#328).
 

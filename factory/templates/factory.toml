@@ -150,9 +150,10 @@ exclusive = false
 # theme = ".factory-dashboard.css"   # repo-relative CSS loaded after the built-in stylesheet
 
 [watch]
-# `factory watch` files the factory's own runtime failures (engine bugs) here, from
+# `factory watch` files engine failures and persistent host conditions here from
 # every install, and comments on the open issue another install already filed.
 # engine_repo = "mikeroySoft/factory"
+# host_failure_minutes = 60  # streak duration to file as `host`; longer gaps reset it
 
 # Human decision owners for `factory plan route N --reason R` (read-only; nothing
 # is ever assigned). Omit the whole section to keep legacy behaviour. Owners are
