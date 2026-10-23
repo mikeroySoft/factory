@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import re
 import shutil
@@ -226,20 +227,97 @@ def _publish(cfg: config.Config, tag: str) -> str:
     return reason
 
 
+def _replace_once(text: str, pattern: str, replacement: str, spot: str) -> str:
+    changed, count = re.subn(pattern, lambda match: match.expand(replacement), text)
+    if count != 1:
+        raise ValueError(f"{spot} must appear exactly once (found {count})")
+    return changed
+
+
 def _update_release_files(cfg: config.Config, worktree: Path, old: str, new: str) -> None:
     version = worktree / cfg.release_version_file
-    text = version.read_text()
-    changed, count = re.subn(rf"(?<![0-9.]){re.escape(old)}(?![0-9.])", new, text, count=1)
+    version_text, count = re.subn(
+        rf"(?<![0-9.]){re.escape(old)}(?![0-9.])", new, version.read_text(), count=1
+    )
     if count != 1:
         raise ValueError(f"{cfg.release_version_file} does not contain version {old}")
-    version.write_text(changed)
+
+    released = datetime.now(UTC).date()
     changelog = worktree / "CHANGELOG.md"
-    text = changelog.read_text()
-    heading = f"## {new} — {datetime.now(UTC).date().isoformat()}"
-    changed, count = re.subn(r"(?m)^## Unreleased[ \t]*\n(?:\n)?", f"## Unreleased\n\n{heading}\n\n", text, count=1)
+    changelog_text, count = re.subn(
+        r"(?m)^## Unreleased[ \t]*\n(?:\n)?",
+        f"## Unreleased\n\n## {new} — {released.isoformat()}\n\n",
+        changelog.read_text(),
+        count=1,
+    )
     if count != 1:
         raise ValueError("CHANGELOG.md has no ## Unreleased heading")
-    changelog.write_text(changed)
+
+    readme = worktree / "README.md"
+    page = worktree / "docs" / "index.html"
+    readme_text = _replace_once(
+        readme.read_text() if readme.exists() else "",
+        r"(?m)^(uv tool install git\+https://github\.com/mikeroySoft/factory@)"
+        r"v\d+\.\d+\.\d+([ \t]+# a specific release)$",
+        rf"\g<1>v{new}\g<2>",
+        "README.md specific-release install pin",
+    )
+    page_text = page.read_text() if page.exists() else ""
+    page_text = _replace_once(
+        page_text,
+        r"(uv tool install git\+https://github\.com/mikeroySoft/factory@)"
+        r"v\d+\.\d+\.\d+(</code>)",
+        rf"\g<1>v{new}\g<2>",
+        "docs/index.html install-command version pin",
+    )
+    display_date = f"{released:%B} {released.day}, {released.year}"
+    page_text = _replace_once(
+        page_text,
+        r"Latest release: v\d+\.\d+\.\d+ · [A-Z][a-z]+ \d{1,2}, \d{4}",
+        f"Latest release: v{new} · {display_date}",
+        "docs/index.html latest-release line",
+    )
+    section = re.search(
+        rf"(?ms)^## {re.escape(new)} — \d{{4}}-\d{{2}}-\d{{2}}\n\n(.*?)(?=^## |\Z)",
+        changelog_text,
+    )
+    notes = "\n".join(
+        f"                <li>{html.escape(line.removeprefix('- '))}</li>"
+        for line in section.group(1).splitlines()
+        if line
+    )
+    entry = (
+        '          <li class="release">\n'
+        '            <div class="release-meta">\n'
+        '              <span class="chip chip-success">Latest release</span>\n'
+        f'              <a href="https://github.com/mikeroySoft/factory/releases/tag/v{new}">'
+        f"v{new}</a>\n"
+        f'              <time datetime="{released.isoformat()}">{display_date}</time>\n'
+        "            </div>\n"
+        "            <div>\n"
+        f"              <h3>v{new} release notes.</h3>\n"
+        "              <ul>\n"
+        f"{notes}\n"
+        "              </ul>\n"
+        "            </div>\n"
+        "          </li>\n"
+    )
+    page_text = _replace_once(
+        page_text,
+        r'<span class="chip chip-success">Latest release</span>',
+        '<span class="chip">Release</span>',
+        "docs/index.html changelog history",
+    )
+    history = '<ol class="history">\n'
+    count = page_text.count(history)
+    if count != 1:
+        raise ValueError(f"docs/index.html changelog history must appear exactly once (found {count})")
+    page_text = page_text.replace(history, f"{history}{entry}", 1)
+
+    version.write_text(version_text)
+    changelog.write_text(changelog_text)
+    readme.write_text(readme_text)
+    page.write_text(page_text)
 
 
 def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
@@ -386,7 +464,14 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
             if not gate_passes(worktree):
                 return _finish(cfg, False, _reason("factory gate --tier release failed", metrics, bar),
                                metrics, bar, latest_tag)
-            _git(worktree, "add", cfg.release_version_file, "CHANGELOG.md")
+            _git(
+                worktree,
+                "add",
+                cfg.release_version_file,
+                "CHANGELOG.md",
+                "README.md",
+                "docs/index.html",
+            )
             _git(worktree, "commit", "-m", f"Release {next_version}")
             pushed = _git(worktree, "push", "--force", "origin",
                           f"HEAD:refs/heads/{branch}", check=False)
