@@ -351,8 +351,12 @@ worse, all completed CI statuses and check runs on `origin/<main>` to pass
 (`success`, `skipped`, and `neutral` check conclusions pass), and `factory gate
 --tier release` to pass in a temporary worktree. It then bumps the patch
 version, moves the current Unreleased changelog entries under the dated release
-heading, pushes the factory-owned `release/vX.Y.Z` branch, and opens a PR. A
-later pass updates a behind release branch from `main`, closes and deletes a
+heading, pushes the factory-owned `release/vX.Y.Z` branch, and opens a PR. The
+release PR also updates `README.md`'s fixed-version install pin and
+`docs/index.html`'s install pin, latest-release note, and top changelog history
+entry built from the new `CHANGELOG.md` section. Each of those four spots must
+appear exactly once; otherwise Factory refuses to create the release. A later
+pass updates a behind release branch from `main`, closes and deletes a
 conflicting one for rebuilding, or squash-merges a clean PR after its CI
 succeeds, respecting the required `gate` check on protected `main`. Once the
 version bump is present on `main`, a final pass creates the annotated tag on
