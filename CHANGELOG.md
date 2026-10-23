@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Gate and dispatcher subprocess reads now decode arbitrary check, Git, and toolchain output as UTF-8 with replacement, so invalid bytes preserve the command's real pass/fail result instead of crashing the pipeline (#365).
+
 ## 0.4.6 — 2026-10-23
 
 - Gate checks replace invalid UTF-8 bytes in captured output instead of crashing before the gate report is written (#361).
