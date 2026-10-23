@@ -82,6 +82,14 @@ def persistent_host_conditions(events: list[dict], minutes: int) -> dict[str, li
     for row in events:
         if reason := _host_reason(row):
             rows = streaks.setdefault(reason, [])
+            if rows:
+                # Idle successes can leave no journal row; a long gap is not continuity.
+                try:
+                    gap = datetime.fromisoformat(str(row["at"])) - datetime.fromisoformat(str(rows[-1]["at"]))
+                    if gap > threshold:
+                        rows.clear()
+                except (KeyError, TypeError, ValueError):
+                    rows.clear()
             rows.append(row)
             continue
         if (row.get("event") != "lifecycle" or row.get("kind") != "exit"

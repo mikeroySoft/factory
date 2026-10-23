@@ -439,13 +439,23 @@ class PersistentHostConditionTest(unittest.TestCase):
         self.assertEqual(watch.run_pass(self.cfg), [])
         self.assertEqual(self.gh.calls, [])
 
-    def test_long_gap_between_host_failures_does_not_break_streak(self) -> None:
+    def test_long_gap_between_host_failures_breaks_streak(self) -> None:
         self.journal(
             exit_row("manage", "mechanism_failure", "github_command_failed", at=self.ago(3 * 24 * 60)),
             exit_row("manage", "mechanism_failure", "github_command_failed", at=self.ago(1)),
         )
 
-        self.assertEqual(len(watch.run_pass(self.cfg)), 1)
+        self.assertEqual(watch.signals(self.cfg, lifecycle.read_events(dispatch.EVENTS)), [])
+        self.assertEqual(watch.run_pass(self.cfg), [])
+        self.assertEqual(self.gh.calls, [])
+
+    def test_host_failure_gap_uses_configured_threshold(self) -> None:
+        self.cfg.watch_host_failure_minutes = 15
+        self.journal(*self.failures(70, 5))
+
+        self.assertEqual(watch.signals(self.cfg, lifecycle.read_events(dispatch.EVENTS)), [])
+        self.assertEqual(watch.run_pass(self.cfg), [])
+        self.assertEqual(self.gh.calls, [])
 
 
 
