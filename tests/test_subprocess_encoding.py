@@ -6,9 +6,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
-from factory import dispatch, gate, lifecycle
+from factory import dispatch, lifecycle
 
 INVALID_OUTPUT = [
     sys.executable,
@@ -47,9 +46,25 @@ class DispatchOutputEncodingTest(unittest.TestCase):
             descriptor = os.open(os.path.join(os.fsencode(root), b"\xff-status"), os.O_WRONLY | os.O_CREAT, 0o600)
             os.close(descriptor)
 
-            activity = dispatch._activity(root, root / "worker.log", root / "handoff.md")
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "from pathlib import Path; from factory import dispatch; import sys; "
+                        "root = Path(sys.argv[1]); "
+                        "print(repr(dispatch._activity(root, root / 'worker.log', root / 'handoff.md')[2]))"
+                    ),
+                    str(root),
+                ],
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
 
-            self.assertIn("\ufffd-status", activity[2])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("\ufffd-status", result.stdout)
 
 
 class GateToolchainEncodingTest(unittest.TestCase):
@@ -62,10 +77,24 @@ class GateToolchainEncodingTest(unittest.TestCase):
                     f"#!{sys.executable}\nimport os\nos.write(1, bytes([255]) + b' version\\n')\n"
                 )
                 command.chmod(0o755)
-            with mock.patch.dict(os.environ, {"PATH": str(bindir)}):
-                values = gate.toolchain()
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "from factory import gate; print(repr(gate.toolchain()))",
+                ],
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                env={**os.environ, "PATH": str(bindir)},
+                check=False,
+            )
 
-            self.assertEqual(values, {"rocm": "\ufffd version", "kernel": "\ufffd version", "amdgpu": "\ufffd version"})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                result.stdout,
+                repr({"rocm": "\ufffd version", "kernel": "\ufffd version", "amdgpu": "\ufffd version"}) + "\n",
+            )
 
 
 if __name__ == "__main__":
