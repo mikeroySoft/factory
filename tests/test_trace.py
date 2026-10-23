@@ -668,3 +668,65 @@ class TraceCoverageRegressionTest(unittest.TestCase):
         graph = trace.explain(rows, 7)
         self.assertEqual(graph["coverage"], ["binding", "admission", "worker_select", "claim"])
         self.assertIsNone(graph["frontier"])
+
+
+class TraceFindingReferenceRegressionTest(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.enterContext(mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
+        self.cfg = config.Config(root=Path(temp.name), repo="acme/widgets")
+        self.cfg.factory.mkdir()
+        self.events = self.cfg.factory / "events.jsonl"
+        dispatch.configure(self.cfg)
+        lifecycle.append(self.events, {"event": "pr-opened", "ticket": 7, "pr": 9})
+
+    def publish_review(self, comment_url):
+        findings = (
+            "## Required fixes\n"
+            "1. `factory/a.py:4`: Handle the missing value.\n"
+            "2. Explain why the branch needs refreshing.\n\n"
+            "## Verdict\nVERDICT: REVISE"
+        )
+        dispatch._PENDING_REVIEWS[7] = {
+            "verdict": "REVISE",
+            "findings": findings,
+            "head": "a" * 40,
+            "parsed": True,
+            "accepted": True,
+            "usage": None,
+            "seconds": 1,
+        }
+        posted = mock.Mock(returncode=0, stdout=comment_url, stderr="")
+        with mock.patch.object(dispatch, "run", return_value=posted):
+            dispatch.pr_comment(7, findings)
+        return [
+            row for row in lifecycle.read_events(self.events)
+            if row.get("event") == "decision" and row.get("stage") == "review"
+        ][-1]
+
+    def test_findings_use_published_comment_url_without_overriding_file_line(self):
+        comment_url = "https://github.com/acme/widgets/pull/9#issuecomment-123"
+        review = self.publish_review(comment_url + "\n")
+        findings = [value for value in review["inputs"] if value["kind"] == "finding"]
+        self.assertEqual(findings, [
+            {"kind": "finding", "ref": "factory/a.py:4",
+             "summary": "`factory/a.py:4`: Handle the missing value."},
+            {"kind": "finding", "ref": comment_url,
+             "summary": "Explain why the branch needs refreshing."},
+        ])
+        self.assertEqual(
+            next(value["ref"] for value in review["inputs"] if value["kind"] == "review_comment"),
+            comment_url,
+        )
+
+    def test_findings_fall_back_to_existing_pr_url_without_overriding_file_line(self):
+        review = self.publish_review("")
+        self.assertEqual(
+            [value["ref"] for value in review["inputs"] if value["kind"] == "finding"],
+            ["factory/a.py:4", "https://github.com/acme/widgets/pull/9"],
+        )
+        self.assertEqual(
+            next(value["ref"] for value in review["inputs"] if value["kind"] == "review_comment"),
+            "https://github.com/acme/widgets/pull/9",
+        )

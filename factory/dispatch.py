@@ -812,7 +812,7 @@ def _record_gate_decision(
     return payload["decision_id"]
 
 
-def _required_fixes(n: int, findings: str) -> list[dict]:
+def _required_fixes(findings: str, review_ref: str) -> list[dict]:
     match = re.search(r"(?ims)^#{1,6}\s+Required fixes\s*$\n(.*?)(?=^#{1,6}\s|\Z)", findings)
     if not match:
         return []
@@ -824,7 +824,7 @@ def _required_fixes(n: int, findings: str) -> list[dict]:
         location = re.search(r"`?([A-Za-z0-9_.\-/]+:\d+)`?", summary)
         fixes.append({
             "kind": "finding",
-            "ref": location.group(1) if location else f".factory/review-{n}.md",
+            "ref": location.group(1) if location else review_ref,
             "summary": summary,
         })
     return fixes
@@ -854,12 +854,13 @@ def _record_review_decision(
     chosen = verdict if parsed and accepted else "unparseable verdict"
     reason = "selected by the reviewer" if parsed and accepted else "review evidence was rejected and failed closed to REVISE"
     cause = _latest_decision_id(n, {"gate"})
+    review_ref = comment_url or (f"https://github.com/{REPO}/pull/{pr}" if pr else f".factory/review-{n}.md")
     inputs = [
         {"kind": "head", "ref": f"https://github.com/{REPO}/commit/{head}", "summary": f"reviewed head {head}"},
         {"kind": "review_comment",
-         "ref": comment_url or (f"https://github.com/{REPO}/pull/{pr}" if pr else f".factory/review-{n}.md"),
+         "ref": review_ref,
          "summary": "published review comment" if comment_url else "review comment target"},
-        *_required_fixes(n, findings),
+        *_required_fixes(findings, review_ref),
     ]
     payload = trace.decision(
         ticket=n,
