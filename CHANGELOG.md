@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+
+## 0.4.5 — 2026-10-23
+
 - Opt-in worker profiles can select a stable profile name from a separate ticket label with `when = { label = "..." }`, apply profile-local environment variables, and record a pinned worker version. The Prime Agent pilot uses these fields to isolate telemetry-disabled state beneath the target repository's `.factory/`, retain OMP-compatible transcripts, and leave every non-pilot worker unchanged (#332).
 
 
