@@ -382,7 +382,7 @@ def explain(rows: list[dict], ticket: int) -> dict:
             node["stage"] for node in reversed(flow) if node.get("stage") in STAGES
         ), STAGES[-1])
         expected = STAGES[:STAGES.index(last_stage) + 1]
-    blocked = any(
+    blocked = bool(last and last.get("stage") in {"triage", "binding"}) and any(
         cause["relation"] == "blocked_by"
         for node in decisions for cause in node["causes"]
     ) and not any(

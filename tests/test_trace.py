@@ -810,3 +810,46 @@ class TraceRetryLoopBoundaryRegressionTest(unittest.TestCase):
         ], total_seconds=21)
         self.assertEqual(graph["frontier"], manager["decision_id"])
         self.assertEqual(graph["frontier_stage"], "manager")
+
+
+class TraceBlockerFrontierRegressionTest(unittest.TestCase):
+    AT = "2026-10-23T10:00:00Z"
+
+    def test_historical_blocker_does_not_override_passing_gate_without_admission(self):
+        triage_row = decision(
+            7, "triage", "ready-for-agent", self.AT,
+            causes=[{"ticket": 3, "relation": "blocked_by"}],
+        )
+        gate = decision(7, "gate", "pass", self.AT)
+
+        graph = trace.explain([triage_row, gate], 7)
+
+        self.assertEqual(graph["frontier"], gate["decision_id"])
+        self.assertEqual(graph["frontier_stage"], "review")
+        self.assertIn({
+            "from": "ticket:3", "to": triage_row["decision_id"], "relation": "blocked_by",
+        }, graph["edges"])
+
+    def test_pre_admission_frontier_still_reports_blocker(self):
+        triage_row = decision(
+            7, "triage", "ready-for-agent", self.AT,
+            causes=[{"ticket": 3, "relation": "blocked_by"}],
+        )
+        binding = decision(7, "binding", "unbound", self.AT)
+        for rows in ([triage_row], [triage_row, binding]):
+            with self.subTest(stage=rows[-1]["stage"]):
+                graph = trace.explain(rows, 7)
+                self.assertEqual(graph["frontier"], rows[-1]["decision_id"])
+                self.assertEqual(graph["frontier_stage"], "blocker")
+
+    def test_historical_blocker_does_not_change_terminal_frontier(self):
+        triage_row = decision(
+            7, "triage", "ready-for-agent", self.AT,
+            causes=[{"ticket": 3, "relation": "blocked_by"}],
+        )
+        for stage, chosen in (("merge", "merge now"), ("wontfix", "wontfix-proposal")):
+            with self.subTest(stage=stage):
+                terminal = decision(7, stage, chosen, self.AT)
+                graph = trace.explain([triage_row, terminal], 7)
+                self.assertIsNone(graph["frontier"])
+                self.assertIsNone(graph["frontier_stage"])
