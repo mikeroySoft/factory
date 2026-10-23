@@ -730,3 +730,83 @@ class TraceFindingReferenceRegressionTest(unittest.TestCase):
             next(value["ref"] for value in review["inputs"] if value["kind"] == "review_comment"),
             "https://github.com/acme/widgets/pull/9",
         )
+
+
+class TraceRetryLoopBoundaryRegressionTest(unittest.TestCase):
+    def setUp(self):
+        self.rows = []
+
+    def append_decision(self, stage, chosen, seconds, retry=None):
+        row = decision(
+            7, stage, chosen, "2026-10-23T10:00:00Z",
+            cost={"seconds": seconds, "prompt_tokens": seconds * 10,
+                  "completion_tokens": seconds * 2, "cached_tokens": seconds * 3},
+            causes=[{"decision_id": retry["decision_id"], "relation": "retries"}] if retry else [],
+        )
+        self.rows.append(row)
+        return row
+
+    def append_retry(self, source, seconds):
+        worker = self.append_decision("worker_select", "default", seconds, retry=source)
+        claim = self.append_decision("claim", "claimed", 0, retry=source)
+        return worker, claim
+
+    def assert_loops(self, expected, total_seconds):
+        graph = trace.explain(self.rows, 7)
+        self.assertEqual(len(graph["loops"]), len(expected))
+        for loop, (members, seconds) in zip(graph["loops"], expected, strict=True):
+            self.assertEqual(loop["nodes"], [row["decision_id"] for row in members])
+            self.assertEqual(loop["cost"], {
+                "seconds": seconds, "prompt_tokens": seconds * 10,
+                "completion_tokens": seconds * 2, "cached_tokens": seconds * 3,
+            })
+        membership = [node for loop in graph["loops"] for node in loop["nodes"]]
+        self.assertEqual(len(membership), len(set(membership)))
+        self.assertEqual(graph["cost"], {
+            "seconds": total_seconds, "prompt_tokens": total_seconds * 10,
+            "completion_tokens": total_seconds * 2, "cached_tokens": total_seconds * 3,
+        })
+        return graph
+
+    def test_review_retry_stops_before_failed_gate_retry_source(self):
+        revise = self.append_decision("review", "REVISE", 1)
+        first_retry = self.append_retry(revise, 2)
+        failed_gate = self.append_decision("gate", "test", 3)
+        second_retry = self.append_retry(failed_gate, 4)
+        passing_gate = self.append_decision("gate", "pass", 5)
+        self.append_decision("review", "APPROVE", 6)
+
+        self.assert_loops([
+            ([revise, *first_retry], 3),
+            ([failed_gate, *second_retry, passing_gate], 12),
+        ], total_seconds=21)
+
+    def test_consecutive_failed_gate_retries_have_disjoint_costed_loops(self):
+        first_failure = self.append_decision("gate", "test", 1)
+        first_retry = self.append_retry(first_failure, 2)
+        second_failure = self.append_decision("gate", "test", 3)
+        second_retry = self.append_retry(second_failure, 4)
+        third_failure = self.append_decision("gate", "test", 5)
+        third_retry = self.append_retry(third_failure, 6)
+        passing_gate = self.append_decision("gate", "pass", 7)
+        self.append_decision("review", "APPROVE", 8)
+
+        self.assert_loops([
+            ([first_failure, *first_retry], 3),
+            ([second_failure, *second_retry], 7),
+            ([third_failure, *third_retry, passing_gate], 18),
+        ], total_seconds=36)
+
+    def test_escalation_ends_retry_without_swallowing_later_manager_decisions(self):
+        revise = self.append_decision("review", "REVISE", 1)
+        retry = self.append_retry(revise, 2)
+        failed_gate = self.append_decision("gate", "test", 3)
+        self.append_decision("escalate", "gate_failed", 4)
+        self.append_decision("manager", "HUMAN", 5)
+        manager = self.append_decision("manager", "FIX", 6)
+
+        graph = self.assert_loops([
+            ([revise, *retry, failed_gate], 6),
+        ], total_seconds=21)
+        self.assertEqual(graph["frontier"], manager["decision_id"])
+        self.assertEqual(graph["frontier_stage"], "manager")

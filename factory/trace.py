@@ -361,7 +361,8 @@ def explain(rows: list[dict], ticket: int) -> dict:
         start = positions[source]
         stop = next((
             index for index in range(start + 1, len(ordered))
-            if ordered[index].get("stage") == "review"
+            if ordered[index].get("stage") in {"review", "escalate"}
+            or ordered[index]["decision_id"] in retry_sources
         ), len(ordered))
         members = ordered[start:stop]
         loops.append({
