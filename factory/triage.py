@@ -334,10 +334,6 @@ def _usage_fields(body: object) -> dict | None:
         cached = details.get("cached_tokens") if isinstance(details, dict) else None
         if type(cached) is int and 0 <= cached <= prompt and prompt:
             fields["prefix_cache_hit_rate"] = cached / prompt
-    details = usage.get("prompt_tokens_details")
-    cached = details.get("cached_tokens") if isinstance(details, dict) else None
-    if type(cached) is int and 0 <= cached <= prompt:
-        fields["cached_tokens"] = cached
     return fields
 
 
@@ -398,12 +394,20 @@ def call_llm(messages: list[dict], execution=None) -> str:
         raise (EndpointTimeout if isinstance(exc, TimeoutError) else SystemExit)(2) from exc
     usage = _usage_fields(body)
     _record_usage(execution, usage)
-    cost = None if usage is None else {
-        "prompt_tokens": usage["prompt_tokens"],
-        "completion_tokens": usage["completion_tokens"],
-        "cached_tokens": usage.get("cached_tokens", 0),
-        "seconds": time.monotonic() - started,
-    }
+    cost = None
+    if usage is not None:
+        reported = body["usage"]
+        details = reported.get("prompt_tokens_details")
+        cached = details.get("cached_tokens") if isinstance(details, dict) else None
+        if type(cached) is not int or not 0 <= cached <= usage["prompt_tokens"]:
+            rate = usage.get("prefix_cache_hit_rate")
+            cached = int(usage["prompt_tokens"] * rate) if type(rate) in (int, float) and 0 <= rate <= 1 else 0
+        cost = {
+            "prompt_tokens": usage["prompt_tokens"],
+            "completion_tokens": usage["completion_tokens"],
+            "cached_tokens": cached,
+            "seconds": time.monotonic() - started,
+        }
     return _ModelReply(body["choices"][0]["message"]["content"], cost)
 
 

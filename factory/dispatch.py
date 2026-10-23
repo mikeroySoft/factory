@@ -2468,6 +2468,7 @@ def process_ticket(
     admission_id: str | None = None,
 ) -> bool | None:
     """None when the ticket was processed or skipped; False when the host could not launch its worker."""
+    admission_id = admission_id or issue.get("_factory_admission_id")
     n, title = issue["number"], issue["title"]
     labels = {label["name"] for label in issue.get("labels", [])}
     wt = FACTORY / f"wt-{n}"
@@ -2767,7 +2768,9 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
             record("scheduling", capacity=capacity, active=active, explained=decided["explained"])
     for issue in decided["selected"]:
         process_ticket(
-            issue, budget_min, dry_run, admission_id=admissions.get(issue["number"]),
+            {**issue, "_factory_admission_id": admissions.get(issue["number"])},
+            budget_min,
+            dry_run,
         )
 
 
