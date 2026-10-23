@@ -23,6 +23,9 @@ ROOT = Path(__file__).resolve().parents[1]
 REPO = "example/evidence"
 AT = "2026-01-02T03:04:05Z"
 PREFIX = f"repos/{REPO}/"
+# Detached maintenance can still write into .git while TemporaryDirectory removes it.
+# Keep both modern maintenance and older gc implementations attached to fixture commits.
+FIXTURE_GIT = ["git", "-c", "maintenance.autoDetach=false", "-c", "gc.autoDetach=false"]
 
 # The actual CLI runs under a Python audit hook, not patched Factory collectors.
 # Child executables use -S so their fixture transcript is outside this guard.
@@ -179,7 +182,7 @@ class EvidenceCliTest(unittest.TestCase):
         path.chmod(0o755)
 
     def git(self, *args):
-        return subprocess.run(["git", "-C", str(self.root), *args], capture_output=True,
+        return subprocess.run([*FIXTURE_GIT, "-C", str(self.root), *args], capture_output=True,
                               text=True, check=True).stdout
 
     def response(self, endpoint, value=None, *, raw=None, **query):
@@ -483,7 +486,7 @@ class EvidenceCliTest(unittest.TestCase):
         # clean committed checkout, then from the same tree locally modified.
         engine = self.directory / "engine"
         shutil.copytree(ROOT / "factory", engine / "factory")
-        commit = ["git", "-C", str(engine)]
+        commit = [*FIXTURE_GIT, "-C", str(engine)]
         subprocess.run([*commit, "init", "-q", "-b", "main"], check=True)
         subprocess.run([*commit, "add", "."], check=True)
         subprocess.run([*commit, "-c", "user.name=E", "-c", "user.email=e@e.invalid",
@@ -1001,6 +1004,22 @@ class EvidenceCliTest(unittest.TestCase):
                 observed = self.invoke("observe", code=1)
                 self.assertIsNone(observed["attention_count"])
                 self.assertIn(expected, self.error_codes(observed))
+
+
+class EvidenceFixtureCleanupTest(unittest.TestCase):
+    def test_fixture_commits_do_not_launch_detached_maintenance(self):
+        # Trace the real failing test, including both of its temporary repositories.
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "git.trace"
+            with patch.dict(os.environ, {"GIT_TRACE": str(trace)}):
+                result = unittest.TestResult()
+                EvidenceCliTest(
+                    "test_reader_build_identity_is_verifiable_and_never_fabricated"
+                ).run(result)
+            self.assertTrue(result.wasSuccessful(), result.errors or result.failures)
+            commands = trace.read_text()
+            self.assertIn("git commit", commands)
+            self.assertNotRegex(commands, r"git maintenance run[^\n]* --detach\b")
 
 
 if __name__ == "__main__":

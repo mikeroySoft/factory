@@ -3216,6 +3216,9 @@ class DispatchTest(unittest.TestCase):
             self.assertEqual(git(bare, "diff", "--name-only", "main", branch), config.LESSONS_NAME)
             self.assertIn("- Run `make test` before the gate.", git(bare, "show", f"{branch}:{config.LESSONS_NAME}"))
             self.assertNotIn("agent/curate-", calls)
+            events = list(map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines()))
+            gate = next(e for e in events if e.get("event") == "gate")  # the gate ran before the push
+            self.assertEqual((gate["branch"], gate["gate"], gate["head"]), (branch, "PASS", git(bare, "rev-parse", branch)))
 
     def test_learn_curate_opens_chore_pr_touching_only_context_paths(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -3297,10 +3300,6 @@ class DispatchTest(unittest.TestCase):
             self.assertEqual(git(bare, "diff", "--name-only", "main", branch).split(),
                              [config.CONFIG_NAME, "tests/test_parser.py"])
             self.assertIn('name = "lint"', git(bare, "show", f"{branch}:{config.CONFIG_NAME}"))
-            for pr in ("curate", "lessons"):
-                name = git(bare, "branch", "--list", f"agent/{pr}-*").lstrip("* ").removeprefix("agent/")
-                body = (repo / ".factory" / f"pr-body-{name}.md").read_text()
-                self.assertIn("Harness change from the meta loop — human merge required.", body)
 
     def test_learn_curate_rejects_weakening_the_harness(self) -> None:
         def toml_edit(old: str, new: str):

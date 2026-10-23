@@ -535,7 +535,7 @@ class TracePartTwoTest(unittest.TestCase):
                 return mock.Mock(returncode=0, stdout=" M AGENTS.md\0 M .github/workflows/ci.yml\0")
             return mock.Mock(returncode=0, stdout="", stderr="")
 
-        def invoke_edit(cfg, branch, edit, title, body):
+        def invoke_edit(cfg, branch, edit, title, body, protected_override=False):
             edit(worktree)
 
         with mock.patch.object(dispatch, "run", side_effect=run), \

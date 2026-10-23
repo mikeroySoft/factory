@@ -382,6 +382,33 @@ def collect_rows(progress: bool = False) -> list[dict[str, Any]]:
     return [rows[number] for number in sorted(rows)]
 
 
+def promotions(path: Path) -> list[dict]:
+    """One row per `promotion-open` journal row (a merged lessons/curate PR) with its baseline means and,
+    once `learn_pass` decided it, the `after` means, `decision` (`keep`/`revert`) and the revert branch."""
+    rows: dict[int, dict] = {}
+    for e in lifecycle.read_events(path):
+        if e.get("event") == "promotion-open":
+            rows[e["pr"]] = {"pr": e["pr"], "branch": e.get("branch"), "head": e.get("head"), "opened_at": e.get("at"),
+                             "baseline": e.get("baseline"), "decision": None, "decided_at": None, "after": None,
+                             "reason": None, "revert": None}
+        elif e.get("event") in ("promotion-keep", "promotion-revert") and e.get("pr") in rows:
+            rows[e["pr"]].update(decision=e["event"].removeprefix("promotion-"), decided_at=e.get("at"),
+                                 after=e.get("after"), reason=e.get("reason"), revert=e.get("branch"))
+    return list(rows.values())
+
+
+def print_promotions(rows: list[dict]) -> None:
+    def pair(r: dict, key: str) -> str:
+        left, right = (r["baseline"] or {}).get(key), (r["after"] or {}).get(key)
+        return f"{'n/a' if left is None else f'{left:.2f}'} -> {'n/a' if right is None else f'{right:.2f}'}"
+
+    print(f"{'PR':>5}  {'branch':40}  {'decision':8}  efficiency        first-pass")
+    for r in rows:
+        print(f"#{r['pr']:<4}  {r['branch'] or '':40}  {r['decision'] or 'open':8}  "
+              f"{pair(r, 'efficiency_mean'):16}  {pair(r, 'gate_first_pass_rate')}"
+              + (f"  {r['revert']}" if r["revert"] else ""))
+
+
 def truncate(title: str) -> str:
     return title if len(title) <= 40 else f"{title[:37]}..."
 
@@ -615,6 +642,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--repo", metavar="OWNER/NAME",
                         help='read the root registered as [repo."OWNER/NAME"].path in the host config (default: this checkout\'s repository)')
     parser.add_argument("--quiet", action="store_true", help="no progress on stderr")
+    parser.add_argument("--promotions", action="store_true",
+                        help="merged lessons/curate PRs with their before/after score means and keep/revert decision")
     args = parser.parse_args(argv)
     configure(resolve(args.repo))
     journal = cfg.factory / "events.jsonl"
@@ -633,6 +662,8 @@ def main(argv: list[str]) -> int:
         return 0
     if args.escapes:
         rows = escapes()
+    elif args.promotions:
+        rows = promotions(cfg.factory / "events.jsonl")
     elif args.by_worker or args.by_brief:
         audit = audit_by_ticket(journal)
         rows = worker_metrics(audit, cfg.workers) if args.by_worker else brief_metrics(audit)
@@ -642,6 +673,8 @@ def main(argv: list[str]) -> int:
         print(json.dumps(rows, indent=2))
     elif args.escapes:
         print_escapes(rows, {n for _, n, _ in agent_commits()})
+    elif args.promotions:
+        print_promotions(rows)
     elif args.by_worker:
         print_workers(rows)
     elif args.by_brief:
