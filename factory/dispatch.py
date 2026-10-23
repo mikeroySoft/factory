@@ -2388,12 +2388,12 @@ def merge_pass_locked(dry_run: bool) -> None:
                 )
                 continue
             starved = [c for c in checks if c["bucket"] == "infra"]
-            if starved and not dry_run:
-                record_merge_decision(
-                    n, pr_num, "ci-infra", "CI runner infrastructure is unavailable",
-                    listed_head, listed_head, checks,
-                )
             if starved and runner_unavailable(n, pr_num, starved, dry_run):
+                if not dry_run:
+                    record_merge_decision(
+                        n, pr_num, "ci-infra", "CI runner infrastructure is unavailable",
+                        listed_head, listed_head, checks,
+                    )
                 continue
             if buckets.get("pending") or starved:
                 log(f"PR #{pr_num}: CI pending {buckets}; waiting")
@@ -2520,12 +2520,11 @@ def merge_pass_locked(dry_run: bool) -> None:
                     None, code="ci_failed",
                 )
                 continue
-            if latest_starved:
+            if latest_starved and runner_unavailable(n, pr_num, latest_starved, False):
                 record_merge_decision(
                     n, pr_num, "ci-infra", "CI runner infrastructure became unavailable",
                     head, head, latest_checks,
                 )
-            if latest_starved and runner_unavailable(n, pr_num, latest_starved, False):
                 continue
             if any(c["bucket"] in ("pending", "infra") for c in latest_checks):
                 execution.outcome, execution.reason = "not_eligible", "ci_pending"
@@ -2977,7 +2976,7 @@ def process_ticket(
                     f"Address required fixes only; optional suggestions are not requirements.\n\n"
                     f"{findings}"
                 )
-                retry_decision = _latest_decision_id(n, {"review"})
+                retry_decision = _latest_decision_id(n, {"gate"} if pr_failed else {"review"})
                 if retry_decision:
                     record_worker_selection(n, labels, cause=retry_decision, relation="retries")
                     record_claim_decision(n, True, retry_decision, relation="retries")

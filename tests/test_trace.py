@@ -533,3 +533,69 @@ class TracePartTwoTest(unittest.TestCase):
         options = {option["option"]: option for option in row["options"]}
         self.assertTrue(options["AGENTS.md"]["eligible"])
         self.assertFalse(options[".github/workflows/ci.yml"]["eligible"])
+
+    def test_waiting_on_existing_runner_outage_does_not_repeat_merge_decision(self):
+        pr = {
+            "number": 9,
+            "headRefName": "agent/7",
+            "headRefOid": "a" * 40,
+            "baseRefName": "main",
+            "isDraft": False,
+            "labels": [{"name": dispatch.FACTORY_APPROVED}],
+            "reviewDecision": "APPROVED",
+        }
+        checks = [{"name": "test", "bucket": "infra", "run": 123}]
+        with mock.patch.object(dispatch, "gh_json", return_value=[pr]), \
+                mock.patch.object(dispatch, "initiative_kind", return_value=None), \
+                mock.patch.object(dispatch, "pr_checks", return_value=checks), \
+                mock.patch.object(dispatch, "triage_cancelled", return_value=checks), \
+                mock.patch.object(dispatch, "runner_unavailable", return_value=False), \
+                mock.patch.object(dispatch, "record_merge_decision") as record:
+            dispatch.merge_pass_locked(False)
+
+        record.assert_not_called()
+
+    def test_waiting_on_runner_outage_during_final_check_does_not_repeat_merge_decision(self):
+        head = "a" * 40
+        pr = {
+            "number": 9,
+            "state": "OPEN",
+            "headRefName": "agent/7",
+            "headRefOid": head,
+            "baseRefName": "main",
+            "isDraft": False,
+            "labels": [{"name": dispatch.FACTORY_APPROVED}],
+            "reviewDecision": "APPROVED",
+            "title": "change",
+        }
+        lifecycle.append(self.events, {
+            "event": "approved",
+            "ticket": 7,
+            "pr": 9,
+            "head": head,
+            "gate_head": head,
+            "review_head": head,
+        })
+        passing = [{"name": "test", "bucket": "pass"}]
+        starved = [{"name": "test", "bucket": "infra", "run": 123}]
+
+        def query(args):
+            if args[:2] == ["pr", "list"]:
+                return [pr]
+            if args[:2] == ["pr", "view"]:
+                return pr
+            if args[0] == "api":
+                return {"behind_by": 0}
+            raise AssertionError(args)
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=query), \
+                mock.patch.object(dispatch, "initiative_kind", return_value=None), \
+                mock.patch.object(dispatch, "pr_checks", side_effect=[passing, starved]), \
+                mock.patch.object(dispatch, "triage_cancelled", side_effect=lambda _, rows, *args: rows), \
+                mock.patch.object(dispatch, "_head_evidence_matches", return_value=True), \
+                mock.patch.object(dispatch, "run", return_value=mock.Mock(returncode=0, stdout="")), \
+                mock.patch.object(dispatch, "runner_unavailable", return_value=False), \
+                mock.patch.object(dispatch, "record_merge_decision") as record:
+            dispatch.merge_pass_locked(False)
+
+        record.assert_not_called()
