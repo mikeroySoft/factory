@@ -118,3 +118,42 @@ process.stdout.write(window.WorkspaceTrace.markup(graph, {
         self.assertEqual(html.count('data-trace-node="'), 3)
         self.assertEqual(html.count("is-synthesized"), 3)
         self.assertIn('data-terminal="merged"', html)
+
+    def test_full_legacy_trace_keeps_pipeline_order(self) -> None:
+        graph = trace.explain(
+            [
+                {"event": "claimed", "ticket": 8, "at": "2026-10-23T10:00:00Z"},
+                {"event": "attempt", "ticket": 8, "at": "2026-10-23T10:01:00Z"},
+                {"event": "review", "ticket": 8, "at": "2026-10-23T10:02:00Z"},
+                {"event": "approved", "ticket": 8, "at": "2026-10-23T10:03:00Z"},
+                {"event": "merged", "ticket": 8, "at": "2026-10-23T10:04:00Z"},
+            ],
+            8,
+        )
+
+        html = self.render(graph)
+        order = [
+            html.index(f'data-stage="{stage}"')
+            for stage in ("claim", "attempt", "review", "approved", "merged")
+        ]
+
+        self.assertEqual(order, sorted(order))
+
+    def test_escalated_terminal_shows_recorded_code(self) -> None:
+        escalated = decision(
+            "escalate",
+            "protected_path",
+            "2026-10-23T10:00:00Z",
+        )
+        graph = trace.explain(
+            [
+                escalated,
+                {"event": "escalate", "ticket": 7, "at": "2026-10-23T10:01:00Z"},
+            ],
+            7,
+        )
+
+        html = self.render(graph)
+
+        self.assertIn('data-terminal="escalated"', html)
+        self.assertIn("<p>protected_path</p>", html)

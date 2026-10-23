@@ -318,13 +318,17 @@
     const choices=new Map([...app.querySelectorAll('[data-action-choice]')].filter(node=>node.value!=='').map(node=>[node.dataset.actionChoice,JSON.stringify(JSON.parse(node.dataset.actionOptions)[Number(node.value)])]));
     applyTheme(repo);
     const focused=document.activeElement;
-    const focusAttribute=app.contains(focused)?['data-action-choice','data-case','data-view','data-repository','data-theme','data-chat','data-refresh','data-palette','data-prepare-action'].find(name=>focused.hasAttribute(name)):null;
+    const focusAttribute=app.contains(focused)?['data-action-choice','data-case','data-view','data-repository','data-theme','data-chat','data-refresh','data-palette','data-prepare-action','data-trace-select'].find(name=>focused.hasAttribute(name)):null;
     const focusSelector=focusAttribute?`[${focusAttribute}="${CSS.escape(focused.getAttribute(focusAttribute))}"]`:null;
     const previousSettings=app.querySelector('.workspace-settings');
     const keepSettings=Boolean(repo&&previousSettings&&current.view==='Settings'&&previousSettings.querySelector('[data-real-settings]')?.dataset.repository===repo.slug);
     if(keepSettings)previousSettings.remove();
     app.setAttribute('aria-busy', String(state.loading));
     document.title=`${current.view} · Factory Workspace`;
+    const previousTrace=app.querySelector('[data-trace-tool]');
+    const traceTicket=String(current.ticketNumber||'');
+    const keepTrace=Boolean(repo&&previousTrace&&current.view==='Decisions'&&previousTrace.dataset.repository===repo.slug&&previousTrace.dataset.ticket===traceTicket);
+    if(keepTrace)previousTrace.remove();
     const previousTool=app.querySelector('[data-native-tool]');
     const keep=previousTool&&previousTool.dataset.nativeTool===current.view.toLowerCase()&&previousTool.dataset.repository===repo?.slug;
     if(keep)previousTool.remove(); else WorkspaceTools.dispose();
@@ -337,7 +341,7 @@
     const host=app.querySelector('[data-native-tool]');
     if(host){host.dataset.repository=repo.slug;if(keep)host.replaceWith(previousTool);else WorkspaceTools.mount(host,host.dataset.nativeTool,repo.slug);}
     const traceHost=app.querySelector('[data-trace-tool]');
-    if(traceHost)WorkspaceTrace.mount(traceHost,{repository:repo.slug,ticket:current.ticketNumber,recentTickets:cases(repo),onTicket:number=>setRoute({view:'decisions',ticket:number,case:null})});
+    if(traceHost){traceHost.dataset.repository=repo.slug;traceHost.dataset.ticket=traceTicket;if(keepTrace)traceHost.replaceWith(previousTrace);else WorkspaceTrace.mount(traceHost,{repository:repo.slug,ticket:current.ticketNumber,recentTickets:cases(repo),onTicket:number=>setRoute({view:'decisions',ticket:number,case:null})});}
     if(current.view==='Settings'){if(keepSettings)app.querySelector('.workspace-settings').replaceWith(previousSettings);else WorkspaceSettings.mount(app,repo?.slug);}
     if(current.view==='Attention'&&repo)WorkspaceDecisions.mountHistory(app.querySelector('[data-decision-history]'),repo.slug);
     applyPreferences();

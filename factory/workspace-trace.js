@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const STAGES = ['ticket','triage','binding','admission','worker_select','claim','gate','review','manager','merge','wontfix','escalate','learn','curate'];
+  const STAGES = ['ticket','triage','binding','admission','worker_select','claim','attempt','gate','review','approved','manager','merge','merged','wontfix','escalate','learn','curate'];
   const esc = value => String(value ?? '').replace(/[&<>'"]/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[character]));
   const array = value => Array.isArray(value) ? value : [];
   const object = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
@@ -41,7 +41,8 @@
     }
     if (last.stage === 'wontfix') return {kind:'wontfix', label:"Won't-fix", detail:last.chosen};
     if (last.stage === 'escalate' || last.event === 'escalate') {
-      return {kind:'escalated', label:'Escalated', detail:last.chosen || last.rationale || 'human decision required'};
+      const decision = flow.filter(item => item.stage === 'escalate' && item.synthesized !== true).at(-1);
+      return {kind:'escalated', label:'Escalated', detail:decision?.chosen || last.chosen || last.rationale || 'human decision required'};
     }
     return null;
   };
