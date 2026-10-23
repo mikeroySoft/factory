@@ -288,3 +288,613 @@ class TraceEmissionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TracePartTwoTest(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.enterContext(mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
+        self.root = Path(temp.name)
+        self.cfg = config.Config(
+            root=self.root,
+            repo="acme/widgets",
+            workers={"gpu": ["gpu-worker"], "default": ["worker"]},
+            worker_select_label={"gpu": "needs-gpu"},
+        )
+        self.cfg.factory.mkdir()
+        self.events = self.cfg.factory / "events.jsonl"
+        dispatch.configure(self.cfg)
+        triage.configure(self.cfg)
+
+    @staticmethod
+    def cost(seconds):
+        return {"seconds": seconds}
+
+    def test_two_round_trace_folds_retry_and_sums_costs(self):
+        first = decision(7, "worker_select", "default", "2026-10-23T10:00:00Z", cost=self.cost(1))
+        gate_one = decision(7, "gate", "pass", "2026-10-23T10:01:00Z", cost=self.cost(2))
+        revise = decision(
+            7,
+            "review",
+            "REVISE",
+            "2026-10-23T10:02:00Z",
+            cost=self.cost(3),
+            inputs=[
+                {"kind": "finding", "ref": "factory/a.py:4", "summary": "fix A"},
+                {"kind": "finding", "ref": "factory/b.py:8", "summary": "fix B"},
+            ],
+        )
+        fixing_worker = decision(
+            7,
+            "worker_select",
+            "default",
+            "2026-10-23T10:03:00Z",
+            cost=self.cost(4),
+            causes=[{"decision_id": revise["decision_id"], "relation": "retries"}],
+        )
+        fixing_claim = decision(
+            7,
+            "claim",
+            "claimed",
+            "2026-10-23T10:03:01Z",
+            causes=[{"decision_id": revise["decision_id"], "relation": "retries"}],
+        )
+        gate_two = decision(7, "gate", "pass", "2026-10-23T10:04:00Z", cost=self.cost(5))
+        approve = decision(7, "review", "APPROVE", "2026-10-23T10:05:00Z", cost=self.cost(6))
+        refresh = decision(
+            7,
+            "merge",
+            "refresh branch",
+            "2026-10-23T10:06:00Z",
+            cost=self.cost(1),
+            options=[
+                {"option": "merge now", "eligible": False, "reason": "approval head is stale"},
+                {"option": "refresh branch", "eligible": True, "reason": "head is behind main"},
+            ],
+        )
+        reapprove = decision(7, "review", "APPROVE", "2026-10-23T10:07:00Z", cost=self.cost(2))
+        merged = decision(7, "merge", "merge now", "2026-10-23T10:08:00Z", cost=self.cost(3))
+
+        graph = trace.explain(
+            [first, gate_one, revise, fixing_worker, fixing_claim, gate_two, approve, refresh, reapprove, merged],
+            7,
+        )
+
+        self.assertEqual(len(graph["loops"]), 1)
+        self.assertEqual(
+            graph["loops"][0]["nodes"],
+            [revise["decision_id"], fixing_worker["decision_id"], fixing_claim["decision_id"], gate_two["decision_id"]],
+        )
+        self.assertEqual(graph["loops"][0]["cost"]["seconds"], 12)
+        self.assertEqual(graph["cost"]["seconds"], 27)
+        retries = {(edge["from"], edge["to"]) for edge in graph["edges"] if edge["relation"] == "retries"}
+        self.assertEqual(
+            retries,
+            {(revise["decision_id"], fixing_worker["decision_id"]),
+             (revise["decision_id"], fixing_claim["decision_id"])},
+        )
+        refresh_options = {option["option"]: option for option in refresh["options"]}
+        self.assertFalse(refresh_options["merge now"]["eligible"])
+        self.assertTrue(refresh_options["refresh branch"]["eligible"])
+        self.assertIsNone(graph["frontier"])
+
+    def test_rejected_label_gated_route_records_ineligible_manager_option(self):
+        from factory import manage
+
+        output = 'DECISION: ROUTE\n{"add":["needs-gpu"],"guidance":"Use the GPU worker"}'
+        chosen, body, data = manage.parse(output, {"default": ["worker"]})
+        self.assertEqual(chosen, "HUMAN")
+        manage.record_manager_decision(
+            7, chosen, body, data, output, {"default": ["worker"]}, self.root / "packet.md"
+        )
+
+        [row] = [
+            row for row in lifecycle.read_events(self.events)
+            if row.get("event") == "decision" and row.get("stage") == "manager"
+        ]
+        options = {option["option"]: option for option in row["options"]}
+        self.assertFalse(options["ROUTE"]["eligible"])
+        self.assertIn("worker_select_label", options["ROUTE"]["reason"])
+
+    def test_malformed_route_body_still_records_human_fallback(self):
+        from factory import manage
+
+        for route in ('{"add": "gpu"}', '{"add": null}', '{"add": ["gpu"], "remove": "default"}'):
+            with self.subTest(route=route):
+                output = f"DECISION: ROUTE\n{route}"
+                chosen, body, data = manage.parse(output, self.cfg.workers)
+                self.assertEqual(chosen, "HUMAN")
+                manage.record_manager_decision(
+                    7, chosen, body, data, output, self.cfg.workers, self.root / "packet.md"
+                )
+
+        self.assertEqual(len([
+            row for row in lifecycle.read_events(self.events)
+            if row.get("event") == "decision" and row.get("stage") == "manager"
+        ]), 3)
+
+    def test_learn_decision_cites_every_evidence_ticket(self):
+        from factory import learn
+
+        with mock.patch.object(learn, "evidence", return_value=([1, 2, 3], "evidence")), \
+                mock.patch.object(learn, "propose", return_value=(["Run the gate."], None)):
+            learn.run(self.cfg)
+
+        [row] = [
+            row for row in lifecycle.read_events(self.events)
+            if row.get("event") == "decision" and row.get("stage") == "learn"
+        ]
+        self.assertEqual(
+            row["causes"],
+            [{"ticket": 1, "relation": "follows"}, {"ticket": 2, "relation": "follows"},
+             {"ticket": 3, "relation": "follows"}],
+        )
+
+    def test_triage_wontfix_is_terminal(self):
+        issue = {"number": 7, "title": "Do not build", "body": "No longer needed"}
+        route = {"decision": config.LABEL_WONTFIX, "rationale": "Superseded", "question": "", "brief": ""}
+        with mock.patch.object(triage, "gh", return_value=""):
+            triage.apply_decision(7, route, False, issue=issue)
+
+        graph = trace.explain(lifecycle.read_events(self.events), 7)
+        self.assertEqual(graph["nodes"][-1]["stage"], "wontfix")
+        self.assertIsNone(graph["frontier"])
+
+    def test_review_comment_and_merge_sha_are_decision_inputs(self):
+        comment_url = "https://github.com/acme/widgets/pull/9#issuecomment-123"
+        dispatch._PENDING_REVIEWS[7] = {
+            "verdict": "APPROVE",
+            "findings": "VERDICT: APPROVE",
+            "head": "a" * 40,
+            "parsed": True,
+            "accepted": True,
+            "usage": {"model": "reviewer", "prompt_tokens": 4, "completion_tokens": 1},
+            "seconds": 2,
+        }
+        posted = mock.Mock(returncode=0, stdout=comment_url + "\n", stderr="")
+        with mock.patch.object(dispatch, "run", return_value=posted):
+            dispatch.pr_comment(7, "VERDICT: APPROVE")
+        dispatch.record_merge_decision(
+            7, 9, "merge now", "eligible", "a" * 40, "a" * 40, [],
+            merge_sha="b" * 40,
+        )
+
+        rows = [
+            row for row in lifecycle.read_events(self.events)
+            if row.get("event") == "decision"
+        ]
+        review, merge = rows
+        self.assertIn(comment_url, {value["ref"] for value in review["inputs"]})
+        self.assertIn("b" * 40, {value["summary"].removeprefix("merge SHA ") for value in merge["inputs"]})
+
+    def test_nonfinal_merge_decision_keeps_frontier_open(self):
+        waiting = decision(7, "merge", "ci-infra", "2026-10-23T10:00:00Z")
+
+        graph = trace.explain([waiting], 7)
+
+        self.assertEqual(graph["frontier"], waiting["decision_id"])
+        self.assertEqual(graph["frontier_stage"], "merge eligibility")
+
+    def test_merge_record_carries_ci_run_and_stale_head_reason(self):
+        reason = "approval head abc is stale because the branch is behind main"
+        link = "https://github.com/acme/widgets/actions/runs/123/job/456"
+        dispatch.record_merge_decision(
+            7, 9, "refresh branch", reason, "a" * 40, "a" * 40,
+            [{"name": "test", "bucket": "pass", "link": link}],
+        )
+
+        [row] = [
+            row for row in lifecycle.read_events(self.events)
+            if row.get("event") == "decision" and row.get("stage") == "merge"
+        ]
+        options = {option["option"]: option for option in row["options"]}
+        self.assertFalse(options["merge now"]["eligible"])
+        self.assertEqual(options["merge now"]["reason"], reason)
+        self.assertTrue(options["refresh branch"]["eligible"])
+        self.assertIn(link, {value["ref"] for value in row["inputs"]})
+
+    def test_manager_options_follow_parser_context(self):
+        from factory import manage
+
+        manage.record_manager_decision(
+            7, "APPROVE", "approved", None, "DECISION: APPROVE\napproved", {},
+            self.root / "approval.md", approval=True,
+        )
+        manage.record_manager_decision(
+            7, "HUMAN", "needs a human", None, "DECISION: HUMAN\nneeds a human", {},
+            self.root / "escalation.md",
+        )
+        manage.record_manager_decision(
+            7, "BUILD", "useful", None, "useful [S1]\nVERDICT: BUILD", {},
+            self.root / "viability.md", viability=True,
+        )
+
+        rows = [
+            row for row in lifecycle.read_events(self.events)
+            if row.get("event") == "decision" and row.get("stage") == "manager"
+        ]
+        approval, escalation, viability = (
+            {option["option"]: option for option in row["options"]}
+            for row in rows
+        )
+        self.assertFalse(approval["RESOLVE"]["eligible"])
+        self.assertFalse(approval["AUTHORIZE"]["eligible"])
+        self.assertFalse(escalation["APPROVE"]["eligible"])
+        self.assertTrue(all(not viability[option]["eligible"] for option in manage.MANAGER_DECISIONS))
+        self.assertTrue(viability["BUILD"]["eligible"])
+
+    def test_curate_records_each_paths_allowlist_verdict(self):
+        from factory import learn
+
+        worktree = self.root / "curate"
+        worktree.mkdir()
+
+        def run(args, **kwargs):
+            if args[1] == "status":
+                return mock.Mock(returncode=0, stdout=" M AGENTS.md\0 M .github/workflows/ci.yml\0")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        def invoke_edit(cfg, branch, edit, title, body):
+            edit(worktree)
+
+        with mock.patch.object(dispatch, "run", side_effect=run), \
+                mock.patch.object(learn, "chore_pr", side_effect=invoke_edit):
+            result = learn.curate(self.cfg, "diff", [7], "notes")
+
+        self.assertTrue(result.startswith("rejected:"))
+        [row] = [
+            row for row in lifecycle.read_events(self.events)
+            if row.get("event") == "decision" and row.get("stage") == "curate"
+        ]
+        options = {option["option"]: option for option in row["options"]}
+        self.assertTrue(options["AGENTS.md"]["eligible"])
+        self.assertFalse(options[".github/workflows/ci.yml"]["eligible"])
+
+    def test_waiting_on_existing_runner_outage_does_not_repeat_merge_decision(self):
+        pr = {
+            "number": 9,
+            "headRefName": "agent/7",
+            "headRefOid": "a" * 40,
+            "baseRefName": "main",
+            "isDraft": False,
+            "labels": [{"name": dispatch.FACTORY_APPROVED}],
+            "reviewDecision": "APPROVED",
+        }
+        checks = [{"name": "test", "bucket": "infra", "run": 123}]
+        with mock.patch.object(dispatch, "gh_json", return_value=[pr]), \
+                mock.patch.object(dispatch, "initiative_kind", return_value=None), \
+                mock.patch.object(dispatch, "pr_checks", return_value=checks), \
+                mock.patch.object(dispatch, "triage_cancelled", return_value=checks), \
+                mock.patch.object(dispatch, "runner_unavailable", return_value=False), \
+                mock.patch.object(dispatch, "record_merge_decision") as record:
+            dispatch.merge_pass_locked(False)
+
+        record.assert_not_called()
+
+    def test_waiting_on_runner_outage_during_final_check_does_not_repeat_merge_decision(self):
+        head = "a" * 40
+        pr = {
+            "number": 9,
+            "state": "OPEN",
+            "headRefName": "agent/7",
+            "headRefOid": head,
+            "baseRefName": "main",
+            "isDraft": False,
+            "labels": [{"name": dispatch.FACTORY_APPROVED}],
+            "reviewDecision": "APPROVED",
+            "title": "change",
+        }
+        lifecycle.append(self.events, {
+            "event": "approved",
+            "ticket": 7,
+            "pr": 9,
+            "head": head,
+            "gate_head": head,
+            "review_head": head,
+        })
+        passing = [{"name": "test", "bucket": "pass"}]
+        starved = [{"name": "test", "bucket": "infra", "run": 123}]
+
+        def query(args):
+            if args[:2] == ["pr", "list"]:
+                return [pr]
+            if args[:2] == ["pr", "view"]:
+                return pr
+            if args[0] == "api":
+                return {"behind_by": 0}
+            raise AssertionError(args)
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=query), \
+                mock.patch.object(dispatch, "initiative_kind", return_value=None), \
+                mock.patch.object(dispatch, "pr_checks", side_effect=[passing, starved]), \
+                mock.patch.object(dispatch, "triage_cancelled", side_effect=lambda _, rows, *args: rows), \
+                mock.patch.object(dispatch, "_head_evidence_matches", return_value=True), \
+                mock.patch.object(dispatch, "run", return_value=mock.Mock(returncode=0, stdout="")), \
+                mock.patch.object(dispatch, "runner_unavailable", return_value=False), \
+                mock.patch.object(dispatch, "record_merge_decision") as record:
+            dispatch.merge_pass_locked(False)
+
+        record.assert_not_called()
+
+
+class TraceCoverageRegressionTest(unittest.TestCase):
+    CLAIM_STAGES = ("triage", "binding", "admission", "worker_select", "claim")
+    AT = "2026-10-23T10:00:00Z"
+
+    def test_claim_stage_contract_preserves_post_claim_validation(self):
+        self.assertEqual(trace.STAGES, self.CLAIM_STAGES)
+        for stage in ("gate", "review", "manager", "merge", "wontfix", "escalate", "learn", "curate"):
+            with self.subTest(stage=stage):
+                row = decision(7, stage, "selected", self.AT)
+                self.assertIs(trace.validate(row), row)
+        with self.assertRaises(ValueError):
+            decision(7, "unknown", "selected", self.AT)
+
+    def test_completed_ticket_reports_only_missing_claim_stage_coverage(self):
+        for missing in (None, "binding"):
+            with self.subTest(missing=missing):
+                rows = [
+                    decision(7, stage, "selected", self.AT)
+                    for stage in self.CLAIM_STAGES if stage != missing
+                ]
+                rows.extend([
+                    decision(7, "gate", "pass", self.AT),
+                    decision(7, "review", "APPROVE", self.AT),
+                    decision(7, "merge", "merge now", self.AT),
+                ])
+                graph = trace.explain(rows, 7)
+                self.assertEqual(graph["coverage"], [missing] if missing else [])
+                self.assertIsNone(graph["frontier"])
+
+    def test_gate_escalation_has_no_spurious_post_claim_coverage_gaps(self):
+        rows = [
+            decision(7, stage, "selected", self.AT)
+            for stage in self.CLAIM_STAGES if stage != "binding"
+        ]
+        rows.extend([
+            decision(7, "gate", "test", self.AT),
+            decision(7, "escalate", "gate_failed", self.AT),
+        ])
+        graph = trace.explain(rows, 7)
+        self.assertEqual(graph["coverage"], ["binding"])
+        self.assertEqual(graph["frontier_stage"], "human")
+
+    def test_triaged_wontfix_coverage_names_only_missing_claim_stages(self):
+        rows = [
+            decision(7, "triage", "wontfix-proposal", self.AT),
+            decision(7, "wontfix", "wontfix-proposal", self.AT),
+        ]
+        graph = trace.explain(rows, 7)
+        self.assertEqual(graph["coverage"], ["binding", "admission", "worker_select", "claim"])
+        self.assertIsNone(graph["frontier"])
+
+
+class TraceFindingReferenceRegressionTest(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.enterContext(mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
+        self.cfg = config.Config(root=Path(temp.name), repo="acme/widgets")
+        self.cfg.factory.mkdir()
+        self.events = self.cfg.factory / "events.jsonl"
+        dispatch.configure(self.cfg)
+        lifecycle.append(self.events, {"event": "pr-opened", "ticket": 7, "pr": 9})
+
+    def publish_review(self, comment_url):
+        findings = (
+            "## Required fixes\n"
+            "1. `factory/a.py:4`: Handle the missing value.\n"
+            "2. Explain why the branch needs refreshing.\n\n"
+            "## Verdict\nVERDICT: REVISE"
+        )
+        dispatch._PENDING_REVIEWS[7] = {
+            "verdict": "REVISE",
+            "findings": findings,
+            "head": "a" * 40,
+            "parsed": True,
+            "accepted": True,
+            "usage": None,
+            "seconds": 1,
+        }
+        posted = mock.Mock(returncode=0, stdout=comment_url, stderr="")
+        with mock.patch.object(dispatch, "run", return_value=posted):
+            dispatch.pr_comment(7, findings)
+        return [
+            row for row in lifecycle.read_events(self.events)
+            if row.get("event") == "decision" and row.get("stage") == "review"
+        ][-1]
+
+    def test_findings_use_published_comment_url_without_overriding_file_line(self):
+        comment_url = "https://github.com/acme/widgets/pull/9#issuecomment-123"
+        review = self.publish_review(comment_url + "\n")
+        findings = [value for value in review["inputs"] if value["kind"] == "finding"]
+        self.assertEqual(findings, [
+            {"kind": "finding", "ref": "factory/a.py:4",
+             "summary": "`factory/a.py:4`: Handle the missing value."},
+            {"kind": "finding", "ref": comment_url,
+             "summary": "Explain why the branch needs refreshing."},
+        ])
+        self.assertEqual(
+            next(value["ref"] for value in review["inputs"] if value["kind"] == "review_comment"),
+            comment_url,
+        )
+
+    def test_findings_fall_back_to_existing_pr_url_without_overriding_file_line(self):
+        review = self.publish_review("")
+        self.assertEqual(
+            [value["ref"] for value in review["inputs"] if value["kind"] == "finding"],
+            ["factory/a.py:4", "https://github.com/acme/widgets/pull/9"],
+        )
+        self.assertEqual(
+            next(value["ref"] for value in review["inputs"] if value["kind"] == "review_comment"),
+            "https://github.com/acme/widgets/pull/9",
+        )
+
+
+class TraceRetryLoopBoundaryRegressionTest(unittest.TestCase):
+    def setUp(self):
+        self.rows = []
+
+    def append_decision(self, stage, chosen, seconds, retry=None):
+        row = decision(
+            7, stage, chosen, "2026-10-23T10:00:00Z",
+            cost={"seconds": seconds, "prompt_tokens": seconds * 10,
+                  "completion_tokens": seconds * 2, "cached_tokens": seconds * 3},
+            causes=[{"decision_id": retry["decision_id"], "relation": "retries"}] if retry else [],
+        )
+        self.rows.append(row)
+        return row
+
+    def append_retry(self, source, seconds):
+        worker = self.append_decision("worker_select", "default", seconds, retry=source)
+        claim = self.append_decision("claim", "claimed", 0, retry=source)
+        return worker, claim
+
+    def assert_loops(self, expected, total_seconds):
+        graph = trace.explain(self.rows, 7)
+        self.assertEqual(len(graph["loops"]), len(expected))
+        for loop, (members, seconds) in zip(graph["loops"], expected, strict=True):
+            self.assertEqual(loop["nodes"], [row["decision_id"] for row in members])
+            self.assertEqual(loop["cost"], {
+                "seconds": seconds, "prompt_tokens": seconds * 10,
+                "completion_tokens": seconds * 2, "cached_tokens": seconds * 3,
+            })
+        membership = [node for loop in graph["loops"] for node in loop["nodes"]]
+        self.assertEqual(len(membership), len(set(membership)))
+        self.assertEqual(graph["cost"], {
+            "seconds": total_seconds, "prompt_tokens": total_seconds * 10,
+            "completion_tokens": total_seconds * 2, "cached_tokens": total_seconds * 3,
+        })
+        return graph
+
+    def test_review_retry_stops_before_failed_gate_retry_source(self):
+        revise = self.append_decision("review", "REVISE", 1)
+        first_retry = self.append_retry(revise, 2)
+        failed_gate = self.append_decision("gate", "test", 3)
+        second_retry = self.append_retry(failed_gate, 4)
+        passing_gate = self.append_decision("gate", "pass", 5)
+        self.append_decision("review", "APPROVE", 6)
+
+        self.assert_loops([
+            ([revise, *first_retry], 3),
+            ([failed_gate, *second_retry, passing_gate], 12),
+        ], total_seconds=21)
+
+    def test_consecutive_failed_gate_retries_have_disjoint_costed_loops(self):
+        first_failure = self.append_decision("gate", "test", 1)
+        first_retry = self.append_retry(first_failure, 2)
+        second_failure = self.append_decision("gate", "test", 3)
+        second_retry = self.append_retry(second_failure, 4)
+        third_failure = self.append_decision("gate", "test", 5)
+        third_retry = self.append_retry(third_failure, 6)
+        passing_gate = self.append_decision("gate", "pass", 7)
+        self.append_decision("review", "APPROVE", 8)
+
+        self.assert_loops([
+            ([first_failure, *first_retry], 3),
+            ([second_failure, *second_retry], 7),
+            ([third_failure, *third_retry, passing_gate], 18),
+        ], total_seconds=36)
+
+    def test_escalation_ends_retry_without_swallowing_later_manager_decisions(self):
+        revise = self.append_decision("review", "REVISE", 1)
+        retry = self.append_retry(revise, 2)
+        failed_gate = self.append_decision("gate", "test", 3)
+        self.append_decision("escalate", "gate_failed", 4)
+        self.append_decision("manager", "HUMAN", 5)
+        manager = self.append_decision("manager", "FIX", 6)
+
+        graph = self.assert_loops([
+            ([revise, *retry, failed_gate], 6),
+        ], total_seconds=21)
+        self.assertEqual(graph["frontier"], manager["decision_id"])
+        self.assertEqual(graph["frontier_stage"], "gate")
+
+
+class TraceBlockerFrontierRegressionTest(unittest.TestCase):
+    AT = "2026-10-23T10:00:00Z"
+
+    def test_historical_blocker_does_not_override_passing_gate_without_admission(self):
+        triage_row = decision(
+            7, "triage", "ready-for-agent", self.AT,
+            causes=[{"ticket": 3, "relation": "blocked_by"}],
+        )
+        gate = decision(7, "gate", "pass", self.AT)
+
+        graph = trace.explain([triage_row, gate], 7)
+
+        self.assertEqual(graph["frontier"], gate["decision_id"])
+        self.assertEqual(graph["frontier_stage"], "review")
+        self.assertIn({
+            "from": "ticket:3", "to": triage_row["decision_id"], "relation": "blocked_by",
+        }, graph["edges"])
+
+    def test_pre_admission_frontier_still_reports_blocker(self):
+        triage_row = decision(
+            7, "triage", "ready-for-agent", self.AT,
+            causes=[{"ticket": 3, "relation": "blocked_by"}],
+        )
+        binding = decision(7, "binding", "unbound", self.AT)
+        for rows in ([triage_row], [triage_row, binding]):
+            with self.subTest(stage=rows[-1]["stage"]):
+                graph = trace.explain(rows, 7)
+                self.assertEqual(graph["frontier"], rows[-1]["decision_id"])
+                self.assertEqual(graph["frontier_stage"], "blocker")
+
+    def test_historical_blocker_does_not_change_terminal_frontier(self):
+        triage_row = decision(
+            7, "triage", "ready-for-agent", self.AT,
+            causes=[{"ticket": 3, "relation": "blocked_by"}],
+        )
+        for stage, chosen in (("merge", "merge now"), ("wontfix", "wontfix-proposal")):
+            with self.subTest(stage=stage):
+                terminal = decision(7, stage, chosen, self.AT)
+                graph = trace.explain([triage_row, terminal], 7)
+                self.assertIsNone(graph["frontier"])
+                self.assertIsNone(graph["frontier_stage"])
+
+
+class TraceRequeueFrontierRegressionTest(unittest.TestCase):
+    def test_conflict_and_manager_requeues_wait_on_gate(self):
+        requeues = [
+            ("merge", "conflict-requeue"),
+            *(("manager", chosen) for chosen in ("RETRY", "REWRITE", "ROUTE", "AUTHORIZE", "FIX")),
+        ]
+        for stage, chosen in requeues:
+            with self.subTest(stage=stage, chosen=chosen):
+                graph = trace.explain([
+                    decision(7, stage, chosen, "2026-10-23T10:00:00Z"),
+                ], 7)
+                self.assertEqual(graph["frontier_stage"], "gate")
+
+
+class RequiredFixesParserRegressionTest(unittest.TestCase):
+    def test_all_suffixed_sections_are_parsed_and_none_sections_are_empty(self):
+        findings = (
+            "## Required fixes (blocking)\n"
+            "1. `factory/a.py:4`: Handle the missing value.\n\n"
+            "## Optional suggestions\n"
+            "- Rename the local.\n\n"
+            "### Required fixes (second pass)\n"
+            "- Explain why the branch needs refreshing.\n\n"
+            "## Required fixes\n"
+            "None.\n\n"
+            "## Required fixes (empty)\n"
+            "None\n\n"
+            "## Verdict\n"
+            "VERDICT: REVISE\n"
+        )
+
+        self.assertEqual(dispatch._required_fixes(findings, "https://review.example/1"), [
+            {
+                "kind": "finding",
+                "ref": "factory/a.py:4",
+                "summary": "`factory/a.py:4`: Handle the missing value.",
+            },
+            {
+                "kind": "finding",
+                "ref": "https://review.example/1",
+                "summary": "Explain why the branch needs refreshing.",
+            },
+        ])

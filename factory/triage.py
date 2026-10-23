@@ -569,6 +569,27 @@ def apply_decision(
         label,
         execution=execution,
     )
+    if label == config.LABEL_WONTFIX:
+        terminal = trace.decision(
+            ticket=number,
+            stage="wontfix",
+            inputs=[{
+                "kind": "github_issue",
+                "ref": f"https://github.com/{cfg.repo}/issues/{number}",
+                "summary": issue.get("title") or f"issue #{number}",
+            }],
+            options=[
+                {"option": config.LABEL_WONTFIX, "eligible": True, "reason": rationale},
+                {"option": "continue", "eligible": False, "reason": "triage proposed wontfix"},
+            ],
+            chosen=config.LABEL_WONTFIX,
+            rationale=rationale,
+            causes=[{"decision_id": payload["decision_id"], "relation": "follows"}],
+            cost=None,
+            actor={"kind": "deterministic", "name": "triage.apply_decision",
+                   "model": None, "version": __version__},
+        )
+        dispatch.record("decision", **terminal)
 
 
 def list_needs_triage(execution=None) -> list[int]:

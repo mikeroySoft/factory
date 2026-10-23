@@ -191,6 +191,44 @@ def branch_name(kind: str, tickets: list[int]) -> str:
     return f"agent/{kind}-{datetime.now().astimezone().date().isoformat()}-t{tickets[-1]}"
 
 
+
+def record_learn_decision(
+    cfg: config.Config, tickets: list[int], lessons: int, branch: str | None,
+    *, curated: str | None = None,
+) -> str:
+    from factory import __version__, trace
+
+    chosen = "propose" if lessons else "skip"
+    payload = trace.decision(
+        ticket=tickets[-1],
+        stage="learn",
+        inputs=[
+            {"kind": "evidence", "ref": f"https://github.com/{cfg.repo}/issues/{ticket}",
+             "summary": f"evidence ticket #{ticket}"}
+            for ticket in tickets
+        ] + ([
+            {"kind": "resulting_pr", "ref": branch, "summary": f"lessons PR branch {branch}"}
+        ] if branch else []),
+        options=[
+            {"option": "propose", "eligible": bool(lessons),
+             "reason": f"proposed {lessons} lesson(s)" if lessons else "no recurring lesson was found"},
+            {"option": "skip", "eligible": not lessons,
+             "reason": "no lesson was proposed" if not lessons else "evidence supported a proposal"},
+        ],
+        chosen=chosen,
+        rationale=(
+            f"proposed {lessons} lesson(s)"
+            + (f"; CURATE {curated}" if curated else "")
+            if lessons else "evidence produced no lesson"
+        ),
+        causes=[{"ticket": ticket, "relation": "follows"} for ticket in tickets],
+        cost=None,
+        actor={"kind": "model", "name": "factory learn", "model": cfg.manager_model,
+               "version": __version__},
+    )
+    dispatch.record("decision", **payload)
+    return payload["decision_id"]
+
 def chore_pr(cfg: config.Config, branch: str, edit: Callable[[Path], list[str]], title: str, pr_body: str) -> None:
     """Branch from origin/main in a throwaway worktree, let `edit` return the paths it changed, commit, open the PR."""
     wt = cfg.factory / f"wt-{branch.removeprefix('agent/')}"
@@ -206,6 +244,52 @@ def chore_pr(cfg: config.Config, branch: str, edit: Callable[[Path], list[str]],
         dispatch.run(["git", "worktree", "remove", "--force", str(wt)], cwd=cfg.root, check=False)
 
 
+def _record_curate_decision(
+    cfg: config.Config, tickets: list[int], paths: list[str],
+    allowed: dict[str, bool], result: str,
+) -> str:
+    from factory import __version__, trace
+
+    accepted = not result.startswith("rejected:")
+    options = [
+        {
+            "option": path,
+            "eligible": allowed.get(path, False),
+            "reason": (
+                "curate_allowed accepted this path"
+                if allowed.get(path, False)
+                else "curate_allowed rejected this path"
+            ),
+        }
+        for path in paths
+    ]
+    options.append({
+        "option": "skip", "eligible": not accepted,
+        "reason": result if not accepted else "CURATE produced an eligible change",
+    })
+    chosen = paths[0] if accepted and paths else "skip"
+    payload = trace.decision(
+        ticket=tickets[-1],
+        stage="curate",
+        inputs=[
+            {"kind": "evidence", "ref": f"https://github.com/{cfg.repo}/issues/{ticket}",
+             "summary": f"evidence ticket #{ticket}"}
+            for ticket in tickets
+        ] + ([
+            {"kind": "resulting_pr", "ref": result, "summary": f"CURATE PR branch {result}"}
+        ] if accepted else []),
+        options=options,
+        chosen=chosen,
+        rationale=result,
+        causes=[{"ticket": ticket, "relation": "follows"} for ticket in tickets],
+        cost=None,
+        actor={"kind": "model", "name": "factory learn CURATE", "model": cfg.manager_model,
+               "version": __version__},
+    )
+    dispatch.record("decision", **payload)
+    return payload["decision_id"]
+
+
 def curate(cfg: config.Config, diff: str, tickets: list[int], notes: str) -> str:
     """Apply the manager's CURATE diff on `agent/curate-<date>-t<N>` and open its chore PR.
 
@@ -213,6 +297,8 @@ def curate(cfg: config.Config, diff: str, tickets: list[int], notes: str) -> str
     branch = branch_name("curate", tickets)
     patch = cfg.factory / f"{branch.removeprefix('agent/')}.patch"
     patch.write_text(diff if diff.endswith("\n") else diff + "\n")
+    observed_paths: list[str] = []
+    allowed: dict[str, bool] = {}
 
     def edit(wt: Path) -> list[str]:
         toml = wt / config.CONFIG_NAME
@@ -226,7 +312,9 @@ def curate(cfg: config.Config, diff: str, tickets: list[int], notes: str) -> str
         status = dispatch.run(["git", "status", "--porcelain", "-z", "--untracked-files=all"], cwd=wt).stdout
         entries = [(entry[:2], entry[3:]) for entry in status.split("\0") if entry]
         paths = [p for _, p in entries]
-        bad = [p for p in paths if not manage.curate_allowed(p, protected)]
+        observed_paths.extend(paths)
+        allowed.update((path, manage.curate_allowed(path, protected)) for path in paths)
+        bad = [path for path in paths if not allowed[path]]
         if bad:
             raise ValueError(", ".join(bad) + " outside " + ", ".join(manage.CURATE_PREFIXES)
                              + f", {config.CONFIG_NAME}, [gate].protected_paths and [gate].add_only_paths")
@@ -249,11 +337,13 @@ def curate(cfg: config.Config, diff: str, tickets: list[int], notes: str) -> str
                f"## Manager notes\n\n{notes or '(none)'}")
     try:
         chore_pr(cfg, branch, edit, f"{branch}: curate harness context", pr_body)
+        result = branch
     except ValueError as exc:
-        return f"rejected: {exc}"
+        result = f"rejected: {exc}"
     finally:
         patch.unlink(missing_ok=True)
-    return branch
+    _record_curate_decision(cfg, tickets, observed_paths, allowed, result)
+    return result
 
 
 def run(cfg: config.Config, last: int = 10, dry_run: bool = False, **fields: object) -> dict | None:
@@ -288,6 +378,7 @@ def run(cfg: config.Config, last: int = 10, dry_run: bool = False, **fields: obj
         path.write_text(content)
         event = {"tickets": tickets, "lessons": len(lessons), **fields}
         dispatch.record("learn", **event)
+        record_learn_decision(cfg, tickets, len(lessons), None)
         print(f"wrote {path}; review and commit it")
         return event
     branch = branch_name("lessons", tickets)
@@ -304,6 +395,7 @@ def run(cfg: config.Config, last: int = 10, dry_run: bool = False, **fields: obj
         print(f"CURATE {curated}" if curated.startswith("rejected") else f"opened a {LABEL_CHORE} PR from {curated}")
     event = {"tickets": tickets, "lessons": len(lessons), "branch": branch, "curate": curated, **fields}
     dispatch.record("learn", **event)
+    record_learn_decision(cfg, tickets, len(lessons), branch, curated=curated)
     return event
 
 

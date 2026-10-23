@@ -14,6 +14,10 @@ from factory import config, lifecycle, runtime_events
 from factory.decisions import _SECRET
 
 STAGES = ("triage", "binding", "admission", "worker_select", "claim")
+ALL_STAGES = (
+    *STAGES,
+    "gate", "review", "manager", "merge", "wontfix", "escalate", "learn", "curate",
+)
 RELATIONS = frozenset({"follows", "retries", "blocked_by", "split_from", "unblocked_by", "overrides"})
 ACTORS = frozenset({"deterministic", "model", "human", "worker"})
 INPUT_LIMIT = 16
@@ -22,7 +26,6 @@ OPTION_LIMIT = 512
 TEXT_LIMIT = 256
 RATIONALE_LIMIT = 2_000
 LEGACY = frozenset({"claimed", "attempt", "review", "approved", "merged", "escalate"})
-_TERMINAL = frozenset({"merged", "escalate"})
 _SPLIT = re.compile(r"(?i)(?:\(|\b)split from\s+#([1-9][0-9]*)")
 _BLOCKED = re.compile(r"(?im)^blocked by:(.*)$")
 _REF = re.compile(r"#([1-9][0-9]*)")
@@ -176,7 +179,7 @@ def validate(row: dict) -> dict:
         raise ValueError("invalid decision record fields")
     if row["schema_version"] != 1 or not _uuid4(row["decision_id"]):
         raise ValueError("invalid decision record identity")
-    if type(row["ticket"]) is not int or row["ticket"] <= 0 or row["stage"] not in STAGES or not _utc(row["at"]):
+    if type(row["ticket"]) is not int or row["ticket"] <= 0 or row["stage"] not in ALL_STAGES or not _utc(row["at"]):
         raise ValueError("invalid decision ticket, stage, or timestamp")
     if "pr" in row and (type(row["pr"]) is not int or row["pr"] <= 0):
         raise ValueError("invalid decision PR")
@@ -250,6 +253,56 @@ def _legacy(row: dict, index: int) -> dict:
     }
 
 
+def _sum_cost(nodes: list[dict]) -> dict:
+    total = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "cached_tokens": 0,
+        "seconds": 0,
+    }
+    for node in nodes:
+        cost = node.get("cost")
+        if not isinstance(cost, dict):
+            continue
+        for key in total:
+            value = cost.get(key, 0)
+            if type(value) in (int, float) and value >= 0:
+                total[key] += value
+    return total
+
+
+def _terminal(node: dict) -> bool:
+    return (
+        node.get("stage") == "wontfix"
+        or node.get("stage") == "merge" and node.get("chosen") == "merge now"
+        or node.get("event") == "merged"
+    )
+
+
+def _frontier_stage(node: dict) -> str | None:
+    stage = node.get("stage")
+    chosen = node.get("chosen")
+    if _terminal(node):
+        return None
+    if stage in {"admission", "worker_select", "claim"} or node.get("event") == "claimed":
+        return "gate"
+    if stage == "gate" or node.get("event") == "attempt":
+        return "review" if chosen == "pass" or "PASS" in str(node.get("rationale", "")) else "gate"
+    if stage == "review" or node.get("event") == "review":
+        return "merge eligibility" if chosen == "APPROVE" or "APPROVE" in str(node.get("rationale", "")) else "gate"
+    if stage == "manager":
+        if chosen in {"RETRY", "REWRITE", "ROUTE", "AUTHORIZE", "FIX"}:
+            return "gate"
+        return "human" if chosen == "HUMAN" else "merge eligibility" if chosen == "APPROVE" else "manager"
+    if stage == "escalate" or node.get("event") == "escalate":
+        return "human"
+    if stage == "merge":
+        return "gate" if chosen in {"refresh branch", "conflict-requeue"} else "merge eligibility"
+    if node.get("event") == "approved":
+        return "merge eligibility"
+    return stage
+
+
 def explain(rows: list[dict], ticket: int) -> dict:
     """Project journal rows into a bounded graph without I/O or mutation."""
     nodes = []
@@ -299,19 +352,62 @@ def explain(rows: list[dict], ticket: int) -> dict:
             edge(source, node["decision_id"], cause["relation"])
     for previous, current in pairwise(ordered):
         edge(previous["decision_id"], current["decision_id"], "follows")
+
+    positions = {node["decision_id"]: index for index, node in enumerate(ordered)}
+    loops = []
+    retry_sources = dict.fromkeys(
+        value["from"] for value in edges
+        if value["relation"] == "retries" and value["from"] in positions
+    )
+    for source in retry_sources:
+        start = positions[source]
+        stop = next((
+            index for index in range(start + 1, len(ordered))
+            if ordered[index].get("stage") in {"review", "escalate"}
+            or ordered[index]["decision_id"] in retry_sources
+        ), len(ordered))
+        members = ordered[start:stop]
+        loops.append({
+            "nodes": [node["decision_id"] for node in members],
+            "cost": _sum_cost(members),
+        })
+
     nodes = [*external.values(), *nodes]
     present = {row["stage"] for row in decisions}
-    terminal = bool(ordered and ordered[-1].get("event") in _TERMINAL)
+    flow = [node for node in ordered if node.get("stage") not in {"learn", "curate"}]
+    last = flow[-1] if flow else None
+    terminal = bool(last and _terminal(last))
+    if terminal or not decisions:
+        expected = STAGES
+    else:
+        last_stage = next((
+            node["stage"] for node in reversed(flow) if node.get("stage") in STAGES
+        ), STAGES[-1])
+        expected = STAGES[:STAGES.index(last_stage) + 1]
+    blocked = bool(last and last.get("stage") in {"triage", "binding"}) and any(
+        cause["relation"] == "blocked_by"
+        for node in decisions for cause in node["causes"]
+    ) and not any(
+        cause["relation"] == "unblocked_by"
+        for node in decisions for cause in node["causes"]
+    )
     graph = {
         "ticket": ticket,
         "nodes": nodes,
         "edges": edges,
-        "frontier": None if terminal or not ordered else ordered[-1]["decision_id"],
-        "coverage": [stage for stage in STAGES if stage not in present],
+        "loops": loops,
+        "cost": _sum_cost(decisions),
+        "frontier": None if terminal or last is None else last["decision_id"],
+        "frontier_stage": None if terminal or last is None else "blocker" if blocked else _frontier_stage(last),
+        "coverage": [stage for stage in expected if stage not in present],
     }
     while len(json.dumps(graph, ensure_ascii=False).encode()) > runtime_events.BYTE_LIMIT and graph["nodes"]:
         removed = graph["nodes"].pop(0)["decision_id"]
         graph["edges"] = [value for value in graph["edges"] if removed not in (value["from"], value["to"])]
+        graph["loops"] = [
+            {**loop, "nodes": [node for node in loop["nodes"] if node != removed]}
+            for loop in graph["loops"] if any(node != removed for node in loop["nodes"])
+        ]
         if graph["frontier"] == removed:
             graph["frontier"] = graph["nodes"][-1]["decision_id"] if graph["nodes"] else None
     return graph
