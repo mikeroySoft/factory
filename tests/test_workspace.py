@@ -779,6 +779,19 @@ class WorkspaceHTTPTest(unittest.TestCase):
         self.assertEqual(body, trace.explain(trace.read_rows(self.cfg.factory / "events.jsonl"), 7))
 
 
+    def test_decisions_view_asset_redirect_and_shareable_route(self) -> None:
+        status, _, asset = self.request("GET", "/workspace-trace.js")
+        self.assertEqual(status, 200)
+        self.assertIn(b"WorkspaceTrace", asset)
+
+        status, headers, _ = self.request("GET", "/decisions")
+        self.assertEqual((status, headers.get("location")), (302, "/?view=decisions"))
+        status, _, _ = self.request("GET", "/?view=decisions&ticket=7")
+        self.assertEqual(status, 200)
+        status, _, body = self.request("GET", "/?view=decisions&ticket=bad")
+        self.assertEqual((status, body["error"]["code"]), (400, "invalid_query"))
+
+
 class WorkspaceRegistryTest(unittest.TestCase):
     def test_registered_main_overrides_same_slug_startup_but_key_stays_startup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

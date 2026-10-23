@@ -61,6 +61,7 @@ ASSETS = {
     "/workspace-tools.js": ("text/javascript; charset=utf-8", ASSET_ROOT / "workspace-tools.js"),
     "/workspace-codebase.js": ("text/javascript; charset=utf-8", ASSET_ROOT / "workspace-codebase.js"),
     "/workspace-decisions.js": ("text/javascript; charset=utf-8", ASSET_ROOT / "workspace-decisions.js"),
+    "/workspace-trace.js": ("text/javascript; charset=utf-8", ASSET_ROOT / "workspace-trace.js"),
     "/workspace.js": ("text/javascript; charset=utf-8", ASSET_ROOT / "workspace.js"),
     "/fonts/Newsreader.ttf": ("font/ttf", ASSET_ROOT / "fonts" / "Newsreader.ttf"),
     "/fonts/Newsreader-OFL.txt": ("text/plain; charset=utf-8", ASSET_ROOT / "fonts" / "Newsreader-OFL.txt"),
@@ -70,6 +71,7 @@ REDIRECTS = {
     "/chat": "/?chat=1",
     "/atlas": "/?view=atlas",
     "/codebase": "/?view=codebase",
+    "/decisions": "/?view=decisions",
 }
 SLUG = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+")
 DECISION_ID = re.compile(r"[0-9a-f]{32}")
@@ -1646,7 +1648,7 @@ class Handler(BaseHTTPRequestHandler):
             if target.path == "/":
                 values = _query(
                     target.query,
-                    optional={"view", "repository", "case", "chat"},
+                    optional={"view", "repository", "case", "ticket", "chat"},
                 )
                 if "chat" in values and values["chat"] != "1":
                     raise WorkspaceError("invalid_query", "chat must be 1")
@@ -1660,11 +1662,12 @@ class Handler(BaseHTTPRequestHandler):
                     or SLUG.fullmatch(values["repository"]) is None
                 ):
                     raise WorkspaceError("invalid_query", "repository is invalid")
-                if "case" in values and (
-                    re.fullmatch(r"[1-9][0-9]{0,18}", values["case"]) is None
-                    or int(values["case"]) >= 2**63
-                ):
-                    raise WorkspaceError("invalid_query", "case is invalid")
+                for field in ("case", "ticket"):
+                    if field in values and (
+                        re.fullmatch(r"[1-9][0-9]{0,18}", values[field]) is None
+                        or int(values[field]) >= 2**63
+                    ):
+                        raise WorkspaceError("invalid_query", f"{field} is invalid")
                 self._send(
                     200,
                     "text/html; charset=utf-8",
