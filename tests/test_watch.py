@@ -458,6 +458,11 @@ class PersistentHostConditionTest(unittest.TestCase):
         self.assertEqual(self.gh.calls, [])
 
 
+class WatchOutcomeEscalationTest(unittest.TestCase):
+    def test_repeated_ci_failed_outcome_is_not_filed(self) -> None:
+        rows = [escalate_row(n, "ci_failed", "PR checks failed") for n in (1, 2, 3)]
+
+        self.assertEqual(watch.repeated_escalations(rows), {})
 
 
 if __name__ == "__main__":
