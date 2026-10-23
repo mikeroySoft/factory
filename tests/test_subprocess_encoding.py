@@ -10,7 +10,6 @@ from unittest import mock
 
 from factory import dispatch, gate, lifecycle
 
-
 INVALID_OUTPUT = [
     sys.executable,
     "-c",
@@ -28,9 +27,11 @@ class DispatchOutputEncodingTest(unittest.TestCase):
         self.assert_replaced_output(dispatch.run(INVALID_OUTPUT))
 
     def test_lifecycle_run_replaces_non_utf8_output(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            with lifecycle.scope(Path(directory) / "events.jsonl", "dispatch"):
-                self.assert_replaced_output(dispatch.run(INVALID_OUTPUT))
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            lifecycle.scope(Path(directory) / "events.jsonl", "dispatch"),
+        ):
+            self.assert_replaced_output(dispatch.run(INVALID_OUTPUT))
 
     def test_activity_replaces_non_utf8_git_output(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
