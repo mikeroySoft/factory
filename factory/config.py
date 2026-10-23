@@ -37,6 +37,7 @@ LABEL_CHORE = "chore"
 LABEL_INITIATIVE = "initiative"
 LABEL_WONTFIX = "wontfix-proposal"
 LABEL_EXPERIMENT = "experiment"
+LABEL_HOST = "host"
 LABELS = {
     LABEL_VIABILITY: ("D4C5F9", "Opt in to a manager build/defer recommendation before triage"),
     LABEL_REVIEW: ("D4C5F9", "Opt in to a manager PR direction recommendation before review"),
@@ -51,6 +52,7 @@ LABELS = {
     LABEL_WONTFIX: ("EDEDED", "Triage or manager proposes not to action this; a human decides"),
     LABEL_INITIATIVE: ("1D76DB", "Shared initiative plan read by `factory plan`; never triaged, dispatched, managed or merged"),
     LABEL_EXPERIMENT: ("5319E7", "Experiment ticket: at most one active at a time; never ranks by its results"),
+    LABEL_HOST: ("D4C5F9", "Persistent host condition reported by factory watch"),
 }
 
 # Word-bounded strong signals only: bare words like "internal"/"private" are ordinary English.
@@ -93,7 +95,7 @@ KNOWN_KEYS = {
     "install": ("every", "dashboard", "host", "python", "env", "dispatch_env"),
     "collaboration": ("fallback", "reasons", "components"),
     "prices": None,
-    "watch": ("engine_repo",),
+    "watch": ("engine_repo", "host_failure_minutes"),
 }
 # Normalized numeric fields of an `llm-usage` event; a worker profile maps each to JSON paths.
 USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "cached_tokens", "cost")
@@ -191,6 +193,7 @@ class Config:
     collaboration: dict | None = None
     # `[watch].engine_repo`: where `factory watch` files engine/runtime failures from every install.
     watch_engine_repo: str = ENGINE_REPO
+    watch_host_failure_minutes: int = 60
     raw_repo: dict = field(default_factory=dict)  # the committed file alone, before host layering
 
     @property
@@ -615,10 +618,15 @@ def load(start: Path | None = None) -> Config:
     ):
         raise ConfigError("triage.service must be a systemd service unit name ending in .service")
     cfg.triage_service = service
-    engine_repo = raw.get("watch", {}).get("engine_repo", cfg.watch_engine_repo)
+    watch = raw.get("watch", {})
+    engine_repo = watch.get("engine_repo", cfg.watch_engine_repo)
     if not isinstance(engine_repo, str) or not re.fullmatch(r"[\w.-]+/[\w.-]+", engine_repo):
         raise ConfigError(f'watch.engine_repo must be a GitHub "owner/name", got {engine_repo!r}')
     cfg.watch_engine_repo = engine_repo
+    host_failure_minutes = watch.get("host_failure_minutes", cfg.watch_host_failure_minutes)
+    if isinstance(host_failure_minutes, bool) or not isinstance(host_failure_minutes, int) or host_failure_minutes < 1:
+        raise ConfigError("watch.host_failure_minutes must be a positive integer")
+    cfg.watch_host_failure_minutes = host_failure_minutes
     cfg.dashboard_port = int(dash.get("port", cfg.dashboard_port))
     cfg.dashboard_theme = root / dash["theme"] if dash.get("theme") else None
     cfg.install = merge(DEFAULT_INSTALL, raw.get("install", {}))
