@@ -49,8 +49,8 @@ def timed(cmd: list[str]) -> subprocess.CompletedProcess:
     env = execution.env() if execution else dict(os.environ)
     env.pop(lifecycle.CONTEXT_ENV, None)
     proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True,
-        env=env,
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
+        start_new_session=True, env=env,
     )
     if execution:
         execution.child(proc.pid)

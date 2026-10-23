@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import re
 import shutil
@@ -188,20 +189,135 @@ def _finish(cfg: config.Config, dry_run: bool, reason: str, metrics: dict[str, f
     return reason
 
 
+def _gh_release(cfg: config.Config, *args: str, notes: str | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["gh", "release", *args, "--repo", cfg.repo], input=notes,
+                          text=True, capture_output=True, check=False)
+
+
+def _notes(cfg: config.Config, tag: str) -> str:
+    """The tag's ``## X.Y.Z`` section of its own CHANGELOG.md, empty when it has none."""
+    text = _git(cfg.root, "show", f"{tag}:CHANGELOG.md", check=False).stdout
+    match = re.search(rf"(?ms)^## {re.escape(tag.removeprefix('v'))}(?![0-9.]).*?\n(.*?)(?=^## |\Z)", text)
+    return match.group(1).strip() if match else ""
+
+
+def _unpublished(cfg: config.Config, tag: str) -> bool:
+    outcomes = {row.get("outcome") for row in lifecycle.read_events(cfg.factory / "events.jsonl")
+                if row.get("event") == "release" and row.get("tag") == tag}
+    return "released" in outcomes and "published" not in outcomes
+
+
+def _publish(cfg: config.Config, tag: str) -> str:
+    """Create the GitHub Release for a pushed tag unless one exists. A failure is journaled
+    as ``publish_failed`` and retried by the next pass; the tag stays."""
+    try:
+        if _gh_release(cfg, "view", tag).returncode == 0:
+            reason = f"GitHub Release {tag} already exists"
+        else:
+            proc = _gh_release(cfg, "create", tag, "--verify-tag", "--latest", "--title", tag,
+                               "--notes-file", "-", notes=_notes(cfg, tag))
+            if proc.returncode:
+                raise RuntimeError(proc.stderr.strip() or f"gh release create {tag} failed")
+            reason = f"created GitHub Release {tag}"
+    except Exception as exc:  # noqa: BLE001 - journaled and retried next pass
+        reason = f"GitHub Release {tag} failed: {type(exc).__name__}: {exc}"
+        _record(cfg, "publish_failed", reason, None, None, tag=tag)
+        return reason
+    _record(cfg, "published", reason, None, None, tag=tag)
+    return reason
+
+
+def _replace_once(text: str, pattern: str, replacement: str, spot: str) -> str:
+    changed, count = re.subn(pattern, lambda match: match.expand(replacement), text)
+    if count != 1:
+        raise ValueError(f"{spot} must appear exactly once (found {count})")
+    return changed
+
+
 def _update_release_files(cfg: config.Config, worktree: Path, old: str, new: str) -> None:
     version = worktree / cfg.release_version_file
-    text = version.read_text()
-    changed, count = re.subn(rf"(?<![0-9.]){re.escape(old)}(?![0-9.])", new, text, count=1)
+    version_text, count = re.subn(
+        rf"(?<![0-9.]){re.escape(old)}(?![0-9.])", new, version.read_text(), count=1
+    )
     if count != 1:
         raise ValueError(f"{cfg.release_version_file} does not contain version {old}")
-    version.write_text(changed)
+
+    released = datetime.now(UTC).date()
     changelog = worktree / "CHANGELOG.md"
-    text = changelog.read_text()
-    heading = f"## {new} — {datetime.now(UTC).date().isoformat()}"
-    changed, count = re.subn(r"(?m)^## Unreleased[ \t]*\n(?:\n)?", f"## Unreleased\n\n{heading}\n\n", text, count=1)
+    changelog_text, count = re.subn(
+        r"(?m)^## Unreleased[ \t]*\n(?:\n)?",
+        f"## Unreleased\n\n## {new} — {released.isoformat()}\n\n",
+        changelog.read_text(),
+        count=1,
+    )
     if count != 1:
         raise ValueError("CHANGELOG.md has no ## Unreleased heading")
-    changelog.write_text(changed)
+
+    readme = worktree / "README.md"
+    page = worktree / "docs" / "index.html"
+    readme_text = _replace_once(
+        readme.read_text() if readme.exists() else "",
+        r"(?m)^(uv tool install git\+https://github\.com/mikeroySoft/factory@)"
+        r"v\d+\.\d+\.\d+([ \t]+# a specific release)$",
+        rf"\g<1>v{new}\g<2>",
+        "README.md specific-release install pin",
+    )
+    page_text = page.read_text() if page.exists() else ""
+    page_text = _replace_once(
+        page_text,
+        r"(uv tool install git\+https://github\.com/mikeroySoft/factory@)"
+        r"v\d+\.\d+\.\d+(</code>)",
+        rf"\g<1>v{new}\g<2>",
+        "docs/index.html install-command version pin",
+    )
+    display_date = f"{released:%B} {released.day}, {released.year}"
+    page_text = _replace_once(
+        page_text,
+        r"Latest release: v\d+\.\d+\.\d+ · [A-Z][a-z]+ \d{1,2}, \d{4}",
+        f"Latest release: v{new} · {display_date}",
+        "docs/index.html latest-release line",
+    )
+    section = re.search(
+        rf"(?ms)^## {re.escape(new)} — \d{{4}}-\d{{2}}-\d{{2}}\n\n(.*?)(?=^## |\Z)",
+        changelog_text,
+    )
+    notes = "\n".join(
+        f"                <li>{html.escape(line.removeprefix('- '))}</li>"
+        for line in section.group(1).splitlines()
+        if line
+    )
+    entry = (
+        '          <li class="release">\n'
+        '            <div class="release-meta">\n'
+        '              <span class="chip chip-success">Latest release</span>\n'
+        f'              <a href="https://github.com/mikeroySoft/factory/releases/tag/v{new}">'
+        f"v{new}</a>\n"
+        f'              <time datetime="{released.isoformat()}">{display_date}</time>\n'
+        "            </div>\n"
+        "            <div>\n"
+        f"              <h3>v{new} release notes.</h3>\n"
+        "              <ul>\n"
+        f"{notes}\n"
+        "              </ul>\n"
+        "            </div>\n"
+        "          </li>\n"
+    )
+    page_text = _replace_once(
+        page_text,
+        r'<span class="chip chip-success">Latest release</span>',
+        '<span class="chip">Release</span>',
+        "docs/index.html changelog history",
+    )
+    history = '<ol class="history">\n'
+    count = page_text.count(history)
+    if count != 1:
+        raise ValueError(f"docs/index.html changelog history must appear exactly once (found {count})")
+    page_text = page_text.replace(history, f"{history}{entry}", 1)
+
+    version.write_text(version_text)
+    changelog.write_text(changelog_text)
+    readme.write_text(readme_text)
+    page.write_text(page_text)
 
 
 def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
@@ -217,6 +333,8 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
             return _finish(cfg, dry_run, _reason("no semver release tag reachable from origin/main", None, None),
                            None, None, None)
         latest_tag = latest["tag"]
+        if not dry_run and _unpublished(cfg, latest_tag):
+            _publish(cfg, latest_tag)
         bar = _bar(latest["message"])
         current = _version_at(cfg, f"origin/{cfg.main}")
         if current > latest["version"]:
@@ -249,7 +367,8 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
                     detail = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "git push failed"
                     return _finish(cfg, False, _reason(f"atomic push failed: {detail}", metrics, bar),
                                    metrics, bar, latest_tag)
-                return _finish(cfg, False, f"released {tag}", metrics, bar, tag, released=True)
+                released = _finish(cfg, False, f"released {tag}", metrics, bar, tag, released=True)
+                return f"{released}; {_publish(cfg, tag)}"
             finally:
                 if not pushed:
                     _git(cfg.root, "tag", "-d", tag, check=False)
@@ -345,7 +464,14 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
             if not gate_passes(worktree):
                 return _finish(cfg, False, _reason("factory gate --tier release failed", metrics, bar),
                                metrics, bar, latest_tag)
-            _git(worktree, "add", cfg.release_version_file, "CHANGELOG.md")
+            _git(
+                worktree,
+                "add",
+                cfg.release_version_file,
+                "CHANGELOG.md",
+                "README.md",
+                "docs/index.html",
+            )
             _git(worktree, "commit", "-m", f"Release {next_version}")
             pushed = _git(worktree, "push", "--force", "origin",
                           f"HEAD:refs/heads/{branch}", check=False)

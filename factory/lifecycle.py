@@ -28,6 +28,63 @@ _IDENTITY_FIELDS = (
 # Defaults; `config.load` applies `[journal] max_mb` / `retention` from .factory.toml.
 MAX_BYTES = 64 * 1024 * 1024
 RETENTION = 8
+PASS_STAGES = ("triage", "dispatch", "watch")
+STAGE_SUCCESS_NAME = "stage-success.json"
+
+
+def _empty_stage_success() -> dict[str, str | None]:
+    return dict.fromkeys(PASS_STAGES)
+
+
+def parse_stage_success(text: str) -> dict[str, str | None]:
+    try:
+        value = json.loads(text)
+        stages = value["stages"]
+        if value.get("schema_version") != 1 or set(value) != {"schema_version", "stages"}:
+            raise ValueError
+        if not isinstance(stages, dict) or set(stages) != set(PASS_STAGES):
+            raise ValueError
+        for timestamp in stages.values():
+            if timestamp is not None:
+                if not isinstance(timestamp, str):
+                    raise ValueError
+                datetime.fromisoformat(timestamp)
+    except (KeyError, TypeError, ValueError, RecursionError) as exc:
+        raise ValueError("invalid stage-success projection") from exc
+    return {stage: stages[stage] for stage in PASS_STAGES}
+
+
+def last_successful_passes(journal: Path) -> dict[str, str | None]:
+    path = Path(journal).with_name(STAGE_SUCCESS_NAME)
+    try:
+        return parse_stage_success(path.read_text())
+    except FileNotFoundError:
+        return _empty_stage_success()
+
+
+def record_stage_success(journal: Path, stage: str) -> None:
+    if stage not in PASS_STAGES:
+        raise ValueError(f"unknown pass stage: {stage}")
+    journal = Path(journal)
+    journal.parent.mkdir(parents=True, exist_ok=True)
+    target = journal.with_name(STAGE_SUCCESS_NAME)
+    temporary = target.with_name(target.name + ".tmp")
+    with journal.open("a+b") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            stages = last_successful_passes(journal)
+        except (OSError, ValueError):
+            stages = _empty_stage_success()
+        stages[stage] = _now()
+        try:
+            with temporary.open("w") as output:
+                json.dump({"schema_version": 1, "stages": stages}, output, separators=(",", ":"))
+                output.write("\n")
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def _now() -> str:

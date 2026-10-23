@@ -184,5 +184,21 @@ class AddOnlyPathsTest(unittest.TestCase):
             self.assertIn("-# fork line", report)
 
 
+class GateOutputEncodingTest(unittest.TestCase):
+    def test_configured_check_replaces_non_utf8_output(self) -> None:
+        toml = TOML + (
+            "\n[[gate.check]]\n"
+            'name = "bytes"\n'
+            f'run = ["{sys.executable}", "-c", '
+            '"import os; os.write(1, bytes([255])); print(\'done\')"]\n'
+            "exclusive = false\n"
+        )
+        with tempfile.TemporaryDirectory() as d:
+            repo = repo_with_test(Path(d), toml)
+            code, out, report = gate(repo, "--skip", "conflict-markers,leak-scan")
+            self.assertEqual(code, 0, report + out)
+            self.assertIn("- bytes: PASS", report)
+
+
 if __name__ == "__main__":
     unittest.main()

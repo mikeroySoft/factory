@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "frozen_before_model_calls": true,
+  "frozen_at": "2026-10-22",
+  "rule": "Every parsed criterion is covered by criteria_sha256. A criterion absent from defects maps to no oracle defect; if Jev flags it, the flag is false. Primary and secondary oracle IDs are retained, but only primary defects earn blocking-detection credit.",
+  "cases": {
+    "12-before": {
+      "criteria_sha256": "52ec1e9877078040d58d735ed619d327c712975464fb83dc3a9adeba0dd41e09",
+      "defects": {
+        "c001": ["D1"],
+        "c002": ["D2"],
+        "c004": ["D1"],
+        "c007": ["D1"],
+        "c009": ["D1"]
+      },
+      "rationale": "D1 corrupts string-form manager command argv and therefore its doctor/loader obligations. D2 is the secondary closed-set review-value defect."
+    },
+    "12-after": {
+      "criteria_sha256": "52ec1e9877078040d58d735ed619d327c712975464fb83dc3a9adeba0dd41e09",
+      "defects": {},
+      "rationale": "Confirmed clean after packet."
+    },
+    "62-before": {
+      "criteria_sha256": "889bc7f19aab4fa57ff5dfb1a610ebdda3ad25bde4ea7544619ab673e7dd1dec",
+      "defects": {
+        "c001": ["D1"],
+        "c004": ["D2"]
+      },
+      "rationale": "D1 regresses the documented worker/template contract while implementing the manager prompt-file criterion. D2 violates the explicit manager_failed-to-stats criterion."
+    },
+    "62-after": {
+      "criteria_sha256": "889bc7f19aab4fa57ff5dfb1a610ebdda3ad25bde4ea7544619ab673e7dd1dec",
+      "defects": {},
+      "rationale": "Confirmed clean after packet."
+    },
+    "9-approve": {
+      "criteria_sha256": "019a869f8d1b362d1fb4c6c1f7d0f4694a096fd925f2945fcec6ce12eb7d11e3",
+      "defects": {},
+      "rationale": "Confirmed clean approval packet."
+    },
+    "8-approve": {
+      "criteria_sha256": "7c5098d7a1d43bfed9c6c731f948754155f28440d3b2a2123ee2f8c2d2f991cc",
+      "defects": {},
+      "rationale": "Confirmed clean approval packet."
+    },
+    "20-before": {
+      "criteria_sha256": "089f8ae2b5bb355caa66a76e17011f6c2d98dc92932861ab4c241c936346967a",
+      "defects": {
+        "c004": ["D1"],
+        "c008": ["D1"]
+      },
+      "rationale": "D1 is the interaction between the shipped conflict profile, which rewrites history, and the FIX path's non-force push."
+    },
+    "20-after": {
+      "criteria_sha256": "089f8ae2b5bb355caa66a76e17011f6c2d98dc92932861ab4c241c936346967a",
+      "defects": {},
+      "rationale": "Confirmed clean after packet."
+    },
+    "79-before": {
+      "criteria_sha256": "f993b8b7166a62232b0a01255b8bb6aa4c9401c8a678e46c935d0945a91601be",
+      "defects": {
+        "c028": ["D1"]
+      },
+      "rationale": "D1 directly violates the item-field criterion requiring actual provider UTC update time when supported."
+    },
+    "79-after": {
+      "criteria_sha256": "f993b8b7166a62232b0a01255b8bb6aa4c9401c8a678e46c935d0945a91601be",
+      "defects": {},
+      "rationale": "Confirmed clean after packet."
+    },
+    "87-approve": {
+      "criteria_sha256": "f5720510928b1d7cdee567c7d48afc30c323d08664830f4ffbae73c6887ab4d4",
+      "defects": {},
+      "rationale": "Confirmed clean approval packet."
+    }
+  }
+}

@@ -131,10 +131,11 @@ def llm_usage(events: list[dict], prices: dict[str, dict] | None = None) -> dict
 
 
 def worker_metrics(audit: dict[int, list[dict]], workers: dict[str, list[str]]) -> list[dict]:
-    """Claim-label attribution, using Config.worker's first-match precedence.
+    """Claim attribution, using the recorded worker profile when available.
 
-    First-pass denominators are attempt-1 gate outcomes per claim. All attempts
-    (including review bounces) and reported costs count; unclaimed history does not.
+    First-pass denominators are attempt-1 gate outcomes per claim. All attempts,
+    reported worker tokens and costs count; unclaimed history does not. Older
+    claims fall back to their labels.
     """
     rows = {key: {"worker": key, "first_pass": None, "attempts": 0, "cost": None} for key in workers}
     outcomes: dict[str, list[bool]] = {key: [] for key in workers}
@@ -143,7 +144,16 @@ def worker_metrics(audit: dict[int, list[dict]], workers: dict[str, list[str]]) 
         for event in events:
             if event.get("event") == "claimed":
                 labels = event.get("labels", [])
-                worker = next((key for key in workers if key in labels), "default")
+                recorded = event.get("worker")
+                worker = recorded if recorded in workers else next(
+                    (key for key in workers if key in labels), "default"
+                )
+            elif event.get("event") == "llm-usage" and event.get("stage") == "worker" and worker is not None:
+                row = rows[worker]
+                for field in USAGE_FIELDS[:-1]:
+                    value = event.get(field)
+                    if type(value) in (int, float):
+                        row[field] = row.get(field, 0) + value
             elif event.get("event") == "attempt" and worker is not None:
                 row = rows[worker]
                 row["attempts"] += 1
@@ -159,14 +169,21 @@ def worker_metrics(audit: dict[int, list[dict]], workers: dict[str, list[str]]) 
 
 
 def print_workers(rows: list[dict]) -> None:
-    """The cost column only when some worker reported a cost, never a column of n/a."""
+    """Show token and cost columns only when at least one worker reported them."""
     width = max(len("worker"), *(len(row["worker"]) for row in rows))
     costs = any(row["cost"] is not None for row in rows)
-    print(f"{'worker':<{width}}  first-gate pass  attempts" + "  cost" * costs)
+    token_fields = USAGE_FIELDS[:-1] if any(
+        any(field in row for field in USAGE_FIELDS[:-1]) for row in rows
+    ) else ()
+    token_headings = {"prompt_tokens": "prompt tokens", "completion_tokens": "completion tokens",
+                      "cached_tokens": "cached tokens"}
+    print(f"{'worker':<{width}}  first-gate pass  attempts"
+          + "".join(f"  {token_headings[field]}" for field in token_fields) + "  cost" * costs)
     for row in rows:
         rate = "n/a" if row["first_pass"] is None else f"{row['first_pass']:.1%}"
+        tokens = "".join(f"  {row.get(field, NOT_REPORTED)}" for field in token_fields)
         cost = "n/a" if row["cost"] is None else f"${row['cost']:.2f}"
-        print(f"{row['worker']:<{width}}  {rate:>15}  {row['attempts']:>8}" + f"  {cost}" * costs)
+        print(f"{row['worker']:<{width}}  {rate:>15}  {row['attempts']:>8}{tokens}" + f"  {cost}" * costs)
 
 
 def brief_metrics(audit: dict[int, list[dict]]) -> list[dict]:
@@ -615,8 +632,11 @@ def resolve(repo: str | None) -> Config:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="factory stats", description=__doc__)
     parser.add_argument("--json", action="store_true", help="print metric rows as JSON")
-    parser.add_argument("--by-worker", action="store_true", help="split gate pass rate, attempts and known cost by claim label")
+    parser.add_argument("--by-worker", action="store_true",
+                        help="split gate pass rate, attempts, reported token usage and known cost by claim label")
     parser.add_argument("--by-brief", action="store_true", help="split first-gate pass rate by tickets with/without a brief")
+    parser.add_argument("--stages", action="store_true",
+                        help="last successful triage, dispatch and watch pass for this repository")
     parser.add_argument("--escapes", action="store_true",
                         help="candidate escaped defects: closed bugs whose fix changed lines an earlier agent ticket wrote")
     parser.add_argument("--repo", metavar="OWNER/NAME",
@@ -630,6 +650,16 @@ def main(argv: list[str]) -> int:
     if not args.escapes and not journal.is_file():
         raise SystemExit(f"factory stats: no journal at {journal}; this is not the dispatcher's root. "
                          f'Set [repo."{cfg.repo}"].path in {config.host_config_path()} or pass --repo owner/name')
+    if args.stages:
+        passes = lifecycle.last_successful_passes(journal)
+        result = {"repository": cfg.repo, "last_successful_pass": passes}
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            print(f"repository: {cfg.repo}")
+            for stage, timestamp in passes.items():
+                print(f"{stage}: {timestamp or 'never'}")
+        return 0
     if args.escapes:
         rows = escapes()
     elif args.promotions:

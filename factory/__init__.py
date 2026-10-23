@@ -1,3 +1,3 @@
 """factory: a label-driven autonomous ticket pipeline for any GitHub repo."""
 
-__version__ = "0.4.2"
+__version__ = "0.4.6"

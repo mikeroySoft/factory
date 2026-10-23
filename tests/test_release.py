@@ -31,6 +31,7 @@ class ReleaseTest(unittest.TestCase):
         (self.repo / "factory").mkdir()
         (self.repo / "factory" / "__init__.py").write_text('__version__ = "0.0.1"\n')
         (self.repo / "CHANGELOG.md").write_text("# Changelog\n\n## Unreleased\n\n- shipped work\n")
+        self.write_release_docs()
         (self.repo / ".gitignore").write_text(".factory/\n")
         (self.repo / ".factory.toml").write_text('[repo]\nslug = "acme/widgets"\n')
         self.git(self.repo, "add", ".")
@@ -220,6 +221,7 @@ class ReleaseTest(unittest.TestCase):
         self.git(self.repo, "push", "-q", "origin", "HEAD:release/v0.0.2")
         self.git(self.repo, "push", "-q", "origin", "HEAD:main")
         self.git(self.repo, "tag", "-a", "v0.0.2", landed, "-m", "local only")
+        self.enterContext(mock.patch.object(release, "_gh_release", return_value=subprocess.CompletedProcess([], 1, "", "")))
         reason = release.run(self.cfg)
         second = release.run(self.cfg)
         self.assertIn("released v0.0.2", reason)
@@ -297,6 +299,135 @@ class ReleaseTest(unittest.TestCase):
         self.assertEqual(first, {"human_rate": 0.6, "first_pass": 0.5, "tickets": 17})
         second = release.next_bar(first, measured)
         self.assertEqual(second, {"human_rate": 0.4, "first_pass": 0.75, "tickets": 17})
+
+    def land_release(self) -> None:
+        self.tag_and_advance({"human_rate": 0.0, "first_pass": 1.0, "tickets": 1})
+        self.events()
+        release._update_release_files(self.cfg, self.repo, "0.0.1", "0.0.2")
+        self.git(self.repo, "add", "factory/__init__.py", "CHANGELOG.md")
+        self.git(self.repo, "commit", "-q", "-m", "Release 0.0.2")
+        self.git(self.repo, "push", "-q", "origin", "HEAD:main")
+
+    def release_rows(self) -> list[tuple[str, str]]:
+        return [(row["outcome"], row["tag"]) for row in lifecycle.read_events(self.cfg.factory / "events.jsonl")
+                if row["event"] == "release"]
+
+    @staticmethod
+    def gh_result(code: int, stderr: str = "") -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess([], code, "", stderr)
+
+    def test_tag_publishes_github_release_with_changelog_section(self) -> None:
+        self.land_release()
+        with mock.patch.object(release, "_gh_release",
+                               side_effect=[self.gh_result(1, "release not found"), self.gh_result(0)]) as gh:
+            reason = release.run(self.cfg)
+        self.assertIn("released v0.0.2", reason)
+        self.assertEqual(gh.call_args_list, [
+            mock.call(self.cfg, "view", "v0.0.2"),
+            mock.call(self.cfg, "create", "v0.0.2", "--verify-tag", "--latest", "--title", "v0.0.2",
+                      "--notes-file", "-", notes="- shipped work"),
+        ])
+        self.assertEqual(self.release_rows(), [("released", "v0.0.2"), ("published", "v0.0.2")])
+        with mock.patch.object(release, "_gh_release") as gh:
+            self.assertIn("no changes since v0.0.2", release.run(self.cfg))
+        gh.assert_not_called()
+
+    def test_existing_github_release_is_left_alone(self) -> None:
+        self.land_release()
+        with mock.patch.object(release, "_gh_release", return_value=self.gh_result(0)) as gh:
+            self.assertIn("released v0.0.2", release.run(self.cfg))
+        gh.assert_called_once_with(self.cfg, "view", "v0.0.2")
+        self.assertEqual(self.release_rows(), [("released", "v0.0.2"), ("published", "v0.0.2")])
+
+    def test_failed_github_release_is_journaled_and_retried_next_pass(self) -> None:
+        self.land_release()
+        with mock.patch.object(release, "_gh_release",
+                               side_effect=[self.gh_result(1), self.gh_result(1, "HTTP 502")]):
+            reason = release.run(self.cfg)
+        self.assertIn("released v0.0.2", reason)
+        self.assertIn("HTTP 502", reason)
+        self.assertTrue(self.git(self.origin, "rev-parse", "v0.0.2"))
+        self.assertEqual(self.release_rows(), [("released", "v0.0.2"), ("publish_failed", "v0.0.2")])
+        with mock.patch.object(release, "_gh_release",
+                               side_effect=[self.gh_result(1), self.gh_result(0)]) as gh:
+            self.assertIn("no changes since v0.0.2", release.run(self.cfg))
+        self.assertEqual(gh.call_args_list[1].args[1:3], ("create", "v0.0.2"))
+        self.assertEqual(self.release_rows()[-1], ("published", "v0.0.2"))
+        with mock.patch.object(release, "_gh_release") as gh:
+            release.run(self.cfg)
+        gh.assert_not_called()
+
+    def write_release_docs(self) -> None:
+        (self.repo / "README.md").write_text(
+            "```sh\n"
+            "uv tool install git+https://github.com/mikeroySoft/factory@stable   # stable\n"
+            "uv tool install git+https://github.com/mikeroySoft/factory@v0.0.1   # a specific release\n"
+            "```\n"
+        )
+        (self.repo / "docs").mkdir(exist_ok=True)
+        (self.repo / "docs" / "index.html").write_text(
+            "<code>uv tool install git+https://github.com/mikeroySoft/factory@v0.0.1</code>\n"
+            '<p class="release-note"><a href="#changelog">'
+            "Latest release: v0.0.1 · January 1, 2026</a></p>\n"
+            '<ol class="history">\n'
+            '  <li class="release">\n'
+            '    <span class="chip chip-success">Latest release</span>\n'
+            '    <a href="/v0.0.1">v0.0.1</a>\n'
+            "  </li>\n"
+            "</ol>\n"
+        )
+
+    def test_release_bump_updates_and_stages_public_documentation(self) -> None:
+        with (self.repo / "CHANGELOG.md").open("a") as changelog:
+            changelog.write(r"- matches \d and C:\new" + "\n")
+        self.git(self.repo, "add", "CHANGELOG.md")
+        self.git(self.repo, "commit", "-q", "-m", "add release notes")
+        self.tag_and_advance({"human_rate": 0.0, "first_pass": 1.0, "tickets": 1})
+        self.events()
+        with mock.patch.object(release, "_pulls", return_value=[]), \
+                mock.patch.object(release, "_open_pull", return_value={"number": 12}), \
+                mock.patch.object(release, "ci_passes", return_value=True), \
+                mock.patch.object(release, "gate_passes", return_value=True):
+            reason = release.run(self.cfg)
+        self.assertIn("opened release PR #12 for v0.0.2", reason)
+        readme = self.git(self.origin, "show", "release/v0.0.2:README.md")
+        page = self.git(self.origin, "show", "release/v0.0.2:docs/index.html")
+        changelog = self.git(self.origin, "show", "release/v0.0.2:CHANGELOG.md")
+        version = self.git(self.origin, "show", "release/v0.0.2:factory/__init__.py")
+        self.assertIn('__version__ = "0.0.2"', version)
+        self.assertRegex(changelog, r"## 0\.0\.2 — \d{4}-\d{2}-\d{2}")
+        self.assertIn("factory@stable", readme)
+        self.assertIn("factory@v0.0.2   # a specific release", readme)
+        self.assertIn("factory@v0.0.2</code>", page)
+        self.assertRegex(page, r"Latest release: v0\.0\.2 · [A-Z][a-z]+ \d{1,2}, \d{4}")
+        self.assertLess(page.index(">v0.0.2</a>"), page.index(">v0.0.1</a>"))
+        self.assertIn("<li>shipped work</li>", page)
+        self.assertIn(r"<li>matches \d and C:\new</li>", page)
+        self.assertEqual(page.count('<span class="chip chip-success">Latest release</span>'), 1)
+
+    def test_release_bump_fails_when_a_documentation_spot_is_missing(self) -> None:
+        missing_spots = {
+            "README.md specific-release install pin": (
+                "README.md", "factory@v0.0.1", "factory@main"
+            ),
+            "docs/index.html install-command version pin": (
+                "docs/index.html", "factory@v0.0.1</code>", "factory@main</code>"
+            ),
+            "docs/index.html latest-release line": (
+                "docs/index.html", "Latest release:", "Current release:"
+            ),
+            "docs/index.html changelog history": (
+                "docs/index.html", '<ol class="history">', '<ol class="releases">'
+            ),
+        }
+        for expected, (relative, present, replacement) in missing_spots.items():
+            with self.subTest(expected=expected):
+                self.new_repo()
+                self.write_release_docs()
+                path = self.repo / relative
+                path.write_text(path.read_text().replace(present, replacement))
+                with self.assertRaisesRegex(ValueError, expected):
+                    release._update_release_files(self.cfg, self.repo, "0.0.1", "0.0.2")
 
 
 if __name__ == "__main__":

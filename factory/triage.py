@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -18,8 +19,9 @@ import urllib.error
 import urllib.request
 from contextlib import nullcontext
 from datetime import datetime, timedelta
+from pathlib import Path
 
-from factory import config, lifecycle
+from factory import config, lifecycle, onboard
 from factory.config import (
     LABEL_AGENT,
     LABEL_APPROVED,
@@ -35,6 +37,10 @@ from factory.config import (
 cfg: Config
 LLM_URL = os.environ.get("FACTORY_LLM_URL", config.DEFAULT_LLM_URL)
 LLM_MODEL = os.environ.get("FACTORY_LLM_MODEL", config.DEFAULT_LLM_MODEL)
+LOGIN: str | None = None  # `gh` login this process posts as; read once per process
+PROBE_FAILURES = 3
+PROBE_COOLDOWN = 15 * 60
+PROBE_TIMEOUT = 3
 
 
 def configure(c: Config) -> None:
@@ -42,6 +48,142 @@ def configure(c: Config) -> None:
     cfg = c
     LLM_URL = os.environ.get("FACTORY_LLM_URL", cfg.llm_url)
     LLM_MODEL = os.environ.get("FACTORY_LLM_MODEL", cfg.llm_model)
+
+
+def models_url(c: Config) -> str:
+    return f"{c.llm_url.rsplit('/chat/completions', 1)[0].rstrip('/')}/models"
+
+
+def probe_endpoint(c: Config, *, opener=None) -> tuple[bool, str]:
+    endpoint = models_url(c)
+    opener = opener or urllib.request.urlopen
+    try:
+        with opener(endpoint, timeout=PROBE_TIMEOUT):
+            return True, "ready"
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = exc.read(1024).decode(errors="replace") or str(exc.reason)
+        finally:
+            exc.close()
+        if exc.code == 503 and "loading model" in detail.casefold():
+            return True, "loading model"
+        return False, f"HTTP {exc.code}: {detail}"
+    except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+def _probe_state(path) -> dict:
+    try:
+        state = json.loads(path.read_text())
+    except (OSError, ValueError, TypeError):
+        return {"failures": 0, "last_restart": None}
+    if not isinstance(state, dict):
+        return {"failures": 0, "last_restart": None}
+    failures = state.get("failures")
+    last_restart = state.get("last_restart")
+    return {
+        "failures": failures if type(failures) is int and failures >= 0 else 0,
+        "last_restart": last_restart if type(last_restart) in (int, float) else None,
+    }
+
+
+def _write_probe_state(path, state: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(state, separators=(",", ":")) + "\n")
+    os.replace(temporary, path)
+
+
+def _restart_service(service: str) -> bool:
+    result = subprocess.run(
+        ["systemctl", "--user", "restart", service],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode:
+        print(
+            f"triage probe: could not restart {service}: "
+            f"{result.stderr.strip() or result.returncode}",
+            file=sys.stderr,
+        )
+    return result.returncode == 0
+
+
+def _probe_paths(c: Config, endpoint: str) -> tuple[Path, Path]:
+    if not c.triage_service:
+        base = c.factory / "triage-probe"
+    else:
+        state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+        key = hashlib.sha256(f"{c.triage_service}\n{endpoint}".encode()).hexdigest()[:16]
+        base = state_home / "factory" / f"triage-probe-{key}"
+    return base.with_suffix(".json"), base.with_suffix(".lock")
+
+
+def run_probe(c: Config, *, now: float | None = None) -> int:
+    """Probe the model endpoint once, persisting failure and restart-cooldown state."""
+    endpoint = models_url(c)
+    state_path, lock_path = _probe_paths(c, endpoint)
+    c.factory.mkdir(parents=True, exist_ok=True)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as state_lock:
+        fcntl.flock(state_lock, fcntl.LOCK_EX)
+        state = _probe_state(state_path)
+        alive, detail = probe_endpoint(c)
+        if alive:
+            state["failures"] = 0
+            _write_probe_state(state_path, state)
+            print(f"triage probe: {detail} at {endpoint}")
+            return 0
+
+        state["failures"] = min(state["failures"] + 1, PROBE_FAILURES)
+        current = time.time() if now is None else now
+        service = c.triage_service
+        with lifecycle.scope(c.factory / "events.jsonl", "triage-probe", lazy=True) as execution:
+            execution.outcome = "mechanism_failure"
+            execution.reason = "triage_endpoint_unavailable"
+            execution.emit(
+                "result",
+                endpoint=endpoint,
+                error=detail,
+                failures=state["failures"],
+                service=service,
+            )
+            last_restart = state["last_restart"]
+            if (
+                service
+                and state["failures"] >= PROBE_FAILURES
+                and (last_restart is None or current - last_restart >= PROBE_COOLDOWN)
+            ):
+                state["last_restart"] = current
+                _write_probe_state(state_path, state)
+                succeeded = _restart_service(service)
+                execution.emit("result", service=service, restarted=True, succeeded=succeeded)
+                print(f"triage probe: {'restarted' if succeeded else 'restart failed for'} {service}")
+            else:
+                _write_probe_state(state_path, state)
+                print(f"triage probe: failure {state['failures']}/{PROBE_FAILURES}: {detail}")
+        return 1
+
+
+def login() -> str:
+    global LOGIN
+    if LOGIN is None:
+        LOGIN = onboard.gh_login(dict(os.environ))
+    return LOGIN
+
+
+def identity_mismatch() -> str | None:
+    """Why this process must not post, or None. With `[install].dispatch_env` the factory
+    posts as the dispatcher account; a triage whose `gh` authenticates as anyone else (an
+    owner shell, a unit installed without that env) would post triage as the wrong login."""
+    dispatch_env = cfg.install.get("dispatch_env")
+    if not dispatch_env:
+        return None  # no separate dispatcher identity is configured
+    expected = onboard.gh_login({**os.environ, **cfg.install["env"], **dispatch_env})
+    if expected and login().casefold() == expected.casefold():
+        return None
+    return f"gh authenticates as {login() or 'nobody'}, not the configured dispatcher {expected or '(unknown)'}"
 
 
 LABEL_TABLE = "\n".join(
@@ -59,6 +201,21 @@ LABEL_TABLE = "\n".join(
 )
 
 DECISIONS = (LABEL_AGENT, LABEL_INFO, LABEL_HUMAN, config.LABEL_WONTFIX)
+
+
+class _Decision(dict):
+    def __init__(self, value: dict, *, actor: str, name: str, cost: dict | None = None) -> None:
+        super().__init__(value)
+        self.trace_actor = actor
+        self.trace_name = name
+        self.trace_cost = cost
+
+
+class _ModelReply(str):
+    def __new__(cls, value: str, cost: dict | None = None):
+        reply = super().__new__(cls, value)
+        reply.cost = cost
+        return reply
 
 ACCEPTANCE_HINTS = re.compile(
     r"acceptance|exit gate|verification|expected behavior|steps to reproduce",
@@ -78,16 +235,18 @@ WATCH_BRIEF = (
 
 
 def watch_filed(issue: dict) -> bool:
-    """Filed by this repository's `factory watch`: its journal recorded the issue number, so a
+    """Filed by `factory watch`: this repository's journal recorded the issue number, or the
+    account this triage posts as wrote it (another install's watch routed it here), so a
     hand-written issue cannot copy the format to skip triage."""
     labels = {label.get("name") for label in issue.get("labels", [])}
-    return (
-        issue.get("number") in {row.get("issue") for row in lifecycle.read_events(cfg.factory / "events.jsonl")
-                                if row.get("event") == "watch"}
-        and bool(WATCH_FINGERPRINT.match(issue.get("body") or ""))
-        and str(issue.get("title") or "").startswith(WATCH_TITLE)
-        and "bug" in labels
-    )
+    if not (WATCH_FINGERPRINT.match(issue.get("body") or "")
+            and str(issue.get("title") or "").startswith(WATCH_TITLE) and "bug" in labels):
+        return False
+    if issue.get("number") in {row.get("issue") for row in lifecycle.read_events(cfg.factory / "events.jsonl")
+                               if row.get("event") == "watch"}:
+        return True
+    author = (issue.get("author") or {}).get("login") or ""
+    return bool(author) and author.casefold() == login().casefold()
 
 def deterministic_needs_info(body: str, comments: str) -> str | None:
     """Cheap lint before the LLM: obviously under-specified -> needs-info."""
@@ -202,6 +361,7 @@ class EndpointTimeout(SystemExit):
 
 
 def call_llm(messages: list[dict], execution=None) -> str:
+    started = time.monotonic()
     payload = json.dumps(
         {
             "model": LLM_MODEL,
@@ -232,8 +392,23 @@ def call_llm(messages: list[dict], execution=None) -> str:
         )
         # URLError(TimeoutError) is a connect timeout (endpoint unreachable); a bare one is a slow model.
         raise (EndpointTimeout if isinstance(exc, TimeoutError) else SystemExit)(2) from exc
-    _record_usage(execution, _usage_fields(body))
-    return body["choices"][0]["message"]["content"]
+    usage = _usage_fields(body)
+    _record_usage(execution, usage)
+    cost = None
+    if usage is not None:
+        reported = body["usage"]
+        details = reported.get("prompt_tokens_details")
+        cached = details.get("cached_tokens") if isinstance(details, dict) else None
+        if type(cached) is not int or not 0 <= cached <= usage["prompt_tokens"]:
+            rate = usage.get("prefix_cache_hit_rate")
+            cached = int(usage["prompt_tokens"] * rate) if type(rate) in (int, float) and 0 <= rate <= 1 else 0
+        cost = {
+            "prompt_tokens": usage["prompt_tokens"],
+            "completion_tokens": usage["completion_tokens"],
+            "cached_tokens": cached,
+            "seconds": time.monotonic() - started,
+        }
+    return _ModelReply(body["choices"][0]["message"]["content"], cost)
 
 
 def parse_decision(text: str) -> dict | None:
@@ -259,7 +434,7 @@ def fetch_issue(number: int, execution=None) -> dict:
         "view",
         str(number),
         "--json",
-        "number,title,body,comments,labels,state,updatedAt",
+        "number,title,body,comments,labels,state,updatedAt,author",
         execution=execution,
     )
     return json.loads(raw)
@@ -283,12 +458,12 @@ def unchanged_since_triage(issue: dict) -> bool:
 def triage_issue(issue: dict, execution=None) -> dict | None:
     """Choose a deterministic route where possible, otherwise ask the model."""
     if watch_filed(issue):
-        return {
+        return _Decision({
             "decision": LABEL_AGENT,
             "rationale": "Factory watch evidence requires an agent investigation.",
             "question": "",
             "brief": WATCH_BRIEF,
-        }
+        }, actor="deterministic", name="watch_filed")
     comments = "\n\n".join(
         f"Comment by {c.get('author', {}).get('login', '?')}:\n{c.get('body', '')}"
         for c in issue.get("comments", [])
@@ -296,12 +471,12 @@ def triage_issue(issue: dict, execution=None) -> dict | None:
     body = issue.get("body") or ""
     question = deterministic_needs_info(body, comments)
     if question:
-        return {
+        return _Decision({
             "decision": LABEL_INFO,
             "rationale": "Deterministic pre-check: under-specified for the factory.",
             "question": question,
             "brief": "",
-        }
+        }, actor="deterministic", name="deterministic_needs_info")
     user_msg = (
         f"Issue #{issue['number']}: {issue['title']}\n\n"
         f"Body:\n{body or '(empty)'}\n\n"
@@ -311,11 +486,18 @@ def triage_issue(issue: dict, execution=None) -> dict | None:
         {"role": "system", "content": system_prompt()},
         {"role": "user", "content": user_msg},
     ]
+    costs = []
     for _attempt in range(2):
         reply = call_llm(messages, execution=execution)
+        if getattr(reply, "cost", None) is not None:
+            costs.append(reply.cost)
         decision = parse_decision(reply)
         if decision is not None:
-            return decision
+            cost = None if not costs else {
+                key: sum(value[key] for value in costs)
+                for key in ("prompt_tokens", "completion_tokens", "cached_tokens", "seconds")
+            }
+            return _Decision(decision, actor="model", name="triage", cost=cost)
         messages.append({"role": "assistant", "content": reply})
         messages.append(
             {
@@ -327,7 +509,9 @@ def triage_issue(issue: dict, execution=None) -> dict | None:
     return None
 
 
-def apply_decision(number: int, decision: dict, dry_run: bool, execution=None) -> None:
+def apply_decision(
+    number: int, decision: dict, dry_run: bool, execution=None, issue: dict | None = None,
+) -> None:
     label = decision["decision"]
     rationale = decision["rationale"]
     if label == LABEL_INFO and decision["question"]:
@@ -343,6 +527,36 @@ def apply_decision(number: int, decision: dict, dry_run: bool, execution=None) -
         print(f"#{number} [dry-run] decision: {json.dumps(decision)}")
         print(f"#{number} [dry-run] comment: {comment}")
         return
+    from factory import __version__, dispatch, trace
+
+    issue = issue or {}
+    dispatch.configure(cfg)
+    rows = lifecycle.read_events(cfg.factory / "events.jsonl")
+    parent = next((row.get("parent") for row in reversed(rows)
+                   if row.get("event") == "issue-created" and row.get("ticket") == number), None)
+    actor_kind = getattr(decision, "trace_actor", "model")
+    actor_name = getattr(decision, "trace_name", "triage")
+    payload = trace.decision(
+        ticket=number,
+        stage="triage",
+        inputs=[{
+            "kind": "github_issue",
+            "ref": f"https://github.com/{cfg.repo}/issues/{number}",
+            "summary": issue.get("title") or f"issue #{number}",
+        }],
+        options=[{
+            "option": option,
+            "eligible": actor_kind == "model" or option == label,
+            "reason": rationale if option == label else f"{label} was selected instead",
+        } for option in DECISIONS],
+        chosen=label,
+        rationale=rationale,
+        causes=trace.ticket_causes(issue.get("title"), issue.get("body"), parent=parent),
+        cost=getattr(decision, "trace_cost", None),
+        actor={"kind": actor_kind, "name": actor_name,
+               "model": LLM_MODEL if actor_kind == "model" else None, "version": __version__},
+    )
+    dispatch.record("decision", **payload)
 
     gh("issue", "comment", str(number), "--body", comment, execution=execution)
     gh(
@@ -355,6 +569,27 @@ def apply_decision(number: int, decision: dict, dry_run: bool, execution=None) -
         label,
         execution=execution,
     )
+    if label == config.LABEL_WONTFIX:
+        terminal = trace.decision(
+            ticket=number,
+            stage="wontfix",
+            inputs=[{
+                "kind": "github_issue",
+                "ref": f"https://github.com/{cfg.repo}/issues/{number}",
+                "summary": issue.get("title") or f"issue #{number}",
+            }],
+            options=[
+                {"option": config.LABEL_WONTFIX, "eligible": True, "reason": rationale},
+                {"option": "continue", "eligible": False, "reason": "triage proposed wontfix"},
+            ],
+            chosen=config.LABEL_WONTFIX,
+            rationale=rationale,
+            causes=[{"decision_id": payload["decision_id"], "relation": "follows"}],
+            cost=None,
+            actor={"kind": "deterministic", "name": "triage.apply_decision",
+                   "model": None, "version": __version__},
+        )
+        dispatch.record("decision", **terminal)
 
 
 def list_needs_triage(execution=None) -> list[int]:
@@ -381,6 +616,15 @@ def timeouts_last(numbers: list[int]) -> list[int]:
     return sorted(numbers, key=lambda n: last.get(n) == "triage_endpoint_timeout")
 
 
+def probe_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="factory triage-probe",
+        description="Probe the configured triage endpoint and restart its service after repeated failures.",
+    )
+    parser.parse_args(argv)
+    return run_probe(config.load())
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="factory triage",
@@ -400,12 +644,22 @@ def main(argv: list[str]) -> int:
     with (
         lifecycle.scope(cfg.factory / "events.jsonl", "triage", lazy=True) if recording else nullcontext()
     ) as execution:
-        return execute(args, execution)
+        result = execute(args, execution)
+    if recording and result == 0:
+        lifecycle.record_stage_success(cfg.factory / "events.jsonl", "triage")
+    return result
 
 
 def execute(args: argparse.Namespace, execution) -> int:
     replay = bool(args.replay)
     from factory.plan import is_initiative  # plan -> evidence -> dashboard: import lazily
+
+    if not (replay or args.dry_run) and (refused := identity_mismatch()):
+        print(f"triage refused to post: {refused}. Run it from the factory unit, whose "
+              "[install].dispatch_env selects the dispatcher's gh config.", file=sys.stderr)
+        if execution:
+            execution.outcome, execution.reason = "not_admitted", "identity_mismatch"
+        return 1
 
     if replay:
         numbers = [int(n) for n in args.replay.split(",")]
@@ -471,7 +725,9 @@ def execute(args: argparse.Namespace, execution) -> int:
                         if replay:
                             print(f"#{number}: {json.dumps(decision)}")
                         else:
-                            apply_decision(number, decision, args.dry_run, execution=ticket_execution)
+                            apply_decision(
+                                number, decision, args.dry_run, execution=ticket_execution, issue=issue,
+                            )
                         if ticket_execution:
                             ticket_execution.reason = decision["decision"]
                             if decision["decision"] != LABEL_AGENT:
