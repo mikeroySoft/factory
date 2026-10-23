@@ -263,8 +263,7 @@ def signals(cfg: config.Config, events: list[dict]) -> list[dict]:
 
 
 def title(signal: dict) -> str:
-    prefix = "factory host condition" if signal["kind"] == "host" else "factory runtime failure"
-    return f"{prefix}: {signal['kind']} {signal['stage']} {signal['key']}"[:200]
+    return f"factory runtime failure: {signal['kind']} {signal['stage']} {signal['key']}"[:200]
 
 
 def evidence(signal: dict) -> list[str]:

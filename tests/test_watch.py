@@ -406,6 +406,28 @@ class PersistentHostConditionTest(unittest.TestCase):
 
         self.assertEqual(loaded.watch_host_failure_minutes, 15)
 
+    def test_host_condition_keeps_watch_triage_route_until_success(self) -> None:
+        self.journal(*self.failures(70, 5))
+        fingerprint = watch.fingerprint("host", "triage_endpoint_unavailable")
+
+        signals = {signal["fingerprint"]: signal for signal in watch.signals(
+            self.cfg, lifecycle.read_events(dispatch.EVENTS)
+        )}
+        self.assertIn(fingerprint, signals)
+        self.assertEqual(
+            watch.title(signals[fingerprint]),
+            "factory runtime failure: host triage triage_endpoint_unavailable",
+        )
+
+        self.journal(exit_row("triage", "completed", None))
+        self.assertNotIn(
+            fingerprint,
+            {signal["fingerprint"] for signal in watch.signals(
+                self.cfg, lifecycle.read_events(dispatch.EVENTS)
+            )},
+        )
+
+
 
 if __name__ == "__main__":
     unittest.main()
