@@ -25,7 +25,7 @@ from pathlib import Path
 from urllib.parse import quote, urlencode
 from uuid import uuid4
 
-from factory import brief, briefing, config, dashboard, runtime_events, runtime_local
+from factory import brief, briefing, config, dashboard, lifecycle, runtime_events, runtime_local
 
 REQUEST_CAP = 4096
 READ_SECONDS = 90
@@ -1362,6 +1362,30 @@ def local_inventory(cfg: config.Config, result: dict) -> tuple[set[int], dict[in
     return numbers, attempts
 
 
+def collect_stage_success(cfg: config.Config, result: dict) -> None:
+    path = cfg.factory / lifecycle.STAGE_SUCCESS_NAME
+    try:
+        state = os.lstat(path)
+        if not stat.S_ISREG(state.st_mode):
+            raise OSError
+        entry = briefing.bounded_file(cfg.factory, lifecycle.STAGE_SUCCESS_NAME, 4096)
+        if entry is None or entry[1]:
+            raise OSError
+        passes = lifecycle.parse_stage_success(entry[0])
+    except FileNotFoundError:
+        passes = dict.fromkeys(lifecycle.PASS_STAGES)
+    except (OSError, ValueError):
+        result["last_successful_pass"] = None
+        failed(result, EvidenceError(
+            "stage_success_unavailable", "Factory pass-success evidence is unavailable.",
+            lifecycle.STAGE_SUCCESS_NAME, "stage_success",
+        ))
+        return
+    result["last_successful_pass"] = passes
+    result["sources"].append(source("Last successful Factory pass per installed stage", passes,
+                                    path=f".factory/{lifecycle.STAGE_SUCCESS_NAME}"))
+
+
 def audit_membership(cfg: config.Config, result: dict) -> dict:
     """Bounded, read-only audit-trail membership: which ticket numbers recorded
     evidence in events.jsonl, and whether that claim is complete. The dashboard
@@ -1449,6 +1473,7 @@ def pull_record(value: dict) -> dict:
 
 
 def collect_cases(req: dict, result: dict, cfg: config.Config, deadline: float) -> None:
+    collect_stage_success(cfg, result)
     gh = GitHub(req, result, deadline)
     runtime = runtime_events.project(cfg.factory / "events.jsonl", [(cfg.lock, "host"), (cfg.factory / "locks" / "merge.lock", "repository")])
     result["sources"].append(source("Local runtime observation", runtime))

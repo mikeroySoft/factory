@@ -469,4 +469,6 @@ def main(argv: list[str]) -> int:
     dispatch.configure(config.load())
     with nullcontext() if args.dry_run else lifecycle.scope(dispatch.EVENTS, "watch", lazy=True):
         run_pass(dispatch.cfg, args.dry_run)
+    if not args.dry_run:
+        lifecycle.record_stage_success(dispatch.EVENTS, "watch")
     return 0

@@ -2648,7 +2648,10 @@ def main(argv: list[str]) -> int:
                     "number,title,body,labels,assignees",
                 ]
             )
-            return 1 if process_ticket(issue, args.budget_min, args.dry_run, forced=True) is False else 0
+            result = 1 if process_ticket(issue, args.budget_min, args.dry_run, forced=True) is False else 0
+            if not args.dry_run and result == 0:
+                lifecycle.record_stage_success(EVENTS, "dispatch")
+            return result
 
         def release_step(open_pr: bool) -> None:
             if not cfg.release_auto or args.dry_run:
@@ -2672,4 +2675,6 @@ def main(argv: list[str]) -> int:
         ticket_pass(args.budget_min, args.dry_run)
         learn_pass(args.dry_run)
         release_step(open_pr=True)
+        if not args.dry_run:
+            lifecycle.record_stage_success(EVENTS, "dispatch")
         return 0
