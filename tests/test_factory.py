@@ -3878,6 +3878,8 @@ class DispatchTest(unittest.TestCase):
             self.assertEqual((infra["pr"], infra["run"], infra["checks"]), (70, 123, ["compile"]))
             self.assertEqual(infra["evidence"][0]["steps_run"], False)
             self.assertTrue(any(e.get("event") == "ci-rerun" and e.get("ok") for e in events))
+            decisions = [e for e in events if e.get("event") == "decision" and e.get("stage") == "merge"]
+            self.assertEqual([decision["chosen"] for decision in decisions], ["ci-rerun"])
             # GitHub has not surfaced the rerun yet: still attempt 1, so wait, never rerun twice.
             escalations, removed, reruns, _ = self.cancelled_ci_pass([ok, self.cancelled()], starved)
             self.assertEqual((escalations, removed, reruns), ([], False, []))

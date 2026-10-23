@@ -2079,7 +2079,10 @@ def _run_in_progress(run_id: int) -> bool:
         return False
 
 
-def triage_cancelled(pr: int, checks: list[dict], dry_run: bool = False) -> list[dict]:
+def triage_cancelled(
+    pr: int, checks: list[dict], dry_run: bool = False,
+    ticket: int | None = None, head: str | None = None,
+) -> list[dict]:
     """Rebucket `cancel` rows so a CI runner outage is not a code failure.
 
     A cancel that ran steps becomes `fail`. An infra cancel reads `pending` while
@@ -2117,6 +2120,11 @@ def triage_cancelled(pr: int, checks: list[dict], dry_run: bool = False) -> list
             ok = run(["gh", "run", "rerun", str(run_id), "--failed", "--repo", REPO],
                      check=False).returncode == 0
             record("ci-rerun", pr=pr, run=run_id, attempt=attempt, checks=names, ok=ok)
+            if ticket is not None:
+                record_merge_decision(
+                    ticket, pr, "ci-rerun", f"reran CI run {run_id} after runner starvation",
+                    head, head, checks,
+                )
             bucket = "pending" if ok else "infra"
         elif rerun.get("ok") and attempt <= rerun["attempt"]:
             bucket = "pending"  # the rerun attempt is not visible yet
@@ -2202,6 +2210,11 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             files = "## Conflicting files\n\n" + ("\n".join(f"- `{path}`" for path in conflicts) or "(none listed)")
             withdraw(f"{verb} onto moved main conflicts ({why}); worktree {wt}", "refresh_conflict", extra=files)
             return False
+        record_merge_decision(
+            n, pr, "conflict-requeue",
+            f"{verb} onto moved {cfg.main} conflicted; requeued to a worker",
+            remote_head, remote_head, [],
+        )
         record("conflict-requeue", ticket=n, pr=pr, head=remote_head, verb=verb, files=conflicts, round=rounds + 1)
         run(["gh", "issue", "edit", str(n), "--repo", REPO,
              "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT, "--remove-assignee", "@me"], check=False)
@@ -2353,7 +2366,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 if execution:
                     execution.outcome, execution.reason = "not_eligible", "initiative"
                 continue
-            checks = triage_cancelled(pr_num, pr_checks(pr_num), dry_run)
+            checks = triage_cancelled(pr_num, pr_checks(pr_num), dry_run, n, listed_head)
             buckets: dict[str, int] = {}
             for c in checks:
                 buckets[c["bucket"]] = buckets.get(c["bucket"], 0) + 1
@@ -2499,7 +2512,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 )
                 execution.outcome, execution.reason = "project_escalation", "state_changed"
                 continue
-            latest_checks = triage_cancelled(pr_num, pr_checks(pr_num))
+            latest_checks = triage_cancelled(pr_num, pr_checks(pr_num), False, n, head)
             latest_failed = [c["name"] for c in latest_checks if c["bucket"] == "fail"]
             latest_starved = [c for c in latest_checks if c["bucket"] == "infra"]
             if latest_failed:

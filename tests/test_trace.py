@@ -397,6 +397,23 @@ class TracePartTwoTest(unittest.TestCase):
         self.assertFalse(options["ROUTE"]["eligible"])
         self.assertIn("worker_select_label", options["ROUTE"]["reason"])
 
+    def test_malformed_route_body_still_records_human_fallback(self):
+        from factory import manage
+
+        for route in ('{"add": "gpu"}', '{"add": null}', '{"add": ["gpu"], "remove": "default"}'):
+            with self.subTest(route=route):
+                output = f"DECISION: ROUTE\n{route}"
+                chosen, body, data = manage.parse(output, self.cfg.workers)
+                self.assertEqual(chosen, "HUMAN")
+                manage.record_manager_decision(
+                    7, chosen, body, data, output, self.cfg.workers, self.root / "packet.md"
+                )
+
+        self.assertEqual(len([
+            row for row in lifecycle.read_events(self.events)
+            if row.get("event") == "decision" and row.get("stage") == "manager"
+        ]), 3)
+
     def test_learn_decision_cites_every_evidence_ticket(self):
         from factory import learn
 

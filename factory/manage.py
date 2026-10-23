@@ -185,7 +185,8 @@ def record_manager_decision(
         except (ValueError, TypeError):
             requested_data = {}
         targets = (
-            requested_data.get("add", []) + requested_data.get("remove", [])
+            [value for key in ("add", "remove")
+             for value in (requested_data.get(key) if isinstance(requested_data.get(key), list) else [])]
             if requested == "ROUTE" and isinstance(requested_data, dict)
             else [requested_data.get("worker")] if isinstance(requested_data, dict) else []
         )
