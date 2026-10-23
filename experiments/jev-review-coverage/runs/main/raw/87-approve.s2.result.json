@@ -1,0 +1,31 @@
+{
+  "id": "87-approve.s2",
+  "case": "87-approve",
+  "sample": 2,
+  "split": "lockbox",
+  "ok": true,
+  "model": "jev-1.14.0",
+  "usage": {
+    "input_tokens": 2117,
+    "output_tokens": 280
+  },
+  "answers": {
+    "c001__f000": 0.78,
+    "c001__f001": 0.49,
+    "c001__whole": 0.94,
+    "c002__f000": 0.55,
+    "c002__f001": 0.55,
+    "c002__whole": 0.79,
+    "c003__f000": 0.71,
+    "c003__f001": 0.61,
+    "c003__whole": 0.91,
+    "c004__f000": 0.11,
+    "c004__f001": 0.49,
+    "c004__whole": 0.7
+  },
+  "estimated_usd": 8.891400000000001e-05,
+  "seconds": 0.207,
+  "request_sha256": "33cceae0a8a64e7c2ad12ca3e3cc699bb4af9af66f4585a73bec6db0f693d3ff",
+  "response_sha256": "1687280fab249a2103061a34f801416606d6533ca0a6ae1ba5a8cc440786c865",
+  "request_wire_bytes": 2319
+}
