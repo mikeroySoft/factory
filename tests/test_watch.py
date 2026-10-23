@@ -289,5 +289,123 @@ class WatchTest(unittest.TestCase):
         self.assertEqual(self.gh.created, [])
 
 
+class HostFakeGh(FakeGh):
+    def __call__(self, cmd, **kwargs) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "issue", "create"]:
+            result = super().__call__(cmd, **kwargs)
+            issue = self.issues[self.next_issue]
+            issue.update(assignees=[], comments=[],
+                         labels=[{"name": label} for label in cmd[cmd.index("--label") + 1].split(",")])
+            return result
+        self.calls.append(cmd)
+        if cmd[:3] == ["gh", "issue", "view"]:
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(self.issues[int(cmd[3])]), "")
+        if cmd[:3] == ["gh", "issue", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(
+                [{"number": n, "body": issue["body"]} for n, issue in self.issues.items()
+                 if issue["state"] == "OPEN"]), "")
+        if cmd[:3] == ["gh", "issue", "comment"]:
+            self.issues[int(cmd[3])]["comments"].append(
+                {"body": cmd[cmd.index("--body") + 1], "createdAt": lifecycle._now()})
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        if cmd[:3] == ["gh", "issue", "edit"]:
+            self.issues[int(cmd[3])]["body"] = cmd[cmd.index("--body") + 1]
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        if cmd[:3] == ["gh", "issue", "close"]:
+            self.issues[int(cmd[3])].update(state="CLOSED", closedAt=lifecycle._now())
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        raise AssertionError(f"unexpected command {cmd}")
+
+
+class PersistentHostConditionTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.cfg = config.Config(self.root, REPO)
+        self.cfg.factory.mkdir()
+        dispatch.configure(self.cfg)
+        self.gh = HostFakeGh()
+        for patch in (
+            mock.patch.object(dispatch, "run", self.gh),
+            mock.patch.object(watch, "failed_units", return_value=[]),
+            mock.patch.object(watch, "runtime_errors", return_value=[]),
+        ):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def journal(self, *rows: dict) -> None:
+        for row in rows:
+            lifecycle.append(dispatch.EVENTS, row)
+
+    @staticmethod
+    def ago(minutes: int) -> str:
+        return (datetime.now(UTC) - timedelta(minutes=minutes)).isoformat().replace("+00:00", "Z")
+
+    def failures(self, first: int, last: int) -> tuple[dict, dict]:
+        return (
+            exit_row("triage", "mechanism_failure", "triage_endpoint_unavailable", at=self.ago(first)),
+            exit_row("triage", "mechanism_failure", "triage_endpoint_unavailable", at=self.ago(last)),
+        )
+
+    def test_persistent_host_condition_files_with_evidence_and_host_label(self) -> None:
+        rows = self.failures(70, 5)
+        self.journal(*rows)
+
+        filed = watch.run_pass(self.cfg)
+
+        self.assertEqual(len(filed), 1)
+        create = self.gh.created[0]
+        self.assertEqual(create[create.index("--label") + 1], "bug,host,needs-triage")
+        body = create[create.index("--body") + 1]
+        self.assertIn("persistent host condition", body)
+        for row in rows:
+            self.assertIn(row["execution_id"], body)
+
+    def test_transient_host_condition_is_not_filed(self) -> None:
+        self.journal(*self.failures(10, 1))
+
+        self.assertEqual(watch.run_pass(self.cfg), [])
+        self.assertEqual(self.gh.calls, [])
+
+    def test_successful_triage_pass_clears_and_closes_host_condition(self) -> None:
+        self.journal(*self.failures(70, 5))
+        watch.run_pass(self.cfg)
+        self.journal(exit_row("triage", "completed", None))
+
+        with mock.patch.object(watch, "QUIET_PERIOD", timedelta(0)):
+            watch.run_pass(self.cfg)
+
+        self.assertEqual(self.gh.issues[101]["state"], "CLOSED")
+
+    def test_two_installs_dedupe_the_same_host_condition(self) -> None:
+        self.journal(*self.failures(70, 5))
+        watch.run_pass(self.cfg)
+
+        other_root = self.root / "other"
+        other = config.Config(other_root, "other/widgets")
+        other.factory.mkdir(parents=True)
+        dispatch.configure(other)
+        for row in self.failures(70, 5):
+            lifecycle.append(dispatch.EVENTS, row)
+        watch.run_pass(other)
+
+        self.assertEqual(len(self.gh.created), 1)
+        self.assertIn("- `other/widgets`", self.gh.issues[101]["body"])
+
+    def test_host_failure_threshold_is_configurable(self) -> None:
+        root = self.root / "configured"
+        root.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
+        (root / config.CONFIG_NAME).write_text(
+            '[repo]\nslug = "acme/widgets"\n[watch]\nhost_failure_minutes = 15\n'
+        )
+
+        with mock.patch.object(config, "host_config", return_value={}):
+            loaded = config.load(root)
+
+        self.assertEqual(loaded.watch_host_failure_minutes, 15)
+
+
 if __name__ == "__main__":
     unittest.main()
