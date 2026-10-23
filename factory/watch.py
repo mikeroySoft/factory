@@ -39,10 +39,10 @@ UNKNOWN_REASONS = ("check_timeout",)
 HOST_REASONS = ("worker_exit:", "triage_endpoint_", "github_command_failed")
 REPEAT_MIN = 3  # distinct tickets one escalation code must hit...
 REPEAT_DAYS = 7  # ...inside this trailing window to count as a factory defect
-# Ticket outcomes, not factory defects: an already-fixed ticket may produce `no_change`;
-# `review_revise` means review still requests changes after bounded review rounds, a
-# manager FIX, or a merge-stage refresh/rebase.
-OUTCOME_CODES = {"no_change", "review_revise"}
+# Ticket outcomes, not factory defects: `ci_failed` reports a PR's own failed checks;
+# an already-fixed ticket may produce `no_change`; `review_revise` means review still
+# requests changes after bounded review rounds, a manager FIX, or a merge-stage refresh/rebase.
+OUTCOME_CODES = {"ci_failed", "no_change", "review_revise"}
 OBSERVED = "## Observed by"
 COMMENT_PREFIX = "factory watch: observed in `"
 MAX_OPEN = 200  # newest open `bug` issues of the engine repo searched for a fingerprint
