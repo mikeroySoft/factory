@@ -222,9 +222,9 @@ class GateOutputEncodingTest(unittest.TestCase):
         command = [
             sys.executable,
             "-c",
-            "import os, time; os.write(1, bytes([255])); time.sleep(5)",
+            "import os, time; os.write(1, bytes([255])); time.sleep(30)",
         ]
-        with mock.patch.object(gate_module, "CHECK_TIMEOUT", 0.05):
+        with mock.patch.object(gate_module, "CHECK_TIMEOUT", 2):
             result = gate_module.timed(command)
         self.assertEqual(result.returncode, 124)
         self.assertIn("\ufffd", result.stdout)
