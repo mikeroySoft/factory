@@ -728,6 +728,57 @@ class WorkspaceHTTPTest(unittest.TestCase):
         self.assertEqual(config.load(self.root).max_active, 7)
 
 
+    def test_trace_requires_access_key(self) -> None:
+        status, _, body = self.request("GET", "/api/trace?ticket=7")
+        self.assertEqual(status, 401)
+        self.assertEqual(body["error"]["code"], "authentication_required")
+
+    def test_trace_rejects_missing_or_invalid_ticket(self) -> None:
+        for path in ("/api/trace", "/api/trace?ticket=nope", "/api/trace?ticket=0"):
+            with self.subTest(path=path):
+                status, _, body = self.request("GET", path, auth=True)
+                self.assertEqual(status, 400)
+                self.assertIn(body["error"]["code"], {"invalid_query", "invalid_request"})
+
+    def test_trace_returns_empty_graph_for_unknown_ticket(self) -> None:
+        from factory import trace
+
+        status, _, body = self.request("GET", "/api/trace?ticket=404", auth=True)
+        self.assertEqual(status, 200)
+        self.assertEqual(body, trace.explain([], 404))
+
+    def test_trace_returns_explain_projection_unchanged(self) -> None:
+        from factory import lifecycle, trace
+
+        row = {
+            "event": "decision",
+            **trace.decision(
+                ticket=7,
+                stage="triage",
+                inputs=[{"kind": "issue", "ref": "https://github.com/acme/widgets/issues/7",
+                         "summary": "Trace fixture"}],
+                options=[
+                    {"option": "ready-for-agent", "eligible": True, "reason": "selected"},
+                    {"option": "needs-info", "eligible": False, "reason": "complete"},
+                ],
+                chosen="ready-for-agent",
+                rationale="The ticket is complete.",
+                causes=[],
+                cost={"prompt_tokens": 10, "completion_tokens": 2, "seconds": 0.5},
+                actor={"kind": "model", "name": "triage", "model": "fixture", "version": "1"},
+                at="2026-10-23T10:00:00Z",
+                decision_id="00000000-0000-4000-8000-000000000007",
+            ),
+        }
+        lifecycle.append(self.cfg.factory / "events.jsonl", row)
+
+        status, _, body = self.request(
+            "GET", f"/api/trace?ticket=7&repository={REPOSITORY}", auth=True
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(body, trace.explain(trace.read_rows(self.cfg.factory / "events.jsonl"), 7))
+
+
 class WorkspaceRegistryTest(unittest.TestCase):
     def test_registered_main_overrides_same_slug_startup_but_key_stays_startup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -25,7 +25,7 @@ from pathlib import Path
 from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, urlsplit
 
-from factory import briefing, config, flow, runtime_events, runtime_local, settings
+from factory import briefing, config, flow, runtime_events, runtime_local, settings, trace
 from factory.config import Config
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
@@ -1012,6 +1012,11 @@ class Workspace:
     def _public_collection(value: dict) -> dict:
         return {key: item for key, item in value.items() if not key.startswith("_")}
 
+    def trace(self, slug: str, ticket: int) -> dict:
+        cfg = self.repository_config(slug)
+        return trace.explain(trace.read_rows(cfg.factory / "events.jsonl"), ticket)
+
+
     def data(self, slug: str, *, refresh: bool = False) -> dict:
         self.repository_config(slug)
         self.request_refresh(slug, force=refresh)
@@ -1688,6 +1693,24 @@ class Handler(BaseHTTPRequestHandler):
             if target.path == "/api/ticket-flow":
                 _query(target.query)
                 self._json(200, ticket_flow_data())
+                return
+            if target.path == "/api/trace":
+                values = _query(
+                    target.query, required={"ticket"}, optional={"repository"}
+                )
+                if (
+                    re.fullmatch(r"[1-9][0-9]{0,18}", values["ticket"]) is None
+                    or int(values["ticket"]) >= 2**63
+                ):
+                    raise WorkspaceError(
+                        "invalid_request", "ticket must be a positive integer"
+                    )
+                self._json(
+                    200,
+                    self.workspace.trace(
+                        self._repository(values), int(values["ticket"])
+                    ),
+                )
                 return
             if target.path == "/api/theme":
                 values = _query(target.query, required={"repository"})
