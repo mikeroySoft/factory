@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.4 — 2026-10-23
+
 - Worker and reviewer capabilities are explicit instead of tied to an `omp` executable name (#334): `[workers.<label>].transcript = "omp-session"` captures compatible JSONL for token usage, scoring and learning, while `[review].json_mode = true` enables OMP-compatible JSON review parsing. Commands named `omp` retain both defaults, undeclared workers still report usage as `n/a (not reported)`, and `factory stats --by-worker` now includes reported worker token totals.
 
 - `factory watch` no longer reports repeated `review_revise` escalations as engine defects (#324): every `review_revise` is a ticket outcome, whether bounded review rounds are exhausted, review after a manager `FIX` still requests changes, or fresh review after a merge-stage refresh/rebase requests changes.
