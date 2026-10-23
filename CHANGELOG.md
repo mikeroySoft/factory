@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Automatic release PRs now keep public installation guidance current (#351): `factory release` updates and stages the version file, `CHANGELOG.md`, the fixed-version install pins in `README.md` and `docs/index.html`, the project page's latest-release date, and a new page history entry built from that version's changelog notes. Every expected documentation spot must match exactly once or the release is refused.
+
 ## 0.4.5 — 2026-10-23
 
 - Opt-in worker profiles can select a stable profile name from a separate ticket label with `when = { label = "..." }`, apply profile-local environment variables, and record a pinned worker version. The Prime Agent pilot uses these fields to isolate telemetry-disabled state beneath the target repository's `.factory/`, retain OMP-compatible transcripts, and leave every non-pilot worker unchanged (#332).
@@ -17,7 +19,6 @@
 
 - Optional triage endpoint recovery (#335): host `[triage].service` makes `factory install` add a two-minute `GET <base>/models` liveness timer. Three consecutive failures restart the systemd user service, with a shared 15-minute cooldown across repositories; 503 `Loading model` remains healthy. Probe failures and restarts are lifecycle-journaled, while an unset service remains report-only and installs no probe timer. `factory doctor` reports the probe state.
 - Factory now exposes each repository's last successful `triage`, `dispatch`, and `watch` pass for District alerting (#337): successful non-dry-run passes atomically update `.factory/stage-success.json`; `factory stats --stages`, evidence `observe`/`inspect`, and `factory doctor` report the same timestamps without a GitHub read.
-- Automatic release PRs now keep public installation guidance current (#351): `factory release` updates and stages the version file, `CHANGELOG.md`, the fixed-version install pins in `README.md` and `docs/index.html`, the project page's latest-release date, and a new page history entry built from that version's changelog notes. Every expected documentation spot must match exactly once or the release is refused.
 
 ## 0.4.4 — 2026-10-23
 
