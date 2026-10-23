@@ -202,6 +202,21 @@ LABEL_TABLE = "\n".join(
 
 DECISIONS = (LABEL_AGENT, LABEL_INFO, LABEL_HUMAN, config.LABEL_WONTFIX)
 
+
+class _Decision(dict):
+    def __init__(self, value: dict, *, actor: str, name: str, cost: dict | None = None) -> None:
+        super().__init__(value)
+        self.trace_actor = actor
+        self.trace_name = name
+        self.trace_cost = cost
+
+
+class _ModelReply(str):
+    def __new__(cls, value: str, cost: dict | None = None):
+        reply = super().__new__(cls, value)
+        reply.cost = cost
+        return reply
+
 ACCEPTANCE_HINTS = re.compile(
     r"acceptance|exit gate|verification|expected behavior|steps to reproduce",
     re.IGNORECASE,
@@ -346,6 +361,7 @@ class EndpointTimeout(SystemExit):
 
 
 def call_llm(messages: list[dict], execution=None) -> str:
+    started = time.monotonic()
     payload = json.dumps(
         {
             "model": LLM_MODEL,
@@ -376,8 +392,23 @@ def call_llm(messages: list[dict], execution=None) -> str:
         )
         # URLError(TimeoutError) is a connect timeout (endpoint unreachable); a bare one is a slow model.
         raise (EndpointTimeout if isinstance(exc, TimeoutError) else SystemExit)(2) from exc
-    _record_usage(execution, _usage_fields(body))
-    return body["choices"][0]["message"]["content"]
+    usage = _usage_fields(body)
+    _record_usage(execution, usage)
+    cost = None
+    if usage is not None:
+        reported = body["usage"]
+        details = reported.get("prompt_tokens_details")
+        cached = details.get("cached_tokens") if isinstance(details, dict) else None
+        if type(cached) is not int or not 0 <= cached <= usage["prompt_tokens"]:
+            rate = usage.get("prefix_cache_hit_rate")
+            cached = int(usage["prompt_tokens"] * rate) if type(rate) in (int, float) and 0 <= rate <= 1 else 0
+        cost = {
+            "prompt_tokens": usage["prompt_tokens"],
+            "completion_tokens": usage["completion_tokens"],
+            "cached_tokens": cached,
+            "seconds": time.monotonic() - started,
+        }
+    return _ModelReply(body["choices"][0]["message"]["content"], cost)
 
 
 def parse_decision(text: str) -> dict | None:
@@ -427,12 +458,12 @@ def unchanged_since_triage(issue: dict) -> bool:
 def triage_issue(issue: dict, execution=None) -> dict | None:
     """Choose a deterministic route where possible, otherwise ask the model."""
     if watch_filed(issue):
-        return {
+        return _Decision({
             "decision": LABEL_AGENT,
             "rationale": "Factory watch evidence requires an agent investigation.",
             "question": "",
             "brief": WATCH_BRIEF,
-        }
+        }, actor="deterministic", name="watch_filed")
     comments = "\n\n".join(
         f"Comment by {c.get('author', {}).get('login', '?')}:\n{c.get('body', '')}"
         for c in issue.get("comments", [])
@@ -440,12 +471,12 @@ def triage_issue(issue: dict, execution=None) -> dict | None:
     body = issue.get("body") or ""
     question = deterministic_needs_info(body, comments)
     if question:
-        return {
+        return _Decision({
             "decision": LABEL_INFO,
             "rationale": "Deterministic pre-check: under-specified for the factory.",
             "question": question,
             "brief": "",
-        }
+        }, actor="deterministic", name="deterministic_needs_info")
     user_msg = (
         f"Issue #{issue['number']}: {issue['title']}\n\n"
         f"Body:\n{body or '(empty)'}\n\n"
@@ -455,11 +486,18 @@ def triage_issue(issue: dict, execution=None) -> dict | None:
         {"role": "system", "content": system_prompt()},
         {"role": "user", "content": user_msg},
     ]
+    costs = []
     for _attempt in range(2):
         reply = call_llm(messages, execution=execution)
+        if getattr(reply, "cost", None) is not None:
+            costs.append(reply.cost)
         decision = parse_decision(reply)
         if decision is not None:
-            return decision
+            cost = None if not costs else {
+                key: sum(value[key] for value in costs)
+                for key in ("prompt_tokens", "completion_tokens", "cached_tokens", "seconds")
+            }
+            return _Decision(decision, actor="model", name="triage", cost=cost)
         messages.append({"role": "assistant", "content": reply})
         messages.append(
             {
@@ -471,7 +509,9 @@ def triage_issue(issue: dict, execution=None) -> dict | None:
     return None
 
 
-def apply_decision(number: int, decision: dict, dry_run: bool, execution=None) -> None:
+def apply_decision(
+    number: int, decision: dict, dry_run: bool, execution=None, issue: dict | None = None,
+) -> None:
     label = decision["decision"]
     rationale = decision["rationale"]
     if label == LABEL_INFO and decision["question"]:
@@ -487,6 +527,36 @@ def apply_decision(number: int, decision: dict, dry_run: bool, execution=None) -
         print(f"#{number} [dry-run] decision: {json.dumps(decision)}")
         print(f"#{number} [dry-run] comment: {comment}")
         return
+    from factory import __version__, dispatch, trace
+
+    issue = issue or {}
+    dispatch.configure(cfg)
+    rows = lifecycle.read_events(cfg.factory / "events.jsonl")
+    parent = next((row.get("parent") for row in reversed(rows)
+                   if row.get("event") == "issue-created" and row.get("ticket") == number), None)
+    actor_kind = getattr(decision, "trace_actor", "model")
+    actor_name = getattr(decision, "trace_name", "triage")
+    payload = trace.decision(
+        ticket=number,
+        stage="triage",
+        inputs=[{
+            "kind": "github_issue",
+            "ref": f"https://github.com/{cfg.repo}/issues/{number}",
+            "summary": issue.get("title") or f"issue #{number}",
+        }],
+        options=[{
+            "option": option,
+            "eligible": actor_kind == "model" or option == label,
+            "reason": rationale if option == label else f"{label} was selected instead",
+        } for option in DECISIONS],
+        chosen=label,
+        rationale=rationale,
+        causes=trace.ticket_causes(issue.get("title"), issue.get("body"), parent=parent),
+        cost=getattr(decision, "trace_cost", None),
+        actor={"kind": actor_kind, "name": actor_name,
+               "model": LLM_MODEL if actor_kind == "model" else None, "version": __version__},
+    )
+    dispatch.record("decision", **payload)
 
     gh("issue", "comment", str(number), "--body", comment, execution=execution)
     gh(
@@ -634,7 +704,9 @@ def execute(args: argparse.Namespace, execution) -> int:
                         if replay:
                             print(f"#{number}: {json.dumps(decision)}")
                         else:
-                            apply_decision(number, decision, args.dry_run, execution=ticket_execution)
+                            apply_decision(
+                                number, decision, args.dry_run, execution=ticket_execution, issue=issue,
+                            )
                         if ticket_execution:
                             ticket_execution.reason = decision["decision"]
                             if decision["decision"] != LABEL_AGENT:
