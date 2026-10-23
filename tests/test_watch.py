@@ -429,14 +429,23 @@ class PersistentHostConditionTest(unittest.TestCase):
             )},
         )
 
-    def test_separated_host_blips_do_not_form_streak(self) -> None:
+    def test_success_separates_host_blips(self) -> None:
         self.journal(
             exit_row("manage", "mechanism_failure", "github_command_failed", at=self.ago(3 * 24 * 60)),
+            exit_row("manage", "completed", None, at=self.ago(2 * 24 * 60)),
             exit_row("manage", "mechanism_failure", "github_command_failed", at=self.ago(1)),
         )
 
         self.assertEqual(watch.run_pass(self.cfg), [])
         self.assertEqual(self.gh.calls, [])
+
+    def test_long_gap_between_host_failures_does_not_break_streak(self) -> None:
+        self.journal(
+            exit_row("manage", "mechanism_failure", "github_command_failed", at=self.ago(3 * 24 * 60)),
+            exit_row("manage", "mechanism_failure", "github_command_failed", at=self.ago(1)),
+        )
+
+        self.assertEqual(len(watch.run_pass(self.cfg)), 1)
 
 
 

@@ -82,14 +82,6 @@ def persistent_host_conditions(events: list[dict], minutes: int) -> dict[str, li
     for row in events:
         if reason := _host_reason(row):
             rows = streaks.setdefault(reason, [])
-            if rows:
-                try:
-                    gap = datetime.fromisoformat(str(row["at"])) - datetime.fromisoformat(str(rows[-1]["at"]))
-                except (KeyError, TypeError, ValueError):
-                    rows.clear()
-                else:
-                    if gap >= threshold:
-                        rows.clear()
             rows.append(row)
             continue
         if (row.get("event") != "lifecycle" or row.get("kind") != "exit"
