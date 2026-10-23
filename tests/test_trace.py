@@ -58,6 +58,19 @@ class TraceSchemaTest(unittest.TestCase):
         self.assertNotIn(token, json.dumps(row))
         self.assertIn("credential withheld", json.dumps(row))
 
+    def test_builder_normalizes_controls_before_scrubbing_secrets(self):
+        credential = "Bearer\x01ABCDEFGHIJKLMN"
+        row = decision(
+            7,
+            "triage",
+            "ready-for-agent",
+            "2026-10-23T10:00:00Z",
+            rationale=credential,
+            inputs=[{"kind": "issue", "ref": ".factory/events.jsonl", "summary": credential}],
+        )
+        self.assertIs(trace.validate(row), row)
+        self.assertNotIn("ABCDEFGHIJKLMN", json.dumps(row))
+
     def test_explain_builds_decision_and_cross_ticket_edges(self):
         triage_row = decision(7, "triage", "ready-for-agent", "2026-10-23T10:00:00Z")
         admission = decision(7, "admission", "ticket:7", "2026-10-23T10:01:00Z")

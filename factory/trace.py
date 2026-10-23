@@ -29,8 +29,8 @@ _REF = re.compile(r"#([1-9][0-9]*)")
 
 
 def _text(value: object, limit: int = TEXT_LIMIT) -> str:
-    text = _SECRET.sub("[credential withheld]", str(value or ""))
-    text = "".join(character if ord(character) >= 32 else " " for character in text)
+    text = "".join(character if ord(character) >= 32 else " " for character in str(value or ""))
+    text = _SECRET.sub("[credential withheld]", text)
     return text[:limit]
 
 
