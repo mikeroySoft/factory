@@ -67,6 +67,26 @@ its own `[repo."owner/name".dashboard] port` in the host config. The preflight c
 reserve the port until systemd starts the service: a later bind failure exits 1
 with a one-line diagnostic, and the existing systemd restart policy still applies.
 
+The liveness timer is opt-in. Set the systemd user service that owns the local
+model in the host config, then rerun `factory install`:
+
+```toml
+[defaults.triage]
+url = "http://127.0.0.1:11435/v1/chat/completions"
+service = "rocm-serve-ornith.service"
+```
+
+`factory install` then adds a per-repository two-minute timer that runs
+`factory triage-probe`. Each run sends `GET <triage base>/models` with a
+three-second timeout. HTTP 503 whose response says `Loading model` is alive;
+three consecutive failures restart the configured service. Restart state and
+the 15-minute cooldown are shared by repositories using the same service and
+endpoint, preventing their timers from restart-looping it. Every failed probe
+and restart is written to that repository's lifecycle journal. `factory doctor`
+reports whether the liveness timer is active. Without `service`, `factory
+install` removes any old probe units and the manual command only reports and
+journals failures; it never invokes `systemctl restart`.
+
 `factory doctor --json` includes a `fix` object on actionable drift rows only:
 `kind: patch` carries an advisory `diff` from the issue template to the shipped
 version; `kind: relocate` lists host-setting key paths and destination tables;
@@ -76,8 +96,8 @@ Relocation payloads omit values unless explicitly requested with
 values under their destination host tables. Treat that output as sensitive.
 Doctor never applies these repairs; text output is unchanged.
 
-Generated triage, dispatch and dashboard services use the interpreter selected by
-host-owned, optional `[install].python`, or `sys.executable` (the interpreter running
+Generated triage, triage-probe, dispatch and dashboard services use the interpreter
+selected by host-owned, optional `[install].python`, or `sys.executable` (the interpreter running
 `factory install`) when unset, followed by `-P -m factory`. Set
 `python = "/path/to/venv/bin/python"` under `[defaults.install]` or
 `[repo."owner/name".install]`; a committed `[install]` remains a host-setting warning.
@@ -90,7 +110,7 @@ a 10-second probe from the repository working directory. Validation snapshots th
 user manager environment read-only with `systemctl --user show-environment`,
 parses its assignments, applies the PATH rendered into units, then overlays
 `[install].env`. Failures stop installation before any mutation.
-The probe loads all three service commands and reports the loaded Factory version
+The probe loads every generated service command and reports the loaded Factory version
 and location. It checks every loaded service module origin (`factory`,
 `factory.cli`, `factory.triage`, `factory.dispatch` and `factory.dashboard`), with
 the selected interpreter's `purelib`/`platlib` context as appropriate, rejecting
@@ -279,6 +299,7 @@ landed on its own, and partial progress needs its own reviewed PR.
 | Command | What one invocation does |
 |---|---|
 | `factory triage` | Labels every `needs-triage` issue via the local model: `ready-for-agent` (with an agent brief), `needs-info` (with the question), `ready-for-human`, or `wontfix-proposal` (proposal comment and label; a human closes). An issue unchanged since its last triage comment is skipped. `--dry-run`, `--issue N`, `--replay a,b,c`. |
+| `factory triage-probe` | Sends `GET <triage base>/models` with a three-second timeout. A 503 `Loading model` response is alive. After three consecutive failures it restarts `[triage].service` at most once per 15 minutes; failures and restarts are lifecycle-journaled. With no service configured it reports only. |
 | `factory dispatch` | One stateless pass: fetch and detach the main checkout at `origin/<main>` before `.factory.toml` is read (a root with tracked or untracked changes outside `.factory/` exits 1 with a `root_dirty` dispatcher exit row naming the paths and does nothing, even when its config does not load) → upstream sync (stage a sync ticket) → merge stage (at most one PR) → review-only PR intake → manager → claim up to `max_active` tickets → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan from the checkout as it is. |
 | `factory manage` | First recommends directions for `needs-review` PRs, then `needs-viability` issues; then resolves untouched `ready-for-human` escalation packets within `[manager].rounds`; finally publishes one routed human handoff request per escalation whose automatic recovery is terminal (also without a manager). `--dry-run` lists eligible requests without inference or writes. |
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |

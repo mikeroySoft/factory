@@ -10,6 +10,7 @@ COMMANDS = {
     "doctor": ("onboard", "doctor", "check tools, auth, remotes, and the triage model"),
     "install": ("onboard", "install", "install the systemd user timer (and dashboard)"),
     "triage": ("triage", "main", "label needs-triage issues with the local model"),
+    "triage-probe": ("triage", "probe_main", "probe the triage endpoint and restart its configured service"),
     "dispatch": ("dispatch", "main", "one pass: sync, merge stage, claim and work tickets"),
     "manage": ("manage", "main", "recommend PR/issue viability, resolve untouched escalations, publish terminal human handoffs"),
     "gate": ("gate", "main", "run the deterministic quality gate in this worktree"),
