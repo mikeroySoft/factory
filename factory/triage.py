@@ -158,7 +158,7 @@ def run_probe(c: Config, *, now: float | None = None) -> int:
                 state["last_restart"] = current
                 _write_probe_state(state_path, state)
                 succeeded = _restart_service(service)
-                execution.emit("restart", service=service, succeeded=succeeded)
+                execution.emit("result", service=service, restarted=True, succeeded=succeeded)
                 print(f"triage probe: {'restarted' if succeeded else 'restart failed for'} {service}")
             else:
                 _write_probe_state(state_path, state)

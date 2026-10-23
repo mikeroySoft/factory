@@ -253,7 +253,8 @@ class TriageLivenessProbe(unittest.TestCase):
             triage.PROBE_FAILURES + 3,
         )
         self.assertEqual(
-            [(row["service"], row["succeeded"]) for row in rows if row.get("kind") == "restart"],
+            [(row["service"], row["succeeded"]) for row in rows
+             if row.get("kind") == "result" and row.get("restarted")],
             [("rocm-serve-ornith.service", True)],
         )
 
