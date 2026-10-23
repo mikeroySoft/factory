@@ -318,6 +318,16 @@ landed on its own, and partial progress needs its own reviewed PR.
 | `factory plan baseline N` / `factory plan drift TICKET` | Read-only schema 1 JSON for proposing a complete immutable initiative baseline or comparing a ticket's latest accepted baseline with the live complete source. Results are under top-level `baseline` or `drift`; neither command edits issues, rebaselines work, or grants execution authority. |
 | `factory doctor` / `init` / `install` | Onboarding, above. |
 
+Successful non-dry-run `triage`, `dispatch`, and `watch` invocations atomically
+update `.factory/stage-success.json` with that repository's last successful pass
+per installed stage. `factory stats --stages --json` returns the repository slug
+and `last_successful_pass` map without GitHub reads; text mode prints the same
+three stages. Evidence `observe` and `inspect` include the map and cite the local
+projection. `factory doctor` reports the timestamps (`never` until a stage has
+succeeded); an unreadable or malformed projection is a warning, not a silently
+missing metric.
+
+
 `factory watch` also closes an open, unassigned issue it opened, still at `needs-triage`
 or `ready-for-agent` (never one handed to a human), as completed when its
 newest evidence (or its filing time) is at least 24 hours old, the failure is not
