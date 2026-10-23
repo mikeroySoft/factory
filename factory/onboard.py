@@ -496,6 +496,11 @@ def doctor(argv: list[str]) -> int:
     port_ok, port_detail = _dashboard_port_check(cfg, cfg.install["host"], cfg.dashboard_port)
     report(port_ok, f"dashboard port {cfg.dashboard_port}", port_detail)
 
+    from factory.workspace import access_file_problem, key_directory_problem
+
+    key_problem = key_directory_problem(cfg.factory) or access_file_problem(cfg.factory)
+    report(key_problem is None, f"{cfg.factory.name} directory safe", key_problem or "")
+
     fails = sum(r["status"] == "FAIL" for r in rows)
     if args.json:
         print(json.dumps({"ok": not fails, "version": __version__, "repo": cfg.repo, "root": str(cfg.root), "rows": rows}, indent=2))

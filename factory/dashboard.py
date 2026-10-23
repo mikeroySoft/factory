@@ -1327,15 +1327,18 @@ def main(argv: list[str]) -> int:
         print(json.dumps(snapshot(), indent=2))
         return 0
 
-    from factory.workspace import Handler, Server, Workspace
+    from factory.workspace import Handler, KeyStorageError, Server, Workspace
 
     global codebase_monitor
     codebase_monitor = CodebaseMonitor(cfg, args.codebase_ref, args.codebase_limit)
     try:
         workspace = Workspace(cfg, codebase_monitor=codebase_monitor)
     except (OSError, ValueError, RuntimeError) as exc:
-        print(f"factory dashboard: could not initialize workspace ({type(exc).__name__})",
-              file=sys.stderr)
+        reason = str(exc) if isinstance(exc, KeyStorageError) else type(exc).__name__
+        print(
+            f"factory dashboard: could not initialize workspace ({reason})",
+            file=sys.stderr,
+        )
         return 1
     try:
         server = Server((args.host, port), Handler, workspace,

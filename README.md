@@ -57,7 +57,7 @@ cd your-repo
 factory init            # .factory.toml, .gitignore, issue template, labels
 $EDITOR .factory.toml   # put your real test/lint commands in [[gate.check]]
 git add .factory.toml .gitignore .github/ISSUE_TEMPLATE && git commit
-factory doctor          # tools, auth, remotes, model endpoint, dashboard port ownership
+factory doctor          # tools, auth, remotes, model, dashboard port and .factory safety
 factory install --dashboard   # systemd user timer every 10 min + dashboard on :8765
 ```
 
