@@ -590,8 +590,9 @@ def admit_plan(n: int, issue: dict, *, record_decision: bool = True) -> dict | N
     if not isinstance(issue, dict) or "body" not in issue:
         raise binding.BindingError("incomplete-source: ticket body was not returned")
     body = issue.get("body") or ""
-    linked = binding.linked(body)
+    linked = None
     try:
+        linked = binding.linked(body)
         baseline = binding.admit(cfg, body)
         if baseline is None and binding.accepted(cfg, n) is not None:
             raise binding.BindingError(
@@ -780,7 +781,7 @@ def record_binding_decision(n: int, body: str, linked: int | None, chosen: str, 
             {"option": "bound", "eligible": chosen == "bound",
              "reason": rationale if chosen == "bound" else "no valid matching baseline"},
             {"option": "unbound", "eligible": chosen == "unbound",
-             "reason": rationale if chosen == "unbound" else "ticket has an Initiative link"},
+             "reason": rationale if chosen == "unbound" or linked is None else "ticket has an Initiative link"},
             {"option": "refused", "eligible": chosen == "refused",
              "reason": rationale if chosen == "refused" else "binding is valid"},
         ],

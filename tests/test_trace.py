@@ -259,6 +259,31 @@ class TraceEmissionTest(unittest.TestCase):
         [row] = self.decisions("admission")
         self.assertIn("ticket:1", {option["option"] for option in row["options"]})
 
+    def test_malformed_binding_writes_refused_decision(self):
+        from factory import binding
+
+        body = "Initiative: nope"
+        with lifecycle.scope(self.events, "ticket", ticket=7), \
+                self.assertRaisesRegex(binding.BindingError, "malformed Initiative declaration"):
+            dispatch.admit_plan(7, {"body": body})
+
+        [row] = self.decisions("binding")
+        self.assertEqual(row["chosen"], "refused")
+        self.assertIn("malformed Initiative declaration", row["rationale"])
+
+    def test_previously_bound_ticket_without_link_explains_unbound_rejection(self):
+        from factory import binding
+
+        with lifecycle.scope(self.events, "ticket", ticket=7), \
+                mock.patch.object(binding, "accepted", return_value={"sha256": "old"}), \
+                self.assertRaisesRegex(binding.BindingError, "missing baseline"):
+            dispatch.admit_plan(7, {"body": "Initiative removed"})
+
+        [row] = self.decisions("binding")
+        options = {option["option"]: option for option in row["options"]}
+        self.assertEqual(row["inputs"][0]["summary"], "no Initiative link")
+        self.assertIn("previously bound ticket", options["unbound"]["reason"])
+
 
 
 if __name__ == "__main__":
