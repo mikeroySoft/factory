@@ -1,15 +1,14 @@
-"""`factory watch`: file the factory's own runtime failures as `bug` issues in the engine repo.
+"""`factory watch`: file engine failures and persistent host conditions in the engine repo.
 
-One pass reads four local signals (lifecycle exit rows that name a mechanism failure,
-failed `factory-*` systemd units, `dashboard --runtime-json` failures, one escalation code
-repeating across REPEAT_MIN tickets within REPEAT_DAYS days), fingerprints each by reason,
-unit, journal source or code (not by stage, reader code or install: one defect is one
-issue), and files it into `[watch].engine_repo` whatever repository it runs in: every signal
-is an engine defect, and a downstream repository cannot fix engine code, so nothing is filed
-locally. An open engine issue with the same fingerprint (filed by any install) gets this
+One pass reads lifecycle failures, host-condition streaks, failed `factory-*` systemd
+units, `dashboard --runtime-json` failures, and escalation codes repeating across
+REPEAT_MIN tickets within REPEAT_DAYS days. It fingerprints each by reason, unit,
+journal source or code, not by stage, reader code or install. Engine failures file as
+`bug`; host conditions file as `bug,host` only after their uninterrupted streak reaches
+`[watch].host_failure_minutes`. An open engine issue with the same fingerprint gets this
 install's newest evidence as a comment, at most once per QUIET_PERIOD, and the install is
 added to its `Observed by` list. Filings and comments are journaled as `watch` rows so the
-next pass can skip, comment or refile.
+next pass can skip, comment, close or refile.
 """
 from __future__ import annotations
 
@@ -29,14 +28,15 @@ from factory import config, dispatch, lifecycle, runtime_events
 
 LABELS = "bug,needs-triage"
 MAX_ISSUES = 5
+HOST_LABELS = f"bug,{config.LABEL_HOST},{config.LABEL_TRIAGE}"
 QUIET_PERIOD = timedelta(hours=24)
 CLOSABLE = {config.LABEL_TRIAGE, config.LABEL_AGENT}
 MAX_ROWS = 20
 MAX_LOG_LINES = 40
 UNKNOWN_REASONS = ("check_timeout",)
-# Host conditions the dispatcher already retries or escalates and `factory doctor` reports:
-# the worker process exiting, the local triage model, GitHub. Not factory defects.
-ENVIRONMENT_REASONS = ("worker_exit:", "triage_endpoint_", "github_command_failed")
+# Host conditions are ignored until their current uninterrupted failure streak crosses
+# `[watch].host_failure_minutes`.
+HOST_REASONS = ("worker_exit:", "triage_endpoint_", "github_command_failed")
 REPEAT_MIN = 3  # distinct tickets one escalation code must hit...
 REPEAT_DAYS = 7  # ...inside this trailing window to count as a factory defect
 # Ticket outcomes, not factory defects: an already-fixed ticket may produce `no_change`;
@@ -57,11 +57,51 @@ def _failing(row: dict) -> bool:
     if row.get("event") != "lifecycle" or row.get("kind") != "exit":
         return False
     reason = row.get("reason") or ""
-    if reason.startswith(ENVIRONMENT_REASONS):
+    if reason.startswith(HOST_REASONS):
         return False
     return row.get("outcome") == "mechanism_failure" or (
         row.get("outcome") == "unknown" and reason.startswith(UNKNOWN_REASONS)
     )
+
+
+def _host_reason(row: dict) -> str | None:
+    if row.get("event") != "lifecycle" or row.get("kind") != "exit":
+        return None
+    reason = str(row.get("reason") or "")
+    return reason if reason.startswith(HOST_REASONS) else None
+
+
+def _host_family(row: dict) -> str:
+    return str(row.get("stage") or "").split("-", 1)[0]
+
+
+def persistent_host_conditions(events: list[dict], minutes: int) -> dict[str, list[dict]]:
+    """Current uninterrupted host-failure streaks old enough to file."""
+    streaks: dict[str, list[dict]] = {}
+    for row in events:
+        if reason := _host_reason(row):
+            streaks.setdefault(reason, []).append(row)
+            continue
+        if (row.get("event") != "lifecycle" or row.get("kind") != "exit"
+                or row.get("outcome") not in {"completed", "product_feedback"}
+                or row.get("reason") == "no_tickets"):
+            continue
+        family = _host_family(row)
+        for reason, rows in streaks.items():
+            if rows and any(_host_family(failure) == family for failure in rows):
+                streaks[reason] = []
+    threshold = timedelta(minutes=minutes)
+    persistent = {}
+    for reason, rows in streaks.items():
+        if len(rows) < 2:
+            continue
+        try:
+            duration = datetime.fromisoformat(str(rows[-1]["at"])) - datetime.fromisoformat(str(rows[0]["at"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if duration >= threshold:
+            persistent[reason] = rows
+    return persistent
 
 
 def failed_units(cfg: config.Config) -> list[tuple[str, str]]:
@@ -181,6 +221,16 @@ def signals(cfg: config.Config, events: list[dict]) -> list[dict]:
         signal["rows"].append(row)
         signal["latest"] = max(signal["latest"], str(row.get("at") or ""))
         signal["log"] = logs.get((row.get("ticket"), row.get("attempt"))) or signal["log"]
+    for reason, rows in persistent_host_conditions(events, cfg.watch_host_failure_minutes).items():
+        key = fingerprint("host", reason)
+        stages = dict.fromkeys(str(row.get("stage")) for row in rows)
+        found[key] = {
+            "fingerprint": key, "kind": "host", "stage": stages, "key": reason,
+            "rows": rows, "excerpt": None, "log": None,
+            "latest": max(str(row.get("at") or "") for row in rows),
+            "command": "zcat -f .factory/events.jsonl* | grep -F "
+            f"{shlex.quote(json.dumps({'reason': reason}, separators=(',', ':'))[1:-1])}",
+        }
     for name, status in failed_units(cfg):
         # Fingerprint the unit's role, not this install's unit name, so installs share one issue.
         key = fingerprint("unit", name.replace(cfg.unit, "factory-<repo>", 1))
@@ -207,13 +257,14 @@ def signals(cfg: config.Config, events: list[dict]) -> list[dict]:
                       f"{shlex.quote(json.dumps({'code': code}, separators=(',', ':'))[1:-1])}"}
     for signal in found.values():
         signal["rows"] = signal["rows"][-MAX_ROWS:]
-        if signal["kind"] == "lifecycle":
+        if signal["kind"] in {"lifecycle", "host"}:
             signal["stage"] = ", ".join(signal["stage"])
     return list(found.values())
 
 
 def title(signal: dict) -> str:
-    return f"factory runtime failure: {signal['kind']} {signal['stage']} {signal['key']}"[:200]
+    prefix = "factory host condition" if signal["kind"] == "host" else "factory runtime failure"
+    return f"{prefix}: {signal['kind']} {signal['stage']} {signal['key']}"[:200]
 
 
 def evidence(signal: dict) -> list[str]:
@@ -233,8 +284,10 @@ def body(signal: dict, install: str) -> str:
     parts = [
         f"Fingerprint: {signal['fingerprint']}",
         "",
-        (f"`factory watch` observed a runtime failure of the factory itself from local evidence: "
-         f"signal `{signal['kind']}`, stage `{signal['stage']}`, `{signal['key']}`. "
+        (f"`factory watch` observed a persistent host condition from local evidence: "
+         if signal["kind"] == "host" else
+         f"`factory watch` observed a runtime failure of the factory itself from local evidence: "),
+        (f"signal `{signal['kind']}`, stage `{signal['stage']}`, `{signal['key']}`. "
          "Filed automatically; no human has looked at it yet."),
         "",
         OBSERVED, f"- `{install}`", "",
@@ -326,7 +379,8 @@ def run_pass(cfg: config.Config, dry_run: bool = False) -> list[dict]:
         if issue is None:
             url = dispatch.run([
                 "gh", "issue", "create", "--repo", engine, "--title", title(signal),
-                "--label", LABELS, "--body", body(signal, install),
+                "--label", HOST_LABELS if signal["kind"] == "host" else LABELS,
+                "--body", body(signal, install),
             ]).stdout.strip().splitlines()[-1]
             number = int(url.rstrip("/").rsplit("/", 1)[-1])
             dispatch.record("watch", fingerprint=fp, issue=number, repo=engine,
