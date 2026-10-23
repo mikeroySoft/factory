@@ -87,7 +87,7 @@ KNOWN_KEYS = {
     "release": ("auto", "version_file", "min_tickets"),
     "gate": ("timeout", "lock", "check", "protected_paths", "add_only_paths"),
     "leak_scan": ("pattern", "exclude", "extra"),
-    "triage": ("url", "model", "timeout"),
+    "triage": ("url", "model", "timeout", "service"),
     "journal": ("max_mb", "retention"),
     "dashboard": ("port", "theme"),
     "install": ("every", "dashboard", "host", "python", "env", "dispatch_env"),
@@ -180,6 +180,7 @@ class Config:
     llm_url: str = DEFAULT_LLM_URL
     llm_model: str = DEFAULT_LLM_MODEL
     triage_timeout: int = 60  # seconds per triage model request
+    triage_service: str | None = None  # systemd user service restarted by the optional liveness probe
     manager_model: str | None = None  # dashboard's no-tools OMP briefing; never a command
     dashboard_port: int = 8765
     dashboard_theme: Path | None = None  # CSS file served after the built-in stylesheet
@@ -607,6 +608,13 @@ def load(start: Path | None = None) -> Config:
     cfg.llm_url = triage.get("url", cfg.llm_url)
     cfg.llm_model = triage.get("model", cfg.llm_model)
     cfg.triage_timeout = int(triage.get("timeout", cfg.triage_timeout))
+    service = triage.get("service")
+    if service is not None and (
+        not isinstance(service, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.@:-]*\.service", service) is None
+    ):
+        raise ConfigError("triage.service must be a systemd service unit name ending in .service")
+    cfg.triage_service = service
     engine_repo = raw.get("watch", {}).get("engine_repo", cfg.watch_engine_repo)
     if not isinstance(engine_repo, str) or not re.fullmatch(r"[\w.-]+/[\w.-]+", engine_repo):
         raise ConfigError(f'watch.engine_repo must be a GitHub "owner/name", got {engine_repo!r}')

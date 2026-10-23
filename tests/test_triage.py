@@ -221,5 +221,71 @@ class Reproposal(unittest.TestCase):
         self.assertEqual(self.labels, {LABEL_WONTFIX})
 
 
+class TriageLivenessProbe(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.enterContext(patch.dict(os.environ, {
+            lifecycle.CONTEXT_ENV: "",
+            "XDG_STATE_HOME": temp.name,
+        }))
+        self.enterContext(patch.dict(triage.__dict__))
+        self.cfg = Config(root=Path(temp.name), repo="local/triage")
+        self.cfg.factory.mkdir(parents=True)
+        self.events = self.cfg.factory / "events.jsonl"
+
+    def refuse(self, request, timeout):
+        raise urllib.error.URLError(ConnectionRefusedError("refused"))
+
+    def test_consecutive_failures_restart_once_then_cool_down(self):
+        self.cfg.triage_service = "rocm-serve-ornith.service"
+        with patch.object(triage.urllib.request, "urlopen", self.refuse), \
+                patch.object(triage, "_restart_service", return_value=True, create=True) as restart, \
+                contextlib.redirect_stdout(io.StringIO()):
+            for now in range(triage.PROBE_FAILURES + 3):
+                self.assertEqual(triage.run_probe(self.cfg, now=now), 1)
+        restart.assert_called_once_with("rocm-serve-ornith.service")
+        rows = lifecycle.read_events(self.events)
+        self.assertEqual(
+            len([row for row in rows if row.get("stage") == "triage-probe"
+                 and row.get("kind") == "exit"
+                 and row.get("reason") == "triage_endpoint_unavailable"]),
+            triage.PROBE_FAILURES + 3,
+        )
+        self.assertEqual(
+            [(row["service"], row["succeeded"]) for row in rows if row.get("kind") == "restart"],
+            [("rocm-serve-ornith.service", True)],
+        )
+
+    def test_loading_response_is_alive_and_never_restarts(self):
+        def loading(request, timeout):
+            raise urllib.error.HTTPError(
+                request if isinstance(request, str) else request.full_url,
+                503, "Loading model", {}, io.BytesIO(b"Loading model"),
+            )
+        self.cfg.triage_service = "rocm-serve-ornith.service"
+        with patch.object(triage.urllib.request, "urlopen", side_effect=loading), \
+                patch.object(triage, "_restart_service", create=True) as restart, \
+                contextlib.redirect_stdout(io.StringIO()):
+            for now in range(triage.PROBE_FAILURES + 1):
+                self.assertEqual(triage.run_probe(self.cfg, now=now), 0)
+        restart.assert_not_called()
+
+    def test_no_service_journals_failures_without_restarting(self):
+        with patch.object(triage.urllib.request, "urlopen", self.refuse), \
+                patch.object(triage, "_restart_service", create=True) as restart, \
+                contextlib.redirect_stdout(io.StringIO()):
+            for now in range(triage.PROBE_FAILURES + 1):
+                self.assertEqual(triage.run_probe(self.cfg, now=now), 1)
+        restart.assert_not_called()
+        failures = [
+            row for row in lifecycle.read_events(self.events)
+            if row.get("stage") == "triage-probe" and row.get("kind") == "exit"
+        ]
+        self.assertEqual(len(failures), triage.PROBE_FAILURES + 1)
+        self.assertTrue(all(row["reason"] == "triage_endpoint_unavailable" for row in failures))
+
+
+
 if __name__ == "__main__":
     unittest.main()

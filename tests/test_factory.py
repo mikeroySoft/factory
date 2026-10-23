@@ -4961,5 +4961,102 @@ esac
         self.assertEqual(next(r["reason"] for r in rows if r.get("kind") == "exit" and r.get("ticket") == 9), "initiative")
 
 
+
+class TriageProbeOnboardingTest(unittest.TestCase):
+    def tearDown(self) -> None:
+        host_file("")
+
+    def test_service_config_is_validated(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            valid = root / "valid"
+            valid.mkdir()
+            cfg = config.load(make_repo(valid, '[triage]\nservice = "rocm-serve-ornith.service"\n'))
+            self.assertEqual(cfg.triage_service, "rocm-serve-ornith.service")
+            for index, service in enumerate(("", "--now.service", "ornith", "ornith service.service")):
+                with self.subTest(service=service):
+                    parent = root / f"invalid-{index}"
+                    parent.mkdir()
+                    repo = make_repo(parent, f"[triage]\nservice = {json.dumps(service)}\n")
+                    with self.assertRaises(config.ConfigError):
+                        config.load(repo)
+
+    def test_install_writes_and_enables_probe_timer_only_when_configured(self) -> None:
+        import io
+        from contextlib import redirect_stdout
+        from unittest import mock
+
+        from factory import onboard
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = make_repo(root, '[triage]\nservice = "rocm-serve-ornith.service"\n')
+            cfg = config.load(repo)
+            unit_dir = root / "units"
+            calls = []
+            with mock.patch.object(onboard.config, "load", return_value=cfg), \
+                    mock.patch.object(onboard, "unit_dir", return_value=unit_dir), \
+                    mock.patch.object(onboard, "systemctl", side_effect=lambda *args: calls.append(args)), \
+                    mock.patch.object(onboard.shutil, "which", return_value="/bin/systemctl"), \
+                    mock.patch.object(
+                        onboard,
+                        "sh",
+                        return_value=subprocess.CompletedProcess([], 0, "yes\n", ""),
+                    ), redirect_stdout(io.StringIO()):
+                self.assertEqual(onboard.install(["--no-dashboard"]), 0)
+            service = unit_dir / "factory-widgets-triage-probe.service"
+            timer = unit_dir / "factory-widgets-triage-probe.timer"
+            self.assertIn(" -P -m factory triage-probe\n", service.read_text())
+            self.assertIn("OnUnitActiveSec=2min", timer.read_text())
+            self.assertIn(("enable", "--now", timer.name), calls)
+            self.assertFalse(any("triage-probe" in name for name in onboard.units(
+                config.Config(root=repo, repo="acme/widgets"), "10min", "127.0.0.1"
+            )))
+
+    def test_doctor_reports_active_probe_and_loading_endpoint(self) -> None:
+        import io
+        from contextlib import redirect_stdout
+        from unittest import mock
+
+        from factory import onboard, triage
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = make_repo(root, '[triage]\nservice = "rocm-serve-ornith.service"\n')
+            cfg = config.load(repo)
+            cfg.raw_repo = {}
+
+            def command(argv, cwd=None):
+                if argv[:3] == ["gh", "repo", "view"]:
+                    return subprocess.CompletedProcess(argv, 0, "WRITE\n", "")
+                if argv[:3] == ["gh", "label", "list"]:
+                    return subprocess.CompletedProcess(argv, 0, json.dumps(list(config.LABELS)), "")
+                if argv[:3] == ["systemctl", "--user", "is-active"]:
+                    return subprocess.CompletedProcess(argv, 0, "active\n", "")
+                if argv[:3] == ["git", "config", "user.name"]:
+                    return subprocess.CompletedProcess(argv, 0, "T\n", "")
+                return subprocess.CompletedProcess(argv, 0, "", "")
+
+            output = io.StringIO()
+            with mock.patch.object(onboard.config, "load", return_value=cfg), \
+                    mock.patch.object(onboard.config, "host_config", return_value={}), \
+                    mock.patch.object(onboard.config, "engine_drift", return_value=None), \
+                    mock.patch.object(onboard, "sh", side_effect=command), \
+                    mock.patch.object(onboard, "unit_dir", return_value=root / "units"), \
+                    mock.patch.object(onboard.shutil, "which", return_value="/bin/tool"), \
+                    mock.patch.object(onboard, "_dashboard_port_check", return_value=(True, "available")), \
+                    mock.patch.object(triage, "probe_endpoint", return_value=(True, "loading model")), \
+                    redirect_stdout(output):
+                self.assertEqual(onboard.doctor(["--json"]), 0)
+            rows = {row["label"]: row for row in json.loads(output.getvalue())["rows"]}
+            self.assertEqual(rows["triage model endpoint"]["status"], "PASS")
+            self.assertIn("loading model", rows["triage model endpoint"]["detail"])
+            self.assertEqual(rows["triage liveness probe"], {
+                "status": "PASS",
+                "label": "triage liveness probe",
+                "detail": "factory-widgets-triage-probe.timer active",
+            })
+
+
 if __name__ == "__main__":
     unittest.main()
