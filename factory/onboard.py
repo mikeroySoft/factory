@@ -16,6 +16,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 from factory import __version__, config
@@ -483,7 +484,7 @@ def doctor(argv: list[str]) -> int:
 
     from factory import triage
 
-    alive, detail = triage.probe_endpoint(cfg)
+    alive, detail = triage.probe_endpoint(cfg, opener=urllib.request.urlopen)
     report(
         True if alive else None,
         "triage model endpoint",

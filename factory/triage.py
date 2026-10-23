@@ -54,10 +54,11 @@ def models_url(c: Config) -> str:
     return f"{c.llm_url.rsplit('/chat/completions', 1)[0].rstrip('/')}/models"
 
 
-def probe_endpoint(c: Config) -> tuple[bool, str]:
+def probe_endpoint(c: Config, *, opener=None) -> tuple[bool, str]:
     endpoint = models_url(c)
+    opener = opener or urllib.request.urlopen
     try:
-        with urllib.request.urlopen(endpoint, timeout=PROBE_TIMEOUT):
+        with opener(endpoint, timeout=PROBE_TIMEOUT):
             return True, "ready"
     except urllib.error.HTTPError as exc:
         try:
