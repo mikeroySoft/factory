@@ -201,6 +201,65 @@ class TraceEmissionTest(unittest.TestCase):
         self.assertEqual(claim["causes"], [{"decision_id": admission_id, "relation": "follows"}])
         self.assertEqual(claim["chosen"], "claimed")
 
+    def test_worker_round_does_not_repeat_claim_time_worker_selection(self):
+        def run(cmd, **_kwargs):
+            stdout = "head\n" if cmd[:3] == ["git", "rev-parse", "HEAD"] else ""
+            return mock.Mock(stdout=stdout, returncode=0)
+
+        with lifecycle.scope(self.events, "ticket", ticket=7):
+            dispatch.record_worker_selection(7, {"needs-gpu"})
+            with mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
+                    mock.patch.object(dispatch, "run_worker", return_value=(0, None)), \
+                    mock.patch.object(dispatch, "worker_usage", return_value={
+                        "model": None, "prompt_tokens": None, "completion_tokens": None,
+                        "cached_tokens": None, "cost": None,
+                    }), mock.patch.object(dispatch, "commit_leftovers"), \
+                    mock.patch.object(dispatch, "run", side_effect=run), \
+                    mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")), \
+                    mock.patch("factory.results.source_metadata", return_value={}):
+                dispatch.worker_round(7, self.root, {"needs-gpu"}, "ticket", "", 1, float("inf"))
+
+        self.assertEqual(len(self.decisions("worker_select")), 1)
+
+    def test_worker_prompts_do_not_repeat_claim_time_binding_decision(self):
+        issue = {"title": "unbound", "body": "unbound", "comments": []}
+        with lifecycle.scope(self.events, "ticket", ticket=7), \
+                mock.patch.object(dispatch, "gh_json", return_value=issue), \
+                mock.patch.object(dispatch, "resume_context", return_value=None), \
+                mock.patch.object(dispatch.brief, "ensure", return_value=None):
+            self.assertIsNone(dispatch.admit_plan(7, issue))
+            dispatch.build_prompt(7, self.root)
+            dispatch.build_prompt(7, self.root)
+
+        self.assertEqual(len(self.decisions("binding")), 1)
+
+    def test_large_admission_record_stays_below_runtime_row_limit(self):
+        from factory import runtime_events
+
+        options = [
+            {"option": f"ticket:{number}", "eligible": number == 1, "reason": "r" * 256}
+            for number in range(1, trace.OPTION_LIMIT + 1)
+        ]
+        payload = trace.decision(
+            ticket=1,
+            stage="admission",
+            inputs=[{"kind": "capacity", "ref": ".factory/events.jsonl", "summary": "1"}],
+            options=options,
+            chosen="ticket:1",
+            rationale="selected",
+            causes=[],
+            cost=None,
+            actor=ACTOR,
+        )
+        with lifecycle.scope(self.events, "dispatch"):
+            dispatch.record("decision", **payload)
+
+        errors = {error["code"] for error in runtime_events.project(self.events)["errors"]}
+        self.assertNotIn("row_limit", errors)
+        [row] = self.decisions("admission")
+        self.assertIn("ticket:1", {option["option"] for option in row["options"]})
+
+
 
 if __name__ == "__main__":
     unittest.main()

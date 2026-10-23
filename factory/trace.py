@@ -124,6 +124,22 @@ def decision(
     }
     if type(pr) is int and pr > 0:
         row["pr"] = pr
+    selected_option = next(value for value in normalized_options if value["option"] == chosen)
+    envelope = {
+        "event": "decision",
+        **row,
+        "execution_id": "00000000-0000-4000-8000-000000000000",
+        "dispatcher_run_id": "00000000-0000-4000-8000-000000000000",
+    }
+    while len(json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode()) + 1 \
+            > runtime_events.ROW_LIMIT:
+        removable = next((
+            index for index in range(len(normalized_options) - 1, -1, -1)
+            if normalized_options[index] is not selected_option
+        ), None)
+        if removable is None:
+            raise ValueError("decision record exceeds journal row limit")
+        normalized_options.pop(removable)
     validate({"event": "decision", **row})
     return row
 

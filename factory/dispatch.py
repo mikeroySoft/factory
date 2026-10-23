@@ -583,7 +583,7 @@ def review_external_pr(n: int, base: str, head: str) -> None:
         execution.reason = "APPROVE" if event == "APPROVE" else "REVISE"
 
 
-def admit_plan(n: int, issue: dict) -> dict | None:
+def admit_plan(n: int, issue: dict, *, record_decision: bool = True) -> dict | None:
     """One binding boundary for fresh claims, dry runs and direct worker prompts."""
     from factory import binding
 
@@ -598,10 +598,10 @@ def admit_plan(n: int, issue: dict) -> dict | None:
                 "missing baseline for previously bound ticket; human review must retain an explicit revision"
             )
     except binding.BindingError as exc:
-        if lifecycle.current() is not None:
+        if record_decision and lifecycle.current() is not None:
             record_binding_decision(n, body, linked, "refused", str(exc))
         raise
-    if lifecycle.current() is not None:
+    if record_decision and lifecycle.current() is not None:
         chosen = "bound" if baseline is not None else "unbound"
         record_binding_decision(
             n, body, linked, chosen,
@@ -689,7 +689,7 @@ def build_prompt(n: int, wt: Path, extra: str = "") -> str:
         issue = gh_json(
             ["issue", "view", str(n), "--repo", REPO, "--json", "title,body,comments"]
         )
-        baseline = admit_plan(n, issue)
+        baseline = admit_plan(n, issue, record_decision=False)
         if baseline is not None:
             issue = {key: issue.get(key) for key in ("title", "body", "comments")}
             record("plan-bound", ticket=n, schema_version=1, baseline=baseline, issue=issue)
@@ -2319,7 +2319,10 @@ def worker_round(
     logfile = LOGS / f"{n}-attempt-{attempt}.log"
     started = time.monotonic()
     wall = time.time()
-    worker = record_worker_selection(n, labels, selected_worker=selected_worker)
+    if selected_worker is None:
+        worker = cfg.worker_key(labels)
+    else:
+        worker = record_worker_selection(n, labels, selected_worker=selected_worker)
     worker_version = cfg.worker_version.get(worker)
     identity = {"worker": worker, "worker_version": worker_version}
     transcript_mode = cfg.worker_transcript.get(worker)
