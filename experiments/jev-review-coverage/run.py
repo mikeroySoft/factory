@@ -291,7 +291,11 @@ def _key() -> str:
     if os.environ.get("TYPESAFE_API_KEY"):
         return os.environ["TYPESAFE_API_KEY"]
     values = []
-    for line in (REPO / ".env").read_text().splitlines():
+    env_files = (REPO / ".env", Path.home() / "dev" / "mikeroysoft" / "factory" / ".env")
+    env_file = next((path for path in env_files if path.is_file()), None)
+    if env_file is None:
+        raise ValueError("TYPESAFE_API_KEY is unset and no repository .env was found")
+    for line in env_file.read_text().splitlines():
         if line.strip().startswith(("TYPESAFE_API_KEY=", "export TYPESAFE_API_KEY=")):
             parsed = shlex.split(line.split("=", 1)[1], comments=True)
             if len(parsed) == 1:
