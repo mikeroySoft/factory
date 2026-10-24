@@ -199,6 +199,56 @@ class GateOutputEncodingTest(unittest.TestCase):
             self.assertEqual(code, 0, report + out)
             self.assertIn("- bytes: PASS", report)
 
+    def test_failed_check_replaces_non_utf8_output(self) -> None:
+        toml = TOML + (
+            "\n[[gate.check]]\n"
+            'name = "bytes"\n'
+            f'run = ["{sys.executable}", "-c", '
+            '"import os; os.write(2, bytes([255, 254]) + b\' failed\\\\n\'); raise SystemExit(7)"]\n'
+            "exclusive = false\n"
+        )
+        with tempfile.TemporaryDirectory() as d:
+            repo = repo_with_test(Path(d), toml)
+            code, out, report = gate(repo, "--skip", "conflict-markers,leak-scan")
+            self.assertEqual(code, 1, report + out)
+            self.assertIn("- bytes: FAIL", report)
+            self.assertIn("\ufffd\ufffd failed", report)
+
+    def test_timeout_replaces_non_utf8_output(self) -> None:
+        from unittest import mock
+
+        from factory import gate as gate_module
+
+        command = [
+            sys.executable,
+            "-c",
+            "import os, time; os.write(1, bytes([255])); time.sleep(30)",
+        ]
+        with mock.patch.object(gate_module, "CHECK_TIMEOUT", 2):
+            result = gate_module.timed(command)
+        self.assertEqual(result.returncode, 124)
+        self.assertIn("\ufffd", result.stdout)
+        self.assertIn("check timed out", result.stdout)
+
+    def test_leak_scan_finds_pattern_beside_non_utf8_filename(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            repo = repo_with_test(Path(d), TOML + '\n[leak_scan]\nextra = ["codename"]\n')
+            git(repo, "config", "core.quotePath", "false")
+            descriptor = os.open(
+                os.path.join(os.fsencode(repo), b"\xff-leak.txt"),
+                os.O_WRONLY | os.O_CREAT,
+                0o600,
+            )
+            os.write(descriptor, b"codename\n")
+            os.close(descriptor)
+            commit(repo)
+
+            code, out, report = gate(repo, "--skip", "conflict-markers")
+
+            self.assertEqual(code, 1, report + out)
+            self.assertIn("- leak-scan: FAIL", report)
+            self.assertIn("\ufffd-leak.txt:1: [codename] codename", report)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -137,12 +137,17 @@ def run(
 def _run(cmd, cwd, check, stdout, stderr, env) -> subprocess.CompletedProcess:
     execution = lifecycle.current()
     if execution is None:
-        return subprocess.run(cmd, cwd=cwd, check=check, stdout=stdout, stderr=stderr, text=True, env=env)
+        return subprocess.run(
+            cmd, cwd=cwd, check=check, stdout=stdout, stderr=stderr,
+            encoding="utf-8", errors="replace", env=env,
+        )
     launch = execution.env()
     if env is not None:
         launch = {**env, lifecycle.CONTEXT_ENV: launch[lifecycle.CONTEXT_ENV]}
-    with subprocess.Popen(cmd, cwd=cwd, stdout=stdout, stderr=stderr,
-                          text=True, env=launch) as proc:
+    with subprocess.Popen(
+        cmd, cwd=cwd, stdout=stdout, stderr=stderr,
+        encoding="utf-8", errors="replace", env=launch,
+    ) as proc:
         try:
             execution.child(proc.pid)
             out, err = proc.communicate()
@@ -1128,8 +1133,10 @@ def _activity(wt: Path, logfile: Path, handoff: Path) -> tuple:
         return None
 
     def git(*args: str) -> str:
-        return subprocess.run(["git", "--no-optional-locks", "-C", str(wt), *args],
-                              capture_output=True, text=True, check=False).stdout
+        return subprocess.run(
+            ["git", "--no-optional-locks", "-C", str(wt), *args],
+            capture_output=True, encoding="utf-8", errors="replace", check=False,
+        ).stdout
 
     return (stat(logfile), git("rev-parse", "HEAD"),
             git("status", "--porcelain", "--untracked-files=all"), stat(handoff))
