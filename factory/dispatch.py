@@ -1017,14 +1017,19 @@ def record_direct_admission(issue: dict) -> str:
 
 
 def _worker_options(labels: set[str], chosen: str, selected_worker: str | None) -> list[dict]:
+    resolved_labels = labels | ({selected_worker} if selected_worker else set())
+    ticket_worker = cfg.worker_key(labels)
     options = []
     prior_match = None
     for worker in cfg.workers:
         label = cfg.worker_select_label.get(worker, worker)
-        matched = label in ({selected_worker} if selected_worker else labels)
+        matched = label in resolved_labels
         if worker == chosen:
             if selected_worker:
-                reason = f"manager selected_worker override `{selected_worker}` resolved to this profile"
+                mode = "sticky" if chosen == ticket_worker else "override"
+                reason = (
+                    f"{mode}: manager selected_worker `{selected_worker}` resolved with ticket labels"
+                )
             elif matched:
                 source = "worker_select_label" if worker in cfg.worker_select_label else "label"
                 reason = f"{source} `{label}` matched"
@@ -1052,9 +1057,10 @@ def record_worker_selection(
 
     if cause is None and selected_worker is not None:
         cause = _latest_decision_id(n, {"manager"})
-    chosen = cfg.worker_key({selected_worker} if selected_worker else labels)
+    chosen = cfg.worker_key(labels | ({selected_worker} if selected_worker else set()))
     causes = [{"decision_id": cause, "relation": relation}] if cause else []
     version = cfg.worker_version.get(chosen)
+    options = _worker_options(labels, chosen, selected_worker)
     payload = trace.decision(
         ticket=n,
         stage="worker_select",
@@ -1064,10 +1070,9 @@ def record_worker_selection(
             {"kind": "worker_version", "ref": ".factory.toml",
              "summary": f"worker version {version}" if version else "worker version not configured"},
         ],
-        options=_worker_options(labels, chosen, selected_worker),
+        options=options,
         chosen=chosen,
-        rationale=next(option["reason"] for option in _worker_options(labels, chosen, selected_worker)
-                       if option["option"] == chosen),
+        rationale=next(option["reason"] for option in options if option["option"] == chosen),
         causes=causes,
         cost=None,
         actor=_decision_actor("deterministic", "Config.worker_key"),
