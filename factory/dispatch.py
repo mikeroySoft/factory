@@ -1016,8 +1016,9 @@ def record_direct_admission(issue: dict) -> str:
     return payload["decision_id"]
 
 
-def _worker_options(labels: set[str], chosen: str, selected_worker: str | None) -> list[dict]:
-    resolved_labels = labels | ({selected_worker} if selected_worker else set())
+def _worker_options(
+    labels: set[str], resolved_labels: set[str], chosen: str, selected_worker: str | None,
+) -> list[dict]:
     ticket_worker = cfg.worker_key(labels)
     options = []
     prior_match = None
@@ -1057,10 +1058,18 @@ def record_worker_selection(
 
     if cause is None and selected_worker is not None:
         cause = _latest_decision_id(n, {"manager"})
-    chosen = cfg.worker_key(labels | ({selected_worker} if selected_worker else set()))
+    ticket_worker = cfg.worker_key(labels)
+    resolved_labels = (
+        labels | {selected_worker}
+        if selected_worker and ticket_worker in cfg.worker_select_label
+        else {selected_worker}
+        if selected_worker
+        else labels
+    )
+    chosen = cfg.worker_key(resolved_labels)
     causes = [{"decision_id": cause, "relation": relation}] if cause else []
     version = cfg.worker_version.get(chosen)
-    options = _worker_options(labels, chosen, selected_worker)
+    options = _worker_options(labels, resolved_labels, chosen, selected_worker)
     payload = trace.decision(
         ticket=n,
         stage="worker_select",

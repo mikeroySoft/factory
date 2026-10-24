@@ -23,6 +23,7 @@ class ManagerFixWorkerSelectionTest(unittest.TestCase):
             workers={
                 "prime": ["prime-worker", "{prompt}"],
                 "chore": ["chore-worker", "{prompt}"],
+                "ci-fix": ["fix-worker", "{prompt}"],
                 "default": ["default-worker", "{prompt}"],
             },
             worker_select_label={"prime": "harness-pilot"},
@@ -97,10 +98,10 @@ class ManagerFixWorkerSelectionTest(unittest.TestCase):
         self.assertNotEqual(follow_up["chosen"], "default")
 
     def test_non_gated_ticket_uses_manager_worker(self) -> None:
-        command, follow_up = self.fix_round(9, {"bug"}, "chore")
+        command, follow_up = self.fix_round(9, {"chore"}, "ci-fix")
 
-        self.assertEqual(command, "chore-worker")
-        self.assertEqual(follow_up["chosen"], "chore")
+        self.assertEqual(command, "fix-worker")
+        self.assertEqual(follow_up["chosen"], "ci-fix")
         self.assertIn("override", follow_up["rationale"])
 
 
