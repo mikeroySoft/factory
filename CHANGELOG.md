@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Manager `FIX` follow-ups now resolve the selected worker together with the ticket's labels, keeping label-gated tickets on their sticky profile while preserving explicit overrides for non-gated tickets (#376).
 - `factory watch` no longer reports repeated `gate_failed` escalations as engine defects; a deterministic project gate failure is a ticket outcome (#377).
 - `factory watch` no longer reports repeated `pr_feedback` escalations as engine defects; unresolved PR feedback is a ticket outcome for its worker to address (#373).
 - Gate and dispatcher subprocess reads now decode arbitrary check, Git, and toolchain output as UTF-8 with replacement, so invalid bytes preserve the command's real pass/fail result instead of crashing the pipeline (#365).
