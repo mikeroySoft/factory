@@ -251,6 +251,7 @@ class WatchTest(unittest.TestCase):
             errors = REAL_RUNTIME_ERRORS(self.cfg)
         self.assertEqual([e["code"] for e in errors], ["invalid_json"])
 
+    @mock.patch.object(watch, "OUTCOME_CODES", watch.OUTCOME_CODES - {"gate_failed"})
     def test_repeated_escalation_code_files_one_bug_listing_every_ticket(self) -> None:
         self.journal(*(escalate_row(n, "gate_failed", f"gate failed on #{n}") for n in (1, 2, 3)))
         watch.run_pass(self.cfg)
@@ -468,6 +469,12 @@ class WatchOutcomeEscalationTest(unittest.TestCase):
         rows = [escalate_row(n, "pr_feedback", "PR feedback remains") for n in (1, 2, 3)]
 
         self.assertEqual(watch.repeated_escalations(rows), {})
+
+    def test_repeated_gate_failed_outcome_is_not_filed(self) -> None:
+        rows = [escalate_row(n, "gate_failed", "project gate failed") for n in (1, 2, 3)]
+
+        self.assertEqual(watch.repeated_escalations(rows), {})
+
 
 
 if __name__ == "__main__":
