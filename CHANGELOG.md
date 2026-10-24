@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `factory watch` no longer reports repeated `gate_failed` escalations as engine defects; a deterministic project gate failure is a ticket outcome (#377).
 - `factory watch` no longer reports repeated `pr_feedback` escalations as engine defects; unresolved PR feedback is a ticket outcome for its worker to address (#373).
 - Gate and dispatcher subprocess reads now decode arbitrary check, Git, and toolchain output as UTF-8 with replacement, so invalid bytes preserve the command's real pass/fail result instead of crashing the pipeline (#365).
 - The Factory Workspace adds a read-only Decisions breadboard for `trace.explain()` graphs, with authenticated per-repository trace reads, stage-grouped recorded and synthesized nodes, labeled relationships, costed retry folds, timeline replay, evidence details, frontier and coverage state, cross-ticket navigation, and terminal outcomes (#360).
