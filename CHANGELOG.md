@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Gate and dispatcher subprocess reads now decode arbitrary check, Git, and toolchain output as UTF-8 with replacement, so invalid bytes preserve the command's real pass/fail result instead of crashing the pipeline (#365).
+- The Factory Workspace adds a read-only Decisions breadboard for `trace.explain()` graphs, with authenticated per-repository trace reads, stage-grouped recorded and synthesized nodes, labeled relationships, costed retry folds, timeline replay, evidence details, frontier and coverage state, cross-ticket navigation, and terminal outcomes (#360).
 
 ## 0.4.6 — 2026-10-23
 

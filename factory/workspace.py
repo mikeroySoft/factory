@@ -25,7 +25,7 @@ from pathlib import Path
 from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, urlsplit
 
-from factory import briefing, config, flow, runtime_events, runtime_local, settings
+from factory import briefing, config, flow, runtime_events, runtime_local, settings, trace
 from factory.config import Config
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
@@ -61,6 +61,7 @@ ASSETS = {
     "/workspace-tools.js": ("text/javascript; charset=utf-8", ASSET_ROOT / "workspace-tools.js"),
     "/workspace-codebase.js": ("text/javascript; charset=utf-8", ASSET_ROOT / "workspace-codebase.js"),
     "/workspace-decisions.js": ("text/javascript; charset=utf-8", ASSET_ROOT / "workspace-decisions.js"),
+    "/workspace-trace.js": ("text/javascript; charset=utf-8", ASSET_ROOT / "workspace-trace.js"),
     "/workspace.js": ("text/javascript; charset=utf-8", ASSET_ROOT / "workspace.js"),
     "/fonts/Newsreader.ttf": ("font/ttf", ASSET_ROOT / "fonts" / "Newsreader.ttf"),
     "/fonts/Newsreader-OFL.txt": ("text/plain; charset=utf-8", ASSET_ROOT / "fonts" / "Newsreader-OFL.txt"),
@@ -70,6 +71,7 @@ REDIRECTS = {
     "/chat": "/?chat=1",
     "/atlas": "/?view=atlas",
     "/codebase": "/?view=codebase",
+    "/decisions": "/?view=decisions",
 }
 SLUG = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+")
 DECISION_ID = re.compile(r"[0-9a-f]{32}")
@@ -1012,6 +1014,11 @@ class Workspace:
     def _public_collection(value: dict) -> dict:
         return {key: item for key, item in value.items() if not key.startswith("_")}
 
+    def trace(self, slug: str, ticket: int) -> dict:
+        cfg = self.repository_config(slug)
+        return trace.explain(trace.read_rows(cfg.factory / "events.jsonl"), ticket)
+
+
     def data(self, slug: str, *, refresh: bool = False) -> dict:
         self.repository_config(slug)
         self.request_refresh(slug, force=refresh)
@@ -1641,7 +1648,7 @@ class Handler(BaseHTTPRequestHandler):
             if target.path == "/":
                 values = _query(
                     target.query,
-                    optional={"view", "repository", "case", "chat"},
+                    optional={"view", "repository", "case", "ticket", "chat"},
                 )
                 if "chat" in values and values["chat"] != "1":
                     raise WorkspaceError("invalid_query", "chat must be 1")
@@ -1655,11 +1662,12 @@ class Handler(BaseHTTPRequestHandler):
                     or SLUG.fullmatch(values["repository"]) is None
                 ):
                     raise WorkspaceError("invalid_query", "repository is invalid")
-                if "case" in values and (
-                    re.fullmatch(r"[1-9][0-9]{0,18}", values["case"]) is None
-                    or int(values["case"]) >= 2**63
-                ):
-                    raise WorkspaceError("invalid_query", "case is invalid")
+                for field in ("case", "ticket"):
+                    if field in values and (
+                        re.fullmatch(r"[1-9][0-9]{0,18}", values[field]) is None
+                        or int(values[field]) >= 2**63
+                    ):
+                        raise WorkspaceError("invalid_query", f"{field} is invalid")
                 self._send(
                     200,
                     "text/html; charset=utf-8",
@@ -1688,6 +1696,24 @@ class Handler(BaseHTTPRequestHandler):
             if target.path == "/api/ticket-flow":
                 _query(target.query)
                 self._json(200, ticket_flow_data())
+                return
+            if target.path == "/api/trace":
+                values = _query(
+                    target.query, required={"ticket"}, optional={"repository"}
+                )
+                if (
+                    re.fullmatch(r"[1-9][0-9]{0,18}", values["ticket"]) is None
+                    or int(values["ticket"]) >= 2**63
+                ):
+                    raise WorkspaceError(
+                        "invalid_request", "ticket must be a positive integer"
+                    )
+                self._json(
+                    200,
+                    self.workspace.trace(
+                        self._repository(values), int(values["ticket"])
+                    ),
+                )
                 return
             if target.path == "/api/theme":
                 values = _query(target.query, required={"repository"})
