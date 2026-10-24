@@ -464,6 +464,11 @@ class WatchOutcomeEscalationTest(unittest.TestCase):
 
         self.assertEqual(watch.repeated_escalations(rows), {})
 
+    def test_repeated_pr_feedback_outcome_is_not_filed(self) -> None:
+        rows = [escalate_row(n, "pr_feedback", "PR feedback remains") for n in (1, 2, 3)]
+
+        self.assertEqual(watch.repeated_escalations(rows), {})
+
 
 if __name__ == "__main__":
     unittest.main()
