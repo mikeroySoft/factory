@@ -357,3 +357,92 @@ class ManagerFixAheadTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TriageExemptionRegateTest(unittest.TestCase):
+    def setUp(self) -> None:
+        from factory import triage
+
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.tmp = Path(temp.name)
+        self.root, self.origin = build_fork(self.tmp)
+        git(self.origin, "checkout", "-qb", "agent/9")
+        (self.origin / "fix.txt").write_text("fix\n")
+        git(self.origin, "add", "fix.txt")
+        git(self.origin, "commit", "-qm", "fix")
+        git(self.origin, "checkout", "-q", "main")
+        self.cfg = config.Config(root=self.root, repo="acme/widgets", main="main")
+        dispatch.configure(self.cfg)
+        self.wt = dispatch.ensure_worktree(9)
+        self.issue = {
+            "title": "bug", "body": "Fix the hardware failure.",
+            "labels": [{"name": "bug"}],
+            "comments": [{
+                "author": {"login": "factory-bot"},
+                "body": "Triage: hardware issue\n\nAgent brief: investigate\n"
+                "No repro test: hardware-only triage reason\n"
+                "factory-protected-override: comment is not override authority",
+            }],
+        }
+        self.requests = []
+        self.login = mock.patch.object(triage, "login", return_value="factory-bot")
+        self.login.start()
+        self.addCleanup(self.login.stop)
+
+    def gh_json(self, args):
+        fields = args[args.index("--json") + 1].split(",")
+        if args[:2] == ["issue", "view"]:
+            self.requests.append(fields)
+            return {key: self.issue[key] for key in fields}
+        self.assertEqual(args[:2], ["pr", "view"])
+        pr = {
+            "state": "OPEN", "headRefName": "agent/9", "baseRefName": "main",
+            "headRefOid": git(self.wt, "rev-parse", "HEAD"), "reviewDecision": "",
+        }
+        return {key: pr[key] for key in fields}
+
+    def assert_triage_flags(self, gate):
+        self.assertEqual(gate.call_args.kwargs, {
+            "protected_override": False, "bug": True,
+            "no_repro_test": "hardware-only triage reason",
+        })
+        self.assertTrue(any("comments" in fields for fields in self.requests))
+
+    def test_manager_fix_fetches_trusted_triage_comments_for_worker_gate(self) -> None:
+        packet = self.tmp / "packet.md"
+        packet.write_text("manager guidance")
+        with mock.patch.object(dispatch, "gh_json", side_effect=self.gh_json), \
+                mock.patch.object(dispatch, "build_prompt", return_value="fix the bug"), \
+                mock.patch.object(dispatch, "run_worker", return_value=(0, None)), \
+                mock.patch.object(dispatch, "commit_leftovers"), \
+                mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")) as gate, \
+                mock.patch.object(dispatch, "push_agent"), \
+                mock.patch.object(dispatch, "pr_gate_and_review", return_value=("APPROVE", "ok", False)), \
+                mock.patch.object(dispatch, "pr_comment"), \
+                mock.patch.object(dispatch, "approve_pr", return_value=True):
+            manage.apply(9, self.issue, "FIX", "", {"worker": "default", "guidance": "fix"}, packet)
+
+        self.assert_triage_flags(gate)
+
+    def test_refresh_fetches_trusted_triage_comments_for_gate(self) -> None:
+        (self.origin / "moved.txt").write_text("moved main\n")
+        git(self.origin, "add", "moved.txt")
+        git(self.origin, "commit", "-qm", "main moved")
+        real_run = dispatch.run
+
+        def run(cmd, *args, **kwargs):
+            if cmd[0] == "gh":
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            return real_run(cmd, *args, **kwargs)
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=self.gh_json), \
+                mock.patch.object(dispatch, "run", side_effect=run), \
+                mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")) as gate, \
+                mock.patch.object(dispatch, "push_agent", return_value="pushed"), \
+                mock.patch.object(dispatch, "review", return_value=("APPROVE", "ok")), \
+                mock.patch.object(dispatch, "pr_comment"), \
+                mock.patch.object(dispatch, "approve_pr", return_value=True):
+            self.assertTrue(dispatch.refresh_pr_branch(9, 102, False))
+
+        self.assert_triage_flags(gate)

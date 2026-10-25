@@ -596,3 +596,158 @@ class PythonParseErrorGateTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RustLifetimeGateTest(unittest.TestCase):
+    SOURCE = (
+        "pub fn f(s: &'static str) -> usize { s.len() }\n"
+        "#[cfg(test)]\n"
+        "mod tests {\n"
+        "    use super::*;\n"
+        "    #[test]\n"
+        '    fn counts() { assert_eq!(f("ab"), 2); }\n'
+        "    #[test]\n"
+        "    fn chars() { assert_eq!('a', 'a'); }\n"
+        "}\n"
+    )
+
+    def test_lifetime_and_character_literals_preserve_test_discovery(self) -> None:
+        tests = gate_module._rust_tests("src/lib.rs", self.SOURCE)
+        self.assertEqual(
+            {record["display"] for record in tests.values()},
+            {"src/lib.rs:counts", "src/lib.rs:chars"},
+        )
+
+    def test_character_mask_accepts_single_characters_and_escapes_not_lifetimes(self) -> None:
+        literals = ["'a'", "'}'", "'λ'", r"'\n'", r"'\''", r"'\\'", r"'\x7f'", r"'\u{1F600}'"]
+        for literal in literals:
+            with self.subTest(literal=literal):
+                self.assertIsNotNone(gate_module._RUST_MASK.fullmatch(literal))
+        for text in ["'static", "'a, 'b", "'ab'", "'\n'", "'a\nb'", r"'\q'"]:
+            with self.subTest(not_character=text):
+                self.assertIsNone(gate_module._RUST_MASK.fullmatch(text))
+
+    def test_ignore_or_deletion_with_lifetime_fails_unless_authorized(self) -> None:
+        for change in ("ignore", "delete"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                repo = repository(Path(directory))
+                source = repo / "src" / "lib.rs"
+                source.write_text(self.SOURCE)
+                commit(repo, "Rust lifetime and character fixture")
+                git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+                counts = '    #[test]\n    fn counts() { assert_eq!(f("ab"), 2); }\n'
+                source.write_text(self.SOURCE.replace(
+                    counts, "    #[ignore]\n" + counts if change == "ignore" else ""
+                ))
+                commit(repo, f"{change} existing inline test")
+
+                code, report = run_gate(repo, "--bug", "--no-repro-test", "protection fixture")
+                self.assertEqual(code, 1, report)
+                self.assertIn("- protected-tests: FAIL", report)
+                self.assertIn(f"src/lib.rs:counts: {'modified' if change == 'ignore' else 'deleted'}", report)
+
+                flags = dispatch.gate_flags(None, {"bug", config.LABEL_PROTECTED_OVERRIDE})
+                self.assertTrue(flags["protected_override"])
+                code, report = run_gate(
+                    repo, "--bug", "--no-repro-test", "protection fixture", "--protected-override"
+                )
+                self.assertEqual(code, 0, report)
+
+    def test_new_rust_reproduction_with_lifetime_is_recognized(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repository(Path(directory))
+            source = repo / "src" / "lib.rs"
+            source.write_text(self.SOURCE.replace("s.len()", "0"))
+            commit(repo, "Rust bug with lifetime and characters")
+            git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+            source.write_text(source.read_text().replace(
+                "    use super::*;\n",
+                "    use super::*;\n"
+                "    #[test]\n"
+                '    fn reproduces_bug() { assert_eq!(f("abc"), 3); }\n',
+            ))
+            commit(repo, "add Rust reproduction")
+            source.write_text(source.read_text().replace("-> usize { 0 }", "-> usize { s.len() }"))
+            commit(repo, "fix Rust bug")
+            previous = Path.cwd()
+            os.chdir(repo)
+            try:
+                gate_module.configure(config.load(repo))
+                # A local runner exercises both checkouts without requiring a Rust toolchain.
+                command = [
+                    sys.executable, "-c",
+                    "from pathlib import Path; "
+                    "raise SystemExit('-> usize { 0 }' in Path('src/lib.rs').read_text())",
+                ]
+                with mock.patch.object(gate_module, "_repro_command", return_value=(command, False)):
+                    results = gate_module.check_bug_reproduction("origin/main", "reproduces_bug", None)
+            finally:
+                os.chdir(previous)
+            self.assertEqual(
+                [(name, status) for name, status, _ in results],
+                [("bug-repro-before", "EXPECTED FAIL"), ("bug-repro-head", "PASS")],
+                results,
+            )
+
+
+class AuthenticatedTriageGateTest(unittest.TestCase):
+    def flags(self, author: str, text: str, *, login: str = "factory-bot", labels=None) -> dict:
+        from factory import onboard, triage
+
+        with mock.patch.object(triage, "LOGIN", None), \
+                mock.patch.object(onboard, "gh_login", return_value=login):
+            return dispatch.gate_flags(
+                None, {"bug"} if labels is None else labels,
+                comments=[{"author": {"login": author}, "body": text}],
+            )
+
+    def test_authenticated_triage_reason_is_accepted_without_override_authority(self) -> None:
+        flags = self.flags(
+            "Factory-Bot",
+            "Triage: hardware-only failure\n\nAgent brief: investigate\n"
+            "No repro test: requires unavailable hardware\n"
+            "factory-protected-override: not authorized by a comment",
+        )
+        self.assertEqual(flags, {
+            "protected_override": False, "bug": True,
+            "no_repro_test": "requires unavailable hardware",
+        })
+
+    def test_untrusted_or_non_triage_comments_cannot_exempt_reproduction(self) -> None:
+        for author, text, login in [
+            ("spoof", "Triage: copied prefix\nNo repro test: bypass", "factory-bot"),
+            ("factory-bot", "Factory dispatcher escalating:\nNo repro test: copied handoff", "factory-bot"),
+            ("factory-bot", "Triage: no reason\nNo repro test:   ", "factory-bot"),
+            ("factory-bot", "Triage: no authenticated identity\nNo repro test: bypass", ""),
+        ]:
+            with self.subTest(author=author, text=text, login=login):
+                self.assertEqual(
+                    self.flags(author, text, login=login),
+                    {"protected_override": False, "bug": True},
+                )
+
+    def test_body_reason_wins_and_handoff_reason_is_not_authority(self) -> None:
+        from factory import triage
+
+        with mock.patch.object(triage, "login", return_value="factory-bot"):
+            comments = [{"author": {"login": "factory-bot"}, "body": "Triage: reason\nNo repro test: triage reason"}]
+            self.assertEqual(dispatch.gate_flags(
+                None, {"bug"}, "No repro test: ticket reason",
+                "No repro test: worker reason", comments=comments,
+            )["no_repro_test"], "ticket reason")
+            self.assertEqual(dispatch.gate_flags(
+                None, {"bug"}, "", "No repro test: worker reason", comments=[],
+            ), {"protected_override": False, "bug": True})
+
+    def test_non_bug_ignores_comment_exemptions_and_does_not_lookup_identity(self) -> None:
+        from factory import triage
+
+        with mock.patch.object(triage, "login") as login:
+            flags = dispatch.gate_flags(
+                None, set(), comments=[{
+                    "author": {"login": "factory-bot"},
+                    "body": "Triage: exemption\nNo repro test: hardware-only",
+                }],
+            )
+        self.assertEqual(flags, {"protected_override": False})
+        login.assert_not_called()
