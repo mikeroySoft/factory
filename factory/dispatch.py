@@ -107,6 +107,9 @@ STANDING_INSTRUCTIONS = """
 
 - Implement exactly what the ticket above asks for; nothing more.
 - Use TDD where practical: failing test first, then the fix.
+- For a bug ticket, commit the reproducing test before the fix and add
+  `Repro test: <test ID>` to the handoff. A ticket-author `No repro test: <reason>`
+  line is the only substitute.
 - Commit incrementally with `git commit{commit_flag}`. Stage only files you created or
   edited for the ticket; never `git add -A`, and never commit
   `.factory-prompt.md` or gate reports.
@@ -947,6 +950,7 @@ def _record_gate_decision(
     from factory import trace
 
     failures = re.findall(r"(?m)^- ([^:\n]+): FAIL(?: \(([^\n]*)\))?", report)
+    reproduction = re.findall(r"(?m)^- (bug-repro[^:\n]*): ([^\n]+)", report)
     options = ([{"option": "pass", "eligible": passed,
                  "reason": "every configured check passed" if passed else "one or more checks failed"}]
                if passed else [])
@@ -963,6 +967,10 @@ def _record_gate_decision(
             {"kind": "head", "ref": f"https://github.com/{REPO}/commit/{head}",
              "summary": f"gated head {head}"},
             {"kind": "gate_log", "ref": report_path, "summary": "deterministic gate report"},
+            *[
+                {"kind": "repro_test", "ref": report_path, "summary": f"{name}: {status}"}
+                for name, status in reproduction
+            ],
         ],
         options=options,
         chosen=chosen,
@@ -1452,6 +1460,7 @@ def run_gate(
     wt: Path, n: int | str, skip: str = "", protected_override: bool = False,
     add_only_override: bool = False, tier: str = "attempt", upstream: list[str] = (),
     base: str | None = None, timeout: float | None = None,
+    bug: bool = False, repro_test: str | None = None, no_repro_test: str | None = None,
 ) -> tuple[bool, str]:
     report_rel = f".factory/gate-report-{n}.md"
     (wt / ".factory").mkdir(exist_ok=True)
@@ -1476,6 +1485,12 @@ def run_gate(
         cmd.append("--protected-override")
     if add_only_override:
         cmd.append("--add-only-override")
+    if bug:
+        cmd.append("--bug")
+    if repro_test:
+        cmd += ["--repro-test", repro_test]
+    if no_repro_test:
+        cmd += ["--no-repro-test", no_repro_test]
     for ref in upstream:
         cmd += ["--upstream", ref]
     if tier != "attempt":
@@ -2044,15 +2059,25 @@ def sync_event(n: int) -> dict | None:
                  if e.get("event") == "upstream-sync" and e.get("ticket") == n), None)
 
 
-def gate_flags(sync: dict | None, labels: set[str]) -> dict:
-    """`run_gate` keywords for a ticket. Human authority overrides all protected paths;
-    manager or human add-only authority overrides only add-only paths. A sync ticket's
-    gate ignores protected-path hits whose content is upstream's (equal to the recorded
-    tip or the dispatcher's staged candidate) and leak-scans from the tip, so both checks
-    judge what the worker wrote."""
-    flags = {"protected_override": LABEL_PROTECTED_OVERRIDE in labels}
+def _ticket_line(text: str, name: str) -> str | None:
+    match = re.search(rf"(?im)^{re.escape(name)}:[ \t]*(\S[^\r\n]*)$", text)
+    return match.group(1).strip() if match else None
+
+
+def gate_flags(sync: dict | None, labels: set[str], body: str = "", handoff: str = "") -> dict:
+    """`run_gate` keywords for a ticket, including bug-test evidence declarations."""
+    explicit_override = _ticket_line(body, LABEL_PROTECTED_OVERRIDE)
+    flags = {"protected_override": LABEL_PROTECTED_OVERRIDE in labels or explicit_override is not None}
     if LABEL_ADD_ONLY_OVERRIDE in labels:
         flags["add_only_override"] = True
+    if "bug" in labels:
+        flags["bug"] = True
+        no_repro = _ticket_line(body, "No repro test")
+        repro = _ticket_line(handoff, "Repro test")
+        if no_repro:
+            flags["no_repro_test"] = no_repro
+        elif repro:
+            flags["repro_test"] = repro
     if sync:
         flags["upstream"] = [sync["upstream"], sync["head"]]
     return flags
@@ -2572,9 +2597,15 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         ":(exclude).factory-prompt.md", ":(exclude).factory",
     ]
     before_status = run(status_cmd, cwd=wt).stdout.strip()
-    issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels"])
+    issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels,body"])
     labels = {label["name"] for label in issue.get("labels", [])}
-    ok, report = run_gate(wt, n, **gate_flags(sync_event(n), labels))
+    handoff = wt / ".factory" / f"handoff-{n}.md"
+    ok, report = run_gate(
+        wt, n, **gate_flags(
+            sync_event(n), labels, issue.get("body") or "",
+            handoff.read_text() if handoff.exists() else "",
+        )
+    )
     actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     after_status = run(status_cmd, cwd=wt).stdout.strip()
     if actual_head != head:
@@ -2974,6 +3005,7 @@ def worker_round(
     extra: str,
     attempt: int,
     deadline: float,
+    body: str = "",
     selected_worker: str | None = None,
 ) -> tuple[bool, str, Path, str]:
     """One worker + gate cycle, bound to one immutable head."""
@@ -3040,7 +3072,12 @@ def worker_round(
         return False, "budget exceeded before gate", logfile, head
     sync = sync_event(n)
     tip = sync["upstream"] if sync else None
-    ok, report = run_gate(wt, n, **gate_flags(sync, labels))
+    handoff_path = wt / ".factory" / f"handoff-{n}.md"
+    ok, report = run_gate(
+        wt, n, **gate_flags(
+            sync, labels, body, handoff_path.read_text() if handoff_path.exists() else "",
+        )
+    )
     actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     after_status = run(status_cmd, cwd=wt).stdout.strip()
     if actual_head != head:
@@ -3218,6 +3255,7 @@ def process_ticket(
                 execution.outcome = "not_admitted"
                 execution.reason = "state_changed"
                 return
+            labels = {label["name"] for label in fresh["labels"]}
             if not forced and shutil.which(worker) is None:
                 # Frontier claims only: `--ticket` is an operator's explicit ask and fails loudly.
                 # ponytail: PATH probe only; a binary swapped out between here and Popen still
@@ -3289,12 +3327,13 @@ def process_ticket(
                 report, gate_head = staged
             for attempt in range(1, MAX_ATTEMPTS + 1 if staged is None else 1):
                 ok, report, logfile, gate_head = worker_round(
-                    n, wt, labels, title, extra, attempt, deadline
+                    n, wt, labels, title, extra, attempt, deadline, body=fresh.get("body") or ""
                 )
                 if ok:
                     break
-                if "- protected-paths: FAIL" in report:
-                    escalate(n, "worker removed or changed existing tests" if "- protected-paths: FAIL (add-only" in report
+                if "- protected-paths: FAIL" in report or "- protected-tests: FAIL" in report:
+                    tests = "- protected-tests: FAIL" in report or "- protected-paths: FAIL (add-only" in report
+                    escalate(n, "worker removed or changed existing tests" if tests
                              else "worker edited protected paths", logfile,
                              extra="## Offending diff\n\n" + report, code="protected_paths")
                     return
@@ -3368,10 +3407,12 @@ def process_ticket(
                     record_worker_selection(n, labels, cause=retry_decision, relation="retries")
                     record_claim_decision(n, True, retry_decision, relation="retries")
                 ok, report, logfile, gate_head = worker_round(
-                    n, wt, labels, title, extra, MAX_ATTEMPTS + bounce, deadline
+                    n, wt, labels, title, extra, MAX_ATTEMPTS + bounce, deadline,
+                    body=fresh.get("body") or "",
                 )
-                if "- protected-paths: FAIL" in report:
-                    escalate(n, "worker removed or changed existing tests" if "- protected-paths: FAIL (add-only" in report
+                if "- protected-paths: FAIL" in report or "- protected-tests: FAIL" in report:
+                    tests = "- protected-tests: FAIL" in report or "- protected-paths: FAIL (add-only" in report
+                    escalate(n, "worker removed or changed existing tests" if tests
                              else "worker edited protected paths", logfile,
                              extra="## Offending diff\n\n" + report, code="protected_paths")
                     return

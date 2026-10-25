@@ -752,12 +752,23 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    justification and worker guidance, to apply `factory-add-only-override` and
    requeue the ticket when the ticket requires the existing add-only edit or an
    obsolete wording-only assertion must be removed; a human may apply it directly.
-   It does not authorize `[gate].protected_paths`. Only a human can apply
-   `factory-protected-override` to bypass both classes, including during a
-   refresh onto moved main. An `upstream sync:` ticket's worker otherwise gets
-   no override, only upstream-authored content is exempt (`--upstream`, above).
-   Otherwise make protected changes outside the worker flow. Then `conflict-markers`,
-   your `[[gate.check]]` list in order, and a `leak-scan`
+   It does not authorize `[gate].protected_paths`. On `bug` tickets the attempt
+   gate also compares every existing Python test function and every Rust
+   `#[test]` function (including tests inside `src/*.rs`) with the base. Deleting
+   or changing one, including adding `@unittest.skip`, pytest skip/xfail, or
+   Rust `#[ignore]`, fails as `protected-tests`; other languages retain the
+   configured path-based add-only policy. `factory-protected-override`, or a
+   ticket line `factory-protected-override: <reason>`, bypasses both path and
+   function protection. An `upstream sync:` ticket's worker otherwise gets no
+   override, only upstream-authored content is exempt (`--upstream`, above).
+   A bug worker must make the first branch commit add the reproducing test, make
+   the fix in a later commit, and put `Repro test: <test ID>` in its handoff.
+   The dispatcher runs that test at the test commit (it must fail) and at HEAD
+   (it must pass); both results are written to the gate report and the gate
+   decision trace. A ticket-author `No repro test: <reason>` line records the
+   reason and skips only this fail-before/pass-after check. Otherwise make
+   protected changes outside the worker flow. Then `conflict-markers`, your
+   `[[gate.check]]` list in order, and a `leak-scan`
    run. Checks marked `exclusive` serialise on a host-wide lock. Every check
    has a timeout. `[[gate.check]]` has three tiers, selected by `when`
    (`factory gate --tier <tier>`; anything else is a config error naming the

@@ -448,7 +448,8 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         ok, report, logfile, gate_head = dispatch.worker_round(
             n, wt, {data["worker"]} | {label["name"] for label in issue.get("labels", [])},
             issue["title"], extra, max(attempts, default=0) + 1,
-            time.monotonic() + cfg.budget_min * 60, selected_worker=data["worker"],
+            time.monotonic() + cfg.budget_min * 60, body=issue.get("body") or "",
+            selected_worker=data["worker"],
         )
         if not ok:
             reason = "gate failed after manager FIX"
