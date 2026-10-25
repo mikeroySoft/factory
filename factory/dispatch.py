@@ -2791,46 +2791,39 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         extra: str = "",
         *,
         refreshed_head: str | None = None,
-        evidence_ref: str | None = None,
     ) -> None:
+        evidence_ref = None
+        if refreshed_head is not None:
+            evidence_ref = f"refs/factory-evidence/{n}-refreshed-{refreshed_head[:12]}"
+            run(["git", "update-ref", evidence_ref, refreshed_head], cwd=wt)
+            run(
+                [
+                    "git",
+                    "fetch",
+                    "origin",
+                    f"+refs/heads/agent/{n}:refs/remotes/origin/agent/{n}",
+                ],
+                cwd=wt,
+            )
+            run(["git", "reset", "--hard", f"origin/agent/{n}"], cwd=wt)
+            run(
+                [
+                    "git",
+                    "clean",
+                    "-fd",
+                    "--",
+                    ".",
+                    ":(exclude).factory-prompt.md",
+                    ":(exclude).factory",
+                ],
+                cwd=wt,
+            )
         escalate(
             n,
             f"PR #{pr}: {reason}; `{FACTORY_APPROVED}` label removed",
             None,
             extra=extra,
             code=code,
-            refreshed_head=refreshed_head,
-            evidence_ref=evidence_ref,
-        )
-
-    def withdraw_refreshed(reason: str, code: str, refreshed_head: str) -> None:
-        evidence_ref = f"refs/factory-evidence/{n}-refreshed-{refreshed_head[:12]}"
-        run(["git", "update-ref", evidence_ref, refreshed_head], cwd=wt)
-        run(
-            [
-                "git",
-                "fetch",
-                "origin",
-                f"+refs/heads/agent/{n}:refs/remotes/origin/agent/{n}",
-            ],
-            cwd=wt,
-        )
-        run(["git", "reset", "--hard", f"origin/agent/{n}"], cwd=wt)
-        run(
-            [
-                "git",
-                "clean",
-                "-fd",
-                "--",
-                ".",
-                ":(exclude).factory-prompt.md",
-                ":(exclude).factory",
-            ],
-            cwd=wt,
-        )
-        withdraw(
-            reason,
-            code,
             refreshed_head=refreshed_head,
             evidence_ref=evidence_ref,
         )
@@ -2892,10 +2885,10 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         ["git", "merge-base", "--is-ancestor", "HEAD", f"origin/{cfg.main}"], cwd=wt, check=False
     ).returncode == 0
     if empty:
-        withdraw_refreshed(
+        withdraw(
             f"nothing ahead of {cfg.main} after {verb}; refusing to push",
             "refresh_empty",
-            head,
+            refreshed_head=head,
         )
         return False
     status_cmd = [
@@ -3007,13 +3000,17 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             return False
     if not ok:
         pr_comment(n, f"Gate failed after {verb} onto current main:\n\n{report}")
-        withdraw_refreshed(f"gate failed after {verb} onto moved main", "gate_failed", head)
+        withdraw(
+            f"gate failed after {verb} onto moved main",
+            "gate_failed",
+            refreshed_head=head,
+        )
         return False
     if push_agent(wt, n, remote_head, check=False) is None:
-        withdraw_refreshed(
+        withdraw(
             "remote head changed while refreshed evidence was being produced",
             "refresh_head",
-            head,
+            refreshed_head=head,
         )
         return False
     record(
