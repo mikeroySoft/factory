@@ -9,7 +9,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from factory import config, dispatch, gate as gate_module
+from factory import config, dispatch
+from factory import gate as gate_module
 
 ROOT = Path(__file__).resolve().parents[1]
 TEST_ID = "tests.test_regression.RegressionTest.test_value"
