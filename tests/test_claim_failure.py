@@ -176,7 +176,21 @@ class ClaimFailure(unittest.TestCase):
         git("commit", "-qam", "agent")
         git("merge", "other", check=False)
 
-        self.assertIn("mid-merge", dispatch.orphaned_worktree_reason(7))
+        assigned = {**self.fresh, "assignees": [{"login": "runner"}]}
+
+        def github(args):
+            if args == ["api", "user"]:
+                return {"login": "runner"}
+            if args[:2] == ["issue", "view"]:
+                return assigned
+            return [assigned]
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=github), \
+                mock.patch.object(dispatch, "escalate") as escalate:
+            [issue] = dispatch.frontier()
+
+        self.assertEqual(issue["held"], "orphaned claim escalated")
+        self.assertIn("mid-merge", escalate.call_args.args[1])
 
     def test_assigned_ticket_with_open_pr_is_never_reclaimed(self):
         assigned = {**self.fresh, "assignees": [{"login": "runner"}]}

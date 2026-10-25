@@ -76,6 +76,7 @@ flowchart TB
 
   %% Build
   RFA -->|"open, unassigned, no open blockers: dispatch.frontier"| CLAIM
+  RFA -->|"bot-only assignment, no live lock, unsafe worktree: dispatch.frontier"| ESC
   RFA -->|"its PR's red CI completed before the release: no escalation, waits for a worker: manage.frontier_pass"| CLAIM
   RFA -->|"its PR's CI red after the release, or idle stale_days counted from the release: manage.frontier_pass, manage.released_at"| ESC
   CLAIM -->|"dispatch.process_ticket"| WR
@@ -183,6 +184,10 @@ event. `{}` is a runtime value.
 
 | Code | Reason | Edge |
 |------|--------|------|
+| `dispatch.frontier` | ``worktree path is not a directory: {}`` | ready-for-agent orphan → escalate (`orphaned_claim`) |
+| `dispatch.frontier` | ``worktree is mid-merge: {}`` | ready-for-agent orphan → escalate (`orphaned_claim`) |
+| `dispatch.frontier` | ``worktree state is unreadable: {}`` | ready-for-agent orphan → escalate (`orphaned_claim`) |
+| `dispatch.frontier` | ``worktree has uncommitted changes: {}`` | ready-for-agent orphan → escalate (`orphaned_claim`) |
 | `dispatch.process_ticket` | ``worker edited protected paths`` | worker round → escalate |
 | `dispatch.process_ticket` | ``worker removed or changed existing tests`` | worker round → escalate (add-only path) |
 | `dispatch.process_ticket` | ``wall-clock budget ({} min) exceeded`` | worker round → escalate |

@@ -463,22 +463,6 @@ def open_agent_tickets() -> set[int]:
     }
 
 
-def orphaned_worktree_reason(n: int) -> str | None:
-    """Why an unlocked claimed worktree needs human recovery; None means it is safe to resume."""
-    wt = FACTORY / f"wt-{n}"
-    if not wt.exists():
-        return None
-    if not wt.is_dir():
-        return f"worktree path is not a directory: {wt}"
-    merging = run(["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"], cwd=wt, check=False)
-    if merging.returncode == 0:
-        return f"worktree is mid-merge: {wt}"
-    status = run(["git", "status", "--porcelain", "--untracked-files=all"], cwd=wt, check=False)
-    if status.returncode != 0:
-        return f"worktree state is unreadable: {wt}"
-    if status.stdout:
-        return f"worktree has uncommitted changes: {wt}"
-    return None
 
 
 def frontier(dry_run: bool = False) -> list[dict]:
@@ -546,22 +530,45 @@ def frontier(dry_run: bool = False) -> list[dict]:
                                     or not still_owned
                                 ):
                                     issue["held"] = "assigned"
-                                elif reason := orphaned_worktree_reason(n):
-                                    escalate(n, reason, None, code="orphaned_claim")
-                                    issue["held"] = "orphaned claim escalated"
                                 else:
-                                    released = run(
-                                        ["gh", "issue", "edit", str(n), "--repo", REPO,
-                                         "--remove-assignee", "@me"],
-                                        check=False,
+                                    wt = FACTORY / f"wt-{n}"
+                                    exists = wt.exists()
+                                    is_dir = wt.is_dir() if exists else False
+                                    merging = status = None
+                                    if is_dir:
+                                        merging = run(
+                                            ["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+                                            cwd=wt, check=False,
+                                        )
+                                        if merging.returncode != 0:
+                                            status = run(
+                                                ["git", "status", "--porcelain", "--untracked-files=all"],
+                                                cwd=wt, check=False,
+                                            )
+                                    reason = (
+                                        "" if not exists
+                                        else f"worktree path is not a directory: {wt}" if not is_dir
+                                        else f"worktree is mid-merge: {wt}" if merging.returncode == 0
+                                        else f"worktree state is unreadable: {wt}" if status.returncode != 0
+                                        else f"worktree has uncommitted changes: {wt}" if status.stdout
+                                        else ""
                                     )
-                                    if released.returncode == 0:
-                                        record("reclaim", ticket=n, reason="orphaned_claim",
-                                               assignee=bot_login)
-                                        issue["assignees"] = []
-                                        log(f"#{n}: reclaimed orphaned claim (no live lock)")
+                                    if reason:
+                                        escalate(n, reason, None, code="orphaned_claim")
+                                        issue["held"] = "orphaned claim escalated"
                                     else:
-                                        issue["held"] = "assigned (orphan reclaim failed)"
+                                        released = run(
+                                            ["gh", "issue", "edit", str(n), "--repo", REPO,
+                                             "--remove-assignee", "@me"],
+                                            check=False,
+                                        )
+                                        if released.returncode == 0:
+                                            record("reclaim", ticket=n, reason="orphaned_claim",
+                                                   assignee=bot_login)
+                                            issue["assignees"] = []
+                                            log(f"#{n}: reclaimed orphaned claim (no live lock)")
+                                        else:
+                                            issue["held"] = "assigned (orphan reclaim failed)"
                             finally:
                                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
             else:
