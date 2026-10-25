@@ -348,7 +348,10 @@ class RefreshGateFailureTest(unittest.TestCase):
         self.assertIn(config.LABEL_AGENT, self.github.issue_labels)
         self.assertNotIn(config.LABEL_HUMAN, self.github.issue_labels)
         self.assertEqual(self.github.assignees, [])
-        prompt = dispatch.build_prompt(9, dispatch.FACTORY / "wt-9", dispatch.refresh_requeue_context(9))
+        with self.patched():
+            prompt = dispatch.build_prompt(
+                9, dispatch.FACTORY / "wt-9", dispatch.refresh_requeue_context(9)
+            )
         self.assertIn("## Refresh gate failure, round 1", prompt)
         self.assertIn(first, prompt)
         self.assertIn(second, prompt)
