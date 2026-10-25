@@ -1,42 +1,40 @@
-Note: `./review.diff` and `./snapshot` were absent from the sandbox; the cwd is the gated revision (`45d96f6`, detached) with base `311ba91` (agent/8 commit). I reconstructed the diff via `git diff 311ba91..HEAD` (4 files, +176/−5) and read the checked-out tree as the snapshot. Line cites below are into that diff.
+## Review — issue #9 external PR review queue
 
-## Standards
+Scope check: issue "Touches" names `factory/dashboard.py`, `factory/dashboard.html`, `tests/test_factory.py`, `README.md`. Diff touches exactly those four files (`review.diff:1,30,120,230`). No plan recorded; no file drift.
 
-No `AGENTS.md`/`CONTRIBUTING.md` in repo; only documented conventions are the issue template (`.github/ISSUE_TEMPLATE/agent_task.md`) and `[tool.ruff] line-length = 100` (`pyproject.toml:37`, not run in `ci.yml`; `dashboard.py` already has 28 lines >100).
-
-- No hard violations.
-- Smell check: `review_queue()` (dashboard.py:153-201) mirrors the state cascade in `dispatch.review_readiness` (dispatch.py:300-310) — Duplicated Code judgement call, but the dashboard must classify from recorded evidence without `gh` calls, so inlining is the simpler choice. No speculative generality; no new abstractions beyond one pure function and three small JS helpers.
-
-## Spec (issue #9)
+### Spec (issue #9 body + agent brief)
 
 | Criterion | Evidence | Status |
 |---|---|---|
-| Six states: pending review / changes requested / CI pending / CI failed / ready / escalated | dashboard.py:185-193; `REVIEW_STATES` dashboard.html:58 | ✓ |
-| Row fields: local PR number, title, author, head SHA, last reviewed SHA, verdict, CI state | dashboard.py:194-200; dashboard.html:62-71 | ✓ |
-| Link each row to GitHub | dashboard.html:64 (`href: pr.url`) | ✓ |
-| Stalled items in existing inbox, no mutation controls | dashboard.html:84-90 pushes into `inboxItems()`; :115-116 renders `reviewRow` + text only, no form/buttons | ✓ |
-| Opted-in = `needs-review` label, review request to viewer, or previously admitted — matches dispatch intake (dispatch.py:211-223) | dashboard.py:165-174; GraphQL `viewer{login}`, `reviewRequests` :136,:145 | ✓ |
-| Old approval never makes new head ready | state derives from `current` (head-matched, :176-177), display from `review` (latest any-head, :164) | ✓ |
-| Snapshot test covers six states, PR links, SHA-specific data | test_factory.py:286-298 (states, url, head, review_head old vs current, ci_state) | ✓ |
-| No mutation of labels/reviews/branches/merge | test asserts `events.jsonl` unchanged :276,:284; `review_queue` is pure; only remote call is read-only GraphQL | ✓ |
-| Out of scope untouched (no review submission, no separate service) | no new endpoints/handlers in diff | ✓ |
-| README documents the lane | README.md:14-26 | ✓ |
+| Six states on opted-in PRs | `review.diff:185-193` (review_pending / changes_requested / ci_pending / ci_failed / ready / escalated) | met |
+| Row fields: number, title, author, head SHA, last reviewed SHA, verdict, CI state | `review.diff:194-200`; rendered `review.diff:62-70` | met |
+| GitHub link per row | `review.diff:64` (`href: pr.url`) | met |
+| Stalled items in existing Inbox, no mutation controls | `review.diff:84-90` push into `inboxItems`; `review.diff:115-116` renders read-only `reviewRow` + GitHub-only guidance; `WAITING` extended `review.diff:76` | met |
+| Snapshot test covers six states, links, SHA-specific data | `review.diff:286-299` asserts all six states, `url`, `head`, `review_head`/`ci_state` divergence for stale head (PR 1) | met |
+| No mutation of labels/reviews/branches/merge | `review.diff:276,284` asserts events.jsonl unchanged; only new GitHub I/O is GraphQL fields `review.diff:136,144-145` | met (test); live `factory dashboard` run not in gate report |
+| Opt-in = `needs-review` label, review request to viewer, or prior admitted review-result | `review.diff:165-174` mirrors `dispatch.review_intake_pass` (`snapshot/factory/dispatch.py:211-223`) | consistent |
+| SHA-specific CI from `review-readiness` (no new poll) | `review.diff:178-179` filters on `head`; matches `dispatch.review_readiness` recorder (`snapshot/factory/dispatch.py:311`) | consistent |
 
-Cross-checked field contracts against the snapshot: `review-readiness` rows carry `head/state/checks[].bucket/at` (dispatch.py:311-312, :408); `review-result` carries `head/verdict` (dispatch.py:363); PR escalations carry `pr=`/`reason` while ticket escalations use `ticket=` (dispatch.py:260, :555, manage.py:432) — so `history` keyed by `row["pr"]` (dashboard.py:157) cannot pick up ticket escalations. `h()` supports `style` objects (snapshot dashboard.html:464); `initFromHash` regex `[\w-]+` accepts `review-N` keys (snapshot :1691); `INBOX_KINDS[i.kind]` is only indexed for non-WAITING items (:1559) and `external-review` is in `WAITING` (:76).
+Inbox integration checked against existing consumers: sort tiebreaker tolerates missing `t` (`dashboard.html:1189`), `informational` list excludes WAITING kinds so `INBOX_KINDS[i.kind]`/`i.t.number` at `dashboard.html:1559` is never reached for review items, hash regex `[\w-]+` accepts `review-<n>` keys (`dashboard.html:1691`), briefing microtask guarded by `item?.t` (`dashboard.html:1560`).
 
-## Plan drift
+### Standards
 
-- Plan: not recorded. Files changed (README.md, factory/dashboard.html, factory/dashboard.py, tests/test_factory.py) are exactly the four the issue's **Touches** names. No unnamed files.
-- Gate report has `test: PASS` (covers `python -m unittest`). The manual exit-gate proof ("running `factory dashboard` displays the queue") is not in the gate report; the read-only property is evidenced by the test's `events.jsonl` assertion and the absence of any write path in the diff. Not a defect.
+No AGENTS.md / CONTRIBUTING.md in snapshot. `pyproject.toml:36-37` sets ruff `line-length = 100`; not enforced by `.factory.toml` gate or `ci.yml` (unittest only), and `dashboard.py` already has 28 lines >100. Test follows the existing `mock.patch.dict(dashboard.__dict__)` + `dashboard.configure` pattern (`tests/test_factory.py:596-597`).
 
-## Required fixes
+### Plan drift
+
+- Files outside plan: none.
+- Planned proof missing from gate report: exit-gate item "Running `factory dashboard` displays the queue without changing labels, reviews, branches, or merge state" is not evidenced by the gate (only `test: PASS`). The read-only property is covered by the new test's events-journal assertion and by the diff containing no write calls, so this does not expose a defect.
+
+### Required fixes
 
 None.
 
-## Optional suggestions
+### Optional suggestions
 
-1. **dashboard.py:199 / dashboard.html:86 — dead `reason` path, and permanently-skipped reviews never reach the Inbox.** `review-result` events never carry `reason` (dispatch.py:363), so `current.get("reason")` is always `None` and the `pr.state === 'review_pending' && pr.reason` branch is unreachable. Reviews dropped for `prompt_too_large`/`unparsed_verdict`/`review_exit` are recorded only on lifecycle executions (dispatch.py:336-356) and are "not automatically retried" (README.md:8), yet they render as plain "Pending review" and are never surfaced as stalled. README.md:23-24 ("pending reviews needing human attention also appear in Inbox") currently only holds for the old-approval/new-head case. If those count as "actionable stalled items", derive them from `executions` already in the snapshot. Not blocking: the issue doesn't define "stalled" and the six-state exit gate is met.
-2. dashboard.html:64 uses raw `pr.url` with `rel: 'noopener'`; the sibling system briefing uses `safeSourceURL(...)` + `'noopener noreferrer'` (snapshot dashboard.html:1493). Consistency only; `pr.url` is API-sourced.
-3. Ruff `line-length = 100` exceeded at dashboard.py:167 (107), :171 (103), test_factory.py:275 (104). Not CI-enforced and the files already violate it widely.
+1. `review.diff:167` is 104 chars, over the `[tool.ruff] line-length = 100` in `pyproject.toml:37`. Not gate-enforced and pre-existing violations exist; wrap if convenient.
+2. `CHANGELOG.md:3-13` has an `## Unreleased` section where comparable dashboard features (#79, #67) are logged; this diff adds a new snapshot key `review_queue` (`review.diff:226`) without an entry. Issue "Touches" does not name CHANGELOG, so non-blocking.
+3. `review.diff:199` `current.get("reason")`: `review-result` events are recorded without a `reason` field (`snapshot/factory/dispatch.py:363`), so the `review_pending && pr.reason` inbox branch at `review.diff:86` is effectively only reachable via escalation (already covered by the `escalated` branch). Dead condition; harmless.
+4. `review.diff:183-184` buckets `{pass, skipping}` → `ci_state: "pending"`. Dispatch likewise withholds `ready` for skipped checks (`dispatch.py:307-309`), so the state is consistent, but the label "pending" is slightly misleading for skipped required checks. Cosmetic.
 
 VERDICT: APPROVE

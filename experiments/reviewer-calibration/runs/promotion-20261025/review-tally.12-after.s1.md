@@ -1,13 +1,11 @@
-## Standards
-No `AGENTS.md`/`CONTRIBUTING.md` in the snapshot; conventions come from `README.md`, `skills/factory/SKILL.md`, `factory/templates/factory.toml`, and sibling code in `factory/config.py`. The diff matches existing loader style (`ConfigError`, `shlex`, layered host tables). One inconsistency: `load()`'s own errors carry a `{path}:` prefix (`config.py:283`, `:299`) while the new `manager.review` error at `factory/config.py:291` does not — same pattern as the pre-existing `manager.command` errors, so nit only. Clean cutover: `manager_model` has no remaining callers (`briefing.py` reads `cfg.manager_model` only).
-
-## Spec (issue #12 + triage brief)
-Exit-gate criteria (doctor `manager:` row, `[manager]` drift, loader test for `command`/`rounds`/`review`) were already met at base (`tests/test_factory.py:137-138`, `onboard.py:226-227`, `KNOWN_KEYS["manager"]`). The diff does not regress them. It adds two things not in the brief: (a) `review` is now validated to `escalated|all` (`config.py:290-291`) — consistent with the issue's "`"all"` allowed" wording, a guard not an abstraction; (b) a string `command` is now shlex-split into `cfg.manager` (`config.py:232-238`) instead of the base's `list(str)` → per-character argv, which would have made `doctor` and `dashboard --json` emit garbage. That is a real fix. Issue says `templates/factory.toml` documents the table; the template (`:46`) only shows the array form while the error at `config.py:238` and the new test at `tests/test_factory.py:279` advertise the string form — doc gap, nit.
-
-## Plan drift
-Plan status not recorded, so there is no named file list or planned proof to diff against. Files changed: `factory/config.py`, `tests/test_briefing.py`, `tests/test_factory.py`. Gate report: test PASS covers the new tests. No drift-exposed defect.
-
 ```json
-{"verdict":"APPROVE","findings":[{"severity":"nit","pass":"bug","path":"factory/config.py","line":291,"summary":"New manager.review ConfigError omits the `{path}:` prefix that sibling load() errors use (config.py:283, :299); harder to attribute when host and repo files both set the key."},{"severity":"nit","pass":"spec","path":"factory/config.py","line":238,"summary":"String form of manager.command is now a first-class loader input (error text and tests/test_factory.py:279 rely on it) but factory/templates/factory.toml:46 documents only the argv-array form; issue #12 says the template documents the table."}]}
+{"verdict":"APPROVE","findings":[{"severity":"nit","pass":"bug","path":"factory/config.py","line":71,"summary":"`manager.rounds` is coerced with `int()` but never range-checked; `rounds = 0`/negative/`true` load silently (consistent with `gate.timeout` handling, so not a rule violation). A one-line `< 1` check would fail fast like `manager.review` does on line 73-74."}]}
 ```
+
+Standards: `HOST_TABLES` already contained `manager` (config.py:50, pre-existing), `KNOWN_KEYS` extended (diff:10), unknown-key drift flows through existing `unknown_keys`/`host_drift` (onboard.py:139-151) with test coverage (diff:190,198). Template documents all three keys (diff:128-133); README defers to the template ("documents them all", README:118-119), so no README change needed. Doctor row matches reviewer-row pattern (diff:110-111).
+
+Spec: command/rounds/review loaded with defaults unset/1/"escalated" (diff:18-20, 70-74); `"all"` accepted, other values rejected (diff:73-74, test diff:217); `{prompt}`/`{cwd}` template kept verbatim (test diff:170,180); doctor prints `manager:` only when configured (diff:110-111, test diff:224-232); `dashboard --json` `config.manager` (diff:94-98); loader test for all three keys (diff:180-181). Running the command: not implemented, docstring and template reiterate (diff:31, 128-129). Gate `test: PASS` covers the stated verification command.
+
+Plan drift: no plan recorded. Beyond the issue's four named files, the diff touches `tests/test_briefing.py` (forced by the `manager_model`→`manager_settings` rename, diff:145-157) and `tests/test_factory.py` (required loader/doctor tests). Neither exposes a defect.
+
 VERDICT: APPROVE

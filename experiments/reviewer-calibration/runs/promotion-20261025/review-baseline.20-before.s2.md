@@ -1,40 +1,31 @@
-**Inputs:** `./review.diff` and `./snapshot` are absent from the sandbox; reviewed `git diff 07913b4..HEAD` (commits `7fc5fe2`, `8dd6588`) in the checked-out gated revision. Issue #20 + triage comment fetched via GitHub API. No `AGENTS.md`/`CONTRIBUTING.md` in the repo; standards sources are `README.md`, `docs/manager-plan.md` (T11), `factory/templates/factory.toml`.
-
 ## Standards
 
-- Config loader convention (`config.py:45-51` host layering, `merge()` at `config.py:203-208`): table-form `[workers.<label>]` merges correctly across host `[defaults.workers.*]` and the repo file; the template note at `factory/templates/factory.toml:37-39` ("keep a default worker in that layer") is accurate because `config.py:286-287` still requires `default`.
-- Push convention: the existing re-gate-then-push path uses `--force-with-lease` (`dispatch.py:731`); the new FIX path uses a plain push (`manage.py:124`). See Required #1.
-- Smell baseline, judgement calls only: `parse()` still subtracts `RESERVED_LABELS` (`manage.py:54`, `manage.py:65`) after `manage_pass` already pre-filters (`manage.py:199`) — harmless duplication, keeps `parse` safe for direct callers. `import shutil` inside the test body (`tests/test_factory.py:678`) vs. module-level imports elsewhere in the file. No speculative generality: `RESERVED_LABELS` and `worker_when` are each used by ≥2 sites.
+No `AGENTS.md`/`CONTRIBUTING.md` in the snapshot; documented sources are `README.md` and `docs/manager-plan.md` (T11, lines 341–352). README updated in-diff (`review.diff:10-24`) and matches the code paths it describes (gate-PASS-only push `manage.py:121-124`, fresh-APPROVE-only relabel `:127-128`, no requeue `:131`). Config validation follows the existing `ConfigError` pattern (`review.diff:49-52`). `RESERVED_LABELS` extraction (`review.diff:102,112,122`) removes a duplicate set literal rather than adding abstraction. No smell-baseline findings beyond judgement calls below.
 
-## Spec (issue #20 / T11)
+## Spec (issue #20 / brief comment)
 
-| Criterion | Status | Evidence |
+| Criterion | Evidence | Status |
 |---|---|---|
-| `[workers.<label>]` may carry `when` | Met | `config.py:289-298` |
-| Manager prompt lists labels with `when` | Met | `manage.py:199-201`; asserted at `tests/test_factory.py:673` |
-| ROUTE/FIX only for listed labels | Met | `manage.py:53-56`, `manage.py:63-66`; tests `:652-676`, `:719-729` |
-| `ROUTE chore` without chore worker rejected + recorded | Met | HUMAN recorded in `manage` event, no `issue edit` (`tests/test_factory.py:670-676`) |
-| With chore worker, label applied | Met | `--add-label chore` (`tests/test_factory.py:674`) |
-| FIX on red CI runs `ci-fix` argv | Met | `manage.py:117-120`; `fix-worker` stub output checked (`tests/test_factory.py:706-710`) |
-| Array-form `[workers]` still loads | Met | `tests/test_factory.py:147-157` |
-| Ship `ci-fix` + `conflict` in template | Met (opt-in) | `factory/templates/factory.toml:41-47`, commented out. Consistent with the template's "defaults are shown commented out" header (`:2-3`) and with "human-applied" in the issue; an active `[workers.ci-fix]` would force an active `default` into every onboarded repo (`config.py:286`). Flagging the interpretation, not blocking. |
-| `dashboard.py` touched | Met | `dashboard.py:847` exposes `worker_when`; `dashboard.html` does not render it (optional) |
-| Out of scope: manager writing host config | Respected | README `:101-102`, MENU `:33-35` |
+| `[workers.<label>]` may carry `when`; array form still loads | `review.diff:45-55`, test `:236-254` | met |
+| Manager prompt lists labels with `when` | `review.diff:176-178`, test `:283` | met |
+| ROUTE/FIX only for listed labels | `review.diff:111-115,120-126`, tests `:263-286,:332-342` | met |
+| Ship `ci-fix` and `conflict` profiles in template; human-applied | `review.diff:218-224` | met |
+| ROUTE chore w/o worker rejected+recorded; with worker label applied | test `:281-286` (HUMAN decision in `manage` event; `--add-label chore`) | met |
+| FIX on red CI runs `ci-fix` argv | `review.diff:152-155`, test `:303-330` | met |
+| Out of scope: manager writes host config | nothing in diff writes config | met |
 
-## Required fixes
+### Required fixes
 
-1. **`conflict` profile cannot land through FIX: non-fast-forward push.** `manage.py:124` runs `git push origin agent/{n}`. The rebase-conflict escalation path does `git rebase --abort` before escalating (`dispatch.py:722-724`), so the kept worktree equals the remote branch; the shipped `conflict` command instructs the worker to restart the rebase (`factory/templates/factory.toml:47`), rewriting history. Trigger: manager answers `FIX {"worker":"conflict"}` on that escalation → worker rebases → gate PASS → `manage.py:124` rejected as non-fast-forward → `CalledProcessError` → `manage_pass` records `mechanism_failure` (`manage.py:222-226`). Impact: one of the two profiles this issue ships (scope: "`conflict` (resolve the rebase…)") can never push, review, or re-approve; the rebased worktree is left unpushed. The existing re-gate-then-push path uses `--force-with-lease` (`dispatch.py:731`); use the same here. The gate did not catch it because the test stubs `git push` to `exit 0` (`tests/test_factory.py:699`).
+1. **FIX push cannot succeed for the shipped `conflict` profile.** `manage.py` (`review.diff:159`) runs `git push origin agent/{n}` (plain). The `conflict` profile this diff ships (`review.diff:222-224`) instructs the worker to restart and resolve the rebase; the dispatcher's conflict escalation aborts the rebase first (`snapshot/factory/dispatch.py:722-724`), so a successful `conflict` worker always rewrites `agent/{n}` history. Plain push is rejected non-fast-forward → `CalledProcessError` → caught at `review.diff:197-199` as `mechanism_failure` with only a local log line; no GitHub comment, no new escalation, and with `manager_rounds=1` the round is consumed (`manage.py:189-192`), so the resolved rebase sits unpushed and invisible. The repo's own post-rebase push uses `--force-with-lease` (`dispatch.py:731`). Fix: `["git", "push", "--force-with-lease", "origin", f"agent/{n}"]` at `review.diff:159`; update the assertion at `review.diff:330` accordingly. Rule source: issue scope "`conflict` (resolve the rebase, keep both intents…)" + plan T11 line 142 ("Dispatch a worker round (`ci-fix`, `conflict`…)") — the diff ships a profile its own FIX path cannot complete. The gate's test PASS doesn't cover it: the test stubs `git push` to `exit 0` (`review.diff:316`).
 
-## Optional suggestions
+### Optional suggestions
 
-- `dashboard.html:893-894` renders `cfg.workers` but ignores the new `worker_when` key (`dashboard.py:847`); a one-line addition shows the rule next to the label.
-- `manage.py:225` labels every FIX failure (precondition `ValueError` at `:109-112`, worker/gate errors) as `github_command_failed`; the audit reason is now misleading for FIX.
-- `docs/manager-plan.md:347` says the manager "may recommend one [profile] in a HUMAN diagnosis"; `MENU` (`manage.py:17-32`) doesn't say so. Prompt-only change.
-- Drop the redundant `- RESERVED_LABELS` / `worker in RESERVED_LABELS` in `parse` (`manage.py:54`, `:65`) or the pre-filter at `manage.py:199`, not both.
+- `KNOWN_KEYS["workers"] = None` (`snapshot/factory/config.py:58`) means `factory doctor` won't flag a mistyped `whne =` in a `[workers.<label>]` table; the key is silently dropped at `review.diff:48`. Consider validating table keys ⊆ `{command, when}` in the loader.
+- `dashboard.py` exposes `worker_when` (`review.diff:67`) but `dashboard.html:894` doesn't render it. Harmless; wire it or drop it.
+- `pr checks` stub in the FIX test (`review.diff:313`) is unused by the code path.
 
 ## Plan drift
 
-- Worker plan: not recorded. Against the issue's **Touches** list (config.py, manage.py, dashboard.py, templates/factory.toml), the diff also changes `README.md` (documents the new `FIX` decision and table-form workers; expected given README `:85-98` is the manager spec) and `tests/test_factory.py` (exit gate requires it to pass). Neither exposes a defect.
-- Proof: gate `test: PASS` runs `python -m unittest discover -s tests` (`.factory.toml:4-13`), covering `tests/test_factory.py`. All four exit-gate conditions have a test. Missing proof: no test exercises a real push after a rebase (see Required #1).
+Plan status: not recorded — no planned file list or proof to diff against. Files changed vs. issue "Touches": `README.md` and `tests/test_factory.py` are additional; both are justified (docs for new decision; tests are the exit gate). Gate report covers the stated verification (`uv run pytest tests/test_factory.py` → test PASS). No proof gap exposes a defect; the required fix above is a code defect, not drift.
 
 VERDICT: REVISE

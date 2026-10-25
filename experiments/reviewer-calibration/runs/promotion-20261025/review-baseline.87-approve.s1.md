@@ -1,32 +1,37 @@
-## Review: 76a1a7a..19bd468 — `evidence: expose verifiable reader build and schema identity`
+## Standards
 
-Inputs: `./review.diff` and `./snapshot` were absent; reviewed `git diff 76a1a7a 19bd468` (merge-base origin/main..gated HEAD) in the checkout. No AGENTS.md/CONTRIBUTING.md in repo; conventions taken from README.md evidence contract and docs/c1-read-interface-*.md.
+Sources: `README.md` (evidence contract §"Bounded project evidence JSON schema 1"), `pyproject.toml` `[tool.ruff] line-length = 100`, `.factory.toml` gate (`unittest` only), smell baseline.
 
-### Spec (issue #87)
+No hard violations.
 
-- AC1 "build revision and supported schema separate from repository revision and service identity" — met. `factory/evidence.py:374-397` reports `producers.reader = {revision, verified, evidence_schema, runtime_schema}` from the engine's own checkout (`Path(__file__).resolve().parent`), not `--root`; repository identity stays in `scope`/`head_sha`, service state stays in `runtime_local` output.
-- AC2 "unavailable provenance explicitly unknown; never fabricated from version string or checkout HEAD" — met. `evidence.py:392-396`: revision emitted only when `rev-parse HEAD` is a SHA **and** `ls-files --error-unmatch evidence.py` succeeds **and** `status --porcelain -- .` is empty; otherwise `revision: null, verified: false`. No fallback to a version string or `--root` HEAD. Consistent with README.md:824 ("clean source-checkout Git revision, otherwise null, never a CLI version").
-- AC3 "exercise actual JSON CLI for verified and unavailable provenance; bounded output, zero operational writes" — met. `tests/test_evidence.py:292-311` runs `python -B -m factory.cli evidence` against a committed engine copy (verified, revision ≠ `self.head`) then a locally-modified copy (`False, None`). `GIT_OPTIONAL_LOCKS=0` (`evidence.py:382`) prevents index refresh writes; all git calls bounded by `COMMAND_SECONDS` and errors collapse to unknown (`evidence.py:385-390`).
+- `review.diff:45` (`factory/evidence.py` producers line) exceeds ruff's 100 columns. Not enforced by the gate or CI, and `evidence.py` already has 162 such lines → skipped, not a finding.
+- Possible **Duplicated Code** (judgement call): `review.diff:27-30` re-implements `snapshot/factory/dashboard.py:936-940` (`rev-parse HEAD` / `ls-files --error-unmatch` / `status --porcelain -- .` on the imported source dir). The evidence copy adds `GIT_OPTIONAL_LOCKS=0` and a per-call timeout, which the dashboard copy lacks; `evidence` already imports `dashboard`, so the shared helper would have to live in `dashboard`. Optional.
+- Audit-hook/no-write contract preserved: `review.diff:17` sets `GIT_OPTIONAL_LOCKS=0` (matches `github_read` at `evidence.py:321`), so `git status` does not refresh the index; all three git calls are read-only; failures collapse to `None` (`review.diff:23-25`) without leaking diagnostics, matching the module's "raw diagnostics withheld" convention.
 
-### Standards
+## Spec (issue #87 + triage brief)
 
-- Read-only/bounded conventions (README.md:108, docs/c1-read-interface-ticket.md:37-39) honoured: no network, no state creation, timeouts on every subprocess.
-- Existing `producers.evidence_schema`/`runtime_schema` keys preserved (`evidence.py:420`); no consumers broken (none found outside evidence.py/tests).
+AC1 "identifies verifiable build revision and supported schema separately from repository revision and service identity" — met. `review.diff:31-32` emits `producers.reader = {revision, verified, evidence_schema, runtime_schema}` from the engine's own `Path(__file__)` checkout (`review.diff:16`), never from `--root`. Test `review.diff:88` asserts `reader.revision != self.head`.
 
-### Plan drift
+AC2 "unavailable provenance is explicitly unknown; version strings or checkout HEAD never fabricate" — met. `verified` requires full-SHA HEAD ∧ tracked module ∧ clean `factory/` (`review.diff:30`); otherwise `revision: null, verified: false` (`review.diff:31`). No use of `factory.__version__`. Packaged/site-packages install → `rev-parse` fails or `ls-files` is unmatched → unknown. `review.diff:90-93` proves the locally-modified path yields `(False, None)`.
 
-- Plan not recorded → no named-file baseline. Files changed: `factory/evidence.py`, `tests/test_evidence.py` only.
-- Gate report: test PASS covers the CLI exercise (tests spawn the real CLI). Issue also asks to "record commands and observed results in the PR"; PR body not available here — unverified, not a code defect.
+AC3 "exercise actual JSON CLI for verified and unavailable provenance; preserve bounded output and zero operational writes" — met through the real `factory.cli evidence` subprocess under the audit-hook guard (`review.diff:61-63`, `78-93`). Gate `test: PASS` on the target host.
 
-### Required fixes
+Verification recording: issue requires commands/results recorded in the PR; not visible in the diff/gate report → unverifiable here, not a diff defect.
+
+No scope creep: two files, one function, one producer field.
+
+## Plan drift
+
+Plan status: not recorded → no named file list or planned proof to diff against. Files changed: `factory/evidence.py`, `tests/test_evidence.py`. Nothing in the gate report is missing relative to the issue's required `python -m unittest discover -s tests` (gate `test: PASS`).
+
+## Required fixes
 
 None.
 
-### Optional suggestions
+## Optional suggestions
 
-1. **Duplicate logic.** `evidence.py:384-395` reimplements the exact three-command clean-checkout check already inline at `factory/dashboard.py:935-940` (rev-parse / ls-files --error-unmatch / status --porcelain). docs/c1-read-interface-ticket.md:41 asks for one owner of shared read logic. Extracting one helper (dashboard.py's `sh` has no timeout; the new one does) would let both use the bounded version. Not blocking: dashboard.py is an overlapping-writer surface and the issue scoped "no automatic scope changes".
-2. **Test helper duplication drops checks.** `tests/test_evidence.py:275-283` `reader_from` copies `invoke` (`test_evidence.py:205-218`) but omits the `self.state()` before/after and `len(stdout) < 1_048_576` assertions that `invoke` applies. An `engine=` parameter on `invoke` would exercise AC3's "bounded output and zero operational writes" on the verified/unavailable runs too. The implementation satisfies the bound regardless (`bounded_output` at `evidence.py:1157`), and the first assertion block (`test_evidence.py:286`) goes through `invoke`.
-3. **Docs.** README.md:1161 and :1216-1218 document `capabilities`/`producers` contents and don't mention `producers.reader`; CHANGELOG.md `## Unreleased` has no entry. Recent feature commits (76a1a7a) updated both. No written rule mandates it, so not blocking.
-4. `evidence_schema`/`runtime_schema` now appear both in `producers` and `producers.reader` (`evidence.py:396-397`, `:420`). Fine for compatibility; drop the outer pair only if a later schema bump wants one source of truth.
+1. `README.md:1216-1218` states `capabilities` "advertises **only** … evidence and runtime schema 1 support, the accepted escalation path, and an empty action menu"; `review.diff:44` now also advertises `producers.reader`. Add one clause there and a `CHANGELOG.md` Unreleased line `(#87)` to keep the documented contract accurate. No repo rule mandates it, so non-blocking.
+2. `review.diff:57-65` `reader_from` skips the `before == self.state()` and `len(stdout) < 1_048_576` assertions that `invoke` (`tests/test_evidence.py:216-218`) applies; the engine checkout's own cleanliness after the read is also not asserted. Reusing `invoke` with an `env` override would cover AC3's "zero operational writes / bounded output" for the engine-copy runs too.
+3. Share the source-revision check with `dashboard.py:936-940` (see Standards) so both surfaces agree on what "verified build" means; only worthwhile if the dashboard copy also wants the no-locks/timeout hardening.
 
 VERDICT: APPROVE

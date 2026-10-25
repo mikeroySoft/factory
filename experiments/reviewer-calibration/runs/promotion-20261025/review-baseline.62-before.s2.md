@@ -1,42 +1,54 @@
-**Evidence note:** `./review.diff` and `./snapshot` do not exist in the sandbox. Reviewed `git diff origin/main...HEAD` (4 commits, `1eca1bb..cfbdb6f`, matching the handoff in the issue comment) against the checked-out gated head; line cites are post-image lines in that checkout. Issue #62 read via GitHub API (gh CLI unavailable).
-
 ## Standards
 
-Repo has no AGENTS.md/CONTRIBUTING.md; standards sources are README.md (execution-event contract, config docs) and the `factory init` template. CHANGELOG is release-time only (`289cac5`), so no per-PR entry is owed.
+No `AGENTS.md`/`CONTRIBUTING.md` in the snapshot; `docs/` holds plans, not coding rules. `CHANGELOG.md` is release-compiled (`## 0.3.0 — …`, "Compared against 0.2.0"), no `Unreleased` section, so no per-PR entry is required. Nothing in the diff breaches a documented convention.
 
-- **Docs assert behavior the code lacks.** `factory/templates/factory.toml:25` (under `[workers]`): "bare `{prompt}` passes path text and is rejected"; `README.md:97-100` says the same in a sentence scoped to "Worker and manager commands". Only `Config.manager_cmd` rejects (`factory/config.py:149-150`); `Config.worker` (`factory/config.py:138-141`) expands anything. Trigger: operator writes `default = ["omp","-p","--cwd","{cwd}","{prompt}"]` expecting the documented rejection → omp silently runs with a path as its prompt. — **Required** (documentation contradicts implemented contract; the issue limits rejection to `manager_cmd` for `omp`).
-- Judgement call, Duplicated Code: the omp bare-`{prompt}` rule appears in `factory/config.py:149` and `factory/onboard.py:234`. Optional; a one-function predicate would do, not blocking.
-- Judgement call, lifecycle vocabulary: `factory/manage.py:272-273` records `escalate` inside the `manage` lifecycle scope, so `dispatch.record` (`factory/dispatch.py:245-248`, unchanged) stamps the manage execution `outcome=project_escalation, reason=manager_failed`. README:368 defines `project_escalation` as "not a broken runtime mechanism", while README:371-372 route a mechanism that could not run to `mechanism_failure`/`unknown`. Runtime state still projects to `completed` either way (`factory/lifecycle.py:642`), so no consumer-visible state flips. Optional.
+Judgement-call smells (non-blocking):
+
+- **Duplicated Code** — the `omp` + bare `{prompt}` rule lives twice: `factory/config.py:59-60` (diff) and `factory/onboard.py:153-154` (diff). Doctor could call `cfg.manager_cmd(Path("p"), Path("c"))` under `except ConfigError` and get the same message for free. Two copies will drift the first time the rule changes (e.g. `-f {prompt}`).
 
 ## Spec (issue #62 + agent brief)
 
-Satisfied:
-- `manager_cmd(prompt_path, cwd)` expands a path; `manage.py:263-265` writes `<factory>/manager-prompt-<n>.md`. `learn.py:64-68` adapted (temp file, same prefix). ✓
-- omp bare `{prompt}` → `ConfigError` naming `@{prompt}`; other programs untouched (`config.py:149-151`). ✓ Test `tests/test_factory.py:150-165`.
-- Nonzero exit: `Manager command exited N (argv: <unexpanded json>)` + last 5 stderr lines + `escalate` event `reason=manager_failed` (`manage.py:266-273`). ✓ Test `tests/test_factory.py:752-782`. Round arithmetic excludes `manager_failed` (`dispatch.py:375-378`), approved in review round 1 per the issue comment.
-- `ConfigError` contained per ticket (`manage.py:278`), approved in round 1. ✓
-- Doctor row WARN/FAIL/PASS (`onboard.py:226-238`). ✓ Test `tests/test_factory.py:410-436`.
-- README §Configuration + template document file-vs-text (`README.md:97-100`, template `:25,:63-65`). ✓
-- `DEFAULT_MANAGER`: does not exist on base or head (manager unset = disabled); the README/template example commands now use `@{prompt}`. Not applicable rather than missing.
+Acceptance criteria, each checked against the diff:
 
-Defects:
-- **Unrequested behavior loss in the `ci-fix`/`conflict` profiles.** `factory/templates/factory.toml:44` and `:48` replace `"Read the ticket prompt at {prompt}. Read the failing CI job log. Fix the cause, or declare a flake … Do not claim a flake without evidence."` (and the conflict equivalent) with a bare `@{prompt}`. Those strings were already valid omp inline prompts with a *path* substituted — not the bug #62 fixes — and they were the profile's only instruction channel: `worker_when` is shown to the manager only (`factory/manage.py:252-253`), never to the worker. Trigger: a human applies the template profile as README:119-120 directs → ROUTE adds the label → the worker runs with no profile-specific instructions. Issue scope is "`factory init` template … document `{prompt}` = file"; nothing in "After this change" or the brief asks to change profile commands. — **Required**: revert the two command lines (they need no `@`).
-- Stats: the issue says the event exists "so `factory stats` can count it", but `stats.py:167-171` (unchanged) folds it into `escalation_count`/`escalations_per_week`, inflating per-ticket escalation counts by one per manager failure. No stats change was in the brief; flagging as **Optional** (filter `reason == "manager_failed"` or add a distinct counter).
+| Criterion | Evidence | Status |
+|---|---|---|
+| `manager_cmd(prompt_path, cwd)` expands `{prompt}` with a file path; prompt written to `<factory>/manager-prompt-<n>.md` | `factory/config.py:56-61`, `factory/manage.py:114-116` | met (writing moved to the caller, mirroring `Config.worker`; the issue's signature cannot carry the text anyway) |
+| Bare `{prompt}` element with argv[0] `omp` → `ConfigError` naming `@{prompt}`; other programs untouched | `factory/config.py:59-60`; test `tests/test_factory.py:224-226` | met |
+| Default manager command = worker shape | README `README.md:40-41`, template `factory/templates/factory.toml:199` (there is no `DEFAULT_MANAGER` constant in `config.py`; manager stays `None` by default) | met |
+| `doctor` row: PASS / FAIL naming placeholder or executable / WARN when unset | `factory/onboard.py:145-157`; test `tests/test_factory.py:244-270` | met |
+| Nonzero exit → `Manager command exited N (argv: …unexpanded…)` + last 5 stderr lines; `escalate` event `reason: manager_failed` | `factory/manage.py:119-125`; test `tests/test_factory.py:313-322` | met |
+| README + template document file for workers/manager, text for reviewer | `README.md:24-27`, `factory/templates/factory.toml:168-169,187,197-198` | met |
+| Exit-gate tests (`@<path>` readable, ConfigError, 5-line cap, doctor rows) | `tests/test_factory.py:211-226, 244-270, 278-297, 299-331` | met |
+| Manual District #26 replay | not in gate report; handoff cites a prior attempt's `.factory/district-26-replay.log` | **unverified here** (see drift) |
+
+Correctness checks I traced and found sound:
+
+- Round replay after `manager_failed`: `manage.py:237-244` picks the newest `escalate` (the failure row, same `round`), the `manage` row for that round blocks replay; `dispatch.py:72-76` keeps the next real escalation at round 2. Test `tests/test_factory.py:323-331` covers it.
+- `record("escalate")` inside the `manage` lifecycle scope sets `outcome=project_escalation` (`dispatch.py:245-248`); `lifecycle.py:591-592` treats that as a completed mechanism, not a failure. Acceptable.
+- `ConfigError(SystemExit)` is caught at `manage.py:131`, so a stale host config no longer aborts the whole pass; `learn.py:101` leaves it uncaught, which is the normal CLI exit path for config errors.
+
+### Optional suggestions (non-blocking)
+
+1. **`factory stats` now double-counts escalations.** `stats.py:167-171` counts every `escalate` row; a ticket whose manager failed once reports `escalation_count` 2 and bumps `escalations_per_week`. The issue mandates the `escalate` event "so `factory stats` can count it", so the AC is literally met, but counting it *as an escalation* is almost certainly not what the author meant. Excluding `reason == "manager_failed"` in `stats.human_touch` (same predicate as `dispatch.py:74`) or reporting it as its own column would make the metric honest. Not raised to required because the spec prescribes the event name and is silent on stats semantics.
+2. **Template worker examples lost their instructions.** `factory/templates/factory.toml:177-178,182-183` replace the `ci-fix`/`conflict` example commands (inline text that told the worker "declare a flake with evidence", "restart the rebase if aborted") with bare `@{prompt}`. Those commands were valid omp invocations and the only place that guidance existed — `worker_when` is fed to the manager menu (`manage.py:252-253`), never to the worker prompt (`dispatch.py:200-226`). The brief asked only to document `{prompt}` = file for workers. Suggest reverting these two lines.
+3. **Doc overstatement.** `README.md:26-27` and `factory/templates/factory.toml:169` say a bare `{prompt}` "is rejected" in a paragraph/section covering workers; only `manager_cmd` rejects it (`config.py:59`). `Config.worker` (`config.py:138-141`) does no such check. Reword to "rejected for the manager" or drop the clause from the `[workers]` comment.
+4. Deduplicate the omp check as noted under Standards.
 
 ## Plan drift
 
-Plan not recorded; drift judged against the issue's "Touches".
-- Named: `config.py`, `manage.py`, `doctor.py` (→ `onboard.py` here; `doctor.py` does not exist), template, README, `tests/test_factory.py`.
-- Not named: `factory/dispatch.py` (round exclusion, approved in round 1), `factory/learn.py` (forced by the `manager_cmd` signature change). Neither exposes a defect.
-- Proof missing from the gate report: the manual exit-gate item "re-run `factory manage` on District #26's kept packet … and get a real DECISION line". The handoff claims it from a prior attempt (`.factory/district-26-replay.log`) and marks it unverified for this revision; the gate report (conflict-markers/test/leak-scan) carries no evidence of it. Not a code defect; noting for the operator.
+Plan status: not recorded, so comparison is against the issue's "Touches" list.
 
-## Required fixes
-1. `factory/templates/factory.toml:44,48` — restore the original `ci-fix`/`conflict` command strings (unrequested removal of worker instructions; `worker_when` never reaches the worker).
-2. `factory/templates/factory.toml:25`, `README.md:100` — scope "is rejected" to the manager command (only `Config.manager_cmd` validates; `Config.worker` does not).
+Files changed beyond "Touches":
+- `factory/dispatch.py:72-76` — required consequence of the new `escalate` row (round arithmetic); approved in the round-1 reviewer feedback recorded in the issue handoff comment.
+- `factory/learn.py:87,97-101` — second caller of `manager_cmd`; mandatory after the signature change. (`doctor` lives in `factory/onboard.py`, not the issue's `factory/doctor.py`; same component.)
 
-## Optional
-- Dedupe the omp bare-`{prompt}` predicate (`config.py:149`, `onboard.py:234`).
-- Decide whether a manager nonzero exit should stamp the `manage` execution `project_escalation` (README:368) vs `mechanism_failure`/`unknown` (README:371-372).
-- Exclude `reason == "manager_failed"` from `stats.py:167` or count it separately.
+Planned proof missing from the gate report:
+- The manual District #26 kept-packet replay (issue exit gate, last bullet). The handoff says a *previous* attempt produced `DECISION: FIX` and this revision did not repeat it. The gate report covers only conflict-markers/test/leak-scan. The code path it would exercise is covered by `tests/test_factory.py:278-297` with a stub `omp`, so I do not treat this as exposing a defect; it remains an unverified claim.
 
-VERDICT: REVISE
+Neither drift item exposes a required defect.
+
+### Required fixes
+
+None.
+
+VERDICT: APPROVE

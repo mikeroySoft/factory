@@ -1,46 +1,32 @@
-## Standards
+## Review: #62 — manager prompt transport
 
-No `AGENTS.md`/`CONTRIBUTING.md` in the snapshot; the documented contract that applies is `README.md` §"Execution event contract" (outcome table, README:366-377) and §"Configuration".
+### Standards
+No `AGENTS.md`/`CONTRIBUTING.md` in the snapshot; the only documented conventions are CI (`.github/workflows/ci.yml:11` → `unittest discover`, gate PASS) and `CHANGELOG.md` linked from `README.md:50`. Diff adds an `Unreleased` entry (`CHANGELOG.md:8-10`) and updates both documentation surfaces named in the brief (`README.md:38-47,65-66`, `factory/templates/factory.toml:232,251-253`). Compliant.
 
-**Required**
-
-1. **Nonzero manager exit is classified as `project_escalation` on the `manage` execution** — `factory/manage.py:273-274` records `dispatch.record("escalate", …, reason="manager_failed")` inside the `lifecycle.scope(…, "manage")` opened at `factory/manage.py:225`. `dispatch.record` (`factory/dispatch.py:245-248`, unchanged) sets `execution.outcome = "project_escalation"` and `execution.reason = "manager_failed"` for every `escalate` row. README:372 defines `project_escalation` as "the existing project escalation path ran; **not a broken runtime mechanism**", and README:376 puts "command/API errors" and unexplained nonzero exits under `unknown` (README:375 `mechanism_failure` for a mechanism that could not run). Trigger: any manager command exiting nonzero (the exact ENAMETOOLONG case in the issue). Impact: the `manage` exit row in `.factory/events.jsonl` and `factory dashboard --runtime-json` report a broken manager command as a healthy escalation outcome; `manager_failed` is also not in `runtime_events.REASONS` (`factory/runtime_events.py:34-44`), so the bounded reader nulls the reason, leaving `project_escalation` with no evidence. Minimal fix: after the `record` call, set `execution.outcome = "unknown"` (or `"mechanism_failure"`) and `execution.reason = f"manager_exit:{proc.returncode}"`, matching `run_worker` (`factory/dispatch.py:258-259`). The issue's requirement to record the `escalate`/`manager_failed` row for `factory stats` is unaffected.
-
-**Optional**
-
-- Duplicated rule: the "omp needs `@{prompt}`" check exists twice — `factory/config.py:149-150` and `factory/onboard.py:234-235`. A future change to one (e.g. accepting `-f {prompt}`) silently diverges doctor from runtime. Could expose one predicate in `config.py`; not blocking.
-- `factory/manage.py:279-280`: the new `ConfigError` branch leaves the manage execution at default `completed` outcome, though README:375 describes a mechanism that could not run. Same gap already existed for `OSError`; noting only.
-
-## Spec (issue #62 + agent brief)
-
-| Criterion | Status | Evidence |
+### Spec (issue #62 "After this change" + exit gate)
+| Criterion | Evidence | Status |
 |---|---|---|
-| `manager_cmd(prompt_path, cwd)` expands `{prompt}` with a file path; prompt written to `<factory>/manager-prompt-<n>.md` | Met | `factory/config.py:146-151`, `factory/manage.py:264-266` |
-| Bare `{prompt}` for argv[0]==`omp` → `ConfigError` naming `@{prompt}`; other programs not second-guessed | Met | `factory/config.py:149-150` (`Path(argv[0]).name == "omp"`) |
-| Default manager command = worker shape; README §Configuration + init template document file-for-worker/manager, text-for-reviewer | Met | No `DEFAULT_MANAGER` constant exists in base (`manager: None`); docs updated `README.md:97-101,219-220`, `factory/templates/factory.toml:25,51,63-65` |
-| `factory doctor` "manager command" row: PASS / FAIL naming missing placeholder or executable / WARN when unset | Met | `factory/onboard.py:226-238`; `report(None, …)` → WARN per `onboard.py:168` |
-| Nonzero exit posts `Manager command exited N (argv: <unexpanded>)` + last 5 stderr lines | Met | `factory/manage.py:268-271`; test asserts exactly lines 15-19 (`tests/test_factory.py:771`) |
-| Records `escalate` event with `reason: manager_failed`; `factory stats` can count it | Met (see Required #1 for the outcome side effect) | `factory/manage.py:273-274`, `factory/stats.py:173-174`, `stats.py:303` |
-| Exit-gate tests: `@<path>` readable with prompt text; ConfigError on bare `{prompt}`; HUMAN body prefix + ≤5 stderr lines; doctor WARN/FAIL | Met | `tests/test_factory.py:150-165`, `410-436`, `730-781` |
-| Round-1 reviewer required fixes (ConfigError contained per ticket; `manager_failed` excluded from round arithmetic) | Met | `factory/manage.py:237-238,279`, `factory/dispatch.py:375-378`, tests `tests/test_factory.py:790-802` |
-| Out of scope untouched (decision semantics, packet format, model) | Met | no changes to `parse`/`MENU`/packet |
+| `manager_cmd(prompt_path, cwd)` expands `{prompt}` with a file at `<factory>/manager-prompt-<n>.md` | `factory/config.py:81-86`, `factory/manage.py:149-151` | ✓ (file written by caller, same split as the worker transport) |
+| Default/template manager shape `@{prompt}` | `README.md:66`, `factory/templates/factory.toml:253` | ✓ (no `DEFAULT_MANAGER` constant exists in base; unset = disabled, as before) |
+| Bare `{prompt}` + argv[0] `omp` → `ConfigError` naming `@{prompt}`; other programs untouched | `factory/config.py:84-85` (exact-element match, so `@{prompt}` passes; basename check) | ✓ |
+| Doctor row: PASS / FAIL (placeholder, executable) / WARN (unset) | `factory/onboard.py:180-192`; `report(None, …)` → WARN per `onboard.py:168` | ✓ |
+| Nonzero exit → `Manager command exited N (argv: …unexpanded…)` + last 5 stderr lines, `escalate` event `reason: manager_failed` | `factory/manage.py:154-160` | ✓ |
+| `factory stats` can count it | `factory/stats.py:205-212,220` | ✓ |
+| Tests: `@<path>` readable content; ConfigError on bare `{prompt}`; HUMAN body prefix + ≤5 stderr lines; doctor WARN/FAIL | `tests/test_factory.py:265-280, 298-324, 353-372` | ✓ |
+| Manual District #26 replay | not in gate report; handoff states a prior attempt did it, this revision did not | not re-verified (manual item, non-blocking) |
 
-Scope creep: none material. `manager_failures` column in the stats table (`factory/stats.py:303`) and `human_touch` key go slightly beyond "stats can count it" but are the direct realization of that criterion.
+Consequential changes beyond the literal brief are necessary, not speculative: `factory/learn.py:122-126` is the second `manager_cmd` caller and would otherwise pass text where a `Path` is expected; `factory/dispatch.py:98-100` and `factory/manage.py:139-140` keep the new `manager_failed` event from inflating round numbers / being picked as "the escalation" (verified against the only other `escalate` consumers: `learn.py:39` unaffected since a `manager_failed` row implies a prior real escalation; `dashboard.py:635` reads `escalation_count`, which excludes it).
 
-## Plan drift
+### Plan drift
+Plan status not recorded; no plan file to diff against. Relative to the issue's "Touches" list, extra files: `CHANGELOG.md`, `factory/dispatch.py`, `factory/learn.py`, `factory/stats.py` — all justified above. Planned proof missing from the gate report: the manual District #26 packet replay. Exposes no defect.
 
-Plan status not recorded; compared against the issue's "Touches" list.
+### Required fixes
+None.
 
-Files changed the issue did not name:
-- `CHANGELOG.md` — repo keeps an `## Unreleased` log; expected.
-- `factory/dispatch.py:375-378` — approved round-1 reviewer required fix (issue comment 2026-09-09).
-- `factory/learn.py:64-68` — only other `manager_cmd` caller; required by the signature change (previously inline text).
-- `factory/stats.py` — counting `manager_failed` per the acceptance text.
-- Doctor row landed in `factory/onboard.py` rather than `factory/doctor.py`; no `doctor.py` exists in the snapshot — correct placement.
+### Optional suggestions
+- `factory/manage.py:166-167` — `OSError`/`ConfigError` failures post HUMAN but record no `manager_failed` event, so a missing executable or bad omp shape never shows in `manager_failures`. Spec only mandates the nonzero-exit path; if the counter is meant to cover "manager didn't run", record the same event here.
+- `factory/manage.py:159-160` — `dispatch.record("escalate", …)` inside the `manage` lifecycle scope flips the execution's terminal outcome to `project_escalation`/`manager_failed` (`dispatch.py:245-248`), whereas `lifecycle.py:591-592` reserves `mechanism_failure` for runtime failures. Cosmetic in the journal; no consumer in the diff depends on it.
+- `factory/manage.py:154` — `json.dumps(cfg.manager)` is posted verbatim to the issue comment. Spec asked for it, but host argv can carry local paths or `--api-key`-style secrets; worth a note in the README line that documents the body shape if public repos are a target.
+- `factory/onboard.py:188-189` duplicates the omp check in `config.py:84-85`. Two lines; fine to leave.
 
-Planned proof missing from the gate report:
-- Manual replay of District #26's kept packet with the host's current command (exit-gate item). Gate report lists only conflict-markers/test/leak-scan; the round-1 handoff claims a prior attempt produced `DECISION: FIX` (`.factory/district-26-replay.log`), unverified here. Does not expose a defect by itself; the file-transport tests (`tests/test_factory.py:730-749`, 30 000-token prompt) cover the ENAMETOOLONG path.
-
-None of the drift exposes a required defect; the only required fix is Standards #1.
-
-VERDICT: REVISE
+VERDICT: APPROVE

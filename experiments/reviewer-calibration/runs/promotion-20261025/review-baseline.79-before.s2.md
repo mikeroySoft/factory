@@ -1,38 +1,36 @@
-Note on inputs: `./review.diff` and `./snapshot` were absent from the sandbox. I reviewed `git diff 8fba9c5..HEAD` (the issue's stated base revision → gated head `7bd5805`, 9 files, +1249/−38) and the checked-out tree as the snapshot. Line references below are `path:line` in that diff output (`../review79-before.diff`) with the target source line where useful. The repo has no AGENTS.md/CONTRIBUTING.md; standards sources are README.md (`python -m unittest discover -s tests` gate) and pyproject (ruff line-length 100, not CI-enforced). GH issue #79 fetched via web.
+## Review: #79 B2 source-versioned PR feedback
 
-## Required fixes
+No `AGENTS.md`/`CONTRIBUTING.md` in the snapshot; only documented standards are the CI gate (`.github/workflows/ci.yml:12`, `python -m unittest discover -s tests`) and README contracts. Spec source: issue #79 body + triage brief comment.
 
-### R1. `github()` now fails the whole full snapshot on GraphQL partial errors and drops diagnostic text — regression in a path the issue says to preserve
-- `review.diff:496-505` (`factory/dashboard.py` `github()`): `if value.get("errors"): raise RuntimeError("GitHub query was incomplete")` applies to the **default full-snapshot query**, not just feedback reads. Base code returned `json.loads(proc.stdout)["data"]` and consumed partial data.
-- Trigger: GitHub GraphQL returns `data` + `errors` for nullable sub-fields routinely — the default query (`factory/dashboard.py:114-117`, `:130-132`) requests `upstream: repository(...)` (NOT_FOUND when the configured upstream is inaccessible) and `CROSS_REFERENCED_EVENT` timeline nodes (FORBIDDEN when an issue is cross-referenced from a private repo). Both previously yielded a usable snapshot with a `null` node.
-- Impact: `snapshot()` catches `RuntimeError` at `factory/dashboard.py:828-829`, leaving `issues=[]`, `prs={}` → `tickets: []` and `errors: ["github: GitHub query was incomplete"]`. Every GitHub-backed ticket disappears from the dashboard, Inbox, and `--json`.
-- Same hunk, `review.diff:499`: `raise RuntimeError("GitHub read failed")` replaces `proc.stderr.strip() or ...`, so the existing snapshot `errors` surface loses `gh` diagnostics (e.g. "not logged in"). Sanitization is unnecessary here for the collector: `factory/feedback.py` already discards exception text (`review.diff:706-709` maps every exception to fixed strings).
-- Rule: issue #79 Scope — "Preserve the existing `pr.checks`, `pr.comments`, `pr.verdicts`, `review_decision`, gate text, and current snapshot fields for their existing consumers"; Integration — "Preserve full-snapshot cadence and existing ticket/PR fields." Also "reuse the existing full-snapshot GitHub transport" — reuse, not change its failure semantics.
-- Fix (minimal): keep the base behavior for `query is None` (return `value["data"]`, propagate stderr text); only the feedback `endpoint`/explicit-`query` branch needs the stricter handling, and even there the collector's `head()`/threads code already treats `None`/malformed data as `malformed_response`, so the `errors` check can simply be dropped.
+### Standards
 
-## Optional suggestions (non-blocking)
+No documented-rule violations. The diff reuses existing helpers (`briefing.bounded_file`, `h`/`pre`/`safeSourceURL`, `dashboard.sh`, `lifecycle._lifecycle`) rather than inventing parallel ones. `factory/feedback.py` is the single new module the issue asked for; no event bus/cache/second client introduced.
 
-- `review.diff:530-553` (`dashboard.py` provenance): `snapshot()` already holds a coherent committed journal view — `rows` from `lifecycle.journal_snapshot(dispatch.EVENTS)` at `factory/dashboard.py:837`. The diff adds a second, independent 2 MB tail read of the same `events.jsonl` with its own torn-line/uncommitted logic (the subject of commit `7bd5805`). Passing `rows` as `events` removes ~25 lines and a second reader over a file that is being appended. Issue text favours this ("reuse ... accepted bounded lifecycle/event readers for provenance"); not a correctness defect as written.
-- `review.diff:954` (`feedback.py`): `lifecycle._lifecycle(e)` imports a private validator; `runtime_events` also re-validates lifecycle rows. If `rows` from `journal_snapshot` are used (above), consider whether a public accessor exists before coupling to `_lifecycle`.
-- `review.diff:383-384, 390-391` (`dashboard.html` `taskFacts`): the local gate report (`t.gate`) is relabelled "Legacy local gate…". The repository gate is current, deterministic evidence (README gate section), not legacy; the wording conflates it with provenance-free PR verdict comments. Wording only.
-- `review.diff:839-841`: REST reviews carry `submitted_at`, not `updated_at`, so `source_updated_at` is always `null` for `review` items; README `review.diff:57-58` documents nulls for check runs but not reviews. Per spec ("when supported") null is acceptable; document it alongside the check-run note.
-- `review.diff:366-375` (`tabReview`): legacy verdict chips lose their `PASS`/`FAIL` classes. Cosmetic; existing `pr.verdicts` data is preserved, which is what the spec requires.
+### Spec
 
-## Spec coverage (issue #79 exit gate vs diff)
+Verified against issue text:
 
-- Gate 1 ✓ `tests/test_feedback.py` `review.diff:1272-1309`, `tests/test_factory.py` `:1157-1207` (simultaneous review/review_comment/check_run/factory_review; provenance-free `VERDICT` excluded).
-- Gate 2 ✓ `review.diff:1311-1342` (reorder + timestamp → identical ids; body/state/line/resolved/conclusion/attempt → only that `source_revision` changes).
-- Gate 3 ✓ `review.diff:1344-1485` (same/advanced/raced/missing head, dismissed, resolved/outdated, check states, empty-complete, pagination, body cap, timeout, malformed, one-source failure).
-- Gate 4 partial: legacy fields ✓ (`:1198-1204`), older-engine no-key ✓ in briefing (`:1116-1125`), `sources_for` ordering/omission ✓ (`:1132-1143`), non-PR ticket ✓ (`:1207`), runtime-json — relies on pre-existing `tests/test_runtime.py` audit harness (acceptable). `<img onerror=...>` literal rendering has no automated check; DOM path verified by inspection: `h()` uses `createTextNode` (`factory/dashboard.html:464`), `pre()`/`safeSourceURL` reused (`review.diff:286-289, 350`).
-- Gates 5–7 (CLI/browser smoke, handoff packet) are not in the gate report (only conflict-markers/test/leak-scan). Issue comment shows a truncated sanitized schema-1 example from the worker handoff, so gate 7 material exists; gate 5 browser observations are not evidenced in-diff. Not a code defect.
+- Schema envelope, required keys, coverage with exactly 4 sources, errors bounded/sanitized, items sorted by `(evidence_id, source_revision)` — `review.diff:664-670, 984-988`.
+- `source_revision` over exactly the 14 named fields — `review.diff:605-607, 811`. `observation_id` excludes timestamps/URLs/relevance — `review.diff:986-988`.
+- Bounds `100/2/20000/32/30` as fixed constants — `review.diff:599-603`; initial+final head reads with race → `unknown` + both SHAs in reason — `review.diff:750, 920-931`.
+- Factory review requires lifecycle `result` with `returncode==0`, `parsed is True`, `head==actual_head`, matching `exit` outcome — `review.diff:954-968`; matches real emitter fields in `dispatch.py:489-492`. Provenance-free `VERDICT` prose never becomes `factory_review` — tested `review.diff:1304-1309`.
+- `--runtime-json` branch unchanged, returns before `snapshot()` (`dashboard.py:1224-1250`); collector only invoked from `snapshot()` — `review.diff:563-572`.
+- Non-PR tickets get no feedback (`n in raw_prs` guard, `review.diff:563`); briefing appends feedback after existing candidates and reports omission/shortening counts — `review.diff:136-219`.
+- Body rendered via `pre()` → text node (`dashboard.html:938`, `h()` line 464); URLs via `safeSourceURL` — `review.diff:286-289, 350-351`.
 
-## Standards
+### Required fixes
 
-- Gate command unchanged; new tests use `unittest` per README ✓.
-- Ruff `line-length = 100` (pyproject) is not CI-enforced; `feedback.py` has 63 lines >100 vs 26 pre-existing in `dashboard.py`. Tooling-level; not reported as a violation.
+1. **`producer.revision` can report an unrelated repository's HEAD.** `review.diff:555-558`: `git rev-parse HEAD` runs with `cwd=factory/` and the only guard is `git status --porcelain -- .` being empty. For the documented install paths (`uv tool install` / `pipx` / `pip install --user`, README:43-48) the package lives in a site-packages dir; if any ancestor is a git worktree (home-directory dotfiles repo, a project `.venv/` which is gitignored so `status` is empty) the command resolves that repo's HEAD and emits it as the Factory producer revision. Spec: `producer.revision` "is a verifiable source/build revision when available, otherwise null" and exit-gate item 7 keys #15 acceptance to "the actual merged producer revision". Impact: fabricated provenance in a field the spec designates as authority evidence. Fix (one line): additionally require `sh(["git","ls-files","--error-unmatch","feedback.py"], cwd=source_root)` non-empty, else `revision = None`.
 
-## Plan drift
+### Optional suggestions
 
-Plan status not recorded → no plan file list to diff against. Files changed match the issue's "Touches" list exactly (`feedback.py`, `dashboard.py`, `briefing.py`, `dashboard.html`, `test_factory.py`, `test_briefing.py`, `test_feedback.py`, `README.md`, `CHANGELOG.md`); no out-of-scope files (`dispatch.py`, `manage.py`, `triage.py`, `lifecycle.py`) touched. Missing planned proof: exit gate 5 smoke/browser evidence absent from the gate report. Drift exposes no defect beyond R1.
+- `review.diff:496-499`: `github()` now raises bare `"GitHub read failed"` for the main snapshot query too, dropping `proc.stderr` that previously surfaced in `snapshot()["errors"]` (e.g. the `GH_TOKEN` hint). `feedback.request()` already replaces exception text with fixed messages (`review.diff:706-709`), so sanitizing inside `github()` is redundant for feedback and only degrades the existing error surface. Keep stderr on the default-query path.
+- `review.diff:839-841, 906-912`: REST review objects carry `submitted_at`, not `updated_at`; REST check-runs carry `started_at`/`completed_at`, not `updated_at` or `run_attempt`. In production `source_updated_at` will be `null` for every review and check run, so any truncated body always triggers `change_detection_incomplete`. README documents the nulls, but `submitted_at`/`completed_at` (or GraphQL `PullRequestReview.updatedAt`) would give a real update signal the spec prefers "when supported".
+- Cadence risk [INFERENCE, not measured]: `snapshot()` now issues ≥7 serial `gh` subprocesses per selected PR with a 30 s budget each (`review.diff:563-572`), under `_cache_lock` with a 15 s TTL (`dashboard.py:958-967`). Total snapshot time is unbounded in PR count. Spec says "Preserve full-snapshot cadence"; worth noting in handoff or batching reviews/threads into the existing GraphQL query.
+- `review.diff:557`: dirty check is scoped to `factory/` only; a dirty `tests/` still yields a "clean" revision. Minor given fix #1.
+
+### Plan drift
+
+Plan status not recorded; nothing to diff against. Files changed (`CHANGELOG.md`, `README.md`, `factory/{briefing.py,dashboard.html,dashboard.py,feedback.py}`, `tests/{test_briefing.py,test_factory.py,test_feedback.py}`) all appear in the issue's **Touches** list; `tests/test_feedback.py` is the issue-permitted conditional file. Gate report covers conflict-markers/test/leak-scan only; exit-gate items 5 (disposable-repo CLI + live browser smoke, mutation-absence record) and 7 (handoff packet with sanitized example) are process evidence not present in the gate report. The second issue comment shows a sanitized snapshot example from a prior attempt, but no browser/no-mutation record for this revision is in evidence. Not a diff defect; flagging as missing proof.
 
 VERDICT: REVISE

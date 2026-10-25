@@ -1,42 +1,34 @@
-## Evidence basis
-
-`./review.diff` and `./snapshot` are absent from the working directory (`ls` shows only the repo; the only `review.diff` on disk, `/tmp/factory-review-zo3x3zy7/`, is a different repo). Diff reconstructed from git: base `6ec3546` (origin/main) → gated head `4830b7d` (HEAD, merge of `agent/12`). Line cites below are snapshot lines at HEAD. Issue #12 fetched from GitHub (closed, label `ready-for-agent`; one triage comment with the agent brief, no scope-change comments).
-
 ## Standards
 
-No `AGENTS.md`/`CONTRIBUTING.md` in repo; standards sources are `docs/manager-plan.md` (T3) and existing patterns in `factory/config.py`.
+No `AGENTS.md`/`CONTRIBUTING.md`/`docs/` coding standard in the snapshot; the only documented conventions are the existing loader patterns in `factory/config.py`. The diff follows them: `KNOWN_KEYS` entry (`review.diff:10`), dataclass fields with defaults (`review.diff:18-20`), `int(...)` coercion and `.get(key, default)` mirroring `gate.timeout`/`triage.model` (`review.diff:38-39`), doctor row shaped like the reviewer row (`review.diff:67-68`), dashboard `config` entry joined like `reviewer` (`review.diff:51-55`). `manager` was already in `HOST_TABLES` (snapshot `factory/config.py:50`), so the "register in HOST_TABLES" step is already satisfied without a diff hunk.
 
-- `factory/config.py:60,104-106,269,285-288` — follows the `review` table pattern exactly (`KNOWN_KEYS` entry, dataclass fields, loader `raw.get(...)` + `list(...)`). `HOST_TABLES` already contained `"manager"` at base (`config.py:50`), so no change needed there.
-- `factory/onboard.py:226-227` — mirrors the `reviewer:` row one line above. Conditional on `cfg.manager` satisfies "nothing when not".
-- `factory/templates/factory.toml:40-48` — documents all three keys plus placeholders.
-- Smell baseline: nothing notable. No new abstractions introduced.
+Smell baseline: nothing beyond judgement-call level; no new abstractions introduced.
 
-## Spec (issue #12 exit gate + brief)
+## Spec (issue #12 + agent brief)
 
-| Criterion | Status | Evidence |
+| Criterion | Evidence | Status |
 |---|---|---|
-| `command` argv template, unset = disabled | met | `config.py:104,285-286`; `onboard.py:226` |
-| `rounds = 1` default | met | `config.py:105,287` |
-| `review = "escalated"`, `"all"` allowed | met (unvalidated, see Optional) | `config.py:106,288` |
-| Host-layer table in `HOST_TABLES` | met (pre-existing) | `config.py:50` |
-| `doctor` prints `manager:` row only when configured | met + tested | `onboard.py:226-227`; `tests/test_factory.py:276-285` |
-| Unknown `[manager]` keys reported as drift | met + tested | `config.py:60`; `tests/test_factory.py:252,263` |
-| `dashboard --json` `config` includes it | met, untested | `dashboard.py:840-844` |
-| Template documents it | met | `templates/factory.toml:40-48` |
-| Loader test for all three keys | met | `tests/test_factory.py:112-115,137-138` |
-| Out of scope: running the command | respected | no exec path added |
+| `command` argv template, unset = disabled | `review.diff:18,36-37` | met |
+| `rounds = 1`, `review = "escalated"` defaults | `review.diff:19-20,38-39` | met |
+| Host-layer table like `review` | pre-existing `HOST_TABLES` entry | met |
+| `factory doctor` prints `manager:` row only when configured | `review.diff:67-68`, test `review.diff:139-147` | met |
+| Unknown `[manager]` keys reported as drift | `review.diff:10,123,131` | met |
+| `dashboard --json` `config` includes table | `review.diff:51-55` | met |
+| `templates/factory.toml` documents it | `review.diff:82-90` | met |
+| Loader test for all three keys | `review.diff:102-105,113-114` | met |
+| Out of scope: running the command | no exec added | met |
 
 ### Required fixes
 
-1. **String-form `manager.command` is mangled into a character list.** `factory/config.py:286` does `cfg.manager = list(manager["command"])`. The same table's existing validator `manager_model()` (`config.py:231-233`) explicitly accepts `command` as a string and `shlex.split`s it ("legacy manager argv"; README.md:171-172 refers to "an existing `manager.command`"). Trigger: `[manager] command = "omp -p --model x"` — `load()` succeeds (`manager_model` splits the string and returns `x`), but `cfg.manager == ['o','m','p',' ',...]`. Impact: `factory doctor` (`onboard.py:227`) reports `manager: o` → FAIL, and `dashboard --json` `config.manager.command` (`dashboard.py:841`) emits `"o m p   - p ..."`. This violates the exit gate "`factory doctor` reports the binary" for an input form the codebase already accepts. Fix is one line: either reject non-lists with `ConfigError("manager.command must be an argv array")` (consistent with `config.py:237`) or reuse the `shlex.split` branch; the list-only template contract makes rejection the simpler choice.
+1. **`command` given as a string is silently exploded into characters.** `factory/config.py` already accepts `manager.command` as either an argv array *or* a command string and validates it as such (snapshot `factory/config.py:231-237`, `manager_model`, called at `config.py:302`). The new loader line `cfg.manager = list(manager["command"])` (`review.diff:37`) runs before that validator and, for `command = "omp -p {prompt}"`, yields `['o','m','p',' ', ...]`. Trigger: any host/repo config using the string form that the same loader explicitly permits. Impact: `doctor` reports `manager: o` → FAIL (`review.diff:68`), `dashboard --json` emits `"o m p   - p ..."` (`review.diff:52`), and the stored `cfg.manager` is garbage for the future runner. Defect class: concrete correctness (loader accepts input it then misinterprets). Minimal fix: `shlex.split` when `isinstance(cmd, str)` (matching `manager_model`), or reject non-lists with a `ConfigError` and drop the string tolerance in `manager_model` — either way one branch, no new abstraction.
 
 ### Optional suggestions
 
-- `config.py:288` — `review` accepts any string; spec names only `"escalated"`/`"all"`. A `ConfigError` on other values would catch typos at `doctor` time rather than when T4 consumes it. Not required: no consumer exists yet (running is out of scope).
-- `dashboard.py:840-844` has no test; exit gate does not require one, but a one-line assertion in the existing `DashboardTest` would pin the shape T4 will read.
+- `review` accepts any string (`review.diff:39`); the brief says `"escalated"` default, `"all"` allowed. Validating against `{"escalated", "all"}` would surface typos at `doctor` time instead of in the out-of-scope runner. Not an explicit acceptance criterion, so non-blocking.
+- `int(manager.get("rounds", ...))` (`review.diff:38`) raises an uncaught `ValueError` for `rounds = "x"` — same as existing `gate.timeout`/`dashboard.port`, so consistent with repo convention; mention only.
 
 ## Plan drift
 
-Plan status: not recorded, so compared against the issue's **Touches** list. Files changed: `factory/config.py`, `factory/dashboard.py`, `factory/onboard.py`, `factory/templates/factory.toml` (all named) + `tests/test_factory.py` (required by the exit gate's "loader test"). No unplanned files. Gate report shows `test: PASS`; the issue's named command `uv run pytest tests/test_factory.py` is not listed verbatim, so coverage of that exact invocation is `[INFERENCE]` from the generic test row. Drift exposes no additional defect.
+Plan status not recorded, so no worker plan to diff against. Against the issue's **Touches** list (`config.py`, `onboard.py`, `templates/factory.toml`, `dashboard.py`): one extra file, `tests/test_factory.py` (`review.diff:94`), which the Exit gate explicitly requires (loader test, doctor/drift behaviour). Not drift. Gate report `test: PASS` covers the `uv run pytest tests/test_factory.py` proof. No planned proof missing.
 
 VERDICT: REVISE

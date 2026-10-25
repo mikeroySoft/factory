@@ -1,39 +1,50 @@
-**Note on inputs:** `./review.diff` and `./snapshot` do not exist in the sandbox. Reviewed `git diff 07913b4...ce5568e` (merge-base with `origin/main` → gated head) in the checkout at `repo/`; line numbers below are from the gated revision's files. Issue #20 and its triage comment fetched from GitHub.
-
 ## Standards
 
-No `AGENTS.md`/`CONTRIBUTING.md` in repo; documented conventions are README, `docs/manager-plan.md`, `pyproject.toml`, CI (`python -m unittest discover -s tests`).
+Repo has no AGENTS.md/CONTRIBUTING.md; conventions come from README.md, `docs/manager-plan.md`, and the template header ("defaults are shown commented out", `snapshot/factory/templates/factory.toml:2`).
 
-- Tests follow existing `unittest` + stub-binary pattern in `tests/test_factory.py:147-165, 652-749`. Consistent.
-- Template keeps every key commented, matching the file's "defaults are shown commented out" convention (`factory/templates/factory.toml:31-47`).
-- `[tool.ruff] line-length = 100` (`pyproject.toml:34`): `factory/config.py:292` (130 cols), `factory/manage.py:109` (136), `:110` (109) exceed it. Not CI-enforced and `manage.py` already has 26 such lines → optional only.
-- Manager-plan §4.3 authority boundary ("Change `[workers]` host config: human/District applies", `docs/manager-plan.md:153`) respected: `parse` rejects unlisted labels (`factory/manage.py:54,63-66`), no config writes.
+- README updated in step with behaviour (`review.diff:10-24`); manager MENU updated (`review.diff:88,95-97`). Consistent with the existing "docs describe the decision menu" pattern.
+- Host-layer config: `merge` is recursive on dicts (`config.py:203`), so `[defaults.workers.ci-fix]` tables layer under a repo `[workers]` as the template comment claims (`review.diff:214-216`). `KNOWN_KEYS["workers"] = None` means `factory doctor` does not flag table-form entries as drift (`config.py:219`).
+- Smell baseline (judgement calls only):
+  - *Possible Feature Envy*: `apply`'s FIX branch is a 27-line dispatch pipeline (`review.diff:139-166`) living in `manage.py`, reaching into `dispatch.worker_round/escalate/review/pr_comment/approve_pr`. It matches the plan's "dispatch one `worker_round` in the kept worktree" (`docs/manager-plan.md:283`), and `manage.py` already wraps `dispatch` everywhere, so suppressed.
+  - `RESERVED_LABELS` extraction (`review.diff:102,112,122,176`) removes a duplicated literal set; net reduction, not a new abstraction.
 
-## Spec (issue #20 + triage brief)
+No hard standards violations.
+
+## Spec (issue #20 + brief)
 
 | Criterion | Status | Evidence |
 |---|---|---|
-| `[workers.<label>]` may carry `when`; array form still loads | Met | `factory/config.py:288-298`; test `tests/test_factory.py:147-165` |
-| Manager prompt lists labels with `when` | Met | `factory/manage.py:199-201` |
-| ROUTE/FIX only for listed labels | Met | `factory/manage.py:54, 63-66, 213` |
-| `ci-fix` and `conflict` profiles in template | Met (commented, human-applied) | `factory/templates/factory.toml:41-47` |
-| ROUTE chore rejected+recorded w/o chore worker; label applied with one | Met | `tests/test_factory.py:652-676` |
-| FIX on red CI runs selected argv | Met | `factory/manage.py:117-120`; test `:678-736` |
-| `dashboard.py` touched | Met (snapshot field only) | `factory/dashboard.py:847` |
-| Out of scope: manager writing host config | Respected | — |
+| `[workers.<label>]` may carry `when` | Met | `review.diff:36,45-55` |
+| Manager prompt lists labels with their `when` | Met | `review.diff:176-178` |
+| ROUTE only for listed labels | Met | `review.diff:112-115,187`; test `review.diff:263-286` covers both halves of the exit gate (no `chore` → HUMAN recorded, no `issue edit`; with `chore` → `--add-label chore`) |
+| FIX only for listed labels | Met | `review.diff:120-126`; test `review.diff:349-359` rejects `default`, `ready-for-agent`, unconfigured `ci-fix`, non-string |
+| FIX on red CI runs the `ci-fix` argv | Met | `review.diff:152-155`; test `review.diff:288-347` asserts the configured `fix-worker` ran, guidance + packet reached it, push/approve only on gate PASS + APPROVE |
+| `ci-fix` and `conflict` profiles in `templates/factory.toml` | Met (commented) | `review.diff:218-224` |
+| Array-form `[workers]` still loads | Met | `review.diff:47,236-248` |
+| Out of scope: manager writing host config | Respected | no config writes in diff |
 
-### Required fixes
-
-1. **Stale `factory-approved` survives a FIX that the reviewer rejects — merge-gate bypass.** `factory/manage.py:125` force-pushes worker-modified commits, then on REVISE only escalates (`:131`); the label is never removed. Trigger: rebase-conflict escalation (`factory/dispatch.py:722-724`) happens on an already-approved PR and does not strip the label (only the CI-fail path at `dispatch.py:825-837` does). Manager issues `FIX conflict` → worker edits → gate PASS → push → reviewer REVISE → PR still carries `factory-approved` → merge stage (`dispatch.py:803`) merges the rejected head once CI is green. Contradicts the diff's own documented contract: "Only a fresh APPROVE restores `factory-approved`; failure stays with the human" (`README.md:98-99`) and plan rule "Re-add `factory-approved` … after gate PASS + fresh codex APPROVE" (`docs/manager-plan.md:143`). Fix: remove `FACTORY_APPROVED` from the PR before the push at `manage.py:125` (or on the non-APPROVE branch at `:130-131`); `approve_pr` re-adds it on APPROVE. One `gh pr edit --remove-label` call; no new abstraction.
-
-### Optional suggestions
-
-- `unknown_keys` skips `workers` entirely (`factory/config.py:58` `"workers": None`), so `[workers.ci-fix] wehn = "..."` is silently dropped by `config.py:291` and `factory doctor` won't flag it. Consider checking `{"command","when"}` per table entry.
-- `worker_when` is exported in the dashboard snapshot (`factory/dashboard.py:847`) but nothing renders it; issue only says "touches dashboard.py", so acceptable as-is.
-- Line-length overruns listed under Standards.
+Correctness checks on the FIX path (no defects found):
+- Push gated on gate PASS (`review.diff:156-159`); `factory-approved` only on fresh APPROVE (`review.diff:162-165`). Merge stage keys off the PR label, not issue labels (`dispatch.py:748-751`), so the approved PR merges next pass even though the issue stays `ready-for-human`.
+- Preconditions reject missing worktree, closed PR, head mismatch, wrong checked-out branch (`review.diff:144-147`); failures surface as `mechanism_failure` via the existing `except` (`review.diff:197-199`), and the recorded `manage` event prevents replay for that round.
+- Gate-fail path calls `escalate`, which records a new round — bounded by `manager_rounds` (`manage.py:189`).
+- Worker labels passed to `parse` already exclude reserved labels, and FIX re-checks `RESERVED_LABELS` (`review.diff:122`) — belt-and-braces, harmless.
 
 ## Plan drift
 
-Plan status: not recorded → no plan to diff against. Against the issue's "Touches" list (`config.py`, `manage.py`, `dashboard.py`, `templates/factory.toml`), the diff additionally changes `README.md` (docs for new FIX decision — appropriate) and `tests/test_factory.py` (the issue's named verification file). No unexplained files. Gate report shows `test: PASS` but does not name `uv run pytest tests/test_factory.py` (the issue's stated command); CI runs `unittest discover`, which includes that file, so treated as covered. Drift exposes no defect.
+Plan status not recorded; comparing against the issue's **Touches** list:
+- Files changed not named: `README.md` (`review.diff:1`), `tests/test_factory.py` (`review.diff:228`). Both are the doc/test counterparts of the named changes; no defect exposed.
+- Planned proof: issue's `uv run pytest tests/test_factory.py` → gate `test: PASS`. Nothing missing.
 
-VERDICT: REVISE
+## Required fixes
+
+None.
+
+## Optional suggestions
+
+1. **Profiles are commented out** (`review.diff:218-224`). Issue says "Ship two default profiles"; the template convention shows defaults commented (`factory.toml:2`), but unlike `default`/`chore`, `ci-fix`/`conflict` are not `Config` defaults, so a fresh `factory init` repo can never select them for FIX until a human uncomments or adds host config. README (`review.diff:23-24`) documents this honestly. If "default" was meant as active, add them to `Config.workers` default_factory; otherwise this is fine as-is.
+2. `reviewDecision == "CHANGES_REQUESTED"` precondition (`review.diff:144`) is not mentioned in README's "open PR" wording (`review.diff:19`). One clause would keep docs aligned.
+3. `worker_when` is exposed in the snapshot (`review.diff:67`) but `dashboard.html:894` still renders only the argv; surfacing the rule is a one-line `dl` entry if wanted.
+
+Summary — Standards: 0 violations, 1 suppressed smell. Spec: all exit-gate criteria met; worst item is the ambiguity on whether shipped profiles should be active (non-blocking).
+
+VERDICT: APPROVE

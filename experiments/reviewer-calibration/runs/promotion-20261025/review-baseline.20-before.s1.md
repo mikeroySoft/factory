@@ -1,38 +1,39 @@
-Note: `./review.diff` and `./snapshot` were absent from the sandbox; reviewed `git diff origin/main..HEAD` (07913b4..8dd6588, two commits) against the working tree instead. Issue #20 fetched from GitHub.
-
 ## Standards
 
-No `AGENTS.md`/`CONTRIBUTING.md` in the repo; conventions come from `README.md`, `docs/manager-plan.md` (T11), and the template's "defaults shown commented out" convention (`factory/templates/factory.toml:2`).
+No `AGENTS.md`/`CONTRIBUTING.md` in the snapshot; the documented conventions are `README.md`, `factory/templates/factory.toml` comments, and `docs/manager-plan.md`. The diff updates README (`review.diff:9-24`) and the template (`review.diff:208-224`) alongside the behavior; `skills/factory/SKILL.md` does not enumerate manager decisions, so nothing missed there. `KNOWN_KEYS["workers"]` is `None` (`snapshot/factory/config.py:58`), so the new nested `command`/`when` keys do not trip `factory doctor` drift.
 
-- Template profiles shipped commented-out (`factory/templates/factory.toml:41-47`) match the template convention and the issue's "host-config, human-applied" note. Consistent.
-- README updated for the new `FIX` decision and table-form workers (`README.md:88-99`). Consistent with the documented decision menu.
-- `pyproject.toml` sets `ruff line-length = 100` but no gate/CI runs ruff and existing code already exceeds it; not reporting.
-- Smell baseline: `RESERVED_LABELS` extraction (`factory/manage.py:33`) replaces an inline set already used twice — reasonable, not speculative. No other smells worth naming.
+Baseline smells (judgment calls, non-blocking):
+- **Duplicated Code**: `review.diff:159-165` (push → review → `pr_comment` → `approve_pr`/escalate) repeats `snapshot/factory/dispatch.py:1064-1067`.
+- **Possible Feature Envy**: the FIX branch in `manage.apply` (`review.diff:139-166`) drives `dispatch.cfg/LOGS/EVENTS/worker_round/review/escalate` directly; the rest of `apply` only issues `gh issue` calls.
 
-## Spec (issue #20)
+## Spec (issue #20 + agent brief)
 
-Covered:
-- `when` on `[workers.<label>]`, array form preserved, validation (`factory/config.py:288-298`; test `tests/test_factory.py:147-165`).
-- Prompt lists labels with `when` (`factory/manage.py:199-201`); ROUTE/FIX restricted to listed, non-reserved labels (`factory/manage.py:54-69`); parse receives the filtered dict (`factory/manage.py:213`).
-- Exit gate: ROUTE chore rejected/recorded vs applied (`tests/test_factory.py:652-676`); FIX on red CI runs the `ci-fix` argv (`tests/test_factory.py:678-719`); gate `test` PASS covers `tests/test_factory.py`.
-- `dashboard.py` touched as listed (`factory/dashboard.py:847`).
+| Criterion | Status | Evidence |
+|---|---|---|
+| `[workers.<label>]` may carry `when`; array form still loads | met | `review.diff:45-55`; test `review.diff:236-254` |
+| Manager prompt lists labels with their `when` | met | `review.diff:176-178` |
+| ROUTE/FIX only accepted for listed labels | met | `review.diff:112-115`, `review.diff:120-123`; `parse` receives the reserved-filtered dict (`review.diff:187`) |
+| `ROUTE chore` without a `chore` worker rejected and recorded; with one, label applied | met | `review.diff:263-286` (HUMAN decision recorded via `dispatch.record("manage", …)`, `review.diff:193`) |
+| `FIX` on red CI runs the `ci-fix` argv | met | `review.diff:152-155`, test `review.diff:288-330` |
+| Ship `ci-fix` and `conflict` profiles in the template, host-config/human-applied | met (commented, opt-in) | `review.diff:218-224`; consistent with the triage brief "these remain host-config that humans apply" |
+| Out of scope: manager writing host config | respected | no config writes in diff |
+| `dashboard.py` touched | met | `review.diff:67` (exposed in snapshot; not rendered in `dashboard.html`) |
 
-### Required fixes
-
-1. **`conflict` profile cannot complete the FIX path it is shipped for — plain push after a rebase is rejected.**
-   - `factory/manage.py:124` pushes with `git push origin agent/{n}` (no force). The shipped `conflict` profile (`factory/templates/factory.toml:45-47`) instructs the worker to "restart [the rebase] against the configured main" and resolve it, i.e. rewrite `agent/<n>` history. `refresh_pr_branch` aborts the failed rebase (`factory/dispatch.py:723`), so the worktree branch equals the remote tip when FIX starts; after the worker's rebase the local branch no longer contains the remote tip and the non-fast-forward push fails deterministically. `dispatch.run` is `check=True` → `CalledProcessError` → caught at `factory/manage.py:222-226` as `mechanism_failure`; no review, no `factory-approved`, worktree left with unpushed work. The existing refresh path already uses `--force-with-lease` (`factory/dispatch.py:731`).
-   - Trigger: `DECISION: FIX {"worker":"conflict",...}` on a "rebase onto moved main conflicts" escalation — the exact scenario the issue defines the `conflict` profile for ("resolve the rebase, keep both intents"). The test masks it by stubbing `git push` to `exit 0` (`tests/test_factory.py:705`).
-   - Fix: push with `--force-with-lease` at `factory/manage.py:124`, matching `refresh_pr_branch`. No new abstraction needed.
-
-### Optional suggestions
-
-- ROUTE/FIX rejection is recorded only as a `HUMAN` decision with "Unparseable manager output" (`factory/manage.py:72`); the `ValueError` reason ("unknown worker label") is dropped at `factory/manage.py:70-71`. Including it in the HUMAN body would make the "rejected and recorded" evidence legible to the human. Pre-existing behaviour; not blocking.
-- `worker_when` is added to the dashboard snapshot (`factory/dashboard.py:847`) but nothing in `dashboard.html` renders it. Harmless; mention only so it isn't mistaken for a wired feature.
+Loop safety: a gate failure after FIX calls `escalate` (`review.diff:157`), which bumps the round (`snapshot/factory/dispatch.py:369-371`); `manage_pass` already refuses rounds `> manager_rounds`, so FIX cannot loop. Ticket lock is shared with `process_ticket`, so FIX and dispatch cannot run the same worktree concurrently.
 
 ## Plan drift
 
-Plan status not recorded; drift judged against the issue's "Touches" list.
-- Files changed beyond the named set: `README.md` (documents the new decision; expected by README's menu text), `tests/test_factory.py` (required by the exit gate). Neither exposes a defect.
-- Planned proof: `uv run pytest tests/test_factory.py` — gate ran `python -m unittest discover -s tests` PASS; equivalent coverage. Nothing missing from the gate report.
+Plan status: not recorded, so no planned file list or proof list to diff against. Relative to the issue's "Touches" list, extra files changed: `README.md`, `tests/test_factory.py` — both expected for a behavior change. Gate report `test: PASS` covers the issue's `uv run pytest tests/test_factory.py` criterion [INFERENCE: gate's test command is the suite].
+
+## Required fixes
+
+1. **`review.diff:159` — FIX push cannot land the `conflict` profile's result.** Trigger: the only escalation the shipped `conflict` worker exists for is `refresh_pr_branch`'s rebase conflict, which runs `git rebase --abort` and leaves the worktree at the pushed tip (`snapshot/factory/dispatch.py:722-724`). The worker then re-rebases (`review.diff:224`: "If the rebase was aborted, restart it"), rewriting `agent/<n>` history. `dispatch.run(["git", "push", "origin", f"agent/{n}"])` is then rejected as non-fast-forward → `CalledProcessError` → caught at `review.diff:197-199` as `mechanism_failure` with only a log line: no PR comment, no escalation, no re-review, and the round is consumed so the manager never retries. Impact: issue #20's `conflict` profile ("resolve the rebase, keep both intents") is dead on arrival through FIX, and README's "re-gates, pushes only on gate PASS, and re-reviews" (`review.diff:20-21`) is false for that profile. Fix: push with `--force-with-lease` exactly as the existing rebase path does (`snapshot/factory/dispatch.py:731`); it is a no-op change for the append-only `ci-fix` case.
+
+## Optional suggestions
+
+- `review.diff:112`: `set(workers) - RESERVED_LABELS` is now redundant since `manage_pass` already filters (`review.diff:176`); harmless, keep or drop.
+- `review.diff:67`: `worker_when` is in the snapshot but `dashboard.html:893-894` still renders only `cfg.workers`; a one-line tweak would show the rule next to each label. Not required by the issue.
+- `review.diff:159-165`: consider reusing the push/review/approve tail from `process_ticket` rather than copying it; only worth it if a third caller appears.
+- `review.diff:49`: the validation condition is long enough that splitting into two `if`s would read better at 3am.
 
 VERDICT: REVISE

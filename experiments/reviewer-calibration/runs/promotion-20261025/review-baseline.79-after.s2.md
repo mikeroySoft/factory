@@ -1,44 +1,37 @@
-Note on inputs: `./review.diff` and `./snapshot` were absent; the cwd is the gated checkout (HEAD `e20ebcd`, merge-base with `origin/main` = issue base `8fba9c5`). Reviewed `git diff 8fba9c5..HEAD` (9 files, +1476/−37). Issue #79 fetched via GitHub API; `issue://` failed (no `GH_TOKEN`).
-
 ## Standards
 
-Repo documents no CONTRIBUTING/AGENTS; only `pyproject.toml` (`[tool.ruff] line-length = 100`, not run in CI — `.github/workflows/ci.yml` runs `python -m unittest discover -s tests` only) and README. No hard violations.
+No `AGENTS.md`/`CONTRIBUTING.md`/`docs/` coding-standards file exists in the snapshot; the only documented repo rules are CI = `python -m unittest discover -s tests` (`.github/workflows/ci.yml:12`, gate PASS) and `[tool.ruff] line-length = 100` in `pyproject.toml:36-37` (not enforced by CI; existing `dashboard.py` already exceeds it). README/CHANGELOG updated as the issue's "Touches" require (`review.diff:9`, `review.diff:21-105`).
 
-Judgement-call smells (non-blocking):
-- **Long Function**: `factory/feedback.py:79` — `collect` is ~360 lines with six nested closures (`gap`, `success`, `request`, `head`, `item`) plus three inline paging loops. Readable but every bound/coverage rule lives in one scope.
-- **Private cross-module use**: `factory/feedback.py:406` imports `lifecycle._lifecycle`. The issue says to reuse lifecycle readers, so this is the right source; a public alias would make the contract explicit.
-- Line length: many new lines exceed 100 (e.g. `feedback.py` item construction, `briefing.py`, `dashboard.html`). Pre-existing code already exceeds it and nothing enforces it — not a rule breach.
-- `feedback.py` uses single-quoted strings; every other module uses double quotes. Style only.
+Safe-rendering convention held: every feedback string goes through `h()` text nodes / `pre()` (`factory/dashboard.html`, `review.diff:381`, `review.diff:338`), link hrefs through `safeSourceURL` (`review.diff:314-317`).
 
-## Spec
+Smell notes (judgement calls, non-blocking):
+- `collect()` is a ~360-line function with five nested closures (`factory/feedback.py:79-441`, `review.diff:696-1058`). Readable because the closures share `result`/`reasons`, but a long function nonetheless.
+- Cross-module private import `lifecycle._lifecycle` (`review.diff:1023`); it is re-run over the full journal for every open PR per snapshot (`review.diff:600-608` calls `collect` per PR, `review.diff:1023` revalidates all rows each time). Validate once in `snapshot()` and pass validated rows if this shows up in refresh time.
 
-Checked against the normative schema, canonicalization, bounds, integration, and exit-gate items.
+## Spec (issue #79 + agent brief)
 
-Satisfied (evidence):
-- Envelope/required keys, enums, explicit nulls: `feedback.py:94-102`; coverage exactly `pr/reviews/threads/checks`: `feedback.py:23,101`.
-- `source_revision` over exactly the 14 listed fields: `feedback.py:27-29,244`; `observation_id` over native IDs + head + sorted `(evidence_id, source_revision)` + coverage `status/truncated/reason`, excluding `observed_at`/URLs/order: `feedback.py:438-440`.
-- Bounds as fixed constants (`100/2/20000/32/30`): `feedback.py:18-22`; initial+final head reads, head-race → partial on all sources + both SHAs in reason + relevance unknown: `feedback.py:369-380,422-425`.
-- Items sorted by `evidence_id`, `source_revision`: `feedback.py:436`. Evidence ID namespaced provider/host/repo-id/PR-id/kind/source-id with URL-quoted components: `feedback.py:212`. Missing identity → bounded gap, no invented identity: `feedback.py:190-192`.
-- Checks: native check-runs + commit statuses with IDs/head/status/conclusion/link, one page each: `feedback.py:338-367`. Reviews/threads over GraphQL with native IDs, `updatedAt`, commit, resolved/outdated, original commit: `feedback.py:35-46,279-334`.
-- Factory review requires accepted lifecycle `result` (returncode 0, parsed, head==actual_head, enter/exit bracket) — never `VERDICT` prose: `feedback.py:406-420`; real dispatch emits those fields (`factory/dispatch.py:489-491`). `author.kind=human` never assigned; User vs Bot → `unknown`/`bot`: `feedback.py:211`.
-- No `delivered/ready/approved` bits emitted anywhere in `feedback.py`.
-- Full snapshot only: `factory/dashboard.py:884-896`; `--runtime-json` does not touch `snapshot()` (`dashboard.py:1228-1235`). Non-PR tickets untouched (`n in raw_prs` guard, `dashboard.py:884`).
-- Legacy fields preserved: `pr_record` untouched; `"pr": pr` passthrough `dashboard.py:795`; test `tests/test_factory.py` `test_full_snapshot_preserves_legacy_contract_and_attaches_feedback` asserts `gate_text/review_decision/checks/comments/verdicts`.
-- Briefing: feedback appended after existing candidates, omissions/shortening reported, missing-key/unknown-version rendered as unsupported: `factory/briefing.py:289-335,369-379`.
-- Review drawer/Inbox: body via `pre()` (text node), links via `safeSourceURL`, coverage/errors/owner rendered: `factory/dashboard.html:993-1084,1086,1483`.
-- README/CHANGELOG document schema location, bounds, unknown/partial, read-only authority.
+Implemented and test-backed:
+- Schema-1 envelope, required keys, enums, explicit nulls (`review.diff:711-719`, `829-838`); `items` sorted by `(evidence_id, source_revision)` and `errors` sorted/bounded (`review.diff:1053-1054`, `736`).
+- `source_revision` over exactly the 14 listed fields (`review.diff:644-646`, `861`); `observation_id` over native IDs + final head + sorted pairs + coverage status/truncated/reason, excluding timestamps (`review.diff:1055-1057`); idempotent reorder/timestamp polls and semantic revisions tested (`review.diff:1499-1530`).
+- Bounds: `ITEM_LIMIT=100`, `PAGE_LIMIT=2`, `BODY_LIMIT=20000`, `ERROR_LIMIT=32`, `DETAIL_TIMEOUT=30`, initial+final head read (`review.diff:635-639`, `878`, `986`); head race → partial + both SHAs + `unknown` relevance (`review.diff:993-997`, `1042`); final-head failure keeps facts and null head (`review.diff:1650-1659`).
+- Factory review requires valid lifecycle `result` with `returncode==0`, `parsed`, `head==actual_head`, matching enter/exit outcome (`review.diff:1029-1035`); field names match what `dispatch.review()` actually emits (snapshot `factory/dispatch.py:489-492`). Provenance-free `VERDICT` rejected (`review.diff:1492-1497`).
+- Ownership needs same-repo closing link + retained `claimed` event (`review.diff:1009`); Factory PRs do carry `Closes #n` (snapshot `dispatch.py:1319`) and `claimed` is recorded (`dispatch.py:1297`), so this is live in production.
+- Full-snapshot only: `collect` wired in `snapshot()` (`review.diff:596-608`); `--runtime-json` branch returns before `snapshot()`; pre-existing audit hook in `tests/test_runtime.py:35-42` forbids any `gh` spawn on that path.
+- Legacy `checks/comments/verdicts/review_decision/gate_text` preserved (`review.diff:1319-1323`).
+- `sources_for`: feedback appended after human constraints, omission/shortening counted and reported, coverage notice distinguishes missing / unsupported / incomplete / `not_collected` (`review.diff:156-215`, `239-247`, `255-274`; tests `1147-1233`).
+- Transport reuse: `github()` extended with `endpoint`/`query`/`variables`/`timeout` (`review.diff:510-537`); ints go via `-F`, strings via `-f`, `None` vars dropped.
 
-Deviations / unrequested behavior (none rise to Required):
-1. **Detail reads only for OPEN PRs** — `dashboard.py:895`, `feedback.py:128-131`. Not in the issue text or comments; closed/merged PRs get the schema-1 envelope with all sources `unavailable`/`not_collected`. The spec permits "explicit unavailable coverage" when a source "cannot be read", and the bound is documented in README/CHANGELOG. Scope deviation, not a contract violation; #15 only acts on open PRs. Note it in the handoff.
-2. **`ownership_unverified` downgrades `coverage.pr` to `partial`** — `feedback.py:402-403`. The `pr` source was read completely; the spec puts ownership conflicts in `owner.relation/evidence`, and coverage is defined as read completeness. Conflating them makes every non-Factory PR report partial `pr` coverage (and shifts `observation_id`). Conservative direction, so non-blocking; cleaner to leave it as an error without touching status.
-3. **Response received after deadline is discarded** — `feedback.py:137-138`. A successfully returned page is thrown away as `timeout`. Defensible under "stop cleanly at each bound"; mention only because the spec also says facts actually observed should be retained.
-4. Legacy UI relabeling (`tabReview` chips lose PASS/FAIL colour, "Legacy …" wording in `taskFacts`, briefing labels) — `dashboard.html:1086-1100,1260-1268`, `briefing.py:209,270`. Within "task facts / Review drawer" touches and consistent with "legacy verdict comments render as non-actionable". Existing tests still pass per gate.
-
-Exit-gate coverage not evidenced by the diff or gate report: item 4's "`--runtime-json` performs no feedback/GitHub read" has no new test (structurally true, see above); item 4's `<img onerror=...>` literal rendering is only exercised producer-side (`tests/test_feedback.py:17`), not in the DOM; items 5 (disposable-repo CLI + real browser) and 7 (handoff packet) are not in the gate report — comment 2 contains a truncated sanitized schema-1 example only.
+Scope deviations, approved or neutral:
+- `collect_details=False` for non-open PRs (`review.diff:607`) is not in the issue text but is a bounding choice consistent with "stop cleanly at each bound"; it returns the schema-1 envelope with `not_collected` (`review.diff:746-748`, test `1681-1706`) rather than an empty success, which satisfies "partial or unavailable never means none".
+- Legacy-label copy changes in `taskFacts`/`tabReview` (`review.diff:401-406`, `415-425`) go slightly beyond "presentation only" but implement "do not redefine those legacy fields as source-versioned evidence".
 
 ## Plan drift
 
-Plan status: not recorded, so file-level drift against the plan cannot be computed. Against the issue's **Touches** list, every changed file is named (`feedback.py`, `dashboard.py`, `briefing.py`, `dashboard.html`, `test_factory.py`, `test_briefing.py`, `README.md`, `CHANGELOG.md`; `tests/test_feedback.py` is explicitly permitted). Gate report shows only conflict-markers/test/leak-scan; the issue's exit-gate smoke (item 5) and handoff (item 7) proofs are absent from it. No drift exposes a required defect.
+Plan status not recorded, so no file-level diff against a plan is possible. Files changed vs. issue "Touches": `CHANGELOG.md`, `README.md`, `factory/{briefing.py,dashboard.html,dashboard.py,feedback.py}`, `tests/{test_briefing.py,test_factory.py,test_feedback.py}` — all named in the issue (`test_feedback.py` explicitly allowed).
+
+Proof missing from the gate report (not detectable from the diff; not a required defect in the code):
+- Exit gate 5: disposable-repo `python -m factory dashboard --json` run, live server + real-browser Review drawer / Inbox check, literal `<img onerror=…>` rendering, absence-of-mutation log.
+- Exit gate 7: sanitized real full-snapshot example for the #15 handoff (the issue comment shows one fragment from attempt 4, not for this revision).
 
 ## Required fixes
 
@@ -46,9 +39,9 @@ None.
 
 ## Optional suggestions
 
-- `feedback.py:402-403`: record `ownership_unverified` as an error without flipping `coverage.pr.status` to `partial`.
-- `feedback.py:137-138`: retain a page that arrived after the deadline, and mark the *subsequent* reads as timed out.
-- `feedback.py:406`: export a public `lifecycle.is_lifecycle` (or similar) instead of calling `_lifecycle`.
-- Handoff: state the open-PR-only detail policy explicitly for #15 alongside the schema constants.
+1. `factory/dashboard.py` (`review.diff:582-583`): a missing `.factory/events.jsonl` (`bounded_file` returns `None` on ENOENT) sets `provenance_complete=False`, so every open PR on a fresh repo gets `provenance_partial` and `reviews` can never be `complete` (`review.diff:1017-1018`). An absent journal is an observed-empty source, not a truncated one; treat `None` as complete-empty.
+2. `factory/feedback.py:402-403` (`review.diff:1019-1020`): `ownership_unverified` is recorded as a `pr` coverage gap, forcing `pr.status = partial` even when the PR read itself was complete. Coverage is meant to describe read completeness; the UI then shows `pr` as PENDING (`review.diff:343`). Keep it in `errors`/`owner.evidence` without downgrading `pr` coverage.
+3. `factory/feedback.py:356` (`review.diff:973`): REST check runs expose `app`, not `creator`, so check-run `author` is always `{login:null, kind:unknown}`; `app.slug` would give evidence-backed `bot` attribution as it already does for statuses.
+4. `factory/feedback.py` (`review.diff:829`, `971`, `1009`, `1011`): lines well past the `pyproject.toml` ruff `line-length = 100`. Not CI-enforced; mention only.
 
 VERDICT: APPROVE

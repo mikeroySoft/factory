@@ -1,32 +1,41 @@
-Inputs note: `./review.diff` and `./snapshot` do not exist in this sandbox; the clone itself is the gated revision (`HEAD` = `e20ebcd`, `origin/main` = issue base `8fba9c5`). Reviewed `git diff origin/main..HEAD` (9 files, +1476/−37). Issue #79 read via GitHub API (two comments: triage brief; attempt‑4 escalation). No approved scope-change comment exists.
-
 ## Standards
 
-Repo has no AGENTS.md/CONTRIBUTING.md; `docs/` holds plans only; CI and `.factory.toml` run `python -m unittest discover -s tests` only. `pyproject.toml:36-37` sets `ruff line-length = 100` but nothing enforces it and existing modules already exceed it (dashboard.py 27 lines, briefing.py 60). No hard-standard violations.
+No `AGENTS.md`/`CONTRIBUTING.md`/`docs/` coding rules exist in the snapshot; the only documented tooling is `pyproject.toml:36-38` (`[tool.ruff] line-length = 100`), which the gate does not run. Nothing in the diff violates a documented repo rule.
 
-Optional (judgement calls):
-- `factory/feedback.py` is single-quoted throughout (e.g. `:604-607`, `:664-670`) while every sibling module uses double quotes. Not enforced; cosmetic.
-- `factory/feedback.py:406` imports and calls the private `lifecycle._lifecycle`. Reuse is correct per the brief ("reuse accepted bounded lifecycle/event readers"); exposing it as a public name would be the tidy fix, not required.
+Judgement-call smells (non-blocking):
+- **Inconsistent style** — `factory/feedback.py` uses single-quoted strings throughout (diff 640-646, 711-719) while every sibling module uses double quotes; several lines exceed the configured ruff width (diff 829, 971, 1009). No rule is enforced, so optional.
+- **Test coupling** — `tests/test_factory.py` imports `Provider, REPO, PR, ISSUE, H, AT, factory_events` from `tests/test_feedback.py` (diff 1259, 1331). Issue allowed a separate `test_feedback.py` "only if smaller and clearer"; cross-module fixture imports cut against that. Judgement, not a rule.
+- `lifecycle._lifecycle` (private) is called from `feedback.py` (diff 1023). Issue said to reuse the accepted lifecycle readers; there is no public validator, so this is the available seam.
 
-## Spec
+Safety checks passed: `pre()` is a text-node helper (`dashboard.html:938`), `h()` creates text nodes for string children and skips `false` attrs (`dashboard.html:457,464`), so `open: expanded` and `item.body` (diff 359, 381) render safely; `safeSourceURL` gates all hrefs (diff 314-317). `--runtime-json` path (`dashboard.py:1228-1254`) never reaches `snapshot()`. No import cycle (`lifecycle.py` imports nothing from `factory`).
 
-Schema‑1 envelope, item fields, enums, explicit nulls, `source_revision` field set (`feedback.py:27-29`, `:244`), `observation_id` composition (`:438-440`), sorted items/errors (`:436-437`), fixed bounds (`:18-22`), initial/final head reads with race → `unknown` + both SHAs in reason (`:376-380`), dedup of equivalent polls and identity-conflict handling (`:245-257`), sanitized fixed error messages (`:142-146`), VERDICT prose never promoted (factory reviews only from validated `result` events with matching `head`/`actual_head`, exit outcome, `:406-420`), REST/GraphQL transport reuse via the extended `dashboard.github` (`dashboard.py:196-224`), full‑snapshot‑only wiring (`dashboard.py:884-896`; runtime-json branch at `dashboard.py:1228` untouched; existing `tests/test_runtime.py` command audit still covers it), briefing appends after human constraints with omission/shortening notices (`briefing.py:286-376`), DOM via existing `h`/`pre`/`safeSourceURL` text-node helpers (`dashboard.html:993-1085`, `:1228`). Exit gates 1–4 have matching tests (`tests/test_feedback.py`, `tests/test_factory.py:2399-2538`, `tests/test_briefing.py:17-184`). Legacy `checks/comments/verdicts/review_decision/gate_text` preserved (`tests/test_factory.py:2471-2475`).
+## Spec (issue #79 + agent brief)
 
-Deviation not in the issue or its comments: detail reads only for `OPEN` PRs (`dashboard.py:895`, `feedback.py:129-131`). Closed/merged PRs get the schema‑1 envelope with every source `unavailable` + `not_collected` and ownership `unverified`. The issue never requires detail for historical PRs and does require "preserve full-snapshot cadence"; the README/CHANGELOG/UI name the behaviour explicitly as distinct from empty/unsupported (`README.md:39-46`, `dashboard.html:1071-1073`). Not a defect; flagged as unapproved scope narrowing for the record.
+Satisfied:
+- Schema-1 envelope with all required keys, enums, explicit nulls (diff 711-719, 829-838); `source_revision` over exactly the 14 listed fields (644-646, 861); `observation_id` over native IDs, final head, sorted `(evidence_id, source_revision)`, coverage `status/truncated/reason` and excluding `observed_at` (1053-1057).
+- Fixed bounds `100/2/20000/32/30` (635-639); initial+final head reads around the detail group (878, 986); head race → partial coverage with both SHAs, relevance `unknown` (993-997, 1042); final-head failure keeps facts and nulls head (1650-1659 test).
+- Outdated threads never promoted by SHA equality (1044-1047); missing source SHA never filled (824-826); Factory review requires a valid lifecycle `result` with `returncode 0`, `parsed`, `head == actual_head`, bracketing `enter`/`exit` (1023-1037); provenance-free `VERDICT` rejected (1492-1497 test).
+- One-source failure keeps independent facts, secrets sanitized (759-762, 1554-1561); closed/merged PRs get a schema-1 envelope with `not_collected` and zero reads (745-748, 1681-1706).
+- Full-snapshot only, `repository.id` from the main query (`dashboard.py:816` already binds `repo`; diff 469, 601); runtime-JSON untouched; non-PR tickets get no feedback (1326).
+- `sources_for` appends feedback after existing candidates, reports omissions/shortening, keeps schema-missing/unsupported/partial as explicit notices (156-215, 239-247, 255-256); existing human decisions retain priority (1222-1233 test).
+- Review drawer, task facts and Inbox raw evidence render provenance links, source vs observed head, relevance, disposition, location, coverage and errors (299-391, 426-440, 448). Legacy `checks/comments/verdicts/review_decision/gate_text` preserved (1319-1323 test).
+- README/CHANGELOG document schema location, bounds, unknown/partial semantics and read-only authority (9, 21-105).
 
-Optional:
-- `feedback.py:402-403` records `ownership_unverified` as a `pr` coverage gap, so any PR without a verified Factory link reports `coverage.pr.status = partial` even when the PR read itself completed. The schema defines coverage as read completeness; folding ownership into it means #15 cannot distinguish "PR read incomplete" from "ownership unverified" without parsing the reason string. Consider leaving coverage `complete` and relying on `owner.relation`.
-- Ownership relies solely on `closingIssuesReferences` (`feedback.py:33-34`, `:387-396`). GitHub populates those links only for PRs whose base is the repository default branch `[INFERENCE]`; a factory configured with a non-default `main` (the issue itself cites PRs targeting `stable`) would never reach `factory_issue`, so `factory_review` items would never be emitted. Conservative and spec-compliant ("missing links remain explicit"), but worth confirming on the real host during exit-gate‑5 smoke.
-- `dashboard.html:1093` drops the PASS/FAIL colouring from legacy verdict chips. Within the allowed "existing tabReview presentation" scope, but it is a visible downgrade unrelated to the acceptance criteria.
+Not verifiable from the diff (not blocking): exit-gate 5 (real CLI/browser smoke in a disposable repo) and exit-gate 7 (handoff packet) live outside the diff; the `<img onerror=...>` literal-render check is browser-only. The escalation comment shows a sanitized snapshot example was produced, so the handoff artifact exists.
 
 ## Plan drift
 
-Plan status "not recorded"; no planned file list exists to diff against. All nine changed files are inside the issue's `Touches` list; `tests/test_feedback.py` is permitted ("only if smaller and clearer") and is a dedicated 334‑line contract file rather than an append to the 129 KB `test_factory.py`.
-
-Proof not evidenced in the gate report (gate only lists conflict-markers/test/leak-scan): exit gate 5 (disposable repo `--json` inspection, live server + browser check of Review drawer/Inbox incl. literal `<img onerror…>`, `sources_for` bundle without `respond`, no-mutation record, cleanup) and exit gate 7 handoff packet with a sanitized full-snapshot example. These live in the worker handoff/PR body, which was not supplied; the only handoff text visible is the truncated attempt‑4 JSON in the issue comment. Absence here is unverified, not established, and exposes no defect in the diff.
+Plan status: not recorded — nothing to diff against. All changed files (`CHANGELOG.md`, `README.md`, `factory/{briefing.py,dashboard.html,dashboard.py,feedback.py}`, `tests/{test_briefing.py,test_factory.py,test_feedback.py}`) are named in the issue's Touches. Gate report covers only conflict/test/leak-scan; the issue's smoke proof (exit gate 5) is not evidenced there and cannot be judged from the diff. No drift exposes a defect.
 
 ## Required fixes
 
 None.
+
+## Optional suggestions
+
+1. `factory/feedback.py` diff 1019-1020: `ownership_unverified` is recorded as a `pr` coverage gap, so `coverage.pr.status` becomes `partial` (and `observation_id` shifts) for every PR without verified Factory ownership even when the PR read itself was complete. The drawer then shows `pr partial` (diff 343). Ownership already has its own `relation`; consider keeping it out of `pr` coverage so `partial` keeps meaning "read incomplete".
+2. `factory/dashboard.py` diff 596-608: each selected open PR now costs up to 8 `gh` calls under a 30 s group timeout inside the TTL-15 s cached `snapshot()` (`dashboard.py:84,968`). With several open agent PRs, `/api/snapshot` and `--json` latency will exceed the TTL. Spec places collection here, so no change required; worth noting in the handoff.
+3. `feedback.py` diff 868: removing a conflicting item does not decrement `counts[source]`; harmless off-by-one against `ITEM_LIMIT`.
+4. Style: align `feedback.py` quoting/line width with sibling modules if a formatter is ever added to the gate.
 
 VERDICT: APPROVE

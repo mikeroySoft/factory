@@ -1,35 +1,37 @@
-## Inputs
-
-`./review.diff` and `./snapshot` were absent from the sandbox; reviewed `git diff 07913b4..ce5568e` (commits 7fc5fe2, 8dd6588, ce5568e) in the checked-out gated revision instead. Line refs below are to files at ce5568e.
-
 ## Standards
 
-No `AGENTS.md`/`CONTRIBUTING.md` in the repo; only documented conventions are `pyproject.toml:33-35` (ruff `line-length = 100`, default rule set, so E501 is not enforced) and the design doc `docs/manager-plan.md`.
+No `AGENTS.md`/`CONTRIBUTING.md` in the snapshot; documented conventions are `README.md`, `skills/factory/SKILL.md`, `docs/manager-plan.md`, and `pyproject.toml` (`[tool.ruff] line-length = 100`).
 
-- `docs/manager-plan.md:341-352` (T11) and `:153` ("Change `[workers]` host config → recommend in diagnosis; human applies"): respected. The profiles ship commented-out in `factory/templates/factory.toml:41-47`, matching the template's "defaults shown commented out" convention (`:2-3`); the manager path never writes config.
-- Smell baseline, judgement calls only:
-  - `factory/manage.py:54` still subtracts `RESERVED_LABELS` although `manage_pass` already filters (`:199`, `:213`). Harmless redundancy; `parse` is public so the defensive copy is defensible.
-  - `factory/manage.py:109` `pr["headRefName"] != f"agent/{n}"` is tautological — the PR was looked up by that branch (`:107`). Dead guard.
-  - `factory/config.py:292` is ~150 chars against the configured 100; not enforced and neighbouring lines (`:274`) already exceed it.
+- `README.md:10-24` — manager decision docs updated for `FIX` and `[workers.<label>]` tables; matches the "How a ticket moves"/"Configuration" sections' existing style.
+- `factory/templates/factory.toml:208-224` — profiles shipped commented out, consistent with the template header ("defaults are shown commented out", `snapshot/factory/templates/factory.toml:2-3`) and the plan's "profiles are still added by a human in host config" (`docs/manager-plan.md:346-347`).
+- `factory/manage.py:102,112,176` — `RESERVED_LABELS` replaces the inline set; same filter now applied to both the prompt and `parse`. No smell-baseline hits beyond judgement calls below.
 
-## Spec (issue #20 + agent brief)
+Judgement calls (non-blocking):
+- `factory/config.py:49` — ~129 chars vs `line-length = 100`. Ruff's default rule set does not select E501 and pre-existing lines already exceed it (`snapshot/factory/manage.py:166,211`), so not a tooling-enforced breach.
+- `factory/manage.py:112` — `set(workers) - RESERVED_LABELS` is now redundant: `manage_pass` already pre-filters `workers` at `factory/manage.py:176` before calling `parse` at `:187`. Harmless duplication.
+
+## Spec (issue #20 + triage brief)
 
 | Criterion | Evidence | Status |
 |---|---|---|
-| `[workers.<label>]` may carry `when`; array form still loads | `factory/config.py:288-298`; test `tests/test_factory.py:147-165` | ✓ |
-| Manager prompt lists labels with their `when` | `factory/manage.py:199-201` (`- label: when` / `(no when rule)`) | ✓ |
-| ROUTE only accepted for listed labels; `ROUTE chore` without `chore` worker rejected and recorded; with one, label applied | `factory/manage.py:53-57`, `:72`, `:219`; test `:652-675` asserts HUMAN decision recorded / `--add-label chore` | ✓ |
-| FIX only accepted for listed labels | `factory/manage.py:63-69`; test `:745-755` (rejects `ci-fix` unconfigured, `default`, reserved, non-string) | ✓ |
-| FIX on red CI runs the `ci-fix` argv | `factory/manage.py:104-131` → `dispatch.worker_round(n, wt, {data["worker"]}, …)` → `cfg.worker` first-match (`factory/config.py:135-138`); test `:677-743` asserts worker ran, guidance + packet delivered, push only on gate PASS, `factory-approved` only on APPROVE | ✓ |
-| Two default profiles in `templates/factory.toml` | `:41-47`; `expand` is substring replace (`factory/config.py:147-154`) so `{prompt}`/`{cwd}` inside the instruction string resolve | ✓ |
-| `dashboard.py` touched | `factory/dashboard.py:847` exposes `worker_when` in snapshot config | ✓ |
-| Out of scope: manager writing host config | no config writes in diff | ✓ |
+| `[workers.<label>]` may carry `when` | `factory/config.py:36,45-55` | met |
+| Manager prompt lists labels with their `when` | `factory/manage.py:176-178` | met |
+| ROUTE/FIX accepted only for listed labels | `factory/manage.py:112-115,120-123,176,187` | met |
+| `ci-fix` and `conflict` profiles in `templates/factory.toml` | `factory/templates/factory.toml:218-224` | met (opt-in, per plan T11) |
+| Array-form `[workers]` still loads | `factory/config.py:47-48`; `tests/test_factory.py:236-248` | met |
+| Exit gate: ROUTE chore rejected+recorded without worker, applied with one | `tests/test_factory.py:263-286` (`manage` event decision HUMAN vs ROUTE, `--add-label chore`) | met |
+| Exit gate: FIX on red CI runs the `ci-fix` argv | `factory/manage.py:139-166`; `tests/test_factory.py:288-347` | met |
+| Out of scope: manager writing host config | no config writes in diff; `README.md:24` states it | met |
+| `dashboard.py` touched | `factory/dashboard.py:67` exposes `worker_when` | met |
 
-Correctness checks on the FIX path (all consistent with existing callers): `worker_round`/`review`/`pr_comment`/`approve_pr`/`escalate` signatures match `factory/dispatch.py:915-923, 409, 481, 673, 375`; `--force-with-lease` (`manage.py:124`) mirrors `refresh_pr_branch` (`dispatch.py:731`) and is required for the `conflict` profile's rebase; a failed FIX re-escalates at round+1 (`dispatch.py:369-371`), which `manage_pass` refuses beyond `manager_rounds` (`manage.py:189`), so FIX rounds are bounded.
+FIX implementation traced against `docs/manager-plan.md:283-285` ("dispatch one `worker_round` in the kept worktree with the guidance as `extra`, re-gate, push, re-review; re-add `factory-approved` only on a fresh APPROVE"): `factory/manage.py:151-155` (guidance+packet as `extra`), `:156-158` (gate FAIL → escalate, no push), `:159` (push only after PASS), `:160-165` (review → `approve_pr` only on APPROVE, else escalate). `Config.worker` picks the first configured key in the label set (`snapshot/factory/config.py:137`), so `{data["worker"]}` at `:153` selects exactly the named profile. Early `return` at `:166` skips the `ready-for-agent` relabel at the function tail, matching README "FIX does not merge or requeue the issue".
+
+Scope beyond the brief (not defects):
+- `factory/manage.py:144` — rejects FIX when `reviewDecision == "CHANGES_REQUESTED"`. Not in the issue; mirrors `merge_pass_locked` (`snapshot/factory/dispatch.py:805`) so a human's requested-changes isn't overridden by an automated push. Reasonable guard; no new abstraction.
 
 ## Plan drift
 
-Plan not recorded. Relative to the issue's `Touches` list, the diff additionally changes `README.md` (documents the new `FIX` decision and table-form workers, `README.md:88-102`) and `tests/test_factory.py` (exit-gate tests). Both directly serve the acceptance criteria; no defect exposed. Planned proof `uv run pytest tests/test_factory.py` is covered by the gate's `test: PASS` (`.factory.toml:4-14` runs `unittest discover -s tests`, which includes that file).
+Plan status not recorded, so no plan-named file list or planned proof to diff against. Relative to the issue's **Touches** list, the diff additionally changes `README.md` and `tests/test_factory.py` — docs for the new decision/config form and the exit-gate tests the issue requires. The gate report shows `test: PASS`, which covers the issue's verification command (`uv run pytest tests/test_factory.py`). No required defect exposed.
 
 ## Required fixes
 
@@ -37,8 +39,8 @@ None.
 
 ## Optional suggestions
 
-- `factory/manage.py:109`: drop the `headRefName` comparison (always true after lookup by branch).
-- `factory/manage.py:54`: `set(workers) - RESERVED_LABELS` is now redundant with the pre-filtered `workers` from `:199`; keep only if `parse` is meant to stay safe for raw `cfg.workers` callers.
-- `factory/config.py:292`: wrap to ≤100 cols per `pyproject.toml:34` if the repo ever enables E501.
+1. `factory/manage.py:112` — drop `- RESERVED_LABELS` since the caller pre-filters (`:176`); or keep `parse` self-defending and drop the caller filter. One site is enough.
+2. `factory/config.py:49` — wrap to ≤100 chars to match `[tool.ruff] line-length`; only matters if E501 is ever enabled.
+3. `factory/config.py:47` — unknown keys inside a `[workers.<label>]` table (e.g. a `when` typo) are silently ignored and `unknown_keys` skips `workers` (`snapshot/factory/config.py:58,219`); a `doctor` drift line would surface misconfigured `when` rules. Not required by the issue.
 
 VERDICT: APPROVE
