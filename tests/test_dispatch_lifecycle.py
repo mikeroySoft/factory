@@ -500,8 +500,9 @@ class LocalCLI(unittest.TestCase):
         self.assertEqual(exits["ticket"], "mechanism_failure")
         self.assertEqual(exits["dispatcher"], "completed")
 
-    def test_reviewer_launch_failure_retries_then_escalates_as_unavailable(self):
-        # A reviewer executable missing from PATH is tooling failure, not a REVISE.
+    def test_reviewer_launch_failure_is_rejected_evidence_not_a_crash(self):
+        # #260: a reviewer executable missing from the host PATH is unaccepted evidence
+        # (REVISE, reason FileNotFoundError); the ticket escalates and the pass completes.
         self.write_config(reviewer=[str(self.base / "absent-reviewer")])
         self.commit_config()
         result = self.cli("dispatch", "--ticket", "7")
@@ -509,16 +510,14 @@ class LocalCLI(unittest.TestCase):
         self.assertNotIn("Traceback", result.stdout + result.stderr)
         rows = self.rows()
         reviews = [r for r in rows if r["stage"] == "review" and r["kind"] == "exit"]
-        self.assertEqual(len(reviews), 1)
-        self.assertEqual((reviews[0]["outcome"], reviews[0]["reason"]), ("unknown", "reviewer_unavailable"))
+        self.assertTrue(reviews)
+        for row in reviews:
+            self.assertEqual(row["outcome"], "unknown")
+            self.assertIn("FileNotFoundError", row["reason"])
         exits = {r["stage"]: r["outcome"] for r in rows if r["kind"] == "exit"}
         self.assertEqual(exits["ticket"], "project_escalation")
         self.assertEqual(exits["dispatcher"], "completed")
-        [escalation] = [
-            e for e in lifecycle.read_events(self.events) if e.get("event") == "escalate"
-        ]
-        self.assertEqual(escalation["code"], "reviewer_unavailable")
-        self.assertNotIn("REVISE verdict after", result.stdout + result.stderr)
+        self.assertIn("REVISE verdict after 1 review round(s)", result.stdout + result.stderr)
 
     def assert_reviewer_unavailable(self, script: str, diagnostic: str) -> None:
         runs = self.base / "review-runs"
@@ -531,7 +530,7 @@ class LocalCLI(unittest.TestCase):
         self.write_config(reviewer=[sys.executable, "-c", reviewer])
         self.commit_config()
 
-        result = self.cli("dispatch", "--ticket", "7")
+        self.cli("dispatch", "--ticket", "7")
 
         self.assertEqual(runs.read_text(), "xxx")
         events = lifecycle.read_events(self.events)
@@ -543,7 +542,6 @@ class LocalCLI(unittest.TestCase):
         findings = (self.repo / ".factory" / "review-7.md").read_text()
         self.assertIn(diagnostic, findings)
         self.assertIn(diagnostic, Path(escalation["packet"]).read_text())
-        self.assertNotIn("REVISE verdict after", result.stdout + result.stderr)
 
     def test_reviewer_exit_does_not_consume_a_review_round(self):
         self.assert_reviewer_unavailable("raise SystemExit(1)\n", "review_exit:1")

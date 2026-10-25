@@ -172,18 +172,11 @@ class LearnCandidateReviewTest(unittest.TestCase):
                     publish.assert_not_called()
                     rows = lifecycle.read_events(cfg.factory / "events.jsonl")
                     [record] = [row for row in rows if row["event"] == "learn-candidate-review"]
-                    unavailable = reason == "unparsed_verdict"
-                    self.assertEqual(record["verdict"], None if unavailable else "REVISE")
-                    self.assertEqual(
-                        record["reason"], "reviewer_unavailable" if unavailable else reason,
-                    )
+                    self.assertEqual(record["verdict"], "REVISE")
+                    self.assertEqual(record["reason"], reason)
                     self.assertIn("200 tokens", record["proposal"])
-                    self.assertIn(
-                        "AGENTS.md:2" if reason == "REVISE"
-                        else "Factory reviewer unavailable" if unavailable
-                        else "Factory rejected reviewer evidence",
-                        record["findings"],
-                    )
+                    self.assertIn("AGENTS.md:2" if reason == "REVISE" else
+                                  "Factory rejected reviewer evidence", record["findings"])
                     self.assertIsNone(event["branch"])
                     if helpful == "curate":
                         self.assertIn("rejected:", event["curate"])

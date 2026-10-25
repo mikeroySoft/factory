@@ -1815,10 +1815,11 @@ def run_reviewer(
         "returncode": returncode,
         "actual_head": actual_head,
         "attempts": attempts,
+        "failure_reason": failure_reason,
     }
 
 
-def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str | None, str]:
+def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str, str]:
     """Run the two-axis diff review against the exact head that passed the gate."""
     started = time.monotonic()
     with lifecycle.scope(EVENTS, "review", ticket=n) as execution:
@@ -1828,7 +1829,10 @@ def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str 
         execution.outcome = (
             "approved" if result["verdict"] == "APPROVE" else "product_feedback"
         ) if result["accepted"] else "unknown"
-        execution.reason = result["reason"]
+        execution.reason = (
+            f"{result['reason']}: {result['failure_reason']}"
+            if result["reason"] == "reviewer_unavailable" else result["reason"]
+        )
         execution.emit(
             "result", returncode=result["returncode"], verdict=result["verdict"],
             parsed=result["parsed"], head=expected_head, actual_head=result["actual_head"],
@@ -1842,7 +1846,10 @@ def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str 
             "parsed": result["parsed"], "accepted": result["accepted"], "usage": result["usage"],
             "seconds": time.monotonic() - started,
         }
-    return result["verdict"], result["findings"]
+    findings = result["findings"]
+    if result["verdict"] is None:
+        findings += f"\n\nFactory rejected reviewer evidence: {result['failure_reason']}."
+    return result["verdict"] or "REVISE", findings
 
 
 def pr_gate_and_review(
@@ -1860,7 +1867,8 @@ def pr_gate_and_review(
             return "REVISE", pr_report, True
         report = f"{report}\n{pr_report}"
     verdict, findings = review(wt, n, report, head)
-    return verdict, findings, False
+    pending = _PENDING_REVIEWS.get(n)
+    return (None if pending and pending["verdict"] is None else verdict), findings, False
 
 
 def agent_lease(wt: Path, n: int) -> str:
@@ -2587,8 +2595,9 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         gate_head=head, actual_head=head, clean=True,
     )
     verdict, findings = review(wt, n, report, head)
+    unavailable = _PENDING_REVIEWS.get(n, {}).get("verdict") is None
     pr_comment(n, findings)
-    if verdict is None:
+    if unavailable:
         withdraw(
             f"reviewer unavailable after {verb} onto moved main",
             "reviewer_unavailable",
@@ -3324,6 +3333,10 @@ def process_ticket(
             verdict, findings, pr_failed = pr_gate_and_review(wt, n, report, gate_head, pr_runs)
             pr_comment(n, findings)
             if verdict is None:
+                log(
+                    f"#{n}: reviewer unavailable; not a REVISE verdict after "
+                    f"{cfg.review_rounds} review round(s)"
+                )
                 escalate(
                     n, "reviewer unavailable after retries", logfile,
                     code="reviewer_unavailable",

@@ -112,8 +112,8 @@ class ReviewIsolationTest(unittest.TestCase):
 
         with mock.patch.object(dispatch.subprocess, "run", side_effect=run):
             verdict, findings = dispatch.review(self.wt, 7, "PASS", self.head)
-        self.assertIsNone(verdict)
-        self.assertIn("reviewer unavailable", findings.lower())
+        self.assertEqual(verdict, "REVISE")
+        self.assertIn("CalledProcessError", findings)
         self.assertFalse(self.sentinel.exists())
 
     def test_failed_external_diff_fails_closed(self) -> None:

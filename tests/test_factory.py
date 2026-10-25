@@ -3378,8 +3378,8 @@ class DispatchTest(unittest.TestCase):
                         ],
                     ))
                     verdict, findings = dispatch.review(repo, 7, "PASS", head)
-                    self.assertIsNone(verdict)
-                    self.assertIn("reviewer unavailable", findings.lower())
+                    self.assertEqual(verdict, "REVISE")
+                    self.assertIn("Factory rejected reviewer evidence", findings)
 
     def test_review_keeps_structured_error_event_in_unavailable_diagnostic(self) -> None:
         from unittest import mock
@@ -3408,7 +3408,7 @@ class DispatchTest(unittest.TestCase):
             with mock.patch.object(dispatch.time, "sleep"):
                 verdict, findings = dispatch.review(repo, 7, "PASS", head)
 
-            self.assertIsNone(verdict)
+            self.assertEqual(verdict, "REVISE")
             self.assertIn("rate_limit_error", findings)
             self.assertIn("account limit", findings)
 
