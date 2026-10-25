@@ -29,7 +29,7 @@ json.dump({"cwd": str(cwd), "git": [k for k in os.environ if k.startswith("GIT_"
            "snapshot": (cwd / "snapshot" / ".omp" / "startup.py").is_file(),
            "diff": (cwd / "review.diff").read_text() if (cwd / "review.diff").is_file() else None},
           open(sys.argv[1], "w"))
-print("VERDICT: APPROVE")
+print('```json\\n{"verdict":"APPROVE","findings":[]}\\n```\\nVERDICT: APPROVE')
 """
 
 

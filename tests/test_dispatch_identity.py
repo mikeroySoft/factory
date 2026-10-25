@@ -22,7 +22,7 @@ PROBE = (
     "import json, os, sys; d = os.environ.get('GH_CONFIG_DIR'); "
     "json.dump({'tokens': [k for k in ('GH_TOKEN', 'GITHUB_TOKEN') if k in os.environ], "
     "'dir': d, 'entries': os.listdir(d) if d and os.path.isdir(d) else None}, open(sys.argv[1], 'w')); "
-    "print('VERDICT: APPROVE')"
+    "print('```json\\n{\"verdict\":\"APPROVE\",\"findings\":[]}\\n```\\nVERDICT: APPROVE')"
 )
 DISPATCHER_ENV = {"GH_TOKEN": "t1", "GITHUB_TOKEN": "t2", "GH_CONFIG_DIR": "/machine/gh"}
 

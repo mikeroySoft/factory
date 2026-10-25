@@ -1876,6 +1876,7 @@ def run_reviewer(
 
 def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str, str]:
     """Run the two-axis diff review against the exact head that passed the gate."""
+
     started = time.monotonic()
     with lifecycle.scope(EVENTS, "review", ticket=n) as execution:
         result = run_reviewer(wt, review_prompt(n, gate_report), expected_head, subject=f"#{n}")

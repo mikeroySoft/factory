@@ -501,7 +501,8 @@ class PromotionTest(unittest.TestCase):
         self.open_prs = [{"number": 42, "state": "OPEN", "isDraft": False, "headRefName": self.BRANCH, "headRefOid": "h",
                           "baseRefOid": "b", "labels": [], "reviewRequests": []}]
         self.run.side_effect = lambda cmd, **kw: subprocess.CompletedProcess(
-            cmd, 0, "VERDICT: APPROVE" if cmd[0] == "reviewer" else "{}", "")
+            cmd, 0, '```json\n{"verdict":"APPROVE","findings":[]}\n```\nVERDICT: APPROVE'
+            if cmd[0] == "reviewer" else "{}", "")
         dispatch.review_intake_pass(dry_run=False)
         [post] = [c.args[0] for c in self.run.call_args_list if c.args[0][:4] == ["gh", "api", "--method", "POST"]]
         self.assertEqual(post[4:8], ["repos/acme/widgets/pulls/42/reviews", "-f", "commit_id=h", "-f"])

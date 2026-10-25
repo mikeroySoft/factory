@@ -63,7 +63,11 @@ p = Path(os.environ["SMOKE_STATE"])
 s = json.loads(p.read_text())
 s["reviews"] = s.get("reviews", 0) + 1
 p.write_text(json.dumps(s))
-print("VERDICT: REVISE" if s["reviews"] == 1 else "VERDICT: APPROVE")
+verdict = "REVISE" if s["reviews"] == 1 else "APPROVE"
+findings = [{"severity": "important", "pass": "bug", "path": "change.txt", "line": 1,
+             "summary": "First review requires revision."}] if verdict == "REVISE" else []
+print("```json\\n" + json.dumps({"verdict": verdict, "findings": findings})
+      + "\\n```\\nVERDICT: " + verdict)
 '''
 
 # Records the head it ran on in argv[1]; FAILs its first argv[2] runs.
@@ -352,7 +356,7 @@ class LocalCLI(unittest.TestCase):
         git("-C", str(source), "push", "origin", "main")
         tip = git("-C", str(source), "rev-parse", "HEAD").stdout.strip()
         self.git("remote", "add", "upstream", str(upstream))
-        self.write_config(check=check, worker=worker, reviewer=[sys.executable, "-c", "print('VERDICT: APPROVE')"])
+        self.write_config(check=check, worker=worker, reviewer=[sys.executable, "-c", "print('```json\\n{\"verdict\":\"APPROVE\",\"findings\":[]}\\n```\\nVERDICT: APPROVE')"])
         path = self.repo / ".factory.toml"
         path.write_text(path.read_text().replace('slug = "local/smoke"', 'slug = "local/smoke"\nupstream = "upstream"'))
         self.commit_config()

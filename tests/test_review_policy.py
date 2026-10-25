@@ -111,7 +111,7 @@ class ReviewPolicyTest(unittest.TestCase):
         self.assertNotIn("pr", self.publish())
 
     def test_verdict_counts_mismatch_returns_revise(self) -> None:
-        findings, verdict, parsed, counts, reason = dispatch._parse_review_output(
+        _findings, verdict, parsed, counts, reason = dispatch._parse_review_output(
             tally([self.finding("nit", 1)], "REVISE"), 5
         )
 
