@@ -174,6 +174,7 @@ class EvalSuiteTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             cfg = self.cfg(Path(directory))
+            cfg.eval_schedule = True
             dispatch.configure(cfg)
             head = "a" * 40
             pr = {
@@ -199,6 +200,9 @@ class EvalSuiteTest(unittest.TestCase):
                     "status": "completed", "verdict": "keep",
                 })
                 learn.promote(cfg, pr, events, dry_run=True)
+                self.assertIn("would merge", log.call_args.args[0])
+                cfg.eval_schedule = False
+                learn.promote(cfg, pr, events[:-1], dry_run=True)
                 self.assertIn("would merge", log.call_args.args[0])
 
     def test_worker_context_is_committed_as_the_replay_baseline(self) -> None:
@@ -265,6 +269,139 @@ class EvalSuiteTest(unittest.TestCase):
             self.assertIn("OnCalendar=weekly", units[f"{cfg.unit}-eval.timer"])
             cfg.eval_schedule = False
             self.assertNotIn(f"{cfg.unit}-eval.timer", onboard.units(cfg, "10min", "127.0.0.1"))
+
+    def test_release_keys_remain_known_with_eval_keys(self) -> None:
+        self.assertEqual(
+            config.unknown_keys({
+                "release": {"auto": True, "version_file": "factory/__init__.py", "min_tickets": 2},
+                "eval": {"max_cases": 20, "schedule": True},
+            }),
+            [],
+        )
+
+    def test_rejected_head_cannot_become_its_own_baseline_or_merge(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = self.cfg(root)
+            path = self.manifest(root)
+            head = "b" * 40
+            with mock.patch.object(eval_suite.stats, "resolve", return_value=cfg), \
+                 mock.patch.object(eval_suite.learn, "replay_ticket", return_value=self.metrics()):
+                eval_suite.run(cfg, "default", path, candidate="a" * 40)
+            with mock.patch.object(eval_suite.stats, "resolve", return_value=cfg), \
+                 mock.patch.object(
+                     eval_suite.learn, "replay_ticket", return_value=self.metrics(False),
+                 ):
+                first = eval_suite.run(cfg, "default", path, candidate=head)
+                second = eval_suite.run(cfg, "default", path, candidate=head)
+            self.assertEqual((first["verdict"], second["verdict"]), ("revert", "revert"))
+            rows = lifecycle.read_events(cfg.factory / "events.jsonl")
+            self.assertFalse(eval_suite.merge_allowed([".factory.toml"], head, rows))
+
+    def test_unaccepted_keep_is_not_the_next_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = self.cfg(root)
+            path = self.manifest(root)
+            with mock.patch.object(eval_suite.stats, "resolve", return_value=cfg), \
+                 mock.patch.object(
+                     eval_suite.learn, "replay_ticket", return_value=self.metrics(False),
+                 ):
+                eval_suite.run(cfg, "default", path, candidate="a" * 40)
+            with mock.patch.object(eval_suite.stats, "resolve", return_value=cfg), \
+                 mock.patch.object(eval_suite.learn, "replay_ticket", return_value=self.metrics()):
+                keep = eval_suite.run(cfg, "default", path, candidate="b" * 40)
+            with mock.patch.object(eval_suite.stats, "resolve", return_value=cfg), \
+                 mock.patch.object(
+                     eval_suite.learn, "replay_ticket", return_value=self.metrics(False),
+                 ):
+                parity = eval_suite.run(cfg, "default", path, candidate="c" * 40)
+            self.assertEqual((keep["verdict"], parity["verdict"]), ("keep", "keep"))
+            self.assertEqual(parity["claim"]["baseline"], "a" * 40)
+
+    def test_factory_replay_keeps_gate_validated_agents_map_at_case_base(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wt, source = root / "replay", root / "current"
+            wt.mkdir()
+            source.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=wt, check=True)
+            (wt / "AGENTS.md").write_text("historical\n")
+            subprocess.run(["git", "add", "."], cwd=wt, check=True)
+            subprocess.run([
+                "git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                "commit", "-qm", "base",
+            ], cwd=wt, check=True)
+            (source / "AGENTS.md").write_text("current\n")
+            case = learn.ReplayCase(
+                1, "a" * 40, "ticket", (), {"title": "ticket", "body": "", "comments": []},
+                pinned_context=("AGENTS.md",),
+            )
+
+            learn._context_base(wt, source, case.pinned_context)
+
+            self.assertEqual((wt / "AGENTS.md").read_text(), "historical\n")
+
+    def test_merge_eval_gate_is_opt_in_and_names_the_exact_command(self) -> None:
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = self.cfg(Path(directory), eval_profile="prime")
+            dispatch.configure(cfg)
+            head = "a" * 40
+            pr = {
+                "number": 42, "headRefName": "agent/7", "headRefOid": head,
+                "baseRefName": "main", "isDraft": False,
+                "labels": [{"name": dispatch.FACTORY_APPROVED}],
+                "reviewDecision": "APPROVED", "state": "OPEN", "title": "eval change",
+                "files": [{"path": ".factory.toml"}],
+            }
+
+            def github(args):
+                if args[:2] == ["pr", "list"]:
+                    return [pr]
+                if args[:2] == ["pr", "view"]:
+                    return pr
+                if args[0] == "api":
+                    return {"behind_by": 0}
+                raise AssertionError(args)
+
+            with mock.patch.object(dispatch, "gh_json", side_effect=github), \
+                 mock.patch.object(dispatch, "pr_checks", return_value=[{"name": "ci", "bucket": "pass"}]), \
+                 mock.patch.object(dispatch, "initiative_kind", return_value=None), \
+                 mock.patch.object(dispatch, "log") as log:
+                dispatch.merge_pass_locked(True)
+            self.assertFalse(any("worker eval" in call.args[0] for call in log.call_args_list))
+
+            cfg.eval_schedule = True
+            with mock.patch.object(dispatch, "gh_json", side_effect=github), \
+                 mock.patch.object(dispatch, "pr_checks", return_value=[{"name": "ci", "bucket": "pass"}]), \
+                 mock.patch.object(dispatch, "initiative_kind", return_value=None), \
+                 mock.patch.object(dispatch, "log") as log:
+                dispatch.merge_pass_locked(True)
+            message = "\n".join(call.args[0] for call in log.call_args_list)
+            self.assertIn("factory eval --profile prime", message)
+            self.assertIn(str(cfg.factory / "wt-7"), message)
+
+    def test_checked_in_factory_cases_pin_the_gate_validated_agents_map(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = self.cfg(Path(directory))
+            seen = {}
+
+            def replay(_cfg, case, *_args):
+                seen[case.title] = case.pinned_context
+                return self.metrics()
+
+            with mock.patch.object(eval_suite.stats, "resolve", return_value=cfg), \
+                 mock.patch.object(eval_suite.learn, "replay_ticket", side_effect=replay):
+                eval_suite.run(cfg, "default", candidate="a" * 40)
+
+            manifest = eval_suite.load_manifest()
+            for case in manifest.cases:
+                self.assertEqual(
+                    seen[case.title],
+                    ("AGENTS.md",) if case.repo == "mikeroySoft/factory" else (),
+                )
 
 
 if __name__ == "__main__":

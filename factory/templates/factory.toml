@@ -112,7 +112,9 @@
 # Frozen 20-50-ticket worker regression suite. `factory eval --profile <name>
 # --dry-run` lists the checked-in cases and this budget. Real runs use two
 # repeats, journal every replay and compare with the previous same-profile run.
-# A weekly timer is installed only when schedule = true.
+# `schedule = true` installs a weekly timer and requires exact-head keep
+# evidence before worker-setup changes merge. Missing evidence reports the
+# `factory eval` command to run from the candidate checkout.
 # max_cases = 20
 # max_tokens = 2000000
 # budget_min = 720

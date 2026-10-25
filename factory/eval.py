@@ -156,12 +156,16 @@ def requires_eval(paths: list[str]) -> bool:
 def merge_allowed(paths: list[str], head: str, rows: list[dict]) -> bool:
     if not requires_eval(paths):
         return True
-    return any(
-        row.get("event") == "eval-summary"
-        and row.get("candidate") == head
-        and row.get("status") == "completed"
-        and row.get("verdict") == "keep"
-        for row in rows
+    matching = [
+        row for row in rows
+        if row.get("event") == "eval-summary" and row.get("candidate") == head
+    ]
+    return (
+        not any(row.get("verdict") == "revert" for row in matching)
+        and any(
+            row.get("status") == "completed" and row.get("verdict") == "keep"
+            for row in matching
+        )
     )
 
 
@@ -268,14 +272,37 @@ def _baseline(cfg: config.Config, profile: str, version: int) -> dict | None:
         rows = lifecycle.read_events(cfg.factory / "events.jsonl")
     except OSError:
         return None
+    merged = {
+        row.get("head") for row in rows
+        if row.get("event") == "merged" and isinstance(row.get("head"), str)
+    }
     return next((
         row for row in reversed(rows)
         if row.get("event") == "eval-summary"
         and row.get("profile") == profile
         and row.get("manifest_version") == version
         and row.get("status") in ("baseline", "completed")
+        and row.get("verdict") != "revert"
         and isinstance(row.get("splits"), dict)
+        and (
+            row.get("candidate") in merged
+            or row.get("accepted") is True
+            or (row.get("status") == "baseline" and "accepted" not in row)
+        )
     ), None)
+
+
+def _candidate_accepted(cfg: config.Config, candidate: str) -> bool | None:
+    result = subprocess.run(
+        ["git", "-C", str(cfg.root), "merge-base", "--is-ancestor", candidate, f"refs/heads/{cfg.main}"],
+        capture_output=True, text=True, check=False,
+    )
+    return result.returncode == 0 if result.returncode in (0, 1) else None
+
+
+def baseline_ready(cfg: config.Config) -> bool:
+    """Whether this profile and manifest have accepted comparison evidence."""
+    return _baseline(cfg, cfg.eval_profile, load_manifest().version) is not None
 
 
 def _not_tested(
@@ -362,9 +389,13 @@ def run(
                 target = stats.resolve(case.repo)
                 replay_cfg = _case_config(cfg, target, profile)
                 dispatch.configure(replay_cfg)
+                replay_case = learn.ReplayCase(
+                    case.ticket, case.base, case.title, case.labels, case.issue,
+                    pinned_context=("AGENTS.md",) if case.repo == "mikeroySoft/factory" else (),
+                )
                 metrics = learn.replay_ticket(
                     replay_cfg,
-                    learn.ReplayCase(case.ticket, case.base, case.title, case.labels, case.issue),
+                    replay_case,
                     None,
                     deadline,
                     context_root if case.repo == cfg.repo and context_root is not None else target.root,
@@ -433,21 +464,13 @@ def run(
         "splits": splits, "claim": claim, "fingerprint": fingerprint,
         "prime_global": harness, "flagged": bool(scheduled and verdict == "revert"),
     }
+    accepted = _candidate_accepted(cfg, candidate)
+    if accepted is not None:
+        summary["accepted"] = accepted
     _append(cfg, summary)
     print(f"eval {profile}: {verdict or 'baseline'}" + (f" ({reason})" if reason else ""))
     return summary
 
-def run_if_changed(cfg: config.Config, dry_run: bool = False) -> dict | None:
-    """Run the configured profile when its worker context differs from the latest eval."""
-    manifest = load_manifest()
-    fingerprint, _ = _fingerprint(cfg, cfg.eval_profile)
-    latest = _baseline(cfg, cfg.eval_profile, manifest.version)
-    if latest is not None and latest.get("fingerprint") == fingerprint:
-        return None
-    if dry_run:
-        print(f"eval {cfg.eval_profile}: would run (worker context changed)")
-        return None
-    return run(cfg, cfg.eval_profile)
 
 
 def main(argv: list[str]) -> int:

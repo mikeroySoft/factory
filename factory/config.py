@@ -87,6 +87,7 @@ KNOWN_KEYS = {
     "review": ("command", "json_mode", "policy"),
     "manager": ("model", "command", "rounds", "review", "stale_days", "max_active_cap", "budget_min_cap"),
     "learn": ("evaluate", "max_tickets", "max_tokens", "budget_min"),
+    "release": ("auto", "version_file", "min_tickets"),
     "eval": ("max_cases", "max_tokens", "budget_min", "profile", "schedule"),
     "gate": ("timeout", "lock", "check", "protected_paths", "add_only_paths"),
     "leak_scan": ("pattern", "exclude", "extra"),

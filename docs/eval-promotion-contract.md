@@ -74,18 +74,24 @@ versions may add cases; a lockbox case never leaves lockbox.
 `factory eval --profile NAME --dry-run` lists all cases and the `[eval]`
 case/token/wall budget. A real run uses `MIN_REPEATS`, the selected worker
 profile, each target repository's normal gate and reviewer, and the sandboxed
-no-GitHub/no-push replay path shared with `factory learn`. It journals one
-`eval` row per case/repeat and one `eval-summary` containing split means,
-population-stdev noise, usage, wall time, candidate head, worker-context
-fingerprint, and any Prime `scope: global` entries read at run start. The first
-same-profile run establishes the baseline; later runs submit a regression claim
-to `promotion.decide()`.
+no-GitHub/no-push replay path shared with `factory learn`. Current worker
+context is committed before replay, except that Factory cases retain their
+pinned `AGENTS.md` because their historical gate validates that file's feature
+map. The run journals one `eval` row per case/repeat and one `eval-summary`
+containing split means, population-stdev noise, usage, wall time, candidate
+head, worker-context fingerprint, and any Prime `scope: global` entries read at
+run start. An accepted-main run establishes the baseline. Rejected or unmerged
+candidate runs never replace it, and any `revert` summary permanently rejects
+that candidate head.
 
-Budget exhaustion or unavailable replay evidence journals `not_tested` and does
-not escalate. Worker setup paths require an exact-head `keep` summary before
-merge. `[eval] schedule = true` installs a persistent weekly
-`factory eval --scheduled` timer; a scheduled drop beyond noise is journaled
-with `flagged: true`.
+Budget exhaustion or unavailable replay evidence journals `not_tested` and
+does not escalate. `[eval] schedule = true` opts the repository into exact-head
+merge claims for `.factory.toml`, `.factory-lessons.md`, `AGENTS.md`,
+`CLAUDE.md`, the worker setup modules and prompt template, and `SKILL.md` files.
+Missing evidence reports the exact `factory eval` command instead of launching
+the suite synchronously in the dispatcher. The same setting installs a
+persistent weekly `factory eval --scheduled` timer; a scheduled drop beyond
+noise is journaled with `flagged: true`.
 
 ## 4. Lessons
 

@@ -56,7 +56,7 @@ class ReplayCase:
     title: str
     labels: tuple[str, ...]
     issue: dict
-
+    pinned_context: tuple[str, ...] = ()
 
 @dataclass(frozen=True)
 class Candidate:
@@ -246,8 +246,8 @@ def _candidate_base(wt: Path, state: Path, candidate: Candidate | None) -> str:
     return dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
 
 
-def _context_base(wt: Path, source: Path) -> str:
-    paths = worker_context_paths(wt) | worker_context_paths(source)
+def _context_base(wt: Path, source: Path, pinned: tuple[str, ...] = ()) -> str:
+    paths = (worker_context_paths(wt) | worker_context_paths(source)) - {Path(path) for path in pinned}
     touched = []
     for relative in paths:
         target = wt / relative
@@ -300,7 +300,7 @@ def replay_ticket(
         dispatch.run(["git", "config", "user.name", "Factory replay"], cwd=wt)
         dispatch.run(["git", "config", "user.email", "factory@localhost"], cwd=wt)
         if context_root is not None:
-            _context_base(wt, context_root)
+            _context_base(wt, context_root, case.pinned_context)
         base = _candidate_base(wt, state, candidate)
         isolated = _no_push_env(state)
         extra = ""
@@ -1288,13 +1288,20 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
         item["filename"] for item in compare.get("files", [])
         if isinstance(item, dict) and isinstance(item.get("filename"), str)
     ]
-    initialized = any(row.get("event") == "eval-summary" for row in events)
     if (
-        initialized
+        cfg.eval_schedule
         and not branch.startswith(REVERT_BRANCH)
         and not eval_suite.merge_allowed(paths, head, events)
     ):
-        dispatch.log(f"PR #{n}: {branch} waiting for worker eval keep evidence at {head[:12]}")
+        command = f"factory eval --profile {cfg.eval_profile}"
+        baseline = (
+            f"First run `cd {cfg.root} && {command}` to establish the accepted baseline; "
+            if not eval_suite.baseline_ready(cfg) else ""
+        )
+        dispatch.log(
+            f"PR #{n}: {branch} waiting for worker eval keep evidence at {head[:12]}; "
+            f"{baseline}run `{command}` from a checkout of {head}"
+        )
         return
     if dry_run:
         dispatch.log(f"PR #{n}: would merge {branch}")

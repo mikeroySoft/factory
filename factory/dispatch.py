@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -3149,10 +3150,23 @@ def merge_pass_locked(dry_run: bool) -> None:
             if dry_run:
                 if behind:
                     log(f"PR #{pr_num}: would refresh (behind main)")
-                elif "files" in fresh and not eval_suite.merge_allowed(
-                    changed_paths, head, lifecycle.read_events(EVENTS),
+                elif (
+                    cfg.eval_schedule
+                    and "files" in fresh
+                    and not eval_suite.merge_allowed(changed_paths, head, lifecycle.read_events(EVENTS))
                 ):
-                    log(f"PR #{pr_num}: would refuse (worker eval keep claim missing for {head})")
+                    candidate_command = (
+                        f"cd {shlex.quote(str(FACTORY / f'wt-{n}'))} && "
+                        f"factory eval --profile {shlex.quote(cfg.eval_profile)}"
+                    )
+                    command = candidate_command
+                    if not eval_suite.baseline_ready(cfg):
+                        command = (
+                            f"cd {shlex.quote(str(ROOT))} && "
+                            f"factory eval --profile {shlex.quote(cfg.eval_profile)} && "
+                            f"{candidate_command}"
+                        )
+                    log(f"PR #{pr_num}: would refuse (worker eval keep claim missing for {head}); run `{command}`")
                 else:
                     events = lifecycle.read_events(EVENTS)
                     approved = _head_evidence_matches(events, n, head) and any(
@@ -3196,10 +3210,27 @@ def merge_pass_locked(dry_run: bool) -> None:
                     execution.outcome = "refreshed"
                 return
             events = lifecycle.read_events(EVENTS)
-            if "files" in fresh and not eval_suite.merge_allowed(changed_paths, head, events):
-                log(f"PR #{pr_num}: worker eval keep claim missing for {head}; not merging")
+            if (
+                cfg.eval_schedule
+                and "files" in fresh
+                and not eval_suite.merge_allowed(changed_paths, head, events)
+            ):
+                candidate_command = (
+                    f"cd {shlex.quote(str(FACTORY / f'wt-{n}'))} && "
+                    f"factory eval --profile {shlex.quote(cfg.eval_profile)}"
+                )
+                command = candidate_command
+                if not eval_suite.baseline_ready(cfg):
+                    command = (
+                        f"cd {shlex.quote(str(ROOT))} && "
+                        f"factory eval --profile {shlex.quote(cfg.eval_profile)} && "
+                        f"{candidate_command}"
+                    )
+                log(f"PR #{pr_num}: worker eval keep claim missing for {head}; run `{command}`; not merging")
                 execution.outcome, execution.reason = "not_eligible", "eval_required"
-                execution.wait("eval_required", mode="eligibility", pr=pr_num, head=head)
+                execution.wait(
+                    "eval_required", mode="operator", pr=pr_num, head=head, command=command,
+                )
                 continue
             approved = _head_evidence_matches(events, n, head) and any(
                 e.get("event") == "approved"
@@ -3930,13 +3961,6 @@ def main(argv: list[str]) -> int:
         # A release PR merges before this pass lands a ticket (every ticket edits CHANGELOG.md,
         # which GitHub cannot union-merge), and a new one opens only after landing.
         release_step(open_pr=False)
-        if cfg.eval_schedule:
-            try:
-                from factory import eval as eval_suite
-
-                eval_suite.run_if_changed(cfg, args.dry_run)
-            except Exception as exc:  # noqa: BLE001 - unavailable eval evidence blocks only eval-gated changes
-                log(f"eval: failed ({type(exc).__name__}: {exc})")
         land_pass(args.dry_run)
         review_intake_pass(args.dry_run)
         from factory.learn import learn_pass
