@@ -385,11 +385,19 @@ def call_llm(messages: list[dict], execution=None) -> str:
             execution.outcome = "unknown" if timed_out else "mechanism_failure"
             execution.reason = "triage_endpoint_timeout" if timed_out else "triage_endpoint_unavailable"
             execution.emit("result", timed_out=timed_out, timeout_seconds=cfg.triage_timeout)
-        print(
-            f"cannot reach local model at {LLM_URL}: {exc}\n"
-            "Is the model server running? Set [triage].url in .factory.toml if the endpoint differs.",
-            file=sys.stderr,
-        )
+        if timed_out:
+            where = "connecting to" if isinstance(exc, urllib.error.URLError) else "at"
+            print(
+                f"local model request timed out after {cfg.triage_timeout}s {where} {LLM_URL}\n"
+                "The model server may be busy or the request too large; raise [triage].timeout if this persists.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"cannot reach local model at {LLM_URL}: {exc}\n"
+                "Is the model server running? Set [triage].url in .factory.toml if the endpoint differs.",
+                file=sys.stderr,
+            )
         # URLError(TimeoutError) is a connect timeout (endpoint unreachable); a bare one is a slow model.
         raise (EndpointTimeout if isinstance(exc, TimeoutError) else SystemExit)(2) from exc
     usage = _usage_fields(body)
