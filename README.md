@@ -766,8 +766,11 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    the fix in a later commit, and put `Repro test: <test ID>` in its handoff.
    The dispatcher runs that test at the test commit (it must fail) and at HEAD
    (it must pass); both results are written to the gate report and the gate
-   decision trace. A ticket-author `No repro test: <reason>` line records the
-   reason and skips only this fail-before/pass-after check. Otherwise make
+   decision trace. A `No repro test: <reason>` line in the ticket body or an
+   authenticated triage account's `Triage:` comment records the nonempty reason
+   and skips only this fail-before/pass-after check. Other commenters and worker
+   handoffs cannot grant this exemption; triage comments grant no protected-path
+   or existing-test override. Otherwise make
    protected changes outside the worker flow. Then `conflict-markers`, your
    `[[gate.check]]` list in order, and a `leak-scan`
    run. Checks marked `exclusive` serialise on a host-wide lock. Every check

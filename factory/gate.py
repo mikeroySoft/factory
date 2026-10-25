@@ -329,7 +329,8 @@ _RUST_MOD = re.compile(
     r"[A-Za-z_][A-Za-z0-9_]*[ \t]*\{"
 )
 _RUST_MASK = re.compile(
-    r"//[^\n]*|/\*.*?\*/|r(?P<hashes>#+)?\".*?\"(?P=hashes)|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'",
+    r"//[^\n]*|/\*.*?\*/|r(?P<hashes>#+)?\".*?\"(?P=hashes)|\"(?:\\.|[^\"\\])*\"|"
+    r"'(?:[^'\\\r\n\t]|\\(?:[nrt0\\'\"]|x[0-7][0-9a-fA-F]|u\{[0-9a-fA-F]{1,6}\}))'",
     re.DOTALL,
 )
 
@@ -595,7 +596,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--bug", action="store_true",
                         help="enforce failing-test-first and existing-test protection")
     parser.add_argument("--repro-test", help="test ID named by the worker handoff")
-    parser.add_argument("--no-repro-test", help="ticket-author reason a reproduction test is impractical")
+    parser.add_argument("--no-repro-test", help="ticket-author or authenticated-triage reason a reproduction test is impractical")
     parser.add_argument("--upstream", action="append", default=[], metavar="REF",
                         help="upstream sync: first REF is the tip, later REFs the staged head (repeatable); "
                         "protected-path hits equal to the staged head, or to the tip for paths upstream changed, "

@@ -676,8 +676,8 @@ class RustLifetimeGateTest(unittest.TestCase):
                 # A local runner exercises both checkouts without requiring a Rust toolchain.
                 command = [
                     sys.executable, "-c",
-                    "from pathlib import Path; "
-                    "raise SystemExit('-> usize { 0 }' in Path('src/lib.rs').read_text())",
+                    ("from pathlib import Path; "
+                     "raise SystemExit('-> usize { 0 }' in Path('src/lib.rs').read_text())"),
                 ]
                 with mock.patch.object(gate_module, "_repro_command", return_value=(command, False)):
                     results = gate_module.check_bug_reproduction("origin/main", "reproduces_bug", None)

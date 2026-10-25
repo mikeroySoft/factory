@@ -107,8 +107,11 @@ at the gate before any check runs. This repository keeps `tests/**` add-only: ne
 files and appended lines need no label; changing existing test lines needs
 `factory-add-only-override` at filing (or a manager may grant it via `AUTHORIZE`).
 Label bug fixes `bug`; the worker must commit the reproducing test first and name it as
-`Repro test: <test ID>` in the handoff. If that is impractical, the ticket author must
-add `No repro test: <reason>`. File with `gh issue create --label needs-triage` (plus
+`Repro test: <test ID>` in the handoff. If that is impractical, the ticket author can
+add `No repro test: <reason>` to the body, or the authenticated triage account can
+include it in its `Triage:` comment. The nonempty reason exempts only reproduction,
+not test protection; other commenters and worker handoffs cannot grant it.
+File with `gh issue create --label needs-triage` (plus
 `bug` and any applicable override label when needed); label `ready-for-agent` directly
 only when the user says to skip triage.
 

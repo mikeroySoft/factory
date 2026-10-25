@@ -108,8 +108,10 @@ STANDING_INSTRUCTIONS = """
 - Implement exactly what the ticket above asks for; nothing more.
 - Use TDD where practical: failing test first, then the fix.
 - For a bug ticket, commit the reproducing test before the fix and add
-  `Repro test: <test ID>` to the handoff. A ticket-author `No repro test: <reason>`
-  line is the only substitute.
+  `Repro test: <test ID>` to the handoff. Only a nonempty `No repro test: <reason>`
+  line in the ticket body or the authenticated triage account's `Triage:` comment
+  exempts reproduction. Worker handoffs cannot grant exemptions, and triage
+  comments do not authorize changes to protected paths or existing tests.
 - Commit incrementally with `git commit{commit_flag}`. Stage only files you created or
   edited for the ticket; never `git add -A`, and never commit
   `.factory-prompt.md` or gate reports.
@@ -2067,7 +2069,10 @@ def _ticket_line(text: str, name: str) -> str | None:
     return match.group(1).strip() if match else None
 
 
-def gate_flags(sync: dict | None, labels: set[str], body: str = "", handoff: str = "") -> dict:
+def gate_flags(
+    sync: dict | None, labels: set[str], body: str = "", handoff: str = "",
+    comments: list[dict] | None = None,
+) -> dict:
     """`run_gate` keywords for a ticket, including bug-test evidence declarations."""
     flags = {"protected_override": LABEL_PROTECTED_OVERRIDE in labels}
     if LABEL_ADD_ONLY_OVERRIDE in labels:
@@ -2078,6 +2083,16 @@ def gate_flags(sync: dict | None, labels: set[str], body: str = "", handoff: str
             flags["test_override"] = True
         flags["bug"] = True
         no_repro = _ticket_line(body, "No repro test")
+        if not no_repro:
+            from factory import triage
+
+            for comment in reversed(comments or []):
+                text = comment.get("body") or ""
+                author = (comment.get("author") or {}).get("login") or ""
+                reason = _ticket_line(text, "No repro test") if text.startswith("Triage: ") else None
+                if reason and author and author.casefold() == triage.login().casefold():
+                    no_repro = reason
+                    break
         repro = _ticket_line(handoff, "Repro test")
         if no_repro:
             flags["no_repro_test"] = no_repro
@@ -2602,13 +2617,14 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         ":(exclude).factory-prompt.md", ":(exclude).factory",
     ]
     before_status = run(status_cmd, cwd=wt).stdout.strip()
-    issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels,body"])
+    issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels,body,comments"])
     labels = {label["name"] for label in issue.get("labels", [])}
     handoff = wt / ".factory" / f"handoff-{n}.md"
     ok, report = run_gate(
         wt, n, **gate_flags(
             sync_event(n), labels, issue.get("body") or "",
             handoff.read_text() if handoff.exists() else "",
+            comments=issue.get("comments"),
         )
     )
     actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
@@ -3012,6 +3028,7 @@ def worker_round(
     deadline: float,
     body: str = "",
     selected_worker: str | None = None,
+    comments: list[dict] | None = None,
 ) -> tuple[bool, str, Path, str]:
     """One worker + gate cycle, bound to one immutable head."""
     from factory import results
@@ -3081,6 +3098,7 @@ def worker_round(
     ok, report = run_gate(
         wt, n, **gate_flags(
             sync, labels, body, handoff_path.read_text() if handoff_path.exists() else "",
+            comments=comments,
         )
     )
     actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
@@ -3332,7 +3350,8 @@ def process_ticket(
                 report, gate_head = staged
             for attempt in range(1, MAX_ATTEMPTS + 1 if staged is None else 1):
                 ok, report, logfile, gate_head = worker_round(
-                    n, wt, labels, title, extra, attempt, deadline, body=fresh.get("body") or ""
+                    n, wt, labels, title, extra, attempt, deadline, body=fresh.get("body") or "",
+                    comments=fresh.get("comments"),
                 )
                 if ok:
                     break
@@ -3414,6 +3433,7 @@ def process_ticket(
                 ok, report, logfile, gate_head = worker_round(
                     n, wt, labels, title, extra, MAX_ATTEMPTS + bounce, deadline,
                     body=fresh.get("body") or "",
+                    comments=fresh.get("comments"),
                 )
                 if "- protected-paths: FAIL" in report or "- protected-tests: FAIL" in report:
                     tests = "- protected-tests: FAIL" in report or "- protected-paths: FAIL (add-only" in report
