@@ -247,11 +247,24 @@ def _python_tests(path: str, source: str) -> dict[str, dict]:
     module = path.removesuffix(".py").replace("/", ".")
     found = {}
 
+    def is_pytestmark(node: ast.stmt) -> bool:
+        targets = (
+            node.targets if isinstance(node, ast.Assign)
+            else [node.target] if isinstance(node, (ast.AnnAssign, ast.AugAssign))
+            else []
+        )
+        return any(isinstance(target, ast.Name) and target.id == "pytestmark" for target in targets)
+
     def visit(
         nodes: list[ast.stmt],
         parents: tuple[str, ...] = (),
-        class_decorators: str = "",
+        enclosing_source: str = "",
     ) -> None:
+        scope_source = enclosing_source + "".join(
+            "".join(lines[node.lineno - 1:node.end_lineno])
+            for node in nodes
+            if is_pytestmark(node)
+        )
         for node in nodes:
             if isinstance(node, ast.ClassDef):
                 start = min(
@@ -260,7 +273,7 @@ def _python_tests(path: str, source: str) -> dict[str, dict]:
                 visit(
                     node.body,
                     (*parents, node.name),
-                    class_decorators + "".join(lines[start - 1:node.lineno - 1]),
+                    scope_source + "".join(lines[start - 1:node.lineno - 1]),
                 )
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test"):
                 start = min(
@@ -268,7 +281,7 @@ def _python_tests(path: str, source: str) -> dict[str, dict]:
                 )
                 qualified = ".".join((*parents, node.name))
                 found[f"python:{path}:{qualified}"] = {
-                    "source": class_decorators + "".join(lines[start - 1:node.end_lineno]),
+                    "source": scope_source + "".join(lines[start - 1:node.end_lineno]),
                     "aliases": {
                         f"{module}.{qualified}",
                         f"{path}::{'::'.join((*parents, node.name))}",
@@ -287,6 +300,11 @@ _RUST_TEST = re.compile(
     r"^[ \t]*(?:(?:pub(?:\([^)]*\))?)[ \t]+)?(?:async[ \t]+)?fn[ \t]+"
     r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
 )
+_RUST_MOD = re.compile(
+    r"(?m)(?P<attrs>(?:^[ \t]*#\[[^\n]+\][ \t]*\n)*)"
+    r"^[ \t]*(?:(?:pub(?:\([^)]*\))?)[ \t]+)?mod[ \t]+"
+    r"[A-Za-z_][A-Za-z0-9_]*[ \t]*\{"
+)
 _RUST_MASK = re.compile(
     r"//[^\n]*|/\*.*?\*/|r(?P<hashes>#+)?\".*?\"(?P=hashes)|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'",
     re.DOTALL,
@@ -295,29 +313,45 @@ _RUST_MASK = re.compile(
 
 def _rust_tests(path: str, source: str) -> dict[str, dict]:
     masked = _RUST_MASK.sub(lambda match: re.sub(r"[^\n]", " ", match.group()), source)
-    found, occurrences = {}, {}
-    for match in _RUST_TEST.finditer(source):
-        if not re.search(r"#\[(?:[A-Za-z_][A-Za-z0-9_]*::)*test(?:\([^]]*\))?\]", match["attrs"]):
-            continue
-        brace = masked.find("{", match.end("name"))
-        if brace < 0:
-            continue
-        depth, end = 0, None
+
+    def block_end(brace: int) -> int | None:
+        depth = 0
         for index in range(brace, len(masked)):
             if masked[index] == "{":
                 depth += 1
             elif masked[index] == "}":
                 depth -= 1
                 if depth == 0:
-                    end = index + 1
-                    break
+                    return index + 1
+        return None
+
+    modules = []
+    for module in _RUST_MOD.finditer(masked):
+        end = block_end(module.end() - 1)
+        if end is not None:
+            modules.append((
+                module.end() - 1,
+                end,
+                source[module.start("attrs"):module.end("attrs")],
+            ))
+
+    found, occurrences = {}, {}
+    for match in _RUST_TEST.finditer(source):
+        if not re.search(r"#\[(?:[A-Za-z_][A-Za-z0-9_]*::)*test(?:\([^]]*\))?\]", match["attrs"]):
+            continue
+        brace = masked.find("{", match.end("name"))
+        end = block_end(brace) if brace >= 0 else None
         if end is None:
             continue
         name = match["name"]
         occurrence = occurrences.get(name, 0)
         occurrences[name] = occurrence + 1
+        enclosing = "".join(
+            attrs for start, stop, attrs in modules
+            if start < match.start() < stop
+        )
         found[f"rust:{path}:{name}:{occurrence}"] = {
-            "source": source[match.start():end],
+            "source": enclosing + source[match.start():end],
             "aliases": {name},
             "language": "rust",
             "display": f"{path}:{name}",
@@ -442,7 +476,7 @@ def check_bug_reproduction(
     if error:
         return [("bug-repro", "FAIL", error)]
     added = [
-        record for key, record in with_test.items()
+        (key, record) for key, record in with_test.items()
         if key not in before and _matches_test_id(test_id, record)
     ]
     if not added:
@@ -451,7 +485,8 @@ def check_bug_reproduction(
             "FAIL",
             f"first bug-ticket commit does not add declared reproduction test `{test_id}`",
         )]
-    command = _repro_command(test_id, added[0])
+    test_key, test_record = added[0]
+    command = _repro_command(test_id, test_record)
     reproduced, ran = _run_at(test_commit, command)
     if not ran or reproduced.returncode == 124:
         return [(
@@ -465,9 +500,30 @@ def check_bug_reproduction(
             "FAIL",
             "test does not reproduce the bug: it passes at the test commit",
         )]
+    results = [(
+        "bug-repro-before",
+        "EXPECTED FAIL",
+        reproduced.stdout + reproduced.stderr,
+    )]
+    head, error = _tests_at("HEAD")
+    if error:
+        return [*results, ("bug-repro-head", "FAIL", error)]
+    head_record = head.get(test_key)
+    if head_record is None or not _matches_test_id(test_id, head_record):
+        return [*results, (
+            "bug-repro-head",
+            "FAIL",
+            f"declared reproduction test `{test_id}` is missing at HEAD",
+        )]
+    if head_record["source"] != test_record["source"]:
+        return [*results, (
+            "bug-repro-head",
+            "FAIL",
+            f"declared reproduction test changed at HEAD: `{test_id}`",
+        )]
     fixed = timed(command, cwd=Path.cwd(), pythonpath=Path.cwd())
     return [
-        ("bug-repro-before", "EXPECTED FAIL", reproduced.stdout + reproduced.stderr),
+        *results,
         (
             "bug-repro-head",
             "PASS" if fixed.returncode == 0 else "FAIL",

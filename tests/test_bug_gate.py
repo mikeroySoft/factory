@@ -349,5 +349,94 @@ class BugGateDispatchTest(unittest.TestCase):
         )
 
 
+class ReviewerRegressionGateTest(unittest.TestCase):
+    def test_skipped_reproduction_test_fails_at_head(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repository(Path(directory))
+            add_repro(repo)
+            (repo / "tests" / "test_regression.py").write_text(
+                "import unittest\n\n"
+                "from value import value\n\n"
+                "class RegressionTest(unittest.TestCase):\n"
+                "    @unittest.skip(\"hide failure\")\n"
+                "    def test_value(self):\n"
+                "        self.assertTrue(value())\n"
+            )
+            commit(repo, "skip reproduction instead of fixing bug")
+
+            code, report = run_gate(repo, "--bug", "--repro-test", TEST_ID)
+
+            self.assertEqual(code, 1, report)
+            self.assertIn("- bug-repro-before: EXPECTED FAIL", report)
+            self.assertIn("- bug-repro-head: FAIL", report)
+            self.assertIn("reproduction test changed at HEAD", report)
+
+    def test_enclosing_pytestmark_and_rust_cfg_fail(self) -> None:
+        cases = {
+            "module pytestmark": (
+                "tests/test_existing.py",
+                (
+                    "import unittest\n"
+                    "import pytest\n\n"
+                    "pytestmark = pytest.mark.skip(reason=\"hide module\")\n\n"
+                    "class ExistingTest(unittest.TestCase):\n"
+                    "    def test_existing(self):\n"
+                    "        self.assertTrue(True)\n"
+                ),
+            ),
+            "class pytestmark": (
+                "tests/test_existing.py",
+                (
+                    "import unittest\n"
+                    "import pytest\n\n"
+                    "class ExistingTest(unittest.TestCase):\n"
+                    "    pytestmark = pytest.mark.xfail(reason=\"hide class\")\n\n"
+                    "    def test_existing(self):\n"
+                    "        self.assertTrue(True)\n"
+                ),
+            ),
+            "rust module cfg": (
+                "src/lib.rs",
+                (
+                    "#[cfg(any())]\n"
+                    "mod tests {\n"
+                    "    #[test]\n"
+                    "    fn existing_rust_test() {\n"
+                    "        assert!(true);\n"
+                    "    }\n"
+                    "}\n"
+                ),
+            ),
+        }
+        for name, (path, source) in cases.items():
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as directory:
+                repo = repository(Path(directory))
+                (repo / path).write_text(source)
+                commit(repo, name)
+
+                code, report = run_gate(
+                    repo, "--bug", "--no-repro-test", "existing-test protection fixture"
+                )
+
+                self.assertEqual(code, 1, report)
+                self.assertIn("- protected-tests: FAIL", report)
+
+
+
+    def test_deleted_reproduction_test_fails_as_missing_at_head(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repository(Path(directory))
+            add_repro(repo)
+            (repo / "tests" / "test_regression.py").unlink()
+            commit(repo, "delete reproduction instead of fixing bug")
+
+            code, report = run_gate(repo, "--bug", "--repro-test", TEST_ID)
+
+            self.assertEqual(code, 1, report)
+            self.assertIn("- bug-repro-before: EXPECTED FAIL", report)
+            self.assertIn("- bug-repro-head: FAIL", report)
+            self.assertIn("is missing at HEAD", report)
+
+
 if __name__ == "__main__":
     unittest.main()
