@@ -503,19 +503,27 @@ def check_bug_reproduction(
     before, error = _tests_at(base)
     if error:
         return [("bug-repro", "FAIL", error)]
-    test_commit = revisions[0]
-    with_test, error = _tests_at(test_commit)
-    if error:
-        return [("bug-repro", "FAIL", error)]
-    added = [
-        (key, record) for key, record in with_test.items()
-        if key not in before and _matches_test_id(test_id, record)
-    ]
-    if not added:
+    for test_commit in revisions:
+        with_test, error = _tests_at(test_commit)
+        if error:
+            return [("bug-repro", "FAIL", error)]
+        added = [
+            (key, record) for key, record in with_test.items()
+            if key not in before and _matches_test_id(test_id, record)
+        ]
+        if added:
+            break
+    else:
         return [(
             "bug-repro",
             "FAIL",
-            f"first bug-ticket commit does not add declared reproduction test `{test_id}`",
+            f"no bug-ticket commit adds declared reproduction test `{test_id}`",
+        )]
+    if test_commit == revisions[-1]:
+        return [(
+            "bug-repro",
+            "FAIL",
+            "bug ticket needs a test commit followed by a separate fix commit",
         )]
     test_key, test_record = added[0]
     command, exclusive = _repro_command(test_id, test_record)

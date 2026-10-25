@@ -762,10 +762,13 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `factory-protected-override: <reason>` bypasses only function protection on
    bug tickets. An `upstream sync:` ticket's worker otherwise gets no
    override, only upstream-authored content is exempt (`--upstream`, above).
-   A bug worker must make the first branch commit add the reproducing test, make
-   the fix in a later commit, and put `Repro test: <test ID>` in its handoff.
-   The dispatcher runs that test at the test commit (it must fail) and at HEAD
-   (it must pass); both results are written to the gate report and the gate
+   A bug worker must add the reproducing test in its own commit before the fix
+   and put `Repro test: <test ID>` in its handoff. The test may be added during
+   a later retry, review bounce, or manager FIX, not just the first branch commit.
+   The dispatcher finds the earliest first-parent commit after base that adds
+   the declared test and requires a subsequent commit. It runs the test at its
+   introduction commit (it must fail) and at HEAD (it must pass);
+   both results are written to the gate report and the gate
    decision trace. A `No repro test: <reason>` line in the ticket body or an
    authenticated triage account's `Triage:` comment records the nonempty reason
    and skips only this fail-before/pass-after check. Other commenters and worker
