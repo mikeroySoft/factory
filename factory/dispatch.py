@@ -2595,7 +2595,8 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         gate_head=head, actual_head=head, clean=True,
     )
     verdict, findings = review(wt, n, report, head)
-    unavailable = _PENDING_REVIEWS.get(n, {}).get("verdict") is None
+    pending = _PENDING_REVIEWS.get(n)
+    unavailable = pending is not None and pending.get("verdict") is None
     pr_comment(n, findings)
     if unavailable:
         withdraw(
