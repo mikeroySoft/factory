@@ -503,6 +503,36 @@ VERDICT: REVISE
             self.assertIn("token budget", result["reason"])
 
 
+    def test_rejected_no_manager_lessons_record_skip_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = config.Config(root=root, repo="acme/widgets", learn_evaluate=True)
+            cfg.factory.mkdir()
+            dispatch.configure(cfg)
+            evaluation = {
+                "candidate": "lessons",
+                "status": "rejected",
+                "reason": "variant regressed",
+                "tickets": [7],
+                "cost": {"tokens": 20, "seconds": 2.0},
+            }
+
+            with mock.patch.object(learn, "evidence", return_value=([7], "incident")), \
+                 mock.patch.object(learn, "propose", return_value=(["harmful"], "")), \
+                 mock.patch.object(learn, "replay_cases", return_value=[]), \
+                 mock.patch.object(
+                     learn, "evaluate_candidates", return_value={"lessons": evaluation},
+                 ):
+                learn.run(cfg, evaluate=True)
+
+            self.assertFalse((root / learn.LESSONS_NAME).exists())
+            [decision] = [
+                row for row in lifecycle.read_events(cfg.factory / "events.jsonl")
+                if row.get("event") == "decision" and row.get("stage") == "learn"
+            ]
+            self.assertEqual(decision["chosen"], "skip")
+
+
 
 if __name__ == "__main__":
     unittest.main()

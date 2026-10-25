@@ -674,7 +674,10 @@ def record_learn_decision(
 ) -> str:
     from factory import __version__, trace
 
-    proposed = bool(branch) if cfg.manager else bool(lessons)
+    proposed = (
+        bool(branch) if cfg.manager else
+        bool(lessons) and (not evaluations or evaluations.get("lessons", {}).get("status") == "kept")
+    )
     review_input = _candidate_review_input(review_branch)
     inputs = [
         {
