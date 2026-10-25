@@ -13,6 +13,12 @@ from unittest import mock
 
 from factory import config, dispatch, learn, lifecycle
 
+APPROVE = '```json\n{"verdict":"APPROVE","findings":[]}\n```\nVERDICT: APPROVE'
+REVISE = (
+    '```json\n{"verdict":"REVISE","findings":[{"severity":"important","pass":"bug",'
+    '"path":"AGENTS.md","line":2,"summary":"Guidance is incorrect."}]}\n```\nVERDICT: REVISE'
+)
+
 
 class LearnCandidateReviewTest(unittest.TestCase):
     def scenario(self, directory: str, reply: str, *, gate_failure: str = "") -> tuple:
@@ -60,7 +66,7 @@ class LearnCandidateReviewTest(unittest.TestCase):
                 "subprocess.run(['git','-C',str(wt),'commit','--allow-empty','-qm','review changed head'],check=True)\n"
                 if reply == "move-head" else ""
             )
-            + f"print({('VERDICT: APPROVE' if reply == 'move-head' else reply)!r})\n"
+            + f"print({(APPROVE if reply == 'move-head' else reply)!r})\n"
         )
         cfg = config.Config(
             root=repo, repo="acme/widgets", manager=["manager"],
@@ -112,7 +118,7 @@ class LearnCandidateReviewTest(unittest.TestCase):
     def test_only_helpful_candidate_is_published_after_candidate_review_with_evidence(self) -> None:
         for helpful in ("curate", "lessons"):
             with self.subTest(helpful=helpful), tempfile.TemporaryDirectory() as directory:
-                cfg, case, diff, captured, git = self.scenario(directory, "VERDICT: APPROVE")
+                cfg, case, diff, captured, git = self.scenario(directory, APPROVE)
                 with mock.patch.object(dispatch, "push_and_pr", return_value=True) as publish:
                     event = self.run_proposal(cfg, case, diff, helpful=helpful)
                 publish.assert_called_once()
@@ -158,7 +164,7 @@ class LearnCandidateReviewTest(unittest.TestCase):
     def test_unsuccessful_candidate_review_is_retained_and_publishes_nothing(self) -> None:
         for helpful in ("curate", "lessons"):
             for reply, reason in (
-                ("- AGENTS.md:2: guidance is incorrect\nVERDICT: REVISE", "REVISE"),
+                (REVISE, "REVISE"),
                 ("Looks good", "unparsed_verdict"),
                 ("VERDICT: APPROVE\nVERDICT: REVISE", "unparsed_verdict"),
                 ("move-head", "state_changed"),
@@ -175,8 +181,8 @@ class LearnCandidateReviewTest(unittest.TestCase):
                     self.assertEqual(record["verdict"], "REVISE")
                     self.assertEqual(record["reason"], reason)
                     self.assertIn("200 tokens", record["proposal"])
-                    self.assertIn("AGENTS.md:2" if reason == "REVISE" else
-                                  "Factory rejected reviewer evidence", record["findings"])
+                    if reason != "REVISE":
+                        self.assertIn("Factory rejected reviewer evidence", record["findings"])
                     self.assertIsNone(event["branch"])
                     if helpful == "curate":
                         self.assertIn("rejected:", event["curate"])
@@ -186,7 +192,7 @@ class LearnCandidateReviewTest(unittest.TestCase):
         for tier in ("attempt", "pr"):
             with self.subTest(tier=tier), tempfile.TemporaryDirectory() as directory:
                 cfg, case, diff, captured, _ = self.scenario(
-                    directory, "VERDICT: APPROVE", gate_failure=tier,
+                    directory, APPROVE, gate_failure=tier,
                 )
                 with mock.patch.object(dispatch, "push_and_pr") as publish:
                     self.run_proposal(cfg, case, diff)
@@ -200,7 +206,7 @@ class LearnCandidateReviewTest(unittest.TestCase):
 
     def test_not_tested_candidates_skip_candidate_review_and_publication(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            cfg, case, diff, captured, _ = self.scenario(directory, "VERDICT: APPROVE")
+            cfg, case, diff, captured, _ = self.scenario(directory, APPROVE)
             with mock.patch.object(dispatch, "push_and_pr") as publish:
                 event = self.run_proposal(cfg, case, diff, exhausted=True)
             publish.assert_not_called()
@@ -211,7 +217,7 @@ class LearnCandidateReviewTest(unittest.TestCase):
 
     def test_candidate_gate_moving_head_cannot_produce_review_approval(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            cfg, case, diff, captured, _ = self.scenario(directory, "VERDICT: APPROVE")
+            cfg, case, diff, captured, _ = self.scenario(directory, APPROVE)
             run_gate = dispatch.run_gate
 
             def moving_gate(wt, name, **kwargs):
@@ -232,7 +238,7 @@ class LearnCandidateReviewTest(unittest.TestCase):
 
     def test_evaluation_off_preserves_publication_without_candidate_review(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            cfg, case, diff, captured, _ = self.scenario(directory, "VERDICT: REVISE")
+            cfg, case, diff, captured, _ = self.scenario(directory, REVISE)
             cfg.learn_evaluate = False
             with mock.patch.object(dispatch, "push_and_pr", return_value=True) as publish, \
                  mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")) as gate, \

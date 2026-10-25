@@ -257,8 +257,11 @@ class LearnEvaluationTest(unittest.TestCase):
                 "prompt=__import__('sys').argv[-1]\n"
                 "with Path(os.environ['REVIEW_PROMPTS']).open('a') as f: f.write(prompt+'\\0')\n"
                 "value=Path('snapshot/solution.txt').read_text().strip()\n"
-                "text=('- solution.txt:1: baseline needs revision\\nVERDICT: REVISE' "
-                "if value == 'baseline' else 'VERDICT: APPROVE')\n"
+                "revised='```json\\n{\"verdict\":\"REVISE\",\"findings\":[{\"severity\":\"important\","
+                "\"pass\":\"bug\",\"path\":\"solution.txt\",\"line\":1,"
+                "\"summary\":\"Baseline needs revision.\"}]}\\n```\\nVERDICT: REVISE'\n"
+                "approved='```json\\n{\"verdict\":\"APPROVE\",\"findings\":[]}\\n```\\nVERDICT: APPROVE'\n"
+                "text=revised if value == 'baseline' else approved\n"
                 "print(json.dumps({'type':'message_end','message':{'role':'assistant','content':text,"
                 "'model':'fixture','usage':{'input':5,'output':5}}}))\n"
             )
