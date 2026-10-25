@@ -1,0 +1,12 @@
+```json
+{"verdict":"REVISE","findings":[
+{"severity":"important","pass":"bug","path":"factory/manage.py","line":272,"summary":"Recording a second `escalate` event (reason=manager_failed) for an already-escalated ticket double-counts it in `factory stats`: stats.py:167-171 counts every `escalate` row into `escalation_count`/`escalation_times`, and human_touch_metrics (stats.py:185) derives `escalations_per_week` from those times. Trigger: any nonzero manager exit on round 1 → one escalation reports as two. Issue #62 asked for the event 'so `factory stats` can count it' (a manager-failure count); the diff adds no such count and corrupts the existing escalation metric instead. Fix: exclude `reason == \"manager_failed\"` in stats.py like dispatch.py:376 does, or record a distinct event name."},
+{"severity":"nit","pass":"bug","path":"factory/manage.py","line":272,"summary":"`dispatch.record(\"escalate\", …)` runs inside the `manage` lifecycle scope; dispatch.py:245-248 then flips that execution's outcome to `project_escalation` with reason `manager_failed`, which is not in runtime_events.REASONS (runtime_events.py:34) and nulls out in runtime views. Side effect of reusing the `escalate` event name for a manager failure."},
+{"severity":"nit","pass":"spec","path":"factory/manage.py","line":278,"summary":"ConfigError path posts HUMAN and records a `manage` row for the round but no `manager_failed` event, so a bare-`{prompt}` omp config is invisible to stats and the round is consumed: fixing the config does not re-run the diagnosis for that escalation. Spec only mandates the event for nonzero exit; noting the gap."},
+{"severity":"nit","pass":"spec","path":"factory/templates/factory.toml","line":44,"summary":"ci-fix/conflict example commands were rewritten from `\"Read the ticket prompt at {prompt}. …\"` (valid under the path contract, carried profile-specific instructions) to `@{prompt}`, making both identical to `default`. `when` text is only shown to the manager (manage.py:252), not the worker, so the examples lost their payload. Not requested by #62."}
+]}
+```
+
+Plan drift: no plan recorded. Beyond the issue's Touches list the diff edits `factory/dispatch.py` (round arithmetic must ignore `manager_failed`) and `factory/learn.py` (`manager_cmd` signature change); both are required consequences, not defects. Doctor row lands in `factory/onboard.py` (no `doctor.py` exists). Exit-gate manual proof (District #26 packet replay with a real DECISION) is absent from the gate report; handoff only cites a prior attempt's log.
+
+VERDICT: REVISE

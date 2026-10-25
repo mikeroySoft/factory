@@ -1,0 +1,11 @@
+```json
+{"verdict":"APPROVE","findings":[{"severity":"nit","pass":"bug","path":"factory/dashboard.py","line":853,"summary":"`current.get(\"reason\")` is dead: dispatch.py:363 records `review-result` rows with `findings`, never `reason`, so `reason` is only ever the escalation reason; the `review_pending && pr.reason` inbox branch in dashboard.html:1162 is unreachable (escalations always classify as `escalated`)."},{"severity":"nit","pass":"spec","path":"factory/dashboard.py","line":839,"summary":"Re-derives CI/ready state from `checks` buckets, duplicating dispatch.review_readiness (dispatch.py:300-310) which already stores `state`; results agree today (ready still gated on `readiness.state == \"ready\"`), but two classifiers for one evidence row can drift. Optional: use the recorded `state` for the approved branch."},{"severity":"nit","pass":"spec","path":"README.md","line":353,"summary":"CHANGELOG.md `## Unreleased` not updated for a new dashboard snapshot field (`review_queue`) and panel; no documented rule requires it and sibling commits agent/6–8 also skipped it, so not blocking."}]}
+```
+
+Standards: no AGENTS.md/CONTRIBUTING.md in repo; README/issue-template conventions (read-only dashboard, evidence from `review-readiness` events, no mutation controls) are honoured — queue and inbox branch add only GitHub links (dashboard.html:1134, 1551), test asserts `events.jsonl` unchanged across `snapshot()` (test_factory.py:2821).
+
+Spec: all six states classified and asserted (test_factory.py:2824-2826); PR URL, head, author, title, SHA-specific `review_head`/`verdict`/`ci_state` asserted (2827-2837); admission mirrors dispatch.py:211-223 (label, viewer review request, prior verdict); stale approval on a new head surfaces in Inbox, which matches dispatch.py:234-236 never re-reviewing an approved PR.
+
+Plan drift: plan not recorded, so no plan-named file set to compare; changed files equal the issue's Touches list exactly. Gate report covers `test: PASS`; the issue's manual "running `factory dashboard` displays the queue" check has no recorded proof, but the test exercises `snapshot()` end to end and all HTML references (`fmt`, `h` style objects, `.empty`, `.briefing-option`, `S.q`) resolve in the snapshot.
+
+VERDICT: APPROVE

@@ -35,13 +35,15 @@ from run_calibration import CASES as CORPUS
 from run_calibration import checkout
 
 EXP = pathlib.Path(__file__).parent
-REPO = "/home/mike/dev/mikeroysoft/factory"
+REPO = str(EXP.parents[1])
 CONTRACTS = {"baseline": "cadb9981524ab5506693e27f56ff8ac4ef911da6",
              "landed": "29d21d625bd92b9f3aa6d8ac0c8da1386233f284",
              # #237: the deployed contract at the time of the claim, and that contract plus
              # one appended cross-file tracing sentence in dispatch.review() (nothing else).
              "current": "4390f481ed6743694d35193049dc0242eb4c7784",
-             "candidate": "70fea0e9cc314916acbe4494e4dc0d0dff21b361"}
+             "candidate": "70fea0e9cc314916acbe4494e4dc0d0dff21b361",
+             "review-baseline": "d57e0587b7021f92324b74e3cbdc524395f9015b",
+             "review-tally": "217edb42965d394d8b5eecd34407f5c06d998b3e"}
 CHECKOUT_ROOT = pathlib.Path("/tmp/cal-checkout")
 
 

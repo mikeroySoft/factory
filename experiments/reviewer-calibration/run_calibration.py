@@ -18,7 +18,7 @@ import threading
 import time
 
 EXP = pathlib.Path(__file__).parent
-REPO = "/home/mike/dev/mikeroysoft/factory"
+REPO = str(EXP.parents[1])
 CHECKOUT_ROOT = pathlib.Path("/tmp/cal-checkout")
 CONTRACTS = {"baseline": "cadb9981524ab5506693e27f56ff8ac4ef911da6",
              "issue36": "1947fc4e3de23e71f64342f2c9cd2570d845db5e"}
@@ -61,8 +61,8 @@ def checkout(commit: str) -> pathlib.Path:
                            check=True, capture_output=True)
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=dest,
                               capture_output=True, text=True, check=False).stdout.strip()
-        if head != commit:
-            subprocess.run(["git", "checkout", "--quiet", "--detach", commit], cwd=dest,
+        if head != commit or not (dest / "factory" / "dispatch.py").is_file():
+            subprocess.run(["git", "checkout", "--quiet", "--force", "--detach", commit], cwd=dest,
                            check=True, capture_output=True)
     return dest
 
