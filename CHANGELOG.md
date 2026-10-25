@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Post-refresh gate failures now get one same-head re-run before handoff. A passing re-run continues push and review with both reports journaled; a repeated failure requeues the open ticket to its existing worker profile on `agent/<n>` with a bounded `gate-requeue` round, both reports, and an explicit note when the failure appears outside the PR diff. Closed tickets, exhausted rounds, and unauthorized protected/add-only failures still escalate immediately with that evidence (#381).
 - Local-model request timeouts (triage and learn scoring) now report `local model request timed out after Ns at <url>` (or `connecting to <url>` for a connect timeout) instead of `cannot reach local model`; real connection failures such as refused or DNS errors keep the `cannot reach` message.
 - Reviewer launch errors, nonzero exits, and unparseable output now retry three times with provider `retry-after` support, retain stderr or structured error events, and escalate persistent failure as `reviewer_unavailable` without consuming review or manager `FIX` rounds. A real `VERDICT: REVISE` keeps the existing bounded worker bounce, while manager `FIX` failures no longer add another escalation to a ticket already on `ready-for-human` (#392).
 

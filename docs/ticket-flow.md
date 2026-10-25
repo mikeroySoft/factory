@@ -104,9 +104,10 @@ flowchart TB
   CI -->|"cancel before any runner: rerun once, wait: dispatch.triage_cancelled"| FA
   CI -->|"rerun still found no runner, approval kept: dispatch.runner_unavailable"| ESC
   CI -->|"pass, behind main, approval removed: dispatch.refresh_pr_branch"| REF
-  REF -->|"dispatch.approve_pr"| FA
+  REF -->|"gate pass, including one passing re-run: dispatch.approve_pr"| FA
   REF -->|"conflict, open ticket, rounds left, no unauthorized protected path: claim released, ready-for-human removed, ready-for-agent added, worker rebases on agent/N: dispatch.refresh_pr_branch"| RFA
-  REF -->|"conflict on a protected path without override, after review_rounds conflict rounds, or ticket not open; gate FAIL, REVISE, or head moved: dispatch.refresh_pr_branch"| ESC
+  REF -->|"gate fails twice, open ticket, gate rounds left, no unauthorized protected/add-only path: reports and diff assessment recorded, claim released to same worker profile on agent/N: dispatch.refresh_pr_branch"| RFA
+  REF -->|"conflict on a protected path without override, exhausted conflict rounds, or ticket not open; protected/add-only gate failure, exhausted gate rounds, closed ticket, REVISE, or head moved: dispatch.refresh_pr_branch"| ESC
   CI -->|"pass, missing SHA-bound approval evidence: dispatch.merge_pass_locked"| ESC
   CI -->|"pass, up to date, no human CHANGES_REQUESTED: dispatch.merge_pass_locked"| MERGE
   MERGE -->|"dispatch.cleanup_after_merge"| MERGED
@@ -166,7 +167,7 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 | `dispatch.escalate` | `ready-for-agent` | `ready-for-human` | Every escalation |
 | `dispatch.merge_pass_locked` | `factory-approved` | — | CI fail, or cancel after steps ran; missing approval evidence |
 | `dispatch.push_and_pr` | — | `*` | Caller's PR label; ticket PRs pass none |
-| `dispatch.refresh_pr_branch` | `factory-approved`, `ready-for-human` | `ready-for-agent` | Behind main: approval withdrawn before refresh; eligible conflict requeues restore agent flow |
+| `dispatch.refresh_pr_branch` | `factory-approved`, `ready-for-human` | `ready-for-agent` | Behind main: approval withdrawn before refresh; eligible conflict and repeated-gate requeues restore agent flow |
 | `dispatch.review_intake_pass` | — | `ready-for-human` | New issue for an unresolved opted-in PR review |
 | `dispatch.sync_issue` | — | `ready-for-agent` | New sync ticket for new upstream commits; its `agent/N` candidate carries the merge and gate evidence |
 | `learn.promote` | — | `factory-approved` | `factory learn` PR (lessons, curate, revert-lessons) with head-bound gate PASS, reviewer APPROVE and green CI, then squash merge (`learn.promote_pass` runs it per PR); lessons/curate merges open a `promotion-open` that `learn.decide_promotions` keeps or reverts |
@@ -208,7 +209,11 @@ event. `{}` is a runtime value.
 | `dispatch.refresh_pr_branch` | ``{} onto moved main conflicts (after {} conflict-resolution round(s)); worktree {}`` | refresh → escalate once `review_rounds` conflict requeues are used up, conflict file list in the packet |
 | `dispatch.refresh_pr_branch` | ``{} onto moved main conflicts (ticket is not open); worktree {}`` | refresh → escalate (ticket is no longer open) |
 | `dispatch.refresh_pr_branch` | ``nothing ahead of {} after {}; refusing to push`` | refresh → escalate |
-| `dispatch.refresh_pr_branch` | ``gate failed after {} onto moved main`` | refresh → escalate |
+| `dispatch.refresh_pr_branch` | ``gate failed after {} onto moved main`` | refresh → escalate when the first gate's head or worktree evidence is invalid |
+| `dispatch.refresh_pr_branch` | ``gate failed after {} onto moved main (protected or add-only paths without authority)`` | refresh → escalate immediately without a re-run when the first report is an unauthorized protected/add-only failure |
+| `dispatch.refresh_pr_branch` | ``gate re-run changed the refreshed head or worktree`` | refresh → escalate when retry evidence is not for the same clean head |
+| `dispatch.refresh_pr_branch` | ``gate failed twice after {} onto moved main (after {} gate-resolution round(s)); worktree {}`` | refresh → escalate after `review_rounds` gate requeues; packet contains both reports and diff assessment |
+| `dispatch.refresh_pr_branch` | ``gate failed twice after {} onto moved main (ticket is not open); worktree {}`` | refresh → escalate instead of requeueing a closed ticket; packet contains both reports and diff assessment |
 | `dispatch.refresh_pr_branch` | ``remote head changed while refreshed evidence was being produced`` | refresh → escalate |
 | `dispatch.refresh_pr_branch` | ``fresh review requested changes after {} onto moved main`` | refresh → escalate |
 | `dispatch.refresh_pr_branch` | ``reviewer unavailable after {} onto moved main`` | refreshed review tooling retries exhausted → escalate (`reviewer_unavailable`) |

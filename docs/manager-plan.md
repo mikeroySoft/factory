@@ -24,7 +24,7 @@ unassigns, and comments. The trigger set is closed:
 | REVISE after `review_rounds` | `process_ticket` | PR comments with `path:line` findings |
 | gate FAIL after review bounce | `process_ticket` | gate report |
 | rebase onto moved main conflicts | `refresh_pr_branch` | worktree kept |
-| gate FAIL after rebase | `refresh_pr_branch` | gate report |
+| repeated gate FAIL after refresh and bounded worker rounds | `refresh_pr_branch` | both gate reports and PR-diff assessment |
 | CI red on approved PR | `merge_pass_locked` | `gh pr checks`; label removed |
 | upstream sync conflict / gate fail | `sync_pass` → `process_ticket` | sync ticket on a staged `agent/N` candidate; ordinary worker/gate escalations |
 
