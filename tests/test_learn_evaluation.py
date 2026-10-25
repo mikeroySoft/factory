@@ -534,5 +534,56 @@ VERDICT: REVISE
 
 
 
+    def test_replay_gate_finishes_after_wall_time_budget_expires(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / "repo"
+            repo.mkdir()
+
+            def git(*args: str) -> str:
+                return subprocess.run(
+                    ["git", *args], cwd=repo, text=True, capture_output=True, check=True,
+                ).stdout.strip()
+
+            git("init", "-q", "-b", "main")
+            git("config", "user.name", "Test")
+            git("config", "user.email", "test@example.com")
+            marker = root / "gate-finished"
+            (repo / "check.py").write_text(
+                "import sys,time\n"
+                "from pathlib import Path\n"
+                "time.sleep(1.25)\n"
+                "Path(sys.argv[1]).write_text('done')\n"
+            )
+            (repo / config.CONFIG_NAME).write_text(
+                '[repo]\nslug = "acme/widgets"\n'
+                '[[gate.check]]\nname = "slow"\nrun = ['
+                + json.dumps(sys.executable) + ', "check.py", '
+                + json.dumps(str(marker)) + ']\n'
+                '[leak_scan]\npattern = ""\n'
+            )
+            git("add", "check.py", config.CONFIG_NAME)
+            git("commit", "-q", "-m", "base")
+            base = git("rev-parse", "HEAD")
+            cfg = config.Config(
+                root=repo,
+                repo="acme/widgets",
+                workers={"default": ["/usr/bin/true"]},
+                signoff=False,
+                max_attempts=1,
+                review_rounds=0,
+            )
+            cfg.factory.mkdir()
+            dispatch.configure(cfg)
+            case = learn.ReplayCase(
+                7, base, "slow gate", (), {"title": "slow gate", "body": "wait for the gate"},
+            )
+
+            result = learn.replay_ticket(cfg, case, None, learn.time.monotonic() + 1)
+
+            self.assertTrue(result["first_gate_pass"])
+            self.assertEqual(marker.read_text(), "done")
+
+
 if __name__ == "__main__":
     unittest.main()
