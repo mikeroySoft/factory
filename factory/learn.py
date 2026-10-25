@@ -15,6 +15,7 @@ import argparse
 import fnmatch
 import json
 import re
+import shlex
 import shutil
 import sys
 import tempfile
@@ -1293,9 +1294,13 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
         and not branch.startswith(REVERT_BRANCH)
         and not eval_suite.merge_allowed(paths, head, events)
     ):
-        command = f"factory eval --profile {cfg.eval_profile}"
+        command = (
+            f"{shlex.quote(sys.executable)} -m factory eval "
+            f"--profile {shlex.quote(cfg.eval_profile)}"
+        )
         baseline = (
-            f"First run `cd {cfg.root} && {command}` to establish the accepted baseline; "
+            f"First run `cd {shlex.quote(str(cfg.root))} && {command}` "
+            "to establish the accepted baseline; "
             if not eval_suite.baseline_ready(cfg) else ""
         )
         dispatch.log(

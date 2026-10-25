@@ -3147,6 +3147,10 @@ def merge_pass_locked(dry_run: bool) -> None:
                 item["path"] for item in fresh.get("files", [])
                 if isinstance(item, dict) and isinstance(item.get("path"), str)
             ]
+            eval_command = (
+                f"{shlex.quote(sys.executable)} -m factory eval "
+                f"--profile {shlex.quote(cfg.eval_profile)}"
+            )
             if dry_run:
                 if behind:
                     log(f"PR #{pr_num}: would refresh (behind main)")
@@ -3157,14 +3161,13 @@ def merge_pass_locked(dry_run: bool) -> None:
                 ):
                     candidate_command = (
                         f"cd {shlex.quote(str(FACTORY / f'wt-{n}'))} && "
-                        f"factory eval --profile {shlex.quote(cfg.eval_profile)}"
+                        f"{eval_command}"
                     )
                     command = candidate_command
                     if not eval_suite.baseline_ready(cfg):
                         command = (
                             f"cd {shlex.quote(str(ROOT))} && "
-                            f"factory eval --profile {shlex.quote(cfg.eval_profile)} && "
-                            f"{candidate_command}"
+                            f"{eval_command} && {candidate_command}"
                         )
                     log(f"PR #{pr_num}: would refuse (worker eval keep claim missing for {head}); run `{command}`")
                 else:
@@ -3217,19 +3220,18 @@ def merge_pass_locked(dry_run: bool) -> None:
             ):
                 candidate_command = (
                     f"cd {shlex.quote(str(FACTORY / f'wt-{n}'))} && "
-                    f"factory eval --profile {shlex.quote(cfg.eval_profile)}"
+                    f"{eval_command}"
                 )
                 command = candidate_command
                 if not eval_suite.baseline_ready(cfg):
                     command = (
                         f"cd {shlex.quote(str(ROOT))} && "
-                        f"factory eval --profile {shlex.quote(cfg.eval_profile)} && "
-                        f"{candidate_command}"
+                        f"{eval_command} && {candidate_command}"
                     )
                 log(f"PR #{pr_num}: worker eval keep claim missing for {head}; run `{command}`; not merging")
                 execution.outcome, execution.reason = "not_eligible", "eval_required"
                 execution.wait(
-                    "eval_required", mode="operator", pr=pr_num, head=head, command=command,
+                    "eval_required", mode="eligibility", pr=pr_num, head=head, command=command,
                 )
                 continue
             approved = _head_evidence_matches(events, n, head) and any(

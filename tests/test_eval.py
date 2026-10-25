@@ -195,6 +195,10 @@ class EvalSuiteTest(unittest.TestCase):
                  mock.patch.object(dispatch, "log") as log:
                 learn.promote(cfg, pr, events, dry_run=True)
                 self.assertIn("waiting for worker eval keep", log.call_args.args[0])
+                self.assertIn(
+                    f"{learn.shlex.quote(learn.sys.executable)} -m factory eval",
+                    log.call_args.args[0],
+                )
                 events.append({
                     "event": "eval-summary", "candidate": head,
                     "status": "completed", "verdict": "keep",
@@ -382,6 +386,67 @@ class EvalSuiteTest(unittest.TestCase):
             message = "\n".join(call.args[0] for call in log.call_args_list)
             self.assertIn("factory eval --profile prime", message)
             self.assertIn(str(cfg.factory / "wt-7"), message)
+
+    def test_merge_eval_gate_real_path_journals_wait_and_runs_candidate_checkout(self) -> None:
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = self.cfg(
+                Path(directory), eval_profile="prime", eval_schedule=True,
+            )
+            dispatch.configure(cfg)
+            head = "a" * 40
+            pr = {
+                "number": 42, "headRefName": "agent/7", "headRefOid": head,
+                "baseRefName": "main", "isDraft": False,
+                "labels": [{"name": dispatch.FACTORY_APPROVED}],
+                "reviewDecision": "APPROVED", "state": "OPEN", "title": "eval change",
+                "files": [{"path": "factory/dispatch.py"}],
+            }
+            lifecycle.append(cfg.factory / "events.jsonl", {
+                "event": "eval-summary", "profile": "prime", "manifest_version": 1,
+                "status": "baseline", "verdict": None, "splits": {},
+                "candidate": "b" * 40, "accepted": True,
+            })
+            checkout = cfg.factory / "wt-7"
+            package = checkout / "factory"
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text("")
+            (package / "__main__.py").write_text(
+                "import json, pathlib, sys\n"
+                "pathlib.Path('observed.json').write_text(json.dumps(sys.argv[1:]))\n"
+            )
+
+            def github(args):
+                if args[:2] == ["pr", "list"]:
+                    return [pr]
+                if args[:2] == ["pr", "view"]:
+                    return pr
+                if args[0] == "api":
+                    return {"behind_by": 0}
+                raise AssertionError(args)
+
+            with mock.patch.object(dispatch, "gh_json", side_effect=github), \
+                 mock.patch.object(dispatch, "pr_checks", return_value=[{"name": "ci", "bucket": "pass"}]), \
+                 mock.patch.object(dispatch, "initiative_kind", return_value=None), \
+                 mock.patch.object(dispatch, "run"):
+                dispatch.merge_pass_locked(False)
+
+            waits = [
+                row for row in lifecycle.read_events(cfg.factory / "events.jsonl")
+                if row.get("event") == "lifecycle" and row.get("kind") == "wait"
+            ]
+            self.assertEqual(waits[-1]["wait"]["mode"], "eligibility")
+            command = waits[-1]["wait"]["details"]["command"]
+            result = subprocess.run(
+                command, shell=True, cwd=cfg.root, text=True, capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(
+                json.loads((checkout / "observed.json").read_text()),
+                ["eval", "--profile", "prime"],
+            )
 
     def test_checked_in_factory_cases_pin_the_gate_validated_agents_map(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
