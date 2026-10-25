@@ -388,6 +388,32 @@ projection. `factory doctor` reports the timestamps (`never` until a stage has
 succeeded); an unreadable or malformed projection is a warning, not a silently
 missing metric.
 
+`factory init` writes `factory-bands.toml`, the committed schema-1 control-band
+configuration used by `factory watch`. Each `[[band]]` selects one daily metric,
+its trailing `window_days`, and explicit rules. A `sigma` rule supplies
+`sigma`, `count`, and `span`; a `same_side` rule supplies `count` and `span`.
+Every rule declares a `tier`: `log` writes only the watch log and journal,
+`diagnose` additionally asks the configured local model for a read-only summary,
+and `act` uses the existing fingerprinted watch issue filing and closure path.
+Act never opens a PR and writes only `bug,needs-triage` issues, comments, edits,
+or closures in `[watch].engine_repo`.
+
+The daily metrics are gate failures divided by gate outcomes; failed gate-check
+and failed-test counts keyed by check or canonical test ID; escalated tickets
+divided by merged-or-escalated tickets; mean hours from the first `claimed` row
+to `merged`; and mean review rounds after the first review per terminal ticket.
+Calendar days without matching rows are zero after the journal's first dated
+row. No rule runs until that first row predates the full configured window;
+`factory doctor` reports `insufficient baseline` meanwhile. The built-in
+configuration uses a trailing 28-day mean and population standard deviation for
+one of one beyond 3 sigma, two of three beyond 2 sigma, and eight of eight on one
+side of the mean.
+
+Gate-check result rows now carry `failed_tests` parsed from unittest `FAIL:` /
+`ERROR:` summaries and pytest `FAILED` summaries, plus `changed_paths` when at
+least one test ID was parsed. Earlier journal rows named only the failed check
+and pass/fail result; they did not contain a structured, parseable test ID.
+
 
 `factory watch` also closes an open, unassigned issue it opened, still at `needs-triage`
 or `ready-for-agent` (never one handed to a human), as completed when its

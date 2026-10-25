@@ -21,8 +21,9 @@ import shlex
 import subprocess
 import sys
 from contextlib import nullcontext
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from statistics import mean, pstdev
 
 from factory import config, dispatch, lifecycle, runtime_events
 
@@ -212,8 +213,264 @@ def repeated_escalations(events: list[dict]) -> dict[str, list[dict]]:
     return {code: rows for code, rows in by_code.items()
             if len({r.get("ticket") for r in rows}) >= REPEAT_MIN}
 
+def _day(row: dict) -> date | None:
+    try:
+        return datetime.fromisoformat(str(row["at"])).date()
+    except (KeyError, TypeError, ValueError):
+        return None
 
-def signals(cfg: config.Config, events: list[dict]) -> list[dict]:
+
+def _days(start: date, end: date) -> list[date]:
+    return [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
+
+
+def metric_series(events: list[dict], start: date, end: date) -> dict[str, dict[str, dict]]:
+    """Configured watch inputs as daily values plus the rows supporting each point."""
+    days = _days(start, end)
+    names = {
+        "gate_failure_rate",
+        "ready_for_human_rate",
+        "claim_to_merge_hours",
+        "rework_rounds",
+    }
+    failed = [
+        row for row in events
+        if row.get("event") == "lifecycle" and row.get("kind") == "result"
+        and row.get("stage") == "gate-check" and row.get("passed") is False
+        and isinstance(row.get("check"), str)
+    ]
+    names.update(f"gate_failures_by_check:{row['check']}" for row in failed)
+    names.update(
+        f"gate_failures_by_test:{test}"
+        for row in failed for test in row.get("failed_tests", [])
+        if isinstance(test, str) and test
+    )
+    by_day: dict[date, list[dict]] = {}
+    for row in events:
+        parsed = _day(row)
+        if parsed is not None and start <= parsed <= end:
+            by_day.setdefault(parsed, []).append(row)
+    series = {
+        name: {day.isoformat(): {"value": 0.0, "rows": []} for day in days}
+        for name in names
+    }
+    claims: dict[object, dict] = {}
+    reviews: dict[object, list[dict]] = {}
+    for row in events:
+        ticket = row.get("ticket")
+        if row.get("event") == "claimed" and ticket is not None and _day(row) is not None:
+            previous = claims.get(ticket)
+            if previous is None or str(row["at"]) < str(previous["at"]):
+                claims[ticket] = row
+        elif row.get("event") == "review" and ticket is not None and _day(row) is not None:
+            reviews.setdefault(ticket, []).append(row)
+
+    for day in days:
+        key = day.isoformat()
+        today = by_day.get(day, [])
+        attempts = [row for row in today if row.get("event") == "attempt" and row.get("gate") in {"PASS", "FAIL"}]
+        if attempts:
+            series["gate_failure_rate"][key] = {
+                "value": sum(row["gate"] == "FAIL" for row in attempts) / len(attempts),
+                "rows": attempts,
+            }
+        terminal = [
+            row for row in today
+            if row.get("ticket") is not None and row.get("event") in {"merged", "escalate"}
+        ]
+        terminal_tickets = {row["ticket"] for row in terminal}
+        if terminal_tickets:
+            escalated = {row["ticket"] for row in terminal if row["event"] == "escalate"}
+            series["ready_for_human_rate"][key] = {
+                "value": len(escalated) / len(terminal_tickets),
+                "rows": terminal,
+            }
+            rounds = []
+            round_rows = list(terminal)
+            for ticket in terminal_tickets:
+                end_at = max(str(row["at"]) for row in terminal if row["ticket"] == ticket)
+                ticket_reviews = [row for row in reviews.get(ticket, []) if str(row["at"]) <= end_at]
+                rounds.append(max(0, len(ticket_reviews) - 1))
+                round_rows.extend(ticket_reviews)
+            series["rework_rounds"][key] = {
+                "value": sum(rounds) / len(rounds),
+                "rows": round_rows,
+            }
+        cycles, cycle_rows = [], []
+        for merged in (row for row in today if row.get("event") == "merged"):
+            claim = claims.get(merged.get("ticket"))
+            if claim is None:
+                continue
+            try:
+                hours = (
+                    datetime.fromisoformat(str(merged["at"]))
+                    - datetime.fromisoformat(str(claim["at"]))
+                ).total_seconds() / 3600
+            except (KeyError, TypeError, ValueError):
+                continue
+            if hours >= 0:
+                cycles.append(hours)
+                cycle_rows.extend((claim, merged))
+        if cycles:
+            series["claim_to_merge_hours"][key] = {
+                "value": sum(cycles) / len(cycles),
+                "rows": cycle_rows,
+            }
+        for row in today:
+            if not (
+                row.get("event") == "lifecycle" and row.get("kind") == "result"
+                and row.get("stage") == "gate-check" and row.get("passed") is False
+                and isinstance(row.get("check"), str)
+            ):
+                continue
+            check = series[f"gate_failures_by_check:{row['check']}"][key]
+            check["value"] += 1
+            check["rows"].append(row)
+            for test in row.get("failed_tests", []):
+                name = f"gate_failures_by_test:{test}"
+                if name in series:
+                    series[name][key]["value"] += 1
+                    series[name][key]["rows"].append(row)
+    return series
+
+
+def fired_rules(
+    rules: tuple[config.BandRule, ...], *, mean: float, deviation: float, values: list[float],
+) -> list[config.BandRule]:
+    fired = []
+    for rule in rules:
+        recent = values[-rule.span:]
+        if len(recent) < rule.span:
+            continue
+        if rule.kind == "sigma":
+            distance = rule.sigma * deviation
+            high = sum(value > mean + distance for value in recent)
+            low = sum(value < mean - distance for value in recent)
+        else:
+            high = sum(value > mean for value in recent)
+            low = sum(value < mean for value in recent)
+        if max(high, low) >= rule.count:
+            fired.append(rule)
+    return fired
+
+
+def _rule_name(rule: config.BandRule) -> str:
+    if rule.kind == "sigma":
+        return f"{rule.count} of {rule.span} beyond {rule.sigma:g} sigma"
+    return f"{rule.count} of {rule.span} on one side of the mean"
+
+
+def _history_days(events: list[dict], today: date) -> int:
+    dates = [parsed for row in events if (parsed := _day(row)) is not None and parsed <= today]
+    return max(0, (today - min(dates)).days) if dates else 0
+
+
+def baseline_status(
+    cfg: config.Config, events: list[dict], now: datetime | None = None,
+) -> str | None:
+    if not cfg.watch_bands:
+        return None
+    today = (now or datetime.now(UTC)).date()
+    available = _history_days(events, today)
+    missing = [band for band in cfg.watch_bands if available < band.window_days]
+    if not missing:
+        return None
+    needed = max(band.window_days for band in missing)
+    return f"insufficient baseline: {available} of {needed} trailing days available"
+
+
+def band_signals(
+    cfg: config.Config, events: list[dict], now: datetime | None = None,
+) -> list[dict]:
+    if not cfg.watch_bands:
+        return []
+    current = now or datetime.now(UTC)
+    today = current.date()
+    available = _history_days(events, today)
+    start = today - timedelta(days=max(band.window_days for band in cfg.watch_bands))
+    metrics = metric_series(events, start, today)
+    pr_by_ticket = {
+        row.get("ticket"): row.get("pr") for row in events
+        if row.get("event") == "pr-opened" and isinstance(row.get("pr"), int)
+    }
+    alarms = []
+    for band in cfg.watch_bands:
+        if available < band.window_days:
+            continue
+        names = [
+            name for name in metrics
+            if name == band.metric or name.startswith(f"{band.metric}:")
+        ]
+        for name in sorted(names):
+            points = list(metrics[name].values())[-(band.window_days + 1):]
+            baseline = [point["value"] for point in points[:-1]]
+            average, deviation = mean(baseline), pstdev(baseline)
+            values = [point["value"] for point in points]
+            point = points[-1]
+            rows = list(point["rows"])
+            tickets = {row.get("ticket") for row in rows if row.get("ticket") is not None}
+            related = [
+                row for row in events
+                if row.get("ticket") in tickets and row.get("event") in {"pr-opened", "escalate"}
+            ]
+            evidence_rows = rows + [row for row in related if row not in rows]
+            prs = sorted({pr_by_ticket[ticket] for ticket in tickets if ticket in pr_by_ticket})
+            key = name.split(":", 1)[1] if ":" in name else name
+            for rule in fired_rules(
+                band.rules, mean=average, deviation=deviation, values=values,
+            ):
+                rule_name = _rule_name(rule)
+                fp = f"band:{fingerprint(name, rule_name)}"
+                pr_text = f"\nAffected PRs: {', '.join(f'PR #{pr}' for pr in prs)}." if prs else ""
+                excerpt = (
+                    f"Metric: {name}\nCurrent: {point['value']:g}\n"
+                    f"Baseline ({band.window_days} days): mean {average:g}, "
+                    f"standard deviation {deviation:g}\nRule: {rule_name}.{pr_text}"
+                )
+                alarms.append({
+                    "fingerprint": fp,
+                    "kind": "band",
+                    "stage": "control-band",
+                    "key": key,
+                    "metric": name,
+                    "rule": rule_name,
+                    "tier": rule.tier,
+                    "rows": evidence_rows,
+                    "excerpt": excerpt,
+                    "log": None,
+                    "latest": max(
+                        (str(row.get("at") or "") for row in evidence_rows),
+                        default=datetime.combine(today, datetime.min.time(), UTC).isoformat(),
+                    ),
+                    "command": "factory watch --dry-run",
+                    "prs": prs,
+                })
+    return alarms
+
+
+def _diagnose(cfg: config.Config, signal: dict) -> None:
+    from factory import triage
+
+    triage.configure(cfg)
+    summary = triage.call_llm([
+        {
+            "role": "system",
+            "content": (
+                "Diagnose this deterministic Factory metric alarm from the supplied evidence only. "
+                "You have no tools and must not request or perform writes. Return a concise summary."
+            ),
+        },
+        {"role": "user", "content": signal["excerpt"]},
+    ]).strip()
+    signal["diagnosis"] = summary
+    signal["excerpt"] += f"\nDiagnosis: {summary}"
+
+
+
+
+def signals(
+    cfg: config.Config, events: list[dict], now: datetime | None = None,
+) -> list[dict]:
     """Every observed failure, newest journal evidence first within each fingerprint."""
     found: dict[str, dict] = {}
     logs = {(r.get("ticket"), r.get("attempt")): r.get("log") for r in events if r.get("event") == "attempt"}
@@ -266,6 +523,8 @@ def signals(cfg: config.Config, events: list[dict]) -> list[dict]:
                       "excerpt": "\n".join(f"- #{r.get('ticket')}: {r.get('reason')} ({r.get('packet')})" for r in rows),
                       "command": "zcat -f .factory/events.jsonl* | grep -F "
                       f"{shlex.quote(json.dumps({'code': code}, separators=(',', ':'))[1:-1])}"}
+    for alarm in band_signals(cfg, events, now):
+        found[alarm["fingerprint"]] = alarm
     for signal in found.values():
         signal["rows"] = signal["rows"][-MAX_ROWS:]
         if signal["kind"] in {"lifecycle", "host"}:
@@ -274,6 +533,8 @@ def signals(cfg: config.Config, events: list[dict]) -> list[dict]:
 
 
 def title(signal: dict) -> str:
+    if signal["kind"] == "band":
+        return f"factory control-band alarm: {signal['metric']} ({signal['rule']})"[:200]
     return f"factory runtime failure: {signal['kind']} {signal['stage']} {signal['key']}"[:200]
 
 
@@ -294,18 +555,32 @@ def body(signal: dict, install: str) -> str:
     parts = [
         f"Fingerprint: {signal['fingerprint']}",
         "",
-        ("`factory watch` observed a persistent host condition from local evidence: "
-         if signal["kind"] == "host" else
-         "`factory watch` observed a runtime failure of the factory itself from local evidence: "),
-        (f"signal `{signal['kind']}`, stage `{signal['stage']}`, `{signal['key']}`. "
-         "Filed automatically; no human has looked at it yet."),
+        (
+            f"`factory watch` observed metric `{signal['metric']}` outside its configured control band "
+            f"under `{signal['rule']}` at tier `{signal['tier']}`. "
+            if signal["kind"] == "band" else
+            "`factory watch` observed a persistent host condition from local evidence: "
+            if signal["kind"] == "host" else
+            "`factory watch` observed a runtime failure of the factory itself from local evidence: "
+        ),
+        (
+            "Filed automatically from deterministic journal metrics; no human has looked at it yet."
+            if signal["kind"] == "band" else
+            f"signal `{signal['kind']}`, stage `{signal['stage']}`, `{signal['key']}`. "
+            "Filed automatically; no human has looked at it yet."
+        ),
         "",
         OBSERVED, f"- `{install}`", "",
         "## Evidence", *evidence(signal),
         "## Reproduce", f"In the `{install}` checkout:", "```", signal["command"], "factory watch --dry-run", "```",
         "## Expected behavior",
-        (f"The factory pass completes without `{signal['key']}` at stage `{signal['stage']}`, and "
-         f"`factory watch --dry-run` no longer reports fingerprint `{signal['fingerprint']}`."),
+        (
+            f"Metric `{signal['metric']}` returns inside its configured control band, and "
+            f"`factory watch --dry-run` no longer reports fingerprint `{signal['fingerprint']}`."
+            if signal["kind"] == "band" else
+            f"The factory pass completes without `{signal['key']}` at stage `{signal['stage']}`, and "
+            f"`factory watch --dry-run` no longer reports fingerprint `{signal['fingerprint']}`."
+        ),
     ]
     return "\n".join(parts) + "\n"
 
@@ -344,8 +619,10 @@ def _age(at: str) -> timedelta:
     return datetime.now(UTC) - datetime.fromisoformat(at)
 
 
-def run_pass(cfg: config.Config, dry_run: bool = False) -> list[dict]:
-    """File/comment and close at most MAX_ISSUES fingerprints apiece; return signals filed or commented."""
+def run_pass(
+    cfg: config.Config, dry_run: bool = False, now: datetime | None = None,
+) -> list[dict]:
+    """Log, diagnose, file/comment, and close configured signals."""
     events = lifecycle.read_events(dispatch.EVENTS)
     rows = [r for r in events if r.get("event") == "watch"]
     filings = {r["fingerprint"]: r for r in rows}
@@ -353,11 +630,46 @@ def run_pass(cfg: config.Config, dry_run: bool = False) -> list[dict]:
     opened = {(r["fingerprint"], r["issue"], r.get("repo", dispatch.REPO))
               for r in rows if not r.get("commented") and not r.get("closed")}
     engine, install = cfg.watch_engine_repo, cfg.repo
-    current = signals(cfg, events)
-    latest_by_fingerprint = {signal["fingerprint"]: signal["latest"] for signal in current}
+    current = signals(cfg, events, now)
+    observations = {
+        row["fingerprint"]: row for row in events
+        if row.get("event") == "watch-band" and isinstance(row.get("fingerprint"), str)
+    }
+    observed_signals = []
+    actionable = []
+    for signal in current:
+        tier = signal.get("tier", "act")
+        if tier == "act":
+            actionable.append(signal)
+            continue
+        previous_observation = observations.get(signal["fingerprint"])
+        if (
+            previous_observation is not None
+            and signal["latest"] <= previous_observation.get("latest", previous_observation["at"])
+        ):
+            observed_signals.append(signal)
+            continue
+        if tier == "diagnose":
+            try:
+                _diagnose(cfg, signal)
+            except (SystemExit, OSError, ValueError, KeyError, TypeError) as exc:
+                signal["diagnosis"] = f"unavailable ({type(exc).__name__})"
+        dispatch.log(
+            f"watch: {tier} {signal['fingerprint']} ({title(signal)})"
+            + (f": {signal['diagnosis']}" if signal.get("diagnosis") else "")
+        )
+        if not dry_run:
+            dispatch.record(
+                "watch-band", fingerprint=signal["fingerprint"], tier=tier,
+                latest=signal["latest"], diagnosis=signal.get("diagnosis"),
+            )
+        observed_signals.append(signal)
+    latest_by_fingerprint = {
+        signal["fingerprint"]: signal["latest"] for signal in actionable
+    }
     listing = None
     filed = []
-    for signal in current:
+    for signal in actionable:
         fp = signal["fingerprint"]
         if len(filed) >= MAX_ISSUES:
             dispatch.log(f"watch: deferring {fp} to the next pass (cap {MAX_ISSUES})")
@@ -410,6 +722,7 @@ def run_pass(cfg: config.Config, dry_run: bool = False) -> list[dict]:
                             commented=True, at=lifecycle._now())
             dispatch.log(f"watch: commented on {engine}#{number} for {fp}")
         filed.append(signal)
+    filed = observed_signals + filed
 
     closed = 0
     for fp, previous in filings.items():

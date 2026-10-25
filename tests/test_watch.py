@@ -477,5 +477,150 @@ class WatchOutcomeEscalationTest(unittest.TestCase):
 
 
 
+
+class ControlBandRuleTest(unittest.TestCase):
+    def test_in_band_data_fires_nothing_and_each_rule_fires_once(self) -> None:
+        rules = (
+            config.BandRule(kind="sigma", tier="log", sigma=3.0, count=1, span=1),
+            config.BandRule(kind="sigma", tier="log", sigma=2.0, count=2, span=3),
+            config.BandRule(kind="same_side", tier="log", count=8, span=8),
+        )
+
+        self.assertEqual(watch.fired_rules(rules, mean=0.0, deviation=1.0, values=[0.5, -0.5] * 4), [])
+        cases = (
+            ([0.0] * 7 + [3.1], rules[0]),
+            ([0.0] * 5 + [2.1, 0.0, 2.1], rules[1]),
+            ([0.5] * 8, rules[2]),
+        )
+        for values, expected in cases:
+            with self.subTest(rule=expected):
+                self.assertEqual(watch.fired_rules(rules, mean=0.0, deviation=1.0, values=values), [expected])
+
+    def test_daily_metrics_cover_rates_cycle_time_rework_checks_and_tests(self) -> None:
+        day = datetime(2026, 10, 24, tzinfo=UTC)
+        at = lambda hour: day.replace(hour=hour).isoformat()
+        test_id = "tests.test_status.StatusTest.test_port"
+        rows = [
+            {"event": "attempt", "ticket": 1, "gate": "FAIL", "at": at(10)},
+            {"event": "attempt", "ticket": 2, "gate": "PASS", "at": at(10)},
+            {"event": "lifecycle", "kind": "result", "stage": "gate-check", "ticket": 1,
+             "check": "test", "passed": False, "failed_tests": [test_id], "at": at(10)},
+            {"event": "claimed", "ticket": 2, "at": at(9)},
+            {"event": "review", "ticket": 2, "at": at(10)},
+            {"event": "review", "ticket": 2, "at": at(11)},
+            {"event": "review", "ticket": 2, "at": at(12)},
+            {"event": "merged", "ticket": 2, "at": at(13)},
+            {"event": "escalate", "ticket": 1, "code": "gate_failed", "at": at(13)},
+        ]
+
+        points = watch.metric_series(rows, day.date(), day.date())
+        values = {name: series[day.date().isoformat()]["value"] for name, series in points.items()}
+
+        self.assertEqual(values["gate_failure_rate"], 0.5)
+        self.assertEqual(values["gate_failures_by_check:test"], 1.0)
+        self.assertEqual(values[f"gate_failures_by_test:{test_id}"], 1.0)
+        self.assertEqual(values["ready_for_human_rate"], 0.5)
+        self.assertEqual(values["claim_to_merge_hours"], 4.0)
+        self.assertEqual(values["rework_rounds"], 1.0)
+
+
+class ControlBandWatchTest(unittest.TestCase):
+    TEST_ID = "tests.test_status.StatusTest.status_reports_stopped_when_saved_comfyui_pid_is_gone"
+    ENGINE = "factory/engine"
+    NOW = datetime(2026, 10, 24, 23, tzinfo=UTC)
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.cfg = config.Config(self.root, REPO)
+        self.cfg.watch_engine_repo = self.ENGINE
+        self.cfg.watch_bands = [
+            config.Band(
+                metric="gate_failures_by_test",
+                window_days=28,
+                rules=(config.BandRule(
+                    kind="sigma", tier="act", sigma=3.0, count=1, span=1,
+                ),),
+            ),
+        ]
+        self.cfg.factory.mkdir()
+        dispatch.configure(self.cfg)
+        self.gh = HostFakeGh()
+        for patch in (
+            mock.patch.object(dispatch, "run", self.gh),
+            mock.patch.object(watch, "failed_units", return_value=[]),
+            mock.patch.object(watch, "runtime_errors", return_value=[]),
+        ):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def rows(self) -> list[dict]:
+        rows = []
+        for ago in range(28, 0, -1):
+            at = (self.NOW - timedelta(days=ago)).replace(hour=12).isoformat()
+            rows.append({"event": "attempt", "ticket": 100 + ago, "gate": "PASS", "at": at})
+        for ticket, pr, minute in ((17, 25, 6), (73, 74, 56)):
+            at = self.NOW.replace(hour=15, minute=minute).isoformat()
+            rows += [
+                {"event": "pr-opened", "ticket": ticket, "pr": pr, "at": at},
+                {"event": "lifecycle", "kind": "result", "stage": "gate-check",
+                 "ticket": ticket, "check": "test", "passed": False,
+                 "failed_tests": [self.TEST_ID], "changed_paths": [f"src/change_{ticket}.py"], "at": at},
+                escalate_row(ticket, "gate_failed", "gate failed after rebase onto moved main", at=at),
+            ]
+        return rows
+
+    def journal(self, rows: list[dict]) -> None:
+        for row in rows:
+            lifecycle.append(dispatch.EVENTS, row)
+
+    def test_rocm_cli_replay_files_one_issue_then_dedupes_and_closes_in_band(self) -> None:
+        self.journal(self.rows())
+
+        filed = watch.run_pass(self.cfg, now=self.NOW)
+
+        self.assertEqual(len(filed), 1)
+        self.assertEqual(len(self.gh.created), 1)
+        create = self.gh.created[0]
+        self.assertEqual(create[create.index("--label") + 1], "bug,needs-triage")
+        body = create[create.index("--body") + 1]
+        self.assertIn(self.TEST_ID, body)
+        self.assertIn("PR #25", body)
+        self.assertIn("PR #74", body)
+        self.assertFalse(any("pr" in call[:3] for call in self.gh.calls))
+        self.assertTrue(all(
+            call[call.index("--repo") + 1] == self.ENGINE
+            for call in self.gh.calls if "--repo" in call
+        ))
+
+        watch.run_pass(self.cfg, now=self.NOW)
+        self.assertEqual(len(self.gh.created), 1)
+
+        with mock.patch.object(watch, "_age", return_value=timedelta(days=2)):
+            watch.run_pass(self.cfg, now=self.NOW + timedelta(days=2))
+        self.assertEqual(self.gh.issues[101]["state"], "CLOSED")
+
+    def test_log_and_diagnose_tiers_make_no_github_write(self) -> None:
+        base = {
+            "kind": "band", "stage": "control-band", "key": "gate_failure_rate",
+            "metric": "gate_failure_rate", "rule": "1 of 1 beyond 3 sigma",
+            "rows": [], "excerpt": "metric evidence", "log": None,
+            "latest": self.NOW.isoformat(), "command": "factory watch --dry-run",
+        }
+        observed = [
+            {**base, "fingerprint": "band-log", "tier": "log"},
+            {**base, "fingerprint": "band-diagnose", "tier": "diagnose"},
+        ]
+
+        with mock.patch.object(watch, "signals", return_value=observed), \
+                mock.patch("factory.triage.call_llm", return_value="Likely shared port contention.") as model:
+            returned = watch.run_pass(self.cfg, now=self.NOW)
+
+        self.assertEqual(returned, observed)
+        self.assertEqual(observed[1]["diagnosis"], "Likely shared port contention.")
+        self.assertEqual(model.call_count, 1)
+        self.assertEqual(self.gh.calls, [])
+
 if __name__ == "__main__":
     unittest.main()

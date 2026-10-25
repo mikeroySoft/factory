@@ -250,5 +250,42 @@ class GateOutputEncodingTest(unittest.TestCase):
             self.assertIn("\ufffd-leak.txt:1: [codename] codename", report)
 
 
+
+class FailedTestEvidenceTest(unittest.TestCase):
+    def test_failed_unittest_and_pytest_ids_are_journaled(self) -> None:
+        import json
+
+        output = (
+            "print('FAIL: test_port "
+            "(tests.test_status.StatusTest.test_port)'); "
+            "print('FAILED tests/test_cli.py::CliTest::test_help - assertion'); "
+            "raise SystemExit(1)"
+        )
+        toml = TOML + (
+            "\n[[gate.check]]\n"
+            'name = "tests"\n'
+            f"run = [{json.dumps(sys.executable)}, \"-c\", {json.dumps(output)}]\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repo_with_test(Path(directory), toml)
+
+            code, out, report = gate(repo, "--skip", "conflict-markers,leak-scan")
+
+            self.assertEqual(code, 1, report + out)
+            rows = [
+                json.loads(line)
+                for line in (repo / ".factory" / "events.jsonl").read_text().splitlines()
+            ]
+            [result] = [
+                row for row in rows
+                if row.get("stage") == "gate-check"
+                and row.get("kind") == "result"
+                and row.get("check") == "tests"
+            ]
+            self.assertEqual(result["failed_tests"], [
+                "tests.test_status.StatusTest.test_port",
+                "tests/test_cli.py::CliTest::test_help",
+            ])
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,56 @@
+# Versioned `factory watch` control bands. Every threshold and action tier is reviewed.
+schema_version = 1
+
+[[band]]
+metric = "gate_failure_rate"
+window_days = 28
+rules = [
+  { kind = "sigma", sigma = 3.0, count = 1, span = 1, tier = "log" },
+  { kind = "sigma", sigma = 2.0, count = 2, span = 3, tier = "log" },
+  { kind = "same_side", count = 8, span = 8, tier = "log" },
+]
+
+[[band]]
+metric = "gate_failures_by_check"
+window_days = 28
+rules = [
+  { kind = "sigma", sigma = 3.0, count = 1, span = 1, tier = "log" },
+  { kind = "sigma", sigma = 2.0, count = 2, span = 3, tier = "log" },
+  { kind = "same_side", count = 8, span = 8, tier = "log" },
+]
+
+[[band]]
+metric = "gate_failures_by_test"
+window_days = 28
+rules = [
+  { kind = "sigma", sigma = 3.0, count = 1, span = 1, tier = "act" },
+  { kind = "sigma", sigma = 2.0, count = 2, span = 3, tier = "act" },
+  { kind = "same_side", count = 8, span = 8, tier = "act" },
+]
+
+[[band]]
+metric = "ready_for_human_rate"
+window_days = 28
+rules = [
+  { kind = "sigma", sigma = 3.0, count = 1, span = 1, tier = "diagnose" },
+  { kind = "sigma", sigma = 2.0, count = 2, span = 3, tier = "diagnose" },
+  { kind = "same_side", count = 8, span = 8, tier = "diagnose" },
+]
+
+[[band]]
+metric = "claim_to_merge_hours"
+window_days = 28
+rules = [
+  { kind = "sigma", sigma = 3.0, count = 1, span = 1, tier = "diagnose" },
+  { kind = "sigma", sigma = 2.0, count = 2, span = 3, tier = "diagnose" },
+  { kind = "same_side", count = 8, span = 8, tier = "diagnose" },
+]
+
+[[band]]
+metric = "rework_rounds"
+window_days = 28
+rules = [
+  { kind = "sigma", sigma = 3.0, count = 1, span = 1, tier = "diagnose" },
+  { kind = "sigma", sigma = 2.0, count = 2, span = 3, tier = "diagnose" },
+  { kind = "same_side", count = 8, span = 8, tier = "diagnose" },
+]

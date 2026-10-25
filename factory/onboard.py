@@ -20,7 +20,7 @@ import urllib.request
 from pathlib import Path
 
 from factory import __version__, config, lifecycle
-from factory.config import CONFIG_NAME, LABELS, ConfigError
+from factory.config import BANDS_NAME, CONFIG_NAME, LABELS, ConfigError
 
 TEMPLATES = Path(__file__).with_name("templates")
 GITIGNORE_LINES = ("/.factory/", ".factory-prompt.md")
@@ -69,7 +69,7 @@ def ensure_labels(slug: str) -> list[str]:
 def init(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="factory init",
-        description="Prepare this repository: .factory.toml, .gitignore, issue template, labels.",
+        description=f"Prepare this repository: {CONFIG_NAME}, {BANDS_NAME}, issue templates, labels.",
     )
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--no-labels", action="store_true", help="skip creating GitHub labels")
@@ -94,6 +94,12 @@ def init(argv: list[str]) -> int:
     else:
         shutil.copyfile(TEMPLATES / "factory.toml", cfg_path)
         done.append(f"wrote {CONFIG_NAME}")
+    bands_path = root / BANDS_NAME
+    if bands_path.exists():
+        done.append(f"kept existing {BANDS_NAME}")
+    else:
+        shutil.copyfile(TEMPLATES / BANDS_NAME, bands_path)
+        done.append(f"wrote {BANDS_NAME}")
 
     for line in GITIGNORE_LINES:
         if ensure_line(root / ".gitignore", line):
@@ -130,7 +136,7 @@ def init(argv: list[str]) -> int:
         "\nnext:\n"
         f"  1. edit {CONFIG_NAME}: put your real test/lint commands in [[gate.check]],\n"
         f"     and the same commands in {CI_WORKFLOW} (the merge stage needs a passing check)\n"
-        f"  2. git add {CONFIG_NAME} .gitignore {ISSUE_TEMPLATE.parent} {WORKFLOWS} && git commit\n"
+        f"  2. git add {CONFIG_NAME} {BANDS_NAME} .gitignore {ISSUE_TEMPLATE.parent} {WORKFLOWS} && git commit\n"
         "  3. factory doctor\n"
         "  4. factory install --dashboard   # systemd user timer, every 10 min"
     )
@@ -372,6 +378,18 @@ def doctor(argv: list[str]) -> int:
     report(present, f"{CONFIG_NAME} present", "" if present else "run `factory init`")
     tracked = sh(["git", "ls-files", "--error-unmatch", CONFIG_NAME], cwd=cfg.root).returncode == 0
     report(True if tracked else None, f"{CONFIG_NAME} committed", "" if tracked else "commit it so clones see it")
+    bands_present = (cfg.root / BANDS_NAME).exists()
+    report(
+        True if bands_present else None,
+        f"{BANDS_NAME} present",
+        "" if bands_present else "missing; control-band alarms are disabled (run `factory init`)",
+    )
+    bands_tracked = sh(["git", "ls-files", "--error-unmatch", BANDS_NAME], cwd=cfg.root).returncode == 0
+    report(
+        True if bands_tracked else None,
+        f"{BANDS_NAME} committed",
+        "" if bands_tracked else "commit it so clones use the reviewed thresholds and tiers",
+    )
 
     unknown = config.unknown_keys(cfg.raw_repo)
     report(
@@ -389,6 +407,11 @@ def doctor(argv: list[str]) -> int:
     if unset:
         report(None, "defaults in effect", ", ".join(unset), info=True)
     report_stage_success(cfg, report)
+    if cfg.watch_bands:
+        from factory import watch
+
+        detail = watch.baseline_status(cfg, lifecycle.read_events(cfg.factory / "events.jsonl"))
+        report(None if detail else True, "watch control bands", detail or f"{len(cfg.watch_bands)} configured")
 
     for tmpl in (ISSUE_TEMPLATE, INITIATIVE_TEMPLATE):
         shipped, ours = sha256(TEMPLATES / tmpl.name), sha256(cfg.root / tmpl)
