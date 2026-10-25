@@ -9,7 +9,6 @@ usage: capture_contract.py <checkout> <scratch> <issue-number> <gate-report-file
 """
 import inspect
 import pathlib
-import subprocess
 import sys
 
 checkout, scratch, number, gate_file, out, source, head = sys.argv[1:8]
