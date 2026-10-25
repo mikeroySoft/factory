@@ -1,14 +1,17 @@
 """Bug-ticket gate regressions for failing-test-first and existing-test protection."""
 from __future__ import annotations
 
+import fcntl
 import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
+import factory.lifecycle as lifecycle  # noqa: PLR0402
 from factory import config, dispatch
 from factory import gate as gate_module
 
@@ -436,6 +439,122 @@ class ReviewerRegressionGateTest(unittest.TestCase):
             self.assertIn("- bug-repro-before: EXPECTED FAIL", report)
             self.assertIn("- bug-repro-head: FAIL", report)
             self.assertIn("is missing at HEAD", report)
+
+    def test_bare_rust_reproduction_waits_for_exclusive_check_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = repository(root)
+            lock = root / "gpu.lock"
+            (repo / ".factory.toml").write_text(
+                '[leak_scan]\npattern = ""\n'
+                "[gate]\n"
+                f"lock = {str(lock)!r}\n"
+                "[[gate.check]]\n"
+                'name = "test"\n'
+                'run = ["cargo", "test"]\n'
+                "exclusive = true\n"
+            )
+            (repo / "src" / "lib.rs").write_text(
+                "pub fn fixed() -> bool { false }\n\n"
+                "#[cfg(test)]\n"
+                "mod tests {\n"
+                "    #[test]\n"
+                "    fn existing_rust_test() {\n"
+                "        assert!(true);\n"
+                "    }\n"
+                "}\n"
+            )
+            commit(repo, "configure exclusive Rust tests")
+            git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+            (repo / "src" / "lib.rs").write_text(
+                "pub fn fixed() -> bool { false }\n\n"
+                "#[cfg(test)]\n"
+                "mod tests {\n"
+                "    #[test]\n"
+                "    fn existing_rust_test() {\n"
+                "        assert!(true);\n"
+                "    }\n\n"
+                "    #[test]\n"
+                "    fn reproduces_bug() {\n"
+                "        assert!(super::fixed());\n"
+                "    }\n"
+                "}\n"
+            )
+            commit(repo, "reproduce Rust bug")
+            source = (repo / "src" / "lib.rs").read_text()
+            (repo / "src" / "lib.rs").write_text(
+                source.replace("pub fn fixed() -> bool { false }", "pub fn fixed() -> bool { true }")
+            )
+            commit(repo, "fix Rust bug")
+
+            marker = root / "cargo-started"
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            cargo = bin_dir / "cargo"
+            cargo.write_text(
+                f"#!{sys.executable}\n"
+                "import os, sys\n"
+                "from pathlib import Path\n"
+                "Path(os.environ['REPRO_STARTED']).touch()\n"
+                "args = sys.argv[1:]\n"
+                "selector = args[1] if len(args) > 1 and args[1] != '--' else None\n"
+                "selected = selector is None or (\n"
+                "    selector == 'tests::reproduces_bug' if '--exact' in args\n"
+                "    else selector in 'tests::reproduces_bug'\n"
+                ")\n"
+                "fixed = 'pub fn fixed() -> bool { true }' in Path('src/lib.rs').read_text()\n"
+                "raise SystemExit(0 if not selected or fixed else 1)\n"
+            )
+            cargo.chmod(0o755)
+            env = {
+                **os.environ,
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "PYTHONPATH": str(ROOT),
+                "REPRO_STARTED": str(marker),
+            }
+            env.pop("FACTORY_LIFECYCLE_CONTEXT", None)
+            report = repo / ".factory" / "gate-report.md"
+            with lock.open("w") as held:
+                fcntl.flock(held, fcntl.LOCK_EX)
+                proc = subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-m",
+                        "factory",
+                        "gate",
+                        "--bug",
+                        "--repro-test",
+                        "reproduces_bug",
+                        "--skip",
+                        "conflict-markers,test",
+                    ],
+                    cwd=repo,
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+                try:
+                    deadline = time.monotonic() + 10
+                    waiting = False
+                    while time.monotonic() < deadline and not marker.exists():
+                        waiting = any(
+                            row.get("kind") == "wait"
+                            and row.get("wait", {}).get("reason") == "exclusive_resource"
+                            for row in lifecycle.read_events(repo / ".factory" / "events.jsonl")
+                        )
+                        if waiting:
+                            break
+                        time.sleep(0.01)
+                    self.assertTrue(waiting, "bug reproduction did not wait for the exclusive lock")
+                    self.assertFalse(marker.exists(), "cargo started while the exclusive lock was held")
+                finally:
+                    fcntl.flock(held, fcntl.LOCK_UN)
+                    output, _ = proc.communicate(timeout=15)
+
+            self.assertEqual(proc.returncode, 0, output + report.read_text())
+            self.assertIn("- bug-repro-before: EXPECTED FAIL", report.read_text())
+            self.assertIn("- bug-repro-head: PASS", report.read_text())
 
 
 if __name__ == "__main__":

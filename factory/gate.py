@@ -95,6 +95,29 @@ def run(cmd: list[str]) -> tuple[bool, str]:
         execution.reason = "configured_check_failed"
     return proc.returncode == 0, proc.stdout + proc.stderr
 
+def _acquire_exclusive(execution):
+    lock = open(GPU_LOCK, "w")  # noqa: SIM115 — caller controls lock lifetime
+    try:
+        requested = execution.resource("requested", GPU_LOCK, scope="host", blocking=True)
+        if lifecycle._lock_state(lifecycle._lock(GPU_LOCK)) == "held":
+            execution.wait(
+                "exclusive_resource", mode="blocking", resource=requested["resource"]
+            )
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        execution.resource("acquired", GPU_LOCK, scope="host", blocking=True)
+        execution.wait_end()
+        return lock
+    except BaseException:
+        lock.close()
+        raise
+
+
+def _release_exclusive(execution, lock) -> None:
+    fcntl.flock(lock, fcntl.LOCK_UN)
+    lock.close()
+    execution.resource("released", GPU_LOCK, scope="host", blocking=True)
+
+
 
 def check_conflict_markers() -> tuple[bool, str]:
     proc = timed(
@@ -412,25 +435,33 @@ raise SystemExit(not result.wasSuccessful())
 """
 
 
-def _repro_command(test_id: str, record: dict) -> list[str]:
+def _repro_command(test_id: str, record: dict) -> tuple[list[str], bool]:
     language = record["language"]
     for check in cfg.checks:
         if language == "python" and "pytest" in check.run:
             selector = next(alias for alias in record["aliases"] if "::" in alias)
-            return [*check.run[:check.run.index("pytest") + 1], selector]
+            return (
+                [*check.run[:check.run.index("pytest") + 1], selector],
+                check.name in GPU_CHECKS,
+            )
         if language == "python" and "unittest" in check.run:
             runner = check.run.index("unittest")
             prefix = check.run[:runner - 1] if runner and check.run[runner - 1] == "-m" else check.run[:runner]
-            return [*(prefix or [sys.executable]), "-c", _UNITTEST_ONE, record["path"], record["qualified"]]
+            return (
+                [*(prefix or [sys.executable]), "-c", _UNITTEST_ONE, record["path"], record["qualified"]],
+                check.name in GPU_CHECKS,
+            )
         if language == "rust" and "cargo" in check.run and "test" in check.run:
             separator = check.run.index("--") if "--" in check.run else len(check.run)
-            suffix = [*check.run[separator:], "--exact"] if separator < len(check.run) else ["--", "--exact"]
-            return [*check.run[:separator], test_id, *suffix]
+            return (
+                [*check.run[:separator], test_id, *check.run[separator:]],
+                check.name in GPU_CHECKS,
+            )
     if language == "python" and "::" not in test_id:
-        return [sys.executable, "-c", _UNITTEST_ONE, record["path"], record["qualified"]]
+        return [sys.executable, "-c", _UNITTEST_ONE, record["path"], record["qualified"]], False
     if language == "python":
-        return [sys.executable, "-m", "pytest", test_id]
-    return ["cargo", "test", test_id, "--", "--exact"]
+        return [sys.executable, "-m", "pytest", test_id], False
+    return ["cargo", "test", test_id], False
 
 
 def _run_at(
@@ -448,7 +479,7 @@ def _run_at(
 
 
 def check_bug_reproduction(
-    base: str, test_id: str | None, no_repro_test: str | None
+    base: str, test_id: str | None, no_repro_test: str | None, execution=None
 ) -> list[tuple[str, str, str]]:
     if no_repro_test:
         return [("bug-repro", f"SKIP (No repro test: {no_repro_test})", "")]
@@ -486,50 +517,55 @@ def check_bug_reproduction(
             f"first bug-ticket commit does not add declared reproduction test `{test_id}`",
         )]
     test_key, test_record = added[0]
-    command = _repro_command(test_id, test_record)
-    reproduced, ran = _run_at(test_commit, command)
-    if not ran or reproduced.returncode == 124:
-        return [(
+    command, exclusive = _repro_command(test_id, test_record)
+    gpu_lock = _acquire_exclusive(execution) if exclusive else None
+    try:
+        reproduced, ran = _run_at(test_commit, command)
+        if not ran or reproduced.returncode == 124:
+            return [(
+                "bug-repro-before",
+                "FAIL",
+                reproduced.stdout + reproduced.stderr,
+            )]
+        if reproduced.returncode == 0:
+            return [(
+                "bug-repro-before",
+                "FAIL",
+                "test does not reproduce the bug: it passes at the test commit",
+            )]
+        results = [(
             "bug-repro-before",
-            "FAIL",
+            "EXPECTED FAIL",
             reproduced.stdout + reproduced.stderr,
         )]
-    if reproduced.returncode == 0:
-        return [(
-            "bug-repro-before",
-            "FAIL",
-            "test does not reproduce the bug: it passes at the test commit",
-        )]
-    results = [(
-        "bug-repro-before",
-        "EXPECTED FAIL",
-        reproduced.stdout + reproduced.stderr,
-    )]
-    head, error = _tests_at("HEAD")
-    if error:
-        return [*results, ("bug-repro-head", "FAIL", error)]
-    head_record = head.get(test_key)
-    if head_record is None or not _matches_test_id(test_id, head_record):
-        return [*results, (
-            "bug-repro-head",
-            "FAIL",
-            f"declared reproduction test `{test_id}` is missing at HEAD",
-        )]
-    if head_record["source"] != test_record["source"]:
-        return [*results, (
-            "bug-repro-head",
-            "FAIL",
-            f"declared reproduction test changed at HEAD: `{test_id}`",
-        )]
-    fixed = timed(command, cwd=Path.cwd(), pythonpath=Path.cwd())
-    return [
-        *results,
-        (
-            "bug-repro-head",
-            "PASS" if fixed.returncode == 0 else "FAIL",
-            "" if fixed.returncode == 0 else "reproduction test still fails at HEAD\n" + fixed.stdout + fixed.stderr,
-        ),
-    ]
+        head, error = _tests_at("HEAD")
+        if error:
+            return [*results, ("bug-repro-head", "FAIL", error)]
+        head_record = head.get(test_key)
+        if head_record is None or not _matches_test_id(test_id, head_record):
+            return [*results, (
+                "bug-repro-head",
+                "FAIL",
+                f"declared reproduction test `{test_id}` is missing at HEAD",
+            )]
+        if head_record["source"] != test_record["source"]:
+            return [*results, (
+                "bug-repro-head",
+                "FAIL",
+                f"declared reproduction test changed at HEAD: `{test_id}`",
+            )]
+        fixed = timed(command, cwd=Path.cwd(), pythonpath=Path.cwd())
+        return [
+            *results,
+            (
+                "bug-repro-head",
+                "PASS" if fixed.returncode == 0 else "FAIL",
+                "" if fixed.returncode == 0 else "reproduction test still fails at HEAD\n" + fixed.stdout + fixed.stderr,
+            ),
+        ]
+    finally:
+        if gpu_lock is not None:
+            _release_exclusive(execution, gpu_lock)
 
 
 def main(argv: list[str]) -> int:
@@ -644,7 +680,9 @@ def execute(args: argparse.Namespace, execution) -> int:
     later_tier = {check.name: check.when for check in listed if check.when != args.tier}
 
     results: list[tuple[str, str, str]] = (
-        check_bug_reproduction(args.base, args.repro_test, args.no_repro_test)
+        check_bug_reproduction(
+            args.base, args.repro_test, args.no_repro_test, execution
+        )
         if args.bug and args.tier == "attempt" else []
     )
     outcome, reason = (
@@ -653,21 +691,13 @@ def execute(args: argparse.Namespace, execution) -> int:
         else ("completed", None)
     )
     gpu_lock = None
-    gpu_acquired = False
     try:
         for name, fn in checks:
             if name in skip or name in later_tier:
                 results.append((name, f"SKIP ({later_tier[name]} tier)" if name in later_tier else "SKIP", ""))
                 continue
             if name in GPU_CHECKS and gpu_lock is None:
-                gpu_lock = open(GPU_LOCK, "w")  # noqa: SIM115 — lock must outlive the loop
-                requested = execution.resource("requested", GPU_LOCK, scope="host", blocking=True)
-                if lifecycle._lock_state(lifecycle._lock(GPU_LOCK)) == "held":
-                    execution.wait("exclusive_resource", mode="blocking", resource=requested["resource"])
-                fcntl.flock(gpu_lock, fcntl.LOCK_EX)
-                gpu_acquired = True
-                execution.resource("acquired", GPU_LOCK, scope="host", blocking=True)
-                execution.wait_end()
+                gpu_lock = _acquire_exclusive(execution)
             with lifecycle.scope(
                 cfg.factory / "events.jsonl", "gate-check", lock=GPU_LOCK if gpu_lock else None
             ) as check:
@@ -682,10 +712,7 @@ def execute(args: argparse.Namespace, execution) -> int:
                 outcome, reason = check.outcome, check.reason
     finally:
         if gpu_lock is not None:
-            fcntl.flock(gpu_lock, fcntl.LOCK_UN)
-            gpu_lock.close()
-            if gpu_acquired:
-                execution.resource("released", GPU_LOCK, scope="host", blocking=True)
+            _release_exclusive(execution, gpu_lock)
 
     lines = [
         "# Gate report" if args.tier == "attempt" else f"# Gate report ({args.tier} tier)", "", "## Host toolchain",
