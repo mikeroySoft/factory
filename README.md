@@ -1167,10 +1167,12 @@ branches, or merge state.
   proposal into a paired replay: up to `max_tickets` recent tickets that recorded
   a frozen issue snapshot and pre-work revision run in isolated checkouts with
   the configured worker, gate and reviewer, first without and then with each
-  lessons-file or CURATE candidate. Replays have no GitHub credentials and a
-  rejecting `pre-push` hook. The candidate is kept only when first-gate passes
-  are no lower, review rounds and REVISE findings are no higher, and at least one
-  metric improves. Reported usage counts toward `max_tokens`; reviewers that do
+  lessons-file or CURATE candidate. Replay subprocesses have `GH_TOKEN` and
+  `GITHUB_TOKEN` removed, `gh` uses an empty config, the clone's origin is local,
+  and a rejecting `pre-push` hook blocks ordinary pushes. The candidate is kept
+  only when first-gate passes are no lower, review rounds and REVISE findings are
+  no higher, and at least one metric improves. Reported usage counts toward
+  `max_tokens`; reviewers that do
   not report usage still run, remain bounded by `max_tickets` and `budget_min`,
   and show `tokens not reported` in the evidence. An unavailable replay or budget
   exhaustion records `learn-evaluation` as `not_tested`, opens no PR and never
@@ -1184,9 +1186,12 @@ branches, or merge state.
   the incident tickets' implementation criteria. A `learn-candidate-review` row
   retains the proposal, head, verdict, findings and reported reviewer usage.
   Gate failure, REVISE or invalid reviewer evidence publishes nothing and does
-  not escalate; approved PR bodies include the candidate review and still require
-  human merge. Evaluation is off by default, so existing learning behavior is
-  unchanged.
+  not escalate. The learn/CURATE decision record cites both replay and candidate
+  review evidence. Approved PR bodies include the candidate review and enter the
+  normal promotion flow: an independent head-bound PR review and green CI allow
+  automatic merge, while a human change request vetoes it; the post-merge score
+  window can still revert a regression. Evaluation is off by default, so existing
+  learning behavior is unchanged.
 - **Audit trail**: `.factory/events.jsonl` retains the ticket outcome events
   (`claimed`, `attempt`, `pr-opened`, `review`, `approved`, `refreshed`, `conflict-requeue`,
   `merged`, `escalate`, `upstream-sync`, and `human-decision`; `gate`,
