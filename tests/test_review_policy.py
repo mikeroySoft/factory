@@ -103,6 +103,39 @@ class ReviewPolicyTest(unittest.TestCase):
         self.assertEqual(result["reason"], "verdict_counts_mismatch")
         self.assertEqual(result["counts"], {"important": 1, "nit": 0, "pre_existing": 0})
 
+    def test_ticket_review_result_does_not_enter_external_lane(self) -> None:
+        self.configure(tally([], "APPROVE"))
+
+        dispatch.review(self.root, 7, "PASS", self.head)
+
+        self.assertNotIn("pr", self.publish())
+
+    def test_verdict_counts_mismatch_returns_revise(self) -> None:
+        findings, verdict, parsed, counts, reason = dispatch._parse_review_output(
+            tally([self.finding("nit", 1)], "REVISE"), 5
+        )
+
+        self.assertEqual(verdict, "REVISE")
+        self.assertTrue(parsed)
+        self.assertEqual(counts, {"important": 0, "nit": 1, "pre_existing": 0})
+        self.assertEqual(reason, "verdict_counts_mismatch")
+
+    def test_missing_tally_without_policy_fails_closed(self) -> None:
+        git(self.root, "rm", "REVIEW.md")
+        git(self.root, "commit", "-qm", "base without policy")
+        git(self.root, "update-ref", "refs/remotes/origin/main", "HEAD")
+        (self.root / "app.py").write_text("value = 3\n")
+        git(self.root, "add", "app.py")
+        git(self.root, "commit", "-qm", "worker without policy")
+        self.configure("VERDICT: APPROVE")
+
+        verdict, findings = dispatch.review(
+            self.root, 7, "PASS", git(self.root, "rev-parse", "HEAD")
+        )
+
+        self.assertEqual(verdict, "REVISE")
+        self.assertIn("unparsed_verdict", findings)
+
     def test_missing_or_invalid_tally_fails_closed(self) -> None:
         for output in ("VERDICT: APPROVE", "```json\nnot json\n```\nVERDICT: APPROVE"):
             with self.subTest(output=output):

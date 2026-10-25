@@ -660,7 +660,7 @@ def review_external_pr(n: int, base: str, head: str, branch: str = "") -> None:
         if usage is not None:
             record("llm-usage", pr=n, stage="review", **usage)
         findings, verdict, parsed, counts, parser_reason = _parse_review_output(
-            findings, nit_cap, require_tally=policy is not None
+            findings, nit_cap
         )
         lines = findings.splitlines()
         legacy_invalid = counts is None and (
@@ -1094,7 +1094,7 @@ def _record_review_decision(
     )
     record("decision", **payload)
     record(
-        "review-result", ticket=n, pr=pr, head=head,
+        "review-result", ticket=n, head=head,
         verdict="APPROVE" if verdict == "APPROVE" else "REQUEST_CHANGES",
         findings=findings, counts=counts, reason=rejection_reason,
     )
