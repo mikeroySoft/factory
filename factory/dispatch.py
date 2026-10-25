@@ -81,7 +81,8 @@ LESSONS_BRANCH = re.compile(r"agent/(lessons|curate|revert-lessons)-")
 
 PLAN_INSTRUCTIONS = """## Attempt plan
 
-Before implementing, write a short plan to `.factory/plans/current/1.md`.
+Before implementing, create `.factory/plans/current` and write a short plan to
+`.factory/plans/current/1.md`.
 Keep it to 30 lines or fewer; a three-line plan is enough for a small ticket.
 Use this template:
 
@@ -2799,8 +2800,6 @@ def worker_round(
         lifecycle.current().attempt = attempt
     plan_dir = attempt_plan_dir(wt, attempt)
     shutil.rmtree(plan_dir, ignore_errors=True)
-    if LABEL_CHORE not in labels:
-        plan_dir.mkdir(parents=True, exist_ok=True)
     promptfile = wt / ".factory-prompt.md"
     promptfile.write_text(build_prompt(n, wt, extra, attempt=attempt, labels=labels))
     logfile = LOGS / f"{n}-attempt-{attempt}.log"
