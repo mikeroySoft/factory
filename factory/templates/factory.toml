@@ -95,6 +95,17 @@
 # max_active_cap = 4
 # budget_min_cap = 240
 
+[learn]
+# Test each proposed lessons-file or CURATE change by replaying recent tickets at
+# their recorded pre-work revisions, once without and once with the candidate.
+# Keep only changes that improve first-gate pass, review rounds, or REVISE
+# findings without worsening another metric. `factory learn --evaluate` enables
+# one manual pass without changing this setting.
+# evaluate = false
+# max_tickets = 3
+# max_tokens = 100000
+# budget_min = 30
+
 [gate]
 # timeout = 1200                      # seconds per check; a wedged check FAILs
 # lock = "/tmp/factory.lock"          # host-wide lock held by `exclusive` checks
