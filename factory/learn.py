@@ -671,9 +671,10 @@ def record_learn_decision(
 ) -> str:
     from factory import __version__, trace
 
+    evaluated = bool(evaluations)
     proposed = (
-        bool(branch) if cfg.manager else
-        bool(lessons) and (not evaluations or evaluations.get("lessons", {}).get("status") == "kept")
+        bool(branch) if evaluated and cfg.manager else
+        bool(lessons) and (not evaluated or evaluations.get("lessons", {}).get("status") == "kept")
     )
     review_input = _candidate_review_input(review_branch)
     inputs = [
@@ -701,18 +702,28 @@ def record_learn_decision(
             {
                 "option": "propose",
                 "eligible": proposed,
-                "reason": f"proposed {lessons} lesson(s)" if proposed else "evaluation or review blocked publication",
+                "reason": (
+                    f"proposed {lessons} lesson(s)" if proposed else
+                    "evaluation or review blocked publication" if evaluated else
+                    "no recurring lesson was found"
+                ),
             },
             {
                 "option": "skip",
                 "eligible": not proposed,
-                "reason": "no publishable lesson proposal" if not proposed else "evidence supported a proposal",
+                "reason": (
+                    "evidence supported a proposal" if proposed else
+                    "no publishable lesson proposal" if evaluated else
+                    "no lesson was proposed"
+                ),
             },
         ],
         chosen="propose" if proposed else "skip",
         rationale=(
             f"proposed {lessons} lesson(s)" + (f"; CURATE {curated}" if curated else "")
-            if proposed else "evidence produced no publishable lesson"
+            if proposed else
+            "evidence produced no publishable lesson" if evaluated else
+            "evidence produced no lesson"
         ),
         causes=[{"ticket": ticket, "relation": "follows"} for ticket in tickets],
         cost=None,

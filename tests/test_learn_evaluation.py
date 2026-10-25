@@ -585,5 +585,36 @@ VERDICT: REVISE
             self.assertEqual(marker.read_text(), "done")
 
 
+    def test_evaluation_off_keeps_zero_lesson_decision_reasons(self) -> None:
+        cases = [
+            ([], None),
+            (["manager"], "agent/lessons-2026-10-25-t7"),
+        ]
+        for manager, branch in cases:
+            with self.subTest(manager=bool(manager)), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                cfg = config.Config(root=root, repo="acme/widgets", manager=manager)
+                cfg.factory.mkdir()
+                dispatch.configure(cfg)
+
+                learn.record_learn_decision(cfg, [7], 0, branch, evaluations={})
+
+                [decision] = lifecycle.read_events(cfg.factory / "events.jsonl")
+                self.assertEqual(decision["chosen"], "skip")
+                self.assertEqual(decision["options"], [
+                    {
+                        "option": "propose",
+                        "eligible": False,
+                        "reason": "no recurring lesson was found",
+                    },
+                    {
+                        "option": "skip",
+                        "eligible": True,
+                        "reason": "no lesson was proposed",
+                    },
+                ])
+                self.assertEqual(decision["rationale"], "evidence produced no lesson")
+
+
 if __name__ == "__main__":
     unittest.main()
