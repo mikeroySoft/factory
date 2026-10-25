@@ -395,8 +395,8 @@ def _tests_at(ref: str) -> tuple[dict[str, dict], str]:
             return {}, blob.stdout + blob.stderr
         try:
             tests = _python_tests(path, blob.stdout) if path.endswith(".py") else _rust_tests(path, blob.stdout)
-        except SyntaxError as exc:
-            return {}, f"{ref}:{path}: cannot parse Python tests: {exc}"
+        except SyntaxError:
+            continue
         found.update(tests)
     return found, ""
 

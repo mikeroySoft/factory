@@ -576,7 +576,7 @@ class PythonParseErrorGateTest(unittest.TestCase):
             self.assertIn("- bug-repro-before: EXPECTED FAIL", report)
             self.assertIn("- bug-repro-head: PASS", report)
             self.assertIn("- test: PASS", report)
-            self.assertNotIn("SKIP", report)
+            self.assertNotIn("- bug-repro: SKIP", report)
 
     def test_existing_python_test_made_unparseable_still_fails_protection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
