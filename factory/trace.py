@@ -16,7 +16,7 @@ from factory.decisions import _SECRET
 STAGES = ("triage", "binding", "admission", "worker_select", "claim")
 ALL_STAGES = (
     *STAGES,
-    "gate", "review", "manager", "merge", "wontfix", "escalate", "learn", "curate",
+    "plan", "gate", "review", "manager", "merge", "wontfix", "escalate", "learn", "curate",
 )
 RELATIONS = frozenset({"follows", "retries", "blocked_by", "split_from", "unblocked_by", "overrides"})
 ACTORS = frozenset({"deterministic", "model", "human", "worker"})
@@ -284,7 +284,11 @@ def _frontier_stage(node: dict) -> str | None:
     chosen = node.get("chosen")
     if _terminal(node):
         return None
-    if stage in {"admission", "worker_select", "claim"} or node.get("event") == "claimed":
+    if stage in {"admission", "worker_select"}:
+        return "gate"
+    if stage == "claim" or node.get("event") == "claimed":
+        return "plan"
+    if stage == "plan":
         return "gate"
     if stage == "gate" or node.get("event") == "attempt":
         return "review" if chosen == "pass" or "PASS" in str(node.get("rationale", "")) else "gate"
