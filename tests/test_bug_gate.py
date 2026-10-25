@@ -557,5 +557,42 @@ class ReviewerRegressionGateTest(unittest.TestCase):
             self.assertIn("- bug-repro-head: PASS", report.read_text())
 
 
+class PythonParseErrorGateTest(unittest.TestCase):
+    def test_invalid_python_fixture_at_base_does_not_block_bug_reproduction(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repository(Path(directory))
+            fixtures = repo / "fixtures" / "tests"
+            fixtures.mkdir(parents=True)
+            (fixtures / "invalid.py").write_text("def invalid(:\n")
+            commit(repo, "add invalid parser fixture")
+            git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+            add_repro(repo)
+            (repo / "value.py").write_text("def value():\n    return True\n")
+            commit(repo, "fix bug")
+
+            code, report = run_gate(repo, "--bug", "--repro-test", TEST_ID)
+
+            self.assertEqual(code, 0, report)
+            self.assertIn("- bug-repro-before: EXPECTED FAIL", report)
+            self.assertIn("- bug-repro-head: PASS", report)
+            self.assertIn("- test: PASS", report)
+            self.assertNotIn("SKIP", report)
+
+    def test_existing_python_test_made_unparseable_still_fails_protection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repository(Path(directory))
+            add_repro(repo)
+            (repo / "value.py").write_text("def value():\n    return True\n")
+            existing = repo / "tests" / "test_existing.py"
+            existing.write_text(existing.read_text() + "\ndef invalid(:\n")
+            commit(repo, "fix bug but break existing test syntax")
+
+            code, report = run_gate(repo, "--bug", "--repro-test", TEST_ID)
+
+            self.assertEqual(code, 1, report)
+            self.assertIn("- protected-tests: FAIL", report)
+            self.assertIn("tests/test_existing.py:ExistingTest.test_existing: deleted", report)
+
+
 if __name__ == "__main__":
     unittest.main()
