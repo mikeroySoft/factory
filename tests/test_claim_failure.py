@@ -139,7 +139,11 @@ class ClaimFailure(unittest.TestCase):
         assigned = {**self.fresh, "assignees": [{"login": "runner"}]}
 
         def github(args):
-            return {"login": "runner"} if args == ["api", "user"] else [assigned]
+            if args == ["api", "user"]:
+                return {"login": "runner"}
+            if args[:2] == ["issue", "view"]:
+                return assigned
+            return [assigned]
 
         with mock.patch.object(dispatch, "gh_json", side_effect=github), \
                 mock.patch.object(dispatch, "escalate") as escalate:
@@ -188,6 +192,32 @@ class ClaimFailure(unittest.TestCase):
 
         with mock.patch.object(dispatch, "gh_json", side_effect=github), \
                 mock.patch.object(dispatch, "run", side_effect=AssertionError("mutated active PR")):
+            [issue] = dispatch.frontier()
+
+        self.assertEqual(issue["held"], "assigned")
+
+    def test_stale_orphan_snapshot_is_rechecked_under_lock(self):
+        assigned = {**self.fresh, "assignees": [{"login": "runner"}]}
+        fresh = {
+            **assigned,
+            "labels": [{"name": "ready-for-human"}],
+            "assignees": [],
+        }
+
+        def github(args):
+            if args[:2] == ["issue", "list"]:
+                return [assigned]
+            if args == ["api", "user"]:
+                return {"login": "runner"}
+            if args[:2] == ["pr", "list"]:
+                return []
+            if args[:2] == ["issue", "view"]:
+                return fresh
+            raise AssertionError(f"unexpected GitHub call: {args}")
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=github), \
+                mock.patch.object(dispatch, "run", side_effect=AssertionError("mutated stale claim")), \
+                mock.patch.object(dispatch, "escalate", side_effect=AssertionError("escalated stale claim")):
             [issue] = dispatch.frontier()
 
         self.assertEqual(issue["held"], "assigned")

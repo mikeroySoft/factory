@@ -494,7 +494,26 @@ def frontier(dry_run: bool = False) -> list[dict]:
                             issue["held"] = "assigned"
                         else:
                             try:
-                                if reason := orphaned_worktree_reason(n):
+                                fresh = gh_json(
+                                    [
+                                        "issue", "view", str(n), "--repo", REPO,
+                                        "--json", "state,labels,assignees",
+                                    ]
+                                )
+                                fresh_assignees = fresh.get("assignees", [])
+                                still_owned = (
+                                    len(fresh_assignees) == 1
+                                    and fresh_assignees[0].get("login", "").casefold() == bot_login
+                                )
+                                if (
+                                    fresh.get("state", "").upper() != "OPEN"
+                                    or LABEL_AGENT not in {
+                                        label["name"] for label in fresh.get("labels", [])
+                                    }
+                                    or not still_owned
+                                ):
+                                    issue["held"] = "assigned"
+                                elif reason := orphaned_worktree_reason(n):
                                     escalate(n, reason, None, code="orphaned_claim")
                                     issue["held"] = "orphaned claim escalated"
                                 else:
@@ -504,7 +523,8 @@ def frontier(dry_run: bool = False) -> list[dict]:
                                         check=False,
                                     )
                                     if released.returncode == 0:
-                                        record("reclaim", ticket=n, reason="orphaned_claim", assignee=bot_login)
+                                        record("reclaim", ticket=n, reason="orphaned_claim",
+                                               assignee=bot_login)
                                         issue["assignees"] = []
                                         log(f"#{n}: reclaimed orphaned claim (no live lock)")
                                     else:
