@@ -131,5 +131,61 @@ class ClaimFailure(unittest.TestCase):
         self.assertFalse(dispatch.lock_held(dispatch.ticket_lock(7)))
 
 
+    def test_orphaned_claim_with_dirty_worktree_escalates(self):
+        wt = self.cfg.factory / "wt-7"
+        wt.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", "-b", "agent/7"], cwd=wt, check=True)
+        (wt / "unfinished.txt").write_text("dirty\n")
+        assigned = {**self.fresh, "assignees": [{"login": "runner"}]}
+
+        def github(args):
+            return {"login": "runner"} if args == ["api", "user"] else [assigned]
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=github), \
+                mock.patch.object(dispatch, "escalate") as escalate:
+            [issue] = dispatch.frontier()
+
+        self.assertEqual(issue["held"], "orphaned claim escalated")
+        reason = escalate.call_args.args[1]
+        self.assertIn("uncommitted changes", reason)
+        self.assertEqual(escalate.call_args.kwargs["code"], "orphaned_claim")
+
+    def test_orphaned_claim_mid_merge_is_identified_before_generic_dirty_state(self):
+        wt = self.cfg.factory / "wt-7"
+        wt.mkdir(parents=True)
+
+        def git(*args, check=True):
+            return subprocess.run(["git", *args], cwd=wt, check=check, capture_output=True, text=True)
+
+        git("init", "-q", "-b", "agent/7")
+        git("config", "user.name", "Claim Test")
+        git("config", "user.email", "claim@example.invalid")
+        tracked = wt / "tracked.txt"
+        tracked.write_text("base\n")
+        git("add", "tracked.txt")
+        git("commit", "-qm", "base")
+        git("checkout", "-qb", "other")
+        tracked.write_text("other\n")
+        git("commit", "-qam", "other")
+        git("checkout", "-q", "agent/7")
+        tracked.write_text("agent\n")
+        git("commit", "-qam", "agent")
+        git("merge", "other", check=False)
+
+        self.assertIn("mid-merge", dispatch.orphaned_worktree_reason(7))
+
+    def test_human_assignment_is_never_reclaimed(self):
+        assigned = {**self.fresh, "assignees": [{"login": "human"}]}
+
+        def github(args):
+            return {"login": "runner"} if args == ["api", "user"] else [assigned]
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=github), \
+                mock.patch.object(dispatch, "run", side_effect=AssertionError("mutated human claim")):
+            [issue] = dispatch.frontier()
+
+        self.assertEqual(issue["held"], "assigned")
+
+
 if __name__ == "__main__":
     unittest.main()

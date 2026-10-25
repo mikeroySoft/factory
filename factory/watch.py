@@ -213,6 +213,55 @@ def repeated_escalations(events: list[dict]) -> dict[str, list[dict]]:
             if len({r.get("ticket") for r in rows}) >= REPEAT_MIN}
 
 
+def orphaned_claims(cfg: config.Config) -> list[dict]:
+    """Bot-only ready claims whose per-ticket lock is not live."""
+    issues = dispatch.gh_json([
+        "issue", "list", "--repo", cfg.repo, "--state", "open",
+        "--label", config.LABEL_AGENT, "--assignee", "@me", "--limit", "1000",
+        "--json", "number,title,assignees",
+    ])
+    return [
+        issue for issue in issues
+        if len(issue.get("assignees", [])) == 1
+        and not dispatch.lock_held(cfg.factory / "locks" / f"{issue['number']}.lock")
+    ]
+
+
+def orphaned_claim_signal(cfg: config.Config, events: list[dict], dry_run: bool) -> dict | None:
+    """Signal only when the same unlocked claim survives two consecutive watch passes."""
+    issues = orphaned_claims(cfg)
+    tickets = [issue["number"] for issue in issues]
+    previous = next((
+        row for row in reversed(events) if row.get("event") == "orphaned-claim-observation"
+    ), None)
+    at = lifecycle._now()
+    snapshot = {"event": "orphaned-claim-observation", "tickets": tickets, "at": at}
+    if not dry_run and (tickets or previous and previous.get("tickets")):
+        dispatch.record("orphaned-claim-observation", tickets=tickets, at=at)
+    repeated = set(tickets) & set(previous.get("tickets", []) if previous else [])
+    if not repeated:
+        return None
+    key = "assigned ready-for-agent without a live lock"
+    rows = [row for row in (previous, snapshot) if row is not None]
+    return {
+        "fingerprint": fingerprint("orphaned_claim", key),
+        "kind": "orphaned_claim",
+        "stage": "dispatch",
+        "key": key,
+        "rows": rows,
+        "excerpt": "\n".join(
+            f"- #{issue['number']}: {issue.get('title', '')}" for issue in issues
+            if issue["number"] in repeated
+        ),
+        "log": None,
+        "latest": at,
+        "command": (
+            f"gh issue list --repo {shlex.quote(cfg.repo)} --state open "
+            f"--label {shlex.quote(config.LABEL_AGENT)} --assignee @me"
+        ),
+    }
+
+
 def signals(cfg: config.Config, events: list[dict]) -> list[dict]:
     """Every observed failure, newest journal evidence first within each fingerprint."""
     found: dict[str, dict] = {}
@@ -354,6 +403,8 @@ def run_pass(cfg: config.Config, dry_run: bool = False) -> list[dict]:
               for r in rows if not r.get("commented") and not r.get("closed")}
     engine, install = cfg.watch_engine_repo, cfg.repo
     current = signals(cfg, events)
+    if orphan := orphaned_claim_signal(cfg, events, dry_run):
+        current.append(orphan)
     latest_by_fingerprint = {signal["fingerprint"]: signal["latest"] for signal in current}
     listing = None
     filed = []

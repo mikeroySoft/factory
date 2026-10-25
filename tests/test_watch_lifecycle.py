@@ -63,6 +63,7 @@ class WatchLifecycleTest(unittest.TestCase):
                                            "issue": issue, "at": at, **fields})
         return at
 
+    @mock.patch.object(watch, "orphaned_claims", new=lambda cfg: [])
     def run_watch(self, states: dict[int, str], *, signals=(), dry_run=False):
         calls = []
 

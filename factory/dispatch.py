@@ -417,7 +417,25 @@ def open_blockers(number: int, body: str) -> list[int]:
     return sorted(blockers)
 
 
-def frontier() -> list[dict]:
+def orphaned_worktree_reason(n: int) -> str | None:
+    """Why an unlocked claimed worktree needs human recovery; None means it is safe to resume."""
+    wt = FACTORY / f"wt-{n}"
+    if not wt.exists():
+        return None
+    if not wt.is_dir():
+        return f"worktree path is not a directory: {wt}"
+    merging = run(["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"], cwd=wt, check=False)
+    if merging.returncode == 0:
+        return f"worktree is mid-merge: {wt}"
+    status = run(["git", "status", "--porcelain", "--untracked-files=all"], cwd=wt, check=False)
+    if status.returncode != 0:
+        return f"worktree state is unreadable: {wt}"
+    if status.stdout:
+        return f"worktree has uncommitted changes: {wt}"
+    return None
+
+
+def frontier(dry_run: bool = False) -> list[dict]:
     """Open `ready-for-agent` issues; an ineligible one carries `held` naming why, never ranked."""
     issues = gh_json(
         [
@@ -433,17 +451,51 @@ def frontier() -> list[dict]:
             "number,title,body,labels,assignees,createdAt",
         ]
     )
+    bot_login = None
     for issue in issues:
         n = issue["number"]
         if any(label.get("name") == config.LABEL_INITIATIVE for label in issue.get("labels", [])):
             issue["held"] = "initiative record"
         elif issue["assignees"]:
-            issue["held"] = "assigned"
-        elif blockers := open_blockers(n, issue.get("body", "")):
+            if len(issue["assignees"]) == 1:
+                bot_login = bot_login or gh_json(["api", "user"])["login"].casefold()
+                assigned_to_bot = issue["assignees"][0].get("login", "").casefold() == bot_login
+            else:
+                assigned_to_bot = False
+            lock_path = FACTORY / "locks" / f"{n}.lock"
+            if assigned_to_bot and dry_run:
+                issue["held"] = "assigned" if lock_held(lock_path) else "orphaned claim (would reclaim)"
+            elif assigned_to_bot:
+                with ticket_lock(n).open("w") as lock_fd:
+                    try:
+                        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except OSError:
+                        issue["held"] = "assigned"
+                    else:
+                        try:
+                            if reason := orphaned_worktree_reason(n):
+                                escalate(n, reason, None, code="orphaned_claim")
+                                issue["held"] = "orphaned claim escalated"
+                            else:
+                                released = run(
+                                    ["gh", "issue", "edit", str(n), "--repo", REPO,
+                                     "--remove-assignee", "@me"],
+                                    check=False,
+                                )
+                                if released.returncode == 0:
+                                    record("reclaim", ticket=n, reason="orphaned_claim", assignee=bot_login)
+                                    issue["assignees"] = []
+                                    log(f"#{n}: reclaimed orphaned claim (no live lock)")
+                                else:
+                                    issue["held"] = "assigned (orphan reclaim failed)"
+                        finally:
+                            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            else:
+                issue["held"] = "assigned"
+        if "held" not in issue and (blockers := open_blockers(n, issue.get("body", ""))):
             issue["held"] = f"blocked by {', '.join(f'#{b}' for b in blockers)}"
-        else:
-            continue
-        log(f"#{n}: skipped ({issue['held']})")
+        if "held" in issue:
+            log(f"#{n}: skipped ({issue['held']})")
     return issues
 
 
@@ -1511,7 +1563,8 @@ ESCALATION_CODES = frozenset({
     "pr_checks_failed", "review_revise", "approval_drift", "approval_missing",
     "ci_failed", "ci_runner", "refresh_head", "refresh_conflict", "refresh_empty",
     "gh_failed", "review_intake", "manager_failed", "manager_exhausted",
-    "manager_human", "pr_feedback", "pr_stale", "lease_refused", "dispatcher_error", "no_change",
+    "manager_human", "pr_feedback", "pr_stale", "lease_refused", "dispatcher_error", "orphaned_claim",
+    "no_change",
 })
 
 
@@ -3314,7 +3367,7 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
             if execution:
                 execution.wait("capacity_reached", mode="admission", active=len(active), max_active=MAX_ACTIVE)
             return
-        rows = frontier()
+        rows = frontier(dry_run=True) if dry_run else frontier()
         if all(issue.get("held") for issue in rows):
             log("frontier empty, nothing to do")
             return

@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -712,6 +713,100 @@ class LocalCLI(unittest.TestCase):
         self.assertFalse(any(r.get("event") == "claimed" for r in events))
         self.assertFalse((self.repo / ".factory" / "wt-7").exists())
         self.assertEqual(self.git("symbolic-ref", "HEAD").stdout.strip(), "refs/heads/main")
+
+
+    def test_sigterm_orphan_is_reclaimed_but_live_claim_is_held(self):
+        marker = self.base / "worker.pid"
+        runs = self.base / "worker-runs"
+        self.worker.write_text(
+            "import os, subprocess, time\n"
+            "from pathlib import Path\n"
+            f"runs = Path({str(runs)!r})\n"
+            "number = int(runs.read_text()) + 1 if runs.exists() else 1\n"
+            "runs.write_text(str(number))\n"
+            "if number == 1:\n"
+            f"    Path({str(marker)!r}).write_text(str(os.getpid()))\n"
+            "    time.sleep(60)\n"
+            "else:\n"
+            "    Path('change.txt').write_text('recovered\\n')\n"
+            "    subprocess.run(['git', 'add', 'change.txt'], check=True)\n"
+            "    subprocess.run(['git', 'commit', '-qm', 'recovered'], check=True)\n"
+        )
+        gh = self.bin / "gh"
+        gh.write_text(
+            GH.replace(
+                '"assignees": [], "state": "OPEN"',
+                '"assignees": ([{"login": "runner"}] if s.get("assigned") else []), "state": "OPEN"',
+            ).replace(
+                'print(json.dumps([issue]) if s.get("sync") and not s.get("merged") else "[]")',
+                'print(json.dumps([issue]) if not s.get("merged") else "[]")',
+            ).replace(
+                'elif a[0] == "api" and "/compare/" in a[1]:',
+                'elif a == ["api", "user"]:\n'
+                '    print(json.dumps({"login": "runner"}))\n'
+                'elif a[0] == "api" and "/dependencies/blocked_by" in a[1]:\n'
+                '    print("[]")\n'
+                'elif a[0] == "api" and "/compare/" in a[1]:',
+            ).replace(
+                'elif a[:2] not in (["issue", "edit"], ["issue", "comment"], ["pr", "edit"], ["pr", "comment"]):',
+                'elif a[:2] == ["issue", "edit"]:\n'
+                '    s.setdefault("issue_edits", []).append(a)\n'
+                '    if "--add-assignee" in a: s["assigned"] = True\n'
+                '    if "--remove-assignee" in a: s["assigned"] = False\n'
+                '    p.write_text(json.dumps(s))\n'
+                'elif a[:2] not in (["issue", "comment"], ["pr", "edit"], ["pr", "comment"]):',
+            )
+        )
+        self.write_config(
+            worker=[sys.executable, str(self.worker)],
+            reviewer=[sys.executable, "-c", "print('VERDICT: APPROVE')"],
+        )
+        config_path = self.repo / ".factory.toml"
+        config_path.write_text(config_path.read_text().replace(
+            "max_attempts = 2\n", "max_attempts = 2\nmax_active = 2\n",
+        ))
+        self.commit_config()
+
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "factory", "dispatch"],
+            cwd=self.repo, env=self.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+
+        def stop() -> None:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            if marker.exists():
+                try:
+                    os.kill(int(marker.read_text()), 15)
+                except ProcessLookupError:
+                    pass
+
+        self.addCleanup(stop)
+        deadline = time.monotonic() + 10
+        while not marker.exists() and proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(marker.exists(), proc.stdout.read() if proc.poll() is not None else "worker did not start")
+
+        live = self.cli("dispatch", "--dry-run")
+        self.assertIn("#7: skipped (assigned)", live.stdout + live.stderr)
+        self.assertEqual(len(json.loads(self.state.read_text()).get("issue_edits", [])), 1)
+
+        proc.terminate()
+        proc.wait(timeout=10)
+        proc.stdout.close()
+        os.kill(int(marker.read_text()), 15)
+        self.cli("dispatch")
+
+        edits = json.loads(self.state.read_text())["issue_edits"]
+        assignment_changes = [
+            "add" if "--add-assignee" in edit else "remove"
+            for edit in edits if "--add-assignee" in edit or "--remove-assignee" in edit
+        ]
+        self.assertEqual(assignment_changes, ["add", "remove", "add"])
+        events = lifecycle.read_events(self.events)
+        self.assertEqual([row["ticket"] for row in events if row.get("event") == "reclaim"], [7])
+        self.assertEqual(len([row for row in events if row.get("event") == "claimed"]), 2)
 
 
 class LeaseRefusedCLI(unittest.TestCase):

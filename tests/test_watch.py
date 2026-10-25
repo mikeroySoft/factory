@@ -71,6 +71,7 @@ class WatchTest(unittest.TestCase):
             mock.patch.object(dispatch, "run", self.gh),
             mock.patch.object(watch, "failed_units", return_value=[]),
             mock.patch.object(watch, "runtime_errors", return_value=[]),
+            mock.patch.object(watch, "orphaned_claims", return_value=[]),
         ]
         for patch in patches:
             patch.start()
@@ -290,6 +291,28 @@ class WatchTest(unittest.TestCase):
         self.assertEqual(self.gh.created, [])
 
 
+    def test_orphaned_claim_files_only_after_two_consecutive_observations(self) -> None:
+        issue = {"number": 7, "title": "stalled", "assignees": [{"login": "runner"}]}
+        with mock.patch.object(watch, "orphaned_claims", side_effect=([issue], [], [issue], [issue])):
+            self.assertEqual(watch.run_pass(self.cfg), [])
+            self.assertEqual(watch.run_pass(self.cfg), [])
+            self.assertEqual(watch.run_pass(self.cfg), [])
+            [filed] = watch.run_pass(self.cfg)
+
+        self.assertEqual((filed["kind"], filed["key"]), (
+            "orphaned_claim", "assigned ready-for-agent without a live lock",
+        ))
+        self.assertEqual(len(self.gh.created), 1)
+        observations = self.events("orphaned-claim-observation")
+        self.assertEqual([row["tickets"] for row in observations], [[7], [], [7], [7]])
+
+    def test_orphaned_claim_observation_excludes_a_live_lock(self) -> None:
+        issue = {"number": 7, "title": "running", "assignees": [{"login": "runner"}]}
+        with mock.patch.object(dispatch, "gh_json", return_value=[issue]), \
+                mock.patch.object(dispatch, "lock_held", return_value=True):
+            self.assertEqual(watch.orphaned_claims(self.cfg), [])
+
+
 class HostFakeGh(FakeGh):
     def __call__(self, cmd, **kwargs) -> subprocess.CompletedProcess:
         if cmd[:3] == ["gh", "issue", "create"]:
@@ -331,6 +354,7 @@ class PersistentHostConditionTest(unittest.TestCase):
             mock.patch.object(dispatch, "run", self.gh),
             mock.patch.object(watch, "failed_units", return_value=[]),
             mock.patch.object(watch, "runtime_errors", return_value=[]),
+            mock.patch.object(watch, "orphaned_claims", return_value=[]),
         ):
             patch.start()
             self.addCleanup(patch.stop)
