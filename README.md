@@ -752,12 +752,30 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    justification and worker guidance, to apply `factory-add-only-override` and
    requeue the ticket when the ticket requires the existing add-only edit or an
    obsolete wording-only assertion must be removed; a human may apply it directly.
-   It does not authorize `[gate].protected_paths`. Only a human can apply
-   `factory-protected-override` to bypass both classes, including during a
-   refresh onto moved main. An `upstream sync:` ticket's worker otherwise gets
-   no override, only upstream-authored content is exempt (`--upstream`, above).
-   Otherwise make protected changes outside the worker flow. Then `conflict-markers`,
-   your `[[gate.check]]` list in order, and a `leak-scan`
+   It does not authorize `[gate].protected_paths`. On `bug` tickets the attempt
+   gate also compares every existing Python test function and every Rust
+   `#[test]` function (including tests inside `src/*.rs`) with the base. Deleting
+   or changing one, including adding `@unittest.skip`, pytest skip/xfail, or
+   Rust `#[ignore]`, fails as `protected-tests`; other languages retain the
+   configured path-based add-only policy. The `factory-protected-override` label
+   bypasses both path and function protection; a ticket line
+   `factory-protected-override: <reason>` bypasses only function protection on
+   bug tickets. An `upstream sync:` ticket's worker otherwise gets no
+   override, only upstream-authored content is exempt (`--upstream`, above).
+   A bug worker must add the reproducing test in its own commit before the fix
+   and put `Repro test: <test ID>` in its handoff. The test may be added during
+   a later retry, review bounce, or manager FIX, not just the first branch commit.
+   The dispatcher finds the earliest first-parent commit after base that adds
+   the declared test and requires a subsequent commit. It runs the test at its
+   introduction commit (it must fail) and at HEAD (it must pass);
+   both results are written to the gate report and the gate
+   decision trace. A `No repro test: <reason>` line in the ticket body or an
+   authenticated triage account's `Triage:` comment records the nonempty reason
+   and skips only this fail-before/pass-after check. Other commenters and worker
+   handoffs cannot grant this exemption; triage comments grant no protected-path
+   or existing-test override. Otherwise make
+   protected changes outside the worker flow. Then `conflict-markers`, your
+   `[[gate.check]]` list in order, and a `leak-scan`
    run. Checks marked `exclusive` serialise on a host-wide lock. Every check
    has a timeout. `[[gate.check]]` has three tiers, selected by `when`
    (`factory gate --tier <tier>`; anything else is a config error naming the

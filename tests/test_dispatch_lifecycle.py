@@ -901,3 +901,64 @@ class RetryDecisionTraceTest(unittest.TestCase):
             and row["causes"][0].get("relation") == "retries"
         ]
         self.assertEqual(retry_sources, [revise["decision_id"], failed_gate["decision_id"]])
+
+
+class TriageExemptionLifecycleTest(unittest.TestCase):
+    setUp = LocalCLI.setUp
+    git = LocalCLI.git
+    write_config = LocalCLI.write_config
+    commit_config = LocalCLI.commit_config
+    cli = LocalCLI.cli
+
+    def configure_bug(self, author="factory-bot"):
+        gh = self.bin / "gh"
+        gh.write_text(GH.replace(
+            'if s.get("sync"):',
+            'issue["labels"].append({"name": "bug"})\n'
+            'issue["comments"] = [{"author": {"login": ' + repr(author) + '}, '
+            '"body": "Triage: investigate hardware failure\\n\\n'
+            'Agent brief: fix it\\nNo repro test: requires unavailable hardware"}]\n'
+            'if a[:2] == ["api", "user"]:\n'
+            '    print("factory-bot")\n'
+            '    raise SystemExit(0)\n'
+            'if s.get("sync"):',
+        ))
+
+    def test_trusted_triage_exemption_survives_retry_and_review_bounce(self):
+        self.configure_bug()
+        marker = self.base / "first-check"
+        check = self.base / "check.py"
+        check.write_text(
+            "from pathlib import Path\n"
+            f"p = Path({str(marker)!r})\n"
+            "exists = p.exists()\np.touch()\nraise SystemExit(0 if exists else 1)\n"
+        )
+        self.write_config(check=[sys.executable, str(check)])
+        self.commit_config()
+
+        self.cli("dispatch", "--ticket", "7")
+
+        events = lifecycle.read_events(self.events)
+        attempts = [row for row in events if row.get("event") == "attempt"]
+        self.assertEqual([row["gate"] for row in attempts], ["FAIL", "PASS", "PASS"])
+        gates = [row for row in events if row.get("stage") == "gate" and row.get("event") == "decision"]
+        self.assertEqual(len(gates), 3)
+        for row in gates:
+            summaries = [item["summary"] for item in row["inputs"] if item["kind"] == "repro_test"]
+            self.assertEqual(summaries, [
+                "bug-repro: SKIP (No repro test: requires unavailable hardware)",
+            ])
+        self.assertTrue(any(row.get("event") == "approved" for row in events))
+
+    def test_spoofed_triage_comment_cannot_skip_real_bug_gate(self):
+        self.configure_bug(author="untrusted")
+
+        self.cli("dispatch", "--ticket", "7")
+
+        events = lifecycle.read_events(self.events)
+        attempts = [row for row in events if row.get("event") == "attempt"]
+        self.assertEqual([row["gate"] for row in attempts], ["FAIL", "FAIL"])
+        report = (self.repo / ".factory" / "wt-7" / ".factory" / "gate-report-7.md").read_text()
+        self.assertIn("bug ticket needs a `Repro test:` handoff line", report)
+        self.assertNotIn("- bug-repro: SKIP", report)
+        self.assertFalse(any(row.get("event") == "approved" for row in events))
