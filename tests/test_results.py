@@ -358,6 +358,20 @@ class ResultsTest(unittest.TestCase):
         latest = results.latest_result(self.cfg, incomplete_ticket)
         self.assertEqual(latest["status"], "unavailable")
 
+    def test_origin_review_iteration_is_scoped_to_its_ticket(self) -> None:
+        ticket = 18
+        metadata = {"status": "complete", "bytes": 1, "sha256": "digest"}
+        first, current = "5" * 40, "6" * 40
+        events = [
+            {"event": "attempt", "ticket": ticket, "head": first, "handoff": metadata},
+            {"event": "review", "ticket": 19, "verdict": "REVISE"},
+            {"event": "attempt", "ticket": ticket, "head": current, "handoff": metadata},
+        ]
+        self.assertEqual(results._origin(events, ticket, "digest", 1), (first, "complete"))
+
+        events.insert(1, {"event": "review", "ticket": ticket, "verdict": "REVISE"})
+        self.assertEqual(results._origin(events, ticket, "digest", 1), (current, "complete"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -368,8 +368,12 @@ def _origin(events: list[dict], ticket: int, digest: str | None, size: int | Non
     """Return the first matching attempt observation in the current review iteration."""
     if digest is None or size is None:
         return None, None
-    retry = 1 + max((index for index, event in enumerate(events)
-                     if event.get("event") == "review" and event.get("verdict") == "REVISE"), default=-1)
+    retry = 1 + max((
+        index for index, event in enumerate(events)
+        if event.get("event") == "review"
+        and event.get("ticket") == ticket
+        and event.get("verdict") == "REVISE"
+    ), default=-1)
     for event in events[retry:]:
         handoff = event.get("handoff")
         if (
