@@ -7,11 +7,11 @@ there. This variant separates the two candidate explanations:
   (a) the contract does not ask for enough, or
   (b) the packet withheld evidence the defect needs.
 
-So it runs the production path instead: the real reviewer argv, tools enabled, inside a
-throwaway clone checked out at the case head with `refs/remotes/origin/main` set to the
-case's review base — so `git diff origin/main..HEAD` resolves exactly as it does in a
-worker worktree, and the reviewer can read any file and the live issue itself. No packet
-envelope is appended.
+So it runs the production path instead: the real reviewer argv, tools enabled, in a
+throwaway review directory containing `review.diff` and a `snapshot` clone at the case
+head. The clone's `refs/remotes/origin/main` is the case review base, so both the captured
+policy and diff come from the same refs production uses. The reviewer can read any file
+and the live issue itself. No packet envelope is appended.
 
 Deliberate deviations from production, applied identically to every run: `--mode text`,
 `--no-title`, `--max-time`, and `--auto-approve` (a print-mode approval prompt would
@@ -71,12 +71,13 @@ def oracle(case: str) -> dict:
     return json.loads((EXP / "cases" / case / "oracle.json").read_text())
 
 
-def capture(contract: str, case: str) -> str:
+def capture(contract: str, case: str, source: pathlib.Path) -> str:
     with tempfile.TemporaryDirectory(prefix="cal-capture-") as scratch:
         out = pathlib.Path(scratch) / "prompt.txt"
         subprocess.run([sys.executable, str(EXP / "capture_contract.py"),
                         str(checkout(CONTRACTS[contract])), scratch, case.split("-")[0],
-                        str(EXP / "cases" / case / "sources/gate-report.md"), str(out)],
+                        str(EXP / "cases" / case / "sources/gate-report.md"), str(out),
+                        str(source), oracle(case)["head"]],
                        check=True, capture_output=True, text=True, cwd=scratch)
         return out.read_text()
 
@@ -92,15 +93,18 @@ def worktree(case: str, dest: pathlib.Path) -> None:
 
 
 def review(contract: str, case: str, sample: int) -> dict:
-    prompt = capture(contract, case)
     root = pathlib.Path(tempfile.mkdtemp(prefix=f"cal-tools-{case}-"))
-    wt = root / "repo"
+    wt = root / "snapshot"
     try:
         worktree(case, wt)
+        diff = subprocess.run(["git", "diff", "origin/main..HEAD"], cwd=wt, check=True,
+                              capture_output=True, text=True).stdout
+        (root / "review.diff").write_text(diff)
+        prompt = capture(contract, case, wt)
         started = time.monotonic()
         proc = subprocess.run(["omp", "-p", "--mode", "text", "--no-session", "--no-title",
                                "--auto-approve", "--max-time", "600", "--model", MODEL, prompt],
-                              cwd=wt, capture_output=True, text=True, timeout=TIMEOUT,
+                              cwd=root, capture_output=True, text=True, timeout=TIMEOUT,
                               stdin=subprocess.DEVNULL, check=False)
         elapsed = round(time.monotonic() - started, 1)
         dirty = subprocess.run(["git", "status", "--porcelain"], cwd=wt,
