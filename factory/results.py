@@ -365,16 +365,10 @@ def _acceptance(cfg: Any, ticket: int, head: str, events: list[dict]) -> tuple[d
 
 
 def _origin(events: list[dict], ticket: int, digest: str | None, size: int | None) -> tuple[str | None, str | None]:
-    """Return the first matching attempt observation in the current review iteration."""
+    """Return the first matching attempt observation, not a claim of authorship."""
     if digest is None or size is None:
         return None, None
-    retry = 1 + max((
-        index for index, event in enumerate(events)
-        if event.get("event") == "review"
-        and event.get("ticket") == ticket
-        and event.get("verdict") == "REVISE"
-    ), default=-1)
-    for event in events[retry:]:
+    for event in events:
         handoff = event.get("handoff")
         if (
             event.get("event") != "attempt" or event.get("ticket") != ticket
