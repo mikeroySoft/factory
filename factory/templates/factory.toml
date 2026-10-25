@@ -69,7 +69,8 @@
 # USD per million tokens) prices events that report tokens but no cost.
 
 [review]
-# {prompt} = inline review prompt text. Output must end with `VERDICT: APPROVE` or `VERDICT: REVISE`.
+# {prompt} = inline review prompt text. Output ends with one fenced JSON findings tally,
+# then the legacy `VERDICT: APPROVE` or `VERDICT: REVISE` line.
 # Keep the reviewer on a different model family than [manager] so the two verdicts are independent.
 # command = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1", "{prompt}"]
 # json_mode = true  # add/replace `--mode json` for an OMP-compatible reviewer not named `omp`
