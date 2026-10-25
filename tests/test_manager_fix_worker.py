@@ -104,6 +104,21 @@ class ManagerFixWorkerSelectionTest(unittest.TestCase):
         self.assertEqual(follow_up["chosen"], "ci-fix")
         self.assertIn("override", follow_up["rationale"])
 
+    def test_label_gated_sticky_worker_ignores_worker_order(self) -> None:
+        self.cfg.workers = {
+            "chore": ["chore-worker", "{prompt}"],
+            "prime": ["prime-worker", "{prompt}"],
+            "ci-fix": ["fix-worker", "{prompt}"],
+            "default": ["default-worker", "{prompt}"],
+        }
+        dispatch.record_worker_selection(10, {"bug", "harness-pilot"})
+
+        command, follow_up = self.fix_round(10, {"bug", "harness-pilot"}, "chore")
+
+        self.assertEqual(command, "prime-worker")
+        self.assertEqual(follow_up["chosen"], "prime")
+
+
 
 if __name__ == "__main__":
     unittest.main()

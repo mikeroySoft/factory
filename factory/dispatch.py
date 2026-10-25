@@ -1066,7 +1066,11 @@ def record_worker_selection(
         if selected_worker
         else labels
     )
-    chosen = cfg.worker_key(resolved_labels)
+    chosen = (
+        ticket_worker
+        if selected_worker and ticket_worker in cfg.worker_select_label
+        else cfg.worker_key(resolved_labels)
+    )
     causes = [{"decision_id": cause, "relation": relation}] if cause else []
     version = cfg.worker_version.get(chosen)
     options = _worker_options(labels, resolved_labels, chosen, selected_worker)
