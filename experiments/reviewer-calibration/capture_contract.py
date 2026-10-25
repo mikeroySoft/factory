@@ -35,6 +35,10 @@ if "expected_head" in inspect.signature(dispatch.review).parameters:
         ["git", "rev-parse", "HEAD"], cwd=scratch, check=True,
         capture_output=True, text=True,
     ).stdout.strip()
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", head],
+        cwd=scratch, check=True, capture_output=True,
+    )
     dispatch.review(scratch, int(number), gate_report, head)
 else:
     dispatch.review(scratch, int(number), gate_report)
