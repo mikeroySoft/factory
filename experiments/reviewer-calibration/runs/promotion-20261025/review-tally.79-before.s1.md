@@ -1,1 +1,23 @@
+**Inputs note:** `./review.diff` and `./snapshot` were absent from the sandbox; reviewed `git diff 8fba9c5..HEAD` (the issue's stated base → gated head `7bd5805`) in the checkout instead. Reported to `xd://report_issue`.
 
+## Standards
+No AGENTS.md/CONTRIBUTING.md in repo; `docs/` are plans. CHANGELOG entry follows the existing `Unreleased` + `(#N)` style. Gate command (`python -m unittest discover -s tests`) unchanged. Rendering uses existing `h()`/`pre()` text-node helpers and `safeSourceURL` — no HTML interpolation of source bodies.
+
+## Spec (issue #79)
+Collector satisfies schema 1: required envelope keys, `REVISION_FIELDS` match the normative 14-field list, `observation_id` excludes timestamps/URLs/order, bounds are the fixed constants, initial/final head reads with race → `unknown`, one-source failure preserves independent facts, Factory review requires accepted `review/result` lifecycle provenance (matches `dispatch.review` emitted fields: `returncode/parsed/head/actual_head/verdict`, exit `approved|product_feedback`). Runtime-JSON path is untouched and already audited network-free by `tests/test_runtime.py`. Legacy `checks/comments/verdicts/review_decision/gate_text` retained (asserted in `FeedbackSnapshotTest`).
+
+One concrete defect against the schema's `producer.revision` rule ("verifiable source/build revision when available, otherwise null"): `dashboard.py:875-878` runs `git rev-parse HEAD` from the installed `factory/` package dir with no toplevel check. Under the documented `uv tool install`/`pip install --user` channels the package lives under `$HOME`; if `$HOME` is a git worktree (dotfiles repo with `*` ignored — `git status --porcelain -- .` then returns empty) or the package sits in a project `.venv`, the emitted revision is the *unrelated* repo's HEAD, not a Factory source revision. Fix: null unless `git rev-parse --show-toplevel` equals `source_root.parent` (and it is clean).
+
+## Plan drift
+No plan recorded. All changed files are within the issue's Touches list (`feedback.py`, `dashboard.py`, `briefing.py`, `dashboard.html`, `tests/test_{factory,briefing,feedback}.py`, `README.md`, `CHANGELOG.md`). Gate report covers only conflict-markers/test/leak-scan; exit-gate 5 smoke evidence (disposable-repo `--json` run, live browser Review drawer/Inbox check, `sources_for` bundle, no-mutation record) is not in the gate report — a snapshot excerpt appears in the handoff comment, browser/no-mutation evidence does not. Not itself a code defect.
+
+```json
+{"verdict":"REVISE","findings":[
+{"severity":"important","pass":"bug","path":"factory/dashboard.py","line":876,"summary":"producer.revision runs `git rev-parse HEAD` from the installed package dir without verifying the git toplevel is the Factory source checkout. Under documented installs (`uv tool install`/`pip install --user`) the package lives under $HOME; if $HOME (dotfiles repo with ignore-all) or a project .venv is a git worktree, `status --porcelain -- .` is empty and an unrelated repo's HEAD is emitted as the producer revision — violates schema rule \"verifiable source/build revision when available, otherwise null\". Null the revision unless `git rev-parse --show-toplevel` == source_root.parent."},
+{"severity":"nit","pass":"bug","path":"factory/dashboard.py","line":216,"summary":"Shared transport now raises bare \"GitHub read failed\" for the pre-existing full-snapshot query too; `snapshot()['errors']` loses gh stderr (auth required / not found) that the existing dashboard error banner surfaced. Keep stderr for the main GRAPHQL call, sanitize only feedback reads if credential leakage is the concern."},
+{"severity":"nit","pass":"bug","path":"factory/dashboard.py","line":885,"summary":"feedback.collect runs serially per selected PR on the request thread under `_cache_lock` (≥6 gh subprocesses, up to 30 s each). With SNAPSHOT_TTL=15 s, a handful of active PRs can push snapshot time past the TTL so every /api/snapshot poll recomputes and blocks; issue asks to preserve full-snapshot cadence."},
+{"severity":"nit","pass":"spec","path":"factory/feedback.py","line":258,"summary":"REST pull reviews expose `submitted_at`, not `updated_at`, so `source_updated_at` is always null for `review` items and any truncated review body always reports `change_detection_incomplete`; GraphQL `PullRequestReview.updatedAt` is available if provider update time is wanted."},
+{"severity":"nit","pass":"spec","path":"README.md","line":21,"summary":"Agent brief asked README/CHANGELOG documentation to include a sanitized real schema-1 example; README section describes the schema in prose only (example exists only in the handoff comment)."}
+]}
+```
+VERDICT: REVISE
