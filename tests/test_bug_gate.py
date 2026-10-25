@@ -751,3 +751,81 @@ class AuthenticatedTriageGateTest(unittest.TestCase):
             )
         self.assertEqual(flags, {"protected_override": False})
         login.assert_not_called()
+
+
+class MultiRoundReproductionGateTest(unittest.TestCase):
+    TEST_ID = "tests.test_later_regression.LaterRegressionTest.test_value"
+
+    def earlier_test_and_fix(self, root: Path, *, fixed: bool = False) -> Path:
+        repo = repository(root)
+        (repo / "later_value.py").write_text(f"def value():\n    return {fixed}\n")
+        commit(repo, "base with second bug")
+        git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+        add_repro(repo)
+        (repo / "value.py").write_text("def value():\n    return True\n")
+        commit(repo, "fix original bug")
+        return repo
+
+    def add_later_repro(self, repo: Path) -> None:
+        (repo / "tests" / "test_later_regression.py").write_text(
+            "import unittest\n\n"
+            "from later_value import value\n\n"
+            "class LaterRegressionTest(unittest.TestCase):\n"
+            "    def test_value(self):\n"
+            "        self.assertTrue(value())\n"
+        )
+        commit(repo, "reproduce later finding")
+
+    def test_later_test_commit_records_failure_before_and_pass_after_fix(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.earlier_test_and_fix(Path(directory))
+            self.add_later_repro(repo)
+            (repo / "later_value.py").write_text("def value():\n    return True\n")
+            commit(repo, "fix later finding")
+
+            code, report = run_gate(repo, "--bug", "--repro-test", self.TEST_ID)
+
+            self.assertEqual(code, 0, report)
+            self.assertIn("- bug-repro-before: EXPECTED FAIL", report)
+            self.assertIn("- bug-repro-head: PASS", report)
+            self.assertIn("- test: PASS", report)
+
+    def test_later_reproduction_introduced_only_at_head_needs_a_fix_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.earlier_test_and_fix(Path(directory), fixed=True)
+            self.add_later_repro(repo)
+
+            code, report = run_gate(repo, "--bug", "--repro-test", self.TEST_ID)
+
+            self.assertEqual(code, 1, report)
+            self.assertIn("- bug-repro: FAIL", report)
+            self.assertIn("test commit followed by a separate fix commit", report)
+            self.assertNotIn("- bug-repro-before:", report)
+            self.assertIn("- test: PASS", report)
+
+    def test_later_test_that_passes_at_introduction_does_not_reproduce_bug(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.earlier_test_and_fix(Path(directory), fixed=True)
+            self.add_later_repro(repo)
+            (repo / "README.md").write_text("claimed later fix\n")
+            commit(repo, "claimed fix for later finding")
+
+            code, report = run_gate(repo, "--bug", "--repro-test", self.TEST_ID)
+
+            self.assertEqual(code, 1, report)
+            self.assertIn("- bug-repro-before: FAIL", report)
+            self.assertIn("test does not reproduce the bug", report)
+            self.assertNotIn("EXPECTED FAIL", report)
+            self.assertIn("- test: PASS", report)
+
+    def test_test_already_present_at_base_is_not_a_new_reproduction(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.earlier_test_and_fix(Path(directory))
+
+            code, report = run_gate(
+                repo, "--bug", "--repro-test", "tests.test_existing.ExistingTest.test_existing"
+            )
+
+            self.assertEqual(code, 1, report)
+            self.assertIn("- bug-repro: FAIL", report)
+            self.assertNotIn("- bug-repro-before:", report)
