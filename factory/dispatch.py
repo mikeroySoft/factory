@@ -1062,6 +1062,7 @@ def _record_review_decision(
         else "reviewer tooling failed before a verdict" if verdict is None
         else "review evidence was rejected and failed closed to REVISE"
     )
+    decision_reason = rejection_reason or reason
     cause = _latest_decision_id(n, {"gate"})
     review_ref = comment_url or (f"https://github.com/{REPO}/pull/{pr}" if pr else f".factory/review-{n}.md")
     inputs = [
@@ -1684,6 +1685,91 @@ def _review_plan(n: int) -> str:
     return f"Path: `{path}`\nSHA-256: `{digest}`\n\n{data.decode(errors='replace')}"
 
 
+def _review_policy(wt: Path, base: str) -> tuple[str | None, int]:
+    """Policy text and nit cap from the reviewed base, never the candidate head."""
+    shown = subprocess.run(
+        ["git", "show", f"{base}:{cfg.review_policy}"],
+        cwd=wt,
+        check=False,
+        capture_output=True,
+        text=True,
+        errors="replace",
+    )
+    if shown.returncode:
+        return None, 5
+    policy = shown.stdout
+    match = re.search(r"(?im)^\s*(?:[-*]\s*)?nit cap\s*:\s*(\d+)\s*$", policy)
+    return policy, int(match.group(1)) if match else 5
+
+
+def _parse_review_output(
+    findings: str, nit_cap: int
+) -> tuple[str, str, bool, dict[str, int] | None, str | None]:
+    """Validate and cap structured findings; return the effective verdict and counts."""
+    verdicts = list(re.finditer(r"(?m)^VERDICT: (APPROVE|REVISE)[ \t]*$", findings))
+    verdict_lines = re.findall(r"(?m)^VERDICT:.*$", findings)
+    final_verdict = (
+        verdicts[0].group(1)
+        if len(verdict_lines) == len(verdicts) == 1 and verdicts[0].end() == len(findings)
+        else None
+    )
+    blocks = list(re.finditer(r"```json[ \t]*\r?\n(.*?)\r?\n```", findings, re.DOTALL))
+    if len(blocks) != 1 or final_verdict is None:
+        return findings, "REVISE", False, None, "unparsed_verdict"
+    try:
+        tally = json.loads(blocks[0].group(1))
+    except (json.JSONDecodeError, TypeError):
+        return findings, "REVISE", False, None, "unparsed_verdict"
+    if (
+        not isinstance(tally, dict)
+        or tally.get("verdict") not in {"APPROVE", "REVISE"}
+        or not isinstance(tally.get("findings"), list)
+    ):
+        return findings, "REVISE", False, None, "unparsed_verdict"
+    rows = tally["findings"]
+    if not all(
+        isinstance(row, dict)
+        and row.get("severity") in {"important", "nit", "pre-existing"}
+        and row.get("pass") in {"bug", "security", "spec"}
+        and isinstance(row.get("path"), str)
+        and bool(row["path"])
+        and type(row.get("line")) is int
+        and row["line"] > 0
+        and isinstance(row.get("summary"), str)
+        and bool(row["summary"].strip())
+        for row in rows
+    ):
+        return findings, "REVISE", False, None, "unparsed_verdict"
+    counts = {
+        "important": sum(row["severity"] == "important" for row in rows),
+        "nit": sum(row["severity"] == "nit" for row in rows),
+        "pre_existing": sum(row["severity"] == "pre-existing" for row in rows),
+    }
+    expected = "REVISE" if counts["important"] else "APPROVE"
+    reason = (
+        "verdict_counts_mismatch"
+        if tally["verdict"] != expected or final_verdict != tally["verdict"]
+        else None
+    )
+    kept, seen_nits = [], 0
+    for row in rows:
+        if row["severity"] == "nit":
+            seen_nits += 1
+            if seen_nits > nit_cap:
+                continue
+        kept.append(row)
+    replacement = json.dumps({"verdict": tally["verdict"], "findings": kept}, indent=2)
+    omitted = counts["nit"] - min(counts["nit"], nit_cap)
+    summary = f"{omitted} additional nit findings omitted by policy cap.\n\n" if omitted else ""
+    normalized = (
+        findings[:blocks[0].start()]
+        + summary
+        + f"```json\n{replacement}\n```"
+        + findings[blocks[0].end():]
+    )
+    return normalized, "REVISE" if reason else final_verdict, True, counts, reason
+
+
 def review_prompt(
     n: int | None,
     gate_report: str,
@@ -1727,24 +1813,32 @@ def review_prompt(
         f"authoritative for build/test/scan status:\n\n```\n{gate_report}\n```\n\n"
         + (f"## Learning proposal\n\n{proposal.strip()}\n\n" if proposal else "")
         + (f"{context.strip()}\n\n" if context.strip() else "")
-        + "Every finding MUST cite evidence as `path:line` from the diff. Separate "
-        "Required fixes (blocking) from Optional suggestions (non-blocking). "
-        f"For each required fix, cite the specific {requirement} or "
+        + "Every finding MUST cite evidence as `path:line` from the diff. "
+        f"For each Important finding, cite the specific {requirement} or "
         "documented rule (source and rule), or explain a concrete correctness/"
         "security defect with its trigger and impact. A preference is not a rule.\n"
         "Do not report style preferences, hypothetical extensibility, or repeat "
         "failures already established by the gate. A passing gate does not "
         "exclude concrete defects it did not detect.\n"
+        "Trace each acceptance path end to end across changed and unchanged code, including "
+        "state transitions and external API contracts; do not assume a passing unit stub "
+        "proves the real operation.\n"
         "Discourage unrequested abstractions. For any net-new abstraction beyond "
         "the brief, whether introduced by the diff or requested in your review, "
         "explicitly justify why it is needed for an acceptance criterion, "
         "documented rule, or concrete correctness/security defect and why a "
         "simpler change is insufficient. Missing justification alone is not a "
         "blocking defect; requests to add or remove abstractions must meet the "
-        "same required-fix standard. Do not turn optional suggestions into "
-        "requirements or demand speculative refactoring.\n"
-        "Output findings as markdown. REVISE only when required fixes remain; "
-        "optional suggestions alone mean APPROVE. End with exactly one line: "
+        "same Important-finding standard. Do not turn nits into requirements or "
+        "demand speculative refactoring.\n"
+        "Classify each finding with severity `important`, `nit`, or `pre-existing` "
+        "and pass `bug`, `security`, or `spec`. Put findings only in one fenced JSON "
+        "block with schema "
+        '`{"verdict":"APPROVE|REVISE","findings":[{"severity":"important|nit|pre-existing",'
+        '"pass":"bug|security|spec","path":"...","line":1,"summary":"..."}]}`. '
+        "Include every nit; Factory applies the repository policy cap when publishing. "
+        "REVISE if and only if at least one Important finding remains. Place the JSON "
+        "block immediately before exactly one final line: "
         "`VERDICT: APPROVE` or `VERDICT: REVISE`."
     )
 
@@ -1760,6 +1854,14 @@ def run_reviewer(
     timeout: float | None = None,
 ) -> dict:
     """Run and validate the configured reviewer outside the candidate checkout."""
+    base = base_ref or f"origin/{cfg.main}"
+    policy, nit_cap = _review_policy(wt, base)
+    if policy:
+        prompt += (
+            "\n\nThe following repository review policy is from the reviewed base and "
+            "governs severity, skips, and the nit cap:\n\n"
+            f"--- BEGIN REVIEW POLICY ---\n{policy}\n--- END REVIEW POLICY ---"
+        )
     clean = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     before = run(["git", "rev-parse", "HEAD"], cwd=wt, env=clean).stdout.strip()
     deadline = time.monotonic() + timeout if timeout is not None else None
@@ -1769,6 +1871,8 @@ def run_reviewer(
     failure_reason = "state_changed"
     returncode = None
     parsed = False
+    counts = None
+    parser_reason = None
     attempts = 0
     structured = False
     if before == expected_head:
@@ -1777,10 +1881,9 @@ def run_reviewer(
             proc = None
             launch_error = None
             raw_output = ""
-            matches = []
             try:
                 diff = run(
-                    ["git", "diff", f"{base_ref or f'origin/{cfg.main}'}..{expected_head}"],
+                    ["git", "diff", f"{base}..{expected_head}"],
                     cwd=wt,
                     env=clean,
                 ).stdout
@@ -1794,45 +1897,61 @@ def run_reviewer(
                 launch_error = f"{type(exc).__name__}: {exc}"
                 log(f"{subject}: reviewer launch failed ({exc}); fix PATH or [review] (`factory doctor`)")
             if proc is not None:
-                parsed_findings, attempt_usage = (
+                raw_findings, attempt_usage = (
                     _omp_output(proc.stdout) if structured else (proc.stdout.strip(), None)
                 )
                 findings = _review_diagnostics(
-                    proc.stdout, proc.stderr, structured, parsed_findings,
+                    proc.stdout, proc.stderr, structured, raw_findings,
                 )
                 usage = attempt_usage or usage
                 raw_output = f"{proc.stdout}\n{proc.stderr}"
-                matches = list(re.finditer(r"(?m)^VERDICT: (APPROVE|REVISE)[ \t]*$", parsed_findings))
-                verdict_lines = re.findall(r"(?m)^VERDICT:.*$", parsed_findings)
-                parsed = (
-                    len(verdict_lines) == 1
-                    and len(matches) == 1
-                    and matches[0].end() == len(parsed_findings)
+                normalized, model_verdict, parsed, counts, parser_reason = _parse_review_output(
+                    raw_findings, nit_cap
                 )
+                if parsed:
+                    findings = normalized
                 returncode = proc.returncode
                 actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt, env=clean).stdout.strip()
             accepted = (
                 proc is not None
                 and proc.returncode == 0
                 and parsed
+                and parser_reason is None
                 and actual_head == expected_head
             )
             if accepted:
-                findings = parsed_findings
                 return {
-                    "verdict": matches[0].group(1),
+                    "verdict": model_verdict,
                     "findings": findings,
                     "usage": usage,
                     "accepted": True,
                     "parsed": True,
-                    "reason": matches[0].group(1),
+                    "reason": model_verdict,
                     "returncode": returncode,
                     "actual_head": actual_head,
                     "attempts": attempts,
+                    "counts": counts,
+                    "rejection_reason": None,
                 }
             if actual_head != expected_head:
                 failure_reason = "state_changed"
                 break
+            if proc is not None and proc.returncode == 0 and parsed and parser_reason:
+                findings += f"\n\nFactory rejected reviewer evidence: {parser_reason}."
+                return {
+                    "verdict": "REVISE",
+                    "findings": findings,
+                    "usage": usage,
+                    "accepted": False,
+                    "parsed": True,
+                    "reason": parser_reason,
+                    "returncode": returncode,
+                    "actual_head": actual_head,
+                    "attempts": attempts,
+                    "counts": counts,
+                    "rejection_reason": parser_reason,
+                    "failure_reason": parser_reason,
+                }
             if launch_error:
                 failure_reason = launch_error
                 findings = launch_error
@@ -1871,6 +1990,8 @@ def run_reviewer(
         "actual_head": actual_head,
         "attempts": attempts,
         "failure_reason": failure_reason,
+        "counts": None,
+        "rejection_reason": None,
     }
 
 
@@ -1892,15 +2013,18 @@ def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str,
         execution.emit(
             "result", returncode=result["returncode"], verdict=result["verdict"],
             parsed=result["parsed"], head=expected_head, actual_head=result["actual_head"],
+            counts=result["counts"], reason=result["rejection_reason"],
         )
         record(
             "review", ticket=n, verdict=result["verdict"], parsed=result["parsed"],
             accepted=result["accepted"], head=expected_head, actual_head=result["actual_head"],
+            counts=result["counts"], reason=result["rejection_reason"],
         )
         _PENDING_REVIEWS[n] = {
             "verdict": result["verdict"], "findings": result["findings"], "head": expected_head,
             "parsed": result["parsed"], "accepted": result["accepted"], "usage": result["usage"],
-            "seconds": time.monotonic() - started,
+            "seconds": time.monotonic() - started, "counts": result["counts"],
+            "rejection_reason": result["rejection_reason"],
         }
     findings = result["findings"]
     if result["verdict"] is None:

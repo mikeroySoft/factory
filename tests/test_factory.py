@@ -3436,7 +3436,8 @@ class DispatchTest(unittest.TestCase):
                 ["reviewer"], 1, "", "rate limited retry-after-ms=2500",
             )
             approved = subprocess.CompletedProcess(
-                ["reviewer"], 0, "VERDICT: APPROVE", "",
+                ["reviewer"], 0,
+                '```json\n{"verdict":"APPROVE","findings":[]}\n```\nVERDICT: APPROVE', "",
             )
             with mock.patch.object(
                     dispatch, "_run_reviewer", side_effect=[failed, approved]), \
