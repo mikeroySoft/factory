@@ -14,9 +14,9 @@ All state lives in GitHub and .factory/ on disk.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import fcntl
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -81,7 +81,7 @@ LESSONS_BRANCH = re.compile(r"agent/(lessons|curate|revert-lessons)-")
 
 PLAN_INSTRUCTIONS = """## Attempt plan
 
-Before implementing, write a short plan to `.factory/plans/attempt-{attempt}/1.md`.
+Before implementing, write a short plan to `.factory/plans/current/1.md`.
 Keep it to 30 lines or fewer; a three-line plan is enough for a small ticket.
 Use this template:
 
@@ -778,8 +778,8 @@ def brief_path(wt: Path, n: int) -> Path:
     return wt / ".factory" / f"brief-{n}.md"
 
 
-def attempt_plan_dir(wt: Path, attempt: int) -> Path:
-    return wt / ".factory" / "plans" / f"attempt-{attempt}"
+def attempt_plan_dir(wt: Path, _attempt: int) -> Path:
+    return wt / ".factory" / "plans" / "current"
 
 
 def record(event: str, **fields: object) -> None:
@@ -830,7 +830,7 @@ def _record_plan_decision(
 ) -> None:
     from factory import trace
 
-    expected = path or f".factory/plans/attempt-{attempt}/1.md"
+    expected = path or ".factory/plans/current/1.md"
     summary = f"sha256 {sha256}" if sha256 else f"plan {status}"
     cause = _latest_decision_id(n, {"claim", "plan"})
     options = [

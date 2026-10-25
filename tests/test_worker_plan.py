@@ -12,7 +12,6 @@ from unittest import mock
 
 from factory import config, dispatch, lifecycle, trace
 
-
 ACTOR = {"kind": "deterministic", "name": "test", "model": None, "version": "1"}
 
 
@@ -66,7 +65,7 @@ class WorkerPlanTest(unittest.TestCase):
             chore = dispatch.build_prompt(7, self.wt, attempt=2, labels={config.LABEL_CHORE})
 
         self.assertIn("## Attempt plan", prompt)
-        self.assertIn("`.factory/plans/attempt-2/1.md`", prompt)
+        self.assertIn("`.factory/plans/current/1.md`", prompt)
         self.assertIn("30 lines or fewer", prompt)
         self.assertLess(prompt.index("## Attempt plan"), prompt.index("- Implement exactly"))
         self.assertNotIn("## Attempt plan", chore)

@@ -357,8 +357,8 @@ learning and CURATE records retain the alternatives and evidence used.
 
 Each non-`chore` attempt tells the existing worker session to write a plan of at
 most 30 lines covering files, order, risks, and proof. Numbered revisions under
-`.factory/plans/attempt-N/` preserve course changes. After the worker exits, the
-dispatcher copies every revision beside its transcript under
+`.factory/plans/current/` preserve course changes within the attempt. After the
+worker exits, the dispatcher copies every revision beside its transcript under
 `.factory/transcripts/<ticket>/`, journals an `event: "plan"` row with artifact
 path and SHA-256, and records a `plan` decision with actor `worker` between claim
 and gate. A missing plan records `plan: "missing"` without failing the gate;
