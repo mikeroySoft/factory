@@ -7,4 +7,4 @@ import pathlib
 import sys
 
 pathlib.Path(sys.argv[2]).write_text(sys.argv[1])
-print('```json\n{"verdict":"APPROVE","findings":[]}\n```\nVERDICT: APPROVE')
+print("VERDICT: APPROVE")
