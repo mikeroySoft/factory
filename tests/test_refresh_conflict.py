@@ -497,6 +497,225 @@ class ManagerFixAheadTest(unittest.TestCase):
         self.assertEqual(git(self.origin, "rev-parse", "agent/7"), moved)
 
 
+
+class RefreshGateFailureRecoveryTest(unittest.TestCase):
+    def setUp(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.tmp = Path(temp.name)
+        self.root, self.origin = build_fork(self.tmp)
+        git(self.origin, "checkout", "-qb", "agent/9")
+        (self.origin / "feature.txt").write_text("feature\n")
+        git(self.origin, "add", "feature.txt")
+        git(self.origin, "commit", "-qm", "agent change")
+        self.pr_head = git(self.origin, "rev-parse", "HEAD")
+        git(self.origin, "checkout", "-q", "main")
+        (self.origin / "main.txt").write_text("main moved\n")
+        git(self.origin, "add", "main.txt")
+        git(self.origin, "commit", "-qm", "main change")
+        self.cfg = config.Config(
+            root=self.root,
+            repo="acme/widgets",
+            main="main",
+            review_rounds=0,
+            workers={"default": [sys.executable, "-c", "pass"]},
+        )
+        dispatch.configure(self.cfg)
+        self.github = FakeGitHub(self.origin, dispatch.run)
+
+    def patched(self):
+        return mock.patch.multiple(dispatch, gh_json=self.github.gh_json, run=self.github.run)
+
+    def events(self, name: str) -> list[dict]:
+        return [e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("event") == name]
+
+    def fail_refresh_gate(self) -> None:
+        with self.patched(), mock.patch.object(
+            dispatch, "run_gate", return_value=(False, "flaky failure")
+        ):
+            self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+
+    def test_gate_failure_after_refresh_resets_worktree_to_pr_head_and_keeps_rebased_head_in_side_ref(
+        self,
+    ) -> None:
+        self.fail_refresh_gate()
+
+        wt = dispatch.FACTORY / "wt-9"
+        self.assertEqual(git(wt, "rev-parse", "HEAD"), self.pr_head)
+        [escalation] = self.events("escalate")
+        self.assertEqual(escalation["code"], "gate_failed")
+        refreshed_head = escalation["refreshed_head"]
+        evidence_ref = escalation["evidence_ref"]
+        self.assertNotEqual(refreshed_head, self.pr_head)
+        self.assertEqual(git(wt, "rev-parse", evidence_ref), refreshed_head)
+        packet = Path(escalation["packet"]).read_text()
+        self.assertIn(f"Refreshed head: `{refreshed_head}`", packet)
+        self.assertIn(f"Evidence ref: `{evidence_ref}`", packet)
+        self.assertEqual(
+            git(
+                wt,
+                "status",
+                "--porcelain",
+                "--untracked-files=all",
+                "--",
+                ".",
+                ":(exclude).factory-prompt.md",
+                ":(exclude).factory",
+            ),
+            "",
+        )
+
+    def test_manager_fix_after_refresh_gate_failure_runs_worker_instead_of_refresh_head(self) -> None:
+        self.fail_refresh_gate()
+        [escalation] = self.events("escalate")
+        logfile = self.tmp / "manager.log"
+        with self.patched(), mock.patch.object(
+            dispatch,
+            "worker_round",
+            return_value=(False, "still failing", logfile, self.pr_head),
+        ) as worker:
+            manage.apply(
+                9,
+                self.github.issue(),
+                "FIX",
+                "",
+                {"worker": "default", "guidance": "fix the gate"},
+                Path(escalation["packet"]),
+            )
+
+        worker.assert_called_once()
+        self.assertNotIn("refresh_head", [event["code"] for event in self.events("escalate")])
+
+    def test_second_refresh_after_gate_failure_does_not_withdraw_for_head_mismatch(self) -> None:
+        self.fail_refresh_gate()
+        self.fail_refresh_gate()
+
+        self.assertEqual(
+            [event["code"] for event in self.events("escalate")],
+            ["gate_failed", "gate_failed"],
+        )
+        self.assertEqual(git(dispatch.FACTORY / "wt-9", "rev-parse", "HEAD"), self.pr_head)
+
+    def assert_recovered(self, code: str, refreshed_head: str) -> None:
+        wt = dispatch.FACTORY / "wt-9"
+        self.assertEqual(git(wt, "rev-parse", "HEAD"), self.github.head())
+        [escalation] = self.events("escalate")
+        self.assertEqual(escalation["code"], code)
+        self.assertEqual(escalation["refreshed_head"], refreshed_head)
+        self.assertEqual(git(wt, "rev-parse", escalation["evidence_ref"]), refreshed_head)
+        packet = Path(escalation["packet"]).read_text()
+        self.assertIn(refreshed_head, packet)
+        self.assertIn(escalation["evidence_ref"], packet)
+
+    def test_failed_merge_refresh_preserves_merged_head_and_restores_pr_head(self) -> None:
+        heads = []
+
+        def gate(wt, *args, **kwargs):
+            heads.append(git(wt, "rev-parse", "HEAD"))
+            return False, "merge gate failure"
+
+        with self.patched(), mock.patch.object(dispatch, "run_gate", side_effect=gate):
+            self.assertFalse(dispatch.refresh_pr_branch(9, 102, True))
+
+        self.assertEqual(len(git(self.root, "rev-list", "--parents", "-n1", heads[0]).split()), 3)
+        self.assert_recovered("gate_failed", heads[0])
+
+    def test_refresh_empty_preserves_refreshed_head_and_restores_pr_head(self) -> None:
+        git(self.origin, "merge", "-q", "agent/9")
+        main_head = git(self.origin, "rev-parse", "HEAD")
+        with self.patched(), mock.patch.object(dispatch, "run_gate") as gate:
+            self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+
+        gate.assert_not_called()
+        self.assert_recovered("refresh_empty", main_head)
+
+    def test_refresh_lease_refusal_restores_new_remote_head_and_keeps_evidence(self) -> None:
+        heads = []
+
+        def gate(wt, *args, **kwargs):
+            heads.append(git(wt, "rev-parse", "HEAD"))
+            git(self.origin, "checkout", "-q", "agent/9")
+            (self.origin / "other.txt").write_text("another push\n")
+            git(self.origin, "add", "other.txt")
+            git(self.origin, "commit", "-qm", "concurrent push")
+            git(self.origin, "checkout", "-q", "main")
+            return True, "gate passed"
+
+        with self.patched(), mock.patch.object(dispatch, "run_gate", side_effect=gate):
+            self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+
+        self.assertNotEqual(self.github.head(), self.pr_head)
+        self.assert_recovered("refresh_head", heads[0])
+
+    def test_rejected_refresh_evidence_cleans_gate_artifacts_but_keeps_worker_notes(self) -> None:
+        heads = []
+
+        def gate(wt, *args, **kwargs):
+            heads.append(git(wt, "rev-parse", "HEAD"))
+            (wt / "feature.txt").write_text("gate changed a tracked file\n")
+            (wt / "artifact").mkdir()
+            (wt / "artifact" / "output.txt").write_text("gate output\n")
+            (wt / ".factory-prompt.md").write_text("worker prompt\n")
+            (wt / ".factory").mkdir(exist_ok=True)
+            (wt / ".factory" / "handoff-9.md").write_text("worker handoff\n")
+            return True, "gate passed"
+
+        with self.patched(), mock.patch.object(dispatch, "run_gate", side_effect=gate):
+            self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+
+        self.assert_recovered("gate_failed", heads[0])
+        wt = dispatch.FACTORY / "wt-9"
+        self.assertEqual((wt / "feature.txt").read_text(), "feature\n")
+        self.assertFalse((wt / "artifact").exists())
+        self.assertEqual((wt / ".factory-prompt.md").read_text(), "worker prompt\n")
+        self.assertEqual((wt / ".factory" / "handoff-9.md").read_text(), "worker handoff\n")
+
+    def test_protected_refresh_failure_restores_pr_head_without_retry(self) -> None:
+        heads = []
+
+        def gate(wt, *args, **kwargs):
+            heads.append(git(wt, "rev-parse", "HEAD"))
+            return False, "- protected-paths: FAIL"
+
+        with self.patched(), mock.patch.object(dispatch, "run_gate", side_effect=gate) as check:
+            self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+
+        check.assert_called_once()
+        self.assert_recovered("protected_paths", heads[0])
+
+    def test_gate_rerun_changing_head_preserves_candidate_before_restoring_pr_head(self) -> None:
+        heads = []
+
+        def gate(wt, *args, **kwargs):
+            if not heads:
+                heads.append(git(wt, "rev-parse", "HEAD"))
+            else:
+                git(wt, "commit", "--allow-empty", "-qm", "gate changed HEAD")
+            return False, "failed gate"
+
+        with self.patched(), mock.patch.object(dispatch, "run_gate", side_effect=gate) as check:
+            self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+
+        self.assertEqual(check.call_count, 2)
+        self.assert_recovered("refresh_head", heads[0])
+
+    def test_refresh_gate_requeue_preserves_candidate_and_restores_pr_head(self) -> None:
+        self.cfg.review_rounds = 3
+        heads = []
+
+        def gate(wt, *args, **kwargs):
+            heads.append(git(wt, "rev-parse", "HEAD"))
+            return False, "persistent failure"
+
+        with self.patched(), mock.patch.object(dispatch, "run_gate", side_effect=gate):
+            self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+
+        self.assertEqual(self.events("escalate"), [])
+        [requeue] = self.events("gate-requeue")
+        self.assertEqual(requeue["refreshed_head"], heads[0])
+        self.assertEqual(git(self.root, "rev-parse", requeue["evidence_ref"]), heads[0])
+        self.assertEqual(git(dispatch.FACTORY / "wt-9", "rev-parse", "HEAD"), self.pr_head)
+
 if __name__ == "__main__":
     unittest.main()
 
