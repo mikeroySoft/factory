@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const STAGES = ['ticket','triage','binding','admission','worker_select','claim','attempt','gate','review','approved','manager','merge','merged','wontfix','escalate','learn','curate'];
+  const STAGES = ['ticket','triage','binding','admission','worker_select','claim','plan','attempt','gate','review','approved','manager','merge','merged','wontfix','escalate','learn','curate'];
   const esc = value => String(value ?? '').replace(/[&<>'"]/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[character]));
   const array = value => Array.isArray(value) ? value : [];
   const object = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
@@ -65,11 +65,12 @@
     const id = String(value.decision_id || 'unknown');
     const options = array(value.options);
     const ticket = value.stage === 'ticket' ? positive(value.ticket) : ticketFrom(value.chosen);
+    const actor = [value.actor?.kind, value.actor?.name].filter(Boolean).join(' · ');
     const classes = `trace-node${value.synthesized === true ? ' is-synthesized' : ''}${id === frontier ? ' is-frontier' : ''}`;
     const loop = loopByNode.get(id);
     return `<article class="${classes}" data-trace-node="${esc(id)}" data-at="${esc(value.at || '')}"${loop == null ? '' : ` data-loop="${loop}"`}>
       <button class="trace-node-select" type="button" data-trace-select="${esc(id)}" aria-pressed="false">
-        <span class="trace-node-meta"><b>${esc(stageLabel(value.stage))}</b>${value.synthesized === true ? '<i>synthesized</i>' : ''}${id === frontier ? '<i>frontier</i>' : ''}</span>
+        <span class="trace-node-meta"><b>${esc(stageLabel(value.stage))}</b>${value.stage === 'plan' && actor ? `<i>${esc(actor)}</i>` : ''}${value.synthesized === true ? '<i>synthesized</i>' : ''}${id === frontier ? '<i>frontier</i>' : ''}</span>
         <strong>${esc(value.chosen || value.event || 'unknown')}</strong>
         <time>${esc(value.at || 'time not recorded')}</time>
       </button>
