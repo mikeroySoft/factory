@@ -247,17 +247,28 @@ def _python_tests(path: str, source: str) -> dict[str, dict]:
     module = path.removesuffix(".py").replace("/", ".")
     found = {}
 
-    def visit(nodes: list[ast.stmt], parents: tuple[str, ...] = ()) -> None:
+    def visit(
+        nodes: list[ast.stmt],
+        parents: tuple[str, ...] = (),
+        class_decorators: str = "",
+    ) -> None:
         for node in nodes:
             if isinstance(node, ast.ClassDef):
-                visit(node.body, (*parents, node.name))
+                start = min(
+                    [node.lineno, *(decorator.lineno for decorator in node.decorator_list)]
+                )
+                visit(
+                    node.body,
+                    (*parents, node.name),
+                    class_decorators + "".join(lines[start - 1:node.lineno - 1]),
+                )
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test"):
                 start = min(
                     [node.lineno, *(decorator.lineno for decorator in node.decorator_list)]
                 )
                 qualified = ".".join((*parents, node.name))
                 found[f"python:{path}:{qualified}"] = {
-                    "source": "".join(lines[start - 1:node.end_lineno]),
+                    "source": class_decorators + "".join(lines[start - 1:node.end_lineno]),
                     "aliases": {
                         f"{module}.{qualified}",
                         f"{path}::{'::'.join((*parents, node.name))}",
@@ -267,7 +278,6 @@ def _python_tests(path: str, source: str) -> dict[str, dict]:
                     "path": path,
                     "qualified": qualified,
                 }
-
     visit(tree.body)
     return found
 
@@ -335,7 +345,10 @@ def _tests_at(ref: str) -> tuple[dict[str, dict], str]:
 
 
 def check_existing_tests(base: str) -> tuple[bool, str]:
-    before, error = _tests_at(base)
+    common = timed(["git", "merge-base", base, "HEAD"])
+    if common.returncode:
+        return False, common.stdout + common.stderr
+    before, error = _tests_at(common.stdout.strip())
     if error:
         return False, error
     after, error = _tests_at("HEAD")
@@ -386,14 +399,16 @@ def _repro_command(test_id: str, record: dict) -> list[str]:
     return ["cargo", "test", test_id, "--", "--exact"]
 
 
-def _run_at(ref: str, command: list[str]) -> subprocess.CompletedProcess:
+def _run_at(
+    ref: str, command: list[str]
+) -> tuple[subprocess.CompletedProcess, bool]:
     with tempfile.TemporaryDirectory(prefix="factory-repro-") as directory:
         checkout = Path(directory) / "checkout"
         added = timed(["git", "worktree", "add", "--detach", str(checkout), ref])
         if added.returncode:
-            return added
+            return added, False
         try:
-            return timed(command, cwd=checkout, pythonpath=checkout)
+            return timed(command, cwd=checkout, pythonpath=checkout), True
         finally:
             timed(["git", "worktree", "remove", "--force", str(checkout)])
 
@@ -437,7 +452,13 @@ def check_bug_reproduction(
             f"first bug-ticket commit does not add declared reproduction test `{test_id}`",
         )]
     command = _repro_command(test_id, added[0])
-    reproduced = _run_at(test_commit, command)
+    reproduced, ran = _run_at(test_commit, command)
+    if not ran or reproduced.returncode == 124:
+        return [(
+            "bug-repro-before",
+            "FAIL",
+            reproduced.stdout + reproduced.stderr,
+        )]
     if reproduced.returncode == 0:
         return [(
             "bug-repro-before",
@@ -475,6 +496,8 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument("--protected-override", action="store_true",
                         help="human-authorized protected-path override")
+    parser.add_argument("--test-override", action="store_true",
+                        help="ticket-authorized existing-test override")
     parser.add_argument("--add-only-override", action="store_true",
                         help="manager- or human-authorized edits to add-only paths")
     parser.add_argument("--bug", action="store_true",
@@ -525,20 +548,21 @@ def execute(args: argparse.Namespace, execution) -> int:
     if LEAK_RE is None:
         skip.add("leak-scan")
 
-    if not args.protected_override and args.tier == "attempt":
-        passed, reason, detail = check_protected_paths(
-            args.base, args.upstream, args.add_only_override
-        )
-        if not passed:
-            execution.outcome, execution.reason = "project_escalation", reason
-            report = Path(args.report)
-            report.parent.mkdir(parents=True, exist_ok=True)
-            note = f" ({ADD_ONLY_NOTE})" if reason == "add_only_paths" else ""
-            report.write_text(f"# Gate report\n\n- protected-paths: FAIL{note}\n\n"
-                              "## protected-paths failure\n\n```diff\n" + detail + "\n```\n")
-            print(f"report: {report}\ngate FAIL: protected-paths")
-            return 1
-        if args.bug:
+    if args.tier == "attempt":
+        if not args.protected_override:
+            passed, reason, detail = check_protected_paths(
+                args.base, args.upstream, args.add_only_override
+            )
+            if not passed:
+                execution.outcome, execution.reason = "project_escalation", reason
+                report = Path(args.report)
+                report.parent.mkdir(parents=True, exist_ok=True)
+                note = f" ({ADD_ONLY_NOTE})" if reason == "add_only_paths" else ""
+                report.write_text(f"# Gate report\n\n- protected-paths: FAIL{note}\n\n"
+                                  "## protected-paths failure\n\n```diff\n" + detail + "\n```\n")
+                print(f"report: {report}\ngate FAIL: protected-paths")
+                return 1
+        if args.bug and not (args.protected_override or args.test_override):
             passed, detail = check_existing_tests(args.base)
             if not passed:
                 execution.outcome, execution.reason = "project_escalation", "protected_tests"

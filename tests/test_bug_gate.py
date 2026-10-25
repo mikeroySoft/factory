@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from factory import config, dispatch
+from factory import config, dispatch, gate as gate_module
 
 ROOT = Path(__file__).resolve().parents[1]
 TEST_ID = "tests.test_regression.RegressionTest.test_value"
@@ -134,6 +134,59 @@ class BugReproductionGateTest(unittest.TestCase):
                 report,
             )
 
+    def test_timeout_is_not_accepted_as_a_failing_reproduction(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repository(Path(directory))
+            (repo / "tests" / "test_regression.py").write_text(
+                "import time\n"
+                "import unittest\n\n"
+                "class RegressionTest(unittest.TestCase):\n"
+                "    def test_value(self):\n"
+                "        time.sleep(30)\n"
+            )
+            commit(repo, "reproduce bug")
+            (repo / "README.md").write_text("claimed fix\n")
+            commit(repo, "fix bug")
+
+            code, report = run_gate(
+                repo,
+                "--bug",
+                "--repro-test",
+                TEST_ID,
+                "--check-timeout",
+                "1",
+                "--skip",
+                "test",
+            )
+
+            self.assertEqual(code, 1, report)
+            self.assertIn("- bug-repro-before: FAIL", report)
+            self.assertIn("check timed out", report)
+            self.assertNotIn("EXPECTED FAIL", report)
+
+    def test_worktree_setup_failure_is_not_accepted_as_a_failing_reproduction(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repository(Path(directory))
+            add_repro(repo)
+            (repo / "value.py").write_text("def value():\n    return True\n")
+            commit(repo, "fix bug")
+            previous = Path.cwd()
+            os.chdir(repo)
+            try:
+                gate_module.configure(config.load(repo))
+                failed = subprocess.CompletedProcess([], 1, "worktree setup failed", "")
+                with mock.patch.object(gate_module, "_run_at", return_value=(failed, False)):
+                    results = gate_module.check_bug_reproduction(
+                        "origin/main", TEST_ID, None
+                    )
+            finally:
+                os.chdir(previous)
+
+            self.assertEqual(
+                results,
+                [("bug-repro-before", "FAIL", "worktree setup failed")],
+            )
+
 
 class ExistingTestProtectionGateTest(unittest.TestCase):
     def test_python_skip_and_rust_ignore_or_deletion_fail_unless_overridden(self) -> None:
@@ -191,6 +244,58 @@ class ExistingTestProtectionGateTest(unittest.TestCase):
             self.assertEqual(code, 0, report)
             self.assertNotIn("protected-tests", report)
 
+    def test_enclosing_python_skip_fails_but_ticket_override_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repository(Path(directory))
+            (repo / "tests" / "test_existing.py").write_text(
+                "import unittest\n\n"
+                "@unittest.skip(\"hide class\")\n"
+                "class ExistingTest(unittest.TestCase):\n"
+                "    def test_existing(self):\n"
+                "        self.assertTrue(True)\n"
+            )
+            commit(repo, "skip existing test class")
+
+            code, report = run_gate(
+                repo, "--bug", "--no-repro-test", "existing-test protection fixture"
+            )
+            self.assertEqual(code, 1, report)
+            self.assertIn("- protected-tests: FAIL", report)
+
+            code, report = run_gate(
+                repo,
+                "--bug",
+                "--no-repro-test",
+                "existing-test protection fixture",
+                "--test-override",
+            )
+            self.assertEqual(code, 0, report)
+
+    def test_existing_tests_are_compared_from_the_merge_base(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repository(Path(directory))
+            base = git(repo, "rev-parse", "HEAD")
+            git(repo, "checkout", "-q", "-b", "worker")
+            (repo / "value.py").write_text("def value():\n    return True\n")
+            commit(repo, "worker fix")
+            git(repo, "checkout", "-q", "-b", "upstream", base)
+            (repo / "tests" / "test_existing.py").write_text(
+                "import unittest\n\n"
+                "class ExistingTest(unittest.TestCase):\n"
+                "    def test_existing(self):\n"
+                "        self.assertTrue(False)\n"
+            )
+            commit(repo, "upstream changes test")
+            git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+            git(repo, "checkout", "-q", "worker")
+
+            code, report = run_gate(
+                repo, "--bug", "--no-repro-test", "existing-test protection fixture"
+            )
+
+            self.assertEqual(code, 0, report)
+            self.assertNotIn("protected-tests", report)
+
 
 class BugGateDispatchTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -198,7 +303,7 @@ class BugGateDispatchTest(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         dispatch.configure(config.Config(Path(self.temp.name), "acme/widgets"))
 
-    def test_gate_flags_read_bug_repro_skip_and_explicit_override_lines(self) -> None:
+    def test_gate_flags_scope_explicit_override_to_bug_test_protection(self) -> None:
         self.assertEqual(
             dispatch.gate_flags(
                 None,
@@ -208,10 +313,17 @@ class BugGateDispatchTest(unittest.TestCase):
                 "Repro test: ignored.when.no_repro_is_declared",
             ),
             {
-                "protected_override": True,
+                "protected_override": False,
+                "test_override": True,
                 "bug": True,
                 "no_repro_test": "requires unavailable hardware",
             },
+        )
+        self.assertEqual(
+            dispatch.gate_flags(
+                None, set(), "factory-protected-override: worker-authored bypass"
+            ),
+            {"protected_override": False},
         )
         self.assertEqual(
             dispatch.gate_flags(None, {"bug"}, "", f"Repro test: {TEST_ID}"),

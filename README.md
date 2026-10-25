@@ -757,9 +757,10 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `#[test]` function (including tests inside `src/*.rs`) with the base. Deleting
    or changing one, including adding `@unittest.skip`, pytest skip/xfail, or
    Rust `#[ignore]`, fails as `protected-tests`; other languages retain the
-   configured path-based add-only policy. `factory-protected-override`, or a
-   ticket line `factory-protected-override: <reason>`, bypasses both path and
-   function protection. An `upstream sync:` ticket's worker otherwise gets no
+   configured path-based add-only policy. The `factory-protected-override` label
+   bypasses both path and function protection; a ticket line
+   `factory-protected-override: <reason>` bypasses only function protection on
+   bug tickets. An `upstream sync:` ticket's worker otherwise gets no
    override, only upstream-authored content is exempt (`--upstream`, above).
    A bug worker must make the first branch commit add the reproducing test, make
    the fix in a later commit, and put `Repro test: <test ID>` in its handoff.

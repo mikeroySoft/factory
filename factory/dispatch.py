@@ -1458,9 +1458,10 @@ def commit_leftovers(wt: Path, n: int, title: str) -> None:
 
 def run_gate(
     wt: Path, n: int | str, skip: str = "", protected_override: bool = False,
-    add_only_override: bool = False, tier: str = "attempt", upstream: list[str] = (),
+    test_override: bool = False, add_only_override: bool = False,
+    tier: str = "attempt", upstream: list[str] = (), bug: bool = False,
+    repro_test: str | None = None, no_repro_test: str | None = None,
     base: str | None = None, timeout: float | None = None,
-    bug: bool = False, repro_test: str | None = None, no_repro_test: str | None = None,
 ) -> tuple[bool, str]:
     report_rel = f".factory/gate-report-{n}.md"
     (wt / ".factory").mkdir(exist_ok=True)
@@ -1483,6 +1484,8 @@ def run_gate(
     # The gate process records its own stage and check boundaries.
     if protected_override:
         cmd.append("--protected-override")
+    if test_override:
+        cmd.append("--test-override")
     if add_only_override:
         cmd.append("--add-only-override")
     if bug:
@@ -2066,11 +2069,13 @@ def _ticket_line(text: str, name: str) -> str | None:
 
 def gate_flags(sync: dict | None, labels: set[str], body: str = "", handoff: str = "") -> dict:
     """`run_gate` keywords for a ticket, including bug-test evidence declarations."""
-    explicit_override = _ticket_line(body, LABEL_PROTECTED_OVERRIDE)
-    flags = {"protected_override": LABEL_PROTECTED_OVERRIDE in labels or explicit_override is not None}
+    flags = {"protected_override": LABEL_PROTECTED_OVERRIDE in labels}
     if LABEL_ADD_ONLY_OVERRIDE in labels:
         flags["add_only_override"] = True
     if "bug" in labels:
+        explicit_override = _ticket_line(body, LABEL_PROTECTED_OVERRIDE)
+        if explicit_override is not None and not flags["protected_override"]:
+            flags["test_override"] = True
         flags["bug"] = True
         no_repro = _ticket_line(body, "No repro test")
         repro = _ticket_line(handoff, "Repro test")
