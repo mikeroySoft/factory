@@ -95,6 +95,7 @@ flowchart TB
   MAPP -->|"CI fail, late feedback, stale, rounds exhausted, HUMAN: manage.frontier_pass"| ESC
   FA -->|"late feedback or stale past stale_days, any manager.review mode: manage.frontier_pass"| ESC
   MAPP -.->|"CI cancel still treated as fail before approval: manage.frontier_pass"| ESC
+  RFA -->|"bot-only assignment, no live lock, unsafe worktree: dispatch.frontier"| ESC
   PUSH -->|"agent/<n> push refused, remote moved since the lease was read: dispatch.push_agent"| ESC
   CLAIM -->|"any other dispatcher exception after the claim, then re-raised: dispatch.process_ticket"| ESC
   MAPP -->|"FIX or CLOSE: manage.apply"| MGR
@@ -183,6 +184,10 @@ event. `{}` is a runtime value.
 
 | Code | Reason | Edge |
 |------|--------|------|
+| `dispatch.frontier` | ``worktree path is not a directory: {}`` | ready-for-agent orphan → escalate (`orphaned_claim`) |
+| `dispatch.frontier` | ``worktree is mid-merge: {}`` | ready-for-agent orphan → escalate (`orphaned_claim`) |
+| `dispatch.frontier` | ``worktree state is unreadable: {}`` | ready-for-agent orphan → escalate (`orphaned_claim`) |
+| `dispatch.frontier` | ``worktree has uncommitted changes: {}`` | ready-for-agent orphan → escalate (`orphaned_claim`) |
 | `dispatch.process_ticket` | ``worker edited protected paths`` | worker round → escalate |
 | `dispatch.process_ticket` | ``worker removed or changed existing tests`` | worker round → escalate (add-only path) |
 | `dispatch.process_ticket` | ``wall-clock budget ({} min) exceeded`` | worker round → escalate |

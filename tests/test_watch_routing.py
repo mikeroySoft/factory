@@ -83,6 +83,7 @@ class Install:
         for row in rows:
             lifecycle.append(self.cfg.factory / "events.jsonl", row)
 
+    @mock.patch.object(watch, "orphaned_claims", new=lambda cfg: [])
     def run(self, **patches) -> list[dict]:
         dispatch.configure(self.cfg)
         with mock.patch.object(watch, "failed_units", return_value=[]), \

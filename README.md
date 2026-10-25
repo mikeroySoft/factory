@@ -383,6 +383,11 @@ projection. `factory doctor` reports the timestamps (`never` until a stage has
 succeeded); an unreadable or malformed projection is a warning, not a silently
 missing metric.
 
+`factory watch` observes bot-only `ready-for-agent` assignments without a live
+ticket lock or open `agent/<n>` PR. The first pass journals the observation; the
+same ticket must still be orphaned on the next watch pass before it files a
+Factory engine bug. A live lock, open pipeline PR, or intervening clear
+observation resets that signal.
 
 `factory watch` also closes an open, unassigned issue it opened, still at `needs-triage`
 or `ready-for-agent` (never one handed to a human), as completed when its
@@ -711,7 +716,14 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    triage under the owner's account. The dashboard's "Run LLM triage" decision
    runs its triage step with `dispatch_env` applied, so it posts as the dispatcher.
 2. **Schedule and claim.** Eligibility first: open `ready-for-agent` issues that
-   are not initiatives, not assigned and have no open `Blocked by` edge; then
+   are not initiatives, have no open `Blocked by` edge, and are unassigned or
+   carry only Factory's own assignment without a live ticket lock or open
+   `agent/<n>` PR. A live lock, open pipeline PR, human assignment, or mixed
+   assignment remains held. For an unlocked bot-only claim without an open PR,
+   a non-dry pass first acquires the ticket lock nonblocking: a missing or clean
+   worktree is unassigned, journaled as `reclaim`, and ranked in that same pass;
+   a dirty, unreadable, or mid-merge worktree escalates as `orphaned_claim` for
+   human recovery. Then
    capacity (`max_active` minus held ticket locks) and the experiment slot (at
    most one `experiment`-labelled ticket active; production delivery gets the
    rest). A ticket whose Plan binding admission would refuse (ambiguous or
@@ -848,12 +860,15 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    cannot prevent a retarget after the last check.
 7. **Escalation.** Budget exceeded, gate failed thrice, second `REVISE`,
    nothing to PR, refused `agent/<n>` push, a refresh conflict that is not
-   routine (step 6), red CI, or any
-   dispatcher crash after the claim: the issue gets `ready-for-human`,
+   routine (step 6), red CI, or any caught
+   dispatcher exception after the claim: the issue gets `ready-for-human`,
    loses the assignee and `ready-for-agent`, and receives a comment with the
-   reason and the worker log path (its comment id is journaled). The worktree
-   is kept for forensics. When no automatic manager recovery remains, one routed
-   human handoff request follows (see [Routed human handoffs](#routed-human-handoffs)).
+   reason and the worker log path (its comment id is journaled). An abrupt
+   process death cannot run that cleanup; the next pass reclaims its unlocked
+   clean claim, or escalates a dirty/mid-merge worktree as `orphaned_claim`.
+   The worktree is kept for forensics. When no automatic manager recovery
+   remains, one routed human handoff request follows (see
+   [Routed human handoffs](#routed-human-handoffs)).
 8. **Manager PR frontier** (when `manager.command` is configured; runs in
    `factory manage` after landing). Every open same-repository `agent/<n>` PR
    targeting the configured branch is observed through the schema-1 feedback
