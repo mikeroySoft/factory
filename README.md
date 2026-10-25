@@ -300,7 +300,7 @@ landed on its own, and partial progress needs its own reviewed PR.
 |---|---|
 | `factory triage` | Labels every `needs-triage` issue via the local model: `ready-for-agent` (with an agent brief), `needs-info` (with the question), `ready-for-human`, or `wontfix-proposal` (proposal comment and label; a human closes). An issue unchanged since its last triage comment is skipped. `--dry-run`, `--issue N`, `--replay a,b,c`. |
 | `factory triage-probe` | Sends `GET <triage base>/models` with a three-second timeout. A 503 `Loading model` response is alive. After three consecutive failures it restarts `[triage].service` at most once per 15 minutes; failures and restarts are lifecycle-journaled. With no service configured it reports only. |
-| `factory dispatch` | One stateless pass: fetch and detach the main checkout at `origin/<main>` before `.factory.toml` is read (a root with tracked or untracked changes outside `.factory/` exits 1 with a `root_dirty` dispatcher exit row naming the paths and does nothing, even when its config does not load) → upstream sync (stage a sync ticket) → merge stage (at most one PR) → review-only PR intake → manager → claim up to `max_active` tickets → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan from the checkout as it is. |
+| `factory dispatch` | One stateless pass: fetch and detach the main checkout at `origin/<main>` before `.factory.toml` is read (a root with tracked or untracked changes outside `.factory/` exits 1 with a `root_dirty` dispatcher exit row naming the paths and does nothing, even when its config does not load) → upstream sync (stage a sync ticket) → merge stage (at most one PR) → review-only PR intake → manager → claim up to `max_active` tickets → worker plan → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan from the checkout as it is. |
 | `factory explain N [--json] [--since ISO]` | Reads the live `.factory/events.jsonl` and retained `events.jsonl.N.gz` segments without writing. JSON mode returns `{ticket,nodes,edges,loops,cost,frontier,frontier_stage,coverage}`; `cost` totals the ticket and each retry loop has its own total. `frontier_stage` distinguishes gate, review, manager, human, merge eligibility, and blocker waits; merged and wontfix tickets have a null frontier. Text mode prints a compact decision tree. Legacy `claimed`, `attempt`, `review`, `approved`, `merged`, and `escalate` rows become `synthesized: true` nodes, while `coverage` names part-1 stages with no structured record. Output is bounded to the runtime projection's 1 MiB limit. |
 | `factory manage` | First recommends directions for `needs-review` PRs, then `needs-viability` issues; then resolves untouched `ready-for-human` escalation packets within `[manager].rounds`; finally publishes one routed human handoff request per escalation whose automatic recovery is terminal (also without a manager). `--dry-run` lists eligible requests without inference or writes. |
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
@@ -332,7 +332,7 @@ through the same flocked, rotating journal writer as other audit events. Schema 
   "decision_id": "uuid4",
   "ticket": 7,
   "pr": 12,
-  "stage": "triage|binding|admission|worker_select|claim|gate|review|manager|merge|wontfix|escalate|learn|curate",
+  "stage": "triage|binding|admission|worker_select|claim|plan|gate|review|manager|merge|wontfix|escalate|learn|curate",
   "at": "2026-10-23T10:00:00Z",
   "inputs": [{"kind": "github_issue", "ref": "https://github.com/owner/repo/issues/7", "summary": "bounded text"}],
   "options": [{"option": "ready-for-agent", "eligible": true, "reason": "bounded text"}],
@@ -354,6 +354,18 @@ ticket, cross-ticket nodes for ticket causes, and collapsible groups beginning a
 `retries` edges. Gate records carry the gated SHA, report and duration; review
 records carry required findings and model usage; manager, merge, escalation,
 learning and CURATE records retain the alternatives and evidence used.
+
+Each non-`chore` attempt tells the existing worker session to write a plan of at
+most 30 lines covering files, order, risks, and proof. Numbered revisions under
+`.factory/plans/current/` preserve course changes within the attempt. After the
+worker exits, the dispatcher copies every revision beside its transcript under
+`.factory/transcripts/<ticket>/`, journals an `event: "plan"` row with artifact
+path and SHA-256, and records a `plan` decision with actor `worker` between claim
+and gate. A missing plan records `plan: "missing"` without failing the gate;
+`chore` attempts record `plan: "skipped"` and receive no plan prompt. This adds
+no worker or model launch. The reviewer receives the latest plan artifact or
+status and lists changed files the plan did not name and planned proof absent
+from the gate report. Plan drift is evidence, not an automatic `REVISE`.
 
 The workspace **Decisions** view (`/?view=decisions&ticket=N`, or `/decisions`)
 reads the selected repository through authenticated `GET /api/trace?ticket=N`.
