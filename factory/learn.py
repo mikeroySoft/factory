@@ -278,7 +278,9 @@ def replay_ticket(
             )
             _, fired = dispatch.run_worker(
                 argv, wt, logfile, wt / ".factory" / f"handoff-{case.ticket}.md",
-                deadline, journal=False, env_overrides=isolated,
+                deadline, journal=False, env_overrides={
+                    **cfg.worker_environment(worker, promptfile, wt), **isolated,
+                },
                 worker=worker, worker_version=cfg.worker_version.get(worker),
             )
             transcript = dispatch._transcript(session_dir, wall)
@@ -359,7 +361,9 @@ def replay_ticket(
             )
             _, fired = dispatch.run_worker(
                 argv, wt, logfile, wt / ".factory" / f"handoff-{case.ticket}.md",
-                deadline, journal=False, env_overrides=isolated,
+                deadline, journal=False, env_overrides={
+                    **cfg.worker_environment(worker, promptfile, wt), **isolated,
+                },
                 worker=worker, worker_version=cfg.worker_version.get(worker),
             )
             transcript = dispatch._transcript(session_dir, wall)
@@ -1231,6 +1235,20 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
         dispatch.log(f"PR #{n}: {'would refresh' if dry_run else 'refreshing'} {branch} (behind {cfg.main})")
         if not dry_run:
             refresh(cfg, n, branch, head)
+        return
+    from factory import eval as eval_suite
+
+    paths = [
+        item["filename"] for item in compare.get("files", [])
+        if isinstance(item, dict) and isinstance(item.get("filename"), str)
+    ]
+    initialized = any(row.get("event") == "eval-summary" for row in events)
+    if (
+        initialized
+        and not branch.startswith(REVERT_BRANCH)
+        and not eval_suite.merge_allowed(paths, head, events)
+    ):
+        dispatch.log(f"PR #{n}: {branch} waiting for worker eval keep evidence at {head[:12]}")
         return
     if dry_run:
         dispatch.log(f"PR #{n}: would merge {branch}")

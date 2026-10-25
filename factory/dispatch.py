@@ -3122,7 +3122,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                     execution.outcome, execution.reason = "not_eligible", "no_passing_ci"
                     execution.wait("no_passing_ci", mode="eligibility", pr=pr_num)
                 continue
-            fields = "number,state,headRefName,headRefOid,baseRefName,isDraft,labels,reviewDecision,title"
+            fields = "number,state,headRefName,headRefOid,baseRefName,isDraft,labels,reviewDecision,title,files"
             fresh = gh_json(["pr", "view", str(pr_num), "--repo", REPO, "--json", fields])
             labels = {label["name"] for label in fresh.get("labels", [])}
             head = fresh.get("headRefOid")
@@ -3140,9 +3140,19 @@ def merge_pass_locked(dry_run: bool) -> None:
                 log(f"PR #{pr_num}: head changed during CI check; retrying next pass")
                 continue
             behind = gh_json(["api", f"repos/{REPO}/compare/{cfg.main}...{head}"])["behind_by"]
+            from factory import eval as eval_suite
+
+            changed_paths = [
+                item["path"] for item in fresh.get("files", [])
+                if isinstance(item, dict) and isinstance(item.get("path"), str)
+            ]
             if dry_run:
                 if behind:
                     log(f"PR #{pr_num}: would refresh (behind main)")
+                elif "files" in fresh and not eval_suite.merge_allowed(
+                    changed_paths, head, lifecycle.read_events(EVENTS),
+                ):
+                    log(f"PR #{pr_num}: would refuse (worker eval keep claim missing for {head})")
                 else:
                     events = lifecycle.read_events(EVENTS)
                     approved = _head_evidence_matches(events, n, head) and any(
@@ -3186,6 +3196,11 @@ def merge_pass_locked(dry_run: bool) -> None:
                     execution.outcome = "refreshed"
                 return
             events = lifecycle.read_events(EVENTS)
+            if "files" in fresh and not eval_suite.merge_allowed(changed_paths, head, events):
+                log(f"PR #{pr_num}: worker eval keep claim missing for {head}; not merging")
+                execution.outcome, execution.reason = "not_eligible", "eval_required"
+                execution.wait("eval_required", mode="eligibility", pr=pr_num, head=head)
+                continue
             approved = _head_evidence_matches(events, n, head) and any(
                 e.get("event") == "approved"
                 and e.get("ticket") == n
@@ -3915,6 +3930,13 @@ def main(argv: list[str]) -> int:
         # A release PR merges before this pass lands a ticket (every ticket edits CHANGELOG.md,
         # which GitHub cannot union-merge), and a new one opens only after landing.
         release_step(open_pr=False)
+        if cfg.eval_schedule:
+            try:
+                from factory import eval as eval_suite
+
+                eval_suite.run_if_changed(cfg, args.dry_run)
+            except Exception as exc:  # noqa: BLE001 - unavailable eval evidence blocks only eval-gated changes
+                log(f"eval: failed ({type(exc).__name__}: {exc})")
         land_pass(args.dry_run)
         review_intake_pass(args.dry_run)
         from factory.learn import learn_pass

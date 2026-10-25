@@ -18,6 +18,7 @@ COMMANDS = {
     "stats": ("stats", "main", "ticket metrics from GitHub"),
     "explain": ("trace", "main", "explain one ticket's routing decisions from the local journal"),
     "learn": ("learn", "main", "distil recent ticket outcomes into .factory-lessons.md"),
+    "eval": ("eval", "main", "replay the frozen worker suite with one profile"),
     "score": ("score", "main", "rubric-score finished tickets' worker attempts from their transcripts"),
     "release": ("release", "main", "measure the quality bar and cut an atomic patch release"),
     "dashboard": ("dashboard", "main", "serve the authenticated outcome-control workspace"),

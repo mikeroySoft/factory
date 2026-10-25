@@ -1,0 +1,567 @@
+{
+  "version": 1,
+  "note": "Frozen worker replay suite. Reviewer-calibration source tickets retain their v2 train/lockbox membership; recent merged Factory and rocm-cli tickets seed the remaining cases. Lockbox cases never move out in later versions.",
+  "cases": [
+    {
+      "id": "mikeroySoft/factory#12",
+      "repo": "mikeroySoft/factory",
+      "ticket": 12,
+      "base": "6ec35460e4879b8278bc7feb680b7fbb5e84ce08",
+      "split": "train",
+      "title": "[manager] config table",
+      "labels": [
+        "ready-for-agent"
+      ],
+      "issue": {
+        "title": "[manager] config table",
+        "body": "Plan: `docs/manager-plan.md` (T3)\n\n**Scope**\n`[manager] command = [...]` (argv template with `{prompt}`, `{cwd}`; unset = disabled), `rounds = 1`, `review = \"escalated\"` (`\"all\"` allowed). Host-layer table like `review` (`HOST_TABLES`). `factory doctor` reports the binary; `dashboard --json` `config` includes it; `templates/factory.toml` documents it.\n\n**Touches**\n`factory/config.py` (`KNOWN_KEYS`, `HOST_TABLES`, `Config`, loader), `factory/onboard.py` doctor, `factory/templates/factory.toml`, `factory/dashboard.py`.\n\n**Exit gate**\n`factory doctor` prints a `manager:` row when configured and nothing when not; unknown keys under `[manager]` are reported as drift; `uv run pytest tests/test_factory.py` passes with a loader test for all three keys.\n\n**Out of scope**\nRunning the command.",
+        "comments": []
+      },
+      "accepted": {
+        "merged_pr": 22,
+        "merge_commit": "f083408ee2d90f87fd51e3eb5d53e6fc6443b301",
+        "gate": "PASS",
+        "review": "APPROVE",
+        "gate_checks": [
+          "test"
+        ],
+        "acceptance_criteria": "`factory doctor` prints a `manager:` row when configured and nothing when not; unknown keys under `[manager]` are reported as drift; `uv run pytest tests/test_factory.py` passes with a loader test for all three keys."
+      }
+    },
+    {
+      "id": "mikeroySoft/factory#62",
+      "repo": "mikeroySoft/factory",
+      "ticket": 62,
+      "base": "f6dfc77bb61437773d87cf06df8df7d78844f837",
+      "split": "train",
+      "title": "manager: `{prompt}` is inline text while workers get a path; a worker-shaped command fails with ENAMETOOLONG and posts a stack trace",
+      "labels": [
+        "bug",
+        "ready-for-human"
+      ],
+      "issue": {
+        "title": "manager: `{prompt}` is inline text while workers get a path; a worker-shaped command fails with ENAMETOOLONG and posts a stack trace",
+        "body": "**Scope**\n\nOn 2026-09-07T22:11Z the manager ran for District #26's escalation and failed with:\n\n```\nFactory manager: Manager command failed (1):\n... ENAMETOOLONG: name too long, open '/home/mike/dev/mikeroysoft/district/.factory/wt-26/You are the factory manager. Diagnose only; ...\n```\n\nThe host config had `[defaults.manager].command = [\"omp\", \"-p\", \"--no-session\", \"--model\", \"openai-codex/gpt-6-astra\", \"--cwd\", \"{cwd}\", \"@{prompt}\"]` — the *worker* shape, where `@{prompt}` means \"read the prompt file\". The manager contract is different: `Config.manager_cmd` (`factory/config.py:143`) expands `{prompt}` with the inline prompt **text** (README:92), like the reviewer, while `Config.worker` (`config.py:135`) expands it with a **path**. `omp` therefore received `@<2 KB of prompt text>` as a filename. The manager decision became `HUMAN` with a minified JS stack trace as the diagnosis, so the escalated ticket got no automated diagnosis and the operator got no useful message.\n\nThree things are wrong, in order of leverage:\n\n1. **Nothing validates the manager command's shape.** `config.py` accepts any argv; `factory doctor` has no row for it. A `{prompt}` placeholder prefixed with `@` (or used as an `-f`/`--file` argument) can never work for a text-expanded command, and the failure only appears at the first escalation — the moment the manager is needed.\n2. **The failure is reported as a stack trace.** `factory/manage.py:245` posts `proc.stderr or proc.stdout` verbatim as the HUMAN body. A nonzero manager exit should post a one-line cause (`manager command exited 1; stderr tail: …`) with the argv shape (placeholders unexpanded), not 20 lines of minified JavaScript.\n3. **The inline-text transport is fragile by design.** A prompt containing the issue body, the escalation packet, lessons and notes is passed as one argv element; it already grows past 2 KB and will hit `ARG_MAX`/per-argument limits (`MAX_ARG_STRLEN` = 128 KiB on Linux) as packets grow. The worker path writes `.factory-prompt.md` and passes a path; the manager should do the same.\n\nAfter this change:\n\n- `Config.manager_cmd(prompt_path, cwd)` writes the prompt to `<factory>/manager-prompt-<n>.md` and expands `{prompt}` with that path, matching the worker contract. `README.md` §\"Configuration\" and the `factory init` template document `{prompt}` = file for workers **and** manager, text for the reviewer only. The default manager command becomes the worker shape (`@{prompt}` for omp).\n- Existing host configs written for inline text (a bare `{prompt}` argument to `omp`) keep working: `omp -p <path>` is not a valid prompt, so `manager_cmd` rejects a bare `{prompt}` element for commands whose argv[0] is `omp` with a `ConfigError` naming the fix (`use \"@{prompt}\"`). Other programs are not second-guessed.\n- `factory doctor` gains a `manager command` row: PASS when `{prompt}` and `{cwd}` are present and argv[0] resolves on PATH; FAIL naming the missing placeholder or executable; WARN when `[dispatch.manager]` is unset (escalations get no automated diagnosis).\n- A nonzero manager exit posts `Manager command exited N (argv: …unexpanded…)` plus the last 5 stderr lines, and records an `escalate`-round event with `reason: manager_failed` so `factory stats` can count it.\n\n**Touches**\n\n`factory/config.py` (`manager_cmd`, `DEFAULT_MANAGER`, validation), `factory/manage.py` (prompt file, failure body), `factory/doctor.py` (new row), `factory/init` template + `README.md`, `tests/test_factory.py`.\n\n**Exit gate**\n\n- A test builds a `Config` with the District-shaped command (`\"@{prompt}\"`), calls `manager_cmd`, and asserts argv contains `@<path>` where `<path>` is a readable file whose content is the prompt text; a test with a bare `\"{prompt}\"` for `omp` raises `ConfigError` mentioning `@{prompt}`.\n- A test runs the manager with a stub that exits 1 and asserts the HUMAN body starts with `Manager command exited 1` and contains no more than 5 stderr lines.\n- `factory doctor` on a repo with no manager prints the WARN row; with a placeholder-less command prints FAIL.\n- `uv run python -m unittest discover -s tests` passes.\n- Manual: re-run `factory manage` on District #26's kept packet (`.factory/escalations/26.md`) with the host's current command and get a real DECISION line, not ENAMETOOLONG.\n\n**Out of scope**\n\nChanging manager decision semantics, the escalation packet format, or which model the manager uses.\n",
+        "comments": []
+      },
+      "accepted": {
+        "merged_pr": 63,
+        "merge_commit": "6a89802de023751c9e3fe4ae6fdd29c892f6ce56",
+        "gate": "PASS",
+        "review": "APPROVE",
+        "gate_checks": [
+          "test"
+        ],
+        "acceptance_criteria": "- A test builds a `Config` with the District-shaped command (`\"@{prompt}\"`), calls `manager_cmd`, and asserts argv contains `@<path>` where `<path>` is a readable file whose content is the prompt text; a test with a bare `\"{prompt}\"` for `omp` raises `ConfigError` mentioning `@{prompt}`.\n- A test runs the manager with a stub that exits 1 and asserts the HUMAN body starts with `Manager command exited 1` and contains no more than 5 stderr lines.\n- `factory doctor` on a repo with no manager prints the WARN row; with a placeholder-less command prints FAIL.\n- `uv run python -m unittest discover -s tests` passes.\n- Manual: re-run `factory manage` on District #26's kept packet (`.factory/escalations/26.md`) with the host's current command and get a real DECISION line, not ENAMETOOLONG."
+      }
+    },
+    {
+      "id": "mikeroySoft/factory#9",
+      "repo": "mikeroySoft/factory",
+      "ticket": 9,
+      "base": "311ba913f3f94cabac929d38ca38c8eeb87e180f",
+      "split": "train",
+      "title": "Show the external pull-request review queue in the dashboard",
+      "labels": [
+        "enhancement",
+        "ready-for-agent"
+      ],
+      "issue": {
+        "title": "Show the external pull-request review queue in the dashboard",
+        "body": "## Scope\n\nAdd an external pull-request review queue to `factory dashboard`. Show each opted-in PR with repository-local PR number, title, author, current head SHA, last reviewed SHA, review verdict, CI state, and one of: pending review, changes requested, CI pending, CI failed, ready, or escalated. Link each row to GitHub and include actionable stalled items in the existing inbox without adding mutation controls.\n\nBlocked by: #8\n\n## Touches\n\n- `factory/dashboard.py`: review-queue snapshot data\n- `factory/dashboard.html`: queue and inbox rendering\n- `tests/test_factory.py`: snapshot classification and response shape\n- `README.md`: operating description of the review lane\n\n## Exit gate\n\nA dashboard snapshot test covers all six states and verifies PR links and SHA-specific review data; `python -m unittest` passes. Running `factory dashboard` displays the queue without changing labels, reviews, branches, or merge state.\n\n## Out of scope\n\nSubmitting reviews from the dashboard, fixing contributor branches, merging external PRs, and adding a separate dashboard service.",
+        "comments": []
+      },
+      "accepted": {
+        "merged_pr": 84,
+        "merge_commit": "82e09ab38d1b1382be2cd09f17312041f7f3260f",
+        "gate": "PASS",
+        "review": "APPROVE",
+        "gate_checks": [
+          "test"
+        ],
+        "acceptance_criteria": "A dashboard snapshot test covers all six states and verifies PR links and SHA-specific review data; `python -m unittest` passes. Running `factory dashboard` displays the queue without changing labels, reviews, branches, or merge state."
+      }
+    },
+    {
+      "id": "mikeroySoft/factory#8",
+      "repo": "mikeroySoft/factory",
+      "ticket": 8,
+      "base": "2f5e7ac524a6b415596d52531de9aacdaf104f0f",
+      "split": "train",
+      "title": "Track CI and merge readiness for reviewed pull requests",
+      "labels": [
+        "enhancement",
+        "ready-for-agent"
+      ],
+      "issue": {
+        "title": "Track CI and merge readiness for reviewed pull requests",
+        "body": "## Scope\n\nTrack GitHub check state for pull requests in the opt-in review lane and derive a fail-closed readiness state from both review and CI evidence. Expose distinct states for CI pending, CI failed, changes requested, and ready when the factory review approves the current head SHA and all reported required checks pass. A later head SHA invalidates prior readiness. External pull requests must never be merged by this lane.\n\nBlocked by: #7\n\n## Touches\n\n- `factory/dispatch.py`: check-state query and readiness derivation\n- `.factory/events.jsonl` event schema through existing `record()` calls\n- `tests/test_factory.py`: pending, failed, missing, passing, and stale-approval cases\n\n## Exit gate\n\nTests prove that missing, unparsable, pending, failed, or cancelled checks are not ready; approval and passing required checks for the same head SHA are ready; a new head SHA clears readiness; and no `gh pr merge` command is issued for an external PR. Running `python -m unittest` passes.\n\n## Out of scope\n\nFixing failed checks, pushing to contributor branches, merging external PRs, and dashboard rendering.",
+        "comments": []
+      },
+      "accepted": {
+        "merged_pr": 83,
+        "merge_commit": "311ba913f3f94cabac929d38ca38c8eeb87e180f",
+        "gate": "PASS",
+        "review": "APPROVE",
+        "gate_checks": [
+          "test"
+        ],
+        "acceptance_criteria": "Tests prove that missing, unparsable, pending, failed, or cancelled checks are not ready; approval and passing required checks for the same head SHA are ready; a new head SHA clears readiness; and no `gh pr merge` command is issued for an external PR. Running `python -m unittest` passes."
+      }
+    },
+    {
+      "id": "mikeroySoft/factory#20",
+      "repo": "mikeroySoft/factory",
+      "ticket": 20,
+      "base": "07913b4276be9d6013cafa025aeb489d6304a99a",
+      "split": "lockbox",
+      "title": "[workers] when-rules; ci-fix and conflict default profiles",
+      "labels": [
+        "ready-for-agent"
+      ],
+      "issue": {
+        "title": "[workers] when-rules; ci-fix and conflict default profiles",
+        "body": "Blocked by: #13\nBlocked by: #19\nPlan: `docs/manager-plan.md` (T11)\n\n**Scope**\n`[workers.<label>]` may carry `when = \"<natural-language description>\"`. The manager prompt lists labels with their `when`; `ROUTE` and `FIX` are only accepted for listed labels. Ship two default profiles in `templates/factory.toml`: `ci-fix` (read the failing job log, fix or declare flake with evidence) and `conflict` (resolve the rebase, keep both intents, no semantic changes). New profiles remain host-config, human-applied.\n\n**Touches**\n`factory/config.py` (`[workers]` table-or-array), `factory/manage.py`, `factory/dashboard.py`, `factory/templates/factory.toml`.\n\n**Exit gate**\nA `ROUTE chore` decision on a repo without a `chore` worker is rejected and recorded; with one, the label is applied; a `FIX` on red CI runs the `ci-fix` argv. Existing array-form `[workers]` still loads. `uv run pytest tests/test_factory.py` passes.\n\n**Out of scope**\nThe manager writing host config.",
+        "comments": []
+      },
+      "accepted": {
+        "merged_pr": 39,
+        "merge_commit": "cadb9981524ab5506693e27f56ff8ac4ef911da6",
+        "gate": "PASS",
+        "review": "APPROVE",
+        "gate_checks": [
+          "test"
+        ],
+        "acceptance_criteria": "A `ROUTE chore` decision on a repo without a `chore` worker is rejected and recorded; with one, the label is applied; a `FIX` on red CI runs the `ci-fix` argv. Existing array-form `[workers]` still loads. `uv run pytest tests/test_factory.py` passes."
+      }
+    },
+    {
+      "id": "mikeroySoft/factory#79",
+      "repo": "mikeroySoft/factory",
+      "ticket": 79,
+      "base": "8fba9c5e33a7b0122683334e424183af5ff1b5fd",
+      "split": "lockbox",
+      "title": "[B2] Expose source-versioned PR feedback evidence in the existing dashboard and briefing",
+      "labels": [
+        "ready-for-human"
+      ],
+      "issue": {
+        "title": "[B2] Expose source-versioned PR feedback evidence in the existing dashboard and briefing",
+        "body": "Prepared against canonical GitHub `main` revision `8fba9c5e33a7b0122683334e424183af5ff1b5fd`. Re-read `main`, open PR changed-file ownership, issue ownership, and Factory locks immediately before starting work; rebase onto the then-current canonical `main` rather than copying whole files from an older PR. `B2` is a planning handle, not a GitHub issue number, and this ticket has no `Blocked by:` dependency.\n\n## Scope\n\nAdd one bounded, read-only PR-feedback collector/normalizer for Factory-owned PR evidence. The same collector output must be consumed by the existing full `factory dashboard --json` snapshot at `tickets[].pr.feedback`, the existing Review drawer/Inbox evidence, and `factory.briefing.sources_for`; it is also the only producer contract a later, separately authorized #15/B3 consumer may use. Keep the existing Inbox and Factory Manager briefing advisory and read-only. This ticket observes and presents evidence only: it never dispatches a worker, delivers feedback, decides readiness, approves, merges, closes, relabels, resolves a review thread, submits a review, or invokes a model.\n\nUse a narrow `factory/feedback.py` module so later #15 can call the collector/normalizer without importing dashboard internals and so dashboard, briefing, and future consumers cannot grow competing GitHub interpretations. Reuse the existing full-snapshot GitHub transport and accepted bounded lifecycle/event readers for provenance. Do not add an event bus, provider framework, database, persistent session, worker-log parser, or second GitHub client per consumer. The collector must not run or add network calls on the `factory dashboard --runtime-json` path; preserve that existing output contract.\n\nPreserve the existing `pr.checks`, `pr.comments`, `pr.verdicts`, `review_decision`, gate text, and current snapshot fields for their existing consumers. Feedback consumers move to the richer object; they do not redefine those legacy fields as source-versioned evidence. When a PR is present but a feedback source cannot be read, return the schema-1 feedback object with explicit unavailable/partial coverage and retained independent facts. An older engine with no `feedback` key is unsupported/unknown, never equivalent to a complete empty observation.\n\n### Normative schema 1\n\nThe shared collector returns exactly one feedback object with these required keys and meanings:\n\n- `schema_version`: integer `1`. Unknown versions are unsupported and cannot authorize later dispatch.\n- `producer`: `{name: \"factory.pr-feedback\", revision: string|null}`. `revision` is a verifiable source/build revision when available, otherwise null; a CLI version alone is not revision proof.\n- `observed_at`: UTC timestamp for this collection, not provider change time.\n- `observation_id`: `sha256:` plus the deterministic digest defined below.\n- `repository`: `{id: string|null, slug: string, host: string}`. Use the GitHub native repository ID; do not derive identity from a filesystem path.\n- `pr`: `{id: string|null, number: int, url: string, head_sha: string|null, state: \"open\"|\"closed\"|\"merged\"|\"unknown\", draft: bool|null}`. `head_sha` is the head actually observed for this collection.\n- `owner`: `{issue: {id: string|null, number: int, url: string}|null, relation: \"factory_issue\"|\"unverified\"|\"ambiguous\"|\"none\", evidence: [string]}`. For `agent/<n>`, verify an actual same-repository issue/link plus retained Factory claim/PR provenance. Branch text, assignee login, PR author, or the shared GitHub account alone never proves ownership. Conflicts and missing links remain explicit and non-actionable.\n- `coverage`: an object with exactly `pr`, `reviews`, `threads`, and `checks`. Each value is `{status: \"complete\"|\"partial\"|\"unavailable\", observed_at: string|null, truncated: bool, reason: string|null}`. A complete empty source means observed empty; partial or unavailable never means none.\n- `items`: array sorted by `evidence_id` and then `source_revision`. CI/status, reviews, Factory reviews, and inline review threads/comments coexist; there is no singular PR-level feedback kind.\n- `errors`: bounded array of `{source: \"pr\"|\"reviews\"|\"threads\"|\"checks\", code: string, message: string}`. Sanitize messages so credentials and raw configuration cannot appear. One failed source must not discard usable independent sources.\n\nEvery `items[]` record has all of these fields, with explicit nulls where specified:\n\n- `evidence_id: string`: stable provider identity namespaced by provider, host, repository native ID, PR native ID, `kind`, and provider source ID. Never derive it from a timestamp, array index, display ordering, or wording. If a required provider source ID is absent or contradictory, record a bounded gap/error instead of inventing an item identity.\n- `kind`: one of `review`, `review_comment`, `check_run`, `commit_status`, or `factory_review`. Ordinary PR discussion is separate quoted context, not an automatically actionable inline review. A comment containing regex `VERDICT` without accepted review-execution and target-SHA provenance is legacy/unknown, not trusted independent approval.\n- `source_id: string`, `source_url: string|null`, `source_revision: string`, `source_updated_at: string|null`, `review_id: string|null`, `thread_id: string|null`, `check_run_id: string|null`, and `run_attempt: int|null`. Use real provider IDs/links and actual provider UTC update time when supported. A Factory review uses its accepted recorded review execution/event identity and known target SHA, not its rendered prose.\n- `observed_head_sha: string|null` and `source_head_sha: string|null`. The first is the observed PR head for this collection; the second is the commit actually reviewed, checked, or commented on. Preserve the provider's original/current comment commit distinction in `location.original_commit_sha`. Never fill a missing source SHA with the current PR head.\n- `relevance`: `current_head`, `historical`, or `unknown`. Equal non-null observed/source SHAs establish current-head relevance for reviews/checks; unequal SHAs establish historical relevance. Preserve provider outdated/current-position evidence for comments: `thread_outdated=true` cannot become current actionability merely because SHAs compare equal. Missing or contradictory source SHA, or a head race during collection, yields `unknown` with the gap recorded in coverage/errors.\n- `disposition`: `{review_state: string|null, thread_resolved: bool|null, thread_outdated: bool|null, check_status: string|null, check_conclusion: string|null}` using documented provider values. Disposition is independent of relevance and delivery. Dismissed reviews, resolved/outdated threads, and passing, failed, rerun, neutral, skipped, cancelled, pending, or unavailable checks remain distinguishable. A failed check is not a failed worker; a dismissed review is not delivered feedback.\n- `author`: `{login: string|null, kind: \"human\"|\"bot\"|\"factory_reviewer\"|\"unknown\"}`. Attribution must be evidence-backed. Provider User versus Bot alone does not distinguish a human from a Factory process using shared credentials; `factory_reviewer` requires recorded Factory review provenance.\n- `body: string` and `truncated: bool`. Empty body is valid when the source has none. `location` is `{path: string|null, line: int|null, side: string|null, original_line: int|null, original_commit_sha: string|null}`. `summary: string|null` is only the provider review/check title or name, never a generated verdict or identity. Keep source detail links when body text is truncated.\n\nThe producer must not emit or infer `delivered`, `fixed`, `approved_for_merge`, an aggregate `ready` bit, worker completion, or any equivalent authority. Flattening consumers must retain the containing repository, PR, and owner identities.\n\n### Canonicalization, revision, and observation identity\n\nCanonical JSON is UTF-8 with sorted object keys, compact separators, normalized identity strings, explicit nulls, and source-ID-sorted arrays. `source_revision` is `sha256:` over exactly these retained normalized fields: `kind`, `source_id`, `review_id`, `thread_id`, `check_run_id`, `run_attempt`, `source_head_sha`, `source_updated_at`, `author`, `body`, `truncated`, `location`, `disposition`, and `summary`.\n\nExclude collection/current-head timestamps, `source_url` and other display coordinates, presentation labels/order, relevance, and unrelated provider metadata from `source_revision`. Therefore editing retained body/location/resolution/dismissal or changing a check outcome changes the revision under the same source ID, while observing an unchanged old source against a new PR head changes relevance without pretending the source changed. A rerun with a new check-run ID or run attempt is new evidence identity/revision. Provider result reordering and repeated equivalent polls are not new feedback. When body content is truncated and the provider supplies no reliable update/version signal, coverage must state that byte-exact change detection beyond the retained body is unavailable; later consumers cannot autonomously act on that incomplete source.\n\n`observation_id` is `sha256:` over canonical repository/PR native IDs, the observed head, sorted `(evidence_id, source_revision)` pairs, and each source coverage `status`, `truncated`, and `reason`. Exclude `observed_at`, every provider/collection/generation timestamp used only for display, including `coverage.*.observed_at`, and harmless source order. Equivalent reads therefore have the same observation identity.\n\nQuery real reviews and real review threads/comments, with native IDs, links, commit identity, and resolved/outdated state. Query native check runs and commit statuses with IDs, target head, status, conclusion, run attempt, and link, not name-only aggregates. Preserve Factory-review versus external-review provenance and do not double-count one provider review as two independent reviewers.\n\n### Bounded observation, races, and partial reads\n\nUse fixed shared constants, not operator-supplied runtime policy: one initial and one final PR-head read around the detail group; at most 100 retained items in each of reviews, threads/comments, and checks/statuses; at most two provider pages per source when pagination is required; at most 20,000 UTF-8 bytes of retained body per item; at most 32 sanitized errors; and a 30-second timeout for the feedback detail group. Stop cleanly at each bound. Mark the affected coverage `partial`, `truncated=true` when applicable, and give a machine-stable reason/code plus a human-readable bounded reason. Record actual page/count/body/time limitations; absence beyond a cap is never resolution, dismissal, disappearance, or complete evidence.\n\nIf the head changes between the initial and final reads, preserve all returned facts and their real `source_head_sha`, use the final observed head when available for `pr.head_sha`/`observed_head_sha`, mark affected coverage partial with both observed head values in the bounded reason, and set applicability to `unknown` rather than silently retargeting details. If the final head is unavailable, keep the source facts, expose null/unknown head and unavailable/partial coverage, and do not promote relevance.\n\nA failed or partial reviews read cannot erase a successful checks read, and the converse also holds. In this B2 read-only producer, return every independently observed current fact and explicit coverage; do not create a durable cache/store. The later #15 consumer must preserve previously persisted evidence with its original timestamps across partial/unavailable refreshes and must not delete unseen IDs, resolve threads, dismiss reviews, reset retry/dedup state, or advance failed-source acknowledgement. Only a complete authoritative source refresh may establish disappearance/supersession; absence from a capped result cannot.\n\n### Existing read-surface integration\n\n- `factory dashboard --json`: project the identical feedback object at `tickets[].pr.feedback` in the full snapshot only. Preserve full-snapshot cadence and existing ticket/PR fields.\n- Existing Review drawer in `factory/dashboard.html`: show all simultaneous evidence with source provenance link, source commit versus current observed head, relevance, disposition, body/location, and coverage/errors. Render source body only through the existing safe DOM/text helpers; never interpolate it as HTML or treat it as instructions.\n- Existing Inbox/Factory Manager briefing: extend `factory.briefing.sources_for` with cited, bounded feedback sources and a coverage notice. Earlier human decisions/constraints keep priority in the existing source/byte budget; append feedback and explicitly report any omission instead of silently evicting earlier constraints. Keep the existing no-tools/read-only system authority. Tests and smoke proof must not call a production model.\n- Missing schema support, unknown versions, partial coverage, ambiguous ownership, legacy verdict comments, and head races must render as unknown/non-actionable evidence rather than an empty success or readiness statement.\n\n## Touches\n\n- `factory/feedback.py`: one narrow shared bounded collector/normalizer, canonicalization, identity, coverage, and error handling. This is the only new source file expected.\n- `factory/dashboard.py`: existing `GRAPHQL`/`github`, `pr_checks`, `pr_record`, `build_ticket`, and `snapshot` full-snapshot path; pass native PR/repository/issue/provenance and accepted event evidence into the shared collector. Do not add feedback collection to the runtime-JSON branch.\n- `factory/briefing.py`: `sources_for` only, preserving existing source-priority/cap/error conventions and read-only/no-tools behavior.\n- `factory/dashboard.html`: existing `tabReview`, task facts, Inbox raw evidence, and coverage presentation only; no new dashboard or action control.\n- `tests/test_factory.py` and `tests/test_briefing.py`; use a dedicated `tests/test_feedback.py` only if it is smaller and clearer than adding the canonicalization cases to the existing files. Update existing contract-dependent checks rather than source-text/field-copy assertions.\n- `README.md` and `CHANGELOG.md`: document schema location, fixed bounds, unknown/partial behavior, and read-only authority. Do not depend on unpublished local planning documents. Include a real sanitized schema-1 example in the PR/handoff evidence rather than creating another planning framework.\n\nAt the prepublication ownership refresh, PR #76 (`agent/4`, targeting `stable`) changes only bind-error handling in `factory/dashboard.py:main` relative to canonical `main`, not the snapshot/feedback functions. Its large diff against `stable` mostly reflects base divergence. Leave that PR untouched and preserve its independent ownership. No open PR changes `factory/briefing.py` or `factory/dashboard.html` relative to canonical `main`. PR #77 (`agent/5`, also targeting `stable`) owns external-review intake changes outside B2; leave it untouched. Open issue #7 may touch `factory/dashboard.py` only if needed and open issue #9 names `factory/dashboard.py`/`factory/dashboard.html`; both are unassigned, have no PR, and remain on the separately ordered #5→#6→#7→#8→#9 external-review chain. They are scheduling overlaps, not behavioral dependencies. Open PR #74 changes `README.md` but no B2 implementation/read-surface file; integrate B2 documentation last and rebase rather than adding a fake blocker. Before editing, re-read all open PR changed-file lists and the relevant Factory locks. If another owner has begun writing the same functions or presentation sections in `factory/dashboard.py`, `factory/briefing.py`, or `factory/dashboard.html`, do not edit concurrently: leave the ticket in normal intake/handoff and report the exact owner/PR/file overlap for serialization. Do not add a permanent `Blocked by:` line for file scheduling.\n\n## Exit gate\n\n1. Add focused behavior checks that provide simultaneous failing CI, a current-head changes-requested review, an unresolved inline thread/comment, and a provenance-backed Factory review. Assert all independent items survive together with native IDs/links, source/observed heads, location, disposition, ownership evidence, explicit nulls, and complete coverage. Assert an ordinary PR comment or provenance-free `VERDICT` does not become trusted Factory review evidence.\n2. Repeat an equivalent provider read with reordered results and a changed collection timestamp: every `evidence_id`, `source_revision`, and `observation_id` stays identical. Edit a body/location/resolution/dismissal under its existing provider ID and rerun/change a check attempt/outcome: only the applicable semantic revision/identity and enclosing observation identity change.\n3. Exercise same-head, advanced-head, head-change-during-collection, missing source SHA, dismissed review, resolved/outdated thread, cancelled/pending/passing/failing check, empty-complete source, pagination/count cap, body truncation, timeout, malformed response, and one-source failure. Historical/unknown evidence never becomes current; independent successful facts remain; coverage/errors distinguish empty, partial, unavailable, and complete.\n4. Add focused regression boundaries: existing checks/comments/verdict/gate fields and current full-snapshot consumers still work; a PR on an older engine with no feedback key renders unsupported/unknown; `factory dashboard --runtime-json` performs no feedback/GitHub read and its schema stays unchanged; non-PR tickets gain no fabricated feedback; `sources_for` retains earlier human constraints ahead of appended feedback and exposes coverage/omission; source text such as `<img onerror=...>` renders literally and executes nothing; no mutation command, event append, model call, or new durable state occurs.\n5. In a disposable temporary repository with real Factory configuration and controlled read-only `gh`/provider stand-ins, run the actual full CLI `python -m factory dashboard --json` and inspect `tickets[].pr.feedback` for simultaneous CI/review/thread evidence plus historical and partial evidence. Then launch the actual server with `python -m factory dashboard --host 127.0.0.1 --port <free-port> --no-open`, open it in a real browser, select the existing ticket Review drawer and Inbox evidence, and visibly confirm links, source/current heads, relevance, disposition, escaped body/location, and coverage/errors. Exercise `briefing.sources_for` against the same snapshot and inspect its cited bundle without invoking `briefing.respond`, OMP, a provider model, `/api/act`, or any GitHub mutation. Record the exact disposable commands, browser observations, and absence of mutation calls in the handoff; remove the temporary repository/process afterward.\n6. Run the repository gate exactly once after implementation and smoke evidence settle: `python -m unittest discover -s tests`. No formatter, linter, alternate `pytest` command, or changed gate policy substitutes for this command.\n7. At accepted handoff, give #15's integration owner the real B2 issue number, accepted merge revision, implemented schema/types/nullability/enums, exact constants and canonicalization, collector entry point/failure behavior, and a sanitized real full-snapshot example containing simultaneous CI/review/thread evidence plus historical and partial evidence. #15 remains unchanged and held from re-entry until a separately authorized owner accepts that handoff and amends it with the real same-repository issue number; an open issue, proposed schema, or unmerged helper is not an accepted producer.\n\n## Out of scope\n\nNo changes to `factory/dispatch.py`, `factory/manage.py`, `factory/triage.py`, `factory/lifecycle.py`, `.factory/events.jsonl` schema, `/api/act`, manager decision menus, worker prompts, delivery/dedup/acknowledgement state, readiness/admission policy, review submission/resolution, branch edits, labels, issue/PR state, or merge behavior. #15/B3 owns later bounded delivery and remains `ready-for-human`; do not amend, requeue, relabel, close, duplicate, or build it here. #5–#9 own the external/human PR review-only lane; do not replace or implement that lane and never grant it fix, push, merge, or close authority. B1 readiness explanations, B4 history, B5 causal receipts, F01 lifecycle, F02 waits, F03 network-free runtime projection, collaboration #55–#59, District implementation, notifications, controller/daemon/database work, releases, installation, rollout, and production evidence collection remain unchanged/held.\n\nPreserve configured PR-target safeguards accepted in #78 and all exact-head S0 protections already on canonical `main`: failed reviewer execution cannot approve; gate and independent review evidence stay bound to the assessed immutable head; refresh requires fresh gate and review; stale/missing/ambiguous/partial/legacy evidence is non-authorizing; the provider expected-head precondition prevents a last-moment head race; CI remains fail-closed; current-main containment, human requested-changes veto, ticket/merge locks, one-merge-per-pass remain intact. This read-only ticket cannot weaken or grant any of those authorities. Merge of B2 source will not mean release, installation, rollout, public publication, #15 execution, or delivered outcome.\n",
+        "comments": []
+      },
+      "accepted": {
+        "merged_pr": 80,
+        "merge_commit": "c75a5a7a384693d2c377fab7a543242535cde77d",
+        "gate": "PASS",
+        "review": "APPROVE",
+        "gate_checks": [
+          "test"
+        ],
+        "acceptance_criteria": "1. Add focused behavior checks that provide simultaneous failing CI, a current-head changes-requested review, an unresolved inline thread/comment, and a provenance-backed Factory review. Assert all independent items survive together with native IDs/links, source/observed heads, location, disposition, ownership evidence, explicit nulls, and complete coverage. Assert an ordinary PR comment or provenance-free `VERDICT` does not become trusted Factory review evidence.\n2. Repeat an equivalent provider read with reordered results and a changed collection timestamp: every `evidence_id`, `source_revision`, and `observation_id` stays identical. Edit a body/location/resolution/dismissal under its existing provider ID and rerun/change a check attempt/outcome: only the applicable semantic revision/identity and enclosing observation identity change.\n3. Exercise same-head, advanced-head, head-change-during-collection, missing source SHA, dismissed review, resolved/outdated thread, cancelled/pending/passing/failing check, empty-complete source, pagination/count cap, body truncation, timeout, malformed response, and one-source failure. Historical/unknown evidence never becomes current; independent successful facts remain; coverage/errors distinguish empty, partial, unavailable, and complete.\n4. Add focused regression boundaries: existing checks/comments/verdict/gate fields and current full-snapshot consumers still work; a PR on an older engine with no feedback key renders unsupported/unknown; `factory dashboard --runtime-json` performs no feedback/GitHub read and its schema stays unchanged; non-PR tickets gain no fabricated feedback; `sources_for` retains earlier human constraints ahead of appended feedback and exposes coverage/omission; source text such as `<img onerror=...>` renders literally and executes nothing; no mutation command, event append, model call, or new durable state occurs.\n5. In a disposable temporary repository with real Factory configuration and controlled read-only `gh`/provider stand-ins, run the actual full CLI `python -m factory dashboard --json` and inspect `tickets[].pr.feedback` for simultaneous CI/review/thread evidence plus historical and partial evidence. Then launch the actual server with `python -m factory dashboard --host 127.0.0.1 --port <free-port> --no-open`, open it in a real browser, select the existing ticket Review drawer and Inbox evidence, and visibly confirm links, source/current heads, relevance, disposition, escaped body/location, and coverage/errors. Exercise `briefing.sources_for` against the same snapshot and inspect its cited bundle without invoking `briefing.respond`, OMP, a provider model, `/api/act`, or any GitHub mutation. Record the exact disposable commands, browser observations, and absence of mutation calls in the handoff; remove the temporary repository/process afterward.\n6. Run the repository gate exactly once after implementation and smoke evidence settle: `python -m unittest discover -s tests`. No formatter, linter, alternate `pytest` command, or changed gate policy substitutes for this command.\n7. At accepted handoff, give #15's integration owner the real B2 issue number, accepted merge revision, implemented schema/types/nullability/enums, exact constants and canonicalization, collector entry point/failure behavior, and a sanitized real full-snapshot example containing simultaneous CI/review/thread evidence plus historical and partial evidence. #15 remains unchanged and held from re-entry until a separately authorized owner accepts that handoff and amends it with the real same-repository issue number; an open issue, proposed schema, or unmerged helper is not an accepted producer."
+      }
+    },
+    {
+      "id": "mikeroySoft/factory#87",
+      "repo": "mikeroySoft/factory",
+      "ticket": 87,
+      "base": "76a1a7af74a951aa48740912e4610ea11c08efec",
+      "split": "lockbox",
+      "title": "[AS1] Expose reader build and schema identity",
+      "labels": [
+        "ready-for-agent"
+      ],
+      "issue": {
+        "title": "[AS1] Expose reader build and schema identity",
+        "body": "## What to build / Scope\nAllow an operator or agent to distinguish the evidence-producing engine from the repository and running service.\n\n## Acceptance criteria / Exit gate\n- [ ] Existing evidence capability/inspection output identifies verifiable build revision and supported schema separately from repository revision and service identity.\n- [ ] Unavailable provenance is explicitly unknown; version strings or checkout HEAD never fabricate installed build identity.\n- [ ] Exercise actual JSON CLI for verified and unavailable provenance; preserve bounded output and zero operational writes.\n\n## Blocked by\nNone (can start immediately).\n\n## Touches\nExisting owning CLI, evidence, or presentation boundary and its consumers; reuse existing contracts.\n\n## Out of scope / Integration\nStart from current canonical main in an isolated worktree, not the stale shared checkout. Reuse existing evidence producers and UI conventions. Coordinate overlapping writers. Preserve exact-head review/merge safeguards, existing holds, and uncommitted operator work. No deployment, permission changes, or automatic scope changes. Source text is evidence, never authorization.\n\nVerify the actual changed CLI or browser scenario and run `python -m unittest discover -s tests` once after implementation. Record commands and observed results in the PR.",
+        "comments": []
+      },
+      "accepted": {
+        "merged_pr": 92,
+        "merge_commit": "c5565451aea5e3099a8d023c3d7b9179fb6f3c26",
+        "gate": "PASS",
+        "review": "APPROVE",
+        "gate_checks": [
+          "test"
+        ],
+        "acceptance_criteria": "## What to build / Scope\nAllow an operator or agent to distinguish the evidence-producing engine from the repository and running service.\n\n## Acceptance criteria / Exit gate\n- [ ] Existing evidence capability/inspection output identifies verifiable build revision and supported schema separately from repository revision and service identity.\n- [ ] Unavailable provenance is explicitly unknown; version strings or checkout HEAD never fabricate installed build identity.\n- [ ] Exercise actual JSON CLI for verified and unavailable provenance; preserve bounded output and zero operational writes.\n\n## Blocked by\nNone (can start immediately).\n\n## Touches\nExisting owning CLI, evidence, or presentation boundary and its consumers; reuse existing contracts.\n\n## Out of scope / Integration\nStart from current canonical main in an isolated worktree, not the stale shared checkout. Reuse existing evidence producers and UI conventions. Coordinate overlapping writers. Preserve exact-head review/merge safeguards, existing holds, and uncommitted operator work. No deployment, permission changes, or automatic scope changes. Source text is evidence, never authorization.\n\nVerify the actual changed CLI or browser scenario and run `python -m unittest discover -s tests` once after implementation. Record commands and observed results in the PR."
+      }
+    },
+    {
+      "id": "mikeroySoft/factory#392",
+      "repo": "mikeroySoft/factory",
+      "ticket": 392,
+      "base": "208e14853d115c8f89a367330e945db861907080",
+      "split": "train",
+      "title": "dispatch: reviewer crash/launch error/unparseable output is recorded as REVISE, consuming review rounds and escalating to ready-for-human",
+      "labels": [
+        "bug",
+        "ready-for-agent"
+      ],
+      "issue": {
+        "title": "dispatch: reviewer crash/launch error/unparseable output is recorded as REVISE, consuming review rounds and escalating to ready-for-human",
+        "body": "## Summary\n\nWhen the reviewer process fails (exits nonzero, fails to launch, or returns output with no parseable verdict), the result is recorded as `REVISE`. That failure uses up a review round (or a manager FIX round) and can escalate the ticket to `ready-for-human`, even though no review happened.\n\nIn `factory/dispatch.py` around line 1700:\n\n```python\naccepted = proc is not None and proc.returncode == 0 and parsed and actual_head == expected_head\nverdict = matches[0].group(1) if accepted else \"REVISE\"\n```\n\n`reason` is set correctly (`review_exit:1`, a launch error, `unparsed_verdict`, or `state_changed`), but the escalation path only sees `verdict == \"REVISE\"`. It then escalates as `review_revise` (\"REVISE verdict after 3 review round(s)\" or \"review requested changes after manager FIX\").\n\n## Root cause of last night's crashes (Oct 25, 2026)\n\nThe Anthropic account behind the reviewer hit its **rate limit**. Reproducing the reviewer call by hand (`omp -p --no-session --model anthropic/claude-opus-5-5 ...`, omp 18.11.3) at 7:51 AM PT returned exit 1 with:\n\n```\n429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"This request would exceed your account's rate limit. Please try again later.\"}} retry-after-ms=2337000\n```\n\n`factory doctor` reports 0 blocking problems, so it doesn't catch this. Secondary problem: the 429 text never reached the review findings or the escalation packet. `review-384.md` contains only `Factory rejected reviewer evidence: review_exit:1.` In JSON mode, `_omp_output` probably drops the error event, so the real cause is lost.\n\n## Evidence (times PT, Oct 25)\n\nThere were 6 reviewer failures (`outcome: unknown, reason: review_exit:1`) between 5:10 and 6:26 AM. The last good review was at 4:26 AM.\n\n- **#389 / PR #391**: all 4 review rounds crashed (5:40, 5:47, 5:54, 6:00 AM). It escalated at 6:01 AM as \"REVISE verdict after 3 review round(s)\". **The PR was never actually reviewed.** Its gate is green and it is mergeable.\n- **#384 / PR #387**: the manager FIX-3 review crashed at 6:26 AM. It was recorded as REVISE and escalated as \"review requested changes after manager FIX\", spending the last FIX round. The previous real finding had already been fixed in 824c1f0.\n- **#386 / PR #390**: the review crashed at 5:10 AM, the same pass that hit the 90-minute budget and escalated.\n- The release hold's measured `human_rate` rose to **0.44** (9 tickets), against a bar of 0.038. At least part of that comes from these false escalations.\n\nA related problem: the manager FIX loop keeps running on a ticket that is already on `ready-for-human`, and each round escalates it again. #384 got 4 escalation comments plus a handoff request.\n\n## Proposed fix\n\n1. Treat reviewer exit != 0, launch errors and unparseable output as a **tooling failure**, not a verdict. Retry with backoff, honoring `retry-after` when the reviewer reports it. Don't increment the review round or FIX round counter.\n2. If the failure persists after retries, hold the ticket or escalate it with a distinct reason (for example `reviewer_unavailable`) and include the reviewer's stderr or error event. Never use `review_revise`.\n3. Keep the reviewer's error output (stderr, or the JSON-mode error event) in the findings or diagnostic so escalation packets show the real cause.\n4. Don't let the manager FIX loop escalate again when the ticket is already on `ready-for-human`.\n5. Optional: have `factory doctor` make a cheap reviewer liveness probe so rate limits and auth failures show up there.\n\n## Acceptance tests\n\n- A reviewer that exits 1 with empty output is not recorded as `REVISE` and doesn't increment the review round or FIX round count.\n- A reviewer with unparseable output is handled the same way.\n- Persistent reviewer failure across retries produces a distinct reason (`reviewer_unavailable`), not `review_revise`, and the escalation includes the reviewer's error text.\n- A real `VERDICT: REVISE` still counts as a round and escalates after the configured limit, unchanged.\n- A manager FIX round on a ticket already on `ready-for-human` doesn't post another escalation comment.\n\nRelated: #384, #386, #389\n",
+        "comments": []
+      },
+      "accepted": {
+        "merged_pr": 393,
+        "merge_commit": "eb611cc794da4008ffaba73cac6108a2ed8af0a1",
+        "gate": "PASS",
+        "review": "APPROVE",
+        "gate_checks": [
+          "test",
+          "ruff",
+          "mutation"
+        ],
+        "acceptance_criteria": "## Summary\n\nWhen the reviewer process fails (exits nonzero, fails to launch, or returns output with no parseable verdict), the result is recorded as `REVISE`. That failure uses up a review round (or a manager FIX round) and can escalate the ticket to `ready-for-human`, even though no review happened.\n\nIn `factory/dispatch.py` around line 1700:\n\n```python\naccepted = proc is not None and proc.returncode == 0 and parsed and actual_head == expected_head\nverdict = matches[0].group(1) if accepted else \"REVISE\"\n```\n\n`reason` is set correctly (`review_exit:1`, a launch error, `unparsed_verdict`, or `state_changed`), but the escalation path only sees `verdict == \"REVISE\"`. It then escalates as `review_revise` (\"REVISE verdict after 3 review round(s)\" or \"review requested changes after manager FIX\").\n\n## Root cause of last night's crashes (Oct 25, 2026)\n\nThe Anthropic account behind the reviewer hit its **rate limit**. Reproducing the reviewer call by hand (`omp -p --no-session --model anthropic/claude-opus-5-5 ...`, omp 18.11.3) at 7:51 AM PT returned exit 1 with:\n\n```\n429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"This request would exceed your account's rate limit. Please try again later.\"}} retry-after-ms=2337000\n```\n\n`factory doctor` reports 0 blocking problems, so it doesn't catch this. Secondary problem: the 429 text never reached the review findings or the escalation packet. `review-384.md` contains only `Factory rejected reviewer evidence: review_exit:1.` In JSON mode, `_omp_output` probably drops the error event, so the real cause is lost.\n\n## Evidence (times PT, Oct 25)\n\nThere were 6 reviewer failures (`outcome: unknown, reason: review_exit:1`) between 5:10 and 6:26 AM. The last good review was at 4:26 AM.\n\n- **#389 / PR #391**: all 4 review rounds crashed (5:40, 5:47, 5:54, 6:00 AM). It escalated at 6:01 AM as \"REVISE verdict after 3 review round(s)\". **The PR was never actually reviewed.** Its gate is green and it is mergeable.\n- **#384 / PR #387**: the manager FIX-3 review crashed at 6:26 AM. It was recorded as REVISE and escalated as \"review requested changes after manager FIX\", spending the last FIX round. The previous real finding had already been fixed in 824c1f0.\n- **#386 / PR #390**: the review crashed at 5:10 AM, the same pass that hit the 90-minute budget and escalated.\n- The release hold's measured `human_rate` rose to **0.44** (9 tickets), against a bar of 0.038. At least part of that comes from these false escalations.\n\nA related problem: the manager FIX loop keeps running on a ticket that is already on `ready-for-human`, and each round escalates it again. #384 got 4 escalation comments plus a handoff request.\n\n## Proposed fix\n\n1. Treat reviewer exit != 0, launch errors and unparseable output as a **tooling failure**, not a verdict. Retry with backoff, honoring `retry-after` when the reviewer reports it. Don't increment the review round or FIX round counter.\n2. If the failure persists after retries, hold the ticket or escalate it with a distinct reason (for example `reviewer_unavailable`) and include the reviewer's stderr or error event. Never use `review_revise`.\n3. Keep the reviewer's error output (stderr, or the JSON-mode error event) in the findings or diagnostic so escalation packets show the real cause.\n4. Don't let the manager FIX loop escalate again when the ticket is already on `ready-for-human`.\n5. Optional: have `factory doctor` make a cheap reviewer liveness probe so rate limits and auth failures show up there.\n\n## Acceptance tests\n\n- A reviewer that exits 1 with empty output is not recorded as `REVISE` and doesn't increment the review round or FIX round count.\n- A reviewer with unparseable output is handled the same way.\n- Persistent reviewer failure across retries produces a distinct reason (`reviewer_unavailable`), not `review_revise`, and the escalation includes the reviewer's error text.\n- A real `VERDICT: REVISE` still counts as a round and escalates after the configured limit, unchanged.\n- A manager FIX round on a ticket already on `ready-for-human` doesn't post another escalation comment.\n\nRelated: #384, #386, #389"
+      }
+    },
+    {
+      "id": "mikeroySoft/factory#385",
+      "repo": "mikeroySoft/factory",
+      "ticket": 385,
+      "base": "820e898b8f9b2070364e1ee0d969fa70f6a35976",
+      "split": "train",
+      "title": "worker: write a short plan before implementing; review checks the diff against it",
+      "labels": [
+        "enhancement",
+        "ready-for-agent"
+      ],
+      "issue": {
+        "title": "worker: write a short plan before implementing; review checks the diff against it",
+        "body": "## Problem\n\nA worker goes from the ticket straight to code. The reviewer sees the ticket, the diff and the gate report, but no statement of what the worker meant to change or how it would prove the change. Drift, such as extra files or a promised test that never appeared, is caught only if the reviewer happens to notice it.\n\nThe decision trace (#357, Decisions view #360) records triage, binding, admission, worker_select, claim, gate, review, manager, merge and learn, but nothing about the worker's intended approach. (The existing `plan-bound` event and `factory/plan.py` are initiative plan baselines, not per-ticket work plans.)\n\n## Proposal\n\n- At the start of each attempt, in the same worker session (no extra model call), the worker writes a short plan: files to change, order of work, risks, and proof (tests or commands it will run). Aim for 30 lines or fewer, from a template in the worker prompt.\n- The plan is stored as a journaled artifact (path + hash) next to the transcript, not in the PR diff, and recorded as a new `plan` trace stage (actor `worker`) between `claim` and `gate`.\n- The reviewer prompt includes the plan. The reviewer lists drift as findings: files changed that the plan didn't name, and planned proof that's missing. Drift doesn't force REVISE on its own; the reviewer judges it.\n- If the worker changes course, it updates the plan in the same attempt, and the trace keeps both versions.\n- Keep it light: `chore` tickets skip the plan, and a 3-line plan is fine for small tickets.\n\n## Acceptance criteria\n\n- [ ] Each attempt journals the plan artifact path and hash; a missing plan journals `plan: missing` (recorded, not a gate failure).\n- [ ] The trace shows a `plan` node between `claim` and `gate`, and the Decisions view renders it.\n- [ ] Fixture: a diff that touches a file the plan didn't name produces a drift line in the review findings.\n- [ ] `chore` tickets skip the plan, and worker run count per attempt is unchanged.\n\n## Out of scope\n\nHuman or manager approval of the plan before coding, and any change to initiative plans (`factory/plan.py`).\n\nSource: Anthropic, \"The AI-native SDLC playbook\", Stage 3 Build, \"Claude Code plan mode as the default starting point\" (https://claude.com/resources/articles/the-ai-native-sdlc-playbook).\n",
+        "comments": []
+      },
+      "accepted": {
+        "merged_pr": 388,
+        "merge_commit": "d57e0587b7021f92324b74e3cbdc524395f9015b",
+        "gate": "PASS",
+        "review": "APPROVE",
+        "gate_checks": [
+          "test",
+          "ruff",
+          "mutation"
+        ],
+        "acceptance_criteria": "- [ ] Each attempt journals the plan artifact path and hash; a missing plan journals `plan: missing` (recorded, not a gate failure).\n- [ ] The trace shows a `plan` node between `claim` and `gate`, and the Decisions view renders it.\n- [ ] Fixture: a diff that touches a file the plan didn't name produces a drift line in the review findings.\n- [ ] `chore` tickets skip the plan, and worker run count per attempt is unchanged."
+      }
+    },
+    {
+      "id": "mikeroySoft/factory#384",
+      "repo": "mikeroySoft/factory",
+      "ticket": 384,
+      "base": "5f64998841c0539414697bf0e5aac422a42edcdb",
+      "split": "train",
+      "title": "gate: failing test first for bug tickets, and reject fix diffs that weaken existing tests",
+      "labels": [
+        "enhancement",
+        "ready-for-agent"
+      ],
+      "issue": {
+        "title": "gate: failing test first for bug tickets, and reject fix diffs that weaken existing tests",
+        "body": "## Problem\n\nNothing proves that a bug fix's test reproduces the bug, and test protection only works by path.\n\n- The gate checks the final tree. A bug ticket can pass with a test that would also have passed before the fix, or with no new test.\n- #228 added `[gate].add_only_paths`, so `tests/**` in factory's own `.factory.toml` accepts pure additions and rejects edits. It doesn't cover:\n  - repos that don't configure it (rocm-cli's `.factory.toml` has no `protected_paths` or `add_only_paths`);\n  - Rust inline `#[cfg(test)] mod tests` inside `src/` files (e.g. rocm-cli's `apps/rocm/src/comfyui.rs`), which path globs can't separate from product code;\n  - skip markers (`#[ignore]`, `@unittest.skip`, `pytest.mark.skip`/`xfail`), which are pure line additions and so pass add-only.\n\n## Proposal\n\n1. **Failing test first, for bug tickets** (`bug` label or triage route). The worker commits the reproducing test as its own commit before the fix and names the test ID in its handoff. The gate runs that test on the base plus the test commit (must fail) and on the head (must pass), and records both results in the gate report and the decision trace's `gate` node.\n2. **Protect existing tests during fixes.** On bug tickets, the gate rejects diffs that delete or modify existing test functions or add skip/ignore/xfail markers to them, including inline Rust test modules. Start with Python and Rust patterns; other languages fall back to path-based add-only. The existing `factory-protected-override` label, or an explicit line in the ticket, allows it.\n3. When a reproduction test isn't practical, triage or the ticket author can write a `No repro test:` line with the reason. The gate records it and skips step 1.\n\n## Acceptance criteria\n\n- [ ] Fixture bug ticket with a test commit followed by a fix commit: gate PASS, with fail-before and pass-after recorded.\n- [ ] A test that already passes before the fix: gate FAIL with \"test does not reproduce the bug\".\n- [ ] A bug ticket with no test commit and no `No repro test:` line: gate FAIL with a clear reason.\n- [ ] Adding `#[ignore]` to an existing Rust test, adding `@unittest.skip`, or deleting a test function inside `src/*.rs` fails; the same diff with the override label passes.\n- [ ] Tickets that aren't bugs behave as today.\n\n## Out of scope\n\nCoverage thresholds, mutation testing (#197 is report-only today), and flaky-test quarantine (the control-band ticket).\n\nSource: Anthropic, \"The AI-native SDLC playbook\", Stage 4 Test, \"Give Claude a feedback loop\", steps 4 and 7 (https://claude.com/resources/articles/the-ai-native-sdlc-playbook).\n",
+        "comments": []
+      },
+      "accepted": {
+        "merged_pr": 387,
+        "merge_commit": "da2018cc1d52fb4ee7d73a3aa47bc6797c977f13",
+        "gate": "PASS",
+        "review": "APPROVE",
+        "gate_checks": [
+          "test",
+          "ruff",
+          "mutation"
+        ],
+        "acceptance_criteria": "- [ ] Fixture bug ticket with a test commit followed by a fix commit: gate PASS, with fail-before and pass-after recorded.\n- [ ] A test that already passes before the fix: gate FAIL with \"test does not reproduce the bug\".\n- [ ] A bug ticket with no test commit and no `No repro test:` line: gate FAIL with a clear reason.\n- [ ] Adding `#[ignore]` to an existing Rust test, adding `@unittest.skip`, or deleting a test function inside `src/*.rs` fails; the same diff with the override label passes.\n- [ ] Tickets that aren't bugs behave as today."
+      }
+    },
+    {
+      "id": "mikeroySoft/rocm-cli#22",
+      "repo": "mikeroySoft/rocm-cli",
+      "ticket": 22,
+      "base": "99ced2f3ad4177da28cf2bd32d51ee6ce91ed7a6",
+      "split": "train",
+      "title": "rocmd MCP server is complete but hidden and undocumented",
+      "labels": [
+        "ready-for-agent"
+      ],
+      "issue": {
+        "title": "rocmd MCP server is complete but hidden and undocumented",
+        "body": "## Problem\nA complete MCP stdio server ships in rocmd today: `run_mcp_server` (apps/rocmd/src/lib.rs:1528), tool catalog, approval guard, and drift tests. It is invisible: `McpToolsJson`/`McpCall` are `#[command(hide = true)]` (lib.rs:158-161) and the server appears nowhere in README or agent-facing docs. A shipped, tested surface that no doc names is at risk of deletion by silence, and its approval-gate semantics are exactly the surface an agent host cannot bypass.\n\n## Decision needed (why needs-triage)\nDisposition: document and un-hide as a supported surface (with a pinned protocol version), or explicitly keep it internal with a comment saying so and why. Either way the current state — complete, tested, and secret — is the one wrong answer.\n\n## Acceptance (once triaged)\n- The MCP server's existence, invocation, and support status are stated in repo docs, or the hidden status carries an explicit in-code rationale.\n- Protocol/tool-catalog versioning policy recorded if exposed.",
+        "comments": []
+      },
+      "accepted": {
+        "merged_pr": 91,
+        "merge_commit": "1759215af030f8a1fe6a13d7c7ee962798c90e88",
+        "gate": "PASS",
+        "review": "APPROVE",
+        "gate_checks": [
+          "clippy",
+          "tests",
+          "smoke"
+        ],
+        "acceptance_criteria": "## Problem\nA complete MCP stdio server ships in rocmd today: `run_mcp_server` (apps/rocmd/src/lib.rs:1528), tool catalog, approval guard, and drift tests. It is invisible: `McpToolsJson`/`McpCall` are `#[command(hide = true)]` (lib.rs:158-161) and the server appears nowhere in README or agent-facing docs. A shipped, tested surface that no doc names is at risk of deletion by silence, and its approval-gate semantics are exactly the surface an agent host cannot bypass.\n\n## Decision needed (why needs-triage)\nDisposition: document and un-hide as a supported surface (with a pinned protocol version), or explicitly keep it internal with a comment saying so and why. Either way the current state — complete, tested, and secret — is the one wrong answer.\n\n## Acceptance (once triaged)\n- The MCP server's existence, invocation, and support status are stated in repo docs, or the hidden status carries an explicit in-code rationale.\n- Protocol/tool-catalog versioning policy recorded if exposed."
+      }
+    },
+    {
+      "id": "mikeroySoft/rocm-cli#89",
+      "repo": "mikeroySoft/rocm-cli",
+      "ticket": 89,
+      "base": "319e4c1323c686f2af4a973d106d27c6d75e32c3",
+      "split": "train",
+      "title": "Flaky test: status_reports_stopped_when_saved_comfyui_pid_is_gone races other tests for its \"unused\" port",
+      "labels": [
+        "bug",
+        "ready-for-agent"
+      ],
+      "issue": {
+        "title": "Flaky test: status_reports_stopped_when_saved_comfyui_pid_is_gone races other tests for its \"unused\" port",
+        "body": "**Problem**\n`comfyui::tests::status_reports_stopped_when_saved_comfyui_pid_is_gone` (`apps/rocm/src/comfyui.rs`, ~line 2736 on main 800f3731) fails at random under the parallel test runner.\n\nThe test saves a ComfyUI state with `pid: 0` and a URL on `unused_local_port()`, then asserts `render_status` reports `status: stopped`. `unused_local_port()` (~line 2306) binds `127.0.0.1:0`, reads the port, and drops the listener, so the port is free again before the test uses it. Other tests in the same binary call `unused_local_port()` and start listeners (~lines 3976, 4071, 4141, 4291, 4683). When one of them grabs the same port, the status probe connects, ComfyUI reads as `starting or running`, and the assertion fails.\n\nIt passes 10/10 on a quiet run but failed three times on 2026-10-24, in the post-rebase gates for #17 (PR #25) and #73 (PR #74), and escalated both.\n\n**Fix**\nUse port 0 in this test (`let port = 0;`). Nothing can listen on port 0, so connecting to `127.0.0.1:0` always fails. This is the same one-line change as commit a29b7e10 (\"test(comfyui): avoid stale-status port race\"). A worker made that commit during #73, but review dropped it as out of scope. Change only this test. Leave the other `unused_local_port()` callers alone; they need a real port.\n\n**Acceptance criteria**\n- `status_reports_stopped_when_saved_comfyui_pid_is_gone` no longer calls `unused_local_port()`. It uses a port that can never accept a connection (port 0), and its existing assertions are unchanged (`status: stopped`, `next step: rocm comfyui start`, not `starting or running`).\n- The test passes 20 times in a row:\n  ```\n  for i in $(seq 20); do cargo test -p rocm status_reports_stopped_when_saved_comfyui_pid_is_gone || exit 1; done\n  ```\n- The full suite still passes: `cargo test -p rocm` and `cargo clippy --workspace --all-targets -- -D warnings`.\n- Check that the test body no longer contains `unused_local_port`: `awk '/fn status_reports_stopped_when_saved_comfyui_pid_is_gone/,/^    }$/' apps/rocm/src/comfyui.rs | grep -c unused_local_port` prints `0`.\n\n**Out of scope**\n- Changing `unused_local_port()` itself or any other test.\n- Any non-test code.\n\nEstimated size: 1 line, 1 file.\n",
+        "comments": []
+      },
+      "accepted": {
+        "merged_pr": 90,
+        "merge_commit": "f2abe50f37807de1c880b76b2a846bbeb598fdb8",
+        "gate": "PASS",
+        "review": "APPROVE",
+        "gate_checks": [
+          "clippy",
+          "tests",
+          "smoke"
+        ],
+        "acceptance_criteria": "- `status_reports_stopped_when_saved_comfyui_pid_is_gone` no longer calls `unused_local_port()`. It uses a port that can never accept a connection (port 0), and its existing assertions are unchanged (`status: stopped`, `next step: rocm comfyui start`, not `starting or running`).\n- The test passes 20 times in a row:\n  ```\n  for i in $(seq 20); do cargo test -p rocm status_reports_stopped_when_saved_comfyui_pid_is_gone || exit 1; done\n  ```\n- The full suite still passes: `cargo test -p rocm` and `cargo clippy --workspace --all-targets -- -D warnings`.\n- Check that the test body no longer contains `unused_local_port`: `awk '/fn status_reports_stopped_when_saved_comfyui_pid_is_gone/,/^    }$/' apps/rocm/src/comfyui.rs | grep -c unused_local_port` prints `0`."
+      }
+    },
+    {
+      "id": "mikeroySoft/rocm-cli#78",
+      "repo": "mikeroySoft/rocm-cli",
+      "ticket": 78,
+      "base": "800f373144536bbc40637f3e5b92b2ff1ea5e7ec",
+      "split": "train",
+      "title": "`parse_http_endpoint` accepts empty / userinfo / unbracketed-IPv6 hosts, rejects `?query`, and is copy-pasted in two crates",
+      "labels": [
+        "bug",
+        "ready-for-agent",
+        "harness-pilot"
+      ],
+      "issue": {
+        "title": "`parse_http_endpoint` accepts empty / userinfo / unbracketed-IPv6 hosts, rejects `?query`, and is copy-pasted in two crates",
+        "body": "**Scope**\nLocal endpoint URLs (service records, provider config) are parsed by `parse_http_endpoint`, which has three byte-for-byte copies. The function misparses several inputs. Verified with a standalone rustc harness of the current `rocm_core::net` body:\n\n| input | today | expected |\n|---|---|---|\n| `http://:8000/v1` | `Some((\"\", 8000))` | `None` |\n| `http://[]:8000` | `Some((\"\", 8000))` | `None` |\n| `http://user@host:80` | `Some((\"user@host\", 80))` | `None` (userinfo unsupported) |\n| `http://::1:8000` | `Some((\"::1\", 8000))` | `None` (IPv6 must be bracketed) |\n| `http://localhost:8000?x=1` | `None` | `Some((\"localhost\", 8000))` |\n| `http://127.0.0.1:8000/v1`, `http://[::1]:11435/v1` | ok | unchanged |\n\nAn empty host then reaches `connect_tcp_stream` / `format_host_port` and fails with a resolver error rather than the clear \"unsupported local endpoint URL\" context the callers attach.\n\nEvidence:\n- Canonical: `crates/rocm-core/src/net.rs:46-60` (exported via `crates/rocm-core/src/lib.rs:134`). It has no direct unit test.\n- Copy 1: `apps/rocm/src/providers.rs:814-828` (private `fn parse_http_endpoint`), used at `providers.rs:596,631`.\n- Copy 2: `engines/lemonade/src/state.rs:276-286` (`pub(crate)`, without the `authority.is_empty()` guard), used at `state.rs:45` and `engines/lemonade/src/process.rs:724`. The lemonade crate already depends on `rocm-core` (`engines/lemonade/Cargo.toml:25`).\n- Contrast: `crates/rocm-dash-tui/src/llm.rs:121-160` (`parse_host_port`) already rejects empty bracketed hosts and stops the authority at `?`.\n\nObservable outcome: one `rocm_core::net::parse_http_endpoint` returns the expected column above for every row, and both private copies are deleted with their callers using the core function.\n\n**Touches**\n- `crates/rocm-core/src/net.rs`: harden `parse_http_endpoint`; add a table-driven unit test.\n- `apps/rocm/src/providers.rs`: delete the private copy; import from `rocm_core`. Keep or move the `[::1]` test.\n- `engines/lemonade/src/state.rs`, `engines/lemonade/src/process.rs`: delete the copy; import from `rocm_core`.\n\n**Exit gate**\n- A table test in `rocm-core` covers every row above.\n- `rg -n 'fn parse_http_endpoint' apps crates engines` returns exactly one hit (`crates/rocm-core/src/net.rs`).\n- Existing `[::1]` tests in providers/lemonade still pass.\n- Verify: `cargo test -p rocm-core --all-targets net::`, `cargo test -p rocm-engine-lemonade --all-targets`, `cargo test -p rocm --all-targets providers`, `cargo clippy --workspace --all-targets -- -D warnings`.\n\n**Out of scope**\n- `https://` support or any scheme other than `http://` (current behaviour, `None`, stays).\n- `rocm-dash-tui::llm::parse_host_port` (different contract: optional scheme, default ports).\n- Changing how endpoint URLs are produced or stored.\n\nEstimated size: medium, about 100–180 lines (+tests, −~30 duplicated lines, 4 files).\n",
+        "comments": []
+      },
+      "accepted": {
+        "merged_pr": 88,
+        "merge_commit": "8c3b9c2562082bb57d42f602102b6d6dfd2117fe",
+        "gate": "PASS",
+        "review": "APPROVE",
+        "gate_checks": [
+          "clippy",
+          "tests",
+          "smoke"
+        ],
+        "acceptance_criteria": "- A table test in `rocm-core` covers every row above.\n- `rg -n 'fn parse_http_endpoint' apps crates engines` returns exactly one hit (`crates/rocm-core/src/net.rs`).\n- Existing `[::1]` tests in providers/lemonade still pass.\n- Verify: `cargo test -p rocm-core --all-targets net::`, `cargo test -p rocm-engine-lemonade --all-targets`, `cargo test -p rocm --all-targets providers`, `cargo clippy --workspace --all-targets -- -D warnings`."
+      }
+    },
+    {
+      "id": "mikeroySoft/rocm-cli#77",
+      "repo": "mikeroySoft/rocm-cli",
+      "ticket": 77,
+      "base": "73ac0ba8157b238daed4c7a122d1c91d544b98b9",
+      "split": "train",
+      "title": "vLLM KV-cache % and TPOT are always blank: scraper reads metric names removed from the vLLM versions rocm installs",
+      "labels": [
+        "bug",
+        "ready-for-agent",
+        "harness-pilot"
+      ],
+      "issue": {
+        "title": "vLLM KV-cache % and TPOT are always blank: scraper reads metric names removed from the vLLM versions rocm installs",
+        "body": "**Scope**\nThe dashboard's vLLM Prometheus scraper reads `vllm:gpu_cache_usage_perc` and `vllm:time_per_output_token_seconds_{sum,count}`.\n- Upstream vLLM deprecated `gpu_cache_usage_perc` in favour of `vllm:kv_cache_usage_perc` (vllm-project/vllm#18354, 0.9.2/0.10), hid it in 0.11 (#24245) and removed it in 0.12 (#29330).\n- `time_per_output_token_seconds` was renamed `vllm:inter_token_latency_seconds` and hidden in the same 0.12 change.\n- rocm installs vLLM 0.26 / 0.27.* / 0.29.*, so against any rocm-installed vLLM the Instances tab's KV-cache and TPOT columns can never populate.\n\nEvidence:\n- `crates/rocm-dash-collectors/src/vllm_prom.rs:23`: `const KEY_KV_CACHE: &str = \"vllm:gpu_cache_usage_perc\";`\n- `crates/rocm-dash-collectors/src/vllm_prom.rs:30-31`: `KEY_TPOT_SUM/COUNT = \"vllm:time_per_output_token_seconds_{sum,count}\"`\n- `crates/rocm-dash-collectors/src/vllm_prom.rs:99-126` (`parse`): no fallback; `extract` returns `None` when the key is missing.\n- The test fixture `SAMPLE` (`vllm_prom.rs:~160-185`) only contains the legacy names, so tests stay green.\n- `engines/vllm/src/install.rs:38` (`vllm_version: \"0.26.0\"`), `:113` (`\"0.27\"`), `:136` (`\"0.29\"`) are the installed versions.\n- Consumers: `crates/rocm-dash-tui/src/ui/tabs/instances.rs:147-176,428` render `tpot_ms` / `kv_cache_usage_pct`; the runner windows `tpot_sum_s` at `crates/rocm-dash-daemon/src/runner.rs:819,900`.\n\nObservable outcome: for a current vLLM `/metrics` payload (`vllm:kv_cache_usage_perc`, `vllm:inter_token_latency_seconds_{sum,count}`), `parse` returns `kv_cache_usage_pct` and `tpot_sum_s` / `tpot_count`. Legacy-named payloads keep parsing; when both are present, the current name wins.\n\n**Touches**\n- `crates/rocm-dash-collectors/src/vllm_prom.rs`: metric key constants, `parse` (try current name, fall back to legacy), and tests (a modern-name fixture plus a both-present precedence case; keep the legacy fixture).\n\n**Exit gate**\n- New tests: a modern payload yields `kv_cache_usage_pct ≈ 42.31` and the expected `tpot_sum_s` / `tpot_count`; a legacy-only payload is unchanged (existing `parses_full_sample` / `parses_ttft_tpot_histograms` still pass); when both names are present, the current name wins.\n- Verify: `cargo test -p rocm-dash-collectors --all-targets vllm_prom` and `cargo clippy --workspace --all-targets -- -D warnings`.\n\n**Out of scope**\n- Summing across multiple label sets (per-engine / data-parallel `engine=\"N\"` series). `extract` still takes the first matching series.\n- Any other renamed vLLM metric (prefix-cache hits/queries), and the Lemonade/llama.cpp scrapers.\n- TUI layout or column changes.\n\nEstimated size: medium-small, about 60–120 lines, mostly tests (1 file).\n",
+        "comments": []
+      },
+      "accepted": {
+        "merged_pr": 87,
+        "merge_commit": "800f373144536bbc40637f3e5b92b2ff1ea5e7ec",
+        "gate": "PASS",
+        "review": "APPROVE",
+        "gate_checks": [
+          "clippy",
+          "tests",
+          "smoke"
+        ],
+        "acceptance_criteria": "- New tests: a modern payload yields `kv_cache_usage_pct ≈ 42.31` and the expected `tpot_sum_s` / `tpot_count`; a legacy-only payload is unchanged (existing `parses_full_sample` / `parses_ttft_tpot_histograms` still pass); when both names are present, the current name wins.\n- Verify: `cargo test -p rocm-dash-collectors --all-targets vllm_prom` and `cargo clippy --workspace --all-targets -- -D warnings`."
+      }
+    },
+    {
+      "id": "mikeroySoft/rocm-cli#76",
+      "repo": "mikeroySoft/rocm-cli",
+      "ticket": 76,
+      "base": "e7ca1d0b14240624e0eab872ce369833e13a0876",
+      "split": "train",
+      "title": "`rocm comfyui logs --lines` silently clamps out-of-range values and chat silently ignores invalid ones",
+      "labels": [
+        "bug",
+        "ready-for-agent",
+        "harness-pilot"
+      ],
+      "issue": {
+        "title": "`rocm comfyui logs --lines` silently clamps out-of-range values and chat silently ignores invalid ones",
+        "body": "**Scope**\n`--lines` accepts any `usize`, but the renderer silently clamps it to 1..=400. So `rocm comfyui logs --lines 0` prints 1 line and `--lines 5000` prints 400, with no message either way. The in-chat path (`rocm chat` → read-only `comfyui logs`) is worse: an invalid value such as `--lines nope` is swallowed by `unwrap_or` and the default 80 is used without saying so. The parser's own error text (\"lines flag must be a positive number\") also accepts 0.\n\nEvidence:\n- `apps/rocm/src/main.rs:1011-1014`: `Logs { #[arg(long, default_value_t = 80)] lines: usize }`, with no range on the value parser.\n- `apps/rocm/src/comfyui.rs:338`: `let limit = line_limit.clamp(1, 400);`, a silent clamp.\n- `apps/rocm/src/chat.rs:218-230` (`parse_optional_lines`): parses `usize`, so it accepts `0` despite the \"positive number\" message.\n- `apps/rocm/src/chat.rs:3719`: `parse_optional_lines(rest).unwrap_or(DEFAULT_LOG_TAIL_LINES)` drops the parse error.\n- Documented as `rocm comfyui logs [--lines N]` in `README.md:968` with no stated bounds.\n\nObservable outcome: `rocm comfyui logs --lines 0` and `--lines 401` exit nonzero with a clap error naming the valid range 1..=400. `--lines 1` and `--lines 400` still work. In chat, an invalid or zero `--lines` returns an error to the user instead of silently using 80.\n\n**Touches**\n- `apps/rocm/src/main.rs`: `ComfyuiCommand::Logs` arg: range-checked value parser for 1..=400.\n- `apps/rocm/src/chat.rs`: `parse_optional_lines` rejects 0; the `comfyui logs` arm (~:3719) propagates the error with `?`.\n- `apps/rocm/src/comfyui.rs`: the clamp may stay as a defensive guard.\n- Tests next to the existing `Cli::try_parse_from([\"rocm\",\"comfyui\",\"logs\",\"--lines\",\"3\"])` case (`main.rs:~17082`) and `parse_optional_lines_*` tests (`chat.rs:~4325-4340`).\n\n**Exit gate**\n- Tests: `Cli::try_parse_from([... \"--lines\",\"0\"])` and `\"401\"` are `Err`; `\"1\"` and `\"400\"` are `Ok`; `parse_optional_lines([\"--lines\",\"0\"])` is `Err`; the chat read-only path with `comfyui logs --lines nope` returns `Err`.\n- Verify: `cargo test -p rocm --all-targets comfyui` and `cargo test -p rocm --all-targets parse_optional_lines`, plus `cargo clippy --workspace --all-targets -- -D warnings`.\n\n**Out of scope**\n- The default tail-length drift between lemonade (200) and protocol/vllm (80). That's #17.\n- Other `logs` commands (`rocm logs`, engine/service logs) and `read_tail_lines`.\n- Changing the 400-line ceiling or the 80-line default.\n\nEstimated size: small, about 15–35 lines including tests (2–3 files).\n",
+        "comments": []
+      },
+      "accepted": {
+        "merged_pr": 86,
+        "merge_commit": "6db27f4af967cd466a884ce807a7713125387101",
+        "gate": "PASS",
+        "review": "APPROVE",
+        "gate_checks": [
+          "clippy",
+          "tests",
+          "smoke"
+        ],
+        "acceptance_criteria": "- Tests: `Cli::try_parse_from([... \"--lines\",\"0\"])` and `\"401\"` are `Err`; `\"1\"` and `\"400\"` are `Ok`; `parse_optional_lines([\"--lines\",\"0\"])` is `Err`; the chat read-only path with `comfyui logs --lines nope` returns `Err`.\n- Verify: `cargo test -p rocm --all-targets comfyui` and `cargo test -p rocm --all-targets parse_optional_lines`, plus `cargo clippy --workspace --all-targets -- -D warnings`."
+      }
+    },
+    {
+      "id": "mikeroySoft/rocm-cli#75",
+      "repo": "mikeroySoft/rocm-cli",
+      "ticket": 75,
+      "base": "6db27f4af967cd466a884ce807a7713125387101",
+      "split": "train",
+      "title": "Dashboard SI formatter prints \"1000.00 k\" / \"1000.0 tok/s\" at unit boundaries instead of promoting",
+      "labels": [
+        "bug",
+        "ready-for-agent",
+        "harness-pilot"
+      ],
+      "issue": {
+        "title": "Dashboard SI formatter prints \"1000.00 k\" / \"1000.0 tok/s\" at unit boundaries instead of promoting",
+        "body": "**Scope**\n`rocm_dash_tui::ui::format::si` picks the unit from the raw value but rounds afterwards, so values just under a boundary render as four-digit mantissas in the lower unit. Verified with a standalone rustc harness of the current code (main cda8ac5c):\n\n| call | today | expected |\n|---|---|---|\n| `si(999.96)` | `1000.0` | `1.00 k` |\n| `si(999_995.0)` / `si(999_999.0)` | `1000.00 k` | `1.00 M` |\n| `si(999_999_999.0)` | `1000.00 M` | `1.00 B` |\n| `bps(999_999.0)` | `1000.00 k/s` | `1.00 M/s` |\n| `tps_opt(Some(999.96))` | `1000.0 tok/s` | `1.00 k tok/s` |\n| `tps_opt(Some(999_999.0))` | `1000.00 k tok/s` | `1.00 M tok/s` |\n\nEvidence:\n- `crates/rocm-dash-tui/src/ui/format.rs:113-130` (`si`): compares `av < 1_000.0` / `< 1_000_000.0` / `< 1_000_000_000.0` on the raw value, then formats with `{:.1}` / `{:.2}`.\n- `crates/rocm-dash-tui/src/ui/format.rs:144-150` (`tps_opt`): switches to `si` only when `v >= 1_000.0`, otherwise prints `{v:.1}`, so 999.96 → \"1000.0 tok/s\".\n- Inherited by `bps` (`format.rs:135-141`) and the other `si` callers in that file.\n- The same file already fixed this bug class for MiB → GiB in `promoted_mib_unit` (`format.rs:50-66`, \"Promotes while the value AS PRINTED would reach 1024 … Comparing the rounded tenths, as `rocm_core::format_bytes` does\"). `si` was not given the same treatment.\n\nObservable outcome: no `si`/`bps`/`tps_opt` output ever has a mantissa ≥ 1000 in any unit; values that round up to the next unit are printed in that unit.\n\n**Touches**\n- `crates/rocm-dash-tui/src/ui/format.rs`: `si`, `tps_opt` (choose unit on the rounded value, mirroring `promoted_mib_unit`).\n- Unit tests in the same file's `mod tests` (`si_scales_into_k_m_b`, `tps_opt_promotes_at_thousand`, `bps_appends_rate_suffix_and_scales`).\n\n**Exit gate**\n- New test cases assert every row of the table above, plus the existing cases unchanged (`si(999.0) == \"999\"`, `si(1234.0) == \"1.23 k\"`, `si(1_234_567.0) == \"1.23 M\"`, `si(2_500_000_000.0) == \"2.50 B\"`, `tps_opt(Some(45.6)) == \"45.6 tok/s\"`).\n- Verify: `cargo test -p rocm-dash-tui --all-targets format::` and `cargo clippy --workspace --all-targets -- -D warnings`.\n\n**Out of scope**\n- `duration()` rounding (`format.rs:186-201`, `duration(0.9996)` → \"1000 ms\"). That's a separate one-line fix, not this ticket.\n- Changing the k/M/B suffix scheme, the decimal precision, or switching rates to IEC units.\n- Any caller outside `format.rs`.\n\nEstimated size: small, about 20–40 lines including tests (1 file).\n",
+        "comments": []
+      },
+      "accepted": {
+        "merged_pr": 84,
+        "merge_commit": "73ac0ba8157b238daed4c7a122d1c91d544b98b9",
+        "gate": "PASS",
+        "review": "APPROVE",
+        "gate_checks": [
+          "clippy",
+          "tests",
+          "smoke"
+        ],
+        "acceptance_criteria": "- New test cases assert every row of the table above, plus the existing cases unchanged (`si(999.0) == \"999\"`, `si(1234.0) == \"1.23 k\"`, `si(1_234_567.0) == \"1.23 M\"`, `si(2_500_000_000.0) == \"2.50 B\"`, `tps_opt(Some(45.6)) == \"45.6 tok/s\"`).\n- Verify: `cargo test -p rocm-dash-tui --all-targets format::` and `cargo clippy --workspace --all-targets -- -D warnings`."
+      }
+    },
+    {
+      "id": "mikeroySoft/rocm-cli#82",
+      "repo": "mikeroySoft/rocm-cli",
+      "ticket": 82,
+      "base": "f2e9d88b441a4305331656258f957234522f80d6",
+      "split": "train",
+      "title": "upstream sync: 16 commit(s) at 1c33248c318c",
+      "labels": [
+        "ready-for-agent"
+      ],
+      "issue": {
+        "title": "upstream sync: 16 commit(s) at 1c33248c318c",
+        "body": "Automatic sync of `ROCm/rocm-cli` main into `main`: 16 new upstream commit(s), tip `1c33248c318c72a9e837627ff71476c8583f1930`.\n\nThe candidate branch (this ticket's `agent/` branch, your worktree) starts from `main` and contains the conflict-free prefix through `32834b2946eebf4c185d77a8665b0acc27441773`; merging the tip conflicts.\n\n## Conflicted files when merging the tip\n\n```\nREADME.md\napps/rocm/src/main.rs\ntests/e2e-cucumber/features/update.feature\ntests/e2e-cucumber/tests/e2e/update_steps.rs\n```\n\nExit gate: HEAD contains upstream tip `1c33248c318c72a9e837627ff71476c8583f1930` (merge it; never squash or rebase it away) and the gate passes. The dispatcher rejects a passing gate whose HEAD does not contain the tip. Never push `main`; the merge stage lands the reviewed PR.",
+        "comments": []
+      },
+      "accepted": {
+        "merged_pr": 83,
+        "merge_commit": "9428da4ed9ab57f73c3b1951f43e3e38141de3bb",
+        "gate": "PASS",
+        "review": "APPROVE",
+        "gate_checks": [
+          "clippy",
+          "tests",
+          "smoke"
+        ],
+        "acceptance_criteria": "Automatic sync of `ROCm/rocm-cli` main into `main`: 16 new upstream commit(s), tip `1c33248c318c72a9e837627ff71476c8583f1930`.\n\nThe candidate branch (this ticket's `agent/` branch, your worktree) starts from `main` and contains the conflict-free prefix through `32834b2946eebf4c185d77a8665b0acc27441773`; merging the tip conflicts.\n\n## Conflicted files when merging the tip\n\n```\nREADME.md\napps/rocm/src/main.rs\ntests/e2e-cucumber/features/update.feature\ntests/e2e-cucumber/tests/e2e/update_steps.rs\n```\n\nExit gate: HEAD contains upstream tip `1c33248c318c72a9e837627ff71476c8583f1930` (merge it; never squash or rebase it away) and the gate passes. The dispatcher rejects a passing gate whose HEAD does not contain the tip. Never push `main`; the merge stage lands the reviewed PR."
+      }
+    },
+    {
+      "id": "mikeroySoft/rocm-cli#73",
+      "repo": "mikeroySoft/rocm-cli",
+      "ticket": 73,
+      "base": "f2abe50f37807de1c880b76b2a846bbeb598fdb8",
+      "split": "train",
+      "title": "serve: exit nonzero when the backend server dies in --foreground mode",
+      "labels": [
+        "ready-for-human"
+      ],
+      "issue": {
+        "title": "serve: exit nonzero when the backend server dies in --foreground mode",
+        "body": "**Problem**\nOn ROCm tank, `rocm serve ornith --foreground` (user unit `rocm-serve-ornith.service`, `Restart=on-failure`) kept running after its backend died. On Mon 10/19 at about 6:34 PM PT the journal logged `Error: Lemonade packaged llama-server exited with status signal: 9 (SIGKILL)`, but the `rocm` process (and its `rocm daemon` child) stayed up with nothing listening on port 11435. systemd saw the unit as active, never restarted it, and the factory's triage model was down for about 2.7 days.\n\n**Expected**\nIn `--foreground` mode, when the backend server exits for any reason (signal or nonzero status), `rocm serve` exits nonzero after cleaning up its children, so the service manager's restart policy applies.\n\n**Acceptance criteria**\n- A test (or scripted repro) kills the backend with SIGKILL and asserts `rocm serve --foreground` exits nonzero within a few seconds and leaves no orphaned backend or daemon process.\n- A clean backend shutdown still exits 0 when the user stopped it (SIGTERM/SIGINT to `rocm serve`).\n- The exit is logged with the backend's exit status/signal.\n- Optional: `--restart-backend N` to retry in-process before giving up (off by default).\n\nContext: mikeroySoft/factory triage outage; companion factory tickets cover health checks and alerting.\n",
+        "comments": []
+      },
+      "accepted": {
+        "merged_pr": 74,
+        "merge_commit": "f59dd73a3233575931cab49f7aef37c8cab41002",
+        "gate": "PASS",
+        "review": "APPROVE",
+        "gate_checks": [
+          "clippy",
+          "tests",
+          "smoke"
+        ],
+        "acceptance_criteria": "- A test (or scripted repro) kills the backend with SIGKILL and asserts `rocm serve --foreground` exits nonzero within a few seconds and leaves no orphaned backend or daemon process.\n- A clean backend shutdown still exits 0 when the user stopped it (SIGTERM/SIGINT to `rocm serve`).\n- The exit is logged with the backend's exit status/signal.\n- Optional: `--restart-backend N` to retry in-process before giving up (off by default).\n\nContext: mikeroySoft/factory triage outage; companion factory tickets cover health checks and alerting."
+      }
+    },
+    {
+      "id": "mikeroySoft/rocm-cli#50",
+      "repo": "mikeroySoft/rocm-cli",
+      "ticket": 50,
+      "base": "b720a6fb7c1f93abd3a24112c0120380c0a2f637",
+      "split": "lockbox",
+      "title": "upstream sync: merge conflict at 5ed93653b87c",
+      "labels": [
+        "ready-for-human"
+      ],
+      "issue": {
+        "title": "upstream sync: merge conflict at 5ed93653b87c",
+        "body": "Automatic sync of `ROCm/rocm-cli` main (5ed93653b87cc8a9651c115d7c8cc004a29de529) into `main` failed: merge conflict.\n\n```\ncrates/rocm-core/src/lib.rs\nskills/rocm-cli-assistant/SKILL.md\ntests/e2e-cucumber/features/model_serving.feature\n```\n\nResolve through the normal flow: a PR onto `main` that contains the upstream tip (merge, do not squash or rebase it away), gated and reviewed like any factory PR. Never push `main` directly. Close this issue once `main` contains the tip; the dispatcher skips upstream sync while it is open.",
+        "comments": []
+      },
+      "accepted": {
+        "merged_pr": 67,
+        "merge_commit": "cda8ac5cf5a83af33bc6a05d74c6914d243bcf58",
+        "gate": "PASS",
+        "review": "APPROVE",
+        "gate_checks": [
+          "clippy",
+          "tests",
+          "smoke"
+        ],
+        "acceptance_criteria": "Automatic sync of `ROCm/rocm-cli` main (5ed93653b87cc8a9651c115d7c8cc004a29de529) into `main` failed: merge conflict.\n\n```\ncrates/rocm-core/src/lib.rs\nskills/rocm-cli-assistant/SKILL.md\ntests/e2e-cucumber/features/model_serving.feature\n```\n\nResolve through the normal flow: a PR onto `main` that contains the upstream tip (merge, do not squash or rebase it away), gated and reviewed like any factory PR. Never push `main` directly. Close this issue once `main` contains the tip; the dispatcher skips upstream sync while it is open."
+      }
+    },
+    {
+      "id": "mikeroySoft/rocm-cli#65",
+      "repo": "mikeroySoft/rocm-cli",
+      "ticket": 65,
+      "base": "1862d1bc48ca7595a06c52cfcf19ab252a25efa0",
+      "split": "lockbox",
+      "title": "Managed service liveness ignores start-ticks: recycled PID keeps a dead record live after reboot",
+      "labels": [
+        "bug"
+      ],
+      "issue": {
+        "title": "Managed service liveness ignores start-ticks: recycled PID keeps a dead record live after reboot",
+        "body": "**Scope**\nA managed service record whose recorded PIDs now belong to *different* processes (PID recycled, e.g. after a reboot) is treated as dead: `load_managed_services` demotes it to `stopped`, so `existing_live_managed_service` no longer returns it and `rocm serve <model>` launches a fresh server instead of printing `model already being served` and exiting 0.\n\nObserved on rocm-tank 2026-10-18 after a reboot: record `lemonade-ornith-ai-ornith-1-5-35b-1792352102829` was left at `status: starting` with `supervisor_pid: 1634, supervisor_start_ticks: 16200`. In the new boot PID 1634 was a wireplumber thread (start ticks 79452). `refresh_managed_service_runtime_liveness` checks `process_is_running(pid)` only, saw 1634 alive, kept the record live, and `rocm serve ornith --foreground` (systemd unit `rocm-serve-ornith`) exited 0 with `model already being served`. `Restart=on-failure` never fired, so nothing served `127.0.0.1:11435` until the record was stopped by hand.\n\n**Touches**\n- `apps/rocm/src/main.rs`: `recorded_service_pids`, `settle_pending_stop_key_cleanup`, `refresh_managed_service_runtime_liveness` — pair each PID with its own start-ticks (`supervisor_pid`↔`supervisor_start_ticks`, `engine_pid`↔`engine_start_ticks`) and classify with the existing `rocm_core::identity_state(&ProcessIdentity::new(pid, ticks))` instead of bare `process_is_running`.\n- Semantics: `Matches` and `Indeterminate` count as alive (conservative, same as `terminate_recorded_service_pids`); `Recycled` and `Gone` count as dead. Records without start-ticks (legacy) keep today's behaviour (`identity_state` returns `Matches` for a live PID).\n- Precedent for the pattern: `terminate_recorded_service_pids` in the same file and `apps/rocmd/src/service.rs` identity checks.\n\n**Exit gate**\nNew unit test(s) in `apps/rocm/src/main.rs` tests module, Linux-gated like the existing start-ticks tests:\n1. A `starting` record whose `supervisor_pid` (and `engine_pid`) is a live process (e.g. `std::process::id()` or a spawned child) but whose recorded start-ticks differ from `rocm_core::process_start_ticks(pid)` → after `refresh_managed_service_runtime_liveness`, `status == \"stopped\"` and the function returns `true`.\n2. Same record with the *correct* start-ticks → status stays `starting`.\n3. Same record with `None` start-ticks (legacy) → status stays `starting`.\n\nVerify: `cargo test -p rocm --all-targets recycled` passes, and the full gate (`cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --all-targets`) stays green.\n\n**Out of scope**\n- The stop/terminate path (`terminate_recorded_service_pids`) and rocmd's stop path (tracked in #16).\n- `rocm serve` exit codes, systemd unit files, or any change to `managed_service_is_live` status strings.\n- Daemon (`rocmd`) recovery logic.\n",
+        "comments": []
+      },
+      "accepted": {
+        "merged_pr": 66,
+        "merge_commit": "99ced2f3ad4177da28cf2bd32d51ee6ce91ed7a6",
+        "gate": "PASS",
+        "review": "APPROVE",
+        "gate_checks": [
+          "clippy",
+          "tests",
+          "smoke"
+        ],
+        "acceptance_criteria": "New unit test(s) in `apps/rocm/src/main.rs` tests module, Linux-gated like the existing start-ticks tests:\n1. A `starting` record whose `supervisor_pid` (and `engine_pid`) is a live process (e.g. `std::process::id()` or a spawned child) but whose recorded start-ticks differ from `rocm_core::process_start_ticks(pid)` → after `refresh_managed_service_runtime_liveness`, `status == \"stopped\"` and the function returns `true`.\n2. Same record with the *correct* start-ticks → status stays `starting`.\n3. Same record with `None` start-ticks (legacy) → status stays `starting`.\n\nVerify: `cargo test -p rocm --all-targets recycled` passes, and the full gate (`cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --all-targets`) stays green."
+      }
+    }
+  ]
+}

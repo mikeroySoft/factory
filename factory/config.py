@@ -87,7 +87,7 @@ KNOWN_KEYS = {
     "review": ("command", "json_mode", "policy"),
     "manager": ("model", "command", "rounds", "review", "stale_days", "max_active_cap", "budget_min_cap"),
     "learn": ("evaluate", "max_tickets", "max_tokens", "budget_min"),
-    "release": ("auto", "version_file", "min_tickets"),
+    "eval": ("max_cases", "max_tokens", "budget_min", "profile", "schedule"),
     "gate": ("timeout", "lock", "check", "protected_paths", "add_only_paths"),
     "leak_scan": ("pattern", "exclude", "extra"),
     "triage": ("url", "model", "timeout", "service"),
@@ -175,6 +175,11 @@ class Config:
     learn_max_tickets: int = 3
     learn_max_tokens: int = 100_000
     learn_budget_min: int = 30
+    eval_max_cases: int = 20
+    eval_max_tokens: int = 2_000_000
+    eval_budget_min: int = 720
+    eval_profile: str = "default"
+    eval_schedule: bool = False
     release_auto: bool = False
     release_version_file: str = "factory/__init__.py"
     release_min_tickets: int = 5
@@ -485,10 +490,13 @@ def load(start: Path | None = None) -> Config:
     manager = raw.get("manager", {})
     release = raw.get("release", {})
     learn = raw.get("learn", {})
+    evaluation = raw.get("eval", {})
     if not isinstance(learn, dict):
         raise ConfigError("[learn] must be a table")
     if not isinstance(release, dict):
         raise ConfigError("[release] must be a table")
+    if not isinstance(evaluation, dict):
+        raise ConfigError("[eval] must be a table")
     cfg = Config(root=root, repo=slug, raw_repo=raw_repo)
     cfg.upstream = repo_t.get("upstream") or None
     cfg.main = repo_t.get("main", cfg.main)
@@ -591,6 +599,19 @@ def load(start: Path | None = None) -> Config:
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise ConfigError(f"learn.{key} must be a positive integer")
         setattr(cfg, f"learn_{key}", value)
+    for key in ("max_cases", "max_tokens", "budget_min"):
+        value = evaluation.get(key, getattr(cfg, f"eval_{key}"))
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ConfigError(f"eval.{key} must be a positive integer")
+        setattr(cfg, f"eval_{key}", value)
+    cfg.eval_profile = evaluation.get("profile", cfg.eval_profile)
+    if not isinstance(cfg.eval_profile, str) or not cfg.eval_profile.strip():
+        raise ConfigError("eval.profile must be non-empty text")
+    if cfg.eval_profile not in cfg.workers:
+        raise ConfigError(f"eval.profile {cfg.eval_profile!r} is not a configured worker")
+    cfg.eval_schedule = evaluation.get("schedule", cfg.eval_schedule)
+    if type(cfg.eval_schedule) is not bool:
+        raise ConfigError("eval.schedule must be true or false")
     auto = release.get("auto", cfg.release_auto)
     version_file = release.get("version_file", cfg.release_version_file)
     min_tickets = release.get("min_tickets", cfg.release_min_tickets)
