@@ -36,6 +36,18 @@ MAX_ESCAPES = 10  # most recent candidate-escape bugs carried into evidence
 AUTO_EVERY = 10  # finished tickets between automatic runs at the end of a dispatcher pass
 LESSONS_BRANCH = dispatch.LESSONS_BRANCH
 REVERT_BRANCH = "agent/revert-lessons-"  # + the reverted PR number
+WORKER_CONTEXT_FILES = (LESSONS_NAME, "AGENTS.md", "CLAUDE.md")
+
+
+def worker_context_paths(root: Path) -> set[Path]:
+    """Paths whose current contents alter worker instructions."""
+    paths = {Path(name) for name in WORKER_CONTEXT_FILES}
+    for name in ("skills", ".omp/skills", ".agents/skills"):
+        directory = root / name
+        if not directory.is_dir():
+            continue
+        paths.update(skill.parent.relative_to(root) for skill in directory.rglob("SKILL.md"))
+    return paths
 
 @dataclass(frozen=True)
 class ReplayCase:
@@ -234,11 +246,43 @@ def _candidate_base(wt: Path, state: Path, candidate: Candidate | None) -> str:
     return dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
 
 
+def _context_base(wt: Path, source: Path) -> str:
+    paths = worker_context_paths(wt) | worker_context_paths(source)
+    touched = []
+    for relative in paths:
+        target = wt / relative
+        current = source / relative
+        if not (target.exists() or target.is_symlink() or current.exists()):
+            continue
+        touched.append(relative)
+        if target.is_symlink() or target.is_file():
+            target.unlink()
+        elif target.is_dir():
+            shutil.rmtree(target)
+        if current.is_dir():
+            shutil.copytree(current, target)
+        elif current.is_file():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(current, target)
+    if not touched:
+        return dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    dispatch.run(["git", "add", "-A", "--", *(str(path) for path in sorted(touched))], cwd=wt)
+    changed = dispatch.run(["git", "diff", "--cached", "--quiet"], cwd=wt, check=False).returncode
+    if not changed:
+        return dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    dispatch.run([
+        "git", "-c", "user.name=Factory replay", "-c", "user.email=factory@localhost",
+        "commit", "-m", "factory eval worker context",
+    ], cwd=wt)
+    return dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+
+
 def replay_ticket(
     cfg: config.Config,
     case: ReplayCase,
     candidate: Candidate | None,
     deadline: float,
+    context_root: Path | None = None,
 ) -> dict:
     """Replay one frozen ticket arm in an isolated checkout; no GitHub or push operation is available."""
     cfg.factory.mkdir(parents=True, exist_ok=True)
@@ -255,6 +299,8 @@ def replay_ticket(
         dispatch.run(["git", "checkout", "--quiet", "--detach", case.base], cwd=wt)
         dispatch.run(["git", "config", "user.name", "Factory replay"], cwd=wt)
         dispatch.run(["git", "config", "user.email", "factory@localhost"], cwd=wt)
+        if context_root is not None:
+            _context_base(wt, context_root)
         base = _candidate_base(wt, state, candidate)
         isolated = _no_push_env(state)
         extra = ""

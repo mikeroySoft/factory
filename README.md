@@ -1272,12 +1272,13 @@ branches, or merge state.
   train/lockbox split. New versions may add cases but never move an existing
   lockbox case out. `factory eval --profile NAME --dry-run` lists the suite and
   configured `[eval]` case/token/wall budget. A real run uses two repeats in
-  sandboxed clones, the selected worker profile, and each case repository's
-  gate and reviewer. Pushes and GitHub credentials remain disabled by the
-  shared learning-replay machinery. Every case/repeat is an `eval` row; the
+  sandboxed clones, the selected worker profile, and current candidate lessons,
+  agent rules, and skills committed as the replay baseline; each case keeps its
+  pinned gate and reviewer. Pushes and GitHub credentials remain disabled by
+  the shared learning-replay machinery. Every case/repeat is an `eval` row; the
   summary records first-gate pass, review rounds, REVISE findings, tokens,
   wall time, per-split means and population-stdev noise, the worker-context
-  fingerprint, and pinned Prime `scope: global` entries when present. The
+  fingerprint, and captured Prime `scope: global` entries when present. The
   first run is the baseline; later same-profile runs use
   `promotion.decide(objective="regression")`: parity/changes within repeat
   noise keep, a train or lockbox drop beyond noise reverts. Budget exhaustion

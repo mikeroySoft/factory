@@ -467,9 +467,9 @@ def manager_settings(table: dict) -> tuple[list[str] | None, str | None]:
     return command, model
 
 
-def load(start: Path | None = None) -> Config:
+def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     """Load `<root>/.factory.toml` over the host layer; every key optional except a resolvable repo slug."""
-    root = repo_root(start)
+    root = Path(git(start, "rev-parse", "--show-toplevel")) if worktree else repo_root(start)
     path = root / CONFIG_NAME
     raw: dict = {}
     if path.exists():

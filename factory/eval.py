@@ -202,16 +202,20 @@ def _prime_globals(cfg: config.Config, profile: str) -> dict:
     }
 
 
-def _fingerprint(cfg: config.Config, profile: str) -> tuple[str, dict]:
+def _fingerprint(
+    cfg: config.Config, profile: str, context_root: Path | None = None,
+) -> tuple[str, dict]:
+    root = context_root or cfg.root
     files = {}
-    for relative in (config.LESSONS_NAME, "AGENTS.md", "CLAUDE.md", "factory/templates/agent_task.md"):
-        path = cfg.root / relative
-        if path.is_file():
-            files[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
-    for directory in (cfg.root / ".omp/skills", cfg.root / ".agents/skills"):
-        if directory.is_dir():
-            for path in sorted(directory.rglob("SKILL.md")):
-                files[path.relative_to(cfg.root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    paths = learn.worker_context_paths(root) | {Path("factory/templates/agent_task.md")}
+    for relative in sorted(paths):
+        path = root / relative
+        candidates = [path] if path.is_file() else sorted(path.rglob("*")) if path.is_dir() else []
+        for candidate in candidates:
+            if candidate.is_file():
+                files[candidate.relative_to(root).as_posix()] = hashlib.sha256(
+                    candidate.read_bytes(),
+                ).hexdigest()
     harness = _prime_globals(cfg, profile)
     value = {
         "command": cfg.workers[profile],
@@ -312,6 +316,7 @@ def run(
     dry_run: bool = False,
     scheduled: bool = False,
     candidate: str | None = None,
+    context_root: Path | None = None,
 ) -> dict | None:
     manifest = load_manifest(manifest_path)
     _validate_history(manifest_path, manifest)
@@ -335,7 +340,7 @@ def run(
     run_id = uuid.uuid4().hex
     trigger = "scheduled" if scheduled else "change"
     started = time.monotonic()
-    fingerprint, harness = _fingerprint(cfg, profile)
+    fingerprint, harness = _fingerprint(cfg, profile, context_root)
     rows = []
     if len(manifest.cases) > cfg.eval_max_cases:
         return _not_tested(
@@ -362,6 +367,7 @@ def run(
                     learn.ReplayCase(case.ticket, case.base, case.title, case.labels, case.issue),
                     None,
                     deadline,
+                    context_root if case.repo == cfg.repo and context_root is not None else target.root,
                 )
             except (Exception, SystemExit) as exc:  # noqa: BLE001 - unavailable evidence is not escalation
                 _append(cfg, {
@@ -451,9 +457,17 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--scheduled", action="store_true", help="record this as the scheduled drift run")
     parser.add_argument("--manifest", type=Path, default=MANIFEST, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
-    cfg = config.load()
+    journal_cfg = config.load()
+    checkout = Path(config.git(Path.cwd(), "rev-parse", "--show-toplevel"))
+    checkout_cfg = config.load(checkout, worktree=True)
+    if checkout_cfg.repo != journal_cfg.repo:
+        raise config.ConfigError("eval must run from a worktree of the configured repository")
+    cfg = replace(checkout_cfg, root=journal_cfg.root)
     dispatch.configure(cfg)
-    summary = run(cfg, args.profile, args.manifest, dry_run=args.dry_run, scheduled=args.scheduled)
+    summary = run(
+        cfg, args.profile, args.manifest, dry_run=args.dry_run, scheduled=args.scheduled,
+        context_root=checkout,
+    )
     return int(bool(summary and (
         summary.get("status") == "not_tested" or summary.get("verdict") == "revert"
     )))
