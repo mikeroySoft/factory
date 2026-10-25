@@ -3381,6 +3381,62 @@ class DispatchTest(unittest.TestCase):
                     self.assertEqual(verdict, "REVISE")
                     self.assertIn("Factory rejected reviewer evidence", findings)
 
+    def test_review_keeps_structured_error_event_in_unavailable_diagnostic(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            reviewer = Path(d) / "reviewer"
+            reviewer.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json\n"
+                "print(json.dumps({'type': 'message_end', 'message': {'role': 'assistant', "
+                "'content': '', 'usage': {'input': 1, 'output': 0}}}))\n"
+                "print(json.dumps({'type': 'error', 'error': {'type': 'rate_limit_error', "
+                "'message': 'account limit'}, 'retry-after-ms': 0}))\n"
+                "raise SystemExit(1)\n"
+            )
+            reviewer.chmod(0o755)
+            dispatch.configure(config.Config(
+                root=repo, repo="acme/widgets", reviewer=[str(reviewer)],
+                reviewer_json_mode=True,
+            ))
+            head = git(repo, "rev-parse", "HEAD")
+
+            with mock.patch.object(dispatch.time, "sleep"):
+                verdict, findings = dispatch.review(repo, 7, "PASS", head)
+
+            self.assertEqual(verdict, "REVISE")
+            self.assertIn("rate_limit_error", findings)
+            self.assertIn("account limit", findings)
+
+    def test_review_retry_honors_provider_delay_before_accepting_verdict(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            dispatch.configure(config.Config(
+                root=repo, repo="acme/widgets", reviewer=["reviewer"],
+            ))
+            head = git(repo, "rev-parse", "HEAD")
+            failed = subprocess.CompletedProcess(
+                ["reviewer"], 1, "", "rate limited retry-after-ms=2500",
+            )
+            approved = subprocess.CompletedProcess(
+                ["reviewer"], 0, "VERDICT: APPROVE", "",
+            )
+            with mock.patch.object(
+                    dispatch, "_run_reviewer", side_effect=[failed, approved]), \
+                    mock.patch.object(dispatch.time, "sleep") as sleep:
+                verdict, _ = dispatch.review(repo, 7, "PASS", head)
+
+            self.assertEqual(verdict, "APPROVE")
+            sleep.assert_called_once_with(2.5)
+
     def test_worker_round_records_normalized_worker_usage(self) -> None:
         from unittest import mock
 

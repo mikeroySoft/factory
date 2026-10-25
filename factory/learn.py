@@ -776,6 +776,17 @@ def chore_pr(
                 "parsed": False, "reason": "gate_failed", "usage": None,
                 "returncode": None, "actual_head": head,
             }
+            if result["verdict"] is None:
+                failure = result.get("failure_reason", "unparsed_verdict")
+                result = {
+                    **result,
+                    "verdict": "REVISE",
+                    "reason": failure,
+                    "findings": (
+                        f"{result['findings']}\n\n"
+                        f"Factory rejected reviewer evidence: {failure}."
+                    ),
+                }
             dispatch.record(
                 "learn-candidate-review", branch=branch, title=title, proposal=pr_body,
                 base=base, head=head, gate="PASS" if ok else "FAIL", **result,
