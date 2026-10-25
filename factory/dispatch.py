@@ -417,6 +417,19 @@ def open_blockers(number: int, body: str) -> list[int]:
     return sorted(blockers)
 
 
+def open_agent_tickets() -> set[int]:
+    """Ticket numbers with an open `agent/<n>` PR still owned by the pipeline."""
+    prs = gh_json([
+        "pr", "list", "--repo", REPO, "--state", "open", "--limit", "1000",
+        "--json", "headRefName",
+    ])
+    return {
+        int(match[1])
+        for pr in prs
+        if (match := re.fullmatch(r"agent/(\d+)", pr.get("headRefName") or ""))
+    }
+
+
 def orphaned_worktree_reason(n: int) -> str | None:
     """Why an unlocked claimed worktree needs human recovery; None means it is safe to resume."""
     wt = FACTORY / f"wt-{n}"
@@ -452,6 +465,7 @@ def frontier(dry_run: bool = False) -> list[dict]:
         ]
     )
     bot_login = None
+    open_pr_tickets: set[int] | None = None
     for issue in issues:
         n = issue["number"]
         if any(label.get("name") == config.LABEL_INITIATIVE for label in issue.get("labels", [])):
@@ -463,33 +477,40 @@ def frontier(dry_run: bool = False) -> list[dict]:
             else:
                 assigned_to_bot = False
             lock_path = FACTORY / "locks" / f"{n}.lock"
-            if assigned_to_bot and dry_run:
-                issue["held"] = "assigned" if lock_held(lock_path) else "orphaned claim (would reclaim)"
+            if assigned_to_bot and lock_held(lock_path):
+                issue["held"] = "assigned"
             elif assigned_to_bot:
-                with ticket_lock(n).open("w") as lock_fd:
-                    try:
-                        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    except OSError:
-                        issue["held"] = "assigned"
-                    else:
+                if open_pr_tickets is None:
+                    open_pr_tickets = open_agent_tickets()
+                if n in open_pr_tickets:
+                    issue["held"] = "assigned"
+                elif dry_run:
+                    issue["held"] = "orphaned claim (would reclaim)"
+                else:
+                    with ticket_lock(n).open("w") as lock_fd:
                         try:
-                            if reason := orphaned_worktree_reason(n):
-                                escalate(n, reason, None, code="orphaned_claim")
-                                issue["held"] = "orphaned claim escalated"
-                            else:
-                                released = run(
-                                    ["gh", "issue", "edit", str(n), "--repo", REPO,
-                                     "--remove-assignee", "@me"],
-                                    check=False,
-                                )
-                                if released.returncode == 0:
-                                    record("reclaim", ticket=n, reason="orphaned_claim", assignee=bot_login)
-                                    issue["assignees"] = []
-                                    log(f"#{n}: reclaimed orphaned claim (no live lock)")
+                            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        except OSError:
+                            issue["held"] = "assigned"
+                        else:
+                            try:
+                                if reason := orphaned_worktree_reason(n):
+                                    escalate(n, reason, None, code="orphaned_claim")
+                                    issue["held"] = "orphaned claim escalated"
                                 else:
-                                    issue["held"] = "assigned (orphan reclaim failed)"
-                        finally:
-                            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                                    released = run(
+                                        ["gh", "issue", "edit", str(n), "--repo", REPO,
+                                         "--remove-assignee", "@me"],
+                                        check=False,
+                                    )
+                                    if released.returncode == 0:
+                                        record("reclaim", ticket=n, reason="orphaned_claim", assignee=bot_login)
+                                        issue["assignees"] = []
+                                        log(f"#{n}: reclaimed orphaned claim (no live lock)")
+                                    else:
+                                        issue["held"] = "assigned (orphan reclaim failed)"
+                            finally:
+                                fcntl.flock(lock_fd, fcntl.LOCK_UN)
             else:
                 issue["held"] = "assigned"
         if "held" not in issue and (blockers := open_blockers(n, issue.get("body", ""))):

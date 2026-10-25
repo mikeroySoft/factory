@@ -174,6 +174,25 @@ class ClaimFailure(unittest.TestCase):
 
         self.assertIn("mid-merge", dispatch.orphaned_worktree_reason(7))
 
+    def test_assigned_ticket_with_open_pr_is_never_reclaimed(self):
+        assigned = {**self.fresh, "assignees": [{"login": "runner"}]}
+
+        def github(args):
+            if args[:2] == ["issue", "list"]:
+                return [assigned]
+            if args == ["api", "user"]:
+                return {"login": "runner"}
+            if args[:2] == ["pr", "list"]:
+                return [{"headRefName": "agent/7"}]
+            raise AssertionError(f"unexpected GitHub call: {args}")
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=github), \
+                mock.patch.object(dispatch, "run", side_effect=AssertionError("mutated active PR")):
+            [issue] = dispatch.frontier()
+
+        self.assertEqual(issue["held"], "assigned")
+
+
     def test_human_assignment_is_never_reclaimed(self):
         assigned = {**self.fresh, "assignees": [{"login": "human"}]}
 

@@ -312,6 +312,14 @@ class WatchTest(unittest.TestCase):
                 mock.patch.object(dispatch, "lock_held", return_value=True):
             self.assertEqual(watch.orphaned_claims(self.cfg), [])
 
+    def test_orphaned_claim_observation_excludes_an_open_agent_pr(self) -> None:
+        issue = {"number": 7, "title": "awaiting CI", "assignees": [{"login": "runner"}]}
+        with mock.patch.object(dispatch, "gh_json", side_effect=(
+                [issue], [{"headRefName": "agent/7"}],
+        )), mock.patch.object(dispatch, "lock_held", return_value=False):
+            self.assertEqual(watch.orphaned_claims(self.cfg), [])
+
+
 
 class HostFakeGh(FakeGh):
     def __call__(self, cmd, **kwargs) -> subprocess.CompletedProcess:

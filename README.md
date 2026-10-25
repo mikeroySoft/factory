@@ -384,9 +384,10 @@ succeeded); an unreadable or malformed projection is a warning, not a silently
 missing metric.
 
 `factory watch` observes bot-only `ready-for-agent` assignments without a live
-ticket lock. The first pass journals the observation; the same ticket must still
-be orphaned on the next watch pass before it files a Factory engine bug. A live
-lock or an intervening clear observation resets that signal.
+ticket lock or open `agent/<n>` PR. The first pass journals the observation; the
+same ticket must still be orphaned on the next watch pass before it files a
+Factory engine bug. A live lock, open pipeline PR, or intervening clear
+observation resets that signal.
 
 `factory watch` also closes an open, unassigned issue it opened, still at `needs-triage`
 or `ready-for-agent` (never one handed to a human), as completed when its
@@ -711,12 +712,13 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    runs its triage step with `dispatch_env` applied, so it posts as the dispatcher.
 2. **Schedule and claim.** Eligibility first: open `ready-for-agent` issues that
    are not initiatives, have no open `Blocked by` edge, and are unassigned or
-   carry only Factory's own assignment without a live ticket lock. A live lock,
-   human assignment, or mixed assignment remains held. For an unlocked bot-only
-   claim, a non-dry pass first acquires the ticket lock nonblocking: a missing or
-   clean worktree is unassigned, journaled as `reclaim`, and ranked in that same
-   pass; a dirty, unreadable, or mid-merge worktree escalates as
-   `orphaned_claim` for human recovery. Then
+   carry only Factory's own assignment without a live ticket lock or open
+   `agent/<n>` PR. A live lock, open pipeline PR, human assignment, or mixed
+   assignment remains held. For an unlocked bot-only claim without an open PR,
+   a non-dry pass first acquires the ticket lock nonblocking: a missing or clean
+   worktree is unassigned, journaled as `reclaim`, and ranked in that same pass;
+   a dirty, unreadable, or mid-merge worktree escalates as `orphaned_claim` for
+   human recovery. Then
    capacity (`max_active` minus held ticket locks) and the experiment slot (at
    most one `experiment`-labelled ticket active; production delivery gets the
    rest). A ticket whose Plan binding admission would refuse (ambiguous or

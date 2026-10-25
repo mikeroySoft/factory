@@ -214,15 +214,19 @@ def repeated_escalations(events: list[dict]) -> dict[str, list[dict]]:
 
 
 def orphaned_claims(cfg: config.Config) -> list[dict]:
-    """Bot-only ready claims whose per-ticket lock is not live."""
+    """Bot-only ready claims with no live lock or open pipeline PR."""
     issues = dispatch.gh_json([
         "issue", "list", "--repo", cfg.repo, "--state", "open",
         "--label", config.LABEL_AGENT, "--assignee", "@me", "--limit", "1000",
         "--json", "number,title,assignees",
     ])
+    if not issues:
+        return []
+    open_pr_tickets = dispatch.open_agent_tickets()
     return [
         issue for issue in issues
         if len(issue.get("assignees", [])) == 1
+        and issue["number"] not in open_pr_tickets
         and not dispatch.lock_held(cfg.factory / "locks" / f"{issue['number']}.lock")
     ]
 
