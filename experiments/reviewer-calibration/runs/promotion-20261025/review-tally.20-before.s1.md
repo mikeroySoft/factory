@@ -1,32 +1,38 @@
+## Standards
+
+No AGENTS.md/CONTRIBUTING.md in the snapshot; conventions come from README.md, `docs/manager-plan.md` (T11/T6), and `templates/factory.toml`.
+
+- `factory/config.py:285-298` — table-or-array `[workers]` matches T11 "config.py (`[workers]` becomes table-or-array)"; host layering via `merge()` (config.py:203) deep-merges tables and replaces arrays, so `[defaults.workers.ci-fix]` composes with a repo `[workers]`.
+- `factory/manage.py:102,139-166` — FIX follows T6's contract verbatim: one `worker_round` in kept worktree with guidance as `extra`, re-gate, push only on PASS, re-review, `factory-approved` only on fresh APPROVE. Failure paths go through `escalate` (new round, bounded by `manager_rounds`), consistent with "A partial … must not be replayed".
+- `factory/manage.py:176-178` — prompt lists only routable labels with `when`; `parse` receives the filtered dict, so ROUTE/FIX cannot name `default`/reserved labels.
+- Nit: README `[workers]` reference block (README.md:176-178, unchanged) still shows array form only; table form is documented only inside the manager paragraph (README.md:93-95).
+
+## Spec (issue #20 / brief)
+
+| Criterion | Evidence | Status |
+|---|---|---|
+| `when` on `[workers.<label>]`, prompt lists labels with `when` | config.py:291-298; manage.py:176-178 | met |
+| ROUTE/FIX accepted only for listed labels | manage.py:111-115,120-123 | met |
+| `ROUTE chore` without chore worker rejected and recorded; with one, label applied | tests:263-286 — HUMAN recorded via `record("manage")` + issue comment; `--add-label chore` otherwise | met |
+| FIX on red CI runs the `ci-fix` argv | tests:288-330; escalation produced by dispatch.py:838-843 (CI fail) → manage → `worker_round({"ci-fix"})` | met |
+| `ci-fix` and `conflict` profiles in template, human-applied | templates/factory.toml:41-47 | met |
+| Array-form `[workers]` still loads | tests:236-248 | met |
+| Manager not writing host config | nothing in diff writes config | met |
+
+Trace: red CI → `land_pass` removes `factory-approved`, `escalate(n, …)` round 1 → `manage_pass` builds prompt → FIX → precondition (kept `wt-n`, PR OPEN on `agent/n`, no CHANGES_REQUESTED, branch check) → `worker_round` → gate → push → `review` → `approve_pr`. Issue stays `ready-for-human`; merge stage then needs green CI + head contains main. Coherent with README.md:21-23.
+
+## Plan drift
+
+- Files not named in issue Touches: `README.md` (documents new decision; appropriate), `tests/test_factory.py` (required by exit gate `pytest tests/test_factory.py`). Neither exposes a defect.
+- Planned proof: `uv run pytest tests/test_factory.py` → gate `test: PASS`. No missing proof.
+
+## Nits
+
+- `factory/templates/factory.toml:39` — the template directs humans to put profiles in host config, but a repo with no `[workers]` table then loads host `{ci-fix: …}` alone and fails `needs a default command` (config.py:286-287) for every `factory` command. The comment warns; a friendlier path would be to fall back to built-in `default`/`chore` when the merged table lacks `default`. Pre-existing check, newly reachable by the documented workflow.
+- `README.md:176` — `[workers]` config reference still shows only array form.
+
 ```json
-{
-  "verdict": "REVISE",
-  "findings": [
-    {
-      "severity": "important",
-      "pass": "bug",
-      "path": "factory/manage.py",
-      "line": 124,
-      "summary": "FIX pushes with plain `git push origin agent/<n>` after the worker round. The shipped `conflict` profile (factory/templates/factory.toml:47) instructs the worker to (re)start and resolve the rebase onto main, which rewrites agent/<n> history (the earlier `refresh_pr_branch` conflict path ran `git rebase --abort`, so remote == pre-rebase tip). A successful rebase + gate PASS then hits a non-fast-forward rejection → CalledProcessError → manage_pass logs `manager decision application failed … leaving for human` as mechanism_failure with no issue comment, no escalation, and the resolved worktree unpublished; the single manager round (manager_rounds=1) is consumed by the recorded `manage` event so it is never retried. Issue #20 scope ships `conflict` as a FIX-dispatched profile (\"resolve the rebase, keep both intents\"), and README.md:21 states FIX \"pushes only on gate PASS\"; the only dispatch path for that profile cannot publish its result. `refresh_pr_branch` (dispatch.py:731) already uses `--force-with-lease` for exactly this case; the FIX push should match it (safe for ci-fix too)."
-    },
-    {
-      "severity": "nit",
-      "pass": "spec",
-      "path": "factory/manage.py",
-      "line": 109,
-      "summary": "FIX precondition also refuses PRs with `reviewDecision == CHANGES_REQUESTED`; README.md:18-24 and MENU (manage.py:26-28) describe FIX only as requiring a kept worktree and an open PR. Document the human-blocks-FIX rule next to the ROUTE/FIX text so the manager's HUMAN diagnosis can account for it."
-    },
-    {
-      "severity": "nit",
-      "pass": "bug",
-      "path": "factory/manage.py",
-      "line": 54,
-      "summary": "`parse` still subtracts RESERVED_LABELS (ROUTE, line 54) and re-checks `worker in RESERVED_LABELS` (FIX, line 65) although manage_pass:199 now passes an already-filtered `workers` dict; redundant, harmless."
-    }
-  ]
-}
+{"verdict":"APPROVE","findings":[{"severity":"nit","pass":"spec","path":"factory/templates/factory.toml","line":39,"summary":"Host-only profile without a repo [workers] table makes config.load raise 'needs a default command' for every command; consider falling back to built-in default/chore when the merged table lacks default."},{"severity":"nit","pass":"spec","path":"README.md","line":176,"summary":"[workers] config reference still shows only the array form; table form with `command`/`when` is documented only in the manager paragraph."}]}
 ```
 
-Plan drift: issue Touches named config.py, manage.py, dashboard.py, templates/factory.toml; diff also changes README.md (documents the new decision/config) and tests/test_factory.py (required by the exit gate's `pytest tests/test_factory.py`). Planned proof `uv run pytest tests/test_factory.py` is covered by the gate's `test: PASS` (same `tests/` discovery). Neither drift exposes a defect; the REVISE rests solely on the non-force push.
-
-VERDICT: REVISE
+VERDICT: APPROVE

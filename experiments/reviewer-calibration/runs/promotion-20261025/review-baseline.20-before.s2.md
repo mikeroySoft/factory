@@ -1,31 +1,42 @@
 ## Standards
 
-No `AGENTS.md`/`CONTRIBUTING.md` in the snapshot; documented sources are `README.md` and `docs/manager-plan.md` (T11, lines 341–352). README updated in-diff (`review.diff:10-24`) and matches the code paths it describes (gate-PASS-only push `manage.py:121-124`, fresh-APPROVE-only relabel `:127-128`, no requeue `:131`). Config validation follows the existing `ConfigError` pattern (`review.diff:49-52`). `RESERVED_LABELS` extraction (`review.diff:102,112,122`) removes a duplicate set literal rather than adding abstraction. No smell-baseline findings beyond judgement calls below.
+No `AGENTS.md`/`CONTRIBUTING.md` in the snapshot; `README.md` and `docs/manager-plan.md` are the documented conventions.
 
-## Spec (issue #20 / brief comment)
+- README updated for the new decision and config form (`review.diff:10-24`); template documents the table form and profiles (`review.diff:208-224`). Consistent with README's "every key documented" convention.
+- FIX path (`review.diff:139-166`) mirrors the existing review-bounce sequence in `dispatch.py:1056-1070` (worker_round → gate → push → review → pr_comment → approve_pr/escalate) rather than inventing a second mechanism. No new abstractions beyond `RESERVED_LABELS` (`review.diff:102`), which replaces an inline set literal already present at `review.diff:111`.
+- `manage` event recorded before mutation (`review.diff:193`), matching README's "records a `manage` event before GitHub mutations".
+
+No standards violations found.
+
+## Spec (issue #20 / plan T11)
 
 | Criterion | Evidence | Status |
 |---|---|---|
-| `[workers.<label>]` may carry `when`; array form still loads | `review.diff:45-55`, test `:236-254` | met |
-| Manager prompt lists labels with `when` | `review.diff:176-178`, test `:283` | met |
-| ROUTE/FIX only for listed labels | `review.diff:111-115,120-126`, tests `:263-286,:332-342` | met |
-| Ship `ci-fix` and `conflict` profiles in template; human-applied | `review.diff:218-224` | met |
-| ROUTE chore w/o worker rejected+recorded; with worker label applied | test `:281-286` (HUMAN decision in `manage` event; `--add-label chore`) | met |
-| FIX on red CI runs `ci-fix` argv | `review.diff:152-155`, test `:303-330` | met |
-| Out of scope: manager writes host config | nothing in diff writes config | met |
+| `[workers.<label>]` may carry `when` | `review.diff:36,45-55` | ✓ |
+| Manager prompt lists labels with `when` | `review.diff:176-178` | ✓ |
+| ROUTE/FIX only for listed labels | `review.diff:112-115`, `review.diff:120-123`, `review.diff:186-187` | ✓ |
+| Ship `ci-fix` and `conflict` profiles in template | `review.diff:218-224` | ✓ (commented, matching the template's all-defaults-commented style; brief says "remain host-config that humans apply") |
+| Array-form `[workers]` still loads | `review.diff:47`, test `review.diff:240,298` | ✓ |
+| Exit gate: ROUTE chore rejected+recorded without worker, applied with | test `review.diff:263-286` | ✓ |
+| Exit gate: FIX on red CI runs `ci-fix` argv | test `review.diff:288-330`; `cfg.worker({data["worker"]}, …)` at `review.diff:153` selects by exact label | ✓ |
+| Out of scope: manager writing host config | no config writes in diff | ✓ |
+| Dashboard touch | `review.diff:67` | ✓ (exposed in JSON; not rendered in `dashboard.html`, not required) |
 
-### Required fixes
-
-1. **FIX push cannot succeed for the shipped `conflict` profile.** `manage.py` (`review.diff:159`) runs `git push origin agent/{n}` (plain). The `conflict` profile this diff ships (`review.diff:222-224`) instructs the worker to restart and resolve the rebase; the dispatcher's conflict escalation aborts the rebase first (`snapshot/factory/dispatch.py:722-724`), so a successful `conflict` worker always rewrites `agent/{n}` history. Plain push is rejected non-fast-forward → `CalledProcessError` → caught at `review.diff:197-199` as `mechanism_failure` with only a local log line; no GitHub comment, no new escalation, and with `manager_rounds=1` the round is consumed (`manage.py:189-192`), so the resolved rebase sits unpushed and invisible. The repo's own post-rebase push uses `--force-with-lease` (`dispatch.py:731`). Fix: `["git", "push", "--force-with-lease", "origin", f"agent/{n}"]` at `review.diff:159`; update the assertion at `review.diff:330` accordingly. Rule source: issue scope "`conflict` (resolve the rebase, keep both intents…)" + plan T11 line 142 ("Dispatch a worker round (`ci-fix`, `conflict`…)") — the diff ships a profile its own FIX path cannot complete. The gate's test PASS doesn't cover it: the test stubs `git push` to `exit 0` (`review.diff:316`).
-
-### Optional suggestions
-
-- `KNOWN_KEYS["workers"] = None` (`snapshot/factory/config.py:58`) means `factory doctor` won't flag a mistyped `whne =` in a `[workers.<label>]` table; the key is silently dropped at `review.diff:48`. Consider validating table keys ⊆ `{command, when}` in the loader.
-- `dashboard.py` exposes `worker_when` (`review.diff:67`) but `dashboard.html:894` doesn't render it. Harmless; wire it or drop it.
-- `pr checks` stub in the FIX test (`review.diff:313`) is unused by the code path.
+Safety properties claimed in README hold in code: push only after gate PASS (`review.diff:156-159`), `factory-approved` only on fresh APPROVE (`review.diff:162-163`), failure → `escalate` (`review.diff:157,165`), no requeue (early `return` at `review.diff:166` skips the `ready-for-agent` relabel at `manage.py:158-159`). Merge stage keys on the PR label only (`dispatch.py:803`), so a FIX-approved PR merges next pass.
 
 ## Plan drift
 
-Plan status: not recorded — no planned file list or proof to diff against. Files changed vs. issue "Touches": `README.md` and `tests/test_factory.py` are additional; both are justified (docs for new decision; tests are the exit gate). Gate report covers the stated verification (`uv run pytest tests/test_factory.py` → test PASS). No proof gap exposes a defect; the required fix above is a code defect, not drift.
+Plan status: not recorded. Against the issue's "Touches" list (config.py, manage.py, dashboard.py, factory.toml), extra files are `README.md` and `tests/test_factory.py` — both expected (doc convention; exit-gate tests). Gate `test: PASS` runs `python -m unittest discover -s tests` (`snapshot/.factory.toml:4-13`), which includes `tests/test_factory.py`; equivalent to the issue's `uv run pytest tests/test_factory.py` [INFERENCE: pytest collects the same unittest classes]. No planned proof missing.
 
-VERDICT: REVISE
+## Required fixes
+
+None.
+
+## Optional suggestions
+
+- `review.diff:144`: `pr["headRefName"] != f"agent/{n}"` is tautological — `gh pr view agent/{n}` already selects by branch. Harmless; could drop.
+- `review.diff:112`: `set(workers) - RESERVED_LABELS` in ROUTE is now redundant since `workers` is pre-filtered at `review.diff:176`. Harmless.
+- `review.diff:47-48`: unknown keys in a `[workers.<label>]` table (e.g. `wehn`) are silently ignored; `KNOWN_KEYS["workers"] = None` (`config.py:58`) means `factory doctor` won't report them as drift. Consider a check if typos bite in practice.
+- `review.diff:166`: on FIX + APPROVE nothing is posted to the *issue* (only `pr_comment` on the PR); the human watching `ready-for-human` sees no trace until merge. A one-line `gh issue comment` would close that gap; documented behavior, so not blocking.
+
+VERDICT: APPROVE

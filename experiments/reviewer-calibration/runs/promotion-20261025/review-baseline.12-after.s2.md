@@ -1,41 +1,35 @@
 ## Standards
 
-Sources: `README.md` (config section, lines 118–119: template documents all keys), `factory/templates/factory.toml` comment convention, `pyproject.toml` ruff `line-length = 100`, existing loader patterns in `factory/config.py`.
+No `AGENTS.md`/`CONTRIBUTING.md` in the snapshot; the operative convention is in `factory/config.py` itself ("Every key the loader reads, by table; `factory doctor` reports anything else") plus the template-documents-all-keys rule (README.md:118-119).
 
-- `factory/config.py:10` adds `rounds`, `review` to `KNOWN_KEYS["manager"]`; `HOST_TABLES` already contained `manager` pre-diff (snapshot `config.py:50`), so host layering works without a diff change. Consistent with `review` table handling.
-- `factory/config.py:70-74` loader follows the existing `int(table.get(key, default))` / `ConfigError` pattern (`max_active`, `check_timeout`). `review` enum validated with `ConfigError`; `manager = 5` (non-table) caught by `manager_settings` at line 32-33 before `.get("rounds")` runs at line 71.
-- `factory/dashboard.py:94-98` mirrors the `reviewer`/`workers` `" ".join(argv)` shape.
-- `factory/onboard.py:110-111` mirrors the `reviewer` `shutil.which` row.
-- `factory/templates/factory.toml:125-133` documents all three keys with the same comment style as `[workers]`/`[review]`; README defers to the template (README:118-119), so no README change needed.
-- `tests/test_factory.py:229` lambda + `# noqa: E731` matches existing usage (`test_factory.py:234,310` in snapshot).
-- No smell-baseline issues of note. Mild Divergent Change: `manager_settings` now serves both the dashboard briefing model selector and the frontier manager argv (`config.py:30-54`); acceptable, both read the same table.
+- `review.diff:10` — `KNOWN_KEYS["manager"]` extended with exactly the keys the loader reads (`rounds`, `review`); `HOST_TABLES` already contained `manager` at base (snapshot `factory/config.py:50`). Convention met.
+- `review.diff:71,75` — `rounds` coerced via `int(...)` identically to `gate.timeout`/`dashboard.port`; matches existing pattern (a non-numeric value raises `ValueError`, not `ConfigError`, same as those siblings — pre-existing convention, not flagged).
+- `review.diff:95` — `" ".join(cfg.manager)` mirrors `workers`/`reviewer` rendering at `dashboard.py:92-93`.
+- `review.diff:28-54` — `manager_model` → `manager_settings` returning `(command, model)`: no new abstraction, single function still, all callers migrated (`tests/test_briefing.py:119-124`, `config.py:287`). Not speculative.
 
-## Spec (issue #12 + agent brief)
+No violations.
+
+## Spec (issue #12 / brief)
 
 | Criterion | Evidence | Status |
 |---|---|---|
-| `command` argv template, unset = disabled | `config.py:18` (`manager: list[str] \| None = None`), `config.py:36-44` normalizes list or string; `onboard.py:110` treats unset as disabled | met |
-| `rounds = 1` default | `config.py:19,71` | met |
-| `review = "escalated"`, `"all"` allowed | `config.py:20,72-74` | met |
-| Host-layer like `review` | `HOST_TABLES` pre-existing; host-layer loading proven at `tests/test_factory.py:209-212` | met |
-| `factory doctor` prints `manager:` row when configured, nothing otherwise | `onboard.py:110-111`; test `tests/test_factory.py:224-232` | met |
-| Unknown keys under `[manager]` reported as drift | `KNOWN_KEYS` at `config.py:10`; test `tests/test_factory.py:190,198` | met |
-| `dashboard --json` `config` includes table | `dashboard.py:94-98` inside `snapshot()` which feeds `--json` | met |
-| `templates/factory.toml` documents it | `factory.toml:128-133` | met |
-| Loader test for all three keys | `tests/test_factory.py:169-172,180-181` | met |
-| Out of scope: running the command | No execution path added; `test_briefing.py:146-152` still asserts no execution | met |
-
-No scope creep found. `manager_settings` returning the argv (`config.py:30,54`) is the minimal way to expose `command`; not a net-new abstraction.
+| `command` argv template, unset = disabled | `review.diff:18` (`None` default), `:36-44` validation, `:70` | met |
+| `rounds = 1` default | `review.diff:19,71` | met |
+| `review = "escalated"`, `"all"` allowed, others rejected | `review.diff:20,72-74`; test `:217` | met |
+| Host-layer like `review` | `HOST_TABLES` already includes `manager` (base) | met |
+| `doctor` prints `manager:` row only when configured | `review.diff:110-111`; test `:224-232` | met |
+| Unknown `[manager]` keys reported as drift | `review.diff:190,198` | met |
+| `dashboard --json` `config` includes table | `review.diff:94-98` | met |
+| `templates/factory.toml` documents it | `review.diff:125-133` | met |
+| Loader test for all three keys | `review.diff:169-172,180-181` | met |
+| Out of scope: running the command | nothing executes `cfg.manager`; `:146-152` asserts no execution | met |
 
 ## Plan drift
 
-Plan (issue "Touches" / `docs/manager-plan.md:240-241`) names `config.py`, `onboard.py`, `templates/factory.toml`, `dashboard.py`.
+Worker plan not recorded; drift judged against the issue's "Touches" list.
 
-Files changed not named by the plan:
-- `tests/test_factory.py` — required by the exit gate ("loader test for all three keys"); not drift in substance.
-- `tests/test_briefing.py:145-157` — forced by the `manager_model` → `manager_settings` rename (`config.py:28-30`). Rename is a worker choice, not a plan item; no behavioral change (same assertions).
-
-Planned proof vs. gate report: plan's proof is `uv run pytest tests/test_factory.py` and the doctor row behavior. Gate report shows `test: PASS`; the doctor behavior is asserted inside the test suite (`tests/test_factory.py:224-232`). Nothing planned is missing from the gate. No drift exposes a defect.
+- Files changed not named: `tests/test_factory.py` (required by exit gate — not drift in substance), `tests/test_briefing.py` (`review.diff:137-157`, forced by the `manager_model` → `manager_settings` rename). Neither exposes a defect.
+- Planned proof: exit-gate items all have assertions in `tests/test_factory.py`; gate `test: PASS`. No missing proof.
 
 ## Required fixes
 
@@ -43,7 +37,7 @@ None.
 
 ## Optional suggestions
 
-- `config.py:28-30,54`: renaming `manager_model` → `manager_settings` and changing the return to a tuple rippled into `tests/test_briefing.py:146-157`. Keeping `manager_model` as-is and normalizing `command` inline in `load()` would be a smaller diff with one fewer touched file. Non-blocking.
-- `config.py:71`: `int(manager.get("rounds", ...))` raises a bare `ValueError` traceback on `rounds = "x"`, same as the existing `max_active`/`check_timeout` lines. Consistent with repo convention; mention only.
+- `review.diff:36-45` — behaviour change: a `[manager]` with `model` set and a malformed `command` (bad shell quoting / non-string argv) was previously ignored, now raises `ConfigError`. Correct for a real `command` key, but worth a line in the template comment (`:131`) so existing hosts hitting it know why `load()` started failing.
+- `review.diff:71` — `rounds = 0` / negative is accepted. Spec doesn't require bounds; T4 will need `round <= manager.rounds`, so a `>= 0` check could land then.
 
 VERDICT: APPROVE

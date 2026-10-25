@@ -1,37 +1,38 @@
-## Standards
+## Review: #87 — Expose reader build and schema identity
 
-Sources: `README.md` (evidence contract §"Bounded project evidence JSON schema 1"), `pyproject.toml` `[tool.ruff] line-length = 100`, `.factory.toml` gate (`unittest` only), smell baseline.
+Scope of evidence: `review.diff` (2 files), snapshot of `factory/evidence.py`, `factory/dashboard.py`, `tests/test_evidence.py`, `README.md`, `CHANGELOG.md`, `docs/*`. Issue #87 body + triage comment fetched from the GitHub API. No `AGENTS.md`/`CONTRIBUTING.md` exists in the snapshot; the repo's documented conventions live in `README.md`, `CHANGELOG.md`, and `docs/`.
 
-No hard violations.
+### 1. Standards
 
-- `review.diff:45` (`factory/evidence.py` producers line) exceeds ruff's 100 columns. Not enforced by the gate or CI, and `evidence.py` already has 162 such lines → skipped, not a finding.
-- Possible **Duplicated Code** (judgement call): `review.diff:27-30` re-implements `snapshot/factory/dashboard.py:936-940` (`rev-parse HEAD` / `ls-files --error-unmatch` / `status --porcelain -- .` on the imported source dir). The evidence copy adds `GIT_OPTIONAL_LOCKS=0` and a per-call timeout, which the dashboard copy lacks; `evidence` already imports `dashboard`, so the shared helper would have to live in `dashboard`. Optional.
-- Audit-hook/no-write contract preserved: `review.diff:17` sets `GIT_OPTIONAL_LOCKS=0` (matches `github_read` at `evidence.py:321`), so `git status` does not refresh the index; all three git calls are read-only; failures collapse to `None` (`review.diff:23-25`) without leaking diagnostics, matching the module's "raw diagnostics withheld" convention.
+- **Follows the existing producer-revision rule.** README.md:824-825 (B2/#79 contract): "The producer revision is a clean source-checkout Git revision, otherwise null, never a CLI version." `reader_build()` (review.diff:9-32) implements exactly that: `rev-parse HEAD` + `ls-files --error-unmatch` on its own module + `status --porcelain -- .`, else `revision: None`. It never reads `factory.__version__` or the `--root` HEAD.
+- **Read-only/bounded conventions preserved.** `GIT_OPTIONAL_LOCKS=0` (review.diff:17) matches `github_read` at evidence.py:321 and `runtime_local.py:63`; each git call is capped at `COMMAND_SECONDS` (review.diff:22); three sequential calls (≤60 s) stay inside the 90 s `READ_SECONDS` deadline checked at evidence.py:1134; output still passes through `bounded_output` (evidence.py:1157). Failures collapse to `None` → `verified: False`, never an exception leaking into the envelope.
+- **Test conventions.** New test drives the real CLI via subprocess under the audit-hook guard and asserts no `EVIDENCE_FORBIDDEN` (review.diff:57-65), matching the file's stated approach (test_evidence.py:25-26). Git fixture commands inherit the process env exactly as the existing `self.git` helper does (test_evidence.py:172-174).
+- **Smell (judgement call, non-blocking): Duplicated Code.** dashboard.py:936-940 already runs the same three-command clean-checkout probe for the feedback producer. Two copies now exist. Extracting a shared helper would be a net-new cross-module seam that the brief did not ask for; I am not requesting it.
 
-## Spec (issue #87 + triage brief)
+### 2. Spec (issue #87 acceptance criteria)
 
-AC1 "identifies verifiable build revision and supported schema separately from repository revision and service identity" — met. `review.diff:31-32` emits `producers.reader = {revision, verified, evidence_schema, runtime_schema}` from the engine's own `Path(__file__)` checkout (`review.diff:16`), never from `--root`. Test `review.diff:88` asserts `reader.revision != self.head`.
+| Criterion | Status | Evidence |
+|---|---|---|
+| Capability output identifies verifiable build revision and supported schema separately from repository revision and service identity | Met | `producers.reader = {revision, verified, evidence_schema, runtime_schema}` (review.diff:31-32, 44-45). Revision is derived from the engine's own `__file__` location (review.diff:16), not `--root`. Test asserts engine revision ≠ selected repo HEAD (review.diff:88). |
+| Unavailable provenance explicitly unknown; version strings / checkout HEAD never fabricate | Met | `revision if verified else None` + boolean `verified` (review.diff:30-31). Locally modified tree → `(False, None)` proven at review.diff:90-93. No version string referenced anywhere in `reader_build()`. |
+| Exercise actual JSON CLI for verified and unavailable provenance; bounded output; zero operational writes | Met | Both states exercised through `python -m factory.cli evidence` subprocess (review.diff:61-65, 86-93) under the write-forbidding audit hook (review.diff:63). Gate `test: PASS` on target host. |
+| Reuse existing producers/contracts; no deployment/permission changes | Met | Only `capabilities()` producers map touched (review.diff:42-45); existing `evidence_schema`/`runtime_schema`/`runtime_reader`/`escalation_packet` keys retained. |
+| "Record commands and observed results in the PR" | Not verifiable from diff | PR body not in scope; not a code defect. |
 
-AC2 "unavailable provenance is explicitly unknown; version strings or checkout HEAD never fabricate" — met. `verified` requires full-SHA HEAD ∧ tracked module ∧ clean `factory/` (`review.diff:30`); otherwise `revision: null, verified: false` (`review.diff:31`). No use of `factory.__version__`. Packaged/site-packages install → `rev-parse` fails or `ls-files` is unmatched → unknown. `review.diff:90-93` proves the locally-modified path yields `(False, None)`.
+No scope creep observed.
 
-AC3 "exercise actual JSON CLI for verified and unavailable provenance; preserve bounded output and zero operational writes" — met through the real `factory.cli evidence` subprocess under the audit-hook guard (`review.diff:61-63`, `78-93`). Gate `test: PASS` on the target host.
+### 3. Plan drift
 
-Verification recording: issue requires commands/results recorded in the PR; not visible in the diff/gate report → unverifiable here, not a diff defect.
+Plan status: not recorded, so no planned file list or proof list to diff against. Files changed: `factory/evidence.py`, `tests/test_evidence.py` — both squarely within the issue's "Touches" (owning evidence boundary + tests). Gate report covers conflict-markers/test/leak-scan; the issue's stated verification (`python -m unittest discover -s tests`) is the gate's `test: PASS`. No drift exposing a defect.
 
-No scope creep: two files, one function, one producer field.
-
-## Plan drift
-
-Plan status: not recorded → no named file list or planned proof to diff against. Files changed: `factory/evidence.py`, `tests/test_evidence.py`. Nothing in the gate report is missing relative to the issue's required `python -m unittest discover -s tests` (gate `test: PASS`).
-
-## Required fixes
+### Required fixes (blocking)
 
 None.
 
-## Optional suggestions
+### Optional suggestions (non-blocking)
 
-1. `README.md:1216-1218` states `capabilities` "advertises **only** … evidence and runtime schema 1 support, the accepted escalation path, and an empty action menu"; `review.diff:44` now also advertises `producers.reader`. Add one clause there and a `CHANGELOG.md` Unreleased line `(#87)` to keep the documented contract accurate. No repo rule mandates it, so non-blocking.
-2. `review.diff:57-65` `reader_from` skips the `before == self.state()` and `len(stdout) < 1_048_576` assertions that `invoke` (`tests/test_evidence.py:216-218`) applies; the engine checkout's own cleanliness after the read is also not asserted. Reusing `invoke` with an `env` override would cover AC3's "zero operational writes / bounded output" for the engine-copy runs too.
-3. Share the source-revision check with `dashboard.py:936-940` (see Standards) so both surfaces agree on what "verified build" means; only worthwhile if the dashboard copy also wants the no-locks/timeout hardening.
+1. **CHANGELOG.md `## Unreleased` entry.** Every other public-contract change in that section carries a one-line entry with its issue number (CHANGELOG.md:5-14). `producers.reader` is a new field in the schema-1 capabilities output and has no entry. Not a documented rule, so not blocking.
+2. **README evidence contract.** README.md:1161 lists `producers` without fields; a half-sentence noting `producers.reader` follows the README.md:824 "clean source-checkout revision, otherwise null" rule would keep the two producer-revision contracts visibly aligned.
+3. **Duplicate probe with dashboard.py:936-940.** If a third consumer appears, fold into one helper then; two call sites don't justify a new seam now.
 
 VERDICT: APPROVE

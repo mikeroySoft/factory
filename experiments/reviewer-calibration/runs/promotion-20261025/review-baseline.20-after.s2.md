@@ -1,37 +1,31 @@
 ## Standards
 
-No `AGENTS.md`/`CONTRIBUTING.md` in the snapshot; documented conventions are `README.md`, `skills/factory/SKILL.md`, `docs/manager-plan.md`, and `pyproject.toml` (`[tool.ruff] line-length = 100`).
+Snapshot has no `AGENTS.md`/`CONTRIBUTING.md`; documented sources are `README.md`, `docs/manager-plan.md` §4.4, `pyproject.toml`, and the template's own conventions.
 
-- `README.md:10-24` — manager decision docs updated for `FIX` and `[workers.<label>]` tables; matches the "How a ticket moves"/"Configuration" sections' existing style.
-- `factory/templates/factory.toml:208-224` — profiles shipped commented out, consistent with the template header ("defaults are shown commented out", `snapshot/factory/templates/factory.toml:2-3`) and the plan's "profiles are still added by a human in host config" (`docs/manager-plan.md:346-347`).
-- `factory/manage.py:102,112,176` — `RESERVED_LABELS` replaces the inline set; same filter now applied to both the prompt and `parse`. No smell-baseline hits beyond judgement calls below.
-
-Judgement calls (non-blocking):
-- `factory/config.py:49` — ~129 chars vs `line-length = 100`. Ruff's default rule set does not select E501 and pre-existing lines already exceed it (`snapshot/factory/manage.py:166,211`), so not a tooling-enforced breach.
-- `factory/manage.py:112` — `set(workers) - RESERVED_LABELS` is now redundant: `manage_pass` already pre-filters `workers` at `factory/manage.py:176` before calling `parse` at `:187`. Harmless duplication.
+- **Decide → record → act** (plan §4.4): `manage` event recorded before any GitHub mutation — `manage.py:193` precedes `apply(...)` at `manage.py:196`. OK.
+- **Closed decision menu applied by code** (§4.4): FIX `worker` is validated against configured, non-reserved labels (`manage.py:120-125`); `RESERVED_LABELS` (`manage.py:102`) also excludes `default`/`ready-for-agent`/`ready-for-human`/`needs-triage` from the prompt list (`manage.py:176`). OK.
+- **Loop safety** (§4.4 `manager_rounds`): FIX failure routes through `dispatch.escalate` (`manage.py:157,165`), which bumps the escalation round; `manage_pass` still gates on `1 <= round <= manager_rounds`. Bounded. OK.
+- **Template convention** ("defaults are shown commented out"): `ci-fix`/`conflict` profiles shipped commented (`factory.toml:218-224`), consistent; a live `[workers.ci-fix]` table without `default` would fail `config.py:42-43`, so this is the only loadable form.
+- `pyproject.toml` declares `ruff line-length = 100` but no gate/CI step runs ruff and pre-existing lines already exceed it (`manage.py:114` context). Not enforced → not a finding.
 
 ## Spec (issue #20 + triage brief)
 
 | Criterion | Evidence | Status |
 |---|---|---|
-| `[workers.<label>]` may carry `when` | `factory/config.py:36,45-55` | met |
-| Manager prompt lists labels with their `when` | `factory/manage.py:176-178` | met |
-| ROUTE/FIX accepted only for listed labels | `factory/manage.py:112-115,120-123,176,187` | met |
-| `ci-fix` and `conflict` profiles in `templates/factory.toml` | `factory/templates/factory.toml:218-224` | met (opt-in, per plan T11) |
-| Array-form `[workers]` still loads | `factory/config.py:47-48`; `tests/test_factory.py:236-248` | met |
-| Exit gate: ROUTE chore rejected+recorded without worker, applied with one | `tests/test_factory.py:263-286` (`manage` event decision HUMAN vs ROUTE, `--add-label chore`) | met |
-| Exit gate: FIX on red CI runs the `ci-fix` argv | `factory/manage.py:139-166`; `tests/test_factory.py:288-347` | met |
-| Out of scope: manager writing host config | no config writes in diff; `README.md:24` states it | met |
-| `dashboard.py` touched | `factory/dashboard.py:67` exposes `worker_when` | met |
+| `[workers.<label>]` may carry `when` | `config.py:36,45-55` | Met |
+| Manager prompt lists labels with `when` | `manage.py:176-178`; test `test_factory.py:283` | Met |
+| ROUTE/FIX only for listed labels | `manage.py:111-115,120-123`; tests `test_factory.py:263-286,349-359` | Met |
+| Two profiles in `templates/factory.toml` | `factory.toml:218-224` | Met |
+| Existing array-form still loads | `config.py:47` (non-dict entry path); test `test_factory.py:240,247` | Met |
+| ROUTE chore without worker rejected+recorded; with worker label applied | `test_factory.py:281-286` | Met |
+| FIX on red CI runs the selected argv | `manage.py:152-155` (`{data["worker"]}` as labels → `cfg.worker` first-match); test `test_factory.py:326-338` | Met |
+| Out of scope: manager writing host config | No config writes in diff | Met |
 
-FIX implementation traced against `docs/manager-plan.md:283-285` ("dispatch one `worker_round` in the kept worktree with the guidance as `extra`, re-gate, push, re-review; re-add `factory-approved` only on a fresh APPROVE"): `factory/manage.py:151-155` (guidance+packet as `extra`), `:156-158` (gate FAIL → escalate, no push), `:159` (push only after PASS), `:160-165` (review → `approve_pr` only on APPROVE, else escalate). `Config.worker` picks the first configured key in the label set (`snapshot/factory/config.py:137`), so `{data["worker"]}` at `:153` selects exactly the named profile. Early `return` at `:166` skips the `ready-for-agent` relabel at the function tail, matching README "FIX does not merge or requeue the issue".
-
-Scope beyond the brief (not defects):
-- `factory/manage.py:144` — rejects FIX when `reviewDecision == "CHANGES_REQUESTED"`. Not in the issue; mirrors `merge_pass_locked` (`snapshot/factory/dispatch.py:805`) so a human's requested-changes isn't overridden by an automated push. Reasonable guard; no new abstraction.
+FIX itself wasn't in base (T10/#19 not landed), so the diff implements it per plan T10 (`manager-plan.md:283-285`: one `worker_round` with guidance as `extra`, re-gate, push, re-review, approve only on fresh APPROVE). `manage.py:139-166` mirrors `process_ticket`'s existing review/push/approve sequence (`dispatch.py:1056-1071`). `--force-with-lease` (`manage.py:159`) is needed for the `conflict` rebase case and fails closed if a human pushed the branch.
 
 ## Plan drift
 
-Plan status not recorded, so no plan-named file list or planned proof to diff against. Relative to the issue's **Touches** list, the diff additionally changes `README.md` and `tests/test_factory.py` — docs for the new decision/config form and the exit-gate tests the issue requires. The gate report shows `test: PASS`, which covers the issue's verification command (`uv run pytest tests/test_factory.py`). No required defect exposed.
+Plan status not recorded; nothing to diff against. Files beyond the issue's "Touches": `README.md` (doc update for new decision/config shape) and `tests/test_factory.py` (exit-gate tests). Neither exposes a defect. Gate `test: PASS` covers the issue's `pytest tests/test_factory.py` proof (same suite via `unittest discover`).
 
 ## Required fixes
 
@@ -39,8 +33,9 @@ None.
 
 ## Optional suggestions
 
-1. `factory/manage.py:112` — drop `- RESERVED_LABELS` since the caller pre-filters (`:176`); or keep `parse` self-defending and drop the caller filter. One site is enough.
-2. `factory/config.py:49` — wrap to ≤100 chars to match `[tool.ruff] line-length`; only matters if E501 is ever enabled.
-3. `factory/config.py:47` — unknown keys inside a `[workers.<label>]` table (e.g. a `when` typo) are silently ignored and `unknown_keys` skips `workers` (`snapshot/factory/config.py:58,219`); a `doctor` drift line would surface misconfigured `when` rules. Not required by the issue.
+1. `manage.py:139-166` — FIX is the only decision that posts no `Factory manager:` comment on the issue (REWRITE/SPLIT/ROUTE/HUMAN do at `manage.py:134-157` of the snapshot). On success the human sees only a reviewer PR comment and a label; the FIX guidance is visible only in `events.jsonl`/worker log. A one-line `gh("comment", "--body", "Factory manager: FIX via <worker>: <guidance>")` before `worker_round` keeps attribution consistent with plan §4.4 (`manager-plan.md:176-177`).
+2. `manage.py:144-147` — pre-flight `ValueError`s (no worktree, PR closed, CHANGES_REQUESTED) surface as `mechanism_failure` with a consumed manager round and no GitHub trace. Treating them as a HUMAN diagnosis (comment + leave) would match §4.4 "exhausted → diagnosis attached". Same ceiling as existing SPLIT/REWRITE failures, so non-blocking.
+3. `manage.py:160-163` — `human_activity` is checked before `apply` but not after the (long) worker round before `approve_pr`. Branch pushes are protected by the lease; label/comment takeover during the run is not. Non-blocking; same window exists in `process_ticket`.
+4. `manage.py:149-150` re-reads `events.jsonl` that `manage_pass` already loaded (`manage.py:184` in snapshot). Trivial.
 
 VERDICT: APPROVE

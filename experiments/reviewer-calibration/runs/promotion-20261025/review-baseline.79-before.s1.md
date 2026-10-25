@@ -1,37 +1,42 @@
-## Review: #79 (B2 source-versioned PR feedback)
+## Standards
 
-### Standards
-No `AGENTS.md`/`CONTRIBUTING.md` in the snapshot; `docs/` holds plan documents, not conventions. Observable conventions followed: `unittest` suite (`tests/test_feedback.py:1218-1497`), README/CHANGELOG updated (`README.md:21-93`, `CHANGELOG.md:9`), text-only DOM via `h()`/`pre()` (`dashboard.html:350`, `pre` is a text node at snapshot `dashboard.html:938`), private `lifecycle._lifecycle` use has precedent (`lifecycle._now` already used in `dashboard.py`).
+No `AGENTS.md`/`CONTRIBUTING.md` in the snapshot. Documented conventions found: CI gate = `python -m unittest discover -s tests` (`.github/workflows/ci.yml:12`), `[tool.ruff] line-length = 100` (`pyproject.toml:36-37`, not enforced by CI), "Keep the normal Python package dependency-free" (`docs/c1-read-interface-handoff.md:104`). Gate PASS; no new dependency (`feedback.py` imports stdlib + `factory.lifecycle`, review.diff:588-597). No hard documented-standard violation.
 
-### Spec (issue #79 body + agent brief)
-Verified against the diff:
-- Schema-1 envelope and item fields, all required keys, explicit nulls: `feedback.py:664-670`, `779-788`.
-- `source_revision` over exactly the 14 named fields: `feedback.py:605-607`, `811`. `observation_id` over native IDs, final head, sorted `(evidence_id, source_revision)`, coverage status/truncated/reason, excluding `observed_at`: `feedback.py:986-988`.
-- Bounds: `ITEM_LIMIT=100`, `PAGE_LIMIT=2`, `BODY_LIMIT=20_000`, `ERROR_LIMIT=32`, `DETAIL_TIMEOUT=30`, initial/final head reads: `feedback.py:599-603`, `750`, `920`; timeout enforced through transport `timeout` → `subprocess.run(timeout=)` (`dashboard.py:495`).
-- Head race → relevance `unknown`, both heads in reason, facts retained: `feedback.py:927-931`, `973-981`. Missing source SHA never filled with head: `774-776`. `thread_outdated=true` → historical regardless of SHA: `977-978`.
-- Factory review requires accepted lifecycle `result` (returncode 0, parsed, head == actual_head, matching enter/exit outcome), not `VERDICT` prose: `feedback.py:954-968`; matches the real emitter (`dispatch.py:489-491`, `477`).
-- Ownership requires same-repo closing-issue link (id+url) **and** retained `claimed` event: `feedback.py:937-945`; matches `dispatch.py:1297`.
-- Error sanitization: `gap()` emits fixed strings only (`feedback.py:680-688`); the test asserts no `SECRET` leaks (`test_feedback.py:1373`).
-- Full-snapshot-only integration at `tickets[].pr.feedback` (`dashboard.py:563-572`); runtime-json branch untouched (snapshot `dashboard.py:1224-1250`); legacy `checks/comments/verdicts/review_decision/gate_text` untouched (`pr_record` unchanged, asserted `test_factory.py:1200-1204`).
-- `sources_for`: feedback appended after existing candidates, omissions/shortening counted and reported, missing/unknown schema reported as unknown: `briefing.py:136-187`, `191-203`, `211-219`.
-- Review drawer / Inbox / task facts render coverage, heads, relevance, disposition, location, links via `safeSourceURL`: `dashboard.html:271-360`, `395-407`, `415`.
+Judgement-call smells (non-blocking):
+- **Duplicated Code** — `snapshot()` already holds a coherent committed journal view (`rows` from `lifecycle.journal_snapshot`, dashboard.py:837-844) yet the diff re-reads `events.jsonl` via `briefing.bounded_file(..., tail=True)` and hand-parses lines (review.diff:530-553). The issue asked to reuse "accepted bounded lifecycle/event readers"; `rows` is that reader and is already in scope.
+- **Reaching into a private** — `lifecycle._lifecycle(e)` (review.diff:954) is underscore-private and only used inside `lifecycle.py` today (lifecycle.py:597,690,789).
+- Long lines >100 in `feedback.py` (review.diff:779, 907, 943) and `dashboard.py` (review.diff:566-567) vs `pyproject.toml` ruff config; existing code already exceeds, lint isn't gated.
 
-No acceptance criterion found unmet in the diff.
+## Spec (issue #79 + agent brief)
 
-### Plan drift
-Plan not recorded; compared against the issue's "Touches" list. Files changed: `CHANGELOG.md`, `README.md`, `factory/briefing.py`, `factory/dashboard.html`, `factory/dashboard.py`, `factory/feedback.py`, `tests/test_briefing.py`, `tests/test_factory.py`, `tests/test_feedback.py` — all named by the issue (`test_feedback.py` conditionally permitted). No unnamed files.
+Satisfied, with evidence:
+- Single collector `factory/feedback.py`, envelope keys/enums/nullability as specified (review.diff:664-670, 779-788); fixed constants (599-603); two head reads bracketing the detail group (750, 920); head race → all coverage partial with both SHAs, relevance unknown (927-931, 973); final-head failure keeps facts, null head (920-926, test 1462-1471).
+- `source_revision` over exactly the listed fields (605-607, 811); `observation_id` over native IDs + head + sorted pairs + coverage status/truncated/reason, excluding `observed_at` (986-988); items sorted by `(evidence_id, source_revision)` (984).
+- Factory review requires validated lifecycle `review`/`result` row with `returncode==0`, `parsed is True`, `head==actual_head`, bracketing enter/exit with matching outcome (954-968) — matches `dispatch.py:468-492`. Provenance-free `VERDICT` rejected (test 1304-1309).
+- Ownership requires same-repo closing-issue link (id+url match) plus retained `claimed` event (937-947); `claimed` shape matches `dispatch.py:1297`.
+- Full snapshot only; `--runtime-json` path untouched (dashboard.py:1227-1231 doesn't call `snapshot()`); non-PR tickets get no feedback (563-572; test 1207).
+- Briefing: feedback appended after existing candidates; omissions/shortening reported; unsupported/unknown schema notices (136-187, 211-228); unsupported schema contents not interpreted (test 1126).
+- Dashboard: body via `pre()`/text nodes only (350, `h()` uses `createTextNode`, dashboard.html:464); links through `safeSourceURL` (286-289); unsupported/missing/non-PR states rendered as unknown (273-283).
+- README/CHANGELOG document schema location, bounds, unknown/partial, read-only authority (9, 21-93).
 
-Planned proof missing from the gate report: exit gate 5 (disposable-repo `python -m factory dashboard --json` + live server/browser inspection of Review drawer and Inbox, `sources_for` bundle) and exit gate 7 (handoff packet with sanitized schema-1 example). The gate report covers only conflict-markers/test/leak-scan. The `<img onerror=...>` literal-render criterion (exit gate 4) is browser-only and not covered by the unit suite. Not blocking on its own; no defect exposed.
+Defect found — see Required.
 
-### Required fixes
-None.
+## Plan drift
 
-### Optional suggestions
-1. `dashboard.py:497-499` — `github()` now raises `RuntimeError("GitHub read failed")` for the main full-snapshot GraphQL read too, so `snapshot()["errors"]` loses `gh` stderr (auth/404 diagnostics) for existing consumers. Sanitization is only required for feedback `errors`, which `gap()` already achieves without using exception text. Consider keeping stderr for the default (no `endpoint`/`query`) path.
-2. `dashboard.py:563-572` — `collect()` runs serially per selected PR inside `snapshot()`, which `cached_snapshot()` executes synchronously under a lock on request. Worst case adds ~6 `gh` subprocesses and up to 30 s per PR to `/api/snapshot` latency. Within spec bounds; note as an operational risk.
-3. `feedback.py:950-951` — unverified ownership marks `coverage.pr` as `partial` although the PR read itself completed; `owner.relation` already carries this. Conflates read completeness with ownership state in the drawer's coverage row (`dashboard.html:313-318`).
-4. `test_feedback.py:1410-1415` — the pagination case's `Provider` ignores the `page` parameter and returns the same 100 rows for both pages, so the cap is exercised via dedupe rather than two distinct pages. Weak evidence for the two-page bound.
-5. `dashboard.html:384` — "Legacy local gate failures" relabels the current local gate report as legacy; the gate is not a legacy mechanism. Wording only.
-6. `dashboard.py:875-878` — `git status --porcelain -- .` scopes cleanliness to the `factory/` package directory, not the whole checkout; README claims a "clean source-checkout" revision (`README.md:85`).
+Plan not recorded; using the issue "Touches" list as the plan. Files changed: `CHANGELOG.md`, `README.md`, `factory/briefing.py`, `factory/dashboard.html`, `factory/dashboard.py`, `factory/feedback.py`, `tests/test_briefing.py`, `tests/test_factory.py`, `tests/test_feedback.py`. All named; `tests/test_feedback.py` is the conditionally-allowed file. No unplanned files.
 
-VERDICT: APPROVE
+Planned proof missing from the gate report: exit-gate items 5 (disposable-repo `python -m factory dashboard --json` + real-browser Review drawer/Inbox check + `sources_for` bundle inspection, with recorded commands/observations) and 7 (handoff with sanitized full-snapshot example). The gate report covers only conflict-markers/test/leak-scan. Issue comment 2 contains a partial sanitized snapshot from an earlier REVISE'd attempt, not evidence for this head. Not blocking on its own; no defect exposed beyond the one below.
+
+## Required fixes
+
+1. **`producer.revision` can report an unrelated repository's HEAD.** `review.diff:555-558`: `source_root = Path(__file__).resolve().parent`, then `git rev-parse HEAD` and `git status --porcelain -- .` with that cwd. When Factory is installed (non-editable) into a venv that lives inside any git checkout — e.g. `<target-repo>/.venv/lib/python3.x/site-packages/factory/`, the common `uv`/in-project-venv layout — `git rev-parse HEAD` resolves the *enclosing* repo's HEAD and `git status --porcelain -- .` is empty because `.venv` is ignored, so `revision` becomes the target repo's SHA and `sha()` accepts it (review.diff:664). Impact: a hex SHA that is not the Factory source/build revision is emitted as `producer.revision` and surfaces in the Review drawer (`review.diff:301`), briefing payloads (`review.diff:159-167`), and the #15 handoff. Violates issue #79 "Normative schema 1 → `producer.revision` is a verifiable source/build revision when available, otherwise null" and the diff's own README claim "The producer revision is a clean source-checkout Git revision, otherwise null" (`review.diff:85-86`). Minimal fix: only trust the SHA when the package file is tracked by that repo, e.g. gate on `sh(["git", "ls-files", "--error-unmatch", "__init__.py"], cwd=source_root)` being non-empty (`sh` already returns `""` on nonzero, dashboard.py:169-171); otherwise `revision = None`.
+
+## Optional suggestions
+
+- Replace the second journal read (`review.diff:530-553`) with the `rows` already loaded by `lifecycle.journal_snapshot` (dashboard.py:837); `provenance_complete` then reflects the same committed view the rest of the snapshot uses. Smaller diff, no 2 MB tail edge cases.
+- `github()` now raises `RuntimeError("GitHub read failed")` for the pre-existing full-snapshot query too (`review.diff:499`), so the dashboard's `errors: ["github: ..."]` (dashboard.py:829) loses the `gh` stderr (`Not logged in`, rate-limit text) operators relied on. Sanitize only the feedback-supplied reads (`endpoint`/`query` given) and keep stderr for the default query.
+- `item()` leaves `counts[source]` incremented after removing a conflicting item (`review.diff:816-824`), so a source with a conflict can retain 99 items under a 100 cap. Cosmetic vs the stated bound.
+- Full snapshot now serializes ~5–7 `gh` subprocesses per selected PR under `_cache_lock` (`review.diff:565`, `SNAPSHOT_TTL = 15`, dashboard.py:84, 963-967). With tens of open agent PRs a snapshot can exceed its TTL. Requested by the issue, so not a defect — but worth recording in the handoff as the observed cost.
+- `lifecycle._lifecycle` is private; exposing a thin public alias in `lifecycle.py` is out of scope for #79 ("No changes to factory/lifecycle.py"), so leave as-is and note it for the #15 owner.
+
+VERDICT: REVISE

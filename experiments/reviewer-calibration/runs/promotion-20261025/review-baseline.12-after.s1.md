@@ -1,37 +1,34 @@
 ## Standards
 
-Sources checked: `README.md` (Configuration: "The template written by `factory init` documents them all"), `pyproject.toml` (ruff defaults, line-length 100 — E501 not enabled), `docs/manager-plan.md` §4.3/§6 T3, `templates/factory.toml`. No `CONTRIBUTING.md`/`AGENTS.md` in the snapshot.
+Sources: `snapshot/README.md`, `snapshot/docs/manager-plan.md`, `pyproject.toml` (`ruff line-length = 100`), `.github/workflows/ci.yml` (unittest only). No AGENTS.md/CONTRIBUTING.md in the repo.
 
-- Host-layer registration: `"manager"` already in `HOST_TABLES` (snapshot `config.py:50`); diff adds the keys to `KNOWN_KEYS` (`review.diff:10`) so `unknown_keys` → doctor drift works without further wiring. Matches the `review` precedent.
-- Loader follows the existing per-key pattern (`int(table.get(...))`, `ConfigError` for shape errors) — `review.diff:70-74`. Validation of `review` ∈ {escalated, all} is the same style as the gate-check-name check.
-- Template documents all three keys and the placeholders (`review.diff:128-133`), satisfying the README rule that the template documents every key.
-- Tests extend existing `HostConfigTest`/stub-bin patterns (`review.diff:206-232`).
-- Smell check: no new abstraction; `manager_model` → `manager_settings` returns the already-parsed argv instead of re-parsing it twice (`review.diff:30-54`). Minor judgement call only: a tuple return is a small Data Clump, but with two fields and one caller it's not worth a type.
+- `factory/config.py:70-74` — loader pattern matches existing tables (`int(gate.get("timeout", …))`, `raw.get("review", {})`); `manager_review` validation raises `ConfigError` like sibling validators. Conforms.
+- `factory/config.py:10` — `KNOWN_KEYS["manager"]` extended; `HOST_TABLES` already contained `"manager"` in base (`snapshot/factory/config.py:50`), so the "host-layer like `review`" requirement is met without a diff change. Proven by `tests/test_factory.py:209-212` loading from `[defaults.manager]`.
+- `factory/config.py:28-54` — `manager_model` → `manager_settings` rename: no stale callers in `snapshot/` (only `tests/test_briefing.py`, updated in the diff). Clean cutover.
+- `factory/templates/factory.toml:128-133` — documents all three keys plus `{prompt}`/`{cwd}` placeholders, consistent with `docs/manager-plan.md:136,171` (`review = "escalated"`, `rounds` default 1).
+- Smell baseline: nothing notable. No new abstraction beyond extending the existing normalizer to return argv alongside model.
 
-No standards violations.
+Judgement call (non-blocking): `tests/test_briefing.py:150,154` exceed 100 columns, but the replaced lines (`:149,153`) already did and ruff is not in CI.
 
-## Spec (issue #12, brief in the triage comment)
+## Spec (issue #12 + triage brief)
 
 | Criterion | Evidence | Status |
 |---|---|---|
-| `command` argv template, unset = disabled | `review.diff:18,36-44,70`; string form via `shlex` kept | met |
-| `rounds` default 1 | `review.diff:19,71` | met |
-| `review` default `"escalated"`, `"all"` allowed, else error | `review.diff:20,72-74`; test `review.diff:217` | met |
-| Host-layer like `review` (`HOST_TABLES`, `KNOWN_KEYS`) | `KNOWN_KEYS` `review.diff:10`; `HOST_TABLES` pre-existing; host-file test `review.diff:209-212` | met |
-| `factory doctor` prints `manager:` row only when configured | `review.diff:110-111`; test `review.diff:224-232` | met |
-| Unknown keys under `[manager]` reported as drift | test `review.diff:190,198` | met |
-| `dashboard --json` `config` includes the table | `review.diff:94-98` | met |
-| Loader test covering all three keys | `review.diff:169-172,180-181` | met |
-| Out of scope: running the command | nothing executes `cfg.manager`; `test_manager_settings_never_execute_the_command` retained (`review.diff:146-152`) | met |
+| `command` argv template, unset = disabled | `config.py:18,70`; doctor/dashboard guard on falsy `cfg.manager` (`onboard.py:110`, `dashboard.py:95`) | met |
+| `rounds = 1` default | `config.py:19,71` | met |
+| `review = "escalated"`, `"all"` allowed, else error | `config.py:20,72-74`; `test_factory.py:217` | met |
+| `factory doctor` prints `manager:` row only when configured | `onboard.py:110-111`; `test_factory.py:224-232` | met |
+| Unknown `[manager]` keys reported as drift | `test_factory.py:190,198` | met |
+| `dashboard --json` `config` includes table | `dashboard.py:94-98` | met (no test; exit gate doesn't require one) |
+| `templates/factory.toml` documents it | `factory.toml:128-133` | met |
+| Loader test for all three keys | `test_factory.py:169-172,180-181` | met |
+| Out of scope: running the command | nothing in diff executes `cfg.manager`; `test_briefing.py:146-152` still asserts no execution | met |
 
-Behaviour change worth noting, not a defect: `command` is now validated even when `model` is set (`review.diff:37-44`), whereas `manager_model` previously skipped it. Correct now that `command` is a first-class key.
+Behavior change worth noting (not a defect): `config.py:36-45` now validates `manager.command` even when `manager.model` is set (previously skipped). Intended, since `command` is now a stored setting; covered by `test_factory.py:214-215`.
 
 ## Plan drift
 
-Plan status not recorded; compared against the issue's **Touches** list.
-
-- Files changed beyond the named set: `tests/test_briefing.py` (rename for `manager_settings`, forced by the refactor), `tests/test_factory.py` (required by the exit gate's loader test). Neither exposes a defect.
-- Planned proof: exit gate names `uv run pytest tests/test_factory.py` → gate report `test: PASS`. Doctor-row and drift criteria are covered by the added tests rather than a manual `factory doctor` transcript; acceptable since the tests exercise the real CLI via `factory(repo, "doctor", "--json")` (`review.diff:229`).
+Plan status: not recorded, so drift is judged against the issue's **Touches** list. Files changed outside that list: `tests/test_briefing.py` (forced by the rename; required to keep the suite green) and `tests/test_factory.py` (explicitly required by the exit gate). No planned proof is missing from the gate report; the gate's `test: PASS` covers the stated `tests/test_factory.py` verification. No drift exposes a defect.
 
 ## Required fixes
 
@@ -39,7 +36,7 @@ None.
 
 ## Optional suggestions
 
-- `review.diff:71`: a non-numeric `rounds` surfaces as `ValueError`, not `ConfigError`. Same as every other `int(...)` key in the loader, so leave it unless the repo decides to fix them together.
-- `review.diff:229`: 150-char line; ruff's default rule set doesn't enforce E501 and the surrounding code already exceeds 100, so purely cosmetic.
+- `factory/config.py:71` — `rounds` accepts `0`, negatives, and `true` (`int(True) == 1`). No spec rule constrains it; leave unless the consumer feature (out of scope here) needs a lower bound.
+- `factory/dashboard.py:94-98` — no test asserts the `config.manager` block in `dashboard --json`. The exit gate doesn't require one and no sibling key (`reviewer`, `workers`) is tested either, so this is consistent with the existing suite.
 
 VERDICT: APPROVE

@@ -1,20 +1,9 @@
-**Standards.** No AGENTS.md/CONTRIBUTING.md in the snapshot; conventions come from README/CHANGELOG. Code matches existing patterns (`run(check=False)`, `record()` kwargs, `lifecycle.read_events`). Doc drift: README:349 still states the review lane "does not … monitor CI", and `review-readiness` is absent from the README event list and CHANGELOG `Unreleased` — not a documented rule, so nit.
-
-**Spec (issue #8 exit gate).** Traced `review_intake_pass` → `review_readiness` → `record`:
-- Missing (`[]`), unparsable, pending, `skipping` → `ci_pending`; `fail`/`cancel` → `ci_failed`; never `ready` (dispatch.py:292-310). ✓
-- `ready` requires latest `review-result` APPROVE for the *re-fetched* head, `confirmed` head equality, all rows `pass`, and `gh pr checks` exit 0 (dispatch.py:287-289, 307-310). ✓
-- New head: review lookup keyed by head (dispatch.py:297-299) → `review_pending`; a mid-query push re-keys `head` to the fresh SHA so stale approval cannot leak (dispatch.py:288-289). ✓
-- No `gh pr merge` anywhere in the diff; test asserts it (tests/test_factory.py:1422). ✓
-- Events via existing `record()` (dispatch.py:311). ✓
-- Test covers missing/unparsable/pending/failed/cancelled/ready/stale-head/dry-run (tests/test_factory.py:1385-1421). ✓
-
-**Plan drift.** No plan recorded. Files changed (`factory/dispatch.py`, `tests/test_factory.py`) are exactly the issue's "Touches". Verification `python -m unittest` is covered by gate `test: PASS`. No missing proof.
-
 ```json
 {"verdict":"APPROVE","findings":[
-{"severity":"nit","pass":"bug","path":"factory/dispatch.py","line":233,"summary":"review_readiness runs and appends a review-readiness row for every tracked PR on every pass, and twice in the pass that admits a new head (line 233 before review, line 271 after). The append-only journal grows per pass with no state change; the 233 call on a newly admitted head always records review_pending noise. Consider skipping the record when state/head match the last review-readiness row for that PR."},
-{"severity":"nit","pass":"spec","path":"factory/dispatch.py","line":274,"summary":"Lane now queries gh pr checks, but README.md:349 still says the review lane 'does not … monitor CI', and the new review-readiness event is not listed in the README event list or CHANGELOG Unreleased, unlike other Unreleased entries."},
-{"severity":"pre-existing","pass":"spec","path":"factory/dispatch.py","line":234,"summary":"Any prior APPROVE ends the review cycle regardless of head, so a head pushed after approval is never re-reviewed and can only ever report review_pending; readiness is correctly cleared per the issue, but no path back to ready exists without human action. Pre-existing policy (test_external_review_head_transitions_end_on_approval), not introduced here."}
+{"severity":"nit","pass":"spec","path":"factory/dispatch.py","line":72,"summary":"`review-readiness` is recorded unconditionally on every non-dry pass for every tracked PR (called at dispatch.py:24 before any early-continue), so an open approved PR appends an identical row every dispatcher run. Intake at line 264-266 skips already-recorded (pr, head) pairs; mirror that by skipping when the last readiness row for (pr, head) already has the same state, to keep the append-only journal from growing per pass with no transition."},
+{"severity":"nit","pass":"spec","path":"factory/dispatch.py","line":45,"summary":"Checks and head JSON are parsed in one try block: an unparsable `gh pr checks` stdout skips the `gh pr view` head confirmation entirely, so the event is recorded against the possibly stale list head with `confirmed=False`. Result is still fail-closed (never ready), but the recorded `head` can be stale; parse the two results independently so the head is always refreshed when `gh pr view` succeeds."},
+{"severity":"nit","pass":"spec","path":"factory/dispatch.py","line":35,"summary":"README.md:349 still states the review lane 'does not ... monitor CI', and README.md:337-338 documents only `review-intake` events; this diff adds CI monitoring and a new `review-readiness` event with `state`/`review_head`/`checks` fields. CHANGELOG.md `## Unreleased` also has no entry, unlike every other shipped feature there (e.g. #79 entry explicitly says 'no ... readiness'). Update both so the docs match shipped behavior."}
 ]}
 ```
+
 VERDICT: APPROVE

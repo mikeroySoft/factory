@@ -42,8 +42,8 @@ CONTRACTS = {"baseline": "cadb9981524ab5506693e27f56ff8ac4ef911da6",
              # one appended cross-file tracing sentence in dispatch.review() (nothing else).
              "current": "4390f481ed6743694d35193049dc0242eb4c7784",
              "candidate": "70fea0e9cc314916acbe4494e4dc0d0dff21b361",
-             "review-baseline": "d57e0587b7021f92324b74e3cbdc524395f9015b",
-             "review-tally": "060e430b7c965e521b36f4a6f646b6b140740c10"}
+             "review-baseline": "eb611cc794da4008ffaba73cac6108a2ed8af0a1",
+             "review-tally": "0bdaa307b51ce743dcaa7b6d9a6a33b3ab447697"}
 CHECKOUT_ROOT = pathlib.Path("/tmp/cal-checkout")
 
 
