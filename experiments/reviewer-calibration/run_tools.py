@@ -43,7 +43,7 @@ CONTRACTS = {"baseline": "cadb9981524ab5506693e27f56ff8ac4ef911da6",
              "current": "4390f481ed6743694d35193049dc0242eb4c7784",
              "candidate": "70fea0e9cc314916acbe4494e4dc0d0dff21b361",
              "review-baseline": "eb611cc794da4008ffaba73cac6108a2ed8af0a1",
-             "review-tally": "0bdaa307b51ce743dcaa7b6d9a6a33b3ab447697"}
+             "review-tally": "1bc93aa2abaf34607b88ee53428a22d5453f5c12"}
 CHECKOUT_ROOT = pathlib.Path("/tmp/cal-checkout")
 
 
