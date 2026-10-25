@@ -52,12 +52,12 @@ class LearnCandidateReviewTest(unittest.TestCase):
         reviewer.write_text(
             "import json,subprocess,sys\n"
             "from pathlib import Path\n"
-            "head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()\n"
-            "diff=subprocess.check_output(['git','diff','HEAD^..HEAD'],text=True)\n"
+            "diff=Path('review.diff').read_text()\n"
             f"Path({str(captured)!r}).write_text(json.dumps("
-            "{'prompt':sys.argv[1],'head':head,'diff':diff}))\n"
+            "{'prompt':sys.argv[1],'diff':diff}))\n"
             + (
-                "subprocess.run(['git','commit','--allow-empty','-qm','review changed head'],check=True)\n"
+                f"wt=next(Path({str(repo / '.factory')!r}).glob('wt-*'))\n"
+                "subprocess.run(['git','-C',str(wt),'commit','--allow-empty','-qm','review changed head'],check=True)\n"
                 if reply == "move-head" else ""
             )
             + f"print({('VERDICT: APPROVE' if reply == 'move-head' else reply)!r})\n"
@@ -135,7 +135,7 @@ class LearnCandidateReviewTest(unittest.TestCase):
                 self.assertIn("publication: PASS", review["prompt"])
                 self.assertIn("## Candidate review", body)
                 self.assertIn("VERDICT: APPROVE", body)
-                self.assertIn("human merge required", body)
+                self.assertIn("merges after gate, reviewer APPROVE and CI", body)
                 rows = lifecycle.read_events(cfg.factory / "events.jsonl")
                 evaluated = {row["candidate"]: row["status"] for row in rows
                              if row["event"] == "learn-evaluation"}
@@ -144,10 +144,14 @@ class LearnCandidateReviewTest(unittest.TestCase):
                 [record] = [row for row in rows if row["event"] == "learn-candidate-review"]
                 self.assertTrue(record["accepted"])
                 self.assertEqual(record["verdict"], "APPROVE")
-                self.assertEqual(record["head"], review["head"])
+                self.assertEqual(record["head"], git("rev-parse", f"refs/heads/{branch}"))
                 self.assertEqual(record["base"], case.base)
                 self.assertIn("200 tokens", record["proposal"])
-                self.assertEqual(git("rev-parse", f"refs/heads/{branch}"), review["head"])
+                decisions = [row for row in rows if row["event"] == "decision"
+                             and row["stage"] in ("learn", "curate")]
+                input_kinds = {item["kind"] for decision in decisions for item in decision["inputs"]}
+                self.assertIn("learn_evaluation", input_kinds)
+                self.assertIn("candidate_review", input_kinds)
                 self.assertFalse(any(row["event"] == "escalate" for row in rows))
                 self.assertEqual(event["evaluation"], evaluated)
 
@@ -231,13 +235,14 @@ class LearnCandidateReviewTest(unittest.TestCase):
             cfg, case, diff, captured, _ = self.scenario(directory, "VERDICT: REVISE")
             cfg.learn_evaluate = False
             with mock.patch.object(dispatch, "push_and_pr", return_value=True) as publish, \
-                 mock.patch.object(dispatch, "run_gate") as gate, \
+                 mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")) as gate, \
                  mock.patch.object(dispatch, "run_reviewer") as reviewer:
                 event = self.run_proposal(cfg, case, diff, evaluate=None)
             self.assertEqual(publish.call_count, 2)
-            gate.assert_not_called()
+            self.assertEqual(gate.call_count, 2)
             reviewer.assert_not_called()
             self.assertFalse(captured.exists())
             self.assertNotIn("evaluation", event)
             rows = lifecycle.read_events(cfg.factory / "events.jsonl")
-            self.assertEqual([row["event"] for row in rows], ["learn"])
+            self.assertFalse(any(row["event"] in ("learn-evaluation", "learn-candidate-review")
+                                 for row in rows))

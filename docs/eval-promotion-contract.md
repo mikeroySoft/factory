@@ -34,8 +34,17 @@ model, effort, gate-check). Harness changes originate only from the meta loop
 (`factory learn` CURATE): add-only edits to `.factory.toml` (new
 `[[gate.check]]` tables, appended `[gate].protected_paths`) and files under
 the base ref's protected paths, never `.github/`, never deleting or renaming a
-protected file, and merged only by a human. The inner loop (worker and attempt
-gate) and the outer loop (reviewer and merge stage) never change the harness.
+protected file. Lessons and CURATE PRs merge through the ordinary gate, reviewer
+APPROVE, CI and `factory-approved` path; the keep/revert rule below runs online
+on them (`promotion.drift`): the `score` rows of the `PROMOTION_N = 10` attempts
+before the merge are the baseline (journaled in `promotion-open`), the first 10
+attempts journaled after the merge and scored the fresh split (an attempt that
+ran before the merge but was scored after it never counts), and a drop in `efficiency_mean` or
+`gate_first_pass_rate` beyond the baseline's population stdev journals
+`promotion-revert` and opens `agent/revert-lessons-<pr>`; otherwise
+`promotion-keep`. One decision per merge, never replayed. The inner loop (worker
+and attempt gate) and the outer loop (reviewer and merge stage) never change the
+harness.
 Score train (+ optional selection).
 
 - **Keep** only if the train gain exceeds train noise **and** the

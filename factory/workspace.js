@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VIEWS = ['Overview','Outcomes','Attention','Flow','Success','Codebase','Atlas','System','Settings'];
+  const VIEWS = ['Overview','Outcomes','Attention','Flow','Decisions','Success','Codebase','Atlas','System','Settings'];
   const THEMES = [['cyberpunk','Cyberpunk'],['gpuflo','GPUFlo'],['district','District'],['factory','Factory'],['rocm','ROCm'],['porcelain','Porcelain'],['sandstone','Sandstone'],['slate','Slate'],['forest','Forest']];
   const app = document.querySelector('#app');
   const overlay = document.querySelector('#overlay');
@@ -34,7 +34,7 @@
   const route = () => {
     const params = new URLSearchParams(location.search);
     const requested = slugify(params.get('view'));
-    return {view: VIEWS.find(view => slugify(view) === requested) || 'Overview', repository: params.get('repository') || '', caseNumber: positive(params.get('case'))};
+    return {view: VIEWS.find(view => slugify(view) === requested) || 'Overview', repository: params.get('repository') || '', caseNumber: positive(params.get('case')), ticketNumber: positive(params.get('ticket'))};
   };
   function setRoute(changes, replace = false) {
     const params = new URLSearchParams(location.search);
@@ -300,6 +300,7 @@
     if(view==='Outcomes')return outcomes(repo);
     if(view==='Attention')return attention(repo);
     if(view==='Flow')return flowView(repo);
+    if(view==='Decisions')return `<header class="workspace-head"><div><p class="eyebrow">Decision trace</p><h1>How did this ticket get here?</h1><p>Recorded choices, alternatives, retries, evidence, and terminal outcome from the repository journal.</p></div></header><div data-trace-tool></div>`;
     if(view==='Success')return success(repo);
     if(view==='System')return system(repo);
     if(view==='Settings')return WorkspaceSettings.markup(repo.slug);
@@ -317,13 +318,17 @@
     const choices=new Map([...app.querySelectorAll('[data-action-choice]')].filter(node=>node.value!=='').map(node=>[node.dataset.actionChoice,JSON.stringify(JSON.parse(node.dataset.actionOptions)[Number(node.value)])]));
     applyTheme(repo);
     const focused=document.activeElement;
-    const focusAttribute=app.contains(focused)?['data-action-choice','data-case','data-view','data-repository','data-theme','data-chat','data-refresh','data-palette','data-prepare-action'].find(name=>focused.hasAttribute(name)):null;
+    const focusAttribute=app.contains(focused)?['data-action-choice','data-case','data-view','data-repository','data-theme','data-chat','data-refresh','data-palette','data-prepare-action','data-trace-select'].find(name=>focused.hasAttribute(name)):null;
     const focusSelector=focusAttribute?`[${focusAttribute}="${CSS.escape(focused.getAttribute(focusAttribute))}"]`:null;
     const previousSettings=app.querySelector('.workspace-settings');
     const keepSettings=Boolean(repo&&previousSettings&&current.view==='Settings'&&previousSettings.querySelector('[data-real-settings]')?.dataset.repository===repo.slug);
     if(keepSettings)previousSettings.remove();
     app.setAttribute('aria-busy', String(state.loading));
     document.title=`${current.view} · Factory Workspace`;
+    const previousTrace=app.querySelector('[data-trace-tool]');
+    const traceTicket=String(current.ticketNumber||'');
+    const keepTrace=Boolean(repo&&previousTrace&&current.view==='Decisions'&&previousTrace.dataset.repository===repo.slug&&previousTrace.dataset.ticket===traceTicket);
+    if(keepTrace)previousTrace.remove();
     const previousTool=app.querySelector('[data-native-tool]');
     const keep=previousTool&&previousTool.dataset.nativeTool===current.view.toLowerCase()&&previousTool.dataset.repository===repo?.slug;
     if(keep)previousTool.remove(); else WorkspaceTools.dispose();
@@ -335,6 +340,8 @@
     for(const node of app.querySelectorAll('[data-flow-case]')){const before=positions.get(node.dataset.flowCase);if(before&&before!==node.dataset.stage)node._factoryMotion=Motion.animate(node,{x:[8,0],opacity:[.55,1]},{duration:.3,ease:[.16,1,.3,1]});}
     const host=app.querySelector('[data-native-tool]');
     if(host){host.dataset.repository=repo.slug;if(keep)host.replaceWith(previousTool);else WorkspaceTools.mount(host,host.dataset.nativeTool,repo.slug);}
+    const traceHost=app.querySelector('[data-trace-tool]');
+    if(traceHost){traceHost.dataset.repository=repo.slug;traceHost.dataset.ticket=traceTicket;if(keepTrace)traceHost.replaceWith(previousTrace);else WorkspaceTrace.mount(traceHost,{repository:repo.slug,ticket:current.ticketNumber,recentTickets:cases(repo),onTicket:number=>setRoute({view:'decisions',ticket:number,case:null})});}
     if(current.view==='Settings'){if(keepSettings)app.querySelector('.workspace-settings').replaceWith(previousSettings);else WorkspaceSettings.mount(app,repo?.slug);}
     if(current.view==='Attention'&&repo)WorkspaceDecisions.mountHistory(app.querySelector('[data-decision-history]'),repo.slug);
     applyPreferences();

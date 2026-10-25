@@ -1,4 +1,4 @@
-"""`factory score`: rubric-score worker attempts from their persisted OMP transcripts.
+"""`factory score`: rubric-score worker attempts from persisted OMP-compatible transcripts.
 
 Every finished ticket's `attempt` rows name a session file (`.factory/transcripts/<n>/*.jsonl`);
 each gets one `score` row: deterministic counts from the JSONL, and a 0-1 compliance
@@ -32,8 +32,8 @@ _NUMBER = re.compile(r"0(?:\.\d+)?|1(?:\.0+)?|\.\d+")
 
 
 def _messages(path: Path) -> list[dict]:
-    """`message` rows from the first MAX_TRANSCRIPT bytes of one OMP session file; a truncated
-    final line is dropped."""
+    """`message` rows from the first MAX_TRANSCRIPT bytes of an OMP-compatible session;
+    a truncated final line is dropped."""
     with path.open("rb") as handle:
         data = handle.read(MAX_TRANSCRIPT)
     out = []

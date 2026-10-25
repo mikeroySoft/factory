@@ -256,7 +256,7 @@ class LearnEvaluationTest(unittest.TestCase):
                 "from pathlib import Path\n"
                 "prompt=__import__('sys').argv[-1]\n"
                 "with Path(os.environ['REVIEW_PROMPTS']).open('a') as f: f.write(prompt+'\\0')\n"
-                "value=Path('solution.txt').read_text().strip()\n"
+                "value=Path('snapshot/solution.txt').read_text().strip()\n"
                 "text=('- solution.txt:1: baseline needs revision\\nVERDICT: REVISE' "
                 "if value == 'baseline' else 'VERDICT: APPROVE')\n"
                 "print(json.dumps({'type':'message_end','message':{'role':'assistant','content':text,"
@@ -297,12 +297,19 @@ class LearnEvaluationTest(unittest.TestCase):
                     "@@ -0,0 +1 @@\n+helpful\n",
                 ),
             ]
+            cfg.worker_transcript["default"] = "omp-session"
             project = Path(__file__).resolve().parents[1]
             with mock.patch.dict(
                 os.environ,
                 {"PYTHONPATH": str(project), "REVIEW_PROMPTS": str(prompts)},
-            ):
+            ), mock.patch.object(
+                dispatch, "_with_transcript", side_effect=lambda argv, *_args: (argv, None),
+            ) as transcripts:
                 results = learn.evaluate_candidates(cfg, [case], candidates)
+
+            self.assertTrue(transcripts.call_args_list, results)
+            self.assertTrue(all(call.args[2:] == ("omp-session", 0)
+                                for call in transcripts.call_args_list))
 
             self.assertEqual(
                 (results["lessons"]["status"], results["curate"]["status"]),
@@ -311,7 +318,7 @@ class LearnEvaluationTest(unittest.TestCase):
             )
             self.assertNotIn("refs/heads/replay-leak", git("show-ref", check=False).stdout)
             self.assertFalse((repo / "solution.txt").exists())
-            self.assertIn("## Learn evaluation evidence", prompts.read_text())
+            self.assertIn("## Learn replay context", prompts.read_text())
             self.assertNotIn("Candidate arm:", prompts.read_text())
             self.assertNotIn("recorded baseline evidence", prompts.read_text())
             rows = lifecycle.read_events(cfg.factory / "events.jsonl")
@@ -446,6 +453,14 @@ VERDICT: REVISE
 
             self.assertNotIn("frozen-body-must-not-enter-lessons", prompt_evidence)
             self.assertNotIn("frozen-comment-must-not-enter-lessons", prompt_evidence)
+
+    def test_no_candidates_skip_baseline_replays(self) -> None:
+        cfg = config.Config(root=Path("/tmp"), repo="acme/widgets")
+        case = learn.ReplayCase(7, "a" * 40, "t", (), {"title": "t", "body": "b"})
+        with mock.patch.object(learn, "replay_ticket") as replay:
+            self.assertEqual(learn.evaluate_candidates(cfg, [case], []), {})
+        replay.assert_not_called()
+
 
     def test_reported_partial_usage_counts_toward_token_budget(self) -> None:
         with tempfile.TemporaryDirectory() as d:

@@ -158,6 +158,11 @@ class RefreshConflictTest(unittest.TestCase):
             self.assertFalse(any(cmd[1:3] == ["issue", "comment"] for cmd in self.github.calls))
             [requeue] = self.events("conflict-requeue")
             self.assertEqual((requeue["pr"], requeue["files"], requeue["round"]), (102, ["shared.txt"], 1))
+            [decision] = [
+                event for event in self.events("decision")
+                if event.get("stage") == "merge" and event.get("chosen") == "conflict-requeue"
+            ]
+            self.assertEqual(decision["inputs"][0]["summary"], f"PR head {self.approved_head}")
             self.assertEqual(self.github.head(), self.approved_head)  # nothing pushed yet
 
             [ready] = dispatch.frontier()

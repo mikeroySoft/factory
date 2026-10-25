@@ -131,10 +131,11 @@ def llm_usage(events: list[dict], prices: dict[str, dict] | None = None) -> dict
 
 
 def worker_metrics(audit: dict[int, list[dict]], workers: dict[str, list[str]]) -> list[dict]:
-    """Claim-label attribution, using Config.worker's first-match precedence.
+    """Claim attribution, using the recorded worker profile when available.
 
-    First-pass denominators are attempt-1 gate outcomes per claim. All attempts
-    (including review bounces) and reported costs count; unclaimed history does not.
+    First-pass denominators are attempt-1 gate outcomes per claim. All attempts,
+    reported worker tokens and costs count; unclaimed history does not. Older
+    claims fall back to their labels.
     """
     rows = {key: {"worker": key, "first_pass": None, "attempts": 0, "cost": None} for key in workers}
     outcomes: dict[str, list[bool]] = {key: [] for key in workers}
@@ -143,7 +144,16 @@ def worker_metrics(audit: dict[int, list[dict]], workers: dict[str, list[str]]) 
         for event in events:
             if event.get("event") == "claimed":
                 labels = event.get("labels", [])
-                worker = next((key for key in workers if key in labels), "default")
+                recorded = event.get("worker")
+                worker = recorded if recorded in workers else next(
+                    (key for key in workers if key in labels), "default"
+                )
+            elif event.get("event") == "llm-usage" and event.get("stage") == "worker" and worker is not None:
+                row = rows[worker]
+                for field in USAGE_FIELDS[:-1]:
+                    value = event.get(field)
+                    if type(value) in (int, float):
+                        row[field] = row.get(field, 0) + value
             elif event.get("event") == "attempt" and worker is not None:
                 row = rows[worker]
                 row["attempts"] += 1
@@ -159,14 +169,21 @@ def worker_metrics(audit: dict[int, list[dict]], workers: dict[str, list[str]]) 
 
 
 def print_workers(rows: list[dict]) -> None:
-    """The cost column only when some worker reported a cost, never a column of n/a."""
+    """Show token and cost columns only when at least one worker reported them."""
     width = max(len("worker"), *(len(row["worker"]) for row in rows))
     costs = any(row["cost"] is not None for row in rows)
-    print(f"{'worker':<{width}}  first-gate pass  attempts" + "  cost" * costs)
+    token_fields = USAGE_FIELDS[:-1] if any(
+        any(field in row for field in USAGE_FIELDS[:-1]) for row in rows
+    ) else ()
+    token_headings = {"prompt_tokens": "prompt tokens", "completion_tokens": "completion tokens",
+                      "cached_tokens": "cached tokens"}
+    print(f"{'worker':<{width}}  first-gate pass  attempts"
+          + "".join(f"  {token_headings[field]}" for field in token_fields) + "  cost" * costs)
     for row in rows:
         rate = "n/a" if row["first_pass"] is None else f"{row['first_pass']:.1%}"
+        tokens = "".join(f"  {row.get(field, NOT_REPORTED)}" for field in token_fields)
         cost = "n/a" if row["cost"] is None else f"${row['cost']:.2f}"
-        print(f"{row['worker']:<{width}}  {rate:>15}  {row['attempts']:>8}" + f"  {cost}" * costs)
+        print(f"{row['worker']:<{width}}  {rate:>15}  {row['attempts']:>8}{tokens}" + f"  {cost}" * costs)
 
 
 def brief_metrics(audit: dict[int, list[dict]]) -> list[dict]:
@@ -363,6 +380,33 @@ def collect_rows(progress: bool = False) -> list[dict[str, Any]]:
         row["llm_usage"] = llm_usage(audit.get(number, []), cfg.prices)
 
     return [rows[number] for number in sorted(rows)]
+
+
+def promotions(path: Path) -> list[dict]:
+    """One row per `promotion-open` journal row (a merged lessons/curate PR) with its baseline means and,
+    once `learn_pass` decided it, the `after` means, `decision` (`keep`/`revert`) and the revert branch."""
+    rows: dict[int, dict] = {}
+    for e in lifecycle.read_events(path):
+        if e.get("event") == "promotion-open":
+            rows[e["pr"]] = {"pr": e["pr"], "branch": e.get("branch"), "head": e.get("head"), "opened_at": e.get("at"),
+                             "baseline": e.get("baseline"), "decision": None, "decided_at": None, "after": None,
+                             "reason": None, "revert": None}
+        elif e.get("event") in ("promotion-keep", "promotion-revert") and e.get("pr") in rows:
+            rows[e["pr"]].update(decision=e["event"].removeprefix("promotion-"), decided_at=e.get("at"),
+                                 after=e.get("after"), reason=e.get("reason"), revert=e.get("branch"))
+    return list(rows.values())
+
+
+def print_promotions(rows: list[dict]) -> None:
+    def pair(r: dict, key: str) -> str:
+        left, right = (r["baseline"] or {}).get(key), (r["after"] or {}).get(key)
+        return f"{'n/a' if left is None else f'{left:.2f}'} -> {'n/a' if right is None else f'{right:.2f}'}"
+
+    print(f"{'PR':>5}  {'branch':40}  {'decision':8}  efficiency        first-pass")
+    for r in rows:
+        print(f"#{r['pr']:<4}  {r['branch'] or '':40}  {r['decision'] or 'open':8}  "
+              f"{pair(r, 'efficiency_mean'):16}  {pair(r, 'gate_first_pass_rate')}"
+              + (f"  {r['revert']}" if r["revert"] else ""))
 
 
 def truncate(title: str) -> str:
@@ -588,21 +632,38 @@ def resolve(repo: str | None) -> Config:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="factory stats", description=__doc__)
     parser.add_argument("--json", action="store_true", help="print metric rows as JSON")
-    parser.add_argument("--by-worker", action="store_true", help="split gate pass rate, attempts and known cost by claim label")
+    parser.add_argument("--by-worker", action="store_true",
+                        help="split gate pass rate, attempts, reported token usage and known cost by claim label")
     parser.add_argument("--by-brief", action="store_true", help="split first-gate pass rate by tickets with/without a brief")
+    parser.add_argument("--stages", action="store_true",
+                        help="last successful triage, dispatch and watch pass for this repository")
     parser.add_argument("--escapes", action="store_true",
                         help="candidate escaped defects: closed bugs whose fix changed lines an earlier agent ticket wrote")
     parser.add_argument("--repo", metavar="OWNER/NAME",
                         help='read the root registered as [repo."OWNER/NAME"].path in the host config (default: this checkout\'s repository)')
     parser.add_argument("--quiet", action="store_true", help="no progress on stderr")
+    parser.add_argument("--promotions", action="store_true",
+                        help="merged lessons/curate PRs with their before/after score means and keep/revert decision")
     args = parser.parse_args(argv)
     configure(resolve(args.repo))
     journal = cfg.factory / "events.jsonl"
     if not args.escapes and not journal.is_file():
         raise SystemExit(f"factory stats: no journal at {journal}; this is not the dispatcher's root. "
                          f'Set [repo."{cfg.repo}"].path in {config.host_config_path()} or pass --repo owner/name')
+    if args.stages:
+        passes = lifecycle.last_successful_passes(journal)
+        result = {"repository": cfg.repo, "last_successful_pass": passes}
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            print(f"repository: {cfg.repo}")
+            for stage, timestamp in passes.items():
+                print(f"{stage}: {timestamp or 'never'}")
+        return 0
     if args.escapes:
         rows = escapes()
+    elif args.promotions:
+        rows = promotions(cfg.factory / "events.jsonl")
     elif args.by_worker or args.by_brief:
         audit = audit_by_ticket(journal)
         rows = worker_metrics(audit, cfg.workers) if args.by_worker else brief_metrics(audit)
@@ -612,6 +673,8 @@ def main(argv: list[str]) -> int:
         print(json.dumps(rows, indent=2))
     elif args.escapes:
         print_escapes(rows, {n for _, n, _ in agent_commits()})
+    elif args.promotions:
+        print_promotions(rows)
     elif args.by_worker:
         print_workers(rows)
     elif args.by_brief:

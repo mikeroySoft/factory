@@ -76,7 +76,10 @@ def active_experiments(events: list[dict], active: set[int]) -> int:
     return count
 
 
-def plan(rows: list[dict], capacity: int, *, repo: str, streak: int, experiments: int) -> dict:
+def plan(
+    rows: list[dict], capacity: int, *, repo: str, streak: int, experiments: int,
+    parents: dict[int, int] | None = None,
+) -> dict:
     """Admission order for one pass under the accepted policy; mutates nothing.
 
     Eligibility came first: a row with `held` (assigned, blocked, initiative) is explained,
@@ -86,6 +89,7 @@ def plan(rows: list[dict], capacity: int, *, repo: str, streak: int, experiments
     eligible unknown-priority ticket is admitted instead. Returns the `selected` issues in
     admission order and one `explained` row per frontier ticket.
     """
+    initial_streak, initial_experiments = streak, experiments
     explained, held, pool = [], [], []
     for issue in rows:
         n = issue["number"]
@@ -133,7 +137,43 @@ def plan(rows: list[dict], capacity: int, *, repo: str, streak: int, experiments
         else:
             rule = "no capacity left; unknown priority ranks after explicit priorities"
         explained.append(_explain(c, "deferred", rule))
-    return {"selected": selected, "explained": explained + held}
+    explained = explained + held
+    from factory import __version__, trace
+
+    options = [
+        {
+            "option": f"ticket:{row['ticket']}",
+            "eligible": row["decision"] == "selected",
+            "reason": row["reason"],
+        }
+        for row in explained
+    ]
+    records = []
+    for issue in selected:
+        n = issue["number"]
+        selected_row = next(row for row in explained if row["ticket"] == n)
+        records.append(trace.decision(
+            ticket=n,
+            stage="admission",
+            inputs=[
+                {"kind": "priority", "ref": ".factory/events.jsonl",
+                 "summary": f"{selected_row.get('priority') or 'unknown'}; {selected_row['reason']}"},
+                {"kind": "capacity", "ref": ".factory/events.jsonl", "summary": str(capacity)},
+                {"kind": "fairness_streak", "ref": ".factory/events.jsonl", "summary": str(initial_streak)},
+                {"kind": "experiment_slot", "ref": ".factory/events.jsonl",
+                 "summary": f"{initial_experiments} active of {MAX_EXPERIMENTS}"},
+            ],
+            options=options,
+            chosen=f"ticket:{n}",
+            rationale=selected_row["reason"],
+            causes=trace.ticket_causes(
+                issue.get("title"), issue.get("body"), parent=(parents or {}).get(n),
+            ),
+            cost=None,
+            actor={"kind": "deterministic", "name": "schedule.plan", "model": None,
+                   "version": __version__},
+        ))
+    return {"selected": selected, "explained": explained, "decisions": records}
 
 
 def _explain(candidate: dict, decision: str, rule: str) -> dict:

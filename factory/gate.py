@@ -49,8 +49,8 @@ def timed(cmd: list[str]) -> subprocess.CompletedProcess:
     env = execution.env() if execution else dict(os.environ)
     env.pop(lifecycle.CONTEXT_ENV, None)
     proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True,
-        env=env,
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        encoding="utf-8", errors="replace", start_new_session=True, env=env,
     )
     if execution:
         execution.child(proc.pid)
@@ -267,7 +267,10 @@ def toolchain() -> dict[str, str]:
         ("amdgpu", ["modinfo", "-F", "version", "amdgpu"]),
     ):
         try:
-            result = subprocess.run(command, capture_output=True, text=True, timeout=5, check=False)
+            result = subprocess.run(
+                command, capture_output=True, encoding="utf-8", errors="replace",
+                timeout=5, check=False,
+            )
             values[name] = result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else "unavailable"
         except (OSError, subprocess.TimeoutExpired):
             values[name] = "unavailable"
