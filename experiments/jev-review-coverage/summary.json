@@ -1,0 +1,836 @@
+{
+  "schema_version": 1,
+  "candidate": {
+    "threshold": 0.5,
+    "splits": {
+      "train": {
+        "per_repeat": {
+          "1": {
+            "packets": 6,
+            "blocking_defects": 3,
+            "blocking_defects_flagged": 0,
+            "blocking_defects_missed": 3,
+            "false_flags": 5,
+            "clean_after_packets": 2,
+            "false_flags_on_clean_after": 2,
+            "input_tokens": 34419,
+            "output_tokens": 8367,
+            "estimated_usd": 0.0014456,
+            "latency_seconds": 1.009,
+            "defect_recall": 0.0,
+            "false_flags_per_packet": 0.8333333333333334,
+            "false_flags_per_clean_after_packet": 1.0
+          },
+          "2": {
+            "packets": 6,
+            "blocking_defects": 3,
+            "blocking_defects_flagged": 0,
+            "blocking_defects_missed": 3,
+            "false_flags": 6,
+            "clean_after_packets": 2,
+            "false_flags_on_clean_after": 2,
+            "input_tokens": 34419,
+            "output_tokens": 8367,
+            "estimated_usd": 0.0014456,
+            "latency_seconds": 1.024,
+            "defect_recall": 0.0,
+            "false_flags_per_packet": 1.0,
+            "false_flags_per_clean_after_packet": 1.0
+          },
+          "3": {
+            "packets": 6,
+            "blocking_defects": 3,
+            "blocking_defects_flagged": 0,
+            "blocking_defects_missed": 3,
+            "false_flags": 6,
+            "clean_after_packets": 2,
+            "false_flags_on_clean_after": 2,
+            "input_tokens": 34419,
+            "output_tokens": 8367,
+            "estimated_usd": 0.0014456,
+            "latency_seconds": 0.955,
+            "defect_recall": 0.0,
+            "false_flags_per_packet": 1.0,
+            "false_flags_per_clean_after_packet": 1.0
+          }
+        },
+        "repeat_noise_pstdev": {
+          "defect_recall": 0.0,
+          "false_flags_per_packet": 0.0786
+        }
+      },
+      "lockbox": {
+        "per_repeat": {
+          "1": {
+            "packets": 5,
+            "blocking_defects": 2,
+            "blocking_defects_flagged": 0,
+            "blocking_defects_missed": 2,
+            "false_flags": 9,
+            "clean_after_packets": 2,
+            "false_flags_on_clean_after": 3,
+            "input_tokens": 128161,
+            "output_tokens": 40568,
+            "estimated_usd": 0.00538276,
+            "latency_seconds": 1.607,
+            "defect_recall": 0.0,
+            "false_flags_per_packet": 1.8,
+            "false_flags_per_clean_after_packet": 1.5
+          },
+          "2": {
+            "packets": 5,
+            "blocking_defects": 2,
+            "blocking_defects_flagged": 0,
+            "blocking_defects_missed": 2,
+            "false_flags": 8,
+            "clean_after_packets": 2,
+            "false_flags_on_clean_after": 4,
+            "input_tokens": 128161,
+            "output_tokens": 40568,
+            "estimated_usd": 0.00538276,
+            "latency_seconds": 1.685,
+            "defect_recall": 0.0,
+            "false_flags_per_packet": 1.6,
+            "false_flags_per_clean_after_packet": 2.0
+          },
+          "3": {
+            "packets": 5,
+            "blocking_defects": 2,
+            "blocking_defects_flagged": 0,
+            "blocking_defects_missed": 2,
+            "false_flags": 6,
+            "clean_after_packets": 2,
+            "false_flags_on_clean_after": 3,
+            "input_tokens": 128161,
+            "output_tokens": 40568,
+            "estimated_usd": 0.00538276,
+            "latency_seconds": 1.572,
+            "defect_recall": 0.0,
+            "false_flags_per_packet": 1.2,
+            "false_flags_per_clean_after_packet": 1.5
+          }
+        },
+        "repeat_noise_pstdev": {
+          "defect_recall": 0.0,
+          "false_flags_per_packet": 0.2494
+        }
+      }
+    },
+    "cells": [
+      {
+        "case": "12-before",
+        "split": "train",
+        "sample": 1,
+        "flagged_criteria": [
+          "c003"
+        ],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [
+          "D1"
+        ],
+        "false_flags": [
+          "c003"
+        ]
+      },
+      {
+        "case": "12-after",
+        "split": "train",
+        "sample": 1,
+        "flagged_criteria": [
+          "c003"
+        ],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [],
+        "false_flags": [
+          "c003"
+        ]
+      },
+      {
+        "case": "62-before",
+        "split": "train",
+        "sample": 1,
+        "flagged_criteria": [
+          "c009"
+        ],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [
+          "D1",
+          "D2"
+        ],
+        "false_flags": [
+          "c009"
+        ]
+      },
+      {
+        "case": "62-after",
+        "split": "train",
+        "sample": 1,
+        "flagged_criteria": [
+          "c009"
+        ],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [],
+        "false_flags": [
+          "c009"
+        ]
+      },
+      {
+        "case": "9-approve",
+        "split": "train",
+        "sample": 1,
+        "flagged_criteria": [],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [],
+        "false_flags": []
+      },
+      {
+        "case": "8-approve",
+        "split": "train",
+        "sample": 1,
+        "flagged_criteria": [
+          "c009"
+        ],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [],
+        "false_flags": [
+          "c009"
+        ]
+      },
+      {
+        "case": "20-before",
+        "split": "lockbox",
+        "sample": 1,
+        "flagged_criteria": [],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [
+          "D1"
+        ],
+        "false_flags": []
+      },
+      {
+        "case": "20-after",
+        "split": "lockbox",
+        "sample": 1,
+        "flagged_criteria": [],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [],
+        "false_flags": []
+      },
+      {
+        "case": "79-before",
+        "split": "lockbox",
+        "sample": 1,
+        "flagged_criteria": [
+          "c065",
+          "c066",
+          "c074",
+          "c075",
+          "c077",
+          "c078"
+        ],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [
+          "D1"
+        ],
+        "false_flags": [
+          "c065",
+          "c066",
+          "c074",
+          "c075",
+          "c077",
+          "c078"
+        ]
+      },
+      {
+        "case": "79-after",
+        "split": "lockbox",
+        "sample": 1,
+        "flagged_criteria": [
+          "c066",
+          "c077",
+          "c078"
+        ],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [],
+        "false_flags": [
+          "c066",
+          "c077",
+          "c078"
+        ]
+      },
+      {
+        "case": "87-approve",
+        "split": "lockbox",
+        "sample": 1,
+        "flagged_criteria": [],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [],
+        "false_flags": []
+      },
+      {
+        "case": "12-before",
+        "split": "train",
+        "sample": 2,
+        "flagged_criteria": [
+          "c003"
+        ],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [
+          "D1"
+        ],
+        "false_flags": [
+          "c003"
+        ]
+      },
+      {
+        "case": "12-after",
+        "split": "train",
+        "sample": 2,
+        "flagged_criteria": [
+          "c003"
+        ],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [],
+        "false_flags": [
+          "c003"
+        ]
+      },
+      {
+        "case": "62-before",
+        "split": "train",
+        "sample": 2,
+        "flagged_criteria": [
+          "c009"
+        ],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [
+          "D1",
+          "D2"
+        ],
+        "false_flags": [
+          "c009"
+        ]
+      },
+      {
+        "case": "62-after",
+        "split": "train",
+        "sample": 2,
+        "flagged_criteria": [
+          "c009"
+        ],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [],
+        "false_flags": [
+          "c009"
+        ]
+      },
+      {
+        "case": "9-approve",
+        "split": "train",
+        "sample": 2,
+        "flagged_criteria": [],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [],
+        "false_flags": []
+      },
+      {
+        "case": "8-approve",
+        "split": "train",
+        "sample": 2,
+        "flagged_criteria": [
+          "c004",
+          "c009"
+        ],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [],
+        "false_flags": [
+          "c004",
+          "c009"
+        ]
+      },
+      {
+        "case": "20-before",
+        "split": "lockbox",
+        "sample": 2,
+        "flagged_criteria": [],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [
+          "D1"
+        ],
+        "false_flags": []
+      },
+      {
+        "case": "20-after",
+        "split": "lockbox",
+        "sample": 2,
+        "flagged_criteria": [
+          "c010"
+        ],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [],
+        "false_flags": [
+          "c010"
+        ]
+      },
+      {
+        "case": "79-before",
+        "split": "lockbox",
+        "sample": 2,
+        "flagged_criteria": [
+          "c066",
+          "c075",
+          "c077",
+          "c078"
+        ],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [
+          "D1"
+        ],
+        "false_flags": [
+          "c066",
+          "c075",
+          "c077",
+          "c078"
+        ]
+      },
+      {
+        "case": "79-after",
+        "split": "lockbox",
+        "sample": 2,
+        "flagged_criteria": [
+          "c066",
+          "c077",
+          "c078"
+        ],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [],
+        "false_flags": [
+          "c066",
+          "c077",
+          "c078"
+        ]
+      },
+      {
+        "case": "87-approve",
+        "split": "lockbox",
+        "sample": 2,
+        "flagged_criteria": [],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [],
+        "false_flags": []
+      },
+      {
+        "case": "12-before",
+        "split": "train",
+        "sample": 3,
+        "flagged_criteria": [
+          "c003"
+        ],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [
+          "D1"
+        ],
+        "false_flags": [
+          "c003"
+        ]
+      },
+      {
+        "case": "12-after",
+        "split": "train",
+        "sample": 3,
+        "flagged_criteria": [
+          "c003"
+        ],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [],
+        "false_flags": [
+          "c003"
+        ]
+      },
+      {
+        "case": "62-before",
+        "split": "train",
+        "sample": 3,
+        "flagged_criteria": [
+          "c008",
+          "c009"
+        ],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [
+          "D1",
+          "D2"
+        ],
+        "false_flags": [
+          "c008",
+          "c009"
+        ]
+      },
+      {
+        "case": "62-after",
+        "split": "train",
+        "sample": 3,
+        "flagged_criteria": [
+          "c009"
+        ],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [],
+        "false_flags": [
+          "c009"
+        ]
+      },
+      {
+        "case": "9-approve",
+        "split": "train",
+        "sample": 3,
+        "flagged_criteria": [],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [],
+        "false_flags": []
+      },
+      {
+        "case": "8-approve",
+        "split": "train",
+        "sample": 3,
+        "flagged_criteria": [
+          "c009"
+        ],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [],
+        "false_flags": [
+          "c009"
+        ]
+      },
+      {
+        "case": "20-before",
+        "split": "lockbox",
+        "sample": 3,
+        "flagged_criteria": [],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [
+          "D1"
+        ],
+        "false_flags": []
+      },
+      {
+        "case": "20-after",
+        "split": "lockbox",
+        "sample": 3,
+        "flagged_criteria": [],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [],
+        "false_flags": []
+      },
+      {
+        "case": "79-before",
+        "split": "lockbox",
+        "sample": 3,
+        "flagged_criteria": [
+          "c066",
+          "c077",
+          "c078"
+        ],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [
+          "D1"
+        ],
+        "false_flags": [
+          "c066",
+          "c077",
+          "c078"
+        ]
+      },
+      {
+        "case": "79-after",
+        "split": "lockbox",
+        "sample": 3,
+        "flagged_criteria": [
+          "c066",
+          "c077",
+          "c078"
+        ],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [],
+        "false_flags": [
+          "c066",
+          "c077",
+          "c078"
+        ]
+      },
+      {
+        "case": "87-approve",
+        "split": "lockbox",
+        "sample": 3,
+        "flagged_criteria": [],
+        "flagged_primary_defects": [],
+        "missed_primary_defects": [],
+        "false_flags": []
+      }
+    ]
+  },
+  "baseline": {
+    "source": "experiments/reviewer-calibration/runs/rerun-20261016/adjudication.json",
+    "contract": "baseline",
+    "splits": {
+      "train": {
+        "per_repeat": {
+          "1": {
+            "packets": 6,
+            "missed_blocking": 2,
+            "unnecessary_revise": 0,
+            "primary_defects": 3,
+            "primary_defects_missed": 2,
+            "quality": 0.6666666666666667
+          },
+          "2": {
+            "packets": 6,
+            "missed_blocking": 2,
+            "unnecessary_revise": 0,
+            "primary_defects": 3,
+            "primary_defects_missed": 3,
+            "quality": 0.6666666666666667
+          }
+        },
+        "repeat_noise_pstdev": {
+          "quality": 0.0
+        }
+      },
+      "lockbox": {
+        "per_repeat": {
+          "1": {
+            "packets": 5,
+            "missed_blocking": 1,
+            "unnecessary_revise": 1,
+            "primary_defects": 2,
+            "primary_defects_missed": 1,
+            "quality": 0.6
+          },
+          "2": {
+            "packets": 5,
+            "missed_blocking": 2,
+            "unnecessary_revise": 1,
+            "primary_defects": 2,
+            "primary_defects_missed": 2,
+            "quality": 0.4
+          }
+        },
+        "repeat_noise_pstdev": {
+          "quality": 0.1
+        }
+      }
+    },
+    "cells": [
+      {
+        "case": "12-before",
+        "sample": 1,
+        "split": "train",
+        "missed_primary_defects": [
+          "D1"
+        ],
+        "missed_blocking": true,
+        "unnecessary_revise": false
+      },
+      {
+        "case": "12-before",
+        "sample": 2,
+        "split": "train",
+        "missed_primary_defects": [
+          "D1"
+        ],
+        "missed_blocking": true,
+        "unnecessary_revise": false
+      },
+      {
+        "case": "12-after",
+        "sample": 1,
+        "split": "train",
+        "missed_primary_defects": [],
+        "missed_blocking": false,
+        "unnecessary_revise": false
+      },
+      {
+        "case": "12-after",
+        "sample": 2,
+        "split": "train",
+        "missed_primary_defects": [],
+        "missed_blocking": false,
+        "unnecessary_revise": false
+      },
+      {
+        "case": "62-before",
+        "sample": 1,
+        "split": "train",
+        "missed_primary_defects": [
+          "D2"
+        ],
+        "missed_blocking": true,
+        "unnecessary_revise": false
+      },
+      {
+        "case": "62-before",
+        "sample": 2,
+        "split": "train",
+        "missed_primary_defects": [
+          "D1",
+          "D2"
+        ],
+        "missed_blocking": true,
+        "unnecessary_revise": false
+      },
+      {
+        "case": "62-after",
+        "sample": 1,
+        "split": "train",
+        "missed_primary_defects": [],
+        "missed_blocking": false,
+        "unnecessary_revise": false
+      },
+      {
+        "case": "62-after",
+        "sample": 2,
+        "split": "train",
+        "missed_primary_defects": [],
+        "missed_blocking": false,
+        "unnecessary_revise": false
+      },
+      {
+        "case": "9-approve",
+        "sample": 1,
+        "split": "train",
+        "missed_primary_defects": [],
+        "missed_blocking": false,
+        "unnecessary_revise": false
+      },
+      {
+        "case": "9-approve",
+        "sample": 2,
+        "split": "train",
+        "missed_primary_defects": [],
+        "missed_blocking": false,
+        "unnecessary_revise": false
+      },
+      {
+        "case": "8-approve",
+        "sample": 1,
+        "split": "train",
+        "missed_primary_defects": [],
+        "missed_blocking": false,
+        "unnecessary_revise": false
+      },
+      {
+        "case": "8-approve",
+        "sample": 2,
+        "split": "train",
+        "missed_primary_defects": [],
+        "missed_blocking": false,
+        "unnecessary_revise": false
+      },
+      {
+        "case": "20-before",
+        "sample": 1,
+        "split": "lockbox",
+        "missed_primary_defects": [
+          "D1"
+        ],
+        "missed_blocking": true,
+        "unnecessary_revise": false
+      },
+      {
+        "case": "20-before",
+        "sample": 2,
+        "split": "lockbox",
+        "missed_primary_defects": [
+          "D1"
+        ],
+        "missed_blocking": true,
+        "unnecessary_revise": false
+      },
+      {
+        "case": "20-after",
+        "sample": 1,
+        "split": "lockbox",
+        "missed_primary_defects": [],
+        "missed_blocking": false,
+        "unnecessary_revise": false
+      },
+      {
+        "case": "20-after",
+        "sample": 2,
+        "split": "lockbox",
+        "missed_primary_defects": [],
+        "missed_blocking": false,
+        "unnecessary_revise": false
+      },
+      {
+        "case": "79-before",
+        "sample": 1,
+        "split": "lockbox",
+        "missed_primary_defects": [],
+        "missed_blocking": false,
+        "unnecessary_revise": false
+      },
+      {
+        "case": "79-before",
+        "sample": 2,
+        "split": "lockbox",
+        "missed_primary_defects": [
+          "D1"
+        ],
+        "missed_blocking": true,
+        "unnecessary_revise": false
+      },
+      {
+        "case": "79-after",
+        "sample": 1,
+        "split": "lockbox",
+        "missed_primary_defects": [],
+        "missed_blocking": false,
+        "unnecessary_revise": true
+      },
+      {
+        "case": "79-after",
+        "sample": 2,
+        "split": "lockbox",
+        "missed_primary_defects": [],
+        "missed_blocking": false,
+        "unnecessary_revise": true
+      },
+      {
+        "case": "87-approve",
+        "sample": 1,
+        "split": "lockbox",
+        "missed_primary_defects": [],
+        "missed_blocking": false,
+        "unnecessary_revise": false
+      },
+      {
+        "case": "87-approve",
+        "sample": 2,
+        "split": "lockbox",
+        "missed_primary_defects": [],
+        "missed_blocking": false,
+        "unnecessary_revise": false
+      }
+    ]
+  },
+  "decision": {
+    "worth_follow_up": false,
+    "baseline_missed_lockbox_defects_flagged": [],
+    "false_flags_on_clean_after_packets": 16,
+    "clean_after_packet_repeats": 12,
+    "false_flags_per_clean_after_packet": 1.3333333333333333,
+    "criterion": "at least one baseline-missed primary lockbox defect flagged and <=1 false flag per clean after packet"
+  },
+  "resolved_models": [
+    "jev-1.14.0"
+  ],
+  "failures": 0,
+  "consumption": {
+    "provider_calls": 33,
+    "retries": 0,
+    "input_tokens": 487740,
+    "output_tokens": 146805,
+    "estimated_usd": 0.02048508,
+    "latency_seconds": 7.852,
+    "max_request_bytes": 33808
+  }
+}

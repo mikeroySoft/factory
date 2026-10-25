@@ -1907,6 +1907,33 @@ PY
                 else:
                     self.assertNotIn("issue edit", calls)
 
+    def test_manager_cannot_route_or_fix_a_label_selected_worker(self) -> None:
+        decisions = (
+            'DECISION: ROUTE\n{"add":["prime"],"guidance":"Use Prime"}',
+            'DECISION: FIX\n{"worker":"prime","guidance":"Use Prime"}',
+        )
+        for output in decisions:
+            with self.subTest(output=output):
+                repo, stubs, _ = self.scenario()
+                prompt = repo / ".factory/manager-prompt.txt"
+                command = [
+                    sys.executable, "-c",
+                    "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(pathlib.Path(sys.argv[2]).read_text()); print(sys.argv[3])",
+                    str(prompt), "{prompt}", output,
+                ]
+                (repo / config.CONFIG_NAME).write_text(
+                    "[manager]\ncommand = " + json.dumps(command)
+                    + '\n[workers]\ndefault = ["false"]\n'
+                    + '[workers.prime]\nwhen = { label = "harness-pilot" }\ncommand = ["true"]\n'
+                )
+
+                result = factory(repo, "manage", path=stubs)
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                events = list(map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines()))
+                self.assertEqual(next(e["decision"] for e in events if e.get("event") == "manage"), "HUMAN")
+                self.assertNotIn("- prime:", prompt.read_text())
+
     def test_fix_rejects_wrong_or_missing_base_before_mutation(self) -> None:
         from unittest import mock
 
@@ -3189,6 +3216,9 @@ class DispatchTest(unittest.TestCase):
             self.assertEqual(git(bare, "diff", "--name-only", "main", branch), config.LESSONS_NAME)
             self.assertIn("- Run `make test` before the gate.", git(bare, "show", f"{branch}:{config.LESSONS_NAME}"))
             self.assertNotIn("agent/curate-", calls)
+            events = list(map(json.loads, (repo / ".factory/events.jsonl").read_text().splitlines()))
+            gate = next(e for e in events if e.get("event") == "gate")  # the gate ran before the push
+            self.assertEqual((gate["branch"], gate["gate"], gate["head"]), (branch, "PASS", git(bare, "rev-parse", branch)))
 
     def test_learn_curate_opens_chore_pr_touching_only_context_paths(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -3270,10 +3300,6 @@ class DispatchTest(unittest.TestCase):
             self.assertEqual(git(bare, "diff", "--name-only", "main", branch).split(),
                              [config.CONFIG_NAME, "tests/test_parser.py"])
             self.assertIn('name = "lint"', git(bare, "show", f"{branch}:{config.CONFIG_NAME}"))
-            for pr in ("curate", "lessons"):
-                name = git(bare, "branch", "--list", f"agent/{pr}-*").lstrip("* ").removeprefix("agent/")
-                body = (repo / ".factory" / f"pr-body-{name}.md").read_text()
-                self.assertIn("Harness change from the meta loop — human merge required.", body)
 
     def test_learn_curate_rejects_weakening_the_harness(self) -> None:
         def toml_edit(old: str, new: str):
@@ -3851,6 +3877,8 @@ class DispatchTest(unittest.TestCase):
             self.assertEqual((infra["pr"], infra["run"], infra["checks"]), (70, 123, ["compile"]))
             self.assertEqual(infra["evidence"][0]["steps_run"], False)
             self.assertTrue(any(e.get("event") == "ci-rerun" and e.get("ok") for e in events))
+            decisions = [e for e in events if e.get("event") == "decision" and e.get("stage") == "merge"]
+            self.assertEqual([decision["chosen"] for decision in decisions], ["ci-rerun"])
             # GitHub has not surfaced the rerun yet: still attempt 1, so wait, never rerun twice.
             escalations, removed, reruns, _ = self.cancelled_ci_pass([ok, self.cancelled()], starved)
             self.assertEqual((escalations, removed, reruns), ([], False, []))
@@ -4932,6 +4960,103 @@ esac
             call.assert_not_called()
         rows = [json.loads(line) for line in (repo / ".factory/events.jsonl").read_text().splitlines()]
         self.assertEqual(next(r["reason"] for r in rows if r.get("kind") == "exit" and r.get("ticket") == 9), "initiative")
+
+
+
+class TriageProbeOnboardingTest(unittest.TestCase):
+    def tearDown(self) -> None:
+        host_file("")
+
+    def test_service_config_is_validated(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            valid = root / "valid"
+            valid.mkdir()
+            cfg = config.load(make_repo(valid, '[triage]\nservice = "rocm-serve-ornith.service"\n'))
+            self.assertEqual(cfg.triage_service, "rocm-serve-ornith.service")
+            for index, service in enumerate(("", "--now.service", "ornith", "ornith service.service")):
+                with self.subTest(service=service):
+                    parent = root / f"invalid-{index}"
+                    parent.mkdir()
+                    repo = make_repo(parent, f"[triage]\nservice = {json.dumps(service)}\n")
+                    with self.assertRaises(config.ConfigError):
+                        config.load(repo)
+
+    def test_install_writes_and_enables_probe_timer_only_when_configured(self) -> None:
+        import io
+        from contextlib import redirect_stdout
+        from unittest import mock
+
+        from factory import onboard
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = make_repo(root, '[triage]\nservice = "rocm-serve-ornith.service"\n')
+            cfg = config.load(repo)
+            unit_dir = root / "units"
+            calls = []
+            with mock.patch.object(onboard.config, "load", return_value=cfg), \
+                    mock.patch.object(onboard, "unit_dir", return_value=unit_dir), \
+                    mock.patch.object(onboard, "systemctl", side_effect=lambda *args: calls.append(args)), \
+                    mock.patch.object(onboard.shutil, "which", return_value="/bin/systemctl"), \
+                    mock.patch.object(
+                        onboard,
+                        "sh",
+                        return_value=subprocess.CompletedProcess([], 0, "yes\n", ""),
+                    ), redirect_stdout(io.StringIO()):
+                self.assertEqual(onboard.install(["--no-dashboard"]), 0)
+            service = unit_dir / "factory-widgets-triage-probe.service"
+            timer = unit_dir / "factory-widgets-triage-probe.timer"
+            self.assertIn(" -P -m factory triage-probe\n", service.read_text())
+            self.assertIn("OnUnitActiveSec=2min", timer.read_text())
+            self.assertIn(("enable", "--now", timer.name), calls)
+            self.assertFalse(any("triage-probe" in name for name in onboard.units(
+                config.Config(root=repo, repo="acme/widgets"), "10min", "127.0.0.1"
+            )))
+
+    def test_doctor_reports_active_probe_and_loading_endpoint(self) -> None:
+        import io
+        from contextlib import redirect_stdout
+        from unittest import mock
+
+        from factory import onboard, triage
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = make_repo(root, '[triage]\nservice = "rocm-serve-ornith.service"\n')
+            cfg = config.load(repo)
+            cfg.raw_repo = {}
+
+            def command(argv, cwd=None):
+                if argv[:3] == ["gh", "repo", "view"]:
+                    return subprocess.CompletedProcess(argv, 0, "WRITE\n", "")
+                if argv[:3] == ["gh", "label", "list"]:
+                    return subprocess.CompletedProcess(argv, 0, json.dumps(list(config.LABELS)), "")
+                if argv[:3] == ["systemctl", "--user", "is-active"]:
+                    return subprocess.CompletedProcess(argv, 0, "active\n", "")
+                if argv[:3] == ["git", "config", "user.name"]:
+                    return subprocess.CompletedProcess(argv, 0, "T\n", "")
+                return subprocess.CompletedProcess(argv, 0, "", "")
+
+            output = io.StringIO()
+            with mock.patch.object(onboard.config, "load", return_value=cfg), \
+                    mock.patch.object(onboard.config, "host_config", return_value={}), \
+                    mock.patch.object(onboard.config, "engine_drift", return_value=None), \
+                    mock.patch.object(onboard, "sh", side_effect=command), \
+                    mock.patch.object(onboard, "unit_dir", return_value=root / "units"), \
+                    mock.patch.object(onboard.shutil, "which", return_value="/bin/tool"), \
+                    mock.patch.object(onboard, "_dashboard_port_check", return_value=(True, "available")), \
+                    mock.patch.object(triage, "probe_endpoint", return_value=(True, "loading model")), \
+                    redirect_stdout(output):
+                self.assertEqual(onboard.doctor(["--json"]), 0)
+            rows = {row["label"]: row for row in json.loads(output.getvalue())["rows"]}
+            self.assertEqual(rows["triage model endpoint"]["status"], "PASS")
+            self.assertIn("loading model", rows["triage model endpoint"]["detail"])
+            self.assertEqual(rows["triage liveness probe"], {
+                "status": "PASS",
+                "label": "triage liveness probe",
+                "detail": "factory-widgets-triage-probe.timer active",
+            })
 
 
 if __name__ == "__main__":

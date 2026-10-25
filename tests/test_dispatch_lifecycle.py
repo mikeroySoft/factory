@@ -791,3 +791,42 @@ class LeaseRefusedCLI(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RetryDecisionTraceTest(unittest.TestCase):
+    setUp = LocalCLI.setUp
+    git = LocalCLI.git
+    write_config = LocalCLI.write_config
+    commit_config = LocalCLI.commit_config
+    cli = LocalCLI.cli
+    pr_config = LocalCLI.pr_config
+
+    def test_pr_gate_failure_retry_cites_gate_instead_of_previous_review(self):
+        self.pr_config(fails=0)
+        check = self.base / "pr_check.py"
+        check.write_text(PR_CHECK.replace(
+            'raise SystemExit(0 if len(runs) >= int(sys.argv[2]) else 1)',
+            'raise SystemExit(1 if len(runs) == 1 else 0)',
+        ))
+        config_path = self.repo / ".factory.toml"
+        config_path.write_text(config_path.read_text().replace("review_rounds = 1", "review_rounds = 2"))
+        self.commit_config()
+
+        self.cli("dispatch", "--ticket", "7")
+
+        decisions = [
+            row for row in lifecycle.read_events(self.events)
+            if row.get("event") == "decision"
+        ]
+        revise = next(row for row in decisions if row.get("stage") == "review"
+                      and row.get("chosen") == "REVISE")
+        failed_gate = next(row for row in decisions if row.get("stage") == "gate"
+                           and row.get("chosen") == "slow")
+        retry_sources = [
+            row["causes"][0]["decision_id"]
+            for row in decisions
+            if row.get("stage") == "worker_select"
+            and row.get("causes")
+            and row["causes"][0].get("relation") == "retries"
+        ]
+        self.assertEqual(retry_sources, [revise["decision_id"], failed_gate["decision_id"]])

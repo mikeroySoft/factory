@@ -34,11 +34,15 @@
 # default = ["claude", "-p", "--dangerously-skip-permissions", "{prompt}"]  # reads the path as text: use a wrapper
 # default = ["codex", "exec", "--full-auto", "-C", "{cwd}", "@{prompt}"]
 #
-# A worker may also be a table with `command` argv, an optional natural-language
-# `when` rule, and `transcript = "omp-session"` when its differently named binary
-# accepts OMP's `--session-dir` and writes compatible JSONL. Commands containing
-# a binary named `omp` default to that mode. Array and table forms can coexist;
-# do not define a label twice. The manager lists configured labels and their rules;
+# A worker may also be a table with `command` argv, an optional `when`, and
+# `transcript = "omp-session"` when its differently named binary accepts OMP's
+# `--session-dir` and writes compatible JSONL. A text `when` is manager guidance;
+# `when = { label = "name" }` directly selects this profile for that ticket label.
+# Optional `env = { NAME = "value" }` applies only to that worker and expands
+# command placeholders; `version = "..."` records a pinned worker release in
+# claim, usage, attempt, and lifecycle evidence. Commands containing a binary
+# named `omp` default to transcript mode. Array and table forms can coexist; do
+# not define a label twice. The manager lists configured profiles and their rules;
 # ROUTE and FIX cannot invent profiles or write host config. FIX uses
 # {"worker": "ci-fix", "guidance": "..."}.
 #
@@ -91,6 +95,17 @@
 # max_active_cap = 4
 # budget_min_cap = 240
 
+[learn]
+# Test each proposed lessons-file or CURATE change by replaying recent tickets at
+# their recorded pre-work revisions, once without and once with the candidate.
+# Keep only changes that improve first-gate pass, review rounds, or REVISE
+# findings without worsening another metric. `factory learn --evaluate` enables
+# one manual pass without changing this setting.
+# evaluate = false
+# max_tickets = 3
+# max_tokens = 100000
+# budget_min = 30
+
 [gate]
 # timeout = 1200                      # seconds per check; a wedged check FAILs
 # lock = "/tmp/factory.lock"          # host-wide lock held by `exclusive` checks
@@ -129,6 +144,7 @@ exclusive = false
 # url = "http://127.0.0.1:11434/v1/chat/completions"
 # model = "qwen3:30b"
 # timeout = 60         # seconds per model request; raise for slow local models
+# service = "my-model.service"  # opt in to a two-minute liveness timer installed by `factory install`
 
 [journal]
 # .factory/events.jsonl rolls into events.jsonl.1.gz (older segments shift to
@@ -145,9 +161,10 @@ exclusive = false
 # theme = ".factory-dashboard.css"   # repo-relative CSS loaded after the built-in stylesheet
 
 [watch]
-# `factory watch` files the factory's own runtime failures (engine bugs) here, from
+# `factory watch` files engine failures and persistent host conditions here from
 # every install, and comments on the open issue another install already filed.
 # engine_repo = "mikeroySoft/factory"
+# host_failure_minutes = 60  # streak duration to file as `host`; longer gaps reset it
 
 # Human decision owners for `factory plan route N --reason R` (read-only; nothing
 # is ever assigned). Omit the whole section to keep legacy behaviour. Owners are

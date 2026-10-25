@@ -31,6 +31,7 @@ class ReleaseTest(unittest.TestCase):
         (self.repo / "factory").mkdir()
         (self.repo / "factory" / "__init__.py").write_text('__version__ = "0.0.1"\n')
         (self.repo / "CHANGELOG.md").write_text("# Changelog\n\n## Unreleased\n\n- shipped work\n")
+        self.write_release_docs()
         (self.repo / ".gitignore").write_text(".factory/\n")
         (self.repo / ".factory.toml").write_text('[repo]\nslug = "acme/widgets"\n')
         self.git(self.repo, "add", ".")
@@ -355,6 +356,78 @@ class ReleaseTest(unittest.TestCase):
         with mock.patch.object(release, "_gh_release") as gh:
             release.run(self.cfg)
         gh.assert_not_called()
+
+    def write_release_docs(self) -> None:
+        (self.repo / "README.md").write_text(
+            "```sh\n"
+            "uv tool install git+https://github.com/mikeroySoft/factory@stable   # stable\n"
+            "uv tool install git+https://github.com/mikeroySoft/factory@v0.0.1   # a specific release\n"
+            "```\n"
+        )
+        (self.repo / "docs").mkdir(exist_ok=True)
+        (self.repo / "docs" / "index.html").write_text(
+            "<code>uv tool install git+https://github.com/mikeroySoft/factory@v0.0.1</code>\n"
+            '<p class="release-note"><a href="#changelog">'
+            "Latest release: v0.0.1 · January 1, 2026</a></p>\n"
+            '<ol class="history">\n'
+            '  <li class="release">\n'
+            '    <span class="chip chip-success">Latest release</span>\n'
+            '    <a href="/v0.0.1">v0.0.1</a>\n'
+            "  </li>\n"
+            "</ol>\n"
+        )
+
+    def test_release_bump_updates_and_stages_public_documentation(self) -> None:
+        with (self.repo / "CHANGELOG.md").open("a") as changelog:
+            changelog.write(r"- matches \d and C:\new" + "\n")
+        self.git(self.repo, "add", "CHANGELOG.md")
+        self.git(self.repo, "commit", "-q", "-m", "add release notes")
+        self.tag_and_advance({"human_rate": 0.0, "first_pass": 1.0, "tickets": 1})
+        self.events()
+        with mock.patch.object(release, "_pulls", return_value=[]), \
+                mock.patch.object(release, "_open_pull", return_value={"number": 12}), \
+                mock.patch.object(release, "ci_passes", return_value=True), \
+                mock.patch.object(release, "gate_passes", return_value=True):
+            reason = release.run(self.cfg)
+        self.assertIn("opened release PR #12 for v0.0.2", reason)
+        readme = self.git(self.origin, "show", "release/v0.0.2:README.md")
+        page = self.git(self.origin, "show", "release/v0.0.2:docs/index.html")
+        changelog = self.git(self.origin, "show", "release/v0.0.2:CHANGELOG.md")
+        version = self.git(self.origin, "show", "release/v0.0.2:factory/__init__.py")
+        self.assertIn('__version__ = "0.0.2"', version)
+        self.assertRegex(changelog, r"## 0\.0\.2 — \d{4}-\d{2}-\d{2}")
+        self.assertIn("factory@stable", readme)
+        self.assertIn("factory@v0.0.2   # a specific release", readme)
+        self.assertIn("factory@v0.0.2</code>", page)
+        self.assertRegex(page, r"Latest release: v0\.0\.2 · [A-Z][a-z]+ \d{1,2}, \d{4}")
+        self.assertLess(page.index(">v0.0.2</a>"), page.index(">v0.0.1</a>"))
+        self.assertIn("<li>shipped work</li>", page)
+        self.assertIn(r"<li>matches \d and C:\new</li>", page)
+        self.assertEqual(page.count('<span class="chip chip-success">Latest release</span>'), 1)
+
+    def test_release_bump_fails_when_a_documentation_spot_is_missing(self) -> None:
+        missing_spots = {
+            "README.md specific-release install pin": (
+                "README.md", "factory@v0.0.1", "factory@main"
+            ),
+            "docs/index.html install-command version pin": (
+                "docs/index.html", "factory@v0.0.1</code>", "factory@main</code>"
+            ),
+            "docs/index.html latest-release line": (
+                "docs/index.html", "Latest release:", "Current release:"
+            ),
+            "docs/index.html changelog history": (
+                "docs/index.html", '<ol class="history">', '<ol class="releases">'
+            ),
+        }
+        for expected, (relative, present, replacement) in missing_spots.items():
+            with self.subTest(expected=expected):
+                self.new_repo()
+                self.write_release_docs()
+                path = self.repo / relative
+                path.write_text(path.read_text().replace(present, replacement))
+                with self.assertRaisesRegex(ValueError, expected):
+                    release._update_release_files(self.cfg, self.repo, "0.0.1", "0.0.2")
 
 
 if __name__ == "__main__":

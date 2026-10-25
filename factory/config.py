@@ -37,6 +37,7 @@ LABEL_CHORE = "chore"
 LABEL_INITIATIVE = "initiative"
 LABEL_WONTFIX = "wontfix-proposal"
 LABEL_EXPERIMENT = "experiment"
+LABEL_HOST = "host"
 LABELS = {
     LABEL_VIABILITY: ("D4C5F9", "Opt in to a manager build/defer recommendation before triage"),
     LABEL_REVIEW: ("D4C5F9", "Opt in to a manager PR direction recommendation before review"),
@@ -51,6 +52,7 @@ LABELS = {
     LABEL_WONTFIX: ("EDEDED", "Triage or manager proposes not to action this; a human decides"),
     LABEL_INITIATIVE: ("1D76DB", "Shared initiative plan read by `factory plan`; never triaged, dispatched, managed or merged"),
     LABEL_EXPERIMENT: ("5319E7", "Experiment ticket: at most one active at a time; never ranks by its results"),
+    LABEL_HOST: ("D4C5F9", "Persistent host condition reported by factory watch"),
 }
 
 # Word-bounded strong signals only: bare words like "internal"/"private" are ordinary English.
@@ -84,16 +86,17 @@ KNOWN_KEYS = {
     "worker_wrap": ("command",),
     "review": ("command", "json_mode"),
     "manager": ("model", "command", "rounds", "review", "stale_days", "max_active_cap", "budget_min_cap"),
+    "learn": ("evaluate", "max_tickets", "max_tokens", "budget_min"),
     "release": ("auto", "version_file", "min_tickets"),
     "gate": ("timeout", "lock", "check", "protected_paths", "add_only_paths"),
     "leak_scan": ("pattern", "exclude", "extra"),
-    "triage": ("url", "model", "timeout"),
+    "triage": ("url", "model", "timeout", "service"),
     "journal": ("max_mb", "retention"),
     "dashboard": ("port", "theme"),
     "install": ("every", "dashboard", "host", "python", "env", "dispatch_env"),
     "collaboration": ("fallback", "reasons", "components"),
     "prices": None,
-    "watch": ("engine_repo",),
+    "watch": ("engine_repo", "host_failure_minutes"),
 }
 # Normalized numeric fields of an `llm-usage` event; a worker profile maps each to JSON paths.
 USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "cached_tokens", "cost")
@@ -143,6 +146,12 @@ class Config:
         default_factory=lambda: {"default": DEFAULT_WORKER, LABEL_CHORE: DEFAULT_CHORE_WORKER}
     )
     worker_when: dict[str, str] = field(default_factory=dict)
+    # Per worker profile: a ticket label selected by a structured `when` rule.
+    worker_select_label: dict[str, str] = field(default_factory=dict)
+    # Per worker profile: environment applied only to that worker process.
+    worker_env: dict[str, dict[str, str]] = field(default_factory=dict)
+    # Per worker profile: pinned release version recorded with its lifecycle evidence.
+    worker_version: dict[str, str] = field(default_factory=dict)
     # Per worker label: JSON paths read from its log (see `usage_spec`); absent = cost_pattern only.
     worker_usage: dict[str, dict] = field(default_factory=dict)
     # Per worker label: compatible persisted transcript format; absent defaults by executable.
@@ -161,6 +170,10 @@ class Config:
     # Ceilings for the fleet manager (`district manage`) raising `max_active`/`budget_min`; None = no cap.
     manager_max_active_cap: int | None = None
     manager_budget_min_cap: int | None = None
+    learn_evaluate: bool = False
+    learn_max_tickets: int = 3
+    learn_max_tokens: int = 100_000
+    learn_budget_min: int = 30
     release_auto: bool = False
     release_version_file: str = "factory/__init__.py"
     release_min_tickets: int = 5
@@ -174,6 +187,7 @@ class Config:
     llm_url: str = DEFAULT_LLM_URL
     llm_model: str = DEFAULT_LLM_MODEL
     triage_timeout: int = 60  # seconds per triage model request
+    triage_service: str | None = None  # systemd user service restarted by the optional liveness probe
     manager_model: str | None = None  # dashboard's no-tools OMP briefing; never a command
     dashboard_port: int = 8765
     dashboard_theme: Path | None = None  # CSS file served after the built-in stylesheet
@@ -184,6 +198,7 @@ class Config:
     collaboration: dict | None = None
     # `[watch].engine_repo`: where `factory watch` files engine/runtime failures from every install.
     watch_engine_repo: str = ENGINE_REPO
+    watch_host_failure_minutes: int = 60
     raw_repo: dict = field(default_factory=dict)  # the committed file alone, before host layering
 
     @property
@@ -201,14 +216,29 @@ class Config:
         return f"factory-{self.name}"
 
     def worker_key(self, labels: set[str]) -> str:
-        """The `[workers]` label that owns these ticket labels (first match wins)."""
-        return next((k for k in self.workers if k in labels), "default")
+        """The `[workers]` profile that owns these ticket labels (first match wins)."""
+        return next(
+            (
+                key for key in self.workers
+                if (key in labels and key not in self.worker_select_label) or self.worker_select_label.get(key) in labels
+            ),
+            "default",
+        )
 
     def worker(self, labels: set[str], prompt: Path, cwd: Path) -> list[str]:
-        """argv for the worker that owns these ticket labels (first match wins)."""
-        argv = self.workers[self.worker_key(labels)]
-        return expand([*self.worker_wrap, *argv], prompt=str(prompt), cwd=str(cwd),
+        """argv for the worker profile that owns these ticket labels."""
+        return self.worker_command(self.worker_key(labels), prompt, cwd)
+
+    def worker_command(self, worker: str, prompt: Path, cwd: Path) -> list[str]:
+        """Expanded argv for an already selected worker profile."""
+        return expand([*self.worker_wrap, *self.workers[worker]], prompt=str(prompt), cwd=str(cwd),
                       root=str(self.root), repo=self.repo, home=str(Path.home()))
+
+    def worker_environment(self, worker: str, prompt: Path, cwd: Path) -> dict[str, str]:
+        """Expanded environment overrides for one selected worker profile."""
+        values = {"prompt": str(prompt), "cwd": str(cwd), "root": str(self.root),
+                  "repo": self.repo, "home": str(Path.home())}
+        return {key: expand([value], **values)[0] for key, value in self.worker_env.get(worker, {}).items()}
 
     def review_cmd(self, prompt: str) -> list[str]:
         return expand(self.reviewer, prompt=prompt)
@@ -453,6 +483,9 @@ def load(start: Path | None = None) -> Config:
     gate, leak, triage, dash = raw.get("gate", {}), raw.get("leak_scan", {}), raw.get("triage", {}), raw.get("dashboard", {})
     manager = raw.get("manager", {})
     release = raw.get("release", {})
+    learn = raw.get("learn", {})
+    if not isinstance(learn, dict):
+        raise ConfigError("[learn] must be a table")
     if not isinstance(release, dict):
         raise ConfigError("[release] must be a table")
     cfg = Config(root=root, repo=slug, raw_repo=raw_repo)
@@ -477,9 +510,31 @@ def load(start: Path | None = None) -> Config:
             when = entry.get("when", "") if isinstance(entry, dict) else ""
             if not isinstance(command, list) or not command or any(not isinstance(arg, str) for arg in command) or not command[0]:
                 raise ConfigError(f"{path}: workers.{label} needs a non-empty command argv")
-            if not isinstance(when, str):
-                raise ConfigError(f"{path}: workers.{label}.when must be text")
+            if isinstance(when, dict):
+                if set(when) != {"label"} or not isinstance(when.get("label"), str) or not when["label"].strip():
+                    raise ConfigError(f"{path}: workers.{label}.when needs exactly one non-empty label")
+                cfg.worker_select_label[label] = when["label"]
+                when = f"Ticket has label `{when['label']}`."
+            elif not isinstance(when, str):
+                raise ConfigError(f"{path}: workers.{label}.when must be text or {{ label = \"...\" }}")
             cfg.workers[label] = command
+            if isinstance(entry, dict) and "env" in entry:
+                environment = entry["env"]
+                if (
+                    not isinstance(environment, dict)
+                    or any(
+                        not isinstance(key, str) or not key or "=" in key or "\0" in key
+                        or not isinstance(value, str) or "\0" in value
+                        for key, value in environment.items()
+                    )
+                ):
+                    raise ConfigError(f"workers.{label}.env must map valid environment names to text")
+                cfg.worker_env[label] = environment
+            if isinstance(entry, dict) and "version" in entry:
+                version = entry["version"]
+                if not isinstance(version, str) or not version.strip() or any(ord(char) < 32 for char in version):
+                    raise ConfigError(f"workers.{label}.version must be non-empty text without control characters")
+                cfg.worker_version[label] = version
             if isinstance(entry, dict) and "usage" in entry:
                 cfg.worker_usage[label] = usage_spec(label, entry["usage"])
             if isinstance(entry, dict) and "transcript" in entry:
@@ -518,6 +573,14 @@ def load(start: Path | None = None) -> Config:
         if cap is not None and (isinstance(cap, bool) or not isinstance(cap, int) or cap < 1):
             raise ConfigError(f"manager.{key} must be a positive integer")
         setattr(cfg, f"manager_{key}", cap)
+    cfg.learn_evaluate = learn.get("evaluate", cfg.learn_evaluate)
+    if type(cfg.learn_evaluate) is not bool:
+        raise ConfigError("learn.evaluate must be true or false")
+    for key in ("max_tickets", "max_tokens", "budget_min"):
+        value = learn.get(key, getattr(cfg, f"learn_{key}"))
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ConfigError(f"learn.{key} must be a positive integer")
+        setattr(cfg, f"learn_{key}", value)
     auto = release.get("auto", cfg.release_auto)
     version_file = release.get("version_file", cfg.release_version_file)
     min_tickets = release.get("min_tickets", cfg.release_min_tickets)
@@ -564,10 +627,22 @@ def load(start: Path | None = None) -> Config:
     cfg.llm_url = triage.get("url", cfg.llm_url)
     cfg.llm_model = triage.get("model", cfg.llm_model)
     cfg.triage_timeout = int(triage.get("timeout", cfg.triage_timeout))
-    engine_repo = raw.get("watch", {}).get("engine_repo", cfg.watch_engine_repo)
+    service = triage.get("service")
+    if service is not None and (
+        not isinstance(service, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.@:-]*\.service", service) is None
+    ):
+        raise ConfigError("triage.service must be a systemd service unit name ending in .service")
+    cfg.triage_service = service
+    watch = raw.get("watch", {})
+    engine_repo = watch.get("engine_repo", cfg.watch_engine_repo)
     if not isinstance(engine_repo, str) or not re.fullmatch(r"[\w.-]+/[\w.-]+", engine_repo):
         raise ConfigError(f'watch.engine_repo must be a GitHub "owner/name", got {engine_repo!r}')
     cfg.watch_engine_repo = engine_repo
+    host_failure_minutes = watch.get("host_failure_minutes", cfg.watch_host_failure_minutes)
+    if isinstance(host_failure_minutes, bool) or not isinstance(host_failure_minutes, int) or host_failure_minutes < 1:
+        raise ConfigError("watch.host_failure_minutes must be a positive integer")
+    cfg.watch_host_failure_minutes = host_failure_minutes
     cfg.dashboard_port = int(dash.get("port", cfg.dashboard_port))
     cfg.dashboard_theme = root / dash["theme"] if dash.get("theme") else None
     cfg.install = merge(DEFAULT_INSTALL, raw.get("install", {}))

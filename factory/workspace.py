@@ -25,7 +25,7 @@ from pathlib import Path
 from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, urlsplit
 
-from factory import briefing, config, flow, runtime_events, runtime_local, settings
+from factory import briefing, config, flow, runtime_events, runtime_local, settings, trace
 from factory.config import Config
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
@@ -61,6 +61,7 @@ ASSETS = {
     "/workspace-tools.js": ("text/javascript; charset=utf-8", ASSET_ROOT / "workspace-tools.js"),
     "/workspace-codebase.js": ("text/javascript; charset=utf-8", ASSET_ROOT / "workspace-codebase.js"),
     "/workspace-decisions.js": ("text/javascript; charset=utf-8", ASSET_ROOT / "workspace-decisions.js"),
+    "/workspace-trace.js": ("text/javascript; charset=utf-8", ASSET_ROOT / "workspace-trace.js"),
     "/workspace.js": ("text/javascript; charset=utf-8", ASSET_ROOT / "workspace.js"),
     "/fonts/Newsreader.ttf": ("font/ttf", ASSET_ROOT / "fonts" / "Newsreader.ttf"),
     "/fonts/Newsreader-OFL.txt": ("text/plain; charset=utf-8", ASSET_ROOT / "fonts" / "Newsreader-OFL.txt"),
@@ -70,6 +71,7 @@ REDIRECTS = {
     "/chat": "/?chat=1",
     "/atlas": "/?view=atlas",
     "/codebase": "/?view=codebase",
+    "/decisions": "/?view=decisions",
 }
 SLUG = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+")
 DECISION_ID = re.compile(r"[0-9a-f]{32}")
@@ -363,6 +365,71 @@ def ticket_flow_data() -> dict:
     return {**graph, "source": {"path": TICKET_FLOW_PATH, "revision": revision, "url": url}}
 
 
+class KeyStorageError(RuntimeError):
+    """Fixed-string, secret-free reason the key directory cannot be used."""
+
+
+def key_directory_problem(
+    factory: Path, info: os.stat_result | None = None
+) -> str | None:
+    """Reason and remedy when the access-key directory is unsafe."""
+    if info is None:
+        try:
+            info = os.lstat(factory)
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return f"Factory workspace key directory is unavailable: {factory}"
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        return (
+            "Factory workspace key directory is not a real directory: "
+            f"replace {factory} with a plain directory"
+        )
+    if info.st_uid != os.geteuid():
+        return (
+            "Factory workspace key directory is not owned by the service user: "
+            f"chown the directory {factory}"
+        )
+    if stat.S_IMODE(info.st_mode) & 0o022:
+        return (
+            "Factory workspace key directory is unsafe (group/other-writable): "
+            f"chmod go-w {factory}"
+        )
+    return None
+
+
+def access_file_problem(
+    factory: Path, info: os.stat_result | None = None
+) -> str | None:
+    """Reason and remedy when an existing workspace access key is unsafe."""
+    path = factory / ACCESS_FILE
+    if info is None:
+        try:
+            info = os.lstat(path)
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return f"Factory workspace access key is unavailable: {path}"
+    if not stat.S_ISREG(info.st_mode):
+        return (
+            "Factory workspace access key is not a regular file: "
+            f"remove {path} (a new key is created on start)"
+        )
+    if info.st_uid != os.geteuid():
+        return (
+            "Factory workspace access key is not owned by the service user: "
+            f"chown {path}"
+        )
+    if stat.S_IMODE(info.st_mode) != 0o600:
+        return f"Factory workspace access key has unsafe mode: chmod 600 {path}"
+    if info.st_nlink != 1:
+        return (
+            "Factory workspace access key has extra hard links: "
+            f"remove {path} (a new key is created on start)"
+        )
+    return None
+
+
 
 
 class Workspace:
@@ -467,14 +534,12 @@ class Workspace:
             factory.mkdir(mode=0o700, parents=True, exist_ok=True)
             directory = os.lstat(factory)
         except OSError as exc:
-            raise RuntimeError("Factory workspace key directory is unavailable") from exc
-        if (
-            not stat.S_ISDIR(directory.st_mode)
-            or stat.S_ISLNK(directory.st_mode)
-            or directory.st_uid != os.geteuid()
-            or stat.S_IMODE(directory.st_mode) & 0o022
-        ):
-            raise RuntimeError("Factory workspace key directory is unsafe")
+            raise RuntimeError(
+                "Factory workspace key directory is unavailable"
+            ) from exc
+        problem = key_directory_problem(factory, directory)
+        if problem:
+            raise KeyStorageError(problem)
         path = factory / ACCESS_FILE
         flags = os.O_RDWR | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
         try:
@@ -483,21 +548,22 @@ class Workspace:
             try:
                 fd = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o600)
             except OSError as exc:
-                raise RuntimeError("Factory workspace access key could not be created safely") from exc
+                raise RuntimeError(
+                    "Factory workspace access key could not be created safely"
+                ) from exc
             created = True
         except OSError as exc:
+            problem = access_file_problem(factory)
+            if problem:
+                raise KeyStorageError(problem) from exc
             raise RuntimeError("Factory workspace access key is unsafe") from exc
         else:
             created = False
         try:
             info = os.fstat(fd)
-            if (
-                not stat.S_ISREG(info.st_mode)
-                or info.st_uid != os.geteuid()
-                or stat.S_IMODE(info.st_mode) != 0o600
-                or info.st_nlink != 1
-            ):
-                raise RuntimeError("Factory workspace access key is unsafe")
+            problem = access_file_problem(factory, info)
+            if problem:
+                raise KeyStorageError(problem)
             if created:
                 raw = secrets.token_urlsafe(32).encode("ascii")
                 os.write(fd, raw)
@@ -947,6 +1013,11 @@ class Workspace:
     @staticmethod
     def _public_collection(value: dict) -> dict:
         return {key: item for key, item in value.items() if not key.startswith("_")}
+
+    def trace(self, slug: str, ticket: int) -> dict:
+        cfg = self.repository_config(slug)
+        return trace.explain(trace.read_rows(cfg.factory / "events.jsonl"), ticket)
+
 
     def data(self, slug: str, *, refresh: bool = False) -> dict:
         self.repository_config(slug)
@@ -1577,7 +1648,7 @@ class Handler(BaseHTTPRequestHandler):
             if target.path == "/":
                 values = _query(
                     target.query,
-                    optional={"view", "repository", "case", "chat"},
+                    optional={"view", "repository", "case", "ticket", "chat"},
                 )
                 if "chat" in values and values["chat"] != "1":
                     raise WorkspaceError("invalid_query", "chat must be 1")
@@ -1591,11 +1662,12 @@ class Handler(BaseHTTPRequestHandler):
                     or SLUG.fullmatch(values["repository"]) is None
                 ):
                     raise WorkspaceError("invalid_query", "repository is invalid")
-                if "case" in values and (
-                    re.fullmatch(r"[1-9][0-9]{0,18}", values["case"]) is None
-                    or int(values["case"]) >= 2**63
-                ):
-                    raise WorkspaceError("invalid_query", "case is invalid")
+                for field in ("case", "ticket"):
+                    if field in values and (
+                        re.fullmatch(r"[1-9][0-9]{0,18}", values[field]) is None
+                        or int(values[field]) >= 2**63
+                    ):
+                        raise WorkspaceError("invalid_query", f"{field} is invalid")
                 self._send(
                     200,
                     "text/html; charset=utf-8",
@@ -1624,6 +1696,24 @@ class Handler(BaseHTTPRequestHandler):
             if target.path == "/api/ticket-flow":
                 _query(target.query)
                 self._json(200, ticket_flow_data())
+                return
+            if target.path == "/api/trace":
+                values = _query(
+                    target.query, required={"ticket"}, optional={"repository"}
+                )
+                if (
+                    re.fullmatch(r"[1-9][0-9]{0,18}", values["ticket"]) is None
+                    or int(values["ticket"]) >= 2**63
+                ):
+                    raise WorkspaceError(
+                        "invalid_request", "ticket must be a positive integer"
+                    )
+                self._json(
+                    200,
+                    self.workspace.trace(
+                        self._repository(values), int(values["ticket"])
+                    ),
+                )
                 return
             if target.path == "/api/theme":
                 values = _query(target.query, required={"repository"})
