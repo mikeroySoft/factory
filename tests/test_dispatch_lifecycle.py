@@ -520,6 +520,77 @@ class LocalCLI(unittest.TestCase):
         self.assertEqual(exits["dispatcher"], "completed")
         self.assertIn("REVISE verdict after 1 review round(s)", result.stdout + result.stderr)
 
+    def assert_reviewer_unavailable(self, script: str, diagnostic: str) -> None:
+        runs = self.base / "review-runs"
+        reviewer = (
+            "from pathlib import Path\n"
+            f"p = Path({str(runs)!r})\n"
+            "p.write_text(p.read_text() + 'x' if p.exists() else 'x')\n"
+            + script
+        )
+        self.write_config(reviewer=[sys.executable, "-c", reviewer])
+        self.commit_config()
+
+        self.cli("dispatch", "--ticket", "7")
+
+        self.assertEqual(runs.read_text(), "xxx")
+        events = lifecycle.read_events(self.events)
+        self.assertEqual(len([e for e in events if e.get("event") == "attempt"]), 1)
+        [review] = [e for e in events if e.get("event") == "review"]
+        self.assertEqual((review["accepted"], review["verdict"]), (False, None))
+        [escalation] = [e for e in events if e.get("event") == "escalate"]
+        self.assertEqual(escalation["code"], "reviewer_unavailable")
+        findings = (self.repo / ".factory" / "review-7.md").read_text()
+        self.assertIn(diagnostic, findings)
+        self.assertIn(diagnostic, Path(escalation["packet"]).read_text())
+
+    def test_reviewer_exit_does_not_consume_a_review_round(self):
+        self.assert_reviewer_unavailable("raise SystemExit(1)\n", "review_exit:1")
+
+    def test_unparseable_reviewer_does_not_consume_a_review_round(self):
+        self.assert_reviewer_unavailable("print('unparseable retry-after-ms=0')\n", "unparseable")
+
+    def test_manager_fix_review_failure_does_not_escalate_an_already_human_ticket(self):
+        from unittest import mock
+
+        from factory import config, dispatch, manage
+
+        self.pr_config(fails=0)
+        self.reviewer.write_text(
+            "import sys\nprint('rate limited retry-after-ms=0', file=sys.stderr)\nraise SystemExit(1)\n"
+        )
+        wt = self.repo / ".factory" / "wt-7"
+        wt.parent.mkdir(exist_ok=True)
+        self.git("worktree", "add", str(wt), "-b", "agent/7")
+        head = self.git("rev-parse", "HEAD").stdout.strip()
+        packet = self.repo / ".factory" / "packet.md"
+        packet.write_text("fix it")
+        issue = {
+            "title": "local change", "body": "", "comments": [],
+            "labels": [{"name": "ready-for-human"}],
+        }
+        pr = {
+            "state": "OPEN", "headRefName": "agent/7", "headRefOid": head,
+            "baseRefName": "main", "reviewDecision": "",
+        }
+        with mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(
+                    dispatch, "gh_json",
+                    side_effect=lambda a: pr if a[:2] == ["pr", "view"] else issue,
+                ), \
+                mock.patch.object(dispatch, "push_agent", return_value=head), \
+                mock.patch.object(dispatch, "pr_comment"), \
+                mock.patch.object(dispatch, "approve_pr") as approve, \
+                mock.patch.object(dispatch, "escalate") as escalate:
+            dispatch.configure(config.load(self.repo))
+            manage.apply(
+                7, issue, "FIX", "",
+                {"worker": "default", "guidance": "fix"}, packet,
+            )
+
+        approve.assert_not_called()
+        escalate.assert_not_called()
+
     def pr_config(self, fails, when="pr"):
         """One attempt check (`code`) plus one pr check (`slow`); prompts of worker and reviewer are kept."""
         self.pr_log = self.base / "pr-runs.log"

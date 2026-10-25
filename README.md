@@ -464,8 +464,12 @@ temporary directory, so project config written by a worker or PR author (OMP
 `.omp/extensions`, Claude Code `.claude/settings.json`, `.mcp.json`) is not discovered.
 Ticket review gets `./review.diff` (base to gated head) and a read-only `git archive`
 snapshot of the gated head in `./snapshot`; PR review gets the diff inline. `GIT_*` and
-GitHub credentials are stripped from the reviewer's environment. Snapshot, diff, or
-reviewer launch failures reject the review evidence instead of escaping the review lane.
+GitHub credentials are stripped from the reviewer's environment. Ticket review
+retries snapshot, diff, launch, nonzero-exit, and unparseable-output failures up
+to three times, using exponential backoff unless the provider reports
+`retry-after` or `retry-after-ms`. Persistent failure records
+`reviewer_unavailable`, preserves stderr or a structured error event in the
+review findings and escalation packet, and consumes no `review_rounds` slot.
 
 Keep `{cwd}` in worker and manager commands, and configure the manager CLI in
 read-only/no-tools mode: the prompt prohibits file edits, but an arbitrary
@@ -663,8 +667,9 @@ JSON and dashboard ticket `human_touch` data, and as `manager failures` in the
 stats table. They do not add an escalation or consume another manager round.
 Every `escalate` row carries a `code` from `dispatch.ESCALATION_CODES` (the
 mechanical origin: `gate_failed`, `worker_stuck`, `budget`, `ci_failed`,
-`review_revise`, `approval_drift`, …) beside the prose `reason`; the stats footer
-and `human_touch_metrics` report the trailing week `escalations_by_code`.
+`review_revise`, `reviewer_unavailable`, `approval_drift`, …) beside the prose
+`reason`; the stats footer and `human_touch_metrics` report the trailing week
+`escalations_by_code`.
 
 Human corrections that never escalate are counted per agent PR (`agent/<n>`, any
 state, merged included): `human_change_requests` (changes-requested reviews),
@@ -794,10 +799,15 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    whether the diff introduced them or the review asks for them, need that same
    justification, but a missing justification alone does not block. Reviews must
    exit zero and end with exactly one final `VERDICT: APPROVE` or
-   `VERDICT: REVISE` line; malformed, multiple, non-final, and nonzero-exit
-   verdicts fail closed as REVISE. Each `REVISE` sends the findings back to the
+   `VERDICT: REVISE` line. Malformed, multiple, non-final, nonzero-exit, and
+   launch failures are reviewer tooling failures: Factory retries them, then
+   escalates persistent failure as `reviewer_unavailable` without sending work
+   back to the worker. Each accepted `REVISE` sends the findings back to the
    worker, flagged so only the required fixes are binding (re-gate, push,
-   re-review), up to `review_rounds` times; then it escalates.
+   re-review), up to `review_rounds` times; then it escalates. A manager `FIX`
+   failure leaves an already-`ready-for-human` ticket on its existing escalation
+   instead of posting another escalation comment or consuming another manager
+   round.
    `APPROVE` adds the `factory-approved` label only while the remote PR still
    points to the exact commit that passed the gate and review. The successful
    label operation and gate/review commit are recorded in `.factory/events.jsonl`.

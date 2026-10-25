@@ -356,6 +356,39 @@ def _omp_output(stdout: str) -> tuple[str, dict | None]:
     return text.strip(), fields
 
 
+def _review_diagnostics(stdout: str, stderr: str, structured: bool, findings: str) -> str:
+    """Keep provider errors that JSON-mode assistant text does not contain."""
+    details = [findings] if findings else []
+    if structured:
+        for line in stdout.splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event, dict) and (event.get("type") == "error" or "error" in event):
+                error = event.get("error", event)
+                details.append(
+                    error if isinstance(error, str) else json.dumps(error, ensure_ascii=False)
+                )
+    if stderr.strip():
+        details.append(stderr.strip())
+    if not details and stdout.strip():
+        details.append(stdout.strip())
+    return "\n\n".join(dict.fromkeys(details))
+
+
+def _review_retry_delay(output: str, attempt: int) -> float:
+    milliseconds = re.search(r"retry-after-ms[\"']?\s*[:=]\s*(\d+)", output, re.IGNORECASE)
+    if milliseconds:
+        return int(milliseconds.group(1)) / 1000
+    seconds = re.search(
+        r"retry-after(?!-ms)[\"']?\s*[:=]\s*(\d+(?:\.\d+)?)",
+        output,
+        re.IGNORECASE,
+    )
+    return float(seconds.group(1)) if seconds else 2 ** (attempt - 1)
+
+
 def lock_held(lockfile: Path) -> bool:
     """True if another process holds an flock on lockfile."""
     if not lockfile.exists():
@@ -1067,7 +1100,7 @@ def _reviewer_model(usage: dict | None) -> str | None:
 
 
 def _record_review_decision(
-    n: int, verdict: str, findings: str, head: str, parsed: bool, accepted: bool,
+    n: int, verdict: str | None, findings: str, head: str, parsed: bool, accepted: bool,
     usage: dict | None, seconds: float, comment_url: str | None = None,
 ) -> str:
     from factory import trace
@@ -1076,8 +1109,12 @@ def _record_review_decision(
         row.get("pr") for row in reversed(lifecycle.read_events(EVENTS))
         if row.get("ticket") == n and row.get("event") == "pr-opened" and type(row.get("pr")) is int
     ), None)
-    chosen = verdict if parsed and accepted else "unparseable verdict"
-    reason = "selected by the reviewer" if parsed and accepted else "review evidence was rejected and failed closed to REVISE"
+    chosen = verdict if parsed and accepted else "reviewer unavailable" if verdict is None else "unparseable verdict"
+    reason = (
+        "selected by the reviewer" if parsed and accepted
+        else "reviewer tooling failed before a verdict" if verdict is None
+        else "review evidence was rejected and failed closed to REVISE"
+    )
     cause = _latest_decision_id(n, {"gate"})
     review_ref = comment_url or (f"https://github.com/{REPO}/pull/{pr}" if pr else f".factory/review-{n}.md")
     inputs = [
@@ -1097,6 +1134,8 @@ def _record_review_decision(
              "reason": reason if chosen == "APPROVE" else "required fixes remain or evidence was invalid"},
             {"option": "REVISE", "eligible": chosen == "REVISE",
              "reason": reason if chosen == "REVISE" else "no accepted REVISE verdict"},
+            {"option": "reviewer unavailable", "eligible": chosen == "reviewer unavailable",
+             "reason": reason if chosen == "reviewer unavailable" else "the reviewer returned a verdict"},
             {"option": "unparseable verdict", "eligible": chosen == "unparseable verdict",
              "reason": reason if chosen == "unparseable verdict" else "the verdict parsed"},
         ],
@@ -1601,11 +1640,11 @@ def escalation_packet(
 # a repeated code can be filed as a factory bug. `reason` stays the human prose.
 ESCALATION_CODES = frozenset({
     "protected_paths", "budget", "gate_failed", "worker_stuck", "pr_unpublished",
-    "pr_checks_failed", "review_revise", "approval_drift", "approval_missing",
-    "ci_failed", "ci_runner", "refresh_head", "refresh_conflict", "refresh_empty",
-    "gh_failed", "review_intake", "manager_failed", "manager_exhausted",
-    "manager_human", "pr_feedback", "pr_stale", "lease_refused", "dispatcher_error", "orphaned_claim",
-    "no_change",
+    "pr_checks_failed", "review_revise", "reviewer_unavailable", "approval_drift",
+    "approval_missing", "ci_failed", "ci_runner", "refresh_head", "refresh_conflict",
+    "refresh_empty", "gh_failed", "review_intake", "manager_failed",
+    "manager_exhausted", "manager_human", "pr_feedback", "pr_stale",
+    "lease_refused", "dispatcher_error", "orphaned_claim", "no_change",
 })
 
 
@@ -1761,61 +1800,115 @@ def run_reviewer(
     """Run and validate the configured reviewer outside the candidate checkout."""
     clean = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     before = run(["git", "rev-parse", "HEAD"], cwd=wt, env=clean).stdout.strip()
-    proc = None
-    launch_error = None
+    deadline = time.monotonic() + timeout if timeout is not None else None
     findings = ""
-    parsed = False
-    matches = []
     usage = None
     actual_head = before
+    failure_reason = "state_changed"
+    returncode = None
+    parsed = False
+    attempts = 0
+    structured = False
     if before == expected_head:
         command, structured = _review_command(prompt)
-        try:
-            diff = run(
-                ["git", "diff", f"{base_ref or f'origin/{cfg.main}'}..{expected_head}"],
-                cwd=wt,
-                env=clean,
-            ).stdout
-            kwargs = {}
-            if env is not None:
-                kwargs["env_overrides"] = env
-            if timeout is not None:
-                kwargs["timeout"] = timeout
-            proc = _run_reviewer(command, wt, expected_head, diff, **kwargs)
-        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            launch_error = f"{type(exc).__name__}: {exc}"
-            log(f"{subject}: reviewer launch failed ({exc}); fix PATH or [review] (`factory doctor`)")
-    if proc is not None:
-        findings, usage = _omp_output(proc.stdout) if structured else (proc.stdout.strip(), None)
-        findings = findings or proc.stderr.strip()
-        matches = list(re.finditer(r"(?m)^VERDICT: (APPROVE|REVISE)[ \t]*$", findings))
-        verdict_lines = re.findall(r"(?m)^VERDICT:.*$", findings)
-        parsed = len(verdict_lines) == 1 and len(matches) == 1 and matches[0].end() == len(findings)
-        actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt, env=clean).stdout.strip()
-    accepted = proc is not None and proc.returncode == 0 and parsed and actual_head == expected_head
-    verdict = matches[0].group(1) if accepted else "REVISE"
-    if accepted:
-        reason = verdict
-    elif before != expected_head or actual_head != expected_head:
-        reason = "state_changed"
-    elif launch_error:
-        reason = launch_error
-    elif proc is not None and proc.returncode:
-        reason = f"review_exit:{proc.returncode}"
-    else:
-        reason = "unparsed_verdict"
-    if not accepted:
+        for attempts in range(1, 4):
+            proc = None
+            launch_error = None
+            raw_output = ""
+            matches = []
+            try:
+                diff = run(
+                    ["git", "diff", f"{base_ref or f'origin/{cfg.main}'}..{expected_head}"],
+                    cwd=wt,
+                    env=clean,
+                ).stdout
+                kwargs = {}
+                if env is not None:
+                    kwargs["env_overrides"] = env
+                if deadline is not None:
+                    kwargs["timeout"] = max(0.001, deadline - time.monotonic())
+                proc = _run_reviewer(command, wt, expected_head, diff, **kwargs)
+            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+                launch_error = f"{type(exc).__name__}: {exc}"
+                log(f"{subject}: reviewer launch failed ({exc}); fix PATH or [review] (`factory doctor`)")
+            if proc is not None:
+                parsed_findings, attempt_usage = (
+                    _omp_output(proc.stdout) if structured else (proc.stdout.strip(), None)
+                )
+                findings = _review_diagnostics(
+                    proc.stdout, proc.stderr, structured, parsed_findings,
+                )
+                usage = attempt_usage or usage
+                raw_output = f"{proc.stdout}\n{proc.stderr}"
+                matches = list(re.finditer(r"(?m)^VERDICT: (APPROVE|REVISE)[ \t]*$", parsed_findings))
+                verdict_lines = re.findall(r"(?m)^VERDICT:.*$", parsed_findings)
+                parsed = (
+                    len(verdict_lines) == 1
+                    and len(matches) == 1
+                    and matches[0].end() == len(parsed_findings)
+                )
+                returncode = proc.returncode
+                actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt, env=clean).stdout.strip()
+            accepted = (
+                proc is not None
+                and proc.returncode == 0
+                and parsed
+                and actual_head == expected_head
+            )
+            if accepted:
+                findings = parsed_findings
+                return {
+                    "verdict": matches[0].group(1),
+                    "findings": findings,
+                    "usage": usage,
+                    "accepted": True,
+                    "parsed": True,
+                    "reason": matches[0].group(1),
+                    "returncode": returncode,
+                    "actual_head": actual_head,
+                    "attempts": attempts,
+                }
+            if actual_head != expected_head:
+                failure_reason = "state_changed"
+                break
+            if launch_error:
+                failure_reason = launch_error
+                findings = launch_error
+                raw_output = launch_error
+            elif proc is not None and proc.returncode:
+                failure_reason = f"review_exit:{proc.returncode}"
+            else:
+                failure_reason = "unparsed_verdict"
+            if attempts == 3:
+                break
+            delay = _review_retry_delay(raw_output, attempts)
+            if deadline is not None and delay >= deadline - time.monotonic():
+                break
+            log(f"{subject}: reviewer tooling failure ({failure_reason}); retrying in {delay:g}s")
+            if delay:
+                time.sleep(delay)
+    if failure_reason == "state_changed":
+        verdict = "REVISE"
+        reason = failure_reason
         diagnostic = f"Factory rejected reviewer evidence: {reason}."
-        findings = f"{findings}\n\n{diagnostic}" if findings else diagnostic
+    else:
+        verdict = None
+        reason = "reviewer_unavailable"
+        diagnostic = (
+            f"Factory reviewer unavailable after {attempts} attempt(s): {failure_reason}."
+        )
+    findings = f"{findings}\n\n{diagnostic}" if findings else diagnostic
     return {
         "verdict": verdict,
         "findings": findings,
         "usage": usage,
-        "accepted": accepted,
+        "accepted": False,
         "parsed": parsed,
         "reason": reason,
-        "returncode": proc.returncode if proc is not None else None,
+        "returncode": returncode,
         "actual_head": actual_head,
+        "attempts": attempts,
+        "failure_reason": failure_reason,
     }
 
 
@@ -1829,7 +1922,10 @@ def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str,
         execution.outcome = (
             "approved" if result["verdict"] == "APPROVE" else "product_feedback"
         ) if result["accepted"] else "unknown"
-        execution.reason = result["reason"]
+        execution.reason = (
+            f"{result['reason']}: {result['failure_reason']}"
+            if result["reason"] == "reviewer_unavailable" else result["reason"]
+        )
         execution.emit(
             "result", returncode=result["returncode"], verdict=result["verdict"],
             parsed=result["parsed"], head=expected_head, actual_head=result["actual_head"],
@@ -1843,12 +1939,15 @@ def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str,
             "parsed": result["parsed"], "accepted": result["accepted"], "usage": result["usage"],
             "seconds": time.monotonic() - started,
         }
-    return result["verdict"], result["findings"]
+    findings = result["findings"]
+    if result["verdict"] is None:
+        findings += f"\n\nFactory rejected reviewer evidence: {result['failure_reason']}."
+    return result["verdict"] or "REVISE", findings
 
 
 def pr_gate_and_review(
     wt: Path, n: int, report: str, head: str, pr_runs: dict[str, tuple[bool, str]],
-) -> tuple[str, str, bool]:
+) -> tuple[str | None, str, bool]:
     """Run the `when = "pr"` checks once per head, then review with their report appended.
 
     Returns (verdict, findings, pr_failed); a pr-tier FAIL skips review and its
@@ -1861,7 +1960,8 @@ def pr_gate_and_review(
             return "REVISE", pr_report, True
         report = f"{report}\n{pr_report}"
     verdict, findings = review(wt, n, report, head)
-    return verdict, findings, False
+    pending = _PENDING_REVIEWS.get(n)
+    return (None if pending and pending["verdict"] is None else verdict), findings, False
 
 
 def agent_lease(wt: Path, n: int) -> str:
@@ -2588,7 +2688,15 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         gate_head=head, actual_head=head, clean=True,
     )
     verdict, findings = review(wt, n, report, head)
+    pending = _PENDING_REVIEWS.get(n)
+    unavailable = pending is not None and pending.get("verdict") is None
     pr_comment(n, findings)
+    if unavailable:
+        withdraw(
+            f"reviewer unavailable after {verb} onto moved main",
+            "reviewer_unavailable",
+        )
+        return False
     if verdict != "APPROVE":
         withdraw(f"fresh review requested changes after {verb} onto moved main", "review_revise")
         return False
@@ -3318,6 +3426,16 @@ def process_ticket(
             pr_runs: dict[str, tuple[bool, str]] = {}
             verdict, findings, pr_failed = pr_gate_and_review(wt, n, report, gate_head, pr_runs)
             pr_comment(n, findings)
+            if verdict is None:
+                log(
+                    f"#{n}: reviewer unavailable; not a REVISE verdict after "
+                    f"{cfg.review_rounds} review round(s)"
+                )
+                escalate(
+                    n, "reviewer unavailable after retries", logfile,
+                    code="reviewer_unavailable",
+                )
+                return
             # Review rounds: each REVISE (or pr-tier FAIL) goes back to the worker with the
             # findings, then re-gate, push, re-review. `review_rounds` bounces max.
             for bounce in range(1, cfg.review_rounds + 1):
@@ -3361,6 +3479,12 @@ def process_ticket(
                 lease = push_agent(wt, n, lease)
                 verdict, findings, pr_failed = pr_gate_and_review(wt, n, report, gate_head, pr_runs)
                 pr_comment(n, findings)
+                if verdict is None:
+                    escalate(
+                        n, "reviewer unavailable after retries", logfile,
+                        code="reviewer_unavailable",
+                    )
+                    return
             if verdict != "APPROVE" and pr_failed:
                 escalate(n, "pr checks failed", logfile, extra="## PR-tier gate report\n\n" + findings,
                          code="pr_checks_failed")
