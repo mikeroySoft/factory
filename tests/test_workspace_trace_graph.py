@@ -117,3 +117,30 @@ process.stdout.write(JSON.stringify({expression}));
 
         self.assertLessEqual(result["stripeOffset"], 14)
         self.assertLessEqual(result["trackWidth"], 44)
+
+    def test_initial_replay_time_uses_latest_journal_event(self) -> None:
+        graph = {
+            "ticket": 389,
+            "nodes": [
+                {
+                    "decision_id": "old-review",
+                    "stage": "review",
+                    "chosen": "revise",
+                    "at": "2026-10-25T10:00:00Z",
+                },
+                {
+                    "decision_id": "latest-gate",
+                    "stage": "gate",
+                    "chosen": "pass",
+                    "at": "2026-10-25T11:00:00Z",
+                },
+            ],
+            "edges": [],
+        }
+
+        replay_time = self.evaluate(
+            "window.WorkspaceTrace.markup(value).match(/data-trace-time>([^<]*)/)[1]",
+            graph,
+        )
+
+        self.assertEqual(replay_time, "2026-10-25T11:00:00Z")
