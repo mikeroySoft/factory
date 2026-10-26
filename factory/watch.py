@@ -398,8 +398,13 @@ def _unchanged_test_rows(test_id: str, rows: list[dict]) -> list[dict]:
         parts = test_id.split(".")
         stop = next((index for index, part in enumerate(parts) if part[:1].isupper()), len(parts) - 1)
         source = "/".join(parts[:stop]) + ".py"
+    source_parts = Path(source).parts if source else ()
     def changed(path: Path) -> bool:
-        return module in {path.stem, path.parent.name} if module else path.as_posix() == source
+        return (
+            module in {path.stem, path.parent.name}
+            if module
+            else bool(source_parts) and path.parts[-len(source_parts):] == source_parts
+        )
     return [
         row for row in rows
         if row.get("ticket") is not None
