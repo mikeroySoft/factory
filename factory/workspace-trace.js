@@ -324,6 +324,7 @@
       const width = board.scrollWidth, height = board.scrollHeight;
       svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
       svg.setAttribute('width', width); svg.setAttribute('height', height);
+      svg.style.width = `${width}px`; svg.style.height = `${height}px`;
       const boardRect = board.getBoundingClientRect();
       const byId = new Map([...host.querySelectorAll('[data-trace-node]')].map(item => [item.dataset.traceNode, item]));
       const stageIndex = new Map([...host.querySelectorAll('[data-stage]')].map((item, index) => [item.dataset.stage, index]));
@@ -337,9 +338,13 @@
         groups.get(key).push(index);
       }
       const bundleInfo = new Map();
-      [...groups.values()].forEach((members, lane) => members.forEach((index, stripe) => {
-        const spacing = Math.min(2.4, 24 / members.length);
-        bundleInfo.set(index, {lane:lane % 4,stripe:(stripe - (members.length - 1) / 2) * spacing});
+      const bundleGroups = [...groups.values()];
+      const stripeCount = bundleGroups.reduce((total, members) => total + members.length, 0);
+      const spacing = Math.min(2.4, 44 / Math.max(1, stripeCount));
+      let track = 8 + spacing / 2;
+      bundleGroups.forEach(members => members.forEach((index, stripe) => {
+        bundleInfo.set(index, {spacing,stripe:(stripe - (members.length - 1) / 2) * spacing,track});
+        track += spacing;
       }));
       return edges.flatMap((edge, index) => {
         const source = byId.get(String(edge.from)), target = byId.get(String(edge.to));
@@ -356,16 +361,17 @@
           const track = 12 + index % 4 * 9;
           points = [{x:x(a.right),y:y1},{x:gutter,y:y1},{x:gutter,y:track},{x:gutter + 16,y:track},{x:gutter + 16,y:y2},{x:x(b.right),y:y2}];
         } else if (to < from) {
-          const track = 12 + (info?.lane ?? index % 4) * 9 + (info?.stripe || 0);
-          points = [{x:x(a.left),y:y1},{x:x(a.left) - 16,y:y1},{x:x(a.left) - 16,y:track},{x:x(b.right) + 16,y:track},{x:x(b.right) + 16,y:y2},{x:x(b.right),y:y2}];
+          const stripe = info?.stripe || 0;
+          const track = info?.track ?? 12 + index % 4 * 9;
+          points = [{x:x(a.left),y:y1},{x:x(a.left) - 16 + stripe,y:y1},{x:x(a.left) - 16 + stripe,y:track},{x:x(b.right) + 16 + stripe,y:track},{x:x(b.right) + 16 + stripe,y:y2},{x:x(b.right),y:y2}];
         } else if (info) {
-          const track = 12 + info.lane * 9 + info.stripe;
-          points = [{x:x(a.right),y:y1},{x:x(a.right) + 16,y:y1},{x:x(a.right) + 16,y:track},{x:x(b.left) - 16,y:track},{x:x(b.left) - 16,y:y2},{x:x(b.left),y:y2}];
+          const track = info.track;
+          points = [{x:x(a.right),y:y1},{x:x(a.right) + 16 + info.stripe,y:y1},{x:x(a.right) + 16 + info.stripe,y:track},{x:x(b.left) - 16 + info.stripe,y:track},{x:x(b.left) - 16 + info.stripe,y:y2},{x:x(b.left),y:y2}];
         } else {
           const gutter = (x(a.right) + x(b.left)) / 2;
           points = [{x:x(a.right),y:y1},{x:gutter,y:y1},{x:gutter,y:y1},{x:gutter,y:y2},{x:gutter,y:y2},{x:x(b.left),y:y2}];
         }
-        return [{index,edge,points,bundled:bundled.has(index),synthesized:target.classList.contains('is-synthesized')}];
+        return [{index,edge,points,bundled:bundled.has(index),spacing:info?.spacing,synthesized:target.classList.contains('is-synthesized')}];
       });
     };
     const applyHighlight = () => {
@@ -408,6 +414,7 @@
         let wire = wires.get(route.index);
         if (!wire) { wire = createWire(route); wires.set(route.index, wire); }
         wire.group.setAttribute('class', `trace-edge-group ${edgeType(route.edge.relation).className}${route.bundled ? ' is-bundled' : ''}${route.synthesized ? ' is-synthesized' : ''}`);
+        if (route.spacing) wire.group.style.setProperty('--trace-stripe-spacing', route.spacing);
         if (!wire.current || reduceMotion) {
           wire.current = route.points.map(point => ({...point}));
           updateWire(wire, wire.current);

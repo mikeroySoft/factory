@@ -420,14 +420,15 @@ body[data-motion="on"]:not([data-hidden="true"]) .signal[data-status="refreshing
 .trace-legend-line.relation-unblocked-by { border-top-style: double; }
 .trace-layout { display: grid; grid-template-columns: minmax(0,1fr) minmax(280px,340px); gap: 14px; align-items: start; }
 .trace-board { position: relative; min-height: 360px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: color-mix(in srgb,var(--surface) 84%,var(--bg)); }
-.trace-lines { position: absolute; z-index: 3; inset: 0; overflow: visible; pointer-events: none; }
+.trace-lines { position: absolute; z-index: 3; top: 0; left: 0; overflow: visible; pointer-events: none; }
 .trace-edge-group { color: var(--trace-color); transition: opacity 120ms ease; }
 .trace-edge, .trace-bundle-ribbon, .trace-edge-hit { fill: none; vector-effect: non-scaling-stroke; }
 .trace-edge { stroke: currentColor; stroke-width: 1.75; stroke-dasharray: var(--trace-dash); }
 .trace-arrow { fill: context-stroke; }
 .trace-edge-hit { pointer-events: stroke; stroke: transparent; stroke-width: 14; cursor: pointer; }
+.trace-edge-group.is-bundled .trace-edge-hit { stroke-width: var(--trace-stripe-spacing); }
 .trace-bundle-ribbon { stroke: color-mix(in srgb,var(--surface) 82%,var(--line)); stroke-width: 8; }
-.trace-edge-group.is-bundled .trace-edge { stroke-width: 2.5; }
+.trace-edge-group.is-bundled .trace-edge { stroke-width: var(--trace-stripe-spacing); }
 .trace-edge-group.is-synthesized { opacity: .72; }
 .trace-edge-label { opacity: 0; fill: var(--text); paint-order: stroke; stroke: var(--surface); stroke-width: 5px; stroke-linejoin: round; text-anchor: middle; font: 10px var(--mono); pointer-events: none; }
 .trace-edge-group.is-trace-active { z-index: 2; opacity: 1; filter: drop-shadow(0 0 4px color-mix(in srgb,var(--trace-color) 55%,transparent)); }
