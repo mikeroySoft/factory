@@ -386,7 +386,11 @@ def _unchanged_test_rows(test_id: str, rows: list[dict]) -> list[dict]:
         module = test_id.split("::tests::", 1)[0].rsplit("::", 1)[-1]
     elif "::" in test_id:
         source = test_id.split("::", 1)[0]
+        if not source.endswith(".py"):
+            return []
     else:
+        if "." not in test_id:
+            return []
         parts = test_id.split(".")
         stop = next((index for index, part in enumerate(parts) if part[:1].isupper()), len(parts) - 1)
         source = "/".join(parts[:stop]) + ".py"
