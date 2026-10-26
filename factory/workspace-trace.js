@@ -172,7 +172,7 @@
     const loopByNode = new Map();
     loops.forEach((loop, index) => array(loop?.nodes).forEach(id => loopByNode.set(String(id), index)));
     const stages = orderedStages(nodes);
-    const dated = nodes.filter(item => Number.isFinite(new Date(item?.at || '').valueOf()));
+    const dated = array(value.nodes).filter(item => Number.isFinite(new Date(item?.at || '').valueOf()));
     const end = terminal(value);
     const recentMarkup = recent.map(number => `<button type="button" data-trace-ticket="${number}"${number === ticket ? ' aria-current="true"' : ''}>#${number}</button>`).join('');
     const loopMarkup = loops.map((loop, index) => {
