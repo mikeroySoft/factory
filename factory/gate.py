@@ -100,7 +100,7 @@ def failed_test_ids(output: str) -> list[str]:
     """Canonical unittest, pytest and cargo libtest IDs, in report order."""
     found = []
     for line in output.splitlines():
-        match = re.match(r"^(?:FAIL|ERROR): .+ \(([^()\s]+)\)$", line)
+        match = re.match(r"^(?:FAIL|ERROR): \S+ \(([^()\s]+)\)", line)
         if match is None:
             match = re.match(r"^FAILED ([^\s]+::[^\s]+)(?:\s+-|\s*$)", line)
         if match is None:
