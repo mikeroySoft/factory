@@ -287,6 +287,19 @@ class FailedTestEvidenceTest(unittest.TestCase):
                 "tests/test_cli.py::CliTest::test_help",
             ])
 
+    def test_parses_unittest_subtest_failure_id(self) -> None:
+        from factory import gate as factory_gate
+
+        output = """FAIL: test_x (mod.C.test_x) (i=1)
+ERROR: test_y (mod.C.test_y) (name='a.b')
+FAIL: test_z (mod.C.test_z) (a=1, b=2)
+"""
+        self.assertEqual(factory_gate.failed_test_ids(output), [
+            "mod.C.test_x",
+            "mod.C.test_y",
+            "mod.C.test_z",
+        ])
+
     def test_parses_cargo_libtest_failure_id(self) -> None:
         from factory import gate as factory_gate
 
