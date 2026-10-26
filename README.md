@@ -841,9 +841,10 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    head, target branch, label, and veto are then re-read immediately before
    `gh pr merge --match-head-commit <sha>`. Missing,
    unbound, legacy, or stale approval evidence never merges.
-   A PR changing worker configuration/routing, standing prompts, lessons, or
-   skills also needs an `eval-summary` `keep` verdict bound to that exact head;
-   a missing or `revert` claim waits without merging. Behind `main` → refresh,
+   With `[eval] schedule = true`, a PR changing worker configuration/routing,
+   standing prompts, lessons, or skills also needs an `eval-summary` `keep`
+   verdict bound to that exact head; a missing or `revert` claim waits without
+   merging. Behind `main` → refresh,
    re-gate on this host, force-push, run a fresh independent review,
    post its findings, and either reapprove the resulting head, return routine
    refresh work to the ticket worker, or withdraw the label and escalate. A
