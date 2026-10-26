@@ -5128,5 +5128,81 @@ class TriageProbeOnboardingTest(unittest.TestCase):
             })
 
 
+
+class WatchBandConfigTest(unittest.TestCase):
+    CONFIG = """schema_version = 1
+[[band]]
+metric = "gate_failures_by_test"
+window_days = 28
+rules = [
+  { kind = "sigma", sigma = 3.0, count = 1, span = 1, tier = "act", min_tickets = 2 },
+  { kind = "same_side", count = 8, span = 8, tier = "diagnose" },
+]
+"""
+
+    def test_loads_thresholds_and_tiers_from_committed_band_config(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = make_repo(Path(directory))
+            (repo / config.BANDS_NAME).write_text(self.CONFIG)
+
+            cfg = config.load(repo)
+
+        [band] = cfg.watch_bands
+        self.assertEqual((band.metric, band.window_days), ("gate_failures_by_test", 28))
+        self.assertEqual(
+            [(rule.kind, rule.sigma, rule.count, rule.span, rule.tier, rule.min_tickets)
+             for rule in band.rules],
+            [("sigma", 3.0, 1, 1, "act", 2), ("same_side", None, 8, 8, "diagnose", 1)],
+        )
+
+    def test_rejects_unversioned_or_incomplete_rule_config(self) -> None:
+        cases = (
+            '[[band]]\nmetric = "gate_failure_rate"\nwindow_days = 28\nrules = []\n',
+            'schema_version = 2\n',
+            (
+                'schema_version = 1\n[[band]]\nmetric = "gate_failure_rate"\nwindow_days = 28\n'
+                'rules = [{ kind = "sigma", count = 1, span = 1, tier = "act" }]\n'
+            ),
+            (
+                'schema_version = 1\n[[band]]\nmetric = "gate_failures_by_test"\nwindow_days = 28\n'
+                'rules = [{ kind = "sigma", sigma = 3, count = 1, span = 1, '
+                'tier = "act", min_tickets = 0 }]\n'
+            ),
+        )
+        for text in cases:
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as directory:
+                repo = make_repo(Path(directory))
+                (repo / config.BANDS_NAME).write_text(text)
+                with self.assertRaises(config.ConfigError):
+                    config.load(repo)
+
+    def test_init_writes_versioned_band_config(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = make_repo(Path(directory))
+
+            result = factory(repo, "init", "--no-labels")
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            loaded = config.load(repo)
+            self.assertEqual(len(loaded.watch_bands), 6)
+            self.assertIn(f"wrote {config.BANDS_NAME}", result.stdout)
+
+    def test_doctor_reports_insufficient_baseline(self) -> None:
+        gh = 'case "$1 $2" in "repo view") echo WRITE;; "label list") echo "[]";; esac\nexit 0'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = make_repo(root)
+            (repo / config.BANDS_NAME).write_text(self.CONFIG)
+            git(repo, "add", config.BANDS_NAME)
+            git(repo, "commit", "-q", "-m", "bands")
+            stubs = stub_bin(root, gh=gh, systemctl="echo inactive", omp="exit 0", droid="exit 0")
+
+            result = factory(repo, "doctor", "--json", path=stubs)
+
+            rows = {row["label"]: row for row in json.loads(result.stdout)["rows"]}
+            self.assertEqual(rows[f"{config.BANDS_NAME} committed"]["status"], "PASS")
+            self.assertEqual(rows["watch control bands"]["status"], "WARN")
+            self.assertIn("insufficient baseline", rows["watch control bands"]["detail"])
+
 if __name__ == "__main__":
     unittest.main()

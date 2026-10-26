@@ -95,6 +95,27 @@ def run(cmd: list[str]) -> tuple[bool, str]:
         execution.reason = "configured_check_failed"
     return proc.returncode == 0, proc.stdout + proc.stderr
 
+
+def failed_test_ids(output: str) -> list[str]:
+    """Canonical unittest, pytest and cargo libtest IDs, in report order."""
+    found = []
+    for line in output.splitlines():
+        match = re.match(r"^(?:FAIL|ERROR): \S+ \(([^()\s]+)\)", line)
+        if match is None:
+            match = re.match(r"^FAILED ([^\s]+::[^\s]+)(?:\s+-|\s*$)", line)
+        if match is None:
+            match = re.match(r"^---- ([^\s]+) stdout ----$", line)
+        if match is not None and match[1] not in found:
+            found.append(match[1])
+    return found
+
+
+def changed_paths(base: str) -> list[str]:
+    proc = timed(["git", "diff", "--name-only", "-z", f"{base}...HEAD"])
+    return proc.stdout.rstrip("\0").split("\0") if proc.returncode == 0 and proc.stdout else []
+
+
+
 def _acquire_exclusive(execution):
     lock = open(GPU_LOCK, "w")  # noqa: SIM115 — caller controls lock lifetime
     try:
@@ -715,7 +736,10 @@ def execute(args: argparse.Namespace, execution) -> int:
                 if not passed and check.outcome == "completed":
                     check.outcome = "product_feedback"
                     check.reason = "check_failed"
-                check.emit("result", check=name, passed=passed)
+                fields = {"failed_tests": failed_test_ids(output)} if not passed else {}
+                if fields.get("failed_tests"):
+                    fields["changed_paths"] = changed_paths(args.base)
+                check.emit("result", check=name, passed=passed, **fields)
                 results.append((name, "PASS" if passed else "FAIL", output))
             if not passed and (outcome == "completed" or check.outcome == "unknown"):
                 outcome, reason = check.outcome, check.reason

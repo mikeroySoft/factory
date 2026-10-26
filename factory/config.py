@@ -9,6 +9,7 @@ conventions, not configuration.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shlex
@@ -21,6 +22,7 @@ from pathlib import Path
 from factory import lifecycle
 
 CONFIG_NAME = ".factory.toml"
+BANDS_NAME = "factory-bands.toml"
 LESSONS_NAME = ".factory-lessons.md"  # committed; `factory learn` writes, every worker prompt reads
 
 # Triage roles -> label strings. Fixed by convention; `factory init` creates them.
@@ -103,6 +105,15 @@ KNOWN_KEYS = {
 USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "cached_tokens", "cost")
 CHECK_KEYS = ("name", "run", "exclusive", "when")
 CHECK_TIERS = ("attempt", "pr", "release")
+BAND_METRICS = frozenset({
+    "gate_failure_rate",
+    "gate_failures_by_check",
+    "gate_failures_by_test",
+    "ready_for_human_rate",
+    "claim_to_merge_hours",
+    "rework_rounds",
+})
+BAND_TIERS = frozenset({"log", "diagnose", "act"})
 ROUTE_REASONS = ("requirements", "implementation", "ci", "unknown")
 # GitHub login, or `@org/team`. Syntax only: never proof of membership or authorization.
 OWNER = re.compile(r"@?(?P<login>[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)|(?P<team>@[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9_.-]{1,100})")
@@ -127,6 +138,23 @@ class Check:
     run: list[str]
     exclusive: bool = False
     when: str = "attempt"
+
+
+@dataclass(frozen=True)
+class BandRule:
+    kind: str
+    tier: str
+    count: int
+    span: int
+    sigma: float | None = None
+    min_tickets: int = 1
+
+
+@dataclass(frozen=True)
+class Band:
+    metric: str
+    window_days: int
+    rules: tuple[BandRule, ...]
 
 
 @dataclass
@@ -206,6 +234,7 @@ class Config:
     # `[watch].engine_repo`: where `factory watch` files engine/runtime failures from every install.
     watch_engine_repo: str = ENGINE_REPO
     watch_host_failure_minutes: int = 60
+    watch_bands: list[Band] = field(default_factory=list)
     raw_repo: dict = field(default_factory=dict)  # the committed file alone, before host layering
 
     @property
@@ -468,6 +497,85 @@ def manager_settings(table: dict) -> tuple[list[str] | None, str | None]:
     return command, model
 
 
+def band_settings(path: Path) -> list[Band]:
+    """Strict schema-1 control bands. Missing means disabled; every threshold is committed."""
+    if not path.exists():
+        return []
+    try:
+        raw = tomllib.loads(path.read_text())
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"{path}: {exc}") from exc
+    if (
+        set(raw) != {"schema_version", "band"}
+        or type(raw.get("schema_version")) is not int
+        or raw["schema_version"] != 1
+    ):
+        raise ConfigError(f"{path}: needs schema_version = 1 and one or more [[band]] tables")
+    tables = raw.get("band")
+    if not isinstance(tables, list) or not tables:
+        raise ConfigError(f"{path}: band must be a nonempty array of tables")
+    bands = []
+    for index, table in enumerate(tables):
+        where = f"{path}: band[{index}]"
+        if not isinstance(table, dict) or set(table) != {"metric", "window_days", "rules"}:
+            raise ConfigError(f"{where} needs exactly metric, window_days and rules")
+        metric, window, rules = table["metric"], table["window_days"], table["rules"]
+        if not isinstance(metric, str) or metric not in BAND_METRICS:
+            raise ConfigError(f"{where}.metric must be one of {', '.join(sorted(BAND_METRICS))}")
+        if isinstance(window, bool) or not isinstance(window, int) or window < 1:
+            raise ConfigError(f"{where}.window_days must be a positive integer")
+        if not isinstance(rules, list) or not rules:
+            raise ConfigError(f"{where}.rules must be a nonempty array")
+        parsed = []
+        for rule_index, rule in enumerate(rules):
+            rule_where = f"{where}.rules[{rule_index}]"
+            if not isinstance(rule, dict):
+                raise ConfigError(f"{rule_where} must be a table")
+            kind = rule.get("kind")
+            expected = {"kind", "tier", "count", "span", "sigma"} if kind == "sigma" else {
+                "kind", "tier", "count", "span"
+            }
+            if "min_tickets" in rule:
+                expected.add("min_tickets")
+            if not isinstance(kind, str) or kind not in {"sigma", "same_side"} or set(rule) != expected:
+                raise ConfigError(
+                    f"{rule_where} needs kind, tier, count, span"
+                    + (", sigma for kind = \"sigma\"" if kind == "sigma" else "")
+                    + " and optional min_tickets"
+                )
+            tier, count, span = rule["tier"], rule["count"], rule["span"]
+            if not isinstance(tier, str) or tier not in BAND_TIERS:
+                raise ConfigError(f"{rule_where}.tier must be log, diagnose or act")
+            if (
+                isinstance(count, bool) or not isinstance(count, int) or count < 1
+                or isinstance(span, bool) or not isinstance(span, int)
+                or count > span or span > window
+            ):
+                raise ConfigError(f"{rule_where}: require 1 <= count <= span <= window_days")
+            sigma = rule.get("sigma")
+            if kind == "sigma" and (
+                isinstance(sigma, bool) or not isinstance(sigma, (int, float))
+                or not math.isfinite(sigma) or sigma <= 0
+            ):
+                raise ConfigError(f"{rule_where}.sigma must be positive and finite")
+            min_tickets = rule.get("min_tickets", 1)
+            if isinstance(min_tickets, bool) or not isinstance(min_tickets, int) or min_tickets < 1:
+                raise ConfigError(f"{rule_where}.min_tickets must be a positive integer")
+            if "min_tickets" in rule and (
+                metric != "gate_failures_by_test" or tier != "act"
+            ):
+                raise ConfigError(
+                    f"{rule_where}.min_tickets is only valid for gate_failures_by_test act rules"
+                )
+            parsed.append(BandRule(
+                kind, tier, count, span, float(sigma) if sigma is not None else None, min_tickets,
+            ))
+        bands.append(Band(metric, window, tuple(parsed)))
+    if len({band.metric for band in bands}) != len(bands):
+        raise ConfigError(f"{path}: band metrics must be unique")
+    return bands
+
+
 def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     """Load `<root>/.factory.toml` over the host layer; every key optional except a resolvable repo slug."""
     root = Path(git(start, "rev-parse", "--show-toplevel")) if worktree else repo_root(start)
@@ -499,6 +607,7 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     if not isinstance(evaluation, dict):
         raise ConfigError("[eval] must be a table")
     cfg = Config(root=root, repo=slug, raw_repo=raw_repo)
+    cfg.watch_bands = band_settings(root / BANDS_NAME)
     cfg.upstream = repo_t.get("upstream") or None
     cfg.main = repo_t.get("main", cfg.main)
     cfg.max_active = int(dispatch.get("max_active", cfg.max_active))
