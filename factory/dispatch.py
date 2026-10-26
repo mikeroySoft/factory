@@ -2915,6 +2915,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
                     "gate_failed", extra=details,
                 )
                 return False
+            run(["git", "reset", "--hard", remote_head], cwd=wt)
             record_merge_decision(
                 n, pr, "gate-requeue",
                 f"gate failed twice after {verb} onto moved {cfg.main}; requeued to a worker",
