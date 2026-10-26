@@ -1613,10 +1613,27 @@ ESCALATION_CODES = frozenset({
 })
 
 
-def escalate(n: int, reason: str, log_path: Path | None, extra: str = "", *, code: str) -> None:
+def escalate(
+    n: int,
+    reason: str,
+    log_path: Path | None,
+    extra: str = "",
+    *,
+    code: str,
+    refreshed_head: str | None = None,
+    evidence_ref: str | None = None,
+) -> None:
     assert code in ESCALATION_CODES, code
+    assert (refreshed_head is None) == (evidence_ref is None)
     log(f"#{n}: escalating to human ({code}: {reason})")
     wt = FACTORY / f"wt-{n}"
+    if refreshed_head is not None:
+        extra = (
+            (f"{extra.rstrip()}\n\n" if extra.strip() else "")
+            + "## Refreshed head evidence\n\n"
+            + f"- Refreshed head: `{refreshed_head}`\n"
+            + f"- Evidence ref: `{evidence_ref}`\n"
+        )
     packet, round_number = escalation_packet(n, reason, log_path, wt, extra=extra)
     from factory import trace
 
@@ -1637,9 +1654,15 @@ def escalate(n: int, reason: str, log_path: Path | None, extra: str = "", *, cod
         actor=_decision_actor("deterministic", "dispatch.escalate"),
     )
     record("decision", **payload)
+    evidence = (
+        {"refreshed_head": refreshed_head, "evidence_ref": evidence_ref}
+        if refreshed_head is not None
+        else {}
+    )
     record(
         "escalate", ticket=n, code=code, reason=reason,
         log=str(log_path) if log_path else None, packet=str(packet), round=round_number,
+        **evidence,
     )
     run(
         [
@@ -2762,8 +2785,51 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         return False
     wt = ensure_worktree(n)
 
-    def withdraw(reason: str, code: str, extra: str = "") -> None:
-        escalate(n, f"PR #{pr}: {reason}; `{FACTORY_APPROVED}` label removed", None, extra=extra, code=code)
+    def restore_pr_head(refreshed_head: str) -> str:
+        """Keep the unpushed candidate as evidence before restoring the live PR head."""
+        evidence_ref = f"refs/factory-evidence/{n}-refreshed-{refreshed_head[:12]}"
+        run(["git", "update-ref", evidence_ref, refreshed_head], cwd=wt)
+        run(
+            [
+                "git",
+                "fetch",
+                "origin",
+                f"+refs/heads/agent/{n}:refs/remotes/origin/agent/{n}",
+            ],
+            cwd=wt,
+        )
+        run(["git", "reset", "--hard", f"origin/agent/{n}"], cwd=wt)
+        run(
+            [
+                "git",
+                "clean",
+                "-fd",
+                "--",
+                ".",
+                ":(exclude).factory-prompt.md",
+                ":(exclude).factory",
+            ],
+            cwd=wt,
+        )
+        return evidence_ref
+
+    def withdraw(
+        reason: str,
+        code: str,
+        extra: str = "",
+        *,
+        refreshed_head: str | None = None,
+    ) -> None:
+        evidence_ref = restore_pr_head(refreshed_head) if refreshed_head is not None else None
+        escalate(
+            n,
+            f"PR #{pr}: {reason}; `{FACTORY_APPROVED}` label removed",
+            None,
+            extra=extra,
+            code=code,
+            refreshed_head=refreshed_head,
+            evidence_ref=evidence_ref,
+        )
 
     removed = run(
         ["gh", "pr", "edit", str(pr), "--repo", REPO, "--remove-label", FACTORY_APPROVED],
@@ -2817,13 +2883,17 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
              "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT, "--remove-assignee", "@me"], check=False)
         log(f"#{n}: PR #{pr} {verb} onto {cfg.main} conflicts in {', '.join(conflicts)}; requeued to a worker")
         return False
+    head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     empty = run(
         ["git", "merge-base", "--is-ancestor", "HEAD", f"origin/{cfg.main}"], cwd=wt, check=False
     ).returncode == 0
     if empty:
-        withdraw(f"nothing ahead of {cfg.main} after {verb}; refusing to push", "refresh_empty")
+        withdraw(
+            f"nothing ahead of {cfg.main} after {verb}; refusing to push",
+            "refresh_empty",
+            refreshed_head=head,
+        )
         return False
-    head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     status_cmd = [
         "git", "status", "--porcelain", "--untracked-files=all", "--", ".",
         ":(exclude).factory-prompt.md", ":(exclude).factory",
@@ -2859,6 +2929,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             f"gate failed after {verb} onto moved main (protected or add-only paths without authority)",
             "protected_paths",
             extra=f"## First refresh gate report\n\n{report}{assessment}",
+            refreshed_head=head,
         )
         return False
     if not ok and evidence_clean:
@@ -2889,12 +2960,15 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             f"## Refresh gate re-run report\n\n{report}{assessment}"
         )
         if not rerun_clean:
-            withdraw("gate re-run changed the refreshed head or worktree", "refresh_head", extra=details)
+            withdraw(
+                "gate re-run changed the refreshed head or worktree", "refresh_head",
+                extra=details, refreshed_head=head,
+            )
             return False
         if not ok and "- protected-paths: FAIL" in report:
             withdraw(
                 f"gate failed after {verb} onto moved main (protected or add-only paths without authority)",
-                "protected_paths", extra=details,
+                "protected_paths", extra=details, refreshed_head=head,
             )
             return False
         if not ok:
@@ -2913,10 +2987,11 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             if why:
                 withdraw(
                     f"gate failed twice after {verb} onto moved main ({why}); worktree {wt}",
-                    "gate_failed", extra=details,
+                    "gate_failed", extra=details, refreshed_head=head,
                 )
                 return False
-            run(["git", "reset", "--hard", remote_head], cwd=wt)
+            evidence_ref = restore_pr_head(head)
+            remote_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
             record_merge_decision(
                 n, pr, "gate-requeue",
                 f"gate failed twice after {verb} onto moved {cfg.main}; requeued to a worker",
@@ -2925,6 +3000,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             record(
                 "gate-requeue", ticket=n, pr=pr, head=remote_head, verb=verb,
                 reports=reports, changed_files=changed_files, unrelated=unrelated, round=rounds + 1,
+                refreshed_head=head, evidence_ref=evidence_ref,
             )
             run(["gh", "issue", "edit", str(n), "--repo", REPO,
                  "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
@@ -2933,10 +3009,18 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             return False
     if not ok:
         pr_comment(n, f"Gate failed after {verb} onto current main:\n\n{report}")
-        withdraw(f"gate failed after {verb} onto moved main", "gate_failed")
+        withdraw(
+            f"gate failed after {verb} onto moved main",
+            "gate_failed",
+            refreshed_head=head,
+        )
         return False
     if push_agent(wt, n, remote_head, check=False) is None:
-        withdraw("remote head changed while refreshed evidence was being produced", "refresh_head")
+        withdraw(
+            "remote head changed while refreshed evidence was being produced",
+            "refresh_head",
+            refreshed_head=head,
+        )
         return False
     record(
         "refreshed", ticket=n, pr=pr, head=head, gate="PASS",
