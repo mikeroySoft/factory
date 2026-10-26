@@ -1120,6 +1120,7 @@ def record_merge_decision(
         "ci-rerun": rationale if chosen == "ci-rerun" else "CI rerun is not required",
         "ci-infra": rationale if chosen == "ci-infra" else "CI infrastructure is available",
         "conflict-requeue": rationale if chosen == "conflict-requeue" else "no refresh conflict",
+        "gate-requeue": rationale if chosen == "gate-requeue" else "no repeated refresh gate failure",
     }
     inputs = [
         {"kind": "head", "ref": f"https://github.com/{REPO}/commit/{head or 'unknown'}",
@@ -2699,6 +2700,59 @@ def runner_unavailable(n: int, pr: int, starved: list[dict], dry_run: bool) -> b
     return True
 
 
+def _refresh_failure_scope(wt: Path, n: int, reports: list[str]) -> tuple[list[str], bool]:
+    changed = run(
+        ["git", "diff", "--name-only", "-z", f"origin/{cfg.main}...origin/agent/{n}"],
+        cwd=wt, check=False,
+    ).stdout
+    paths = [path for path in changed.split("\0") if path]
+    text = "\n".join(reports)
+    related = any(
+        token and token in text
+        for path in paths
+        for token in (path, Path(path).name, Path(path).stem if len(Path(path).stem) >= 5 else "")
+    )
+    return paths, bool(paths) and not related
+
+
+def refresh_requeue_context(n: int) -> str:
+    rows = [
+        event for event in lifecycle.read_events(EVENTS)
+        if event.get("ticket") == n
+        and event.get("event") in {"attempt", "conflict-requeue", "gate-requeue"}
+    ]
+    if not rows or rows[-1]["event"] == "attempt":
+        return ""
+    event = rows[-1]
+    if event["event"] == "conflict-requeue":
+        return (
+            f"## Refresh conflict, round {event['round']}\n\n"
+            f"PR #{event['pr']} was approved, but `git {event['verb']} origin/{cfg.main}` conflicts in:\n\n"
+            + "".join(f"- `{path}`\n" for path in event["files"])
+            + f"\nRun `git fetch origin && git {event['verb']} origin/{cfg.main}` in this worktree, resolve "
+            "the conflicts, and commit. Keep the already-approved intent of the change; do not widen scope. "
+            "The approval does not carry over: the gate and an independent review run again.\n\n"
+        )
+    reports = event.get("reports") or []
+    assessment = (
+        "\n**Assessment:** failure appears unrelated to this PR's changes.\n"
+        if event.get("unrelated") else ""
+    )
+    rendered = "\n\n".join(
+        f"### {'First gate report' if index == 1 else 'Gate re-run report'}\n\n{report}"
+        for index, report in enumerate(reports, 1)
+    )
+    return (
+        f"## Refresh gate failure, round {event['round']}\n\n"
+        f"PR #{event['pr']} was approved, but the gate failed twice after refresh onto current "
+        f"`{cfg.main}`.{assessment}\n\n"
+        f"{rendered}\n\n"
+        f"Continue on the existing `agent/{n}` branch. Rebase onto `origin/{cfg.main}` if needed, "
+        "make the gate pass, and commit only changes within the ticket's scope. The approval does not "
+        "carry over: the gate and an independent review run again.\n\n"
+    )
+
+
 def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     """Refresh, gate, push, and independently review the resulting immutable head."""
     target = gh_json(["pr", "view", str(pr), "--repo", REPO, "--json", "baseRefName"])
@@ -2777,21 +2831,105 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels,body,comments"])
     labels = {label["name"] for label in issue.get("labels", [])}
     handoff = wt / ".factory" / f"handoff-{n}.md"
-    ok, report = run_gate(
-        wt, n, **gate_flags(
-            sync_event(n), labels, issue.get("body") or "",
-            handoff.read_text() if handoff.exists() else "",
-            comments=issue.get("comments"),
-        )
+    flags = gate_flags(
+        sync_event(n), labels, issue.get("body") or "",
+        handoff.read_text() if handoff.exists() else "",
+        comments=issue.get("comments"),
     )
+    ok, report = run_gate(wt, n, **flags)
+    reports = [report]
+    gate_rerun = False
     actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     after_status = run(status_cmd, cwd=wt).stdout.strip()
+    evidence_clean = actual_head == head and not before_status and not after_status
     if actual_head != head:
         ok = False
         report += f"\n\nGate evidence rejected: HEAD changed from {head} to {actual_head}."
     if before_status or after_status:
         ok = False
         report += "\n\nGate evidence rejected: worktree was not clean for the gated commit."
+    if not ok and evidence_clean and "- protected-paths: FAIL" in report:
+        _changed_files, unrelated = _refresh_failure_scope(wt, n, reports)
+        assessment = (
+            "\n\n**Assessment:** failure appears unrelated to this PR's changes."
+            if unrelated else ""
+        )
+        withdraw(
+            f"gate failed after {verb} onto moved main (protected or add-only paths without authority)",
+            "protected_paths",
+            extra=f"## First refresh gate report\n\n{report}{assessment}",
+        )
+        return False
+    if not ok and evidence_clean:
+        first_report = report
+        ok, report = run_gate(wt, n, **flags)
+        gate_rerun = True
+        actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+        after_status = run(status_cmd, cwd=wt).stdout.strip()
+        rerun_clean = actual_head == head and not after_status
+        if actual_head != head:
+            ok = False
+            report += f"\n\nGate evidence rejected: HEAD changed from {head} to {actual_head}."
+        if after_status:
+            ok = False
+            report += "\n\nGate evidence rejected: worktree was not clean for the gated commit."
+        reports = [first_report, report]
+        changed_files, unrelated = _refresh_failure_scope(wt, n, reports)
+        record(
+            "gate-rerun", ticket=n, pr=pr, head=head, gate="PASS" if ok else "FAIL",
+            reports=reports, changed_files=changed_files, unrelated=unrelated,
+        )
+        assessment = (
+            "\n\n**Assessment:** failure appears unrelated to this PR's changes."
+            if unrelated else ""
+        )
+        details = (
+            f"## First refresh gate report\n\n{first_report}\n\n"
+            f"## Refresh gate re-run report\n\n{report}{assessment}"
+        )
+        if not rerun_clean:
+            withdraw("gate re-run changed the refreshed head or worktree", "refresh_head", extra=details)
+            return False
+        if not ok and "- protected-paths: FAIL" in report:
+            withdraw(
+                f"gate failed after {verb} onto moved main (protected or add-only paths without authority)",
+                "protected_paths", extra=details,
+            )
+            return False
+        if not ok:
+            rounds = sum(
+                event.get("event") == "gate-requeue" and event.get("ticket") == n
+                for event in lifecycle.read_events(EVENTS)
+            )
+            issue_state = gh_json(
+                ["issue", "view", str(n), "--repo", REPO, "--json", "state"]
+            ).get("state")
+            why = (
+                f"after {rounds} gate-resolution round(s)" if rounds >= cfg.review_rounds
+                else "ticket is not open" if issue_state != "OPEN"
+                else ""
+            )
+            if why:
+                withdraw(
+                    f"gate failed twice after {verb} onto moved main ({why}); worktree {wt}",
+                    "gate_failed", extra=details,
+                )
+                return False
+            run(["git", "reset", "--hard", remote_head], cwd=wt)
+            record_merge_decision(
+                n, pr, "gate-requeue",
+                f"gate failed twice after {verb} onto moved {cfg.main}; requeued to a worker",
+                remote_head, remote_head, [],
+            )
+            record(
+                "gate-requeue", ticket=n, pr=pr, head=remote_head, verb=verb,
+                reports=reports, changed_files=changed_files, unrelated=unrelated, round=rounds + 1,
+            )
+            run(["gh", "issue", "edit", str(n), "--repo", REPO,
+                 "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
+                 "--remove-assignee", "@me"], check=False)
+            log(f"#{n}: PR #{pr} gate failed twice after {verb} onto {cfg.main}; requeued to a worker")
+            return False
     if not ok:
         pr_comment(n, f"Gate failed after {verb} onto current main:\n\n{report}")
         withdraw(f"gate failed after {verb} onto moved main", "gate_failed")
@@ -2801,7 +2939,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         return False
     record(
         "refreshed", ticket=n, pr=pr, head=head, gate="PASS",
-        gate_head=head, actual_head=head, clean=True,
+        gate_head=head, actual_head=head, clean=True, gate_rerun=gate_rerun,
     )
     verdict, findings = review(wt, n, report, head)
     pending = _PENDING_REVIEWS.get(n)
@@ -3489,20 +3627,10 @@ def process_ticket(
 
             # Attempts 1..MAX_ATTEMPTS: worker + gate, feeding the failed report back. A sync
             # candidate the dispatcher's own gate passed at this exact head needs no worker,
-            # unless a refresh conflict requeued it (no attempt since its `conflict-requeue`).
-            rows = [e for e in lifecycle.read_events(EVENTS)
-                    if e.get("ticket") == n and e.get("event") in {"attempt", "conflict-requeue"}]
-            conflict = rows[-1] if rows and rows[-1]["event"] == "conflict-requeue" else None
-            resolve = "" if conflict is None else (
-                f"## Refresh conflict, round {conflict['round']}\n\n"
-                f"PR #{conflict['pr']} was approved, but `git {conflict['verb']} origin/{cfg.main}` conflicts in:\n\n"
-                + "".join(f"- `{path}`\n" for path in conflict["files"])
-                + f"\nRun `git fetch origin && git {conflict['verb']} origin/{cfg.main}` in this worktree, resolve "
-                "the conflicts, and commit. Keep the already-approved intent of the change; do not widen scope. "
-                "The approval does not carry over: the gate and an independent review run again.\n\n"
-            )
+            # unless a refresh conflict or repeated refresh gate failure requeued it.
+            resolve = refresh_requeue_context(n)
             extra, logfile, report = resolve, None, ""
-            staged = None if conflict else sync_staged(n, wt)
+            staged = None if resolve else sync_staged(n, wt)
             if staged is not None:
                 report, gate_head = staged
             for attempt in range(1, MAX_ATTEMPTS + 1 if staged is None else 1):

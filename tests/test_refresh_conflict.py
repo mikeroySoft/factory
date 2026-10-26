@@ -281,6 +281,148 @@ class RefreshConflictTest(unittest.TestCase):
         self.assertEqual(len(self.events("conflict-requeue")), 1)
 
 
+
+class RefreshGateFailureTest(unittest.TestCase):
+    """#381: a refresh gate gets one retry, then returns routine failures to the worker."""
+
+    def setUp(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.tmp = Path(temp.name)
+        self.prompt_seen = self.tmp / "prompt-seen.md"
+        resolver = self.tmp / "resolver.py"
+        resolver.write_text(RESOLVER)
+        self.root, self.origin = build_fork(self.tmp)
+        git(self.origin, "checkout", "-qb", "agent/9")
+        (self.origin / "feature.txt").write_text("agent change\n")
+        git(self.origin, "add", "-A")
+        git(self.origin, "commit", "-qm", "agent change")
+        self.approved_head = git(self.origin, "rev-parse", "HEAD")
+        git(self.origin, "checkout", "-q", "main")
+        (self.origin / "main.txt").write_text("main change\n")
+        git(self.origin, "add", "-A")
+        git(self.origin, "commit", "-qm", "main moved")
+        self.cfg = config.Config(
+            root=self.root, repo="acme/widgets", main="main", review_rounds=3,
+            idle_timeout=0, exit_grace=0,
+            workers={"default": [sys.executable, str(resolver), str(self.prompt_seen)]},
+            reviewer=[sys.executable, "-c", "print('```json\\n{\"verdict\":\"APPROVE\",\"findings\":[]}\\n```\\nVERDICT: APPROVE')"],
+        )
+        dispatch.configure(self.cfg)
+        self.github = FakeGitHub(self.origin, dispatch.run)
+
+    def patched(self):
+        return mock.patch.multiple(dispatch, gh_json=self.github.gh_json, run=self.github.run)
+
+    def events(self, name: str) -> list[dict]:
+        return [e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("event") == name]
+
+    def test_flaky_gate_failure_after_refresh_reruns_once_then_pushes_and_merges(self) -> None:
+        with self.patched(), mock.patch.object(
+            dispatch, "run_gate", side_effect=[(False, "first flaky report"), (True, "second passing report")]
+        ) as gate:
+            dispatch.merge_pass_locked(False)
+            self.assertEqual(gate.call_count, 2)
+            [rerun] = self.events("gate-rerun")
+            self.assertEqual(rerun["reports"], ["first flaky report", "second passing report"])
+            [refreshed] = self.events("refreshed")
+            self.assertTrue(refreshed["gate_rerun"])
+            self.assertNotEqual(self.github.head(), self.approved_head)
+            self.assertNotIn(config.LABEL_HUMAN, self.github.issue_labels)
+
+            dispatch.merge_pass_locked(False)
+
+        self.assertTrue(self.github.merged)
+        self.assertEqual(self.events("escalate"), [])
+
+    def test_repeated_gate_failure_after_refresh_requeues_to_same_worker_with_report(self) -> None:
+        first = "# Gate report\n- test: FAIL\n\ntests/test_flaky.py:7 failed"
+        second = "# Gate report\n- test: FAIL\n\ntests/test_flaky.py:7 failed again"
+        with self.patched(), mock.patch.object(
+            dispatch, "run_gate",
+            side_effect=[(False, first), (False, second), (True, "worker gate ok")],
+        ) as gate:
+            self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+
+            self.assertEqual(gate.call_count, 2)
+            self.assertEqual(self.events("escalate"), [])
+            [requeue] = self.events("gate-requeue")
+            self.assertEqual((requeue["pr"], requeue["head"], requeue["round"]),
+                             (102, self.approved_head, 1))
+            self.assertEqual(requeue["reports"], [first, second])
+            self.assertTrue(requeue["unrelated"])
+            self.assertIn(config.LABEL_AGENT, self.github.issue_labels)
+            self.assertNotIn(config.LABEL_HUMAN, self.github.issue_labels)
+            self.assertEqual(self.github.assignees, [])
+
+            [ready] = dispatch.frontier()
+            dispatch.process_ticket(ready, 30, False)
+
+            resolved = self.github.head()
+            self.assertNotEqual(resolved, self.approved_head)
+            self.assertEqual(
+                git(self.origin, "merge-base", "main", resolved),
+                git(self.origin, "rev-parse", "main"),
+            )
+            prompt = self.prompt_seen.read_text()
+            self.assertIn("## Refresh gate failure, round 1", prompt)
+            self.assertIn(first, prompt)
+            self.assertIn(second, prompt)
+            self.assertIn("failure appears unrelated to this PR's changes", prompt)
+            self.assertEqual(gate.call_count, 3)
+            self.assertEqual(self.events("escalate"), [])
+            self.assertIn(config.LABEL_APPROVED, self.github.pr_labels)
+
+            dispatch.merge_pass_locked(False)
+
+        self.assertTrue(self.github.merged)
+        self.assertEqual(self.events("escalate"), [])
+
+    def test_gate_failure_after_refresh_flags_failures_outside_pr_diff(self) -> None:
+        self.cfg.review_rounds = 0
+        report = "# Gate report\n- test: FAIL\n\napps/other/tests/test_status.py:12 failed"
+        with self.patched(), mock.patch.object(
+            dispatch, "run_gate", return_value=(False, report)
+        ):
+            self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+
+        [rerun] = self.events("gate-rerun")
+        self.assertTrue(rerun["unrelated"])
+        [escalation] = self.events("escalate")
+        packet = Path(escalation["packet"]).read_text()
+        self.assertIn("failure appears unrelated to this PR's changes", packet)
+        self.assertIn("apps/other/tests/test_status.py:12 failed", packet)
+
+    def test_gate_failure_after_refresh_past_round_limit_escalates(self) -> None:
+        for round_number in range(1, self.cfg.review_rounds + 1):
+            dispatch.record("gate-requeue", ticket=9, pr=102, round=round_number,
+                            head=self.approved_head, reports=["old failure", "old failure"])
+        with self.patched(), mock.patch.object(
+            dispatch, "run_gate", return_value=(False, "persistent failure")
+        ):
+            self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+
+        [escalation] = self.events("escalate")
+        self.assertEqual(escalation["code"], "gate_failed")
+        self.assertIn("after 3 gate-resolution round(s)", escalation["reason"])
+        self.assertEqual(len(self.events("gate-requeue")), 3)
+        self.assertIn("persistent failure", Path(escalation["packet"]).read_text())
+        self.assertIn(config.LABEL_HUMAN, self.github.issue_labels)
+
+    def test_closed_ticket_gate_failure_after_refresh_escalates_without_requeue(self) -> None:
+        closed_issue = {**self.github.issue(), "state": "CLOSED"}
+        with self.patched(), mock.patch.object(self.github, "issue", return_value=closed_issue), \
+                mock.patch.object(dispatch, "run_gate", return_value=(False, "persistent failure")) as gate:
+            self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+
+        self.assertEqual(gate.call_count, 2)
+        [escalation] = self.events("escalate")
+        self.assertEqual(escalation["code"], "gate_failed")
+        self.assertIn("ticket is not open", escalation["reason"])
+        self.assertEqual(self.events("gate-requeue"), [])
+        self.assertIn(config.LABEL_HUMAN, self.github.issue_labels)
+
+
 class ManagerFixAheadTest(unittest.TestCase):
     """#264: a kept worktree ahead of the PR head with only the worker's own commits."""
 

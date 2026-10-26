@@ -301,7 +301,7 @@ def _frontier_stage(node: dict) -> str | None:
     if stage == "escalate" or node.get("event") == "escalate":
         return "human"
     if stage == "merge":
-        return "gate" if chosen in {"refresh branch", "conflict-requeue"} else "merge eligibility"
+        return "gate" if chosen in {"refresh branch", "conflict-requeue", "gate-requeue"} else "merge eligibility"
     if node.get("event") == "approved":
         return "merge eligibility"
     return stage

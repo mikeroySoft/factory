@@ -841,8 +841,9 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `gh pr merge --match-head-commit <sha>`. Missing,
    unbound, legacy, or stale approval evidence never merges. Behind `main` →
    refresh, re-gate on this host, force-push, run a fresh independent review,
-   post its findings, and either reapprove the resulting head or withdraw the
-   label and escalate. A rebase (or sync-merge) conflict is routine work: the
+   post its findings, and either reapprove the resulting head, return routine
+   refresh work to the ticket worker, or withdraw the label and escalate. A
+   rebase (or sync-merge) conflict is routine work: the
    label is withdrawn, a `conflict-requeue` row records the PR, head and
    conflicting files, and the ticket is released (unassigned, `ready-for-human`
    removed, `ready-for-agent` added, including after a manager `FIX`) so the
@@ -858,7 +859,18 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    already used up, or when the ticket is not open.
    Conflicts in `add_only_paths` go to the worker; the gate's add-only check
    judges the resolution (`factory-add-only-override` or manager `AUTHORIZE`
-   to rewrite existing lines). Red CI → label removed, escalated once with the failing
+   to rewrite existing lines).
+   A gate failure on the clean refreshed head is re-run once before any handoff.
+   A passing re-run continues the normal push and review path and journals both
+   reports in `gate-rerun`. If the re-run also fails, a `gate-requeue` row records
+   both reports, the PR diff paths, whether the failure appears unrelated to those
+   paths, and the round; the open ticket is released to its existing worker profile
+   on the same `agent/<n>` branch. The worker brief includes both reports and the
+   unrelated-failure assessment. This repeats for at most `review_rounds` gate
+   requeues. A closed ticket, exhausted gate rounds, or a protected/add-only failure
+   without its authority label escalates immediately; escalation packets retain both
+   reports and the same diff assessment.
+   Red CI → label removed, escalated once with the failing
    check names. A check cancelled after running steps is red CI. A check
    cancelled before any runner picked it up (no steps, no runner, or GitHub's
    "not acquired by Runner" annotation) is infrastructure: once its run has
