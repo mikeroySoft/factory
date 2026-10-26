@@ -134,7 +134,7 @@ class RefreshConflictTest(unittest.TestCase):
         self.cfg = config.Config(
             root=self.root, repo="acme/widgets", main="main", review_rounds=3, idle_timeout=0, exit_grace=0,
             workers={"default": [sys.executable, str(resolver), str(self.prompt_seen)]},
-            reviewer=[sys.executable, "-c", "print('VERDICT: APPROVE')"],
+            reviewer=[sys.executable, "-c", "print('```json\\n{\"verdict\":\"APPROVE\",\"findings\":[]}\\n```\\nVERDICT: APPROVE')"],
         )
         dispatch.configure(self.cfg)
         self.github = FakeGitHub(self.origin, dispatch.run)

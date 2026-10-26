@@ -134,7 +134,8 @@ class WorkerPlanTest(unittest.TestCase):
         dispatch.journal_attempt_plan(self.wt, 7, 1, set(), "default", None)
         head = "a" * 40
         diff = "diff --git a/unplanned.py b/unplanned.py\n--- /dev/null\n+++ b/unplanned.py\n@@ -0,0 +1 @@\n+new\n"
-        reply = "## Optional suggestions\n- unplanned.py:1 — Plan drift: changed but not named in the worker plan.\n\nVERDICT: APPROVE"
+        reply = ('## Optional suggestions\n- unplanned.py:1 — Plan drift: changed but not named in the worker plan.\n\n'
+                 '```json\n{"verdict":"APPROVE","findings":[]}\n```\nVERDICT: APPROVE')
         prompts: list[str] = []
 
         def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess:

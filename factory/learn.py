@@ -337,7 +337,10 @@ def replay_ticket(
             if result["verdict"] == "APPROVE":
                 approved = True
                 break
-            revise_findings += max(1, _finding_count(result["findings"]))
+            counts = result.get("counts")
+            revise_findings += counts["important"] if counts is not None else max(
+                1, _finding_count(result["findings"]),
+            )
             if bounce == cfg.review_rounds:
                 break
             promptfile.write_text(_replay_prompt(

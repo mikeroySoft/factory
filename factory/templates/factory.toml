@@ -69,11 +69,13 @@
 # USD per million tokens) prices events that report tokens but no cost.
 
 [review]
-# {prompt} = inline review prompt text. Output must end with `VERDICT: APPROVE` or `VERDICT: REVISE`.
+# {prompt} = inline review prompt text. Output ends with one fenced JSON findings tally,
+# then the legacy `VERDICT: APPROVE` or `VERDICT: REVISE` line.
 # Keep the reviewer on a different model family than [manager] so the two verdicts are independent.
 # command = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1", "{prompt}"]
 # json_mode = true  # add/replace `--mode json` for an OMP-compatible reviewer not named `omp`
 # Defaults to true when the reviewer program is named `omp`; false disables that default.
+# policy = "REVIEW.md"  # base-ref review rules; keep this path in gate.protected_paths
 # command = ["codex", "exec", "{prompt}"]
 
 [manager]
@@ -109,6 +111,8 @@
 [gate]
 # timeout = 1200                      # seconds per check; a wedged check FAILs
 # lock = "/tmp/factory.lock"          # host-wide lock held by `exclusive` checks
+# Review policy is read from the base ref, so a PR cannot change its own review rules.
+protected_paths = ["REVIEW.md"]
 
 # Checks run in order inside the worktree; nonzero exit = FAIL. Built-ins
 # `conflict-markers` (first) and `leak-scan` (last) are always on. Mark

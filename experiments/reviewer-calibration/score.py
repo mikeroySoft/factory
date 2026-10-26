@@ -2,7 +2,7 @@
 
 Reads an adjudication.json and reports, per contract arm and split, the two
 separate reviewer metrics with repeat-run noise:
-  missed_blocking     — a primary defect was missed, or a REVISE case got APPROVE
+  missed_blocking     — a primary defect was not reported as blocking, or a REVISE case got APPROVE
   unnecessary_revise  — an APPROVE case got REVISE
 Counts only; never a population accuracy claim.
 
@@ -31,7 +31,7 @@ def score(rows: list[dict]) -> dict:
     for r in rows:
         missed = r["expected_verdict"] == "REVISE" and (
             r["verdict"] != "REVISE" or any(
-                r["defects"].get(d) == "missed" for d in primary_ids(r["case"])))
+                r["defects"].get(d) != "reported" for d in primary_ids(r["case"])))
         unnecessary = r["expected_verdict"] == "APPROVE" and r["verdict"] == "REVISE"
         arm = out.setdefault(r["contract"], {}).setdefault(split_of(r["case"]), {})
         s = arm.setdefault(r["sample"], {"n": 0, "missed_blocking": 0, "unnecessary_revise": 0})

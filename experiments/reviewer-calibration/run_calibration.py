@@ -18,7 +18,7 @@ import threading
 import time
 
 EXP = pathlib.Path(__file__).parent
-REPO = "/home/mike/dev/mikeroysoft/factory"
+REPO = str(EXP.parents[1])
 CHECKOUT_ROOT = pathlib.Path("/tmp/cal-checkout")
 CONTRACTS = {"baseline": "cadb9981524ab5506693e27f56ff8ac4ef911da6",
              "issue36": "1947fc4e3de23e71f64342f2c9cd2570d845db5e"}
@@ -61,8 +61,8 @@ def checkout(commit: str) -> pathlib.Path:
                            check=True, capture_output=True)
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=dest,
                               capture_output=True, text=True, check=False).stdout.strip()
-        if head != commit:
-            subprocess.run(["git", "checkout", "--quiet", "--detach", commit], cwd=dest,
+        if head != commit or not (dest / "factory" / "dispatch.py").is_file():
+            subprocess.run(["git", "checkout", "--quiet", "--force", "--detach", commit], cwd=dest,
                            check=True, capture_output=True)
     return dest
 
@@ -70,11 +70,18 @@ def checkout(commit: str) -> pathlib.Path:
 def capture(contract: str, case: str) -> str:
     """The contract's own prompt text, built by its own dispatch.review()."""
     with tempfile.TemporaryDirectory(prefix="cal-capture-") as scratch:
-        out = pathlib.Path(scratch) / "prompt.txt"
+        scratch_path = pathlib.Path(scratch)
+        out, source = scratch_path / "prompt.txt", scratch_path / "source"
+        oracle = json.loads((EXP / "cases" / case / "oracle.json").read_text())
+        subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout", REPO, str(source)],
+                       check=True, capture_output=True)
+        for args in (["update-ref", "refs/remotes/origin/main", oracle["review_base"]],
+                     ["checkout", "--quiet", "--detach", oracle["head"]]):
+            subprocess.run(["git", *args], cwd=source, check=True, capture_output=True)
         subprocess.run([sys.executable, str(EXP / "capture_contract.py"),
-                        str(checkout(CONTRACTS[contract])),
-                        scratch, case.split("-")[0],
-                        str(EXP / "cases" / case / "sources/gate-report.md"), str(out)],
+                        str(checkout(CONTRACTS[contract])), scratch, case.split("-")[0],
+                        str(EXP / "cases" / case / "sources/gate-report.md"), str(out),
+                        str(source), oracle["head"]],
                        check=True, capture_output=True, text=True, cwd=scratch)
         return out.read_text()
 

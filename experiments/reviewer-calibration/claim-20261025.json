@@ -1,0 +1,21 @@
+{
+  "contract_version": 1,
+  "stage": "review",
+  "change": {
+    "kind": "prompt",
+    "detail": "Issue #386 changes the reviewer contract from prose findings to Important/Nit/Pre-existing JSON findings with bug/security/spec passes, a base-ref REVIEW.md policy, and nit capping; candidate commit 0bdaa307b51ce743dcaa7b6d9a6a33b3ab447697 on current-main baseline eb611cc794da4008ffaba73cac6108a2ed8af0a1."
+  },
+  "baseline": "reviewer@eb611cc",
+  "candidate": "reviewer@0bdaa30",
+  "evidence": "experiments/reviewer-calibration/runs/promotion-20261025/adjudication.json scored by score.py (tools-enabled run_tools.py --all, 2 repeats, splits.json v2)",
+  "splits": {
+    "train": {
+      "baseline": [0.8333333333333334, 0.8333333333333334],
+      "candidate": [0.6666666666666667, 0.8333333333333334]
+    },
+    "lockbox": {
+      "baseline": [0.6, 0.6],
+      "candidate": [0.6, 0.6]
+    }
+  }
+}

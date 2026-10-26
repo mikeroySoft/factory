@@ -320,6 +320,10 @@ landed on its own, and partial progress needs its own reviewed PR.
 | `factory plan baseline N` / `factory plan drift TICKET` | Read-only schema 1 JSON for proposing a complete immutable initiative baseline or comparing a ticket's latest accepted baseline with the live complete source. Results are under top-level `baseline` or `drift`; neither command edits issues, rebaselines work, or grants execution authority. |
 | `factory doctor` / `init` / `install` | Onboarding, above. |
 
+`factory stats` exposes each structured review round as ordered
+`review_findings` counts in JSON and as `important/nit/pre-existing` triples in
+the ticket table.
+
 ### Decision records and explanations
 
 Routing from triage through merge or wontfix writes `event: "decision"` rows
@@ -817,6 +821,17 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `APPROVE` adds the `factory-approved` label only while the remote PR still
    points to the exact commit that passed the gate and review. The successful
    label operation and gate/review commit are recorded in `.factory/events.jsonl`.
+   The optional `[review].policy` path defaults to `REVIEW.md`. Factory reads it
+   from the base ref, never the worker head, so add that path to
+   `[gate].protected_paths`. The policy can define bug/security/spec passes,
+   Important/Nit/Pre-existing severity, skips, and `Nit cap: N`; without the
+   file, the built-in rules below remain in force.
+   Structured reviews end with a fenced JSON object containing `verdict` and
+   findings (`severity`, `pass`, `path`, `line`, `summary`), followed by the
+   legacy `VERDICT:` line. Factory counts every finding, caps published nits,
+   and approves if and only if Important is zero. Invalid JSON fails closed;
+   disagreement between either verdict and the counts fails closed with
+   `verdict_counts_mismatch`. `review-result` records the three counts.
 6. **Merge stage** (start of the next pass). One PR per pass requires green
    GitHub checks, a current-main head, no human requested-changes veto, the
    `factory-approved` label, and a matching successful journal approval whose
@@ -945,6 +960,7 @@ chore   = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd
 [review]
 command = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1", "{prompt}"]   # {prompt} = review prompt text
 # json_mode = true   # required for an OMP-compatible reviewer not named `omp`
+# policy = "REVIEW.md"  # read from the base ref
 
 [manager]                         # optional; unset command disables it
 command = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]   # {prompt} = manager prompt file
@@ -952,7 +968,7 @@ command = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]   # {prompt} = manager pr
 [gate]
 timeout = 1200
 lock = "/tmp/factory.lock"
-protected_paths = [".factory.toml", "TRACKING*"]
+protected_paths = [".factory.toml", "REVIEW.md", "TRACKING*"]
 add_only_paths = ["tests/**"]     # new files and appended lines pass; edits escalate
 
 [[gate.check]]
@@ -1078,6 +1094,8 @@ between the recorded base and head SHAs. Valid final `VERDICT: APPROVE` or
 through `gh api`, explicitly bound to the recorded head with `commit_id`.
 Findings must each cite `path:line`; malformed output or a failed reviewer
 publishes nothing. Branch advancement cannot retarget the supplied diff or review.
+The same base-ref `[review].policy`, structured tally, nit cap, and
+Important-only blocking rule apply to this lane.
 Prompts exceeding 120 KiB (UTF-8, including the diff) are skipped before reviewer
 execution and recorded as `unknown` with reason `prompt_too_large`; intake
 continues with the next PR. The recorded revision is not automatically retried.

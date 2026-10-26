@@ -73,8 +73,8 @@ ENGINE_REPO = "mikeroySoft/factory"  # factory's own source repo: `[watch].engin
 # from here. Everything else in the host file is left for other tools (District).
 # `worker_wrap` is host-only: a committed `[worker_wrap]` is refused, never merged.
 # `leak_scan.extra` is read from both and concatenated: host terms only add to the scan.
-HOST_TABLES = frozenset({"triage", "workers", "worker_wrap", "review", "manager", "install", "prices"})
-HOST_KEYS = {"dashboard": ("port",), "gate": ("lock",)}
+HOST_TABLES = frozenset({"triage", "workers", "worker_wrap", "manager", "install", "prices"})
+HOST_KEYS = {"dashboard": ("port",), "gate": ("lock",), "review": ("command", "json_mode")}
 
 # Every key the loader reads, by table; `factory doctor` reports anything else.
 # `workers` is label-keyed, `gate.check` is a list of {name, run, exclusive, when}.
@@ -84,7 +84,7 @@ KNOWN_KEYS = {
                  "review_rounds", "cost_pattern", "signoff"),
     "workers": None,
     "worker_wrap": ("command",),
-    "review": ("command", "json_mode"),
+    "review": ("command", "json_mode", "policy"),
     "manager": ("model", "command", "rounds", "review", "stale_days", "max_active_cap", "budget_min_cap"),
     "learn": ("evaluate", "max_tickets", "max_tokens", "budget_min"),
     "release": ("auto", "version_file", "min_tickets"),
@@ -163,6 +163,7 @@ class Config:
     reviewer: list[str] = field(default_factory=lambda: list(DEFAULT_REVIEWER))
     # None preserves executable-based compatibility for the built-in OMP reviewer.
     reviewer_json_mode: bool | None = None
+    review_policy: str = "REVIEW.md"
     manager: list[str] | None = None
     manager_rounds: int = 1
     manager_review: str = "escalated"
@@ -560,6 +561,15 @@ def load(start: Path | None = None) -> Config:
     if json_mode is not None and type(json_mode) is not bool:
         raise ConfigError("review.json_mode must be true or false")
     cfg.reviewer_json_mode = json_mode
+    policy = review.get("policy", cfg.review_policy)
+    if (
+        not isinstance(policy, str)
+        or not policy
+        or Path(policy).is_absolute()
+        or ".." in Path(policy).parts
+    ):
+        raise ConfigError("review.policy must be a nonempty repository-relative path")
+    cfg.review_policy = policy
     cfg.manager, cfg.manager_model = manager_settings(manager)
     cfg.manager_rounds = int(manager.get("rounds", cfg.manager_rounds))
     cfg.manager_review = manager.get("review", cfg.manager_review)
