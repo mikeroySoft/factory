@@ -2831,13 +2831,12 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels,body,comments"])
     labels = {label["name"] for label in issue.get("labels", [])}
     handoff = wt / ".factory" / f"handoff-{n}.md"
-    ok, report = run_gate(
-        wt, n, **gate_flags(
-            sync_event(n), labels, issue.get("body") or "",
-            handoff.read_text() if handoff.exists() else "",
-            comments=issue.get("comments"),
-        )
+    flags = gate_flags(
+        sync_event(n), labels, issue.get("body") or "",
+        handoff.read_text() if handoff.exists() else "",
+        comments=issue.get("comments"),
     )
+    ok, report = run_gate(wt, n, **flags)
     reports = [report]
     gate_rerun = False
     actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
@@ -2863,7 +2862,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         return False
     if not ok and evidence_clean:
         first_report = report
-        ok, report = run_gate(wt, n, **gate_flags(sync_event(n), labels))
+        ok, report = run_gate(wt, n, **flags)
         gate_rerun = True
         actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
         after_status = run(status_cmd, cwd=wt).stdout.strip()
