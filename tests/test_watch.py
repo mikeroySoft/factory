@@ -525,7 +525,7 @@ class ControlBandRuleTest(unittest.TestCase):
 
 
 class ControlBandWatchTest(unittest.TestCase):
-    TEST_ID = "tests.test_status.StatusTest.status_reports_stopped_when_saved_comfyui_pid_is_gone"
+    TEST_ID = "comfyui::tests::status_reports_stopped_when_saved_comfyui_pid_is_gone"
     ENGINE = "factory/engine"
     NOW = datetime(2026, 10, 24, 23, tzinfo=UTC)
 
@@ -541,6 +541,7 @@ class ControlBandWatchTest(unittest.TestCase):
                 window_days=28,
                 rules=(config.BandRule(
                     kind="sigma", tier="act", sigma=3.0, count=1, span=1,
+                    min_tickets=2,
                 ),),
             ),
         ]
@@ -600,6 +601,22 @@ class ControlBandWatchTest(unittest.TestCase):
         with mock.patch.object(watch, "_age", return_value=timedelta(days=2)):
             watch.run_pass(self.cfg, now=self.NOW + timedelta(days=2))
         self.assertEqual(self.gh.issues[101]["state"], "CLOSED")
+
+    def test_single_new_test_failure_files_nothing(self) -> None:
+        self.journal([row for row in self.rows() if row.get("ticket") != 73])
+
+        self.assertEqual(watch.run_pass(self.cfg, now=self.NOW), [])
+        self.assertEqual(self.gh.created, [])
+
+    def test_changed_test_does_not_count_as_flake_evidence(self) -> None:
+        rows = self.rows()
+        failed = next(
+            row for row in rows
+            if row.get("ticket") == 17 and row.get("stage") == "gate-check"
+        )
+        failed["changed_paths"] = ["src/comfyui.rs"]
+
+        self.assertEqual(watch.band_signals(self.cfg, rows, self.NOW), [])
 
     def test_log_and_diagnose_tiers_make_no_github_write(self) -> None:
         base = {

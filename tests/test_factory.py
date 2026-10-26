@@ -5132,10 +5132,10 @@ class TriageProbeOnboardingTest(unittest.TestCase):
 class WatchBandConfigTest(unittest.TestCase):
     CONFIG = """schema_version = 1
 [[band]]
-metric = "gate_failure_rate"
+metric = "gate_failures_by_test"
 window_days = 28
 rules = [
-  { kind = "sigma", sigma = 3.0, count = 1, span = 1, tier = "act" },
+  { kind = "sigma", sigma = 3.0, count = 1, span = 1, tier = "act", min_tickets = 2 },
   { kind = "same_side", count = 8, span = 8, tier = "diagnose" },
 ]
 """
@@ -5148,10 +5148,11 @@ rules = [
             cfg = config.load(repo)
 
         [band] = cfg.watch_bands
-        self.assertEqual((band.metric, band.window_days), ("gate_failure_rate", 28))
+        self.assertEqual((band.metric, band.window_days), ("gate_failures_by_test", 28))
         self.assertEqual(
-            [(rule.kind, rule.sigma, rule.count, rule.span, rule.tier) for rule in band.rules],
-            [("sigma", 3.0, 1, 1, "act"), ("same_side", None, 8, 8, "diagnose")],
+            [(rule.kind, rule.sigma, rule.count, rule.span, rule.tier, rule.min_tickets)
+             for rule in band.rules],
+            [("sigma", 3.0, 1, 1, "act", 2), ("same_side", None, 8, 8, "diagnose", 1)],
         )
 
     def test_rejects_unversioned_or_incomplete_rule_config(self) -> None:
@@ -5161,6 +5162,11 @@ rules = [
             (
                 'schema_version = 1\n[[band]]\nmetric = "gate_failure_rate"\nwindow_days = 28\n'
                 'rules = [{ kind = "sigma", count = 1, span = 1, tier = "act" }]\n'
+            ),
+            (
+                'schema_version = 1\n[[band]]\nmetric = "gate_failures_by_test"\nwindow_days = 28\n'
+                'rules = [{ kind = "sigma", sigma = 3, count = 1, span = 1, '
+                'tier = "act", min_tickets = 0 }]\n'
             ),
         )
         for text in cases:

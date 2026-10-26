@@ -379,6 +379,28 @@ def baseline_status(
     return f"insufficient baseline: {available} of {needed} trailing days available"
 
 
+def _unchanged_test_rows(test_id: str, rows: list[dict]) -> list[dict]:
+    module = None
+    source = None
+    if "::tests::" in test_id:
+        module = test_id.split("::tests::", 1)[0].rsplit("::", 1)[-1]
+    elif "::" in test_id:
+        source = test_id.split("::", 1)[0]
+    else:
+        parts = test_id.split(".")
+        stop = next((index for index, part in enumerate(parts) if part[:1].isupper()), len(parts) - 1)
+        source = "/".join(parts[:stop]) + ".py"
+    def changed(path: Path) -> bool:
+        return module in {path.stem, path.parent.name} if module else path.as_posix() == source
+    return [
+        row for row in rows
+        if row.get("ticket") is not None
+        and isinstance(row.get("changed_paths"), list)
+        and all(isinstance(path, str) for path in row["changed_paths"])
+        and not any(changed(Path(path)) for path in row["changed_paths"])
+    ]
+
+
 def band_signals(
     cfg: config.Config, events: list[dict], now: datetime | None = None,
 ) -> list[dict]:
@@ -408,17 +430,30 @@ def band_signals(
             values = [point["value"] for point in points]
             point = points[-1]
             rows = list(point["rows"])
-            tickets = {row.get("ticket") for row in rows if row.get("ticket") is not None}
-            related = [
-                row for row in events
-                if row.get("ticket") in tickets and row.get("event") in {"pr-opened", "escalate"}
-            ]
-            evidence_rows = rows + [row for row in related if row not in rows]
-            prs = sorted({pr_by_ticket[ticket] for ticket in tickets if ticket in pr_by_ticket})
             key = name.split(":", 1)[1] if ":" in name else name
             for rule in fired_rules(
                 band.rules, mean=average, deviation=deviation, values=values,
             ):
+                rule_rows = rows
+                if band.metric == "gate_failures_by_test" and rule.tier == "act":
+                    recent_rows = [
+                        row for recent in points[-rule.span:] for row in recent["rows"]
+                    ]
+                    rule_rows = _unchanged_test_rows(key, recent_rows)
+                    if len({row["ticket"] for row in rule_rows}) < rule.min_tickets:
+                        continue
+                tickets = {
+                    row.get("ticket") for row in rule_rows if row.get("ticket") is not None
+                }
+                related = [
+                    row for row in events
+                    if row.get("ticket") in tickets
+                    and row.get("event") in {"pr-opened", "escalate"}
+                ]
+                evidence_rows = rule_rows + [row for row in related if row not in rule_rows]
+                prs = sorted({
+                    pr_by_ticket[ticket] for ticket in tickets if ticket in pr_by_ticket
+                })
                 rule_name = _rule_name(rule)
                 fp = f"band:{fingerprint(name, rule_name)}"
                 pr_text = f"\nAffected PRs: {', '.join(f'PR #{pr}' for pr in prs)}." if prs else ""

@@ -97,19 +97,21 @@ def run(cmd: list[str]) -> tuple[bool, str]:
 
 
 def failed_test_ids(output: str) -> list[str]:
-    """Canonical unittest/pytest IDs from failure summaries, in report order."""
+    """Canonical unittest, pytest and cargo libtest IDs, in report order."""
     found = []
     for line in output.splitlines():
         match = re.match(r"^(?:FAIL|ERROR): .+ \(([^()\s]+)\)$", line)
         if match is None:
             match = re.match(r"^FAILED ([^\s]+::[^\s]+)(?:\s+-|\s*$)", line)
+        if match is None:
+            match = re.match(r"^---- ([^\s]+) stdout ----$", line)
         if match is not None and match[1] not in found:
             found.append(match[1])
     return found
 
 
 def changed_paths(base: str) -> list[str]:
-    proc = timed(["git", "diff", "--name-only", "-z", f"{base}..HEAD"])
+    proc = timed(["git", "diff", "--name-only", "-z", f"{base}...HEAD"])
     return proc.stdout.rstrip("\0").split("\0") if proc.returncode == 0 and proc.stdout else []
 
 

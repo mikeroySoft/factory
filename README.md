@@ -395,8 +395,10 @@ its trailing `window_days`, and explicit rules. A `sigma` rule supplies
 Every rule declares a `tier`: `log` writes only the watch log and journal,
 `diagnose` additionally asks the configured local model for a read-only summary,
 and `act` uses the existing fingerprinted watch issue filing and closure path.
-Act never opens a PR and writes only `bug,needs-triage` issues, comments, edits,
-or closures in `[watch].engine_repo`.
+Per-test act rules also set `min_tickets`; only distinct tickets whose recorded
+diff paths do not touch the test source count toward that threshold. Act never
+opens a PR and writes only `bug,needs-triage` issues, comments, edits, or closures
+in `[watch].engine_repo`.
 
 The daily metrics are gate failures divided by gate outcomes; failed gate-check
 and failed-test counts keyed by check or canonical test ID; escalated tickets
@@ -410,9 +412,10 @@ one of one beyond 3 sigma, two of three beyond 2 sigma, and eight of eight on on
 side of the mean.
 
 Gate-check result rows now carry `failed_tests` parsed from unittest `FAIL:` /
-`ERROR:` summaries and pytest `FAILED` summaries, plus `changed_paths` when at
-least one test ID was parsed. Earlier journal rows named only the failed check
-and pass/fail result; they did not contain a structured, parseable test ID.
+`ERROR:` summaries, pytest `FAILED` summaries, and cargo libtest failure
+headers, plus `changed_paths` when at least one test ID was parsed. Earlier
+journal rows named only the failed check and pass/fail result; they did not
+contain a structured, parseable test ID.
 
 
 `factory watch` also closes an open, unassigned issue it opened, still at `needs-triage`

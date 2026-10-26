@@ -287,5 +287,21 @@ class FailedTestEvidenceTest(unittest.TestCase):
                 "tests/test_cli.py::CliTest::test_help",
             ])
 
+    def test_parses_cargo_libtest_failure_id(self) -> None:
+        from factory import gate as factory_gate
+
+        output = """running 1 test
+---- comfyui::tests::status_reports_stopped_when_saved_comfyui_pid_is_gone stdout ----
+thread 'comfyui::tests::status_reports_stopped_when_saved_comfyui_pid_is_gone' panicked
+
+failures:
+    comfyui::tests::status_reports_stopped_when_saved_comfyui_pid_is_gone
+
+test result: FAILED. 0 passed; 1 failed
+"""
+        self.assertEqual(factory_gate.failed_test_ids(output), [
+            "comfyui::tests::status_reports_stopped_when_saved_comfyui_pid_is_gone",
+        ])
+
 if __name__ == "__main__":
     unittest.main()

@@ -23,9 +23,9 @@ rules = [
 metric = "gate_failures_by_test"
 window_days = 28
 rules = [
-  { kind = "sigma", sigma = 3.0, count = 1, span = 1, tier = "act" },
-  { kind = "sigma", sigma = 2.0, count = 2, span = 3, tier = "act" },
-  { kind = "same_side", count = 8, span = 8, tier = "act" },
+  { kind = "sigma", sigma = 3.0, count = 1, span = 1, tier = "act", min_tickets = 2 },
+  { kind = "sigma", sigma = 2.0, count = 2, span = 3, tier = "act", min_tickets = 2 },
+  { kind = "same_side", count = 8, span = 8, tier = "act", min_tickets = 2 },
 ]
 
 [[band]]

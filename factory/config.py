@@ -147,6 +147,7 @@ class BandRule:
     count: int
     span: int
     sigma: float | None = None
+    min_tickets: int = 1
 
 
 @dataclass(frozen=True)
@@ -534,10 +535,13 @@ def band_settings(path: Path) -> list[Band]:
             expected = {"kind", "tier", "count", "span", "sigma"} if kind == "sigma" else {
                 "kind", "tier", "count", "span"
             }
+            if "min_tickets" in rule:
+                expected.add("min_tickets")
             if not isinstance(kind, str) or kind not in {"sigma", "same_side"} or set(rule) != expected:
                 raise ConfigError(
                     f"{rule_where} needs kind, tier, count, span"
                     + (", sigma for kind = \"sigma\"" if kind == "sigma" else "")
+                    + " and optional min_tickets"
                 )
             tier, count, span = rule["tier"], rule["count"], rule["span"]
             if not isinstance(tier, str) or tier not in BAND_TIERS:
@@ -554,7 +558,18 @@ def band_settings(path: Path) -> list[Band]:
                 or not math.isfinite(sigma) or sigma <= 0
             ):
                 raise ConfigError(f"{rule_where}.sigma must be positive and finite")
-            parsed.append(BandRule(kind, tier, count, span, float(sigma) if sigma is not None else None))
+            min_tickets = rule.get("min_tickets", 1)
+            if isinstance(min_tickets, bool) or not isinstance(min_tickets, int) or min_tickets < 1:
+                raise ConfigError(f"{rule_where}.min_tickets must be a positive integer")
+            if "min_tickets" in rule and (
+                metric != "gate_failures_by_test" or tier != "act"
+            ):
+                raise ConfigError(
+                    f"{rule_where}.min_tickets is only valid for gate_failures_by_test act rules"
+                )
+            parsed.append(BandRule(
+                kind, tier, count, span, float(sigma) if sigma is not None else None, min_tickets,
+            ))
         bands.append(Band(metric, window, tuple(parsed)))
     if len({band.metric for band in bands}) != len(bands):
         raise ConfigError(f"{path}: band metrics must be unique")
