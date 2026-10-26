@@ -524,6 +524,52 @@ class ControlBandRuleTest(unittest.TestCase):
         self.assertEqual(values["rework_rounds"], 1.0)
 
 
+    def test_days_without_denominators_are_missing_but_counts_are_zero(self) -> None:
+        first = datetime(2026, 10, 23, tzinfo=UTC)
+        second = first + timedelta(days=1)
+        test_id = "tests.test_status.StatusTest.test_port"
+        rows = [
+            {"event": "attempt", "ticket": 1, "gate": "FAIL", "at": first.isoformat()},
+            {"event": "lifecycle", "kind": "result", "stage": "gate-check", "ticket": 1,
+             "check": "test", "passed": False, "failed_tests": [test_id], "at": first.isoformat()},
+            {"event": "claimed", "ticket": 1, "at": first.isoformat()},
+            {"event": "review", "ticket": 1, "at": first.isoformat()},
+            {"event": "merged", "ticket": 1, "at": first.replace(hour=1).isoformat()},
+        ]
+
+        points = watch.metric_series(rows, first.date(), second.date())
+        missing = second.date().isoformat()
+
+        for metric in ("gate_failure_rate", "ready_for_human_rate", "claim_to_merge_hours", "rework_rounds"):
+            self.assertIsNone(points[metric][missing]["value"], metric)
+        self.assertEqual(points["gate_failures_by_check:test"][missing]["value"], 0.0)
+        self.assertEqual(points[f"gate_failures_by_test:{test_id}"][missing]["value"], 0.0)
+
+    def test_missing_days_do_not_skew_band_baseline_or_fire_on_idle_today(self) -> None:
+        today = datetime(2026, 10, 24, tzinfo=UTC)
+        cfg = config.Config(Path("."), REPO)
+        cfg.watch_bands = [config.Band(
+            metric="ready_for_human_rate",
+            window_days=28,
+            rules=(
+                config.BandRule(kind="sigma", tier="log", sigma=3.0, count=1, span=1),
+                config.BandRule(kind="same_side", tier="log", count=8, span=8),
+            ),
+        )]
+        sparse_rows = [
+            {"event": "merged", "ticket": 1, "at": (today - timedelta(days=28)).isoformat()},
+            {"event": "escalate", "ticket": 2, "at": (today - timedelta(days=14)).isoformat()},
+            {"event": "escalate", "ticket": 3, "at": today.isoformat()},
+        ]
+        idle_rows = [
+            {"event": "merged", "ticket": ago, "at": (today - timedelta(days=ago)).isoformat()}
+            for ago in range(28, 7, -1)
+        ]
+
+        self.assertEqual(watch.band_signals(cfg, sparse_rows, today), [])
+        self.assertEqual(watch.band_signals(cfg, idle_rows, today), [])
+
+
 class ControlBandWatchTest(unittest.TestCase):
     TEST_ID = "comfyui::tests::status_reports_stopped_when_saved_comfyui_pid_is_gone"
     ENGINE = "factory/engine"

@@ -404,8 +404,9 @@ The daily metrics are gate failures divided by gate outcomes; failed gate-check
 and failed-test counts keyed by check or canonical test ID; escalated tickets
 divided by merged-or-escalated tickets; mean hours from the first `claimed` row
 to `merged`; and mean review rounds after the first review per terminal ticket.
-Calendar days without matching rows are zero after the journal's first dated
-row. No rule runs until that first row predates the full configured window;
+Days without a denominator or completed cycle are omitted from rate, duration,
+and rework bands; only failed check/test count metrics record zero on quiet days.
+No rule runs until the journal's first row predates the full configured window;
 `factory doctor` reports `insufficient baseline` meanwhile. The built-in
 configuration uses a trailing 28-day mean and population standard deviation for
 one of one beyond 3 sigma, two of three beyond 2 sigma, and eight of eight on one

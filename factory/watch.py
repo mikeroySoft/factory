@@ -227,12 +227,13 @@ def _days(start: date, end: date) -> list[date]:
 def metric_series(events: list[dict], start: date, end: date) -> dict[str, dict[str, dict]]:
     """Configured watch inputs as daily values plus the rows supporting each point."""
     days = _days(start, end)
-    names = {
+    sparse_names = {
         "gate_failure_rate",
         "ready_for_human_rate",
         "claim_to_merge_hours",
         "rework_rounds",
     }
+    names = set(sparse_names)
     failed = [
         row for row in events
         if row.get("event") == "lifecycle" and row.get("kind") == "result"
@@ -251,7 +252,10 @@ def metric_series(events: list[dict], start: date, end: date) -> dict[str, dict[
         if parsed is not None and start <= parsed <= end:
             by_day.setdefault(parsed, []).append(row)
     series = {
-        name: {day.isoformat(): {"value": 0.0, "rows": []} for day in days}
+        name: {
+            day.isoformat(): {"value": None if name in sparse_names else 0.0, "rows": []}
+            for day in days
+        }
         for name in names
     }
     claims: dict[object, dict] = {}
@@ -429,10 +433,14 @@ def band_signals(
         ]
         for name in sorted(names):
             points = list(metrics[name].values())[-(band.window_days + 1):]
-            baseline = [point["value"] for point in points[:-1]]
-            average, deviation = mean(baseline), pstdev(baseline)
-            values = [point["value"] for point in points]
             point = points[-1]
+            if point["value"] is None:
+                continue
+            baseline = [point["value"] for point in points[:-1] if point["value"] is not None]
+            if not baseline:
+                continue
+            average, deviation = mean(baseline), pstdev(baseline)
+            values = [point["value"] for point in points if point["value"] is not None]
             rows = list(point["rows"])
             key = name.split(":", 1)[1] if ":" in name else name
             for rule in fired_rules(
