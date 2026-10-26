@@ -259,7 +259,9 @@ class LearnEvaluationTest(unittest.TestCase):
                 "value=Path('snapshot/solution.txt').read_text().strip()\n"
                 "revised='```json\\n{\"verdict\":\"REVISE\",\"findings\":[{\"severity\":\"important\","
                 "\"pass\":\"bug\",\"path\":\"solution.txt\",\"line\":1,"
-                "\"summary\":\"Baseline needs revision.\"}]}\\n```\\nVERDICT: REVISE'\n"
+                "\"summary\":\"Baseline needs revision.\"},{\"severity\":\"important\","
+                "\"pass\":\"spec\",\"path\":\"solution.txt\",\"line\":1,"
+                "\"summary\":\"Baseline violates the ticket.\"}]}\\n```\\nVERDICT: REVISE'\n"
                 "approved='```json\\n{\"verdict\":\"APPROVE\",\"findings\":[]}\\n```\\nVERDICT: APPROVE'\n"
                 "text=revised if value == 'baseline' else approved\n"
                 "print(json.dumps({'type':'message_end','message':{'role':'assistant','content':text,"
@@ -319,6 +321,7 @@ class LearnEvaluationTest(unittest.TestCase):
                 ("rejected", "kept"),
                 results,
             )
+            self.assertEqual(results["lessons"]["baseline"][0]["revise_findings"], 2)
             self.assertNotIn("refs/heads/replay-leak", git("show-ref", check=False).stdout)
             self.assertFalse((repo / "solution.txt").exists())
             self.assertIn("## Learn replay context", prompts.read_text())
