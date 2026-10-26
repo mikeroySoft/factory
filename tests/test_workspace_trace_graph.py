@@ -7,7 +7,6 @@ import subprocess
 import unittest
 from pathlib import Path
 
-
 ASSET = Path(__file__).resolve().parents[1] / "factory" / "workspace-trace.js"
 
 
