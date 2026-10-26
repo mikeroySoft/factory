@@ -105,3 +105,15 @@ process.stdout.write(JSON.stringify({expression}));
         self.assertEqual(result["first"], result["second"])
         self.assertEqual(result["first"], ["a1", "a2", "b2", "b1"])
         self.assertLess(result["after"], result["before"])
+
+    def test_large_bundle_stripes_stay_inside_sixteen_pixel_gutter(self) -> None:
+        result = self.evaluate(
+            "(() => { const groups = value.sizes.map(size => Array(size).fill(0)); "
+            "const spacing = window.WorkspaceTrace.bundleSpacing(groups); "
+            "return { stripeOffset: (Math.max(...value.sizes) - 1) / 2 * spacing.stripe, "
+            "trackWidth: value.sizes.reduce((total, size) => total + size, 0) * spacing.track }; })()",
+            {"sizes": [34, 10]},
+        )
+
+        self.assertLessEqual(result["stripeOffset"], 14)
+        self.assertLessEqual(result["trackWidth"], 44)
