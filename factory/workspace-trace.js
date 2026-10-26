@@ -67,6 +67,14 @@
     const stages = new Map(nodes.map(item => [nodeId(item), columns.get(item.stage || 'unknown')]));
     return edges.flatMap((edge, index) => Math.abs((stages.get(String(edge.to)) ?? 0) - (stages.get(String(edge.from)) ?? 0)) > 1 ? [index] : []);
   }
+  function bundleSpacing(groups) {
+    const largest = groups.reduce((maximum, members) => Math.max(maximum, members.length), 1);
+    const total = groups.reduce((sum, members) => sum + members.length, 0);
+    return {
+      stripe:Math.min(2.4, 28 / Math.max(1, largest - 1)),
+      track:Math.min(2.4, 44 / Math.max(1, total)),
+    };
+  }
   function crossingCount(nodes, edges) {
     const columns = stageColumns(nodes);
     const order = new Map(), stage = new Map(), counts = new Map();
@@ -339,12 +347,11 @@
       }
       const bundleInfo = new Map();
       const bundleGroups = [...groups.values()];
-      const stripeCount = bundleGroups.reduce((total, members) => total + members.length, 0);
-      const spacing = Math.min(2.4, 44 / Math.max(1, stripeCount));
-      let track = 8 + spacing / 2;
+      const spacing = bundleSpacing(bundleGroups);
+      let track = 8 + spacing.track / 2;
       bundleGroups.forEach(members => members.forEach((index, stripe) => {
-        bundleInfo.set(index, {spacing,stripe:(stripe - (members.length - 1) / 2) * spacing,track});
-        track += spacing;
+        bundleInfo.set(index, {spacing:spacing.stripe,stripe:(stripe - (members.length - 1) / 2) * spacing.stripe,track});
+        track += spacing.track;
       }));
       return edges.flatMap((edge, index) => {
         const source = byId.get(String(edge.from)), target = byId.get(String(edge.to));
@@ -583,5 +590,5 @@
     }
   }
 
-  window.WorkspaceTrace = Object.freeze({bundleEdges, crossingCount, edgeType, markup, mount, orderNodes, render, safeUrl});
+  window.WorkspaceTrace = Object.freeze({bundleEdges, bundleSpacing, crossingCount, edgeType, markup, mount, orderNodes, render, safeUrl});
 })();
