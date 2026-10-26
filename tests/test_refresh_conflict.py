@@ -289,6 +289,9 @@ class RefreshGateFailureTest(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.tmp = Path(temp.name)
+        self.prompt_seen = self.tmp / "prompt-seen.md"
+        resolver = self.tmp / "resolver.py"
+        resolver.write_text(RESOLVER)
         self.root, self.origin = build_fork(self.tmp)
         git(self.origin, "checkout", "-qb", "agent/9")
         (self.origin / "feature.txt").write_text("agent change\n")
@@ -301,6 +304,8 @@ class RefreshGateFailureTest(unittest.TestCase):
         git(self.origin, "commit", "-qm", "main moved")
         self.cfg = config.Config(
             root=self.root, repo="acme/widgets", main="main", review_rounds=3,
+            idle_timeout=0, exit_grace=0,
+            workers={"default": [sys.executable, str(resolver), str(self.prompt_seen)]},
             reviewer=[sys.executable, "-c", "print('```json\\n{\"verdict\":\"APPROVE\",\"findings\":[]}\\n```\\nVERDICT: APPROVE')"],
         )
         dispatch.configure(self.cfg)
@@ -334,28 +339,44 @@ class RefreshGateFailureTest(unittest.TestCase):
         first = "# Gate report\n- test: FAIL\n\ntests/test_flaky.py:7 failed"
         second = "# Gate report\n- test: FAIL\n\ntests/test_flaky.py:7 failed again"
         with self.patched(), mock.patch.object(
-            dispatch, "run_gate", side_effect=[(False, first), (False, second)]
+            dispatch, "run_gate",
+            side_effect=[(False, first), (False, second), (True, "worker gate ok")],
         ) as gate:
             self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
 
-        self.assertEqual(gate.call_count, 2)
-        self.assertEqual(self.events("escalate"), [])
-        [requeue] = self.events("gate-requeue")
-        self.assertEqual((requeue["pr"], requeue["head"], requeue["round"]),
-                         (102, self.approved_head, 1))
-        self.assertEqual(requeue["reports"], [first, second])
-        self.assertTrue(requeue["unrelated"])
-        self.assertIn(config.LABEL_AGENT, self.github.issue_labels)
-        self.assertNotIn(config.LABEL_HUMAN, self.github.issue_labels)
-        self.assertEqual(self.github.assignees, [])
-        with self.patched():
-            prompt = dispatch.build_prompt(
-                9, dispatch.FACTORY / "wt-9", dispatch.refresh_requeue_context(9)
+            self.assertEqual(gate.call_count, 2)
+            self.assertEqual(self.events("escalate"), [])
+            [requeue] = self.events("gate-requeue")
+            self.assertEqual((requeue["pr"], requeue["head"], requeue["round"]),
+                             (102, self.approved_head, 1))
+            self.assertEqual(requeue["reports"], [first, second])
+            self.assertTrue(requeue["unrelated"])
+            self.assertIn(config.LABEL_AGENT, self.github.issue_labels)
+            self.assertNotIn(config.LABEL_HUMAN, self.github.issue_labels)
+            self.assertEqual(self.github.assignees, [])
+
+            [ready] = dispatch.frontier()
+            dispatch.process_ticket(ready, 30, False)
+
+            resolved = self.github.head()
+            self.assertNotEqual(resolved, self.approved_head)
+            self.assertEqual(
+                git(self.origin, "merge-base", "main", resolved),
+                git(self.origin, "rev-parse", "main"),
             )
-        self.assertIn("## Refresh gate failure, round 1", prompt)
-        self.assertIn(first, prompt)
-        self.assertIn(second, prompt)
-        self.assertIn("failure appears unrelated to this PR's changes", prompt)
+            prompt = self.prompt_seen.read_text()
+            self.assertIn("## Refresh gate failure, round 1", prompt)
+            self.assertIn(first, prompt)
+            self.assertIn(second, prompt)
+            self.assertIn("failure appears unrelated to this PR's changes", prompt)
+            self.assertEqual(gate.call_count, 3)
+            self.assertEqual(self.events("escalate"), [])
+            self.assertIn(config.LABEL_APPROVED, self.github.pr_labels)
+
+            dispatch.merge_pass_locked(False)
+
+        self.assertTrue(self.github.merged)
+        self.assertEqual(self.events("escalate"), [])
 
     def test_gate_failure_after_refresh_flags_failures_outside_pr_diff(self) -> None:
         self.cfg.review_rounds = 0
