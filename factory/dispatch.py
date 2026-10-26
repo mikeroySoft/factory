@@ -2828,7 +2828,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         ":(exclude).factory-prompt.md", ":(exclude).factory",
     ]
     before_status = run(status_cmd, cwd=wt).stdout.strip()
-    issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "state,labels,body,comments"])
+    issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels,body,comments"])
     labels = {label["name"] for label in issue.get("labels", [])}
     handoff = wt / ".factory" / f"handoff-{n}.md"
     ok, report = run_gate(
@@ -2902,9 +2902,12 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
                 event.get("event") == "gate-requeue" and event.get("ticket") == n
                 for event in lifecycle.read_events(EVENTS)
             )
+            issue_state = gh_json(
+                ["issue", "view", str(n), "--repo", REPO, "--json", "state"]
+            ).get("state")
             why = (
                 f"after {rounds} gate-resolution round(s)" if rounds >= cfg.review_rounds
-                else "ticket is not open" if issue.get("state") != "OPEN"
+                else "ticket is not open" if issue_state != "OPEN"
                 else ""
             )
             if why:
