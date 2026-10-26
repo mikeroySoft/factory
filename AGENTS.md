@@ -47,4 +47,5 @@ map or a path in it does not exist; update the map in the same change.
 | Attempt scoring (`score`) | `factory/score.py` | `tests/test_score.py` | `test` |
 | Automatic releases | `factory/release.py` | `tests/test_release.py` | `test` |
 | Eval promotion | `factory/promotion.py`, `docs/eval-promotion-contract.md` | `tests/test_promotion.py` | `test` |
+| Frozen worker eval suite | `factory/eval.py`, `factory/eval-suite.json` | `tests/test_eval.py` | `test` |
 | Experiments | `experiments/b1-build/build.py`, `experiments/o1-observation/observer.py`, `experiments/escalation-reasons/classify.py` | `tests/test_b1_build.py`, `tests/test_o1_observation.py`, `tests/test_escalation_reasons.py` | `test` |

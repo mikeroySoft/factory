@@ -29,8 +29,8 @@ published scores come from the lockbox or fresh tickets only.
 
 ## 3. Climb loop
 
-One attributable change per round (`change.kind` ∈ prompt, skill, rubric,
-model, effort, gate-check). Harness changes originate only from the meta loop
+One attributable change per round (`change.kind` ∈ prompt, skill, lesson,
+worker-config, routing, rubric, model, effort, gate-check). Harness changes originate only from the meta loop
 (`factory learn` CURATE): add-only edits to `.factory.toml` (new
 `[[gate.check]]` tables, appended `[gate].protected_paths`) and files under
 the base ref's protected paths, never `.github/`, never deleting or renaming a
@@ -56,6 +56,42 @@ Score train (+ optional selection).
   (delta = 0) or down — a train-only win, even when the drop is inside noise.
 - On stall, bucket root cause (ambiguous task / bad grader / harness / real
   miss) before another round.
+
+Worker regression claims set `objective: "regression"` and use the same
+train/lockbox split and repeat-noise calculation. They keep parity or a drop
+within the larger per-arm noise margin; a drop beyond noise in either split
+reverts. This is distinct from an improvement claim, which still requires a
+train gain beyond noise and a positive held-out delta.
+
+## 3a. Frozen worker suite
+
+`factory/eval-suite.json` version 1 pins 20 merged Factory and rocm-cli tickets,
+including the real tickets behind reviewer-calibration plus recent merged work.
+Each case carries the repository, issue snapshot, exact pre-work base, accepted
+merge, gate checks, acceptance criteria, and train/lockbox membership. Later
+versions may add cases; a lockbox case never leaves lockbox.
+
+`factory eval --profile NAME --dry-run` lists all cases and the `[eval]`
+case/token/wall budget. A real run uses `MIN_REPEATS`, the selected worker
+profile, each target repository's normal gate and reviewer, and the sandboxed
+no-GitHub/no-push replay path shared with `factory learn`. Current worker
+context is committed before replay, except that Factory cases retain their
+pinned `AGENTS.md` because their historical gate validates that file's feature
+map. The run journals one `eval` row per case/repeat and one `eval-summary`
+containing split means, population-stdev noise, usage, wall time, candidate
+head, worker-context fingerprint, and any Prime `scope: global` entries read at
+run start. An accepted-main run establishes the baseline. Rejected or unmerged
+candidate runs never replace it, and any `revert` summary permanently rejects
+that candidate head.
+
+Budget exhaustion or unavailable replay evidence journals `not_tested` and
+does not escalate. `[eval] schedule = true` opts the repository into exact-head
+merge claims for `.factory.toml`, `.factory-lessons.md`, `AGENTS.md`,
+`CLAUDE.md`, the worker setup modules and prompt template, and `SKILL.md` files.
+Missing evidence reports the exact `factory eval` command instead of launching
+the suite synchronously in the dispatcher. The same setting installs a
+persistent weekly `factory eval --scheduled` timer; a scheduled drop beyond
+noise is journaled with `flagged: true`.
 
 ## 4. Lessons
 

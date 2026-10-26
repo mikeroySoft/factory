@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -3122,7 +3123,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                     execution.outcome, execution.reason = "not_eligible", "no_passing_ci"
                     execution.wait("no_passing_ci", mode="eligibility", pr=pr_num)
                 continue
-            fields = "number,state,headRefName,headRefOid,baseRefName,isDraft,labels,reviewDecision,title"
+            fields = "number,state,headRefName,headRefOid,baseRefName,isDraft,labels,reviewDecision,title,files"
             fresh = gh_json(["pr", "view", str(pr_num), "--repo", REPO, "--json", fields])
             labels = {label["name"] for label in fresh.get("labels", [])}
             head = fresh.get("headRefOid")
@@ -3140,9 +3141,35 @@ def merge_pass_locked(dry_run: bool) -> None:
                 log(f"PR #{pr_num}: head changed during CI check; retrying next pass")
                 continue
             behind = gh_json(["api", f"repos/{REPO}/compare/{cfg.main}...{head}"])["behind_by"]
+            from factory import eval as eval_suite
+
+            changed_paths = [
+                item["path"] for item in fresh.get("files", [])
+                if isinstance(item, dict) and isinstance(item.get("path"), str)
+            ]
+            eval_command = (
+                f"{shlex.quote(sys.executable)} -m factory eval "
+                f"--profile {shlex.quote(cfg.eval_profile)}"
+            )
             if dry_run:
                 if behind:
                     log(f"PR #{pr_num}: would refresh (behind main)")
+                elif (
+                    cfg.eval_schedule
+                    and "files" in fresh
+                    and not eval_suite.merge_allowed(changed_paths, head, lifecycle.read_events(EVENTS))
+                ):
+                    candidate_command = (
+                        f"cd {shlex.quote(str(FACTORY / f'wt-{n}'))} && "
+                        f"{eval_command}"
+                    )
+                    command = candidate_command
+                    if not eval_suite.baseline_ready(cfg):
+                        command = (
+                            f"cd {shlex.quote(str(ROOT))} && "
+                            f"{eval_command} && {candidate_command}"
+                        )
+                    log(f"PR #{pr_num}: would refuse (worker eval keep claim missing for {head}); run `{command}`")
                 else:
                     events = lifecycle.read_events(EVENTS)
                     approved = _head_evidence_matches(events, n, head) and any(
@@ -3186,6 +3213,27 @@ def merge_pass_locked(dry_run: bool) -> None:
                     execution.outcome = "refreshed"
                 return
             events = lifecycle.read_events(EVENTS)
+            if (
+                cfg.eval_schedule
+                and "files" in fresh
+                and not eval_suite.merge_allowed(changed_paths, head, events)
+            ):
+                candidate_command = (
+                    f"cd {shlex.quote(str(FACTORY / f'wt-{n}'))} && "
+                    f"{eval_command}"
+                )
+                command = candidate_command
+                if not eval_suite.baseline_ready(cfg):
+                    command = (
+                        f"cd {shlex.quote(str(ROOT))} && "
+                        f"{eval_command} && {candidate_command}"
+                    )
+                log(f"PR #{pr_num}: worker eval keep claim missing for {head}; run `{command}`; not merging")
+                execution.outcome, execution.reason = "not_eligible", "eval_required"
+                execution.wait(
+                    "eval_required", mode="eligibility", pr=pr_num, head=head, command=command,
+                )
+                continue
             approved = _head_evidence_matches(events, n, head) and any(
                 e.get("event") == "approved"
                 and e.get("ticket") == n

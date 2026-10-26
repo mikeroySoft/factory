@@ -762,6 +762,20 @@ def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
                 "[Install]\nWantedBy=timers.target\n"
             ),
         })
+    if cfg.eval_schedule:
+        profile = systemd_argument(cfg.eval_profile)
+        result.update({
+            f"{cfg.unit}-eval.service": (
+                f"[Unit]\nDescription=Run the frozen worker eval suite for {cfg.repo}\n\n"
+                f"[Service]\nType=oneshot\nWorkingDirectory={cfg.root}\n{env}"
+                f"ExecStart={exe} eval --profile {profile} --scheduled\n"
+            ),
+            f"{cfg.unit}-eval.timer": (
+                f"[Unit]\nDescription=Run the frozen worker eval suite for {cfg.repo} weekly\n\n"
+                "[Timer]\nOnCalendar=weekly\nPersistent=true\nRandomizedDelaySec=30min\n\n"
+                "[Install]\nWantedBy=timers.target\n"
+            ),
+        })
     return result
 
 
@@ -795,6 +809,8 @@ def install(argv: list[str]) -> int:
     dash_unit = f"{cfg.unit}-dashboard.service"
     probe_service = f"{cfg.unit}-triage-probe.service"
     probe_timer = f"{cfg.unit}-triage-probe.timer"
+    eval_service = f"{cfg.unit}-eval.service"
+    eval_timer = f"{cfg.unit}-eval.timer"
     if not args.dashboard:
         wanted.pop(dash_unit)
     if args.print:
@@ -836,6 +852,13 @@ def install(argv: list[str]) -> int:
             if (udir / name).exists():
                 (udir / name).unlink()
                 print(f"removed {udir / name}")
+    if not cfg.eval_schedule:
+        if (udir / eval_timer).exists():
+            systemctl("disable", "--now", eval_timer)
+        for name in (eval_service, eval_timer):
+            if (udir / name).exists():
+                (udir / name).unlink()
+                print(f"removed {udir / name}")
     systemctl("daemon-reload")
     timer = f"{cfg.unit}.timer"
     systemctl("enable", "--now", timer)
@@ -847,6 +870,11 @@ def install(argv: list[str]) -> int:
         if probe_timer in changed:
             systemctl("restart", probe_timer)
         print(f"{'restarted' if probe_timer in changed else 'started'} {probe_timer}")
+    if cfg.eval_schedule:
+        systemctl("enable", "--now", eval_timer)
+        if eval_timer in changed:
+            systemctl("restart", eval_timer)
+        print(f"{'restarted' if eval_timer in changed else 'started'} {eval_timer}")
     if args.dashboard:
         systemctl("enable", "--now", dash_unit)
         if dash_unit in changed:
@@ -857,6 +885,8 @@ def install(argv: list[str]) -> int:
     enabled = [f"{cfg.unit}.timer"]
     if cfg.triage_service:
         enabled.append(probe_timer)
+    if cfg.eval_schedule:
+        enabled.append(eval_timer)
     if args.dashboard:
         enabled.append(dash_unit)
     print(f"stop with: systemctl --user disable --now {' '.join(enabled)}")
