@@ -664,6 +664,15 @@ class ControlBandWatchTest(unittest.TestCase):
 
         self.assertEqual(watch.band_signals(self.cfg, rows, self.NOW), [])
 
+    def test_repo_relative_unittest_id_maps_to_test_directory(self) -> None:
+        rows = self.rows()
+        for row in rows:
+            if row.get("stage") == "gate-check":
+                row["failed_tests"] = ["test_watch.ControlBandWatchTest.test_example"]
+                row["changed_paths"] = ["tests/test_watch.py"]
+
+        self.assertEqual(watch.band_signals(self.cfg, rows, self.NOW), [])
+
     def test_unmappable_rust_test_id_does_not_count_as_unchanged(self) -> None:
         for test_id, source in (
             ("tests::foo", "crates/rocm-core/src/lib.rs"),
