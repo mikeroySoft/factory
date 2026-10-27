@@ -3591,7 +3591,8 @@ def _json_path(row: object, path: str) -> object:
 
 def _usage_local(usage: dict) -> bool:
     model = usage.get("model")
-    return isinstance(model, str) and model == cfg.llm_model
+    return (config.local_endpoint(cfg.llm_url)
+            and isinstance(model, str) and model == cfg.llm_model)
 
 
 def worker_usage(logfile: Path, spec: dict | None, transcript: str | None = None) -> dict:

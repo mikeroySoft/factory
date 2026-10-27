@@ -792,7 +792,8 @@ def main(argv: list[str]) -> int:
         now = _now()
         start = now - timedelta(days=7)
         rows = weekly_metrics(
-            window_rows(lifecycle.read_events(journal), start, now), start, now, cfg.llm_model,
+            window_rows(lifecycle.read_events(journal), start, now), start, now,
+            cfg.llm_model if config.local_endpoint(cfg.llm_url) else None,
         )
         rows["stuck_over_days"] = stuck_over_days(now)
         if args.json:
