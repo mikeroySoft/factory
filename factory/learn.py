@@ -40,7 +40,7 @@ REVERT_BRANCH = "agent/revert-lessons-"  # + the reverted PR number
 WORKER_CONTEXT_FILES = (LESSONS_NAME, "AGENTS.md", "CLAUDE.md")
 
 LICENSE_MARKERS = (
-    ("apache license\nversion 2.0", "Apache-2.0"),
+    ("apache license version 2.0", "Apache-2.0"),
     ("mit license", "MIT"),
     ("mozilla public license version 2.0", "MPL-2.0"),
     ("neither the name of", "BSD-3-Clause"),
@@ -74,7 +74,7 @@ def repository_spdx(root: Path) -> str:
             return license_id.strip()
     for path in sorted(root.glob("LICENSE*")) + sorted(root.glob("COPYING*")):
         try:
-            text = path.read_text(errors="ignore")[:20_000].casefold()
+            text = " ".join(path.read_text(errors="ignore")[:20_000].casefold().split())
         except OSError:
             continue
         for marker, license_id in LICENSE_MARKERS:
@@ -1361,7 +1361,7 @@ def _reconcile_human_merges(
     events: list[dict],
     dry_run: bool,
 ) -> None:
-    seen: set[tuple[int, str]] = set()
+    seen: set[int] = set()
     for review in events:
         n, head = review.get("pr"), review.get("head")
         if (
@@ -1371,16 +1371,25 @@ def _reconcile_human_merges(
             or not isinstance(head, str)
             or review.get("ticket") is not None
             or n in open_prs
-            or (n, head) in seen
+            or n in seen
+            or any(row.get("event") == "merged" and row.get("pr") == n for row in events)
             or any(
-                row.get("event") == "merged"
+                row.get("event") == "promotion-reconciled"
                 and row.get("pr") == n
-                and row.get("head") == head
+                for row in events
+            )
+            or any(
+                row.get("event") == "promotion-blocked"
+                and row.get("pr") == n
+                and row.get("reason") == "closed without merge"
                 for row in events
             )
         ):
             continue
-        seen.add((n, head))
+        seen.add(n)
+        recorded_branch = review.get("branch")
+        if isinstance(recorded_branch, str) and not LESSONS_BRANCH.match(recorded_branch):
+            continue
         try:
             state = dispatch.gh_json([
                 "pr", "view", str(n), "--repo", cfg.repo,
@@ -1391,6 +1400,15 @@ def _reconcile_human_merges(
             continue
         branch = state.get("headRefName")
         if not isinstance(branch, str) or not LESSONS_BRANCH.match(branch):
+            if not dry_run:
+                row = {
+                    "event": "promotion-reconciled",
+                    "pr": n,
+                    "head": head,
+                    "reason": "not a lessons branch",
+                }
+                dispatch.record("promotion-reconciled", pr=n, head=head, reason=row["reason"])
+                events.append(row)
             continue
         current_head = state.get("headRefOid") or head
         if state.get("state") == "MERGED":
