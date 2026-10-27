@@ -1090,18 +1090,34 @@ def _finding_instances(row: dict) -> list[dict]:
 
 
 def _required_fixes(findings: str, review_ref: str) -> list[dict]:
-    del review_ref
     tally = _review_tally(findings)
-    if tally is None or not isinstance(tally.get("findings"), list):
-        return []
+    if tally is not None and isinstance(tally.get("findings"), list):
+        fixes = []
+        for row in tally["findings"]:
+            if not isinstance(row, dict) or row.get("severity") != "important":
+                continue
+            instance = _finding_instances(row)[0]
+            path, line, summary = instance.get("path"), instance.get("line"), instance.get("summary")
+            if isinstance(path, str) and type(line) is int and isinstance(summary, str):
+                fixes.append({"kind": "finding", "ref": f"{path}:{line}", "summary": summary})
+        return fixes
+    # Historical accepted review rows predate the JSON tally. Current accepted
+    # reviews always take the branch above; retain old decision-trace readability.
     fixes = []
-    for row in tally["findings"]:
-        if not isinstance(row, dict) or row.get("severity") != "important":
-            continue
-        instance = _finding_instances(row)[0]
-        path, line, summary = instance.get("path"), instance.get("line"), instance.get("summary")
-        if isinstance(path, str) and type(line) is int and isinstance(summary, str):
-            fixes.append({"kind": "finding", "ref": f"{path}:{line}", "summary": summary})
+    for section in re.finditer(
+        r"(?ims)^#{1,6}\s+Required fixes[^\r\n]*\r?\n(.*?)(?=^#{1,6}\s|\Z)",
+        findings,
+    ):
+        for line in section[1].splitlines():
+            summary = re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", line).strip()
+            if not summary or summary.rstrip(".").casefold() == "none":
+                continue
+            location = re.search(r"`?([A-Za-z0-9_.\-/]+:\d+)`?", summary)
+            fixes.append({
+                "kind": "finding",
+                "ref": location.group(1) if location else review_ref,
+                "summary": summary,
+            })
     return fixes
 
 
