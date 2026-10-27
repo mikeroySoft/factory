@@ -89,7 +89,8 @@ KNOWN_KEYS = {
     "review": ("command", "json_mode", "policy"),
     "manager": ("model", "command", "rounds", "review", "stale_days", "max_active_cap", "budget_min_cap"),
     "learn": ("evaluate", "max_tickets", "max_tokens", "budget_min"),
-    "release": ("auto", "version_file", "min_tickets"),
+    "release": ("auto", "version_file", "min_tickets", "bar_min_tickets",
+                "bar_floor_human_rate", "bar_floor_first_pass"),
     "eval": ("max_cases", "max_tokens", "budget_min", "profile", "schedule"),
     "gate": ("timeout", "lock", "check", "protected_paths", "add_only_paths"),
     "leak_scan": ("pattern", "exclude", "extra"),
@@ -212,6 +213,9 @@ class Config:
     release_auto: bool = False
     release_version_file: str = "factory/__init__.py"
     release_min_tickets: int = 5
+    release_bar_min_tickets: int = 20
+    release_bar_floor_human_rate: float = 0.10
+    release_bar_floor_first_pass: float = 0.90
     checks: list[Check] = field(default_factory=list)
     protected_paths: list[str] = field(default_factory=list)
     add_only_paths: list[str] = field(default_factory=list)
@@ -725,13 +729,24 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     auto = release.get("auto", cfg.release_auto)
     version_file = release.get("version_file", cfg.release_version_file)
     min_tickets = release.get("min_tickets", cfg.release_min_tickets)
+    bar_min_tickets = release.get("bar_min_tickets", cfg.release_bar_min_tickets)
+    floor_human = release.get("bar_floor_human_rate", cfg.release_bar_floor_human_rate)
+    floor_first = release.get("bar_floor_first_pass", cfg.release_bar_floor_first_pass)
     if type(auto) is not bool:
         raise ConfigError("release.auto must be true or false")
     if not isinstance(version_file, str) or not version_file or Path(version_file).is_absolute() or ".." in Path(version_file).parts:
         raise ConfigError("release.version_file must be a nonempty repository-relative path")
-    if isinstance(min_tickets, bool) or not isinstance(min_tickets, int) or min_tickets < 1:
-        raise ConfigError("release.min_tickets must be a positive integer")
+    for key, value in (("min_tickets", min_tickets), ("bar_min_tickets", bar_min_tickets)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ConfigError(f"release.{key} must be a positive integer")
+    for key, value in (("bar_floor_human_rate", floor_human),
+                       ("bar_floor_first_pass", floor_first)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+            raise ConfigError(f"release.{key} must be a number from 0 to 1")
     cfg.release_auto, cfg.release_version_file, cfg.release_min_tickets = auto, version_file, min_tickets
+    cfg.release_bar_min_tickets = bar_min_tickets
+    cfg.release_bar_floor_human_rate = float(floor_human)
+    cfg.release_bar_floor_first_pass = float(floor_first)
     journal = raw.get("journal", {})
     for key in ("max_mb", "retention"):
         value = journal.get(key, getattr(cfg, f"journal_{key}"))

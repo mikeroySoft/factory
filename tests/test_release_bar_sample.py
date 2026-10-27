@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from factory import config, lifecycle, release
+from factory import config, release
 
 
 def metrics(tickets: int, *, touches: int = 0, passed: int | None = None) -> dict[str, float | int | None]:
@@ -96,37 +94,14 @@ class ReleaseBarSampleTest(unittest.TestCase):
                 )
 
     def test_legacy_bar_is_reset_to_floors_before_comparison(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            origin = base / "origin.git"
-            repo = base / "repo"
-            subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
-            subprocess.run(["git", "clone", "-q", str(origin), str(repo)], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Release Test"], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.email", "release@example.invalid"], check=True)
-            (repo / "factory").mkdir()
-            (repo / "factory" / "__init__.py").write_text('__version__ = "0.0.1"\n')
-            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "initial"], check=True)
-            message = json.dumps({"human_rate": 0.037829, "first_pass": 0.961979, "tickets": 5})
-            subprocess.run(["git", "-C", str(repo), "tag", "-a", "v0.0.1", "-m", f"Release\n\n```json\n{message}\n```"], check=True)
-            subprocess.run(["git", "-C", str(repo), "push", "-q", "origin", "main", "v0.0.1"], check=True)
-            (repo / "change").write_text("change\n")
-            subprocess.run(["git", "-C", str(repo), "add", "change"], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "change"], check=True)
-            subprocess.run(["git", "-C", str(repo), "push", "-q", "origin", "main"], check=True)
-            cfg = config.Config(root=repo, repo="acme/widgets", release_min_tickets=1)
-            path = cfg.factory / "events.jsonl"
-            lifecycle.append(path, {"at": "2099-01-01T00:00:00Z", "event": "merged", "ticket": 1})
-            lifecycle.append(path, {"at": "2099-01-01T00:00:01Z", "event": "attempt", "ticket": 1,
-                                    "attempt": 1, "gate": "PASS"})
-            output = io.StringIO()
-            with mock.patch.object(release, "_pulls", return_value=[]), \
-                    mock.patch.object(release, "ci_passes", return_value=True), redirect_stdout(output):
-                release.run(cfg, dry_run=True)
-            bar = json.loads(output.getvalue())["bar"]
-            self.assertEqual(bar["human_rate"], 0.1)
-            self.assertEqual(bar["first_pass"], 0.9)
+        cfg = config.Config(root=Path("."), repo="acme/widgets")
+        message = json.dumps({"human_rate": 0.037829, "first_pass": 0.961979, "tickets": 5})
+        bar, reset = release._reset_legacy_bar(
+            release._bar(f"Release\n\n```json\n{message}\n```"), cfg
+        )
+        self.assertTrue(reset)
+        self.assertEqual(bar["human_rate"], 0.1)
+        self.assertEqual(bar["first_pass"], 0.9)
 
 
 if __name__ == "__main__":
