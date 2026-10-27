@@ -1533,6 +1533,14 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
         )
         _promotion_blocked(events, n, branch, head, "worker eval keep evidence missing", dry_run)
         return
+    if any(
+        row.get("event") == "promotion-blocked"
+        and row.get("pr") == n
+        and row.get("head") == head
+        and row.get("reason") == "refresh failed"
+        for row in events
+    ):
+        return
     if dry_run:
         dispatch.log(f"PR #{n}: would merge {branch}")
         return
@@ -1550,14 +1558,6 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
             detail = _error_text(exc)
             if "not up to date" in detail.casefold():
                 reason = "refresh failed"
-                if any(
-                    row.get("event") == "promotion-blocked"
-                    and row.get("pr") == n
-                    and row.get("head") == head
-                    and row.get("reason") == reason
-                    for row in events
-                ):
-                    return
                 dispatch.log(f"PR #{n}: refreshing {branch} after strict-base merge refusal")
                 try:
                     refresh(cfg, n, branch, head)
