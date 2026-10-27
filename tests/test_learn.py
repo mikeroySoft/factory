@@ -225,6 +225,127 @@ class PromoteRegressionTest(unittest.TestCase):
         ))
 
 
+    def test_promote_does_not_repeat_a_same_head_merge_refusal(self) -> None:
+        self.journal(self.gate(), self.review())
+        refusal = "Pull request is not mergeable: commits must have verified signatures"
+
+        def reject_merge(args: list[str], **_kwargs) -> subprocess.CompletedProcess:
+            if args[:3] == ["gh", "pr", "merge"]:
+                raise subprocess.CalledProcessError(1, args, stderr=refusal)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        self.run.side_effect = reject_merge
+        with mock.patch.object(dispatch, "log") as log, mock.patch.object(learn, "refresh") as refresh:
+            learn.promote_pass([self.pr])
+            rows_after_failure = lifecycle.read_events(self.events)
+            for _ in range(2):
+                log.reset_mock()
+                learn.promote_pass([self.pr])
+                self.assertEqual(lifecycle.read_events(self.events), rows_after_failure)
+                self.assertIn("verified signatures", str(log.call_args_list))
+                self.assertIn("push a new head", str(log.call_args_list))
+
+        refresh.assert_not_called()
+        self.assertEqual([call.args[0][:3] for call in self.run.call_args_list], [
+            ["gh", "pr", "edit"],
+            ["gh", "pr", "merge"],
+        ])
+        [blocked] = self.rows("promotion-blocked")
+        self.assertEqual((blocked["pr"], blocked["head"]), (42, self.HEAD))
+        self.assertTrue(blocked["reason"].startswith("merge failed: "))
+        self.assertEqual(self.rows("approved"), [])
+        self.assertEqual(self.rows("merged"), [])
+
+        new_head = "b" * 40
+        self.pr["headRefOid"] = new_head
+        self.journal({**self.gate(), "head": new_head}, {**self.review(), "head": new_head})
+        self.run.side_effect = None
+        learn.promote_pass([self.pr])
+
+        self.assertEqual(self.run.call_count, 4)
+        [approved] = self.rows("approved")
+        [merged] = self.rows("merged")
+        self.assertEqual((approved["head"], merged["head"]), (new_head, new_head))
+
+    def test_promote_uses_one_block_reason_for_a_journaled_gate_failure(self) -> None:
+        self.journal(self.review())
+        detail = "gate report: required check failed"
+
+        def fail_gate(_wt: Path, branch: str, _protected: bool) -> str:
+            dispatch.record("gate", branch=branch, head=self.HEAD, gate="FAIL")
+            raise ValueError(detail)
+
+        with mock.patch.object(learn, "gate_head", side_effect=fail_gate) as gate_head, \
+                mock.patch.object(dispatch, "log") as log:
+            learn.promote_pass([self.pr])
+            rows_after_failure = lifecycle.read_events(self.events)
+            learn.promote_pass([self.pr])
+            learn.promote_pass([self.pr])
+
+        gate_head.assert_called_once()
+        self.assertEqual(lifecycle.read_events(self.events), rows_after_failure)
+        [blocked] = self.rows("promotion-blocked")
+        self.assertEqual(blocked["reason"], "gate failed")
+        self.assertIn(detail, str(log.call_args_list))
+        self.assertEqual(len(self.rows("gate")), 1)
+        self.assertEqual(self.rows("approved"), [])
+        self.assertEqual(self.rows("merged"), [])
+
+    def test_promote_logs_a_stored_refresh_failure_without_journal_growth(self) -> None:
+        self.journal(self.gate(), self.review(), {
+            "event": "promotion-blocked",
+            "pr": 42,
+            "head": self.HEAD,
+            "branch": self.BRANCH,
+            "reason": "refresh failed",
+        })
+        before = lifecycle.read_events(self.events)
+
+        with mock.patch.object(dispatch, "log") as log:
+            learn.promote_pass([self.pr])
+
+        self.assertEqual(lifecycle.read_events(self.events), before)
+        self.run.assert_not_called()
+        self.assertIn("refresh failed", str(log.call_args_list))
+        self.assertIn("push a new head", str(log.call_args_list))
+
+    def test_promote_retries_recoverable_ci_and_review_blocks(self) -> None:
+        self.journal(self.gate(), self.review(), *({
+            "event": "promotion-blocked",
+            "pr": 42,
+            "head": self.HEAD,
+            "branch": self.BRANCH,
+            "reason": reason,
+        } for reason in ("CI fail", "review approval missing")))
+
+        learn.promote_pass([self.pr])
+
+        self.assertEqual(self.run.call_count, 2)
+        self.assertEqual(len(self.rows("merged")), 1)
+
+    def test_promote_reconciles_a_human_merge_after_a_merge_refusal(self) -> None:
+        self.journal(self.review(), {
+            "event": "promotion-blocked",
+            "pr": 42,
+            "head": self.HEAD,
+            "branch": self.BRANCH,
+            "reason": "merge failed: commits must have verified signatures",
+        })
+        self.gh.side_effect = lambda _args: {
+            "state": "MERGED",
+            "mergedBy": {"login": "mikeroySoft"},
+            "headRefName": self.BRANCH,
+            "headRefOid": self.HEAD,
+        }
+
+        learn.promote_pass([])
+
+        [merged] = self.rows("merged")
+        [opened] = self.rows("promotion-open")
+        self.assertEqual(merged["by"], "human")
+        self.assertEqual(opened["head"], self.HEAD)
+
+
 class LessonsFileTest(unittest.TestCase):
     def test_new_lessons_file_starts_with_the_repository_spdx_license(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
