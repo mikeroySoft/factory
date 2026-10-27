@@ -93,6 +93,25 @@ class PromoteRegressionTest(unittest.TestCase):
         self.assertEqual(self.rows("approved"), [])
         self.assertEqual(self.rows("merged"), [])
 
+    def test_promote_does_not_repeat_a_failed_strict_base_refresh(self) -> None:
+        self.journal(self.gate(), self.review())
+        self.compare = {"behind_by": 3, "files": [{"filename": config.LESSONS_NAME}]}
+        self.run.side_effect = RuntimeError("the head branch is not up to date")
+
+        with mock.patch.object(learn, "refresh", side_effect=RuntimeError("rebase conflict")) as refresh:
+            for _ in range(3):
+                learn.promote_pass([self.pr])
+
+        refresh.assert_called_once_with(self.cfg, 42, self.BRANCH, self.HEAD)
+        [blocked] = self.rows("promotion-blocked")
+        self.assertEqual((blocked["pr"], blocked["head"], blocked["reason"]), (
+            42,
+            self.HEAD,
+            "refresh failed",
+        ))
+        self.assertEqual(self.rows("approved"), [])
+        self.assertEqual(self.rows("merged"), [])
+
     def test_promote_records_one_block_for_repeated_red_ci(self) -> None:
         self.journal(self.gate(), self.review())
         with mock.patch.object(dispatch, "pr_checks", return_value=[{"name": "lint", "bucket": "fail"}]):
@@ -105,6 +124,22 @@ class PromoteRegressionTest(unittest.TestCase):
 
     def test_promote_records_a_human_merge_and_opens_measurement(self) -> None:
         self.journal(self.gate(), self.review())
+        self.gh.side_effect = lambda args: {
+            "state": "MERGED",
+            "mergedBy": {"login": "mikeroySoft"},
+            "headRefName": self.BRANCH,
+            "headRefOid": self.HEAD,
+        }
+
+        learn.promote_pass([])
+
+        [merged] = self.rows("merged")
+        [opened] = self.rows("promotion-open")
+        self.assertEqual((merged["pr"], merged["by"], merged["actor"]), (42, "human", "mikeroySoft"))
+        self.assertEqual((opened["pr"], opened["head"], opened["branch"]), (42, self.HEAD, self.BRANCH))
+
+    def test_promote_reconciles_a_human_merge_without_approval(self) -> None:
+        self.journal({"event": "review-intake", "pr": 42, "head": self.HEAD})
         self.gh.side_effect = lambda args: {
             "state": "MERGED",
             "mergedBy": {"login": "mikeroySoft"},
