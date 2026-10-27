@@ -90,8 +90,15 @@ def ssh_signing_key_status(cfg: config.Config) -> tuple[bool | None, str] | None
     if "PATH" in os.environ:
         environment["PATH"] = os.environ["PATH"]
     try:
+        login = sh(["gh", "api", "user", "--jq", ".login"], env=environment)
+        if login.returncode or not login.stdout.strip():
+            detail = login.stderr.strip() or "authenticated login unavailable"
+            return None, f"unknown_key: could not determine dispatcher GitHub account ({detail})"
         registered = sh(
-            ["gh", "api", "user/ssh_signing_keys", "--paginate", "--jq", ".[].key"],
+            [
+                "gh", "api", f"users/{login.stdout.strip()}/ssh_signing_keys",
+                "--paginate", "--jq", ".[].key",
+            ],
             env=environment,
         )
     except OSError as exc:
