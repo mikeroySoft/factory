@@ -76,6 +76,8 @@
 # json_mode = true  # add/replace `--mode json` for an OMP-compatible reviewer not named `omp`
 # Defaults to true when the reviewer program is named `omp`; false disables that default.
 # policy = "REVIEW.md"  # base-ref review rules; keep this path in gate.protected_paths
+# verify = false  # independently confirm each Important finding; verifier failure blocks
+# follow_up = false  # after merge, file one needs-triage issue for deferred review findings
 # command = ["codex", "exec", "{prompt}"]
 
 [manager]

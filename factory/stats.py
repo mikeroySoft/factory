@@ -84,6 +84,29 @@ def review_findings(events: list[dict]) -> list[dict[str, int]]:
             rounds.append({key: counts[key] for key in ("important", "nit", "pre_existing")})
     return rounds
 
+def review_convergence(events: list[dict]) -> dict[str, Any]:
+    """Accepted ticket-review convergence metrics in review order."""
+    rounds = [
+        event for event in events
+        if event.get("event") == "review-result" and isinstance(event.get("counts"), dict)
+    ]
+    approved = next(
+        (index for index, event in enumerate(rounds, 1) if event.get("verdict") == "APPROVE"),
+        None,
+    )
+    return {
+        "rounds_to_pass": approved,
+        "repeated_findings_dropped": sum(
+            value for event in rounds
+            if type(value := event.get("repeated_dropped", 0)) is int and value >= 0
+        ),
+        "important_findings_per_round": [
+            event["counts"]["important"] for event in rounds
+            if type(event["counts"].get("important")) is int
+            and event["counts"]["important"] >= 0
+        ],
+    }
+
 
 def issue(number: int) -> dict[str, Any]:
     return gh(
@@ -694,6 +717,7 @@ def collect_rows(progress: bool = False) -> list[dict[str, Any]]:
         row["risk_tier"] = risk_tier(audit.get(number, []))
         if any(event.get("event") == "review" for event in audit.get(number, [])):
             row["rework_rounds"] = rework_rounds(audit.get(number, []))
+        row.update(review_convergence(audit.get(number, [])))
 
     return [rows[number] for number in sorted(rows)]
 
@@ -880,12 +904,18 @@ def print_table(rows: list[dict[str, Any]]) -> None:
             for counts in row.get("review_findings", [])
         )
 
+    def important_rounds(row: dict) -> str:
+        return ",".join(map(str, row.get("important_findings_per_round", [])))
+
     columns = (
         ("ticket#", lambda row: f"#{row['ticket']}"),
         ("title", lambda row: truncate(row["title"])),
         ("state", lambda row: row["state"]),
         ("attempts", lambda row: str(row["attempts"])),
         ("review rounds", lambda row: str(row["review_rounds"])),
+        ("rounds to pass", lambda row: "" if row.get("rounds_to_pass") is None else str(row["rounds_to_pass"])),
+        ("repeats dropped", lambda row: str(row.get("repeated_findings_dropped", 0))),
+        ("important/round", important_rounds),
         ("review findings I/N/P", findings),
         ("hours", lambda row: format_hours(row["merge_hours"])),
         ("triage prompt", lambda row: usage(row, "triage", "prompt_tokens")),
