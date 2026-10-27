@@ -42,16 +42,12 @@ def next_bar(
     bar: dict[str, float | int] | None,
     metrics: dict[str, float | int | None],
     *,
-    bar_min_tickets: int | None = None,
+    bar_min_tickets: int,
     bar_floor_human_rate: float = 0.10,
     bar_floor_first_pass: float = 0.90,
 ) -> dict[str, float | int]:
     """Pool small windows and tighten halfway toward conservative confidence bounds."""
     old = bar or WORST
-    if bar_min_tickets is None:
-        return {**{metric: round((float(old[metric]) + float(metrics[metric])) / 2, 6)
-                    for metric, _ in BAR},
-                "tickets": int(metrics["tickets"])}
 
     tickets = int(metrics["tickets"])
     touches = int(metrics["human_touches"])
