@@ -143,6 +143,121 @@ def llm_usage(events: list[dict], prices: dict[str, dict] | None = None) -> dict
     return usage
 
 
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return (parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)).astimezone(UTC)
+
+
+def _stamp(value: datetime) -> str:
+    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def window_rows(rows: list[dict], start: datetime, end: datetime) -> list[dict]:
+    """Rows whose timestamps fall inside the inclusive UTC window."""
+    return [row for row in rows if (at := _timestamp(row.get("at"))) is not None and start <= at <= end]
+
+
+def weekly_metrics(
+    rows: list[dict], start: datetime, end: datetime, local_model: str | None,
+) -> dict[str, Any]:
+    """Aggregate one already-windowed journal snapshot without external reads."""
+    window = {"start": _stamp(start), "end": _stamp(end)}
+    merged = {row["ticket"] for row in rows
+              if row.get("event") == "merged" and type(row.get("ticket")) is int}
+    touches = sum(
+        row.get("event") == "human-decision"
+        or row.get("event") == "manage" and row.get("decision") == "HUMAN"
+        for row in rows
+    )
+    escalations = [row for row in rows if row.get("event") == "escalate"]
+    escalation_codes = Counter(row.get("code") or "unknown" for row in escalations)
+    review_revises = escalation_codes["review_revise"]
+    attempts = [row for row in rows if row.get("event") == "attempt"
+                and row.get("attempt") == 1 and row.get("gate") in {"PASS", "FAIL"}]
+    first_passes = sum(row["gate"] == "PASS" for row in attempts)
+    tokens: dict[str, dict[str, dict[str, int | bool]]] = {}
+    local_tokens = reported_tokens = usage_missing = 0
+    for row in rows:
+        if row.get("event") != "llm-usage":
+            continue
+        model = row.get("model")
+        if not isinstance(model, str) or not model:
+            usage_missing += 1
+            continue
+        stage = row.get("stage")
+        if not isinstance(stage, str) or not stage:
+            continue
+        prompt = row.get("prompt_tokens") if type(row.get("prompt_tokens")) is int else 0
+        completion = row.get("completion_tokens") if type(row.get("completion_tokens")) is int else 0
+        prompt, completion = max(prompt, 0), max(completion, 0)
+        local = row["local"] if type(row.get("local")) is bool else model == local_model
+        by_model = tokens.setdefault(stage, {})
+        if model not in by_model:
+            by_model[model] = {"prompt": 0, "completion": 0, "calls": 0, "local": local}
+        totals = by_model[model]
+        totals["prompt"] += prompt
+        totals["completion"] += completion
+        totals["calls"] += 1
+        totals["local"] = bool(totals["local"] and local)
+        reported_tokens += prompt + completion
+        if local:
+            local_tokens += prompt + completion
+    return {
+        "window": window,
+        "merges": len(merged),
+        "human_touches": touches,
+        "human_touches_per_merge": touches / len(merged) if merged else None,
+        "escalations_7d": len(escalations),
+        "escalations_by_code": dict(escalation_codes.most_common()),
+        "review_nonconvergence_share": review_revises / len(escalations) if escalations else None,
+        "review_nonconvergence_share_numerator": review_revises,
+        "review_nonconvergence_share_denominator": len(escalations),
+        "review_nonconvergence_share_window": window,
+        "first_pass": first_passes / len(attempts) if attempts else None,
+        "first_pass_numerator": first_passes,
+        "first_pass_denominator": len(attempts),
+        "first_pass_window": window,
+        "tokens": tokens,
+        "local_token_share": round(local_tokens / reported_tokens, 6) if reported_tokens else None,
+        "usage_missing": usage_missing,
+    }
+
+
+def stuck_over_days(now: datetime, days: int = 7) -> list[dict] | str:
+    """One bounded GitHub read for stale open ready-for-human issues."""
+    try:
+        completed = subprocess.run(
+            ["gh", "issue", "list", "--repo", REPOSITORY, "--state", "open",
+             "--label", LABEL_HUMAN, "--limit", "1000", "--json", "number,title,url,updatedAt"],
+            text=True, capture_output=True, check=False, timeout=10,
+        )
+        issues = json.loads(completed.stdout) if completed.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        return "unavailable"
+    if not isinstance(issues, list):
+        return "unavailable"
+    cutoff = now - timedelta(days=days)
+    stale = []
+    for issue in issues:
+        updated = _timestamp(issue.get("updatedAt")) if isinstance(issue, dict) else None
+        if updated is None:
+            return "unavailable"
+        if updated <= cutoff:
+            stale.append(issue)
+    return stale
+
+
+
+
 def worker_metrics(audit: dict[int, list[dict]], workers: dict[str, list[str]]) -> list[dict]:
     """Claim attribution, using the recorded worker profile when available.
 
@@ -653,6 +768,8 @@ def resolve(repo: str | None) -> Config:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="factory stats", description=__doc__)
     parser.add_argument("--json", action="store_true", help="print metric rows as JSON")
+    parser.add_argument("--week", action="store_true",
+                        help="trailing seven-day journal metrics plus one bounded stuck-ticket read")
     parser.add_argument("--by-worker", action="store_true",
                         help="split gate pass rate, attempts, reported token usage and known cost by claim label")
     parser.add_argument("--by-brief", action="store_true", help="split first-gate pass rate by tickets with/without a brief")
@@ -671,6 +788,28 @@ def main(argv: list[str]) -> int:
     if not args.escapes and not journal.is_file():
         raise SystemExit(f"factory stats: no journal at {journal}; this is not the dispatcher's root. "
                          f'Set [repo."{cfg.repo}"].path in {config.host_config_path()} or pass --repo owner/name')
+    if args.week:
+        now = _now()
+        start = now - timedelta(days=7)
+        rows = weekly_metrics(
+            window_rows(lifecycle.read_events(journal), start, now), start, now, cfg.llm_model,
+        )
+        rows["stuck_over_days"] = stuck_over_days(now)
+        if args.json:
+            print(json.dumps(rows, indent=2))
+        else:
+            print(f"Window: {rows['window']['start']} to {rows['window']['end']}")
+            print(f"Merges: {rows['merges']}")
+            print(f"Human touches: {rows['human_touches']} ({rows['human_touches_per_merge']} per merge)")
+            print(f"Escalations: {rows['escalations_7d']} ({rows['escalations_by_code']})")
+            print(f"First pass: {rows['first_pass']} "
+                  f"({rows['first_pass_numerator']}/{rows['first_pass_denominator']})")
+            print(f"Review nonconvergence: {rows['review_nonconvergence_share']} "
+                  f"({rows['review_nonconvergence_share_numerator']}/"
+                  f"{rows['review_nonconvergence_share_denominator']})")
+            print(f"Local token share: {rows['local_token_share']}; missing usage: {rows['usage_missing']}")
+            print(f"Stuck over 7 days: {rows['stuck_over_days']}")
+        return 0
     if args.stages:
         passes = lifecycle.last_successful_passes(journal)
         result = {"repository": cfg.repo, "last_successful_pass": passes}

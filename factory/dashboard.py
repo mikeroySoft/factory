@@ -666,13 +666,24 @@ def metrics(tickets: list[dict]) -> dict:
     rounds = lambda t: sum(1 for a in t["attempts"] if not bounce(a))
     reached = [t for t in tickets if t["pr"]]
     ran = sorted(rounds(t) for t in tickets if t["attempts"])
+    first_passes = sum(1 for t in reached if rounds(t) == 1)
+    bounces = sum(1 for t in reached if any(bounce(a) for a in t["attempts"]))
     frac = lambda n: round(n / len(reached), 3) if reached else None
+    touch = stats.human_touch_metrics([t["human_touch"] for t in tickets])
+    window = "dashboard tickets"
     return {
-        "first_pass": frac(sum(1 for t in reached if rounds(t) == 1)),
-        "bounce_rate": frac(sum(1 for t in reached if any(bounce(a) for a in t["attempts"]))),
+        "first_pass": frac(first_passes),
+        "first_pass_numerator": first_passes,
+        "first_pass_denominator": len(reached),
+        "first_pass_window": window,
+        "bounce_rate": frac(bounces),
+        "bounce_rate_numerator": bounces,
+        "bounce_rate_denominator": len(reached),
+        "bounce_rate_window": window,
         "escalations": sum(t["human_touch"]["escalation_count"] for t in tickets),
+        "escalations_7d": touch["escalations_per_week"],
         "med_attempts": ran[(len(ran) - 1) // 2] if ran else None,
-        **stats.human_touch_metrics([t["human_touch"] for t in tickets]),
+        **touch,
         "human_touched_pct": stats.human_touched_pct(
             [t["pr"].get("corrections") or {} for t in tickets if t["pr"] and t["pr"].get("merged_at")]),
     }

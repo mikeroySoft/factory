@@ -349,6 +349,7 @@ def _record_usage(execution, usage: dict | None) -> None:
             "ticket": execution.ticket,
             "stage": "triage",
             "model": LLM_MODEL,
+            "local": config.local_endpoint(LLM_URL),
             "execution_id": execution.execution_id,
             "root_execution_id": execution.root_execution_id,
             **usage,

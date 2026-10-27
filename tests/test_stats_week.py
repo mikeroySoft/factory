@@ -13,7 +13,6 @@ from unittest import mock
 
 from factory import config, dashboard, stats
 
-
 NOW = datetime(2026, 10, 27, 12, tzinfo=UTC)
 
 

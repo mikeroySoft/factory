@@ -36,7 +36,7 @@ class EndpointLocalityTest(unittest.TestCase):
 
         usage = dispatch.worker_usage(log, None, str(transcript))
 
-        self.assertEqual(usage["local"], True)
+        self.assertIs(dispatch._usage_local(usage), True)
 
     def test_triage_usage_records_endpoint_locality(self) -> None:
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
