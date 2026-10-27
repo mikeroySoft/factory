@@ -96,13 +96,22 @@ class PromoteRegressionTest(unittest.TestCase):
     def test_promote_does_not_repeat_a_failed_strict_base_refresh(self) -> None:
         self.journal(self.gate(), self.review())
         self.compare = {"behind_by": 3, "files": [{"filename": config.LESSONS_NAME}]}
-        self.run.side_effect = RuntimeError("the head branch is not up to date")
 
+        def reject_merge(args: list[str], **_kwargs) -> subprocess.CompletedProcess:
+            if args[:3] == ["gh", "pr", "merge"]:
+                raise RuntimeError("the head branch is not up to date")
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        self.run.side_effect = reject_merge
         with mock.patch.object(learn, "refresh", side_effect=RuntimeError("rebase conflict")) as refresh:
-            for _ in range(3):
-                learn.promote_pass([self.pr])
+            learn.promote_pass([self.pr])
+            rows_after_failure = lifecycle.read_events(self.events)
+            learn.promote_pass([self.pr])
+            learn.promote_pass([self.pr])
 
         refresh.assert_called_once_with(self.cfg, 42, self.BRANCH, self.HEAD)
+        self.assertEqual(self.run.call_count, 2)
+        self.assertEqual(lifecycle.read_events(self.events), rows_after_failure)
         [blocked] = self.rows("promotion-blocked")
         self.assertEqual((blocked["pr"], blocked["head"], blocked["reason"]), (
             42,
