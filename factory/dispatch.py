@@ -4038,7 +4038,7 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     if args.force and not args.ticket:
         parser.error("--force requires --ticket")
-    root = config.repo_root()
+    root = cfg.root if "cfg" in globals() else config.repo_root()
     state = pause.current(root, expire=True)
     if state is not None and not (args.ticket and args.force):
         suffix = "; --ticket refused (use --force)" if args.ticket else ""
