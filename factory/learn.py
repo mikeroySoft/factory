@@ -1365,8 +1365,7 @@ def _reconcile_human_merges(
     for review in events:
         n, head = review.get("pr"), review.get("head")
         if (
-            review.get("event") != "review-result"
-            or review.get("verdict") != "APPROVE"
+            review.get("event") not in {"review-intake", "review-result"}
             or type(n) is not int
             or not isinstance(head, str)
             or review.get("ticket") is not None
@@ -1550,8 +1549,21 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
         except Exception as exc:
             detail = _error_text(exc)
             if "not up to date" in detail.casefold():
+                reason = "refresh failed"
+                if any(
+                    row.get("event") == "promotion-blocked"
+                    and row.get("pr") == n
+                    and row.get("head") == head
+                    and row.get("reason") == reason
+                    for row in events
+                ):
+                    return
                 dispatch.log(f"PR #{n}: refreshing {branch} after strict-base merge refusal")
-                refresh(cfg, n, branch, head)
+                try:
+                    refresh(cfg, n, branch, head)
+                except Exception:
+                    _promotion_blocked(events, n, branch, head, reason, False)
+                    raise
                 return
             _promotion_blocked(events, n, branch, head, f"merge failed: {detail}", False)
             raise
