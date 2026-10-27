@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from factory import config, lifecycle
+from factory import config, lifecycle, pause
 
 SEMVER = re.compile(r"v(\d+)\.(\d+)\.(\d+)\Z")
 JSON_BAR = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
@@ -323,6 +323,8 @@ def _update_release_files(cfg: config.Config, worktree: Path, old: str, new: str
 def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
     """Advance the release PR, merge, tag, and stable branch from remote state. With
     `open_pr=False` (the dispatcher's start-of-pass call) a new release PR is never opened."""
+    if state := pause.current(cfg, expire=True):
+        return pause.message(state)
     metrics: dict[str, float | int | None] | None = None
     bar: dict[str, float | int] | None = None
     latest_tag: str | None = None

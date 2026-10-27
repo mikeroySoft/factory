@@ -25,7 +25,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from statistics import mean, pstdev
 
-from factory import config, dispatch, lifecycle, runtime_events
+from factory import config, dispatch, lifecycle, pause, runtime_events
 
 LABELS = "bug,needs-triage"
 MAX_ISSUES = 5
@@ -675,6 +675,8 @@ def run_pass(
     cfg: config.Config, dry_run: bool = False, now: datetime | None = None,
 ) -> list[dict]:
     """Log, diagnose, file/comment, and close configured signals."""
+    if pause.guard(cfg, dispatch.log):
+        return False
     events = lifecycle.read_events(dispatch.EVENTS)
     rows = [r for r in events if r.get("event") == "watch"]
     filings = {r["fingerprint"]: r for r in rows}
