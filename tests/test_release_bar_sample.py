@@ -62,6 +62,18 @@ class ReleaseBarSampleTest(unittest.TestCase):
         self.assertGreaterEqual(values[3], 0.1)
         self.assertEqual(bar["pending_tickets"], 0)
 
+    def test_touch_rate_above_one_does_not_tighten_or_break_the_bar(self) -> None:
+        old = {"human_rate": 0.2, "first_pass": 0.8, "tickets": 20, "pending_tickets": 0}
+        result = release.next_bar(
+            old,
+            metrics(2, touches=3, passed=2),
+            bar_min_tickets=2,
+            bar_floor_human_rate=0.1,
+            bar_floor_first_pass=0.9,
+        )
+        self.assertEqual(result["human_rate"], 0.2)
+        self.assertEqual(result["pending_tickets"], 0)
+
     def test_wilson_bounds_and_empty_sample(self) -> None:
         self.assertAlmostEqual(release.wilson(0, 21)[1], 0.155, places=3)
         self.assertAlmostEqual(release.wilson(0, 5)[1], 0.434, places=3)

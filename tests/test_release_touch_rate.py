@@ -29,6 +29,19 @@ class ReleaseTouchRateTest(unittest.TestCase):
             self.assertEqual(measured["human_touches"], 3)
             self.assertEqual(measured["human_ticket_rate"], 0.5)
 
+    def test_measure_counts_repeated_manager_touches_without_human_decision_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config.Config(root=Path(directory), repo="acme/widgets")
+            path = cfg.factory / "events.jsonl"
+            for ticket in (1, 2):
+                lifecycle.append(path, {"at": "2099-01-01T00:00:00Z", "event": "merged", "ticket": ticket})
+            for second in range(1, 4):
+                lifecycle.append(path, {"at": f"2099-01-01T00:00:0{second}Z", "event": "manage",
+                                        "ticket": 1, "decision": "HUMAN"})
+            measured = release.measure(cfg, "2098-01-01T00:00:00Z")
+            self.assertEqual(measured["human_rate"], 1.5)
+            self.assertEqual(measured["human_touches"], 3)
+
     def test_identical_bar_hold_is_journaled_once(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
