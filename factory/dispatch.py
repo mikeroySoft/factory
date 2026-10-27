@@ -1513,7 +1513,8 @@ def run_gate(
     # itself. Locking here too deadlocks the gate subprocess (seen in run #7).
     cmd = [
         sys.executable,
-        "-I",
+        "-P",
+        "-E",
         "-m",
         "factory",
         "gate",
@@ -1551,6 +1552,7 @@ def run_gate(
             f"gate runner did not write {report_rel} (exit {proc.returncode})"
             + (f":\n{output}\n" if output else "\n")
         )
+        report.write_text(text)
         ok = False
     match = re.fullmatch(r"(\d+)(?:-pr)?", str(n))
     if match:
