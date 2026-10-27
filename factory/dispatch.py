@@ -1505,12 +1505,16 @@ def run_gate(
 ) -> tuple[bool, str]:
     report_rel = f".factory/gate-report-{n}.md"
     (wt / ".factory").mkdir(exist_ok=True)
+    report = wt / report_rel
+    report.unlink(missing_ok=True)
     started = time.monotonic()
     head = run(["git", "rev-parse", "HEAD"], cwd=wt, check=False).stdout.strip() or "unknown"
     # GPU serialization is the gate's job: the gate flocks the exclusive lock
     # itself. Locking here too deadlocks the gate subprocess (seen in run #7).
     cmd = [
         sys.executable,
+        "-P",
+        "-E",
         "-m",
         "factory",
         "gate",
@@ -1539,15 +1543,24 @@ def run_gate(
     if tier != "attempt":
         cmd += ["--tier", tier]
     proc = run(cmd, cwd=wt, check=False, timeout=timeout)
-    report = wt / report_rel
-    text = report.read_text() if report.exists() else proc.stdout + proc.stderr
+    if report.exists():
+        text = report.read_text()
+        ok = proc.returncode == 0
+    else:
+        output = (proc.stdout + proc.stderr).strip()
+        text = (
+            f"gate runner did not write {report_rel} (exit {proc.returncode})"
+            + (f":\n{output}\n" if output else "\n")
+        )
+        report.write_text(text)
+        ok = False
     match = re.fullmatch(r"(\d+)(?:-pr)?", str(n))
     if match:
         _record_gate_decision(
-            int(match[1]), proc.returncode == 0, text, head, str(report),
+            int(match[1]), ok, text, head, str(report),
             time.monotonic() - started,
         )
-    return proc.returncode == 0, text
+    return ok, text
 
 
 def escalation_packet(
