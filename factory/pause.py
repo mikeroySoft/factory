@@ -156,6 +156,15 @@ def _event(value: Config | Path, event: str, state: dict, who: str, at: str) -> 
     lifecycle.append(_factory(value) / "events.jsonl", row)
 
 
+def _expire_locked(value: Config | Path, state: dict | None, instant: datetime) -> dict | None:
+    if state is None or state["until"] is None or _timestamp(state["until"]) > instant:
+        return state
+    at = _format(instant)
+    _remove(value)
+    _event(value, "resume", state, "expiry", at)
+    return None
+
+
 def activate(
     value: Config | Path,
     reason: str | None = None,
@@ -165,10 +174,11 @@ def activate(
     now: datetime | None = None,
 ) -> bool:
     """Set the pause once. A later pause command never rewrites its state or journal row."""
+    instant = now or datetime.now(UTC)
     with _locked(value):
-        if read(value) is not None:
+        if _expire_locked(value, read(value), instant) is not None:
             return False
-        at = _format(now or datetime.now(UTC))
+        at = _format(instant)
         state = {
             "reason": reason or DEFAULT_REASON,
             "at": at,
@@ -214,13 +224,7 @@ def current(
     if not expire or state is None or state["until"] is None or _timestamp(state["until"]) > instant:
         return state
     with _locked(value):
-        state = read(value)
-        if state is None or state["until"] is None or _timestamp(state["until"]) > instant:
-            return state
-        at = _format(instant)
-        _remove(value)
-        _event(value, "resume", state, "expiry", at)
-        return None
+        return _expire_locked(value, read(value), instant)
 
 
 def message(state: dict) -> str:

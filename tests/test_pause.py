@@ -105,6 +105,16 @@ class PauseTest(unittest.TestCase):
         self.assertEqual(len(resumes), 1)
         self.assertEqual((resumes[0]["who"], resumes[0]["reason"]), ("expiry", "window"))
 
+    def test_pause_replaces_elapsed_hold(self) -> None:
+        self.cli("pause", "--reason", "window", "--until", "2000-01-01T00:00:00Z")
+        self.cli("pause", "--reason", "incident")
+
+        state = pause.read(self.repo)
+        self.assertEqual((state["reason"], state["until"]), ("incident", None))
+        rows = [row for row in self.events() if row.get("event") in {"pause", "resume"}]
+        self.assertEqual([row["event"] for row in rows], ["pause", "resume", "pause"])
+        self.assertEqual(rows[1]["who"], "expiry")
+
     def test_pause_between_tickets_stops_the_second_claim(self) -> None:
         cfg = config.Config(self.repo, "local/pause", max_active=2)
         dispatch.configure(cfg)
