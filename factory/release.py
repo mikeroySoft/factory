@@ -28,8 +28,6 @@ def wilson(k: int, n: int) -> tuple[float, float] | None:
     """Return the 95% Wilson score interval, or no estimate for an empty sample."""
     if n == 0:
         return None
-    if n < 0 or k < 0 or k > n:
-        raise ValueError("Wilson counts must satisfy 0 <= k <= n")
     z = 1.959963984540054
     observed = k / n
     denominator = 1 + z * z / n
@@ -43,8 +41,8 @@ def next_bar(
     metrics: dict[str, float | int | None],
     *,
     bar_min_tickets: int,
-    bar_floor_human_rate: float = 0.10,
-    bar_floor_first_pass: float = 0.90,
+    bar_floor_human_rate: float,
+    bar_floor_first_pass: float,
 ) -> dict[str, float | int]:
     """Pool small windows and tighten halfway toward conservative confidence bounds."""
     old = bar or WORST

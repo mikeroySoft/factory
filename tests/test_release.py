@@ -299,7 +299,10 @@ class ReleaseTest(unittest.TestCase):
             "human_rate": 0.0, "human_touches": 0, "human_ticket_rate": 0.0,
             "first_pass": 1.0, "first_passes": 20, "attempts": 20, "tickets": 20,
         }
-        result = release.next_bar(old, measured, bar_min_tickets=20)
+        result = release.next_bar(
+            old, measured, bar_min_tickets=20,
+            bar_floor_human_rate=0.1, bar_floor_first_pass=0.9,
+        )
         self.assertEqual((result["human_rate"], result["first_pass"]), (0.180563, 0.819437))
 
     def land_release(self) -> None:
