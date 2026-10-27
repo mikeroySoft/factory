@@ -401,6 +401,9 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
     if decision == "FIX":
         cfg = dispatch.cfg
         wt = cfg.factory / f"wt-{n}"
+        already_human = any(
+            label.get("name") == LABEL_HUMAN for label in issue.get("labels", [])
+        )
         pr = dispatch.gh_json(["pr", "view", f"agent/{n}", "--repo", dispatch.REPO,
                                "--json", "state,headRefName,headRefOid,baseRefName,reviewDecision"])
         if pr.get("baseRefName") != cfg.main:
@@ -418,25 +421,49 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
             own = any(e.get("event") == "attempt" and e.get("ticket") == n and e.get("head") == local for e in events)
             ahead = dispatch.run(["git", "merge-base", "--is-ancestor", lease or "", "HEAD"], cwd=wt, check=False).returncode == 0
             if not (own and ahead):
-                dispatch.escalate(n, f"FIX worktree head {local} is not the PR head {lease} plus the worker's own commits; "
-                                  f"worktree kept at {wt}", None, code="refresh_head")
+                reason = (
+                    f"FIX worktree head {local} is not the PR head {lease} plus the worker's own commits; "
+                    f"worktree kept at {wt}"
+                )
+                if already_human:
+                    dispatch.log(f"#{n}: manager FIX failed (refresh_head: {reason}); ticket is already ready-for-human")
+                else:
+                    dispatch.escalate(n, reason, None, code="refresh_head")
                 return
             if dispatch.push_agent(wt, n, lease, check=False) is None:
-                dispatch.escalate(n, f"FIX could not push the worker's own commits: origin/agent/{n} moved since {lease}; "
-                                  f"worktree kept at {wt}", None, code="lease_refused")
+                reason = (
+                    f"FIX could not push the worker's own commits: origin/agent/{n} moved since {lease}; "
+                    f"worktree kept at {wt}"
+                )
+                if already_human:
+                    dispatch.log(f"#{n}: manager FIX failed (lease_refused: {reason}); ticket is already ready-for-human")
+                else:
+                    dispatch.escalate(n, reason, None, code="lease_refused")
                 return
             lease = local
         dispatch.LOGS.mkdir(parents=True, exist_ok=True)
         attempts = [e.get("attempt", 0) for e in events
                     if e.get("event") == "attempt" and e.get("ticket") == n]
         extra = f"## Manager FIX guidance\n\n{data['guidance']}\n\n{packet.read_text()}"
+        comments = None
+        if any(label["name"] == "bug" for label in issue.get("labels", [])):
+            fresh = dispatch.gh_json(
+                ["issue", "view", str(n), "--repo", dispatch.REPO, "--json", "comments"]
+            )
+            comments = fresh.get("comments")
         ok, report, logfile, gate_head = dispatch.worker_round(
             n, wt, {data["worker"]} | {label["name"] for label in issue.get("labels", [])},
             issue["title"], extra, max(attempts, default=0) + 1,
-            time.monotonic() + cfg.budget_min * 60, selected_worker=data["worker"],
+            time.monotonic() + cfg.budget_min * 60, body=issue.get("body") or "",
+            selected_worker=data["worker"],
+            comments=comments,
         )
         if not ok:
-            dispatch.escalate(n, "gate failed after manager FIX", logfile, code="gate_failed")
+            reason = "gate failed after manager FIX"
+            if already_human:
+                dispatch.log(f"#{n}: manager FIX failed (gate_failed: {reason}); ticket is already ready-for-human")
+            else:
+                dispatch.escalate(n, reason, logfile, code="gate_failed")
             return
         fresh = dispatch.gh_json(
             ["pr", "view", f"agent/{n}", "--repo", dispatch.REPO, "--json", "baseRefName"]
@@ -447,13 +474,32 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         verdict, findings, pr_failed = dispatch.pr_gate_and_review(wt, n, report, gate_head, {})
         dispatch.pr_comment(n, findings)
         if pr_failed:
-            dispatch.escalate(n, "pr checks failed", logfile, extra="## PR-tier gate report\n\n" + findings,
-                              code="pr_checks_failed")
+            reason = "pr checks failed"
+            if already_human:
+                dispatch.log(f"#{n}: manager FIX failed (pr_checks_failed: {reason}); ticket is already ready-for-human")
+            else:
+                dispatch.escalate(
+                    n, reason, logfile, extra="## PR-tier gate report\n\n" + findings,
+                    code="pr_checks_failed",
+                )
+        elif verdict is None:
+            reason = "reviewer unavailable after manager FIX"
+            if already_human:
+                dispatch.log(f"#{n}: manager FIX failed (reviewer_unavailable: {reason}); ticket is already ready-for-human")
+            else:
+                dispatch.escalate(n, reason, logfile, code="reviewer_unavailable")
         elif verdict != "APPROVE":
-            dispatch.escalate(n, "review requested changes after manager FIX", logfile, code="review_revise")
+            reason = "review requested changes after manager FIX"
+            if already_human:
+                dispatch.log(f"#{n}: manager FIX failed (review_revise: {reason}); ticket is already ready-for-human")
+            else:
+                dispatch.escalate(n, reason, logfile, code="review_revise")
         elif not dispatch.approve_pr(n, gate_head):
-            dispatch.escalate(n, "approval evidence, head, or human review state changed before manager FIX approval",
-                              logfile, code="approval_drift")
+            reason = "approval evidence, head, or human review state changed before manager FIX approval"
+            if already_human:
+                dispatch.log(f"#{n}: manager FIX failed (approval_drift: {reason}); ticket is already ready-for-human")
+            else:
+                dispatch.escalate(n, reason, logfile, code="approval_drift")
         return
 
     if decision == "AUTHORIZE":

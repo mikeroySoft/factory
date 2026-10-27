@@ -15,6 +15,7 @@ import argparse
 import fnmatch
 import json
 import re
+import shlex
 import shutil
 import sys
 import tempfile
@@ -36,6 +37,18 @@ MAX_ESCAPES = 10  # most recent candidate-escape bugs carried into evidence
 AUTO_EVERY = 10  # finished tickets between automatic runs at the end of a dispatcher pass
 LESSONS_BRANCH = dispatch.LESSONS_BRANCH
 REVERT_BRANCH = "agent/revert-lessons-"  # + the reverted PR number
+WORKER_CONTEXT_FILES = (LESSONS_NAME, "AGENTS.md", "CLAUDE.md")
+
+
+def worker_context_paths(root: Path) -> set[Path]:
+    """Paths whose current contents alter worker instructions."""
+    paths = {Path(name) for name in WORKER_CONTEXT_FILES}
+    for name in ("skills", ".omp/skills", ".agents/skills"):
+        directory = root / name
+        if not directory.is_dir():
+            continue
+        paths.update(skill.parent.relative_to(root) for skill in directory.rglob("SKILL.md"))
+    return paths
 
 @dataclass(frozen=True)
 class ReplayCase:
@@ -44,7 +57,7 @@ class ReplayCase:
     title: str
     labels: tuple[str, ...]
     issue: dict
-
+    pinned_context: tuple[str, ...] = ()
 
 @dataclass(frozen=True)
 class Candidate:
@@ -234,11 +247,43 @@ def _candidate_base(wt: Path, state: Path, candidate: Candidate | None) -> str:
     return dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
 
 
+def _context_base(wt: Path, source: Path, pinned: tuple[str, ...] = ()) -> str:
+    paths = (worker_context_paths(wt) | worker_context_paths(source)) - {Path(path) for path in pinned}
+    touched = []
+    for relative in paths:
+        target = wt / relative
+        current = source / relative
+        if not (target.exists() or target.is_symlink() or current.exists()):
+            continue
+        touched.append(relative)
+        if target.is_symlink() or target.is_file():
+            target.unlink()
+        elif target.is_dir():
+            shutil.rmtree(target)
+        if current.is_dir():
+            shutil.copytree(current, target)
+        elif current.is_file():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(current, target)
+    if not touched:
+        return dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    dispatch.run(["git", "add", "-A", "--", *(str(path) for path in sorted(touched))], cwd=wt)
+    changed = dispatch.run(["git", "diff", "--cached", "--quiet"], cwd=wt, check=False).returncode
+    if not changed:
+        return dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    dispatch.run([
+        "git", "-c", "user.name=Factory replay", "-c", "user.email=factory@localhost",
+        "commit", "-m", "factory eval worker context",
+    ], cwd=wt)
+    return dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+
+
 def replay_ticket(
     cfg: config.Config,
     case: ReplayCase,
     candidate: Candidate | None,
     deadline: float,
+    context_root: Path | None = None,
 ) -> dict:
     """Replay one frozen ticket arm in an isolated checkout; no GitHub or push operation is available."""
     cfg.factory.mkdir(parents=True, exist_ok=True)
@@ -255,6 +300,8 @@ def replay_ticket(
         dispatch.run(["git", "checkout", "--quiet", "--detach", case.base], cwd=wt)
         dispatch.run(["git", "config", "user.name", "Factory replay"], cwd=wt)
         dispatch.run(["git", "config", "user.email", "factory@localhost"], cwd=wt)
+        if context_root is not None:
+            _context_base(wt, context_root, case.pinned_context)
         base = _candidate_base(wt, state, candidate)
         isolated = _no_push_env(state)
         extra = ""
@@ -278,7 +325,9 @@ def replay_ticket(
             )
             _, fired = dispatch.run_worker(
                 argv, wt, logfile, wt / ".factory" / f"handoff-{case.ticket}.md",
-                deadline, journal=False, env_overrides=isolated,
+                deadline, journal=False, env_overrides={
+                    **cfg.worker_environment(worker, promptfile, wt), **isolated,
+                },
                 worker=worker, worker_version=cfg.worker_version.get(worker),
             )
             transcript = dispatch._transcript(session_dir, wall)
@@ -337,7 +386,10 @@ def replay_ticket(
             if result["verdict"] == "APPROVE":
                 approved = True
                 break
-            revise_findings += max(1, _finding_count(result["findings"]))
+            counts = result.get("counts")
+            revise_findings += counts["important"] if counts is not None else max(
+                1, _finding_count(result["findings"]),
+            )
             if bounce == cfg.review_rounds:
                 break
             promptfile.write_text(_replay_prompt(
@@ -356,7 +408,9 @@ def replay_ticket(
             )
             _, fired = dispatch.run_worker(
                 argv, wt, logfile, wt / ".factory" / f"handoff-{case.ticket}.md",
-                deadline, journal=False, env_overrides=isolated,
+                deadline, journal=False, env_overrides={
+                    **cfg.worker_environment(worker, promptfile, wt), **isolated,
+                },
                 worker=worker, worker_version=cfg.worker_version.get(worker),
             )
             transcript = dispatch._transcript(session_dir, wall)
@@ -776,6 +830,17 @@ def chore_pr(
                 "parsed": False, "reason": "gate_failed", "usage": None,
                 "returncode": None, "actual_head": head,
             }
+            if result["verdict"] is None:
+                failure = result.get("failure_reason", "unparsed_verdict")
+                result = {
+                    **result,
+                    "verdict": "REVISE",
+                    "reason": failure,
+                    "findings": (
+                        f"{result['findings']}\n\n"
+                        f"Factory rejected reviewer evidence: {failure}."
+                    ),
+                }
             dispatch.record(
                 "learn-candidate-review", branch=branch, title=title, proposal=pr_body,
                 base=base, head=head, gate="PASS" if ok else "FAIL", **result,
@@ -1217,6 +1282,31 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
         dispatch.log(f"PR #{n}: {'would refresh' if dry_run else 'refreshing'} {branch} (behind {cfg.main})")
         if not dry_run:
             refresh(cfg, n, branch, head)
+        return
+    from factory import eval as eval_suite
+
+    paths = [
+        item["filename"] for item in compare.get("files", [])
+        if isinstance(item, dict) and isinstance(item.get("filename"), str)
+    ]
+    if (
+        cfg.eval_schedule
+        and not branch.startswith(REVERT_BRANCH)
+        and not eval_suite.merge_allowed(paths, head, events)
+    ):
+        command = (
+            f"{shlex.quote(sys.executable)} -m factory eval "
+            f"--profile {shlex.quote(cfg.eval_profile)}"
+        )
+        baseline = (
+            f"First run `cd {shlex.quote(str(cfg.root))} && {command}` "
+            "to establish the accepted baseline; "
+            if not eval_suite.baseline_ready(cfg) else ""
+        )
+        dispatch.log(
+            f"PR #{n}: {branch} waiting for worker eval keep evidence at {head[:12]}; "
+            f"{baseline}run `{command}` from a checkout of {head}"
+        )
         return
     if dry_run:
         dispatch.log(f"PR #{n}: would merge {branch}")

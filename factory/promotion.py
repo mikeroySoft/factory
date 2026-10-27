@@ -17,7 +17,7 @@ from __future__ import annotations
 from statistics import mean, pstdev
 
 SPLITS = ("train", "selection", "lockbox", "fresh")
-CHANGE_KINDS = ("prompt", "skill", "rubric", "model", "effort", "gate-check")
+CHANGE_KINDS = ("prompt", "skill", "lesson", "worker-config", "routing", "rubric", "model", "effort", "gate-check")
 MIN_REPEATS = 2
 CONTRACT_VERSION = 1
 PROMOTION_N = 10  # scored attempts per window on each side of a lessons/curate merge
@@ -38,6 +38,9 @@ def decide(claim: dict) -> tuple[str, str]:
     change = claim.get("change") or {}
     if change.get("kind") not in CHANGE_KINDS:
         raise ValueError(f"change.kind must be one of {CHANGE_KINDS}")
+    objective = claim.get("objective", "promotion")
+    if objective not in ("promotion", "regression"):
+        raise ValueError("objective must be promotion or regression")
     for key in ("stage", "baseline", "candidate"):
         if not claim.get(key):
             raise ValueError(f"claim needs {key!r}")
@@ -54,6 +57,14 @@ def decide(claim: dict) -> tuple[str, str]:
             raise ValueError(f"{name}: need >= {MIN_REPEATS} repeat scores per arm")
         margin = max(noise(base), noise(cand))
         arms[name] = (mean(cand) - mean(base), margin)
+    if objective == "regression":
+        for name, (delta, margin) in arms.items():
+            if delta < -margin:
+                return "revert", f"{name} drop {delta:+.3f} beyond noise {margin:.3f}"
+        return "keep", "; ".join(
+            f"{name} {delta:+.3f} (noise {margin:.3f})"
+            for name, (delta, margin) in arms.items()
+        )
     gain, margin = arms["train"]
     if gain <= margin:
         return "revert", f"train gain {gain:+.3f} within noise {margin:.3f}"

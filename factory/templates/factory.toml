@@ -69,11 +69,13 @@
 # USD per million tokens) prices events that report tokens but no cost.
 
 [review]
-# {prompt} = inline review prompt text. Output must end with `VERDICT: APPROVE` or `VERDICT: REVISE`.
+# {prompt} = inline review prompt text. Output ends with one fenced JSON findings tally,
+# then the legacy `VERDICT: APPROVE` or `VERDICT: REVISE` line.
 # Keep the reviewer on a different model family than [manager] so the two verdicts are independent.
 # command = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1", "{prompt}"]
 # json_mode = true  # add/replace `--mode json` for an OMP-compatible reviewer not named `omp`
 # Defaults to true when the reviewer program is named `omp`; false disables that default.
+# policy = "REVIEW.md"  # base-ref review rules; keep this path in gate.protected_paths
 # command = ["codex", "exec", "{prompt}"]
 
 [manager]
@@ -106,9 +108,24 @@
 # max_tokens = 100000
 # budget_min = 30
 
+[eval]
+# Frozen 20-50-ticket worker regression suite. `factory eval --profile <name>
+# --dry-run` lists the checked-in cases and this budget. Real runs use two
+# repeats, journal every replay and compare with the previous same-profile run.
+# `schedule = true` installs a weekly timer and requires exact-head keep
+# evidence before worker-setup changes merge. Missing evidence reports the
+# `factory eval` command to run from the candidate checkout.
+# max_cases = 20
+# max_tokens = 2000000
+# budget_min = 720
+# profile = "default"
+# schedule = false
+
 [gate]
 # timeout = 1200                      # seconds per check; a wedged check FAILs
 # lock = "/tmp/factory.lock"          # host-wide lock held by `exclusive` checks
+# Review policy is read from the base ref, so a PR cannot change its own review rules.
+protected_paths = ["REVIEW.md"]
 
 # Checks run in order inside the worktree; nonzero exit = FAIL. Built-ins
 # `conflict-markers` (first) and `leak-scan` (last) are always on. Mark

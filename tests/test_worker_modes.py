@@ -98,7 +98,8 @@ class WorkerModesTest(unittest.TestCase):
         real_run = dispatch.run
         review_output = json.dumps({"type": "message_end", "message": {
             "role": "assistant", "model": "review-model",
-            "content": [{"type": "text", "text": "VERDICT: APPROVE"}],
+            "content": [{"type": "text", "text":
+                         '```json\n{"verdict":"APPROVE","findings":[]}\n```\nVERDICT: APPROVE'}],
             "usage": {"input": 3, "output": 1},
         }})
 
@@ -109,8 +110,8 @@ class WorkerModesTest(unittest.TestCase):
             return real_run(argv, *args, **kwargs)
 
         with mock.patch.object(dispatch, "run", side_effect=run):
-            verdict, findings = dispatch.review(self.root, 7, "PASS", head)
-        self.assertEqual((verdict, findings), ("APPROVE", "VERDICT: APPROVE"))
+            verdict, _findings = dispatch.review(self.root, 7, "PASS", head)
+        self.assertEqual(verdict, "APPROVE")
 
     def test_undeclared_worker_reports_not_reported_in_by_worker_stats(self) -> None:
         self.run_worker_round(7, "default")

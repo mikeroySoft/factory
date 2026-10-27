@@ -63,7 +63,11 @@ p = Path(os.environ["SMOKE_STATE"])
 s = json.loads(p.read_text())
 s["reviews"] = s.get("reviews", 0) + 1
 p.write_text(json.dumps(s))
-print("VERDICT: REVISE" if s["reviews"] == 1 else "VERDICT: APPROVE")
+verdict = "REVISE" if s["reviews"] == 1 else "APPROVE"
+findings = [{"severity": "important", "pass": "bug", "path": "change.txt", "line": 1,
+             "summary": "First review requires revision."}] if verdict == "REVISE" else []
+print("```json\\n" + json.dumps({"verdict": verdict, "findings": findings})
+      + "\\n```\\nVERDICT: " + verdict)
 '''
 
 # Records the head it ran on in argv[1]; FAILs its first argv[2] runs.
@@ -143,6 +147,80 @@ class LocalCLI(unittest.TestCase):
 
     def rows(self):
         return [r for r in lifecycle.read_events(self.events) if r.get("event") == "lifecycle"]
+
+    def test_run_gate_uses_installed_runner_and_discards_stale_report(self):
+        import shutil
+        import venv
+        from unittest import mock
+
+        from factory import config, dispatch
+
+        check_cwd = self.base / "check-cwd"
+        check = self.base / "check.py"
+        check.write_text(
+            "from pathlib import Path\n"
+            f"Path({str(check_cwd)!r}).write_text(str(Path.cwd()))\n"
+        )
+        self.write_config(check=[sys.executable, str(check)])
+
+        stub = self.repo / "factory"
+        stub.mkdir()
+        (stub / "__init__.py").write_text("")
+        (stub / "__main__.py").write_text(
+            "import sys\n"
+            "print('worktree factory rejected --bug', file=sys.stderr)\n"
+            "raise SystemExit(64)\n"
+        )
+        stale = self.repo / ".factory" / "gate-report-7.md"
+        stale.parent.mkdir(exist_ok=True)
+        stale.write_text("STALE REPORT\n")
+
+        runner = self.base / "runner"
+        venv.EnvBuilder(with_pip=False).create(runner)
+        runner_python = runner / "bin" / "python"
+        purelib = subprocess.run(
+            [
+                str(runner_python),
+                "-c",
+                "import sysconfig; print(sysconfig.get_path('purelib'))",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        shutil.copytree(Path(dispatch.__file__).parent, Path(purelib) / "factory")
+
+        dispatch.configure(config.load(self.repo))
+        with mock.patch.object(dispatch.sys, "executable", str(runner_python)), \
+                mock.patch.dict(os.environ, {"PYTHONPATH": str(self.repo)}):
+            ok, report = dispatch.run_gate(
+                self.repo, 7, bug=True, no_repro_test="fixture exemption",
+            )
+
+        self.assertTrue(ok, report)
+        self.assertIn("- code: PASS", report)
+        self.assertNotIn("STALE REPORT", report)
+        self.assertEqual(check_cwd.read_text(), str(self.repo))
+
+        failed_runner = self.base / "failed-runner"
+        failed_runner.write_text(
+            "#!/bin/sh\n"
+            "echo 'isolated runner failed' >&2\n"
+            "exit 64\n"
+        )
+        failed_runner.chmod(0o755)
+        stale.write_text("STALE REPORT\n")
+        with mock.patch.object(dispatch.sys, "executable", str(failed_runner)):
+            ok, report = dispatch.run_gate(self.repo, 7)
+        self.assertFalse(ok)
+        self.assertNotIn("STALE REPORT", report)
+        self.assertIn("isolated runner failed", report)
+
+        failed_runner.write_text("#!/bin/sh\nexit 0\n")
+        with mock.patch.object(dispatch.sys, "executable", str(failed_runner)):
+            ok, report = dispatch.run_gate(self.repo, 7)
+        self.assertFalse(ok)
+        self.assertIn("did not write .factory/gate-report-7.md", report)
 
     def test_host_worker_wrap_launches_real_worker(self):
         # Launch-contract proof only: a recording wrapper, NOT sandbox proof.
@@ -352,7 +430,7 @@ class LocalCLI(unittest.TestCase):
         git("-C", str(source), "push", "origin", "main")
         tip = git("-C", str(source), "rev-parse", "HEAD").stdout.strip()
         self.git("remote", "add", "upstream", str(upstream))
-        self.write_config(check=check, worker=worker, reviewer=[sys.executable, "-c", "print('VERDICT: APPROVE')"])
+        self.write_config(check=check, worker=worker, reviewer=[sys.executable, "-c", "print('```json\\n{\"verdict\":\"APPROVE\",\"findings\":[]}\\n```\\nVERDICT: APPROVE')"])
         path = self.repo / ".factory.toml"
         path.write_text(path.read_text().replace('slug = "local/smoke"', 'slug = "local/smoke"\nupstream = "upstream"'))
         self.commit_config()
@@ -518,6 +596,77 @@ class LocalCLI(unittest.TestCase):
         self.assertEqual(exits["ticket"], "project_escalation")
         self.assertEqual(exits["dispatcher"], "completed")
         self.assertIn("REVISE verdict after 1 review round(s)", result.stdout + result.stderr)
+
+    def assert_reviewer_unavailable(self, script: str, diagnostic: str) -> None:
+        runs = self.base / "review-runs"
+        reviewer = (
+            "from pathlib import Path\n"
+            f"p = Path({str(runs)!r})\n"
+            "p.write_text(p.read_text() + 'x' if p.exists() else 'x')\n"
+            + script
+        )
+        self.write_config(reviewer=[sys.executable, "-c", reviewer])
+        self.commit_config()
+
+        self.cli("dispatch", "--ticket", "7")
+
+        self.assertEqual(runs.read_text(), "xxx")
+        events = lifecycle.read_events(self.events)
+        self.assertEqual(len([e for e in events if e.get("event") == "attempt"]), 1)
+        [review] = [e for e in events if e.get("event") == "review"]
+        self.assertEqual((review["accepted"], review["verdict"]), (False, None))
+        [escalation] = [e for e in events if e.get("event") == "escalate"]
+        self.assertEqual(escalation["code"], "reviewer_unavailable")
+        findings = (self.repo / ".factory" / "review-7.md").read_text()
+        self.assertIn(diagnostic, findings)
+        self.assertIn(diagnostic, Path(escalation["packet"]).read_text())
+
+    def test_reviewer_exit_does_not_consume_a_review_round(self):
+        self.assert_reviewer_unavailable("raise SystemExit(1)\n", "review_exit:1")
+
+    def test_unparseable_reviewer_does_not_consume_a_review_round(self):
+        self.assert_reviewer_unavailable("print('unparseable retry-after-ms=0')\n", "unparseable")
+
+    def test_manager_fix_review_failure_does_not_escalate_an_already_human_ticket(self):
+        from unittest import mock
+
+        from factory import config, dispatch, manage
+
+        self.pr_config(fails=0)
+        self.reviewer.write_text(
+            "import sys\nprint('rate limited retry-after-ms=0', file=sys.stderr)\nraise SystemExit(1)\n"
+        )
+        wt = self.repo / ".factory" / "wt-7"
+        wt.parent.mkdir(exist_ok=True)
+        self.git("worktree", "add", str(wt), "-b", "agent/7")
+        head = self.git("rev-parse", "HEAD").stdout.strip()
+        packet = self.repo / ".factory" / "packet.md"
+        packet.write_text("fix it")
+        issue = {
+            "title": "local change", "body": "", "comments": [],
+            "labels": [{"name": "ready-for-human"}],
+        }
+        pr = {
+            "state": "OPEN", "headRefName": "agent/7", "headRefOid": head,
+            "baseRefName": "main", "reviewDecision": "",
+        }
+        with mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(
+                    dispatch, "gh_json",
+                    side_effect=lambda a: pr if a[:2] == ["pr", "view"] else issue,
+                ), \
+                mock.patch.object(dispatch, "push_agent", return_value=head), \
+                mock.patch.object(dispatch, "pr_comment"), \
+                mock.patch.object(dispatch, "approve_pr") as approve, \
+                mock.patch.object(dispatch, "escalate") as escalate:
+            dispatch.configure(config.load(self.repo))
+            manage.apply(
+                7, issue, "FIX", "",
+                {"worker": "default", "guidance": "fix"}, packet,
+            )
+
+        approve.assert_not_called()
+        escalate.assert_not_called()
 
     def pr_config(self, fails, when="pr"):
         """One attempt check (`code`) plus one pr check (`slow`); prompts of worker and reviewer are kept."""
@@ -830,3 +979,64 @@ class RetryDecisionTraceTest(unittest.TestCase):
             and row["causes"][0].get("relation") == "retries"
         ]
         self.assertEqual(retry_sources, [revise["decision_id"], failed_gate["decision_id"]])
+
+
+class TriageExemptionLifecycleTest(unittest.TestCase):
+    setUp = LocalCLI.setUp
+    git = LocalCLI.git
+    write_config = LocalCLI.write_config
+    commit_config = LocalCLI.commit_config
+    cli = LocalCLI.cli
+
+    def configure_bug(self, author="factory-bot"):
+        gh = self.bin / "gh"
+        gh.write_text(GH.replace(
+            'if s.get("sync"):',
+            'issue["labels"].append({"name": "bug"})\n'
+            'issue["comments"] = [{"author": {"login": ' + repr(author) + '}, '
+            '"body": "Triage: investigate hardware failure\\n\\n'
+            'Agent brief: fix it\\nNo repro test: requires unavailable hardware"}]\n'
+            'if a[:2] == ["api", "user"]:\n'
+            '    print("factory-bot")\n'
+            '    raise SystemExit(0)\n'
+            'if s.get("sync"):',
+        ))
+
+    def test_trusted_triage_exemption_survives_retry_and_review_bounce(self):
+        self.configure_bug()
+        marker = self.base / "first-check"
+        check = self.base / "check.py"
+        check.write_text(
+            "from pathlib import Path\n"
+            f"p = Path({str(marker)!r})\n"
+            "exists = p.exists()\np.touch()\nraise SystemExit(0 if exists else 1)\n"
+        )
+        self.write_config(check=[sys.executable, str(check)])
+        self.commit_config()
+
+        self.cli("dispatch", "--ticket", "7")
+
+        events = lifecycle.read_events(self.events)
+        attempts = [row for row in events if row.get("event") == "attempt"]
+        self.assertEqual([row["gate"] for row in attempts], ["FAIL", "PASS", "PASS"])
+        gates = [row for row in events if row.get("stage") == "gate" and row.get("event") == "decision"]
+        self.assertEqual(len(gates), 3)
+        for row in gates:
+            summaries = [item["summary"] for item in row["inputs"] if item["kind"] == "repro_test"]
+            self.assertEqual(summaries, [
+                "bug-repro: SKIP (No repro test: requires unavailable hardware)",
+            ])
+        self.assertTrue(any(row.get("event") == "approved" for row in events))
+
+    def test_spoofed_triage_comment_cannot_skip_real_bug_gate(self):
+        self.configure_bug(author="untrusted")
+
+        self.cli("dispatch", "--ticket", "7")
+
+        events = lifecycle.read_events(self.events)
+        attempts = [row for row in events if row.get("event") == "attempt"]
+        self.assertEqual([row["gate"] for row in attempts], ["FAIL", "FAIL"])
+        report = (self.repo / ".factory" / "wt-7" / ".factory" / "gate-report-7.md").read_text()
+        self.assertIn("bug ticket needs a `Repro test:` handoff line", report)
+        self.assertNotIn("- bug-repro: SKIP", report)
+        self.assertFalse(any(row.get("event") == "approved" for row in events))

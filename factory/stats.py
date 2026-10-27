@@ -71,6 +71,19 @@ def count_comments(comments: list[dict[str, Any]], text: str) -> int:
     return sum(text in comment.get("body", "") for comment in comments)
 
 
+def review_findings(events: list[dict]) -> list[dict[str, int]]:
+    """Machine-readable severity counts in review-round order."""
+    rounds = []
+    for event in events:
+        counts = event.get("counts")
+        if event.get("event") != "review-result" or not isinstance(counts, dict):
+            continue
+        if all(type(counts.get(key)) is int and counts[key] >= 0
+               for key in ("important", "nit", "pre_existing")):
+            rounds.append({key: counts[key] for key in ("important", "nit", "pre_existing")})
+    return rounds
+
+
 def issue(number: int) -> dict[str, Any]:
     return gh(
         "issue",
@@ -378,6 +391,7 @@ def collect_rows(progress: bool = False) -> list[dict[str, Any]]:
         if number in pr_by_ticket:
             row.update(feedback.corrections(actions[pr_by_ticket[number]], login, cutover))
         row["llm_usage"] = llm_usage(audit.get(number, []), cfg.prices)
+        row["review_findings"] = review_findings(audit.get(number, []))
 
     return [rows[number] for number in sorted(rows)]
 
@@ -545,12 +559,19 @@ def print_table(rows: list[dict[str, Any]]) -> None:
     def correction(row: dict, key: str) -> str:
         return "" if key not in row else "n/a" if row[key] is None else str(row[key])
 
+    def findings(row: dict) -> str:
+        return "; ".join(
+            f"{counts['important']}/{counts['nit']}/{counts['pre_existing']}"
+            for counts in row.get("review_findings", [])
+        )
+
     columns = (
         ("ticket#", lambda row: f"#{row['ticket']}"),
         ("title", lambda row: truncate(row["title"])),
         ("state", lambda row: row["state"]),
         ("attempts", lambda row: str(row["attempts"])),
         ("review rounds", lambda row: str(row["review_rounds"])),
+        ("review findings I/N/P", findings),
         ("hours", lambda row: format_hours(row["merge_hours"])),
         ("triage prompt", lambda row: usage(row, "triage", "prompt_tokens")),
         ("triage completion", lambda row: usage(row, "triage", "completion_tokens")),

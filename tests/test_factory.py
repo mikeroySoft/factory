@@ -2141,10 +2141,11 @@ PY
         repo, stubs, packet = self.scenario()
         packet.write_text("PR #9: CI failed (unit); factory-approved label removed")
         command = ["printf", "%s", "DECISION: FIX\n" + json.dumps({"worker": "ci-fix", "guidance": "Read the unit log"})]
+        review_output = '```json\n{"verdict":"APPROVE","findings":[]}\n```\nVERDICT: APPROVE'
         (repo / config.CONFIG_NAME).write_text(
             "[manager]\ncommand = " + json.dumps(command)
             + '\n[workers]\ndefault = ["false"]\n[workers.ci-fix]\ncommand = ["fix-worker", "{prompt}"]\nwhen = "Red CI"'
-            + '\n[review]\ncommand = ["printf", "VERDICT: APPROVE"]'
+            + "\n[review]\ncommand = " + json.dumps(["printf", review_output])
             + '\n[[gate.check]]\nname = "unit"\nrun = ["true"]\n[repo]\nslug = "acme/widgets"\n'
         )
         git(repo, "add", config.CONFIG_NAME)
@@ -2208,11 +2209,18 @@ esac
                 worker = "conflict" if rebase else "ci-fix"
                 command = ["printf", "%s", "DECISION: FIX\n" + json.dumps(
                     {"worker": worker, "guidance": "Read the failing unit job log"})]
+                review_output = "```json\n" + json.dumps({
+                    "verdict": verdict,
+                    "findings": [] if verdict == "APPROVE" else [{
+                        "severity": "important", "pass": "bug", "path": "README.md",
+                        "line": 1, "summary": "CI fix still requires revision.",
+                    }],
+                }) + "\n```\nVERDICT: " + verdict
                 (repo / config.CONFIG_NAME).write_text(
                     "[manager]\ncommand = " + json.dumps(command)
                     + '\n[workers]\ndefault = ["false"]\nchore = ["false"]'
                     + f'\n[workers.{worker}]\ncommand = ["fix-worker", "{{prompt}}"]\nwhen = "Red CI"'
-                    + '\n[review]\ncommand = ["printf", "VERDICT: ' + verdict + '"]'
+                    + "\n[review]\ncommand = " + json.dumps(["printf", review_output])
                     + '\n[[gate.check]]\nname = "unit"\nrun = ["' + ("true" if gate_ok else "false") + '"]\n'
                     + '\n[repo]\nslug = "acme/widgets"\n'
                 )
@@ -2535,7 +2543,7 @@ class DispatchTest(unittest.TestCase):
             cfg = config.Config(
                 root=repo, repo="acme/widgets", review_rounds=2,
                 reviewer=[sys.executable, "-c",
-                          "print('- src/a.py:1: Fix input.\\nVERDICT: REVISE')"],
+                          """print('- src/a.py:1: Fix input.\\n```json\\n{"verdict":"REVISE","findings":[{"severity":"important","pass":"bug","path":"src/a.py","line":1,"summary":"Fix input."}]}\\n```\\nVERDICT: REVISE')"""],
             )
             dispatch.configure(cfg)
             pr = {"number": 17, "state": "OPEN", "isDraft": False,
@@ -2560,7 +2568,7 @@ class DispatchTest(unittest.TestCase):
                 self.assertEqual(len(publications), 1)
                 pr["headRefOid"] = "head-2"
                 pr["reviewRequests"] = []
-                cfg.reviewer = [sys.executable, "-c", "print('VERDICT: APPROVE')"]
+                cfg.reviewer = [sys.executable, "-c", """print('```json\\n{"verdict":"APPROVE","findings":[]}\\n```\\nVERDICT: APPROVE')"""]
                 dispatch.review_intake_pass(False)
                 dispatch.review_intake_pass(False)
                 self.assertEqual(len(publications), 2)
@@ -2582,7 +2590,7 @@ class DispatchTest(unittest.TestCase):
                 cfg = config.Config(
                     root=repo, repo="acme/widgets", review_rounds=rounds,
                     reviewer=[sys.executable, "-c",
-                              "print('- src/a.py:1: Fix input.\\nVERDICT: REVISE')"],
+                              """print('- src/a.py:1: Fix input.\\n```json\\n{"verdict":"REVISE","findings":[{"severity":"important","pass":"bug","path":"src/a.py","line":1,"summary":"Fix input."}]}\\n```\\nVERDICT: REVISE')"""],
                 )
                 dispatch.configure(cfg)
                 pr = {"number": 17, "state": "OPEN", "isDraft": False,
@@ -2632,7 +2640,7 @@ class DispatchTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             repo = make_repo(Path(d))
-            output = "VERDICT: APPROVE"
+            output = '```json\n{"verdict":"APPROVE","findings":[]}\n```\nVERDICT: APPROVE'
             dispatch.configure(config.Config(
                 root=repo, repo="acme/widgets",
                 reviewer=[sys.executable, "-c",
@@ -2660,11 +2668,10 @@ class DispatchTest(unittest.TestCase):
                 dispatch.review_intake_pass(False)
             self.assertIn("RECORDED DIFF", (repo / "received.txt").read_text())
             self.assertEqual(len(publications), 1)
-            self.assertEqual(publications[0], [
+            self.assertEqual(publications[0][:9], [
                 "gh", "api", "--method", "POST",
                 "repos/acme/widgets/pulls/17/reviews",
                 "-f", "commit_id=recorded-head", "-f", "event=APPROVE",
-                "-f", f"body={output}",
             ])
 
     def test_external_review_requires_valid_verdict_and_cited_findings(self) -> None:
@@ -2673,10 +2680,12 @@ class DispatchTest(unittest.TestCase):
         from factory import dispatch
 
         cases = (
-            ("- src/widget.py:12: Reject missing input.\nVERDICT: REVISE", 0,
-             "REQUEST_CHANGES"),
-            ("- src/widget.py:12: Optional simplification.\nVERDICT: APPROVE", 0,
-             "APPROVE"),
+            (('```json\n{"verdict":"REVISE","findings":[{"severity":"important","pass":"bug",'
+              '"path":"src/widget.py","line":12,"summary":"Reject missing input."}]}\n```\n'
+              "VERDICT: REVISE"), 0, "REQUEST_CHANGES"),
+            (('```json\n{"verdict":"APPROVE","findings":[{"severity":"nit","pass":"bug",'
+              '"path":"src/widget.py","line":12,"summary":"Optional simplification."}]}\n```\n'
+              "VERDICT: APPROVE"), 0, "APPROVE"),
             ("No verdict", 0, None),
             ("VERDICT: MAYBE", 0, None),
             ("VERDICT: APPROVE\nVERDICT: REVISE", 0, None),
@@ -2714,12 +2723,12 @@ class DispatchTest(unittest.TestCase):
                 if event is None:
                     self.assertEqual(publications, [])
                 else:
-                    self.assertEqual(publications, [[
+                    self.assertEqual(len(publications), 1)
+                    self.assertEqual(publications[0][:9], [
                         "gh", "api", "--method", "POST",
                         "repos/acme/widgets/pulls/17/reviews",
                         "-f", "commit_id=recorded-head", "-f", f"event={event}",
-                        "-f", f"body={output}",
-                    ]])
+                    ])
                 events = list(map(json.loads, dispatch.EVENTS.read_text().splitlines()))
                 terminal = next(e for e in events
                                 if e.get("kind") == "exit" and e.get("stage") == "review")
@@ -2740,7 +2749,7 @@ class DispatchTest(unittest.TestCase):
             repo = make_repo(Path(d))
             dispatch.configure(config.Config(
                 root=repo, repo="acme/widgets",
-                reviewer=[sys.executable, "-c", "print('VERDICT: APPROVE')", "{prompt}"],
+                reviewer=[sys.executable, "-c", """print('```json\\n{"verdict":"APPROVE","findings":[]}\\n```\\nVERDICT: APPROVE')""", "{prompt}"],
             ))
             prs = [
                 {"number": n, "state": "OPEN", "isDraft": False,
@@ -3381,6 +3390,63 @@ class DispatchTest(unittest.TestCase):
                     self.assertEqual(verdict, "REVISE")
                     self.assertIn("Factory rejected reviewer evidence", findings)
 
+    def test_review_keeps_structured_error_event_in_unavailable_diagnostic(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            reviewer = Path(d) / "reviewer"
+            reviewer.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json\n"
+                "print(json.dumps({'type': 'message_end', 'message': {'role': 'assistant', "
+                "'content': '', 'usage': {'input': 1, 'output': 0}}}))\n"
+                "print(json.dumps({'type': 'error', 'error': {'type': 'rate_limit_error', "
+                "'message': 'account limit'}, 'retry-after-ms': 0}))\n"
+                "raise SystemExit(1)\n"
+            )
+            reviewer.chmod(0o755)
+            dispatch.configure(config.Config(
+                root=repo, repo="acme/widgets", reviewer=[str(reviewer)],
+                reviewer_json_mode=True,
+            ))
+            head = git(repo, "rev-parse", "HEAD")
+
+            with mock.patch.object(dispatch.time, "sleep"):
+                verdict, findings = dispatch.review(repo, 7, "PASS", head)
+
+            self.assertEqual(verdict, "REVISE")
+            self.assertIn("rate_limit_error", findings)
+            self.assertIn("account limit", findings)
+
+    def test_review_retry_honors_provider_delay_before_accepting_verdict(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            dispatch.configure(config.Config(
+                root=repo, repo="acme/widgets", reviewer=["reviewer"],
+            ))
+            head = git(repo, "rev-parse", "HEAD")
+            failed = subprocess.CompletedProcess(
+                ["reviewer"], 1, "", "rate limited retry-after-ms=2500",
+            )
+            approved = subprocess.CompletedProcess(
+                ["reviewer"], 0,
+                '```json\n{"verdict":"APPROVE","findings":[]}\n```\nVERDICT: APPROVE', "",
+            )
+            with mock.patch.object(
+                    dispatch, "_run_reviewer", side_effect=[failed, approved]), \
+                    mock.patch.object(dispatch.time, "sleep") as sleep:
+                verdict, _ = dispatch.review(repo, 7, "PASS", head)
+
+            self.assertEqual(verdict, "APPROVE")
+            sleep.assert_called_once_with(2.5)
+
     def test_worker_round_records_normalized_worker_usage(self) -> None:
         from unittest import mock
 
@@ -3580,7 +3646,10 @@ class DispatchTest(unittest.TestCase):
                     (repo / "raced.txt").write_text("changed during review\n")
                     git(repo, "add", "raced.txt")
                     git(repo, "commit", "-qm", "raced reviewer change")
-                    return subprocess.CompletedProcess(cmd, 0, "VERDICT: APPROVE\n", "")
+                    return subprocess.CompletedProcess(
+                        cmd, 0,
+                        '```json\n{"verdict":"APPROVE","findings":[]}\n```\nVERDICT: APPROVE\n', "",
+                    )
                 return original_run(cmd, *args, **kwargs)
 
             with mock.patch.object(dispatch, "run", side_effect=raced_run):
@@ -5058,6 +5127,82 @@ class TriageProbeOnboardingTest(unittest.TestCase):
                 "detail": "factory-widgets-triage-probe.timer active",
             })
 
+
+
+class WatchBandConfigTest(unittest.TestCase):
+    CONFIG = """schema_version = 1
+[[band]]
+metric = "gate_failures_by_test"
+window_days = 28
+rules = [
+  { kind = "sigma", sigma = 3.0, count = 1, span = 1, tier = "act", min_tickets = 2 },
+  { kind = "same_side", count = 8, span = 8, tier = "diagnose" },
+]
+"""
+
+    def test_loads_thresholds_and_tiers_from_committed_band_config(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = make_repo(Path(directory))
+            (repo / config.BANDS_NAME).write_text(self.CONFIG)
+
+            cfg = config.load(repo)
+
+        [band] = cfg.watch_bands
+        self.assertEqual((band.metric, band.window_days), ("gate_failures_by_test", 28))
+        self.assertEqual(
+            [(rule.kind, rule.sigma, rule.count, rule.span, rule.tier, rule.min_tickets)
+             for rule in band.rules],
+            [("sigma", 3.0, 1, 1, "act", 2), ("same_side", None, 8, 8, "diagnose", 1)],
+        )
+
+    def test_rejects_unversioned_or_incomplete_rule_config(self) -> None:
+        cases = (
+            '[[band]]\nmetric = "gate_failure_rate"\nwindow_days = 28\nrules = []\n',
+            'schema_version = 2\n',
+            (
+                'schema_version = 1\n[[band]]\nmetric = "gate_failure_rate"\nwindow_days = 28\n'
+                'rules = [{ kind = "sigma", count = 1, span = 1, tier = "act" }]\n'
+            ),
+            (
+                'schema_version = 1\n[[band]]\nmetric = "gate_failures_by_test"\nwindow_days = 28\n'
+                'rules = [{ kind = "sigma", sigma = 3, count = 1, span = 1, '
+                'tier = "act", min_tickets = 0 }]\n'
+            ),
+        )
+        for text in cases:
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as directory:
+                repo = make_repo(Path(directory))
+                (repo / config.BANDS_NAME).write_text(text)
+                with self.assertRaises(config.ConfigError):
+                    config.load(repo)
+
+    def test_init_writes_versioned_band_config(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = make_repo(Path(directory))
+
+            result = factory(repo, "init", "--no-labels")
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            loaded = config.load(repo)
+            self.assertEqual(len(loaded.watch_bands), 6)
+            self.assertIn(f"wrote {config.BANDS_NAME}", result.stdout)
+
+    def test_doctor_reports_insufficient_baseline(self) -> None:
+        gh = 'case "$1 $2" in "repo view") echo WRITE;; "label list") echo "[]";; esac\nexit 0'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = make_repo(root)
+            (repo / config.BANDS_NAME).write_text(self.CONFIG)
+            git(repo, "add", config.BANDS_NAME)
+            git(repo, "commit", "-q", "-m", "bands")
+            stubs = stub_bin(root, gh=gh, systemctl="echo inactive", omp="exit 0", droid="exit 0")
+
+            result = factory(repo, "doctor", "--json", path=stubs)
+
+            rows = {row["label"]: row for row in json.loads(result.stdout)["rows"]}
+            self.assertEqual(rows[f"{config.BANDS_NAME} committed"]["status"], "PASS")
+            self.assertEqual(rows["watch control bands"]["status"], "WARN")
+            self.assertIn("insufficient baseline", rows["watch control bands"]["detail"])
 
 if __name__ == "__main__":
     unittest.main()

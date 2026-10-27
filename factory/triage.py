@@ -303,13 +303,13 @@ Label reference:
 {LABEL_TABLE}
 
 Choose exactly one decision for the issue:
-- "ready-for-agent": the issue is fully specified — it has a problem statement AND acceptance criteria or an observable done-condition. Also fill "brief": a short restatement of the acceptance criteria and the exact verification command, for the implementing agent.
+- "ready-for-agent": the issue is fully specified — it has a problem statement AND acceptance criteria or an observable done-condition. Also fill "brief": a short restatement of the acceptance criteria and the exact verification command, for the implementing agent. For a bug where an automated reproduction test is impractical, end "rationale" with a separate `No repro test: <reason>` line; omit that line when reproduction is practical.
 - "needs-info": information is missing; state the specific missing information as a question.
 - "ready-for-human": needs design judgment, touches release, signing, or security policy, or has blast radius beyond this repository.
 - "wontfix-proposal": the issue should not be actioned; explain why.
 
 Respond with strict JSON only, no markdown, no prose outside the JSON:
-{{"decision": "<one of ready-for-agent|needs-info|ready-for-human|wontfix-proposal>", "rationale": "<one short paragraph>", "question": "<the question for the reporter, or empty string if decision is not needs-info>", "brief": "<agent brief for ready-for-agent, else empty string>"}}"""
+{{"decision": "<one of ready-for-agent|needs-info|ready-for-human|wontfix-proposal>", "rationale": "<one short paragraph, optionally followed by the No repro test line>", "question": "<the question for the reporter, or empty string if decision is not needs-info>", "brief": "<agent brief for ready-for-agent, else empty string>"}}"""
 
 
 def _usage_fields(body: object) -> dict | None:
@@ -385,11 +385,19 @@ def call_llm(messages: list[dict], execution=None) -> str:
             execution.outcome = "unknown" if timed_out else "mechanism_failure"
             execution.reason = "triage_endpoint_timeout" if timed_out else "triage_endpoint_unavailable"
             execution.emit("result", timed_out=timed_out, timeout_seconds=cfg.triage_timeout)
-        print(
-            f"cannot reach local model at {LLM_URL}: {exc}\n"
-            "Is the model server running? Set [triage].url in .factory.toml if the endpoint differs.",
-            file=sys.stderr,
-        )
+        if timed_out:
+            where = "connecting to" if isinstance(exc, urllib.error.URLError) else "at"
+            print(
+                f"local model request timed out after {cfg.triage_timeout}s {where} {LLM_URL}\n"
+                "The model server may be busy or the request too large; raise [triage].timeout if this persists.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"cannot reach local model at {LLM_URL}: {exc}\n"
+                "Is the model server running? Set [triage].url in .factory.toml if the endpoint differs.",
+                file=sys.stderr,
+            )
         # URLError(TimeoutError) is a connect timeout (endpoint unreachable); a bare one is a slow model.
         raise (EndpointTimeout if isinstance(exc, TimeoutError) else SystemExit)(2) from exc
     usage = _usage_fields(body)

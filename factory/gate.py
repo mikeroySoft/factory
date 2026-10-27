@@ -7,12 +7,15 @@ Writes a short Markdown report (PASS/FAIL per check + failure excerpts).
 from __future__ import annotations
 
 import argparse
+import ast
 import fcntl
 import fnmatch
 import os
 import re
 import signal
 import subprocess
+import sys
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -36,7 +39,9 @@ def configure(c: Config) -> None:
     CHECK_TIMEOUT = cfg.check_timeout
 
 
-def timed(cmd: list[str]) -> subprocess.CompletedProcess:
+def timed(
+    cmd: list[str], cwd: Path | None = None, pythonpath: Path | None = None
+) -> subprocess.CompletedProcess:
     """Run a command with the per-check timeout.
 
     A wedged check must FAIL, not sit on the GPU lock (ticket #5's gate hung
@@ -48,8 +53,10 @@ def timed(cmd: list[str]) -> subprocess.CompletedProcess:
     # a repo's own tests would otherwise append their fixture rows to the live ledger.
     env = execution.env() if execution else dict(os.environ)
     env.pop(lifecycle.CONTEXT_ENV, None)
+    if pythonpath is not None:
+        env["PYTHONPATH"] = str(pythonpath)
     proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         encoding="utf-8", errors="replace", start_new_session=True, env=env,
     )
     if execution:
@@ -87,6 +94,50 @@ def run(cmd: list[str]) -> tuple[bool, str]:
         execution.outcome = "product_feedback"
         execution.reason = "configured_check_failed"
     return proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def failed_test_ids(output: str) -> list[str]:
+    """Canonical unittest, pytest and cargo libtest IDs, in report order."""
+    found = []
+    for line in output.splitlines():
+        match = re.match(r"^(?:FAIL|ERROR): \S+ \(([^()\s]+)\)", line)
+        if match is None:
+            match = re.match(r"^FAILED ([^\s]+::[^\s]+)(?:\s+-|\s*$)", line)
+        if match is None:
+            match = re.match(r"^---- ([^\s]+) stdout ----$", line)
+        if match is not None and match[1] not in found:
+            found.append(match[1])
+    return found
+
+
+def changed_paths(base: str) -> list[str]:
+    proc = timed(["git", "diff", "--name-only", "-z", f"{base}...HEAD"])
+    return proc.stdout.rstrip("\0").split("\0") if proc.returncode == 0 and proc.stdout else []
+
+
+
+def _acquire_exclusive(execution):
+    lock = open(GPU_LOCK, "w")  # noqa: SIM115 — caller controls lock lifetime
+    try:
+        requested = execution.resource("requested", GPU_LOCK, scope="host", blocking=True)
+        if lifecycle._lock_state(lifecycle._lock(GPU_LOCK)) == "held":
+            execution.wait(
+                "exclusive_resource", mode="blocking", resource=requested["resource"]
+            )
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        execution.resource("acquired", GPU_LOCK, scope="host", blocking=True)
+        execution.wait_end()
+        return lock
+    except BaseException:
+        lock.close()
+        raise
+
+
+def _release_exclusive(execution, lock) -> None:
+    fcntl.flock(lock, fcntl.LOCK_UN)
+    lock.close()
+    execution.resource("released", GPU_LOCK, scope="host", blocking=True)
+
 
 
 def check_conflict_markers() -> tuple[bool, str]:
@@ -223,6 +274,330 @@ def check_protected_paths(
     return False, reason, diff.stdout + diff.stderr
 
 
+def _python_test_path(path: str) -> bool:
+    file = Path(path)
+    return (
+        any(part in {"test", "tests"} for part in file.parts[:-1])
+        or file.stem.startswith("test_")
+        or file.stem.endswith("_test")
+    )
+
+
+def _python_tests(path: str, source: str) -> dict[str, dict]:
+    if not _python_test_path(path):
+        return {}
+    tree = ast.parse(source, filename=path)
+    lines = source.splitlines(keepends=True)
+    module = path.removesuffix(".py").replace("/", ".")
+    found = {}
+
+    def is_pytestmark(node: ast.stmt) -> bool:
+        targets = (
+            node.targets if isinstance(node, ast.Assign)
+            else [node.target] if isinstance(node, (ast.AnnAssign, ast.AugAssign))
+            else []
+        )
+        return any(isinstance(target, ast.Name) and target.id == "pytestmark" for target in targets)
+
+    def visit(
+        nodes: list[ast.stmt],
+        parents: tuple[str, ...] = (),
+        enclosing_source: str = "",
+    ) -> None:
+        scope_source = enclosing_source + "".join(
+            "".join(lines[node.lineno - 1:node.end_lineno])
+            for node in nodes
+            if is_pytestmark(node)
+        )
+        for node in nodes:
+            if isinstance(node, ast.ClassDef):
+                start = min(
+                    [node.lineno, *(decorator.lineno for decorator in node.decorator_list)]
+                )
+                visit(
+                    node.body,
+                    (*parents, node.name),
+                    scope_source + "".join(lines[start - 1:node.lineno - 1]),
+                )
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test"):
+                start = min(
+                    [node.lineno, *(decorator.lineno for decorator in node.decorator_list)]
+                )
+                qualified = ".".join((*parents, node.name))
+                found[f"python:{path}:{qualified}"] = {
+                    "source": scope_source + "".join(lines[start - 1:node.end_lineno]),
+                    "aliases": {
+                        f"{module}.{qualified}",
+                        f"{path}::{'::'.join((*parents, node.name))}",
+                    },
+                    "language": "python",
+                    "display": f"{path}:{qualified}",
+                    "path": path,
+                    "qualified": qualified,
+                }
+    visit(tree.body)
+    return found
+
+
+_RUST_TEST = re.compile(
+    r"(?m)(?P<attrs>(?:^[ \t]*#\[[^\n]+\][ \t]*\n)+)"
+    r"^[ \t]*(?:(?:pub(?:\([^)]*\))?)[ \t]+)?(?:async[ \t]+)?fn[ \t]+"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
+)
+_RUST_MOD = re.compile(
+    r"(?m)(?P<attrs>(?:^[ \t]*#\[[^\n]+\][ \t]*\n)*)"
+    r"^[ \t]*(?:(?:pub(?:\([^)]*\))?)[ \t]+)?mod[ \t]+"
+    r"[A-Za-z_][A-Za-z0-9_]*[ \t]*\{"
+)
+_RUST_MASK = re.compile(
+    r"//[^\n]*|/\*.*?\*/|r(?P<hashes>#+)?\".*?\"(?P=hashes)|\"(?:\\.|[^\"\\])*\"|"
+    r"'(?:[^'\\\r\n\t]|\\(?:[nrt0\\'\"]|x[0-7][0-9a-fA-F]|u\{[0-9a-fA-F]{1,6}\}))'",
+    re.DOTALL,
+)
+
+
+def _rust_tests(path: str, source: str) -> dict[str, dict]:
+    masked = _RUST_MASK.sub(lambda match: re.sub(r"[^\n]", " ", match.group()), source)
+
+    def block_end(brace: int) -> int | None:
+        depth = 0
+        for index in range(brace, len(masked)):
+            if masked[index] == "{":
+                depth += 1
+            elif masked[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    return index + 1
+        return None
+
+    modules = []
+    for module in _RUST_MOD.finditer(masked):
+        end = block_end(module.end() - 1)
+        if end is not None:
+            modules.append((
+                module.end() - 1,
+                end,
+                source[module.start("attrs"):module.end("attrs")],
+            ))
+
+    found, occurrences = {}, {}
+    for match in _RUST_TEST.finditer(source):
+        if not re.search(r"#\[(?:[A-Za-z_][A-Za-z0-9_]*::)*test(?:\([^]]*\))?\]", match["attrs"]):
+            continue
+        brace = masked.find("{", match.end("name"))
+        end = block_end(brace) if brace >= 0 else None
+        if end is None:
+            continue
+        name = match["name"]
+        occurrence = occurrences.get(name, 0)
+        occurrences[name] = occurrence + 1
+        enclosing = "".join(
+            attrs for start, stop, attrs in modules
+            if start < match.start() < stop
+        )
+        found[f"rust:{path}:{name}:{occurrence}"] = {
+            "source": enclosing + source[match.start():end],
+            "aliases": {name},
+            "language": "rust",
+            "display": f"{path}:{name}",
+        }
+    return found
+
+
+def _tests_at(ref: str) -> tuple[dict[str, dict], str]:
+    listing = timed(["git", "ls-tree", "-r", "--name-only", "-z", ref])
+    if listing.returncode:
+        return {}, listing.stdout + listing.stderr
+    found = {}
+    for path in listing.stdout.split("\0"):
+        if not path.endswith((".py", ".rs")):
+            continue
+        blob = timed(["git", "show", f"{ref}:{path}"])
+        if blob.returncode:
+            return {}, blob.stdout + blob.stderr
+        try:
+            tests = _python_tests(path, blob.stdout) if path.endswith(".py") else _rust_tests(path, blob.stdout)
+        except SyntaxError:
+            continue
+        found.update(tests)
+    return found, ""
+
+
+def check_existing_tests(base: str) -> tuple[bool, str]:
+    common = timed(["git", "merge-base", base, "HEAD"])
+    if common.returncode:
+        return False, common.stdout + common.stderr
+    before, error = _tests_at(common.stdout.strip())
+    if error:
+        return False, error
+    after, error = _tests_at("HEAD")
+    if error:
+        return False, error
+    changed = [
+        f"{record['display']}: {'deleted' if key not in after else 'modified'}"
+        for key, record in before.items()
+        if key not in after or record["source"] != after[key]["source"]
+    ]
+    return not changed, "\n".join(changed)
+
+
+def _matches_test_id(test_id: str, record: dict) -> bool:
+    return test_id in record["aliases"] or (
+        record["language"] == "rust" and test_id.rsplit("::", 1)[-1] in record["aliases"]
+    )
+
+
+_UNITTEST_ONE = """import importlib.util, sys, unittest
+path, name = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("_factory_repro", path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+result = unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromName(name, module))
+raise SystemExit(not result.wasSuccessful())
+"""
+
+
+def _repro_command(test_id: str, record: dict) -> tuple[list[str], bool]:
+    language = record["language"]
+    for check in cfg.checks:
+        if language == "python" and "pytest" in check.run:
+            selector = next(alias for alias in record["aliases"] if "::" in alias)
+            return (
+                [*check.run[:check.run.index("pytest") + 1], selector],
+                check.name in GPU_CHECKS,
+            )
+        if language == "python" and "unittest" in check.run:
+            runner = check.run.index("unittest")
+            prefix = check.run[:runner - 1] if runner and check.run[runner - 1] == "-m" else check.run[:runner]
+            return (
+                [*(prefix or [sys.executable]), "-c", _UNITTEST_ONE, record["path"], record["qualified"]],
+                check.name in GPU_CHECKS,
+            )
+        if language == "rust" and "cargo" in check.run and "test" in check.run:
+            separator = check.run.index("--") if "--" in check.run else len(check.run)
+            return (
+                [*check.run[:separator], test_id, *check.run[separator:]],
+                check.name in GPU_CHECKS,
+            )
+    if language == "python" and "::" not in test_id:
+        return [sys.executable, "-c", _UNITTEST_ONE, record["path"], record["qualified"]], False
+    if language == "python":
+        return [sys.executable, "-m", "pytest", test_id], False
+    return ["cargo", "test", test_id], False
+
+
+def _run_at(
+    ref: str, command: list[str]
+) -> tuple[subprocess.CompletedProcess, bool]:
+    with tempfile.TemporaryDirectory(prefix="factory-repro-") as directory:
+        checkout = Path(directory) / "checkout"
+        added = timed(["git", "worktree", "add", "--detach", str(checkout), ref])
+        if added.returncode:
+            return added, False
+        try:
+            return timed(command, cwd=checkout, pythonpath=checkout), True
+        finally:
+            timed(["git", "worktree", "remove", "--force", str(checkout)])
+
+
+def check_bug_reproduction(
+    base: str, test_id: str | None, no_repro_test: str | None, execution=None
+) -> list[tuple[str, str, str]]:
+    if no_repro_test:
+        return [("bug-repro", f"SKIP (No repro test: {no_repro_test})", "")]
+    if not test_id:
+        return [(
+            "bug-repro",
+            "FAIL",
+            "bug ticket needs a `Repro test:` handoff line or `No repro test:` ticket line",
+        )]
+    commits = timed(["git", "rev-list", "--reverse", "--first-parent", f"{base}..HEAD"])
+    if commits.returncode:
+        return [("bug-repro", "FAIL", commits.stdout + commits.stderr)]
+    revisions = commits.stdout.split()
+    if len(revisions) < 2:
+        return [(
+            "bug-repro",
+            "FAIL",
+            "bug ticket needs a test commit followed by a separate fix commit",
+        )]
+    before, error = _tests_at(base)
+    if error:
+        return [("bug-repro", "FAIL", error)]
+    for test_commit in revisions:
+        with_test, error = _tests_at(test_commit)
+        if error:
+            return [("bug-repro", "FAIL", error)]
+        added = [
+            (key, record) for key, record in with_test.items()
+            if key not in before and _matches_test_id(test_id, record)
+        ]
+        if added:
+            break
+    else:
+        return [(
+            "bug-repro",
+            "FAIL",
+            f"no bug-ticket commit adds declared reproduction test `{test_id}`",
+        )]
+    if test_commit == revisions[-1]:
+        return [(
+            "bug-repro",
+            "FAIL",
+            "bug ticket needs a test commit followed by a separate fix commit",
+        )]
+    test_key, test_record = added[0]
+    command, exclusive = _repro_command(test_id, test_record)
+    gpu_lock = _acquire_exclusive(execution) if exclusive else None
+    try:
+        reproduced, ran = _run_at(test_commit, command)
+        if not ran or reproduced.returncode == 124:
+            return [(
+                "bug-repro-before",
+                "FAIL",
+                reproduced.stdout + reproduced.stderr,
+            )]
+        if reproduced.returncode == 0:
+            return [(
+                "bug-repro-before",
+                "FAIL",
+                "test does not reproduce the bug: it passes at the test commit",
+            )]
+        results = [(
+            "bug-repro-before",
+            "EXPECTED FAIL",
+            reproduced.stdout + reproduced.stderr,
+        )]
+        head, error = _tests_at("HEAD")
+        if error:
+            return [*results, ("bug-repro-head", "FAIL", error)]
+        head_record = head.get(test_key)
+        if head_record is None or not _matches_test_id(test_id, head_record):
+            return [*results, (
+                "bug-repro-head",
+                "FAIL",
+                f"declared reproduction test `{test_id}` is missing at HEAD",
+            )]
+        if head_record["source"] != test_record["source"]:
+            return [*results, (
+                "bug-repro-head",
+                "FAIL",
+                f"declared reproduction test changed at HEAD: `{test_id}`",
+            )]
+        fixed = timed(command, cwd=Path.cwd(), pythonpath=Path.cwd())
+        return [
+            *results,
+            (
+                "bug-repro-head",
+                "PASS" if fixed.returncode == 0 else "FAIL",
+                "" if fixed.returncode == 0 else "reproduction test still fails at HEAD\n" + fixed.stdout + fixed.stderr,
+            ),
+        ]
+    finally:
+        if gpu_lock is not None:
+            _release_exclusive(execution, gpu_lock)
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Quality gate for agent worktrees.")
     parser.add_argument("--base", default=None, help="base ref for leak scan and protected paths")
@@ -243,8 +618,14 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument("--protected-override", action="store_true",
                         help="human-authorized protected-path override")
+    parser.add_argument("--test-override", action="store_true",
+                        help="ticket-authorized existing-test override")
     parser.add_argument("--add-only-override", action="store_true",
                         help="manager- or human-authorized edits to add-only paths")
+    parser.add_argument("--bug", action="store_true",
+                        help="enforce failing-test-first and existing-test protection")
+    parser.add_argument("--repro-test", help="test ID named by the worker handoff")
+    parser.add_argument("--no-repro-test", help="ticket-author or authenticated-triage reason a reproduction test is impractical")
     parser.add_argument("--upstream", action="append", default=[], metavar="REF",
                         help="upstream sync: first REF is the tip, later REFs the staged head (repeatable); "
                         "protected-path hits equal to the staged head, or to the tip for paths upstream changed, "
@@ -289,19 +670,33 @@ def execute(args: argparse.Namespace, execution) -> int:
     if LEAK_RE is None:
         skip.add("leak-scan")
 
-    if not args.protected_override and args.tier == "attempt":
-        passed, reason, detail = check_protected_paths(
-            args.base, args.upstream, args.add_only_override
-        )
-        if not passed:
-            execution.outcome, execution.reason = "project_escalation", reason
-            report = Path(args.report)
-            report.parent.mkdir(parents=True, exist_ok=True)
-            note = f" ({ADD_ONLY_NOTE})" if reason == "add_only_paths" else ""
-            report.write_text(f"# Gate report\n\n- protected-paths: FAIL{note}\n\n"
-                              "## protected-paths failure\n\n```diff\n" + detail + "\n```\n")
-            print(f"report: {report}\ngate FAIL: protected-paths")
-            return 1
+    if args.tier == "attempt":
+        if not args.protected_override:
+            passed, reason, detail = check_protected_paths(
+                args.base, args.upstream, args.add_only_override
+            )
+            if not passed:
+                execution.outcome, execution.reason = "project_escalation", reason
+                report = Path(args.report)
+                report.parent.mkdir(parents=True, exist_ok=True)
+                note = f" ({ADD_ONLY_NOTE})" if reason == "add_only_paths" else ""
+                report.write_text(f"# Gate report\n\n- protected-paths: FAIL{note}\n\n"
+                                  "## protected-paths failure\n\n```diff\n" + detail + "\n```\n")
+                print(f"report: {report}\ngate FAIL: protected-paths")
+                return 1
+        if args.bug and not (args.protected_override or args.test_override):
+            passed, detail = check_existing_tests(args.base)
+            if not passed:
+                execution.outcome, execution.reason = "project_escalation", "protected_tests"
+                report = Path(args.report)
+                report.parent.mkdir(parents=True, exist_ok=True)
+                report.write_text(
+                    "# Gate report\n\n"
+                    "- protected-tests: FAIL (existing test deleted or modified)\n\n"
+                    "## protected-tests failure\n\n```\n" + detail + "\n```\n"
+                )
+                print(f"report: {report}\ngate FAIL: protected-tests")
+                return 1
     # attempt lists every configured check, pr the pr+release ones, release only its own;
     # listed checks of a later tier are reported `SKIP (<tier> tier)` instead of run.
     rank = config.CHECK_TIERS.index(args.tier)
@@ -314,24 +709,25 @@ def execute(args: argparse.Namespace, execution) -> int:
     ] if args.tier == "attempt" else configured
     later_tier = {check.name: check.when for check in listed if check.when != args.tier}
 
-    results: list[tuple[str, str, str]] = []  # (name, status, output)
-    outcome, reason = "completed", None
+    results: list[tuple[str, str, str]] = (
+        check_bug_reproduction(
+            args.base, args.repro_test, args.no_repro_test, execution
+        )
+        if args.bug and args.tier == "attempt" else []
+    )
+    outcome, reason = (
+        ("product_feedback", "bug_reproduction_failed")
+        if any(status == "FAIL" for _, status, _ in results)
+        else ("completed", None)
+    )
     gpu_lock = None
-    gpu_acquired = False
     try:
         for name, fn in checks:
             if name in skip or name in later_tier:
                 results.append((name, f"SKIP ({later_tier[name]} tier)" if name in later_tier else "SKIP", ""))
                 continue
             if name in GPU_CHECKS and gpu_lock is None:
-                gpu_lock = open(GPU_LOCK, "w")  # noqa: SIM115 — lock must outlive the loop
-                requested = execution.resource("requested", GPU_LOCK, scope="host", blocking=True)
-                if lifecycle._lock_state(lifecycle._lock(GPU_LOCK)) == "held":
-                    execution.wait("exclusive_resource", mode="blocking", resource=requested["resource"])
-                fcntl.flock(gpu_lock, fcntl.LOCK_EX)
-                gpu_acquired = True
-                execution.resource("acquired", GPU_LOCK, scope="host", blocking=True)
-                execution.wait_end()
+                gpu_lock = _acquire_exclusive(execution)
             with lifecycle.scope(
                 cfg.factory / "events.jsonl", "gate-check", lock=GPU_LOCK if gpu_lock else None
             ) as check:
@@ -340,16 +736,16 @@ def execute(args: argparse.Namespace, execution) -> int:
                 if not passed and check.outcome == "completed":
                     check.outcome = "product_feedback"
                     check.reason = "check_failed"
-                check.emit("result", check=name, passed=passed)
+                fields = {"failed_tests": failed_test_ids(output)} if not passed else {}
+                if fields.get("failed_tests"):
+                    fields["changed_paths"] = changed_paths(args.base)
+                check.emit("result", check=name, passed=passed, **fields)
                 results.append((name, "PASS" if passed else "FAIL", output))
             if not passed and (outcome == "completed" or check.outcome == "unknown"):
                 outcome, reason = check.outcome, check.reason
     finally:
         if gpu_lock is not None:
-            fcntl.flock(gpu_lock, fcntl.LOCK_UN)
-            gpu_lock.close()
-            if gpu_acquired:
-                execution.resource("released", GPU_LOCK, scope="host", blocking=True)
+            _release_exclusive(execution, gpu_lock)
 
     lines = [
         "# Gate report" if args.tier == "attempt" else f"# Gate report ({args.tier} tier)", "", "## Host toolchain",
