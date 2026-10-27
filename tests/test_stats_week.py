@@ -137,6 +137,21 @@ class WeeklyCommandTest(unittest.TestCase):
         self.assertEqual(result["stuck_over_days"], "unavailable")
         runner.assert_called_once()
 
+    def test_hosted_triage_model_is_not_legacy_local_fallback(self) -> None:
+        self.cfg.llm_url = "https://api.openai.com/v1"
+        self.cfg.llm_model = "shared-model"
+        with self.journal.open("a") as stream:
+            stream.write(json.dumps({
+                "at": at(timedelta(hours=-1)), "event": "llm-usage", "stage": "worker",
+                "model": "shared-model", "prompt_tokens": 4, "completion_tokens": 2,
+            }) + "\n")
+
+        code, result, _ = self.run_week()
+
+        self.assertEqual(code, 0)
+        self.assertEqual(result["local_token_share"], 0)
+        self.assertIs(result["tokens"]["worker"]["shared-model"]["local"], False)
+
 
 if __name__ == "__main__":
     unittest.main()

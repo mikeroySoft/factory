@@ -38,6 +38,14 @@ class EndpointLocalityTest(unittest.TestCase):
 
         self.assertIs(dispatch._usage_local(usage), True)
 
+
+    def test_worker_usage_does_not_mark_hosted_configured_model_local(self) -> None:
+        dispatch.cfg = config.Config(Path("/tmp"), "acme/widgets")
+        dispatch.cfg.llm_url = "https://api.openai.com/v1"
+        dispatch.cfg.llm_model = "shared-model"
+
+        self.assertIs(dispatch._usage_local({"model": "shared-model"}), False)
+
     def test_triage_usage_records_endpoint_locality(self) -> None:
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         path = root / "events.jsonl"
