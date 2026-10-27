@@ -1486,8 +1486,8 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
             return
         try:
             _gate_pr_head(cfg, branch, head)
-        except Exception as exc:
-            _promotion_blocked(events, n, branch, head, f"gate run failed: {_error_text(exc)}", False)
+        except Exception:
+            _promotion_blocked(events, n, branch, head, "gate failed", False)
             raise
     elif not any(row.get("gate") == "PASS" for row in gates):
         dispatch.log(f"PR #{n}: {branch} gate failed at {head[:12]}")
@@ -1533,13 +1533,19 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
         )
         _promotion_blocked(events, n, branch, head, "worker eval keep evidence missing", dry_run)
         return
-    if any(
-        row.get("event") == "promotion-blocked"
+    blocker = next((
+        row for row in events
+        if row.get("event") == "promotion-blocked"
         and row.get("pr") == n
         and row.get("head") == head
-        and row.get("reason") == "refresh failed"
-        for row in events
-    ):
+        and isinstance(row.get("reason"), str)
+        and (row["reason"] == "refresh failed" or row["reason"].startswith("merge failed:"))
+    ), None)
+    if blocker:
+        dispatch.log(
+            f"PR #{n}: {branch} blocked at {head[:12]} ({blocker['reason']}); "
+            "resolve the blocker and push a new head to retry promotion"
+        )
         return
     if dry_run:
         dispatch.log(f"PR #{n}: would merge {branch}")
