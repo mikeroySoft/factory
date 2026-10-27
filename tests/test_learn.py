@@ -119,6 +119,67 @@ class PromoteRegressionTest(unittest.TestCase):
         self.assertEqual((merged["pr"], merged["by"], merged["actor"]), (42, "human", "mikeroySoft"))
         self.assertEqual((opened["pr"], opened["head"], opened["branch"]), (42, self.HEAD, self.BRANCH))
 
+    def test_reconciliation_does_not_relabel_a_factory_merge_after_refresh(self) -> None:
+        old_head = "b" * 40
+        self.journal(
+            {"event": "review-result", "pr": 42, "head": old_head, "verdict": "APPROVE"},
+            {
+                "event": "merged",
+                "pr": 42,
+                "head": self.HEAD,
+                "branch": self.BRANCH,
+                "method": "squash",
+                "by": "factory",
+            },
+        )
+
+        for _ in range(3):
+            learn.promote_pass([])
+
+        self.gh.assert_not_called()
+        [merged] = self.rows("merged")
+        self.assertEqual((merged["head"], merged["by"]), (self.HEAD, "factory"))
+
+    def test_reconciliation_settles_historical_non_lessons_reviews(self) -> None:
+        self.journal(self.review())
+        self.gh.side_effect = lambda _args: {
+            "state": "CLOSED",
+            "mergedBy": None,
+            "headRefName": "contributor/fix",
+            "headRefOid": self.HEAD,
+        }
+
+        for _ in range(3):
+            learn.promote_pass([])
+
+        self.assertEqual(self.gh.call_count, 1)
+        [reconciled] = self.rows("promotion-reconciled")
+        self.assertEqual(
+            (reconciled["pr"], reconciled["head"], reconciled["reason"]),
+            (42, self.HEAD, "not a lessons branch"),
+        )
+
+    def test_reconciliation_settles_closed_lessons_reviews(self) -> None:
+        self.journal(self.review())
+        current_head = "b" * 40
+        self.gh.side_effect = lambda _args: {
+            "state": "CLOSED",
+            "mergedBy": None,
+            "headRefName": self.BRANCH,
+            "headRefOid": current_head,
+        }
+
+        for _ in range(3):
+            learn.promote_pass([])
+
+        self.assertEqual(self.gh.call_count, 1)
+        [blocked] = self.rows("promotion-blocked")
+        self.assertEqual((blocked["pr"], blocked["head"], blocked["reason"]), (
+            42,
+            current_head,
+            "closed without merge",
+        ))
+
 
 class LessonsFileTest(unittest.TestCase):
     def test_new_lessons_file_starts_with_the_repository_spdx_license(self) -> None:
@@ -137,6 +198,16 @@ class LessonsFileTest(unittest.TestCase):
                 (root / config.LESSONS_NAME).read_text().startswith("<!-- SPDX-License-Identifier: MIT -->\n")
             )
 
+    def test_apache_license_file_with_standard_indentation_is_detected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "LICENSE").write_text(
+                "                                 Apache License\n"
+                "                           Version 2.0, January 2004\n"
+            )
+
+            self.assertEqual(learn.repository_spdx(root), "Apache-2.0")
+
 
 class DoctorSigningKeyTest(unittest.TestCase):
     def test_doctor_warns_when_configured_ssh_signing_key_is_not_registered(self) -> None:
@@ -154,8 +225,14 @@ class DoctorSigningKeyTest(unittest.TestCase):
             cfg = config.Config(root=root, repo="acme/widgets", manager=["true", "{prompt}", "{cwd}"])
             cfg.factory.mkdir()
             real_sh = onboard.sh
+            commands: list[list[str]] = []
 
             def command(argv: list[str], cwd: Path | None = None, env: dict[str, str] | None = None):
+                commands.append(argv)
+                if argv == ["gh", "api", "user", "--jq", ".login"]:
+                    return subprocess.CompletedProcess(argv, 0, "mikeroysoft-agent\n", "")
+                if argv[:3] == ["gh", "api", "users/mikeroysoft-agent/ssh_signing_keys"]:
+                    return subprocess.CompletedProcess(argv, 0, "ssh-ed25519 AAAAother another-key\n", "")
                 if argv[:3] == ["gh", "api", "user/ssh_signing_keys"]:
                     return subprocess.CompletedProcess(argv, 0, "ssh-ed25519 AAAAother another-key\n", "")
                 if argv[:3] == ["gh", "repo", "view"]:
@@ -183,6 +260,18 @@ class DoctorSigningKeyTest(unittest.TestCase):
             signing = next(row for row in rows if row["label"] == "SSH signing key registered")
             self.assertEqual(signing["status"], "WARN")
             self.assertIn("unknown_key", signing["detail"])
+            self.assertIn(["gh", "api", "user", "--jq", ".login"], commands)
+            self.assertIn(
+                [
+                    "gh",
+                    "api",
+                    "users/mikeroysoft-agent/ssh_signing_keys",
+                    "--paginate",
+                    "--jq",
+                    ".[].key",
+                ],
+                commands,
+            )
 
 
 if __name__ == "__main__":
