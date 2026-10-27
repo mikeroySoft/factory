@@ -74,7 +74,8 @@ def next_bar(
     if pooled["pending_tickets"] < bar_min_tickets:
         return result
 
-    human_bound = wilson(pooled["pending_human_touches"], pooled["pending_tickets"])
+    human_bound = wilson(min(pooled["pending_human_touches"], pooled["pending_tickets"]),
+                         pooled["pending_tickets"])
     first_bound = wilson(pooled["pending_first_passes"], pooled["pending_attempts"])
     if human_bound is not None and human_bound[1] < result["human_rate"]:
         result["human_rate"] = round(
@@ -115,12 +116,8 @@ def measure(cfg: config.Config, since: str | datetime) -> dict[str, float | int 
     attempts = [row for row in rows if row.get("event") == "attempt" and row.get("attempt") == 1]
     first_passes = sum(row.get("gate") == "PASS" for row in attempts)
     denominator = max(len(tickets), 1)
-    touch_rate = human_touches / denominator
-    # Tags from journals without explicit human-decision rows retain the comparable legacy value.
-    if not any(row.get("event") == "human-decision" for row in rows):
-        touch_rate = min(len(human_tickets) / denominator, 1.0)
     return {
-        "human_rate": round(touch_rate, 6),
+        "human_rate": round(human_touches / denominator, 6),
         "human_touches": human_touches,
         "human_ticket_rate": round(min(len(human_tickets) / denominator, 1.0), 6),
         "first_pass": round(first_passes / len(attempts), 6) if attempts else None,
