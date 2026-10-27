@@ -674,7 +674,7 @@ def review_external_pr(n: int, base: str, head: str, branch: str = "") -> None:
         if usage is not None:
             record("llm-usage", pr=n, stage="review", local=_usage_local(usage), **usage)
         findings, verdict, parsed, counts, parser_reason = _parse_review_output(
-            findings, nit_cap
+            findings, nit_cap, legacy_schema=True
         )
         lines = findings.splitlines()
         legacy_invalid = counts is None and (
@@ -1860,7 +1860,7 @@ def _valid_review_instance(instance: object) -> bool:
 
 def _parse_review_output(
     findings: str, nit_cap: int, ledger_ids: set[str] | None = None,
-    legacy_ledger: bool = False,
+    legacy_ledger: bool = False, legacy_schema: bool = False,
 ) -> tuple[str, str, bool, dict[str, int] | None, str | None]:
     """Validate and cap structured findings; return the effective verdict and counts."""
     verdicts = list(re.finditer(r"(?m)^VERDICT: (APPROVE|REVISE)[ \t]*$", findings))
@@ -1884,6 +1884,16 @@ def _parse_review_output(
     ):
         return findings, "REVISE", False, None, "unparsed_verdict"
     rows = tally["findings"]
+    if legacy_schema:
+        for row in rows:
+            if (
+                isinstance(row, dict)
+                and row.get("severity") == "important"
+                and "class" not in row
+                and "instances" not in row
+            ):
+                row["class"] = f"legacy-{row.get('pass', 'finding')}"
+                row["instances"] = _finding_instances(row)
     if not all(
         isinstance(row, dict)
         and row.get("severity") in {"important", "nit", "pre-existing"}
@@ -2385,8 +2395,9 @@ def run_reviewer(
                 usage = attempt_usage or usage
                 raw_output = f"{proc.stdout}\n{proc.stderr}"
                 raw_tally = _review_tally(raw_findings)
+                legacy_schema = policy is None
                 normalized, model_verdict, parsed, counts, parser_reason = _parse_review_output(
-                    raw_findings, nit_cap, ledger_ids, legacy_ledger
+                    raw_findings, nit_cap, ledger_ids, legacy_ledger, legacy_schema
                 )
                 returncode = proc.returncode
                 actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt, env=clean).stdout.strip()
@@ -2434,6 +2445,15 @@ def run_reviewer(
                     parsed_tally = _review_tally(normalized)
                     if raw_tally is not None and parsed_tally is not None and "ledger" in parsed_tally:
                         raw_tally["ledger"] = parsed_tally["ledger"]
+                    if legacy_schema and raw_tally is not None:
+                        for row in raw_tally["findings"]:
+                            if (
+                                row.get("severity") == "important"
+                                and "class" not in row
+                                and "instances" not in row
+                            ):
+                                row["class"] = f"legacy-{row.get('pass', 'finding')}"
+                                row["instances"] = _finding_instances(row)
             accepted = (
                 proc is not None
                 and proc.returncode == 0
