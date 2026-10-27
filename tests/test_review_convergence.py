@@ -82,7 +82,7 @@ class ReviewConvergenceTest(unittest.TestCase):
         repeated = finding(finding_id=None)
         self.configure([
             tally("REVISE", [finding()]),
-            tally("REVISE", [repeated], [{"id": "F1", "status": "still-open"}]),
+            tally("REVISE", [finding(), repeated], [{"id": "F1", "status": "still-open"}]),
             tally("APPROVE", [], [{"id": "F1", "status": "fixed"}]),
         ])
 
@@ -121,11 +121,12 @@ class ReviewConvergenceTest(unittest.TestCase):
     def test_missing_class_on_important_finding_fails_closed(self) -> None:
         row = finding(finding_id=None)
         del row["class"]
+        del row["instances"]
         normalized, verdict, parsed, counts, reason = dispatch._parse_review_output(
             tally("REVISE", [row]), 5
         )
         self.assertEqual((verdict, parsed, counts, reason), ("REVISE", False, None, "unparsed_verdict"))
-        self.assertIn('"instances"', normalized)
+        self.assertNotIn('"class"', normalized)
 
     def test_unconfirmed_important_is_downgraded_and_does_not_block(self) -> None:
         self.configure([
