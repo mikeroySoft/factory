@@ -63,6 +63,19 @@ class FindingSelectionTest(unittest.TestCase):
         self.assertNotIn("Rename this.", bounce)
         self.assertNotIn("Old defect.", bounce)
 
+    def test_pre_existing_only_approve_is_nonblocking(self) -> None:
+        findings = review_output([
+            row("pre-existing", "legacy.py", 3, "Old defect."),
+        ], verdict="APPROVE")
+
+        _, verdict, parsed, counts, reason = dispatch._parse_review_output(findings, 5)
+
+        self.assertEqual((verdict, parsed, reason), ("APPROVE", True, None))
+        self.assertEqual(counts, {"important": 0, "nit": 0, "pre_existing": 1})
+        self.assertEqual(dispatch._required_fixes(findings, "https://review.example/1"), [])
+        self.assertNotIn("Old defect.", dispatch._worker_review_findings(findings))
+
+
     def test_learn_counts_only_structured_important_findings(self) -> None:
         self.assertEqual(learn._finding_count({"important": 2, "nit": 9, "pre_existing": 4}), 2)
         self.assertEqual(learn._finding_count(None), 1)
