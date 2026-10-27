@@ -148,6 +148,80 @@ class LocalCLI(unittest.TestCase):
     def rows(self):
         return [r for r in lifecycle.read_events(self.events) if r.get("event") == "lifecycle"]
 
+    def test_run_gate_uses_installed_runner_and_discards_stale_report(self):
+        import shutil
+        import venv
+        from unittest import mock
+
+        from factory import config, dispatch
+
+        check_cwd = self.base / "check-cwd"
+        check = self.base / "check.py"
+        check.write_text(
+            "from pathlib import Path\n"
+            f"Path({str(check_cwd)!r}).write_text(str(Path.cwd()))\n"
+        )
+        self.write_config(check=[sys.executable, str(check)])
+
+        stub = self.repo / "factory"
+        stub.mkdir()
+        (stub / "__init__.py").write_text("")
+        (stub / "__main__.py").write_text(
+            "import sys\n"
+            "print('worktree factory rejected --bug', file=sys.stderr)\n"
+            "raise SystemExit(64)\n"
+        )
+        stale = self.repo / ".factory" / "gate-report-7.md"
+        stale.parent.mkdir(exist_ok=True)
+        stale.write_text("STALE REPORT\n")
+
+        runner = self.base / "runner"
+        venv.EnvBuilder(with_pip=False).create(runner)
+        runner_python = runner / "bin" / "python"
+        purelib = subprocess.run(
+            [
+                str(runner_python),
+                "-c",
+                "import sysconfig; print(sysconfig.get_path('purelib'))",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        shutil.copytree(Path(dispatch.__file__).parent, Path(purelib) / "factory")
+
+        dispatch.configure(config.load(self.repo))
+        with mock.patch.object(dispatch.sys, "executable", str(runner_python)), \
+                mock.patch.dict(os.environ, {"PYTHONPATH": str(self.repo)}):
+            ok, report = dispatch.run_gate(
+                self.repo, 7, bug=True, no_repro_test="fixture exemption",
+            )
+
+        self.assertTrue(ok, report)
+        self.assertIn("- code: PASS", report)
+        self.assertNotIn("STALE REPORT", report)
+        self.assertEqual(check_cwd.read_text(), str(self.repo))
+
+        failed_runner = self.base / "failed-runner"
+        failed_runner.write_text(
+            "#!/bin/sh\n"
+            "echo 'isolated runner failed' >&2\n"
+            "exit 64\n"
+        )
+        failed_runner.chmod(0o755)
+        stale.write_text("STALE REPORT\n")
+        with mock.patch.object(dispatch.sys, "executable", str(failed_runner)):
+            ok, report = dispatch.run_gate(self.repo, 7)
+        self.assertFalse(ok)
+        self.assertNotIn("STALE REPORT", report)
+        self.assertIn("isolated runner failed", report)
+
+        failed_runner.write_text("#!/bin/sh\nexit 0\n")
+        with mock.patch.object(dispatch.sys, "executable", str(failed_runner)):
+            ok, report = dispatch.run_gate(self.repo, 7)
+        self.assertFalse(ok)
+        self.assertIn("did not write .factory/gate-report-7.md", report)
+
     def test_host_worker_wrap_launches_real_worker(self):
         # Launch-contract proof only: a recording wrapper, NOT sandbox proof.
         log = self.base / "wrap.log"
