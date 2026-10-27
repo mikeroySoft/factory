@@ -1884,17 +1884,6 @@ def _parse_review_output(
     ):
         return findings, "REVISE", False, None, "unparsed_verdict"
     rows = tally["findings"]
-    for row in rows:
-        if (
-            isinstance(row, dict)
-            and row.get("severity") == "important"
-            and "class" not in row
-            and "instances" not in row
-        ):
-            # Output predating the ledger schema had neither field. Partially emitted
-            # new-schema Important findings still fail closed below.
-            row["class"] = f"legacy-{row.get('pass', 'finding')}"
-            row["instances"] = _finding_instances(row)
     if not all(
         isinstance(row, dict)
         and row.get("severity") in {"important", "nit", "pre-existing"}
@@ -2108,9 +2097,10 @@ def _reconcile_review(
         row = dict(raw)
         match = by_id.get(row.get("id")) or by_key.get(_finding_key(row))
         if match is not None:
-            if row.get("id") != match["id"]:
-                dropped += 1
             identity = match["id"]
+            if identity in active_ids:
+                dropped += 1
+                continue
             status = updates.get(identity, "still-open")
             if status != "still-open":
                 raise ValueError(f"review ledger {identity} is {status} but was re-raised")
@@ -2398,18 +2388,52 @@ def run_reviewer(
                 normalized, model_verdict, parsed, counts, parser_reason = _parse_review_output(
                     raw_findings, nit_cap, ledger_ids, legacy_ledger
                 )
+                returncode = proc.returncode
+                actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt, env=clean).stdout.strip()
+                invalid_important = (
+                    isinstance(raw_tally, dict)
+                    and isinstance(raw_tally.get("findings"), list)
+                    and any(
+                        isinstance(row, dict)
+                        and row.get("severity") == "important"
+                        and (
+                            not isinstance(row.get("class"), str)
+                            or "instances" not in row
+                        )
+                        for row in raw_tally["findings"]
+                    )
+                )
+                if not parsed and invalid_important and actual_head == expected_head:
+                    counts = {
+                        severity: sum(
+                            isinstance(row, dict) and row.get("severity") == name
+                            for row in raw_tally["findings"]
+                        )
+                        for severity, name in (
+                            ("important", "important"),
+                            ("nit", "nit"),
+                            ("pre_existing", "pre-existing"),
+                        )
+                    }
+                    parser_reason = (
+                        "verdict_counts_mismatch"
+                        if raw_tally.get("verdict") != "REVISE"
+                        else "unparsed_verdict"
+                    )
+                    findings += f"\n\nFactory rejected reviewer evidence: {parser_reason}."
+                    return {
+                        "verdict": "REVISE", "findings": findings, "usage": usage,
+                        "accepted": False, "parsed": False, "reason": parser_reason,
+                        "returncode": returncode, "actual_head": actual_head,
+                        "attempts": attempts, "counts": counts,
+                        "rejection_reason": parser_reason, "failure_reason": parser_reason,
+                        "tally": None,
+                    }
                 if parsed:
                     findings = normalized
                     parsed_tally = _review_tally(normalized)
-                    if raw_tally is not None:
-                        for row in raw_tally["findings"]:
-                            if row.get("severity") == "important" and "class" not in row and "instances" not in row:
-                                row["class"] = f"legacy-{row.get('pass', 'finding')}"
-                                row["instances"] = _finding_instances(row)
-                        if parsed_tally is not None and "ledger" in parsed_tally:
-                            raw_tally["ledger"] = parsed_tally["ledger"]
-                returncode = proc.returncode
-                actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt, env=clean).stdout.strip()
+                    if raw_tally is not None and parsed_tally is not None and "ledger" in parsed_tally:
+                        raw_tally["ledger"] = parsed_tally["ledger"]
             accepted = (
                 proc is not None
                 and proc.returncode == 0
