@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Dispatcher pushes now lease the exact remote `agent/<n>` SHA observed before the worker, even when a stale or rewritten worktree does not contain it, so unchanged remotes accept completed work while concurrent pushes remain protected. Lease refusals name both the leased and current remote SHAs (#428).
 - Every gated PR head now gets a deterministic Low/Medium/High risk tier from its diff. Low heads skip report-only PR checks unless review requests changes; High heads require distinct-model dual approval and blocking changed-line mutation checks, auto-merge on agreement, and escalate only after a second next-head disagreement. Tier evidence is head-bound, `factory doctor` validates the second reviewer, and stats/dashboard/control bands report per-tier safety outcomes (#419).
 - `factory watch` no longer reports repeated `budget` escalations as engine defects; exhausting a ticket's configured wall-clock budget is a ticket outcome (#424).
 - Bug-ticket attempt gates now honor `factory-add-only-override` when protecting existing tests, so manager-authorized in-place text edits under `[gate].add_only_paths` do not loop back to escalation. Protected-test and add-only escalations name the failed check and clearing label, distinguish manager-authorizable text edits from file deletions, renames, mode changes and binary changes requiring human-only `factory-protected-override`, and rule out repeated `AUTHORIZE` when the add-only override is already present (#423).
