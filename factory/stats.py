@@ -173,9 +173,13 @@ def weekly_metrics(
     window = {"start": _stamp(start), "end": _stamp(end)}
     merged = {row["ticket"] for row in rows
               if row.get("event") == "merged" and type(row.get("ticket")) is int}
-    touches = sum(
-        row.get("event") == "human-decision"
-        or row.get("event") == "manage" and row.get("decision") == "HUMAN"
+    human_decisions = {
+        ("decision", row["decision_id"]) if row.get("decision_id") else ("row", index)
+        for index, row in enumerate(rows)
+        if row.get("event") == "human-decision"
+    }
+    touches = len(human_decisions) + sum(
+        row.get("event") == "manage" and row.get("decision") == "HUMAN"
         for row in rows
     )
     escalations = [row for row in rows if row.get("event") == "escalate"]
