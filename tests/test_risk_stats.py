@@ -106,6 +106,23 @@ class RiskStatsTest(unittest.TestCase):
         self.assertEqual(result["risk"]["High"]["human_interventions_per_merged_pr"], 1.0)
         self.assertEqual(result["risk"]["High"]["escape_rate"], 1.0)
 
+    def test_dashboard_rounds_to_pass_uses_rework_rounds(self) -> None:
+        ticket = {
+            "number": 419,
+            "risk_tier": "High",
+            "rework_rounds": 2,
+            "attempts": [{"attempt": 1}],
+            "pr": {"merged_at": "2026-10-27T00:00:00Z", "corrections": {}},
+            "human_touch": {
+                "escalation_count": 0, "ready_for_human_minutes": 0,
+                "escalation_codes": [], "escalation_times": [], "resolutions": [],
+            },
+        }
+        with mock.patch.object(dashboard, "MAX_ATTEMPTS", 3, create=True):
+            result = dashboard.metrics([ticket])
+
+        self.assertEqual(result["risk"]["High"]["rounds_to_pass"], 2.0)
+
     def test_revert_rate_control_band_is_split_by_tier(self) -> None:
         day = date(2026, 10, 27)
         events = [
