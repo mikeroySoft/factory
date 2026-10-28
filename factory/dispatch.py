@@ -3099,7 +3099,7 @@ def _certificate_checks(head: str, fallback: list[dict]) -> list[dict]:
             ]
             if checks:
                 return sorted(checks, key=lambda row: (str(row["name"]), str(row["id"])))
-    except (subprocess.CalledProcessError, json.JSONDecodeError, OSError):
+    except (subprocess.CalledProcessError, json.JSONDecodeError, OSError, AssertionError):
         pass
     conclusions = {
         "pass": "success", "skipping": "skipped", "cancel": "cancelled",
@@ -3107,7 +3107,7 @@ def _certificate_checks(head: str, fallback: list[dict]) -> list[dict]:
     }
     checks = []
     for row in fallback:
-        match = re.search(r"/(?:job|check-runs)/(\\d+)(?:\\D|$)", row.get("link") or "")
+        match = re.search(r"/(?:job|check-runs)/(\d+)(?:\D|$)", row.get("link") or "")
         checks.append({
             "id": int(match[1]) if match else row.get("id"),
             "name": row.get("name"),

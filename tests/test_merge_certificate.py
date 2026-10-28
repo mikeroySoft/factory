@@ -9,8 +9,13 @@ from pathlib import Path
 from unittest import mock
 
 from factory import certcheck, config, dispatch, lifecycle, watch
-from tests.test_certcheck_regression import MergeCertificateRegressionTest
-from tests.test_factory import build_fork, git, merge_stage_mocks
+
+try:
+    from test_certcheck_regression import MergeCertificateRegressionTest
+    from test_factory import build_fork, git, merge_stage_mocks
+except ModuleNotFoundError:
+    from tests.test_certcheck_regression import MergeCertificateRegressionTest
+    from tests.test_factory import build_fork, git, merge_stage_mocks
 
 
 class MergeCertificateTest(unittest.TestCase):
