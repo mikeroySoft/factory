@@ -39,6 +39,7 @@ class MergeCertificateTest(unittest.TestCase):
             gate_decision_id=decision["decision_id"],
             report_sha256=decision["report_sha256"],
         )
+        decision["head"] = fixture.head
         fixture.git("update-ref", "refs/remotes/origin/main", fixture.base)
         wt = fixture.root / ".factory" / "wt-7"
         fixture.git("worktree", "add", "-q", str(wt), "agent/7")
@@ -135,6 +136,26 @@ class MergeCertificateTest(unittest.TestCase):
         dispatch.configure(cfg)
         fake_gh_json, fake_merge_run = merge_stage_mocks(
             origin, 70, "agent/7", "feature", dispatch.run,
+        )
+        head = git(origin, "rev-parse", "agent/7")
+        report = cfg.factory / "gate-report-7.md"
+        report.write_text("# Gate report\n\n- test: PASS\n")
+        dispatch._record_gate_decision(7, True, report.read_text(), head, str(report), 0)
+        dispatch.record(
+            "attempt", ticket=7, gate="PASS", head=head, actual_head=head,
+            **dispatch._PENDING_GATES.pop(7),
+        )
+        dispatch.record(
+            "review", ticket=7, verdict="APPROVE", accepted=True,
+            head=head, actual_head=head,
+        )
+        dispatch._record_review_decision(
+            7, "APPROVE", "approved", head, True, True, None, 0,
+            comment_url="https://github.com/acme/widgets/pull/70#issuecomment-1",
+        )
+        dispatch.record(
+            "approved", ticket=7, pr=70, head=head, gate_head=head,
+            review_head=head, source="dispatch", actor="factory",
         )
         certificate = cfg.factory / "candidate.json"
         certificate.parent.mkdir(exist_ok=True)

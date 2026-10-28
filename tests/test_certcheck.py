@@ -151,6 +151,7 @@ class CertificateTamperTest(unittest.TestCase):
             cwd=self.fixture.root, env=environment, check=True,
         )
         outside = self.fixture.git("rev-parse", "HEAD")
+        self.fixture.git("update-ref", "refs/remotes/origin/main", outside)
         rows = certcheck.read_journal(self.fixture.root / ".factory" / "events.jsonl")
         results = certcheck.audit(
             self.fixture.root, "acme/widgets", rows, "main", "2026-10-01T00:00:00+00:00",

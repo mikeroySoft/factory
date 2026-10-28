@@ -205,6 +205,7 @@ class MergeCertificateRegressionTest(unittest.TestCase):
         self.git("add", "hand.txt")
         self.git("commit", "-qm", "hand merge")
         outside = self.git("rev-parse", "HEAD")
+        self.git("update-ref", "refs/remotes/origin/main", outside)
         audit = json.loads(self.factory("verify-merge", "--since", "7d", "--json").stdout)
         self.assertEqual(next(row["status"] for row in audit if row["commit"] == outside), "uncertified")
 
