@@ -804,22 +804,29 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `.factory.toml` in the list to protect the list itself. Globs in
    `[gate].add_only_paths` (also read from the base ref) are protected add-only:
    a new file passes, a modified file passes only when `git diff --numstat`
-   shows no deleted lines, and a deletion, rename, mode change, binary change
-   or any removed or changed line fails and escalates as "worker removed or
-   changed existing tests". The manager may use `AUTHORIZE`, with an auditable
-   justification and worker guidance, to apply `factory-add-only-override` and
-   requeue the ticket when the ticket requires the existing add-only edit or an
-   obsolete wording-only assertion must be removed; a human may apply it directly.
-   It does not authorize `[gate].protected_paths`. On `bug` tickets the attempt
-   gate also compares every existing Python test function and every Rust
-   `#[test]` function (including tests inside `src/*.rs`) with the base. Deleting
+   shows no deleted lines, and a deletion, rename, mode change, binary change,
+   or any removed or changed line fails as `add-only`. For in-place text edits,
+   its escalation names `factory-add-only-override` as the clearing label. The
+   manager may use `AUTHORIZE`, with an auditable justification and worker
+   guidance, to apply that label and requeue the ticket when the ticket requires
+   the existing add-only edit or an obsolete wording-only assertion must be
+   removed from a retained file; a human may apply it directly. File deletions,
+   renames, mode changes and binary changes still fail with that label and
+   require human-only `factory-protected-override`. Their escalations name that
+   label instead. If `factory-add-only-override` is already present and protection
+   still fails, the escalation explicitly rules out repeated manager `AUTHORIZE`.
+   The add-only override does not authorize `[gate].protected_paths`. On `bug`
+   tickets the attempt gate also compares every existing Python test function and
+   every Rust `#[test]` function (including tests inside `src/*.rs`) with the base. Deleting
    or changing one, including adding `@unittest.skip`, pytest skip/xfail, or
    Rust `#[ignore]`, fails as `protected-tests`; other languages retain the
-   configured path-based add-only policy. The `factory-protected-override` label
-   bypasses both path and function protection; a ticket line
-   `factory-protected-override: <reason>` bypasses only function protection on
-   bug tickets. An `upstream sync:` ticket's worker otherwise gets no
-   override, only upstream-authored content is exempt (`--upstream`, above).
+   configured path-based add-only policy. `factory-add-only-override` bypasses
+   that function check as well, so manager authorization also works on bug
+   tickets. The `factory-protected-override` label bypasses both path and
+   function protection; a ticket line `factory-protected-override: <reason>`
+   bypasses only function protection on bug tickets. An `upstream sync:`
+   ticket's worker otherwise gets no override; only upstream-authored content
+   is exempt (`--upstream`, above).
    A bug worker must add the reproducing test in its own commit before the fix
    and put `Repro test: <test ID>` in its handoff. The test may be added during
    a later retry, review bounce, or manager FIX, not just the first branch commit.
