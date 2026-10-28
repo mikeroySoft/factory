@@ -2285,7 +2285,8 @@ def pr_gate_and_review(
 
 
 
-_AGENT_LEASE_BASES: dict[tuple[Path, int], tuple[str, str]] = {}
+# process_ticket owns the starting head until its first push or exit.
+_AGENT_LEASE_BASES: dict[tuple[Path, int], str] = {}
 
 
 def _remote_agent_head(wt: Path, n: int, check: bool = True) -> str:
@@ -2296,7 +2297,7 @@ def _remote_agent_head(wt: Path, n: int, check: bool = True) -> str:
 def agent_lease(wt: Path, n: int) -> str:
     """Read the remote `agent/<n>` sha to lease before the worker runs, or "" when absent."""
     remote = _remote_agent_head(wt, n)
-    _AGENT_LEASE_BASES[wt, n] = (remote, run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip())
+    _AGENT_LEASE_BASES[wt, n] = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     return remote
 
 
@@ -2315,9 +2316,10 @@ class LeaseRefused(subprocess.CalledProcessError):
 def push_agent(wt: Path, n: int, lease: str, check: bool = True) -> str | None:
     """Force-push this worktree's HEAD to `agent/<n>`, never any other ref, only while the remote
     still holds `lease`, the sha observed before the worker or returned by the prior push. Rewritten
-    worker history lands; a linear worker cannot overwrite a remote head absent from its starting
-    history. Returns the pushed sha (the next lease), or None when refused and `check` is False; with
-    `check`, a refusal raises `LeaseRefused` and any other push failure a `CalledProcessError`."""
+    worker history lands; a linear worker cannot overwrite a remote head absent from both its
+    starting and final history. Returns the pushed sha (the next lease), or None when refused and
+    `check` is False; with `check`, a refusal raises `LeaseRefused` and any other push failure a
+    `CalledProcessError`."""
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     command = [
         "git", "push", f"--force-with-lease=agent/{n}:{lease}",
@@ -2327,9 +2329,8 @@ def push_agent(wt: Path, n: int, lease: str, check: bool = True) -> str | None:
     if (
         lease
         and leased is not None
-        and leased[0] == lease
-        and run(["git", "merge-base", "--is-ancestor", lease, leased[1]], cwd=wt, check=False).returncode
-        and run(["git", "merge-base", "--is-ancestor", leased[1], head], cwd=wt, check=False).returncode == 0
+        and run(["git", "merge-base", "--is-ancestor", lease, leased], cwd=wt, check=False).returncode
+        and not run(["git", "merge-base", "--is-ancestor", leased, head], cwd=wt, check=False).returncode
         and run(["git", "merge-base", "--is-ancestor", lease, head], cwd=wt, check=False).returncode
     ):
         if not check:
@@ -4322,6 +4323,7 @@ def process_ticket(
                 execution.outcome, execution.reason = "unknown", f"{type(exc).__name__}: {exc}"
             raise
         finally:
+            _AGENT_LEASE_BASES.pop((wt, n), None)
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             lock_fd.close()
             execution.resource("released", lock_path, scope="repository")

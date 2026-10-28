@@ -133,9 +133,14 @@ fails when they are equal; unset, nothing changes. Worker and reviewer agents ne
 get a GitHub credential: the dispatcher drops `GH_TOKEN`/`GITHUB_TOKEN` and points
 `GH_CONFIG_DIR` at a fresh empty directory for them. Workers only commit; the
 dispatcher pushes `agent/<n>` with `--force-with-lease=agent/<n>:<sha>`, the remote
-sha it last fetched or pushed, so a worker rewrite (e.g. a rebase) lands but anyone
-else's push since then is refused, never overwritten (the ticket escalates with
-`lease_refused`, worktree kept). No other ref is force-pushed.
+sha observed before the worker runs (or `""` when absent), or the sha returned by
+the previous successful push. Changes after that observation are refused (the
+ticket escalates with `lease_refused`, worktree kept). Rewritten worker history
+(e.g. a rebase) can replace commits already present at lease-read time even when
+absent locally. Linear work is refused if it still omits a leased head absent
+from its starting history. Starting-history state ends at the first push or
+ticket exit, so it cannot affect later refresh or manager FIX pushes.
+No other ref is force-pushed.
 Review-request opt-in accepts requests naming either the dispatcher's or the
 dashboard's login.
 

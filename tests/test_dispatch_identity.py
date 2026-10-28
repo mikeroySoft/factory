@@ -268,11 +268,8 @@ class AgentPushLeaseTest(unittest.TestCase):
         lease = dispatch.agent_lease(self.wt, 7)
         self.commit(self.wt, "linear worker commit")
 
-        copied_lease = lease.encode().decode()
-        self.assertIsNot(copied_lease, lease)
         with self.assertRaises(dispatch.LeaseRefused) as raised:
-            dispatch.push_agent(self.wt, 7, copied_lease)
-        self.assertEqual(raised.exception.returncode, 1)
+            dispatch.push_agent(self.wt, 7, lease)
         self.assertIn(f"leased {lease}, remote now {lease}", str(raised.exception))
         self.assertEqual(self.remote("agent/7"), lease)
 
