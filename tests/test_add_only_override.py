@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import contextmanager
@@ -10,6 +11,7 @@ from unittest import mock
 
 from factory import config, dispatch, gate, manage
 
+ROOT = Path(__file__).resolve().parents[1]
 
 @contextmanager
 def working_directory(path: Path):
@@ -33,6 +35,7 @@ def repository(root: Path) -> Path:
     git(repo, "init", "-q", "-b", "main")
     git(repo, "config", "user.email", "test@example.com")
     git(repo, "config", "user.name", "Test")
+    git(repo, "remote", "add", "origin", "git@github.com:acme/widgets.git")
     (repo / config.CONFIG_NAME).write_text(
         '[gate]\nprotected_paths = [".factory.toml"]\nadd_only_paths = ["tests/**"]\n'
     )
@@ -42,6 +45,19 @@ def repository(root: Path) -> Path:
     git(repo, "commit", "-q", "-m", "base")
     git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
     return repo
+
+
+def run_gate(repo: Path, *args: str) -> tuple[int, str]:
+    proc = subprocess.run(
+        [sys.executable, "-m", "factory", "gate", *args],
+        cwd=repo,
+        env={**os.environ, "PYTHONPATH": str(ROOT)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    report = repo / ".factory" / "gate-report.md"
+    return proc.returncode, report.read_text() if report.exists() else proc.stdout + proc.stderr
 
 
 class AddOnlyOverrideTest(unittest.TestCase):
@@ -68,6 +84,29 @@ class AddOnlyOverrideTest(unittest.TestCase):
                 )
             self.assertFalse(passed)
             self.assertEqual(reason, "protected_paths")
+
+    def test_bug_ticket_override_allows_deleting_existing_test(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repository(Path(directory))
+            (repo / "tests" / "test_old.py").write_text("# obsolete test removed\n")
+            git(repo, "add", "-A")
+            git(repo, "commit", "-q", "-m", "delete obsolete test")
+            labels = {"bug", config.LABEL_ADD_ONLY_OVERRIDE}
+            flags = dispatch.gate_flags(None, labels)
+
+            code, report = run_gate(
+                repo,
+                "--bug",
+                "--no-repro-test",
+                "existing-test protection fixture",
+                "--add-only-override",
+            )
+
+            self.assertTrue(flags["add_only_override"])
+            self.assertEqual(code, 0, report)
+            self.assertNotIn("- protected-paths: FAIL", report)
+            self.assertNotIn("- protected-tests: FAIL", report)
+
 
     def test_override_rejects_deletion_and_mode_change(self) -> None:
         for change in ("delete", "chmod"):
