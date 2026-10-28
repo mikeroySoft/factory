@@ -80,6 +80,17 @@ class ReleaseBarSampleTest(unittest.TestCase):
         self.assertEqual(release.wilson(5, 5)[1], 1.0)
         self.assertIsNone(release.wilson(0, 0))
 
+    def test_empty_first_pass_sample_leaves_bar_unchanged(self) -> None:
+        old = {"human_rate": 0.2, "first_pass": 0.8, "tickets": 20, "pending_tickets": 0}
+        result = release.next_bar(
+            old,
+            metrics(20),
+            bar_min_tickets=20,
+            bar_floor_human_rate=0.1,
+            bar_floor_first_pass=0.9,
+        )
+        self.assertEqual(result["first_pass"], 0.8)
+
     def test_release_config_defaults_and_values(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

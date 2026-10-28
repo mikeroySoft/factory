@@ -42,6 +42,22 @@ class ReleaseTouchRateTest(unittest.TestCase):
             self.assertEqual(measured["human_rate"], 1.5)
             self.assertEqual(measured["human_touches"], 3)
 
+    def test_measure_counts_one_touch_per_human_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config.Config(root=Path(directory), repo="acme/widgets")
+            path = cfg.factory / "events.jsonl"
+            lifecycle.append(path, {"at": "2099-01-01T00:00:00Z", "event": "merged", "ticket": 1})
+            for second, status in enumerate(("prepared", "started", "applied"), 1):
+                lifecycle.append(path, {
+                    "at": f"2099-01-01T00:00:0{second}Z",
+                    "event": "human-decision",
+                    "ticket": 1,
+                    "decision_id": "decision-1",
+                    "status": status,
+                })
+            measured = release.measure(cfg, "2098-01-01T00:00:00Z")
+            self.assertEqual((measured["human_rate"], measured["human_touches"]), (1.0, 1))
+
     def test_identical_bar_hold_is_journaled_once(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
