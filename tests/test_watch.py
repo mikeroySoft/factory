@@ -475,6 +475,11 @@ class WatchOutcomeEscalationTest(unittest.TestCase):
 
         self.assertEqual(watch.repeated_escalations(rows), {})
 
+    def test_repeated_budget_outcome_is_not_filed(self) -> None:
+        rows = [escalate_row(n, "budget", "wall-clock budget exceeded") for n in (1, 2, 3)]
+
+        self.assertEqual(watch.repeated_escalations(rows), {})
+
 
 
 
