@@ -6,7 +6,7 @@ from datetime import date
 from pathlib import Path
 from unittest import mock
 
-from factory import config, dashboard, stats, watch
+from factory import config, dashboard, dispatch, stats, watch
 
 
 class RiskStatsTest(unittest.TestCase):
@@ -103,6 +103,29 @@ class RiskStatsTest(unittest.TestCase):
                 snapshot = dashboard.snapshot()
 
         self.assertNotIn("risk", snapshot["metrics"])
+
+    def test_tier_escape_control_band_keeps_fractional_rates(self) -> None:
+        day = date(2026, 10, 27)
+        events = [
+            {"event": "risk", "ticket": 7, "tier": "High", "at": "2026-10-27T01:00:00Z"},
+            {"event": "risk", "ticket": 8, "tier": "High", "at": "2026-10-27T01:00:00Z"},
+            {"event": "merged", "ticket": 7, "at": "2026-10-27T02:00:00Z"},
+            {"event": "merged", "ticket": 8, "at": "2026-10-27T02:00:00Z"},
+            {"event": "escape", "ticket": 7, "at": "2026-10-27T03:00:00Z"},
+        ]
+        series = watch.metric_series(events, day, day)
+        self.assertEqual(series["revert_rate_by_tier:High"][day.isoformat()]["value"], 0.5)
+
+    def test_watch_escape_scan_key_error_is_visible_and_nonfatal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config.Config(Path(directory), "acme/widgets")
+            cfg.watch_bands = [mock.Mock(metric="revert_rate_by_tier")]
+            dispatch.configure(cfg)
+            with mock.patch.object(stats, "escapes", side_effect=KeyError("candidates")), \
+                    mock.patch.object(watch, "signals", return_value=[]), \
+                    mock.patch.object(dispatch, "log") as log:
+                self.assertEqual(watch.run_pass(cfg), [])
+            log.assert_called_once_with("watch: escape attribution unavailable (KeyError)")
 
 
 class DashboardEscapeCacheTest(unittest.TestCase):

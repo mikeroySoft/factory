@@ -213,6 +213,27 @@ class DefaultOffStructureTest(RiskTierTest):
         })
         self.assertEqual(tier, "Medium")
 
+    def test_classify_low_guard_with_comments_and_blank_lines(self) -> None:
+        tier, _ = self.classify({
+            "factory/optional.py": (
+                "ENABLED = False\nif ENABLED:\n    # dormant feature\n\n    register_feature()\n"
+            ),
+        })
+        self.assertEqual(tier, "Low")
+
+    def test_recorded_risk_has_exactly_one_eligible_tier(self) -> None:
+        dispatch.configure(config.Config(self.repo, "acme/widgets"))
+        with mock.patch.object(risk, "classify", return_value=("High", ["high:risk policy"])):
+            dispatch.record_risk(self.repo, 7, "a" * 40)
+        decision = next(
+            row for row in lifecycle.read_events(dispatch.EVENTS)
+            if row.get("event") == "decision" and row.get("stage") == "risk"
+        )
+        self.assertEqual(
+            {item["option"]: item["eligible"] for item in decision["options"]},
+            {"Low": False, "Medium": False, "High": True},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

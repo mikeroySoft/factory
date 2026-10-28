@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import contextlib
+import importlib
+import inspect
 import io
 import itertools
 import subprocess
 import sys
 import tempfile
 import types
+import typing
 import unittest
 from enum import Enum
 from pathlib import Path
@@ -267,6 +270,12 @@ class ReviewPolicyTest(unittest.TestCase):
                         mock.patch.object(mutation.time, "monotonic", side_effect=lambda: next(clock)), \
                         contextlib.redirect_stdout(incomplete):
                     self.assertEqual(mutation.main(["--blocking"]), 1)
+                untested = SimpleNamespace(
+                    worker_outcome=WorkerOutcome.NORMAL, test_outcome=None, diff="", output="no test",
+                )
+                with mock.patch.object(mutating, "mutate_and_test", return_value=untested), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(mutation.main(["--blocking"]), 1)
 
         self.assertIn("factory/example.py:1: NumberReplacer", blocking.getvalue())
         self.assertIn("1 survived", report_only.getvalue())
@@ -387,6 +396,18 @@ class HighPrGateTest(unittest.TestCase):
         self.assertEqual(result, ("REVISE", "- mutation: PASS\n- extra: FAIL\n", True))
         reviewer.assert_not_called()
         self.assertNotIn(7, dispatch._PENDING_RISK)
+        row = dispatch.lifecycle.read_events(dispatch.EVENTS)[-1]
+        self.assertEqual((row["event"], row["head"], row["pr_gate"]), ("risk-check", HEAD, "FAIL"))
+
+    def test_low_recorded_tier_skips_pr_checks_without_relying_on_interned_strings(self) -> None:
+        dispatch.record("risk", ticket=7, head=HEAD, tier="Low", matched_rules=["low:markdown"])
+        with mock.patch.object(dispatch, "run_gate") as gate, \
+                mock.patch.object(dispatch, "review", return_value=("APPROVE", "ok")):
+            self.assertEqual(
+                dispatch.pr_gate_and_review(self.root, 7, "attempt", HEAD, {}),
+                ("APPROVE", "ok", False),
+            )
+        gate.assert_not_called()
 
     def test_high_approval_requires_successful_current_head_pr_gate(self) -> None:
         for status in ("FAIL", None):
@@ -644,6 +665,21 @@ class HighPipelineBoundaryTest(unittest.TestCase):
 
 
 class MutationExecutionTest(unittest.TestCase):
+    def test_risk_changed_modules_have_resolvable_function_annotations(self) -> None:
+        for name in (
+            "config", "dashboard", "dispatch", "gate", "manage",
+            "onboard", "risk", "stats", "trace", "watch",
+        ):
+            module = importlib.import_module(f"factory.{name}")
+            for function_name, function in inspect.getmembers(module, inspect.isfunction):
+                if function.__module__ == module.__name__:
+                    with self.subTest(module=name, function=function_name):
+                        typing.get_type_hints(function)
+
+    def test_risk_model_parser_handles_trailing_option_and_preserves_equals(self) -> None:
+        self.assertIsNone(config.command_model(["omp", "--model"]))
+        self.assertEqual(config.command_model(["omp", "--model=provider/name=variant"]), "provider/name=variant")
+
     def test_mutation_deletions_only_have_no_changed_factory_lines(self) -> None:
         diff = "+++ b/factory/dispatch.py\n@@ -2,2 +1,0 @@\n-old\n-code\n"
         with mock.patch.object(mutation.subprocess, "run", return_value=mock.Mock(stdout=diff)):
