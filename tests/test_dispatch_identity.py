@@ -231,6 +231,14 @@ class AgentPushLeaseTest(unittest.TestCase):
         self.assertEqual(dispatch.push_agent(self.wt, 7, lease), worker_head)
         self.assertEqual(self.remote("agent/7"), worker_head)
 
+    def test_stale_worktree_rebased_onto_unchanged_remote_lands(self) -> None:
+        self.git(self.wt, "checkout", "-q", "main")
+        lease = dispatch.agent_lease(self.wt, 7)
+        self.git(self.wt, "checkout", "-q", "--detach", lease)
+        worker_head = self.commit(self.wt, "worker rebased onto remote")
+        self.assertEqual(dispatch.push_agent(self.wt, 7, lease), worker_head)
+        self.assertEqual(self.remote("agent/7"), worker_head)
+
     def test_refusal_names_leased_and_current_remote_heads(self) -> None:
         moved = self.someone_else_pushes()
         with self.assertRaises(dispatch.LeaseRefused) as raised:
