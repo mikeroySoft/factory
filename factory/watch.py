@@ -277,6 +277,8 @@ def metric_series(events: list[dict], start: date, end: date) -> dict[str, dict[
             and row.get("role") in {None, "primary"} and _day(row) is not None
         ):
             reviews.setdefault(ticket, []).append(row)
+    merged_by_tier: dict[str, dict[object, dict]] = {}
+    escaped_by_tier: dict[str, dict[object, dict]] = {}
 
     for day in days:
         key = day.isoformat()
@@ -309,21 +311,25 @@ def metric_series(events: list[dict], start: date, end: date) -> dict[str, dict[
                 "value": sum(rounds) / len(rounds),
                 "rows": round_rows,
             }
+        for row in today:
+            ticket = row.get("ticket")
+            tier = risk_by_ticket.get(ticket)
+            if tier is None:
+                continue
+            if row.get("event") == "merged":
+                merged_by_tier.setdefault(tier, {})[ticket] = row
+            elif row.get("event") == "escape":
+                escaped_by_tier.setdefault(tier, {})[ticket] = row
         for tier in set(risk_by_ticket.values()):
-            merged = [
-                row for row in today
-                if row.get("event") == "merged"
-                and risk_by_ticket.get(row.get("ticket")) == tier
-            ]
+            merged = merged_by_tier.get(tier, {})
             if merged:
-                escaped = [
-                    row for row in today
-                    if row.get("event") == "escape"
-                    and risk_by_ticket.get(row.get("ticket")) == tier
-                ]
+                escaped = {
+                    ticket: row for ticket, row in escaped_by_tier.get(tier, {}).items()
+                    if ticket in merged
+                }
                 series[f"revert_rate_by_tier:{tier}"][key] = {
-                    "value": len({row.get("ticket") for row in escaped}) / len(merged),
-                    "rows": [*merged, *escaped],
+                    "value": len(escaped) / len(merged),
+                    "rows": [*merged.values(), *escaped.values()],
                 }
         cycles, cycle_rows = [], []
         for merged in (row for row in today if row.get("event") == "merged"):

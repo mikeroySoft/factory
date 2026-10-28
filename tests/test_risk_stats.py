@@ -71,6 +71,18 @@ class RiskStatsTest(unittest.TestCase):
         series = watch.metric_series(events, day, day)
         self.assertEqual(series["revert_rate_by_tier:High"][day.isoformat()]["value"], 1.0)
 
+    def test_revert_rate_attributes_escape_closed_after_merge(self) -> None:
+        merged = date(2026, 10, 1)
+        escaped = date(2026, 10, 10)
+        events = [
+            {"event": "risk", "ticket": 7, "tier": "High", "at": "2026-10-01T01:00:00Z"},
+            {"event": "merged", "ticket": 7, "at": "2026-10-01T02:00:00Z"},
+            {"event": "escape", "ticket": 7, "at": "2026-10-10T03:00:00Z"},
+        ]
+        series = watch.metric_series(events, merged, escaped)["revert_rate_by_tier:High"]
+        self.assertEqual(series[merged.isoformat()]["value"], 0.0)
+        self.assertEqual(series[escaped.isoformat()]["value"], 1.0)
+
     def test_escape_events_use_real_stats_attribution_rows(self) -> None:
         rows = [{
             "bug": 419,

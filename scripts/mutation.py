@@ -165,6 +165,8 @@ def main(argv: list[str] | None = None) -> int:
     with tempfile.TemporaryDirectory(prefix="factory-mutation-") as tmp:
         scratch = Path(tmp)
         mutations, hot = sample(lines, scratch)
+        if args.blocking:
+            mutations = mutations[:hot]
         workers = max(1, min(WORKERS, len(mutations)))
         copies = [scratch / f"copy{i}" for i in range(workers)]
         for copy in copies:

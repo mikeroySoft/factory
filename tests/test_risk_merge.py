@@ -216,6 +216,7 @@ class ReviewPolicyTest(unittest.TestCase):
         class TestOutcome(Enum):
             SURVIVED = "survived"
             INCOMPETENT = "incompetent"
+            KILLED = "killed"
 
         class WorkerOutcome(Enum):
             NORMAL = "normal"
@@ -226,6 +227,13 @@ class ReviewPolicyTest(unittest.TestCase):
             occurrence=0,
             start_pos=(1, 0),
             end_pos=(2, 9),
+        )
+        unrelated = SimpleNamespace(
+            module_path=Path("factory/example.py"),
+            operator_name="NumberReplacer",
+            occurrence=1,
+            start_pos=(1, 0),
+            end_pos=(1, 9),
         )
         survivor = SimpleNamespace(
             worker_outcome=WorkerOutcome.NORMAL,
@@ -253,7 +261,7 @@ class ReviewPolicyTest(unittest.TestCase):
             (root / "factory/example.py").write_text("enabled = True\nvalue = 1\n")
             with contextlib.chdir(root), mock.patch.dict(sys.modules, modules), \
                     mock.patch.object(mutation, "changed_lines", return_value={"factory/example.py": {2}}), \
-                    mock.patch.object(mutation, "sample", return_value=([spec], 1)), \
+                    mock.patch.object(mutation, "sample", return_value=([spec], 1)) as sampler, \
                     mock.patch.object(
                         mutation.subprocess, "run",
                         return_value=subprocess.CompletedProcess([], 0, "OK\n", ""),
@@ -276,6 +284,16 @@ class ReviewPolicyTest(unittest.TestCase):
                 with mock.patch.object(mutating, "mutate_and_test", return_value=untested), \
                         contextlib.redirect_stdout(io.StringIO()):
                     self.assertEqual(mutation.main(["--blocking"]), 1)
+                killed = SimpleNamespace(
+                    worker_outcome=WorkerOutcome.NORMAL, test_outcome=TestOutcome.KILLED,
+                    diff="", output="",
+                )
+                sampler.return_value = ([spec, unrelated], 1)
+                mutating.mutate_and_test.reset_mock(return_value=True)
+                mutating.mutate_and_test.return_value = killed
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(mutation.main(["--blocking"]), 0)
+                self.assertEqual(mutating.mutate_and_test.call_count, 1)
 
         self.assertIn("factory/example.py:1: NumberReplacer", blocking.getvalue())
         self.assertIn("1 survived", report_only.getvalue())
