@@ -107,3 +107,58 @@ class RiskStatsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DashboardEscapeCacheTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name)
+        dashboard.configure(config.Config(root, "acme/widgets", lock=root / "gpu.lock"))
+        self.ticket = {
+            "number": 7, "risk_tier": "High", "pr": {"merged_at": "2026-10-27"},
+            "lock_held": False,
+        }
+        patches = {
+            "github": {"repository": {
+                "issues": {"nodes": [{"number": 7}]}, "pullRequests": {"nodes": []},
+            }},
+            "selected_issue": True, "build_ticket": self.ticket,
+            "dispatcher": {}, "upstream_state": {}, "triage_llm_online": False,
+            "metrics": {}, "review_queue": [],
+        }
+        for name, result in patches.items():
+            patcher = mock.patch.object(dashboard, name, return_value=result)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for name, result in (("dispatcher_login", ""), ("worker_metrics", {})):
+            patcher = mock.patch.object(dashboard.stats, name, return_value=result)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for name in ("engine_commit", "engine_drift"):
+            patcher = mock.patch.object(dashboard.config, name, return_value=None)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_dashboard_escape_failure_is_reported_and_retried(self) -> None:
+        with mock.patch.object(dashboard.stats, "escapes", side_effect=[
+            RuntimeError("scan offline"), [{"candidates": [{"ticket": 7}]}],
+        ]) as scan:
+            first = dashboard.snapshot()
+            second = dashboard.snapshot()
+        self.assertTrue(any("escapes: scan offline" in error for error in first["errors"]))
+        self.assertEqual(scan.call_count, 2)
+        self.assertFalse(any(error.startswith("escapes:") for error in second["errors"]))
+        self.assertEqual(dashboard._escape_tickets, {7})
+
+    def test_dashboard_successful_escape_cache_refreshes(self) -> None:
+        with mock.patch.object(dashboard.time, "monotonic", side_effect=[100.0, 101.0, 1000.0]), \
+                mock.patch.object(dashboard.stats, "escapes", side_effect=[
+                    [], [{"candidates": [{"ticket": 7}]}],
+                ]) as scan:
+            dashboard.snapshot()
+            dashboard.snapshot()
+            self.assertEqual(scan.call_count, 1)
+            dashboard.snapshot()
+        self.assertEqual(scan.call_count, 2)
+        self.assertEqual(dashboard._escape_tickets, {7})

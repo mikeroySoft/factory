@@ -26,7 +26,8 @@ def high_events(*, head: str = HEAD, second: bool = True, mutation: str = "PASS"
          "worker_model": "worker/model"},
         {"event": "review", "ticket": 7, "head": head, "actual_head": head, "accepted": True,
          "verdict": "APPROVE", "role": "primary", "model": "primary/model"},
-        {"event": "risk-check", "ticket": 7, "head": head, "mutation": mutation},
+        {"event": "risk-check", "ticket": 7, "head": head, "mutation": mutation,
+         "pr_gate": "PASS" if mutation in {"PASS", "SKIP"} else "FAIL"},
     ]
     if second:
         rows.append({
@@ -359,3 +360,59 @@ class ConfigTest(unittest.TestCase):
         })
 if __name__ == "__main__":
     unittest.main()
+
+
+class HighPrGateTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        cfg = config.Config(self.root, "acme/widgets")
+        cfg.checks = [
+            config.Check("mutation", ["mutation"], when="pr"),
+            config.Check("extra", ["extra"], when="pr"),
+        ]
+        dispatch.configure(cfg)
+
+    def test_high_other_pr_check_failure_is_ordinary_gate_failure(self) -> None:
+        with mock.patch.object(dispatch, "risk_for_head", return_value=("High", ["high:risk policy"])), \
+                mock.patch.object(dispatch, "run_gate", return_value=(
+                    False, "- mutation: PASS\n- extra: FAIL\n",
+                )), mock.patch.object(dispatch, "review", return_value=("APPROVE", "ok")) as reviewer:
+            result = dispatch.pr_gate_and_review(self.root, 7, "attempt", HEAD, {})
+        self.assertEqual(result, ("REVISE", "- mutation: PASS\n- extra: FAIL\n", True))
+        reviewer.assert_not_called()
+        self.assertNotIn(7, dispatch._PENDING_RISK)
+
+    def test_high_approval_requires_successful_current_head_pr_gate(self) -> None:
+        for status in ("FAIL", None):
+            with self.subTest(status=status):
+                events = high_events()
+                for row in events:
+                    if row["event"] == "risk-check":
+                        row["pr_gate"] = status
+                self.assertFalse(dispatch._head_evidence_matches(events, 7, HEAD))
+                with mock.patch.object(dispatch.lifecycle, "read_events", return_value=events), \
+                        mock.patch.object(dispatch, "run") as run:
+                    self.assertFalse(dispatch.approve_pr(7, HEAD))
+                run.assert_not_called()
+        stale = [row for row in high_events() if row["event"] == "risk-check"]
+        current = [row for row in high_events(head=NEW_HEAD) if row["event"] != "risk-check"]
+        self.assertFalse(dispatch._head_evidence_matches(stale + current, 7, NEW_HEAD))
+
+    def test_high_pr_gate_success_is_persisted(self) -> None:
+        def review(*_args, role="primary", **_kwargs):
+            pending = dispatch._PENDING_SECOND_REVIEWS if role == "second" else dispatch._PENDING_REVIEWS
+            pending[7] = {"verdict": "APPROVE", "model": f"{role}/model"}
+            return "APPROVE", "ok"
+
+        with mock.patch.object(dispatch, "risk_for_head", return_value=("High", ["high:risk policy"])), \
+                mock.patch.object(dispatch, "run_gate", return_value=(
+                    True, "- mutation: PASS\n- extra: PASS\n",
+                )), mock.patch.object(dispatch, "review", side_effect=review), \
+                mock.patch.object(dispatch, "_worker_model_for_head", return_value="worker/model"), \
+                mock.patch.object(dispatch, "run", return_value=mock.Mock(stdout="M\tfactory/risk.py\n")):
+            self.assertEqual(dispatch.pr_gate_and_review(self.root, 7, "attempt", HEAD, {})[0], "APPROVE")
+        rows = dispatch.lifecycle.read_events(dispatch.EVENTS)
+        check = next(row for row in rows if row.get("event") == "risk-check")
+        self.assertEqual(check["pr_gate"], "PASS")

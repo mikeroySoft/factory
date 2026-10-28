@@ -170,3 +170,41 @@ class LowPolicyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DefaultOffStructureTest(RiskTierTest):
+    def test_classify_unrelated_found_pattern_is_medium(self) -> None:
+        tier, _ = self.classify({
+            "factory/optional.py": (
+                "found = False\nfor item in items:\n    found = check(item)\n"
+                "if found:\n    publish()\n"
+            ),
+        })
+        self.assertEqual(tier, "Medium")
+
+    def test_classify_unguarded_additions_alongside_flag_are_medium(self) -> None:
+        tier, _ = self.classify({
+            "factory/optional.py": (
+                "ENABLED = False\npublish()\nif ENABLED:\n    register_feature()\n"
+            ),
+        })
+        self.assertEqual(tier, "Medium")
+
+    def test_classify_reassigned_flag_is_medium(self) -> None:
+        tier, _ = self.classify({
+            "factory/optional.py": (
+                "ENABLED = False\nENABLED = True\nif ENABLED:\n    register_feature()\n"
+            ),
+        })
+        self.assertEqual(tier, "Medium")
+
+    def test_classify_existing_flag_binding_is_not_new_default_off_code(self) -> None:
+        path = self.repo / "optional.py"
+        path.write_text("def enable():\n    global ENABLED\n    ENABLED = True\n")
+        git(self.repo, "add", "optional.py")
+        git(self.repo, "commit", "-qm", "existing binding")
+        self.base = git(self.repo, "rev-parse", "HEAD")
+        tier, _ = self.classify({
+            "optional.py": path.read_text() + "\nENABLED = False\nif ENABLED:\n    publish()\n",
+        })
+        self.assertEqual(tier, "Medium")
