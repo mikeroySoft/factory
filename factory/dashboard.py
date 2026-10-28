@@ -703,7 +703,7 @@ def metrics(tickets: list[dict], *, escape_tickets: set[int] | None = None) -> d
                         else ticket.get("stage")
                     ),
                     "risk_tier": ticket["risk_tier"],
-                    "review_rounds": ticket.get("rework_rounds", 0),
+                    "rework_rounds": ticket.get("rework_rounds", 0),
                     **ticket["human_touch"],
                 }
                 for ticket in tickets
