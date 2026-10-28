@@ -898,13 +898,21 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    | Medium | Every path not matched by Low or High | Normal pr-tier checks and bounded review loop. |
    | High | `.github/**`; `factory/release.py`, `promotion.py`, `onboard.py`, `templates/ci.yml`; `factory/dispatch.py`, `gate.py`, `manage.py`, `decisions.py`, `config.py`, `risk.py`; `.factory.toml`; `factory-bands.toml` | Normal gate and primary review, a second reviewer on a model distinct from both the primary reviewer and worker, and blocking mutation checks on changed `factory/*.py` lines. |
 
-   A High PR merges without human approval when both reviewers approve and
-   mutation is `PASS` or `SKIP (no changed factory code)`. Both reviewers
+   Default-off code qualifies as Low only for wholly added Python module-level
+   guards and new literal-false flag declarations, with no unguarded executable
+   additions or existing flag bindings. Uncertain cases stay Medium.
+
+   A High PR merges without human approval when the full current-head gate
+   (including all PR-tier checks) passes, both reviewers approve, and mutation
+   is `PASS` or `SKIP (no changed factory code)`. Both reviewers
    revising uses the normal Medium loop. A reviewer split, or mutation failure
    after both approvals, returns the dissenting findings for one worker round;
    the next-head disagreement escalates as `risk_disagreement`. This
    disagreement is the only High-tier-specific path to `ready-for-human`.
    `[review].second_command` is a host-only override of the code default.
+   Non-mutation PR-check failures use the ordinary gate-failure loop, not the
+   disagreement path. Mutation runs related tests first and stops after the first
+   failure; a surviving mutant still has to pass every discovered test.
    The built-in OMP worker pins `openai-codex/gpt-5.6-sol`; custom worker
    profiles must also name a model. `factory doctor` warns when any of the
    worker, primary-reviewer, or second-reviewer models is missing or not

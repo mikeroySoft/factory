@@ -2200,8 +2200,24 @@ def pr_gate_and_review(
             )
         ok, pr_report = pr_runs[head]
         report = f"{report}\n{pr_report}"
-        if not ok and policy_tier != "High":
-            return "REVISE", pr_report, True
+        if not ok:
+            statuses = dict(re.findall(r"(?m)^- ([\w-]+): (PASS|FAIL|SKIP)", pr_report))
+            mutation_only = (
+                policy_tier == "High"
+                and statuses.get("mutation") == "FAIL"
+                and all(status != "FAIL" for name, status in statuses.items() if name != "mutation")
+                and all(
+                    statuses.get(check.name) in {"PASS", "SKIP"}
+                    for check in cfg.checks if check.when == "pr" and check.name != "mutation"
+                )
+            )
+            if not mutation_only:
+                if policy_tier == "High":
+                    record(
+                        "risk-check", ticket=n, head=head,
+                        mutation=_mutation_status(pr_report), pr_gate="FAIL",
+                    )
+                return "REVISE", pr_report, True
     primary, primary_findings = review(wt, n, report, head)
     primary_row = _PENDING_REVIEWS.get(n) or {}
     if primary_row and primary_row.get("verdict") is None:
@@ -2244,7 +2260,7 @@ def pr_gate_and_review(
         mutation = "SKIP"
     record(
         "risk-check", ticket=n, head=head, mutation=mutation,
-        primary=primary, second=second, models=list(models),
+        primary=primary, second=second, models=list(models), pr_gate="PASS" if ok else "FAIL",
     )
     packet = risk_disagreement_packet(
         head, rules, primary, primary_findings, second, second_findings,
@@ -2674,6 +2690,7 @@ def _head_evidence_matches(
     worker_model = None
     reviews: dict[str, dict] = {}
     mutation = None
+    pr_gate = None
     for event in events:
         if event.get("ticket") != n:
             continue
@@ -2687,6 +2704,7 @@ def _head_evidence_matches(
             reviews[event.get("role") or "primary"] = event
         elif event.get("event") == "risk-check" and event.get("head") == head:
             mutation = event.get("mutation")
+            pr_gate = event.get("pr_gate")
     if worker_model is None:
         worker_model = next((
             event.get("worker_model") for event in reversed(events)
@@ -2709,6 +2727,7 @@ def _head_evidence_matches(
         and second.get("verdict") == "APPROVE"
         and second.get("actual_head") == head
         and mutation in {"PASS", "SKIP"}
+        and pr_gate == "PASS"
         and all(isinstance(model, str) and model for model in models)
         and len(set(models)) == 3
     )

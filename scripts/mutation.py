@@ -1,7 +1,8 @@
 """Mutation testing of changed `factory/` files for the pr-tier gate.
 
 Mutates the Python files under `factory/` that changed in `origin/main..HEAD`, runs
-the full `python -m unittest discover -s tests` suite against each mutant, and prints
+the full discovered unittest suite against each mutant (related tests first,
+stopping at the first failure), and prints
 every survivor as `path:line: <mutation>`. The default report-only mode exits zero
 after a complete trial even when mutants survive. ``--blocking`` exits nonzero for
 survivors on changed lines and for an incomplete run. Tool failures always exit
@@ -20,6 +21,7 @@ import argparse
 import collections
 import os
 import random
+import re
 import shlex
 import shutil
 import subprocess
@@ -27,6 +29,7 @@ import sys
 import tempfile
 import time
 import tomllib
+import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -94,8 +97,40 @@ def sample(lines: dict[str, set[int]], scratch: Path) -> tuple[list, int]:
     return (groups[0] + groups[1])[:CAP], len(groups[0])
 
 
-def test_command(copy: Path) -> str:
-    return f"env -C {copy} PYTHONPATH={copy} {sys.executable} -m unittest discover -s tests"
+def test_command(copy: Path, module: str | None = None) -> str:
+    command = [
+        "env", "-C", str(copy), f"PYTHONPATH={copy}", sys.executable,
+        "-m", "scripts.mutation", "--test-module", module or "",
+    ]
+    return shlex.join(command)
+
+
+def run_tests(module: str) -> int:
+    """Fail fast, but require the entire discovered suite to declare a survivor.
+
+    The feature map only changes ordering, never which tests run. Keeping cases
+    from each module/class together preserves unittest's shared fixture lifetime.
+    """
+    related = set()
+    for line in Path("AGENTS.md").read_text().splitlines():
+        if f"`{module}`" in line:
+            related.update(re.findall(r"`tests/(\w+)\.py`", line))
+
+    def cases(suite):
+        for test in suite:
+            if isinstance(test, unittest.TestSuite):
+                yield from cases(test)
+            else:
+                yield test
+
+    def priority(test):
+        name = type(test).__module__.rsplit(".", 1)[-1]
+        return (0 if name.startswith("test_risk_") else 1 if name in related else 2, name)
+
+    suite = unittest.TestSuite(sorted(
+        cases(unittest.defaultTestLoader.discover("tests")), key=priority,
+    ))
+    return 0 if unittest.TextTestRunner(failfast=True, verbosity=0).run(suite).wasSuccessful() else 1
 
 
 def describe(diff: str) -> str:
@@ -108,7 +143,10 @@ def describe(diff: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--blocking", action="store_true")
+    parser.add_argument("--test-module", default=None)
     args = parser.parse_args(argv)
+    if args.test_module is not None:
+        return run_tests(args.test_module)
     lines = changed_lines()
     if not lines:
         print("no mutable files")
@@ -161,7 +199,9 @@ def main(argv: list[str] | None = None) -> int:
                 except IndexError:
                     return
                 local = evolve(mutation, module_path=copy / mutation.module_path)
-                result = mutate_and_test([local], test_command(copy), min(timeout, left))
+                result = mutate_and_test(
+                    [local], test_command(copy, str(mutation.module_path)), min(timeout, left),
+                )
                 if left < timeout and result.output == "timeout":
                     cut.append(mutation)
                 else:

@@ -76,11 +76,11 @@ VERDICT = re.compile(r"VERDICT:\s*(APPROVE|REVISE)")
 def configure(c: Config) -> None:
     global cfg, FACTORY, LOGS, MAX_ACTIVE, MAX_ATTEMPTS, REPO, ROOT, SYNC_LOG
     global SYNC_TITLE, UPSTREAM, GPU_LOCK, LLM_URL, LLM_MODEL, GATE_CHECKS
-    global _escape_tickets, _escape_tickets_loaded
+    global _escape_tickets, _escape_tickets_at
     cfg = c
     stats.configure(c)
     _escape_tickets = None
-    _escape_tickets_loaded = False
+    _escape_tickets_at = None
     dispatch.configure(c)
     FACTORY = dispatch.FACTORY
     LOGS = dispatch.LOGS
@@ -1153,8 +1153,9 @@ def snapshot() -> dict:
             spend.get(n), by_ticket.get(n), audit=audit.get(n), login=login, cutover=cutover,
         ))
     tickets.sort(key=lambda t: t["number"], reverse=True)
-    global _escape_tickets, _escape_tickets_loaded
-    if not _escape_tickets_loaded and any(
+    global _escape_tickets, _escape_tickets_at
+    now = time.monotonic()
+    if (_escape_tickets_at is None or now - _escape_tickets_at >= ESCAPE_CACHE_SECONDS) and any(
         ticket.get("risk_tier") in risk.TIERS
         and ticket["pr"]
         and ticket["pr"].get("merged_at")
@@ -1164,11 +1165,13 @@ def snapshot() -> dict:
             _escape_tickets = {
                 event["ticket"] for event in stats.escape_events(stats.escapes())
             }
+            _escape_tickets_at = now
         except (
-            OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, SystemExit,
-        ):
+            OSError, RuntimeError, ValueError, KeyError, TypeError, subprocess.SubprocessError, SystemExit,
+        ) as exc:
             _escape_tickets = None
-        _escape_tickets_loaded = True
+            _escape_tickets_at = None
+            errors.append(f"escapes: {exc}")
 
     bounded_executions = recent_executions(executions)
     retained_count_coverage = {
@@ -1273,7 +1276,8 @@ def snapshot() -> dict:
 
 _corrections: dict[int, list[dict]] = {}  # merged PR number -> feedback.correction_actions
 _escape_tickets: set[int] | None = None
-_escape_tickets_loaded = False
+_escape_tickets_at: float | None = None
+ESCAPE_CACHE_SECONDS = 300
 
 
 

@@ -12,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from factory import config, dispatch, gate, onboard
+from factory import config, dispatch, gate, manage, onboard
 from scripts import mutation
 
 HEAD = "a" * 40
@@ -416,3 +416,254 @@ class HighPrGateTest(unittest.TestCase):
         rows = dispatch.lifecycle.read_events(dispatch.EVENTS)
         check = next(row for row in rows if row.get("event") == "risk-check")
         self.assertEqual(check["pr_gate"], "PASS")
+
+
+class HighPipelineBoundaryTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.cfg = config.Config(self.root, "acme/widgets")
+        self.cfg.review_rounds = 1
+        self.cfg.signoff = False
+        self.cfg.checks = [config.Check("mutation", ["mutation"], when="pr")]
+        dispatch.configure(self.cfg)
+        self.wt = dispatch.FACTORY / "wt-7"
+        self.wt.mkdir(parents=True)
+        self.issue = {
+            "number": 7, "title": "change dispatcher", "body": "", "comments": [],
+            "labels": [{"name": config.LABEL_AGENT}], "state": "OPEN", "assignees": [],
+        }
+        self.pr = {
+            "number": 70, "headRefName": "agent/7", "headRefOid": HEAD,
+            "baseRefName": "main", "isDraft": False, "state": "OPEN",
+            "labels": [{"name": config.LABEL_APPROVED}], "reviewDecision": "APPROVED",
+            "title": "change dispatcher", "files": [{"path": "factory/dispatch.py"}],
+        }
+        self.heads = []
+        self.stack = contextlib.ExitStack()
+        self.addCleanup(self.stack.close)
+        self.command = self.patch(dispatch, "run", side_effect=self.command_result)
+        self.patch(dispatch, "gh_json", side_effect=self.github)
+        self.patch(dispatch, "initiative_kind", return_value=None)
+        self.patch(dispatch, "admit_plan", return_value=None)
+        self.patch(dispatch, "ensure_worktree", return_value=self.wt)
+        self.patch(dispatch, "agent_lease", return_value=HEAD)
+        self.patch(dispatch, "refresh_requeue_context", return_value="")
+        self.patch(dispatch, "pending_risk_requeue_head", return_value=None)
+        self.patch(dispatch, "sync_staged", return_value=None)
+        self.patch(dispatch, "push_and_pr", return_value=True)
+        self.patch(dispatch, "push_agent", return_value=NEW_HEAD)
+        self.patch(dispatch, "pr_comment")
+        self.patch(dispatch, "retain_handoff", return_value=True)
+        self.patch(dispatch, "cleanup_after_merge")
+        self.patch(dispatch, "pr_checks", return_value=[{"name": "ci", "bucket": "pass"}])
+        self.patch(dispatch, "triage_cancelled", side_effect=lambda _p, checks, *_: checks)
+        self.patch(dispatch.risk, "classify", return_value=(
+            "High", ["high:approval, gate, and dispatch control"],
+        ))
+        self.stack.enter_context(mock.patch("factory.learn.promote_pass"))
+        self.stack.enter_context(mock.patch("factory.schedule.priority", return_value=("normal", "test")))
+        self.escalate = self.patch(dispatch, "escalate")
+        self.worker = self.patch(dispatch, "worker_round", side_effect=self.work)
+
+    def patch(self, target, name, **kwargs):
+        return self.stack.enter_context(mock.patch.object(target, name, **kwargs))
+
+    def github(self, args):
+        if args[:2] == ["issue", "view"]:
+            return self.issue
+        if args[:2] == ["pr", "list"]:
+            return [self.pr]
+        if args[:2] == ["pr", "view"]:
+            return self.pr
+        if args[0] == "api":
+            return {"behind_by": 0}
+        raise AssertionError(args)
+
+    def command_result(self, args, **_kwargs):
+        if args[:3] == ["git", "diff", "--name-status"]:
+            output = "M\tfactory/dispatch.py\n"
+        elif args[:3] == ["git", "branch", "--show-current"]:
+            output = "agent/7\n"
+        elif args[:3] == ["git", "rev-parse", "HEAD"]:
+            output = self.pr["headRefOid"]
+        else:
+            output = "1\n"
+        return subprocess.CompletedProcess(args, 0, output, "")
+
+    def work(self, *_args, **_kwargs):
+        head = HEAD if not self.heads else NEW_HEAD
+        self.heads.append(head)
+        self.pr["headRefOid"] = head
+        dispatch.record(
+            "attempt", ticket=7, head=head, actual_head=head, gate="PASS",
+            worker_model="worker/model",
+        )
+        return True, "- test: PASS\n", self.root / "worker.log", head
+
+    def reviews(self, verdicts):
+        def review(_wt, n, _report, head, *, role="primary", **_kwargs):
+            verdict = verdicts[role == "second"]
+            row = {
+                "ticket": n, "head": head, "actual_head": head, "accepted": True,
+                "verdict": verdict, "role": role, "model": f"{role}/model",
+            }
+            dispatch.record("review", **row)
+            pending = dispatch._PENDING_SECOND_REVIEWS if role == "second" else dispatch._PENDING_REVIEWS
+            pending[n] = row
+            return verdict, f"{role} dissent" if verdict == "REVISE" else f"{role} ok"
+        self.patch(dispatch, "review", side_effect=review)
+
+    def test_disagree_ticket_loop_reworks_once_then_escalates_at_next_head(self) -> None:
+        for verdicts, mutation_status in (
+            (("APPROVE", "REVISE"), "PASS"),
+            (("APPROVE", "APPROVE"), "FAIL"),
+        ):
+            with self.subTest(verdicts=verdicts):
+                self.heads.clear()
+                self.worker.reset_mock()
+                self.escalate.reset_mock()
+                self.reviews(verdicts)
+                self.patch(dispatch, "run_gate", return_value=(
+                    mutation_status == "PASS", f"- mutation: {mutation_status}\nsurvivor findings",
+                ))
+                dispatch.process_ticket(self.issue, 10, False, forced=True)
+                self.assertEqual(self.heads, [HEAD, NEW_HEAD])
+                self.assertIn("High-risk disagreement", self.worker.call_args.args[4])
+                self.escalate.assert_called_once()
+                self.assertEqual(self.escalate.call_args.kwargs["code"], "risk_disagreement")
+                packet = self.escalate.call_args.kwargs["extra"]
+                for field in (
+                    NEW_HEAD, "What changed", "factory/dispatch.py", "Why High",
+                    f"Primary reviewer: {verdicts[0]}", f"Second reviewer: {verdicts[1]}",
+                    f"Blocking mutation: {mutation_status}",
+                    "second dissent" if verdicts[1] == "REVISE" else "survivor findings",
+                ):
+                    self.assertIn(field, packet)
+
+    def test_high_both_revise_follows_medium_budget_without_risk_disagreement(self) -> None:
+        self.reviews(("REVISE", "REVISE"))
+        self.patch(dispatch, "run_gate", return_value=(True, "- mutation: PASS\n"))
+        dispatch.process_ticket(self.issue, 10, False, forced=True)
+        self.assertEqual(self.heads, [HEAD, NEW_HEAD])
+        self.escalate.assert_called_once()
+        self.assertEqual(self.escalate.call_args.kwargs["code"], "review_revise")
+
+    def test_high_all_checks_agree_approves_and_merges_without_human(self) -> None:
+        self.reviews(("APPROVE", "APPROVE"))
+        self.patch(dispatch, "run_gate", return_value=(True, "- mutation: PASS\n"))
+        dispatch.process_ticket(self.issue, 10, False, forced=True)
+        dispatch.merge_pass_locked(False)
+        commands = [call.args[0] for call in self.command.call_args_list]
+        self.assertTrue(any(command[:3] == ["gh", "pr", "merge"] for command in commands))
+        self.assertTrue(any("--add-label" in command and config.LABEL_APPROVED in command for command in commands))
+        self.assertFalse(any("--add-label" in command and config.LABEL_HUMAN in command for command in commands))
+        self.escalate.assert_not_called()
+        self.assertEqual(self.heads, [HEAD])
+
+    def test_regression_high_dispatch_only_missing_second_cannot_approve_or_merge(self) -> None:
+        for row in high_events(second=False):
+            dispatch.record(row["event"], **{k: v for k, v in row.items() if k != "event"})
+        dispatch.record("approved", ticket=7, pr=70, head=HEAD, gate_head=HEAD, review_head=HEAD)
+        self.assertFalse(dispatch.approve_pr(7, HEAD))
+        dispatch.merge_pass_locked(False)
+        commands = [call.args[0] for call in self.command.call_args_list]
+        self.assertFalse(any(command[:3] == ["gh", "pr", "merge"] for command in commands))
+        self.assertFalse(any("--add-label" in command and config.LABEL_APPROVED in command for command in commands))
+        self.assertTrue(any("--remove-label" in command and config.LABEL_APPROVED in command for command in commands))
+
+    def test_high_mutation_pass_with_other_pr_check_failed_refuses_merge(self) -> None:
+        for row in high_events():
+            row = dict(row)
+            if row["event"] == "risk-check":
+                row["pr_gate"] = "FAIL"
+            dispatch.record(row.pop("event"), **row)
+        dispatch.record("approved", ticket=7, pr=70, head=HEAD, gate_head=HEAD, review_head=HEAD)
+        self.assertFalse(dispatch.approve_pr(7, HEAD))
+        dispatch.merge_pass_locked(False)
+        self.assertFalse(any(call.args[0][:3] == ["gh", "pr", "merge"] for call in self.command.call_args_list))
+
+    def test_high_manager_fix_records_risk_and_cannot_ignore_other_pr_failure(self) -> None:
+        self.cfg.checks.append(config.Check("extra", ["extra"], when="pr"))
+        self.reviews(("APPROVE", "APPROVE"))
+        self.patch(dispatch, "run_gate", return_value=(False, "- mutation: PASS\n- extra: FAIL\n"))
+        packet = self.root / "packet.md"
+        packet.write_text("fix it")
+        approve = self.patch(dispatch, "approve_pr")
+        manage.apply(7, self.issue, "FIX", "", {"worker": "default", "guidance": "fix"}, packet)
+        approve.assert_not_called()
+        self.escalate.assert_called_once()
+        self.assertEqual(self.escalate.call_args.kwargs["code"], "pr_checks_failed")
+        rows = dispatch.lifecycle.read_events(dispatch.EVENTS)
+        self.assertTrue(any(row.get("event") == "risk" and row.get("head") == HEAD for row in rows))
+        self.assertTrue(any(
+            row.get("event") == "decision" and row.get("stage") == "risk" for row in rows
+        ))
+
+    def test_new_head_reruns_high_gate_and_both_reviewers_before_merge(self) -> None:
+        self.reviews(("APPROVE", "APPROVE"))
+        run_gate = self.patch(dispatch, "run_gate", return_value=(True, "- mutation: PASS\n"))
+        dispatch.process_ticket(self.issue, 10, False, forced=True)
+        self.pr["headRefOid"] = NEW_HEAD
+        self.assertFalse(dispatch.approve_pr(7, NEW_HEAD))
+        self.work()
+        dispatch.record_risk(self.wt, 7, NEW_HEAD)
+        self.assertEqual(
+            dispatch.pr_gate_and_review(self.wt, 7, "- test: PASS", NEW_HEAD, {})[0],
+            "APPROVE",
+        )
+        self.assertTrue(dispatch.approve_pr(7, NEW_HEAD))
+        dispatch.merge_pass_locked(False)
+        self.assertEqual(run_gate.call_count, 2)
+        reviews = [
+            (row["head"], row["role"]) for row in dispatch.lifecycle.read_events(dispatch.EVENTS)
+            if row.get("event") == "review"
+        ]
+        self.assertEqual(reviews, [
+            (HEAD, "primary"), (HEAD, "second"), (NEW_HEAD, "primary"), (NEW_HEAD, "second"),
+        ])
+
+
+class MutationExecutionTest(unittest.TestCase):
+    def test_mutation_runner_prioritizes_related_tests_without_omitting_others(self) -> None:
+        executed = []
+
+        class Cases(unittest.TestCase):
+            def test_unrelated(self):
+                executed.append("unrelated")
+
+            def test_related(self):
+                executed.append("related")
+
+        unrelated, related = Cases("test_unrelated"), Cases("test_related")
+        unrelated.__class__.__module__ = "test_other"
+        # Distinct classes keep unittest's module/class fixtures grouped.
+        class Related(Cases):
+            pass
+        related = Related("test_related")
+        Related.__module__ = "test_risk_merge"
+        suite = unittest.TestSuite([unrelated, related])
+        with mock.patch.object(mutation.unittest.defaultTestLoader, "discover", return_value=suite), \
+                mock.patch.object(mutation.Path, "read_text", return_value=(
+                    "| PR risk | `factory/risk.py` | `tests/test_risk_merge.py` | test |\n"
+                )), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(mutation.run_tests("factory/risk.py"), 0)
+        self.assertEqual(executed, ["related", "unrelated"])
+
+    def test_mutation_runner_stops_as_soon_as_a_test_kills_mutant(self) -> None:
+        executed = []
+
+        class Cases(unittest.TestCase):
+            def test_kill(self):
+                self.fail("mutant killed")
+
+            def test_later(self):
+                executed.append("later")
+
+        suite = unittest.TestSuite([Cases("test_kill"), Cases("test_later")])
+        with mock.patch.object(mutation.unittest.defaultTestLoader, "discover", return_value=suite), \
+                mock.patch.object(mutation.Path, "read_text", return_value=""), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(mutation.run_tests("factory/example.py"), 1)
+        self.assertEqual(executed, [])

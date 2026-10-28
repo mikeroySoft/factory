@@ -142,7 +142,8 @@ class DashboardEscapeCacheTest(unittest.TestCase):
 
     def test_dashboard_escape_failure_is_reported_and_retried(self) -> None:
         with mock.patch.object(dashboard.stats, "escapes", side_effect=[
-            RuntimeError("scan offline"), [{"candidates": [{"ticket": 7}]}],
+            RuntimeError("scan offline"),
+            [{"bug": 9, "closed_at": "2026-10-27", "candidates": [{"ticket": 7}]}],
         ]) as scan:
             first = dashboard.snapshot()
             second = dashboard.snapshot()
@@ -154,7 +155,7 @@ class DashboardEscapeCacheTest(unittest.TestCase):
     def test_dashboard_successful_escape_cache_refreshes(self) -> None:
         with mock.patch.object(dashboard.time, "monotonic", side_effect=[100.0, 101.0, 1000.0]), \
                 mock.patch.object(dashboard.stats, "escapes", side_effect=[
-                    [], [{"candidates": [{"ticket": 7}]}],
+                    [], [{"bug": 9, "closed_at": "2026-10-27", "candidates": [{"ticket": 7}]}],
                 ]) as scan:
             dashboard.snapshot()
             dashboard.snapshot()

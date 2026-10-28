@@ -1,6 +1,7 @@
 """Deterministic PR risk tiers from one immutable git diff."""
 from __future__ import annotations
 
+import ast
 import fnmatch
 import re
 import subprocess
@@ -67,20 +68,65 @@ def _low_rule(status: str, path: str) -> str | None:
     return None
 
 def _default_off_additions(base: str, head: str, path: str, cwd: Path | None) -> bool:
+    if not path.endswith(".py"):
+        return False
     diff = subprocess.run(
         ["git", "diff", "--unified=0", f"{base}..{head}", "--", path],
         cwd=cwd, check=True, capture_output=True, text=True,
     ).stdout.splitlines()
-    added = [line[1:] for line in diff if line.startswith("+") and not line.startswith("+++")]
-    if not added or any(line.startswith("-") and not line.startswith("---") for line in diff):
+    if any(line.startswith("-") and not line.startswith("---") for line in diff):
         return False
-    flags = {
-        match.group(1)
-        for line in added
-        if (match := re.search(r"\b([A-Za-z_]\w*)\s*(?::[^=]+)?=\s*False\b", line))
+    added: set[int] = set()
+    for line in diff:
+        if match := re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line):
+            start, count = int(match[1]), int(match[2] or 1)
+            added.update(range(start, start + count))
+    source = subprocess.run(
+        ["git", "show", f"{head}:{path}"], cwd=cwd,
+        check=True, capture_output=True, text=True,
+    ).stdout
+    old = subprocess.run(
+        ["git", "show", f"{base}:{path}"], cwd=cwd,
+        check=False, capture_output=True, text=True,
+    ).stdout
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return False
+    # Only whole new module-level declarations and guards qualify. Partial edits
+    # to existing statements, executable annotations, else arms, and uncertain
+    # syntax conservatively keep the ordinary Medium policy.
+    flags: set[str] = set()
+    guarded = False
+    covered: set[int] = set()
+    for node in tree.body:
+        span = set(range(node.lineno, node.end_lineno + 1))
+        if not span & added:
+            continue
+        if not span <= added:
+            return False
+        if (
+            isinstance(node, ast.Assign) and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Constant) and node.value.value is False
+        ):
+            name = node.targets[0].id
+            if name in flags or re.search(rf"\b{re.escape(name)}\b", old):
+                return False
+            flags.add(name)
+        elif (
+            isinstance(node, ast.If) and isinstance(node.test, ast.Name)
+            and node.test.id in flags and not node.orelse
+        ):
+            guarded = True
+        else:
+            return False
+        covered.update(span)
+    executable = {
+        index for index, line in enumerate(source.splitlines(), 1)
+        if index in added and line.strip() and not line.lstrip().startswith("#")
     }
-    return any(re.search(rf"\bif\s+{re.escape(flag)}\s*:", line)
-               for flag in flags for line in added)
+    return guarded and executable <= covered
 
 
 def classify(
