@@ -924,7 +924,10 @@ def frontier_pass(dry_run: bool = False) -> None:
                 if cfg.manager_review != "all" or approved or not dispatch._head_evidence_matches(events, n, head) \
                             or dispatch.manager_approval(events, n, head):
                     continue
-                decided = [e for e in events if e.get("event") == "manage" and e.get("pr") == number]
+                decided = [
+                    e for e in dispatch._current_round_events(events, n)
+                    if e.get("event") == "manage" and e.get("pr") == number
+                ]
                 if any(e.get("head") == head for e in decided):
                     continue  # one decision per head; a non-APPROVE decision already acted
                 if len(decided) >= cfg.manager_rounds:

@@ -883,6 +883,16 @@ def record(event: str, **fields: object) -> None:
     lifecycle.append(EVENTS, row)
 
 
+def _current_round_events(events: list[dict], ticket: int) -> list[dict]:
+    """Ticket events after its latest human round-budget reset, oldest first."""
+    rows = [event for event in events if event.get("ticket") == ticket]
+    reset = next(
+        (index for index in range(len(rows) - 1, -1, -1) if rows[index].get("event") == "rounds-reset"),
+        -1,
+    )
+    return rows[reset + 1:]
+
+
 def _decision_actor(kind: str, name: str, *, model: str | None = None) -> dict:
     return {"kind": kind, "name": name, "model": model, "version": __version__}
 
@@ -3028,18 +3038,16 @@ def _refresh_failure_scope(wt: Path, n: int, reports: list[str]) -> tuple[list[s
 
 def pending_risk_requeue_head(n: int) -> str | None:
     rows = [
-        event for event in lifecycle.read_events(EVENTS)
-        if event.get("ticket") == n
-        and event.get("event") in {"attempt", "risk-requeue"}
+        event for event in _current_round_events(lifecycle.read_events(EVENTS), n)
+        if event.get("event") in {"attempt", "risk-requeue"}
     ]
     return rows[-1].get("head") if rows and rows[-1]["event"] == "risk-requeue" else None
 
 
 def refresh_requeue_context(n: int) -> str:
     rows = [
-        event for event in lifecycle.read_events(EVENTS)
-        if event.get("ticket") == n
-        and event.get("event") in {
+        event for event in _current_round_events(lifecycle.read_events(EVENTS), n)
+        if event.get("event") in {
             "attempt", "conflict-requeue", "gate-requeue", "risk-requeue",
         }
     ]
@@ -3165,7 +3173,10 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         # A manager-FIX-approved PR may still have a ready-for-human issue; restore agent flow.
         issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "state,labels"])
         labels = {label["name"] for label in issue.get("labels", [])}
-        rounds = sum(e.get("event") == "conflict-requeue" and e.get("ticket") == n for e in lifecycle.read_events(EVENTS))
+        rounds = sum(
+            e.get("event") == "conflict-requeue"
+            for e in _current_round_events(lifecycle.read_events(EVENTS), n)
+        )
         protected = [] if LABEL_PROTECTED_OVERRIDE in labels else [
             path for path in conflicts if any(fnmatch.fnmatchcase(path, glob) for glob in cfg.protected_paths)
         ]
@@ -3279,8 +3290,8 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             return False
         if not ok:
             rounds = sum(
-                event.get("event") == "gate-requeue" and event.get("ticket") == n
-                for event in lifecycle.read_events(EVENTS)
+                event.get("event") == "gate-requeue"
+                for event in _current_round_events(lifecycle.read_events(EVENTS), n)
             )
             issue_state = gh_json(
                 ["issue", "view", str(n), "--repo", REPO, "--json", "state"]
@@ -3352,8 +3363,8 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         state = _PENDING_RISK.get(n) or {}
         if state.get("head") == head and state.get("disagreement"):
             rounds = sum(
-                event.get("event") == "risk-requeue" and event.get("ticket") == n
-                for event in lifecycle.read_events(EVENTS)
+                event.get("event") == "risk-requeue"
+                for event in _current_round_events(lifecycle.read_events(EVENTS), n)
             )
             record(
                 "risk-requeue", ticket=n, pr=pr, head=head,
@@ -4198,6 +4209,13 @@ def process_ticket(
                 return
             lease = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
             execution.review_round = 1
+            review_rounds_used = sum(
+                event.get("event") == "review"
+                and event.get("role") in {None, "primary"}
+                and event.get("accepted") is True
+                and event.get("verdict") == "REVISE"
+                for event in _current_round_events(lifecycle.read_events(EVENTS), n)
+            )
             pr_runs: dict[str, tuple[bool, str]] = {}
             record_risk(wt, n, gate_head)
             verdict, findings, pr_failed = pr_gate_and_review(wt, n, report, gate_head, pr_runs)
@@ -4224,7 +4242,7 @@ def process_ticket(
                 return
             # Each REVISE (or pr-tier FAIL) uses the normal bounce budget. A first
             # High-risk disagreement always gets one rework, even when that budget is spent.
-            for bounce in range(1, cfg.review_rounds + 2):
+            for bounce in range(review_rounds_used + 1, cfg.review_rounds + 2):
                 if verdict == "APPROVE" or (
                     bounce > cfg.review_rounds and risk_disagreement_head is None
                 ):
