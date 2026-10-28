@@ -103,16 +103,27 @@ def merge_stage_mocks(origin: Path, pr_number: int, branch: str, title: str, ori
 
     head = git(origin, "rev-parse", branch)
     ticket = int(branch.removeprefix("agent/"))
+    report = dispatch.FACTORY / f"gate-report-{ticket}.md"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text("# Gate report\n\n- test: PASS\n")
+    dispatch._record_gate_decision(
+        ticket, True, report.read_text(), head, str(report), 0,
+    )
     dispatch.record(
         "attempt", ticket=ticket, gate="PASS", head=head, actual_head=head,
+        **dispatch._PENDING_GATES.pop(ticket),
     )
     dispatch.record(
         "review", ticket=ticket, verdict="APPROVE", accepted=True,
         head=head, actual_head=head,
     )
+    dispatch._record_review_decision(
+        ticket, "APPROVE", "approved", head, True, True, None, 0,
+        comment_url=f"https://github.com/acme/widgets/pull/{pr_number}#issuecomment-1",
+    )
     dispatch.record(
         "approved", ticket=ticket, pr=pr_number, head=head,
-        gate_head=head, review_head=head,
+        gate_head=head, review_head=head, source="dispatch", actor="factory",
     )
     pr = {
         "number": pr_number,
@@ -130,6 +141,12 @@ def merge_stage_mocks(origin: Path, pr_number: int, branch: str, title: str, ori
         if args[:2] == ["pr", "list"]:
             return [pr]
         if args[0] == "api":
+            if "/check-runs" in args[1]:
+                return {
+                    "check_runs": [
+                        {"id": 101, "name": "ci", "status": "completed", "conclusion": "success"},
+                    ],
+                }
             return {"behind_by": 0}
         if args[:2] == ["pr", "view"]:
             return pr

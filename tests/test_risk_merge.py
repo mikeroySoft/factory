@@ -534,6 +534,12 @@ class HighPipelineBoundaryTest(unittest.TestCase):
             return [self.pr]
         if args[:2] == ["pr", "view"]:
             return self.pr
+        if args[0] == "api" and "/check-runs" in args[1]:
+            return {
+                "check_runs": [
+                    {"id": 101, "name": "ci", "status": "completed", "conclusion": "success"},
+                ],
+            }
         if args[0] == "api":
             return {"behind_by": 0}
         raise AssertionError(args)
@@ -553,11 +559,16 @@ class HighPipelineBoundaryTest(unittest.TestCase):
         head = HEAD if not self.heads else NEW_HEAD
         self.heads.append(head)
         self.pr["headRefOid"] = head
+        report_text = "- test: PASS\n"
+        report = self.wt / ".factory" / "gate-report-7.md"
+        report.parent.mkdir(exist_ok=True)
+        report.write_text(report_text)
+        dispatch._record_gate_decision(7, True, report_text, head, str(report), 0)
         dispatch.record(
             "attempt", ticket=7, head=head, actual_head=head, gate="PASS",
-            worker_model="worker/model",
+            worker_model="worker/model", **dispatch._PENDING_GATES.pop(7),
         )
-        return True, "- test: PASS\n", self.root / "worker.log", head
+        return True, report_text, self.root / "worker.log", head
 
     def reviews(self, verdicts):
         def review(_wt, n, _report, head, *, role="primary", **_kwargs):
@@ -567,6 +578,11 @@ class HighPipelineBoundaryTest(unittest.TestCase):
                 "verdict": verdict, "role": role, "model": f"{role}/model",
             }
             dispatch.record("review", **row)
+            dispatch._record_review_decision(
+                n, verdict, f"{role} review", head, True, True, None, 0,
+                comment_url=f"https://github.com/acme/widgets/pull/70#issuecomment-{role}",
+                role=role, model=row["model"],
+            )
             pending = dispatch._PENDING_SECOND_REVIEWS if role == "second" else dispatch._PENDING_REVIEWS
             pending[n] = row
             return verdict, f"{role} dissent" if verdict == "REVISE" else f"{role} ok"

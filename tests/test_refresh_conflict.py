@@ -20,6 +20,21 @@ def git(cwd: Path, *args: str) -> str:
     return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, check=True).stdout.strip()
 
 
+def gate_results(*results: tuple[bool, str]):
+    values = iter(results)
+
+    def gate(wt: Path, n: int, *_args, **_kwargs) -> tuple[bool, str]:
+        ok, text = next(values)
+        report = wt / ".factory" / f"gate-report-{n}.md"
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(text)
+        head = git(wt, "rev-parse", "HEAD")
+        dispatch._record_gate_decision(n, ok, text, head, str(report), 0)
+        return ok, text
+
+    return gate
+
+
 def build_fork(tmp: Path) -> tuple[Path, Path]:
     """`origin` with one commit on main, and the dispatcher's `root` cloned from it."""
     origin, root = tmp / "origin", tmp / "root"
@@ -81,6 +96,12 @@ class FakeGitHub:
             return self.issue()
         if args[:2] == ["issue", "list"]:
             return [self.issue()] if config.LABEL_AGENT in self.issue_labels else []
+        if args[0] == "api" and "/check-runs" in args[1]:
+            return {
+                "check_runs": [
+                    {"id": 101, "name": "ci", "status": "completed", "conclusion": "success"},
+                ],
+            }
         if args[0] == "api" and "/compare/" in args[1]:
             head = args[1].rsplit("...", 1)[1]
             return {"behind_by": int(git(self.origin, "rev-list", "--count", f"{head}..main"))}
@@ -146,7 +167,9 @@ class RefreshConflictTest(unittest.TestCase):
         return [e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("event") == name]
 
     def test_conflict_requeues_to_a_worker_on_the_same_branch_then_merges_without_a_human(self) -> None:
-        with self.patched(), mock.patch.object(dispatch, "run_gate", return_value=(True, "gate ok")):
+        with self.patched(), mock.patch.object(
+            dispatch, "run_gate", side_effect=gate_results((True, "gate ok")),
+        ):
             dispatch.merge_pass_locked(False)
 
             # Re-queued, not escalated: still ready-for-agent, unassigned, approval withdrawn.
@@ -195,7 +218,9 @@ class RefreshConflictTest(unittest.TestCase):
         self.assertIn(config.LABEL_APPROVED, self.github.pr_labels)
         wt = dispatch.ensure_worktree(9)
         with self.patched(), \
-                mock.patch.object(dispatch, "run_gate", return_value=(True, "fresh gate ok")) as gate, \
+                mock.patch.object(
+                    dispatch, "run_gate", side_effect=gate_results((True, "fresh gate ok")),
+                ) as gate, \
                 mock.patch.object(dispatch, "review", wraps=dispatch.review) as review:
             dispatch.merge_pass_locked(False)
 
@@ -319,7 +344,10 @@ class RefreshGateFailureTest(unittest.TestCase):
 
     def test_flaky_gate_failure_after_refresh_reruns_once_then_pushes_and_merges(self) -> None:
         with self.patched(), mock.patch.object(
-            dispatch, "run_gate", side_effect=[(False, "first flaky report"), (True, "second passing report")]
+            dispatch, "run_gate",
+            side_effect=gate_results(
+                (False, "first flaky report"), (True, "second passing report"),
+            ),
         ) as gate:
             dispatch.merge_pass_locked(False)
             self.assertEqual(gate.call_count, 2)
@@ -340,7 +368,9 @@ class RefreshGateFailureTest(unittest.TestCase):
         second = "# Gate report\n- test: FAIL\n\ntests/test_flaky.py:7 failed again"
         with self.patched(), mock.patch.object(
             dispatch, "run_gate",
-            side_effect=[(False, first), (False, second), (True, "worker gate ok")],
+            side_effect=gate_results(
+                (False, first), (False, second), (True, "worker gate ok"),
+            ),
         ) as gate:
             self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
 
