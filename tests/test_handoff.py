@@ -278,6 +278,32 @@ class HandoffCli(unittest.TestCase):
         self.assertIn("Factory handoff request `7/2`", self.requests()[-1]["body"])
         self.assertIn("the manager asked for a human decision", self.requests()[-1]["body"])
 
+    def test_human_reset_restarts_escalation_manager_rounds(self) -> None:
+        self.configure(rounds=1)
+        self.manage(mode="HUMAN")
+        dispatch.configure(config.load(self.repo))
+        dispatch.record(
+            "rounds-reset", ticket=7, actor="alice",
+            requeued_at="2026-01-01T00:04:00Z",
+        )
+
+        _, round_number = dispatch.escalation_packet(
+            7, "gate failed after the fresh worker attempt", None,
+            self.factory / "wt-7",
+        )
+        self.assertEqual(round_number, 1)
+        self.escalate(
+            "gate failed after the fresh worker attempt", round_number,
+            at="2026-01-01T00:05:00Z",
+        )
+        self.manage(mode="RETRY")
+
+        self.assertTrue(self.ran.exists())
+        self.assertEqual(
+            [(e["decision"], e["round"]) for e in self.events("manage")],
+            [("HUMAN", 1), ("RETRY", 1)],
+        )
+
     def test_review_intake_escalation_gets_a_handoff_request(self) -> None:
         # #204 (b): `review_intake_pass` escalates an opted-in PR into a new `ready-for-human` issue with a
         # `pr`-bearing row and no escalation comment; the manager never runs on it, so the handoff pass must post.

@@ -312,25 +312,79 @@ class LocalCLI(unittest.TestCase):
         self.assertEqual(len([e for e in events if e.get("event") == "attempt"]), 2)
         self.assertTrue(any(e.get("event") == "approved" for e in events))
 
-    def test_factory_requeue_does_not_start_a_fresh_review_bounce_budget(self):
+    def set_timeline(self, timeline):
+        state = json.loads(self.state.read_text())
+        state["timeline"] = timeline
+        self.state.write_text(json.dumps(state))
+        gh = self.bin / "gh"
+        gh.write_text(GH.replace(
+            'elif a[0] == "api" and "/compare/" in a[1]:',
+            'elif a[0] == "api" and "/issues/7/timeline" in a[1]:\n'
+            '    print(json.dumps([s.get("timeline", [])]))\n'
+            'elif a[0] == "api" and "/compare/" in a[1]:',
+        ))
+
+    def test_direct_human_requeue_records_reset_before_fresh_worker_attempt(self):
         self.events.parent.mkdir()
-        lifecycle.append(self.events, {
-            "at": "2026-10-28T15:50:00Z", "event": "rounds-reset", "ticket": 7,
-            "actor": "alice", "requeued_at": "2026-10-28T15:50:00Z",
-        })
-        lifecycle.append(self.events, {
-            "at": "2026-10-28T15:53:00Z", "event": "review", "ticket": 7,
-            "verdict": "REVISE", "accepted": True, "role": "primary",
-        })
+        for row in (
+            {"at": "2026-10-28T15:50:00Z", "event": "escalate", "ticket": 7,
+             "round": 2, "reason": "manager rounds exhausted"},
+            {"at": "2026-10-28T15:50:00Z", "event": "comment", "ticket": 7,
+             "kind": "escalation", "round": 2, "comment": 101},
+            {"at": "2026-10-28T15:51:00Z", "event": "manage", "ticket": 7,
+             "round": 2, "decision": "HUMAN"},
+        ):
+            lifecycle.append(self.events, row)
+        self.set_timeline([
+            {"event": "labeled", "label": {"name": "ready-for-human"},
+             "created_at": "2026-10-28T15:50:00Z", "actor": {"login": "runner"}},
+            {"event": "commented", "id": 101, "created_at": "2026-10-28T15:50:00Z",
+             "updated_at": "2026-10-28T15:50:00Z", "user": {"login": "runner"}},
+            {"event": "commented", "id": 102, "created_at": "2026-10-28T15:52:00Z",
+             "updated_at": "2026-10-28T15:52:00Z", "user": {"login": "alice"},
+             "body": "Acceptance criteria amended."},
+            {"event": "labeled", "label": {"name": "ready-for-agent"},
+             "created_at": "2026-10-28T15:53:00Z", "actor": {"login": "alice"}},
+        ])
 
         self.cli("dispatch", "--ticket", "7")
 
         events = lifecycle.read_events(self.events)
-        self.assertEqual(len([e for e in events if e.get("event") == "attempt"]), 1)
+        [reset] = [e for e in events if e.get("event") == "rounds-reset"]
         self.assertEqual(
-            [e.get("code") for e in events if e.get("event") == "escalate"],
-            ["review_revise"],
+            (reset["ticket"], reset["actor"], reset["requeued_at"]),
+            (7, "alice", "2026-10-28T15:53:00Z"),
         )
+        self.assertEqual(len([e for e in events if e.get("event") == "attempt"]), 2)
+        self.assertTrue(any(e.get("event") == "approved" for e in events))
+
+    def test_manager_requeue_does_not_record_round_reset(self):
+        self.events.parent.mkdir()
+        for row in (
+            {"at": "2026-10-28T15:50:00Z", "event": "escalate", "ticket": 7,
+             "round": 1, "reason": "gate failed"},
+            {"at": "2026-10-28T15:50:00Z", "event": "comment", "ticket": 7,
+             "kind": "escalation", "round": 1, "comment": 101},
+            {"at": "2026-10-28T15:52:00Z", "event": "manage", "ticket": 7,
+             "round": 1, "decision": "RETRY"},
+        ):
+            lifecycle.append(self.events, row)
+        self.set_timeline([
+            {"event": "labeled", "label": {"name": "ready-for-human"},
+             "created_at": "2026-10-28T15:50:00Z", "actor": {"login": "runner"}},
+            {"event": "commented", "id": 101, "created_at": "2026-10-28T15:50:00Z",
+             "updated_at": "2026-10-28T15:50:00Z", "user": {"login": "runner"}},
+            {"event": "commented", "id": 102, "created_at": "2026-10-28T15:51:00Z",
+             "updated_at": "2026-10-28T15:51:00Z", "user": {"login": "runner"}},
+            {"event": "labeled", "label": {"name": "ready-for-agent"},
+             "created_at": "2026-10-28T15:53:00Z", "actor": {"login": "runner"}},
+        ])
+
+        self.cli("dispatch", "--ticket", "7")
+
+        self.assertFalse(any(
+            e.get("event") == "rounds-reset" for e in lifecycle.read_events(self.events)
+        ))
 
     def retained_page(self, head, offset=0, expected=0):
         request = {"schema_version": 1, "repository": "local/smoke", "op": "investigate",

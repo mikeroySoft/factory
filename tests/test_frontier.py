@@ -274,16 +274,22 @@ class FrontierTest(unittest.TestCase):
         self.assertIn("manager rounds exhausted", self.escalations()[-1]["reason"])
         self.assertFalse(any("--add-label" in cmd and "factory-approved" in cmd for cmd in self.mutations))
 
-    def test_human_requeue_starts_a_fresh_manager_review_budget(self) -> None:
+    def test_human_requeue_waits_for_a_fresh_worker_head_then_gets_manager_budget(self) -> None:
         self.cfg.manager_review = "all"
         self.cfg.manager_rounds = 1
         self.quiet_provider()
         dispatch.record("manage", ticket=79, pr=80, head=H, decision="HUMAN", round=1)
         dispatch.record("rounds-reset", ticket=79, actor="alice", requeued_at=NOW)
-        self.pr = pr_row(head=H2)
-        self.approved_head(H2)
+        self.approved_head(H)
         self.manager_output = "DECISION: APPROVE\nLooks right now"
 
+        manage.frontier_pass()
+
+        self.assertEqual(len([e for e in self.events() if e.get("event") == "manage"]), 1)
+        self.assertEqual(self.mutations, [])
+
+        self.pr = pr_row(head=H2)
+        self.approved_head(H2)
         manage.frontier_pass()
 
         manage_rows = [e for e in self.events() if e.get("event") == "manage"]
