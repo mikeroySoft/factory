@@ -671,7 +671,7 @@ def metrics(tickets: list[dict]) -> dict:
     frac = lambda n: round(n / len(reached), 3) if reached else None
     touch = stats.human_touch_metrics([t["human_touch"] for t in tickets])
     window = "dashboard tickets"
-    return {
+    result = {
         "first_pass": frac(first_passes),
         "first_pass_numerator": first_passes,
         "first_pass_denominator": len(reached),
@@ -687,6 +687,22 @@ def metrics(tickets: list[dict]) -> dict:
         "human_touched_pct": stats.human_touched_pct(
             [t["pr"].get("corrections") or {} for t in tickets if t["pr"] and t["pr"].get("merged_at")]),
     }
+    if any("risk_tier" in ticket for ticket in tickets):
+        result["risk"] = stats.risk_metrics([
+            {
+                "ticket": ticket.get("number"),
+                "state": (
+                    "merged"
+                    if ticket["pr"] and ticket["pr"].get("merged_at")
+                    else ticket.get("stage")
+                ),
+                "risk_tier": ticket["risk_tier"],
+                "review_rounds": ticket.get("spend", {}).get("rounds", 0),
+                **ticket["human_touch"],
+            }
+            for ticket in tickets
+        ])
+    return result
 
 
 def triage_llm_online() -> bool:
@@ -842,6 +858,7 @@ def build_ticket(
             (pr or {}).get("merged_at") or issue.get("closedAt"), login, cutover,
         ),
         "llm_usage": stats.llm_usage(audit, cfg.prices) if audit else {},
+        "risk_tier": stats.risk_tier(audit or []),
         "events": events,
         "timeline_truncated": issue.get("timelineItems", {}).get("pageInfo", {}).get("hasPreviousPage", False),
         **disk,

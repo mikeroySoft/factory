@@ -246,6 +246,12 @@ def metric_series(events: list[dict], start: date, end: date) -> dict[str, dict[
         for row in failed for test in row.get("failed_tests", [])
         if isinstance(test, str) and test
     )
+    risk_by_ticket = {
+        row["ticket"]: row["tier"] for row in events
+        if row.get("event") == "risk" and row.get("tier") in {"Low", "Medium", "High"}
+        and row.get("ticket") is not None
+    }
+    names.update(f"revert_rate_by_tier:{tier}" for tier in set(risk_by_ticket.values()))
     by_day: dict[date, list[dict]] = {}
     for row in events:
         parsed = _day(row)
@@ -300,6 +306,22 @@ def metric_series(events: list[dict], start: date, end: date) -> dict[str, dict[
                 "value": sum(rounds) / len(rounds),
                 "rows": round_rows,
             }
+        for tier in set(risk_by_ticket.values()):
+            merged = [
+                row for row in today
+                if row.get("event") == "merged"
+                and risk_by_ticket.get(row.get("ticket")) == tier
+            ]
+            if merged:
+                reverted = [
+                    row for row in today
+                    if row.get("event") == "revert"
+                    and risk_by_ticket.get(row.get("ticket")) == tier
+                ]
+                series[f"revert_rate_by_tier:{tier}"][key] = {
+                    "value": len({row.get("ticket") for row in reverted}) / len(merged),
+                    "rows": [*merged, *reverted],
+                }
         cycles, cycle_rows = [], []
         for merged in (row for row in today if row.get("event") == "merged"):
             claim = claims.get(merged.get("ticket"))

@@ -54,3 +54,12 @@ rules = [
   { kind = "sigma", sigma = 2.0, count = 2, span = 3, tier = "diagnose" },
   { kind = "same_side", count = 8, span = 8, tier = "diagnose" },
 ]
+
+[[band]]
+metric = "revert_rate_by_tier"
+window_days = 28
+rules = [
+  { kind = "sigma", sigma = 3.0, count = 1, span = 1, tier = "diagnose" },
+  { kind = "sigma", sigma = 2.0, count = 2, span = 3, tier = "diagnose" },
+  { kind = "same_side", count = 8, span = 8, tier = "diagnose" },
+]
