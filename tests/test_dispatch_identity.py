@@ -246,6 +246,36 @@ class AgentPushLeaseTest(unittest.TestCase):
         self.assertIn(self.fetched[:12], str(raised.exception))
         self.assertIn(moved[:12], str(raised.exception))
 
+    def test_refusal_survives_diagnostic_remote_lookup_failure(self) -> None:
+        self.someone_else_pushes()
+        real_run = dispatch.run
+
+        def run(command, *args, **kwargs):
+            if command[:2] == ["git", "ls-remote"]:
+                if kwargs.get("check", True):
+                    raise subprocess.CalledProcessError(2, command, "", "lookup failed")
+                return subprocess.CompletedProcess(command, 2, "", "lookup failed")
+            return real_run(command, *args, **kwargs)
+
+        with mock.patch.object(dispatch, "run", side_effect=run), \
+                self.assertRaises(dispatch.LeaseRefused) as raised:
+            dispatch.push_agent(self.wt, 7, self.fetched)
+        self.assertIn("remote now (unavailable)", str(raised.exception))
+
+    def test_stale_linear_refusal_reports_the_unchanged_remote(self) -> None:
+        self.git(self.wt, "checkout", "-q", "--orphan", "stale")
+        self.commit(self.wt, "stale local head")
+        lease = dispatch.agent_lease(self.wt, 7)
+        self.commit(self.wt, "linear worker commit")
+
+        copied_lease = lease.encode().decode()
+        self.assertIsNot(copied_lease, lease)
+        with self.assertRaises(dispatch.LeaseRefused) as raised:
+            dispatch.push_agent(self.wt, 7, copied_lease)
+        self.assertEqual(raised.exception.returncode, 1)
+        self.assertIn(f"leased {lease}, remote now {lease}", str(raised.exception))
+        self.assertEqual(self.remote("agent/7"), lease)
+
     def test_lease_taken_before_the_worker_never_admits_an_unseen_push(self) -> None:
         self.assertEqual(dispatch.agent_lease(self.wt, 7), self.fetched)
         self.assertEqual(dispatch.agent_lease(self.wt, 8), "")  # not on the remote: must not exist
