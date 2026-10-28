@@ -685,7 +685,7 @@ def review_external_pr(n: int, base: str, head: str, branch: str = "") -> None:
             "-f", f"body={findings}",
         ])
         record(
-            "review-result", pr=n, head=head, verdict=event, findings=findings,
+            "review-result", pr=n, head=head, branch=branch, verdict=event, findings=findings,
             counts=counts, reason=parser_reason,
         )
         if not parser_reason:

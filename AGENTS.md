@@ -22,7 +22,7 @@ map or a path in it does not exist; update the map in the same change.
 |---|---|---|---|
 | CLI and package | `factory/cli.py`, `factory/__main__.py`, `factory/__init__.py` | `tests/test_runtime.py`, `tests/test_chat.py`, `tests/test_factory.py` | `test` |
 | Configuration | `factory/config.py`, `factory/templates/factory.toml` | `tests/test_factory.py`, `tests/test_settings.py`, `tests/test_dashboard_port.py`, `tests/test_add_only_override.py`, `tests/test_llm_usage_local.py` | `test` |
-| Onboarding (`init`, `doctor`, `install`) | `factory/onboard.py`, `factory/templates/ci.yml` | `tests/test_factory.py`, `tests/test_dashboard_port.py`, `tests/test_plan.py`, `tests/test_factory_dir_safety.py` | `test` |
+| Onboarding (`init`, `doctor`, `install`) | `factory/onboard.py`, `factory/templates/ci.yml` | `tests/test_factory.py`, `tests/test_dashboard_port.py`, `tests/test_plan.py`, `tests/test_factory_dir_safety.py`, `tests/test_learn.py` | `test` |
 | Repository pause | `factory/pause.py` | `tests/test_pause.py`, `tests/test_dispatch_pause.py` | `test` |
 | Triage | `factory/triage.py` | `tests/test_factory.py`, `tests/test_llm_usage.py`, `tests/test_idle_lifecycle.py`, `tests/test_triage.py`, `tests/test_watch_lifecycle.py`, `tests/test_llm_usage_local.py` | `test` |
 | Dispatcher and worker brief | `factory/dispatch.py`, `factory/brief.py`, `factory/templates/agent_task.md` | `tests/test_factory.py`, `tests/test_dispatch_lifecycle.py`, `tests/test_worker_plan.py`, `tests/test_wait_decisions.py`, `tests/test_idle_lifecycle.py`, `tests/test_frontier.py`, `tests/test_add_only_override.py`, `tests/test_refresh_conflict.py`, `tests/test_review_isolation.py`, `tests/test_claim_failure.py`, `tests/test_llm_usage_local.py` | `test` |
@@ -44,7 +44,7 @@ map or a path in it does not exist; update the map in the same change.
 | Codebase history and Atlas | `factory/codebase.py`, `factory/workspace-codebase.js`, `factory/workspace-codebase.css`, `factory/workspace-tools.js` | `tests/test_codebase.py` | `test` |
 | Accepted handoff retention | `factory/results.py` | `tests/test_results.py` | `test` |
 | Metrics (`stats`) | `factory/stats.py` | `tests/test_factory.py`, `tests/test_human_corrections.py`, `tests/test_escapes.py`, `tests/test_stats.py`, `tests/test_stats_week.py`, `tests/test_stats_week_touches.py` | `test` |
-| Lessons (`learn`) | `factory/learn.py` | `tests/test_factory.py`, `tests/test_lifecycle_consumers.py`, `tests/test_escapes.py`, `tests/test_auto_learn.py`, `tests/test_learn_evaluation.py`, `tests/test_learn_candidate_review.py` | `test` |
+| Lessons (`learn`) | `factory/learn.py` | `tests/test_factory.py`, `tests/test_lifecycle_consumers.py`, `tests/test_escapes.py`, `tests/test_auto_learn.py`, `tests/test_learn.py`, `tests/test_learn_evaluation.py`, `tests/test_learn_candidate_review.py` | `test` |
 | Attempt scoring (`score`) | `factory/score.py` | `tests/test_score.py` | `test` |
 | Automatic releases | `factory/release.py` | `tests/test_release.py`, `tests/test_release_bar_sample.py`, `tests/test_release_touch_rate.py` | `test` |
 | Eval promotion | `factory/promotion.py`, `docs/eval-promotion-contract.md` | `tests/test_promotion.py` | `test` |
