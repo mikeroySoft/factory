@@ -92,6 +92,7 @@ KNOWN_KEYS = {
     "release": ("auto", "version_file", "min_tickets", "bar_min_tickets",
                 "bar_floor_human_rate", "bar_floor_first_pass"),
     "eval": ("max_cases", "max_tokens", "budget_min", "profile", "schedule"),
+    "merge": ("certify",),
     "gate": ("timeout", "lock", "check", "protected_paths", "add_only_paths"),
     "leak_scan": ("pattern", "exclude", "extra"),
     "triage": ("url", "model", "timeout", "service"),
@@ -216,6 +217,7 @@ class Config:
     release_bar_min_tickets: int = 20
     release_bar_floor_human_rate: float = 0.10
     release_bar_floor_first_pass: float = 0.90
+    merge_certify: str = "audit"
     checks: list[Check] = field(default_factory=list)
     protected_paths: list[str] = field(default_factory=list)
     add_only_paths: list[str] = field(default_factory=list)
@@ -601,6 +603,7 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     repo_t, dispatch, workers = raw.get("repo", {}), raw.get("dispatch", {}), raw.get("workers", {})
     gate, leak, triage, dash = raw.get("gate", {}), raw.get("leak_scan", {}), raw.get("triage", {}), raw.get("dashboard", {})
     manager = raw.get("manager", {})
+    merge_settings = raw.get("merge", {})
     release = raw.get("release", {})
     learn = raw.get("learn", {})
     evaluation = raw.get("eval", {})
@@ -610,6 +613,8 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
         raise ConfigError("[release] must be a table")
     if not isinstance(evaluation, dict):
         raise ConfigError("[eval] must be a table")
+    if not isinstance(merge_settings, dict):
+        raise ConfigError("[merge] must be a table")
     cfg = Config(root=root, repo=slug, raw_repo=raw_repo)
     cfg.watch_bands = band_settings(root / BANDS_NAME)
     cfg.upstream = repo_t.get("upstream") or None
@@ -667,6 +672,9 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
                 cfg.worker_transcript[label] = transcript
             if when:
                 cfg.worker_when[label] = when
+    cfg.merge_certify = merge_settings.get("certify", cfg.merge_certify)
+    if cfg.merge_certify not in ("audit", "enforce"):
+        raise ConfigError('merge.certify must be "audit" or "enforce"')
     if "worker_wrap" in raw_repo:
         raise ConfigError(f"{path}: [worker_wrap] is host-only; set it in {host_config_path()} "
                           "[defaults.worker_wrap] or [repo.\"<slug>\".worker_wrap]")

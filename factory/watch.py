@@ -25,7 +25,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from statistics import mean, pstdev
 
-from factory import config, dispatch, lifecycle, runtime_events
+from factory import certcheck, config, dispatch, lifecycle, runtime_events
 
 LABELS = "bug,needs-triage"
 MAX_ISSUES = 5
@@ -520,6 +520,36 @@ def _diagnose(cfg: config.Config, signal: dict) -> None:
 
 
 
+def certificate_signals(cfg: config.Config, events: list[dict]) -> list[dict]:
+    try:
+        results = certcheck.audit(
+            cfg.root, cfg.repo, events, cfg.main,
+            (datetime.now(UTC) - timedelta(days=7)).isoformat(),
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return []
+    signals = []
+    for result in results:
+        status = str(result.get("status") or "")
+        if not status.startswith("failed:"):
+            continue
+        premise = status.split(":", 1)[1]
+        rows = [row for row in events if row.get("merge_sha") == result.get("commit")]
+        latest = max((str(row.get("at") or "") for row in rows), default=None)
+        signals.append({
+            "fingerprint": f"certificate:{premise}",
+            "kind": "certificate",
+            "stage": "merge-audit",
+            "key": status,
+            "rows": rows,
+            "excerpt": f"{result.get('commit')} {status} {result.get('reason') or ''}".strip(),
+            "log": None,
+            "latest": latest,
+            "command": "factory verify-merge --since 7d",
+        })
+    return signals
+
+
 def signals(
     cfg: config.Config, events: list[dict], now: datetime | None = None,
 ) -> list[dict]:
@@ -575,6 +605,8 @@ def signals(
                       "excerpt": "\n".join(f"- #{r.get('ticket')}: {r.get('reason')} ({r.get('packet')})" for r in rows),
                       "command": "zcat -f .factory/events.jsonl* | grep -F "
                       f"{shlex.quote(json.dumps({'code': code}, separators=(',', ':'))[1:-1])}"}
+    for signal in certificate_signals(cfg, events):
+        found.setdefault(signal["fingerprint"], signal)
     for alarm in band_signals(cfg, events, now):
         found[alarm["fingerprint"]] = alarm
     for signal in found.values():

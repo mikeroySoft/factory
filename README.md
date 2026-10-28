@@ -304,6 +304,7 @@ landed on its own, and partial progress needs its own reviewed PR.
 | `factory explain N [--json] [--since ISO]` | Reads the live `.factory/events.jsonl` and retained `events.jsonl.N.gz` segments without writing. JSON mode returns `{ticket,nodes,edges,loops,cost,frontier,frontier_stage,coverage}`; `cost` totals the ticket and each retry loop has its own total. `frontier_stage` distinguishes gate, review, manager, human, merge eligibility, and blocker waits; merged and wontfix tickets have a null frontier. Text mode prints a compact decision tree. Legacy `claimed`, `attempt`, `review`, `approved`, `merged`, and `escalate` rows become `synthesized: true` nodes, while `coverage` names part-1 stages with no structured record. Output is bounded to the runtime projection's 1 MiB limit. |
 | `factory manage` | First recommends directions for `needs-review` PRs, then `needs-viability` issues; then resolves untouched `ready-for-human` escalation packets within `[manager].rounds`; finally publishes one routed human handoff request per escalation whose automatic recovery is terminal (also without a manager). `--dry-run` lists eligible requests without inference or writes. |
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
+| `factory verify-merge --since 7d [--json]` | Audits each first-parent commit on the configured main branch using the independent merge checker. Results are `certified`, `failed:<premise>`, `legacy` (before certificate rollout), or `uncertified` (no dispatcher merge row). `--certificate PATH` verifies one certificate; `--pre-merge` checks a candidate before GitHub merges it. |
 | `factory watch` | Post-ship monitor from local evidence only: lifecycle exit rows with `mechanism_failure` (or `unknown` with a `check_timeout` reason), failed `factory-*` user units for this repository, `factory dashboard --runtime-json` **failures** (only the reader's failure-severity journal defects, `runtime_events.FAILURES`; every other reader code is coverage and never filed, see [runtime contract](#bounded-runtime-json-schema-1)), and one escalation `code` repeating on ≥3 distinct tickets in the trailing 7 days (except ticket outcomes: `gate_failed`, when a ticket's project gate fails; `ci_failed`, when a ticket PR's checks fail; `pr_feedback`, when a ticket PR has unresolved feedback on its head; `no_change`, when a worker committed nothing and wrote its handoff because its ticket was already fixed or a duplicate; and `review_revise`, when review still requests changes after bounded review rounds, a manager `FIX`, or a merge-stage refresh/rebase). A no-commit worker without a handoff stays `pr_unpublished` and counts. Host conditions (`worker_exit:*`, `triage_endpoint_*`, `github_command_failed`) remain ignored until their current uninterrupted streak spans `[watch].host_failure_minutes` (default 60), then file as `host`; a later successful pass clears the streak. A gap between failures longer than that threshold starts a new streak, since idle successes may leave no journal row. Every signal files into one engine repository, `[watch].engine_repo` (default `mikeroySoft/factory`), never into the repository it runs in. Each distinct fingerprint (sha256 of kind and reason/unit role/source, 12 hex, so one reason hitting several stages, one journal source reporting several codes, or the same host condition or unit failure in several installs is one issue; `escalation:<code>` for repeats) files one `bug,needs-triage` issue, plus `host` for a host condition, carrying the fingerprint, an `Observed by` list of installs, the triggering journal rows, the newest attempt log tail, the unit status or the runtime failures with what they point at (the offending journal line, the conflicting execution's rows, the reader's stderr; for repeats: each ticket, its prose `reason` and escalation packet path), the reproducing command and an "Expected behavior" section; the filing is journaled as a `watch` row. Before filing it lists the engine repository's open `bug` issues: when one already carries the fingerprint (another install filed it), the install comments its newest evidence there, at most once per 24 hours per install, and adds itself to `Observed by` instead of opening a duplicate. `escalate` rows without a `code` are `unknown` and never filed. Never refiles while that issue is open; refiles once it is closed and the signal recurs. An unassigned filing still at `needs-triage` or `ready-for-agent` closes after 24 hours without newer evidence, including after a successful pass clears a host condition. At most 5 filings or comments and 5 closures per pass. `--dry-run` prints what would be filed or closed without `gh`. `factory install` runs it from the pass unit's `ExecStopPost=`, after every `dispatch`, crashed or not. |
 | `factory stats` | Ticket table: attempts, review rounds, hours to merge, escalation count, resolver attribution, minutes in `ready-for-human`, re-queues, and triage/review/worker prompt and completion token sums (reported prefix-cache rates listed separately). Worker tokens come from the worker's `[workers.<label>.usage]` log paths or, for OMP workers, the session transcript totals; a ticket whose worker reported none reads `n/a (not reported)`, and the footer sums worker tokens over the tickets that reported them. Dollar columns appear only when some ticket has a cost; with no `[prices]` table the footer says so once. Reads GitHub plus `events.jsonl` from the dispatcher's root: the host config's `[repo."owner/name"].path` for `--repo owner/name` or the current checkout's repository, else the current checkout itself; a root without `.factory/events.jsonl` fails naming that path instead of printing empty rows (`--escapes` reads only git and GitHub). Per-ticket GitHub reads run 8 at a time with `stats: N/M tickets` progress on stderr (`--quiet` hides it). `--by-worker` reads only events and shows every configured worker label: first-attempt gate pass rate, all attempts (including review bounces), and known cost. Attribution uses claim labels with current worker precedence; unclaimed attempts are excluded, missing rates/cost are `n/a`. The dashboard Ops view shows the same worker metrics. `--escapes` lists candidate escaped defects, one row per closed `bug` issue: its fix commits (first-parent `agent/<bug>:` commits on `origin/<main>`, else the merge commit of a merged PR whose closing references include the bug), and the candidate tickets whose `agent/<m>:` commits `git blame` names for the lines the fix modified or deleted, with blamed line counts. Rows without candidates read `unlinked` (no fix commit), `no_blamed_lines` (the fix only adds lines) or `no_candidates` (blamed lines are not from agent commits). A fix commit missing from the clone is fetched with `git fetch origin <sha>`; one still missing is skipped with a stderr warning, listed in the row's `skipped`, makes the row `skipped` when every fix was, and is counted in a `Skipped fixes: N` footer. `Regressed-by: #N` lines in the bug body replace blame (`source` is `declared`, else `blame`). The footer reads `Candidate escapes: X of Y merged agent tickets (Z%)`. Blame is SZZ-style and noisy: refactors give false candidates and add-only fixes give none. Read-only. `--json`. |
 | `factory stats --promotions` | Lists every merged lessons/CURATE PR (`promotion-open`) with its baseline and after-window `efficiency_mean`, `compliance_mean`, `gate_first_pass_rate`, and `n`, decision (`open`, `keep`, or `revert`), and revert branch, from `events.jsonl` alone. `--json`. |
@@ -359,6 +360,55 @@ ticket, cross-ticket nodes for ticket causes, and collapsible groups beginning a
 `retries` edges. Gate records carry the gated SHA, report and duration; review
 records carry required findings and model usage; manager, merge, escalation,
 learning and CURATE records retain the alternatives and evidence used.
+
+### Merge certificates
+
+Before every dispatcher merge, Factory writes canonical, sorted-key JSON to
+`.factory/certificates/<ticket>-<head>.json`. After GitHub reports the merge
+commit, Factory adds `merge_sha`, rewrites the canonical file, and records its
+SHA-256 and path on the `merged` journal row. Repeated construction from the
+same journal is byte-identical. The gate report is copied beside the certificate
+as `<ticket>-<head>.gate.md`; its SHA-256 is recorded by the gate decision and
+in the certificate, so worktree cleanup does not remove the evidence.
+
+Schema 1 identifies the repository, ticket, PR, approved head and merge commit,
+then records these premises under `premises`:
+
+- `binding`: ticket/PR, `agent/<ticket>` head ref, configured base ref, base SHA,
+  and merge method.
+- `head`: the approved, live PR, and `--match-head-commit` SHAs.
+- `gate`: the latest PASS `attempt`/`refreshed` source row at the actual head,
+  gate decision id, retained report path, and report digest.
+- `review`: the latest accepted `APPROVE` row at the actual head, review decision
+  id, and published comment URL.
+- `approval`: the SHA-bound `approved` source row, its source and actor, ordered
+  after gate and review.
+- `manager`: the effective `manager.review` policy and, for `all`, the matching
+  manager `APPROVE` row.
+- `ci`: exact-head check-run ids, names, and conclusions, with at least one pass
+  and no failure or pending run.
+- `freshness`: zero commits behind at merge; after merge, a squash tree equal to
+  the head tree or a merge commit whose second parent is the head.
+- `eval`, `human_decision`, and `risk_tier`: optional claims. The latter two are
+  `null` until a later policy requires them; the checker exposes a fail-closed
+  human-decision rule hook.
+- `policy`: SHA-256 of base `.factory.toml`, named merge policy values and review
+  policy digest, Factory version, and installed engine commit. Host configuration
+  contents and credentials are never copied.
+
+`factory/certcheck.py` reads the live journal plus rotated
+`events.jsonl.N.gz` segments itself and uses only Git plus read-only `gh api`
+queries. It does not import dispatcher, manager, decision, result, lifecycle, or
+trace predicates. The first failed premise reports `forged`, `stale`, or
+`missing`; output contains only premise names, ids, SHAs, and digests.
+`factory watch` feeds `failed:<premise>` audit results through its existing
+fingerprinted bug filing/update path. `uncertified` commits remain visible in
+the audit but are not automatically filed.
+
+`[merge] certify = "audit"` is the default and does not change merge eligibility.
+`"enforce"` runs the installed checker with isolated Python path handling against
+the pre-merge certificate. Failure removes `factory-approved`, records
+`certificate_failed`, and stops the merge.
 
 Each non-`chore` attempt tells the existing worker session to write a plan of at
 most 30 lines covering files, order, risks, and proof. Numbered revisions under

@@ -57,6 +57,7 @@ EVENTS: Path
 MAX_ACTIVE: int
 MAX_ATTEMPTS: int
 _PENDING_REVIEWS: dict[int, dict] = {}
+_PENDING_GATES: dict[int, dict] = {}
 
 
 def configure(c: Config) -> None:
@@ -74,6 +75,7 @@ def configure(c: Config) -> None:
     MAX_ACTIVE = cfg.max_active
     MAX_ATTEMPTS = cfg.max_attempts
     _PENDING_REVIEWS.clear()
+    _PENDING_GATES.clear()
 
 
 # `factory learn` branches: lessons, CURATE and the revert a failed promotion opens.
@@ -980,6 +982,7 @@ def _record_gate_decision(
         for name, detail in failures
     ]
     chosen = "pass" if passed else failures[0][0] if failures else "gate failed"
+    report_sha256 = hashlib.sha256(report.encode()).hexdigest()
     cause = _latest_decision_id(n, {"claim", "plan", "worker_select", "review", "manager"})
     payload = trace.decision(
         ticket=n,
@@ -987,7 +990,7 @@ def _record_gate_decision(
         inputs=[
             {"kind": "head", "ref": f"https://github.com/{REPO}/commit/{head}",
              "summary": f"gated head {head}"},
-            {"kind": "gate_log", "ref": report_path, "summary": "deterministic gate report"},
+            {"kind": "gate_log", "ref": report_path, "summary": f"deterministic gate report sha256 {report_sha256}"},
             *[
                 {"kind": "repro_test", "ref": report_path, "summary": f"{name}: {status}"}
                 for name, status in reproduction
@@ -1000,7 +1003,13 @@ def _record_gate_decision(
         cost={"seconds": seconds},
         actor=_decision_actor("deterministic", "dispatch.run_gate"),
     )
+    payload.update(head=head, report_path=report_path, report_sha256=report_sha256)
     record("decision", **payload)
+    _PENDING_GATES[n] = {
+        "gate_decision_id": payload["decision_id"],
+        "report_path": report_path,
+        "report_sha256": report_sha256,
+    }
     return payload["decision_id"]
 
 
@@ -1094,6 +1103,7 @@ def _record_review_decision(
         cost={**(usage or {}), "seconds": seconds},
         actor=_decision_actor("model", "dispatch.review", model=_reviewer_model(usage)),
     )
+    payload.update(head=head, comment_url=comment_url)
     record("decision", **payload)
     record(
         "review-result", ticket=n, head=head,
@@ -1622,7 +1632,7 @@ ESCALATION_CODES = frozenset({
     "approval_missing", "ci_failed", "ci_runner", "refresh_head", "refresh_conflict",
     "refresh_empty", "gh_failed", "review_intake", "manager_failed",
     "manager_exhausted", "manager_human", "pr_feedback", "pr_stale",
-    "lease_refused", "dispatcher_error", "no_change",
+    "lease_refused", "dispatcher_error", "no_change", "certificate_failed",
 })
 
 
@@ -2585,7 +2595,7 @@ def approve_pr(n: int, head: str) -> bool:
         record("decision", **approval)
     record(
         "approved", ticket=n, pr=pr["number"], head=head,
-        gate_head=head, review_head=head,
+        gate_head=head, review_head=head, source="dispatch", actor="factory",
     )
     retain_handoff(n, head)
     return True
@@ -3038,6 +3048,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     record(
         "refreshed", ticket=n, pr=pr, head=head, gate="PASS",
         gate_head=head, actual_head=head, clean=True, gate_rerun=gate_rerun,
+        **_PENDING_GATES.pop(n, {}),
     )
     verdict, findings = review(wt, n, report, head)
     pending = _PENDING_REVIEWS.get(n)
@@ -3071,6 +3082,202 @@ def retain_handoff(n: int, head: str) -> bool:
     if not retained["cleanup_safe"]:
         log(f"#{n}: handoff retention incomplete ({retained.get('reason')}); worktree kept, operator resolution required before cleanup")
     return retained["cleanup_safe"]
+
+
+def _certificate_source(row: dict | None, keys: tuple[str, ...]) -> dict:
+    return {key: row.get(key) for key in keys} if row is not None else {}
+
+
+def _certificate_checks(head: str, fallback: list[dict]) -> list[dict]:
+    try:
+        response = gh_json(["api", f"repos/{REPO}/commits/{head}/check-runs?per_page=100"])
+        source = response.get("check_runs") if isinstance(response, dict) else None
+        if isinstance(source, list):
+            checks = [
+                {"id": row.get("id"), "name": row.get("name"), "conclusion": row.get("conclusion")}
+                for row in source if isinstance(row, dict)
+            ]
+            if checks:
+                return sorted(checks, key=lambda row: (str(row["name"]), str(row["id"])))
+    except (subprocess.CalledProcessError, json.JSONDecodeError, OSError):
+        pass
+    conclusions = {
+        "pass": "success", "skipping": "skipped", "cancel": "cancelled",
+        "fail": "failure", "pending": None, "infra": None,
+    }
+    checks = []
+    for row in fallback:
+        match = re.search(r"/(?:job|check-runs)/(\\d+)(?:\\D|$)", row.get("link") or "")
+        checks.append({
+            "id": int(match[1]) if match else row.get("id"),
+            "name": row.get("name"),
+            "conclusion": conclusions.get(row.get("bucket"), row.get("bucket")),
+        })
+    return sorted(checks, key=lambda row: (str(row["name"]), str(row["id"])))
+
+
+def _certificate_policy(base: str) -> dict:
+    shown = run(["git", "show", f"{base}:.factory.toml"], cwd=ROOT, check=False)
+    config_bytes = shown.stdout.encode() if shown.returncode == 0 else b""
+    policy, _ = _review_policy(ROOT, base)
+    return {
+        "base_sha": base,
+        "config_sha256": hashlib.sha256(config_bytes).hexdigest(),
+        "manager_review": cfg.manager_review,
+        "review_policy": {
+            "path": cfg.review_policy,
+            "sha256": hashlib.sha256(policy.encode()).hexdigest() if policy is not None else None,
+        },
+        "dispatcher_version": __version__,
+        "installed_commit": config.engine_commit(),
+    }
+
+
+def write_merge_certificate(
+    n: int,
+    pr: int,
+    head: str,
+    final: dict,
+    method: str,
+    checks: list[dict],
+    events: list[dict],
+) -> tuple[Path, dict]:
+    """Write the deterministic pre-merge certificate and retain its gate report."""
+    certificates = FACTORY / "certificates"
+    certificates.mkdir(parents=True, exist_ok=True)
+    path = certificates / f"{n}-{head}.json"
+    report_path = certificates / f"{n}-{head}.gate.md"
+    gate_rows = [
+        row for row in events
+        if row.get("ticket") == n
+        and (
+            row.get("event") == "attempt" and row.get("head") == head
+            or row.get("event") == "refreshed" and row.get("gate_head") == head
+        )
+    ]
+    gate_row = gate_rows[-1] if gate_rows else None
+    gate_decision_id = gate_row.get("gate_decision_id") if gate_row else None
+    gate_decisions = [
+        row for row in events
+        if row.get("event") == "decision" and row.get("stage") == "gate"
+        and row.get("ticket") == n and row.get("head") == head
+    ]
+    gate_decision = next(
+        (row for row in gate_decisions if row.get("decision_id") == gate_decision_id),
+        gate_decisions[-1] if gate_decisions else None,
+    )
+    original = gate_row.get("report_path") if gate_row else None
+    original_report = Path(original) if isinstance(original, str) else (
+        Path(str(gate_decision.get("report_path"))) if gate_decision else None
+    )
+    if original_report is not None and original_report.is_file():
+        shutil.copyfile(original_report, report_path)
+    elif not report_path.exists():
+        report_path.write_bytes(b"")
+    report_digest = hashlib.sha256(report_path.read_bytes()).hexdigest()
+
+    review_rows = [
+        row for row in events
+        if row.get("event") == "review" and row.get("ticket") == n and row.get("head") == head
+    ]
+    review_row = review_rows[-1] if review_rows else None
+    review_decisions = [
+        row for row in events
+        if row.get("event") == "decision" and row.get("stage") == "review"
+        and row.get("ticket") == n and row.get("head") == head
+    ]
+    review_decision = review_decisions[-1] if review_decisions else None
+    approvals = [
+        row for row in events
+        if row.get("event") == "approved" and row.get("ticket") == n
+        and row.get("pr") == pr and row.get("head") == head
+    ]
+    approval = approvals[-1] if approvals else None
+    manager_rows = [
+        row for row in events
+        if row.get("event") == "manage" and row.get("ticket") == n
+        and row.get("pr") == pr and row.get("head") == head and row.get("decision") == "APPROVE"
+    ]
+    manager = manager_rows[-1] if manager_rows else None
+    eval_rows = [
+        row for row in events
+        if row.get("event") == "eval-summary" and row.get("candidate") == head
+        and row.get("status") == "completed" and row.get("verdict") == "keep"
+    ]
+    base = run(["git", "rev-parse", f"origin/{cfg.main}"], cwd=ROOT).stdout.strip()
+    document = {
+        "schema_version": 1,
+        "repository": REPO,
+        "ticket": n,
+        "pr": pr,
+        "head": head,
+        "merge_sha": None,
+        "premises": {
+            "binding": {
+                "ticket": n,
+                "pr": pr,
+                "head_ref": final.get("headRefName"),
+                "base_ref": final.get("baseRefName"),
+                "base_sha": base,
+                "merge_method": method,
+            },
+            "head": {"approved": head, "pr": final.get("headRefOid"), "matched": head},
+            "gate": {
+                "row": _certificate_source(
+                    gate_row, ("at", "event", "ticket", "gate", "head", "actual_head"),
+                ),
+                "decision_id": gate_decision_id or (gate_decision.get("decision_id") if gate_decision else None),
+                "report": str(report_path.relative_to(ROOT)),
+                "report_sha256": report_digest,
+            },
+            "review": {
+                "row": _certificate_source(
+                    review_row,
+                    ("at", "event", "ticket", "verdict", "accepted", "head", "actual_head"),
+                ),
+                "decision_id": review_decision.get("decision_id") if review_decision else None,
+                "comment_url": review_decision.get("comment_url") if review_decision else None,
+            },
+            "approval": {
+                "row": _certificate_source(
+                    approval,
+                    (
+                        "at", "event", "ticket", "pr", "head", "gate_head",
+                        "review_head", "source", "actor",
+                    ),
+                ),
+            },
+            "manager": {
+                "policy": cfg.manager_review,
+                "row": _certificate_source(
+                    manager, ("at", "event", "ticket", "pr", "head", "decision"),
+                ) if manager is not None else None,
+            },
+            "ci": {"head": head, "checks": _certificate_checks(head, checks)},
+            "freshness": {"behind_by": 0, "method": method},
+            "eval": {
+                "row": _certificate_source(
+                    eval_rows[-1], ("at", "event", "candidate", "status", "verdict"),
+                ),
+            } if eval_rows else None,
+            "human_decision": None,
+            "risk_tier": None,
+            "policy": _certificate_policy(base),
+        },
+    }
+    path.write_bytes(
+        json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode() + b"\n",
+    )
+    return path, document
+
+
+def finalize_merge_certificate(path: Path, document: dict, merge_sha: str | None) -> str:
+    document["merge_sha"] = merge_sha
+    data = json.dumps(
+        document, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode() + b"\n"
+    path.write_bytes(data)
+    return hashlib.sha256(data).hexdigest()
 
 
 def cleanup_after_merge(n: int, head: str) -> None:
@@ -3418,6 +3625,38 @@ def merge_pass_locked(dry_run: bool) -> None:
                 continue
             method = "--merge" if carries_upstream else "--squash"
             body = f"Closes #{n}\n\n{signoff()}" if cfg.signoff else f"Closes #{n}"
+            certificate_path, certificate = write_merge_certificate(
+                n, pr_num, head, final, method[2:], latest_checks,
+                lifecycle.read_events(EVENTS),
+            )
+            if cfg.merge_certify == "enforce":
+                verified = run(
+                    [
+                        sys.executable, "-P", "-E", "-m", "factory", "verify-merge",
+                        "--certificate", str(certificate_path), "--pre-merge", "--json",
+                    ],
+                    cwd=ROOT,
+                    check=False,
+                )
+                if verified.returncode:
+                    run(
+                        [
+                            "gh", "pr", "edit", str(pr_num), "--repo", REPO,
+                            "--remove-label", FACTORY_APPROVED,
+                        ],
+                        check=False,
+                    )
+                    detail = (verified.stdout or verified.stderr).strip()[:500]
+                    escalate(
+                        n,
+                        f"PR #{pr_num}: merge certificate verification failed"
+                        + (f" ({detail})" if detail else "")
+                        + f"; `{FACTORY_APPROVED}` label removed",
+                        None,
+                        code="certificate_failed",
+                    )
+                    execution.outcome, execution.reason = "project_escalation", "certificate_failed"
+                    continue
             with lifecycle.scope(EVENTS, "merge", ticket=n):
                 run(
                     [
@@ -3444,9 +3683,15 @@ def merge_pass_locked(dry_run: bool) -> None:
                     merge_sha = merge_commit.get("oid") if isinstance(merge_commit, dict) else None
                 except (subprocess.CalledProcessError, json.JSONDecodeError, OSError):
                     merge_sha = None
+                if merge_sha:
+                    run(["git", "fetch", "origin", merge_sha], cwd=ROOT, check=False)
+                certificate_sha256 = finalize_merge_certificate(
+                    certificate_path, certificate, merge_sha,
+                )
                 record(
                     "merged", ticket=n, pr=pr_num, method=method[2:], head=head,
-                    merge_sha=merge_sha,
+                    merge_sha=merge_sha, certificate=str(certificate_path.relative_to(ROOT)),
+                    certificate_sha256=certificate_sha256,
                 )
                 record_merge_decision(
                     n, pr_num, "merge now", f"gate, review, approval, and CI passed for {head}",
@@ -3562,7 +3807,7 @@ def worker_round(
         seconds=int(time.monotonic() - started), cost=usage["cost"], log=str(logfile),
         transcript=transcript, brief=brief_path(wt, n).exists(), head=head,
         actual_head=actual_head, clean=not before_status and not after_status,
-        handoff=handoff, **identity, **timeout,
+        handoff=handoff, **identity, **timeout, **_PENDING_GATES.pop(n, {}),
     )
     return ok, report, logfile, head
 
