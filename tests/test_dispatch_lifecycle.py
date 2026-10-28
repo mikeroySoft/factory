@@ -825,6 +825,61 @@ class LocalCLI(unittest.TestCase):
         self.assertIn("committed nothing", escalations[0]["reason"])
         self.assertFalse(json.loads(self.state.read_text()).get("pr"))
 
+    def test_early_ticket_exit_does_not_poison_later_manager_fix_push(self):
+        from unittest import mock
+
+        from factory import config, dispatch, manage
+
+        wt = self.repo / ".factory" / "wt-7"
+        wt.parent.mkdir(exist_ok=True)
+        self.git("worktree", "add", str(wt), "-b", "agent/7")
+        self.git("-C", str(wt), "commit", "--allow-empty", "-qm", "remote work")
+        self.git("-C", str(wt), "push", "-q", "origin", "agent/7")
+        remote = self.git("rev-parse", "agent/7").stdout.strip()
+        self.git("-C", str(wt), "checkout", "-q", "--detach", "main")
+        issue = {"number": 7, "title": "local change", "body": "", "labels": []}
+        pr = {"state": "OPEN", "headRefName": "agent/7", "headRefOid": remote,
+              "baseRefName": "main", "reviewDecision": ""}
+        packet = wt.parent / "packet.md"
+        packet.write_text("fix it")
+
+        with mock.patch.dict(os.environ, self.env):
+            dispatch.configure(config.load(self.repo))
+            with mock.patch.object(dispatch, "ensure_worktree", return_value=wt), \
+                    mock.patch.object(dispatch, "worker_round", return_value=(
+                        False, "- protected-tests: FAIL", None, remote,
+                    )):
+                dispatch.process_ticket(issue, 1, False, forced=True)
+
+            escalations = [e for e in lifecycle.read_events(self.events) if e.get("event") == "escalate"]
+            self.assertEqual([e["code"] for e in escalations], ["protected_paths"])
+            self.assertEqual(
+                self.git("ls-remote", "origin", "refs/heads/agent/7").stdout.split()[0], remote,
+            )
+            self.git("-C", str(wt), "checkout", "-q", "agent/7")
+
+            def worker(*args, **kwargs):
+                self.git("-C", str(wt), "reset", "-q", "main")
+                self.git("-C", str(wt), "commit", "--allow-empty", "-qm", "manager worker rewrite")
+                head = self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip()
+                return True, "- code: PASS", None, head
+
+            with mock.patch.object(dispatch, "gh_json", return_value=pr), \
+                    mock.patch.object(dispatch, "worker_round", side_effect=worker), \
+                    mock.patch.object(dispatch, "record_risk"), \
+                    mock.patch.object(dispatch, "pr_gate_and_review", return_value=("APPROVE", "", False)), \
+                    mock.patch.object(dispatch, "pr_comment"), \
+                    mock.patch.object(dispatch, "approve_pr", return_value=True), \
+                    mock.patch.object(dispatch, "escalate") as escalate:
+                manage.apply(7, issue, "FIX", "", {"worker": "default", "guidance": "fix"}, packet)
+
+            head = self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip()
+            self.assertNotEqual(head, remote)
+            self.assertEqual(
+                self.git("ls-remote", "origin", "refs/heads/agent/7").stdout.split()[0], head,
+            )
+            escalate.assert_not_called()
+
     def test_worker_that_dies_without_commits_or_handoff_stays_pr_unpublished(self):
         # A crashed worker is a factory failure watch must still count, not a ticket outcome.
         self.worker.write_text("raise SystemExit(1)\n")

@@ -276,6 +276,47 @@ class AgentPushLeaseTest(unittest.TestCase):
         self.assertIn(f"leased {lease}, remote now {lease}", str(raised.exception))
         self.assertEqual(self.remote("agent/7"), lease)
 
+    def test_failed_initial_remote_lookup_aborts_lease_acquisition(self) -> None:
+        self.git(self.wt, "remote", "set-url", "origin", str(self.origin / "missing"))
+        with self.assertRaises(subprocess.CalledProcessError):
+            dispatch.agent_lease(self.wt, 7)
+        self.assertEqual(self.remote("agent/7"), self.fetched)
+
+    def test_stale_linear_refusal_survives_diagnostic_lookup_failure(self) -> None:
+        self.git(self.wt, "checkout", "-q", "--orphan", "stale")
+        self.commit(self.wt, "stale local head")
+        lease = dispatch.agent_lease(self.wt, 7)
+        self.commit(self.wt, "linear worker commit")
+        self.git(self.wt, "remote", "set-url", "origin", str(self.origin / "missing"))
+
+        with self.assertRaises(dispatch.LeaseRefused) as raised:
+            dispatch.push_agent(self.wt, 7, lease)
+        self.assertIn(f"leased {lease}, remote now (unavailable)", str(raised.exception))
+        self.assertEqual(self.remote("agent/7"), lease)
+
+    def test_absent_remote_then_successive_pushes_use_returned_leases(self) -> None:
+        lease = dispatch.agent_lease(self.wt, 8)
+        self.assertEqual(lease, "")
+        first = self.commit(self.wt, "first worker commit")
+        lease = dispatch.push_agent(self.wt, 8, lease)
+        self.assertEqual(lease, first)
+        self.assertEqual(self.remote("agent/8"), first)
+
+        second = self.commit(self.wt, "rewritten after review", "--amend")
+        lease = dispatch.push_agent(self.wt, 8, lease)
+        self.assertEqual(lease, second)
+        self.assertEqual(self.remote("agent/8"), second)
+
+        self.git(self.other, "fetch", "-q", "origin")
+        self.git(self.other, "checkout", "-q", "--detach", "origin/agent/8")
+        moved = self.commit(self.other, "concurrent push after review")
+        self.git(self.other, "push", "-q", "origin", "HEAD:agent/8")
+        self.commit(self.wt, "another rewrite", "--amend")
+        with self.assertRaises(dispatch.LeaseRefused) as raised:
+            dispatch.push_agent(self.wt, 8, lease)
+        self.assertIn(f"leased {lease}, remote now {moved}", str(raised.exception))
+        self.assertEqual(self.remote("agent/8"), moved)
+
     def test_lease_taken_before_the_worker_never_admits_an_unseen_push(self) -> None:
         self.assertEqual(dispatch.agent_lease(self.wt, 7), self.fetched)
         self.assertEqual(dispatch.agent_lease(self.wt, 8), "")  # not on the remote: must not exist
