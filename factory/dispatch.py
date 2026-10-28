@@ -659,7 +659,7 @@ def review_external_pr(n: int, base: str, head: str, branch: str = "") -> None:
             _omp_output(proc.stdout) if structured else (proc.stdout.strip(), None)
         )
         if usage is not None:
-            record("llm-usage", pr=n, stage="review", **usage)
+            record("llm-usage", pr=n, stage="review", local=_usage_local(usage), **usage)
         findings, verdict, parsed, counts, parser_reason = _parse_review_output(
             findings, nit_cap
         )
@@ -2037,7 +2037,10 @@ def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str,
     with lifecycle.scope(EVENTS, "review", ticket=n) as execution:
         result = run_reviewer(wt, review_prompt(n, gate_report), expected_head, subject=f"#{n}")
         if result["usage"] is not None:
-            record("llm-usage", ticket=n, stage="review", **result["usage"])
+            record(
+                "llm-usage", ticket=n, stage="review",
+                local=_usage_local(result["usage"]), **result["usage"],
+            )
         execution.outcome = (
             "approved" if result["verdict"] == "APPROVE" else "product_feedback"
         ) if result["accepted"] else "unknown"
@@ -3510,7 +3513,10 @@ def worker_round(
     transcript = _transcript(session_dir, wall)
     timeout = {"timeout": fired, "reason": TIMEOUT_REASONS[fired]} if fired else {}
     usage = worker_usage(logfile, cfg.worker_usage.get(worker), transcript)
-    record("llm-usage", ticket=n, stage="worker", attempt=attempt, **identity, **usage)
+    record(
+        "llm-usage", ticket=n, stage="worker", attempt=attempt,
+        local=_usage_local(usage), **identity, **usage,
+    )
     commit_leftovers(wt, n, title)
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     handoff = results.source_metadata(cfg, n)
@@ -3586,6 +3592,12 @@ def _json_path(row: object, path: str) -> object:
             return None
         row = row[part]
     return row
+
+
+def _usage_local(usage: dict) -> bool:
+    model = usage.get("model")
+    return (config.local_endpoint(cfg.llm_url)
+            and isinstance(model, str) and model == cfg.llm_model)
 
 
 def worker_usage(logfile: Path, spec: dict | None, transcript: str | None = None) -> dict:

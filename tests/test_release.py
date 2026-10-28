@@ -255,14 +255,14 @@ class ReleaseTest(unittest.TestCase):
         self.assertEqual(self.git(self.origin, "show-ref"), landed_before)
         self.assertNotEqual(before, landed_before)
 
-    def test_human_rate_counts_distinct_tickets_and_is_clamped(self) -> None:
+    def test_human_rate_counts_each_touch_without_a_cap(self) -> None:
         path = self.cfg.factory / "events.jsonl"
         for ticket in (1, 1, 2):
             lifecycle.append(path, {"at": "2099-01-01T00:00:00Z", "event": "manage",
                                     "ticket": ticket, "decision": "HUMAN"})
         lifecycle.append(path, {"at": "2099-01-01T00:00:01Z", "event": "merged", "ticket": 1})
         measured = release.measure(self.cfg, "2098-01-01T00:00:00")
-        self.assertEqual(measured["human_rate"], 1.0)
+        self.assertEqual((measured["human_rate"], measured["human_touches"]), (3.0, 3))
 
     def test_no_first_attempt_evidence_holds(self) -> None:
         self.tag_and_advance(None)
@@ -293,12 +293,17 @@ class ReleaseTest(unittest.TestCase):
         rows = lifecycle.read_events(self.cfg.factory / "events.jsonl")
         self.assertNotIn("release", {row["event"] for row in rows})
 
-    def test_bar_rises_halfway_and_never_past_the_release(self) -> None:
-        measured = {"human_rate": 0.2, "first_pass": 1.0, "tickets": 17}
-        first = release.next_bar(None, measured)
-        self.assertEqual(first, {"human_rate": 0.6, "first_pass": 0.5, "tickets": 17})
-        second = release.next_bar(first, measured)
-        self.assertEqual(second, {"human_rate": 0.4, "first_pass": 0.75, "tickets": 17})
+    def test_bar_moves_halfway_toward_wilson_bounds(self) -> None:
+        old = {"human_rate": 0.2, "first_pass": 0.8, "tickets": 17}
+        measured = {
+            "human_rate": 0.0, "human_touches": 0, "human_ticket_rate": 0.0,
+            "first_pass": 1.0, "first_passes": 20, "attempts": 20, "tickets": 20,
+        }
+        result = release.next_bar(
+            old, measured, bar_min_tickets=20,
+            bar_floor_human_rate=0.1, bar_floor_first_pass=0.9,
+        )
+        self.assertEqual((result["human_rate"], result["first_pass"]), (0.180563, 0.819437))
 
     def land_release(self) -> None:
         self.tag_and_advance({"human_rate": 0.0, "first_pass": 1.0, "tickets": 1})
