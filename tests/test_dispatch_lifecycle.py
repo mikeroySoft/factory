@@ -700,6 +700,78 @@ class LocalCLI(unittest.TestCase):
         self.assertIn("- slow: SKIP (pr tier)", report)
         self.assertEqual(self.pr_runs(), [])
 
+    def protected_path_escalation(self, *, delete=False, bounce=False):
+        path = self.repo / "tests" / "test_old.py"
+        path.parent.mkdir()
+        path.write_text("def test_old():\n    assert True\n")
+        config = self.repo / ".factory.toml"
+        config.write_text(config.read_text().replace(
+            "[gate]\n", '[gate]\nadd_only_paths = ["tests/**"]\n',
+        ))
+        self.git("add", ".factory.toml", "tests/test_old.py")
+        self.git("commit", "-qm", "protect existing tests")
+        self.git("push", "-q", "origin", "main")
+        issue_setup = (
+            'issue["labels"].append({"name": "bug"})\n'
+            'issue["body"] += "\\nNo repro test: escalation guidance fixture"\n'
+        )
+        if delete:
+            issue_setup += 'issue["labels"].append({"name": "factory-add-only-override"})\n'
+        (self.bin / "gh").write_text(GH.replace(
+            'if s.get("sync"):', issue_setup + 'if s.get("sync"):',
+        ))
+        change = "p.unlink()" if delete else 'p.write_text("# obsolete test removed\\n")'
+        self.worker.write_text(
+            "from pathlib import Path\n"
+            'p = Path("tests/test_old.py")\n'
+            + ("if Path('change.txt').exists():\n    " + change + "\n"
+               "else:\n    Path('change.txt').write_text('first attempt\\n')\n"
+               if bounce else change + "\n")
+        )
+
+        self.cli("dispatch", "--ticket", "7")
+
+        events = lifecycle.read_events(self.events)
+        [escalation] = [e for e in events if e.get("event") == "escalate"]
+        self.assertEqual(escalation["code"], "protected_paths")
+        self.assertEqual(len([e for e in events if e.get("event") == "review"]), int(bounce))
+        packet = Path(escalation["packet"]).read_text()
+        self.assertIn("`add-only`", packet)
+        if delete:
+            self.assertIn("already present", packet)
+            self.assertIn("human-only", packet)
+            self.assertIn("`factory-protected-override`", packet)
+            self.assertIn("cannot", packet)
+        else:
+            self.assertIn("`factory-add-only-override`", packet)
+            self.assertIn("AUTHORIZE", packet)
+
+        wt = self.repo / ".factory" / "wt-7"
+        result = subprocess.run(
+            [sys.executable, "-m", "factory", "gate", "--bug", "--no-repro-test",
+             "escalation guidance fixture", "--add-only-override"],
+            cwd=wt, env=self.env, capture_output=True, text=True, timeout=60,
+        )
+        self.assertEqual(result.returncode, int(delete), result.stdout + result.stderr)
+        report = (wt / ".factory" / "gate-report.md").read_text()
+        if delete:
+            self.assertIn("- protected-paths: FAIL (add-only", report)
+            self.assertIn("deleted file mode", report)
+        else:
+            self.assertNotIn(": FAIL", report)
+
+    def test_add_only_text_edit_escalation_names_manager_authority(self):
+        self.protected_path_escalation()
+
+    def test_add_only_text_edit_review_bounce_names_manager_authority(self):
+        self.protected_path_escalation(bounce=True)
+
+    def test_authorized_file_deletion_escalates_to_human_authority(self):
+        self.protected_path_escalation(delete=True)
+
+    def test_authorized_file_deletion_review_bounce_escalates_to_human_authority(self):
+        self.protected_path_escalation(delete=True, bounce=True)
+
     def test_invalid_when_is_a_config_error_naming_the_key(self):
         self.pr_config(fails=0, when="nightly")
         result = self.cli("gate", expected=1)

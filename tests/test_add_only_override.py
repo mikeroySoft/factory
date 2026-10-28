@@ -109,18 +109,47 @@ class AddOnlyOverrideTest(unittest.TestCase):
 
     def test_escalation_names_failed_check_and_clearing_label(self) -> None:
         cases = {
-            "- protected-tests: FAIL": (
-                "Failed check: `protected-tests`. "
-                "Add label `factory-add-only-override` to clear it."
-            ),
+            "- protected-tests: FAIL": ("protected-tests", config.LABEL_ADD_ONLY_OVERRIDE),
             "- protected-paths: FAIL (add-only path removed or changed existing lines)": (
-                "Failed check: `add-only`. "
-                "Add label `factory-add-only-override` to clear it."
+                "add-only", config.LABEL_ADD_ONLY_OVERRIDE,
             ),
+            "- protected-paths: FAIL": ("protected-paths", config.LABEL_PROTECTED_OVERRIDE),
         }
-        for report, expected in cases.items():
+        for report, (check, label) in cases.items():
             with self.subTest(report=report):
-                self.assertEqual(dispatch._protected_gate_guidance(report), expected)
+                guidance = dispatch._protected_gate_guidance(report, set())
+                self.assertIn(f"`{check}`", guidance)
+                self.assertIn(f"`{label}`", guidance)
+                if label == config.LABEL_PROTECTED_OVERRIDE:
+                    self.assertIn("human-only", guidance)
+
+    def test_structural_add_only_failures_require_human_authority(self) -> None:
+        for detail in (
+            "deleted file mode 100644",
+            "rename from tests/test_old.py\nrename to tests/test_new.py",
+            "old mode 100644\nnew mode 100755",
+            "GIT binary patch",
+            "Binary files a/tests/test_old.py and b/tests/test_old.py differ",
+        ):
+            with self.subTest(detail=detail):
+                report = (
+                    "- protected-paths: FAIL (add-only path removed or changed existing lines)\n"
+                    f"\n```diff\n{detail}\n```\n"
+                )
+                guidance = dispatch._protected_gate_guidance(report, set())
+                self.assertIn("`add-only`", guidance)
+                self.assertIn(f"`{config.LABEL_PROTECTED_OVERRIDE}`", guidance)
+                self.assertIn("human-only", guidance)
+                self.assertNotIn(f"`{config.LABEL_ADD_ONLY_OVERRIDE}`", guidance)
+
+    def test_existing_add_only_override_does_not_recommend_authorize_again(self) -> None:
+        report = "- protected-paths: FAIL (add-only path removed or changed existing lines)"
+        guidance = dispatch._protected_gate_guidance(report, {config.LABEL_ADD_ONLY_OVERRIDE})
+        self.assertIn("`add-only`", guidance)
+        self.assertIn("already present", guidance)
+        self.assertIn(f"`{config.LABEL_PROTECTED_OVERRIDE}`", guidance)
+        self.assertIn("human-only", guidance)
+        self.assertIn("cannot", guidance)
 
     def test_override_rejects_deletion_and_mode_change(self) -> None:
         for change in ("delete", "chmod"):
