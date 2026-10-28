@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 from datetime import date
+from pathlib import Path
+from unittest import mock
 
-from factory import dashboard, stats, watch
+from factory import config, dashboard, stats, watch
 
 
 class RiskStatsTest(unittest.TestCase):
@@ -81,6 +84,25 @@ class RiskStatsTest(unittest.TestCase):
                 {"event": "escape", "ticket": 8, "bug": 419, "at": "2026-10-27T03:00:00Z"},
             ],
         )
+
+    def test_dashboard_does_not_scan_escapes_without_risk_tickets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config.Config(Path(directory), "acme/widgets", lock=Path(directory) / "gpu.lock")
+            dashboard.configure(cfg)
+            with (
+                mock.patch.object(dashboard, "github", side_effect=RuntimeError("offline")),
+                mock.patch.object(dashboard, "dispatcher", return_value={}),
+                mock.patch.object(dashboard, "upstream_state", return_value={}),
+                mock.patch.object(dashboard, "triage_llm_online", return_value=False),
+                mock.patch.object(dashboard.stats, "dispatcher_login", return_value=""),
+                mock.patch.object(dashboard.stats, "worker_metrics", return_value={}),
+                mock.patch.object(dashboard.stats, "escapes", side_effect=AssertionError("escape scan")),
+                mock.patch.object(dashboard.config, "engine_commit", return_value=None),
+                mock.patch.object(dashboard.config, "engine_drift", return_value=None),
+            ):
+                snapshot = dashboard.snapshot()
+
+        self.assertNotIn("risk", snapshot["metrics"])
 
 
 if __name__ == "__main__":

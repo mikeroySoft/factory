@@ -1154,7 +1154,12 @@ def snapshot() -> dict:
         ))
     tickets.sort(key=lambda t: t["number"], reverse=True)
     global _escape_tickets, _escape_tickets_loaded
-    if not _escape_tickets_loaded:
+    if not _escape_tickets_loaded and any(
+        ticket.get("risk_tier") in risk.TIERS
+        and ticket["pr"]
+        and ticket["pr"].get("merged_at")
+        for ticket in tickets
+    ):
         try:
             _escape_tickets = {
                 event["ticket"] for event in stats.escape_events(stats.escapes())
