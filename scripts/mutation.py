@@ -234,8 +234,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"incomplete: {len(queue)} mutants not started and {len(cut)} cut short by the "
               f"{deadline - started:.0f}s deadline")
     # cosmic-ray swallows its own failures (a mutation it could not write, a test command it
-    # could not launch) into INCOMPETENT results; those mean the tool broke, not that a mutant ran.
-    broken = [(m, r) for m, r in results if r.test_outcome == TestOutcome.INCOMPETENT]
+    # could not launch) into INCOMPETENT results. NO_TEST also leaves the sampled
+    # mutation untested; neither is evidence of a killed or surviving mutant.
+    broken = [
+        (m, r) for m, r in results
+        if r.test_outcome is None or r.test_outcome == TestOutcome.INCOMPETENT
+    ]
     if broken:
         mutation, result = broken[0]
         print(f"mutation check broke on {len(broken)} mutants; first at "

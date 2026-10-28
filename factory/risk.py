@@ -97,7 +97,7 @@ def _default_off_additions(base: str, head: str, path: str, cwd: Path | None) ->
     # to existing statements, executable annotations, else arms, and uncertain
     # syntax conservatively keep the ordinary Medium policy.
     flags: set[str] = set()
-    guarded = False
+    guarded: set[str] = set()
     covered: set[int] = set()
     for node in tree.body:
         span = set(range(node.lineno, node.end_lineno + 1))
@@ -118,7 +118,7 @@ def _default_off_additions(base: str, head: str, path: str, cwd: Path | None) ->
             isinstance(node, ast.If) and isinstance(node.test, ast.Name)
             and node.test.id in flags and not node.orelse
         ):
-            guarded = True
+            guarded.add(node.test.id)
         else:
             return False
         covered.update(span)
@@ -126,7 +126,7 @@ def _default_off_additions(base: str, head: str, path: str, cwd: Path | None) ->
         index for index, line in enumerate(source.splitlines(), 1)
         if index in added and line.strip() and not line.lstrip().startswith("#")
     }
-    return guarded and executable <= covered
+    return bool(guarded) and flags == guarded and executable <= covered
 
 
 def classify(
