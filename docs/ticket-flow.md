@@ -95,7 +95,7 @@ flowchart TB
   MAPP -->|"CI fail, late feedback, stale, rounds exhausted, HUMAN: manage.frontier_pass"| ESC
   FA -->|"late feedback or stale past stale_days, any manager.review mode: manage.frontier_pass"| ESC
   MAPP -.->|"CI cancel still treated as fail before approval: manage.frontier_pass"| ESC
-  PUSH -->|"agent/<n> push refused, remote moved since the lease was read: dispatch.push_agent"| ESC
+  PUSH -->|"agent/<n> push refused, remote moved since the lease was read or leased head absent from starting and final history: dispatch.push_agent"| ESC
   CLAIM -->|"any other dispatcher exception after the claim, then re-raised: dispatch.process_ticket"| ESC
   MAPP -->|"FIX or CLOSE: manage.apply"| MGR
   FA -->|"dispatch.pr_checks"| CI

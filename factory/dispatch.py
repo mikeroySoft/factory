@@ -2329,6 +2329,7 @@ def push_agent(wt: Path, n: int, lease: str, check: bool = True) -> str | None:
         and leased[0] == lease
         and run(["git", "merge-base", "--is-ancestor", lease, leased[1]], cwd=wt, check=False).returncode
         and run(["git", "merge-base", "--is-ancestor", leased[1], head], cwd=wt, check=False).returncode == 0
+        and run(["git", "merge-base", "--is-ancestor", lease, head], cwd=wt, check=False).returncode
     ):
         if not check:
             return None
