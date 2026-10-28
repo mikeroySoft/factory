@@ -2201,7 +2201,9 @@ def pr_gate_and_review(
         ok, pr_report = pr_runs[head]
         report = f"{report}\n{pr_report}"
         if not ok:
-            statuses = dict(re.findall(r"(?m)^- ([\w-]+): (PASS|FAIL|SKIP)", pr_report))
+            statuses = dict(re.findall(
+                r"(?m)^- ([\w-]+): (PASS|FAIL|SKIP)", pr_report.split("```", 1)[0],
+            ))
             mutation_only = (
                 policy_tier == "High"
                 and statuses.get("mutation") == "FAIL"
