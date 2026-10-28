@@ -988,7 +988,8 @@ def _record_gate_decision(
         for name, detail in failures
     ]
     chosen = "pass" if passed else failures[0][0] if failures else "gate failed"
-    report_sha256 = hashlib.sha256(report.encode()).hexdigest()
+    report_file = Path(report_path)
+    report_sha256 = hashlib.sha256(report_file.read_bytes()).hexdigest() if report_file.is_file() else None
     cause = _latest_decision_id(n, {"claim", "plan", "worker_select", "review", "manager"})
     payload = trace.decision(
         ticket=n,
@@ -3391,6 +3392,31 @@ def _certificate_source(row: dict | None, keys: tuple[str, ...]) -> dict:
     return {key: row.get(key) for key in keys} if row is not None else {}
 
 
+def _certificate_evidence_needs_refresh(events: list[dict], n: int, head: str) -> bool:
+    """Older approvals must earn fresh evidence, not acquire invented metadata."""
+    gate = next((
+        row for row in reversed(events) if row.get("ticket") == n and (
+            row.get("event") == "attempt" and row.get("head") == head
+            or row.get("event") == "refreshed" and row.get("gate_head") == head
+        )
+    ), None)
+    if gate is None or not gate.get("gate_decision_id"):
+        return True
+    decision = next((
+        row for row in reversed(events)
+        if row.get("event") == "decision" and row.get("stage") == "gate"
+        and row.get("ticket") == n and row.get("decision_id") == gate["gate_decision_id"]
+    ), None)
+    if decision is None or decision.get("head") != head or not decision.get("report_sha256"):
+        return True
+    review_decision = next((
+        row for row in reversed(events)
+        if row.get("event") == "decision" and row.get("stage") == "review"
+        and row.get("ticket") == n
+    ), None)
+    return review_decision is None or review_decision.get("head") != head
+
+
 def _certificate_checks(head: str, fallback: list[dict]) -> list[dict]:
     try:
         response = gh_json(["api", f"repos/{REPO}/commits/{head}/check-runs?per_page=100"])
@@ -3402,7 +3428,7 @@ def _certificate_checks(head: str, fallback: list[dict]) -> list[dict]:
             ]
             if checks:
                 return sorted(checks, key=lambda row: (str(row["name"]), str(row["id"])))
-    except (subprocess.CalledProcessError, json.JSONDecodeError, OSError, AssertionError):
+    except (subprocess.CalledProcessError, json.JSONDecodeError, OSError):
         pass
     conclusions = {
         "pass": "success", "skipping": "skipped", "cancel": "cancelled",
@@ -3473,11 +3499,9 @@ def write_merge_certificate(
     original_report = Path(original) if isinstance(original, str) else (
         Path(str(gate_decision.get("report_path"))) if gate_decision else None
     )
-    if original_report is not None and original_report.is_file():
+    if original_report is not None and original_report.is_file() and original_report != report_path:
         shutil.copyfile(original_report, report_path)
-    elif not report_path.exists():
-        report_path.write_bytes(b"")
-    report_digest = hashlib.sha256(report_path.read_bytes()).hexdigest()
+    report_digest = gate_decision.get("report_sha256") if gate_decision else None
 
     review_rows = [
         row for row in events
@@ -3873,6 +3897,15 @@ def merge_pass_locked(dry_run: bool) -> None:
                 )
                 execution.outcome, execution.reason = "project_escalation", "state_changed"
                 continue
+            if _certificate_evidence_needs_refresh(events, n, head):
+                record_merge_decision(
+                    n, pr_num, "refresh branch",
+                    "approval predates complete certificate evidence; earn a fresh gate and review",
+                    head, head, checks,
+                )
+                if refresh_pr_branch(n, pr_num, carries_upstream):
+                    execution.outcome = "refreshed"
+                return
             latest_checks = triage_cancelled(pr_num, pr_checks(pr_num), False, n, head)
             latest_failed = [c["name"] for c in latest_checks if c["bucket"] == "fail"]
             latest_starved = [c for c in latest_checks if c["bucket"] == "infra"]

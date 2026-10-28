@@ -108,6 +108,12 @@ def _worktree_config(root: Path) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _main_ref(root: Path) -> str:
+    raw = _worktree_config(root)
+    repo = raw.get("repo", {})
+    return repo.get("main", "main") if isinstance(repo, dict) else "main"
+
+
 def _version() -> str:
     text = Path(__file__).with_name("__init__.py").read_text()
     match = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE)
@@ -152,6 +158,13 @@ def _gh_pr(root: Path, repo: str, pr: int) -> dict:
     value = _json(["gh", "api", f"repos/{repo}/pulls/{pr}"], root)
     if not isinstance(value, dict):
         raise TypeError("PR response is not an object")
+    head, base = value.get("head"), value.get("base")
+    if (
+        not isinstance(head, dict) or not isinstance(base, dict)
+        or not isinstance(head.get("ref"), str) or not isinstance(head.get("sha"), str)
+        or not isinstance(base.get("ref"), str)
+    ):
+        raise TypeError("PR response is missing branch evidence")
     return value
 
 
@@ -162,8 +175,12 @@ def _gh_checks(root: Path, repo: str, head: str) -> list[dict]:
         raise TypeError("check-runs response is missing check_runs")
     checks = []
     for row in source:
-        if not isinstance(row, dict):
-            continue
+        if (
+            not isinstance(row, dict) or type(row.get("id")) is not int
+            or not isinstance(row.get("name"), str) or not isinstance(row.get("status"), str)
+            or row.get("conclusion") is not None and not isinstance(row["conclusion"], str)
+        ):
+            raise TypeError("check-run response is missing check evidence")
         checks.append({"id": row.get("id"), "name": row.get("name"), "conclusion": row.get("conclusion")})
         if row.get("status") != "completed":
             checks[-1]["conclusion"] = None
@@ -233,7 +250,7 @@ def verify_document(
 
     try:
         remote = _gh_pr(root, repo, pr)
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError):
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError, TypeError):
         return _failed("binding", "missing", "PR evidence")
     binding = premises.get("binding")
     merged = next((row for row in reversed(rows)
@@ -255,7 +272,10 @@ def verify_document(
         "base_sha": binding.get("base_sha") if isinstance(binding, dict) else None,
         "merge_method": method,
     }
-    if binding != expected_binding or expected_binding["head_ref"] != f"agent/{ticket}":
+    if (
+        binding != expected_binding or expected_binding["head_ref"] != f"agent/{ticket}"
+        or expected_binding["base_ref"] != _main_ref(root)
+    ):
         return _failed("binding", "forged", "ticket, PR, branch, base, or merge method differs")
 
     head_premise = premises.get("head")
@@ -348,7 +368,7 @@ def verify_document(
     ci_premise = premises.get("ci")
     try:
         checks = _gh_checks(root, repo, head)
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError):
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError, TypeError):
         return _failed("ci", "missing", "check-run evidence")
     if not checks or not any(row["conclusion"] in _PASS_CONCLUSIONS for row in checks):
         return _failed("ci", "missing", "no passing check run")
@@ -455,7 +475,7 @@ def _since(value: str) -> str:
 
 
 def audit(root: Path, repo: str, rows: list[dict], main: str, since: str) -> list[dict]:
-    output = _git(root, "log", "--first-parent", "--format=%H%x00%cI", f"--since={since}", main)
+    output = _git(root, "log", "--first-parent", "--format=%H%x00%cI", f"--since={since}", f"origin/{main}")
     commits = [line.split("\0", 1) for line in output.splitlines() if "\0" in line]
     certified_rows = [row for row in rows if row.get("event") == "merged" and row.get("certificate_sha256")]
     cutoff = min((str(row.get("at") or "") for row in certified_rows), default=None)
@@ -489,15 +509,17 @@ def main(argv: list[str]) -> int:
         value: object = verdict.value()
         code = 0 if verdict.status == "certified" else 1
     else:
-        raw = _worktree_config(root)
-        main_ref = raw.get("repo", {}).get("main", "main") if isinstance(raw.get("repo", {}), dict) else "main"
-        value = audit(root, repo, rows, main_ref, args.since)
+        try:
+            value = audit(root, repo, rows, _main_ref(root), args.since)
+        except (OSError, subprocess.SubprocessError):
+            value = [_failed("binding", "missing", "origin main history").value()]
         code = 1 if any(row["status"].startswith("failed:") for row in value) else 0
     if args.json:
         print(json.dumps(value, sort_keys=True, separators=(",", ":")))
     elif isinstance(value, list):
         for row in value:
-            print(f"{row['commit']} {row['status']}" + (f" {row['reason']}" if row.get("reason") else ""))
+            print((f"{row['commit']} " if row.get("commit") else "") + row["status"]
+                  + (f" {row['reason']}" if row.get("reason") else ""))
     else:
         print(value["status"] + (f" {value['reason']}" if value.get("reason") else ""))
     return code

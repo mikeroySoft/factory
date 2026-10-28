@@ -9,14 +9,14 @@ from unittest import mock
 from factory import certcheck, config, dispatch, watch
 
 try:
-    from test_certcheck_regression import MergeCertificateRegressionTest, canonical
+    import test_certcheck_regression as fixtures
 except ModuleNotFoundError:
-    from tests.test_certcheck_regression import MergeCertificateRegressionTest, canonical
+    from tests import test_certcheck_regression as fixtures
 
 
 class CertificateRepairTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.fixture = MergeCertificateRegressionTest(
+        self.fixture = fixtures.MergeCertificateRegressionTest(
             "test_approval_head_tamper_fails_and_unjournaled_main_commit_is_uncertified",
         )
         self.fixture.setUp()
@@ -28,7 +28,7 @@ class CertificateRepairTest(unittest.TestCase):
     def rewrite_certificate(self, mutate) -> None:
         document = json.loads(self.fixture.certificate.read_bytes())
         mutate(document)
-        data = canonical(document)
+        data = fixtures.canonical(document)
         self.fixture.certificate.write_bytes(data)
         self.fixture.events[-1]["certificate_sha256"] = hashlib.sha256(data).hexdigest()
         self.fixture.write_events()
