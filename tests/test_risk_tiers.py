@@ -205,6 +205,14 @@ class DefaultOffStructureTest(RiskTierTest):
         })
         self.assertEqual(tier, "Medium")
 
+    def test_classify_unrelated_false_assignment_is_not_a_flag_declaration(self) -> None:
+        tier, _ = self.classify({
+            "factory/optional.py": (
+                "__all__ = False\nENABLED = False\nif ENABLED:\n    register_feature()\n"
+            ),
+        })
+        self.assertEqual(tier, "Medium")
+
 
 if __name__ == "__main__":
     unittest.main()
