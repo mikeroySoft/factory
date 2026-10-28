@@ -110,22 +110,17 @@ class AddOnlyOverrideTest(unittest.TestCase):
     def test_escalation_names_failed_check_and_clearing_label(self) -> None:
         cases = {
             "- protected-tests: FAIL": (
-                "protected-tests failed; add factory-add-only-override "
-                "to authorize existing test changes"
+                "Failed check: `protected-tests`. "
+                "Add label `factory-add-only-override` to clear it."
             ),
             "- protected-paths: FAIL (add-only path removed or changed existing lines)": (
-                "add-only failed; add factory-add-only-override "
-                "to authorize existing add-only path changes"
+                "Failed check: `add-only`. "
+                "Add label `factory-add-only-override` to clear it."
             ),
         }
         for report, expected in cases.items():
-            with self.subTest(report=report), mock.patch.object(
-                dispatch, "escalate"
-            ) as escalate:
-                self.assertTrue(
-                    dispatch._escalate_protected_gate_failure(7, report, None)
-                )
-                self.assertEqual(escalate.call_args.args[1], expected)
+            with self.subTest(report=report):
+                self.assertEqual(dispatch._protected_gate_guidance(report), expected)
 
     def test_override_rejects_deletion_and_mode_change(self) -> None:
         for change in ("delete", "chmod"):

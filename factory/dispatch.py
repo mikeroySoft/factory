@@ -3948,26 +3948,17 @@ def transcript_usage(path: Path) -> dict:
     return usage
 
 
-def _escalate_protected_gate_failure(
-    n: int | str, report: str, logfile: Path | None,
-) -> bool:
-    if not (
-        "- protected-tests: FAIL" in report
-        or "- protected-paths: FAIL" in report
-    ):
-        return False
-    reason = (
-        "protected-tests failed; add factory-add-only-override to authorize existing test changes"
-        if "- protected-tests: FAIL" in report
-        else "add-only failed; add factory-add-only-override to authorize existing add-only path changes"
-        if "- protected-paths: FAIL (add-only" in report
-        else "protected-paths failed; add factory-protected-override to authorize protected path changes"
+def _protected_gate_guidance(report: str) -> str | None:
+    protected_tests = "- protected-tests: FAIL" in report
+    add_only = "- protected-paths: FAIL (add-only" in report
+    if not (protected_tests or "- protected-paths: FAIL" in report):
+        return None
+    check = "protected-tests" if protected_tests else "add-only" if add_only else "protected-paths"
+    label = (
+        LABEL_ADD_ONLY_OVERRIDE
+        if protected_tests or add_only else LABEL_PROTECTED_OVERRIDE
     )
-    escalate(
-        n, reason, logfile, extra="## Offending diff\n\n" + report,
-        code="protected_paths",
-    )
-    return True
+    return f"Failed check: `{check}`. Add label `{label}` to clear it."
 
 def process_ticket(
     issue: dict, budget_min: int, dry_run: bool, forced: bool = False,
@@ -4119,7 +4110,17 @@ def process_ticket(
                 )
                 if ok:
                     break
-                if _escalate_protected_gate_failure(n, report, logfile):
+                if guidance := _protected_gate_guidance(report):
+                    tests = "- protected-tests: FAIL" in report or "- protected-paths: FAIL (add-only" in report
+                    reason = (
+                        "worker removed or changed existing tests"
+                        if tests else "worker edited protected paths"
+                    )
+                    escalate(
+                        n, reason, logfile,
+                        extra=f"{guidance}\n\n## Offending diff\n\n{report}",
+                        code="protected_paths",
+                    )
                     return
                 if time.monotonic() > deadline:
                     escalate(n, f"wall-clock budget ({budget_min} min) exceeded", logfile, code="budget")
@@ -4208,7 +4209,17 @@ def process_ticket(
                     body=fresh.get("body") or "",
                     comments=fresh.get("comments"),
                 )
-                if _escalate_protected_gate_failure(n, report, logfile):
+                if guidance := _protected_gate_guidance(report):
+                    tests = "- protected-tests: FAIL" in report or "- protected-paths: FAIL (add-only" in report
+                    reason = (
+                        "worker removed or changed existing tests"
+                        if tests else "worker edited protected paths"
+                    )
+                    escalate(
+                        n, reason, logfile,
+                        extra=f"{guidance}\n\n## Offending diff\n\n{report}",
+                        code="protected_paths",
+                    )
                     return
                 if not ok:
                     stuck = report.startswith("worker stuck")
