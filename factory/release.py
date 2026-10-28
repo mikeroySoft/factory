@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -20,14 +21,66 @@ SEMVER = re.compile(r"v(\d+)\.(\d+)\.(\d+)\Z")
 JSON_BAR = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
 BAR = (("human_rate", "lower"), ("first_pass", "higher"))
 WORST = {"human_rate": 1.0, "first_pass": 0.0}
+PENDING = ("pending_tickets", "pending_human_touches", "pending_first_passes", "pending_attempts")
 
 
-def next_bar(bar: dict[str, float | int] | None, metrics: dict[str, float | int]) -> dict[str, float | int]:
-    """The bar moves halfway from the old bar (or the worst value) toward the measured release,
-    so it only rises, never jumps to one lucky window, and stays reachable."""
+def wilson(k: int, n: int) -> tuple[float, float] | None:
+    """Return the 95% Wilson score interval, or no estimate for an empty sample."""
+    if n == 0:
+        return None
+    z = 1.959963984540054
+    observed = k / n
+    denominator = 1 + z * z / n
+    center = (observed + z * z / (2 * n)) / denominator
+    radius = z * math.sqrt(observed * (1 - observed) / n + z * z / (4 * n * n)) / denominator
+    return max(0.0, center - radius), min(1.0, center + radius)
+
+
+def next_bar(
+    bar: dict[str, float | int] | None,
+    metrics: dict[str, float | int | None],
+    *,
+    bar_min_tickets: int,
+    bar_floor_human_rate: float,
+    bar_floor_first_pass: float,
+) -> dict[str, float | int]:
+    """Pool small windows and tighten halfway toward conservative confidence bounds."""
     old = bar or WORST
-    return {**{metric: round((old[metric] + metrics[metric]) / 2, 6) for metric, _ in BAR},
-            "tickets": metrics["tickets"]}
+
+    tickets = int(metrics["tickets"])
+    touches = int(metrics["human_touches"])
+    first_passes = int(metrics["first_passes"])
+    attempts = int(metrics["attempts"])
+    pooled = {
+        "pending_tickets": int(old.get("pending_tickets", 0)) + tickets,
+        "pending_human_touches": int(old.get("pending_human_touches", 0)) + touches,
+        "pending_first_passes": int(old.get("pending_first_passes", 0)) + first_passes,
+        "pending_attempts": int(old.get("pending_attempts", 0)) + attempts,
+    }
+    result: dict[str, float | int] = {
+        "human_rate": float(old["human_rate"]),
+        "first_pass": float(old["first_pass"]),
+        "tickets": tickets,
+        **pooled,
+    }
+    if bar is None or "pending_tickets" not in bar:
+        result["human_ticket_rate"] = float(metrics["human_ticket_rate"])
+    if pooled["pending_tickets"] < bar_min_tickets:
+        return result
+
+    human_bound = wilson(min(pooled["pending_human_touches"], pooled["pending_tickets"]),
+                         pooled["pending_tickets"])
+    first_bound = wilson(pooled["pending_first_passes"], pooled["pending_attempts"])
+    if human_bound is not None and human_bound[1] < result["human_rate"]:
+        result["human_rate"] = round(
+            max((result["human_rate"] + human_bound[1]) / 2, bar_floor_human_rate), 6
+        )
+    if first_bound is not None and first_bound[0] > result["first_pass"]:
+        result["first_pass"] = round(
+            min((result["first_pass"] + first_bound[0]) / 2, bar_floor_first_pass), 6
+        )
+    result.update({key: 0 for key in PENDING})
+    return result
 
 
 def _git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -46,14 +99,28 @@ def measure(cfg: config.Config, since: str | datetime) -> dict[str, float | int 
             if isinstance(row.get("at"), str) and _at(row["at"]) > start]
     tickets = {row["ticket"] for row in rows
                if row.get("event") == "merged" and type(row.get("ticket")) is int}
-    humans = {row["ticket"] for row in rows
-              if row.get("event") == "manage" and row.get("decision") == "HUMAN"
-              and type(row.get("ticket")) is int}
+    human_tickets = {row["ticket"] for row in rows
+                     if row.get("event") == "manage" and row.get("decision") == "HUMAN"
+                     and type(row.get("ticket")) is int}
+    human_decisions = {
+        ("decision", row["decision_id"]) if row.get("decision_id") else ("row", index)
+        for index, row in enumerate(rows)
+        if row.get("event") == "human-decision"
+    }
+    human_touches = len(human_decisions) + sum(
+        row.get("event") == "manage" and row.get("decision") == "HUMAN"
+        for row in rows
+    )
     attempts = [row for row in rows if row.get("event") == "attempt" and row.get("attempt") == 1]
+    first_passes = sum(row.get("gate") == "PASS" for row in attempts)
+    denominator = max(len(tickets), 1)
     return {
-        "human_rate": round(min(len(humans) / max(len(tickets), 1), 1.0), 6),
-        "first_pass": round(sum(row.get("gate") == "PASS" for row in attempts) / len(attempts), 6)
-        if attempts else None,
+        "human_rate": round(human_touches / denominator, 6),
+        "human_touches": human_touches,
+        "human_ticket_rate": round(min(len(human_tickets) / denominator, 1.0), 6),
+        "first_pass": round(first_passes / len(attempts), 6) if attempts else None,
+        "first_passes": first_passes,
+        "attempts": len(attempts),
         "tickets": len(tickets),
     }
 
@@ -90,14 +157,41 @@ def _bar(message: str) -> dict[str, float | int] | None:
     if not match:
         return None
     value = json.loads(match.group(1))
-    if not isinstance(value, dict) or set(value) != {"human_rate", "first_pass", "tickets"}:
-        raise ValueError("release tag JSON bar must contain human_rate, first_pass, and tickets")
+    required = {"human_rate", "first_pass", "tickets"}
+    allowed = required | set(PENDING) | {"human_ticket_rate"}
+    if not isinstance(value, dict) or not required <= set(value) or set(value) - allowed:
+        raise ValueError("release tag JSON bar has invalid fields")
+    pending = set(PENDING) & set(value)
+    if pending and pending != set(PENDING):
+        raise ValueError("release tag JSON bar has incomplete pending counts")
     if (type(value["human_rate"]) not in (int, float)
             or type(value["first_pass"]) not in (int, float)
-            or type(value["tickets"]) is not int):
+            or type(value["tickets"]) is not int
+            or any(type(value[key]) is not int for key in pending)
+            or ("human_ticket_rate" in value
+                and type(value["human_ticket_rate"]) not in (int, float))):
         raise ValueError("release tag JSON bar has invalid metric types")
-    return {"human_rate": float(value["human_rate"]), "first_pass": float(value["first_pass"]),
-            "tickets": value["tickets"]}
+    result: dict[str, float | int] = {
+        "human_rate": float(value["human_rate"]),
+        "first_pass": float(value["first_pass"]),
+        "tickets": value["tickets"],
+    }
+    result.update({key: value[key] for key in PENDING if key in value})
+    if "human_ticket_rate" in value:
+        result["human_ticket_rate"] = float(value["human_ticket_rate"])
+    return result
+
+
+def _reset_legacy_bar(
+    bar: dict[str, float | int] | None, cfg: config.Config
+) -> tuple[dict[str, float | int] | None, bool]:
+    if bar is None or "pending_tickets" in bar:
+        return bar, False
+    return {
+        **bar,
+        "human_rate": max(float(bar["human_rate"]), cfg.release_bar_floor_human_rate),
+        "first_pass": min(float(bar["first_pass"]), cfg.release_bar_floor_first_pass),
+    }, True
 
 
 def _gh(cfg: config.Config, endpoint: str, *args: str) -> Any:
@@ -178,6 +272,22 @@ def _record(cfg: config.Config, outcome: str, reason: str, metrics: dict[str, fl
     if getattr(dispatch, "cfg", None) is not cfg:
         dispatch.configure(cfg)
     dispatch.record("release", outcome=outcome, reason=reason, metrics=metrics, bar=bar, **fields)
+
+
+def _record_hold(
+    cfg: config.Config,
+    reason: str,
+    metrics: dict[str, float | int | None],
+    bar: dict[str, float | int],
+) -> None:
+    duplicate = any(
+        row.get("event") == "release"
+        and row.get("outcome") == "held"
+        and row.get("bar") == bar
+        for row in lifecycle.read_events(cfg.factory / "events.jsonl")
+    )
+    if not duplicate:
+        _record(cfg, "held", reason, metrics, bar)
 
 
 def _finish(cfg: config.Config, dry_run: bool, reason: str, metrics: dict[str, float | int | None] | None,
@@ -325,7 +435,9 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
     `open_pr=False` (the dispatcher's start-of-pass call) a new release PR is never opened."""
     metrics: dict[str, float | int | None] | None = None
     bar: dict[str, float | int] | None = None
+    comparison_bar: dict[str, float | int] | None = None
     latest_tag: str | None = None
+    bar_reset = False
     try:
         _git(cfg.root, "fetch", "--quiet", "--tags", "origin")
         latest = _latest(cfg)
@@ -336,6 +448,7 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
         if not dry_run and _unpublished(cfg, latest_tag):
             _publish(cfg, latest_tag)
         bar = _bar(latest["message"])
+        comparison_bar, bar_reset = _reset_legacy_bar(bar, cfg)
         current = _version_at(cfg, f"origin/{cfg.main}")
         if current > latest["version"]:
             version = ".".join(map(str, current))
@@ -350,12 +463,25 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
             if not commit:
                 raise ValueError(f"cannot find commit that set version {version}")
             reason = _reason(
-                f"would tag {tag} and advance stable" if dry_run else f"released {tag}", metrics, bar)
+                f"would tag {tag} and advance stable" if dry_run else f"released {tag}",
+                metrics, comparison_bar)
             if dry_run:
                 return _finish(cfg, True, reason, metrics, bar, latest_tag)
+            reset_note = (
+                f"Release bar reset to floors: human rate {cfg.release_bar_floor_human_rate}, "
+                f"first pass {cfg.release_bar_floor_first_pass}.\n\n"
+                if bar_reset else ""
+            )
+            updated_bar = next_bar(
+                comparison_bar,
+                metrics,
+                bar_min_tickets=cfg.release_bar_min_tickets,
+                bar_floor_human_rate=cfg.release_bar_floor_human_rate,
+                bar_floor_first_pass=cfg.release_bar_floor_first_pass,
+            )
             message = (f"Release {version}: {metrics['tickets']} tickets, human rate "
                        f"{metrics['human_rate']}, first pass {metrics['first_pass']}.\n\n"
-                       f"```json\n{json.dumps(next_bar(bar, metrics), separators=(',', ':'))}\n```")
+                       f"{reset_note}```json\n{json.dumps(updated_bar, separators=(',', ':'))}\n```")
             _git(cfg.root, "tag", "-d", tag, check=False)
             _git(cfg.root, "tag", "-a", tag, commit, "-m", message)
             pushed = False
@@ -436,13 +562,18 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
         if metrics["first_pass"] is None:
             return _finish(cfg, dry_run, _reason(
                 f"no first-attempt evidence since {latest_tag}", metrics, bar), metrics, bar, latest_tag)
-        if bar:
+        if comparison_bar:
             for metric, direction in BAR:
-                worse = metrics[metric] > bar[metric] if direction == "lower" else metrics[metric] < bar[metric]
+                worse = (metrics[metric] > comparison_bar[metric] if direction == "lower"
+                         else metrics[metric] < comparison_bar[metric])
                 if worse:
-                    return _finish(cfg, dry_run, _reason(
-                        f"{metric} {metrics[metric]} is worse than {bar[metric]} ({direction} is better)",
-                        metrics, bar), metrics, bar, latest_tag)
+                    reason = _reason(
+                        f"{metric} {metrics[metric]} is worse than "
+                        f"{comparison_bar[metric]} ({direction} is better)",
+                        metrics, comparison_bar)
+                    if not dry_run:
+                        _record_hold(cfg, reason, metrics, comparison_bar)
+                    return _finish(cfg, dry_run, reason, metrics, bar, latest_tag)
         if not ci_passes(cfg, head):
             return _finish(cfg, dry_run, _reason(
                 f"CI statuses/check-runs are not all successful for {head}", metrics, bar),

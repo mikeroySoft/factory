@@ -429,15 +429,22 @@ reports closures without applying them.
 ## Automatic releases
 
 `[release] auto = true` runs the release check at the start and end of each
-dispatcher pass. `version_file` defaults to `factory/__init__.py` and `min_tickets` to 5.
-The annotated tag's fenced JSON records `human_rate` (distinct tickets with a
-manager HUMAN decision divided by distinct merged tickets, capped at 1; lower
-is better), `first_pass` (PASS journal rows among attempt-1 rows; higher is
-better), and `tickets`; a tag without that block resets the comparison bar. A
-window without attempt-1 evidence is held rather than scored as zero. Each
-release records a bar halfway between the previous bar (or the worst values,
-human rate 1 and first pass 0) and what it measured, so the bar only rises and
-never jumps to one lucky window. Factory requires every bar metric to be no
+dispatcher pass. `version_file` defaults to `factory/__init__.py`, `min_tickets`
+to 5, and `bar_min_tickets` to 20. `bar_floor_human_rate` defaults to 0.10 and
+`bar_floor_first_pass` to 0.90.
+
+The annotated tag's fenced JSON records `human_rate` (manager `HUMAN` and
+`human-decision` rows divided by distinct merged tickets, uncapped; lower is
+better), `first_pass` (PASS journal rows among attempt-1 rows; higher is better),
+and `tickets`. The first tag written by this behavior also records the former
+distinct-ticket metric as `human_ticket_rate`. Windows below `bar_min_tickets`
+retain their raw pending counts in the tag; a later release pools those counts.
+Once the pooled sample reaches the minimum, each bar moves halfway toward the
+95% Wilson upper bound for human rate or lower bound for first pass, without
+tightening past its configured floor. A legacy tag's bar is reset once to those
+floors. A tag without a fenced bar resets the comparison, and a window without
+attempt-1 evidence is held rather than scored as zero. Factory requires every
+bar metric to be no
 worse, all completed CI statuses and check runs on `origin/<main>` to pass
 (`success`, `skipped`, and `neutral` check conclusions pass), and `factory gate
 --tier release` to pass in a temporary worktree. It then bumps the patch
@@ -464,8 +471,9 @@ union-merge), and opens a new one only at the end of a pass. Each pass derives
 its state from remote branches, remote tags, and PRs (only a pending GitHub Release is read from the journal), so crashes need no local recovery file. Temporary worktrees are removed,
 and local-only or stale local tags are ignored and removed before reuse. A
 completed release journals one `release` row with outcome `released`, then one
-with `published` (or `publish_failed` per failed attempt); held reasons go to the
-dispatcher log.
+with `published` (or `publish_failed` per failed attempt). A quality-bar hold
+journals one `release` row with outcome `held`; later passes suppress another
+row until the bar value changes.
 
 Routing distinguishes absent optional information from invalid declarations. A missing
 ticket `Decision owner` section permits fallback; an empty or malformed section stops
