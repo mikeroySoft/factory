@@ -42,13 +42,18 @@ def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
     Mirrors every reason `manage.escalation_pass` will never run the manager again.
     """
     r = escalation.get("round", 0)
+    ticket = escalation.get("ticket")
+    round_events = dispatch._current_round_events(events, ticket) if type(ticket) is int else events
     if not cfg.manager:
         return "no manager is configured, so nothing recovers automatically"
     if escalation.get("pr"):
         return "review-intake escalations are never managed; the opted-in PR needs a human review decision"
     if not 1 <= r <= cfg.manager_rounds:
         return f"the manager's {cfg.manager_rounds} allowed round(s) are exhausted"
-    decided = [e for e in events if e.get("event") == "manage" and e.get("round") == r and not e.get("pr")]
+    decided = [
+        e for e in round_events
+        if e.get("event") == "manage" and e.get("round") == r and not e.get("pr")
+    ]
     if not decided:
         if not Path(escalation["packet"]).is_file():
             return "the escalation packet is missing on the runner, so the manager cannot run"
@@ -57,7 +62,8 @@ def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
             # Without its own comment receipt the factory cannot tell its escalation comment from a human's.
             return "the escalation comment was not journaled, so takeover detection cannot clear the manager to run"
         return None
-    if any(e.get("event") == "escalate" and e.get("reason") == "manager_failed" and e.get("round") == r for e in events):
+    if any(e.get("event") == "escalate" and e.get("reason") == "manager_failed"
+           and e.get("round") == r for e in round_events):
         return "the manager could not run, so there is no automatic diagnosis; the cause is unknown until a human looks"
     if any(e.get("decision") == "HUMAN" for e in decided):
         return "the manager asked for a human decision"
@@ -174,7 +180,8 @@ def handoff_pass(dry_run: bool = False) -> None:
                 execution.resource("acquired", lock_path, scope="repository")
             try:
                 events = [e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("ticket") == n]
-                escalation = next((e for e in reversed(events) if e.get("event") == "escalate"
+                round_events = dispatch._current_round_events(events, n)
+                escalation = next((e for e in reversed(round_events) if e.get("event") == "escalate"
                                    and e.get("reason") != "manager_failed"), None)
                 if not escalation or escalation.get("upstream") or not escalation.get("packet"):
                     continue
@@ -188,8 +195,15 @@ def handoff_pass(dry_run: bool = False) -> None:
                     continue
                 r = escalation.get("round", 0)
                 request = f"{n}/{r}"
-                receipts = [e for e in events if e.get("event") == "comment" and e.get("kind") == "handoff" and e.get("request") == request]
-                intents = [e for e in events if e.get("event") == "handoff" and e.get("request") == request]
+                receipts = [
+                    e for e in round_events
+                    if e.get("event") == "comment" and e.get("kind") == "handoff"
+                    and e.get("request") == request
+                ]
+                intents = [
+                    e for e in round_events
+                    if e.get("event") == "handoff" and e.get("request") == request
+                ]
                 pending = [i for i in intents if not any(p.get("token") == i["token"] for p in receipts)]
                 if pending:
                     # Uncertain publication: only GitHub can say whether the comment exists.
@@ -225,7 +239,7 @@ def handoff_pass(dry_run: bool = False) -> None:
                     continue
                 intent = next((i for i in pending if i["target"] == current), None)
                 if intent is None:
-                    token = f"{MARK} {request} #{len(intents) + 1}"
+                    token = f"{MARK} {request} {escalation['at']} #{len(intents) + 1}"
                     dispatch.record("handoff", ticket=n, round=r, request=request, token=token, target=current, why=why,
                                     route={k: route.get(k) for k in ("status", "owner", "candidates", "source", "reason")})
                 else:

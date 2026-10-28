@@ -602,12 +602,15 @@ Manager executions and ticket-lock waits use the lifecycle journal. If a GitHub
 mutation fails, the execution records a terminal failure and the ticket remains
 with the human; other tickets can proceed. The consumed round is not replayed,
 because a partial rewrite or split may already have changed GitHub.
-The guarded human `requeue_agent` action records a `rounds-reset` event with the
-ticket, authenticated actor, and requeue time after the label change succeeds.
-Manager final-review rounds, reviewer bounces, refresh-conflict rounds, and
-refresh-gate resolution rounds count only events after the latest reset, giving
-the owner one fresh budget. Manager and dispatcher requeues do not record this
-event and therefore cannot renew their own budgets.
+A successful guarded human `requeue_agent` action records a `rounds-reset`
+event with the ticket, authenticated actor, and requeue time after the label
+change succeeds. When an owner instead comments and directly relabels a
+`ready-for-human` ticket to `ready-for-agent`, the dispatcher records the same
+event from the GitHub timeline before claiming it. Manager final-review and
+escalation-recovery rounds, refresh-conflict rounds, and refresh-gate resolution
+rounds count only events after the latest reset. Reviewer bounces already start
+with a full budget on every dispatch. Manager and dispatcher requeues neither
+record a reset nor renew persisted budgets.
 
 
 ### Routed human handoffs

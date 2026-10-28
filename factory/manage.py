@@ -924,11 +924,15 @@ def frontier_pass(dry_run: bool = False) -> None:
                 if cfg.manager_review != "all" or approved or not dispatch._head_evidence_matches(events, n, head) \
                             or dispatch.manager_approval(events, n, head):
                     continue
+                all_decided = [
+                    e for e in events
+                    if e.get("event") == "manage" and e.get("pr") == number
+                ]
                 decided = [
                     e for e in dispatch._current_round_events(events, n)
                     if e.get("event") == "manage" and e.get("pr") == number
                 ]
-                if any(e.get("head") == head for e in decided):
+                if any(e.get("head") == head for e in all_decided):
                     continue  # one decision per head; a non-APPROVE decision already acted
                 if len(decided) >= cfg.manager_rounds:
                     if dry_run:
@@ -1032,14 +1036,16 @@ def escalation_pass(dry_run: bool = False) -> None:
                 execution.resource("acquired", lock_path, scope="repository")
             try:
                 events = [e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("ticket") == n]
-                escalation = next((e for e in reversed(events) if e.get("event") == "escalate"
+                round_events = dispatch._current_round_events(events, n)
+                escalation = next((e for e in reversed(round_events) if e.get("event") == "escalate"
                                    and e.get("reason") != "manager_failed"), None)
                 if not escalation or escalation.get("upstream") or escalation.get("pr") or not escalation.get("packet"):
                     continue
                 round_number = escalation.get("round", 0)
                 # The PR frontier numbers its own `manage` rows (with `pr`) per PR; they never spend an escalation round.
                 if not 1 <= round_number <= cfg.manager_rounds or any(
-                    e.get("event") == "manage" and e.get("round") == round_number and not e.get("pr") for e in events
+                    e.get("event") == "manage" and e.get("round") == round_number and not e.get("pr")
+                    for e in round_events
                 ):
                     continue
                 packet = Path(escalation["packet"])

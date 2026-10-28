@@ -892,6 +892,65 @@ def _current_round_events(events: list[dict], ticket: int) -> list[dict]:
     )
     return rows[reset + 1:]
 
+def _record_human_round_reset(n: int) -> None:
+    """Journal a direct owner requeue that did not pass through a Factory action."""
+    events = [event for event in lifecycle.read_events(EVENTS) if event.get("ticket") == n]
+    escalation_index = next((
+        index for index in range(len(events) - 1, -1, -1)
+        if events[index].get("event") == "escalate"
+        and events[index].get("reason") != "manager_failed"
+    ), None)
+    if escalation_index is None or any(
+        event.get("event") == "rounds-reset" for event in events[escalation_index + 1:]
+    ):
+        return
+    if any(
+        event.get("event") in {"conflict-requeue", "gate-requeue", "risk-requeue"}
+        or (
+            event.get("event") == "manage"
+            and not event.get("pr")
+            and event.get("decision") != "HUMAN"
+        )
+        for event in events[escalation_index + 1:]
+    ):
+        return
+
+    from factory import handoff
+
+    timeline = handoff.timeline(n)
+    release_index = next((
+        index for index in range(len(timeline) - 1, -1, -1)
+        if timeline[index].get("event") == "labeled"
+        and timeline[index].get("label", {}).get("name") == LABEL_AGENT
+        and timeline[index].get("created_at", "") >= events[escalation_index].get("at", "")
+    ), None)
+    if release_index is None:
+        return
+    human_index = next((
+        index for index in range(release_index - 1, -1, -1)
+        if timeline[index].get("event") == "labeled"
+        and timeline[index].get("label", {}).get("name") == LABEL_HUMAN
+        and timeline[index].get("created_at", "") >= events[escalation_index].get("at", "")
+    ), None)
+    if human_index is None:
+        return
+    machine_comments = {
+        event["comment"] for event in events
+        if event.get("event") == "comment" and type(event.get("comment")) is int
+    }
+    decision = next((
+        item for item in reversed(timeline[human_index + 1:release_index])
+        if item.get("event") == "commented" and item.get("id") not in machine_comments
+    ), None)
+    if decision is None:
+        return
+    release = timeline[release_index]
+    actor = (release.get("actor") or {}).get("login") or (decision.get("user") or {}).get("login")
+    requeued_at = release.get("created_at")
+    if not actor or not requeued_at:
+        return
+    record("rounds-reset", ticket=n, actor=actor, requeued_at=requeued_at)
+
 
 def _decision_actor(kind: str, name: str, *, model: str | None = None) -> dict:
     return {"kind": kind, "name": name, "model": model, "version": __version__}
@@ -1639,7 +1698,7 @@ def escalation_packet(
     extra: str = "",
 ) -> tuple[Path, int]:
     events = lifecycle.read_events(EVENTS)
-    ticket_events = [event for event in events if event.get("ticket") == n]
+    ticket_events = _current_round_events(events, n)
     attempts = [event for event in ticket_events if event.get("event") == "attempt"]
     rows = [
         f"| {event.get('attempt', '')} | {event.get('gate') or 'not run'} | "
@@ -4098,6 +4157,7 @@ def process_ticket(
                 execution.reason = "state_changed"
                 return
             labels = {label["name"] for label in fresh["labels"]}
+            _record_human_round_reset(n)
             if not forced and shutil.which(worker) is None:
                 # Frontier claims only: `--ticket` is an operator's explicit ask and fails loudly.
                 # ponytail: PATH probe only; a binary swapped out between here and Popen still
@@ -4209,13 +4269,6 @@ def process_ticket(
                 return
             lease = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
             execution.review_round = 1
-            review_rounds_used = sum(
-                event.get("event") == "review"
-                and event.get("role") in {None, "primary"}
-                and event.get("accepted") is True
-                and event.get("verdict") == "REVISE"
-                for event in _current_round_events(lifecycle.read_events(EVENTS), n)
-            )
             pr_runs: dict[str, tuple[bool, str]] = {}
             record_risk(wt, n, gate_head)
             verdict, findings, pr_failed = pr_gate_and_review(wt, n, report, gate_head, pr_runs)
@@ -4242,7 +4295,7 @@ def process_ticket(
                 return
             # Each REVISE (or pr-tier FAIL) uses the normal bounce budget. A first
             # High-risk disagreement always gets one rework, even when that budget is spent.
-            for bounce in range(review_rounds_used + 1, cfg.review_rounds + 2):
+            for bounce in range(1, cfg.review_rounds + 2):
                 if verdict == "APPROVE" or (
                     bounce > cfg.review_rounds and risk_disagreement_head is None
                 ):

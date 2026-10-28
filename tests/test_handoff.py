@@ -304,6 +304,24 @@ class HandoffCli(unittest.TestCase):
             [("HUMAN", 1), ("RETRY", 1)],
         )
 
+    def test_terminal_escalation_after_reset_publishes_a_new_handoff(self) -> None:
+        self.configure(rounds=1)
+        self.manage(mode="HUMAN")
+        dispatch.configure(config.load(self.repo))
+        dispatch.record(
+            "rounds-reset", ticket=7, actor="alice",
+            requeued_at="2026-01-01T00:04:00Z",
+        )
+        self.escalate(
+            "gate failed after the fresh budget", 1,
+            at="2026-01-01T00:05:00Z",
+        )
+
+        self.manage(mode="HUMAN")
+
+        self.assertEqual(len(self.requests()), 2)
+        self.assertEqual([e["request"] for e in self.events("handoff")], ["7/1", "7/1"])
+
     def test_review_intake_escalation_gets_a_handoff_request(self) -> None:
         # #204 (b): `review_intake_pass` escalates an opted-in PR into a new `ready-for-human` issue with a
         # `pr`-bearing row and no escalation comment; the manager never runs on it, so the handoff pass must post.
