@@ -401,7 +401,15 @@ def verify_document(
         return _failed("risk_tier", "forged", "risk tier is not text or null")
 
     policy = premises.get("policy")
-    if not isinstance(binding, dict) or policy != _policy(root, binding.get("base_sha", ""), repo):
+    expected_policy = (
+        _policy(root, binding.get("base_sha", ""), repo)
+        if isinstance(binding, dict) else {}
+    )
+    historical_keys = ("base_sha", "config_sha256", "review_policy")
+    if not isinstance(policy, dict) or (
+        policy != expected_policy if pre_merge
+        else any(policy.get(key) != expected_policy.get(key) for key in historical_keys)
+    ):
         return _failed("policy", "forged", "policy digest or named values differ")
     if manager_premise.get("policy") != policy.get("manager_review"):
         return _failed("manager", "forged", "manager premise differs from policy")

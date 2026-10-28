@@ -90,6 +90,38 @@ class MergeCertificateTest(unittest.TestCase):
         )
         self.assertEqual(verdict.status, "certified", verdict.reason)
 
+    def test_upstream_sync_records_real_gate_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, _origin, upstream = build_fork(Path(directory))
+            (upstream / "upstream.txt").write_text("upstream\n")
+            git(upstream, "add", "upstream.txt")
+            git(upstream, "commit", "-qm", "upstream")
+            cfg = config.Config(root, "acme/widgets", upstream="upstream", main="main")
+            with mock.patch.object(config, "remote_slug", return_value="acme/upstream-widgets"):
+                dispatch.configure(cfg)
+            real_run = dispatch.run
+
+            def run(cmd, **kwargs):
+                if cmd[0] == "gh":
+                    return subprocess.CompletedProcess(
+                        cmd, 0, "https://github.com/acme/widgets/issues/42\n", "",
+                    )
+                return real_run(cmd, **kwargs)
+
+            report_text = "# Gate\n- test: PASS\n"
+            with mock.patch.object(dispatch, "gh_json", return_value=[]), \
+                    mock.patch.object(dispatch, "run", side_effect=run), \
+                    mock.patch.object(dispatch, "run_gate", return_value=(True, report_text)):
+                dispatch.sync_pass(False)
+
+            rows = lifecycle.read_events(dispatch.EVENTS)
+            attempt = next(row for row in rows if row.get("event") == "attempt")
+            decision = next(row for row in rows if row.get("stage") == "gate")
+            report = Path(attempt["report_path"])
+            self.assertEqual(attempt["gate_decision_id"], decision["decision_id"])
+            self.assertEqual(report.read_text(), report_text)
+            self.assertEqual(attempt["report_sha256"], hashlib.sha256(report.read_bytes()).hexdigest())
+
     def merge_case(self, certify: str, checker_code: int) -> tuple[list[list[str]], mock.Mock, config.Config]:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
