@@ -16,11 +16,13 @@ class RiskStatsTest(unittest.TestCase):
                 "ticket": 1, "state": "merged", "risk_tier": "Low",
                 "escalation_count": 0, "ready_for_human_minutes": 0,
                 "review_rounds": 1, "escalation_codes": [],
+                "rework_rounds": 1,
             },
             {
                 "ticket": 2, "state": "merged", "risk_tier": "High",
                 "escalation_count": 1, "ready_for_human_minutes": 12,
                 "review_rounds": 2,
+                "rework_rounds": 2,
                 "escalation_codes": [("2026-10-27T00:00:00+00:00", "risk_disagreement")],
             },
         ]
@@ -39,6 +41,49 @@ class RiskStatsTest(unittest.TestCase):
         self.assertEqual(stats.rework_rounds(reviews), 0)
         reviews.append({"event": "review", "role": "primary"})
         self.assertEqual(stats.rework_rounds(reviews), 1)
+
+    def test_review_comments_and_rework_rounds_stay_separate(self) -> None:
+        audit = {
+            1: [
+                {"event": "risk", "tier": "Medium"},
+                {"event": "review", "role": "primary"},
+                {"event": "review", "role": "primary"},
+            ],
+        }
+        pull = {
+            "number": 10, "state": "MERGED", "headRefName": "agent/1",
+            "mergedAt": "2026-10-27T01:00:00+00:00",
+        }
+        details = {
+            "number": 1, "title": "ticket", "state": "CLOSED",
+            "createdAt": "2026-10-27T00:00:00+00:00", "closedAt": None,
+            "comments": [],
+        }
+
+        def github(*args: str):
+            if args[:2] == ("pr", "list"):
+                return [pull]
+            if args[:2] == ("issue", "list"):
+                return []
+            if args[:2] == ("issue", "view"):
+                return details
+            if args[:2] == ("pr", "view"):
+                return {"comments": [{"body": "VERDICT:"}, {"body": "VERDICT:"}]}
+            if args[0] == "api":
+                return []
+            self.fail(f"unexpected gh call: {args}")
+
+        with tempfile.TemporaryDirectory() as directory:
+            stats.configure(config.Config(Path(directory), "acme/widgets"))
+            with mock.patch.object(stats, "audit_by_ticket", return_value=audit), \
+                 mock.patch.object(stats, "gh", side_effect=github), \
+                 mock.patch.object(stats, "dispatcher_login", return_value=""), \
+                 mock.patch.object(stats.feedback, "correction_reads", return_value={10: []}):
+                row, = stats.collect_rows()
+
+        self.assertEqual(row["review_rounds"], 2)
+        self.assertEqual(row["rework_rounds"], 1)
+        self.assertEqual(stats.risk_metrics([row])["Medium"]["rounds_to_pass"], 1.0)
 
     def test_dashboard_reports_metrics_by_recorded_tier(self) -> None:
         tickets = []

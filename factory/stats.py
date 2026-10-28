@@ -467,7 +467,7 @@ def risk_metrics(
             "ready_for_human_minutes_per_merged_pr": ratio(sum(
                 row.get("ready_for_human_minutes", 0) for row in merged
             )),
-            "rounds_to_pass": ratio(sum(row.get("review_rounds", 0) for row in merged)),
+            "rounds_to_pass": ratio(sum(row.get("rework_rounds", 0) for row in merged)),
             "risk_disagreements_per_merged_pr": ratio(disagreements),
             "escape_rate": ratio(escaped) if escaped is not None else None,
         }
@@ -578,7 +578,7 @@ def collect_rows(progress: bool = False) -> list[dict[str, Any]]:
         row["review_findings"] = review_findings(audit.get(number, []))
         row["risk_tier"] = risk_tier(audit.get(number, []))
         if any(event.get("event") == "review" for event in audit.get(number, [])):
-            row["review_rounds"] = rework_rounds(audit.get(number, []))
+            row["rework_rounds"] = rework_rounds(audit.get(number, []))
 
     return [rows[number] for number in sorted(rows)]
 
