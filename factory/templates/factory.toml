@@ -121,6 +121,12 @@
 # profile = "default"
 # schedule = false
 
+[merge]
+# `audit` writes a certificate for every dispatcher merge and lets the daily
+# watch audit report failures. `enforce` also runs the installed independent
+# checker before `gh pr merge`; failure withdraws `factory-approved`.
+# certify = "audit"
+
 [gate]
 # timeout = 1200                      # seconds per check; a wedged check FAILs
 # lock = "/tmp/factory.lock"          # host-wide lock held by `exclusive` checks
