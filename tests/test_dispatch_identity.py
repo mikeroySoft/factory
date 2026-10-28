@@ -222,6 +222,22 @@ class AgentPushLeaseTest(unittest.TestCase):
             dispatch.push_agent(self.wt, 7, self.fetched)
         self.assertEqual(self.remote("agent/7"), moved)
 
+    def test_lease_is_the_unchanged_remote_head_missing_from_worktree_history(self) -> None:
+        self.git(self.wt, "checkout", "-q", "--orphan", "stale")
+        self.commit(self.wt, "stale local head")
+        lease = dispatch.agent_lease(self.wt, 7)
+        worker_head = self.commit(self.wt, "worker history rewrite", "--amend")
+        self.assertEqual(lease, self.fetched)
+        self.assertEqual(dispatch.push_agent(self.wt, 7, lease), worker_head)
+        self.assertEqual(self.remote("agent/7"), worker_head)
+
+    def test_refusal_names_leased_and_current_remote_heads(self) -> None:
+        moved = self.someone_else_pushes()
+        with self.assertRaises(dispatch.LeaseRefused) as raised:
+            dispatch.push_agent(self.wt, 7, self.fetched)
+        self.assertIn(self.fetched[:12], str(raised.exception))
+        self.assertIn(moved[:12], str(raised.exception))
+
     def test_lease_taken_before_the_worker_never_admits_an_unseen_push(self) -> None:
         self.assertEqual(dispatch.agent_lease(self.wt, 7), self.fetched)
         self.assertEqual(dispatch.agent_lease(self.wt, 8), "")  # not on the remote: must not exist
