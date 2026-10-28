@@ -2143,7 +2143,11 @@ PY
                     mock.patch.object(dispatch, "escalate") as escalate:
                 dispatch.process_ticket(issue, 5, False)
             escalate.assert_called_once()
-            self.assertEqual(escalate.call_args.args[1], "worker removed or changed existing tests")
+            self.assertEqual(
+                escalate.call_args.args[1],
+                "add-only failed; add factory-add-only-override "
+                "to authorize existing add-only path changes",
+            )
             self.assertIn("-assert True", escalate.call_args.kwargs["extra"])
 
     def test_red_ci_pr_is_fixed_relabelled_and_merged_on_the_next_pass(self) -> None:

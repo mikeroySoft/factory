@@ -184,8 +184,9 @@ event. `{}` is a runtime value.
 
 | Code | Reason | Edge |
 |------|--------|------|
-| `dispatch.process_ticket` | ``worker edited protected paths`` | worker round → escalate |
-| `dispatch.process_ticket` | ``worker removed or changed existing tests`` | worker round → escalate (add-only path) |
+| `dispatch._escalate_protected_gate_failure` | ``protected-tests failed; add factory-add-only-override to authorize existing test changes`` | worker round → escalate (bug-ticket existing-test check) |
+| `dispatch._escalate_protected_gate_failure` | ``add-only failed; add factory-add-only-override to authorize existing add-only path changes`` | worker round → escalate (add-only path check) |
+| `dispatch._escalate_protected_gate_failure` | ``protected-paths failed; add factory-protected-override to authorize protected path changes`` | worker round → escalate (protected path check) |
 | `dispatch.process_ticket` | ``wall-clock budget ({} min) exceeded`` | worker round → escalate |
 | `dispatch.process_ticket` | ``gate failed {} times; worktree kept at {}`` | worker round → escalate |
 | `dispatch.process_ticket` | ``idle_timeout fired (worker stuck) on attempt {}; worktree kept at {}`` | worker round → escalate |

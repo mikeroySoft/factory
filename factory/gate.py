@@ -696,7 +696,9 @@ def execute(args: argparse.Namespace, execution) -> int:
                                   "## protected-paths failure\n\n```diff\n" + detail + "\n```\n")
                 print(f"report: {report}\ngate FAIL: protected-paths")
                 return 1
-        if args.bug and not (args.protected_override or args.test_override):
+        if args.bug and not (
+            args.protected_override or args.test_override or args.add_only_override
+        ):
             passed, detail = check_existing_tests(args.base)
             if not passed:
                 execution.outcome, execution.reason = "project_escalation", "protected_tests"
