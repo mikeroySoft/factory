@@ -226,6 +226,38 @@ class CertificateEvidenceRefreshTest(unittest.TestCase):
         )
         self.assertEqual(json.loads(verdict.stdout)["status"], "certified")
 
+    def test_incomplete_metadata_waits_for_final_ci_and_human_veto_before_refresh(self) -> None:
+        pr = {
+            "number": 70, "headRefName": "agent/7", "headRefOid": self.fixture.head,
+            "baseRefName": "main", "isDraft": False, "state": "OPEN",
+            "labels": [{"name": config.LABEL_APPROVED}], "reviewDecision": "APPROVED",
+        }
+        passing = [{"name": "test", "bucket": "pass"}]
+        for condition in ("pending", "human-veto"):
+            with self.subTest(condition=condition):
+                views = [pr, {**pr, "reviewDecision": "CHANGES_REQUESTED"}]
+
+                def gh_json(args):
+                    if args[:2] == ["pr", "list"]:
+                        return [pr]
+                    if args[:2] == ["pr", "view"]:
+                        return views.pop(0)
+                    if args[:2] == ["issue", "view"]:
+                        return {"labels": []}
+                    if args[0] == "api" and "/compare/" in args[1]:
+                        return {"behind_by": 0}
+                    raise AssertionError(args)
+
+                final_checks = [{"name": "test", "bucket": "pending"}] if condition == "pending" else passing
+                with mock.patch.object(dispatch, "gh_json", side_effect=gh_json), \
+                        mock.patch.object(dispatch, "run", return_value=subprocess.CompletedProcess([], 0, "", "")), \
+                        mock.patch.object(dispatch, "pr_checks", side_effect=[passing, final_checks]), \
+                        mock.patch.object(dispatch, "refresh_pr_branch") as refresh, \
+                        mock.patch.object(dispatch, "write_merge_certificate") as write:
+                    dispatch.merge_pass_locked(False)
+                refresh.assert_not_called()
+                write.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
