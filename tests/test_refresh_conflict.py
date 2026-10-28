@@ -264,6 +264,18 @@ class RefreshConflictTest(unittest.TestCase):
         self.assertIn(config.LABEL_HUMAN, self.github.issue_labels)
         self.assertEqual(len(self.events("conflict-requeue")), 3)
 
+    def test_human_requeue_starts_a_fresh_conflict_resolution_budget(self) -> None:
+        for round_number in range(1, self.cfg.review_rounds + 1):
+            dispatch.record("conflict-requeue", ticket=9, pr=102, round=round_number, files=["shared.txt"])
+        dispatch.record("rounds-reset", ticket=9, actor="alice", requeued_at="2026-10-28T15:53:00Z")
+
+        with self.patched():
+            self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+
+        self.assertEqual(self.events("escalate"), [])
+        self.assertEqual([row["round"] for row in self.events("conflict-requeue")], [1, 2, 3, 1])
+        self.assertIn(config.LABEL_AGENT, self.github.issue_labels)
+
     def test_conflict_on_a_protected_path_escalates_immediately_unless_authorized(self) -> None:
         self.cfg.protected_paths = ["shared.*"]
         with self.patched():

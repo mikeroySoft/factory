@@ -295,6 +295,43 @@ class LocalCLI(unittest.TestCase):
         legacy = [r for r in lifecycle.read_events(self.events) if r.get("event") == "attempt"]
         self.assertEqual(len(legacy), 2)
 
+    def test_human_requeue_starts_a_fresh_review_bounce_budget(self):
+        self.events.parent.mkdir()
+        lifecycle.append(self.events, {
+            "at": "2026-10-28T15:50:00Z", "event": "review", "ticket": 7,
+            "verdict": "REVISE", "accepted": True, "role": "primary",
+        })
+        lifecycle.append(self.events, {
+            "at": "2026-10-28T15:53:00Z", "event": "rounds-reset", "ticket": 7,
+            "actor": "alice", "requeued_at": "2026-10-28T15:53:00Z",
+        })
+
+        self.cli("dispatch", "--ticket", "7")
+
+        events = lifecycle.read_events(self.events)
+        self.assertEqual(len([e for e in events if e.get("event") == "attempt"]), 2)
+        self.assertTrue(any(e.get("event") == "approved" for e in events))
+
+    def test_factory_requeue_does_not_start_a_fresh_review_bounce_budget(self):
+        self.events.parent.mkdir()
+        lifecycle.append(self.events, {
+            "at": "2026-10-28T15:50:00Z", "event": "rounds-reset", "ticket": 7,
+            "actor": "alice", "requeued_at": "2026-10-28T15:50:00Z",
+        })
+        lifecycle.append(self.events, {
+            "at": "2026-10-28T15:53:00Z", "event": "review", "ticket": 7,
+            "verdict": "REVISE", "accepted": True, "role": "primary",
+        })
+
+        self.cli("dispatch", "--ticket", "7")
+
+        events = lifecycle.read_events(self.events)
+        self.assertEqual(len([e for e in events if e.get("event") == "attempt"]), 1)
+        self.assertEqual(
+            [e.get("code") for e in events if e.get("event") == "escalate"],
+            ["review_revise"],
+        )
+
     def retained_page(self, head, offset=0, expected=0):
         request = {"schema_version": 1, "repository": "local/smoke", "op": "investigate",
                    "kind": "result", "number": 7, "head": head, "offset": offset}
