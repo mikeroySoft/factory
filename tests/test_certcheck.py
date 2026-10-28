@@ -114,6 +114,15 @@ class CertificateTamperTest(unittest.TestCase):
         )
         self.assert_premise("policy")
 
+    def test_historical_policy_ignores_current_install_claims(self) -> None:
+        host = Path(self.fixture.env["XDG_CONFIG_HOME"]) / "factory" / "config.toml"
+        host.parent.mkdir(parents=True)
+        host.write_text('[defaults.manager]\nreview = "all"\n')
+        with mock.patch.object(certcheck, "_version", return_value="next"), \
+                mock.patch.object(certcheck, "_installed_commit", return_value="f" * 40):
+            verdict = self.verdict()
+        self.assertEqual(verdict.status, "certified", verdict.reason)
+
     def test_manager_all_without_approve_names_manager(self) -> None:
         def mutate(document: dict) -> None:
             document["premises"]["manager"] = {"policy": "all", "row": None}

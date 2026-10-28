@@ -2467,11 +2467,23 @@ def sync_pass(dry_run: bool) -> None:
             n = sync_issue(tip, count, staged, evidence)
             wt_n = FACTORY / f"wt-{n}"
             run(["git", "worktree", "add", str(wt_n), "-b", f"agent/{n}", head], cwd=ROOT)
+            gate_evidence = {}
             if report is not None:
-                (wt_n / ".factory").mkdir(exist_ok=True)
-                (wt_n / ".factory" / f"gate-report-{n}.md").write_text(report)
-            record("attempt", ticket=n, attempt=0, gate=gate, head=head, actual_head=head, clean=True)
-            sync_record(ticket=n, upstream=tip, commits=count, result="staged", head=head, gate=gate)
+                report_path = wt_n / ".factory" / f"gate-report-{n}.md"
+                report_path.parent.mkdir(exist_ok=True)
+                report_path.write_text(report)
+                _record_gate_decision(
+                    n, gate == "PASS", report, head, str(report_path), 0.0,
+                )
+                gate_evidence = _PENDING_GATES.pop(n)
+            record(
+                "attempt", ticket=n, attempt=0, gate=gate, head=head,
+                actual_head=head, clean=True, **gate_evidence,
+            )
+            sync_record(
+                ticket=n, upstream=tip, commits=count, result="staged",
+                head=head, gate=gate,
+            )
             execution.reason = "upstream_staged"
             log(f"upstream sync: staged {count} commit(s) at {tip[:12]} as #{n} (agent/{n} at {head[:12]}, gate {gate or 'not run: merge conflict'})")
     finally:
