@@ -57,6 +57,45 @@ class DispatchPauseStartupTest(unittest.TestCase):
                 process.assert_not_called()
         self.assertEqual(self.output.getvalue().count("paused (current hold,"), 2)
 
+    def test_dry_run_ticket_uses_current_pause_and_refuses_with_force_hint(self) -> None:
+        pause.activate(self.cfg, "current hold", who="tester")
+        dispatch.configure(self.previous)
+        with (
+            mock.patch.object(config, "load", return_value=self.cfg),
+            mock.patch.object(dispatch, "pin_root") as pin,
+            mock.patch.object(dispatch, "gh_json") as github,
+        ):
+            self.assertEqual(dispatch.main(["--ticket", "7", "--dry-run"]), 1)
+        pin.assert_not_called()
+        github.assert_not_called()
+        self.assertIn("paused (current hold,", self.output.getvalue())
+        self.assertIn("--ticket refused (use --force)", self.output.getvalue())
+
+    def test_force_allows_pinning_and_processing_only_the_requested_ticket(self) -> None:
+        pause.activate(self.cfg, "current hold", who="tester")
+        dispatch.configure(self.previous)
+        with (
+            mock.patch.object(config, "load", return_value=self.cfg),
+            mock.patch.object(dispatch, "run", return_value=subprocess.CompletedProcess(
+                [], 0, "", "",
+            )) as run,
+            mock.patch.object(dispatch, "issue_is_open", return_value=True),
+            mock.patch.object(dispatch, "gh_json", return_value={"number": 7}),
+            mock.patch.object(dispatch, "process_ticket") as process,
+            mock.patch.object(dispatch, "land_pass") as land,
+            mock.patch.object(dispatch, "ticket_pass") as tickets,
+        ):
+            self.assertEqual(dispatch.main(["--ticket", "7", "--force"]), 0)
+        self.assertEqual([call.args[0] for call in run.call_args_list], [
+            ["git", "fetch", "origin", "main"],
+            ["git", "status", "--porcelain", "--", ".", ":!.factory"],
+            ["git", "checkout", "--quiet", "--detach", "origin/main"],
+        ])
+        process.assert_called_once_with({"number": 7}, self.cfg.budget_min, False, forced=True)
+        land.assert_not_called()
+        tickets.assert_not_called()
+        self.assertEqual(pause.read(self.cfg)["reason"], "current hold")
+
     def test_first_invocation_uses_loaded_config_after_pinning(self) -> None:
         dispatch.__dict__.pop("cfg", None)
         with (

@@ -4014,13 +4014,20 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
         )
 
 
-def pin_root() -> list[str]:
+class _RepositoryPaused(RuntimeError):
+    """Pinning refused before any repository mutation."""
+
+
+def pin_root(*, ignore_pause: bool = False) -> list[str]:
     """Fetch and detach the root at origin/<main> so the pass reads committed config, not
     whatever branch or edits the checkout carries. A root with tracked or untracked changes
     outside `.factory/` is left alone; its paths come back and the caller refuses the pass.
     Runs before `config.load`: only `[repo].main` is read, from the raw file, so a root whose
-    config the engine rejects still pins (and picks up the fix from origin/main)."""
+    config the engine rejects still pins (and picks up the fix from origin/main).
+    Refuses a paused root before fetch/checkout unless an explicit ticket overrides it."""
     root = config.repo_root()
+    if not ignore_pause and (state := pause.current(root, expire=True)) is not None:
+        raise _RepositoryPaused(pause.message(state))
     main = "main"
     with suppress(OSError, tomllib.TOMLDecodeError):
         main = tomllib.loads((root / config.CONFIG_NAME).read_text()).get("repo", {}).get("main", main)
@@ -4050,14 +4057,13 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     if args.force and not args.ticket:
         parser.error("--force requires --ticket")
-    root = cfg.root if "cfg" in globals() else config.repo_root()
-    state = pause.current(root, expire=True)
-    if state is not None and not (args.ticket and args.force):
-        suffix = "; --ticket refused (use --force)" if args.ticket else ""
-        log(pause.message(state) + suffix)
-        return 1 if args.ticket else 0
     if not args.dry_run:
-        dirty = pin_root()
+        try:
+            dirty = pin_root(ignore_pause=args.force)
+        except _RepositoryPaused as exc:
+            suffix = "; --ticket refused (use --force)" if args.ticket else ""
+            log(str(exc) + suffix)
+            return 1 if args.ticket else 0
         if dirty:
             root = config.repo_root()
             log(f"root {root} has changes outside .factory/ ({', '.join(dirty)}); root_dirty, nothing dispatched")
@@ -4075,8 +4081,12 @@ def main(argv: list[str]) -> int:
         EVENTS, "dispatcher", dispatcher=True, lazy=True,
         engine_version=__version__, engine_commit=config.engine_commit(),
     ):
-        if not (args.ticket and args.force) and pause.guard(cfg, log):
-            return 0
+        if not (args.ticket and args.force):
+            state = pause.current(cfg, expire=True)
+            if state is not None:
+                suffix = "; --ticket refused (use --force)" if args.ticket else ""
+                log(pause.message(state) + suffix)
+                return 1 if args.ticket else 0
         if not args.dry_run:
             from factory import results
 
