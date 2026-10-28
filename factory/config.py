@@ -8,6 +8,7 @@ conventions, not configuration.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import math
 import os
@@ -18,6 +19,7 @@ import tomllib
 from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from factory import lifecycle
 
@@ -368,6 +370,21 @@ def engine_drift(cfg: Config) -> str | None:
         return None
     return (f"installed {commit[:12]} differs from origin/{cfg.main} {main[:12]}; "
             "merged engine changes are not installed")
+
+
+def local_endpoint(url: str) -> bool:
+    """Whether an HTTP endpoint is explicitly loopback or on a private IP network."""
+    try:
+        parsed = urlsplit(url)
+        host = parsed.hostname
+        if parsed.scheme not in {"http", "https"} or not host:
+            return False
+        if host.casefold() == "localhost":
+            return True
+        address = ipaddress.ip_address(host)
+    except (TypeError, ValueError, UnicodeError):
+        return False
+    return address.is_loopback or address.is_private
 
 
 def host_filter(table: dict) -> dict:

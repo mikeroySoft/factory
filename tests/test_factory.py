@@ -1294,10 +1294,20 @@ class DashboardTest(unittest.TestCase):
             ticket["human_touch"] = {"escalation_count": count}
         m = dashboard.metrics(tickets)
         self.assertEqual(m, {"first_pass": 0.5, "bounce_rate": 0.5, "escalations": 2, "med_attempts": 2,
+                             "first_pass_numerator": 1, "first_pass_denominator": 2,
+                             "first_pass_window": "dashboard tickets",
+                             "bounce_rate_numerator": 1, "bounce_rate_denominator": 2,
+                             "bounce_rate_window": "dashboard tickets",
                              "escalations_per_week": 0, "escalations_by_code": {}, "human_resolved_pct": None,
+                             "escalations_7d": 0,
                              "human_touched_pct": None})
         self.assertEqual(dashboard.metrics([]), {"first_pass": None, "bounce_rate": None, "escalations": 0,
+                                               "first_pass_numerator": 0, "first_pass_denominator": 0,
+                                               "first_pass_window": "dashboard tickets",
+                                               "bounce_rate_numerator": 0, "bounce_rate_denominator": 0,
+                                               "bounce_rate_window": "dashboard tickets",
                                                "med_attempts": None, "escalations_per_week": 0,
+                                               "escalations_7d": 0,
                                                "escalations_by_code": {}, "human_resolved_pct": None,
                                                "human_touched_pct": None})
 
