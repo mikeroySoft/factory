@@ -358,10 +358,6 @@ class ConfigTest(unittest.TestCase):
             config.command_model(cfg.reviewer),
             config.command_model(cfg.second_reviewer),
         })
-if __name__ == "__main__":
-    unittest.main()
-
-
 class HighPrGateTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -672,3 +668,7 @@ class MutationExecutionTest(unittest.TestCase):
                 contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(mutation.run_tests("factory/example.py"), 1)
         self.assertEqual(executed, [])
+
+
+if __name__ == "__main__":
+    unittest.main()

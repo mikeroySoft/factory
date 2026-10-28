@@ -54,7 +54,13 @@ def changed_lines() -> dict[str, set[int]]:
         elif line.startswith("@@"):
             start, _, count = line.split()[2].lstrip("+").partition(",")
             lines[path].update(range(int(start), int(start) + int(count or 1)))
-    return lines
+    return {path: changed for path, changed in lines.items() if changed}
+
+
+def on_changed_line(mutation, lines: dict[str, set[int]]) -> bool:
+    return not lines[str(mutation.module_path)].isdisjoint(
+        range(mutation.start_pos[0], mutation.end_pos[0] + 1),
+    )
 
 
 def gate_timeout() -> int:
@@ -78,9 +84,6 @@ def sample(lines: dict[str, set[int]], scratch: Path) -> tuple[list, int]:
     def key(m):
         return (str(m.module_path), m.start_pos, m.end_pos, m.operator_name, m.occurrence)
 
-    def hot(m):
-        return not lines[str(m.module_path)].isdisjoint(range(m.start_pos[0], m.end_pos[0] + 1))
-
     def applicable(m):
         # cosmic-ray 8.7.0's ExceptionReplacer crashes on a dotted name (`config.ConfigError`)
         # in an except clause; its span is then not a bare identifier.
@@ -91,7 +94,10 @@ def sample(lines: dict[str, set[int]], scratch: Path) -> tuple[list, int]:
 
     mutations = sorted((item.mutations[0] for item in items if applicable(item.mutations[0])), key=key)
     rng = random.Random(SEED)
-    groups = [[m for m in mutations if hot(m)], [m for m in mutations if not hot(m)]]
+    groups = [
+        [m for m in mutations if on_changed_line(m, lines)],
+        [m for m in mutations if not on_changed_line(m, lines)],
+    ]
     for group in groups:
         rng.shuffle(group)
     return (groups[0] + groups[1])[:CAP], len(groups[0])
@@ -213,7 +219,7 @@ def main(argv: list[str] | None = None) -> int:
     survivors = [(m, r) for m, r in results if r.test_outcome == TestOutcome.SURVIVED]
     hot_survivors = [
         (mutation, result) for mutation, result in survivors
-        if mutation.start_pos[0] in lines[str(mutation.module_path)]
+        if on_changed_line(mutation, lines)
     ]
     for mutation, result in sorted(survivors, key=lambda mr: (str(mr[0].module_path), mr[0].start_pos)):
         print(f"{mutation.module_path}:{mutation.start_pos[0]}: {mutation.operator_name} "

@@ -105,10 +105,6 @@ class RiskStatsTest(unittest.TestCase):
         self.assertNotIn("risk", snapshot["metrics"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class DashboardEscapeCacheTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -163,3 +159,7 @@ class DashboardEscapeCacheTest(unittest.TestCase):
             dashboard.snapshot()
         self.assertEqual(scan.call_count, 2)
         self.assertEqual(dashboard._escape_tickets, {7})
+
+
+if __name__ == "__main__":
+    unittest.main()

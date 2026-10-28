@@ -168,10 +168,6 @@ class LowPolicyTest(unittest.TestCase):
         gate.assert_called_once()
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class DefaultOffStructureTest(RiskTierTest):
     def test_classify_unrelated_found_pattern_is_medium(self) -> None:
         tier, _ = self.classify({
@@ -208,3 +204,7 @@ class DefaultOffStructureTest(RiskTierTest):
             "optional.py": path.read_text() + "\nENABLED = False\nif ENABLED:\n    publish()\n",
         })
         self.assertEqual(tier, "Medium")
+
+
+if __name__ == "__main__":
+    unittest.main()
