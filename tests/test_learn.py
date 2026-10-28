@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
@@ -415,13 +416,11 @@ class DoctorSigningKeyTest(unittest.TestCase):
                     mock.patch.object(onboard.shutil, "which", return_value="/bin/true"), \
                     mock.patch("factory.triage.probe_endpoint", return_value=(True, "ok")), \
                     mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}):
-                output = mock.Mock()
-                output.write = lambda text: written.append(text)
-                written: list[str] = []
+                output = io.StringIO()
                 with mock.patch("sys.stdout", output):
                     onboard.doctor(["--json"])
 
-            rows = json.loads("".join(written))["rows"]
+            rows = json.loads(output.getvalue())["rows"]
             signing = next(row for row in rows if row["label"] == "SSH signing key registered")
             self.assertEqual(signing["status"], "WARN")
             self.assertIn("unknown_key", signing["detail"])
