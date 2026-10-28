@@ -95,6 +95,17 @@ def run(cmd: list[str]) -> tuple[bool, str]:
         execution.reason = "configured_check_failed"
     return proc.returncode == 0, proc.stdout + proc.stderr
 
+def _check_status(name: str, passed: bool, output: str, blocking_mutation: bool) -> str:
+    if (
+        blocking_mutation
+        and name == "mutation"
+        and passed
+        and "no mutable files" in output.splitlines()
+    ):
+        return "SKIP (no changed factory code)"
+    return "PASS" if passed else "FAIL"
+
+
 
 def failed_test_ids(output: str) -> list[str]:
     """Canonical unittest, pytest and cargo libtest IDs, in report order."""
@@ -634,6 +645,7 @@ def main(argv: list[str]) -> int:
                         help="attempt: every check except `when = \"pr\"`/`\"release\"` ones (reported SKIP); "
                         "pr: only the `when = \"pr\"` checks (release ones reported SKIP); "
                         "release: only the `when = \"release\"` checks")
+    parser.add_argument("--blocking-mutation", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     configure(config.load())
     with lifecycle.scope(cfg.factory / "events.jsonl", "gate") as execution:
@@ -701,7 +713,16 @@ def execute(args: argparse.Namespace, execution) -> int:
     # listed checks of a later tier are reported `SKIP (<tier> tier)` instead of run.
     rank = config.CHECK_TIERS.index(args.tier)
     listed = [check for check in cfg.checks if config.CHECK_TIERS.index(check.when) >= rank]
-    configured = [(check.name, (lambda c=check: run(c.run))) for check in listed]
+    configured = [
+        (
+            check.name,
+            lambda c=check: run([
+                *c.run,
+                *(["--blocking"] if args.blocking_mutation and c.name == "mutation" else []),
+            ]),
+        )
+        for check in listed
+    ]
     checks = [
         ("conflict-markers", check_conflict_markers),
         *configured,
@@ -740,7 +761,8 @@ def execute(args: argparse.Namespace, execution) -> int:
                 if fields.get("failed_tests"):
                     fields["changed_paths"] = changed_paths(args.base)
                 check.emit("result", check=name, passed=passed, **fields)
-                results.append((name, "PASS" if passed else "FAIL", output))
+                status = _check_status(name, passed, output, args.blocking_mutation)
+                results.append((name, status, output))
             if not passed and (outcome == "completed" or check.outcome == "unknown"):
                 outcome, reason = check.outcome, check.reason
     finally:

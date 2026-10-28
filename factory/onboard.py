@@ -430,6 +430,31 @@ def report_stage_success(cfg: config.Config, report) -> None:
     report(True, "last successful pass", detail, info=True)
 
 
+def second_reviewer_problem(cfg: config.Config, which) -> str | None:
+    command = cfg.second_reviewer
+    if not command:
+        return "not configured; High-risk PRs cannot merge"
+    if which(command[0]) is None:
+        return f"cannot launch {command[0]}; High-risk PRs cannot merge"
+    primary = config.command_model(cfg.reviewer)
+    second = config.command_model(command)
+    if second is None:
+        return "model is not explicit; High-risk PRs cannot prove reviewer independence"
+    if primary is None:
+        return "primary reviewer model is not explicit; High-risk PRs cannot prove reviewer independence"
+    if primary == second:
+        return f"same model as primary reviewer ({second}); High-risk PRs cannot merge"
+    for worker in cfg.workers:
+        model = cfg.worker_model(worker)
+        if model is None:
+            return f"worker `{worker}` model is not explicit; High-risk PRs cannot prove reviewer independence"
+        if model == primary:
+            return f"worker `{worker}` uses the same model as primary reviewer ({model})"
+        if model == second:
+            return f"worker `{worker}` uses the same model as second reviewer ({model})"
+    return None
+
+
 def doctor(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="factory doctor", description="Check tools, auth, remotes, config drift, and the triage model."
@@ -565,6 +590,12 @@ def doctor(argv: list[str]) -> int:
     if cfg.worker_wrap:
         report(which(cfg.worker_wrap[0]) is not None, f"worker wrap: {cfg.worker_wrap[0]}", on_path)
     report(which(cfg.reviewer[0]) is not None, f"reviewer: {cfg.reviewer[0]}", on_path)
+    second_problem = second_reviewer_problem(cfg, which)
+    report(
+        None if second_problem else True,
+        f"second reviewer: {cfg.second_reviewer[0] if cfg.second_reviewer else 'unset'}",
+        second_problem or on_path,
+    )
     if not cfg.manager:
         report(None, "manager command", "[manager].command is unset; escalations get no automated diagnosis")
     else:

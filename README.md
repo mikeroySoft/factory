@@ -886,6 +886,42 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    and approves if and only if Important is zero. Invalid JSON fails closed;
    disagreement between either verdict and the counts fails closed with
    `verdict_counts_mismatch`. `review-result` records the three counts.
+
+   **Risk tiers.** Before these checks, Factory classifies the exact gated
+   `base..head` diff with the installed `factory/risk.py` rules and records a
+   `risk` event plus a `risk` decision. Candidate code cannot change the rules
+   classifying its own head, and a new head invalidates all tier evidence.
+
+   | Tier | Deterministic paths | Review path |
+   |---|---|---|
+   | Low | `docs/**`; Markdown except `AGENTS.md`/`REVIEW.md`; additions-only `tests/**`; `.factory-lessons.md`; note files under `experiments/**`; additions guarded by a newly added default-off flag | Skip `when = "pr"` checks and run one review. A `REVISE` switches the PR to the Medium loop. |
+   | Medium | Every path not matched by Low or High | Normal pr-tier checks and bounded review loop. |
+   | High | `.github/**`; `factory/release.py`, `promotion.py`, `onboard.py`, `templates/ci.yml`; `factory/dispatch.py`, `gate.py`, `manage.py`, `decisions.py`, `config.py`, `risk.py`; `.factory.toml`; `factory-bands.toml` | Normal gate and primary review, a second reviewer on a model distinct from both the primary reviewer and worker, and blocking mutation checks on changed `factory/*.py` lines. |
+
+   Default-off code qualifies as Low only for wholly added Python module-level
+   guards and new literal-false flag declarations, with no unguarded executable
+   additions or existing flag bindings. Uncertain cases stay Medium.
+
+   A High PR merges without human approval when the full current-head gate
+   (including all PR-tier checks) passes, both reviewers approve, and mutation
+   is `PASS` or `SKIP (no changed factory code)`. Both reviewers
+   revising uses the normal Medium loop. A reviewer split, or mutation failure
+   after both approvals, returns the dissenting findings for one worker round;
+   the next-head disagreement escalates as `risk_disagreement`. This
+   disagreement is the only High-tier-specific path to `ready-for-human`.
+   `[review].second_command` is a host-only override of the code default.
+   Non-mutation PR-check failures use the ordinary gate-failure loop, not the
+   disagreement path. Mutation runs related tests first and stops after the first
+   failure; a surviving mutant still has to pass every discovered test. The
+   deterministic 200-mutant sample uses the gate timeout minus 60 seconds for
+   preparation, baseline, and mutants together; incomplete blocking runs fail.
+   The built-in OMP worker pins `openai-codex/gpt-5.6-sol`; custom worker
+   profiles must also name a model. `factory doctor` warns when any of the
+   worker, primary-reviewer, or second-reviewer models is missing or not
+   distinct, or when the second reviewer cannot launch.
+   `factory stats --by-risk` and the dashboard report human interventions,
+   human-wait minutes, rounds, disagreement rate, and escape rate per tier.
+
 6. **Merge stage** (start of the next pass). One PR per pass requires green
    GitHub checks, a current-main head, no human requested-changes veto, the
    `factory-approved` label, and a matching successful journal approval whose
@@ -1017,7 +1053,7 @@ review_rounds = 1                # REVISE -> worker -> re-review cycles
 # cost_pattern = 'Total cost:\s*\$([0-9.]+)'   # $ from the worker log (Claude Code prints this)
 
 [workers]                        # ticket label/profile -> argv; {prompt} file, {cwd} worktree
-default = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]
+default = ["omp", "-p", "--model", "openai-codex/gpt-5.6-sol", "--cwd", "{cwd}", "@{prompt}"]
 chore   = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
 
 # A differently named OMP-compatible worker selected by a separate pilot label:
@@ -1031,6 +1067,7 @@ chore   = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd
 command = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1", "{prompt}"]   # {prompt} = review prompt text
 # json_mode = true   # required for an OMP-compatible reviewer not named `omp`
 # policy = "REVIEW.md"  # read from the base ref
+# second_command is host-only; it overrides Factory's code default for High-risk reviews.
 
 [manager]                         # optional; unset command disables it
 command = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]   # {prompt} = manager prompt file

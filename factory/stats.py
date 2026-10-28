@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from factory import config, feedback, lifecycle, onboard
+from factory import config, feedback, lifecycle, onboard, risk
 from factory.config import LABEL_AGENT, LABEL_HUMAN, USAGE_FIELDS, Config
 
 cfg: Config
@@ -423,6 +423,71 @@ def human_touched_pct(merged: list[dict]) -> float | None:
     known = [any(pr[k] for k in keys) for pr in merged if all(pr.get(k) is not None for k in keys)]
     return round(100 * sum(known) / len(known), 1) if known else None
 
+def rework_rounds(events: list[dict]) -> int:
+    reviews = [
+        row for row in events
+        if row.get("event") == "review" and row.get("role") in {None, "primary"}
+    ]
+    return max(0, len(reviews) - 1)
+
+
+def risk_tier(events: list[dict]) -> str | None:
+    return next((
+        row["tier"] for row in reversed(events)
+        if row.get("event") == "risk" and row.get("tier") in risk.TIERS
+    ), None)
+
+
+def risk_metrics(
+    rows: list[dict], *, escape_tickets: set[int] | None = None,
+) -> dict[str, dict]:
+    """Merged-PR outcomes grouped by the classifier's recorded tier."""
+    result = {}
+    for tier in risk.TIERS:
+        merged = [
+            row for row in rows
+            if row.get("state") == "merged" and row.get("risk_tier") == tier
+        ]
+        count = len(merged)
+        def ratio(value: float, denominator: int = count) -> float | None:
+            return round(value / denominator, 3) if denominator else None
+        disagreements = sum(
+            code == "risk_disagreement"
+            for row in merged for _, code in row.get("escalation_codes", [])
+        )
+        escaped = (
+            sum(row.get("ticket") in escape_tickets for row in merged)
+            if escape_tickets is not None else None
+        )
+        result[tier] = {
+            "merged_prs": count,
+            "human_interventions_per_merged_pr": ratio(sum(
+                row.get("escalation_count", 0) for row in merged
+            )),
+            "ready_for_human_minutes_per_merged_pr": ratio(sum(
+                row.get("ready_for_human_minutes", 0) for row in merged
+            )),
+            "rounds_to_pass": ratio(sum(row.get("rework_rounds", 0) for row in merged)),
+            "risk_disagreements_per_merged_pr": ratio(disagreements),
+            "escape_rate": ratio(escaped) if escaped is not None else None,
+        }
+    return result
+
+
+def print_risk_metrics(rows: dict[str, dict]) -> None:
+    print("tier    merged  human/PR  human min/PR  rounds  disagreements/PR  escape rate")
+    for tier, row in rows.items():
+        def value(key: str, values: dict = row) -> str:
+            return "n/a" if values[key] is None else f"{values[key]:.3f}"
+        print(
+            f"{tier:<6}  {row['merged_prs']:>6}  "
+            f"{value('human_interventions_per_merged_pr'):>8}  "
+            f"{value('ready_for_human_minutes_per_merged_pr'):>12}  "
+            f"{value('rounds_to_pass'):>6}  "
+            f"{value('risk_disagreements_per_merged_pr'):>16}  "
+            f"{value('escape_rate'):>11}"
+        )
+
 
 def merge_hours(created_at: str, merged_at: str | None) -> float | None:
     if not merged_at:
@@ -511,6 +576,9 @@ def collect_rows(progress: bool = False) -> list[dict[str, Any]]:
             row.update(feedback.corrections(actions[pr_by_ticket[number]], login, cutover))
         row["llm_usage"] = llm_usage(audit.get(number, []), cfg.prices)
         row["review_findings"] = review_findings(audit.get(number, []))
+        row["risk_tier"] = risk_tier(audit.get(number, []))
+        if any(event.get("event") == "review" for event in audit.get(number, [])):
+            row["rework_rounds"] = rework_rounds(audit.get(number, []))
 
     return [rows[number] for number in sorted(rows)]
 
@@ -641,6 +709,19 @@ def escapes() -> list[dict[str, Any]]:
                      "source": "declared" if declared else "blame", "status": status, "skipped": skipped,
                      "candidates": [candidates[n] for n in sorted(candidates)]})
     return rows
+
+def escape_events(rows: list[dict[str, Any]]) -> list[dict]:
+    """Project SZZ escape attribution into watch-compatible lifecycle rows."""
+    return [
+        {
+            "event": "escape",
+            "ticket": candidate["ticket"],
+            "bug": row["bug"],
+            "at": row["closed_at"],
+        }
+        for row in rows
+        for candidate in row.get("candidates", [])
+    ]
 
 
 def print_escapes(rows: list[dict[str, Any]], merged: set[int]) -> None:
@@ -781,6 +862,8 @@ def main(argv: list[str]) -> int:
                         help="last successful triage, dispatch and watch pass for this repository")
     parser.add_argument("--escapes", action="store_true",
                         help="candidate escaped defects: closed bugs whose fix changed lines an earlier agent ticket wrote")
+    parser.add_argument("--by-risk", action="store_true",
+                        help="per-tier merged outcomes and escaped-defect guardrail")
     parser.add_argument("--repo", metavar="OWNER/NAME",
                         help='read the root registered as [repo."OWNER/NAME"].path in the host config (default: this checkout\'s repository)')
     parser.add_argument("--quiet", action="store_true", help="no progress on stderr")
@@ -832,6 +915,16 @@ def main(argv: list[str]) -> int:
     elif args.by_worker or args.by_brief:
         audit = audit_by_ticket(journal)
         rows = worker_metrics(audit, cfg.workers) if args.by_worker else brief_metrics(audit)
+    elif args.by_risk:
+        ticket_rows = collect_rows(progress=not args.quiet)
+        escaped = escapes()
+        rows = risk_metrics(
+            ticket_rows,
+            escape_tickets={
+                candidate["ticket"]
+                for row in escaped for candidate in row.get("candidates", [])
+            },
+        )
     else:
         rows = collect_rows(progress=not args.quiet)
     if args.json:
@@ -844,6 +937,8 @@ def main(argv: list[str]) -> int:
         print_workers(rows)
     elif args.by_brief:
         print_briefs(rows)
+    elif args.by_risk:
+        print_risk_metrics(rows)
     else:
         print_table(rows)
         totals = human_touch_metrics(rows)

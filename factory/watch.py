@@ -25,7 +25,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from statistics import mean, pstdev
 
-from factory import config, dispatch, lifecycle, runtime_events
+from factory import config, dispatch, lifecycle, runtime_events, stats
 
 LABELS = "bug,needs-triage"
 MAX_ISSUES = 5
@@ -246,6 +246,12 @@ def metric_series(events: list[dict], start: date, end: date) -> dict[str, dict[
         for row in failed for test in row.get("failed_tests", [])
         if isinstance(test, str) and test
     )
+    risk_by_ticket = {
+        row["ticket"]: row["tier"] for row in events
+        if row.get("event") == "risk" and row.get("tier") in {"Low", "Medium", "High"}
+        and row.get("ticket") is not None
+    }
+    names.update(f"revert_rate_by_tier:{tier}" for tier in set(risk_by_ticket.values()))
     by_day: dict[date, list[dict]] = {}
     for row in events:
         parsed = _day(row)
@@ -266,8 +272,13 @@ def metric_series(events: list[dict], start: date, end: date) -> dict[str, dict[
             previous = claims.get(ticket)
             if previous is None or str(row["at"]) < str(previous["at"]):
                 claims[ticket] = row
-        elif row.get("event") == "review" and ticket is not None and _day(row) is not None:
+        elif (
+            row.get("event") == "review" and ticket is not None
+            and row.get("role") in {None, "primary"} and _day(row) is not None
+        ):
             reviews.setdefault(ticket, []).append(row)
+    merged_by_tier: dict[str, dict[object, dict]] = {}
+    escaped_by_tier: dict[str, dict[object, dict]] = {}
 
     for day in days:
         key = day.isoformat()
@@ -294,12 +305,32 @@ def metric_series(events: list[dict], start: date, end: date) -> dict[str, dict[
             for ticket in terminal_tickets:
                 end_at = max(str(row["at"]) for row in terminal if row["ticket"] == ticket)
                 ticket_reviews = [row for row in reviews.get(ticket, []) if str(row["at"]) <= end_at]
-                rounds.append(max(0, len(ticket_reviews) - 1))
+                rounds.append(stats.rework_rounds(ticket_reviews))
                 round_rows.extend(ticket_reviews)
             series["rework_rounds"][key] = {
                 "value": sum(rounds) / len(rounds),
                 "rows": round_rows,
             }
+        for row in today:
+            ticket = row.get("ticket")
+            tier = risk_by_ticket.get(ticket)
+            if tier is None:
+                continue
+            if row.get("event") == "merged":
+                merged_by_tier.setdefault(tier, {})[ticket] = row
+            elif row.get("event") == "escape":
+                escaped_by_tier.setdefault(tier, {})[ticket] = row
+        for tier in set(risk_by_ticket.values()):
+            merged = merged_by_tier.get(tier, {})
+            if merged:
+                escaped = {
+                    ticket: row for ticket, row in escaped_by_tier.get(tier, {}).items()
+                    if ticket in merged
+                }
+                series[f"revert_rate_by_tier:{tier}"][key] = {
+                    "value": len(escaped) / len(merged),
+                    "rows": [*merged.values(), *escaped.values()],
+                }
         cycles, cycle_rows = [], []
         for merged in (row for row in today if row.get("event") == "merged"):
             claim = claims.get(merged.get("ticket"))
@@ -676,6 +707,14 @@ def run_pass(
 ) -> list[dict]:
     """Log, diagnose, file/comment, and close configured signals."""
     events = lifecycle.read_events(dispatch.EVENTS)
+    if any(band.metric == "revert_rate_by_tier" for band in cfg.watch_bands):
+        stats.configure(cfg)
+        try:
+            events.extend(stats.escape_events(stats.escapes()))
+        except (
+            OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, SystemExit,
+        ) as exc:
+            dispatch.log(f"watch: escape attribution unavailable ({type(exc).__name__})")
     rows = [r for r in events if r.get("event") == "watch"]
     filings = {r["fingerprint"]: r for r in rows}
     # Issues this install opened; only the opener closes one (rows without `repo` predate routing).

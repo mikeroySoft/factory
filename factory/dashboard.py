@@ -26,6 +26,7 @@ from factory import (
     dispatch,
     feedback,
     lifecycle,
+    risk,
     runtime_events,
     runtime_local,
     stats,
@@ -75,7 +76,11 @@ VERDICT = re.compile(r"VERDICT:\s*(APPROVE|REVISE)")
 def configure(c: Config) -> None:
     global cfg, FACTORY, LOGS, MAX_ACTIVE, MAX_ATTEMPTS, REPO, ROOT, SYNC_LOG
     global SYNC_TITLE, UPSTREAM, GPU_LOCK, LLM_URL, LLM_MODEL, GATE_CHECKS
+    global _escape_tickets, _escape_tickets_at
     cfg = c
+    stats.configure(c)
+    _escape_tickets = None
+    _escape_tickets_at = None
     dispatch.configure(c)
     FACTORY = dispatch.FACTORY
     LOGS = dispatch.LOGS
@@ -660,7 +665,7 @@ def dispatcher(runtime: dict) -> dict:
     }
 
 
-def metrics(tickets: list[dict]) -> dict:
+def metrics(tickets: list[dict], *, escape_tickets: set[int] | None = None) -> dict:
     """Fleet KPIs: fractions except the *_pct metrics (0–100); None when undefined."""
     bounce = lambda a: a["attempt"] > MAX_ATTEMPTS
     rounds = lambda t: sum(1 for a in t["attempts"] if not bounce(a))
@@ -671,7 +676,7 @@ def metrics(tickets: list[dict]) -> dict:
     frac = lambda n: round(n / len(reached), 3) if reached else None
     touch = stats.human_touch_metrics([t["human_touch"] for t in tickets])
     window = "dashboard tickets"
-    return {
+    result = {
         "first_pass": frac(first_passes),
         "first_pass_numerator": first_passes,
         "first_pass_denominator": len(reached),
@@ -687,6 +692,25 @@ def metrics(tickets: list[dict]) -> dict:
         "human_touched_pct": stats.human_touched_pct(
             [t["pr"].get("corrections") or {} for t in tickets if t["pr"] and t["pr"].get("merged_at")]),
     }
+    if any(ticket.get("risk_tier") in risk.TIERS for ticket in tickets):
+        result["risk"] = stats.risk_metrics(
+            [
+                {
+                    "ticket": ticket.get("number"),
+                    "state": (
+                        "merged"
+                        if ticket["pr"] and ticket["pr"].get("merged_at")
+                        else ticket.get("stage")
+                    ),
+                    "risk_tier": ticket["risk_tier"],
+                    "rework_rounds": ticket.get("rework_rounds", 0),
+                    **ticket["human_touch"],
+                }
+                for ticket in tickets
+            ],
+            escape_tickets=escape_tickets,
+        )
+    return result
 
 
 def triage_llm_online() -> bool:
@@ -842,6 +866,8 @@ def build_ticket(
             (pr or {}).get("merged_at") or issue.get("closedAt"), login, cutover,
         ),
         "llm_usage": stats.llm_usage(audit, cfg.prices) if audit else {},
+        "risk_tier": stats.risk_tier(audit or []),
+        "rework_rounds": stats.rework_rounds(audit or []),
         "events": events,
         "timeline_truncated": issue.get("timelineItems", {}).get("pageInfo", {}).get("hasPreviousPage", False),
         **disk,
@@ -1127,6 +1153,25 @@ def snapshot() -> dict:
             spend.get(n), by_ticket.get(n), audit=audit.get(n), login=login, cutover=cutover,
         ))
     tickets.sort(key=lambda t: t["number"], reverse=True)
+    global _escape_tickets, _escape_tickets_at
+    now = time.monotonic()
+    if (_escape_tickets_at is None or now - _escape_tickets_at >= ESCAPE_CACHE_SECONDS) and any(
+        ticket.get("risk_tier") in risk.TIERS
+        and ticket["pr"]
+        and ticket["pr"].get("merged_at")
+        for ticket in tickets
+    ):
+        try:
+            _escape_tickets = {
+                event["ticket"] for event in stats.escape_events(stats.escapes())
+            }
+            _escape_tickets_at = now
+        except (
+            OSError, RuntimeError, ValueError, KeyError, TypeError, subprocess.SubprocessError, SystemExit,
+        ) as exc:
+            _escape_tickets = None
+            _escape_tickets_at = None
+            errors.append(f"escapes: {exc}")
 
     bounded_executions = recent_executions(executions)
     retained_count_coverage = {
@@ -1218,7 +1263,7 @@ def snapshot() -> dict:
         },
         "dispatcher": dispatcher_state,
         "upstream": upstream_state(gh_upstream, issues),
-        "metrics": metrics(tickets),
+        "metrics": metrics(tickets, escape_tickets=_escape_tickets),
         "workers": stats.worker_metrics(audit, cfg.workers),
         "executions": bounded_executions,
         "resources": resources,
@@ -1230,6 +1275,9 @@ def snapshot() -> dict:
 # ---------------------------------------------------------------- server
 
 _corrections: dict[int, list[dict]] = {}  # merged PR number -> feedback.correction_actions
+_escape_tickets: set[int] | None = None
+_escape_tickets_at: float | None = None
+ESCAPE_CACHE_SECONDS = 300
 
 
 
