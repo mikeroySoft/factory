@@ -3897,15 +3897,6 @@ def merge_pass_locked(dry_run: bool) -> None:
                 )
                 execution.outcome, execution.reason = "project_escalation", "state_changed"
                 continue
-            if _certificate_evidence_needs_refresh(events, n, head):
-                record_merge_decision(
-                    n, pr_num, "refresh branch",
-                    "approval predates complete certificate evidence; earn a fresh gate and review",
-                    head, head, checks,
-                )
-                if refresh_pr_branch(n, pr_num, carries_upstream):
-                    execution.outcome = "refreshed"
-                return
             latest_checks = triage_cancelled(pr_num, pr_checks(pr_num), False, n, head)
             latest_failed = [c["name"] for c in latest_checks if c["bucket"] == "fail"]
             latest_starved = [c for c in latest_checks if c["bucket"] == "infra"]
@@ -3963,6 +3954,15 @@ def merge_pass_locked(dry_run: bool) -> None:
             ):
                 log(f"PR #{pr_num}: head, label, or human review changed before merge; not merging")
                 continue
+            if _certificate_evidence_needs_refresh(events, n, head):
+                record_merge_decision(
+                    n, pr_num, "refresh branch",
+                    "approval predates complete certificate evidence; earn a fresh gate and review",
+                    head, head, latest_checks,
+                )
+                if refresh_pr_branch(n, pr_num, carries_upstream):
+                    execution.outcome = "refreshed"
+                return
             method = "--merge" if carries_upstream else "--squash"
             body = f"Closes #{n}\n\n{signoff()}" if cfg.signoff else f"Closes #{n}"
             certificate_path, certificate = write_merge_certificate(

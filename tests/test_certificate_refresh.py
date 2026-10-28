@@ -237,7 +237,7 @@ class CertificateEvidenceRefreshTest(unittest.TestCase):
             with self.subTest(condition=condition):
                 views = [pr, {**pr, "reviewDecision": "CHANGES_REQUESTED"}]
 
-                def gh_json(args):
+                def gh_json(args, views=views):
                     if args[:2] == ["pr", "list"]:
                         return [pr]
                     if args[:2] == ["pr", "view"]:
