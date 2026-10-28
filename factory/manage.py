@@ -14,7 +14,7 @@ from pathlib import Path
 from subprocess import CalledProcessError
 from tempfile import NamedTemporaryFile
 
-from factory import binding, config, dispatch, handoff, lifecycle
+from factory import binding, config, dispatch, handoff, lifecycle, pause
 from factory.config import (
     LABEL_ADD_ONLY_OVERRIDE,
     LABEL_AGENT,
@@ -994,6 +994,8 @@ def frontier_pass(dry_run: bool = False) -> None:
 
 def manage_pass(dry_run: bool = False) -> None:
     """Viability, PR frontier and escalation rounds need a manager; terminal handoffs do not."""
+    if pause.guard(dispatch.cfg, dispatch.log):
+        return False
     try:
         if dispatch.cfg.manager:
             viability_pass(dry_run)

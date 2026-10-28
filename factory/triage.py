@@ -21,7 +21,7 @@ from contextlib import nullcontext
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from factory import config, lifecycle, onboard
+from factory import config, lifecycle, onboard, pause
 from factory.config import (
     LABEL_AGENT,
     LABEL_APPROVED,
@@ -631,7 +631,10 @@ def probe_main(argv: list[str]) -> int:
         description="Probe the configured triage endpoint and restart its service after repeated failures.",
     )
     parser.parse_args(argv)
-    return run_probe(config.load())
+    cfg = config.load()
+    if pause.guard(cfg):
+        return 0
+    return run_probe(cfg)
 
 
 def main(argv: list[str]) -> int:
@@ -648,6 +651,8 @@ def main(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
     configure(config.load())
+    if pause.guard(cfg):
+        return 0
 
     recording = not (args.replay or args.dry_run)
     with (

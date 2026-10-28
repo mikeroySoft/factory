@@ -9,6 +9,8 @@ COMMANDS = {
     "init": ("onboard", "init", "prepare this repository: .factory.toml, labels, issue template"),
     "doctor": ("onboard", "doctor", "check tools, auth, remotes, and the triage model"),
     "install": ("onboard", "install", "install the systemd user timer (and dashboard)"),
+    "pause": ("pause", "main_pause", "pause every Factory stage for this repository"),
+    "resume": ("pause", "main_resume", "resume every Factory stage for this repository"),
     "triage": ("triage", "main", "label needs-triage issues with the local model"),
     "triage-probe": ("triage", "probe_main", "probe the triage endpoint and restart its configured service"),
     "dispatch": ("dispatch", "main", "one pass: sync, merge stage, claim and work tickets"),

@@ -298,9 +298,10 @@ landed on its own, and partial progress needs its own reviewed PR.
 
 | Command | What one invocation does |
 |---|---|
+| `factory pause [--reason TEXT] [--until DURATION\|TIMESTAMP]` / `factory resume` | Sets or clears the durable local `.factory/pause.json` hold. Paused dispatcher, manager, watch, triage, learn, and release passes log the reason, time, and operator without GitHub writes. Durations use `s`, `m`, `h`, `d`, or `w`; elapsed holds auto-resume on the next pass. Repeating either command is a no-op. |
 | `factory triage` | Labels every `needs-triage` issue via the local model: `ready-for-agent` (with an agent brief), `needs-info` (with the question), `ready-for-human`, or `wontfix-proposal` (proposal comment and label; a human closes). An issue unchanged since its last triage comment is skipped. `--dry-run`, `--issue N`, `--replay a,b,c`. |
 | `factory triage-probe` | Sends `GET <triage base>/models` with a three-second timeout. A 503 `Loading model` response is alive. After three consecutive failures it restarts `[triage].service` at most once per 15 minutes; failures and restarts are lifecycle-journaled. With no service configured it reports only. |
-| `factory dispatch` | One stateless pass: fetch and detach the main checkout at `origin/<main>` before `.factory.toml` is read (a root with tracked or untracked changes outside `.factory/` exits 1 with a `root_dirty` dispatcher exit row naming the paths and does nothing, even when its config does not load) → upstream sync (stage a sync ticket) → merge stage (at most one PR) → review-only PR intake → manager → claim up to `max_active` tickets → worker plan → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan from the checkout as it is. |
+| `factory dispatch` | One stateless pass: fetch and detach the main checkout at `origin/<main>` before `.factory.toml` is read (a root with tracked or untracked changes outside `.factory/` exits 1 with a `root_dirty` dispatcher exit row naming the paths and does nothing, even when its config does not load) → upstream sync (stage a sync ticket) → merge stage (at most one PR) → review-only PR intake → manager → claim up to `max_active` tickets → worker plan → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue unless the repository is paused; `--ticket N --force` is the explicit pause override. `--dry-run` prints the plan from the checkout as it is. |
 | `factory explain N [--json] [--since ISO]` | Reads the live `.factory/events.jsonl` and retained `events.jsonl.N.gz` segments without writing. JSON mode returns `{ticket,nodes,edges,loops,cost,frontier,frontier_stage,coverage}`; `cost` totals the ticket and each retry loop has its own total. `frontier_stage` distinguishes gate, review, manager, human, merge eligibility, and blocker waits; merged and wontfix tickets have a null frontier. Text mode prints a compact decision tree. Legacy `claimed`, `attempt`, `review`, `approved`, `merged`, and `escalate` rows become `synthesized: true` nodes, while `coverage` names part-1 stages with no structured record. Output is bounded to the runtime projection's 1 MiB limit. |
 | `factory manage` | First recommends directions for `needs-review` PRs, then `needs-viability` issues; then resolves untouched `ready-for-human` escalation packets within `[manager].rounds`; finally publishes one routed human handoff request per escalation whose automatic recovery is terminal (also without a manager). `--dry-run` lists eligible requests without inference or writes. |
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
@@ -1378,9 +1379,11 @@ branches, or merge state.
   `.factory/wt-<n>/.factory/gate-report-<n>.md` per gate;
   `journalctl --user -u factory-<repo>.service` for dispatcher passes.
 - **Re-run one ticket by hand**: `factory dispatch --ticket N` (bypasses the
-  frontier and its label checks; respects the in-flight lock).
-- **Stop everything**: `systemctl --user disable --now factory-<repo>.timer`.
-  In-flight tickets finish their current pass; nothing new is claimed.
+  frontier and its label checks; respects the in-flight lock and repository pause).
+  Add `--force` to override a pause for that ticket only.
+- **Pause everything durably**: `factory pause --reason "maintenance"`; optional
+  `--until 2h` or an ISO timestamp auto-resumes on the next pass. `factory resume`
+  clears it. Running work finishes or parks its current ticket, then claims nothing new.
 - **Tear down a ticket**: verify any accepted handoff is retained before manually
   removing `.factory/wt-<n>` with `git worktree remove --force`, deleting `agent/<n>`,
   and re-labelling the issue. Manual removal bypasses the dispatcher's retention guard.
@@ -1885,7 +1888,8 @@ schema versions rather than interpreting them as version 1.
 | `history` | Explicit retained-window coverage object below. |
 | `errors` | At most 32 structured partial-error objects, `{source, scope, code}` strings. No exception text, credentials, configuration dumps, or log excerpts. |
 
-`dispatcher` has nullable booleans `service_active`, `timer_active`, and `paused`;
+`dispatcher` has nullable booleans `service_active` and `timer_active`;
+`paused` is null or `{reason, at, who, until}` from the bounded local pause state;
 nullable UTC `next_at`; UTC `observed_at`; string `observation`; `capacity`;
 `run_ids` (sorted dispatcher-run identity strings); and `latest_transition`
 (null or `{event_id, at, execution_id, kind}` from a returned `enter`/`exit`).
@@ -1894,8 +1898,8 @@ artifact modification. `capacity` has `configured` (integer), `active` (integer
 or null, actual held ticket admission locks), and `complete` (boolean).
 Stage count is not admission count. An unavailable service query is null,
 not false; inactive service evidence alone does not establish unexpected stop.
-`paused` is null because the current producer has no recorded pause intention.
-No scheduled intention is inferred from a configured interval.
+The optional pause expiry is reported as recorded; only an engine pass consumes
+an elapsed expiry and journals its automatic resume.
 
 Each execution has the eight common F01 identity fields (`dispatcher_run_id`,
 `root_execution_id`, `execution_id`, `parent_execution_id`, `ticket`, `attempt`,

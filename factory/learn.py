@@ -27,7 +27,7 @@ from datetime import datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from factory import config, dispatch, lifecycle, manage, promotion, score, stats, triage
+from factory import config, dispatch, lifecycle, manage, pause, promotion, score, stats, triage
 from factory.config import LABEL_CHORE, LESSONS_NAME
 
 MAX_LESSONS = 10
@@ -1126,6 +1126,8 @@ def run(
 
     Returns the recorded event's fields, or None when nothing was recorded (no finished tickets,
     or a dry run). Raises on a model, `git` or `gh` failure."""
+    if pause.guard(cfg, dispatch.log):
+        return None
     triage.configure(cfg)
     stats.configure(cfg)
     tickets, evidence_md = evidence(last)
@@ -1282,6 +1284,8 @@ def learn_pass(dry_run: bool = False) -> None:
 
     Learn needs a manager (without one, learn only writes an uncommitted file) and no open lessons,
     curate or revert PR (lessons rewrite the whole file). A failure is journaled, never raised."""
+    if pause.guard(dispatch.cfg, dispatch.log):
+        return False
     cfg = dispatch.cfg
     try:
         auto_learn(cfg, dry_run)
@@ -1661,6 +1665,8 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     cfg = config.load()
     dispatch.configure(cfg)
+    if pause.guard(cfg, dispatch.log):
+        return 0
     if args.promotion:
         claim = json.loads(Path(args.promotion).read_text())
         try:

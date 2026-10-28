@@ -31,7 +31,7 @@ import tomllib
 from contextlib import contextmanager, nullcontext, suppress
 from pathlib import Path
 
-from factory import __version__, brief, config, lifecycle
+from factory import __version__, brief, config, lifecycle, pause
 from factory.config import (
     LABEL_ADD_ONLY_OVERRIDE,
     LABEL_AGENT,
@@ -3102,8 +3102,7 @@ def land_pass(dry_run: bool) -> None:
     # the next timer pass retries.
     if dry_run:
         sync_pass(True)
-        merge_pass_locked(True)
-        return
+        return merge_pass_locked(True)
     (FACTORY / "locks").mkdir(parents=True, exist_ok=True)
     lock_path = FACTORY / "locks" / "merge.lock"
     with lifecycle.scope(EVENTS, "landing", lazy=True) as execution:
@@ -3119,7 +3118,7 @@ def land_pass(dry_run: bool) -> None:
         try:
             execution.resource("acquired", lock_path, scope="repository")
             sync_pass(dry_run)
-            merge_pass_locked(dry_run)
+            return merge_pass_locked(dry_run)
         finally:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             lock_fd.close()
@@ -3128,6 +3127,8 @@ def land_pass(dry_run: bool) -> None:
 
 def merge_pass_locked(dry_run: bool) -> None:
     """Ticket PR merge stage; `factory learn` PRs in the same listing go to `learn.promote_pass` first."""
+    if pause.guard(cfg, log):
+        return False
     prs = gh_json(
         [
             "pr",
@@ -3419,6 +3420,10 @@ def merge_pass_locked(dry_run: bool) -> None:
             ):
                 log(f"PR #{pr_num}: head, label, or human review changed before merge; not merging")
                 continue
+            if state := pause.current(ROOT, expire=True):
+                log(pause.message(state))
+                execution.outcome, execution.reason = "not_admitted", "paused"
+                return False
             method = "--merge" if carries_upstream else "--squash"
             body = f"Closes #{n}\n\n{signoff()}" if cfg.signoff else f"Closes #{n}"
             with lifecycle.scope(EVENTS, "merge", ticket=n):
@@ -3698,8 +3703,24 @@ def process_ticket(
             return
 
         claimed = False  # once True, nothing may leave this block without releasing the ticket
+        def park_if_paused() -> bool:
+            nonlocal claimed
+            if forced:
+                return False
+            state = pause.current(ROOT, expire=True)
+            if state is None:
+                return False
+            detail = "parked and unclaimed" if claimed else "not claimed"
+            log(f"#{n}: {pause.message(state)}; {detail}")
+            if claimed:
+                run(["gh", "issue", "edit", str(n), "--repo", REPO, "--remove-assignee", "@me"], check=False)
+                claimed = False
+            execution.outcome, execution.reason = "not_admitted", "paused"
+            return True
         try:
             execution.resource("acquired", lock_path, scope="repository")
+            if park_if_paused():
+                return
             # Strong re-read before claiming: `issue list` is search-backed and lags
             # label/assignee edits, which re-claimed #16/#17 seconds after escalation.
             # The initiative kind is read here even when forced: `--ticket` cannot bypass it.
@@ -3754,6 +3775,8 @@ def process_ticket(
                 record("plan-bound", ticket=n, schema_version=1, baseline=baseline,
                        issue={key: fresh.get(key) for key in ("title", "body", "comments")})
 
+            if park_if_paused():
+                return
             try:
                 run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-assignee", "@me"])
             except subprocess.CalledProcessError as exc:
@@ -3816,6 +3839,8 @@ def process_ticket(
                              code="worker_stuck" if stuck else "gate_failed")
                     return
 
+            if park_if_paused():
+                return
             run(["git", "fetch", "origin", cfg.main], cwd=wt)
             ahead = run(["git", "rev-list", "--count", f"origin/{cfg.main}..HEAD"], cwd=wt).stdout.strip()
             if ahead == "0" and (wt / ".factory" / f"handoff-{n}.md").exists():
@@ -3826,6 +3851,8 @@ def process_ticket(
                          logfile, code="no_change")
                 return
             body = f"Closes #{n}\n\n## Gate report\n\n{report}\n"
+            if park_if_paused():
+                return
             if not push_and_pr(wt, f"agent/{n}", f"agent/{n}: {title}", body, ticket=n, lease=lease):
                 escalate(
                     n, f"agent/{n}: PR not published (no commits over main and no handoff, or existing "
@@ -3891,6 +3918,8 @@ def process_ticket(
                         code="worker_stuck" if stuck else "gate_failed",
                     )
                     return
+                if park_if_paused():
+                    return
                 lease = push_agent(wt, n, lease)
                 verdict, findings, pr_failed = pr_gate_and_review(wt, n, report, gate_head, pr_runs)
                 pr_comment(n, findings)
@@ -3937,6 +3966,8 @@ def process_ticket(
 def ticket_pass(budget_min: int, dry_run: bool) -> None:
     """Claim up to capacity frontier tickets in accepted-priority order and work each one."""
     from factory import schedule
+    if pause.guard(cfg, log):
+        return False
 
     with nullcontext() if dry_run else lifecycle.scope(EVENTS, "scheduling", lazy=True) as execution:
         active = active_tickets()
@@ -3974,6 +4005,8 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
                 admissions[payload["ticket"]] = payload["decision_id"]
             record("scheduling", capacity=capacity, active=active, explained=decided["explained"])
     for issue in decided["selected"]:
+        if pause.guard(cfg, log):
+            return False
         process_ticket(
             {**issue, "_factory_admission_id": admissions.get(issue["number"])},
             budget_min,
@@ -3981,13 +4014,20 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
         )
 
 
-def pin_root() -> list[str]:
+class _RepositoryPaused(RuntimeError):
+    """Pinning refused before any repository mutation."""
+
+
+def pin_root(*, ignore_pause: bool = False) -> list[str]:
     """Fetch and detach the root at origin/<main> so the pass reads committed config, not
     whatever branch or edits the checkout carries. A root with tracked or untracked changes
     outside `.factory/` is left alone; its paths come back and the caller refuses the pass.
     Runs before `config.load`: only `[repo].main` is read, from the raw file, so a root whose
-    config the engine rejects still pins (and picks up the fix from origin/main)."""
+    config the engine rejects still pins (and picks up the fix from origin/main).
+    Refuses a paused root before fetch/checkout unless an explicit ticket overrides it."""
     root = config.repo_root()
+    if not ignore_pause and (state := pause.current(root, expire=True)) is not None:
+        raise _RepositoryPaused(pause.message(state))
     main = "main"
     with suppress(OSError, tomllib.TOMLDecodeError):
         main = tomllib.loads((root / config.CONFIG_NAME).read_text()).get("repo", {}).get("main", main)
@@ -4004,6 +4044,7 @@ def main(argv: list[str]) -> int:
         description="AI-factory dispatcher (one pass, stateless)"
     )
     parser.add_argument("--ticket", type=int, help="process exactly this open issue")
+    parser.add_argument("--force", action="store_true", help="run an explicit --ticket while paused")
     parser.add_argument(
         "--budget-min",
         type=int,
@@ -4014,8 +4055,15 @@ def main(argv: list[str]) -> int:
         "--dry-run", action="store_true", help="print planned actions; no side effects"
     )
     args = parser.parse_args(argv)
+    if args.force and not args.ticket:
+        parser.error("--force requires --ticket")
     if not args.dry_run:
-        dirty = pin_root()
+        try:
+            dirty = pin_root(ignore_pause=args.force)
+        except _RepositoryPaused as exc:
+            suffix = "; --ticket refused (use --force)" if args.ticket else ""
+            log(str(exc) + suffix)
+            return 1 if args.ticket else 0
         if dirty:
             root = config.repo_root()
             log(f"root {root} has changes outside .factory/ ({', '.join(dirty)}); root_dirty, nothing dispatched")
@@ -4033,6 +4081,12 @@ def main(argv: list[str]) -> int:
         EVENTS, "dispatcher", dispatcher=True, lazy=True,
         engine_version=__version__, engine_commit=config.engine_commit(),
     ):
+        if not (args.ticket and args.force):
+            state = pause.current(cfg, expire=True)
+            if state is not None:
+                suffix = "; --ticket refused (use --force)" if args.ticket else ""
+                log(pause.message(state) + suffix)
+                return 1 if args.ticket else 0
         if not args.dry_run:
             from factory import results
 
@@ -4071,15 +4125,27 @@ def main(argv: list[str]) -> int:
 
         # A release PR merges before this pass lands a ticket (every ticket edits CHANGELOG.md,
         # which GitHub cannot union-merge), and a new one opens only after landing.
+        if pause.guard(cfg, log):
+            return 0
         release_step(open_pr=False)
-        land_pass(args.dry_run)
+        if pause.guard(cfg, log):
+            return 0
+        if land_pass(args.dry_run) is False:
+            return 0
+        if pause.guard(cfg, log):
+            return 0
         review_intake_pass(args.dry_run)
         from factory.learn import learn_pass
         from factory.manage import manage_pass
 
-        manage_pass(args.dry_run)
-        ticket_pass(args.budget_min, args.dry_run)
-        learn_pass(args.dry_run)
+        if manage_pass(args.dry_run) is False:
+            return 0
+        if ticket_pass(args.budget_min, args.dry_run) is False:
+            return 0
+        if learn_pass(args.dry_run) is False:
+            return 0
+        if pause.guard(cfg, log):
+            return 0
         release_step(open_pr=True)
         if not args.dry_run:
             lifecycle.record_stage_success(EVENTS, "dispatch")

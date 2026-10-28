@@ -100,6 +100,11 @@
     const sources = [['Cases',repo.observation],['Runtime',repo.runtime],['Outcomes',repo.roadmap]];
     return `<details class="coverage-notice"><summary>${unique.length ? `Evidence incomplete · ${esc(unique[0].message || unique[0])}` : 'Evidence freshness and source coverage'}</summary><dl class="kv">${sources.map(([label,value])=>`<dt>${label}</dt><dd>${value ? `${esc(date(value.observed_at || value.generated_at))} · ${esc(coverage(value).status || 'bounded')}` : 'unavailable'}</dd>`).join('')}</dl>${unique.length ? `<ul>${unique.map(error=>`<li>${esc(error.operation || 'collection')} · ${esc(error.code || 'unavailable')}: ${esc(error.message || error)}</li>`).join('')}</ul>` : ''}<p>Retained timestamps belong to each source. A newer runtime read does not make older issue or outcome evidence fresh.</p></details>`;
   }
+  function pauseMarkup(repo) {
+    const paused=object(object(runtime(repo).dispatcher).paused);
+    if(!paused.at)return '';
+    return `<section class="pause-banner" role="status" aria-atomic="true" aria-label="Repository paused"><strong>Paused</strong><span>${esc(paused.reason||'no reason given')}</span><small>Since ${esc(date(paused.at))} · by ${esc(paused.who||'unknown')}${paused.until?` · until ${esc(date(paused.until))}`:''}</small></section>`;
+  }
 
   function journeyMarkup() {
     const journeys = [['Return after absence','overview'],['Investigate delay','flow'],['Resolve attention','attention'],['Handle abnormality','system'],['Verify outcomes','success']];
@@ -333,6 +338,7 @@
     const keep=previousTool&&previousTool.dataset.nativeTool===current.view.toLowerCase()&&previousTool.dataset.repository===repo?.slug;
     if(keep)previousTool.remove(); else WorkspaceTools.dispose();
     app.innerHTML=`<div class="workspace-shell"><aside class="rail"><div><strong class="wordmark">Factory</strong><span>Outcome workspace</span></div>${nav(current.view)}<div class="rail-tools"><button class="btn shortcut" type="button" data-palette>Jump <kbd>${navigator.platform.includes('Mac')?'⌘':'Ctrl'} K</kbd></button>${themePicker()}<button class="btn" type="button" data-chat aria-expanded="${state.chatOpen}">FM dock</button></div><footer>${repo?`<strong>${esc(repo.slug)}</strong><small>${esc(repo.root||'registered root withheld')}</small>`:'No repository'}${signal(coverage(observation(repo)).status||'unobserved')}</footer></aside><div class="workspace-main"><header class="toolbar">${repoPicker(repo)}${collectionMarkup(repo)}</header><main id="main" tabindex="-1">${state.loading&&!repo?'<p class="empty">Loading registered repositories…</p>':state.error&&!repo?`<p class="error">${esc(state.error)}</p>`:content(current.view,repo)}</main></div></div>`;
+    app.querySelector('#main')?.insertAdjacentHTML('beforebegin',pauseMarkup(repo));
     if(current.view==='Overview')app.querySelector('#main .workspace-head')?.insertAdjacentHTML('afterend',journeyMarkup());
     app.querySelector('#main')?.insertAdjacentHTML('beforeend',evidenceNotices(repo));
     for(const node of app.querySelectorAll('[data-action-choice]')){const chosen=choices.get(node.dataset.actionChoice);if(chosen){const index=JSON.parse(node.dataset.actionOptions).findIndex(option=>JSON.stringify(option)===chosen);if(index>=0)node.value=String(index);}}

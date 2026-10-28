@@ -54,6 +54,9 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .signal[data-tone="unknown"], [data-tone="unknown"] { --tone: var(--faint); }
 .signal { color: var(--tone); }
 .notice, .boundary, .coverage-notice, .fm-boundary, .decision-boundary { padding: 12px 14px; color: var(--muted); border-left: 3px solid var(--warn); background: color-mix(in srgb, var(--warn) 7%, var(--surface)); }
+.pause-banner { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; margin: 16px 20px 0; padding: 14px 16px; color: var(--text); border: 1px solid var(--warn); border-left-width: 5px; border-radius: var(--radius); background: color-mix(in srgb, var(--warn) 12%, var(--surface)); }
+.pause-banner strong { color: var(--warn); text-transform: uppercase; letter-spacing: .08em; }
+.pause-banner small { color: var(--muted); }
 .error, .setting-error { color: var(--bad); }
 .empty { padding: 20px; color: var(--muted); border: 1px dashed var(--line-strong); border-radius: var(--radius); }
 .raw, .exact-preview, details pre { max-width: 100%; max-height: 440px; overflow: auto; padding: 12px; color: var(--text); border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.55 var(--mono); }
