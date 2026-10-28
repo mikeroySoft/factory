@@ -102,9 +102,13 @@ def measure(cfg: config.Config, since: str | datetime) -> dict[str, float | int 
     human_tickets = {row["ticket"] for row in rows
                      if row.get("event") == "manage" and row.get("decision") == "HUMAN"
                      and type(row.get("ticket")) is int}
-    human_touches = sum(
-        row.get("event") == "human-decision"
-        or (row.get("event") == "manage" and row.get("decision") == "HUMAN")
+    human_decisions = {
+        ("decision", row["decision_id"]) if row.get("decision_id") else ("row", index)
+        for index, row in enumerate(rows)
+        if row.get("event") == "human-decision"
+    }
+    human_touches = len(human_decisions) + sum(
+        row.get("event") == "manage" and row.get("decision") == "HUMAN"
         for row in rows
     )
     attempts = [row for row in rows if row.get("event") == "attempt" and row.get("attempt") == 1]
