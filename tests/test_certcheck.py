@@ -10,7 +10,11 @@ from pathlib import Path
 from unittest import mock
 
 from factory import certcheck
-from tests.test_certcheck_regression import MergeCertificateRegressionTest, canonical
+
+try:
+    from test_certcheck_regression import MergeCertificateRegressionTest, canonical
+except ModuleNotFoundError:
+    from tests.test_certcheck_regression import MergeCertificateRegressionTest, canonical
 
 
 class CertificateTamperTest(unittest.TestCase):
