@@ -734,6 +734,7 @@ class LocalCLI(unittest.TestCase):
         events = lifecycle.read_events(self.events)
         [escalation] = [e for e in events if e.get("event") == "escalate"]
         self.assertEqual(escalation["code"], "protected_paths")
+        self.assertEqual(escalation["reason"], "worker removed or changed existing tests")
         self.assertEqual(len([e for e in events if e.get("event") == "review"]), int(bounce))
         packet = Path(escalation["packet"]).read_text()
         self.assertIn("`add-only`", packet)
