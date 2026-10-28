@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from factory import config, dispatch, lifecycle, risk
 
@@ -121,6 +122,50 @@ class RiskTierTest(unittest.TestCase):
         tier, rules = self.classify({"factory/risk.py": "HIGH_PATHS = ()\n"})
         self.assertEqual(tier, "High")
         self.assertIn("high:risk policy", rules)
+
+    def test_candidate_cannot_set_second_reviewer_command(self) -> None:
+        (self.repo / ".factory.toml").write_text(
+            '[repo]\nslug = "acme/widgets"\n'
+            '[review]\nsecond_command = ["candidate-reviewer", "--model", "same/model"]\n'
+        )
+        with mock.patch.object(config, "host_config", return_value={}), \
+                self.assertRaisesRegex(config.ConfigError, "host-only"):
+            config.load(self.repo)
+
+
+class LowPolicyTest(unittest.TestCase):
+    def test_low_skips_pr_checks_and_runs_one_primary_review(self) -> None:
+        cfg = config.Config(Path("."), "acme/widgets")
+        cfg.checks = [config.Check("mutation", ["mutation"], when="pr")]
+        dispatch.configure(cfg)
+        with mock.patch.object(dispatch, "risk_for_head", return_value=("Low", ["low:docs/**"])), \
+                mock.patch.object(dispatch, "run_gate") as gate, \
+                mock.patch.object(dispatch, "review", return_value=("APPROVE", "ok")) as review:
+            self.assertEqual(
+                dispatch.pr_gate_and_review(mock.Mock(), 7, "attempt report", "a" * 40, {}),
+                ("APPROVE", "ok", False),
+            )
+        gate.assert_not_called()
+        review.assert_called_once()
+
+    def test_low_revise_uses_medium_loop_on_next_head(self) -> None:
+        cfg = config.Config(Path("."), "acme/widgets")
+        cfg.checks = [config.Check("mutation", ["mutation"], when="pr")]
+        dispatch.configure(cfg)
+        with mock.patch.object(dispatch, "risk_for_head", return_value=("Low", ["low:docs/**"])), \
+                mock.patch.object(dispatch, "run_gate", return_value=(True, "pr report")) as gate, \
+                mock.patch.object(
+                    dispatch, "review", side_effect=[("REVISE", "fix"), ("APPROVE", "ok")],
+                ):
+            self.assertEqual(
+                dispatch.pr_gate_and_review(mock.Mock(), 7, "attempt", "a" * 40, {})[0],
+                "REVISE",
+            )
+            self.assertEqual(
+                dispatch.pr_gate_and_review(mock.Mock(), 7, "attempt", "b" * 40, {})[0],
+                "APPROVE",
+            )
+        gate.assert_called_once()
 
 
 if __name__ == "__main__":

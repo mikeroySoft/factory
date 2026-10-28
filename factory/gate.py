@@ -95,6 +95,17 @@ def run(cmd: list[str]) -> tuple[bool, str]:
         execution.reason = "configured_check_failed"
     return proc.returncode == 0, proc.stdout + proc.stderr
 
+def _check_status(name: str, passed: bool, output: str, blocking_mutation: bool) -> str:
+    if (
+        blocking_mutation
+        and name == "mutation"
+        and passed
+        and "no mutable files" in output.splitlines()
+    ):
+        return "SKIP (no changed factory code)"
+    return "PASS" if passed else "FAIL"
+
+
 
 def failed_test_ids(output: str) -> list[str]:
     """Canonical unittest, pytest and cargo libtest IDs, in report order."""
@@ -750,12 +761,7 @@ def execute(args: argparse.Namespace, execution) -> int:
                 if fields.get("failed_tests"):
                     fields["changed_paths"] = changed_paths(args.base)
                 check.emit("result", check=name, passed=passed, **fields)
-                status = (
-                    "SKIP (no changed factory code)"
-                    if args.blocking_mutation and name == "mutation"
-                    and passed and output.strip() == "no mutable files"
-                    else "PASS" if passed else "FAIL"
-                )
+                status = _check_status(name, passed, output, args.blocking_mutation)
                 results.append((name, status, output))
             if not passed and (outcome == "completed" or check.outcome == "unknown"):
                 outcome, reason = check.outcome, check.reason

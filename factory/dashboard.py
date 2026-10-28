@@ -26,6 +26,7 @@ from factory import (
     dispatch,
     feedback,
     lifecycle,
+    risk,
     runtime_events,
     runtime_local,
     stats,
@@ -75,7 +76,11 @@ VERDICT = re.compile(r"VERDICT:\s*(APPROVE|REVISE)")
 def configure(c: Config) -> None:
     global cfg, FACTORY, LOGS, MAX_ACTIVE, MAX_ATTEMPTS, REPO, ROOT, SYNC_LOG
     global SYNC_TITLE, UPSTREAM, GPU_LOCK, LLM_URL, LLM_MODEL, GATE_CHECKS
+    global _escape_tickets, _escape_tickets_loaded
     cfg = c
+    stats.configure(c)
+    _escape_tickets = None
+    _escape_tickets_loaded = False
     dispatch.configure(c)
     FACTORY = dispatch.FACTORY
     LOGS = dispatch.LOGS
@@ -660,7 +665,7 @@ def dispatcher(runtime: dict) -> dict:
     }
 
 
-def metrics(tickets: list[dict]) -> dict:
+def metrics(tickets: list[dict], *, escape_tickets: set[int] | None = None) -> dict:
     """Fleet KPIs: fractions except the *_pct metrics (0–100); None when undefined."""
     bounce = lambda a: a["attempt"] > MAX_ATTEMPTS
     rounds = lambda t: sum(1 for a in t["attempts"] if not bounce(a))
@@ -687,21 +692,24 @@ def metrics(tickets: list[dict]) -> dict:
         "human_touched_pct": stats.human_touched_pct(
             [t["pr"].get("corrections") or {} for t in tickets if t["pr"] and t["pr"].get("merged_at")]),
     }
-    if any("risk_tier" in ticket for ticket in tickets):
-        result["risk"] = stats.risk_metrics([
-            {
-                "ticket": ticket.get("number"),
-                "state": (
-                    "merged"
-                    if ticket["pr"] and ticket["pr"].get("merged_at")
-                    else ticket.get("stage")
-                ),
-                "risk_tier": ticket["risk_tier"],
-                "review_rounds": ticket.get("rework_rounds", 0),
-                **ticket["human_touch"],
-            }
-            for ticket in tickets
-        ])
+    if any(ticket.get("risk_tier") in risk.TIERS for ticket in tickets):
+        result["risk"] = stats.risk_metrics(
+            [
+                {
+                    "ticket": ticket.get("number"),
+                    "state": (
+                        "merged"
+                        if ticket["pr"] and ticket["pr"].get("merged_at")
+                        else ticket.get("stage")
+                    ),
+                    "risk_tier": ticket["risk_tier"],
+                    "review_rounds": ticket.get("rework_rounds", 0),
+                    **ticket["human_touch"],
+                }
+                for ticket in tickets
+            ],
+            escape_tickets=escape_tickets,
+        )
     return result
 
 
@@ -1145,6 +1153,17 @@ def snapshot() -> dict:
             spend.get(n), by_ticket.get(n), audit=audit.get(n), login=login, cutover=cutover,
         ))
     tickets.sort(key=lambda t: t["number"], reverse=True)
+    global _escape_tickets, _escape_tickets_loaded
+    if not _escape_tickets_loaded:
+        try:
+            _escape_tickets = {
+                event["ticket"] for event in stats.escape_events(stats.escapes())
+            }
+        except (
+            OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, SystemExit,
+        ):
+            _escape_tickets = None
+        _escape_tickets_loaded = True
 
     bounded_executions = recent_executions(executions)
     retained_count_coverage = {
@@ -1236,7 +1255,7 @@ def snapshot() -> dict:
         },
         "dispatcher": dispatcher_state,
         "upstream": upstream_state(gh_upstream, issues),
-        "metrics": metrics(tickets),
+        "metrics": metrics(tickets, escape_tickets=_escape_tickets),
         "workers": stats.worker_metrics(audit, cfg.workers),
         "executions": bounded_executions,
         "resources": resources,
@@ -1248,6 +1267,8 @@ def snapshot() -> dict:
 # ---------------------------------------------------------------- server
 
 _corrections: dict[int, list[dict]] = {}  # merged PR number -> feedback.correction_actions
+_escape_tickets: set[int] | None = None
+_escape_tickets_loaded = False
 
 
 

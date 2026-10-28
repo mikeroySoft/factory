@@ -431,11 +431,11 @@ def rework_rounds(events: list[dict]) -> int:
     return max(0, len(reviews) - 1)
 
 
-def risk_tier(events: list[dict]) -> str:
+def risk_tier(events: list[dict]) -> str | None:
     return next((
         row["tier"] for row in reversed(events)
         if row.get("event") == "risk" and row.get("tier") in risk.TIERS
-    ), "Medium")
+    ), None)
 
 
 def risk_metrics(
@@ -446,7 +446,7 @@ def risk_metrics(
     for tier in risk.TIERS:
         merged = [
             row for row in rows
-            if row.get("state") == "merged" and row.get("risk_tier", "Medium") == tier
+            if row.get("state") == "merged" and row.get("risk_tier") == tier
         ]
         count = len(merged)
         def ratio(value: float, denominator: int = count) -> float | None:
@@ -709,6 +709,19 @@ def escapes() -> list[dict[str, Any]]:
                      "source": "declared" if declared else "blame", "status": status, "skipped": skipped,
                      "candidates": [candidates[n] for n in sorted(candidates)]})
     return rows
+
+def escape_events(rows: list[dict[str, Any]]) -> list[dict]:
+    """Project SZZ escape attribution into watch-compatible lifecycle rows."""
+    return [
+        {
+            "event": "escape",
+            "ticket": candidate["ticket"],
+            "bug": row["bug"],
+            "at": row["closed_at"],
+        }
+        for row in rows
+        for candidate in row.get("candidates", [])
+    ]
 
 
 def print_escapes(rows: list[dict[str, Any]], merged: set[int]) -> None:

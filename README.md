@@ -904,11 +904,13 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    after both approvals, returns the dissenting findings for one worker round;
    the next-head disagreement escalates as `risk_disagreement`. This
    disagreement is the only High-tier-specific path to `ready-for-human`.
-   `[review].second_command` is a host-only override of the code default;
-   `factory doctor` warns when it cannot launch or does not identify a model
-   distinct from the primary. `factory stats --by-risk` and the dashboard
-   report human interventions, human-wait minutes, rounds, disagreement rate,
-   and escape rate per tier.
+   `[review].second_command` is a host-only override of the code default.
+   The built-in OMP worker pins `openai-codex/gpt-5.6-sol`; custom worker
+   profiles must also name a model. `factory doctor` warns when any of the
+   worker, primary-reviewer, or second-reviewer models is missing or not
+   distinct, or when the second reviewer cannot launch.
+   `factory stats --by-risk` and the dashboard report human interventions,
+   human-wait minutes, rounds, disagreement rate, and escape rate per tier.
 
 6. **Merge stage** (start of the next pass). One PR per pass requires green
    GitHub checks, a current-main head, no human requested-changes veto, the
@@ -1041,7 +1043,7 @@ review_rounds = 1                # REVISE -> worker -> re-review cycles
 # cost_pattern = 'Total cost:\s*\$([0-9.]+)'   # $ from the worker log (Claude Code prints this)
 
 [workers]                        # ticket label/profile -> argv; {prompt} file, {cwd} worktree
-default = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]
+default = ["omp", "-p", "--model", "openai-codex/gpt-5.6-sol", "--cwd", "{cwd}", "@{prompt}"]
 chore   = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
 
 # A differently named OMP-compatible worker selected by a separate pilot label:

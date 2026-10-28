@@ -63,6 +63,7 @@ LABELS = {
 DEFAULT_LEAK_PATTERN = (r"\.(?:corp|internal|intranet|lan)\b|\bconfidential\b|\bproprietary\b"
                         r"|\bjira\b|\bconfluence\b|\.atlassian\.net\b")
 DEFAULT_WORKER = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]
+DEFAULT_WORKER_MODEL = "openai-codex/gpt-5.6-sol"
 DEFAULT_CHORE_WORKER = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
 DEFAULT_REVIEWER = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1", "{prompt}"]
 DEFAULT_SECOND_REVIEWER = ["omp", "-p", "--no-session", "--model", "openai-codex/gpt-6-astra", "{prompt}"]
@@ -279,6 +280,15 @@ class Config:
         """Expanded argv for an already selected worker profile."""
         return expand([*self.worker_wrap, *self.workers[worker]], prompt=str(prompt), cwd=str(cwd),
                       root=str(self.root), repo=self.repo, home=str(Path.home()))
+
+    def worker_model(self, worker: str) -> str | None:
+        """Explicit worker model, including the code-pinned built-in OMP default."""
+        command = self.workers[worker]
+        return (
+            DEFAULT_WORKER_MODEL
+            if command == DEFAULT_WORKER
+            else command_model(command)
+        )
 
     def worker_environment(self, worker: str, prompt: Path, cwd: Path) -> dict[str, str]:
         """Expanded environment overrides for one selected worker profile."""

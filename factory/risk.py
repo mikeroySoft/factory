@@ -47,7 +47,7 @@ def _changes(base: str, head: str, cwd: Path | None) -> list[tuple[str, str]]:
     return changes
 
 
-def _high_rule(path: str) -> str | None:
+def high_rule(path: str) -> str | None:
     return next((name for name, patterns in HIGH_RULES
                  if any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)), None)
 
@@ -96,7 +96,7 @@ def classify(
     cannot lower it; model failures leave the deterministic result unchanged.
     """
     changes = _changes(base, head, cwd)
-    high = [rule for _, path in changes if (rule := _high_rule(path))]
+    high = [rule for _, path in changes if (rule := high_rule(path))]
     if high:
         tier, rules = "High", list(dict.fromkeys(high))
     else:

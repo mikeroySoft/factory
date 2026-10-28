@@ -444,6 +444,14 @@ def second_reviewer_problem(cfg: config.Config, which) -> str | None:
         return "primary reviewer model is not explicit; High-risk PRs cannot prove reviewer independence"
     if primary == second:
         return f"same model as primary reviewer ({second}); High-risk PRs cannot merge"
+    for worker in cfg.workers:
+        model = cfg.worker_model(worker)
+        if model is None:
+            return f"worker `{worker}` model is not explicit; High-risk PRs cannot prove reviewer independence"
+        if model == primary:
+            return f"worker `{worker}` uses the same model as primary reviewer ({model})"
+        if model == second:
+            return f"worker `{worker}` uses the same model as second reviewer ({model})"
     return None
 
 

@@ -316,14 +316,14 @@ def metric_series(events: list[dict], start: date, end: date) -> dict[str, dict[
                 and risk_by_ticket.get(row.get("ticket")) == tier
             ]
             if merged:
-                reverted = [
+                escaped = [
                     row for row in today
-                    if row.get("event") == "revert"
+                    if row.get("event") == "escape"
                     and risk_by_ticket.get(row.get("ticket")) == tier
                 ]
                 series[f"revert_rate_by_tier:{tier}"][key] = {
-                    "value": len({row.get("ticket") for row in reverted}) / len(merged),
-                    "rows": [*merged, *reverted],
+                    "value": len({row.get("ticket") for row in escaped}) / len(merged),
+                    "rows": [*merged, *escaped],
                 }
         cycles, cycle_rows = [], []
         for merged in (row for row in today if row.get("event") == "merged"):
@@ -701,6 +701,14 @@ def run_pass(
 ) -> list[dict]:
     """Log, diagnose, file/comment, and close configured signals."""
     events = lifecycle.read_events(dispatch.EVENTS)
+    if any(band.metric == "revert_rate_by_tier" for band in cfg.watch_bands):
+        stats.configure(cfg)
+        try:
+            events.extend(stats.escape_events(stats.escapes()))
+        except (
+            OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, SystemExit,
+        ) as exc:
+            dispatch.log(f"watch: escape attribution unavailable ({type(exc).__name__})")
     rows = [r for r in events if r.get("event") == "watch"]
     filings = {r["fingerprint"]: r for r in rows}
     # Issues this install opened; only the opener closes one (rows without `repo` predate routing).

@@ -53,19 +53,34 @@ class RiskStatsTest(unittest.TestCase):
                 "spend": {"rounds": 1},
             })
         dashboard.MAX_ATTEMPTS = 3
-        result = dashboard.metrics(tickets)
+        result = dashboard.metrics(tickets, escape_tickets={2})
         self.assertEqual(result["risk"]["Low"]["merged_prs"], 1)
         self.assertEqual(result["risk"]["High"]["human_interventions_per_merged_pr"], 1.0)
+        self.assertEqual(result["risk"]["High"]["escape_rate"], 1.0)
 
     def test_revert_rate_control_band_is_split_by_tier(self) -> None:
         day = date(2026, 10, 27)
         events = [
             {"event": "risk", "ticket": 7, "tier": "High", "at": "2026-10-27T01:00:00Z"},
             {"event": "merged", "ticket": 7, "at": "2026-10-27T02:00:00Z"},
-            {"event": "revert", "ticket": 7, "at": "2026-10-27T03:00:00Z"},
+            {"event": "escape", "ticket": 7, "at": "2026-10-27T03:00:00Z"},
         ]
         series = watch.metric_series(events, day, day)
         self.assertEqual(series["revert_rate_by_tier:High"][day.isoformat()]["value"], 1.0)
+
+    def test_escape_events_use_real_stats_attribution_rows(self) -> None:
+        rows = [{
+            "bug": 419,
+            "closed_at": "2026-10-27T03:00:00Z",
+            "candidates": [{"ticket": 7}, {"ticket": 8}],
+        }]
+        self.assertEqual(
+            stats.escape_events(rows),
+            [
+                {"event": "escape", "ticket": 7, "bug": 419, "at": "2026-10-27T03:00:00Z"},
+                {"event": "escape", "ticket": 8, "bug": 419, "at": "2026-10-27T03:00:00Z"},
+            ],
+        )
 
 
 if __name__ == "__main__":

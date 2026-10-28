@@ -2172,11 +2172,24 @@ def risk_disagreement_packet(
         f"### Mutation findings\n\n{mutation_findings}"
     )
 
+def risk_disagreement_transition(
+    previous_head: str | None, state: dict, head: str,
+) -> tuple[str | None, bool]:
+    """Return the active disagreement head and whether it follows another head."""
+    current = (
+        head
+        if state.get("head") == head and state.get("disagreement")
+        else None
+    )
+    return current, bool(previous_head and current and previous_head != current)
+
+
 
 def pr_gate_and_review(
     wt: Path, n: int, report: str, head: str, pr_runs: dict[str, tuple[bool, str]],
 ) -> tuple[str | None, str, bool]:
     """Apply the per-head Low, Medium, or High gate and review policy."""
+    _PENDING_RISK.pop(n, None)
     tier, rules = risk_for_head(n, head)
     policy_tier = "Medium" if tier == "Low" and n in _LOW_FALLBACK else tier
     ok, pr_report = True, ""
@@ -2218,14 +2231,21 @@ def pr_gate_and_review(
         return None, second_findings, False
     if len(set(models)) != 3:
         return None, f"{second_findings}\n\nHigh-risk reviewer models were not distinct: {models}.", False
+    changed = run(
+        ["git", "diff", "--name-status", f"origin/{cfg.main}..{head}"], cwd=wt,
+    ).stdout.strip()
+    changed_factory_code = any(
+        path.startswith("factory/") and path.endswith(".py")
+        for line in changed.splitlines()
+        for path in line.split("\t")[1:]
+    )
     mutation = _mutation_status(pr_report)
+    if mutation == "MISSING" and not changed_factory_code:
+        mutation = "SKIP"
     record(
         "risk-check", ticket=n, head=head, mutation=mutation,
         primary=primary, second=second, models=list(models),
     )
-    changed = run(
-        ["git", "diff", "--name-status", f"origin/{cfg.main}..{head}"], cwd=wt,
-    ).stdout.strip()
     packet = risk_disagreement_packet(
         head, rules, primary, primary_findings, second, second_findings,
         mutation, pr_report or "mutation check missing", changed,
@@ -2639,9 +2659,17 @@ def sync_pass(dry_run: bool) -> None:
 FACTORY_APPROVED = LABEL_APPROVED
 
 
-def _head_evidence_matches(events: list[dict], n: int, head: str) -> bool:
+def _head_evidence_matches(
+    events: list[dict], n: int, head: str, *, changed_paths: list[str] | None = None,
+) -> bool:
     """True when every tier-specific premise passed for this exact head."""
-    tier, _ = risk_for_head(n, head, events)
+    tier, rules = risk_for_head(n, head, events)
+    if (
+        rules == ["medium:unclassified legacy head"]
+        and changed_paths is not None
+        and any(risk.high_rule(path) for path in changed_paths)
+    ):
+        return False
     gate = None
     worker_model = None
     reviews: dict[str, dict] = {}
@@ -2709,8 +2737,14 @@ def approve_pr(n: int, head: str) -> bool:
     if cfg.manager and cfg.manager_review == "all" and not manager_approval(events, n, head):
         log(f"#{n}: gate and review passed at {head[:12]}; waiting for manager approval (manager.review = all)")
         return True
-    fields = "number,state,headRefOid,baseRefName,reviewDecision"
+    fields = "number,state,headRefOid,baseRefName,reviewDecision,files"
     pr = gh_json(["pr", "view", f"agent/{n}", "--repo", REPO, "--json", fields])
+    changed_paths = [
+        item["path"] for item in pr.get("files", [])
+        if isinstance(item, dict) and isinstance(item.get("path"), str)
+    ]
+    if not _head_evidence_matches(events, n, head, changed_paths=changed_paths):
+        return False
     if (
         pr.get("state") != "OPEN"
         or pr.get("headRefOid") != head
@@ -2943,11 +2977,22 @@ def _refresh_failure_scope(wt: Path, n: int, reports: list[str]) -> tuple[list[s
     return paths, bool(paths) and not related
 
 
+def pending_risk_requeue_head(n: int) -> str | None:
+    rows = [
+        event for event in lifecycle.read_events(EVENTS)
+        if event.get("ticket") == n
+        and event.get("event") in {"attempt", "risk-requeue"}
+    ]
+    return rows[-1].get("head") if rows and rows[-1]["event"] == "risk-requeue" else None
+
+
 def refresh_requeue_context(n: int) -> str:
     rows = [
         event for event in lifecycle.read_events(EVENTS)
         if event.get("ticket") == n
-        and event.get("event") in {"attempt", "conflict-requeue", "gate-requeue"}
+        and event.get("event") in {
+            "attempt", "conflict-requeue", "gate-requeue", "risk-requeue",
+        }
     ]
     if not rows or rows[-1]["event"] == "attempt":
         return ""
@@ -2960,6 +3005,14 @@ def refresh_requeue_context(n: int) -> str:
             + f"\nRun `git fetch origin && git {event['verb']} origin/{cfg.main}` in this worktree, resolve "
             "the conflicts, and commit. Keep the already-approved intent of the change; do not widen scope. "
             "The approval does not carry over: the gate and an independent review run again.\n\n"
+        )
+    if event["event"] == "risk-requeue":
+        return (
+            f"## High-risk disagreement, round {event['round']}\n\n"
+            f"PR #{event['pr']} was refreshed onto current `{cfg.main}`, but its machine checks "
+            f"disagreed at `{event['head']}`. Address the dissenting findings below on the existing "
+            f"`agent/{n}` branch. A second disagreement on the next head escalates.\n\n"
+            f"{event['packet']}\n\n"
         )
     reports = event.get("reports") or []
     assessment = (
@@ -3231,7 +3284,12 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         gate_head=head, actual_head=head, clean=True, gate_rerun=gate_rerun,
     )
     record_risk(wt, n, head)
-    verdict, findings, pr_failed = pr_gate_and_review(wt, n, report, head, {})
+    tier, _ = risk_for_head(n, head)
+    if tier == "High":
+        verdict, findings, pr_failed = pr_gate_and_review(wt, n, report, head, {})
+    else:
+        verdict, findings = review(wt, n, report, head)
+        pr_failed = False
     pending = _PENDING_REVIEWS.get(n)
     unavailable = pending is not None and pending.get("verdict") is None
     pr_comment(n, findings)
@@ -3243,11 +3301,25 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         return False
     if verdict != "APPROVE":
         state = _PENDING_RISK.get(n) or {}
+        if state.get("head") == head and state.get("disagreement"):
+            rounds = sum(
+                event.get("event") == "risk-requeue" and event.get("ticket") == n
+                for event in lifecycle.read_events(EVENTS)
+            )
+            record(
+                "risk-requeue", ticket=n, pr=pr, head=head,
+                packet=state["packet"], round=rounds + 1,
+            )
+            run([
+                "gh", "issue", "edit", str(n), "--repo", REPO,
+                "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
+                "--remove-assignee", "@me",
+            ], check=False)
+            log(f"#{n}: PR #{pr} High-risk checks disagreed after refresh; requeued to a worker")
+            return False
         withdraw(
             f"fresh review requested changes after {verb} onto moved main",
-            "risk_disagreement" if state.get("disagreement") else
             "pr_checks_failed" if pr_failed else "review_revise",
-            extra=state.get("packet", ""),
         )
         return False
     if not approve_pr(n, head):
@@ -3467,7 +3539,9 @@ def merge_pass_locked(dry_run: bool) -> None:
                     log(f"PR #{pr_num}: would refuse (worker eval keep claim missing for {head}); run `{command}`")
                 else:
                     events = lifecycle.read_events(EVENTS)
-                    approved = _head_evidence_matches(events, n, head) and any(
+                    approved = _head_evidence_matches(
+                        events, n, head, changed_paths=changed_paths,
+                    ) and any(
                         e.get("event") == "approved"
                         and e.get("ticket") == n
                         and e.get("pr") == pr_num
@@ -3529,7 +3603,9 @@ def merge_pass_locked(dry_run: bool) -> None:
                     "eval_required", mode="eligibility", pr=pr_num, head=head, command=command,
                 )
                 continue
-            approved = _head_evidence_matches(events, n, head) and any(
+            approved = _head_evidence_matches(
+                events, n, head, changed_paths=changed_paths,
+            ) and any(
                 e.get("event") == "approved"
                 and e.get("ticket") == n
                 and e.get("pr") == pr_num
@@ -3685,10 +3761,15 @@ def worker_round(
     else:
         worker = record_worker_selection(n, labels, selected_worker=selected_worker)
     worker_version = cfg.worker_version.get(worker)
+    worker_model = cfg.worker_model(worker)
     command = cfg.worker_command(worker, promptfile, wt)
+    if cfg.workers[worker] == config.DEFAULT_WORKER:
+        command[len(cfg.worker_wrap) + 2:len(cfg.worker_wrap) + 2] = [
+            "--model", config.DEFAULT_WORKER_MODEL,
+        ]
     identity = {
         "worker": worker, "worker_version": worker_version,
-        "worker_model": config.command_model(command),
+        "worker_model": worker_model,
     }
     transcript_mode = cfg.worker_transcript.get(worker)
     argv, session_dir = _with_transcript(
@@ -3984,6 +4065,7 @@ def process_ticket(
             # candidate the dispatcher's own gate passed at this exact head needs no worker,
             # unless a refresh conflict or repeated refresh gate failure requeued it.
             resolve = refresh_requeue_context(n)
+            prior_risk_disagreement_head = pending_risk_requeue_head(n)
             extra, logfile, report = resolve, None, ""
             staged = None if resolve else sync_staged(n, wt)
             if staged is not None:
@@ -4037,9 +4119,16 @@ def process_ticket(
             record_risk(wt, n, gate_head)
             verdict, findings, pr_failed = pr_gate_and_review(wt, n, report, gate_head, pr_runs)
             pr_comment(n, findings)
-            risk_disagreements = int(bool(
-                (_PENDING_RISK.get(n) or {}).get("disagreement")
-            ))
+            current_risk = _PENDING_RISK.get(n) or {}
+            risk_disagreement_head, repeated_disagreement = risk_disagreement_transition(
+                prior_risk_disagreement_head, current_risk, gate_head,
+            )
+            if repeated_disagreement:
+                escalate(
+                    n, "High-risk machine checks disagreed on two successive heads",
+                    logfile, code="risk_disagreement", extra=current_risk["packet"],
+                )
+                return
             if verdict is None:
                 log(
                     f"#{n}: reviewer unavailable; not a REVISE verdict after "
@@ -4053,7 +4142,9 @@ def process_ticket(
             # Each REVISE (or pr-tier FAIL) uses the normal bounce budget. A first
             # High-risk disagreement always gets one rework, even when that budget is spent.
             for bounce in range(1, cfg.review_rounds + 2):
-                if verdict == "APPROVE" or (bounce > cfg.review_rounds and not risk_disagreements):
+                if verdict == "APPROVE" or (
+                    bounce > cfg.review_rounds and risk_disagreement_head is None
+                ):
                     break
                 if time.monotonic() > deadline:
                     escalate(
@@ -4098,16 +4189,16 @@ def process_ticket(
                 verdict, findings, pr_failed = pr_gate_and_review(wt, n, report, gate_head, pr_runs)
                 pr_comment(n, findings)
                 current_risk = _PENDING_RISK.get(n) or {}
-                if current_risk.get("disagreement"):
-                    if risk_disagreements:
-                        escalate(
-                            n, "High-risk machine checks disagreed on two successive heads",
-                            logfile, code="risk_disagreement", extra=current_risk["packet"],
-                        )
-                        return
-                    risk_disagreements = 1
-                else:
-                    risk_disagreements = 0
+                current_disagreement_head, repeated_disagreement = risk_disagreement_transition(
+                    risk_disagreement_head, current_risk, gate_head,
+                )
+                if repeated_disagreement:
+                    escalate(
+                        n, "High-risk machine checks disagreed on two successive heads",
+                        logfile, code="risk_disagreement", extra=current_risk["packet"],
+                    )
+                    return
+                risk_disagreement_head = current_disagreement_head
                 if verdict is None:
                     escalate(
                         n, "reviewer unavailable after retries", logfile,

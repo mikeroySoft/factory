@@ -28,7 +28,7 @@
 # argv templates. {prompt} = path to the ticket prompt file, {cwd} = worktree.
 # OMP file prompts require `@{prompt}`; bare `{prompt}` passes the path as text.
 # The key is a ticket label; `default` is required. First matching label wins.
-# default = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]
+# default = ["omp", "-p", "--model", "openai-codex/gpt-5.6-sol", "--cwd", "{cwd}", "@{prompt}"]
 # chore   = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
 # Other agents work the same way, e.g.
 # default = ["claude", "-p", "--dangerously-skip-permissions", "{prompt}"]  # reads the path as text: use a wrapper
