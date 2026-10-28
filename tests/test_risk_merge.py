@@ -220,7 +220,7 @@ class ReviewPolicyTest(unittest.TestCase):
             module_path=Path("factory/example.py"),
             operator_name="NumberReplacer",
             occurrence=0,
-            start_pos=(2, 8),
+            start_pos=(1, 0),
             end_pos=(2, 9),
         )
         survivor = SimpleNamespace(
@@ -261,7 +261,7 @@ class ReviewPolicyTest(unittest.TestCase):
                 with contextlib.redirect_stdout(blocking):
                     self.assertEqual(mutation.main(["--blocking"]), 1)
 
-        self.assertIn("factory/example.py:2: NumberReplacer", blocking.getvalue())
+        self.assertIn("factory/example.py:1: NumberReplacer", blocking.getvalue())
         self.assertIn("1 survived", report_only.getvalue())
         self.assertEqual(
             gate._check_status("mutation", True, "Installed 28 packages\nno mutable files\n", True),
@@ -626,6 +626,11 @@ class HighPipelineBoundaryTest(unittest.TestCase):
 
 
 class MutationExecutionTest(unittest.TestCase):
+    def test_mutation_deletions_only_have_no_changed_factory_lines(self) -> None:
+        diff = "+++ b/factory/dispatch.py\n@@ -2,2 +1,0 @@\n-old\n-code\n"
+        with mock.patch.object(mutation.subprocess, "run", return_value=mock.Mock(stdout=diff)):
+            self.assertEqual(mutation.changed_lines(), {})
+
     def test_mutation_runner_prioritizes_related_tests_without_omitting_others(self) -> None:
         executed = []
 
