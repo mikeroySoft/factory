@@ -413,6 +413,20 @@ class HighPrGateTest(unittest.TestCase):
         check = next(row for row in rows if row.get("event") == "risk-check")
         self.assertEqual(check["pr_gate"], "PASS")
 
+    def test_high_pr_check_output_cannot_overwrite_failed_gate_summary(self) -> None:
+        report = (
+            "- mutation: FAIL\n- extra: FAIL\n\n## extra failure\n"
+            "```\n- extra: PASS\n```\n"
+        )
+        with mock.patch.object(dispatch, "risk_for_head", return_value=("High", ["high:risk policy"])), \
+                mock.patch.object(dispatch, "run_gate", return_value=(False, report)), \
+                mock.patch.object(dispatch, "review", return_value=("APPROVE", "ok")) as reviewer:
+            self.assertEqual(
+                dispatch.pr_gate_and_review(self.root, 7, "attempt", HEAD, {}),
+                ("REVISE", report, True),
+            )
+        reviewer.assert_not_called()
+
 
 class HighPipelineBoundaryTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -546,7 +560,7 @@ class HighPipelineBoundaryTest(unittest.TestCase):
         self.escalate.assert_called_once()
         self.assertEqual(self.escalate.call_args.kwargs["code"], "review_revise")
 
-    def test_high_all_checks_agree_approves_and_merges_without_human(self) -> None:
+    def test_high_disagree_checks_all_agree_approves_and_merges_without_human(self) -> None:
         self.reviews(("APPROVE", "APPROVE"))
         self.patch(dispatch, "run_gate", return_value=(True, "- mutation: PASS\n"))
         dispatch.process_ticket(self.issue, 10, False, forced=True)
