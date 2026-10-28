@@ -14,6 +14,7 @@ COMMANDS = {
     "dispatch": ("dispatch", "main", "one pass: sync, merge stage, claim and work tickets"),
     "manage": ("manage", "main", "recommend PR/issue viability, resolve untouched escalations, publish terminal human handoffs"),
     "gate": ("gate", "main", "run the deterministic quality gate in this worktree"),
+    "verify-merge": ("certcheck", "main", "verify merge certificates or audit first-parent main"),
     "watch": ("watch", "main", "file new factory runtime failures (journal, failed units, runtime-json) as bug issues"),
     "stats": ("stats", "main", "ticket metrics from GitHub"),
     "explain": ("trace", "main", "explain one ticket's routing decisions from the local journal"),
