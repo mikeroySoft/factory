@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import itertools
 import subprocess
 import sys
 import tempfile
@@ -260,9 +261,16 @@ class ReviewPolicyTest(unittest.TestCase):
                 blocking = io.StringIO()
                 with contextlib.redirect_stdout(blocking):
                     self.assertEqual(mutation.main(["--blocking"]), 1)
+                incomplete = io.StringIO()
+                clock = itertools.count(0, 10)
+                with mock.patch.object(mutation, "gate_timeout", return_value=1), \
+                        mock.patch.object(mutation.time, "monotonic", side_effect=lambda: next(clock)), \
+                        contextlib.redirect_stdout(incomplete):
+                    self.assertEqual(mutation.main(["--blocking"]), 1)
 
         self.assertIn("factory/example.py:1: NumberReplacer", blocking.getvalue())
         self.assertIn("1 survived", report_only.getvalue())
+        self.assertIn("incomplete: 1 mutants not started", incomplete.getvalue())
         self.assertEqual(
             gate._check_status("mutation", True, "Installed 28 packages\nno mutable files\n", True),
             "SKIP (no changed factory code)",

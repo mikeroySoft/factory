@@ -7,7 +7,7 @@ every survivor as `path:line: <mutation>`. The default report-only mode exits ze
 after a complete trial even when mutants survive. ``--blocking`` exits nonzero for
 survivors on changed lines and for an incomplete run. Tool failures always exit
 nonzero. Mutants are sampled deterministically (sorted, then shuffled with a fixed
-seed, capped at CAP). One absolute deadline, min(TARGET, `[gate].timeout` - 60),
+seed, capped at CAP). One absolute deadline, `[gate].timeout` - 60,
 covers preparation, the baseline and every mutant: each run is bounded by the time
 left, and mutants not started or cut short are reported as incomplete.
 
@@ -35,7 +35,6 @@ from pathlib import Path
 
 CAP = 200
 SEED = 197
-TARGET = 600  # seconds the whole check (copies, baseline, mutants) aims to finish in
 WORKERS = min(16, os.cpu_count() or 1)
 COPY_IGNORE = shutil.ignore_patterns(".git", ".venv", ".factory", "__pycache__", ".ruff_cache")
 
@@ -160,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
     from attrs import evolve
     from cosmic_ray.mutating import mutate_and_test
     from cosmic_ray.work_item import TestOutcome
-    deadline = time.monotonic() + min(TARGET, gate_timeout() - 60)
+    deadline = time.monotonic() + max(1, gate_timeout() - 60)
     root = Path.cwd()
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="factory-mutation-") as tmp:
@@ -197,9 +196,9 @@ def main(argv: list[str] | None = None) -> int:
         cut = []  # mutants whose run the deadline cut short: neither killed nor survived
 
         def worker(copy: Path) -> None:
-            # Launch while a baseline-length run still fits, bound each run by the time left
-            # so the deadline holds, and keep runs the deadline cut short out of the tally.
-            while (left := deadline - time.monotonic()) >= baseline:
+            # Most mutants die before a full baseline-length run. Use the remaining
+            # budget, but never count a deadline-cut run as killed or survived.
+            while (left := deadline - time.monotonic()) > 0:
                 try:
                     mutation = queue.popleft()
                 except IndexError:
