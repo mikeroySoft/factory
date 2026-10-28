@@ -3948,17 +3948,33 @@ def transcript_usage(path: Path) -> dict:
     return usage
 
 
-def _protected_gate_guidance(report: str) -> str | None:
+def _protected_gate_guidance(report: str, labels: set[str]) -> str | None:
     protected_tests = "- protected-tests: FAIL" in report
     add_only = "- protected-paths: FAIL (add-only" in report
     if not (protected_tests or "- protected-paths: FAIL" in report):
         return None
     check = "protected-tests" if protected_tests else "add-only" if add_only else "protected-paths"
-    label = (
-        LABEL_ADD_ONLY_OVERRIDE
-        if protected_tests or add_only else LABEL_PROTECTED_OVERRIDE
+    # These diff headers describe changes the add-only override cannot authorize.
+    structural = add_only and any(line.startswith((
+        "deleted file mode ", "rename from ", "rename to ", "old mode ", "new mode ",
+        "GIT binary patch", "Binary files ",
+    )) for line in report.splitlines())
+    if (protected_tests or add_only) and LABEL_ADD_ONLY_OVERRIDE in labels:
+        return (
+            f"Failed check: `{check}`. `{LABEL_ADD_ONLY_OVERRIDE}` is already present "
+            "and cannot clear this failure; repeating manager AUTHORIZE cannot help. "
+            f"Human-only authority: add label `{LABEL_PROTECTED_OVERRIDE}` to clear it."
+        )
+    if structural or not (protected_tests or add_only):
+        return (
+            f"Failed check: `{check}`. Human-only authority: add label "
+            f"`{LABEL_PROTECTED_OVERRIDE}` to clear it; manager AUTHORIZE cannot "
+            "authorize protected paths, file deletions, renames, mode changes or binary changes."
+        )
+    return (
+        f"Failed check: `{check}`. For in-place text edits, manager AUTHORIZE "
+        f"can add label `{LABEL_ADD_ONLY_OVERRIDE}` to clear it."
     )
-    return f"Failed check: `{check}`. Add label `{label}` to clear it."
 
 def process_ticket(
     issue: dict, budget_min: int, dry_run: bool, forced: bool = False,
@@ -4110,7 +4126,7 @@ def process_ticket(
                 )
                 if ok:
                     break
-                if guidance := _protected_gate_guidance(report):
+                if guidance := _protected_gate_guidance(report, labels):
                     tests = "- protected-tests: FAIL" in report or "- protected-paths: FAIL (add-only" in report
                     reason = (
                         "worker removed or changed existing tests"
@@ -4209,7 +4225,7 @@ def process_ticket(
                     body=fresh.get("body") or "",
                     comments=fresh.get("comments"),
                 )
-                if guidance := _protected_gate_guidance(report):
+                if guidance := _protected_gate_guidance(report, labels):
                     tests = "- protected-tests: FAIL" in report or "- protected-paths: FAIL (add-only" in report
                     reason = (
                         "worker removed or changed existing tests"

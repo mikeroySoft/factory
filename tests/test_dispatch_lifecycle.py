@@ -739,7 +739,7 @@ class LocalCLI(unittest.TestCase):
         self.assertIn("`add-only`", packet)
         if delete:
             self.assertIn("already present", packet)
-            self.assertIn("human-only", packet)
+            self.assertIn("human-only", packet.lower())
             self.assertIn("`factory-protected-override`", packet)
             self.assertIn("cannot", packet)
         else:
@@ -750,13 +750,19 @@ class LocalCLI(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, "-m", "factory", "gate", "--bug", "--no-repro-test",
              "escalation guidance fixture", "--add-only-override"],
-            cwd=wt, env=self.env, capture_output=True, text=True, timeout=60,
+            cwd=wt, env=self.env, capture_output=True, text=True, timeout=60, check=False,
         )
         self.assertEqual(result.returncode, int(delete), result.stdout + result.stderr)
         report = (wt / ".factory" / "gate-report.md").read_text()
         if delete:
             self.assertIn("- protected-paths: FAIL (add-only", report)
             self.assertIn("deleted file mode", report)
+            result = subprocess.run(
+                [sys.executable, "-m", "factory", "gate", "--bug", "--no-repro-test",
+                 "escalation guidance fixture", "--protected-override"],
+                cwd=wt, env=self.env, capture_output=True, text=True, timeout=60, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         else:
             self.assertNotIn(": FAIL", report)
 

@@ -805,15 +805,19 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `[gate].add_only_paths` (also read from the base ref) are protected add-only:
    a new file passes, a modified file passes only when `git diff --numstat`
    shows no deleted lines, and a deletion, rename, mode change, binary change,
-   or any removed or changed line fails as `add-only`. Its escalation names
-   `factory-add-only-override` as the clearing label. The manager may use
-   `AUTHORIZE`, with an auditable justification and worker guidance, to apply
-   that label and requeue the ticket when the ticket requires the existing
-   add-only edit or an obsolete wording-only assertion must be removed; a
-   human may apply it directly.
-   It does not authorize `[gate].protected_paths`. On `bug` tickets the attempt
-   gate also compares every existing Python test function and every Rust
-   `#[test]` function (including tests inside `src/*.rs`) with the base. Deleting
+   or any removed or changed line fails as `add-only`. For in-place text edits,
+   its escalation names `factory-add-only-override` as the clearing label. The
+   manager may use `AUTHORIZE`, with an auditable justification and worker
+   guidance, to apply that label and requeue the ticket when the ticket requires
+   the existing add-only edit or an obsolete wording-only assertion must be
+   removed from a retained file; a human may apply it directly. File deletions,
+   renames, mode changes and binary changes still fail with that label and
+   require human-only `factory-protected-override`. Their escalations name that
+   label instead. If `factory-add-only-override` is already present and protection
+   still fails, the escalation explicitly rules out repeated manager `AUTHORIZE`.
+   The add-only override does not authorize `[gate].protected_paths`. On `bug`
+   tickets the attempt gate also compares every existing Python test function and
+   every Rust `#[test]` function (including tests inside `src/*.rs`) with the base. Deleting
    or changing one, including adding `@unittest.skip`, pytest skip/xfail, or
    Rust `#[ignore]`, fails as `protected-tests`; other languages retain the
    configured path-based add-only policy. `factory-add-only-override` bypasses

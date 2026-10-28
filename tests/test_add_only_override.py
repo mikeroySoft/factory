@@ -121,7 +121,7 @@ class AddOnlyOverrideTest(unittest.TestCase):
                 self.assertIn(f"`{check}`", guidance)
                 self.assertIn(f"`{label}`", guidance)
                 if label == config.LABEL_PROTECTED_OVERRIDE:
-                    self.assertIn("human-only", guidance)
+                    self.assertIn("human-only", guidance.lower())
 
     def test_structural_add_only_failures_require_human_authority(self) -> None:
         for detail in (
@@ -139,7 +139,7 @@ class AddOnlyOverrideTest(unittest.TestCase):
                 guidance = dispatch._protected_gate_guidance(report, set())
                 self.assertIn("`add-only`", guidance)
                 self.assertIn(f"`{config.LABEL_PROTECTED_OVERRIDE}`", guidance)
-                self.assertIn("human-only", guidance)
+                self.assertIn("human-only", guidance.lower())
                 self.assertNotIn(f"`{config.LABEL_ADD_ONLY_OVERRIDE}`", guidance)
 
     def test_existing_add_only_override_does_not_recommend_authorize_again(self) -> None:
@@ -148,7 +148,7 @@ class AddOnlyOverrideTest(unittest.TestCase):
         self.assertIn("`add-only`", guidance)
         self.assertIn("already present", guidance)
         self.assertIn(f"`{config.LABEL_PROTECTED_OVERRIDE}`", guidance)
-        self.assertIn("human-only", guidance)
+        self.assertIn("human-only", guidance.lower())
         self.assertIn("cannot", guidance)
 
     def test_override_rejects_deletion_and_mode_change(self) -> None:
