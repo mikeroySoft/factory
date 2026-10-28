@@ -2288,8 +2288,9 @@ def pr_gate_and_review(
 _AGENT_LEASE_BASES: dict[tuple[Path, int], tuple[str, str]] = {}
 
 
-def _remote_agent_head(wt: Path, n: int) -> str:
-    return (run(["git", "ls-remote", "origin", f"refs/heads/agent/{n}"], cwd=wt).stdout.split() or [""])[0]
+def _remote_agent_head(wt: Path, n: int, check: bool = True) -> str:
+    found = run(["git", "ls-remote", "origin", f"refs/heads/agent/{n}"], cwd=wt, check=check)
+    return "(unavailable)" if found.returncode else (found.stdout.split() or [""])[0]
 
 
 def agent_lease(wt: Path, n: int) -> str:
@@ -2333,7 +2334,7 @@ def push_agent(wt: Path, n: int, lease: str, check: bool = True) -> str | None:
     ):
         if not check:
             return None
-        remote = _remote_agent_head(wt, n)
+        remote = _remote_agent_head(wt, n, check=False)
         refused = subprocess.CompletedProcess(command, 1, "", "stale worktree history")
         raise LeaseRefused(
             refused,
@@ -2345,7 +2346,7 @@ def push_agent(wt: Path, n: int, lease: str, check: bool = True) -> str | None:
     if pushed.returncode and check:
         if "stale info" not in pushed.stderr:
             pushed.check_returncode()
-        remote = _remote_agent_head(wt, n)
+        remote = _remote_agent_head(wt, n, check=False)
         raise LeaseRefused(
             pushed,
             f"agent/{n} push refused: origin/agent/{n} moved since lease was read: "
