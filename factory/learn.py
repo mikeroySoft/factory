@@ -39,6 +39,57 @@ LESSONS_BRANCH = dispatch.LESSONS_BRANCH
 REVERT_BRANCH = "agent/revert-lessons-"  # + the reverted PR number
 WORKER_CONTEXT_FILES = (LESSONS_NAME, "AGENTS.md", "CLAUDE.md")
 
+LICENSE_MARKERS = (
+    ("apache license version 2.0", "Apache-2.0"),
+    ("mit license", "MIT"),
+    ("mozilla public license version 2.0", "MPL-2.0"),
+    ("neither the name of", "BSD-3-Clause"),
+    ("redistribution and use in source and binary forms", "BSD-2-Clause"),
+)
+
+
+def repository_spdx(root: Path) -> str:
+    """Return the repository's SPDX identifier from package metadata or a conventional licence file."""
+    metadata = (
+        ("pyproject.toml", "project"),
+        ("Cargo.toml", "package"),
+    )
+    for filename, section in metadata:
+        path = root / filename
+        if not path.is_file():
+            continue
+        try:
+            license_id = tomllib.loads(path.read_text()).get(section, {}).get("license")
+        except (OSError, tomllib.TOMLDecodeError, AttributeError):
+            continue
+        if isinstance(license_id, str) and license_id.strip():
+            return license_id.strip()
+    package = root / "package.json"
+    if package.is_file():
+        try:
+            license_id = json.loads(package.read_text()).get("license")
+        except (OSError, ValueError, AttributeError):
+            license_id = None
+        if isinstance(license_id, str) and license_id.strip():
+            return license_id.strip()
+    for path in sorted(root.glob("LICENSE*")) + sorted(root.glob("COPYING*")):
+        try:
+            text = " ".join(path.read_text(errors="ignore")[:20_000].casefold().split())
+        except OSError:
+            continue
+        for marker, license_id in LICENSE_MARKERS:
+            if marker in text:
+                return license_id
+    return "NOASSERTION"
+
+
+def lessons_content(root: Path, tickets: list[int], body: str) -> str:
+    return (
+        f"<!-- SPDX-License-Identifier: {repository_spdx(root)} -->\n"
+        f"<!-- Written by `factory learn` from {len(tickets)} finished tickets; edit freely and commit. -->\n"
+        f"{body}"
+    )
+
 
 def worker_context_paths(root: Path) -> set[Path]:
     """Paths whose current contents alter worker instructions."""
@@ -1097,7 +1148,7 @@ def run(
         print(f"manager CURATE diff:\n{diff}", end="")
     if dry_run:
         return None
-    content = f"<!-- Written by `factory learn` from {len(tickets)} finished tickets; edit freely and commit. -->\n{body}"
+    content = lessons_content(cfg.root, tickets, body)
     enabled = cfg.learn_evaluate if evaluate is None else evaluate
     evaluations: dict[str, dict] = {}
     if enabled:
@@ -1242,22 +1293,162 @@ def learn_pass(dry_run: bool = False) -> None:
     decide_promotions(cfg, dry_run)  # attempts scored by hand since the last pass
 
 
+def _promotion_blocked(
+    events: list[dict],
+    n: int,
+    branch: str,
+    head: str,
+    reason: str,
+    dry_run: bool,
+) -> None:
+    if any(
+        row.get("event") == "promotion-blocked"
+        and row.get("pr") == n
+        and row.get("head") == head
+        and row.get("reason") == reason
+        for row in events
+    ) or dry_run:
+        return
+    row = {"event": "promotion-blocked", "pr": n, "head": head, "branch": branch, "reason": reason}
+    dispatch.record("promotion-blocked", pr=n, head=head, branch=branch, reason=reason)
+    events.append(row)
+
+
+def _open_promotion(events: list[dict], n: int, branch: str, head: str, dry_run: bool) -> None:
+    if branch.startswith(REVERT_BRANCH) or any(
+        row.get("event") == "promotion-open"
+        and row.get("pr") == n
+        and row.get("head") == head
+        for row in events
+    ):
+        return
+    baseline = promotion.window(promotion.scored(events)[-promotion.PROMOTION_N:])
+    if dry_run:
+        dispatch.log(f"PR #{n}: would open promotion measurement (baseline n={baseline['n']})")
+        return
+    dispatch.record("promotion-open", pr=n, head=head, branch=branch, baseline=baseline)
+    events.append({
+        "event": "promotion-open",
+        "pr": n,
+        "head": head,
+        "branch": branch,
+        "baseline": baseline,
+    })
+    dispatch.log(f"PR #{n}: promotion open (baseline n={baseline['n']})")
+
+
+def _gate_pr_head(cfg: config.Config, branch: str, head: str) -> str:
+    wt = cfg.factory / f"wt-{branch.removeprefix('agent/')}"
+    dispatch.run(["git", "fetch", "origin", branch], cwd=cfg.root)
+    dispatch.run(["git", "worktree", "add", "--force", "-B", branch, str(wt), head], cwd=cfg.root)
+    try:
+        return gate_head(wt, branch, not branch.startswith("agent/lessons-"))
+    finally:
+        dispatch.run(["git", "worktree", "remove", "--force", str(wt)], cwd=cfg.root, check=False)
+
+
+def _error_text(exc: Exception) -> str:
+    return "\n".join(
+        text.strip()
+        for text in (str(exc), getattr(exc, "stderr", ""), getattr(exc, "stdout", ""))
+        if isinstance(text, str) and text.strip()
+    )
+
+
+def _reconcile_human_merges(
+    cfg: config.Config,
+    open_prs: set[int],
+    events: list[dict],
+    dry_run: bool,
+) -> None:
+    seen: set[int] = set()
+    for review in events:
+        n, head = review.get("pr"), review.get("head")
+        if (
+            review.get("event") not in {"review-intake", "review-result"}
+            or type(n) is not int
+            or not isinstance(head, str)
+            or review.get("ticket") is not None
+            or n in open_prs
+            or n in seen
+            or any(row.get("event") == "merged" and row.get("pr") == n for row in events)
+            or any(
+                row.get("event") == "promotion-reconciled"
+                and row.get("pr") == n
+                for row in events
+            )
+            or any(
+                row.get("event") == "promotion-blocked"
+                and row.get("pr") == n
+                and row.get("reason") == "closed without merge"
+                for row in events
+            )
+        ):
+            continue
+        seen.add(n)
+        recorded_branch = review.get("branch")
+        if isinstance(recorded_branch, str) and not LESSONS_BRANCH.match(recorded_branch):
+            continue
+        try:
+            state = dispatch.gh_json([
+                "pr", "view", str(n), "--repo", cfg.repo,
+                "--json", "state,mergedBy,headRefName,headRefOid",
+            ])
+        except Exception as exc:  # noqa: BLE001 - reconciliation never blocks the merge stage
+            dispatch.log(f"PR #{n}: could not reconcile promotion state ({type(exc).__name__}: {exc})")
+            continue
+        branch = state.get("headRefName")
+        if not isinstance(branch, str) or not LESSONS_BRANCH.match(branch):
+            if not dry_run:
+                row = {
+                    "event": "promotion-reconciled",
+                    "pr": n,
+                    "head": head,
+                    "reason": "not a lessons branch",
+                }
+                dispatch.record("promotion-reconciled", pr=n, head=head, reason=row["reason"])
+                events.append(row)
+            continue
+        current_head = state.get("headRefOid") or head
+        if state.get("state") == "MERGED":
+            actor = (state.get("mergedBy") or {}).get("login") or "unknown"
+            if dry_run:
+                dispatch.log(f"PR #{n}: would record human merge by {actor}")
+                _open_promotion(events, n, branch, current_head, True)
+                continue
+            dispatch.record(
+                "merged", pr=n, head=current_head, branch=branch,
+                method="external", by="human", actor=actor,
+            )
+            events.append({
+                "event": "merged",
+                "pr": n,
+                "head": current_head,
+                "branch": branch,
+                "method": "external",
+                "by": "human",
+                "actor": actor,
+            })
+            dispatch.log(f"PR #{n}: recorded human merge by {actor}")
+            _open_promotion(events, n, branch, current_head, False)
+        elif state.get("state") == "CLOSED":
+            _promotion_blocked(events, n, branch, current_head, "closed without merge", dry_run)
+
+
 def promote_pass(prs: list[dict], dry_run: bool = False) -> None:
-    """Merge stage for `factory learn` PRs (`LESSONS_BRANCH`) in the ticket merge stage's open-PR listing,
-    under the landing lock: a journaled `gate` PASS and reviewer `review-result` APPROVE bound to the PR
-    head and only passing (or skipped) CI checks earn `factory-approved` and a squash merge. A head behind
-    main that changes more than LESSONS_NAME (which no check reads) is refreshed instead (`refresh`).
-    A lessons or curate merge journals `promotion-open` with the baseline means of the last PROMOTION_N
-    scored attempts; a revert merge closes the loop and opens nothing. A failing PR is logged and skipped."""
+    """Merge eligible lessons PRs and reconcile externally merged promotions."""
     cfg = dispatch.cfg
-    events = None
+    events = lifecycle.read_events(dispatch.EVENTS)
+    _reconcile_human_merges(cfg, {pr["number"] for pr in prs}, events, dry_run)
     for pr in sorted(prs, key=lambda p: p["number"]):
         n, branch = pr["number"], pr["headRefName"]
-        if (not LESSONS_BRANCH.match(branch) or pr["isDraft"] or pr["baseRefName"] != cfg.main
-                or pr["reviewDecision"] == "CHANGES_REQUESTED"):
+        if (
+            not LESSONS_BRANCH.match(branch)
+            or pr["isDraft"]
+            or pr["baseRefName"] != cfg.main
+            or pr["reviewDecision"] == "CHANGES_REQUESTED"
+        ):
             continue
-        if events is None:
-            events = lifecycle.read_events(dispatch.EVENTS)
         try:
             promote(cfg, pr, events, dry_run)
         except Exception as exc:  # noqa: BLE001 - one stuck chore PR never blocks the others
@@ -1266,19 +1457,52 @@ def promote_pass(prs: list[dict], dry_run: bool = False) -> None:
 
 def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> None:
     n, branch, head = pr["number"], pr["headRefName"], pr["headRefOid"]
-    gated = any(e.get("event") == "gate" and e.get("branch") == branch and e.get("head") == head
-                and e.get("gate") == "PASS" for e in events)
-    reviewed = any(e.get("event") == "review-result" and e.get("pr") == n and e.get("head") == head
-                   and e.get("verdict") == "APPROVE" for e in events)
-    if not (gated and reviewed):
-        dispatch.log(f"PR #{n}: {branch} waiting for {'review' if gated else 'gate evidence'} at {head[:12]}")
+    if any(
+        row.get("event") == "merged" and row.get("pr") == n and row.get("head") == head
+        for row in events
+    ):
         return
-    buckets = {c["bucket"] for c in dispatch.pr_checks(n)}
+    reviewed = any(
+        row.get("event") == "review-result"
+        and row.get("pr") == n
+        and row.get("head") == head
+        and row.get("verdict") == "APPROVE"
+        for row in events
+    )
+    if not reviewed:
+        reason = "review approval missing"
+        dispatch.log(f"PR #{n}: {branch} waiting for review at {head[:12]}")
+        _promotion_blocked(events, n, branch, head, reason, dry_run)
+        return
+    gates = [
+        row for row in events
+        if row.get("event") == "gate"
+        and row.get("branch") == branch
+        and row.get("head") == head
+    ]
+    if not gates:
+        if dry_run:
+            dispatch.log(f"PR #{n}: would gate legacy head {head[:12]} on {branch}")
+            return
+        try:
+            _gate_pr_head(cfg, branch, head)
+        except Exception:
+            _promotion_blocked(events, n, branch, head, "gate failed", False)
+            raise
+    elif not any(row.get("gate") == "PASS" for row in gates):
+        dispatch.log(f"PR #{n}: {branch} gate failed at {head[:12]}")
+        _promotion_blocked(events, n, branch, head, "gate failed", dry_run)
+        return
+    buckets = {check["bucket"] for check in dispatch.pr_checks(n)}
     if "pass" not in buckets or buckets - {"pass", "skipping"}:
-        dispatch.log(f"PR #{n}: {branch} CI {sorted(buckets) or 'missing'}; not merging")
+        reason = f"CI {','.join(sorted(buckets)) or 'missing'}"
+        dispatch.log(f"PR #{n}: {branch} {reason}; not merging")
+        _promotion_blocked(events, n, branch, head, reason, dry_run)
         return
     compare = dispatch.gh_json(["api", f"repos/{cfg.repo}/compare/{cfg.main}...{head}"])
-    if compare["behind_by"] and {f["filename"] for f in compare["files"]} - {LESSONS_NAME}:
+    if compare["behind_by"] and {
+        item["filename"] for item in compare["files"]
+    } - {LESSONS_NAME}:
         dispatch.log(f"PR #{n}: {'would refresh' if dry_run else 'refreshing'} {branch} (behind {cfg.main})")
         if not dry_run:
             refresh(cfg, n, branch, head)
@@ -1307,21 +1531,59 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
             f"PR #{n}: {branch} waiting for worker eval keep evidence at {head[:12]}; "
             f"{baseline}run `{command}` from a checkout of {head}"
         )
+        _promotion_blocked(events, n, branch, head, "worker eval keep evidence missing", dry_run)
+        return
+    blocker = next((
+        row for row in events
+        if row.get("event") == "promotion-blocked"
+        and row.get("pr") == n
+        and row.get("head") == head
+        and isinstance(row.get("reason"), str)
+        and (row["reason"] == "refresh failed" or row["reason"].startswith("merge failed:"))
+    ), None)
+    if blocker:
+        dispatch.log(
+            f"PR #{n}: {branch} blocked at {head[:12]} ({blocker['reason']}); "
+            "resolve the blocker and push a new head to retry promotion"
+        )
         return
     if dry_run:
         dispatch.log(f"PR #{n}: would merge {branch}")
         return
     with lifecycle.scope(dispatch.EVENTS, "merge"):
-        dispatch.run(["gh", "pr", "edit", str(n), "--repo", cfg.repo, "--add-label", dispatch.FACTORY_APPROVED])
-        dispatch.record("approved", pr=n, head=head, branch=branch, gate_head=head, review_head=head)
-        dispatch.run(["gh", "pr", "merge", str(n), "--repo", cfg.repo, "--squash", "--match-head-commit", head])
-        dispatch.record("merged", pr=n, head=head, branch=branch, method="squash")
+        try:
+            dispatch.run([
+                "gh", "pr", "edit", str(n), "--repo", cfg.repo,
+                "--add-label", dispatch.FACTORY_APPROVED,
+            ])
+            dispatch.run([
+                "gh", "pr", "merge", str(n), "--repo", cfg.repo,
+                "--squash", "--match-head-commit", head,
+            ])
+        except Exception as exc:
+            detail = _error_text(exc)
+            if "not up to date" in detail.casefold():
+                reason = "refresh failed"
+                dispatch.log(f"PR #{n}: refreshing {branch} after strict-base merge refusal")
+                try:
+                    refresh(cfg, n, branch, head)
+                except Exception:
+                    _promotion_blocked(events, n, branch, head, reason, False)
+                    raise
+                return
+            _promotion_blocked(events, n, branch, head, f"merge failed: {detail}", False)
+            raise
+        if not any(
+            row.get("event") == "approved"
+            and row.get("pr") == n
+            and row.get("head") == head
+            for row in events
+        ):
+            dispatch.record("approved", pr=n, head=head, branch=branch, gate_head=head, review_head=head)
+        dispatch.record("merged", pr=n, head=head, branch=branch, method="squash", by="factory")
+    events.append({"event": "merged", "pr": n, "head": head, "branch": branch, "method": "squash"})
     dispatch.log(f"PR #{n}: merged {branch} into {cfg.main}")
-    if branch.startswith(REVERT_BRANCH):
-        return
-    baseline = promotion.window(promotion.scored(events)[-promotion.PROMOTION_N:])
-    dispatch.record("promotion-open", pr=n, head=head, branch=branch, baseline=baseline)
-    dispatch.log(f"PR #{n}: promotion open (baseline n={baseline['n']})")
+    _open_promotion(events, n, branch, head, False)
 
 
 def decide_promotions(cfg: config.Config, dry_run: bool = False) -> list[str]:

@@ -509,6 +509,7 @@ class PromotionTest(unittest.TestCase):
         self.assertEqual(post[8], "event=COMMENT")
         [result] = self.rows("review-result")
         self.assertEqual((result["pr"], result["head"], result["verdict"]), (42, "h", "APPROVE"))
+        self.assertEqual(result["branch"], self.BRANCH)
 
     def test_revert_of_a_merge_that_added_a_file_commits_the_deletion(self) -> None:
         # Real git: the first lessons PR creates .factory-lessons.md, so its revert deletes it.
