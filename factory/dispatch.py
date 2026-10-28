@@ -31,7 +31,7 @@ import tomllib
 from contextlib import contextmanager, nullcontext, suppress
 from pathlib import Path
 
-from factory import __version__, brief, config, lifecycle
+from factory import __version__, brief, config, lifecycle, risk
 from factory.config import (
     LABEL_ADD_ONLY_OVERRIDE,
     LABEL_AGENT,
@@ -57,6 +57,9 @@ EVENTS: Path
 MAX_ACTIVE: int
 MAX_ATTEMPTS: int
 _PENDING_REVIEWS: dict[int, dict] = {}
+_PENDING_SECOND_REVIEWS: dict[int, dict] = {}
+_PENDING_RISK: dict[int, dict] = {}
+_LOW_FALLBACK: set[int] = set()
 
 
 def configure(c: Config) -> None:
@@ -74,6 +77,9 @@ def configure(c: Config) -> None:
     MAX_ACTIVE = cfg.max_active
     MAX_ATTEMPTS = cfg.max_attempts
     _PENDING_REVIEWS.clear()
+    _PENDING_SECOND_REVIEWS.clear()
+    _PENDING_RISK.clear()
+    _LOW_FALLBACK.clear()
 
 
 # `factory learn` branches: lessons, CURATE and the revert a failed promotion opens.
@@ -214,8 +220,8 @@ def without_github(env: dict[str, str]):
         yield {k: v for k, v in env.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")} | {"GH_CONFIG_DIR": empty}
 
 
-def _review_command(prompt: str) -> tuple[list[str], bool]:
-    command = cfg.review_cmd(prompt)
+def _review_command(prompt: str, reviewer: list[str] | None = None) -> tuple[list[str], bool]:
+    command = config.expand(reviewer or cfg.reviewer, prompt=prompt)
     structured = cfg.reviewer_json_mode
     if structured is None:
         structured = Path(command[0]).name == "omp"
@@ -1003,6 +1009,60 @@ def _record_gate_decision(
     record("decision", **payload)
     return payload["decision_id"]
 
+def risk_for_head(
+    n: int, head: str, events: list[dict] | None = None,
+) -> tuple[str, list[str]]:
+    row = next((
+        event for event in reversed(events if events is not None else lifecycle.read_events(EVENTS))
+        if event.get("event") == "risk" and event.get("ticket") == n
+        and event.get("head") == head and event.get("tier") in risk.TIERS
+    ), None)
+    return (
+        (row["tier"], list(row.get("matched_rules") or []))
+        if row is not None else ("Medium", ["medium:unclassified legacy head"])
+    )
+
+
+def record_risk(
+    wt: Path, n: int, head: str, *, base: str | None = None,
+    opinion=None,
+) -> tuple[str, list[str]]:
+    """Classify and journal one gated head using the installed dispatcher's rules."""
+    existing = risk_for_head(n, head)
+    if existing[1] != ["medium:unclassified legacy head"]:
+        return existing
+    tier, rules = risk.classify(
+        base or f"origin/{cfg.main}", head, opinion=opinion, cwd=wt,
+    )
+    record("risk", ticket=n, head=head, tier=tier, matched_rules=rules)
+    from factory import trace
+
+    cause = _latest_decision_id(n, {"gate"})
+    payload = trace.decision(
+        ticket=n,
+        stage="risk",
+        inputs=[{
+            "kind": "head",
+            "ref": f"https://github.com/{REPO}/commit/{head}",
+            "summary": f"classified head {head}",
+        }],
+        options=[
+            {
+                "option": option,
+                "eligible": option == tier,
+                "reason": ", ".join(rules) if option == tier else f"path rules did not select {option}",
+            }
+            for option in risk.TIERS
+        ],
+        chosen=tier,
+        rationale=f"{tier} risk: {', '.join(rules)}",
+        causes=[{"decision_id": cause, "relation": "follows"}] if cause else [],
+        cost=None,
+        actor=_decision_actor("deterministic", "risk.classify"),
+    )
+    record("decision", **payload)
+    return tier, rules
+
 
 def _required_fixes(findings: str, review_ref: str) -> list[dict]:
     fixes = []
@@ -1035,21 +1095,17 @@ def _required_fixes(findings: str, review_ref: str) -> list[dict]:
     return fixes
 
 
-def _reviewer_model(usage: dict | None) -> str | None:
+def _reviewer_model(usage: dict | None, reviewer: list[str] | None = None) -> str | None:
     if usage and isinstance(usage.get("model"), str):
         return usage["model"]
-    for index, value in enumerate(cfg.reviewer):
-        if value == "--model" and index + 1 < len(cfg.reviewer):
-            return cfg.reviewer[index + 1]
-        if value.startswith("--model="):
-            return value.split("=", 1)[1]
-    return None
+    return config.command_model(reviewer or cfg.reviewer)
 
 
 def _record_review_decision(
     n: int, verdict: str | None, findings: str, head: str, parsed: bool, accepted: bool,
     usage: dict | None, seconds: float, comment_url: str | None = None,
     counts: dict[str, int] | None = None, rejection_reason: str | None = None,
+    role: str = "primary", model: str | None = None,
 ) -> str:
     from factory import trace
 
@@ -1092,11 +1148,11 @@ def _record_review_decision(
         rationale=decision_reason,
         causes=[{"decision_id": cause, "relation": "follows"}] if cause else [],
         cost={**(usage or {}), "seconds": seconds},
-        actor=_decision_actor("model", "dispatch.review", model=_reviewer_model(usage)),
+        actor=_decision_actor("model", f"dispatch.review.{role}", model=model),
     )
     record("decision", **payload)
     record(
-        "review-result", ticket=n, head=head,
+        "review-result", ticket=n, head=head, role=role, model=model,
         verdict="APPROVE" if verdict == "APPROVE" else "REQUEST_CHANGES",
         findings=findings, counts=counts, reason=rejection_reason,
     )
@@ -1501,7 +1557,7 @@ def run_gate(
     test_override: bool = False, add_only_override: bool = False,
     tier: str = "attempt", upstream: list[str] = (), bug: bool = False,
     repro_test: str | None = None, no_repro_test: str | None = None,
-    base: str | None = None, timeout: float | None = None,
+    base: str | None = None, timeout: float | None = None, blocking_mutation: bool = False,
 ) -> tuple[bool, str]:
     report_rel = f".factory/gate-report-{n}.md"
     (wt / ".factory").mkdir(exist_ok=True)
@@ -1542,6 +1598,8 @@ def run_gate(
         cmd += ["--upstream", ref]
     if tier != "attempt":
         cmd += ["--tier", tier]
+    if blocking_mutation:
+        cmd.append("--blocking-mutation")
     proc = run(cmd, cwd=wt, check=False, timeout=timeout)
     if report.exists():
         text = report.read_text()
@@ -1622,7 +1680,7 @@ ESCALATION_CODES = frozenset({
     "approval_missing", "ci_failed", "ci_runner", "refresh_head", "refresh_conflict",
     "refresh_empty", "gh_failed", "review_intake", "manager_failed",
     "manager_exhausted", "manager_human", "pr_feedback", "pr_stale",
-    "lease_refused", "dispatcher_error", "no_change",
+    "lease_refused", "dispatcher_error", "no_change", "risk_disagreement",
 })
 
 
@@ -1887,6 +1945,7 @@ def run_reviewer(
     env: dict[str, str] | None = None,
     subject: str = "review",
     timeout: float | None = None,
+    reviewer: list[str] | None = None,
 ) -> dict:
     """Run and validate the configured reviewer outside the candidate checkout."""
     base = base_ref or f"origin/{cfg.main}"
@@ -1911,7 +1970,7 @@ def run_reviewer(
     attempts = 0
     structured = False
     if before == expected_head:
-        command, structured = _review_command(prompt)
+        command, structured = _review_command(prompt, reviewer)
         for attempts in range(1, 4):
             proc = None
             launch_error = None
@@ -2030,15 +2089,22 @@ def run_reviewer(
     }
 
 
-def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str, str]:
-    """Run the two-axis diff review against the exact head that passed the gate."""
-
+def review(
+    wt: Path, n: int, gate_report: str, expected_head: str, *,
+    role: str = "primary", reviewer: list[str] | None = None,
+) -> tuple[str, str]:
+    """Run one diff review against the exact head that passed the gate."""
     started = time.monotonic()
+    model = config.command_model(reviewer or cfg.reviewer)
     with lifecycle.scope(EVENTS, "review", ticket=n) as execution:
-        result = run_reviewer(wt, review_prompt(n, gate_report), expected_head, subject=f"#{n}")
+        result = run_reviewer(
+            wt, review_prompt(n, gate_report), expected_head,
+            subject=f"#{n} {role}", reviewer=reviewer,
+        )
+        model = _reviewer_model(result["usage"], reviewer)
         if result["usage"] is not None:
             record(
-                "llm-usage", ticket=n, stage="review",
+                "llm-usage", ticket=n, stage="review", role=role,
                 local=_usage_local(result["usage"]), **result["usage"],
             )
         execution.outcome = (
@@ -2051,42 +2117,134 @@ def review(wt: Path, n: int, gate_report: str, expected_head: str) -> tuple[str,
         execution.emit(
             "result", returncode=result["returncode"], verdict=result["verdict"],
             parsed=result["parsed"], head=expected_head, actual_head=result["actual_head"],
-            counts=result["counts"], reason=result["rejection_reason"],
+            counts=result["counts"], reason=result["rejection_reason"], role=role, model=model,
         )
         record(
             "review", ticket=n, verdict=result["verdict"], parsed=result["parsed"],
             accepted=result["accepted"], head=expected_head, actual_head=result["actual_head"],
-            counts=result["counts"], reason=result["rejection_reason"],
+            counts=result["counts"], reason=result["rejection_reason"], role=role, model=model,
         )
-        _PENDING_REVIEWS[n] = {
+        pending = {
             "verdict": result["verdict"], "findings": result["findings"], "head": expected_head,
             "parsed": result["parsed"], "accepted": result["accepted"], "usage": result["usage"],
             "seconds": time.monotonic() - started, "counts": result["counts"],
-            "rejection_reason": result["rejection_reason"],
+            "rejection_reason": result["rejection_reason"], "role": role, "model": model,
         }
+        (_PENDING_SECOND_REVIEWS if role == "second" else _PENDING_REVIEWS)[n] = pending
     findings = result["findings"]
     if result["verdict"] is None:
         findings += f"\n\nFactory rejected reviewer evidence: {result['failure_reason']}."
     return result["verdict"] or "REVISE", findings
 
 
+def _mutation_status(report: str) -> str:
+    match = re.search(r"(?m)^- mutation: (PASS|FAIL|SKIP)", report)
+    return match.group(1) if match else "MISSING"
+
+
+def _worker_model_for_head(n: int, head: str) -> str | None:
+    events = lifecycle.read_events(EVENTS)
+    exact = next((
+        event.get("worker_model") for event in reversed(events)
+        if event.get("event") == "attempt" and event.get("ticket") == n
+        and event.get("head") == head
+    ), None)
+    return exact or next((
+        event.get("worker_model") for event in reversed(events)
+        if event.get("event") == "attempt" and event.get("ticket") == n
+    ), None)
+
+
+def risk_disagreement_packet(
+    head: str, rules: list[str], primary: str, primary_findings: str,
+    second: str, second_findings: str, mutation: str, mutation_findings: str,
+    changed: str = "",
+) -> str:
+    return (
+        f"## High-risk disagreement at `{head}`\n\n"
+        f"What changed:\n\n```text\n{changed or '(diff unavailable)'}\n```\n\n"
+        f"Why High: {', '.join(rules)}\n\n"
+        f"- Primary reviewer: {primary}\n"
+        f"- Second reviewer: {second}\n"
+        f"- Blocking mutation: {mutation}\n\n"
+        f"### Primary findings\n\n{primary_findings}\n\n"
+        f"### Second findings\n\n{second_findings}\n\n"
+        f"### Mutation findings\n\n{mutation_findings}"
+    )
+
+
 def pr_gate_and_review(
     wt: Path, n: int, report: str, head: str, pr_runs: dict[str, tuple[bool, str]],
 ) -> tuple[str | None, str, bool]:
-    """Run the `when = "pr"` checks once per head, then review with their report appended.
-
-    Returns (verdict, findings, pr_failed); a pr-tier FAIL skips review and its
-    report becomes the findings."""
-    if any(check.when == "pr" for check in cfg.checks):
+    """Apply the per-head Low, Medium, or High gate and review policy."""
+    tier, rules = risk_for_head(n, head)
+    policy_tier = "Medium" if tier == "Low" and n in _LOW_FALLBACK else tier
+    ok, pr_report = True, ""
+    if policy_tier != "Low" and any(check.when == "pr" for check in cfg.checks):
         if head not in pr_runs:
-            pr_runs[head] = run_gate(wt, f"{n}-pr", tier="pr")
+            pr_runs[head] = run_gate(
+                wt, f"{n}-pr", tier="pr", blocking_mutation=policy_tier == "High",
+            )
         ok, pr_report = pr_runs[head]
-        if not ok:
-            return "REVISE", pr_report, True
         report = f"{report}\n{pr_report}"
-    verdict, findings = review(wt, n, report, head)
-    pending = _PENDING_REVIEWS.get(n)
-    return (None if pending and pending["verdict"] is None else verdict), findings, False
+        if not ok and policy_tier != "High":
+            return "REVISE", pr_report, True
+    primary, primary_findings = review(wt, n, report, head)
+    primary_row = _PENDING_REVIEWS.get(n) or {}
+    if primary_row and primary_row.get("verdict") is None:
+        return None, primary_findings, False
+    if tier == "Low" and primary != "APPROVE":
+        _LOW_FALLBACK.add(n)
+    if policy_tier != "High":
+        return primary, primary_findings, False
+
+    primary_model = primary_row.get("model")
+    configured_second_model = config.command_model(cfg.second_reviewer)
+    worker_model = _worker_model_for_head(n, head)
+    configured_models = (primary_model, configured_second_model, worker_model)
+    if any(model is None for model in configured_models) or len(set(configured_models)) != 3:
+        findings = (
+            f"{primary_findings}\n\nHigh-risk review requires explicit, distinct primary, "
+            f"second, and worker models; got primary={primary_model or 'unknown'}, "
+            f"second={configured_second_model or 'unknown'}, worker={worker_model or 'unknown'}."
+        )
+        return None, findings, False
+    second, second_findings = review(
+        wt, n, report, head, role="second", reviewer=cfg.second_reviewer,
+    )
+    second_row = _PENDING_SECOND_REVIEWS.get(n) or {}
+    models = (primary_model, second_row.get("model"), worker_model)
+    if second_row.get("verdict") is None or any(model is None for model in models):
+        return None, second_findings, False
+    if len(set(models)) != 3:
+        return None, f"{second_findings}\n\nHigh-risk reviewer models were not distinct: {models}.", False
+    mutation = _mutation_status(pr_report)
+    record(
+        "risk-check", ticket=n, head=head, mutation=mutation,
+        primary=primary, second=second, models=list(models),
+    )
+    changed = run(
+        ["git", "diff", "--name-status", f"origin/{cfg.main}..{head}"], cwd=wt,
+    ).stdout.strip()
+    packet = risk_disagreement_packet(
+        head, rules, primary, primary_findings, second, second_findings,
+        mutation, pr_report or "mutation check missing", changed,
+    )
+    disagreement = (
+        primary != second
+        or (primary == second == "APPROVE" and mutation not in {"PASS", "SKIP"})
+    )
+    _PENDING_RISK[n] = {
+        "head": head, "tier": tier, "disagreement": disagreement, "packet": packet,
+        "primary": primary, "second": second, "mutation": mutation,
+    }
+    if primary == second == "REVISE":
+        return "REVISE", f"{primary_findings}\n\n{second_findings}", False
+    if disagreement:
+        return "REVISE", packet, False
+    return "APPROVE", f"{primary_findings}\n\n{second_findings}", False
+
+
 
 
 def agent_lease(wt: Path, n: int) -> str:
@@ -2204,10 +2362,13 @@ def pr_comment(n: int, text: str) -> None:
         ],
         check=False,
     )
-    pending = _PENDING_REVIEWS.pop(n, None)
-    if pending is not None:
-        match = re.search(r"https://\S+", posted.stdout or "")
-        _record_review_decision(n, **pending, comment_url=match[0] if match else None)
+    match = re.search(r"https://\S+", posted.stdout or "")
+    comment_url = match[0] if match else None
+    for pending in (
+        _PENDING_REVIEWS.pop(n, None), _PENDING_SECOND_REVIEWS.pop(n, None),
+    ):
+        if pending is not None:
+            _record_review_decision(n, **pending, comment_url=comment_url)
 
 
 # ---------------------------------------------------------------------------
@@ -2479,8 +2640,12 @@ FACTORY_APPROVED = LABEL_APPROVED
 
 
 def _head_evidence_matches(events: list[dict], n: int, head: str) -> bool:
-    """True when the latest gate and review for this head both succeeded."""
-    gate = review_ok = None
+    """True when every tier-specific premise passed for this exact head."""
+    tier, _ = risk_for_head(n, head, events)
+    gate = None
+    worker_model = None
+    reviews: dict[str, dict] = {}
+    mutation = None
     for event in events:
         if event.get("ticket") != n:
             continue
@@ -2489,13 +2654,36 @@ def _head_evidence_matches(events: list[dict], n: int, head: str) -> bool:
             or event.get("event") == "refreshed" and event.get("gate_head") == head
         ):
             gate = event.get("gate") == "PASS" and event.get("actual_head") == head
+            worker_model = event.get("worker_model") or worker_model
         elif event.get("event") == "review" and event.get("head") == head:
-            review_ok = (
-                event.get("accepted") is True
-                and event.get("verdict") == "APPROVE"
-                and event.get("actual_head") == head
-            )
-    return gate is True and review_ok is True
+            reviews[event.get("role") or "primary"] = event
+        elif event.get("event") == "risk-check" and event.get("head") == head:
+            mutation = event.get("mutation")
+    if worker_model is None:
+        worker_model = next((
+            event.get("worker_model") for event in reversed(events)
+            if event.get("event") == "attempt" and event.get("ticket") == n
+        ), None)
+    primary = reviews.get("primary") or {}
+    primary_ok = (
+        primary.get("accepted") is True
+        and primary.get("verdict") == "APPROVE"
+        and primary.get("actual_head") == head
+    )
+    if tier != "High":
+        return gate is True and primary_ok
+    second = reviews.get("second") or {}
+    models = (primary.get("model"), second.get("model"), worker_model)
+    return (
+        gate is True
+        and primary_ok
+        and second.get("accepted") is True
+        and second.get("verdict") == "APPROVE"
+        and second.get("actual_head") == head
+        and mutation in {"PASS", "SKIP"}
+        and all(isinstance(model, str) and model for model in models)
+        and len(set(models)) == 3
+    )
 
 
 def manager_approval(events: list[dict], n: int, head: str) -> bool:
@@ -3042,7 +3230,8 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         "refreshed", ticket=n, pr=pr, head=head, gate="PASS",
         gate_head=head, actual_head=head, clean=True, gate_rerun=gate_rerun,
     )
-    verdict, findings = review(wt, n, report, head)
+    record_risk(wt, n, head)
+    verdict, findings, pr_failed = pr_gate_and_review(wt, n, report, head, {})
     pending = _PENDING_REVIEWS.get(n)
     unavailable = pending is not None and pending.get("verdict") is None
     pr_comment(n, findings)
@@ -3053,7 +3242,13 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         )
         return False
     if verdict != "APPROVE":
-        withdraw(f"fresh review requested changes after {verb} onto moved main", "review_revise")
+        state = _PENDING_RISK.get(n) or {}
+        withdraw(
+            f"fresh review requested changes after {verb} onto moved main",
+            "risk_disagreement" if state.get("disagreement") else
+            "pr_checks_failed" if pr_failed else "review_revise",
+            extra=state.get("packet", ""),
+        )
         return False
     if not approve_pr(n, head):
         withdraw("approval evidence, head, or human review state changed before refreshed approval", "approval_drift")
@@ -3490,11 +3685,14 @@ def worker_round(
     else:
         worker = record_worker_selection(n, labels, selected_worker=selected_worker)
     worker_version = cfg.worker_version.get(worker)
-    identity = {"worker": worker, "worker_version": worker_version}
+    command = cfg.worker_command(worker, promptfile, wt)
+    identity = {
+        "worker": worker, "worker_version": worker_version,
+        "worker_model": config.command_model(command),
+    }
     transcript_mode = cfg.worker_transcript.get(worker)
     argv, session_dir = _with_transcript(
-        cfg.worker_command(worker, promptfile, wt), n, transcript_mode,
-        len(cfg.worker_wrap) if transcript_mode else None,
+        command, n, transcript_mode, len(cfg.worker_wrap) if transcript_mode else None,
     )
     run_options = {}
     if environment := cfg.worker_environment(worker, promptfile, wt):
@@ -3836,8 +4034,12 @@ def process_ticket(
             lease = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
             execution.review_round = 1
             pr_runs: dict[str, tuple[bool, str]] = {}
+            record_risk(wt, n, gate_head)
             verdict, findings, pr_failed = pr_gate_and_review(wt, n, report, gate_head, pr_runs)
             pr_comment(n, findings)
+            risk_disagreements = int(bool(
+                (_PENDING_RISK.get(n) or {}).get("disagreement")
+            ))
             if verdict is None:
                 log(
                     f"#{n}: reviewer unavailable; not a REVISE verdict after "
@@ -3848,10 +4050,10 @@ def process_ticket(
                     code="reviewer_unavailable",
                 )
                 return
-            # Review rounds: each REVISE (or pr-tier FAIL) goes back to the worker with the
-            # findings, then re-gate, push, re-review. `review_rounds` bounces max.
-            for bounce in range(1, cfg.review_rounds + 1):
-                if verdict == "APPROVE":
+            # Each REVISE (or pr-tier FAIL) uses the normal bounce budget. A first
+            # High-risk disagreement always gets one rework, even when that budget is spent.
+            for bounce in range(1, cfg.review_rounds + 2):
+                if verdict == "APPROVE" or (bounce > cfg.review_rounds and not risk_disagreements):
                     break
                 if time.monotonic() > deadline:
                     escalate(
@@ -3892,8 +4094,20 @@ def process_ticket(
                     )
                     return
                 lease = push_agent(wt, n, lease)
+                record_risk(wt, n, gate_head)
                 verdict, findings, pr_failed = pr_gate_and_review(wt, n, report, gate_head, pr_runs)
                 pr_comment(n, findings)
+                current_risk = _PENDING_RISK.get(n) or {}
+                if current_risk.get("disagreement"):
+                    if risk_disagreements:
+                        escalate(
+                            n, "High-risk machine checks disagreed on two successive heads",
+                            logfile, code="risk_disagreement", extra=current_risk["packet"],
+                        )
+                        return
+                    risk_disagreements = 1
+                else:
+                    risk_disagreements = 0
                 if verdict is None:
                     escalate(
                         n, "reviewer unavailable after retries", logfile,

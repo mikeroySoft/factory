@@ -65,6 +65,7 @@ DEFAULT_LEAK_PATTERN = (r"\.(?:corp|internal|intranet|lan)\b|\bconfidential\b|\b
 DEFAULT_WORKER = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]
 DEFAULT_CHORE_WORKER = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
 DEFAULT_REVIEWER = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1", "{prompt}"]
+DEFAULT_SECOND_REVIEWER = ["omp", "-p", "--no-session", "--model", "openai-codex/gpt-6-astra", "{prompt}"]
 DEFAULT_LLM_URL = "http://127.0.0.1:11434/v1/chat/completions"
 DEFAULT_LLM_MODEL = "qwen3:30b"
 DEFAULT_INSTALL = {"every": "10min", "dashboard": False, "host": "127.0.0.1", "python": None, "env": {}}
@@ -78,7 +79,8 @@ ENGINE_REPO = "mikeroySoft/factory"  # factory's own source repo: `[watch].engin
 # `worker_wrap` is host-only: a committed `[worker_wrap]` is refused, never merged.
 # `leak_scan.extra` is read from both and concatenated: host terms only add to the scan.
 HOST_TABLES = frozenset({"triage", "workers", "worker_wrap", "manager", "install", "prices"})
-HOST_KEYS = {"dashboard": ("port",), "gate": ("lock",), "review": ("command", "json_mode")}
+HOST_KEYS = {"dashboard": ("port",), "gate": ("lock",),
+             "review": ("command", "second_command", "json_mode")}
 
 # Every key the loader reads, by table; `factory doctor` reports anything else.
 # `workers` is label-keyed, `gate.check` is a list of {name, run, exclusive, when}.
@@ -88,7 +90,7 @@ KNOWN_KEYS = {
                  "review_rounds", "cost_pattern", "signoff"),
     "workers": None,
     "worker_wrap": ("command",),
-    "review": ("command", "json_mode", "policy"),
+    "review": ("command", "second_command", "json_mode", "policy"),
     "manager": ("model", "command", "rounds", "review", "stale_days", "max_active_cap", "budget_min_cap"),
     "learn": ("evaluate", "max_tickets", "max_tokens", "budget_min"),
     "release": ("auto", "version_file", "min_tickets", "bar_min_tickets",
@@ -115,6 +117,7 @@ BAND_METRICS = frozenset({
     "ready_for_human_rate",
     "claim_to_merge_hours",
     "rework_rounds",
+    "revert_rate_by_tier",
 })
 BAND_TIERS = frozenset({"log", "diagnose", "act"})
 ROUTE_REASONS = ("requirements", "implementation", "ci", "unknown")
@@ -196,6 +199,7 @@ class Config:
     # None preserves executable-based compatibility for the built-in OMP reviewer.
     reviewer_json_mode: bool | None = None
     review_policy: str = "REVIEW.md"
+    second_reviewer: list[str] = field(default_factory=lambda: list(DEFAULT_SECOND_REVIEWER))
     manager: list[str] | None = None
     manager_rounds: int = 1
     manager_review: str = "escalated"
@@ -285,6 +289,9 @@ class Config:
     def review_cmd(self, prompt: str) -> list[str]:
         return expand(self.reviewer, prompt=prompt)
 
+    def second_review_cmd(self, prompt: str) -> list[str]:
+        return expand(self.second_reviewer, prompt=prompt)
+
     def manager_cmd(self, prompt_path: Path, cwd: Path) -> list[str]:
         """Expand the manager's prompt file, matching the worker transport."""
         argv = self.manager or []
@@ -301,6 +308,17 @@ def expand(argv: list[str], **values: str) -> list[str]:
             arg = arg.replace("{" + key + "}", val)
         out.append(arg)
     return out
+
+
+def command_model(command: list[str]) -> str | None:
+    """Explicit ``--model`` value, or None when the command leaves it implicit."""
+    for index, value in enumerate(command):
+        if value == "--model" and index + 1 < len(command):
+            return command[index + 1]
+        if value.startswith("--model="):
+            return value.split("=", 1)[1]
+    return None
+
 
 
 def git(root: Path | None, *args: str) -> str:
@@ -614,6 +632,7 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
         if "worker_wrap" in section and not isinstance(section["worker_wrap"], dict):
             raise ConfigError(f"{host_config_path()}: worker_wrap must be a table")
     layered = merge(host_filter(host_sections[0]), host_filter(host_sections[1]))
+    host_review = layered.get("review", {})
     raw, raw_repo = merge(layered, raw), raw
     repo_t, dispatch, workers = raw.get("repo", {}), raw.get("dispatch", {}), raw.get("workers", {})
     gate, leak, triage, dash = raw.get("gate", {}), raw.get("leak_scan", {}), raw.get("triage", {}), raw.get("dashboard", {})
@@ -693,9 +712,20 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
         if not isinstance(command, list) or not command or any(not isinstance(a, str) for a in command) or not command[0]:
             raise ConfigError("worker_wrap.command needs a non-empty argv array of strings")
         cfg.worker_wrap = command
+    if "second_command" in raw_repo.get("review", {}):
+        raise ConfigError(f"{path}: review.second_command is host-only; set it in "
+                          f"{host_config_path()} [defaults.review] or "
+                          f"[repo.\"<slug>\".review]")
     review = raw.get("review", {})
     if "command" in review:
         cfg.reviewer = list(review["command"])
+    if "second_command" in host_review:
+        command = host_review["second_command"]
+        if not isinstance(command, list) or not command or any(
+            not isinstance(arg, str) for arg in command
+        ) or not command[0]:
+            raise ConfigError("review.second_command needs a non-empty argv array of strings")
+        cfg.second_reviewer = list(command)
     json_mode = review.get("json_mode")
     if json_mode is not None and type(json_mode) is not bool:
         raise ConfigError("review.json_mode must be true or false")

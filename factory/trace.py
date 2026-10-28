@@ -16,7 +16,8 @@ from factory.decisions import _SECRET
 STAGES = ("triage", "binding", "admission", "worker_select", "claim")
 ALL_STAGES = (
     *STAGES,
-    "plan", "gate", "review", "manager", "merge", "wontfix", "escalate", "learn", "curate",
+    "plan", "gate", "risk", "review", "manager", "merge", "wontfix", "escalate", "learn",
+    "curate",
 )
 RELATIONS = frozenset({"follows", "retries", "blocked_by", "split_from", "unblocked_by", "overrides"})
 ACTORS = frozenset({"deterministic", "model", "human", "worker"})

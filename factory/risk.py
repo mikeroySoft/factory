@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import fnmatch
+import re
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -28,6 +29,7 @@ LOW_RULES = (
     "low:tests/** additions",
     "low:.factory-lessons.md",
     "low:experiments/** notes",
+    "low:default-off code",
 )
 NOTE_SUFFIXES = frozenset({".md", ".txt", ".rst", ".json", ".jsonl", ".csv"})
 
@@ -64,6 +66,22 @@ def _low_rule(status: str, path: str) -> str | None:
         return LOW_RULES[4]
     return None
 
+def _default_off_additions(base: str, head: str, path: str, cwd: Path | None) -> bool:
+    diff = subprocess.run(
+        ["git", "diff", "--unified=0", f"{base}..{head}", "--", path],
+        cwd=cwd, check=True, capture_output=True, text=True,
+    ).stdout.splitlines()
+    added = [line[1:] for line in diff if line.startswith("+") and not line.startswith("+++")]
+    if not added or any(line.startswith("-") and not line.startswith("---") for line in diff):
+        return False
+    flags = {
+        match.group(1)
+        for line in added
+        if (match := re.search(r"\b([A-Za-z_]\w*)\s*(?::[^=]+)?=\s*False\b", line))
+    }
+    return any(re.search(rf"\bif\s+{re.escape(flag)}\s*:", line)
+               for flag in flags for line in added)
+
 
 def classify(
     base: str,
@@ -82,7 +100,12 @@ def classify(
     if high:
         tier, rules = "High", list(dict.fromkeys(high))
     else:
-        low = [_low_rule(status, path) for status, path in changes]
+        low = []
+        for status, path in changes:
+            rule = _low_rule(status, path)
+            if rule is None and _default_off_additions(base, head, path, cwd):
+                rule = LOW_RULES[5]
+            low.append(rule)
         if changes and all(low):
             tier, rules = "Low", list(dict.fromkeys(low))
         else:

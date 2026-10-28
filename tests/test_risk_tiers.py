@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from factory import risk
+from factory import config, dispatch, lifecycle, risk
 
 
 def git(repo: Path, *args: str) -> str:
@@ -54,6 +54,13 @@ class RiskTierTest(unittest.TestCase):
         self.assertEqual(tier, "High")
         self.assertIn("high:approval, gate, and dispatch control", rules)
 
+    def test_additions_behind_default_off_flag_are_low(self) -> None:
+        tier, rules = self.classify({
+            "factory/optional.py": "ENABLED = False\n\nif ENABLED:\n    register_feature()\n",
+        })
+        self.assertEqual(tier, "Low")
+        self.assertIn("low:default-off code", rules)
+
     def test_markdown_exceptions_and_modified_tests_are_not_low(self) -> None:
         tier, _ = self.classify({"AGENTS.md": "rules\n"})
         self.assertEqual(tier, "Medium")
@@ -80,8 +87,35 @@ class RiskTierTest(unittest.TestCase):
         self.setUp()
         def broken(*_):
             raise TimeoutError("offline")
+
         tier, _ = self.classify({"docs/note.md": "low\n"}, opinion=broken)
         self.assertEqual(tier, "Low")
+
+    def test_recorded_event_and_decision_are_bound_to_head(self) -> None:
+        (self.repo / "docs").mkdir()
+        (self.repo / "docs/note.md").write_text("low\n")
+        git(self.repo, "add", "docs/note.md")
+        git(self.repo, "commit", "-q", "-m", "candidate")
+        head = git(self.repo, "rev-parse", "HEAD")
+        dispatch.configure(config.Config(self.repo, "acme/widgets"))
+
+        self.assertEqual(
+            dispatch.record_risk(self.repo, 7, head, base=self.base),
+            ("Low", ["low:docs/**"]),
+        )
+
+        rows = lifecycle.read_events(self.repo / ".factory/events.jsonl")
+        self.assertTrue(any(
+            row.get("event") == "risk" and row.get("head") == head
+            and row.get("tier") == "Low"
+            for row in rows
+        ))
+        self.assertTrue(any(
+            row.get("event") == "decision" and row.get("stage") == "risk"
+            and row.get("chosen") == "Low"
+            for row in rows
+        ))
+
 
     def test_candidate_cannot_lower_rule_for_risk_module(self) -> None:
         tier, rules = self.classify({"factory/risk.py": "HIGH_PATHS = ()\n"})

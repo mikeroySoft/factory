@@ -1,13 +1,14 @@
-"""Report-only mutation testing of changed `factory/` files (pr-tier gate check).
+"""Mutation testing of changed `factory/` files for the pr-tier gate.
 
 Mutates the Python files under `factory/` that changed in `origin/main..HEAD`, runs
 the full `python -m unittest discover -s tests` suite against each mutant, and prints
-every survivor as `path:line: <mutation>`. Exit 0 whenever the trial ran, whatever
-survived; nonzero only when the tool itself cannot run (no git, failing or overlong
-baseline, a mutant cosmic-ray could not apply or test). Mutants are sampled deterministically (sorted, then
-shuffled with a fixed seed, capped at CAP). One absolute deadline, min(TARGET,
-`[gate].timeout` - 60), covers preparation, the baseline and every mutant: each run is
-bounded by the time left, and mutants not started or cut short are reported as incomplete.
+every survivor as `path:line: <mutation>`. The default report-only mode exits zero
+after a complete trial even when mutants survive. ``--blocking`` exits nonzero for
+survivors on changed lines and for an incomplete run. Tool failures always exit
+nonzero. Mutants are sampled deterministically (sorted, then shuffled with a fixed
+seed, capped at CAP). One absolute deadline, min(TARGET, `[gate].timeout` - 60),
+covers preparation, the baseline and every mutant: each run is bounded by the time
+left, and mutants not started or cut short are reported as incomplete.
 
 Each worker runs in its own copy of the tree because cosmic-ray mutates files on disk;
 the worktree itself is never touched.
@@ -15,6 +16,7 @@ the worktree itself is never touched.
 
 from __future__ import annotations
 
+import argparse
 import collections
 import os
 import random
@@ -103,7 +105,10 @@ def describe(diff: str) -> str:
     return f"`{old[:80]}` -> `{new[:80]}`"
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--blocking", action="store_true")
+    args = parser.parse_args(argv)
     lines = changed_lines()
     if not lines:
         print("no mutable files")
@@ -166,6 +171,10 @@ def main() -> int:
             list(pool.map(worker, copies))
 
     survivors = [(m, r) for m, r in results if r.test_outcome == TestOutcome.SURVIVED]
+    hot_survivors = [
+        (mutation, result) for mutation, result in survivors
+        if mutation.start_pos[0] in lines[str(mutation.module_path)]
+    ]
     for mutation, result in sorted(survivors, key=lambda mr: (str(mr[0].module_path), mr[0].start_pos)):
         print(f"{mutation.module_path}:{mutation.start_pos[0]}: {mutation.operator_name} "
               f"{describe(result.diff or '')}")
@@ -186,6 +195,8 @@ def main() -> int:
         mutation, result = broken[0]
         print(f"mutation check broke on {len(broken)} mutants; first at "
               f"{mutation.module_path}:{mutation.start_pos[0]}:\n{(result.output or '')[-3000:]}")
+        return 1
+    if args.blocking and (hot_survivors or queue or cut):
         return 1
     return 0
 
