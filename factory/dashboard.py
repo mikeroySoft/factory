@@ -697,7 +697,7 @@ def metrics(tickets: list[dict]) -> dict:
                     else ticket.get("stage")
                 ),
                 "risk_tier": ticket["risk_tier"],
-                "review_rounds": ticket.get("spend", {}).get("rounds", 0),
+                "review_rounds": ticket.get("rework_rounds", 0),
                 **ticket["human_touch"],
             }
             for ticket in tickets
@@ -859,6 +859,7 @@ def build_ticket(
         ),
         "llm_usage": stats.llm_usage(audit, cfg.prices) if audit else {},
         "risk_tier": stats.risk_tier(audit or []),
+        "rework_rounds": stats.rework_rounds(audit or []),
         "events": events,
         "timeline_truncated": issue.get("timelineItems", {}).get("pageInfo", {}).get("hasPreviousPage", False),
         **disk,

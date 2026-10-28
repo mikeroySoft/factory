@@ -25,7 +25,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from statistics import mean, pstdev
 
-from factory import config, dispatch, lifecycle, runtime_events
+from factory import config, dispatch, lifecycle, runtime_events, stats
 
 LABELS = "bug,needs-triage"
 MAX_ISSUES = 5
@@ -272,7 +272,10 @@ def metric_series(events: list[dict], start: date, end: date) -> dict[str, dict[
             previous = claims.get(ticket)
             if previous is None or str(row["at"]) < str(previous["at"]):
                 claims[ticket] = row
-        elif row.get("event") == "review" and ticket is not None and _day(row) is not None:
+        elif (
+            row.get("event") == "review" and ticket is not None
+            and row.get("role") in {None, "primary"} and _day(row) is not None
+        ):
             reviews.setdefault(ticket, []).append(row)
 
     for day in days:
@@ -300,7 +303,7 @@ def metric_series(events: list[dict], start: date, end: date) -> dict[str, dict[
             for ticket in terminal_tickets:
                 end_at = max(str(row["at"]) for row in terminal if row["ticket"] == ticket)
                 ticket_reviews = [row for row in reviews.get(ticket, []) if str(row["at"]) <= end_at]
-                rounds.append(max(0, len(ticket_reviews) - 1))
+                rounds.append(stats.rework_rounds(ticket_reviews))
                 round_rows.extend(ticket_reviews)
             series["rework_rounds"][key] = {
                 "value": sum(rounds) / len(rounds),

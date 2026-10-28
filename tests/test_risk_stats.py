@@ -28,6 +28,15 @@ class RiskStatsTest(unittest.TestCase):
         self.assertEqual(result["High"]["risk_disagreements_per_merged_pr"], 1.0)
         self.assertEqual(result["High"]["escape_rate"], 1.0)
 
+    def test_second_review_does_not_count_as_rework(self) -> None:
+        reviews = [
+            {"event": "review", "role": "primary"},
+            {"event": "review", "role": "second"},
+        ]
+        self.assertEqual(stats.rework_rounds(reviews), 0)
+        reviews.append({"event": "review", "role": "primary"})
+        self.assertEqual(stats.rework_rounds(reviews), 1)
+
     def test_dashboard_reports_metrics_by_recorded_tier(self) -> None:
         tickets = []
         for tier in ("Low", "High"):

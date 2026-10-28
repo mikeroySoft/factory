@@ -2099,7 +2099,7 @@ def review(
     with lifecycle.scope(EVENTS, "review", ticket=n) as execution:
         result = run_reviewer(
             wt, review_prompt(n, gate_report), expected_head,
-            subject=f"#{n} {role}", reviewer=reviewer,
+            subject=f"#{n}" if role == "primary" else f"#{n} {role}", reviewer=reviewer,
         )
         model = _reviewer_model(result["usage"], reviewer)
         if result["usage"] is not None:

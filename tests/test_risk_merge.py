@@ -35,6 +35,8 @@ class HighEvidenceTest(unittest.TestCase):
         self.assertFalse(dispatch._head_evidence_matches(high_events(distinct=False), 7, HEAD))
         self.assertFalse(dispatch._head_evidence_matches(high_events(mutation="FAIL"), 7, HEAD))
         self.assertTrue(dispatch._head_evidence_matches(high_events(mutation="SKIP"), 7, HEAD))
+
+    def test_new_head_invalidates_all_high_evidence(self) -> None:
         self.assertFalse(dispatch._head_evidence_matches(high_events(), 7, NEW_HEAD))
 
     def test_regression_approve_refuses_high_without_second_review(self) -> None:
@@ -92,6 +94,43 @@ class ReviewPolicyTest(unittest.TestCase):
         self.assertIn("Primary reviewer: APPROVE", packet)
         self.assertIn("Second reviewer: REVISE", packet)
         self.assertIn("second finding", packet)
+
+    def test_disagree_cases_and_agreement_are_distinct(self) -> None:
+        cfg = config.Config(Path("."), "acme/widgets")
+        cfg.checks = [config.Check("mutation", ["mutation"], when="pr")]
+        dispatch.configure(cfg)
+
+        cases = (
+            ("split", ("APPROVE", "REVISE"), "PASS", "REVISE", True),
+            ("mutation", ("APPROVE", "APPROVE"), "FAIL", "REVISE", True),
+            ("approve", ("APPROVE", "APPROVE"), "PASS", "APPROVE", False),
+            ("revise", ("REVISE", "REVISE"), "PASS", "REVISE", False),
+        )
+        for name, verdicts, mutation, expected, disagreement in cases:
+            with self.subTest(name=name):
+                dispatch.configure(cfg)
+
+                def fake_review(*_args, role="primary", expected=verdicts, **_kwargs):
+                    verdict = expected[role == "second"]
+                    target = (
+                        dispatch._PENDING_SECOND_REVIEWS
+                        if role == "second" else dispatch._PENDING_REVIEWS
+                    )
+                    target[7] = {
+                        "verdict": verdict,
+                        "model": f"{role}/model",
+                    }
+                    return verdict, f"{role} findings"
+
+                report = f"- mutation: {mutation}\n"
+                with mock.patch.object(dispatch, "risk_for_head", return_value=("High", ["high:risk policy"])), \
+                        mock.patch.object(dispatch, "run_gate", return_value=(mutation != "FAIL", report)), \
+                        mock.patch.object(dispatch, "review", side_effect=fake_review), \
+                        mock.patch.object(dispatch, "_worker_model_for_head", return_value="worker/model"), \
+                        mock.patch.object(dispatch, "run", return_value=mock.Mock(stdout="M factory/risk.py\n")):
+                    result = dispatch.pr_gate_and_review(Path("."), 7, "attempt", HEAD, {})
+                self.assertEqual(result[0], expected)
+                self.assertEqual(dispatch._PENDING_RISK[7]["disagreement"], disagreement)
 
 
 class ConfigTest(unittest.TestCase):

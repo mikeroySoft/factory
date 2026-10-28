@@ -423,6 +423,14 @@ def human_touched_pct(merged: list[dict]) -> float | None:
     known = [any(pr[k] for k in keys) for pr in merged if all(pr.get(k) is not None for k in keys)]
     return round(100 * sum(known) / len(known), 1) if known else None
 
+def rework_rounds(events: list[dict]) -> int:
+    reviews = [
+        row for row in events
+        if row.get("event") == "review" and row.get("role") in {None, "primary"}
+    ]
+    return max(0, len(reviews) - 1)
+
+
 def risk_tier(events: list[dict]) -> str:
     return next((
         row["tier"] for row in reversed(events)
@@ -569,6 +577,8 @@ def collect_rows(progress: bool = False) -> list[dict[str, Any]]:
         row["llm_usage"] = llm_usage(audit.get(number, []), cfg.prices)
         row["review_findings"] = review_findings(audit.get(number, []))
         row["risk_tier"] = risk_tier(audit.get(number, []))
+        if any(event.get("event") == "review" for event in audit.get(number, [])):
+            row["review_rounds"] = rework_rounds(audit.get(number, []))
 
     return [rows[number] for number in sorted(rows)]
 
