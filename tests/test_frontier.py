@@ -385,6 +385,61 @@ class FrontierTest(unittest.TestCase):
                 dispatch._record_human_round_reset(79)
                 self.assertFalse(any(e.get("event") == "rounds-reset" for e in self.events()))
 
+    def test_human_comment_during_factory_relabel_does_not_renew_rounds(self) -> None:
+        self.direct_requeue()
+        self.timeline = self.timeline[:2]
+        lifecycle.append(dispatch.EVENTS, {
+            "at": "2026-10-28T15:51:00Z", "event": "manage", "ticket": 79,
+            "round": 1, "decision": "RETRY",
+        })
+        packet = self.repo / ".factory" / "packet.md"
+        packet.write_text("Original failure evidence")
+
+        def interleaved_run(cmd, *args, **kwargs):
+            result = self.fake_run(cmd, *args, **kwargs)
+            if cmd[1:3] == ["issue", "comment"]:
+                self.timeline.append({
+                    "event": "commented", "id": 7901,
+                    "created_at": "2026-10-28T15:51:30Z",
+                    "user": {"login": "runner"}, "body": "Factory manager: Retry",
+                })
+            elif cmd[1:3] == ["issue", "edit"]:
+                self.timeline.extend([
+                    {
+                        "event": "commented", "id": 103,
+                        "created_at": "2026-10-28T15:52:00Z",
+                        "user": {"login": "alice"}, "body": "One more clarification.",
+                    },
+                    {
+                        "event": "labeled", "label": {"name": "ready-for-agent"},
+                        "created_at": "2026-10-28T15:53:00Z",
+                        "actor": {"login": "runner"},
+                    },
+                ])
+            return result
+
+        with mock.patch.object(dispatch, "run", side_effect=interleaved_run):
+            manage.apply(
+                79, {"title": "Ticket", "body": "Scope", "labels": []},
+                "RETRY", "Retry", None, packet,
+            )
+        dispatch._record_human_round_reset(79)
+
+        self.assertFalse(any(e.get("event") == "rounds-reset" for e in self.events()))
+
+    def test_failed_factory_relabel_after_owner_decision_does_not_veto_reset(self) -> None:
+        self.direct_requeue()
+        self.timeline[2]["created_at"] = "2026-10-28T15:51:00Z"
+        lifecycle.append(dispatch.EVENTS, {
+            "at": "2026-10-28T15:52:00Z", "event": "manage", "ticket": 79,
+            "round": 1, "decision": "RETRY",
+        })
+
+        dispatch._record_human_round_reset(79)
+
+        [reset] = [e for e in self.events() if e.get("event") == "rounds-reset"]
+        self.assertEqual(reset["actor"], "alice")
+
     def test_later_human_release_is_not_vetoed_by_an_earlier_factory_requeue(self) -> None:
         self.direct_requeue()
         dispatch.record("conflict-requeue", ticket=79, round=1)
