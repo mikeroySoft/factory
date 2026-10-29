@@ -227,7 +227,7 @@ event. `{}` is a runtime value.
 | `manage.frontier_pass` | ``PR #{}: manager rounds exhausted before approval`` | manager PR frontier → escalate |
 | `manage.frontier_pass` | ``PR #{}: approval evidence, head, or human review state changed before manager approval`` | manager PR frontier → escalate |
 | `manage.frontier_pass` | ``PR #{}: manager requires a human: {}`` | manager PR frontier → escalate |
-| `manage.frontier_pass` | ``PR #{}: manager did not return a valid decision: {}`` | invalid manager sign-off → manager-routed escalation |
+| `manage.frontier_pass` | ``PR #{}: manager did not return a valid decision: {} ({})`` | invalid manager sign-off → manager-routed escalation |
 | `manage.apply` | ``gate failed after manager FIX`` | manager FIX → escalate |
 | `manage.apply` | ``review requested changes after manager FIX`` | manager FIX → escalate |
 | `manage.apply` | ``reviewer unavailable after manager FIX`` | manager FIX review tooling retries exhausted → escalate (`reviewer_unavailable`) |
