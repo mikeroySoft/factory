@@ -29,6 +29,7 @@ import tempfile
 import time
 import tomllib
 from contextlib import contextmanager, nullcontext, suppress
+from datetime import UTC, datetime
 from pathlib import Path
 
 from factory import __version__, brief, config, lifecycle, risk
@@ -1192,9 +1193,19 @@ def record_merge_decision(
             "summary": f"merge SHA {merge_sha}",
         })
     inputs += [
-        {"kind": "ci_run",
-         "ref": str(check.get("link") or check.get("run") or check.get("id") or ".factory/events.jsonl"),
-         "summary": f"{check.get('name', 'check')}: {check.get('bucket', 'unknown')}"}
+        {
+            "kind": "ci_run",
+            "ref": str(
+                check.get("link") or check.get("run") or check.get("id")
+                or ".factory/events.jsonl"
+            ),
+            "summary": (
+                f"{check.get('name', 'check')}: advisory "
+                f"({check.get('original_bucket', 'unknown')})"
+                if check.get("advisory")
+                else f"{check.get('name', 'check')}: {check.get('bucket', 'unknown')}"
+            ),
+        }
         for check in checks[:14]
     ]
     cause = _latest_decision_id(n, {"manager", "review", "gate"})
@@ -2872,20 +2883,153 @@ def signoff() -> str:
 
 
 def pr_checks(pr: int) -> list[dict]:
-    """gh check rows [{name, bucket, link, completedAt}]; bucket: pass/fail/pending/skipping/cancel.
+    """Checks that govern a merge, annotated with required/advisory status.
 
-    `gh pr checks` exits nonzero for failing or pending checks; that is data
-    here, not an error. Unparseable output returns [] which the caller treats
-    as "no passing CI" and refuses to merge — fail closed.
+    Required checks are authoritative when GitHub reports any. Repositories
+    with no required checks fall back to all checks, with configured advisory
+    names retained as non-blocking decision evidence.
     """
-    proc = run(
-        ["gh", "pr", "checks", str(pr), "--repo", REPO, "--json", "name,bucket,link,completedAt"],
-        check=False,
-    )
-    try:
-        return json.loads(proc.stdout)
-    except ValueError:
+    fields = "name,bucket,link,completedAt"
+
+    def read(required: bool) -> list[dict] | None:
+        args = ["gh", "pr", "checks", str(pr), "--repo", REPO]
+        if required:
+            args.append("--required")
+        proc = run([*args, "--json", fields], check=False)
+        try:
+            rows = json.loads(proc.stdout)
+        except ValueError:
+            return None
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            return None
+        return rows
+
+    required = read(True)
+    if required is None:
         return []
+    if required:
+        return [{**check, "required": True} for check in required]
+    checks = read(False)
+    if checks is None:
+        return []
+    out = []
+    for check in checks:
+        advisory = any(
+            fnmatch.fnmatchcase(check.get("name", ""), pattern)
+            for pattern in cfg.merge_advisory_checks
+        )
+        out.append({
+            **check,
+            "required": False,
+            **({
+                "bucket": "advisory",
+                "original_bucket": check.get("bucket"),
+                "advisory": True,
+            } if advisory else {}),
+        })
+    return out
+
+
+def _runner_labels(value: object) -> set[str]:
+    if not isinstance(value, list):
+        return set()
+    return {
+        label["name"] if isinstance(label, dict) else label
+        for label in value
+        if (isinstance(label, str) and label)
+        or (isinstance(label, dict) and isinstance(label.get("name"), str) and label["name"])
+    }
+
+
+def _registered_runners() -> list[dict] | None:
+    res = run([
+        "gh", "api", f"repos/{REPO}/actions/runners?per_page=100",
+        "--paginate", "--slurp",
+    ], check=False)
+    if res.returncode != 0:
+        return None
+    try:
+        payload = json.loads(res.stdout)
+    except ValueError:
+        return None
+    pages = payload if isinstance(payload, list) else [payload]
+    if any(not isinstance(page, dict) for page in pages):
+        return None
+    runners = [runner for page in pages for runner in page.get("runners", [])
+               if isinstance(runner, dict)]
+    return runners
+
+
+def classify_queued_checks(checks: list[dict]) -> list[dict]:
+    """Mark old self-hosted jobs with no matching registered runner.
+
+    Required jobs become blocking infra escalations. In the no-required-check
+    fallback, never-runnable jobs are merge evidence but not merge blockers.
+    Unreadable GitHub data stays pending.
+    """
+    out = list(checks)
+    candidates = []
+    now = datetime.now(UTC)
+    for index, check in enumerate(checks):
+        if check.get("bucket") != "pending":
+            continue
+        match = re.search(r"/actions/runs/(\d+)/job/(\d+)", check.get("link") or "")
+        if not match:
+            continue
+        res = run(["gh", "api", f"repos/{REPO}/actions/jobs/{match[2]}"], check=False)
+        if res.returncode != 0:
+            continue
+        try:
+            job = json.loads(res.stdout)
+            created = datetime.fromisoformat(job["created_at"])
+        except (ValueError, TypeError, KeyError):
+            continue
+        if created.tzinfo is None or created.utcoffset() is None:
+            continue
+        labels = _runner_labels(job.get("labels"))
+        steps_ran = any(
+            isinstance(step, dict)
+            and (
+                step.get("conclusion") is not None
+                or step.get("status") not in (None, "queued")
+            )
+            for step in job.get("steps") or []
+        )
+        if (
+            job.get("status") != "queued"
+            or job.get("runner_id")
+            or job.get("runner_name")
+            or steps_ran
+            or "self-hosted" not in {label.lower() for label in labels}
+            or (now - created).total_seconds() <= cfg.merge_queued_check_timeout
+        ):
+            continue
+        candidates.append((index, check, labels, int(match[1]), int(match[2]), created))
+    if not candidates:
+        return out
+    runners = _registered_runners()
+    if runners is None:
+        return out
+    runner_labels = [_runner_labels(runner.get("labels")) for runner in runners]
+    for index, check, labels, run_id, job_id, created in candidates:
+        if any(labels <= available for available in runner_labels):
+            continue
+        out[index] = {
+            **check,
+            "bucket": "infra" if check.get("required") else "skipped-infra",
+            "run": run_id,
+            "job": job_id,
+            "queued_since": created.isoformat(),
+        }
+    return out
+
+
+def merge_checks(
+    pr: int, dry_run: bool = False, ticket: int | None = None, head: str | None = None,
+) -> list[dict]:
+    return triage_cancelled(
+        pr, classify_queued_checks(pr_checks(pr)), dry_run, ticket, head,
+    )
 
 
 def _infra_cancel(check: dict) -> dict | None:
@@ -2999,8 +3143,17 @@ def runner_unavailable(n: int, pr: int, starved: list[dict], dry_run: bool) -> b
     False when this outage is already escalated: the caller waits as if pending.
     """
     runs = ", ".join(sorted({str(c["run"]) for c in starved}))
-    reason = (f"PR #{pr}: CI runner unavailable ({', '.join(c['name'] for c in starved)}) "
-              f"in run {runs}; `{FACTORY_APPROVED}` kept")
+    names = ", ".join(c["name"] for c in starved)
+    if any(c.get("required") for c in starved):
+        reason = (
+            f"PR #{pr}: required check runner unavailable ({names}) in run {runs}; "
+            f"this blocks merge; `{FACTORY_APPROVED}` kept"
+        )
+    else:
+        reason = (
+            f"PR #{pr}: CI runner unavailable ({names}) in run {runs}; "
+            f"`{FACTORY_APPROVED}` kept"
+        )
     if any(e.get("event") == "escalate" and e.get("ticket") == n and e.get("reason") == reason
            for e in lifecycle.read_events(EVENTS)):
         return False
@@ -3485,7 +3638,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 if execution:
                     execution.outcome, execution.reason = "not_eligible", "initiative"
                 continue
-            checks = triage_cancelled(pr_num, pr_checks(pr_num), dry_run, n, listed_head)
+            checks = merge_checks(pr_num, dry_run, n, listed_head)
             buckets: dict[str, int] = {}
             for c in checks:
                 buckets[c["bucket"]] = buckets.get(c["bucket"], 0) + 1
@@ -3520,13 +3673,21 @@ def merge_pass_locked(dry_run: bool) -> None:
                 )
                 continue
             starved = [c for c in checks if c["bucket"] == "infra"]
-            if starved and runner_unavailable(n, pr_num, starved, dry_run):
-                if not dry_run:
+            if starved:
+                escalated = runner_unavailable(n, pr_num, starved, dry_run)
+                if escalated and not dry_run:
                     record_merge_decision(
                         n, pr_num, "ci-infra", "CI runner infrastructure is unavailable",
                         listed_head, listed_head, checks,
                     )
-                continue
+                if any(c.get("required") for c in starved):
+                    log(f"PR #{pr_num}: required CI runner unavailable; merge blocked")
+                    if execution:
+                        execution.outcome, execution.reason = "project_escalation", "ci_runner"
+                        execution.wait("ci_runner", mode="blocking", pr=pr_num)
+                    continue
+                if escalated:
+                    continue
             if buckets.get("pending") or starved:
                 log(f"PR #{pr_num}: CI pending {buckets}; waiting")
                 if execution:
@@ -3682,7 +3843,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 )
                 execution.outcome, execution.reason = "project_escalation", "state_changed"
                 continue
-            latest_checks = triage_cancelled(pr_num, pr_checks(pr_num), False, n, head)
+            latest_checks = merge_checks(pr_num, False, n, head)
             latest_failed = [c["name"] for c in latest_checks if c["bucket"] == "fail"]
             latest_starved = [c for c in latest_checks if c["bucket"] == "infra"]
             if latest_failed:
@@ -3703,12 +3864,19 @@ def merge_pass_locked(dry_run: bool) -> None:
                     None, code="ci_failed",
                 )
                 continue
-            if latest_starved and runner_unavailable(n, pr_num, latest_starved, False):
-                record_merge_decision(
-                    n, pr_num, "ci-infra", "CI runner infrastructure became unavailable",
-                    head, head, latest_checks,
-                )
-                continue
+            if latest_starved:
+                escalated = runner_unavailable(n, pr_num, latest_starved, False)
+                if escalated:
+                    record_merge_decision(
+                        n, pr_num, "ci-infra", "CI runner infrastructure became unavailable",
+                        head, head, latest_checks,
+                    )
+                if any(c.get("required") for c in latest_starved):
+                    execution.outcome, execution.reason = "project_escalation", "ci_runner"
+                    execution.wait("ci_runner", mode="blocking", pr=pr_num)
+                    continue
+                if escalated:
+                    continue
             if any(c["bucket"] in ("pending", "infra") for c in latest_checks):
                 execution.outcome, execution.reason = "not_eligible", "ci_pending"
                 execution.wait("ci_pending", mode="eligibility", pr=pr_num)
