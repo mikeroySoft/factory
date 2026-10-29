@@ -88,9 +88,10 @@
     return `<nav class="workspace-nav" aria-label="Workspace views">${VIEWS.map(item => `<button type="button" data-view="${slugify(item)}"${item === view ? ' aria-current="page"' : ''}>${item}</button>`).join('')}</nav>`;
   }
   function collectionMarkup(repo) {
-    const collection = object(repo?.collection);
+    const collection = object(repo?.collection), mode = object(repo?.mode);
     const status = collection.refreshing ? 'refreshing' : collection.error || state.error ? 'error' : repoObservedAt(repo) ? 'ready' : 'building';
-    return `<div class="collection"><span class="signal" data-status="${status}" data-tone="${tone(status)}">${esc(status)}</span><span>${repoObservedAt(repo) ? `latest source ${esc(date(repoObservedAt(repo)))}` : 'no observation yet'}</span><button class="btn btn-small" type="button" data-refresh ${collection.refreshing || state.request ? 'disabled' : ''}>Refresh selected</button></div>`;
+    const modeLabel = mode.name ? `${mode.name}${mode.feature ? ` #${mode.feature}` : ''}` : 'mode unknown';
+    return `<div class="collection"><span class="badge">${esc(modeLabel)}</span><span class="signal" data-status="${status}" data-tone="${tone(status)}">${esc(status)}</span><span>${repoObservedAt(repo) ? `latest source ${esc(date(repoObservedAt(repo)))}` : 'no observation yet'}</span><button class="btn btn-small" type="button" data-refresh ${collection.refreshing || state.request ? 'disabled' : ''}>Refresh selected</button></div>`;
   }
 
   function evidenceNotices(repo) {

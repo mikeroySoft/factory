@@ -25,7 +25,7 @@ from pathlib import Path
 from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, urlsplit
 
-from factory import briefing, config, flow, runtime_events, runtime_local, settings, trace
+from factory import briefing, config, flow, runtime_events, runtime_local, settings, throttle, trace
 from factory.config import Config
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
@@ -1026,8 +1026,10 @@ class Workspace:
             repositories = []
             for repository in self.repositories:
                 scope = self._scopes[repository]
+                selected_mode = throttle.read(self._configs[repository])
                 repositories.append({
                     "repository_theme": self._configs[repository].dashboard_theme is not None,
+                    "mode": {"name": selected_mode.name, "feature": selected_mode.feature},
                     **{
                         key: (self._public_collection(value) if key == "collection" else value)
                         for key, value in scope.items()

@@ -36,7 +36,13 @@ def timeline(n: int) -> list[dict]:
     return [item for page in pages for item in page] if pages and isinstance(pages[0], list) else pages
 
 
-def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
+def terminal(
+    cfg,
+    events: list[dict],
+    escalation: dict,
+    *,
+    manager_rounds: int | None = None,
+) -> str | None:
     """Why no automatic recovery remains for this escalation; None while the manager may still act.
 
     Mirrors every reason `manage.escalation_pass` will never run the manager again.
@@ -46,8 +52,9 @@ def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
         return "no manager is configured, so nothing recovers automatically"
     if escalation.get("pr"):
         return "review-intake escalations are never managed; the opted-in PR needs a human review decision"
-    if not 1 <= r <= cfg.manager_rounds:
-        return f"the manager's {cfg.manager_rounds} allowed round(s) are exhausted"
+    rounds = cfg.manager_rounds if manager_rounds is None else manager_rounds
+    if not 1 <= r <= rounds:
+        return f"the manager's {rounds} allowed round(s) are exhausted"
     decided = [e for e in events if e.get("event") == "manage" and e.get("round") == r and not e.get("pr")]
     if not decided:
         if not Path(escalation["packet"]).is_file():
@@ -173,12 +180,18 @@ def handoff_pass(dry_run: bool = False) -> None:
                     continue
                 execution.resource("acquired", lock_path, scope="repository")
             try:
-                events = [e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("ticket") == n]
+                all_events = lifecycle.read_events(dispatch.EVENTS)
+                events = [e for e in all_events if e.get("ticket") == n]
                 escalation = next((e for e in reversed(events) if e.get("event") == "escalate"
                                    and e.get("reason") != "manager_failed"), None)
                 if not escalation or escalation.get("upstream") or not escalation.get("packet"):
                     continue
-                why = terminal(cfg, events, escalation)
+                why = terminal(
+                    cfg,
+                    events,
+                    escalation,
+                    manager_rounds=dispatch.ticket_limits(n, all_events)["manager_rounds"],
+                )
                 if why is None:
                     if dry_run:
                         dispatch.log(f"#{n}: automatic recovery still eligible; routing stays advisory (`factory plan route {n}`)")

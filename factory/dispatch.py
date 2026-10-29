@@ -54,8 +54,6 @@ FACTORY: Path
 LOGS: Path
 SYNC_LOG: Path
 EVENTS: Path
-MAX_ACTIVE: int
-MAX_ATTEMPTS: int
 _PENDING_REVIEWS: dict[int, dict] = {}
 _PENDING_SECOND_REVIEWS: dict[int, dict] = {}
 _PENDING_RISK: dict[int, dict] = {}
@@ -64,7 +62,6 @@ _LOW_FALLBACK: set[int] = set()
 
 def configure(c: Config) -> None:
     global cfg, ROOT, REPO, UPSTREAM, UPSTREAM_REPO, FACTORY, LOGS, SYNC_LOG, EVENTS
-    global MAX_ACTIVE, MAX_ATTEMPTS
     cfg = c
     ROOT = cfg.root
     REPO = cfg.repo
@@ -74,12 +71,24 @@ def configure(c: Config) -> None:
     LOGS = FACTORY / "logs"
     SYNC_LOG = FACTORY / "upstream-sync.jsonl"
     EVENTS = FACTORY / "events.jsonl"
-    MAX_ACTIVE = cfg.max_active
-    MAX_ATTEMPTS = cfg.max_attempts
     _PENDING_REVIEWS.clear()
     _PENDING_SECOND_REVIEWS.clear()
     _PENDING_RISK.clear()
     _LOW_FALLBACK.clear()
+
+def _parents(events: list[dict]) -> dict[int, int]:
+    return {
+        row["ticket"]: row["parent"] for row in events
+        if row.get("event") == "issue-created" and type(row.get("ticket")) is int
+        and type(row.get("parent")) is int
+    }
+
+
+def ticket_limits(ticket: int, events: list[dict] | None = None) -> dict[str, int]:
+    from factory import throttle
+
+    rows = lifecycle.read_events(EVENTS) if events is None else events
+    return throttle.limits(cfg, throttle.read(cfg), ticket, _parents(rows))
 
 
 # `factory learn` branches: lessons, CURATE and the revert a failed promotion opens.
@@ -528,7 +537,8 @@ def review_intake_pass(dry_run: bool) -> None:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
                     continue
-            history = [e for e in lifecycle.read_events(EVENTS) if e.get("pr") == n]
+            events = lifecycle.read_events(EVENTS)
+            history = [e for e in events if e.get("pr") == n]
             if not dry_run:
                 review_readiness(n, head, history)
             if any(e.get("event") == "review-result" and e.get("verdict") == "APPROVE"
@@ -537,7 +547,7 @@ def review_intake_pass(dry_run: bool) -> None:
             if any(e.get("event") == "escalate" for e in history):
                 continue
             attempts = [e for e in history if e.get("event") == "review-intake"]
-            if len(attempts) >= cfg.review_rounds + 1:
+            if len(attempts) >= ticket_limits(n, events)["review_rounds"] + 1:
                 reason = f"PR #{n}: unresolved after {len(attempts)} automated review attempt(s)"
                 log(f"{reason}; {'would escalate' if dry_run else 'escalating'} to human")
                 if not dry_run:
@@ -3171,7 +3181,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         ]
         why = (
             f"protected paths without `{LABEL_PROTECTED_OVERRIDE}`" if protected
-            else f"after {rounds} conflict-resolution round(s)" if rounds >= cfg.review_rounds
+            else f"after {rounds} conflict-resolution round(s)" if rounds >= ticket_limits(n)["review_rounds"]
             else "ticket is not open" if issue.get("state") != "OPEN"
             else ""
         )
@@ -3286,7 +3296,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
                 ["issue", "view", str(n), "--repo", REPO, "--json", "state"]
             ).get("state")
             why = (
-                f"after {rounds} gate-resolution round(s)" if rounds >= cfg.review_rounds
+                f"after {rounds} gate-resolution round(s)" if rounds >= ticket_limits(n)["review_rounds"]
                 else "ticket is not open" if issue_state != "OPEN"
                 else ""
             )
@@ -4006,12 +4016,21 @@ def _protected_gate_guidance(report: str, labels: set[str]) -> str | None:
 
 def process_ticket(
     issue: dict, budget_min: int, dry_run: bool, forced: bool = False,
-    admission_id: str | None = None,
+    admission_id: str | None = None, limits: dict[str, int] | None = None,
 ) -> bool | None:
     """None when the ticket was processed or skipped; False when the host could not launch its worker."""
     admission_id = admission_id or issue.get("_factory_admission_id")
     n, title = issue["number"], issue["title"]
     labels = {label["name"] for label in issue.get("labels", [])}
+    effective = limits or issue.get("_factory_limits") or {
+        "review_rounds": cfg.review_rounds,
+        "manager_rounds": cfg.manager_rounds,
+        "max_attempts": cfg.max_attempts,
+        "budget_min": budget_min,
+    }
+    budget_min = effective["budget_min"]
+    max_attempts = effective["max_attempts"]
+    review_rounds = effective["review_rounds"]
     wt = FACTORY / f"wt-{n}"
     worker_key = cfg.worker_key(labels)
     worker = cfg.worker_command(worker_key, wt / ".factory-prompt.md", wt)[0]
@@ -4132,13 +4151,14 @@ def process_ticket(
                 "claimed", ticket=n, title=title, labels=sorted(labels),
                 worker=worker_key, worker_version=cfg.worker_version.get(worker_key),
                 priority=tier, priority_source=why, experiment=schedule.is_experiment(fresh),
+                feature_drive=bool(issue.get("_factory_feature_drive")),
                 base=replay_base,
                 issue={key: fresh.get(key) for key in ("title", "body", "comments")},
             )
             lease = agent_lease(wt, n)
             LOGS.mkdir(parents=True, exist_ok=True)
 
-            # Attempts 1..MAX_ATTEMPTS: worker + gate, feeding the failed report back. A sync
+            # Attempts 1..max_attempts: worker + gate, feeding the failed report back. A sync
             # candidate the dispatcher's own gate passed at this exact head needs no worker,
             # unless a refresh conflict or repeated refresh gate failure requeued it.
             resolve = refresh_requeue_context(n)
@@ -4147,7 +4167,7 @@ def process_ticket(
             staged = None if resolve else sync_staged(n, wt)
             if staged is not None:
                 report, gate_head = staged
-            for attempt in range(1, MAX_ATTEMPTS + 1 if staged is None else 1):
+            for attempt in range(1, max_attempts + 1 if staged is None else 1):
                 ok, report, logfile, gate_head = worker_round(
                     n, wt, labels, title, extra, attempt, deadline, body=fresh.get("body") or "",
                     comments=fresh.get("comments"),
@@ -4173,8 +4193,8 @@ def process_ticket(
             else:
                 if staged is None:
                     stuck = report.startswith("worker stuck")
-                    failed = (f"idle_timeout fired (worker stuck) on attempt {MAX_ATTEMPTS}"
-                              if stuck else f"gate failed {MAX_ATTEMPTS} times")
+                    failed = (f"idle_timeout fired (worker stuck) on attempt {max_attempts}"
+                              if stuck else f"gate failed {max_attempts} times")
                     escalate(n, f"{failed}; worktree kept at {wt}", logfile,
                              code="worker_stuck" if stuck else "gate_failed")
                     return
@@ -4215,7 +4235,7 @@ def process_ticket(
             if verdict is None:
                 log(
                     f"#{n}: reviewer unavailable; not a REVISE verdict after "
-                    f"{cfg.review_rounds} review round(s)"
+                    f"{review_rounds} review round(s)"
                 )
                 escalate(
                     n, "reviewer unavailable after retries", logfile,
@@ -4224,9 +4244,9 @@ def process_ticket(
                 return
             # Each REVISE (or pr-tier FAIL) uses the normal bounce budget. A first
             # High-risk disagreement always gets one rework, even when that budget is spent.
-            for bounce in range(1, cfg.review_rounds + 2):
+            for bounce in range(1, review_rounds + 2):
                 if verdict == "APPROVE" or (
-                    bounce > cfg.review_rounds and risk_disagreement_head is None
+                    bounce > review_rounds and risk_disagreement_head is None
                 ):
                     break
                 if time.monotonic() > deadline:
@@ -4249,7 +4269,7 @@ def process_ticket(
                     record_worker_selection(n, labels, cause=retry_decision, relation="retries")
                     record_claim_decision(n, True, retry_decision, relation="retries")
                 ok, report, logfile, gate_head = worker_round(
-                    n, wt, labels, title, extra, MAX_ATTEMPTS + bounce, deadline,
+                    n, wt, labels, title, extra, max_attempts + bounce, deadline,
                     body=fresh.get("body") or "",
                     comments=fresh.get("comments"),
                 )
@@ -4298,7 +4318,7 @@ def process_ticket(
                 escalate(n, "pr checks failed", logfile, extra="## PR-tier gate report\n\n" + findings,
                          code="pr_checks_failed")
             elif verdict != "APPROVE":
-                escalate(n, f"REVISE verdict after {cfg.review_rounds} review round(s)", logfile, code="review_revise")
+                escalate(n, f"REVISE verdict after {review_rounds} review round(s)", logfile, code="review_revise")
             elif approve_pr(n, gate_head):
                 log(f"#{n}: done (approved at {gate_head[:12]})")
             else:
@@ -4329,29 +4349,35 @@ def process_ticket(
             execution.resource("released", lock_path, scope="repository")
 
 
-def ticket_pass(budget_min: int, dry_run: bool) -> None:
+def ticket_pass(budget_min: int, dry_run: bool, *, budget_override: bool = False) -> None:
     """Claim up to capacity frontier tickets in accepted-priority order and work each one."""
-    from factory import schedule
+    from factory import schedule, throttle
 
     with nullcontext() if dry_run else lifecycle.scope(EVENTS, "scheduling", lazy=True) as execution:
+        events = lifecycle.read_events(EVENTS)
+        parents = _parents(events)
+        if not dry_run:
+            throttle.auto_reset(
+                cfg,
+                parents,
+                lambda number: gh_json([
+                    "issue", "view", str(number), "--repo", REPO, "--json", "state",
+                ])["state"],
+            )
+        mode = throttle.read(cfg)
+        max_active = throttle.capacity(cfg, mode)
         active = active_tickets()
-        capacity = MAX_ACTIVE - len(active)
+        capacity = max_active - len(active)
         log(f"active tickets: {len(active)}, capacity: {max(capacity, 0)}")
         if capacity <= 0:
             log("at capacity, nothing to do")
             if execution:
-                execution.wait("capacity_reached", mode="admission", active=len(active), max_active=MAX_ACTIVE)
+                execution.wait("capacity_reached", mode="admission", active=len(active), max_active=max_active)
             return
         rows = frontier()
         if all(issue.get("held") for issue in rows):
             log("frontier empty, nothing to do")
             return
-        events = lifecycle.read_events(EVENTS)
-        parents = {
-            row["ticket"]: row["parent"] for row in events
-            if row.get("event") == "issue-created" and type(row.get("ticket")) is int
-            and type(row.get("parent")) is int
-        }
         decided = schedule.plan(
             rows,
             capacity,
@@ -4359,6 +4385,8 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
             streak=schedule.explicit_streak(events),
             experiments=schedule.active_experiments(events, set(active)),
             parents=parents,
+            mode=mode,
+            maintenance_label=cfg.throttle_maintenance_label,
         )
         for row in decided["explained"]:
             log(f"#{row['ticket']}: {row['decision']} ({row['reason']})")
@@ -4367,10 +4395,25 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
             for payload in decided["decisions"]:
                 record("decision", **payload)
                 admissions[payload["ticket"]] = payload["decision_id"]
-            record("scheduling", capacity=capacity, active=active, explained=decided["explained"])
+            record(
+                "scheduling",
+                capacity=capacity,
+                active=active,
+                mode=mode.name,
+                feature=mode.feature,
+                explained=decided["explained"],
+            )
     for issue in decided["selected"]:
+        limits = throttle.limits(cfg, mode, issue["number"], parents)
+        if budget_override:
+            limits["budget_min"] = budget_min
         process_ticket(
-            {**issue, "_factory_admission_id": admissions.get(issue["number"])},
+            {
+                **issue,
+                "_factory_admission_id": admissions.get(issue["number"]),
+                "_factory_feature_drive": issue["number"] == decided["reserved_ticket"],
+                "_factory_limits": limits,
+            },
             budget_min,
             dry_run,
         )
@@ -4409,6 +4452,7 @@ def main(argv: list[str]) -> int:
         "--dry-run", action="store_true", help="print planned actions; no side effects"
     )
     args = parser.parse_args(argv)
+    budget_override = args.budget_min is not None
     if not args.dry_run:
         dirty = pin_root()
         if dirty:
@@ -4449,7 +4493,24 @@ def main(argv: list[str]) -> int:
                     "number,title,body,labels,assignees",
                 ]
             )
-            result = 1 if process_ticket(issue, args.budget_min, args.dry_run, forced=True) is False else 0
+            from factory import throttle
+
+            events = lifecycle.read_events(EVENTS)
+            mode = throttle.read(cfg)
+            parents = _parents(events)
+            limits = throttle.limits(cfg, mode, args.ticket, parents)
+            if budget_override:
+                limits["budget_min"] = args.budget_min
+            result = 1 if process_ticket(
+                {
+                    **issue,
+                    "_factory_feature_drive": throttle.covers(mode, args.ticket, parents),
+                    "_factory_limits": limits,
+                },
+                args.budget_min,
+                args.dry_run,
+                forced=True,
+            ) is False else 0
             if not args.dry_run and result == 0:
                 lifecycle.record_stage_success(EVENTS, "dispatch")
             return result
@@ -4473,7 +4534,7 @@ def main(argv: list[str]) -> int:
         from factory.manage import manage_pass
 
         manage_pass(args.dry_run)
-        ticket_pass(args.budget_min, args.dry_run)
+        ticket_pass(args.budget_min, args.dry_run, budget_override=budget_override)
         learn_pass(args.dry_run)
         release_step(open_pr=True)
         if not args.dry_run:
