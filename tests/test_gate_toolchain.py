@@ -26,7 +26,7 @@ class ToolchainTest(unittest.TestCase):
             if command == ["uname", "-r"]:
                 return subprocess.CompletedProcess(command, 0, "6.17.1\n", "")
             if command == ["modinfo", "-F", "version", "amdgpu"]:
-                return subprocess.CompletedProcess(command, 0, "", "")
+                raise FileNotFoundError(command[0])
             raise FileNotFoundError(command[0])
 
         with (
@@ -36,6 +36,30 @@ class ToolchainTest(unittest.TestCase):
             found = gate.toolchain()
 
         self.assertEqual(found["rocm"], "gfx1201 (rocm-cli)")
+        self.assertEqual(found["amdgpu"], "loaded (in-tree)")
+
+    def test_failed_probes_fall_back_to_kfd_and_loaded_module(self) -> None:
+        def probe(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            if command == ["uname", "-r"]:
+                return subprocess.CompletedProcess(command, 0, "6.17.1\n", "")
+            if command[:2] == ["rocm", "examine"]:
+                return subprocess.CompletedProcess(
+                    command, 1, json.dumps({"detected_gfx_target": "gfx9999"}), "",
+                )
+            if command == ["hipconfig", "--version"]:
+                return subprocess.CompletedProcess(command, 1, "diagnostic output\n", "")
+            if command == ["modinfo", "-F", "version", "amdgpu"]:
+                return subprocess.CompletedProcess(command, 1, "not-a-version\n", "")
+            raise FileNotFoundError(command[0])
+
+        with (
+            mock.patch.object(gate.subprocess, "run", side_effect=probe),
+            mock.patch.object(gate, "_kfd_targets", return_value=["gfx1010"]),
+            mock.patch.object(Path, "is_dir", return_value=True),
+        ):
+            found = gate.toolchain()
+
+        self.assertEqual(found["rocm"], "gfx1010 (kfd sysfs)")
         self.assertEqual(found["amdgpu"], "loaded (in-tree)")
 
     def test_absent_rocm_and_amdgpu_stay_unavailable(self) -> None:

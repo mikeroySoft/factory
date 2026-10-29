@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 import sys
@@ -9,6 +10,8 @@ from pathlib import Path
 from unittest import mock
 
 from factory import config, dispatch, gate, lifecycle
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def proof_text(
@@ -64,6 +67,14 @@ class ProofGateTest(unittest.TestCase):
         self.assertIn(shlex.join(self.command), detail)
         self.assertIn("tank ok", detail)
 
+    def test_environment_dump_output_is_rejected_without_echoing_values(self) -> None:
+        secret = "AWS_SECRET_ACCESS_KEY=plain-text-secret"
+        command = ("sh", "-c", f"printf '{secret}\\n'")
+        passed, detail = self.check(proof_text(command, output=secret))
+        self.assertFalse(passed)
+        self.assertIn("environment dump", detail)
+        self.assertNotIn(secret, detail)
+
 
 class ProofDispatchTest(unittest.TestCase):
     def repo(self, root: Path) -> Path:
@@ -84,6 +95,18 @@ class ProofDispatchTest(unittest.TestCase):
         if command[:3] == ["gh", "pr", "create"]:
             return subprocess.CompletedProcess(command, 0, "https://github.com/acme/repo/pull/17\n", "")
         return subprocess.CompletedProcess(command, 0, "", "")
+
+    @staticmethod
+    def gate_run(repo: Path, report: str, *args: str) -> tuple[subprocess.CompletedProcess[str], str]:
+        result = subprocess.run(
+            [sys.executable, "-m", "factory", "gate", "--report", f".factory/{report}", *args],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONPATH": str(ROOT)},
+            check=False,
+        )
+        return result, (repo / ".factory" / report).read_text()
 
     def test_config_loads_proof_repositories_and_commands(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -115,6 +138,85 @@ class ProofDispatchTest(unittest.TestCase):
         self.assertEqual(headings, sorted(headings))
         self.assertNotIn(token, published)
         self.assertIn("[REDACTED]", published)
+
+    def test_existing_required_repo_pr_body_is_refreshed_with_proof(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.repo(Path(directory))
+            dispatch.configure(config.Config(root=repo, repo="acme/rocm-cli"))
+            dispatch.FACTORY.mkdir(exist_ok=True)
+            (repo / ".factory" / "proof-7.md").write_text(
+                proof_text(["rocm", "examine", "--json"], output="gfx1201")
+            )
+            body = "Closes #7\n\n## Gate report\n\nPASS\n"
+            with (
+                mock.patch.object(dispatch, "run", side_effect=self.publish_run) as run,
+                mock.patch.object(
+                    dispatch, "gh_json", return_value=[{"number": 17, "baseRefName": "main"}],
+                ),
+            ):
+                self.assertTrue(dispatch.push_and_pr(repo, "agent/7", "feature", body, ticket=7))
+            published = (dispatch.FACTORY / "pr-body-7.md").read_text()
+            commands = [call.args[0] for call in run.call_args_list]
+        self.assertIn("## Proof on ROCm tank", published)
+        self.assertIn(
+            ["gh", "pr", "edit", "17", "--repo", "acme/rocm-cli",
+             "--body-file", str(dispatch.FACTORY / "pr-body-7.md")],
+            commands,
+        )
+
+    def test_worker_proof_with_environment_dump_is_not_published(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.repo(Path(directory))
+            dispatch.configure(config.Config(root=repo, repo="acme/rocm-cli"))
+            dispatch.FACTORY.mkdir(exist_ok=True)
+            secret = "AWS_SECRET_ACCESS_KEY=plain-text-secret"
+            (repo / ".factory" / "proof-7.md").write_text(
+                proof_text(["true"], output=secret)
+            )
+            with (
+                mock.patch.object(dispatch, "run", side_effect=self.publish_run) as run,
+                mock.patch.object(dispatch, "gh_json", return_value=[]),
+                self.assertRaisesRegex(ValueError, "environment dump"),
+            ):
+                dispatch.push_and_pr(repo, "agent/7", "feature", "body", ticket=7)
+            commands = [call.args[0] for call in run.call_args_list]
+        self.assertFalse(any(command[:3] == ["gh", "pr", "create"] for command in commands))
+
+    def test_required_repo_gate_without_ticket_skips_proof_check(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.repo(Path(directory))
+            (repo / config.CONFIG_NAME).write_text('[proof]\nrepos = ["repo"]\n')
+            result, report = self.gate_run(repo, "gate-report-upstream.md")
+        self.assertEqual(result.returncode, 0, report + result.stdout + result.stderr)
+        self.assertNotIn("- proof:", report)
+
+    def test_gate_report_keeps_every_bounded_proof_rerun(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.repo(Path(directory))
+            (repo / config.CONFIG_NAME).write_text('[proof]\nrepos = ["repo"]\n')
+            (repo / ".factory").mkdir(exist_ok=True)
+            commands = [
+                [
+                    sys.executable,
+                    "-c",
+                    f"print('first-{index}-' + '\\nfirst-{index}-'.join(map(str, range(40))))",
+                ]
+                for index in range(3)
+            ]
+            records = [
+                proof_text(command, not_checked=False, output=f"claimed-{index}")
+                .removeprefix("## Proof on ROCm tank\n\n").strip()
+                for index, command in enumerate(commands)
+            ]
+            (repo / ".factory" / "proof-7.md").write_text(
+                "## Proof on ROCm tank\n\n"
+                + "\n\n".join(records)
+                + "\n\n## Not checked\n\nnothing\n"
+            )
+            result, report = self.gate_run(repo, "gate-report-7.md", "--ticket", "7")
+        self.assertEqual(result.returncode, 0, report + result.stdout + result.stderr)
+        for command in commands:
+            self.assertIn(f"$ {shlex.join(command)}", report)
 
     def test_unlisted_repo_body_is_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
