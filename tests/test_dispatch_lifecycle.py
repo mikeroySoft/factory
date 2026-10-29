@@ -1381,3 +1381,167 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
         )
 
         self.assertEqual(lock, "base\n")
+
+    def realistic_lock(self):
+        return (
+            'version = 1\nrevision = 3\nrequires-python = ">=3.11"\n\n'
+            '[options]\nexclude-newer = "2026-10-20T00:00:00Z"\n\n'
+            '[[package]]\nname = "factory"\nversion = "0.4.6"\n'
+            'source = { editable = "." }\n\n'
+            '[[package]]\nname = "requests"\nversion = "2.31.0"\n'
+            'source = { registry = "https://pypi.org/simple" }\n'
+        )
+
+    def run_realistic_lock_worker(self, plan, *, drift=None):
+        baseline = self.realistic_lock()
+        changed = drift or baseline.replace("2.31.0", "2.32.4")
+        (self.repo / "uv.lock").write_text(baseline)
+        self.git("add", "uv.lock")
+        self.git("commit", "-qm", "realistic lock baseline")
+        self.git("push", "-q", "origin", "main")
+        self.reviewer.write_text(
+            'print(\'```json\\n{"verdict":"APPROVE","findings":[]}\\n```\\nVERDICT: APPROVE\')\n'
+        )
+        self.worker.write_text(
+            "import subprocess\nfrom pathlib import Path\n"
+            "p = Path('.factory/plans/current/1.md')\n"
+            "p.parent.mkdir(parents=True, exist_ok=True)\n"
+            f"p.write_text({plan!r})\n"
+            f"Path('uv.lock').write_text({changed!r})\n"
+            "subprocess.run(['git', 'add', 'uv.lock'], check=True)\n"
+            "subprocess.run(['git', 'commit', '-qm', 'worker lock edit'], check=True)\n"
+        )
+
+        self.cli("dispatch", "--ticket", "7")
+
+        pushed = subprocess.run(
+            ["git", "--git-dir", str(self.base / "origin.git"), "show", "agent/7:uv.lock"],
+            env=self.env, check=True, capture_output=True, text=True,
+        ).stdout
+        self.assertTrue(any(
+            row.get("event") == "approved" for row in lifecycle.read_events(self.events)
+        ))
+        return pushed
+
+    def test_negative_lockfile_clause_does_not_authorize_drift(self):
+        lock = self.run_realistic_lock_worker(
+            "## Files\n- README.md\n## Order\n1. Update README.md; do not change uv.lock.\n"
+        )
+
+        self.assertEqual(lock, self.realistic_lock())
+
+    def test_negative_quoted_lockfile_clause_does_not_authorize_drift(self):
+        lock = self.run_realistic_lock_worker(
+            "## Files\n- README.md\n## Order\n1. Update README.md; do not change `uv.lock`.\n"
+        )
+
+        self.assertEqual(lock, self.realistic_lock())
+
+    def test_existing_package_docs_do_not_authorize_drift(self):
+        lock = self.run_realistic_lock_worker(
+            "## Files\n- docs/packages.md\n## Order\n1. Update the factory package docs.\n"
+        )
+
+        self.assertEqual(lock, self.realistic_lock())
+
+    def test_lockfile_metadata_does_not_authorize_drift(self):
+        lock = self.run_realistic_lock_worker(
+            "## Files\n- README.md\n## Order\n1. Update the version banner in README.\n"
+        )
+
+        self.assertEqual(lock, self.realistic_lock())
+
+    def test_numeric_lockfile_metadata_does_not_authorize_drift(self):
+        lock = self.run_realistic_lock_worker(
+            "## Files\n- tests/test_client.py\n## Order\n1. Add 1 test for the client.\n"
+        )
+
+        self.assertEqual(lock, self.realistic_lock())
+
+    def test_markdown_quoted_dependency_upgrade_preserves_edit(self):
+        lock = self.run_realistic_lock_worker(
+            "## Files\n- pyproject.toml\n## Order\n1. Upgrade `requests` to 2.32.4.\n"
+        )
+
+        self.assertIn('version = "2.32.4"', lock)
+
+    def test_affirmative_lockfile_clause_survives_later_restriction(self):
+        lock = self.run_realistic_lock_worker(
+            "## Order\n1. Update uv.lock; no other files change.\n"
+        )
+
+        self.assertIn('version = "2.32.4"', lock)
+
+    def test_drift_metadata_cannot_authorize_itself(self):
+        lock = self.run_realistic_lock_worker(
+            "## Files\n- README.md\n## Order\n1. Update the banner in README.\n",
+            drift=self.realistic_lock().replace(
+                '[options]\n', '[options]\nbanner = "incidental verifier metadata"\n',
+            ),
+        )
+
+        self.assertEqual(lock, self.realistic_lock())
+
+    def test_drift_package_cannot_authorize_itself(self):
+        lock = self.run_realistic_lock_worker(
+            "## Files\n- docs/navigation.md\n## Order\n1. Update navigation.\n",
+            drift=self.realistic_lock()
+            + '\n[[package]]\nname = "navigation"\nversion = "1.0.0"\n',
+        )
+
+        self.assertEqual(lock, self.realistic_lock())
+
+    def run_sync_lock_worker(self, drift):
+        (self.repo / "uv.lock").write_text(self.realistic_lock())
+        self.git("add", "uv.lock")
+        self.git("commit", "-qm", "shared lock baseline")
+        self.git("push", "-q", "origin", "main")
+        self.worker.write_text(
+            "import subprocess\nfrom pathlib import Path\n"
+            "p = Path('.factory/plans/current/1.md')\n"
+            "p.parent.mkdir(parents=True, exist_ok=True)\n"
+            "p.write_text('## Files\\n- fix.txt\\n## Order\\n1. Repair the gate.\\n')\n"
+            "Path('fix.txt').write_text('fixed\\n')\n"
+            + (
+                "lock = Path('uv.lock')\n"
+                "lock.write_text(lock.read_text().replace('2026-10-20T00:00:00Z', '1 day'))\n"
+                if drift else ""
+            )
+            + "subprocess.run(['git', 'add', 'fix.txt', 'uv.lock'], check=True)\n"
+            "subprocess.run(['git', 'commit', '-qm', 'worker sync repair'], check=True)\n"
+        )
+        tip, _ = LocalCLI.upstream_fixture(
+            self, check=[sys.executable, "-c",
+                         "from pathlib import Path; raise SystemExit(not Path('fix.txt').exists())"],
+        )
+        fork_lock = (
+            self.realistic_lock()
+            + '\n[[package]]\nname = "fork-only"\nversion = "1.0.0"\n'
+        )
+        (self.repo / "uv.lock").write_text(fork_lock)
+        self.git("add", "uv.lock")
+        self.git("commit", "-qm", "fork dependency")
+        self.git("push", "-q", "origin", "main")
+
+        self.cli("dispatch")
+
+        events = lifecycle.read_events(self.events)
+        sync = next(row for row in events if row.get("event") == "upstream-sync")
+        wt = self.repo / ".factory" / "wt-7"
+        self.assertEqual(
+            self.git("-C", str(wt), "show", f"{sync['head']}:uv.lock").stdout, fork_lock,
+        )
+        pushed = subprocess.run(
+            ["git", "--git-dir", str(self.base / "origin.git"), "show", "agent/7:uv.lock"],
+            env=self.env, check=True, capture_output=True, text=True,
+        ).stdout
+        self.assertEqual(pushed, fork_lock)
+        self.git("-C", str(wt), "merge-base", "--is-ancestor", tip, "agent/7")
+        self.git("-C", str(wt), "merge-base", "--is-ancestor", sync["head"], "agent/7")
+        self.assertTrue(any(row.get("event") == "approved" for row in events))
+
+    def test_sync_repair_keeps_staged_fork_lock_without_worker_drift(self):
+        self.run_sync_lock_worker(drift=False)
+
+    def test_sync_repair_removes_only_worker_lock_drift(self):
+        self.run_sync_lock_worker(drift=True)
