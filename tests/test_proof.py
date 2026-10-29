@@ -75,6 +75,17 @@ class ProofGateTest(unittest.TestCase):
         self.assertIn("environment dump", detail)
         self.assertNotIn(secret, detail)
 
+    def test_environment_mapping_rerun_is_rejected_without_echoing_values(self) -> None:
+        secret = "AWS_SECRET_ACCESS_KEY"
+        result = subprocess.CompletedProcess(
+            self.command, 0, f"environ({{{secret!r}: 'plain-text-secret'}})", "",
+        )
+        with mock.patch.object(gate, "timed", return_value=result):
+            passed, detail = self.check(proof_text(self.command))
+        self.assertFalse(passed)
+        self.assertIn("environment dump", detail)
+        self.assertNotIn(secret, detail)
+
 
 class ProofDispatchTest(unittest.TestCase):
     def repo(self, root: Path) -> Path:
