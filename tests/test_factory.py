@@ -3829,6 +3829,8 @@ class DispatchTest(unittest.TestCase):
         advisory_checks: tuple[str, ...] = (),
         job: dict | None = None,
         runners: dict | None = None,
+        rollup_checks: list[dict] | None = None,
+        required_stdout: str | None = None,
     ) -> tuple[bool, list[list[str]], list[str], list[dict]]:
         from unittest import mock
 
@@ -3854,20 +3856,24 @@ class DispatchTest(unittest.TestCase):
             )
             calls = []
 
+            listed_checks = checks if rollup_checks is None else rollup_checks
+
             def fake_gh_json(args):
                 value = stage_gh_json(args)
                 if args[:2] == ["pr", "list"]:
-                    return [{**row, "statusCheckRollup": checks} for row in value]
+                    return [{**row, "statusCheckRollup": listed_checks} for row in value]
                 if args[:2] == ["pr", "view"]:
-                    return {**value, "statusCheckRollup": checks}
+                    return {**value, "statusCheckRollup": listed_checks}
                 return value
 
             def fake_run(cmd, *args, **kwargs):
                 if cmd[0] == "gh":
                     calls.append(cmd)
                 if cmd[:3] == ["gh", "pr", "checks"]:
-                    rows = required if "--required" in cmd else checks
-                    return subprocess.CompletedProcess(cmd, 0, json.dumps(rows), "")
+                    rows = json.dumps(checks)
+                    if "--required" in cmd:
+                        rows = json.dumps(required) if required_stdout is None else required_stdout
+                    return subprocess.CompletedProcess(cmd, 0, rows, "")
                 if cmd[:2] == ["gh", "api"] and "/actions/jobs/" in cmd[2]:
                     return subprocess.CompletedProcess(cmd, 0, json.dumps(job), "")
                 if cmd[:2] == ["gh", "api"] and "/actions/runners" in cmd[2]:
@@ -4002,6 +4008,84 @@ class DispatchTest(unittest.TestCase):
                         ["PR #70: CI failed (unit); `factory-approved` label removed"],
                     )
                     self.assertTrue(any("--remove-label" in call for call in calls))
+
+    def test_merge_uses_complete_deduplicated_check_output(self) -> None:
+        checks = [{"name": "unit", "bucket": "pass"}]
+        rollup = [
+            {"name": "unit", "bucket": "fail"},
+            {"name": "unit", "bucket": "pass"},
+        ]
+
+        merged, _, escalations, _ = self.merge_check_scenario(
+            checks, [], rollup_checks=rollup,
+        )
+
+        self.assertTrue(merged)
+        self.assertEqual(escalations, [])
+
+    def test_merge_preserves_pr_checks_bucket_semantics(self) -> None:
+        scenarios = (
+            ([{"name": "neutral", "bucket": "skipping"}],
+             [{"name": "neutral", "conclusion": "NEUTRAL"}]),
+            ([{"name": "stale", "bucket": "pending"}],
+             [{"name": "stale", "conclusion": "STALE"}]),
+        )
+        for checks, rollup in scenarios:
+            with self.subTest(check=checks[0]["name"]):
+                merged, calls, escalations, _ = self.merge_check_scenario(
+                    checks, [], rollup_checks=rollup,
+                )
+
+                self.assertFalse(merged)
+                self.assertEqual(escalations, [])
+                self.assertFalse(any("--remove-label" in call for call in calls))
+
+    def test_merge_fails_closed_when_required_checks_are_unreadable(self) -> None:
+        checks = [{"name": "unit", "bucket": "pass"}]
+
+        merged, calls, escalations, _ = self.merge_check_scenario(
+            checks, [], required_stdout="not-json",
+        )
+
+        self.assertFalse(merged)
+        self.assertEqual(escalations, [])
+        self.assertFalse(any("--remove-label" in call for call in calls))
+
+    def test_merge_does_not_skip_case_insensitive_runner_match(self) -> None:
+        queued = {
+            "name": "E2E tests (mi300x)",
+            "bucket": "pending",
+            "link": "https://github.com/acme/widgets/actions/runs/123/job/456",
+        }
+        job = {
+            "status": "queued",
+            "created_at": "2000-01-01T00:00:00Z",
+            "runner_name": None,
+            "labels": ["self-hosted", "linux", "x64", "mi300x"],
+            "steps": [],
+        }
+        runners = {
+            "total_count": 1,
+            "runners": [{
+                "labels": [
+                    {"name": "self-hosted"},
+                    {"name": "Linux"},
+                    {"name": "X64"},
+                    {"name": "mi300x"},
+                ],
+            }],
+        }
+
+        merged, calls, escalations, _ = self.merge_check_scenario(
+            [{"name": "unit", "bucket": "pass"}, queued],
+            [],
+            job=job,
+            runners=runners,
+        )
+
+        self.assertFalse(merged)
+        self.assertEqual(escalations, [])
+        self.assertFalse(any(call[:3] == ["gh", "run", "rerun"] for call in calls))
 
     def test_merge_ignores_wrong_or_missing_base_without_mutation(self) -> None:
         from unittest import mock
