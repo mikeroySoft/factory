@@ -2336,7 +2336,7 @@ def push_agent(wt: Path, n: int, lease: str, check: bool = True) -> str | None:
         if not check:
             return None
         remote = _remote_agent_head(wt, n, check=False)
-        refused = subprocess.CompletedProcess(command, 1, "", "stale worktree history")
+        refused = subprocess.CompletedProcess(command, os.EX_SOFTWARE, "", "stale worktree history")
         raise LeaseRefused(
             refused,
             f"agent/{n} push refused: leased {lease}, remote now {remote or '(none)'}; "
