@@ -99,10 +99,12 @@ class WeeklyAggregationTest(unittest.TestCase):
 
     def test_merge_rate_closed_count_and_median_open_to_merge(self) -> None:
         rows = [
+            {"at": at(timedelta(days=-7)), "event": "worker", "pr": 12},
             {"at": at(timedelta(days=-6)), "event": "pr-opened", "ticket": 1, "pr": 11},
             {"at": at(timedelta(days=-5)), "event": "pr-opened", "ticket": 2, "pr": 12},
             {"at": at(timedelta(days=-4)), "event": "pr-opened", "ticket": 3, "pr": 13},
             {"at": at(timedelta(days=-3)), "event": "pr-opened", "ticket": 4, "pr": 14},
+            {"at": at(timedelta(days=-4)), "event": "pr-opened", "ticket": 2, "pr": 12},
             {"at": at(timedelta(days=-5)), "event": "merged", "ticket": 1, "pr": 11},
             {"at": at(timedelta(days=-3)), "event": "merged", "ticket": 2, "pr": 12},
             {"at": at(timedelta(days=-1)), "event": "merged", "ticket": 3, "pr": 13},
@@ -149,6 +151,19 @@ class WeeklyAggregationTest(unittest.TestCase):
         self.assertEqual(priced["cost_unpriced"], [])
         self.assertIsNone(unpriced["cost_per_merged_pr"])
         self.assertEqual(unpriced["cost_unpriced"], ["m2"])
+
+    def test_cost_per_merged_pr_rounds_to_six_places(self) -> None:
+        rows = [
+            {"at": at(timedelta(days=-3)), "event": "merged", "ticket": 1, "pr": 11},
+            {"at": at(timedelta(days=-2)), "event": "merged", "ticket": 2, "pr": 12},
+            {"at": at(timedelta(days=-1)), "event": "merged", "ticket": 3, "pr": 13},
+            {"at": at(timedelta(days=-4)), "event": "llm-usage", "ticket": 1,
+             "stage": "worker", "model": "m1", "cost": 1.0},
+        ]
+
+        result = stats.weekly_metrics(rows, NOW - timedelta(days=7), NOW, None)
+
+        self.assertEqual(result["cost_per_merged_pr"], 0.333333)
 
     def test_ticketless_merges_do_not_change_pr_outcomes_or_cost(self) -> None:
         rows = [
@@ -234,6 +249,7 @@ class WeeklyCommandTest(unittest.TestCase):
         ])
         self.assertEqual(runner.call_count, 2)
         self.assertTrue(all(call.kwargs["timeout"] == 10 for call in runner.call_args_list))
+        self.assertTrue(all(call.kwargs["capture_output"] is True for call in runner.call_args_list))
         self.assertEqual(runner.call_args_list[0].args[0][:3], ["gh", "pr", "list"])
         self.assertEqual(runner.call_args_list[1].args[0][:3], ["gh", "issue", "list"])
 
@@ -259,7 +275,10 @@ class WeeklyCommandTest(unittest.TestCase):
         self.assertIs(result["tokens"]["worker"]["shared-model"]["local"], False)
 
     def test_reconciliation_records_external_close_once(self) -> None:
-        rows = [{"at": at(timedelta(days=-6)), "event": "pr-opened", "ticket": 7, "pr": 17}]
+        rows = [
+            {"at": at(timedelta(days=-6)), "event": "pr-opened", "ticket": 7, "pr": 17},
+            {"at": at(timedelta(days=-5)), "event": "worker", "ticket": 99, "pr": 17},
+        ]
         response = subprocess.CompletedProcess([], 0, json.dumps([
             {"number": 17, "closedAt": at(timedelta(days=-1)), "mergedAt": None},
         ]), "")

@@ -215,7 +215,7 @@ def weekly_metrics(
     window = {"start": _stamp(start), "end": _stamp(end)}
     windowed = window_rows(rows, start, end)
 
-    def settlement_id(row: dict) -> tuple[str, int] | None:
+    def settlement_id(row: dict):
         if type(row.get("ticket")) is not int:
             return None
         if type(row.get("pr")) is int:
@@ -226,9 +226,7 @@ def weekly_metrics(
         key: row for row in windowed
         if row.get("event") == "merged" and (key := settlement_id(row)) is not None
     }
-    merged_tickets = {
-        row["ticket"] for row in merged_rows.values() if type(row.get("ticket")) is int
-    }
+    merged_tickets = {row["ticket"] for row in merged_rows.values()}
     closed_rows = {
         key: row for row in windowed
         if row.get("event") == "pr-closed"
@@ -244,8 +242,7 @@ def weekly_metrics(
         opened = _timestamp(row.get("at"))
         if row.get("event") != "pr-opened" or type(row.get("pr")) is not int or opened is None:
             continue
-        if row["pr"] not in opened_at or opened < opened_at[row["pr"]]:
-            opened_at[row["pr"]] = opened
+        opened_at[row["pr"]] = min(opened_at.get(row["pr"], opened), opened)
     durations = []
     for row in merged_rows.values():
         merged_at = _timestamp(row.get("at"))
