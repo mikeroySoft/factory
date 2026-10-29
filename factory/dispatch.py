@@ -2888,8 +2888,12 @@ def _read_pr_checks(pr: int, *, required: bool) -> list[dict] | None:
     if required:
         args.append("--required")
     proc = run([*args, "--json", fields], check=False)
-    if proc.returncode == 0 and isinstance(proc.stdout, str) and not proc.stdout.strip():
-        return []
+    if isinstance(proc.stdout, str) and not proc.stdout.strip():
+        if proc.returncode == 0 or (
+            required and "no required checks reported" in (proc.stderr or "")
+        ):
+            return []
+        return None
     try:
         rows = json.loads(proc.stdout)
     except (TypeError, ValueError):
