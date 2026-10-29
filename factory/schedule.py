@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 
-from factory import binding, config
+from factory import binding, config, throttle
 
 PRIORITY_TIERS = ("NOW", "NEXT", "THEN", "LATER")
 # Consecutive explicit-priority admissions before the oldest unknown-priority ticket is admitted.
@@ -58,6 +58,8 @@ def explicit_streak(events: list[dict]) -> int:
     for row in reversed(events):
         if row.get("event") != "claimed":
             continue
+        if row.get("feature_drive"):
+            continue
         if row.get("priority") not in PRIORITY_TIERS:
             break
         streak += 1
@@ -78,7 +80,8 @@ def active_experiments(events: list[dict], active: set[int]) -> int:
 
 def plan(
     rows: list[dict], capacity: int, *, repo: str, streak: int, experiments: int,
-    parents: dict[int, int] | None = None,
+    parents: dict[int, int] | None = None, mode: throttle.Mode | None = None,
+    maintenance_label: str | None = None,
 ) -> dict:
     """Admission order for one pass under the accepted policy; mutates nothing.
 
@@ -96,6 +99,18 @@ def plan(
         if issue.get("held"):
             held.append({"ticket": n, "decision": "held", "reason": issue["held"]})
             continue
+        if mode is not None and mode.name == "maintenance":
+            labels = {label.get("name") for label in issue.get("labels") or []}
+            allowed = {"bug", config.LABEL_CHORE}
+            if maintenance_label:
+                allowed.add(maintenance_label)
+            if labels.isdisjoint(allowed):
+                held.append({
+                    "ticket": n,
+                    "decision": "held",
+                    "reason": "maintenance mode: not a bug/chore ticket",
+                })
+                continue
         try:
             tier, why = priority(n, issue.get("body"), repo)
         except binding.BindingError as exc:
@@ -110,6 +125,21 @@ def plan(
             PRIORITY_TIERS.index(c["priority"]) if c["priority"] else len(PRIORITY_TIERS), c["age"]))
 
     selected = []
+    if mode is not None and mode.name == "feature-drive" and capacity > 0:
+        feature = [
+            candidate for candidate in pool
+            if throttle.covers(mode, candidate["ticket"], parents)
+            and not (candidate["experiment"] and experiments >= MAX_EXPERIMENTS)
+        ]
+        if feature:
+            exact = next((candidate for candidate in feature if candidate["ticket"] == mode.feature), None)
+            pick = exact or ranked(feature)[0]
+            experiments += pick["experiment"]
+            pool.remove(pick)
+            selected.append(pick["issue"])
+            explained.append(_explain(
+                pick, "selected", f"feature-drive reserved slot for #{mode.feature}",
+            ))
     while pool and len(selected) < capacity:
         eligible = [c for c in pool if not (c["experiment"] and experiments >= MAX_EXPERIMENTS)]
         if not eligible:

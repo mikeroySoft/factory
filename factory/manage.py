@@ -451,10 +451,11 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
                 ["issue", "view", str(n), "--repo", dispatch.REPO, "--json", "comments"]
             )
             comments = fresh.get("comments")
+        limits = dispatch.ticket_limits(n, events)
         ok, report, logfile, gate_head = dispatch.worker_round(
             n, wt, {data["worker"]} | {label["name"] for label in issue.get("labels", [])},
             issue["title"], extra, max(attempts, default=0) + 1,
-            time.monotonic() + cfg.budget_min * 60, body=issue.get("body") or "",
+            time.monotonic() + limits["budget_min"] * 60, body=issue.get("body") or "",
             selected_worker=data["worker"],
             comments=comments,
         )
@@ -927,7 +928,7 @@ def frontier_pass(dry_run: bool = False) -> None:
                 decided = [e for e in events if e.get("event") == "manage" and e.get("pr") == number]
                 if any(e.get("head") == head for e in decided):
                     continue  # one decision per head; a non-APPROVE decision already acted
-                if len(decided) >= cfg.manager_rounds:
+                if len(decided) >= dispatch.ticket_limits(n, events)["manager_rounds"]:
                     if dry_run:
                         dispatch.log(f"PR #{number}: would escalate (manager rounds exhausted)")
                     else:
@@ -1028,14 +1029,15 @@ def escalation_pass(dry_run: bool = False) -> None:
                     continue
                 execution.resource("acquired", lock_path, scope="repository")
             try:
-                events = [e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("ticket") == n]
+                all_events = lifecycle.read_events(dispatch.EVENTS)
+                events = [e for e in all_events if e.get("ticket") == n]
                 escalation = next((e for e in reversed(events) if e.get("event") == "escalate"
                                    and e.get("reason") != "manager_failed"), None)
                 if not escalation or escalation.get("upstream") or escalation.get("pr") or not escalation.get("packet"):
                     continue
                 round_number = escalation.get("round", 0)
                 # The PR frontier numbers its own `manage` rows (with `pr`) per PR; they never spend an escalation round.
-                if not 1 <= round_number <= cfg.manager_rounds or any(
+                if not 1 <= round_number <= dispatch.ticket_limits(n, all_events)["manager_rounds"] or any(
                     e.get("event") == "manage" and e.get("round") == round_number and not e.get("pr") for e in events
                 ):
                     continue

@@ -93,6 +93,8 @@ KNOWN_KEYS = {
     "worker_wrap": ("command",),
     "review": ("command", "second_command", "json_mode", "policy"),
     "manager": ("model", "command", "rounds", "review", "stale_days", "max_active_cap", "budget_min_cap"),
+    "throttle": ("maintenance_label", "pace_low", "pace_normal", "pace_high",
+                 "aggression_low", "aggression_normal", "aggression_high"),
     "learn": ("evaluate", "max_tickets", "max_tokens", "budget_min"),
     "release": ("auto", "version_file", "min_tickets", "bar_min_tickets",
                 "bar_floor_human_rate", "bar_floor_first_pass"),
@@ -208,6 +210,9 @@ class Config:
     # Ceilings for the fleet manager (`district manage`) raising `max_active`/`budget_min`; None = no cap.
     manager_max_active_cap: int | None = None
     manager_budget_min_cap: int | None = None
+    throttle_maintenance_label: str | None = None
+    throttle_pace: dict[str, int] = field(default_factory=dict)
+    throttle_aggression: dict[str, dict[str, int]] = field(default_factory=dict)
     learn_evaluate: bool = False
     learn_max_tickets: int = 3
     learn_max_tokens: int = 100_000
@@ -650,6 +655,9 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     release = raw.get("release", {})
     learn = raw.get("learn", {})
     evaluation = raw.get("eval", {})
+    throttle = raw.get("throttle", {})
+    if not isinstance(throttle, dict):
+        raise ConfigError("[throttle] must be a table")
     if not isinstance(learn, dict):
         raise ConfigError("[learn] must be a table")
     if not isinstance(release, dict):
@@ -762,6 +770,42 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
         if cap is not None and (isinstance(cap, bool) or not isinstance(cap, int) or cap < 1):
             raise ConfigError(f"manager.{key} must be a positive integer")
         setattr(cfg, f"manager_{key}", cap)
+    maintenance_label = throttle.get("maintenance_label")
+    if maintenance_label is not None and (
+        not isinstance(maintenance_label, str) or not maintenance_label.strip()
+    ):
+        raise ConfigError("throttle.maintenance_label must be non-empty text")
+    cfg.throttle_maintenance_label = maintenance_label
+    cfg.throttle_pace = {"low": 1, "normal": cfg.max_active, "high": 3}
+    for setting in ("low", "normal", "high"):
+        key = f"pace_{setting}"
+        value = throttle.get(key, cfg.throttle_pace[setting])
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ConfigError(f"throttle.{key} must be a non-negative integer")
+        cfg.throttle_pace[setting] = value
+    cfg.throttle_aggression = {
+        "low": {"review_rounds": 3, "manager_rounds": 3, "max_attempts": 3, "budget_min": 90},
+        "normal": {
+            "review_rounds": cfg.review_rounds,
+            "manager_rounds": cfg.manager_rounds,
+            "max_attempts": cfg.max_attempts,
+            "budget_min": cfg.budget_min,
+        },
+        "high": {"review_rounds": 5, "manager_rounds": 5, "max_attempts": 4, "budget_min": 150},
+    }
+    aggression_keys = {"review_rounds", "manager_rounds", "max_attempts", "budget_min"}
+    for setting in ("low", "normal", "high"):
+        key = f"aggression_{setting}"
+        values = throttle.get(key, cfg.throttle_aggression[setting])
+        if not isinstance(values, dict) or set(values) != aggression_keys:
+            raise ConfigError(f"throttle.{key} must contain exactly {', '.join(sorted(aggression_keys))}")
+        for field_name, value in values.items():
+            minimum = 0 if field_name.endswith("rounds") else 1
+            if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+                raise ConfigError(
+                    f"throttle.{key}.{field_name} must be an integer >= {minimum}"
+                )
+        cfg.throttle_aggression[setting] = dict(values)
     cfg.learn_evaluate = learn.get("evaluate", cfg.learn_evaluate)
     if type(cfg.learn_evaluate) is not bool:
         raise ConfigError("learn.evaluate must be true or false")

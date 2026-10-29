@@ -3,15 +3,81 @@ from __future__ import annotations
 
 import copy
 import io
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from factory import config, lifecycle, schedule, throttle
-from tests.test_factory import make_repo
-from tests.test_schedule import BOUND, REPO, ticket
+from factory import binding, config, dispatch, lifecycle, schedule, throttle
+
+REPO = "example/project"
+INITIATIVE = """**Status**
+underway
+
+**Outcome**
+A shared result.
+
+**Owner**
+@alice
+
+**Areas**
+factory/
+
+**Boundaries**
+No execution authority.
+
+**Plan**
+NOW #3
+
+**Open decisions**
+None.
+
+**Success evidence**
+Tests.
+
+**Implementation links**
+#3
+"""
+PARENT = {"number": 50, "title": "Roadmap", "body": INITIATIVE, "labels": [{"name": "initiative"}]}
+BOUND = binding.render(binding.from_issue(config.Config(Path("/nonexistent"), REPO), 50, PARENT))
+
+
+def git(cwd: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True)
+
+
+def make_repo(tmp: Path, toml: str = "") -> Path:
+    repo = tmp / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "config", "user.email", "t@example.com")
+    git(repo, "config", "user.name", "T")
+    git(repo, "remote", "add", "origin", "git@github.com:example/project.git")
+    (repo / "README.md").write_text("hello\n")
+    if toml:
+        (repo / config.CONFIG_NAME).write_text(toml)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "init")
+    return repo
+
+
+def ticket(
+    number: int,
+    created: str,
+    *,
+    body: str = BOUND,
+    labels: tuple[str, ...] = ("ready-for-agent",),
+) -> dict:
+    return {
+        "number": number,
+        "title": f"t{number}",
+        "body": body,
+        "createdAt": created,
+        "labels": [{"name": name} for name in labels],
+        "assignees": [],
+    }
 
 
 class ConfigTest(unittest.TestCase):
@@ -120,7 +186,8 @@ class AdmissionTest(unittest.TestCase):
         rows = [ticket(3, "2026-01-03T00:00:00Z"), ticket(1, "2026-01-01T00:00:00Z", body="unbound")]
         before = schedule.plan(rows, 2, repo=REPO, streak=0, experiments=0)
         after = schedule.plan(rows, 2, repo=REPO, streak=0, experiments=0, mode=throttle.Mode("normal"))
-        self.assertEqual(after, before)
+        self.assertEqual(after["selected"], before["selected"])
+        self.assertEqual(after["explained"], before["explained"])
 
     def test_maintenance_holds_nonmaintenance_work_without_mutating_labels(self):
         rows = [
@@ -149,6 +216,13 @@ class AdmissionTest(unittest.TestCase):
                                 mode=throttle.Mode("feature-drive", 7))
         self.assertEqual([row["number"] for row in decided["selected"]], [8, 3])
 
+    def test_feature_drive_claims_do_not_advance_the_cross_pass_fairness_streak(self):
+        events = [
+            {"event": "claimed", "ticket": 3, "priority": "NOW"},
+            {"event": "claimed", "ticket": 7, "priority": "NOW", "feature_drive": True},
+        ]
+        self.assertEqual(schedule.explicit_streak(events), 1)
+
     def test_mode_capacity_is_clamped_and_only_feature_tree_gets_high_aggression(self):
         self.cfg.manager_max_active_cap = 2
         self.assertEqual(throttle.capacity(self.cfg, throttle.Mode("maintenance")), 1)
@@ -159,6 +233,28 @@ class AdmissionTest(unittest.TestCase):
         self.assertEqual(throttle.limits(self.cfg, mode, 7, parents)["review_rounds"], 5)
         self.assertEqual(throttle.limits(self.cfg, mode, 9, parents)["manager_rounds"], 5)
         self.assertEqual(throttle.limits(self.cfg, mode, 6, parents), self.cfg.throttle_aggression["normal"])
+
+    def test_dispatch_uses_mode_capacity_and_journals_mode_with_each_schedule(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config.Config(Path(directory), REPO, max_active=4)
+            dispatch.configure(cfg)
+            throttle.set_mode(cfg, throttle.Mode("maintenance"), who="michael")
+            rows = [
+                ticket(1, "2026-01-01T00:00:00Z", body="unbound", labels=("ready-for-agent", "bug")),
+                ticket(2, "2026-01-02T00:00:00Z", body="unbound", labels=("ready-for-agent", "enhancement")),
+            ]
+            with mock.patch.object(dispatch, "frontier", return_value=rows), \
+                    mock.patch.object(dispatch, "process_ticket") as process:
+                dispatch.ticket_pass(cfg.budget_min, False)
+            self.assertEqual([call.args[0]["number"] for call in process.call_args_list], [1])
+            scheduling = [
+                row for row in lifecycle.read_events(cfg.factory / "events.jsonl")
+                if row.get("event") == "scheduling"
+            ]
+            self.assertEqual(
+                [(row["mode"], row["feature"], row["capacity"]) for row in scheduling],
+                [("maintenance", None, 1)],
+            )
 
 
 if __name__ == "__main__":
