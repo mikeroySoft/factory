@@ -1174,3 +1174,53 @@ class TriageExemptionLifecycleTest(unittest.TestCase):
         self.assertIn("bug ticket needs a `Repro test:` handoff line", report)
         self.assertNotIn("- bug-repro: SKIP", report)
         self.assertFalse(any(row.get("event") == "approved" for row in events))
+
+
+class LockfileDriftLifecycleTest(unittest.TestCase):
+    setUp = LocalCLI.setUp
+    git = LocalCLI.git
+    write_config = LocalCLI.write_config
+    commit_config = LocalCLI.commit_config
+    cli = LocalCLI.cli
+
+    def run_lockfile_worker(self, plan: str) -> str:
+        (self.repo / "uv.lock").write_text("base\n")
+        self.git("add", "uv.lock")
+        self.git("commit", "-qm", "lock baseline")
+        self.git("push", "-q", "origin", "main")
+        self.reviewer.write_text(
+            'print(\'```json\\n{"verdict":"APPROVE","findings":[]}\\n```\\nVERDICT: APPROVE\')\n'
+        )
+        self.worker.write_text(
+            "import subprocess\n"
+            "from pathlib import Path\n"
+            "p = Path('.factory/plans/current/1.md')\n"
+            "p.parent.mkdir(parents=True, exist_ok=True)\n"
+            f"p.write_text({plan!r})\n"
+            "Path('uv.lock').write_text('worker drift\\n')\n"
+            "subprocess.run(['git', 'add', 'uv.lock'], check=True)\n"
+            "subprocess.run(['git', 'commit', '-qm', 'worker lock edit'], check=True)\n"
+        )
+
+        self.cli("dispatch", "--ticket", "7")
+
+        return subprocess.run(
+            ["git", "--git-dir", str(self.base / "origin.git"), "show", "agent/7:uv.lock"],
+            env=self.env, check=True, capture_output=True, text=True,
+        ).stdout
+
+    def test_unplanned_uv_lock_drift_is_removed_before_push(self):
+        lock = self.run_lockfile_worker("## Files\n- change.txt\n")
+
+        self.assertEqual(lock, "base\n")
+        changed = subprocess.run(
+            ["git", "--git-dir", str(self.base / "origin.git"), "diff", "--name-only",
+             "main...agent/7"],
+            env=self.env, check=True, capture_output=True, text=True,
+        ).stdout.splitlines()
+        self.assertNotIn("uv.lock", changed)
+
+    def test_planned_uv_lock_edit_is_preserved(self):
+        lock = self.run_lockfile_worker("## Files\n- uv.lock: update the declared dependency\n")
+
+        self.assertEqual(lock, "worker drift\n")
