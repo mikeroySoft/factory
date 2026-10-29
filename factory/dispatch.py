@@ -2892,30 +2892,35 @@ def _read_pr_checks(pr: int, *, required: bool) -> list[dict] | None:
     if required:
         args.append("--required")
     proc = run([*args, "--json", fields], check=False)
+    if proc.returncode == 0 and isinstance(proc.stdout, str) and not proc.stdout.strip():
+        return []
     try:
         rows = json.loads(proc.stdout)
-    except ValueError:
+    except (TypeError, ValueError):
         return None
     if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
         return None
     return rows
 
 
-def pr_checks(pr: int) -> list[dict]:
-    """All checks reported for a PR."""
-    return _read_pr_checks(pr, required=False) or []
+def pr_checks(pr: int, *, required: bool = False) -> list[dict] | None:
+    """Checks reported for a PR; None means a required-check query failed."""
+    rows = _read_pr_checks(pr, required=required)
+    if required:
+        return None if rows is None else [{**check, "required": True} for check in rows]
+    return rows or []
 
 
 
 
 def _merge_pr_checks(pr: int) -> list[dict]:
-    required = _read_pr_checks(pr, required=True)
+    required = pr_checks(pr, required=True)
     if required is None:
         return []
     if required:
-        return [{**check, "required": True} for check in required]
+        return required
     out = []
-    for check in pr_checks(pr):
+    for check in pr_checks(pr) or []:
         advisory = any(
             fnmatch.fnmatchcase(check.get("name", ""), pattern)
             for pattern in cfg.merge_advisory_checks
