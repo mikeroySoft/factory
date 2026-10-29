@@ -31,7 +31,7 @@ import tomllib
 from contextlib import contextmanager, nullcontext, suppress
 from pathlib import Path
 
-from factory import __version__, brief, config, lifecycle, risk
+from factory import __version__, brief, config, gate, lifecycle, risk
 from factory.config import (
     LABEL_ADD_ONLY_OVERRIDE,
     LABEL_AGENT,
@@ -133,23 +133,44 @@ STANDING_INSTRUCTIONS = """
   who inherits this ticket read it.
 """
 
+def proof_instructions(n: int) -> str:
+    commands = "\n".join(f"- `{shlex.join(command)}`" for command in cfg.proof_commands)
+    return f"""## ROCm tank proof
+
+This repository requires real GPU proof. Before the final gate, write
+`.factory/proof-{n}.md` with both `## Proof on ROCm tank` and `## Not checked`.
+For every command use this exact record, with no more than 40 combined output lines:
+
+    ### Command: `exact shell-quoted command line`
+    - Started: `UTC ISO-8601 time`
+    - Exit code: `integer`
+
+    ```text
+    real stdout and stderr
+    ```
+
+Run every configured command below and at least one command that exercises the changed
+GPU code path. Do not use `env`, `printenv`, or include environment dumps.
+Configured commands:
+{commands or "- none; choose the affected GPU command"}
+"""
+
+
+MISSING_PROOF = "missing_proof"
+
 
 def log(msg: str) -> None:
     print(f"[dispatch] {msg}", flush=True)
 
 
 STDERR_TAIL = 2000
-_TOKEN = re.compile(
-    r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
-    r"|(?i:bearer|token)\s+[A-Za-z0-9._~+/=-]{20,}"
-)
 
 
 def stderr_tail(err: str | bytes | None) -> str:
     """Return bounded failed-command stderr after redacting complete token-shaped strings."""
     if isinstance(err, bytes):
         err = err.decode(errors="replace")
-    return _TOKEN.sub("[REDACTED]", err or "")[-STDERR_TAIL:]
+    return config.redact(err or "")[-STDERR_TAIL:]
 
 
 
@@ -825,6 +846,8 @@ def build_prompt(
             n=n, commit_flag=commit_flag, main=cfg.main, python=sys.executable
         )
     )
+    if cfg.proof_required:
+        parts += ["", proof_instructions(n)]
     if baseline is not None:
         parts += ["", "## Admitted execution contract", "",
                   ("The pinned ticket scope and exit gate define this execution. The initiative baseline "
@@ -1579,6 +1602,8 @@ def run_gate(
         "--report",
         report_rel,
     ]
+    if str(n).isdigit():
+        cmd += ["--ticket", str(n)]
     if skip:
         cmd += ["--skip", skip]
     # The gate process records its own stage and check boundaries.
@@ -1946,6 +1971,7 @@ def run_reviewer(
     subject: str = "review",
     timeout: float | None = None,
     reviewer: list[str] | None = None,
+    missing_proof: bool = False,
 ) -> dict:
     """Run and validate the configured reviewer outside the candidate checkout."""
     base = base_ref or f"origin/{cfg.main}"
@@ -2002,6 +2028,8 @@ def run_reviewer(
                 normalized, model_verdict, parsed, counts, parser_reason = _parse_review_output(
                     raw_findings, nit_cap
                 )
+                if parsed and missing_proof:
+                    model_verdict, parser_reason = "REVISE", MISSING_PROOF
                 if parsed:
                     findings = normalized
                 returncode = proc.returncode
@@ -2096,10 +2124,22 @@ def review(
     """Run one diff review against the exact head that passed the gate."""
     started = time.monotonic()
     model = config.command_model(reviewer or cfg.reviewer)
+    proof_path = wt / ".factory" / f"proof-{n}.md"
+    proof_text = config.redact(proof_path.read_text()) if proof_path.is_file() else ""
+    missing_proof = cfg.proof_required and not gate.proof_sections_present(proof_text)
+    proof_context = ""
+    if cfg.proof_required:
+        proof_context = (
+            "## ROCm tank proof rule\n\n"
+            "If the evidence below lacks either `## Proof on ROCm tank` or `## Not checked`, "
+            "request changes; Factory records the typed reason `missing_proof`.\n\n"
+            + (proof_text or "(proof artifact missing)")
+        )
     with lifecycle.scope(EVENTS, "review", ticket=n) as execution:
         result = run_reviewer(
-            wt, review_prompt(n, gate_report), expected_head,
+            wt, review_prompt(n, gate_report, context=proof_context), expected_head,
             subject=f"#{n}" if role == "primary" else f"#{n} {role}", reviewer=reviewer,
+            missing_proof=missing_proof,
         )
         model = _reviewer_model(result["usage"], reviewer)
         if result["usage"] is not None:
@@ -2386,6 +2426,10 @@ def push_and_pr(
         if ticket is not None:
             record("pr-opened", ticket=ticket, pr=existing[0]["number"])
         return True
+    if ticket is not None and cfg.proof_required:
+        proof_path = wt / ".factory" / f"proof-{ticket}.md"
+        if proof_path.is_file():
+            body = body.rstrip() + "\n\n" + config.redact(proof_path.read_text()).strip() + "\n"
     body_file = FACTORY / f"pr-body-{branch.removeprefix('agent/')}.md"
     body_file.write_text(body)
     created = run(

@@ -10,13 +10,17 @@ import argparse
 import ast
 import fcntl
 import fnmatch
+import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
 import tempfile
 import tomllib
+from datetime import datetime
+from itertools import pairwise
 from pathlib import Path
 
 from factory import config, lifecycle
@@ -609,6 +613,100 @@ def check_bug_reproduction(
             _release_exclusive(execution, gpu_lock)
 
 
+PROOF_COMMAND = re.compile(
+    r"(?ms)^### Command: `([^`\n]+)`\n"
+    r"- Started: `([^`\n]+)`\n"
+    r"- Exit code: `(-?\d+)`\n\n"
+    r"```(?:text)?\n(.*?)\n```[ \t]*(?=\n+(?:### Command: )|\Z)"
+)
+
+
+def _proof_section(text: str, heading: str) -> str | None:
+    match = re.search(
+        rf"(?ms)^## {re.escape(heading)}[ \t]*\n(.*?)(?=^## |\Z)",
+        text,
+    )
+    return match.group(1).strip() if match and match.group(1).strip() else None
+
+
+def proof_sections_present(text: str) -> bool:
+    return (
+        _proof_section(text, "Proof on ROCm tank") is not None
+        and _proof_section(text, "Not checked") is not None
+    )
+
+
+def check_proof(
+    path: Path, cwd: Path | None = None, required_commands: list[list[str]] | None = None,
+) -> tuple[bool, str]:
+    try:
+        text = path.read_text()
+    except OSError:
+        return False, f"proof artifact missing: {path}"
+    section = _proof_section(text, "Proof on ROCm tank")
+    if section is None:
+        return False, "missing or empty ## Proof on ROCm tank"
+    if _proof_section(text, "Not checked") is None:
+        return False, "missing or empty ## Not checked"
+
+    matches = list(PROOF_COMMAND.finditer(section))
+    if (
+        not matches
+        or section[:matches[0].start()].strip()
+        or section[matches[-1].end():].strip()
+        or any(section[left.end():right.start()].strip() for left, right in pairwise(matches))
+    ):
+        return False, "## Proof on ROCm tank has invalid or missing command records"
+    details = []
+    commands = []
+    passed = True
+    for match in matches:
+        command_line, started, claimed_text, claimed_output = match.groups()
+        safe_command = config.redact(command_line)
+        if len(claimed_output.splitlines()) > 40:
+            return False, f"proof output exceeds 40 lines: {safe_command}"
+        try:
+            started_at = datetime.fromisoformat(started)
+        except ValueError:
+            return False, f"invalid proof start time: {started}"
+        if started_at.tzinfo is None:
+            return False, f"proof start time must include a UTC offset: {started}"
+        try:
+            command = shlex.split(command_line)
+        except ValueError as exc:
+            return False, f"invalid proof command {safe_command!r}: {exc}"
+        commands.append(command)
+        if not command or any(Path(arg).name in {"env", "printenv"} for arg in command):
+            return False, f"environment dump commands are not allowed: {safe_command}"
+        result = timed(command, cwd=cwd)
+        output_lines = result.stdout.splitlines()
+        output = "\n".join(output_lines[:40])
+        if len(output_lines) > 40:
+            output += "\n[output truncated after 40 lines]"
+        claimed = int(claimed_text)
+        if result.returncode != claimed:
+            passed = False
+        details.append(
+            f"$ {safe_command}\nstarted: {started}\n"
+            f"claimed exit {claimed}, re-run exit {result.returncode}\n"
+            f"{config.redact(output)}"
+        )
+    missing = [
+        shlex.join(command) for command in required_commands or []
+        if command not in commands
+    ]
+    if missing:
+        return False, "configured proof commands missing: " + ", ".join(missing)
+    return passed, "\n\n".join(details)
+
+
+def _proof_ticket(args: argparse.Namespace) -> int | None:
+    if args.ticket is not None:
+        return args.ticket
+    match = re.search(r"gate-report-(\d+)\.md$", args.report)
+    return int(match.group(1)) if match else None
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Quality gate for agent worktrees.")
     parser.add_argument("--base", default=None, help="base ref for leak scan and protected paths")
@@ -619,7 +717,7 @@ def main(argv: list[str]) -> int:
         "--skip",
         default="",
         help="comma-separated check names to skip "
-        "(conflict-markers, leak-scan, <configured names>)",
+        "(conflict-markers, proof, leak-scan, <configured names>)",
     )
     parser.add_argument(
         "--check-timeout",
@@ -637,6 +735,7 @@ def main(argv: list[str]) -> int:
                         help="enforce failing-test-first and existing-test protection")
     parser.add_argument("--repro-test", help="test ID named by the worker handoff")
     parser.add_argument("--no-repro-test", help="ticket-author or authenticated-triage reason a reproduction test is impractical")
+    parser.add_argument("--ticket", type=int, help="ticket whose proof artifact the gate verifies")
     parser.add_argument("--upstream", action="append", default=[], metavar="REF",
                         help="upstream sync: first REF is the tip, later REFs the staged head (repeatable); "
                         "protected-path hits equal to the staged head, or to the tip for paths upstream changed, "
@@ -652,21 +751,66 @@ def main(argv: list[str]) -> int:
         return execute(args, execution)
 
 
-def toolchain() -> dict[str, str]:
-    values = {}
-    for name, command in (
-        ("rocm", ["hipconfig", "--version"]),
-        ("kernel", ["uname", "-r"]),
-        ("amdgpu", ["modinfo", "-F", "version", "amdgpu"]),
-    ):
+def _probe(command: list[str]) -> str:
+    try:
+        result = subprocess.run(
+            command, capture_output=True, encoding="utf-8", errors="replace",
+            timeout=5, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _kfd_targets() -> list[str]:
+    targets = []
+    for properties in Path("/sys/class/kfd/kfd/topology/nodes").glob("*/properties"):
         try:
-            result = subprocess.run(
-                command, capture_output=True, encoding="utf-8", errors="replace",
-                timeout=5, check=False,
-            )
-            values[name] = result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else "unavailable"
-        except (OSError, subprocess.TimeoutExpired):
-            values[name] = "unavailable"
+            match = re.search(r"(?m)^gfx_target_version\s+(\d+)\s*$", properties.read_text())
+        except OSError:
+            continue
+        if match and (version := int(match.group(1))):
+            target = f"gfx{version // 100}"
+            if target not in targets:
+                targets.append(target)
+    return targets
+
+
+def toolchain() -> dict[str, str]:
+    values = {
+        "rocm": "unavailable",
+        "kernel": _probe(["uname", "-r"]) or "unavailable",
+        "amdgpu": "unavailable",
+    }
+    raw = _probe(["rocm", "examine", "--json", "--framework", "skip"])
+    if raw:
+        try:
+            examined = json.loads(raw)
+        except json.JSONDecodeError:
+            examined = {}
+        summary = examined.get("summary", examined) if isinstance(examined, dict) else {}
+        driver = summary.get("driver")
+        _driver_status = (
+            driver.get("status") if isinstance(driver, dict) else summary.get("driver_status")
+        )
+        _active_runtime = summary.get("active_runtime_id") or summary.get("active_runtime")
+        target = summary.get("detected_gfx_target")
+        if isinstance(target, str) and target:
+            values["rocm"] = f"{target} (rocm-cli)"
+    if values["rocm"] == "unavailable":
+        hipconfig = _probe(["hipconfig", "--version"])
+        if hipconfig:
+            values["rocm"] = hipconfig
+        else:
+            targets = _kfd_targets()
+            if targets:
+                values["rocm"] = f"{', '.join(targets)} (kfd sysfs)"
+
+    version = _probe(["modinfo", "-F", "version", "amdgpu"])
+    if version:
+        values["amdgpu"] = version
+    elif Path("/sys/module/amdgpu").is_dir():
+        values["amdgpu"] = "loaded (in-tree)"
     return values
 
 
@@ -725,8 +869,19 @@ def execute(args: argparse.Namespace, execution) -> int:
         )
         for check in listed
     ]
+    proof_ticket = _proof_ticket(args)
+    builtins = [("conflict-markers", check_conflict_markers)]
+    if cfg.proof_required:
+        proof_path = (
+            Path(f".factory/proof-{proof_ticket}.md")
+            if proof_ticket is not None else Path(".factory/proof-missing.md")
+        )
+        builtins.append((
+            "proof",
+            lambda: check_proof(proof_path, Path.cwd(), cfg.proof_commands),
+        ))
     checks = [
-        ("conflict-markers", check_conflict_markers),
+        *builtins,
         *configured,
         ("leak-scan", lambda: check_leaks(args.upstream[0] if args.upstream else args.base)),
     ] if args.tier == "attempt" else configured
@@ -780,7 +935,11 @@ def execute(args: argparse.Namespace, execution) -> int:
     for name, status, output in results:
         # pr-tier checks may be report-only (exit 0, findings on stdout); the reviewer sees
         # them only through this report, so keep their output when they pass too.
-        if status == "FAIL" or (args.tier == "pr" and status == "PASS" and output.strip()):
+        if (
+            status == "FAIL"
+            or name == "proof" and output.strip()
+            or args.tier == "pr" and status == "PASS" and output.strip()
+        ):
             tail = "\n".join(output.splitlines()[-TAIL_LINES:])
             lines += ["", f"## {name} {'failure' if status == 'FAIL' else 'output'}", "```", tail, "```"]
     report = Path(args.report)
