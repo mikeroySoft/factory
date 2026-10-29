@@ -149,7 +149,11 @@ def evidence(last: int) -> tuple[list[int], str]:
     }
     finished = [
         n for n, evs in by_ticket.items()
-        if any(e["event"] == "merged" for e in evs) or n in escalation_needs
+        if (
+            any(e["event"] == "merged" for e in evs)
+            or any(e["event"] == "escalate" and e.get("need") is None for e in evs)
+            or n in escalation_needs
+        )
     ]
     chosen = sorted(finished, key=lambda n: by_ticket[n][-1]["at"])[-last:]
     parts = []

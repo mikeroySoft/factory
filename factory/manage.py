@@ -1053,13 +1053,11 @@ def manage_pass(dry_run: bool = False) -> None:
 
 def escalation_pass(dry_run: bool = False) -> None:
     cfg = dispatch.cfg
-    human = dispatch.gh_json(["issue", "list", "--repo", cfg.repo, "--state", "open",
-                              "--label", LABEL_HUMAN,
-                              "--json", "number,title,body,labels", "--limit", "1000"])
-    routed = dispatch.gh_json(["issue", "list", "--repo", cfg.repo, "--state", "open",
-                               "--label", LABEL_AGENT,
-                               "--json", "number,title,body,labels", "--limit", "1000"])
-    issues = list({issue["number"]: issue for issue in [*human, *routed]}.values())
+    label = LABEL_AGENT if cfg.reserved else LABEL_HUMAN
+    issues = dispatch.gh_json([
+        "issue", "list", "--repo", cfg.repo, "--state", "open", "--label", label,
+        "--json", "number,title,body,labels", "--limit", "1000",
+    ])
     for issue in issues:
         n = issue["number"]
         lock_path = cfg.factory / "locks" / f"{n}.lock"
@@ -1084,10 +1082,10 @@ def escalation_pass(dry_run: bool = False) -> None:
                 escalation = next((e for e in reversed(events) if e.get("event") == "escalate"
                                    and e.get("reason") != "manager_failed"), None)
                 labels = {label["name"] for label in issue.get("labels", [])}
-                if escalation and (
+                if cfg.reserved and escalation and (
                     escalation.get("need") == "SIGNOFF"
-                    or escalation.get("need") is not None and LABEL_AGENT not in labels
-                    or escalation.get("need") is None and LABEL_HUMAN not in labels
+                    or escalation.get("need") is None
+                    or LABEL_AGENT not in labels
                 ):
                     continue
                 if not escalation or escalation.get("upstream") or escalation.get("pr") or not escalation.get("packet"):
