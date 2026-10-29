@@ -43,7 +43,17 @@ class SkillLearnEvidenceTest(unittest.TestCase):
         self.events.write_text("".join(json.dumps(row) + "\n" for row in rows))
 
     def test_load_failure_is_evidence_below_ten_sessions(self) -> None:
+        old = [
+            row
+            for ticket in range(1, 4)
+            for row in (
+                {"event": "attempt", "ticket": ticket, "attempt": 1,
+                 "transcript": f"old-{ticket}", "at": AT},
+                load(f"old-{ticket}", ticket, ok=False),
+            )
+        ]
         self.journal(
+            *old,
             {"event": "claimed", "ticket": 7, "title": "use ub", "at": AT},
             {"event": "attempt", "ticket": 7, "attempt": 1, "transcript": "s", "at": AT},
             load("s", 7, ok=False),
@@ -58,22 +68,24 @@ class SkillLearnEvidenceTest(unittest.TestCase):
         self.assertIn("Unknown skill: ub-mode", text)
 
     def test_flagged_skill_has_at_most_three_bounded_tagged_excerpts(self) -> None:
-        rows = []
+        rows, failures = [], {}
         for ticket in range(1, 11):
             session = f"loaded-{ticket}"
             rows += [
                 {"event": "score", "ticket": ticket, "attempt": 1, "transcript": session,
-                 "call_errors": [False] + [True] * 10,
-                 "failures": [{"call_index": index, "text": "command not found " + "x" * 4000}
-                              for index in range(1, 11)], "at": AT},
+                 "call_errors": [False] + [True] * 10, "at": AT},
                 load(session, ticket),
+            ]
+            failures[session] = [
+                {"call_index": index, "text": "command not found " + "x" * 4000}
+                for index in range(1, 11)
             ]
         for ticket in range(20, 30):
             rows.append({"event": "score", "ticket": ticket, "attempt": 1,
                          "transcript": f"control-{ticket}", "call_errors": [False] * 11,
-                         "failures": [], "at": AT})
+                         "at": AT})
 
-        evidence = learn.skill_failure_evidence(rows)
+        evidence = learn.skill_failure_evidence(rows, failures)
 
         self.assertEqual(len(evidence), 3)
         self.assertTrue(all(item["skill"] == "ub-mode" for item in evidence))
@@ -84,6 +96,50 @@ class SkillLearnEvidenceTest(unittest.TestCase):
         self.assertTrue(all(len(item["excerpt"]) <= 3000 for item in evidence))
         self.assertTrue(all(item["tag"] == "stale_command" for item in evidence))
 
+
+    def test_evidence_reads_current_failure_from_transcript_not_score_row(self) -> None:
+        rows = []
+        for ticket in range(1, 11):
+            session = str(self.cfg.factory / "transcripts" / f"{ticket}.jsonl")
+            rows += [
+                {"event": "score", "ticket": ticket, "attempt": 1, "transcript": session,
+                 "efficiency": 1.0, "call_errors": [False] + [True] * 10,
+                 "failures": [{"call_index": 1, "text": "legacy journal error"}], "at": AT},
+                load(session, ticket),
+            ]
+        for ticket in range(20, 30):
+            rows.append({"event": "score", "ticket": ticket, "attempt": 1,
+                         "transcript": f"control-{ticket}", "call_errors": [False] * 11,
+                         "at": AT})
+        session = Path(rows[18]["transcript"])
+        session.parent.mkdir(parents=True)
+        session.write_text("\n".join(json.dumps(row) for row in [
+            {"type": "message", "message": {"role": "assistant", "content": [
+                {"type": "toolCall", "id": "load", "name": "read",
+                 "arguments": {"path": "skill://ub-mode"}},
+            ]}},
+            {"type": "message", "message": {"role": "toolResult", "toolCallId": "load",
+                                             "isError": False, "content": []}},
+            {"type": "message", "message": {"role": "assistant", "content": [
+                {"type": "toolCall", "id": "fail", "name": "bash",
+                 "arguments": {"command": "missing"}},
+            ]}},
+            {"type": "message", "message": {"role": "toolResult", "toolCallId": "fail",
+                                             "isError": True, "content": [
+                                                 {"type": "text", "text": "command not found: missing"},
+                                             ]}},
+        ]) + "\n")
+        rows += [
+            {"event": "claimed", "ticket": 10, "title": "current", "at": AT},
+            {"event": "merged", "ticket": 10, "at": AT},
+        ]
+        self.journal(*rows)
+
+        tickets, text = learn.evidence(1)
+
+        self.assertEqual(tickets, [10])
+        self.assertIn("[stale_command] command not found: missing", text)
+        self.assertNotIn("legacy journal error", text)
 
 if __name__ == "__main__":
     unittest.main()

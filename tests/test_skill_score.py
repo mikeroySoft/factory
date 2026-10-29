@@ -105,9 +105,19 @@ class SkillScoreTest(unittest.TestCase):
             "attempt": 1, "harness": "chore", "reason": "no transcript",
         }])
 
+        self.assertTrue(all("failures" not in row for row in self.rows("score")))
+
         saved = lifecycle.read_events(self.events)
         score.run(self.cfg)
         self.assertEqual(lifecycle.read_events(self.events), saved)
+
+    def test_repo_agents_marks_a_skill_explicit(self) -> None:
+        (self.root / "AGENTS.md").write_text("Workers must follow the factory skill.")
+
+        score.run(self.cfg)
+
+        [factory] = [row for row in self.rows("skill-load") if row["skill"] == "factory"]
+        self.assertTrue(factory["explicit"])
 
     def test_line_selector_marks_a_full_skill_path_partial(self) -> None:
         self.assertEqual(score._skill("skills/factory/SKILL.md:2-4:raw"),
