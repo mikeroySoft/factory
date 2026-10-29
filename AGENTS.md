@@ -30,6 +30,7 @@ map or a path in it does not exist; update the map in the same change.
 | Post-ship monitor (`watch`) | `factory/watch.py` | `tests/test_watch.py`, `tests/test_watch_lifecycle.py`, `tests/test_watch_routing.py`, `tests/test_factory.py` | `test` |
 | Manager and human handoffs | `factory/manage.py`, `factory/handoff.py` | `tests/test_viability.py`, `tests/test_handoff.py`, `tests/test_manager_binding.py`, `tests/test_manager_resolve.py`, `tests/test_frontier.py`, `tests/test_add_only_override.py`, `tests/test_refresh_conflict.py` | `test` |
 | Accepted-priority scheduling | `factory/schedule.py` | `tests/test_schedule.py` | `test` |
+| Throttle modes | `factory/throttle.py` | `tests/test_throttle.py` | `test` |
 | Lifecycle journal (`events.jsonl`) | `factory/lifecycle.py` | `tests/test_lifecycle.py`, `tests/test_lifecycle_consumers.py`, `tests/test_events_rotation.py`, `tests/test_resources.py` | `test` |
 | Decision trace (`explain`) | `factory/trace.py` | `tests/test_trace.py`, `tests/test_worker_plan.py` | `test` |
 | Initiatives, bindings, roadmap and outcomes | `factory/plan.py`, `factory/binding.py`, `factory/roadmap.py`, `factory/outcomes.py`, `factory/templates/initiative.md` | `tests/test_plan.py`, `tests/test_binding.py`, `tests/test_binding_cli.py`, `tests/test_roadmap.py`, `tests/test_outcomes.py` | `test` |
