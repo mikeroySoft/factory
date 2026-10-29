@@ -390,6 +390,68 @@ class ManagerRoutingTest(unittest.TestCase):
         self.assertFalse(any(row.get("event") == "manage"
                              for row in lifecycle.read_events(dispatch.EVENTS)))
 
+    def test_editing_an_older_recorded_comment_during_inference_stops_manager(self) -> None:
+        self.record_escalation()
+        lifecycle.append(dispatch.EVENTS, {
+            "at": "2026-10-26T00:00:00Z", "event": "comment", "ticket": 7,
+            "kind": "manager", "comment": 99,
+        })
+        older = {"event": "commented", "id": 99, "created_at": "2026-10-26T00:00:00Z"}
+        timeline = [
+            older,
+            {"event": "commented", "id": 100, "created_at": "2026-10-27T00:00:01Z"},
+        ]
+        calls = []
+
+        def read(argv):
+            if argv[:2] == ["issue", "list"]:
+                return [self.issue()]
+            if argv[:2] == ["issue", "view"]:
+                return self.issue()
+            if argv[0] == "api":
+                return [timeline]
+            self.fail(argv)
+
+        def run(argv, **_kwargs):
+            calls.append(argv)
+            older["updated_at"] = "2026-10-27T00:01:00Z"
+            output = "DECISION: REWRITE\nReplacement body" if argv[0] == "manager" else ""
+            return subprocess.CompletedProcess(argv, 0, output, "")
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=read), \
+             mock.patch.object(dispatch, "run", side_effect=run):
+            manage.escalation_pass()
+
+        self.assertEqual([call[0] for call in calls], ["manager"])
+        self.assertFalse(any(row.get("event") == "manage"
+                             for row in lifecycle.read_events(dispatch.EVENTS)))
+
+
+class EscalationPublicationTest(unittest.TestCase):
+    def test_failed_label_or_comment_publication_is_not_reported_as_success(self) -> None:
+        for need in (dispatch.RULE_COVERABLE, dispatch.SIGNOFF("spending")):
+            for action in ("edit", "comment"):
+                with self.subTest(need=need, failed_action=action):
+                    root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+                    cfg = config.Config(root, "acme/widgets")
+                    cfg.reserved = {"spending": frozenset({"budget"})}
+                    dispatch.configure(cfg)
+
+                    def run(argv, _cwd, check, *_args):
+                        if argv[1:3] == ["issue", action]:
+                            if check:
+                                raise subprocess.CalledProcessError(1, argv, stderr="unavailable")
+                            return subprocess.CompletedProcess(argv, 1, "", "unavailable")
+                        return subprocess.CompletedProcess(argv, 0, "", "")
+
+                    with mock.patch.object(dispatch, "_run", side_effect=run), \
+                         self.assertRaises(subprocess.CalledProcessError):
+                        dispatch.escalate(
+                            7, "budget exhausted", None, need, code="budget",
+                            question="Needs you:\n1. Approve more quota"
+                            if isinstance(need, dispatch.Signoff) else None,
+                        )
+
 
 if __name__ == "__main__":
     unittest.main()
