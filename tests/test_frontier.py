@@ -331,6 +331,46 @@ class FrontierTest(unittest.TestCase):
         self.assertFalse(any(e.get("event") == "manage" for e in self.events()))
         self.assertEqual(self.mutations, [])
 
+    def test_review_all_human_names_a_reserved_signoff_and_concrete_options(self) -> None:
+        self.cfg.manager_review = "all"
+        self.cfg.reserved = {"product_direction": frozenset({"manager_human"})}
+        self.quiet_provider()
+        self.approved_head(H)
+        self.manager_output = (
+            'DECISION: HUMAN\n{"category":"product_direction","reason":"Choose the product direction",'
+            '"options":["Approve the direction","Close as wontfix"]}'
+        )
+
+        manage.frontier_pass()
+
+        [escalation] = self.escalations()
+        self.assertEqual(
+            (escalation["need"], escalation["category"], escalation["code"]),
+            ("SIGNOFF", "product_direction", "manager_human"),
+        )
+        comment = next(cmd[-1] for cmd in self.mutations if cmd[1:3] == ["issue", "comment"])
+        self.assertTrue(comment.endswith(
+            "Needs you:\n1. Approve the direction\n2. Close as wontfix"
+        ))
+        prompt = (self.repo / ".factory/manager-prompt-79.md").read_text()
+        self.assertIn("product_direction: manager_human", prompt)
+
+    def test_review_all_invalid_human_is_routed_as_manager_failure(self) -> None:
+        self.cfg.manager_review = "all"
+        self.quiet_provider()
+        self.approved_head(H)
+        self.manager_output = "DECISION: HUMAN\nplain text is not a sign-off"
+
+        manage.frontier_pass()
+
+        [escalation] = self.escalations()
+        self.assertEqual(
+            (escalation["need"], escalation["code"], escalation["route"]),
+            ("CHASE_STALL", "manager_failed", "manager"),
+        )
+        flat = [" ".join(cmd) for cmd in self.mutations]
+        self.assertFalse(any("--add-label ready-for-human" in cmd for cmd in flat))
+
 
 class CloseDecisionTest(unittest.TestCase):
     def test_close_proposes_wontfix_on_human_issue_and_closes_factory_child(self) -> None:

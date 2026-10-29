@@ -2275,7 +2275,9 @@ esac
                 self.assertEqual(next(e["decision"] for e in events if e.get("event") == "manage"), "FIX")
                 calls = (Path(stubs) / "gh.log").read_text()
                 self.assertEqual("--add-label factory-approved" in calls, gate_ok and verdict == "APPROVE")
-                self.assertNotIn("--add-label ready-for-agent", calls)
+                routed = "--add-label ready-for-agent" in calls
+                self.assertEqual(routed, not (gate_ok and verdict == "APPROVE"))
+                self.assertEqual("--add-assignee @me" in calls, routed)
                 self.assertEqual(git(remote, "rev-parse", "agent/7"),
                                  git(wt, "rev-parse", "HEAD") if gate_ok else original)
                 approvals = [e for e in events if e.get("event") == "approved"]
@@ -2388,7 +2390,11 @@ esac
         calls = (Path(stubs) / "gh.log").read_text()
         self.assertIn("issue edit 7 --repo acme/widgets --body Replacement body", calls)
         self.assertNotIn("issue edit 7 --repo acme/widgets --remove-label", calls)
-        self.assertIn("issue edit 8 --repo acme/widgets --remove-label ready-for-human --add-label ready-for-agent", calls)
+        self.assertIn(
+            "issue edit 8 --repo acme/widgets --remove-assignee @me "
+            "--remove-label ready-for-human --add-label ready-for-agent",
+            calls,
+        )
         events = list(map(json.loads, events_path.read_text().splitlines()))
         terminal = next(e for e in events if e.get("kind") == "exit" and e.get("stage") == "manage" and e.get("ticket") == 7)
         self.assertEqual(terminal["outcome"], "mechanism_failure")
@@ -2633,7 +2639,8 @@ class DispatchTest(unittest.TestCase):
                     dispatch.review_intake_pass(False)
                     self.assertEqual(len(publications), rounds + 1)
                     self.assertEqual(len(issues), 1)
-                    self.assertIn("ready-for-human", issues[0])
+                    self.assertIn("ready-for-agent", issues[0])
+                    self.assertIn("@me", issues[0])
                 escalations = [e for e in lifecycle.read_events(dispatch.EVENTS)
                                if e.get("event") == "escalate"]
                 self.assertEqual(len(escalations), 1)
@@ -2878,7 +2885,10 @@ class DispatchTest(unittest.TestCase):
             worker_log.parent.mkdir()
             worker_log.write_text("worker detail\n")
             with mock.patch.object(dispatch, "run"):
-                dispatch.escalate(7, "gate failed", worker_log, code="gate_failed")
+                dispatch.escalate(
+                    7, "gate failed", worker_log,
+                    dispatch.classify("gate_failed", {}), code="gate_failed",
+                )
 
             packet = dispatch.FACTORY / "escalations" / "7.md"
             text = packet.read_text()
@@ -2893,7 +2903,10 @@ class DispatchTest(unittest.TestCase):
             self.assertEqual(escalation["packet"], str(packet))
             self.assertEqual(escalation["round"], 1)
             with mock.patch.object(dispatch, "run"):
-                dispatch.escalate(7, "gate failed again", worker_log, code="gate_failed")
+                dispatch.escalate(
+                    7, "gate failed again", worker_log,
+                    dispatch.classify("gate_failed", {}), code="gate_failed",
+                )
             escalation = json.loads(dispatch.EVENTS.read_text().splitlines()[-1])
             self.assertEqual(escalation["round"], 2)
 

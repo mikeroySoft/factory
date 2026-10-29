@@ -998,8 +998,8 @@ class LocalCLI(unittest.TestCase):
 
 
 class LeaseRefusedCLI(unittest.TestCase):
-    """A refused `agent/7` push (the remote gained a commit the worktree lacks) escalates
-    with `lease_refused`, un-assigns the ticket, and keeps the worktree: never a crash."""
+    """A refused `agent/7` push (the remote gained a commit the worktree lacks) parks
+    the ticket for the manager without making it worker-claimable."""
 
     git, cli, write_config = LocalCLI.git, LocalCLI.cli, LocalCLI.write_config
 
@@ -1031,13 +1031,16 @@ class LeaseRefusedCLI(unittest.TestCase):
     def assert_escalated(self, foreign):
         edits = self.gh_calls("issue", "edit")
         self.assertEqual(edits[0][-2:], ["--add-assignee", "@me"])
-        self.assertEqual(edits[-1][5:], ["--remove-assignee", "@me", "--remove-label", "ready-for-agent",
-                                         "--add-label", "ready-for-human"])
+        self.assertEqual(edits[-1][5:], ["--add-assignee", "@me", "--remove-label", "ready-for-human",
+                                         "--add-label", "ready-for-agent"])
         comments = self.gh_calls("issue", "comment")
         self.assertEqual(len(comments), 1)
         self.assertIn("Factory dispatcher escalating: agent/7 push refused", comments[0][-1])
         escalations = [e for e in lifecycle.read_events(self.events) if e.get("event") == "escalate"]
-        self.assertEqual([e["code"] for e in escalations], ["lease_refused"])
+        self.assertEqual(
+            [(e["code"], e["need"], e["route"]) for e in escalations],
+            [("lease_refused", "CROSSED_MESSAGES", "manager")],
+        )
         self.assertTrue(self.wt.is_dir())
         subjects = subprocess.run(["git", "-C", str(self.wt), "log", "--format=%s"], env=self.env,
                                   check=True, capture_output=True, text=True).stdout
@@ -1045,13 +1048,13 @@ class LeaseRefusedCLI(unittest.TestCase):
         remote = self.git("ls-remote", "origin", "refs/heads/agent/7").stdout.split()[0]
         self.assertEqual(remote, foreign)
 
-    def test_refused_first_push_escalates_and_unassigns(self):
+    def test_refused_first_push_parks_for_manager(self):
         foreign = self.push_foreign()
         self.cli("dispatch", "--ticket", "7")
         self.assert_escalated(foreign)
         self.assertFalse(json.loads(self.state.read_text()).get("pr"))
 
-    def test_refused_review_bounce_push_escalates_and_unassigns(self):
+    def test_refused_review_bounce_push_parks_for_manager(self):
         # The first review REVISEs and moves origin's agent/7 underneath the dispatcher, so the
         # bounce push (leased on the first pushed head) is refused.
         foreign_file = self.base / "foreign"

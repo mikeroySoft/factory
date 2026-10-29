@@ -462,7 +462,11 @@ def doctor(argv: list[str]) -> int:
     parser.add_argument("--json", action="store_true", help="emit {ok, version, repo, root, rows} instead of text")
     parser.add_argument("--reveal-fix", action="store_true", help="include host TOML values in JSON fix payloads")
     args = parser.parse_args(argv)
-    cfg = config.load()
+    try:
+        cfg = config.load()
+    except ConfigError as exc:
+        print(f"FAIL configuration: {exc}")
+        return 1
     rows: list[dict] = []
 
     def report(status: bool | None, label: str, detail: str = "", *, info: bool = False, fix: dict | None = None) -> None:

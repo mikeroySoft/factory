@@ -42,10 +42,12 @@ def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
     Mirrors every reason `manage.escalation_pass` will never run the manager again.
     """
     r = escalation.get("round", 0)
+    if escalation.get("need") == "SIGNOFF":
+        return "a reserved human sign-off is required"
+    if escalation.get("pr") and escalation.get("need") is None:
+        return "review-intake escalations are never managed; the opted-in PR needs a human review decision"
     if not cfg.manager:
         return "no manager is configured, so nothing recovers automatically"
-    if escalation.get("pr"):
-        return "review-intake escalations are never managed; the opted-in PR needs a human review decision"
     if not 1 <= r <= cfg.manager_rounds:
         return f"the manager's {cfg.manager_rounds} allowed round(s) are exhausted"
     decided = [e for e in events if e.get("event") == "manage" and e.get("round") == r and not e.get("pr")]

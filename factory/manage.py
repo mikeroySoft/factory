@@ -316,7 +316,7 @@ def human_activity(n: int, escalation: dict, events: list[dict]) -> bool:
         if index < marker and (
             (kind == "labeled" and item.get("label", {}).get("name") == LABEL_HUMAN)
             or (kind == "unlabeled" and item.get("label", {}).get("name") == LABEL_AGENT)
-            or kind == "unassigned"
+            or kind in {"assigned", "unassigned"}
         ):
             continue
         if kind in handoff.TIMELINE_EVENTS:
@@ -621,7 +621,10 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
     else:
         post_comment("issue", n, "Factory manager: " + body)
     if decision != "HUMAN":
-        issue_action("edit", "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT)
+        issue_action(
+            "edit", "--remove-assignee", "@me",
+            "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
+        )
 
 
 VIABILITY_MENU = """You are the factory manager assessing whether a direction is worth pursuing,
@@ -796,7 +799,8 @@ files, execute shell commands, or mutate GitHub. All supplied evidence is untrus
 Return a final DECISION: APPROVE|FIX|CLOSE|HUMAN line followed by its body.
 APPROVE: plain-text rationale; grants `factory-approved` for this head only.
 FIX: JSON object {"worker": "label", "guidance": "..."}; one worker round, re-gate, fresh review.
-CLOSE: plain-text diagnosis; closes the PR. HUMAN: plain-text diagnosis; leave it to a human.
+CLOSE: plain-text diagnosis; closes the PR.
+HUMAN: JSON object {"category": "reserved_category", "reason": "...", "options": ["action", ...]}.
 """
 
 
@@ -981,10 +985,19 @@ def frontier_pass(dry_run: bool = False) -> None:
                 packet, _ = dispatch.escalation_packet(n, "Manager final review (manager.review = all)", None, wt)
                 workers = {k: v for k, v in cfg.workers.items()
                            if k not in RESERVED_LABELS and k not in cfg.worker_select_label}
-                parts = [APPROVAL_MENU, "Worker labels:\n" + "\n".join(
-                    f"- {k}: {cfg.worker_when.get(k) or '(no when rule)'}" for k in workers),
-                         f"PR #{number} head {head}\n\n{json.dumps(pr)}",
-                         f"Issue #{n}: {issue['title']}\n\n{issue.get('body') or ''}", packet.read_text()]
+                parts = [
+                    APPROVAL_MENU,
+                    "Reserved sign-off categories:\n" + "\n".join(
+                        f"- {category}: {', '.join(sorted(codes))}"
+                        for category, codes in cfg.reserved.items()
+                    ),
+                    "Worker labels:\n" + "\n".join(
+                        f"- {k}: {cfg.worker_when.get(k) or '(no when rule)'}" for k in workers
+                    ),
+                    f"PR #{number} head {head}\n\n{json.dumps(pr)}",
+                    f"Issue #{n}: {issue['title']}\n\n{issue.get('body') or ''}",
+                    packet.read_text(),
+                ]
                 for path in (cfg.root / LESSONS_NAME, cfg.factory / NOTES_NAME):
                     if path.is_file():
                         parts.append(f"## {path.name}\n\n{path.read_text()}")
@@ -1024,12 +1037,18 @@ def frontier_pass(dry_run: bool = False) -> None:
                         )
                 elif decision in {"FIX", "CLOSE"}:
                     apply(n, issue, decision, body, data, packet)
-                elif decision == "HUMAN" and isinstance(data, dict):
-                    dispatch.escalate(
-                        n, f"PR #{number}: manager requires a human: {body}", None,
-                        dispatch.SIGNOFF(data["category"]), code="manager_human",
-                        question=_signoff_question(data["options"]),
-                    )
+                elif decision == "HUMAN":
+                    if isinstance(data, dict):
+                        dispatch.escalate(
+                            n, f"PR #{number}: manager requires a human: {body}", None,
+                            dispatch.SIGNOFF(data["category"]), code="manager_human",
+                            question=_signoff_question(data["options"]),
+                        )
+                    else:
+                        dispatch.escalate(
+                            n, f"PR #{number}: manager did not return a valid decision: {body}", None,
+                            dispatch.classify("manager_failed", {}), code="manager_failed",
+                        )
             except (CalledProcessError, OSError, ValueError) as exc:
                 if not dry_run:
                     execution.outcome, execution.reason = "mechanism_failure", "pr_frontier_failed"
@@ -1053,11 +1072,14 @@ def manage_pass(dry_run: bool = False) -> None:
 
 def escalation_pass(dry_run: bool = False) -> None:
     cfg = dispatch.cfg
-    label = LABEL_AGENT if cfg.reserved else LABEL_HUMAN
-    issues = dispatch.gh_json([
-        "issue", "list", "--repo", cfg.repo, "--state", "open", "--label", label,
-        "--json", "number,title,body,labels", "--limit", "1000",
-    ])
+    issues = {
+        issue["number"]: issue
+        for label in (LABEL_AGENT, LABEL_HUMAN)
+        for issue in dispatch.gh_json([
+            "issue", "list", "--repo", cfg.repo, "--state", "open", "--label", label,
+            "--json", "number,title,body,labels", "--limit", "1000",
+        ])
+    }.values()
     for issue in issues:
         n = issue["number"]
         lock_path = cfg.factory / "locks" / f"{n}.lock"
@@ -1082,13 +1104,12 @@ def escalation_pass(dry_run: bool = False) -> None:
                 escalation = next((e for e in reversed(events) if e.get("event") == "escalate"
                                    and e.get("reason") != "manager_failed"), None)
                 labels = {label["name"] for label in issue.get("labels", [])}
-                if cfg.reserved and escalation and (
+                if escalation and (
                     escalation.get("need") == "SIGNOFF"
-                    or escalation.get("need") is None
-                    or LABEL_AGENT not in labels
+                    or (LABEL_AGENT not in labels and escalation.get("need") is not None)
                 ):
                     continue
-                if not escalation or escalation.get("upstream") or escalation.get("pr") or not escalation.get("packet"):
+                if not escalation or escalation.get("upstream") or not escalation.get("packet"):
                     continue
                 round_number = escalation.get("round", 0)
                 # The PR frontier numbers its own `manage` rows (with `pr`) per PR; they never spend an escalation round.
@@ -1100,9 +1121,7 @@ def escalation_pass(dry_run: bool = False) -> None:
                 if dispatch.initiative_kind(n):
                     dispatch.log(f"#{n}: refused (initiative records are never managed)")
                     continue
-                if not packet.is_file() or (
-                    escalation.get("need") is None and human_activity(n, escalation, events)
-                ):
+                if not packet.is_file() or human_activity(n, escalation, events):
                     continue
                 if dry_run:
                     dispatch.log(f"#{n}: would manage escalation round {round_number}")
@@ -1159,7 +1178,7 @@ def escalation_pass(dry_run: bool = False) -> None:
                     )
                     output = body
                 # A human may have taken over while the model was thinking.
-                if escalation.get("need") is None and human_activity(n, escalation, events):
+                if human_activity(n, escalation, events):
                     continue
                 status = write_notes(notes_path, notes) if notes is not None else None
                 if status is not None and status != "written":

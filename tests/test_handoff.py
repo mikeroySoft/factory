@@ -560,8 +560,13 @@ class ReceiptTest(unittest.TestCase):
                 return next(outputs) if cmd[:3] == ["gh", "issue", "comment"] else subprocess.CompletedProcess(cmd, 0, "", "")
 
             with patch.object(dispatch, "run", side_effect=run):
-                dispatch.escalate(7, "gate failed", None, code="gate_failed")
-                dispatch.escalate(7, "gate failed again", None, code="gate_failed")
+                dispatch.escalate(
+                    7, "gate failed", None, dispatch.classify("gate_failed", {}), code="gate_failed",
+                )
+                dispatch.escalate(
+                    7, "gate failed again", None,
+                    dispatch.classify("gate_failed", {}), code="gate_failed",
+                )
             rows = lifecycle.read_events(dispatch.EVENTS)
             self.assertEqual([(e["kind"], e["comment"], e["round"], e["url"]) for e in rows if e.get("event") == "comment"],
                              [("escalation", 4242, 1, f"{ISSUE_URL}#issuecomment-4242")])

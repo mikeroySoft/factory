@@ -4,8 +4,8 @@ A label-driven autonomous ticket pipeline for any GitHub repository. Issues
 labelled `ready-for-agent` are claimed by a coding agent in a git worktree,
 gated by your own deterministic checks, reviewed by a second model, opened as a
 PR, and landed on `main` once the gate, the reviewer, GitHub CI, and freshness
-against `main` all agree. Anything the pipeline cannot resolve is handed back
-with a `ready-for-human` label and the evidence attached.
+against `main` all agree. A reserved sign-off is handed back with
+`ready-for-human`; recoverable failures are parked with the manager and excluded from worker claims.
 
 It runs on your machine, on a systemd timer, with the agent CLIs you already
 have. State is GitHub (labels, comments, PRs) plus a gitignored `.factory/`
@@ -303,9 +303,10 @@ Escalations carry a closed `need`: `SIGNOFF(category)`, `RULE_COVERABLE`,
 `EXPLAIN`, `CHASE_STALL`, or `CROSSED_MESSAGES`. The reviewed
 [`docs/reserved-for-human.md`](docs/reserved-for-human.md) table is parsed at
 configuration load and is the only source of valid sign-off categories and
-their allowed escalation codes. Non-sign-offs route to the manager without
-`ready-for-human`; sign-off comments end with `Needs you:` and one to three
-numbered actions.
+their allowed escalation codes. Non-sign-offs stay assigned to the Factory
+account while they route to the manager, so `ready-for-agent` cannot re-claim
+them; a manager retry releases the assignment. Sign-off comments end with
+`Needs you:` and one to three numbered actions.
 
 ## Commands
 

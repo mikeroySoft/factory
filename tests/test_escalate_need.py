@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
-from factory import config, dispatch, learn, lifecycle, stats
+from factory import cli, config, dispatch, handoff, learn, lifecycle, manage, stats
 
 NOW = datetime(2026, 10, 27, 12, tzinfo=UTC)
 AT = "2026-10-27T00:00:00Z"
@@ -43,10 +43,13 @@ class EscalateNeedTest(unittest.TestCase):
         self.assertIn("ready-for-agent", edit)
         self.assertNotIn(["--add-label", "ready-for-human"],
                          [edit[index:index + 2] for index in range(len(edit) - 1)])
-        self.assertFalse(any(call[1:3] == ["issue", "comment"] for call in self.calls))
         [row] = self.rows("escalate")
         self.assertEqual((row["need"], row["category"], row["route"]),
                          ("RULE_COVERABLE", None, "manager"))
+
+        self.assertNotIn("--remove-assignee", edit)
+        self.assertIn("--add-assignee", edit)
+        self.assertTrue(any(call[1:3] == ["issue", "comment"] for call in self.calls))
 
     def test_signoff_posts_bounded_question_and_unknown_category_precedes_gh(self) -> None:
         block = "Needs you:\n1. Approve the additional spend\n2. Close as wontfix"
@@ -80,6 +83,15 @@ class EscalateNeedTest(unittest.TestCase):
             dispatch.escalate(7, "missing question", None, dispatch.SIGNOFF("spending"), code="budget")
         self.assertEqual(self.calls, [])
 
+    def test_missing_need_fails_without_a_reserved_table(self) -> None:
+        cfg = config.Config(self.root, "acme/widgets")
+        dispatch.configure(cfg)
+
+        with self.assertRaises(TypeError):
+            dispatch.escalate(7, "missing", None, code="budget")
+
+        self.assertEqual(self.calls, [])
+
 
 class ReservedConfigTest(unittest.TestCase):
     def test_reserved_table_is_parsed_and_names_unknown_categories_and_codes(self) -> None:
@@ -105,6 +117,19 @@ class ReservedConfigTest(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(config.ConfigError, problem):
                     config.reserved_table(path)
+
+    def test_doctor_reports_bad_reserved_policy_without_a_traceback(self) -> None:
+        output = io.StringIO()
+        error = config.ConfigError("docs/reserved-for-human.md: unknown category 'unknown'")
+
+        with mock.patch.object(config, "load", side_effect=error), \
+             contextlib.redirect_stdout(output):
+            self.assertEqual(cli.main(["doctor"]), 1)
+
+        self.assertEqual(
+            output.getvalue().splitlines(),
+            ["FAIL configuration: factory: docs/reserved-for-human.md: unknown category 'unknown'"],
+        )
 
 
 class LearningAndStatsTest(unittest.TestCase):
@@ -177,6 +202,86 @@ class NeedCorrectionTest(unittest.TestCase):
                  if row.get("event") == "escalation-correction"]
         self.assertEqual((row["need"], row["need_corrected"], row["category"]),
                          ("RULE_COVERABLE", True, None))
+
+    def test_edited_escalation_comment_is_not_a_label_only_correction(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        dispatch.configure(config.Config(root, "acme/widgets"))
+        lifecycle.append(dispatch.EVENTS, {
+            "at": AT, "event": "escalate", "ticket": 7, "round": 1,
+            "code": "budget", "need": "SIGNOFF", "category": "spending",
+        })
+        lifecycle.append(dispatch.EVENTS, {
+            "at": "2026-10-27T00:00:01Z", "event": "comment", "ticket": 7,
+            "kind": "escalation", "round": 1, "comment": 100,
+        })
+        timeline = [[
+            {"event": "commented", "id": 100, "created_at": "2026-10-27T00:00:01Z",
+             "updated_at": "2026-10-27T00:01:00Z", "user": {"login": "factory-bot", "type": "Bot"}},
+            {"event": "unlabeled", "label": {"name": "ready-for-human"},
+             "created_at": "2026-10-27T00:01:00Z", "actor": {"login": "mikeroySoft", "type": "User"}},
+            {"event": "labeled", "label": {"name": "ready-for-agent"},
+             "created_at": "2026-10-27T00:01:00Z", "actor": {"login": "mikeroySoft", "type": "User"}},
+        ]]
+
+        with mock.patch.object(dispatch, "gh_json", return_value=timeline):
+            self.assertFalse(dispatch.correct_need(7))
+
+
+class ManagerRoutingTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.cfg = config.Config(self.root, "acme/widgets", manager=["manager"], manager_rounds=2)
+        self.cfg.reserved = {"spending": frozenset({"budget", "manager_human"})}
+        dispatch.configure(self.cfg)
+        self.packet = self.cfg.factory / "escalations" / "7.md"
+        self.packet.parent.mkdir(parents=True)
+        self.packet.write_text("# Escalation\n")
+
+    def record_escalation(self, **fields: object) -> dict:
+        row = {
+            "at": AT, "event": "escalate", "ticket": 7, "round": 1,
+            "packet": str(self.packet), "code": "budget", "need": "RULE_COVERABLE",
+            "category": None, "route": "manager", **fields,
+        }
+        lifecycle.append(dispatch.EVENTS, row)
+        lifecycle.append(dispatch.EVENTS, {
+            "at": "2026-10-27T00:00:01Z", "event": "comment", "ticket": 7,
+            "kind": "escalation", "round": 1, "comment": 100,
+        })
+        return row
+
+    def issue(self) -> dict:
+        return {
+            "number": 7, "title": "Escalated", "body": "Manager decision needed",
+            "labels": [{"name": "ready-for-agent"}],
+        }
+
+    def test_human_takeover_stops_classified_manager_escalation(self) -> None:
+        self.record_escalation()
+        logs: list[str] = []
+        with mock.patch.object(dispatch, "gh_json", return_value=[self.issue()]), \
+             mock.patch.object(manage, "human_activity", return_value=True), \
+             mock.patch.object(dispatch, "log", side_effect=logs.append):
+            manage.escalation_pass(dry_run=True)
+
+        self.assertFalse(any("would manage escalation" in line for line in logs))
+
+    def test_review_intake_row_is_consumed_by_manager(self) -> None:
+        self.record_escalation(pr=42, code="review_intake", need="EXPLAIN")
+        logs: list[str] = []
+        with mock.patch.object(dispatch, "gh_json", return_value=[self.issue()]), \
+             mock.patch.object(manage, "human_activity", return_value=False), \
+             mock.patch.object(dispatch, "log", side_effect=logs.append):
+            manage.escalation_pass(dry_run=True)
+
+        self.assertTrue(any("would manage escalation round 1" in line for line in logs), logs)
+
+    def test_signoff_escalation_is_immediately_terminal_for_handoff(self) -> None:
+        escalation = self.record_escalation(need="SIGNOFF", category="spending")
+
+        self.assertIn("human sign-off", handoff.terminal(
+            self.cfg, lifecycle.read_events(dispatch.EVENTS), escalation,
+        ))
 
 
 if __name__ == "__main__":

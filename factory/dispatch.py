@@ -33,7 +33,6 @@ from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import overload
 
 from factory import __version__, brief, config, lifecycle, risk
 from factory.config import (
@@ -80,7 +79,6 @@ class Signoff:
 
 
 Need = NeedKind | Signoff
-_MISSING_NEED = object()
 
 
 RULE_COVERABLE = NeedKind.RULE_COVERABLE
@@ -568,7 +566,7 @@ def frontier() -> list[dict]:
 def _open_manager_review_issue(reason: str, packet: Path) -> str:
     return run([
         "gh", "issue", "create", "--repo", REPO,
-        "--title", reason, "--label", LABEL_AGENT,
+        "--title", reason, "--label", LABEL_AGENT, "--assignee", "@me",
         "--body-file", str(packet),
     ]).stdout.strip().splitlines()[-1]
 
@@ -633,19 +631,19 @@ def review_intake_pass(dry_run: bool) -> None:
                             if e.get("event") in {"review-intake", "review-result"}
                         )
                     )
-                    if cfg.reserved:
-                        url = _open_manager_review_issue(reason, packet)
-                    else:
-                        url = run([
-                            "gh", "issue", "create", "--repo", REPO,
-                            "--title", reason, "--label", LABEL_HUMAN,
-                            "--body-file", str(packet),
-                        ]).stdout.strip().splitlines()[-1]
+                    url = _open_manager_review_issue(reason, packet)
+                    ticket = int(url.rstrip("/").rsplit("/", 1)[-1])
                     record(
-                        "escalate", pr=n, head=head,
-                        ticket=int(url.rstrip("/").rsplit("/", 1)[-1]),
+                        "escalate", pr=n, head=head, ticket=ticket,
                         code="review_intake", reason=reason, packet=str(packet), round=1,
-                        need="EXPLAIN", category=None, route="manager" if cfg.reserved else "human",
+                        need="EXPLAIN", category=None, route="manager",
+                    )
+                    posted = run([
+                        "gh", "issue", "comment", str(ticket), "--repo", REPO,
+                        "--body", f"Factory dispatcher routing this review to the manager.\n\nEscalation packet: `{packet}`",
+                    ], check=False)
+                    comment_receipt(
+                        ticket, "escalation", posted.stdout if posted.returncode == 0 else "", round=1,
                     )
                 continue
             if any(e.get("event") == "review-intake" and e.get("head") == head
@@ -1777,34 +1775,17 @@ def _route_escalation_to_manager(n: int) -> None:
     run(
         [
             "gh", "issue", "edit", str(n), "--repo", REPO,
-            "--remove-assignee", "@me",
-            "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
+            "--add-assignee", "@me", "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
         ],
         check=False,
     )
-
-
-@overload
-def escalate(
-    n: int, reason: str, log_path: Path | None, need: NeedKind, extra: str = "", *,
-    code: str, question: str | None = None, refreshed_head: str | None = None,
-    evidence_ref: str | None = None,
-) -> None: ...
-
-
-@overload
-def escalate(
-    n: int, reason: str, log_path: Path | None, need: Signoff, extra: str = "", *,
-    code: str, question: str | None = None, refreshed_head: str | None = None,
-    evidence_ref: str | None = None,
-) -> None: ...
 
 
 def escalate(
     n: int,
     reason: str,
     log_path: Path | None,
-    need: Need | object = _MISSING_NEED,
+    need: Need,
     extra: str = "",
     *,
     code: str,
@@ -1814,11 +1795,6 @@ def escalate(
 ) -> None:
     if code not in ESCALATION_CODES:
         raise ValueError(f"unknown escalation code {code!r}")
-    legacy = not cfg.reserved
-    if need is _MISSING_NEED:
-        if not legacy:
-            raise TypeError("escalate() missing required escalation need")
-        need = classify(code, {})
     if not isinstance(need, (NeedKind, Signoff)):
         raise TypeError(f"invalid escalation need {need!r}")
     if (refreshed_head is None) != (evidence_ref is None):
@@ -1832,9 +1808,7 @@ def escalate(
         if code not in allowed:
             raise ValueError(f"reserved category {need.category!r} does not allow escalation code {code!r}")
         question = _question_block(question)
-    elif legacy:
-        question = _question_block(question or "Needs you:\n1. Choose how this escalation should proceed")
-    human = signoff or legacy
+    human = signoff
     need_name = "SIGNOFF" if signoff else need.value
     route = "human" if human else "manager"
     log(f"#{n}: escalating to {route} ({code}/{need_name}: {reason})")
@@ -1877,24 +1851,25 @@ def escalate(
         log=str(log_path) if log_path else None, packet=str(packet), round=round_number,
         **evidence,
     )
-    if not human:
+    if human:
+        run(
+            [
+                "gh", "issue", "edit", str(n), "--repo", REPO,
+                "--remove-assignee", "@me",
+                "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN,
+            ],
+            check=False,
+        )
+    else:
         _route_escalation_to_manager(n)
-        return
-    run(
-        [
-            "gh", "issue", "edit", str(n), "--repo", REPO,
-            "--remove-assignee", "@me",
-            "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN,
-        ],
-        check=False,
-    )
     body = f"Factory dispatcher escalating: {reason}.\n\nEscalation packet: `{packet}`"
     if log_path:
         body += f"\n\nWorker logs: `{log_path}`"
     handoff = wt / ".factory" / f"handoff-{n}.md"
     if handoff.exists():
         body += f"\n\nWorker handoff notes:\n\n{handoff.read_text().strip()[-4000:]}"
-    body += f"\n\n{question}"
+    if question:
+        body += f"\n\n{question}"
     posted = run(["gh", "issue", "comment", str(n), "--repo", REPO, "--body", body], check=False)
     comment_receipt(n, "escalation", posted.stdout if posted.returncode == 0 else "", round=round_number)
 
@@ -1927,10 +1902,17 @@ def correct_need(n: int) -> bool:
                    if item.get("event") == "commented" and item.get("id") in escalation_comments), None)
     if marker is None:
         return False
+    marker_item = timeline[marker]
+    if (marker_item.get("updated_at") or marker_item.get("created_at")) != marker_item.get("created_at"):
+        return False
     activity = [
         item for item in timeline[marker + 1:]
         if item.get("event") in handoff.TIMELINE_EVENTS
-        and not (item.get("event") == "commented" and item.get("id") in comments)
+        and not (
+            item.get("event") == "commented"
+            and item.get("id") in comments
+            and (item.get("updated_at") or item.get("created_at")) == item.get("created_at")
+        )
     ]
     expected = {
         ("unlabeled", LABEL_HUMAN),

@@ -117,12 +117,11 @@ flowchart TB
 
   %% Recovery
   ESC -->|"reserved SIGNOFF: ready-for-agent swapped for ready-for-human: dispatch.escalate"| RFH
-  ESC -->|"rule-coverable, explain, stall, or crossed messages: ready-for-human removed, ready-for-agent added: dispatch._route_escalation_to_manager"| MGR
+  ESC -->|"rule-coverable, explain, stall, or crossed messages: assigned to Factory, ready-for-human removed, ready-for-agent added: dispatch._route_escalation_to_manager"| MGR
   UPSTREAM -->|"new sync ticket on a staged agent/N candidate; never moves main: dispatch.sync_pass"| RFA
   EXTPR -->|"review attempts exhausted, new manager-routed issue: dispatch.review_intake_pass"| MGR
   EXTPR -->|"agent/lessons-*, agent/curate-*, agent/revert-lessons-* (same repository) admitted without a label: dispatch.review_intake_pass"| EXTPR
   EXTPR -->|"gate PASS + APPROVE bound to head, CI green: learn.promote_pass"| MERGED
-  RFH -->|"packet and manager rounds left: manage.escalation_pass"| MGR
   RFH -->|"terminal, routed request published: handoff.handoff_pass"| HUMAN
   MGR -->|"RETRY, REWRITE, or ROUTE: manage.apply"| RFA
   MGR -->|"AUTHORIZE adds add-only authority before requeue: manage.apply"| RFA
@@ -132,7 +131,7 @@ flowchart TB
   MGR -->|"CLOSE PR on an original ticket: manage.apply"| WONT
   MGR -->|"CLOSE PR on a SPLIT child, issue closed not planned: manage.apply"| HUMAN
   MGR -->|"RESOLVE: evidence comment, issue closed completed: manage.apply"| HUMAN
-  MGR -->|"HUMAN or manager failed, label kept: manage.escalation_pass"| HUMAN
+  MGR -->|"reserved HUMAN with category and options: dispatch.escalate"| RFH
   WONT -->|"a human decides: config.LABELS"| HUMAN
   HUMAN -->|"relabel, comment, close, approve: decisions.apply"| RFA
 
@@ -165,16 +164,15 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 | `decisions._plan_request` | `*` | `*` | Human action; labels limited to `decisions.ACT_LABELS`, `factory-approved` routed to `decisions._approve` |
 | `decisions._withdraw_approval` | `factory-approved` | — | Human approve step found the PR changed |
 | `dispatch.approve_pr` | `factory-approved` | `factory-approved` | Approve; withdraw again if the PR changed while labelling |
-| `dispatch._route_escalation_to_manager` | `ready-for-human` | `ready-for-agent` | Non-signoff escalation routed to the manager |
-| `dispatch.escalate` | `ready-for-agent` | `ready-for-human` | Reserved sign-off or a repository without a reserved-decision policy |
+| `dispatch._route_escalation_to_manager` | `ready-for-human` | `ready-for-agent` | Non-signoff escalation assigned to Factory and routed to the manager; assignment excludes worker claims |
+| `dispatch.escalate` | `ready-for-agent` | `ready-for-human` | Reserved sign-off only |
 | `dispatch.merge_pass_locked` | `factory-approved` | — | CI fail, or cancel after steps ran; missing approval evidence |
 | `dispatch.push_and_pr` | — | `*` | Caller's PR label; ticket PRs pass none |
 | `dispatch.refresh_pr_branch` | `factory-approved`, `ready-for-human` | `ready-for-agent` | Behind main: approval withdrawn before refresh; eligible conflict and repeated-gate requeues restore agent flow |
-| `dispatch._open_manager_review_issue` | — | `ready-for-agent` | Manager-routed review intake when a reserved-decision policy is configured |
-| `dispatch.review_intake_pass` | — | `ready-for-human` | Legacy review intake when no reserved-decision policy is configured |
+| `dispatch._open_manager_review_issue` | — | `ready-for-agent` | Manager-routed review intake, assigned to Factory so workers cannot claim it |
 | `dispatch.sync_issue` | — | `ready-for-agent` | New sync ticket for new upstream commits; its `agent/N` candidate carries the merge and gate evidence |
 | `learn.promote` | — | `factory-approved` | `factory learn` PR (lessons, curate, revert-lessons) with head-bound gate PASS, reviewer APPROVE and green CI, then squash merge (`learn.promote_pass` runs it per PR); lessons/curate merges open a `promotion-open` that `learn.decide_promotions` keeps or reverts |
-| `manage.apply` | `ready-for-human`, `*` | `factory-add-only-override`, `ready-for-agent`, `needs-triage`, `wontfix-proposal`, `*` | AUTHORIZE grants add-only authority and requeues; RETRY/REWRITE/ROUTE return to agent; SPLIT children; CLOSE; RESOLVE closes completed; ROUTE labels |
+| `manage.apply` | `ready-for-human`, `*` | `factory-add-only-override`, `ready-for-agent`, `needs-triage`, `wontfix-proposal`, `*` | AUTHORIZE grants add-only authority and requeues; RETRY/REWRITE/ROUTE release the Factory assignment and return to agent; SPLIT children; CLOSE; RESOLVE closes completed; ROUTE labels |
 | `manage.viability_pass` | `*` | `needs-triage` | Opt-in label removed; BUILD queues triage |
 | `triage.apply_decision` | `needs-triage` | `*` | `*` is the decision: `ready-for-agent`, `needs-info`, `ready-for-human`, or `wontfix-proposal` |
 | `watch.run_pass` | — | `*` | New `bug` + `needs-triage` issue per runtime-failure fingerprint (`watch.LABELS`) |
@@ -229,6 +227,7 @@ event. `{}` is a runtime value.
 | `manage.frontier_pass` | ``PR #{}: manager rounds exhausted before approval`` | manager PR frontier → escalate |
 | `manage.frontier_pass` | ``PR #{}: approval evidence, head, or human review state changed before manager approval`` | manager PR frontier → escalate |
 | `manage.frontier_pass` | ``PR #{}: manager requires a human: {}`` | manager PR frontier → escalate |
+| `manage.frontier_pass` | ``PR #{}: manager did not return a valid decision: {}`` | invalid manager sign-off → manager-routed escalation |
 | `manage.apply` | ``gate failed after manager FIX`` | manager FIX → escalate |
 | `manage.apply` | ``review requested changes after manager FIX`` | manager FIX → escalate |
 | `manage.apply` | ``reviewer unavailable after manager FIX`` | manager FIX review tooling retries exhausted → escalate (`reviewer_unavailable`) |
