@@ -301,5 +301,120 @@ class WeeklyCommandTest(unittest.TestCase):
             self.assertIn(label, output)
 
 
+class WeeklyBehaviorRegressionTest(unittest.TestCase):
+    def test_non_opening_events_cannot_supply_open_timestamp(self) -> None:
+        rows = [
+            {"at": at(timedelta(days=-3)), "event": "review", "ticket": 1, "pr": 11},
+            {"at": at(timedelta(days=-1)), "event": "merged", "ticket": 1, "pr": 11},
+        ]
+
+        result = stats.weekly_metrics(rows, NOW - timedelta(days=7), NOW, None)
+
+        self.assertIsNone(result["median_open_to_merge_hours"])
+        self.assertEqual(result["median_open_to_merge_hours_numerator"], 0)
+        self.assertEqual(result["median_open_to_merge_hours_denominator"], 1)
+
+    def test_reconciliation_captures_real_stdout_and_survives_journal_reload(self) -> None:
+        import os
+        import sys
+
+        from factory import lifecycle
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            journal = root / "events.jsonl"
+            for row in [
+                {"at": at(timedelta(days=-6)), "event": "pr-opened", "ticket": 7, "pr": 17},
+                {"at": at(timedelta(days=-5)), "event": "worker", "ticket": 99, "pr": 17},
+                {"at": at(timedelta(days=-5)), "event": "worker", "ticket": 8, "pr": 18},
+                {"at": at(timedelta(days=-5)), "event": "pr-opened", "ticket": 9, "pr": 19},
+            ]:
+                lifecycle.append(journal, row)
+            closed = [
+                {"number": 17, "closedAt": at(timedelta(days=-1)), "mergedAt": None},
+                {"number": 18, "closedAt": at(timedelta(days=-1)), "mergedAt": None},
+                {"number": 19, "closedAt": at(timedelta(days=-1)), "mergedAt": at()},
+                {"number": 20, "closedAt": at(timedelta(days=-1)), "mergedAt": None},
+            ]
+            gh = root / "gh"
+            gh.write_text(
+                f"#!{sys.executable}\n"
+                f"print({json.dumps(closed)!r})\n"
+            )
+            gh.chmod(0o755)
+            with mock.patch.dict(os.environ, {"PATH": f"{root}{os.pathsep}{os.environ['PATH']}"}):
+                stats.reconcile_closed_prs(
+                    journal, lifecycle.read_events(journal), NOW - timedelta(days=7),
+                )
+                first = lifecycle.read_events(journal)
+                stats.reconcile_closed_prs(
+                    journal, lifecycle.read_events(journal), NOW - timedelta(days=7),
+                )
+            second = lifecycle.read_events(journal)
+
+        expected = [{
+            "at": at(timedelta(days=-1)), "event": "pr-closed", "ticket": 7, "pr": 17,
+            "by": "external", "reason": "closed outside factory",
+        }]
+        self.assertEqual([row for row in first if row.get("event") == "pr-closed"], expected)
+        self.assertEqual(second, first)
+
+    def test_worker_producer_infers_configured_model_and_reduces_missing_usage(self) -> None:
+        from factory import dispatch, lifecycle
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec = {
+                "match": {"type": "result"}, "model": "model",
+                "prompt_tokens": ["usage.input"], "completion_tokens": ["usage.output"],
+                "cached_tokens": [], "cost": [],
+            }
+            dispatch.configure(config.Config(
+                root, "acme/widgets",
+                workers={"default": ["harness", "--model", "configured-worker", "{prompt}"]},
+                worker_usage={"default": spec},
+            ))
+            dispatch.LOGS.mkdir(parents=True)
+
+            def worker(_command, _wt, logfile, *_args):
+                logfile.write_text(json.dumps({
+                    "type": "result", "usage": {"input": 10, "output": 2},
+                }) + "\n")
+                return 0, None
+
+            def git_result(command, **_kwargs):
+                stdout = "abc123\n" if command[1:3] == ["rev-parse", "HEAD"] else ""
+                return subprocess.CompletedProcess(command, 0, stdout, "")
+
+            with mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
+                    mock.patch.object(dispatch, "run_worker", side_effect=worker), \
+                    mock.patch.object(dispatch, "commit_leftovers"), \
+                    mock.patch.object(dispatch, "run", side_effect=git_result), \
+                    mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")):
+                ok, _, logfile, _ = dispatch.worker_round(
+                    7, root, set(), "ticket", "", 1, float("inf"),
+                )
+            raw = dispatch.worker_usage(logfile, spec)
+            usage = [row for row in lifecycle.read_events(dispatch.EVENTS)
+                     if row.get("event") == "llm-usage"]
+
+        self.assertTrue(ok)
+        self.assertIsNone(raw["model"])
+        self.assertEqual(len(usage), 1)
+        self.assertEqual(usage[0]["model"], "configured-worker")
+        self.assertIs(usage[0]["model_inferred"], True)
+        end = datetime.now(UTC)
+        start = end - timedelta(days=7)
+        before = stats.weekly_metrics(
+            [{"at": usage[0]["at"], "event": "llm-usage", "stage": "worker", **raw}],
+            start, end, None,
+        )
+        after = stats.weekly_metrics(usage, start, end, None)
+        self.assertEqual(before["usage_missing"], 1)
+        self.assertEqual(after["usage_missing"], 0)
+        self.assertEqual(after["tokens"]["worker"]["configured-worker"]["prompt"], 10)
+        self.assertEqual(after["tokens"]["worker"]["configured-worker"]["completion"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -86,21 +86,27 @@ configured worker model and records `model_inferred = true`. OMP-reported rows
 use the model id without its provider, while an inferred worker row uses the
 configured provider-qualified id. Price both exact worker identities.
 
-The hosted zeroes are placeholders; set provider rates before enabling them.
-The local triage model remains zero:
+The hosted rates below are illustrative USD per million tokens, not provider
+quotes; replace them with your actual rates before enabling them. Local triage
+remains zero. The default second reviewer (`openai-codex/gpt-6-astra`) emits
+`gpt-6-astra`; include that exact identifier for high-risk ticket costs:
 
 ```toml
 [defaults.prices."gpt-5.6-sol"]                # OMP-reported worker; replace rates
-prompt = 0.0
-completion = 0.0
+prompt = 2.0
+completion = 8.0
 
 [defaults.prices."openai-codex/gpt-5.6-sol"] # inferred worker; same rates as above
-prompt = 0.0
-completion = 0.0
+prompt = 2.0
+completion = 8.0
 
 [defaults.prices."claude-fable-5-1"]         # OMP-reported reviewer; replace rates
-prompt = 0.0
-completion = 0.0
+prompt = 3.0
+completion = 15.0
+
+[defaults.prices."gpt-6-astra"]             # OMP-reported second reviewer; replace rates
+prompt = 2.0
+completion = 8.0
 
 [defaults.prices."qwen3:30b"]                # local triage
 prompt = 0.0

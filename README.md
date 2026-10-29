@@ -1189,21 +1189,27 @@ while an inferred worker row uses the configured provider-qualified id, so the
 default worker needs both keys below. `cached` (when set) bills the cached share
 of the prompt instead of `prompt`.
 
-The hosted zeroes below are placeholders; replace them with provider rates
-before enabling this host configuration. Local triage is intentionally zero:
+The hosted rates below are illustrative USD per million tokens, not provider
+quotes. Replace them with your actual rates before enabling this host
+configuration. Local triage is intentionally zero. The second reviewer emits
+`gpt-6-astra`; price that identifier too when using the default high-risk review:
 
 ```toml
 [defaults.prices."gpt-5.6-sol"]                # OMP-reported worker; replace rates
-prompt = 0.0
-completion = 0.0
+prompt = 2.0
+completion = 8.0
 
 [defaults.prices."openai-codex/gpt-5.6-sol"] # inferred worker; same rates as above
-prompt = 0.0
-completion = 0.0
+prompt = 2.0
+completion = 8.0
 
 [defaults.prices."claude-fable-5-1"]         # OMP-reported reviewer; replace rates
-prompt = 0.0
-completion = 0.0
+prompt = 3.0
+completion = 15.0
+
+[defaults.prices."gpt-6-astra"]             # OMP-reported second reviewer; replace rates
+prompt = 2.0
+completion = 8.0
 
 [defaults.prices."qwen3:30b"]                # default local triage
 prompt = 0.0
