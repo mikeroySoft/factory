@@ -4286,6 +4286,36 @@ class DispatchTest(unittest.TestCase):
             escalations, removed, reruns, _ = self.cancelled_ci_pass(checks, again)
             self.assertEqual((escalations, removed, reruns), ([], False, []))
 
+    def test_merge_skips_nonrequired_cancel_when_no_runner_matches(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        starved = {
+            "run_id": 123,
+            "run_attempt": 1,
+            "status": "completed",
+            "created_at": "2000-01-01T00:00:00Z",
+            "steps": [],
+            "runner_name": None,
+            "labels": ["self-hosted", "linux", "mi300x"],
+        }
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.configure(config.Config(root=make_repo(Path(d)), repo="acme/widgets"))
+            ok = {"name": "unit", "bucket": "pass"}
+            with mock.patch.object(dispatch, "_registered_runners", return_value=[]):
+                escalations, removed, reruns, _ = self.cancelled_ci_pass(
+                    [ok, self.cancelled()], starved,
+                )
+
+            self.assertEqual((escalations, removed, reruns), ([], False, []))
+            waits = [
+                row["wait"]["reason"] for row in lifecycle.read_events(dispatch.EVENTS)
+                if row.get("kind") == "wait"
+            ]
+            self.assertNotIn("ci_pending", waits)
+            self.assertNotIn("ci_runner", waits)
+
     def test_merge_waits_on_infra_cancel_while_run_still_pending(self) -> None:
         from factory import dispatch
 
