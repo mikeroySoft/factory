@@ -350,6 +350,10 @@ class FrontierTest(unittest.TestCase):
         for kind in ("manage", "conflict-requeue", "gate-requeue", "risk-requeue"):
             with self.subTest(kind=kind):
                 self.direct_requeue(actor="runner")
+                if kind == "manage":
+                    dispatch.record("comment", ticket=79, kind="manager", comment=102)
+                else:
+                    self.timeline.pop(2)
                 dispatch.record(kind, ticket=79, decision="RETRY", round=1)
                 dispatch._record_human_round_reset(79)
                 self.assertFalse(any(e.get("event") == "rounds-reset" for e in self.events()))

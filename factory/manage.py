@@ -930,8 +930,11 @@ def frontier_pass(dry_run: bool = False) -> None:
                     e for e in events
                     if e.get("event") == "manage" and e.get("pr") == number
                 ]
+                round_events = dispatch._current_round_events(events, n)
+                if not any(e.get("event") == "attempt" for e in round_events):
+                    continue  # an owner reset releases a worker before this frontier reviews again
                 decided = [
-                    e for e in dispatch._current_round_events(events, n)
+                    e for e in round_events
                     if e.get("event") == "manage" and e.get("pr") == number
                 ]
                 if any(e.get("head") == head for e in all_decided):

@@ -916,35 +916,35 @@ def _record_human_round_reset(n: int) -> None:
     ), None)
     if release_index is None:
         return
+    machine_comments = {
+        event["comment"] for event in events
+        if event.get("event") == "comment" and type(event.get("comment")) is int
+    }
     human_index = next((
         index for index in range(release_index - 1, -1, -1)
         if timeline[index].get("event") == "labeled"
         and timeline[index].get("label", {}).get("name") == LABEL_HUMAN
         and timeline[index].get("created_at", "") >= events[escalation_index].get("at", "")
     ), None)
-    if human_index is None:
+    machine_index = next((
+        index for index in range(release_index - 1, -1, -1)
+        if timeline[index].get("event") == "commented"
+        and timeline[index].get("id") in machine_comments
+    ), None)
+    boundary = max(
+        (index for index in (human_index, machine_index) if index is not None),
+        default=None,
+    )
+    if boundary is None:
         return
-    machine_comments = {
-        event["comment"] for event in events
-        if event.get("event") == "comment" and type(event.get("comment")) is int
-    }
-    machine_actors = {
-        (item.get("user") or item.get("actor") or {}).get("login", "").casefold()
-        for item in timeline
-        if item.get("event") == "commented" and item.get("id") in machine_comments
-    } - {""}
     release = timeline[release_index]
     actor = (release.get("actor") or {}).get("login")
     requeued_at = release.get("created_at")
-    # Decisions and requeue intents can fail before relabeling. Identify who
-    # actually released this generation, not an earlier attempted recovery.
-    if not actor or not requeued_at or actor.casefold() in machine_actors \
-            or (release.get("actor") or {}).get("type") == "Bot":
+    if not actor or not requeued_at or (release.get("actor") or {}).get("type") == "Bot":
         return
     decision = next((
-        item for item in reversed(timeline[human_index + 1:release_index])
+        item for item in reversed(timeline[boundary + 1:release_index])
         if item.get("event") == "commented" and item.get("id") not in machine_comments
-        and (item.get("user") or {}).get("login", "").casefold() not in machine_actors
         and (item.get("user") or {}).get("type") != "Bot"
     ), None)
     if decision is None:
