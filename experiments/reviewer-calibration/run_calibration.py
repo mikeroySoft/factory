@@ -375,6 +375,7 @@ def replay_models(
             "wall_seconds": elapsed,
         })
     baseline = summaries[0]
+    baseline_missing = any(status == "missing" for status in baseline["statuses"].values())
     output = []
     for summary in summaries:
         flips = [
@@ -401,7 +402,7 @@ def replay_models(
                 baseline_lockbox_mean=baseline["lockbox"]["mean"],
                 baseline_lockbox_pstdev=baseline["lockbox"]["pstdev"],
                 stable_flips=len(flips),
-                missing_cases=len(missing),
+                missing_cases=len(missing) + baseline_missing,
             ),
         })
     report = {"splits_version": SPLITS_VERSION, "repeats": REPEATS, "models": output}
