@@ -3849,10 +3849,18 @@ class DispatchTest(unittest.TestCase):
             if advisory_checks:
                 settings["merge_advisory_checks"] = list(advisory_checks)
             dispatch.configure(config.Config(**settings))
-            fake_gh_json, merge_run = merge_stage_mocks(
+            stage_gh_json, merge_run = merge_stage_mocks(
                 origin, 70, "agent/7", "feature", dispatch.run,
             )
             calls = []
+
+            def fake_gh_json(args):
+                value = stage_gh_json(args)
+                if args[:2] == ["pr", "list"]:
+                    return [{**row, "statusCheckRollup": checks} for row in value]
+                if args[:2] == ["pr", "view"]:
+                    return {**value, "statusCheckRollup": checks}
+                return value
 
             def fake_run(cmd, *args, **kwargs):
                 if cmd[0] == "gh":
