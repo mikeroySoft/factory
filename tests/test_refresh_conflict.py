@@ -81,6 +81,8 @@ class FakeGitHub:
             return self.issue()
         if args[:2] == ["issue", "list"]:
             return [self.issue()] if config.LABEL_AGENT in self.issue_labels else []
+        if args[0] == "api" and args[1] == "repos/acme/widgets/issues/9/timeline":
+            return [[]]
         if args[0] == "api" and "/compare/" in args[1]:
             head = args[1].rsplit("...", 1)[1]
             return {"behind_by": int(git(self.origin, "rev-list", "--count", f"{head}..main"))}
