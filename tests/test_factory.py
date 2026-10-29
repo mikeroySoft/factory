@@ -4023,6 +4023,23 @@ class DispatchTest(unittest.TestCase):
         self.assertTrue(merged)
         self.assertEqual(escalations, [])
 
+    def test_merge_uses_checks_beyond_list_rollup_limit(self) -> None:
+        checks = [
+            {"name": f"E2E lane {index}", "bucket": "pending"}
+            for index in range(100)
+        ]
+        checks.append({"name": "unit", "bucket": "pass"})
+
+        merged, _, escalations, _ = self.merge_check_scenario(
+            checks,
+            [],
+            advisory_checks=("E2E lane *",),
+            rollup_checks=checks[:100],
+        )
+
+        self.assertTrue(merged)
+        self.assertEqual(escalations, [])
+
     def test_merge_preserves_pr_checks_bucket_semantics(self) -> None:
         scenarios = (
             ([{"name": "neutral", "bucket": "skipping"}],
