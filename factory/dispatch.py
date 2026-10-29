@@ -3733,7 +3733,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                     log(f"PR #{pr_num}: required CI runner unavailable; merge blocked")
                     if execution:
                         execution.outcome, execution.reason = "project_escalation", "ci_runner"
-                        execution.wait("ci_runner", mode="blocking", pr=pr_num)
+                        execution.wait("ci_runner", mode="eligibility", pr=pr_num)
                     continue
                 if escalated:
                     continue
@@ -3925,7 +3925,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                     )
                 if any(c.get("required") for c in latest_starved):
                     execution.outcome, execution.reason = "project_escalation", "ci_runner"
-                    execution.wait("ci_runner", mode="blocking", pr=pr_num)
+                    execution.wait("ci_runner", mode="eligibility", pr=pr_num)
                     continue
                 if escalated:
                     continue
