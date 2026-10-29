@@ -4057,6 +4057,35 @@ class DispatchTest(unittest.TestCase):
                 self.assertEqual(escalations, [])
                 self.assertFalse(any("--remove-label" in call for call in calls))
 
+    def test_merge_checks_fall_back_when_gh_reports_no_required_checks(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        checks = [
+            {"name": "unit", "bucket": "pass"},
+            {"name": "E2E tests (mi300x)", "bucket": "pending"},
+        ]
+        responses = [
+            subprocess.CompletedProcess(
+                [], 1, "", "no required checks reported on the 'main' branch\n",
+            ),
+            subprocess.CompletedProcess([], 8, json.dumps(checks), ""),
+        ]
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.configure(config.Config(
+                root=make_repo(Path(d)),
+                repo="acme/widgets",
+                merge_advisory_checks=["E2E tests (*"],
+            ))
+            with mock.patch.object(dispatch, "run", side_effect=responses):
+                rows = dispatch.merge_checks(70)
+
+        self.assertEqual(
+            [(row["name"], row["bucket"]) for row in rows],
+            [("unit", "pass"), ("E2E tests (mi300x)", "advisory")],
+        )
+
     def test_merge_fails_closed_when_required_checks_are_unreadable(self) -> None:
         checks = [{"name": "unit", "bucket": "pass"}]
 
