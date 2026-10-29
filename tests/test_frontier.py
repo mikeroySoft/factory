@@ -332,6 +332,19 @@ class FrontierTest(unittest.TestCase):
         [reset] = [e for e in self.events() if e.get("event") == "rounds-reset"]
         self.assertEqual(reset["actor"], "alice")
 
+    def test_owner_requeue_renews_rounds_when_handoff_follows_decision(self) -> None:
+        self.direct_requeue()
+        self.timeline.insert(-1, {
+            "event": "commented", "id": 103, "created_at": "2026-10-28T15:52:30Z",
+            "user": {"login": "runner"}, "body": "Factory handoff",
+        })
+        dispatch.record("comment", ticket=79, kind="handoff", comment=103)
+
+        dispatch._record_human_round_reset(79)
+
+        [reset] = [e for e in self.events() if e.get("event") == "rounds-reset"]
+        self.assertEqual(reset["actor"], "alice")
+
     def test_human_release_after_failed_fix_or_split_renews_rounds(self) -> None:
         for decision in ("FIX", "SPLIT"):
             with self.subTest(decision=decision):
