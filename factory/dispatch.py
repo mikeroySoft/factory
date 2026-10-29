@@ -86,6 +86,41 @@ def configure(c: Config) -> None:
 # `promote_pass` merges them; the ticket merge stage's `agent/(\d+)` never matches.
 LESSONS_BRANCH = re.compile(r"agent/(lessons|curate|revert-lessons)-")
 
+DEPENDENCY_LOCKFILES = frozenset({
+    "Cargo.lock",
+    "Gemfile.lock",
+    "Package.resolved",
+    "Pipfile.lock",
+    "bun.lock",
+    "bun.lockb",
+    "composer.lock",
+    "flake.lock",
+    "go.sum",
+    "mix.lock",
+    "npm-shrinkwrap.json",
+    "package-lock.json",
+    "packages.lock.json",
+    "pdm.lock",
+    "pnpm-lock.yaml",
+    "poetry.lock",
+    "pubspec.lock",
+    "requirements.lock",
+    "uv.lock",
+    "yarn.lock",
+})
+DEPENDENCY_CHANGE = re.compile(
+    r"\b(?:add|bump|change|install|pin|refresh|regenerate|remove|replace|sync|update|upgrade)"
+    r"\w*\b.{0,80}\b(?:dependenc(?:y|ies)|lock ?file|package(?:s)?)\b"
+    r"|\b(?:dependenc(?:y|ies)|lock ?file|package(?:s)?)\b.{0,80}"
+    r"\b(?:add|bump|change|install|pin|refresh|regenerate|remove|replace|sync|update|upgrade)\w*\b",
+    re.IGNORECASE,
+)
+DEPENDENCY_ACTION = re.compile(r"\b(?:bump|install|pin|upgrade)\w*\b", re.IGNORECASE)
+NEGATED_CHANGE = re.compile(
+    r"\b(?:do not|does not|don't|doesn't|never|no|not|unplanned|without)\b",
+    re.IGNORECASE,
+)
+
 PLAN_INSTRUCTIONS = """## Attempt plan
 
 Before implementing, create `.factory/plans/current` and write a short plan to
@@ -1530,6 +1565,83 @@ def ensure_worktree(n: int) -> Path:
         start = f"origin/{cfg.main}"
     run(["git", "worktree", "add", str(wt), "-b", branch, start], cwd=ROOT)
     return wt
+
+
+def _dependency_lockfiles(wt: Path, base: str) -> list[str]:
+    changed = run(
+        ["git", "diff", "--name-only", "-z", base, "--"], cwd=wt,
+    ).stdout.rstrip("\0").split("\0")
+    untracked = run(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=wt,
+    ).stdout.rstrip("\0").split("\0")
+    return sorted({
+        path for path in [*changed, *untracked]
+        if path and (
+            Path(path).name in DEPENDENCY_LOCKFILES
+            or Path(path).name.endswith(".lockfile")
+        )
+    })
+
+
+def _dependency_change_planned(wt: Path, n: int, path: str, body: str) -> bool:
+    plans = [
+        plan for plan in attempt_plan_dir(wt, 0).glob("*.md")
+        if plan.stem.isdigit() and int(plan.stem) > 0
+    ]
+    latest = max(plans, key=lambda plan: int(plan.stem), default=None)
+    sources = [latest.read_text(errors="replace")] if latest else []
+    if not sources:
+        sources = [body]
+        brief = brief_path(wt, n)
+        if brief.exists():
+            sources.append(brief.read_text(errors="replace"))
+    target = re.escape(path)
+    if Path(path).name != path:
+        target += "|" + re.escape(Path(path).name)
+    action = (
+        r"(?:add|bump|change|install|pin|refresh|regenerate|remove|replace|sync|update|upgrade)"
+        r"\w*"
+    )
+    named_change = re.compile(
+        rf"\b{action}\b.{{0,80}}(?:{target})|(?:{target}).{{0,80}}\b{action}\b",
+        re.IGNORECASE,
+    )
+    return any(
+        not NEGATED_CHANGE.search(line)
+        and (
+            named_change.search(line)
+            or DEPENDENCY_CHANGE.search(line)
+            or DEPENDENCY_ACTION.search(line)
+        )
+        for source in sources
+        for line in source.splitlines()
+    )
+
+
+def restore_unplanned_lockfiles(
+    wt: Path, n: int, body: str, base: str,
+) -> list[str]:
+    lockfiles = [
+        path for path in _dependency_lockfiles(wt, base)
+        if not _dependency_change_planned(wt, n, path, body)
+    ]
+    if not lockfiles:
+        return []
+    listed = run(
+        ["git", "ls-tree", "-r", "--name-only", "-z", base, "--", *lockfiles],
+        cwd=wt,
+    ).stdout.rstrip("\0").split("\0")
+    at_base = {path for path in listed if path}
+    if at_base:
+        run(
+            ["git", "restore", "--source", base, "--staged", "--worktree", "--", *sorted(at_base)],
+            cwd=wt,
+        )
+    for path in sorted(set(lockfiles) - at_base):
+        run(["git", "rm", "-f", "--ignore-unmatch", "--", path], cwd=wt)
+        (wt / path).unlink(missing_ok=True)
+    log(f"#{n}: restored unplanned dependency lockfile drift: {', '.join(lockfiles)}")
+    return lockfiles
 
 
 def commit_leftovers(wt: Path, n: int, title: str) -> None:
@@ -3840,6 +3952,9 @@ def worker_round(
         "llm-usage", ticket=n, stage="worker", attempt=attempt,
         local=_usage_local(usage), **identity, **usage,
     )
+    sync = sync_event(n)
+    tip = sync["upstream"] if sync else None
+    restore_unplanned_lockfiles(wt, n, body, tip or f"origin/{cfg.main}")
     commit_leftovers(wt, n, title)
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     handoff = results.source_metadata(cfg, n)
@@ -3866,8 +3981,6 @@ def worker_round(
             **identity, **timeout,
         )
         return False, "budget exceeded before gate", logfile, head
-    sync = sync_event(n)
-    tip = sync["upstream"] if sync else None
     handoff_path = wt / ".factory" / f"handoff-{n}.md"
     ok, report = run_gate(
         wt, n, **gate_flags(

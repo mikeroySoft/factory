@@ -1182,6 +1182,7 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
     write_config = LocalCLI.write_config
     commit_config = LocalCLI.commit_config
     cli = LocalCLI.cli
+    pr_config = LocalCLI.pr_config
 
     def run_lockfile_worker(self, plan: str) -> str:
         (self.repo / "uv.lock").write_text("base\n")
@@ -1224,3 +1225,56 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
         lock = self.run_lockfile_worker("## Files\n- uv.lock: update the declared dependency\n")
 
         self.assertEqual(lock, "worker drift\n")
+
+    def test_manager_fix_removes_unplanned_uv_lock_drift(self):
+        from unittest import mock
+
+        from factory import config, dispatch, manage
+
+        (self.repo / "uv.lock").write_text("base\n")
+        self.git("add", "uv.lock")
+        self.git("commit", "-qm", "lock baseline")
+        self.git("push", "-q", "origin", "main")
+        self.pr_config(fails=0)
+        self.state.write_text(json.dumps({"reviews": 1}))
+        self.worker.write_text(
+            "import subprocess\n"
+            "from pathlib import Path\n"
+            "p = Path('.factory/plans/current/1.md')\n"
+            "p.parent.mkdir(parents=True, exist_ok=True)\n"
+            "p.write_text('## Files\\n- change.txt\\n')\n"
+            "Path('uv.lock').write_text('worker drift\\n')\n"
+            "subprocess.run(['git', 'add', 'uv.lock'], check=True)\n"
+            "subprocess.run(['git', 'commit', '-qm', 'worker lock edit'], check=True)\n"
+        )
+        wt = self.repo / ".factory" / "wt-7"
+        wt.parent.mkdir(exist_ok=True)
+        self.git("worktree", "add", str(wt), "-b", "agent/7")
+        head = self.git("rev-parse", "HEAD").stdout.strip()
+        packet = self.repo / ".factory" / "packet.md"
+        packet.write_text("fix it")
+        issue = {"title": "local change", "body": "", "comments": [], "labels": []}
+        pr = {
+            "state": "OPEN", "headRefName": "agent/7", "headRefOid": head,
+            "baseRefName": "main", "reviewDecision": "",
+        }
+        with mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(
+                    dispatch, "gh_json",
+                    side_effect=lambda args: pr if args[:2] == ["pr", "view"] else issue,
+                ), \
+                mock.patch.object(dispatch, "push_agent", return_value=head), \
+                mock.patch.object(dispatch, "pr_comment"), \
+                mock.patch.object(dispatch, "approve_pr", return_value=True), \
+                mock.patch.object(dispatch, "escalate"):
+            dispatch.configure(config.load(self.repo))
+            manage.apply(
+                7, issue, "FIX", "",
+                {"worker": "default", "guidance": "fix"}, packet,
+            )
+
+        self.assertEqual((wt / "uv.lock").read_text(), "base\n")
+        changed = self.git(
+            "-C", str(wt), "diff", "--name-only", "origin/main...HEAD",
+        ).stdout.splitlines()
+        self.assertNotIn("uv.lock", changed)
