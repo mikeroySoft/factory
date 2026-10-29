@@ -69,13 +69,19 @@ def _cases_from_splits(splits: dict | None = None) -> list[str]:
 
 
 CASES = _cases_from_splits()
-
-
-def configured_reviewer_model(root: pathlib.Path = REPO) -> str:
-    model = config.command_model(config.load(root, worktree=True).reviewer)
-    if not model:
-        raise ValueError("configured reviewer command has no explicit --model")
-    return model
+MODEL_QUERY = """
+import pathlib, sys, tomllib
+root = pathlib.Path(sys.argv[1])
+sys.path.insert(0, str(root))
+from factory import config
+path = root / config.CONFIG_NAME
+raw = tomllib.loads(path.read_text()) if path.is_file() else {}
+command = raw.get("review", {}).get("command", config.DEFAULT_REVIEWER)
+model = config.command_model(command)
+if not model:
+    raise SystemExit("configured reviewer command has no explicit --model")
+print(model)
+"""
 
 
 def contract_commit(contract: str) -> str:
@@ -83,10 +89,17 @@ def contract_commit(contract: str) -> str:
     if (
         not isinstance(commit, str)
         or len(commit) != 40
-        or any(character not in "0123456789abcdef" for character in commit)
+        or not all(c in "0123456789abcdef" for c in commit)
     ):
         raise ValueError(f"unknown calibration contract {contract!r}")
     return commit
+
+
+def configured_reviewer_model(root: pathlib.Path) -> str:
+    return subprocess.run(
+        [sys.executable, "-c", MODEL_QUERY, str(root)],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
 
 
 def sha(text: str) -> str:

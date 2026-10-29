@@ -3558,6 +3558,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 continue
             behind = gh_json(["api", f"repos/{REPO}/compare/{cfg.main}...{head}"])["behind_by"]
             from factory import eval as eval_suite
+            from factory import reviewer_eval
 
             changed_paths = [
                 item["path"] for item in fresh.get("files", [])
@@ -3567,9 +3568,44 @@ def merge_pass_locked(dry_run: bool) -> None:
                 f"{shlex.quote(sys.executable)} -m factory eval "
                 f"--profile {shlex.quote(cfg.eval_profile)}"
             )
+            reviewer_trigger = False
+            if cfg.reviewer_eval_schedule and "files" in fresh and not behind:
+                try:
+                    reviewer_trigger = reviewer_eval.trigger_for_checkout(
+                        changed_paths,
+                        ROOT,
+                        FACTORY / f"wt-{n}",
+                        cfg.review_policy,
+                    )
+                except Exception as exc:  # noqa: BLE001 - unavailable trigger evidence fails closed
+                    reviewer_trigger = True
+                    log(
+                        f"PR #{pr_num}: reviewer contract comparison failed "
+                        f"({type(exc).__name__}: {exc}); requiring calibration"
+                    )
+            reviewer_eval_command = (
+                f"{shlex.quote(sys.executable)} -m factory reviewer-eval"
+            )
+            reviewer_candidate_command = (
+                f"cd {shlex.quote(str(FACTORY / f'wt-{n}'))} && "
+                f"{reviewer_eval_command}"
+            )
+            reviewer_command = reviewer_candidate_command
+            if reviewer_trigger and not reviewer_eval.baseline_ready(cfg):
+                reviewer_command = (
+                    f"cd {shlex.quote(str(ROOT))} && {reviewer_eval_command} && "
+                    f"{reviewer_candidate_command}"
+                )
             if dry_run:
                 if behind:
                     log(f"PR #{pr_num}: would refresh (behind main)")
+                elif reviewer_trigger and not reviewer_eval.merge_allowed(
+                    True, head, lifecycle.read_events(EVENTS)
+                ):
+                    log(
+                        f"PR #{pr_num}: would refuse (reviewer calibration result missing "
+                        f"or blocking for {head}); run `{reviewer_command}`"
+                    )
                 elif (
                     cfg.eval_schedule
                     and "files" in fresh
@@ -3650,6 +3686,34 @@ def merge_pass_locked(dry_run: bool) -> None:
                 execution.outcome, execution.reason = "not_eligible", "eval_required"
                 execution.wait(
                     "eval_required", mode="eligibility", pr=pr_num, head=head, command=command,
+                )
+                continue
+            reviewer_result = reviewer_eval.result_for_head(head, events)
+            if reviewer_trigger and reviewer_result is not None and not any(
+                row.get("event") == "reviewer-eval-comment"
+                and row.get("pr") == pr_num
+                and row.get("head") == head
+                for row in events
+            ):
+                pr_comment(n, reviewer_eval.format_report(reviewer_result))
+                record("reviewer-eval-comment", ticket=n, pr=pr_num, head=head)
+            if not reviewer_eval.merge_allowed(reviewer_trigger, head, events):
+                reason = (
+                    "reviewer_eval_required"
+                    if reviewer_result is None
+                    else "reviewer_eval_blocked"
+                )
+                log(
+                    f"PR #{pr_num}: reviewer calibration result missing or blocking "
+                    f"for {head}; run `{reviewer_command}`; not merging"
+                )
+                execution.outcome, execution.reason = "not_eligible", reason
+                execution.wait(
+                    reason,
+                    mode="eligibility",
+                    pr=pr_num,
+                    head=head,
+                    command=reviewer_command,
                 )
                 continue
             approved = _head_evidence_matches(

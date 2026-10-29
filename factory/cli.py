@@ -19,6 +19,7 @@ COMMANDS = {
     "explain": ("trace", "main", "explain one ticket's routing decisions from the local journal"),
     "learn": ("learn", "main", "distil recent ticket outcomes into .factory-lessons.md"),
     "eval": ("eval", "main", "replay the frozen worker suite with one profile"),
+    "reviewer-eval": ("reviewer_eval", "main", "run the frozen reviewer calibration gate three times"),
     "score": ("score", "main", "rubric-score finished tickets' worker attempts from their transcripts"),
     "release": ("release", "main", "measure the quality bar and cut an atomic patch release"),
     "dashboard": ("dashboard", "main", "serve the authenticated outcome-control workspace"),

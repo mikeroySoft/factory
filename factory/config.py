@@ -97,6 +97,7 @@ KNOWN_KEYS = {
     "release": ("auto", "version_file", "min_tickets", "bar_min_tickets",
                 "bar_floor_human_rate", "bar_floor_first_pass"),
     "eval": ("max_cases", "max_tokens", "budget_min", "profile", "schedule"),
+    "reviewer_eval": ("max_cases", "budget_min", "schedule"),
     "gate": ("timeout", "lock", "check", "protected_paths", "add_only_paths"),
     "leak_scan": ("pattern", "exclude", "extra"),
     "triage": ("url", "model", "timeout", "service"),
@@ -217,6 +218,9 @@ class Config:
     eval_budget_min: int = 720
     eval_profile: str = "default"
     eval_schedule: bool = False
+    reviewer_eval_max_cases: int = 11
+    reviewer_eval_budget_min: int = 720
+    reviewer_eval_schedule: bool = False
     release_auto: bool = False
     release_version_file: str = "factory/__init__.py"
     release_min_tickets: int = 5
@@ -650,12 +654,15 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     release = raw.get("release", {})
     learn = raw.get("learn", {})
     evaluation = raw.get("eval", {})
+    reviewer_evaluation = raw.get("reviewer_eval", {})
     if not isinstance(learn, dict):
         raise ConfigError("[learn] must be a table")
     if not isinstance(release, dict):
         raise ConfigError("[release] must be a table")
     if not isinstance(evaluation, dict):
         raise ConfigError("[eval] must be a table")
+    if not isinstance(reviewer_evaluation, dict):
+        raise ConfigError("[reviewer_eval] must be a table")
     cfg = Config(root=root, repo=slug, raw_repo=raw_repo)
     cfg.watch_bands = band_settings(root / BANDS_NAME)
     cfg.upstream = repo_t.get("upstream") or None
@@ -783,6 +790,16 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     cfg.eval_schedule = evaluation.get("schedule", cfg.eval_schedule)
     if type(cfg.eval_schedule) is not bool:
         raise ConfigError("eval.schedule must be true or false")
+    for key in ("max_cases", "budget_min"):
+        value = reviewer_evaluation.get(key, getattr(cfg, f"reviewer_eval_{key}"))
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ConfigError(f"reviewer_eval.{key} must be a positive integer")
+        setattr(cfg, f"reviewer_eval_{key}", value)
+    cfg.reviewer_eval_schedule = reviewer_evaluation.get(
+        "schedule", cfg.reviewer_eval_schedule
+    )
+    if type(cfg.reviewer_eval_schedule) is not bool:
+        raise ConfigError("reviewer_eval.schedule must be true or false")
     auto = release.get("auto", cfg.release_auto)
     version_file = release.get("version_file", cfg.release_version_file)
     min_tickets = release.get("min_tickets", cfg.release_min_tickets)

@@ -13,10 +13,10 @@ head. The clone's `refs/remotes/origin/main` is the case review base, so both th
 policy and diff come from the same refs production uses. The reviewer can read any file
 and the live issue itself. No packet envelope is appended.
 
-Deliberate deviations from production, applied identically to every run: `--mode text`,
-`--no-title`, `--max-time`, and `--auto-approve` (a print-mode approval prompt would
-otherwise hang the run and confound the measurement). Each run reports whether the
-reviewer mutated its clone.
+Deliberate deviations from production, applied identically to every run: `--no-title`,
+`--max-time`, and `--auto-approve` (a print-mode approval prompt would otherwise hang
+the run and confound the measurement). Each run reports whether the reviewer mutated
+its clone.
 
 usage: run_tools.py [--all] <out-dir> <samples> [contract ...]
   --all  score every frozen case, not just REVISE-oracle heads
@@ -65,6 +65,7 @@ def _defect_cases() -> list[str]:
 CASES = CORPUS if "--all" in sys.argv else _defect_cases()
 TIMEOUT = 900
 
+
 def sha(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
@@ -76,8 +77,9 @@ def oracle(case: str) -> dict:
 def capture(contract: str, case: str, source: pathlib.Path) -> str:
     with tempfile.TemporaryDirectory(prefix="cal-capture-") as scratch:
         out = pathlib.Path(scratch) / "prompt.txt"
+        commit = contract_commit(contract)
         subprocess.run([sys.executable, str(EXP / "capture_contract.py"),
-                        str(checkout(contract_commit(contract))), scratch, case.split("-")[0],
+                        str(checkout(commit)), scratch, case.split("-")[0],
                         str(EXP / "cases" / case / "sources/gate-report.md"), str(out),
                         str(source), oracle(case)["head"]],
                        check=True, capture_output=True, text=True, cwd=scratch)
@@ -104,6 +106,7 @@ def review(contract: str, case: str, sample: int, model: str) -> dict:
         (root / "review.diff").write_text(diff)
         prompt = capture(contract, case, wt)
         started = time.monotonic()
+
         proc = subprocess.run(["omp", "-p", "--mode", "json", "--no-session", "--no-title",
                                "--auto-approve", "--max-time", "600", "--model", model, prompt],
                               cwd=root, capture_output=True, text=True, timeout=TIMEOUT,
