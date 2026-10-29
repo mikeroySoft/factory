@@ -573,11 +573,16 @@ class FrontierTest(unittest.TestCase):
                     packet = self.repo / ".factory" / "packet.md"
                     packet.write_text("Original failure evidence")
 
-                    def relabel(cmd, *args, succeeds=succeeds, release=release, **kwargs):
+                    def relabel(cmd, *args, succeeds=succeeds, release=release, actor=actor, **kwargs):
                         result = self.fake_run(cmd, *args, **kwargs)
                         if cmd[1:3] == ["issue", "edit"]:
                             if not succeeds:
                                 raise subprocess.CalledProcessError(1, cmd, stderr="label failed")
+                            self.timeline.append({
+                                "event": "commented", "id": 103,
+                                "created_at": "2026-10-28T15:52:45Z",
+                                "user": {"login": actor}, "body": "Owner clarification during relabel",
+                            })
                             self.timeline.append(release)
                         return result
 
@@ -785,6 +790,27 @@ class FrontierTest(unittest.TestCase):
                 dispatch._record_human_round_reset(79)
 
                 self.assertFalse(any(e.get("event") == "rounds-reset" for e in self.events()))
+
+    def test_noncomment_receipts_cannot_hide_the_owner_decision(self) -> None:
+        self.direct_requeue()
+        dispatch.record("review", ticket=79, comment=102)
+
+        dispatch._record_human_round_reset(79)
+
+        self.assertEqual(len([e for e in self.events() if e.get("event") == "rounds-reset"]), 1)
+
+    def test_manager_failure_cannot_duplicate_an_already_recorded_reset(self) -> None:
+        self.direct_requeue()
+        dispatch.record("rounds-reset", ticket=79, actor="alice",
+                        requeued_at="2026-10-28T15:53:00Z")
+        lifecycle.append(dispatch.EVENTS, {
+            "at": "2026-10-28T15:52:30Z", "event": "escalate", "ticket": 79,
+            "reason": "manager_failed", "round": 1,
+        })
+
+        dispatch._record_human_round_reset(79)
+
+        self.assertEqual(len([e for e in self.events() if e.get("event") == "rounds-reset"]), 1)
 
     def test_failed_close_is_not_replayed_for_the_same_head(self) -> None:
         self.cfg.manager_review = "all"
