@@ -108,16 +108,21 @@ DEPENDENCY_LOCKFILES = frozenset({
     "uv.lock",
     "yarn.lock",
 })
-DEPENDENCY_CHANGE = re.compile(
-    r"\b(?:add|bump|change|install|pin|refresh|regenerate|remove|replace|sync|update|upgrade)"
-    r"\w*\b.{0,80}\b(?:dependenc(?:y|ies)|lock ?file|package(?:s)?)\b"
-    r"|\b(?:dependenc(?:y|ies)|lock ?file|package(?:s)?)\b.{0,80}"
-    r"\b(?:add|bump|change|install|pin|refresh|regenerate|remove|replace|sync|update|upgrade)\w*\b",
+DEPENDENCY_ACTION = re.compile(
+    r"\b(?:add|bump|change|install|pin|refresh|regenerate|remove|replace|sync|update|upgrade)\b",
     re.IGNORECASE,
 )
-DEPENDENCY_ACTION = re.compile(r"\b(?:bump|install|pin|upgrade)\w*\b", re.IGNORECASE)
-NEGATED_CHANGE = re.compile(
-    r"\b(?:do not|does not|don't|doesn't|never|no|not|unplanned|without)\b",
+DEPENDENCY_TERM = re.compile(
+    r"\b(?:dependenc(?:y|ies)|lock ?files?|packages)\b",
+    re.IGNORECASE,
+)
+NEGATED_ACTION = re.compile(
+    r"\b(?:do not|does not|don't|doesn't|never|no|not|unplanned|without)\b"
+    r"(?:\s+\w+){0,6}\s*$",
+    re.IGNORECASE,
+)
+DIRECT_NEGATION = re.compile(
+    r"^\s*(?:do not|does not|don't|doesn't|never|no|not|unplanned|without)\b",
     re.IGNORECASE,
 )
 
@@ -1583,58 +1588,86 @@ def _dependency_lockfiles(wt: Path, base: str) -> list[str]:
     })
 
 
-def _dependency_change_planned(wt: Path, n: int, path: str, body: str) -> bool:
+def _dependency_change_planned(
+    wt: Path, n: int, path: str, body: str, base: str,
+) -> bool:
     plans = [
-        plan for plan in attempt_plan_dir(wt, 0).glob("*.md")
-        if plan.stem.isdigit() and int(plan.stem) > 0
+        plan for plan in (wt / ".factory" / "plans" / "current").glob("*.md")
+        if plan.stem.isdigit()
     ]
     latest = max(plans, key=lambda plan: int(plan.stem), default=None)
-    sources = [latest.read_text(errors="replace")] if latest else []
-    if not sources:
-        sources = [body]
-        brief = brief_path(wt, n)
-        if brief.exists():
-            sources.append(brief.read_text(errors="replace"))
-    target = re.escape(path)
-    if Path(path).name != path:
-        target += "|" + re.escape(Path(path).name)
-    action = (
-        r"(?:add|bump|change|install|pin|refresh|regenerate|remove|replace|sync|update|upgrade)"
-        r"\w*"
-    )
-    named_change = re.compile(
-        rf"\b{action}\b.{{0,80}}(?:{target})|(?:{target}).{{0,80}}\b{action}\b",
+    sources = [(latest.read_text(errors="replace"), True)] if latest else []
+    sources.append((body, False))
+    brief = brief_path(wt, n)
+    if brief.exists():
+        sources.append((brief.read_text(errors="replace"), False))
+
+    names = {path, Path(path).name}
+    alternatives = "|".join(re.escape(name) for name in sorted(names, key=len, reverse=True))
+    target = re.compile(
+        rf"(?<![\w/.-])(?:{alternatives})(?![\w/.-])",
         re.IGNORECASE,
     )
-    return any(
-        not NEGATED_CHANGE.search(line)
-        and (
-            named_change.search(line)
-            or DEPENDENCY_CHANGE.search(line)
-            or DEPENDENCY_ACTION.search(line)
-        )
-        for source in sources
-        for line in source.splitlines()
+    listed = re.compile(
+        rf"^\s*[-*]\s*`?(?:{alternatives})`?(?:\s*$|\s*:)",
+        re.IGNORECASE,
     )
+    current = (wt / path).read_text(errors="replace") if (wt / path).is_file() else ""
+    previous = run(["git", "show", f"{base}:{path}"], cwd=wt, check=False).stdout
+    lock_text = current + "\n" + previous
+
+    for source, is_plan in sources:
+        for line in source.splitlines():
+            file_entry = listed.search(line)
+            if is_plan and file_entry and not DIRECT_NEGATION.match(line[file_entry.end():]):
+                return True
+            targets = list(target.finditer(line))
+            terms = list(DEPENDENCY_TERM.finditer(line))
+            for action in DEPENDENCY_ACTION.finditer(line):
+                if NEGATED_ACTION.search(line[:action.start()]):
+                    continue
+                if any(
+                    max(action.start(), item.start()) - min(action.end(), item.end()) <= 80
+                    for item in [*targets, *terms]
+                ):
+                    return True
+                named = re.match(
+                    r"\s+(?:the\s+)?([@A-Za-z0-9][\w@./-]*)",
+                    line[action.end():],
+                    re.IGNORECASE,
+                )
+                if named:
+                    dependency = named.group(1).rstrip(".,")
+                    if re.search(
+                        rf"(?<![\w@./-]){re.escape(dependency)}(?![\w@./-])",
+                        lock_text,
+                        re.IGNORECASE,
+                    ):
+                        return True
+    return False
 
 
 def restore_unplanned_lockfiles(
     wt: Path, n: int, body: str, base: str,
 ) -> list[str]:
+    common = run(["git", "merge-base", base, "HEAD"], cwd=wt).stdout.strip()
     lockfiles = [
-        path for path in _dependency_lockfiles(wt, base)
-        if not _dependency_change_planned(wt, n, path, body)
+        path for path in _dependency_lockfiles(wt, common)
+        if not _dependency_change_planned(wt, n, path, body, common)
     ]
     if not lockfiles:
         return []
     listed = run(
-        ["git", "ls-tree", "-r", "--name-only", "-z", base, "--", *lockfiles],
+        ["git", "ls-tree", "-r", "--name-only", "-z", common, "--", *lockfiles],
         cwd=wt,
     ).stdout.rstrip("\0").split("\0")
     at_base = {path for path in listed if path}
     if at_base:
         run(
-            ["git", "restore", "--source", base, "--staged", "--worktree", "--", *sorted(at_base)],
+            [
+                "git", "restore", "--source", common, "--staged", "--worktree",
+                "--", *sorted(at_base),
+            ],
             cwd=wt,
         )
     for path in sorted(set(lockfiles) - at_base):

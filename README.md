@@ -393,15 +393,15 @@ status and lists changed files the plan did not name and planned proof absent
 from the gate report. Plan drift is evidence, not an automatic `REVISE`.
 
 Before committing worker leftovers or running the attempt gate, the dispatcher
-compares known dependency lockfiles with the ticket base. An affirmative
-dependency or lockfile change in the latest numbered plan preserves those
-edits; without a plan, the ticket body and admitted brief supply the intent.
-Otherwise Factory restores tracked lockfiles from the base and removes newly
-introduced lockfiles, so incidental verifier drift is absent from the gated
-and pushed head. Repository gate commands that use `uv run` pass `--frozen`;
-preventing `uv` from writing `uv.lock` is simpler than repairing the worktree
-after the authoritative gate has run.
-
+compares known dependency lockfiles with the ticket branch's merge-base. The
+latest numbered plan, ticket body, and admitted brief can preserve an edit by
+naming the lockfile, dependencies generally, or a dependency present in that
+lockfile; unrelated action words do not. Otherwise Factory restores tracked
+lockfiles from the merge-base and removes newly introduced lockfiles, so a
+moving main or incidental verifier drift cannot alter the gated and pushed
+head. Repository gate commands that use `uv run` pass `--frozen`; preventing
+`uv` from writing `uv.lock` is simpler than repairing the worktree after the
+authoritative gate has run.
 
 The workspace **Decisions** view (`/?view=decisions&ticket=N`, or `/decisions`)
 reads the selected repository through authenticated `GET /api/trace?ticket=N`.
