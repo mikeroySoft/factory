@@ -908,14 +908,21 @@ def _record_human_round_reset(n: int) -> None:
     from factory import handoff
 
     timeline = handoff.timeline(n)
-    release_index = next((
-        index for index in range(len(timeline) - 1, -1, -1)
-        if timeline[index].get("event") == "labeled"
-        and timeline[index].get("label", {}).get("name") == LABEL_AGENT
-        and timeline[index].get("created_at", "") >= events[escalation_index].get("at", "")
-    ), None)
-    if release_index is None:
+    releases = [
+        index for index, item in enumerate(timeline)
+        if item.get("event") == "labeled"
+        and item.get("label", {}).get("name") == LABEL_AGENT
+        and item.get("created_at", "") >= events[escalation_index].get("at", "")
+    ]
+    factory_requeues = sum(
+        event.get("event") in {"conflict-requeue", "gate-requeue", "risk-requeue"}
+        or event.get("event") == "manage"
+        and event.get("decision") in {"AUTHORIZE", "RETRY", "REWRITE", "ROUTE"}
+        for event in events[escalation_index + 1:]
+    )
+    if len(releases) <= factory_requeues:
         return
+    release_index = releases[-1]
     machine_comments = {
         event["comment"] for event in events
         if event.get("event") == "comment" and type(event.get("comment")) is int
