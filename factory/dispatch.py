@@ -906,15 +906,14 @@ def _label_transition(item: dict) -> dict:
 
 
 def requeue_agent(
-    n: int, *, check: bool = True, unassign: bool = False, from_human: bool = True,
+    n: int, *, check: bool = True, unassign: bool = False,
 ) -> subprocess.CompletedProcess:
     """Apply an automatic release and retain observed transitions, not intent times."""
     from factory import handoff
 
-    # Only parked tickets can acquire a human budget reset. Avoid timeline reads
-    # for ordinary refresh requeues that have never needed an owner decision.
-    parked = from_human and any(e.get("ticket") == n and e.get("event") == "escalate"
-                               for e in lifecycle.read_events(EVENTS))
+    # A never-escalated ticket cannot acquire a human budget reset.
+    parked = any(e.get("ticket") == n and e.get("event") == "escalate"
+                 for e in lifecycle.read_events(EVENTS))
     command = [
         "gh", "issue", "edit", str(n), "--repo", REPO,
         "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
@@ -2680,7 +2679,7 @@ def sync_staged(n: int, wt: Path) -> tuple[str, str] | None:
     """(gate report, head) when the dispatcher's own staged candidate passed the gate and
     is still this worktree's exact head: nothing for a worker to fix."""
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
-    staged = next((e for e in reversed(lifecycle.read_events(EVENTS))
+    staged = next((e for e in reversed(_current_round_events(lifecycle.read_events(EVENTS), n))
                    if e.get("event") == "attempt" and e.get("ticket") == n and e.get("attempt") == 0), None)
     report = wt / ".factory" / f"gate-report-{n}.md"
     if not staged or staged.get("gate") != "PASS" or staged.get("head") != head or not report.exists():
@@ -3334,7 +3333,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             remote_head, remote_head, [],
         )
         record("conflict-requeue", ticket=n, pr=pr, head=remote_head, verb=verb, files=conflicts, round=rounds + 1)
-        requeue_agent(n, check=False, unassign=True, from_human=LABEL_HUMAN in labels)
+        requeue_agent(n, check=False, unassign=True)
         log(f"#{n}: PR #{pr} {verb} onto {cfg.main} conflicts in {', '.join(conflicts)}; requeued to a worker")
         return False
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
@@ -3456,7 +3455,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
                 reports=reports, changed_files=changed_files, unrelated=unrelated, round=rounds + 1,
                 refreshed_head=head, evidence_ref=evidence_ref,
             )
-            requeue_agent(n, check=False, unassign=True, from_human=LABEL_HUMAN in labels)
+            requeue_agent(n, check=False, unassign=True)
             log(f"#{n}: PR #{pr} gate failed twice after {verb} onto {cfg.main}; requeued to a worker")
             return False
     if not ok:
@@ -3505,7 +3504,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
                 "risk-requeue", ticket=n, pr=pr, head=head,
                 packet=state["packet"], round=rounds + 1,
             )
-            requeue_agent(n, check=False, unassign=True, from_human=LABEL_HUMAN in labels)
+            requeue_agent(n, check=False, unassign=True)
             log(f"#{n}: PR #{pr} High-risk checks disagreed after refresh; requeued to a worker")
             return False
         withdraw(
