@@ -10,11 +10,13 @@ usage: run_calibration.py [out-dir] [samples] [contract ...] [--model MODEL]
 from __future__ import annotations
 
 import argparse
+import atexit
 import concurrent.futures as cf
 import hashlib
 import json
 import pathlib
 import statistics
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -28,7 +30,8 @@ from factory.dispatch import _omp_output
 
 EXP = pathlib.Path(__file__).parent
 REPO = EXP.parents[1]
-CHECKOUT_ROOT = pathlib.Path("/tmp/cal-checkout")
+CHECKOUT_ROOT = pathlib.Path(tempfile.mkdtemp(prefix="factory-cal-checkout-"))
+atexit.register(shutil.rmtree, CHECKOUT_ROOT, ignore_errors=True)
 CONTRACTS = {
     "baseline": "cadb9981524ab5506693e27f56ff8ac4ef911da6",
     "issue36": "1947fc4e3de23e71f64342f2c9cd2570d845db5e",
@@ -74,8 +77,25 @@ import pathlib, sys
 root = pathlib.Path(sys.argv[1])
 sys.path.insert(0, str(root))
 from factory import config
-cfg = config.load(root, worktree=True)
-model = config.command_model(cfg.reviewer)
+if hasattr(config, "command_model"):
+    try:
+        cfg = config.load(root, worktree=True)
+    except TypeError:
+        cfg = config.load(root)
+    model = config.command_model(cfg.reviewer)
+else:
+    command = config.DEFAULT_REVIEWER
+    model = next((
+        command[index + 1]
+        for index, argument in enumerate(command[:-1])
+        if argument == "--model"
+    ), None)
+    if model is None:
+        model = next((
+            argument.split("=", 1)[1]
+            for argument in command
+            if argument.startswith("--model=")
+        ), None)
 if not model:
     raise SystemExit("configured reviewer command has no explicit --model")
 print(model)
@@ -105,7 +125,13 @@ def sha(text: str) -> str:
 
 
 def checkout(commit: str) -> pathlib.Path:
-    """Return a pinned, content-addressed clone of the contract under test."""
+    """A pinned, content-addressed clone of the contract under test.
+
+    Provisioned on demand under a process-private directory and keyed by commit,
+    so another local user cannot plant executable checkout content. Serialized and
+    idempotent within one run: concurrent jobs share one clone per commit, and a
+    clone already at that commit is never checked out again.
+    """
     dest = CHECKOUT_ROOT / commit[:12]
     origin = subprocess.run(
         ["git", "remote", "get-url", "origin"], cwd=REPO,

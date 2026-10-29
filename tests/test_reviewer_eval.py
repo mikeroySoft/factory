@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -15,10 +16,27 @@ from factory import config, lifecycle, reviewer_eval
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run(*, passed: bool, output: str = "VERDICT: REVISE", returncode: int = 0, timeout: bool = False) -> dict:
+def review_output(verdict: str = "REVISE", marker: str = "") -> str:
+    findings = (
+        [{"severity": "important", "pass": "bug", "path": "change.py", "line": 1,
+          "summary": "Primary defect."}]
+        if verdict == "REVISE" else []
+    )
+    prefix = f"{marker}\n" if marker else ""
+    return (
+        prefix
+        + "```json\n"
+        + json.dumps({"verdict": verdict, "findings": findings})
+        + f"\n```\nVERDICT: {verdict}"
+    )
+
+
+def run(
+    *, passed: bool, output: str | None = None, returncode: int = 0, timeout: bool = False
+) -> dict:
     return {
         "passed": passed,
-        "output": output,
+        "output": review_output() if output is None else output,
         "returncode": returncode,
         "timeout": timeout,
     }
@@ -36,6 +54,7 @@ class ReviewerEvalTest(unittest.TestCase):
             [run(passed=True), run(passed=True, returncode=1), run(passed=True)],
             [run(passed=True), run(passed=True, output=""), run(passed=True)],
             [run(passed=True), run(passed=True, output="no verdict"), run(passed=True)],
+            [run(passed=True), run(passed=True, output="VERDICT: REVISE"), run(passed=True)],
             [run(passed=True), run(passed=True, timeout=True), run(passed=True)],
             [run(passed=True), run(passed=True)],
         )
@@ -51,13 +70,18 @@ class ReviewerEvalTest(unittest.TestCase):
                 {"id": "D2", "severity": "secondary"},
             ],
         }
-        row = {"returncode": 0, "output": "details\nVERDICT: REVISE"}
+        row = {"returncode": 0, "output": review_output("REVISE")}
         self.assertTrue(reviewer_eval.grade_output(row, oracle, {"D1"})["passed"])
         self.assertFalse(reviewer_eval.grade_output(row, oracle, set())["passed"])
         self.assertFalse(
             reviewer_eval.grade_output(
-                {"returncode": 0, "output": "VERDICT: APPROVE"}, oracle, {"D1"}
+                {"returncode": 0, "output": review_output("APPROVE")}, oracle, {"D1"}
             )["passed"]
+        )
+        self.assertIsNone(
+            reviewer_eval.grade_output(
+                {"returncode": 0, "output": "VERDICT: REVISE"}, oracle, {"D1"}
+            )["verdict"]
         )
 
     def test_missing_and_absent_case_rows_block(self) -> None:
@@ -75,7 +99,11 @@ class ReviewerEvalTest(unittest.TestCase):
         self.assertEqual(summary["missing"], ["case-1", "case-2"])
 
     def test_single_failure_is_flaky_and_does_not_block(self) -> None:
-        outputs = ["one\nVERDICT: REVISE", "two\nVERDICT: APPROVE", "three\nVERDICT: REVISE"]
+        outputs = [
+            review_output("REVISE", "one"),
+            review_output("APPROVE", "two"),
+            review_output("REVISE", "three"),
+        ]
         rows = [
             {"case": "case-1", **run(passed=value, output=output)}
             for value, output in zip((True, False, True), outputs, strict=True)
@@ -94,18 +122,36 @@ class ReviewerEvalTest(unittest.TestCase):
             ["case-1"], rows, {"statuses": {"case-1": "always-pass"}},
             candidate="a" * 40, corpus_version=2,
         )
-        self.assertEqual(summary["flips"], ["case-1"])
+        self.assertEqual(summary["regressions"], ["case-1"])
+        self.assertEqual(summary["flips"], [{
+            "case": "case-1", "baseline": "always-pass", "head": "always-fail",
+        }])
         self.assertEqual(summary["verdict"], "block")
         self.assertIn("case-1", reviewer_eval.format_report(summary))
+        improved = reviewer_eval.summarize(
+            ["case-1"],
+            [{"case": "case-1", **run(passed=True)} for _ in range(3)],
+            {"statuses": {"case-1": "always-fail"}},
+            candidate="b" * 40,
+            corpus_version=2,
+        )
+        self.assertEqual(improved["flips"], [{
+            "case": "case-1", "baseline": "always-fail", "head": "always-pass",
+        }])
+        self.assertEqual(improved["verdict"], "pass")
+        self.assertIn("always-fail → always-pass", reviewer_eval.format_report(improved))
 
     def test_flaky_source_tags(self) -> None:
         mixed = (True, False, True)
         different = [
-            {"case": "agent", **run(passed=value, output=f"output-{index}\nVERDICT: REVISE")}
+            {
+                "case": "agent",
+                **run(passed=value, output=review_output("REVISE", f"output-{index}")),
+            }
             for index, value in enumerate(mixed)
         ]
         identical = [
-            {"case": "judge", **run(passed=value, output="same\nVERDICT: REVISE")}
+            {"case": "judge", **run(passed=value, output=review_output("REVISE", "same"))}
             for value in mixed
         ]
         summary = reviewer_eval.summarize(
@@ -176,16 +222,19 @@ class ReviewerEvalTest(unittest.TestCase):
                 (12, 90, True),
             )
 
-    def test_exact_head_gate_evidence(self) -> None:
+    def test_exact_head_and_current_baseline_gate_evidence(self) -> None:
         head = "a" * 40
+        baseline = {"main_sha": "m" * 40, "statuses": {"case": "always-pass"}}
+        digest = reviewer_eval.baseline_digest(baseline)
         rows = [{
             "event": "reviewer-eval-summary", "candidate": head,
-            "status": "completed", "verdict": "pass",
+            "status": "completed", "verdict": "pass", "baseline_sha256": digest,
         }]
-        self.assertTrue(reviewer_eval.merge_allowed(True, head, rows))
-        self.assertFalse(reviewer_eval.merge_allowed(True, "b" * 40, rows))
-        self.assertFalse(reviewer_eval.merge_allowed(True, head, [{**rows[0], "verdict": "block"}]))
-        self.assertTrue(reviewer_eval.merge_allowed(False, "b" * 40, []))
+        self.assertTrue(reviewer_eval.merge_allowed(True, head, rows, digest))
+        self.assertFalse(reviewer_eval.merge_allowed(True, "b" * 40, rows, digest))
+        self.assertFalse(reviewer_eval.merge_allowed(True, head, rows, "0" * 64))
+        self.assertFalse(reviewer_eval.merge_allowed(True, head, [{**rows[0], "verdict": "block"}], digest))
+        self.assertTrue(reviewer_eval.merge_allowed(False, "b" * 40, [], None))
 
     def test_merge_refuses_triggering_head_without_result_and_journals_command(self) -> None:
         from factory import dispatch
@@ -232,13 +281,24 @@ class ReviewerEvalTest(unittest.TestCase):
             self.assertIn(str(root), command)
             self.assertIn(str(cfg.factory / "wt-7"), command)
             self.assertIn("-m factory reviewer-eval", command)
+            baseline = {
+                "main_sha": "m" * 40,
+                "corpus_version": 2,
+                "statuses": {"case-1": "always-pass"},
+            }
+            reviewer_eval.baseline_path(cfg).write_text(json.dumps(baseline))
+            digest = reviewer_eval.baseline_digest(baseline)
 
             lifecycle.append(cfg.factory / "events.jsonl", {
                 "event": reviewer_eval.EVENT,
                 "candidate": head,
                 "status": "completed",
                 "verdict": "block",
-                "flips": ["case-1"],
+                "baseline_sha256": digest,
+                "flips": [{
+                    "case": "case-1", "baseline": "always-pass", "head": "always-fail",
+                }],
+                "regressions": ["case-1"],
                 "missing": [],
                 "flaky": [],
             })
@@ -268,6 +328,53 @@ class ReviewerEvalTest(unittest.TestCase):
         for module in modules:
             self.assertFalse(hasattr(module, "MODEL"))
             self.assertEqual(module.configured_reviewer_model(ROOT), expected)
+
+    def test_historical_config_model_fallback_and_secure_checkout_root(self) -> None:
+        calibration = ROOT / "experiments/reviewer-calibration"
+        sys.path.insert(0, str(calibration))
+        self.addCleanup(lambda: sys.path.remove(str(calibration)))
+        spec = importlib.util.spec_from_file_location(
+            "test_run_calibration_legacy", calibration / "run_calibration.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+
+        with tempfile.TemporaryDirectory() as directory:
+            legacy = Path(directory)
+            package = legacy / "factory"
+            package.mkdir()
+            (package / "__init__.py").write_text("")
+            (package / "config.py").write_text(
+                'DEFAULT_REVIEWER = ["omp", "-p", "--model", "historical/reviewer", "{prompt}"]\n'
+                "def load(root):\n"
+                "    raise AssertionError('legacy fallback should use DEFAULT_REVIEWER')\n"
+            )
+            self.assertEqual(
+                module.configured_reviewer_model(legacy), "historical/reviewer"
+            )
+        self.assertNotEqual(module.CHECKOUT_ROOT, Path("/tmp/cal-checkout"))
+        self.assertEqual(stat.S_IMODE(module.CHECKOUT_ROOT.stat().st_mode), 0o700)
+
+    def test_calibration_subprocesses_drop_lifecycle_context(self) -> None:
+        context = '{"schema_version":1,"path":"/tmp/live-events.jsonl"}'
+        settings = subprocess.CompletedProcess(
+            [], 0, json.dumps({"model": "reviewer/model", "review_policy": "REVIEW.md"}), ""
+        )
+        hashes = subprocess.CompletedProcess([], 0, '{"case":"hash"}', "")
+        with mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: context}), \
+             mock.patch.object(subprocess, "run", side_effect=[settings, hashes]) as called, \
+             mock.patch.object(config, "git", return_value="a" * 40):
+            reviewer_eval.contract_fingerprint(ROOT)
+        for call in called.call_args_list:
+            self.assertNotIn(lifecycle.CONTEXT_ENV, call.kwargs["env"])
+
+    def test_trigger_rejects_checkout_not_at_pr_head(self) -> None:
+        with mock.patch.object(config, "git", return_value="b" * 40):
+            with self.assertRaisesRegex(RuntimeError, "PR head"):
+                reviewer_eval.trigger_for_checkout(
+                    ["factory/dispatch.py"], ROOT, ROOT, "REVIEW.md", expected_head="a" * 40
+                )
 
 
     def test_contract_fingerprint_uses_revision_prompt_model_and_policy(self) -> None:
@@ -411,10 +518,13 @@ class ReviewerEvalTest(unittest.TestCase):
             proc = mock.Mock()
             proc.communicate.return_value = ("", "crashed")
             proc.returncode = 2
-            with mock.patch.object(subprocess, "Popen", return_value=proc):
+            context = '{"schema_version":1,"path":"/tmp/live-events.jsonl"}'
+            with mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: context}), \
+                 mock.patch.object(subprocess, "Popen", return_value=proc) as popen:
                 rows, timed_out = reviewer_eval._run_runner(
                     ROOT, out, "a" * 40, 1.0
                 )
+            self.assertNotIn(lifecycle.CONTEXT_ENV, popen.call_args.kwargs["env"])
             self.assertFalse(timed_out)
             self.assertEqual(rows, [])
 
@@ -424,7 +534,7 @@ class ReviewerEvalTest(unittest.TestCase):
             {
                 "case": "12-before",
                 "returncode": 0,
-                "output": "VERDICT: REVISE",
+                "output": review_output("REVISE"),
                 "prompt_sha256": "prompt",
             }
             for _ in range(3)

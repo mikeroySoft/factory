@@ -3569,6 +3569,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 f"--profile {shlex.quote(cfg.eval_profile)}"
             )
             reviewer_trigger = False
+            reviewer_contract_ready = True
             if cfg.reviewer_eval_schedule and "files" in fresh and not behind:
                 try:
                     reviewer_trigger = reviewer_eval.trigger_for_checkout(
@@ -3576,8 +3577,10 @@ def merge_pass_locked(dry_run: bool) -> None:
                         ROOT,
                         FACTORY / f"wt-{n}",
                         cfg.review_policy,
+                        expected_head=head,
                     )
                 except Exception as exc:  # noqa: BLE001 - unavailable trigger evidence fails closed
+                    reviewer_contract_ready = False
                     reviewer_trigger = True
                     log(
                         f"PR #{pr_num}: reviewer contract comparison failed "
@@ -3592,9 +3595,14 @@ def merge_pass_locked(dry_run: bool) -> None:
             )
             reviewer_command = reviewer_candidate_command
             reviewer_baseline_ready = True
+            reviewer_baseline_sha256 = None
             if reviewer_trigger:
                 try:
                     reviewer_baseline_ready = reviewer_eval.baseline_ready(cfg)
+                    if reviewer_baseline_ready:
+                        reviewer_baseline_sha256 = reviewer_eval.baseline_digest(
+                            reviewer_eval.load_baseline(reviewer_eval.baseline_path(cfg))
+                        )
                 except Exception as exc:  # noqa: BLE001 - unavailable baseline evidence fails closed
                     reviewer_baseline_ready = False
                     log(
@@ -3610,7 +3618,10 @@ def merge_pass_locked(dry_run: bool) -> None:
                 if behind:
                     log(f"PR #{pr_num}: would refresh (behind main)")
                 elif reviewer_trigger and not reviewer_eval.merge_allowed(
-                    True, head, lifecycle.read_events(EVENTS)
+                    True,
+                    head,
+                    lifecycle.read_events(EVENTS),
+                    reviewer_baseline_sha256 if reviewer_contract_ready else None,
                 ):
                     log(
                         f"PR #{pr_num}: would refuse (reviewer calibration result missing "
@@ -3699,7 +3710,15 @@ def merge_pass_locked(dry_run: bool) -> None:
                 )
                 continue
             reviewer_result = reviewer_eval.result_for_head(head, events)
-            if reviewer_trigger and reviewer_result is not None and not any(
+            reviewer_expected_baseline = (
+                reviewer_baseline_sha256 if reviewer_contract_ready else None
+            )
+            reviewer_result_current = bool(
+                reviewer_result
+                and reviewer_expected_baseline
+                and reviewer_result.get("baseline_sha256") == reviewer_expected_baseline
+            )
+            if reviewer_trigger and reviewer_result_current and not any(
                 row.get("event") == "reviewer-eval-comment"
                 and row.get("pr") == pr_num
                 and row.get("head") == head
@@ -3707,11 +3726,16 @@ def merge_pass_locked(dry_run: bool) -> None:
             ):
                 pr_comment(n, reviewer_eval.format_report(reviewer_result))
                 record("reviewer-eval-comment", ticket=n, pr=pr_num, head=head)
-            if not reviewer_eval.merge_allowed(reviewer_trigger, head, events):
+            if not reviewer_eval.merge_allowed(
+                reviewer_trigger,
+                head,
+                events,
+                reviewer_expected_baseline,
+            ):
                 reason = (
-                    "reviewer_eval_required"
-                    if reviewer_result is None
-                    else "reviewer_eval_blocked"
+                    "reviewer_eval_blocked"
+                    if reviewer_result_current
+                    else "reviewer_eval_required"
                 )
                 log(
                     f"PR #{pr_num}: reviewer calibration result missing or blocking "

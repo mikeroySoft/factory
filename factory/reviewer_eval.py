@@ -28,7 +28,6 @@ _CONTRACT_PATHS = {
     "factory/templates/factory.toml",
 }
 _SHA = re.compile(r"[0-9a-f]{40}")
-_VERDICT = re.compile(r"(?m)^VERDICT: (APPROVE|REVISE)[ \t]*$")
 _SETTINGS_QUERY = """
 import json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
@@ -45,8 +44,10 @@ print(json.dumps({"model": model, "review_policy": cfg.review_policy}))
 def parsed_verdict(output: object) -> str | None:
     if not isinstance(output, str) or not output.strip():
         return None
-    matches = list(_VERDICT.finditer(output.strip()))
-    return matches[0].group(1) if len(matches) == 1 and matches[0].end() == len(output.strip()) else None
+    from factory.dispatch import _parse_review_output
+
+    _, verdict, parsed, _, reason = _parse_review_output(output.strip(), 5)
+    return verdict if parsed and reason is None else None
 
 
 def grade_output(row: dict, oracle: dict, covered: set[str] | None) -> dict:
@@ -109,8 +110,18 @@ def summarize(
     statuses = {case: grade_runs(grouped[case]) for case in case_ids}
     baseline_statuses = (baseline or {}).get("statuses", {})
     flips = [
-        case for case in case_ids
-        if baseline_statuses.get(case) == "always-pass" and statuses[case] == "always-fail"
+        {
+            "case": case,
+            "baseline": baseline_statuses[case],
+            "head": statuses[case],
+        }
+        for case in case_ids
+        if case in baseline_statuses and baseline_statuses[case] != statuses[case]
+    ]
+    regressions = [
+        row["case"]
+        for row in flips
+        if row["baseline"] == "always-pass" and row["head"] == "always-fail"
     ]
     missing = [case for case in case_ids if statuses[case] == "missing"]
     flaky = []
@@ -127,10 +138,11 @@ def summarize(
         "candidate": candidate,
         "corpus_version": corpus_version,
         "status": "completed",
-        "verdict": "block" if missing or flips else "pass",
+        "verdict": "block" if missing or regressions else "pass",
         "statuses": statuses,
         "missing": missing,
         "flips": flips,
+        "regressions": regressions,
         "flaky": flaky,
         "repeats": REPEATS,
     }
@@ -141,10 +153,15 @@ def format_report(summary: dict) -> str:
         return "\n".join(f"- `{value}`" for value in values) or "- None"
 
     flaky = [f"{row['case']} ({row['tag']})" for row in summary.get("flaky", [])]
+    flips = [
+        f"{row['case']} ({row['baseline']} → {row['head']})"
+        for row in summary.get("flips", [])
+    ]
     return (
         f"## Reviewer calibration: {str(summary.get('verdict', 'block')).upper()}\n\n"
         f"Baseline: {'missing' if summary.get('baseline_missing') else 'available'}\n\n"
-        f"### Stable pass→fail flips\n{lines(summary.get('flips', []))}\n\n"
+        f"### Status flips\n{lines(flips)}\n\n"
+        f"### Stable pass→fail regressions\n{lines(summary.get('regressions', []))}\n\n"
         f"### Missing cases\n{lines(summary.get('missing', []))}\n\n"
         f"### Flaky cases\n{lines(flaky)}"
     )
@@ -173,6 +190,12 @@ def case_ids(corpus: Path) -> list[str]:
     return [case for split in ("train", "lockbox") for case in splits[split]]
 
 
+def _isolated_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env.pop(lifecycle.CONTEXT_ENV, None)
+    return env
+
+
 def _checkout_settings(root: Path) -> dict:
     proc = subprocess.run(
         [sys.executable, "-c", _SETTINGS_QUERY, str(root)],
@@ -180,6 +203,7 @@ def _checkout_settings(root: Path) -> dict:
         capture_output=True,
         text=True,
         check=False,
+        env=_isolated_env(),
     )
     if proc.returncode:
         raise RuntimeError(proc.stderr.strip() or "reviewer configuration capture failed")
@@ -203,6 +227,7 @@ def contract_fingerprint(root: Path) -> dict:
         capture_output=True,
         text=True,
         check=False,
+        env=_isolated_env(),
     )
     if proc.returncode:
         raise RuntimeError(proc.stderr.strip() or "reviewer prompt capture failed")
@@ -213,11 +238,21 @@ def contract_fingerprint(root: Path) -> dict:
 
 
 def trigger_for_checkout(
-    paths: list[str], base_root: Path, head_root: Path, review_policy: str = "REVIEW.md"
+    paths: list[str],
+    base_root: Path,
+    head_root: Path,
+    review_policy: str = "REVIEW.md",
+    *,
+    expected_head: str | None = None,
 ) -> bool:
     watched = _CONTRACT_PATHS | {review_policy.removeprefix("./")}
     if not any(path.removeprefix("./") in watched for path in paths):
         return False
+    if (
+        expected_head is not None
+        and config.git(head_root, "rev-parse", "HEAD") != expected_head
+    ):
+        raise RuntimeError(f"reviewer calibration checkout is not at PR head {expected_head}")
     return requires_eval(
         paths,
         contract_fingerprint(base_root),
@@ -236,6 +271,12 @@ def load_baseline(path: Path) -> dict | None:
     except (OSError, json.JSONDecodeError):
         return None
     return value if isinstance(value, dict) else None
+
+def baseline_digest(baseline: dict | None) -> str | None:
+    if baseline is None:
+        return None
+    payload = json.dumps(baseline, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _baseline_matches(baseline: dict | None, version: int, fingerprint: dict) -> bool:
@@ -281,11 +322,21 @@ def result_for_head(head: str, rows: list[dict]) -> dict | None:
     ), None)
 
 
-def merge_allowed(triggered: bool, head: str, rows: list[dict]) -> bool:
+def merge_allowed(
+    triggered: bool,
+    head: str,
+    rows: list[dict],
+    expected_baseline_sha256: str | None,
+) -> bool:
     if not triggered:
         return True
     result = result_for_head(head, rows)
-    return bool(result and result.get("verdict") == "pass")
+    return bool(
+        expected_baseline_sha256
+        and result
+        and result.get("baseline_sha256") == expected_baseline_sha256
+        and result.get("verdict") == "pass"
+    )
 
 
 def _candidate_accepted(cfg: config.Config, candidate: str) -> bool | None:
@@ -384,6 +435,7 @@ def _run_runner(checkout: Path, out: Path, candidate: str, timeout: float) -> tu
         stderr=subprocess.PIPE,
         text=True,
         start_new_session=True,
+        env=_isolated_env(),
     )
     timed_out = False
     try:
@@ -462,6 +514,7 @@ def run(cfg: config.Config, checkout: Path, *, dry_run: bool = False) -> dict | 
     ):
         baseline = None
     summary = summarize(cases, graded, baseline, candidate=candidate, corpus_version=version)
+    summary["baseline_sha256"] = baseline_digest(baseline)
     accepted = _candidate_accepted(cfg, candidate)
     if accepted is not None:
         summary["accepted"] = accepted
