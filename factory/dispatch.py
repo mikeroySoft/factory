@@ -565,6 +565,14 @@ def frontier() -> list[dict]:
     return issues
 
 
+def _open_manager_review_issue(reason: str, packet: Path) -> str:
+    return run([
+        "gh", "issue", "create", "--repo", REPO,
+        "--title", reason, "--label", LABEL_AGENT,
+        "--body-file", str(packet),
+    ]).stdout.strip().splitlines()[-1]
+
+
 def review_intake_pass(dry_run: bool) -> None:
     """Review opted-in PR revisions, and `factory learn` PRs, without running the issue/merge pipeline."""
     prs = gh_json([
@@ -625,16 +633,19 @@ def review_intake_pass(dry_run: bool) -> None:
                             if e.get("event") in {"review-intake", "review-result"}
                         )
                     )
-                    url = run([
-                        "gh", "issue", "create", "--repo", REPO,
-                        "--title", reason, "--label", LABEL_AGENT,
-                        "--body-file", str(packet),
-                    ]).stdout.strip().splitlines()[-1]
+                    if cfg.reserved:
+                        url = _open_manager_review_issue(reason, packet)
+                    else:
+                        url = run([
+                            "gh", "issue", "create", "--repo", REPO,
+                            "--title", reason, "--label", LABEL_HUMAN,
+                            "--body-file", str(packet),
+                        ]).stdout.strip().splitlines()[-1]
                     record(
                         "escalate", pr=n, head=head,
                         ticket=int(url.rstrip("/").rsplit("/", 1)[-1]),
                         code="review_intake", reason=reason, packet=str(packet), round=1,
-                        need="EXPLAIN", category=None, route="manager",
+                        need="EXPLAIN", category=None, route="manager" if cfg.reserved else "human",
                     )
                 continue
             if any(e.get("event") == "review-intake" and e.get("head") == head
