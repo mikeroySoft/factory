@@ -89,6 +89,7 @@ KNOWN_KEYS = {
     "repo": ("slug", "upstream", "main"),
     "dispatch": ("max_active", "max_attempts", "budget_min", "idle_timeout", "exit_grace",
                  "review_rounds", "cost_pattern", "signoff"),
+    "merge": ("advisory_checks", "queued_check_timeout"),
     "workers": None,
     "worker_wrap": ("command",),
     "review": ("command", "second_command", "json_mode", "policy"),
@@ -178,6 +179,8 @@ class Config:
     review_rounds: int = 1  # REVISE -> worker -> re-review cycles before escalating
     signoff: bool = True  # `git commit -s`; Signed-off-by trailer on merges
     cost_pattern: str | None = None  # regex with one capture: dollars in the worker log
+    merge_advisory_checks: list[str] = field(default_factory=list)
+    merge_queued_check_timeout: int = 6 * 60 * 60
     workers: dict[str, list[str]] = field(
         default_factory=lambda: {"default": DEFAULT_WORKER, LABEL_CHORE: DEFAULT_CHORE_WORKER}
     )
@@ -646,10 +649,12 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     raw, raw_repo = merge(layered, raw), raw
     repo_t, dispatch, workers = raw.get("repo", {}), raw.get("dispatch", {}), raw.get("workers", {})
     gate, leak, triage, dash = raw.get("gate", {}), raw.get("leak_scan", {}), raw.get("triage", {}), raw.get("dashboard", {})
-    manager = raw.get("manager", {})
+    manager, merge_t = raw.get("manager", {}), raw.get("merge", {})
     release = raw.get("release", {})
     learn = raw.get("learn", {})
     evaluation = raw.get("eval", {})
+    if not isinstance(merge_t, dict):
+        raise ConfigError("[merge] must be a table")
     if not isinstance(learn, dict):
         raise ConfigError("[learn] must be a table")
     if not isinstance(release, dict):
@@ -670,6 +675,23 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     cfg.review_rounds = int(dispatch.get("review_rounds", cfg.review_rounds))
     cfg.cost_pattern = dispatch.get("cost_pattern") or None
     cfg.signoff = bool(dispatch.get("signoff", cfg.signoff))
+    advisory_checks = merge_t.get("advisory_checks", cfg.merge_advisory_checks)
+    if (
+        not isinstance(advisory_checks, list)
+        or any(not isinstance(pattern, str) or not pattern for pattern in advisory_checks)
+    ):
+        raise ConfigError("merge.advisory_checks must be an array of nonempty globs")
+    queued_check_timeout = merge_t.get(
+        "queued_check_timeout", cfg.merge_queued_check_timeout,
+    )
+    if (
+        isinstance(queued_check_timeout, bool)
+        or not isinstance(queued_check_timeout, int)
+        or queued_check_timeout < 1
+    ):
+        raise ConfigError("merge.queued_check_timeout must be a positive integer")
+    cfg.merge_advisory_checks = advisory_checks
+    cfg.merge_queued_check_timeout = queued_check_timeout
     if workers:
         if "default" not in workers:
             raise ConfigError(f"{path}: [workers] needs a `default` command")

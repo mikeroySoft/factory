@@ -24,6 +24,13 @@
 # Regex with one capture group: dollars spent, read from the worker log after
 # each attempt and summed into .factory/events.jsonl and the dashboard.
 # cost_pattern = 'Total cost:\s*\$([0-9.]+)'      # Claude Code
+
+[merge]
+# With required checks, only those checks govern merge eligibility. Repositories
+# without required checks use every check except names matching these fnmatch globs.
+# advisory_checks = ["E2E tests (*", "E2E consolidated report (self-hosted)"]
+# queued_check_timeout = 21600  # seconds before a never-assigned self-hosted job is examined
+
 [workers]
 # argv templates. {prompt} = path to the ticket prompt file, {cwd} = worktree.
 # OMP file prompts require `@{prompt}`; bare `{prompt}` passes the path as text.
