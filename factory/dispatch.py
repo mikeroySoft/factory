@@ -938,10 +938,7 @@ def _record_human_round_reset(n: int) -> None:
         if timeline[index].get("event") == "commented"
         and timeline[index].get("id") in machine_comments
     ), None)
-    boundary = max(
-        (index for index in (human_index, machine_index) if index is not None),
-        default=None,
-    )
+    boundary = human_index if human_index is not None else machine_index
     if boundary is None:
         return
     release = timeline[release_index]
