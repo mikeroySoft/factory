@@ -39,6 +39,7 @@ REASONS = {
     "conflict_markers", "git_grep_failed", "git_diff_failed", "leak_scan_matches",
     "github_command_failed", "triage_endpoint_timeout", "triage_endpoint_unavailable",
     "no_tickets", "unparseable_decision", "triage_feedback", "identity_mismatch", "ci_pending", "no_passing_ci",
+    "ci_runner",
     "exclusive_resource", "merge_lock_contended", "ticket_lock_contended", "capacity_reached", "worker_unavailable",
     "claim_failed",
     "state_changed", "check_failed", "stuck", "hung_after_done", "budget_exceeded", "root_dirty",
