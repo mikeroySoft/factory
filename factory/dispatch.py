@@ -914,18 +914,17 @@ def _record_human_round_reset(n: int) -> None:
         and item.get("label", {}).get("name") == LABEL_AGENT
         and item.get("created_at", "") >= events[escalation_index].get("at", "")
     ]
-    factory_requeues = sum(
-        event.get("event") in {"conflict-requeue", "gate-requeue", "risk-requeue"}
-        or event.get("event") == "manage"
-        and event.get("decision") in {"AUTHORIZE", "RETRY", "REWRITE", "ROUTE"}
-        for event in events[escalation_index + 1:]
-    )
-    if len(releases) <= factory_requeues:
+    if not releases:
         return
     release_index = releases[-1]
     machine_comments = {
         event["comment"] for event in events
         if event.get("event") == "comment" and type(event.get("comment")) is int
+    }
+    escalation_comments = {
+        event["comment"] for event in events
+        if event.get("event") == "comment" and event.get("kind") == "escalation"
+        and type(event.get("comment")) is int
     }
     human_index = next((
         index for index in range(release_index - 1, -1, -1)
@@ -936,7 +935,7 @@ def _record_human_round_reset(n: int) -> None:
     machine_index = next((
         index for index in range(release_index - 1, -1, -1)
         if timeline[index].get("event") == "commented"
-        and timeline[index].get("id") in machine_comments
+        and timeline[index].get("id") in escalation_comments
     ), None)
     boundary = human_index if human_index is not None else machine_index
     if boundary is None:
