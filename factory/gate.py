@@ -751,15 +751,19 @@ def main(argv: list[str]) -> int:
         return execute(args, execution)
 
 
-def _probe(command: list[str]) -> str:
+def _probe_result(command: list[str]) -> tuple[bool, str]:
     try:
         result = subprocess.run(
             command, capture_output=True, encoding="utf-8", errors="replace",
             timeout=5, check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return ""
-    return result.stdout.strip() if result.returncode == 0 else ""
+        return False, ""
+    return result.returncode == 0, result.stdout.strip()
+
+
+def _probe(command: list[str]) -> str:
+    return _probe_result(command)[1]
 
 
 def _kfd_targets() -> list[str]:
@@ -770,7 +774,9 @@ def _kfd_targets() -> list[str]:
         except OSError:
             continue
         if match and (version := int(match.group(1))):
-            target = f"gfx{version // 100}"
+            major, remainder = divmod(version, 10_000)
+            minor, stepping = divmod(remainder, 100)
+            target = f"gfx{major}{minor}{stepping:x}"
             if target not in targets:
                 targets.append(target)
     return targets
@@ -806,10 +812,10 @@ def toolchain() -> dict[str, str]:
             if targets:
                 values["rocm"] = f"{', '.join(targets)} (kfd sysfs)"
 
-    version = _probe(["modinfo", "-F", "version", "amdgpu"])
+    modinfo_ok, version = _probe_result(["modinfo", "-F", "version", "amdgpu"])
     if version:
         values["amdgpu"] = version
-    elif Path("/sys/module/amdgpu").is_dir():
+    elif modinfo_ok and Path("/sys/module/amdgpu").is_dir():
         values["amdgpu"] = "loaded (in-tree)"
     return values
 
