@@ -314,6 +314,24 @@ class FrontierTest(unittest.TestCase):
              "created_at": "2026-10-28T15:53:00Z", "actor": {"login": actor}},
         ]
 
+    def test_shared_account_owner_requeue_renews_rounds(self) -> None:
+        self.direct_requeue(actor="runner")
+
+        dispatch._record_human_round_reset(79)
+
+        [reset] = [e for e in self.events() if e.get("event") == "rounds-reset"]
+        self.assertEqual((reset["actor"], reset["requeued_at"]),
+                         ("runner", "2026-10-28T15:53:00Z"))
+
+    def test_owner_requeue_renews_rounds_when_human_label_was_already_present(self) -> None:
+        self.direct_requeue()
+        self.timeline.pop(0)
+
+        dispatch._record_human_round_reset(79)
+
+        [reset] = [e for e in self.events() if e.get("event") == "rounds-reset"]
+        self.assertEqual(reset["actor"], "alice")
+
     def test_human_release_after_failed_fix_or_split_renews_rounds(self) -> None:
         for decision in ("FIX", "SPLIT"):
             with self.subTest(decision=decision):
