@@ -345,6 +345,20 @@ class FrontierTest(unittest.TestCase):
         [reset] = [e for e in self.events() if e.get("event") == "rounds-reset"]
         self.assertEqual(reset["actor"], "alice")
 
+    def test_existing_human_label_and_later_handoff_do_not_hide_owner_requeue(self) -> None:
+        self.direct_requeue()
+        self.timeline.pop(0)
+        self.timeline.insert(-1, {
+            "event": "commented", "id": 103, "created_at": "2026-10-28T15:52:30Z",
+            "user": {"login": "runner"}, "body": "Factory handoff",
+        })
+        dispatch.record("comment", ticket=79, kind="handoff", comment=103)
+
+        dispatch._record_human_round_reset(79)
+
+        [reset] = [e for e in self.events() if e.get("event") == "rounds-reset"]
+        self.assertEqual(reset["actor"], "alice")
+
     def test_human_release_after_failed_fix_or_split_renews_rounds(self) -> None:
         for decision in ("FIX", "SPLIT"):
             with self.subTest(decision=decision):
@@ -381,6 +395,15 @@ class FrontierTest(unittest.TestCase):
              "created_at": "2026-10-28T15:51:30Z", "actor": {"login": "alice"}},
         ]
         dispatch._record_human_round_reset(79)
+        [reset] = [e for e in self.events() if e.get("event") == "rounds-reset"]
+        self.assertEqual(reset["actor"], "alice")
+
+    def test_failed_factory_relabel_does_not_veto_later_owner_requeue(self) -> None:
+        self.direct_requeue()
+        dispatch.record("manage", ticket=79, round=1, decision="RETRY")
+
+        dispatch._record_human_round_reset(79)
+
         [reset] = [e for e in self.events() if e.get("event") == "rounds-reset"]
         self.assertEqual(reset["actor"], "alice")
 
