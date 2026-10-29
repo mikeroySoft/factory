@@ -400,7 +400,10 @@ class FrontierTest(unittest.TestCase):
 
     def test_failed_factory_relabel_does_not_veto_later_owner_requeue(self) -> None:
         self.direct_requeue()
-        dispatch.record("manage", ticket=79, round=1, decision="RETRY")
+        lifecycle.append(dispatch.EVENTS, {
+            "at": "2026-10-28T15:51:00Z", "event": "manage", "ticket": 79,
+            "round": 1, "decision": "RETRY",
+        })
 
         dispatch._record_human_round_reset(79)
 

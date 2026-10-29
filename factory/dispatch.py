@@ -945,12 +945,21 @@ def _record_human_round_reset(n: int) -> None:
     requeued_at = release.get("created_at")
     if not actor or not requeued_at or (release.get("actor") or {}).get("type") == "Bot":
         return
+    factory_requeue_at = max((
+        event.get("at", "") for event in events[escalation_index + 1:]
+        if (
+            event.get("event") in {"conflict-requeue", "gate-requeue", "risk-requeue"}
+            or event.get("event") == "manage"
+            and event.get("decision") in {"AUTHORIZE", "RETRY", "REWRITE", "ROUTE"}
+        )
+        and event.get("at", "") <= requeued_at
+    ), default="")
     decision = next((
         item for item in reversed(timeline[boundary + 1:release_index])
         if item.get("event") == "commented" and item.get("id") not in machine_comments
         and (item.get("user") or {}).get("type") != "Bot"
     ), None)
-    if decision is None:
+    if decision is None or decision.get("created_at", "") < factory_requeue_at:
         return
     record("rounds-reset", ticket=n, actor=actor, requeued_at=requeued_at)
 
