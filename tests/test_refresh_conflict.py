@@ -276,6 +276,43 @@ class RefreshConflictTest(unittest.TestCase):
         self.assertEqual([row["round"] for row in self.events("conflict-requeue")], [1, 2, 3, 1])
         self.assertIn(config.LABEL_AGENT, self.github.issue_labels)
 
+    def test_automatic_refresh_receipt_blocks_an_old_owner_comment_after_label_drift(self) -> None:
+        from factory import handoff
+
+        self.github.issue_labels = set()
+        at = "2026-10-28T15:50:00Z"
+        lifecycle.append(dispatch.EVENTS, {
+            "event": "escalate", "ticket": 9, "round": 1, "at": at,
+            "reason": "gate failed",
+        })
+        dispatch.record("comment", ticket=9, kind="escalation", comment=101)
+        timeline = [
+            {"event": "labeled", "id": 1, "label": {"name": config.LABEL_HUMAN},
+             "created_at": at, "actor": {"login": "runner"}},
+            {"event": "commented", "id": 101, "created_at": at,
+             "user": {"login": "runner"}},
+            {"event": "commented", "id": 102, "created_at": "2026-10-28T15:52:00Z",
+             "user": {"login": "alice"}, "body": "Owner decision: Retry"},
+        ]
+        release = {
+            "event": "labeled", "id": 2, "label": {"name": config.LABEL_AGENT},
+            "created_at": "2026-10-28T15:53:00Z", "actor": {"login": "runner"},
+        }
+
+        def relabel(cmd, *args, **kwargs):
+            result = self.github.run(cmd, *args, **kwargs)
+            if cmd[:3] == ["gh", "issue", "edit"]:
+                timeline.append(release)
+            return result
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=self.github.gh_json), \
+                mock.patch.object(dispatch, "run", side_effect=relabel), \
+                mock.patch.object(handoff, "timeline", side_effect=lambda n: list(timeline)):
+            self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+            dispatch._record_human_round_reset(9)
+
+        self.assertEqual(self.events("rounds-reset"), [])
+
     def test_dispatcher_relabel_outcome_controls_shared_account_reset(self) -> None:
         from factory import handoff
 
