@@ -304,6 +304,7 @@ def human_activity(n: int, escalation: dict, events: list[dict]) -> bool:
                    and item.get("id") in escalation_comments and item.get("created_at", "") >= escalation["at"]), None)
     if marker is None:
         return True
+    manager_route = escalation.get("need") not in (None, "SIGNOFF")
     for index, item in enumerate(items):
         if item.get("created_at", "") < escalation["at"]:
             continue
@@ -314,8 +315,10 @@ def human_activity(n: int, escalation: dict, events: list[dict]) -> bool:
             continue
         # Only the recorded escalation comment bounds its own label/assignee churn.
         if index < marker and (
-            (kind == "labeled" and item.get("label", {}).get("name") == LABEL_HUMAN)
-            or (kind == "unlabeled" and item.get("label", {}).get("name") == LABEL_AGENT)
+            (kind == "labeled" and item.get("label", {}).get("name")
+             == (LABEL_AGENT if manager_route else LABEL_HUMAN))
+            or (kind == "unlabeled" and item.get("label", {}).get("name")
+                == (LABEL_HUMAN if manager_route else LABEL_AGENT))
             or kind in {"assigned", "unassigned"}
         ):
             continue
@@ -1024,6 +1027,26 @@ def frontier_pass(dry_run: bool = False) -> None:
                     n, decision, body, data, output, workers, packet, pr=number, head=head,
                     approval=True,
                 )
+                if decision == "HUMAN":
+                    try:
+                        if not isinstance(data, dict):
+                            raise TypeError("HUMAN requires a reserved category and numbered actions")
+                        dispatch.escalate(
+                            n, f"PR #{number}: manager requires a human: {body}", None,
+                            dispatch.SIGNOFF(data["category"]), code="manager_human",
+                            question=_signoff_question(data["options"]),
+                        )
+                    except (ValueError, TypeError) as exc:
+                        # Validation rejects before any GitHub mutation. A rejected
+                        # sign-off still needs a manager route, never a consumed head.
+                        dispatch.escalate(
+                            n, f"PR #{number}: manager did not return a valid decision: {body} ({exc})", None,
+                            dispatch.classify("manager_failed", {}), code="manager_failed",
+                        )
+                    # Routing must succeed before this head becomes at-most-once.
+                    dispatch.record("manage", ticket=n, pr=number, head=head, decision=decision,
+                                    round=len(decided) + 1, packet=str(packet))
+                    continue
                 dispatch.record("manage", ticket=n, pr=number, head=head, decision=decision,
                                 round=len(decided) + 1, packet=str(packet))
                 if decision != "CLOSE":
@@ -1037,18 +1060,6 @@ def frontier_pass(dry_run: bool = False) -> None:
                         )
                 elif decision in {"FIX", "CLOSE"}:
                     apply(n, issue, decision, body, data, packet)
-                elif decision == "HUMAN":
-                    if isinstance(data, dict):
-                        dispatch.escalate(
-                            n, f"PR #{number}: manager requires a human: {body}", None,
-                            dispatch.SIGNOFF(data["category"]), code="manager_human",
-                            question=_signoff_question(data["options"]),
-                        )
-                    else:
-                        dispatch.escalate(
-                            n, f"PR #{number}: manager did not return a valid decision: {body}", None,
-                            dispatch.classify("manager_failed", {}), code="manager_failed",
-                        )
             except (CalledProcessError, OSError, ValueError) as exc:
                 if not dry_run:
                     execution.outcome, execution.reason = "mechanism_failure", "pr_frontier_failed"

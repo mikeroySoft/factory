@@ -663,11 +663,11 @@ def reserved_table(path: Path) -> ReservedTable:
         if category in table:
             raise ConfigError(f"{path}: duplicate category {category!r}")
         codes = frozenset(value.strip().strip("`") for value in columns[2].split(","))
+        if not codes or "" in codes:
+            raise ConfigError(f"{path}: category {category!r} needs an escalation code")
         unknown = sorted(codes - ESCALATION_CODES)
         if unknown:
             raise ConfigError(f"{path}: unknown escalation code {unknown[0]!r}")
-        if not codes or "" in codes:
-            raise ConfigError(f"{path}: category {category!r} needs an escalation code")
         table[category] = codes
     return table
 

@@ -386,7 +386,7 @@ class FrontierTest(unittest.TestCase):
         self.assertEqual((escalation["code"], escalation["route"]), ("manager_failed", "manager"))
         self.assertTrue(any("--add-assignee" in cmd and "ready-for-agent" in cmd
                             for cmd in self.mutations), self.mutations)
-        self.assertFalse(any("--add-label" in cmd and "ready-for-human" in cmd
+        self.assertFalse(any("--add-label ready-for-human" in " ".join(cmd)
                              for cmd in self.mutations), self.mutations)
 
     def test_failed_approval_routing_does_not_consume_the_head(self) -> None:

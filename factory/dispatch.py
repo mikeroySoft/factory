@@ -119,6 +119,8 @@ DEFAULT_NEEDS: dict[str, NeedKind] = {
     "no_change": RULE_COVERABLE,
     "risk_disagreement": RULE_COVERABLE,
 }
+if DEFAULT_NEEDS.keys() != ESCALATION_CODES:
+    raise RuntimeError("DEFAULT_NEEDS must classify every escalation code exactly once")
 
 
 def classify(code: str, packet_facts: Mapping[str, object]) -> Need:
@@ -1777,7 +1779,6 @@ def _route_escalation_to_manager(n: int) -> None:
             "gh", "issue", "edit", str(n), "--repo", REPO,
             "--add-assignee", "@me", "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
         ],
-        check=False,
     )
 
 
@@ -1858,7 +1859,6 @@ def escalate(
                 "--remove-assignee", "@me",
                 "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN,
             ],
-            check=False,
         )
     else:
         _route_escalation_to_manager(n)
@@ -1870,7 +1870,7 @@ def escalate(
         body += f"\n\nWorker handoff notes:\n\n{handoff.read_text().strip()[-4000:]}"
     if question:
         body += f"\n\n{question}"
-    posted = run(["gh", "issue", "comment", str(n), "--repo", REPO, "--body", body], check=False)
+    posted = run(["gh", "issue", "comment", str(n), "--repo", REPO, "--body", body])
     comment_receipt(n, "escalation", posted.stdout if posted.returncode == 0 else "", round=round_number)
 
 
@@ -1898,6 +1898,15 @@ def correct_need(n: int) -> bool:
         and row.get("round") == escalation.get("round") and type(row.get("comment")) is int
     }
     timeline = handoff.timeline(n)
+    # An older comment keeps its creation-time position in GitHub's timeline even
+    # when the human edits it to answer this escalation.
+    if any(
+        item.get("event") == "commented"
+        and (item.get("updated_at") or item.get("created_at")) != item.get("created_at")
+        and (item.get("updated_at") or "") >= escalation.get("at", "")
+        for item in timeline
+    ):
+        return False
     marker = next((index for index, item in enumerate(timeline)
                    if item.get("event") == "commented" and item.get("id") in escalation_comments), None)
     if marker is None:
