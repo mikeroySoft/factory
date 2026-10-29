@@ -585,7 +585,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
     else:
         post_comment("issue", n, "Factory manager: " + body)
     if decision != "HUMAN":
-        issue_action("edit", "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT)
+        dispatch.requeue_agent(n)
 
 
 VIABILITY_MENU = """You are the factory manager assessing whether a direction is worth pursuing,

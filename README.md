@@ -614,6 +614,9 @@ full budget on every dispatch. The reset preserves attempt history, log evidence
 pending conflict/gate repairs, and mandatory High-risk disagreement guidance;
 manager decisions remain bound to their original head. Manager and dispatcher
 requeues neither record a reset nor renew persisted budgets.
+Automatic releases journal label-transition receipts, including failed mutations.
+These receipts, not comment timing or the GitHub login, distinguish Factory
+releases from owner releases, even when both use the same account.
 
 
 ### Routed human handoffs

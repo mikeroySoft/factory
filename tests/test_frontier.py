@@ -774,6 +774,18 @@ class FrontierTest(unittest.TestCase):
 
                 self.assertFalse(any(e.get("event") == "rounds-reset" for e in self.events()))
 
+    def test_bot_comments_or_relabels_cannot_authorize_fresh_budget(self) -> None:
+        for bot_comment in (False, True):
+            with self.subTest(bot_comment=bot_comment):
+                dispatch.EVENTS.unlink(missing_ok=True)
+                self.direct_requeue()
+                identity = self.timeline[2]["user"] if bot_comment else self.timeline[-1]["actor"]
+                identity["type"] = "Bot"
+
+                dispatch._record_human_round_reset(79)
+
+                self.assertFalse(any(e.get("event") == "rounds-reset" for e in self.events()))
+
     def test_failed_close_is_not_replayed_for_the_same_head(self) -> None:
         self.cfg.manager_review = "all"
         self.quiet_provider()
