@@ -28,11 +28,16 @@ import sys
 import tempfile
 import time
 import tomllib
+from collections.abc import Mapping
 from contextlib import contextmanager, nullcontext, suppress
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
+from typing import overload
 
 from factory import __version__, brief, config, lifecycle, risk
 from factory.config import (
+    ESCALATION_CODES,
     LABEL_ADD_ONLY_OVERRIDE,
     LABEL_AGENT,
     LABEL_APPROVED,
@@ -60,6 +65,74 @@ _PENDING_REVIEWS: dict[int, dict] = {}
 _PENDING_SECOND_REVIEWS: dict[int, dict] = {}
 _PENDING_RISK: dict[int, dict] = {}
 _LOW_FALLBACK: set[int] = set()
+
+
+class NeedKind(StrEnum):
+    RULE_COVERABLE = "RULE_COVERABLE"
+    EXPLAIN = "EXPLAIN"
+    CHASE_STALL = "CHASE_STALL"
+    CROSSED_MESSAGES = "CROSSED_MESSAGES"
+
+
+@dataclass(frozen=True)
+class Signoff:
+    category: str
+
+
+Need = NeedKind | Signoff
+_MISSING_NEED = object()
+
+
+RULE_COVERABLE = NeedKind.RULE_COVERABLE
+EXPLAIN = NeedKind.EXPLAIN
+CHASE_STALL = NeedKind.CHASE_STALL
+CROSSED_MESSAGES = NeedKind.CROSSED_MESSAGES
+
+
+def SIGNOFF(category: str) -> Signoff:
+    return Signoff(category)
+
+
+DEFAULT_NEEDS: dict[str, NeedKind] = {
+    "protected_paths": RULE_COVERABLE,
+    "budget": RULE_COVERABLE,
+    "gate_failed": RULE_COVERABLE,
+    "worker_stuck": CHASE_STALL,
+    "pr_unpublished": EXPLAIN,
+    "pr_checks_failed": RULE_COVERABLE,
+    "review_revise": RULE_COVERABLE,
+    "reviewer_unavailable": CHASE_STALL,
+    "approval_drift": CROSSED_MESSAGES,
+    "approval_missing": CROSSED_MESSAGES,
+    "ci_failed": RULE_COVERABLE,
+    "ci_runner": CHASE_STALL,
+    "refresh_head": CROSSED_MESSAGES,
+    "refresh_conflict": RULE_COVERABLE,
+    "refresh_empty": RULE_COVERABLE,
+    "gh_failed": EXPLAIN,
+    "review_intake": EXPLAIN,
+    "manager_failed": CHASE_STALL,
+    "manager_exhausted": CHASE_STALL,
+    "manager_human": EXPLAIN,
+    "pr_feedback": CROSSED_MESSAGES,
+    "pr_stale": CHASE_STALL,
+    "lease_refused": CROSSED_MESSAGES,
+    "dispatcher_error": EXPLAIN,
+    "no_change": RULE_COVERABLE,
+    "risk_disagreement": RULE_COVERABLE,
+}
+
+
+def classify(code: str, packet_facts: Mapping[str, object]) -> Need:
+    """Pure default classification; a reserved category is the only sign-off override."""
+    if code not in DEFAULT_NEEDS:
+        raise ValueError(f"unknown escalation code {code!r}")
+    category = packet_facts.get("category")
+    if category is not None:
+        if not isinstance(category, str) or not category:
+            raise ValueError("sign-off category must be non-empty text")
+        return SIGNOFF(category)
+    return DEFAULT_NEEDS[code]
 
 
 def configure(c: Config) -> None:
@@ -539,7 +612,7 @@ def review_intake_pass(dry_run: bool) -> None:
             attempts = [e for e in history if e.get("event") == "review-intake"]
             if len(attempts) >= cfg.review_rounds + 1:
                 reason = f"PR #{n}: unresolved after {len(attempts)} automated review attempt(s)"
-                log(f"{reason}; {'would escalate' if dry_run else 'escalating'} to human")
+                log(f"{reason}; {'would route' if dry_run else 'routing'} to manager")
                 if not dry_run:
                     packet = FACTORY / "escalations" / f"review-{n}.md"
                     packet.parent.mkdir(parents=True, exist_ok=True)
@@ -554,12 +627,15 @@ def review_intake_pass(dry_run: bool) -> None:
                     )
                     url = run([
                         "gh", "issue", "create", "--repo", REPO,
-                        "--title", reason, "--label", LABEL_HUMAN,
+                        "--title", reason, "--label", LABEL_AGENT,
                         "--body-file", str(packet),
                     ]).stdout.strip().splitlines()[-1]
-                    record("escalate", pr=n, head=head,
-                           ticket=int(url.rstrip("/").rsplit("/", 1)[-1]),
-                           code="review_intake", reason=reason, packet=str(packet), round=1)
+                    record(
+                        "escalate", pr=n, head=head,
+                        ticket=int(url.rstrip("/").rsplit("/", 1)[-1]),
+                        code="review_intake", reason=reason, packet=str(packet), round=1,
+                        need="EXPLAIN", category=None, route="manager",
+                    )
                 continue
             if any(e.get("event") == "review-intake" and e.get("head") == head
                    for e in history):
@@ -1672,31 +1748,74 @@ def escalation_packet(
     return packet, round_number
 
 
-# Mechanical origin of every escalation, so `stats` can count failure classes and
-# a repeated code can be filed as a factory bug. `reason` stays the human prose.
-ESCALATION_CODES = frozenset({
-    "protected_paths", "budget", "gate_failed", "worker_stuck", "pr_unpublished",
-    "pr_checks_failed", "review_revise", "reviewer_unavailable", "approval_drift",
-    "approval_missing", "ci_failed", "ci_runner", "refresh_head", "refresh_conflict",
-    "refresh_empty", "gh_failed", "review_intake", "manager_failed",
-    "manager_exhausted", "manager_human", "pr_feedback", "pr_stale",
-    "lease_refused", "dispatcher_error", "no_change", "risk_disagreement",
-})
+# Mechanical origin and decision need are separate dimensions: code explains where the
+# escalation came from; need controls who can resolve it.
+def _question_block(question: str | None) -> str:
+    lines = question.strip().splitlines() if isinstance(question, str) else []
+    if (
+        not 2 <= len(lines) <= 4
+        or lines[0] != "Needs you:"
+        or any(not line.startswith(f"{index}. ") or not line[3:].strip()
+               for index, line in enumerate(lines[1:], 1))
+    ):
+        raise ValueError("SIGNOFF requires a final Needs you: block with 1 to 3 numbered actions")
+    return "\n".join(lines)
+
+
+@overload
+def escalate(
+    n: int, reason: str, log_path: Path | None, need: NeedKind, extra: str = "", *,
+    code: str, question: str | None = None, refreshed_head: str | None = None,
+    evidence_ref: str | None = None,
+) -> None: ...
+
+
+@overload
+def escalate(
+    n: int, reason: str, log_path: Path | None, need: Signoff, extra: str = "", *,
+    code: str, question: str | None = None, refreshed_head: str | None = None,
+    evidence_ref: str | None = None,
+) -> None: ...
 
 
 def escalate(
     n: int,
     reason: str,
     log_path: Path | None,
+    need: Need | object = _MISSING_NEED,
     extra: str = "",
     *,
     code: str,
+    question: str | None = None,
     refreshed_head: str | None = None,
     evidence_ref: str | None = None,
 ) -> None:
-    assert code in ESCALATION_CODES, code
-    assert (refreshed_head is None) == (evidence_ref is None)
-    log(f"#{n}: escalating to human ({code}: {reason})")
+    if code not in ESCALATION_CODES:
+        raise ValueError(f"unknown escalation code {code!r}")
+    legacy = not cfg.reserved
+    if need is _MISSING_NEED:
+        if not legacy:
+            raise TypeError("escalate() missing required escalation need")
+        need = classify(code, {})
+    if not isinstance(need, (NeedKind, Signoff)):
+        raise TypeError(f"invalid escalation need {need!r}")
+    if (refreshed_head is None) != (evidence_ref is None):
+        raise ValueError("refreshed_head and evidence_ref must be supplied together")
+    category = need.category if isinstance(need, Signoff) else None
+    signoff = isinstance(need, Signoff)
+    if signoff:
+        allowed = cfg.reserved.get(need.category)
+        if allowed is None:
+            raise ValueError(f"unknown reserved category {need.category!r}")
+        if code not in allowed:
+            raise ValueError(f"reserved category {need.category!r} does not allow escalation code {code!r}")
+        question = _question_block(question)
+    elif legacy:
+        question = _question_block(question or "Needs you:\n1. Choose how this escalation should proceed")
+    human = signoff or legacy
+    need_name = "SIGNOFF" if signoff else need.value
+    route = "human" if human else "manager"
+    log(f"#{n}: escalating to {route} ({code}/{need_name}: {reason})")
     wt = FACTORY / f"wt-{n}"
     if refreshed_head is not None:
         extra = (
@@ -1731,35 +1850,89 @@ def escalate(
         else {}
     )
     record(
-        "escalate", ticket=n, code=code, reason=reason,
+        "escalate", ticket=n, code=code, reason=reason, need=need_name,
+        category=category, route=route, question=question if human else None,
         log=str(log_path) if log_path else None, packet=str(packet), round=round_number,
         **evidence,
     )
+    labels = (
+        ["--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN]
+        if human else ["--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT]
+    )
     run(
         [
-            "gh",
-            "issue",
-            "edit",
-            str(n),
-            "--repo",
-            REPO,
-            "--remove-assignee",
-            "@me",
-            "--remove-label",
-            LABEL_AGENT,
-            "--add-label",
-            LABEL_HUMAN,
+            "gh", "issue", "edit", str(n), "--repo", REPO,
+            "--remove-assignee", "@me", *labels,
         ],
         check=False,
     )
+    if not human:
+        return
     body = f"Factory dispatcher escalating: {reason}.\n\nEscalation packet: `{packet}`"
     if log_path:
         body += f"\n\nWorker logs: `{log_path}`"
     handoff = wt / ".factory" / f"handoff-{n}.md"
     if handoff.exists():
         body += f"\n\nWorker handoff notes:\n\n{handoff.read_text().strip()[-4000:]}"
+    body += f"\n\n{question}"
     posted = run(["gh", "issue", "comment", str(n), "--repo", REPO, "--body", body], check=False)
     comment_receipt(n, "escalation", posted.stdout if posted.returncode == 0 else "", round=round_number)
+
+
+def correct_need(n: int) -> bool:
+    """Retag one untouched human label-only return; journal remains append-only."""
+    from factory import handoff
+
+    events = [row for row in lifecycle.read_events(EVENTS) if row.get("ticket") == n]
+    escalation = next((row for row in reversed(events)
+                       if row.get("event") == "escalate"
+                       and row.get("reason") != "manager_failed"), None)
+    if escalation is None or escalation.get("need") != "SIGNOFF" or any(
+        row.get("event") == "escalation-correction"
+        and row.get("round") == escalation.get("round")
+        for row in events
+    ):
+        return False
+    comments = {
+        row["comment"] for row in events
+        if row.get("event") == "comment" and type(row.get("comment")) is int
+    }
+    escalation_comments = {
+        row["comment"] for row in events
+        if row.get("event") == "comment" and row.get("kind") == "escalation"
+        and row.get("round") == escalation.get("round") and type(row.get("comment")) is int
+    }
+    timeline = handoff.timeline(n)
+    marker = next((index for index, item in enumerate(timeline)
+                   if item.get("event") == "commented" and item.get("id") in escalation_comments), None)
+    if marker is None:
+        return False
+    activity = [
+        item for item in timeline[marker + 1:]
+        if item.get("event") in handoff.TIMELINE_EVENTS
+        and not (item.get("event") == "commented" and item.get("id") in comments)
+    ]
+    expected = {
+        ("unlabeled", LABEL_HUMAN),
+        ("labeled", LABEL_AGENT),
+    }
+    actions = {(item.get("event"), (item.get("label") or {}).get("name")) for item in activity}
+    actors = {(item.get("actor") or {}).get("login") for item in activity}
+    if (
+        len(activity) != 2
+        or actions != expected
+        or len(actors) != 1
+        or None in actors
+        or any((item.get("actor") or {}).get("type") == "Bot" for item in activity)
+    ):
+        return False
+    record(
+        "escalation-correction", ticket=n, round=escalation.get("round"),
+        escalation_at=escalation.get("at"), code=escalation.get("code"),
+        previous_need="SIGNOFF", need="RULE_COVERABLE", category=None,
+        need_corrected=True, actor=actors.pop(),
+    )
+    return True
 
 
 def _review_plan(n: int) -> str:
@@ -3007,7 +3180,7 @@ def runner_unavailable(n: int, pr: int, starved: list[dict], dry_run: bool) -> b
     if dry_run:
         log(f"PR #{pr}: would escalate ({reason})")
     else:
-        escalate(n, reason, None, code="ci_runner")
+        escalate(n, reason, None, classify("ci_runner", {}), code="ci_runner")
     return True
 
 
@@ -3131,6 +3304,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             n,
             f"PR #{pr}: {reason}; `{FACTORY_APPROVED}` label removed",
             None,
+            classify(code, {}),
             extra=extra,
             code=code,
             refreshed_head=refreshed_head,
@@ -3142,7 +3316,10 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         check=False,
     )
     if removed.returncode:
-        escalate(n, f"PR #{pr}: could not remove stale `{FACTORY_APPROVED}` approval", None, code="gh_failed")
+        escalate(
+            n, f"PR #{pr}: could not remove stale `{FACTORY_APPROVED}` approval",
+            None, classify("gh_failed", {}), code="gh_failed",
+        )
         return False
     run(["git", "fetch", "origin"], cwd=wt)
     local_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
@@ -3516,7 +3693,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                     n,
                     f"PR #{pr_num}: CI failed ({', '.join(failed)}); "
                     f"`{FACTORY_APPROVED}` label removed",
-                    None, code="ci_failed",
+                    None, classify("ci_failed", {}), code="ci_failed",
                 )
                 continue
             starved = [c for c in checks if c["bucket"] == "infra"]
@@ -3678,7 +3855,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                     n,
                     f"PR #{pr_num}: missing approval evidence bound to {head}; "
                     f"`{FACTORY_APPROVED}` label removed",
-                    None, code="approval_missing",
+                    None, classify("approval_missing", {}), code="approval_missing",
                 )
                 execution.outcome, execution.reason = "project_escalation", "state_changed"
                 continue
@@ -3700,7 +3877,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                     n,
                     f"PR #{pr_num}: CI failed ({', '.join(latest_failed)}); "
                     f"`{FACTORY_APPROVED}` label removed",
-                    None, code="ci_failed",
+                    None, classify("ci_failed", {}), code="ci_failed",
                 )
                 continue
             if latest_starved and runner_unavailable(n, pr_num, latest_starved, False):
@@ -4087,6 +4264,8 @@ def process_ticket(
                 execution.reason = "state_changed"
                 return
             labels = {label["name"] for label in fresh["labels"]}
+            if LABEL_AGENT in labels and correct_need(n):
+                log(f"#{n}: label-only human return corrected to RULE_COVERABLE")
             if not forced and shutil.which(worker) is None:
                 # Frontier claims only: `--ticket` is an operator's explicit ask and fails loudly.
                 # ponytail: PATH probe only; a binary swapped out between here and Popen still
@@ -4162,12 +4341,16 @@ def process_ticket(
                     )
                     escalate(
                         n, reason, logfile,
+                        classify("protected_paths", {}),
                         extra=f"{guidance}\n\n## Offending diff\n\n{report}",
                         code="protected_paths",
                     )
                     return
                 if time.monotonic() > deadline:
-                    escalate(n, f"wall-clock budget ({budget_min} min) exceeded", logfile, code="budget")
+                    escalate(
+                        n, f"wall-clock budget ({budget_min} min) exceeded", logfile,
+                        classify("budget", {}), code="budget",
+                    )
                     return
                 extra = f"{resolve}## Previous gate report (attempt {attempt} failed)\n\n{report}"
             else:
@@ -4175,8 +4358,11 @@ def process_ticket(
                     stuck = report.startswith("worker stuck")
                     failed = (f"idle_timeout fired (worker stuck) on attempt {MAX_ATTEMPTS}"
                               if stuck else f"gate failed {MAX_ATTEMPTS} times")
-                    escalate(n, f"{failed}; worktree kept at {wt}", logfile,
-                             code="worker_stuck" if stuck else "gate_failed")
+                    code = "worker_stuck" if stuck else "gate_failed"
+                    escalate(
+                        n, f"{failed}; worktree kept at {wt}", logfile,
+                        classify(code, {}), code=code,
+                    )
                     return
 
             run(["git", "fetch", "origin", cfg.main], cwd=wt)
@@ -4185,14 +4371,17 @@ def process_ticket(
                 # A ticket outcome, not a publish failure: the worker finished and found nothing
                 # to change (already fixed, duplicate, or blocked); its handoff says which. Without
                 # a handoff the worker died, which stays `pr_unpublished` so watch still counts it.
-                escalate(n, f"agent/{n}: worker committed nothing over {cfg.main}; read the handoff",
-                         logfile, code="no_change")
+                escalate(
+                    n, f"agent/{n}: worker committed nothing over {cfg.main}; read the handoff",
+                    logfile, classify("no_change", {}), code="no_change",
+                )
                 return
             body = f"Closes #{n}\n\n## Gate report\n\n{report}\n"
             if not push_and_pr(wt, f"agent/{n}", f"agent/{n}: {title}", body, ticket=n, lease=lease):
                 escalate(
                     n, f"agent/{n}: PR not published (no commits over main and no handoff, or existing "
                     f"PR targets a base other than {cfg.main}); inspect dispatcher log", logfile,
+                    classify("pr_unpublished", {}),
                     code="pr_unpublished",
                 )
                 return
@@ -4209,7 +4398,8 @@ def process_ticket(
             if repeated_disagreement:
                 escalate(
                     n, "High-risk machine checks disagreed on two successive heads",
-                    logfile, code="risk_disagreement", extra=current_risk["packet"],
+                    logfile, classify("risk_disagreement", {}),
+                    code="risk_disagreement", extra=current_risk["packet"],
                 )
                 return
             if verdict is None:
@@ -4219,6 +4409,7 @@ def process_ticket(
                 )
                 escalate(
                     n, "reviewer unavailable after retries", logfile,
+                    classify("reviewer_unavailable", {}),
                     code="reviewer_unavailable",
                 )
                 return
@@ -4233,7 +4424,7 @@ def process_ticket(
                     escalate(
                         n,
                         f"wall-clock budget ({budget_min} min) exceeded before bounce {bounce}",
-                        logfile, code="budget",
+                        logfile, classify("budget", {}), code="budget",
                     )
                     return
                 execution.review_round = bounce + 1
@@ -4261,6 +4452,7 @@ def process_ticket(
                     )
                     escalate(
                         n, reason, logfile,
+                        classify("protected_paths", {}),
                         extra=f"{guidance}\n\n## Offending diff\n\n{report}",
                         code="protected_paths",
                     )
@@ -4270,6 +4462,7 @@ def process_ticket(
                     failed = "idle_timeout fired (worker stuck)" if stuck else "gate failed"
                     escalate(
                         n, f"{failed} after review bounce {bounce}; worktree kept at {wt}", logfile,
+                        classify("worker_stuck" if stuck else "gate_failed", {}),
                         code="worker_stuck" if stuck else "gate_failed",
                     )
                     return
@@ -4284,28 +4477,37 @@ def process_ticket(
                 if repeated_disagreement:
                     escalate(
                         n, "High-risk machine checks disagreed on two successive heads",
-                        logfile, code="risk_disagreement", extra=current_risk["packet"],
+                        logfile, classify("risk_disagreement", {}),
+                        code="risk_disagreement", extra=current_risk["packet"],
                     )
                     return
                 risk_disagreement_head = current_disagreement_head
                 if verdict is None:
                     escalate(
                         n, "reviewer unavailable after retries", logfile,
+                        classify("reviewer_unavailable", {}),
                         code="reviewer_unavailable",
                     )
                     return
             if verdict != "APPROVE" and pr_failed:
-                escalate(n, "pr checks failed", logfile, extra="## PR-tier gate report\n\n" + findings,
-                         code="pr_checks_failed")
+                escalate(
+                    n, "pr checks failed", logfile, classify("pr_checks_failed", {}),
+                    extra="## PR-tier gate report\n\n" + findings, code="pr_checks_failed",
+                )
             elif verdict != "APPROVE":
-                escalate(n, f"REVISE verdict after {cfg.review_rounds} review round(s)", logfile, code="review_revise")
+                escalate(
+                    n, f"REVISE verdict after {cfg.review_rounds} review round(s)", logfile,
+                    classify("review_revise", {}), code="review_revise",
+                )
             elif approve_pr(n, gate_head):
                 log(f"#{n}: done (approved at {gate_head[:12]})")
             else:
-                escalate(n, "approval evidence, head, or human review state changed before approval", logfile,
-                         code="approval_drift")
+                escalate(
+                    n, "approval evidence, head, or human review state changed before approval",
+                    logfile, classify("approval_drift", {}), code="approval_drift",
+                )
         except LeaseRefused as exc:
-            escalate(n, str(exc), None, code="lease_refused")
+            escalate(n, str(exc), None, classify("lease_refused", {}), code="lease_refused")
         except FileNotFoundError as exc:
             # Host defect (worker executable not on PATH, #260), not a ticket defect: give the
             # claim back so the frontier retries once the host is fixed; the pass goes on.
@@ -4319,7 +4521,10 @@ def process_ticket(
             # later pass skips forever; hand it back to a human first, worktree intact, then
             # still surface the crash.
             if claimed:
-                escalate(n, f"dispatcher error: {exc!r}; worktree kept at {wt}", None, code="dispatcher_error")
+                escalate(
+                    n, f"dispatcher error: {exc!r}; worktree kept at {wt}", None,
+                    classify("dispatcher_error", {}), code="dispatcher_error",
+                )
                 execution.outcome, execution.reason = "unknown", f"{type(exc).__name__}: {exc}"
             raise
         finally:

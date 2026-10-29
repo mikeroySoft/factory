@@ -26,6 +26,26 @@ from factory import lifecycle
 CONFIG_NAME = ".factory.toml"
 BANDS_NAME = "factory-bands.toml"
 LESSONS_NAME = ".factory-lessons.md"  # committed; `factory learn` writes, every worker prompt reads
+RESERVED_NAME = "docs/reserved-for-human.md"
+
+# Stable policy vocabulary. Repositories opt in by checking in RESERVED_NAME.
+RESERVED_CATEGORIES = frozenset({
+    "product_direction",
+    "spending",
+    "secrets_credentials",
+    "publishing_or_merging_factory_policy",
+    "deleting_user_data",
+    "approval_rules",
+})
+ESCALATION_CODES = frozenset({
+    "protected_paths", "budget", "gate_failed", "worker_stuck", "pr_unpublished",
+    "pr_checks_failed", "review_revise", "reviewer_unavailable", "approval_drift",
+    "approval_missing", "ci_failed", "ci_runner", "refresh_head", "refresh_conflict",
+    "refresh_empty", "gh_failed", "review_intake", "manager_failed",
+    "manager_exhausted", "manager_human", "pr_feedback", "pr_stale",
+    "lease_refused", "dispatcher_error", "no_change", "risk_disagreement",
+})
+ReservedTable = dict[str, frozenset[str]]
 
 # Triage roles -> label strings. Fixed by convention; `factory init` creates them.
 LABEL_VIABILITY = "needs-viability"
@@ -246,6 +266,7 @@ class Config:
     watch_engine_repo: str = ENGINE_REPO
     watch_host_failure_minutes: int = 60
     watch_bands: list[Band] = field(default_factory=list)
+    reserved: ReservedTable = field(default_factory=dict)
     raw_repo: dict = field(default_factory=dict)  # the committed file alone, before host layering
 
     @property
@@ -625,6 +646,32 @@ def band_settings(path: Path) -> list[Band]:
     return bands
 
 
+def reserved_table(path: Path) -> ReservedTable:
+    """Parse the reviewed Markdown policy table once at the repository boundary."""
+    if not path.is_file():
+        return {}
+    table: ReservedTable = {}
+    for line in path.read_text().splitlines():
+        if not line.lstrip().startswith("| `"):
+            continue
+        columns = [column.strip() for column in line.strip().strip("|").split("|")]
+        if len(columns) != 3:
+            raise ConfigError(f"{path}: reserved category row needs exactly three columns")
+        category = columns[0].strip("`")
+        if category not in RESERVED_CATEGORIES:
+            raise ConfigError(f"{path}: unknown category {category!r}")
+        if category in table:
+            raise ConfigError(f"{path}: duplicate category {category!r}")
+        codes = frozenset(value.strip().strip("`") for value in columns[2].split(","))
+        unknown = sorted(codes - ESCALATION_CODES)
+        if unknown:
+            raise ConfigError(f"{path}: unknown escalation code {unknown[0]!r}")
+        if not codes or "" in codes:
+            raise ConfigError(f"{path}: category {category!r} needs an escalation code")
+        table[category] = codes
+    return table
+
+
 def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     """Load `<root>/.factory.toml` over the host layer; every key optional except a resolvable repo slug."""
     root = Path(git(start, "rev-parse", "--show-toplevel")) if worktree else repo_root(start)
@@ -657,6 +704,7 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     if not isinstance(evaluation, dict):
         raise ConfigError("[eval] must be a table")
     cfg = Config(root=root, repo=slug, raw_repo=raw_repo)
+    cfg.reserved = reserved_table(root / RESERVED_NAME)
     cfg.watch_bands = band_settings(root / BANDS_NAME)
     cfg.upstream = repo_t.get("upstream") or None
     cfg.main = repo_t.get("main", cfg.main)

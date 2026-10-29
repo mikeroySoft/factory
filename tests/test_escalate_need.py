@@ -41,7 +41,8 @@ class EscalateNeedTest(unittest.TestCase):
 
         edit = next(call for call in self.calls if call[1:3] == ["issue", "edit"])
         self.assertIn("ready-for-agent", edit)
-        self.assertNotIn("ready-for-human", edit)
+        self.assertNotIn(["--add-label", "ready-for-human"],
+                         [edit[index:index + 2] for index in range(len(edit) - 1)])
         self.assertFalse(any(call[1:3] == ["issue", "comment"] for call in self.calls))
         [row] = self.rows("escalate")
         self.assertEqual((row["need"], row["category"], row["route"]),
@@ -73,7 +74,7 @@ class EscalateNeedTest(unittest.TestCase):
     def test_missing_need_invalid_need_and_missing_question_are_refused_before_gh(self) -> None:
         with self.assertRaises(TypeError):
             dispatch.escalate(7, "missing", None, code="budget")
-        with self.assertRaisesRegex(ValueError, "invalid escalation need"):
+        with self.assertRaisesRegex(TypeError, "invalid escalation need"):
             dispatch.escalate(7, "invalid", None, "RULE_COVERABLE", code="budget")
         with self.assertRaisesRegex(ValueError, "Needs you"):
             dispatch.escalate(7, "missing question", None, dispatch.SIGNOFF("spending"), code="budget")
@@ -84,6 +85,7 @@ class ReservedConfigTest(unittest.TestCase):
     def test_reserved_table_is_parsed_and_names_unknown_categories_and_codes(self) -> None:
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         path = root / config.RESERVED_NAME
+        path.parent.mkdir()
         path.write_text(
             "# Reserved for human\n\n"
             "| Category | Decision | Allowed escalation codes |\n"
