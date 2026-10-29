@@ -306,9 +306,15 @@ def human_activity(n: int, escalation: dict, events: list[dict]) -> bool:
         return True
     manager_route = escalation.get("need") not in (None, "SIGNOFF")
     for index, item in enumerate(items):
+        kind = item.get("event")
+        if (
+            kind == "commented"
+            and (item.get("updated_at") or item.get("created_at")) != item.get("created_at")
+            and (item.get("updated_at") or "") >= escalation["at"]
+        ):
+            return True
         if item.get("created_at", "") < escalation["at"]:
             continue
-        kind = item.get("event")
         if kind == "commented" and item.get("id") in machine:
             if (item.get("updated_at") or item["created_at"]) != item["created_at"]:
                 return True
