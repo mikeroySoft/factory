@@ -270,6 +270,7 @@ class AgentPushLeaseTest(unittest.TestCase):
 
         with self.assertRaises(dispatch.LeaseRefused) as raised:
             dispatch.push_agent(self.wt, 7, lease)
+        self.assertTrue(raised.exception.returncode)
         self.assertIn(f"leased {lease}, remote now {lease}", str(raised.exception))
         self.assertEqual(self.remote("agent/7"), lease)
 
