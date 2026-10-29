@@ -221,6 +221,41 @@ class ReviewerCalibrationModelTest(unittest.TestCase):
         self.assertEqual(candidate["verdict"], "inconclusive")
         self.assertEqual(shared_grader.call_count, 4)
 
+    def test_missing_baseline_makes_candidate_inconclusive(self) -> None:
+        def runner(model: str, out: Path) -> tuple[list[dict], float]:
+            missing = model == "baseline/model"
+            return [
+                {
+                    "case": case,
+                    "sample": sample,
+                    "passed": not missing,
+                    "grade_missing": missing,
+                    "usage": {"model": model, "prompt_tokens": 1, "completion_tokens": 1},
+                }
+                for sample in range(1, 4)
+                for case in ("train-case", "lockbox-case")
+            ], 0.5
+
+        def grade_runs(rows: list[dict]) -> str:
+            if any(row["grade_missing"] for row in rows):
+                return "missing"
+            return "always-pass"
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(
+                self.calibration, "_grade_runs", side_effect=grade_runs
+            ):
+                report = self.calibration.replay_models(
+                    ["baseline/model", "candidate/model"],
+                    root / "run",
+                    runner,
+                    {},
+                    self._split_file(root),
+                )
+
+        self.assertEqual(report["models"][1]["verdict"], "inconclusive")
+
     def test_wall_seconds_exclude_grading_latency(self) -> None:
         def runner(model: str, out: Path) -> tuple[list[dict], float]:
             rows = [
