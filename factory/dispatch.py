@@ -2886,7 +2886,7 @@ def signoff() -> str:
     return f"Signed-off-by: {name} <{email}>"
 
 
-def _read_pr_checks(pr: int, *, required: bool) -> list[dict]:
+def _read_pr_checks(pr: int, *, required: bool) -> list[dict] | None:
     fields = "name,bucket,link,completedAt"
     args = ["gh", "pr", "checks", str(pr), "--repo", REPO]
     if required:
@@ -2895,58 +2895,27 @@ def _read_pr_checks(pr: int, *, required: bool) -> list[dict]:
     try:
         rows = json.loads(proc.stdout)
     except ValueError:
-        return []
+        return None
     if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
-        return []
+        return None
     return rows
 
 
 def pr_checks(pr: int) -> list[dict]:
     """All checks reported for a PR."""
-    return _read_pr_checks(pr, required=False)
+    return _read_pr_checks(pr, required=False) or []
 
 
-def _rollup_checks(rows: list[dict]) -> list[dict]:
-    """Normalize `statusCheckRollup` rows to `gh pr checks` buckets."""
-    buckets = {
-        "SUCCESS": "pass",
-        "NEUTRAL": "pass",
-        "SKIPPED": "skipping",
-        "CANCELLED": "cancel",
-        "FAILURE": "fail",
-        "ERROR": "fail",
-        "TIMED_OUT": "fail",
-        "ACTION_REQUIRED": "fail",
-        "STARTUP_FAILURE": "fail",
-        "STALE": "fail",
-    }
-    checks = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        status = str(row.get("status") or "").upper()
-        state = str(row.get("conclusion") or row.get("state") or "").upper()
-        bucket = row.get("bucket")
-        if bucket not in {"pass", "fail", "pending", "skipping", "cancel"}:
-            bucket = "pending" if status and status != "COMPLETED" else buckets.get(state, "pending")
-        checks.append({
-            "name": row.get("name") or row.get("context") or "check",
-            "bucket": bucket,
-            "link": row.get("link") or row.get("detailsUrl") or row.get("targetUrl"),
-            "completedAt": row.get("completedAt"),
-        })
-    return checks
 
 
-def _merge_pr_checks(pr: int, all_checks: list[dict] | None) -> list[dict]:
-    if all_checks is None:
-        return pr_checks(pr)
+def _merge_pr_checks(pr: int) -> list[dict]:
     required = _read_pr_checks(pr, required=True)
+    if required is None:
+        return []
     if required:
         return [{**check, "required": True} for check in required]
-    checks = _rollup_checks(all_checks)
     out = []
-    for check in checks:
+    for check in pr_checks(pr):
         advisory = any(
             fnmatch.fnmatchcase(check.get("name", ""), pattern)
             for pattern in cfg.merge_advisory_checks
@@ -2966,12 +2935,12 @@ def _merge_pr_checks(pr: int, all_checks: list[dict] | None) -> list[dict]:
 def _runner_labels(value: object) -> set[str]:
     if not isinstance(value, list):
         return set()
-    return {
-        label["name"] if isinstance(label, dict) else label
-        for label in value
-        if (isinstance(label, str) and label)
-        or (isinstance(label, dict) and isinstance(label.get("name"), str) and label["name"])
-    }
+    labels = set()
+    for label in value:
+        name = label.get("name") if isinstance(label, dict) else label
+        if isinstance(name, str) and name:
+            labels.add(name.casefold())
+    return labels
 
 
 def _registered_runners() -> list[dict] | None:
@@ -3033,7 +3002,7 @@ def classify_queued_checks(checks: list[dict]) -> list[dict]:
             or job.get("runner_id")
             or job.get("runner_name")
             or steps_ran
-            or "self-hosted" not in {label.lower() for label in labels}
+            or "self-hosted" not in labels
             or (now - created).total_seconds() <= cfg.merge_queued_check_timeout
         ):
             continue
@@ -3059,10 +3028,9 @@ def classify_queued_checks(checks: list[dict]) -> list[dict]:
 
 def merge_checks(
     pr: int, dry_run: bool = False, ticket: int | None = None, head: str | None = None,
-    all_checks: list[dict] | None = None,
 ) -> list[dict]:
     return triage_cancelled(
-        pr, classify_queued_checks(_merge_pr_checks(pr, all_checks)), dry_run, ticket, head,
+        pr, classify_queued_checks(_merge_pr_checks(pr)), dry_run, ticket, head,
     )
 
 
@@ -3640,7 +3608,7 @@ def merge_pass_locked(dry_run: bool) -> None:
             "--state",
             "open",
             "--json",
-            "number,headRefName,headRefOid,baseRefName,isDraft,labels,reviewDecision,statusCheckRollup",
+            "number,headRefName,headRefOid,baseRefName,isDraft,labels,reviewDecision",
         ]
     )
     from factory.learn import promote_pass
@@ -3662,10 +3630,8 @@ def merge_pass_locked(dry_run: bool) -> None:
         if pr["reviewDecision"] == "CHANGES_REQUESTED":
             log(f"PR #{pr['number']}: human requested changes; not merging")
             continue
-        candidates.append((
-            pr["number"], int(m.group(1)), pr.get("headRefOid"), pr.get("statusCheckRollup"),
-        ))
-    for pr_num, n, listed_head, listed_checks in sorted(candidates):
+        candidates.append((pr["number"], int(m.group(1)), pr.get("headRefOid")))
+    for pr_num, n, listed_head in sorted(candidates):
         with nullcontext() if dry_run else lifecycle.scope(
             EVENTS, "merge-eligibility", ticket=n, lock=FACTORY / "locks" / "merge.lock"
         ) as execution:
@@ -3674,7 +3640,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 if execution:
                     execution.outcome, execution.reason = "not_eligible", "initiative"
                 continue
-            checks = merge_checks(pr_num, dry_run, n, listed_head, listed_checks)
+            checks = merge_checks(pr_num, dry_run, n, listed_head)
             buckets: dict[str, int] = {}
             for c in checks:
                 buckets[c["bucket"]] = buckets.get(c["bucket"], 0) + 1
@@ -3738,7 +3704,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 continue
             fields = (
                 "number,state,headRefName,headRefOid,baseRefName,isDraft,labels,"
-                "reviewDecision,title,files,statusCheckRollup"
+                "reviewDecision,title,files"
             )
             fresh = gh_json(["pr", "view", str(pr_num), "--repo", REPO, "--json", fields])
             labels = {label["name"] for label in fresh.get("labels", [])}
@@ -3882,12 +3848,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 )
                 execution.outcome, execution.reason = "project_escalation", "state_changed"
                 continue
-            latest_rollup = fresh.get("statusCheckRollup")
-            if "statusCheckRollup" in fresh:
-                latest_rollup = gh_json([
-                    "pr", "view", str(pr_num), "--repo", REPO, "--json", "statusCheckRollup",
-                ]).get("statusCheckRollup")
-            latest_checks = merge_checks(pr_num, False, n, head, latest_rollup)
+            latest_checks = merge_checks(pr_num, False, n, head)
             latest_failed = [c["name"] for c in latest_checks if c["bucket"] == "fail"]
             latest_starved = [c for c in latest_checks if c["bucket"] == "infra"]
             if latest_failed:
