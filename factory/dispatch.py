@@ -2421,17 +2421,28 @@ def push_and_pr(
         run(["git", "push", "-u", "origin", branch], cwd=wt)
     else:
         push_agent(wt, ticket, lease)
-    if existing:
-        log(f"{branch}: PR already exists (#{existing[0]['number']})")
-        if ticket is not None:
-            record("pr-opened", ticket=ticket, pr=existing[0]["number"])
-        return True
+    proof_appended = False
     if ticket is not None and cfg.proof_required:
         proof_path = wt / ".factory" / f"proof-{ticket}.md"
         if proof_path.is_file():
-            body = body.rstrip() + "\n\n" + config.redact(proof_path.read_text()).strip() + "\n"
+            proof = proof_path.read_text()
+            if gate.proof_contains_environment_dump(proof):
+                raise ValueError(f"proof artifact contains environment dump output: {proof_path}")
+            body = body.rstrip() + "\n\n" + config.redact(proof).strip() + "\n"
+            proof_appended = True
     body_file = FACTORY / f"pr-body-{branch.removeprefix('agent/')}.md"
     body_file.write_text(body)
+    if existing:
+        number = existing[0]["number"]
+        log(f"{branch}: PR already exists (#{number})")
+        if proof_appended:
+            run([
+                "gh", "pr", "edit", str(number), "--repo", REPO,
+                "--body-file", str(body_file),
+            ])
+        if ticket is not None:
+            record("pr-opened", ticket=ticket, pr=number)
+        return True
     created = run(
         [
             "gh",

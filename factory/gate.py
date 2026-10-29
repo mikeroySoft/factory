@@ -619,6 +619,13 @@ PROOF_COMMAND = re.compile(
     r"- Exit code: `(-?\d+)`\n\n"
     r"```(?:text)?\n(.*?)\n```[ \t]*(?=\n+(?:### Command: )|\Z)"
 )
+PROOF_ENVIRONMENT_DUMP = re.compile(
+    r"(?m)^(?:[A-Za-z_][A-Za-z0-9_]*=.*|(?:os\.)?environ\(\{)"
+)
+
+
+def proof_contains_environment_dump(text: str) -> bool:
+    return PROOF_ENVIRONMENT_DUMP.search(text) is not None
 
 
 def _proof_section(text: str, heading: str) -> str | None:
@@ -643,6 +650,8 @@ def check_proof(
         text = path.read_text()
     except OSError:
         return False, f"proof artifact missing: {path}"
+    if proof_contains_environment_dump(text):
+        return False, "proof artifact contains environment dump output"
     section = _proof_section(text, "Proof on ROCm tank")
     if section is None:
         return False, "missing or empty ## Proof on ROCm tank"
@@ -683,6 +692,8 @@ def check_proof(
         output = "\n".join(output_lines[:40])
         if len(output_lines) > 40:
             output += "\n[output truncated after 40 lines]"
+        if proof_contains_environment_dump(output):
+            return False, f"proof re-run produced environment dump output: {safe_command}"
         claimed = int(claimed_text)
         if result.returncode != claimed:
             passed = False
@@ -763,7 +774,8 @@ def _probe_result(command: list[str]) -> tuple[bool, str]:
 
 
 def _probe(command: list[str]) -> str:
-    return _probe_result(command)[1]
+    succeeded, output = _probe_result(command)
+    return output if succeeded else ""
 
 
 def _kfd_targets() -> list[str]:
@@ -813,9 +825,9 @@ def toolchain() -> dict[str, str]:
                 values["rocm"] = f"{', '.join(targets)} (kfd sysfs)"
 
     modinfo_ok, version = _probe_result(["modinfo", "-F", "version", "amdgpu"])
-    if version:
+    if modinfo_ok and version:
         values["amdgpu"] = version
-    elif modinfo_ok and Path("/sys/module/amdgpu").is_dir():
+    elif Path("/sys/module/amdgpu").is_dir():
         values["amdgpu"] = "loaded (in-tree)"
     return values
 
@@ -877,11 +889,8 @@ def execute(args: argparse.Namespace, execution) -> int:
     ]
     proof_ticket = _proof_ticket(args)
     builtins = [("conflict-markers", check_conflict_markers)]
-    if cfg.proof_required:
-        proof_path = (
-            Path(f".factory/proof-{proof_ticket}.md")
-            if proof_ticket is not None else Path(".factory/proof-missing.md")
-        )
+    if cfg.proof_required and proof_ticket is not None:
+        proof_path = Path(f".factory/proof-{proof_ticket}.md")
         builtins.append((
             "proof",
             lambda: check_proof(proof_path, Path.cwd(), cfg.proof_commands),
@@ -946,8 +955,8 @@ def execute(args: argparse.Namespace, execution) -> int:
             or name == "proof" and output.strip()
             or args.tier == "pr" and status == "PASS" and output.strip()
         ):
-            tail = "\n".join(output.splitlines()[-TAIL_LINES:])
-            lines += ["", f"## {name} {'failure' if status == 'FAIL' else 'output'}", "```", tail, "```"]
+            shown = output if name == "proof" else "\n".join(output.splitlines()[-TAIL_LINES:])
+            lines += ["", f"## {name} {'failure' if status == 'FAIL' else 'output'}", "```", shown, "```"]
     report = Path(args.report)
     report.parent.mkdir(parents=True, exist_ok=True)
     report.write_text("\n".join(lines) + "\n")
