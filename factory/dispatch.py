@@ -915,34 +915,36 @@ def requeue_agent(
     # for ordinary refresh requeues that have never needed an owner decision.
     parked = from_human and any(e.get("ticket") == n and e.get("event") == "escalate"
                                for e in lifecycle.read_events(EVENTS))
-    before = handoff.timeline(n) if parked else []
+    command = [
+        "gh", "issue", "edit", str(n), "--repo", REPO,
+        "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
+        *(["--remove-assignee", "@me"] if unassign else []),
+    ]
+    if not parked:
+        return run(command, check=check)
+    before = handoff.timeline(n)
     transitions_before = [_label_transition(item) for item in before]
     operation = str(uuid.uuid4())
     record("agent-requeue", ticket=n, operation=operation, status="started",
            before=transitions_before, releases=[])
     try:
-        proc = run([
-            "gh", "issue", "edit", str(n), "--repo", REPO,
-            "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
-            *(["--remove-assignee", "@me"] if unassign else []),
-        ], check=False)
+        proc = run(command, check=False)
     except (subprocess.CalledProcessError, OSError):
         record("agent-requeue", ticket=n, operation=operation, status="failed",
                before=transitions_before, releases=[])
         raise
     releases = []
     status = "success" if proc.returncode == 0 else "failed"
-    if parked:
-        try:
-            releases = [
-                _label_transition(item) for item in handoff.timeline(n)
-                if item.get("event") == "labeled"
-                and (item.get("label") or {}).get("name") == LABEL_AGENT
-                and _label_transition(item) not in transitions_before
-            ]
-        except (subprocess.CalledProcessError, OSError, ValueError):
-            if proc.returncode == 0:
-                status = "uncertain"
+    try:
+        releases = [
+            _label_transition(item) for item in handoff.timeline(n)
+            if item.get("event") == "labeled"
+            and (item.get("label") or {}).get("name") == LABEL_AGENT
+            and _label_transition(item) not in transitions_before
+        ]
+    except (subprocess.CalledProcessError, OSError, ValueError):
+        if proc.returncode == 0:
+            status = "uncertain"
     record("agent-requeue", ticket=n, operation=operation, status=status,
            before=transitions_before, releases=releases)
     if check:
