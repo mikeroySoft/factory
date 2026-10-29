@@ -1762,6 +1762,17 @@ def _question_block(question: str | None) -> str:
     return "\n".join(lines)
 
 
+def _route_escalation_to_manager(n: int) -> None:
+    run(
+        [
+            "gh", "issue", "edit", str(n), "--repo", REPO,
+            "--remove-assignee", "@me",
+            "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
+        ],
+        check=False,
+    )
+
+
 @overload
 def escalate(
     n: int, reason: str, log_path: Path | None, need: NeedKind, extra: str = "", *,
@@ -1855,19 +1866,17 @@ def escalate(
         log=str(log_path) if log_path else None, packet=str(packet), round=round_number,
         **evidence,
     )
-    labels = (
-        ["--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN]
-        if human else ["--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT]
-    )
+    if not human:
+        _route_escalation_to_manager(n)
+        return
     run(
         [
             "gh", "issue", "edit", str(n), "--repo", REPO,
-            "--remove-assignee", "@me", *labels,
+            "--remove-assignee", "@me",
+            "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN,
         ],
         check=False,
     )
-    if not human:
-        return
     body = f"Factory dispatcher escalating: {reason}.\n\nEscalation packet: `{packet}`"
     if log_path:
         body += f"\n\nWorker logs: `{log_path}`"
