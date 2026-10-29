@@ -1278,3 +1278,106 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
             "-C", str(wt), "diff", "--name-only", "origin/main...HEAD",
         ).stdout.splitlines()
         self.assertNotIn("uv.lock", changed)
+
+    def run_named_dependency_worker(self, plan: str, body: str | None = None) -> str:
+        base_lock = 'version = 1\n\n[[package]]\nname = "requests"\nversion = "2.31.0"\n'
+        changed_lock = base_lock.replace("2.31.0", "2.32.4")
+        (self.repo / "uv.lock").write_text(base_lock)
+        self.git("add", "uv.lock")
+        self.git("commit", "-qm", "lock baseline")
+        self.git("push", "-q", "origin", "main")
+        if body is not None:
+            gh = self.bin / "gh"
+            gh.write_text(GH.replace(
+                '"body": "Acceptance: make the local change"',
+                '"body": ' + repr(body),
+            ))
+        self.reviewer.write_text(
+            'print(\'```json\\n{"verdict":"APPROVE","findings":[]}\\n```\\nVERDICT: APPROVE\')\n'
+        )
+        self.worker.write_text(
+            "import subprocess\n"
+            "from pathlib import Path\n"
+            "p = Path('.factory/plans/current/1.md')\n"
+            "p.parent.mkdir(parents=True, exist_ok=True)\n"
+            f"p.write_text({plan!r})\n"
+            f"Path('uv.lock').write_text({changed_lock!r})\n"
+            "subprocess.run(['git', 'add', 'uv.lock'], check=True)\n"
+            "subprocess.run(['git', 'commit', '-qm', 'worker lock edit'], check=True)\n"
+        )
+
+        self.cli("dispatch", "--ticket", "7")
+
+        return subprocess.run(
+            ["git", "--git-dir", str(self.base / "origin.git"), "show", "agent/7:uv.lock"],
+            env=self.env, check=True, capture_output=True, text=True,
+        ).stdout
+
+    def test_bare_lockfile_in_plan_preserves_edit(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- uv.lock\n## Order\n1. Raise requests floor; relock.\n"
+        )
+
+        self.assertEqual(lock, "worker drift\n")
+
+    def test_named_dependency_in_plan_preserves_edit(self):
+        lock = self.run_named_dependency_worker(
+            "## Files\n- pyproject.toml\n## Order\n1. Update requests to 2.32.4.\n"
+        )
+
+        self.assertIn('version = "2.32.4"', lock)
+
+    def test_ticket_lockfile_intent_survives_unrelated_retry_plan(self):
+        lock = self.run_named_dependency_worker(
+            "## Files\n- tests/test_client.py\n## Order\n1. Fix the failing test.\n",
+            body="Update uv.lock for the planned requests dependency change.",
+        )
+
+        self.assertIn('version = "2.32.4"', lock)
+
+    def test_restriction_after_lockfile_action_does_not_negate_it(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- uv.lock\n## Order\n1. Update uv.lock; no other files change.\n"
+        )
+
+        self.assertEqual(lock, "worker drift\n")
+
+    def test_unrelated_pin_does_not_authorize_lockfile_drift(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- docs/navigation.md\n## Order\n1. Pin the navigation header.\n"
+        )
+
+        self.assertEqual(lock, "base\n")
+
+    def test_moving_main_does_not_replace_ticket_lockfile_base(self):
+        from factory import dispatch
+
+        (self.repo / "uv.lock").write_text("ticket base\n")
+        self.git("add", "uv.lock")
+        self.git("commit", "-qm", "lock baseline")
+        wt = self.repo / ".factory" / "wt-7"
+        wt.parent.mkdir(exist_ok=True)
+        self.git("worktree", "add", str(wt), "-b", "agent/7")
+
+        (self.repo / "uv.lock").write_text("new main lock\n")
+        self.git("add", "uv.lock")
+        self.git("commit", "-qm", "advance main lock")
+        (wt / "uv.lock").write_text("worker drift\n")
+        self.git("-C", str(wt), "add", "uv.lock")
+        self.git("-C", str(wt), "commit", "-qm", "worker lock edit")
+
+        dispatch.restore_unplanned_lockfiles(wt, 7, "", "main")
+        dispatch.commit_leftovers(wt, 7, "restore lockfile")
+
+        self.assertEqual((wt / "uv.lock").read_text(), "ticket base\n")
+        changed = self.git(
+            "-C", str(wt), "diff", "--name-only", "main...HEAD",
+        ).stdout.splitlines()
+        self.assertNotIn("uv.lock", changed)
+
+    def test_package_documentation_does_not_authorize_lockfile_drift(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- docs/packages.md\n## Order\n1. Update the factory package docs.\n"
+        )
+
+        self.assertEqual(lock, "base\n")
