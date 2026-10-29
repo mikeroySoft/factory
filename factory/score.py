@@ -21,6 +21,7 @@ MAX_HANDOFF = 4_000  # chars of the worker handoff shown to the judge
 EDIT_TOOLS = {"edit", "write"}
 EXCERPT_CHARS = 3000  # per-session excerpt handed to `factory learn`
 RESULT_LINES = 10  # lines of a failing tool result kept in the excerpt
+WORKER_CONTEXT_FILES = (config.LESSONS_NAME, "AGENTS.md", "CLAUDE.md")
 FAILED = re.compile(r"(?i:error)|Traceback|FAIL")
 JUDGE_SYSTEM = (
     "You grade whether a coding agent delivered a ticket. You are given the ticket's scope and "
@@ -121,10 +122,18 @@ def _skill_tokens(root: Path, path: str, result: str) -> int:
         return 0
 
 
+def _worker_context(root: Path) -> str:
+    return "\n".join(
+        path.read_text(errors="replace")
+        for name in WORKER_CONTEXT_FILES
+        if (path := root / name).is_file()
+    )
+
+
 def skill_loads(parsed: dict, root: Path, attempt: dict) -> list[dict]:
     """Skill-read rows from one parsed transcript; non-read mentions never qualify."""
     loads = []
-    prompt = parsed["prompt"]
+    prompt = f"{parsed['prompt']}\n{_worker_context(root)}"
     for index, call in enumerate(parsed["calls"]):
         arguments = call["arguments"]
         found = _skill(arguments.get("path")) if call["name"] == "read" else None
@@ -224,7 +233,6 @@ def _attempt_score(cfg: config.Config, attempt: dict, parsed: dict | None) -> di
         "gate_first_pass": attempt.get("gate") == "PASS" and attempt["attempt"] == 1,
         **metrics(calls),
         "call_errors": [bool(call["is_error"]) for call in parsed["calls"]],
-        "failures": _score_failures(parsed),
         "compliance": compliance,
         "judge_model": triage.LLM_MODEL if compliance is not None else None,
     }

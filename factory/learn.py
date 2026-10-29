@@ -37,7 +37,7 @@ MAX_ESCAPES = 10  # most recent candidate-escape bugs carried into evidence
 AUTO_EVERY = 10  # finished tickets between automatic runs at the end of a dispatcher pass
 LESSONS_BRANCH = dispatch.LESSONS_BRANCH
 REVERT_BRANCH = "agent/revert-lessons-"  # + the reverted PR number
-WORKER_CONTEXT_FILES = (LESSONS_NAME, "AGENTS.md", "CLAUDE.md")
+WORKER_CONTEXT_FILES = score.WORKER_CONTEXT_FILES
 
 LICENSE_MARKERS = (
     ("apache license version 2.0", "Apache-2.0"),
@@ -154,14 +154,15 @@ def _load_failure_excerpts(skill: str, loads: list[dict]) -> list[dict]:
             if not load.get("ok") and isinstance(load.get("error"), str)]
 
 
-def _regression_excerpts(skill: str, loads: list[dict], scores: dict[str, dict]) -> list[dict]:
+def _regression_excerpts(
+    skill: str, loads: list[dict], failures: dict[str, list[dict]],
+) -> list[dict]:
     excerpts = []
     for load in loads:
         start = load.get("call_index")
         if type(start) is not int:
             continue
-        scored = scores.get(load.get("session"), {})
-        for failure in scored.get("failures", []):
+        for failure in failures.get(load.get("session"), []):
             index, text = failure.get("call_index"), failure.get("text")
             if type(index) is int and start < index <= start + stats.SKILL_AFTER_CALLS and isinstance(text, str):
                 excerpts.append(_skill_excerpt(skill, load, _skill_failure_tag(text), text))
@@ -174,22 +175,42 @@ def _skill_worse(metric: dict) -> bool:
             and excess > noise)
 
 
-def skill_failure_evidence(rows: list[dict]) -> list[dict]:
+def skill_failure_evidence(
+    rows: list[dict],
+    transcript_failures: dict[str, list[dict]] | None = None,
+    tickets: set[int] | None = None,
+) -> list[dict]:
     """Pure, bounded excerpts for failed loads and skills worse than matched controls."""
-    scores = {row.get("transcript"): row for row in rows
-              if row.get("event") == "score" and isinstance(row.get("transcript"), str)}
     loads = [row for row in rows if row.get("event") == "skill-load"]
+    selected = [row for row in loads if tickets is None or row.get("ticket") in tickets]
+    failures = transcript_failures or {}
     result = []
     for metric in stats.skill_metrics(rows):
         skill = metric["skill"]
-        skill_loads = [row for row in loads if row.get("skill") == skill]
+        skill_loads = [row for row in selected if row.get("skill") == skill]
         excerpts = _load_failure_excerpts(skill, skill_loads)
         if _skill_worse(metric):
-            excerpts += _regression_excerpts(skill, skill_loads, scores)
+            excerpts += _regression_excerpts(skill, skill_loads, failures)
         result += excerpts[:3]
     return result
 
 
+def _transcript_failures(rows: list[dict], tickets: set[int]) -> dict[str, list[dict]]:
+    sessions = {
+        row["session"] for row in rows
+        if row.get("event") == "skill-load" and row.get("ticket") in tickets
+        and isinstance(row.get("session"), str)
+    }
+    failures = {}
+    for session in sessions:
+        path = dispatch.ROOT / session
+        if not path.is_file():
+            continue
+        try:
+            failures[session] = score._score_failures(score._parsed(path))
+        except OSError:
+            continue
+    return failures
 
 
 def evidence(last: int) -> tuple[list[int], str]:
@@ -213,7 +234,8 @@ def evidence(last: int) -> tuple[list[int], str]:
         title = next((e.get("title") for e in evs if e["event"] == "claimed"), "")
         parts.append(f"### Ticket #{n}: {title}")
         for e in evs:
-            fields = {k: v for k, v in e.items() if k not in ("ticket", "title", "log", "issue")}
+            fields = {k: v for k, v in e.items()
+                      if k not in ("ticket", "title", "log", "issue", "failures")}
             parts.append(f"- {json.dumps(fields)}")
         worst = worst_session(evs)
         transcript = Path(worst[0]["transcript"]) if worst and isinstance(worst[0].get("transcript"), str) else None
@@ -232,7 +254,10 @@ def evidence(last: int) -> tuple[list[int], str]:
         if review.exists():
             parts.append(f"\nLatest reviewer findings:\n```\n{review.read_text()[-3000:]}\n```")
         parts.append("")
-    failures = [item for item in skill_failure_evidence(journal_rows) if item.get("ticket") in chosen]
+    selected = set(chosen)
+    failures = skill_failure_evidence(
+        journal_rows, _transcript_failures(journal_rows, selected), selected,
+    )
     for skill in dict.fromkeys(item["skill"] for item in failures):
         parts.append(f"### Skill {skill} failure evidence")
         parts += [f"- [{item['tag']}] {item['excerpt']}" for item in failures if item["skill"] == skill]
