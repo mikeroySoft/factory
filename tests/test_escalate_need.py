@@ -437,7 +437,7 @@ class EscalationPublicationTest(unittest.TestCase):
                     cfg.reserved = {"spending": frozenset({"budget"})}
                     dispatch.configure(cfg)
 
-                    def run(argv, _cwd, check, *_args):
+                    def run(argv, _cwd, check, *_args, action=action):
                         if argv[1:3] == ["issue", action]:
                             if check:
                                 raise subprocess.CalledProcessError(1, argv, stderr="unavailable")
