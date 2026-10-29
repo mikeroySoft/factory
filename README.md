@@ -606,11 +606,14 @@ A successful guarded human `requeue_agent` action records a `rounds-reset`
 event with the ticket, authenticated actor, and requeue time after the label
 change succeeds. When an owner instead comments and directly relabels a
 `ready-for-human` ticket to `ready-for-agent`, the dispatcher records the same
-event from the GitHub timeline before claiming it. Manager final-review and
-escalation-recovery rounds, refresh-conflict rounds, and refresh-gate resolution
-rounds count only events after the latest reset. Reviewer bounces already start
-with a full budget on every dispatch. Manager and dispatcher requeues neither
-record a reset nor renew persisted budgets.
+event from the GitHub timeline before manager frontier budget enforcement or
+claiming it. Manager final-review and escalation-recovery rounds, refresh-conflict
+rounds, refresh-gate resolution rounds, and High-risk disagreement rework rounds
+count only events after the latest reset. Reviewer bounces already start with a
+full budget on every dispatch. The reset preserves attempt history, log evidence,
+pending conflict/gate repairs, and mandatory High-risk disagreement guidance;
+manager decisions remain bound to their original head. Manager and dispatcher
+requeues neither record a reset nor renew persisted budgets.
 
 
 ### Routed human handoffs

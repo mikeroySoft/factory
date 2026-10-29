@@ -363,6 +363,67 @@ class FrontierTest(unittest.TestCase):
         self.assertIn("- `/tmp/old-worker.log`", text)
         self.assertIn("- `/tmp/new-worker.log`", text)
 
+    def test_applied_manager_recovery_distinguishes_owner_from_factory_release(self) -> None:
+        packet = self.repo / ".factory" / "packet.md"
+        packet.write_text("Original failure evidence")
+        wt = self.repo / ".factory" / "wt-79"
+        wt.mkdir()
+
+        def recovery_run(cmd, *args, **kwargs):
+            if cmd[:3] == ["git", "branch", "--show-current"]:
+                return subprocess.CompletedProcess(cmd, 0, "agent/79\n", "")
+            if cmd[:3] == ["git", "rev-parse", "HEAD"]:
+                return subprocess.CompletedProcess(cmd, 0, H, "")
+            result = self.fake_run(cmd, *args, **kwargs)
+            if cmd[:3] == ["gh", "issue", "create"]:
+                return subprocess.CompletedProcess(
+                    cmd, 0, "https://github.com/example/project/issues/81", "",
+                )
+            return result
+
+        for decision, data in (
+            ("FIX", {"worker": "default", "guidance": "Repair the gate"}),
+            ("SPLIT", [{"title": "Child", "body": "Child scope"}]),
+            ("RETRY", None),
+        ):
+            with self.subTest(decision=decision):
+                self.direct_requeue()
+                human_release = self.timeline[-2:]
+                self.timeline = self.timeline[:-2]
+                self.issue_labels = ["ready-for-human"]
+                self.mutations.clear()
+                before_resets = len([e for e in self.events() if e.get("event") == "rounds-reset"])
+                dispatch.record("manage", ticket=79, round=1, decision=decision)
+                with mock.patch.object(dispatch, "run", side_effect=recovery_run), \
+                        mock.patch.object(dispatch, "worker_round",
+                                          return_value=(False, "gate failed", None, H)):
+                    manage.apply(79, self.gh_json(["issue", "view"]), decision,
+                                 "Recovery guidance", data, packet)
+
+                factory_released = any(
+                    cmd[:3] == ["gh", "issue", "edit"]
+                    and "--add-label" in cmd and "ready-for-agent" in cmd
+                    for cmd in self.mutations
+                )
+                self.assertEqual(factory_released, decision == "RETRY")
+                if any(cmd[:3] == ["gh", "issue", "comment"] for cmd in self.mutations):
+                    self.timeline.append({
+                        "event": "commented", "id": 7901, "created_at": "2026-10-28T15:51:00Z",
+                        "user": {"login": "runner"}, "body": "Recovery guidance",
+                    })
+                if factory_released:
+                    self.timeline.append({
+                        "event": "labeled", "label": {"name": "ready-for-agent"},
+                        "created_at": "2026-10-28T15:53:00Z", "actor": {"login": "runner"},
+                    })
+                else:
+                    self.timeline.extend(human_release)
+                self.issue_labels = ["ready-for-agent"]
+
+                dispatch._record_human_round_reset(79)
+                resets = [e for e in self.events() if e.get("event") == "rounds-reset"]
+                self.assertEqual(len(resets) - before_resets, 0 if factory_released else 1)
+
     def test_round_reset_preserves_unconsumed_rework_context(self) -> None:
         for kind, fields, heading in (
             ("conflict-requeue", {"verb": "rebase", "files": ["conflicted.py"]}, "Refresh conflict"),

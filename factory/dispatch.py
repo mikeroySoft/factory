@@ -892,6 +892,7 @@ def _current_round_events(events: list[dict], ticket: int) -> list[dict]:
     )
     return rows[reset + 1:]
 
+
 def _record_human_round_reset(n: int) -> None:
     """Journal a direct owner requeue that did not pass through a Factory action."""
     events = [event for event in lifecycle.read_events(EVENTS) if event.get("ticket") == n]
@@ -904,17 +905,6 @@ def _record_human_round_reset(n: int) -> None:
         event.get("event") == "rounds-reset" for event in events[escalation_index + 1:]
     ):
         return
-    if any(
-        event.get("event") in {"conflict-requeue", "gate-requeue", "risk-requeue"}
-        or (
-            event.get("event") == "manage"
-            and not event.get("pr")
-            and event.get("decision") != "HUMAN"
-        )
-        for event in events[escalation_index + 1:]
-    ):
-        return
-
     from factory import handoff
 
     timeline = handoff.timeline(n)
@@ -938,16 +928,26 @@ def _record_human_round_reset(n: int) -> None:
         event["comment"] for event in events
         if event.get("event") == "comment" and type(event.get("comment")) is int
     }
+    machine_actors = {
+        (item.get("user") or item.get("actor") or {}).get("login", "").casefold()
+        for item in timeline
+        if item.get("event") == "commented" and item.get("id") in machine_comments
+    } - {""}
+    release = timeline[release_index]
+    actor = (release.get("actor") or {}).get("login")
+    requeued_at = release.get("created_at")
+    # Decisions and requeue intents can fail before relabeling. Identify who
+    # actually released this generation, not an earlier attempted recovery.
+    if not actor or not requeued_at or actor.casefold() in machine_actors \
+            or (release.get("actor") or {}).get("type") == "Bot":
+        return
     decision = next((
         item for item in reversed(timeline[human_index + 1:release_index])
         if item.get("event") == "commented" and item.get("id") not in machine_comments
+        and (item.get("user") or {}).get("login", "").casefold() not in machine_actors
+        and (item.get("user") or {}).get("type") != "Bot"
     ), None)
     if decision is None:
-        return
-    release = timeline[release_index]
-    actor = (release.get("actor") or {}).get("login") or (decision.get("user") or {}).get("login")
-    requeued_at = release.get("created_at")
-    if not actor or not requeued_at:
         return
     record("rounds-reset", ticket=n, actor=actor, requeued_at=requeued_at)
 
@@ -1698,7 +1698,7 @@ def escalation_packet(
     extra: str = "",
 ) -> tuple[Path, int]:
     events = lifecycle.read_events(EVENTS)
-    ticket_events = _current_round_events(events, n)
+    ticket_events = [event for event in events if event.get("ticket") == n]
     attempts = [event for event in ticket_events if event.get("event") == "attempt"]
     rows = [
         f"| {event.get('attempt', '')} | {event.get('gate') or 'not run'} | "
@@ -1736,7 +1736,7 @@ def escalation_packet(
     )
     round_number = 1 + sum(
         event.get("event") == "escalate" and event.get("reason") != "manager_failed"
-        for event in ticket_events
+        for event in _current_round_events(ticket_events, n)
     )
     return packet, round_number
 
@@ -3097,16 +3097,16 @@ def _refresh_failure_scope(wt: Path, n: int, reports: list[str]) -> tuple[list[s
 
 def pending_risk_requeue_head(n: int) -> str | None:
     rows = [
-        event for event in _current_round_events(lifecycle.read_events(EVENTS), n)
-        if event.get("event") in {"attempt", "risk-requeue"}
+        event for event in lifecycle.read_events(EVENTS)
+        if event.get("ticket") == n and event.get("event") in {"attempt", "risk-requeue"}
     ]
     return rows[-1].get("head") if rows and rows[-1]["event"] == "risk-requeue" else None
 
 
 def refresh_requeue_context(n: int) -> str:
     rows = [
-        event for event in _current_round_events(lifecycle.read_events(EVENTS), n)
-        if event.get("event") in {
+        event for event in lifecycle.read_events(EVENTS)
+        if event.get("ticket") == n and event.get("event") in {
             "attempt", "conflict-requeue", "gate-requeue", "risk-requeue",
         }
     ]

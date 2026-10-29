@@ -872,6 +872,8 @@ def frontier_pass(dry_run: bool = False) -> None:
                 if config.LABEL_INITIATIVE in labels:
                     dispatch.log(f"PR #{number}: refused (ticket #{n} is an initiative record)")
                     continue
+                if not dry_run and LABEL_AGENT in labels:
+                    dispatch._record_human_round_reset(n)
                 events = lifecycle.read_events(dispatch.EVENTS)
                 observation = observe_pr(pr, n, events)
                 if observation["owner"]["relation"] != "factory_issue":
