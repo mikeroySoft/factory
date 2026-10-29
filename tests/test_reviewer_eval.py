@@ -370,11 +370,11 @@ class ReviewerEvalTest(unittest.TestCase):
             self.assertNotIn(lifecycle.CONTEXT_ENV, call.kwargs["env"])
 
     def test_trigger_rejects_checkout_not_at_pr_head(self) -> None:
-        with mock.patch.object(config, "git", return_value="b" * 40):
-            with self.assertRaisesRegex(RuntimeError, "PR head"):
-                reviewer_eval.trigger_for_checkout(
-                    ["factory/dispatch.py"], ROOT, ROOT, "REVIEW.md", expected_head="a" * 40
-                )
+        with mock.patch.object(config, "git", return_value="b" * 40), \
+             self.assertRaisesRegex(RuntimeError, "PR head"):
+            reviewer_eval.trigger_for_checkout(
+                ["factory/dispatch.py"], ROOT, ROOT, "REVIEW.md", expected_head="a" * 40
+            )
 
 
     def test_contract_fingerprint_uses_revision_prompt_model_and_policy(self) -> None:

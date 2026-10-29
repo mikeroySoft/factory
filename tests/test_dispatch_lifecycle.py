@@ -1174,3 +1174,170 @@ class TriageExemptionLifecycleTest(unittest.TestCase):
         self.assertIn("bug ticket needs a `Repro test:` handoff line", report)
         self.assertNotIn("- bug-repro: SKIP", report)
         self.assertFalse(any(row.get("event") == "approved" for row in events))
+
+
+class ReviewerEvalMergeEvidenceTest(unittest.TestCase):
+    def setUp(self):
+        import shlex
+        from unittest import mock
+
+        from factory import config, dispatch, reviewer_eval
+
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.cfg = config.Config(
+            root=Path(temp.name), repo="acme/widgets", reviewer_eval_schedule=True,
+        )
+        self.cfg.factory.mkdir()
+        self.head = "a" * 40
+        self.checkout = self.cfg.factory / "wt-7"
+        self.events = self.cfg.factory / "events.jsonl"
+        self.main_contract = {"prompt_sha256": {"case": "base"}, "model": "reviewer/one"}
+        self.head_contract = {**self.main_contract, "prompt_sha256": {"case": "head"}}
+        baseline = {
+            "main_sha": "b" * 40, "corpus_version": 2,
+            "statuses": {"case": "always-pass"}, **self.main_contract,
+        }
+        reviewer_eval.baseline_path(self.cfg).write_text(json.dumps(baseline))
+        self.digest = reviewer_eval.baseline_digest(baseline)
+        rows = [
+            {"event": "risk", "tier": "High"},
+            {
+                "event": "attempt", "gate": "PASS", "actual_head": self.head,
+                "worker_model": "worker/model",
+            },
+            {
+                "event": "review", "role": "primary", "accepted": True,
+                "verdict": "APPROVE", "actual_head": self.head, "model": "reviewer/one",
+            },
+            {
+                "event": "review", "role": "second", "accepted": True,
+                "verdict": "APPROVE", "actual_head": self.head, "model": "reviewer/two",
+            },
+            {"event": "risk-check", "mutation": "PASS", "pr_gate": "PASS"},
+            {
+                "event": "approved", "pr": 42,
+                "gate_head": self.head, "review_head": self.head,
+            },
+            {
+                "event": reviewer_eval.EVENT, "candidate": self.head,
+                "status": "completed", "verdict": "pass", "baseline_sha256": self.digest,
+                "missing": [], "flips": [], "regressions": [], "flaky": [],
+            },
+        ]
+        for row in rows:
+            lifecycle.append(self.events, {"ticket": 7, "head": self.head, **row})
+        self.pr = {
+            "number": 42, "headRefName": "agent/7", "headRefOid": self.head,
+            "baseRefName": "main", "isDraft": False,
+            "labels": [{"name": dispatch.FACTORY_APPROVED}],
+            "reviewDecision": "APPROVED", "state": "OPEN", "title": "review prompt",
+            "files": [{"path": "factory/dispatch.py"}],
+        }
+
+        def github(args):
+            if args[:2] == ["pr", "list"]:
+                return [self.pr]
+            if args[:2] == ["pr", "view"]:
+                return self.pr
+            if args[0] == "api":
+                return {"behind_by": 0}
+            raise AssertionError(args)
+
+        def start(patch):
+            value = patch.start()
+            self.addCleanup(patch.stop)
+            return value
+
+        env = dict(os.environ)
+        env.pop(lifecycle.CONTEXT_ENV, None)
+        start(mock.patch.dict(os.environ, env, clear=True))
+        start(mock.patch.multiple(
+            dispatch, create=True, cfg=self.cfg, ROOT=self.cfg.root, REPO=self.cfg.repo,
+            UPSTREAM=None, FACTORY=self.cfg.factory, EVENTS=self.events,
+        ))
+        start(mock.patch.object(dispatch, "gh_json", side_effect=github))
+        start(mock.patch.object(dispatch, "initiative_kind", return_value=None))
+        start(mock.patch.object(
+            dispatch, "pr_checks", return_value=[{"name": "ci", "bucket": "pass"}],
+        ))
+        start(mock.patch("factory.learn.promote_pass"))
+        self.command = start(mock.patch.object(dispatch, "run"))
+        self.comment = start(mock.patch.object(dispatch, "pr_comment"))
+        self.cleanup = start(mock.patch.object(dispatch, "cleanup_after_merge"))
+        self.log = start(mock.patch.object(dispatch, "log"))
+        self.git = start(mock.patch.object(config, "git", return_value=self.head))
+        start(mock.patch.object(reviewer_eval, "corpus_version", return_value=2))
+        self.fingerprint = start(mock.patch.object(
+            reviewer_eval, "contract_fingerprint",
+            side_effect=lambda root: (
+                self.main_contract if root == self.cfg.root else self.head_contract
+            ),
+        ))
+        command = f"{shlex.quote(sys.executable)} -m factory reviewer-eval"
+        self.candidate_command = f"cd {shlex.quote(str(self.checkout))} && {command}"
+        self.refresh_command = (
+            f"cd {shlex.quote(str(self.cfg.root))} && {command} && {self.candidate_command}"
+        )
+        events = lifecycle.read_events(self.events)
+        self.assertTrue(dispatch._head_evidence_matches(
+            events, 7, self.head, changed_paths=["factory/dispatch.py"],
+        ))
+        self.assertTrue(reviewer_eval.merge_allowed(True, self.head, events, self.digest))
+
+    def assert_refused(self, recovery_command):
+        from factory import dispatch
+
+        dispatch.merge_pass_locked(True)
+        messages = "\n".join(call.args[0] for call in self.log.call_args_list)
+        self.assertIn("would refuse (reviewer calibration", messages)
+        self.assertIn(f"run `{recovery_command}`", messages)
+        self.command.assert_not_called()
+        dispatch.merge_pass_locked(False)
+
+        events = lifecycle.read_events(self.events)
+        waits = [
+            row["wait"] for row in events
+            if row.get("event") == "lifecycle" and row.get("kind") == "wait"
+        ]
+        self.assertEqual(len(waits), 1)
+        self.assertEqual(waits[0]["reason"], "reviewer_eval_required")
+        self.assertEqual(waits[0]["mode"], "eligibility")
+        self.assertEqual(waits[0]["details"], {
+            "pr": 42, "head": self.head, "command": recovery_command,
+        })
+        self.assertFalse(any(
+            call.args[0][:3] == ["gh", "pr", "merge"]
+            for call in self.command.call_args_list
+        ))
+        self.assertFalse(any(row.get("event") == "merged" for row in events))
+        self.comment.assert_not_called()
+        self.cleanup.assert_not_called()
+
+    def test_prior_exact_head_pass_cannot_bypass_stale_baseline(self):
+        from factory import reviewer_eval
+
+        self.main_contract = {**self.main_contract, "model": "reviewer/new-host-override"}
+        self.assertFalse(reviewer_eval.baseline_ready(self.cfg))
+        self.assert_refused(self.refresh_command)
+
+    def test_prior_exact_head_pass_cannot_bypass_baseline_lookup_failure(self):
+        from unittest import mock
+
+        from factory import reviewer_eval
+
+        with mock.patch.object(
+            reviewer_eval, "baseline_ready", side_effect=FileNotFoundError("missing corpus"),
+        ):
+            self.assert_refused(self.refresh_command)
+
+    def test_prior_exact_head_pass_cannot_bypass_local_checkout_mismatch(self):
+        from factory import reviewer_eval
+
+        self.assertTrue(reviewer_eval.baseline_ready(self.cfg))
+        self.git.return_value = "b" * 40
+        # The moved checkout has main's contract, which would suppress the trigger
+        # without the expected-head check despite the PR's earlier passing evidence.
+        self.head_contract = self.main_contract
+        self.assert_refused(self.candidate_command)
+        self.git.assert_any_call(self.checkout, "rev-parse", "HEAD")
