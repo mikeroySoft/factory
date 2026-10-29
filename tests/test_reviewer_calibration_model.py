@@ -91,23 +91,20 @@ class ReviewerCalibrationModelTest(unittest.TestCase):
                     "usage": {"model": model, "prompt_tokens": 10, "completion_tokens": 2},
                 }
                 for sample in range(1, 4)
-                for case in ("train-case", "lockbox-case")
+                for case in self.calibration.CASES
             ]
 
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory) / "run"
-            split_file = self._split_file(Path(directory))
-            report = self.calibration.replay_models(
-                ["baseline/model", "candidate/model"],
-                out,
-                runner,
-                {"baseline/model": {"prompt": 1.0, "completion": 2.0}},
-                split_file,
+            status = self.calibration.main(
+                [str(out), "--models", "baseline/model,candidate/model"],
+                matrix_runner=runner,
+                prices={"baseline/model": {"prompt": 1.0, "completion": 2.0}},
             )
-            written = json.loads((out / "report.json").read_text())
+            report = json.loads((out / "report.json").read_text())
             markdown = (out / "report.md").read_text()
+        self.assertEqual(status, 0)
         self.assertEqual(calls, ["baseline/model", "candidate/model"])
-        self.assertEqual(written, report)
         self.assertEqual([row["model"] for row in report["models"]], calls)
         for row in report["models"]:
             self.assertEqual(set(row), {
@@ -120,7 +117,9 @@ class ReviewerCalibrationModelTest(unittest.TestCase):
         self.assertFalse(report["models"][0]["unpriced"])
         self.assertIsNone(report["models"][1]["cost"])
         self.assertTrue(report["models"][1]["unpriced"])
-        self.assertEqual(report["models"][1]["stable_flips"], ["train-case", "lockbox-case"])
+        self.assertEqual(
+            report["models"][1]["stable_flips"], self.calibration.CASES
+        )
         self.assertIn("baseline/model", markdown)
         self.assertIn("candidate/model", markdown)
 
