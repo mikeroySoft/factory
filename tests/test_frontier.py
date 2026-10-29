@@ -297,6 +297,90 @@ class FrontierTest(unittest.TestCase):
         self.assertFalse(any(e.get("code") == "manager_exhausted" for e in self.escalations()))
         self.assertTrue(any("--add-label" in cmd and "factory-approved" in cmd for cmd in self.mutations))
 
+    def direct_requeue(self, actor="alice"):
+        at = "2026-10-28T15:50:00Z"
+        # Append fixed-time evidence so the timeline ordering does not depend on the clock.
+        lifecycle.append(dispatch.EVENTS, {
+            "event": "escalate", "ticket": 79, "reason": "gate failed", "round": 1, "at": at,
+        })
+        dispatch.record("comment", ticket=79, kind="escalation", round=1, comment=101)
+        self.timeline = [
+            {"event": "labeled", "label": {"name": "ready-for-human"},
+             "created_at": at, "actor": {"login": "runner"}},
+            {"event": "commented", "id": 101, "created_at": at, "user": {"login": "runner"}},
+            {"event": "commented", "id": 102, "created_at": "2026-10-28T15:52:00Z",
+             "user": {"login": actor}, "body": "Try the amended scope."},
+            {"event": "labeled", "label": {"name": "ready-for-agent"},
+             "created_at": "2026-10-28T15:53:00Z", "actor": {"login": actor}},
+        ]
+
+    def test_human_release_after_failed_fix_or_split_renews_rounds(self) -> None:
+        for decision in ("FIX", "SPLIT"):
+            with self.subTest(decision=decision):
+                self.direct_requeue()
+                dispatch.record("manage", ticket=79, round=1, decision=decision)
+
+                dispatch._record_human_round_reset(79)
+                dispatch._record_human_round_reset(79)
+
+                resets = [e for e in self.events() if e.get("event") == "rounds-reset"]
+                self.assertEqual(len(resets), 1 if decision == "FIX" else 2)
+                self.assertEqual((resets[-1]["actor"], resets[-1]["requeued_at"]),
+                                 ("alice", "2026-10-28T15:53:00Z"))
+
+    def test_actual_factory_release_does_not_renew_rounds(self) -> None:
+        for kind in ("manage", "conflict-requeue", "gate-requeue", "risk-requeue"):
+            with self.subTest(kind=kind):
+                self.direct_requeue(actor="runner")
+                dispatch.record(kind, ticket=79, decision="RETRY", round=1)
+                dispatch._record_human_round_reset(79)
+                self.assertFalse(any(e.get("event") == "rounds-reset" for e in self.events()))
+
+    def test_later_human_release_is_not_vetoed_by_an_earlier_factory_requeue(self) -> None:
+        self.direct_requeue()
+        dispatch.record("conflict-requeue", ticket=79, round=1)
+        self.timeline[2:2] = [
+            {"event": "labeled", "label": {"name": "ready-for-agent"},
+             "created_at": "2026-10-28T15:51:00Z", "actor": {"login": "runner"}},
+            {"event": "labeled", "label": {"name": "ready-for-human"},
+             "created_at": "2026-10-28T15:51:30Z", "actor": {"login": "alice"}},
+        ]
+        dispatch._record_human_round_reset(79)
+        [reset] = [e for e in self.events() if e.get("event") == "rounds-reset"]
+        self.assertEqual(reset["actor"], "alice")
+
+    def test_round_reset_keeps_escalation_attempts_and_log_evidence(self) -> None:
+        dispatch.record("attempt", ticket=79, attempt=1, gate="FAIL", log="/tmp/old-worker.log")
+        dispatch.record("escalate", ticket=79, reason="budget", round=4)
+        dispatch.record("rounds-reset", ticket=79, actor="alice", requeued_at=NOW)
+        dispatch.record("attempt", ticket=79, attempt=2, gate="FAIL", log="/tmp/new-worker.log")
+        packet, round_number = dispatch.escalation_packet(79, "gate failed", None, self.repo)
+
+        self.assertEqual(round_number, 1)
+        text = packet.read_text()
+        self.assertIn("| 1 | FAIL |", text)
+        self.assertIn("| 2 | FAIL |", text)
+        self.assertIn("- `/tmp/old-worker.log`", text)
+        self.assertIn("- `/tmp/new-worker.log`", text)
+
+    def test_round_reset_preserves_unconsumed_rework_context(self) -> None:
+        for kind, fields, heading in (
+            ("conflict-requeue", {"verb": "rebase", "files": ["conflicted.py"]}, "Refresh conflict"),
+            ("gate-requeue", {"reports": ["original failing gate"]}, "Refresh gate failure"),
+            ("risk-requeue", {"packet": "mandatory dissent findings"}, "High-risk disagreement"),
+        ):
+            with self.subTest(kind=kind):
+                dispatch.record(kind, ticket=79, pr=80, head=H, round=1, **fields)
+                dispatch.record("escalate", ticket=79, reason="budget", round=2)
+                dispatch.record("rounds-reset", ticket=79, actor="alice", requeued_at=NOW)
+
+                self.assertIn(heading, dispatch.refresh_requeue_context(79))
+                if kind == "risk-requeue":
+                    self.assertEqual(dispatch.pending_risk_requeue_head(79), H)
+                dispatch.record("attempt", ticket=79, head=H2)
+                self.assertEqual(dispatch.refresh_requeue_context(79), "")
+                self.assertIsNone(dispatch.pending_risk_requeue_head(79))
+
     def test_review_all_close_and_human_decisions_act_through_the_shared_apply(self) -> None:
         self.cfg.manager_review = "all"
         self.quiet_provider()
