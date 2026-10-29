@@ -3371,7 +3371,12 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     pr_comment(n, findings)
     if failure:
         code, reason = failure
-        withdraw(f"{reason} after {verb} onto moved main", code)
+        reason = (
+            f"worker model provenance missing for High-risk review after {verb} onto moved main"
+            if code == "missing_worker_provenance"
+            else f"reviewer unavailable after {verb} onto moved main"
+        )
+        withdraw(reason, code)
         return False
     if verdict != "APPROVE":
         state = _PENDING_RISK.get(n) or {}
@@ -4238,12 +4243,26 @@ def process_ticket(
                 )
                 return
             if verdict is None:
-                code, reason = review_failure(n, gate_head) or (
+                code, _ = review_failure(n, gate_head) or (
                     "reviewer_unavailable", "reviewer unavailable",
                 )
-                log(f"#{n}: {reason}; not a REVISE verdict")
-                escalate(n, reason, logfile, code=code)
-                return
+                if code == "missing_worker_provenance":
+                    reason = "worker model provenance missing for High-risk review"
+                    log(f"#{n}: {reason}; not a REVISE verdict")
+                    escalate(n, reason, logfile, code=code)
+                    return
+                pending = _PENDING_REVIEWS.get(n) or {}
+                if "FileNotFoundError" not in (pending.get("rejection_reason") or ""):
+                    log(
+                        f"#{n}: reviewer unavailable; not a REVISE verdict after "
+                        f"{cfg.review_rounds} review round(s)"
+                    )
+                    escalate(
+                        n, "reviewer unavailable after retries", logfile,
+                        code="reviewer_unavailable",
+                    )
+                    return
+                verdict = "REVISE"
             # Each REVISE (or pr-tier FAIL) uses the normal bounce budget. A first
             # High-risk disagreement always gets one rework, even when that budget is spent.
             for bounce in range(1, cfg.review_rounds + 2):
@@ -4311,11 +4330,23 @@ def process_ticket(
                     return
                 risk_disagreement_head = current_disagreement_head
                 if verdict is None:
-                    code, reason = review_failure(n, gate_head) or (
+                    code, _ = review_failure(n, gate_head) or (
                         "reviewer_unavailable", "reviewer unavailable",
                     )
-                    escalate(n, reason, logfile, code=code)
-                    return
+                    if code == "missing_worker_provenance":
+                        escalate(
+                            n, "worker model provenance missing for High-risk review",
+                            logfile, code=code,
+                        )
+                        return
+                    pending = _PENDING_REVIEWS.get(n) or {}
+                    if "FileNotFoundError" not in (pending.get("rejection_reason") or ""):
+                        escalate(
+                            n, "reviewer unavailable after retries", logfile,
+                            code="reviewer_unavailable",
+                        )
+                        return
+                    verdict = "REVISE"
             if verdict != "APPROVE" and pr_failed:
                 escalate(n, "pr checks failed", logfile, extra="## PR-tier gate report\n\n" + findings,
                          code="pr_checks_failed")

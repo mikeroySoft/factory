@@ -484,10 +484,14 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
                     code="pr_checks_failed",
                 )
         elif verdict is None:
-            code, failure = dispatch.review_failure(n, gate_head) or (
+            code, _ = dispatch.review_failure(n, gate_head) or (
                 "reviewer_unavailable", "reviewer unavailable",
             )
-            reason = f"{failure} after manager FIX"
+            reason = (
+                "worker model provenance missing for High-risk review after manager FIX"
+                if code == "missing_worker_provenance"
+                else "reviewer unavailable after manager FIX"
+            )
             if already_human:
                 dispatch.log(f"#{n}: manager FIX failed ({code}: {reason}); ticket is already ready-for-human")
             else:
