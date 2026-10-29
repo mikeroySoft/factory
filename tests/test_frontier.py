@@ -371,6 +371,45 @@ class FrontierTest(unittest.TestCase):
         flat = [" ".join(cmd) for cmd in self.mutations]
         self.assertFalse(any("--add-label ready-for-human" in cmd for cmd in flat))
 
+    def test_rejected_signoff_is_routed_before_consuming_the_approval_head(self) -> None:
+        self.cfg.manager_review = "all"
+        self.quiet_provider()
+        self.approved_head(H)
+        self.manager_output = (
+            'DECISION: HUMAN\n{"category":"spending","reason":"Approve more quota",'
+            '"options":["Approve the increase"]}'
+        )
+
+        manage.frontier_pass()
+
+        [escalation] = self.escalations()
+        self.assertEqual((escalation["code"], escalation["route"]), ("manager_failed", "manager"))
+        self.assertTrue(any("--add-assignee" in cmd and "ready-for-agent" in cmd
+                            for cmd in self.mutations), self.mutations)
+        self.assertFalse(any("--add-label" in cmd and "ready-for-human" in cmd
+                             for cmd in self.mutations), self.mutations)
+
+    def test_failed_approval_routing_does_not_consume_the_head(self) -> None:
+        self.cfg.manager_review = "all"
+        self.quiet_provider()
+        self.approved_head(H)
+        self.manager_output = "DECISION: HUMAN\nnot a reserved decision"
+
+        def fail_route(cmd, *args, **kwargs):
+            if cmd[:3] == ["gh", "issue", "edit"]:
+                raise subprocess.CalledProcessError(1, cmd, stderr="routing failed")
+            return self.fake_run(cmd, *args, **kwargs)
+
+        with mock.patch.object(dispatch, "run", side_effect=fail_route):
+            manage.frontier_pass()
+
+        self.assertFalse(any(e.get("event") == "manage" for e in self.events()))
+        self.manager_output = "DECISION: APPROVE\nLooks right"
+        self.mutations.clear()
+        manage.frontier_pass()
+        self.assertTrue(any("--add-label" in cmd and "factory-approved" in cmd
+                            for cmd in self.mutations), self.mutations)
+
 
 class CloseDecisionTest(unittest.TestCase):
     def test_close_proposes_wontfix_on_human_issue_and_closes_factory_child(self) -> None:

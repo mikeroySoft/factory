@@ -94,6 +94,21 @@ class EscalateNeedTest(unittest.TestCase):
 
 
 class ReservedConfigTest(unittest.TestCase):
+    def test_doctor_names_empty_code_at_the_configuration_boundary(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        path = root / config.RESERVED_NAME
+        path.parent.mkdir()
+        path.write_text("| `spending` | Spending or quotas | |\n")
+        output = io.StringIO()
+        with mock.patch.object(config, "repo_root", return_value=root), \
+             mock.patch.object(config, "remote_slug", return_value="acme/widgets"), \
+             mock.patch.object(config, "host_config", return_value={}), \
+             contextlib.redirect_stdout(output):
+            self.assertEqual(cli.main(["doctor"]), 1)
+        self.assertEqual(output.getvalue().splitlines(), [
+            f"FAIL configuration: factory: {path}: category 'spending' needs an escalation code",
+        ])
+
     def test_reserved_table_is_parsed_and_names_unknown_categories_and_codes(self) -> None:
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         path = root / config.RESERVED_NAME
@@ -173,6 +188,32 @@ class LearningAndStatsTest(unittest.TestCase):
 
 
 class NeedCorrectionTest(unittest.TestCase):
+    def test_edited_older_recorded_comment_is_not_a_label_only_correction(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        dispatch.configure(config.Config(root, "acme/widgets"))
+        lifecycle.append(dispatch.EVENTS, {
+            "at": AT, "event": "escalate", "ticket": 7, "round": 1,
+            "code": "budget", "need": "SIGNOFF", "category": "spending",
+        })
+        for comment, kind in ((99, "manager"), (100, "escalation")):
+            lifecycle.append(dispatch.EVENTS, {
+                "at": "2026-10-27T00:00:01Z", "event": "comment", "ticket": 7,
+                "kind": kind, "round": 1, "comment": comment,
+            })
+        human = {"login": "mikeroySoft", "type": "User"}
+        timeline = [[
+            {"event": "commented", "id": 99, "created_at": "2026-10-26T00:00:00Z",
+             "updated_at": "2026-10-27T00:01:00Z"},
+            {"event": "commented", "id": 100, "created_at": "2026-10-27T00:00:01Z",
+             "updated_at": "2026-10-27T00:00:01Z"},
+            {"event": "unlabeled", "label": {"name": "ready-for-human"}, "actor": human},
+            {"event": "labeled", "label": {"name": "ready-for-agent"}, "actor": human},
+        ]]
+        with mock.patch.object(dispatch, "gh_json", return_value=timeline):
+            self.assertFalse(dispatch.correct_need(7))
+        self.assertFalse(any(row.get("need_corrected")
+                             for row in lifecycle.read_events(dispatch.EVENTS)))
+
     def test_label_only_human_return_retags_the_escalation(self) -> None:
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         cfg = config.Config(root, "acme/widgets")
@@ -282,6 +323,72 @@ class ManagerRoutingTest(unittest.TestCase):
         self.assertIn("human sign-off", handoff.terminal(
             self.cfg, lifecycle.read_events(dispatch.EVENTS), escalation,
         ))
+
+    def test_manager_route_label_churn_is_not_human_takeover(self) -> None:
+        self.record_escalation()
+        timeline = [
+            {"event": "unlabeled", "created_at": AT, "label": {"name": "ready-for-human"}},
+            {"event": "labeled", "created_at": AT, "label": {"name": "ready-for-agent"}},
+            {"event": "assigned", "created_at": AT},
+            {"event": "commented", "id": 100, "created_at": "2026-10-27T00:00:01Z"},
+        ]
+        calls = []
+
+        def read(argv):
+            if argv[:2] == ["issue", "list"]:
+                return [self.issue()]
+            if argv[:2] == ["issue", "view"]:
+                return self.issue()
+            if argv[0] == "api":
+                return [timeline]
+            self.fail(argv)
+
+        def run(argv, **_kwargs):
+            calls.append(argv)
+            output = "DECISION: RETRY\nApply the documented budget rule" if argv[0] == "manager" else ""
+            return subprocess.CompletedProcess(argv, 0, output, "")
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=read), \
+             mock.patch.object(dispatch, "run", side_effect=run):
+            manage.escalation_pass()
+
+        self.assertTrue(any(call[0] == "manager" for call in calls), calls)
+        self.assertTrue(any(call[1:3] == ["issue", "comment"] for call in calls), calls)
+        self.assertTrue(any(call[1:3] == ["issue", "edit"] and "--remove-assignee" in call
+                            and "ready-for-agent" in call for call in calls), calls)
+
+    def test_human_comment_during_inference_discards_manager_rewrite(self) -> None:
+        self.record_escalation()
+        timeline = [
+            {"event": "commented", "id": 100, "created_at": "2026-10-27T00:00:01Z"},
+        ]
+        calls = []
+
+        def read(argv):
+            if argv[:2] == ["issue", "list"]:
+                return [self.issue()]
+            if argv[:2] == ["issue", "view"]:
+                return self.issue()
+            if argv[0] == "api":
+                return [list(timeline)]
+            self.fail(argv)
+
+        def run(argv, **_kwargs):
+            calls.append(argv)
+            self.assertEqual(argv[0], "manager")
+            timeline.append({
+                "event": "commented", "id": 101, "created_at": "2026-10-27T00:01:00Z",
+                "user": {"login": "mikeroySoft", "type": "User"},
+            })
+            return subprocess.CompletedProcess(argv, 0, "DECISION: REWRITE\nReplacement body", "")
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=read), \
+             mock.patch.object(dispatch, "run", side_effect=run):
+            manage.escalation_pass()
+
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(any(row.get("event") == "manage"
+                             for row in lifecycle.read_events(dispatch.EVENTS)))
 
 
 if __name__ == "__main__":
