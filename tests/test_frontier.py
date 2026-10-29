@@ -573,7 +573,7 @@ class FrontierTest(unittest.TestCase):
                     packet = self.repo / ".factory" / "packet.md"
                     packet.write_text("Original failure evidence")
 
-                    def relabel(cmd, *args, **kwargs):
+                    def relabel(cmd, *args, succeeds=succeeds, release=release, **kwargs):
                         result = self.fake_run(cmd, *args, **kwargs)
                         if cmd[1:3] == ["issue", "edit"]:
                             if not succeeds:
@@ -669,6 +669,110 @@ class FrontierTest(unittest.TestCase):
         self.assertFalse(any("issue close" in c for c in flat), flat)
         self.assertFalse(any("ready-for-agent" in c for c in flat), flat)
         self.assertEqual(self.escalations(), [])
+
+    def test_release_decision_can_follow_the_first_human_label_without_machine_comment(self) -> None:
+        self.direct_requeue()
+        self.timeline.pop(1)
+        self.timeline.insert(-1, {
+            "event": "unlabeled", "label": {"name": "ready-for-human"},
+            "created_at": "2026-10-28T15:52:30Z", "actor": {"login": "alice"},
+        })
+
+        dispatch._record_human_round_reset(79)
+
+        self.assertEqual(len([e for e in self.events() if e.get("event") == "rounds-reset"]), 1)
+
+    def test_decision_before_the_latest_human_label_is_not_a_release_decision(self) -> None:
+        self.direct_requeue()
+        self.timeline.insert(-1, {
+            "event": "labeled", "label": {"name": "ready-for-human"},
+            "created_at": "2026-10-28T15:52:30Z", "actor": {"login": "runner"},
+        })
+
+        dispatch._record_human_round_reset(79)
+
+        self.assertFalse(any(e.get("event") == "rounds-reset" for e in self.events()))
+
+    def test_machine_receipts_require_comment_events_even_for_missing_human_label(self) -> None:
+        self.direct_requeue()
+        self.timeline = [self.timeline[-1]]
+        self.timeline.insert(0, {
+            "event": "commented", "id": 104, "created_at": "2026-10-28T15:51:00Z",
+            "user": {"login": "runner"}, "body": "Not an escalation",
+        })
+        self.timeline.insert(1, {
+            "event": "commented", "id": 102, "created_at": "2026-10-28T15:52:00Z",
+            "user": {"login": "alice"}, "body": "Owner decision",
+        })
+        dispatch.record("review", ticket=79, kind="escalation", comment=104)
+
+        dispatch._record_human_round_reset(79)
+
+        self.assertFalse(any(e.get("event") == "rounds-reset" for e in self.events()))
+
+    def test_delayed_or_uncertain_automatic_receipt_never_grants_fresh_budget(self) -> None:
+        from factory import handoff
+
+        for unavailable in (False, True):
+            with self.subTest(unavailable=unavailable):
+                dispatch.EVENTS.unlink(missing_ok=True)
+                self.direct_requeue(actor="runner")
+                release = self.timeline.pop()
+                before = list(self.timeline)
+                after = subprocess.CalledProcessError(1, ["gh", "api"]) if unavailable else before
+                with mock.patch.object(handoff, "timeline", side_effect=[before, after]):
+                    dispatch.requeue_agent(79)
+                self.timeline.append(release)
+
+                dispatch._record_human_round_reset(79)
+
+                self.assertFalse(any(e.get("event") == "rounds-reset" for e in self.events()))
+                # The uncertain receipt is generation-bound, not a permanent
+                # classification of this login or a veto on later owner releases.
+                self.timeline.extend([
+                    {"event": "labeled", "id": 105, "label": {"name": "ready-for-human"},
+                     "created_at": "2026-10-28T15:54:00Z", "actor": {"login": "runner"}},
+                    {"event": "commented", "id": 106, "created_at": "2026-10-28T15:55:00Z",
+                     "user": {"login": "runner"}, "body": "Owner decision: Try again"},
+                    {"event": "labeled", "id": 107, "label": {"name": "ready-for-agent"},
+                     "created_at": "2026-10-28T15:56:00Z", "actor": {"login": "runner"}},
+                ])
+                dispatch._record_human_round_reset(79)
+                dispatch._record_human_round_reset(79)
+                [reset] = [e for e in self.events() if e.get("event") == "rounds-reset"]
+                self.assertEqual(reset["requeued_at"], "2026-10-28T15:56:00Z")
+
+    def test_automatic_noop_does_not_claim_a_preexisting_owner_release(self) -> None:
+        self.direct_requeue(actor="runner")
+
+        dispatch.requeue_agent(79)
+        dispatch._record_human_round_reset(79)
+
+        self.assertEqual(len([e for e in self.events() if e.get("event") == "rounds-reset"]), 1)
+
+    def test_existing_human_label_uses_the_latest_escalation_comment_boundary(self) -> None:
+        self.direct_requeue()
+        self.timeline.pop(0)
+        self.timeline[:0] = [
+            {"event": "commented", "id": 200 + index, "created_at": "2026-10-28T15:49:00Z",
+             "user": {"login": "runner"}, "body": "Earlier context"}
+            for index in range(4)
+        ]
+
+        dispatch._record_human_round_reset(79)
+
+        self.assertEqual(len([e for e in self.events() if e.get("event") == "rounds-reset"]), 1)
+
+    def test_missing_or_empty_comment_body_is_not_evidence_of_an_owner_decision(self) -> None:
+        for body in (None, "", "  \n"):
+            with self.subTest(body=body):
+                dispatch.EVENTS.unlink(missing_ok=True)
+                self.direct_requeue()
+                self.timeline[2]["body"] = body
+
+                dispatch._record_human_round_reset(79)
+
+                self.assertFalse(any(e.get("event") == "rounds-reset" for e in self.events()))
 
     def test_failed_close_is_not_replayed_for_the_same_head(self) -> None:
         self.cfg.manager_review = "all"

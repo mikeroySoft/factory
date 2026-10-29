@@ -339,6 +339,23 @@ class HandoffCli(unittest.TestCase):
         self.assertIn("Factory handoff request `7/1`", body)
         self.assertIn("review-intake escalations are never managed", body)
 
+    def test_unrelated_events_cannot_impersonate_handoff_receipts_or_intents(self) -> None:
+        dispatch.configure(config.load(self.repo))
+        dispatch.record(
+            "review", ticket=7, kind="handoff", request="7/1",
+            target="@auth-owner", token="unrelated review evidence", comment=999,
+        )
+
+        self.manage(mode="HUMAN")
+        self.manage()
+
+        [intent] = self.events("handoff")
+        [receipt] = [event for event in self.events("comment")
+                     if event.get("kind") == "handoff"]
+        self.assertEqual(len(self.requests()), 1)
+        self.assertEqual(receipt["token"], intent["token"])
+        self.assertEqual(receipt["comment"], self.requests()[0]["id"])
+
     def test_crash_after_comment_creation_reconciles_to_the_same_request(self) -> None:
         self.manage(mode="HUMAN", crash_on_comment=True, expect=-9)
         self.assertEqual(len(self.requests()), 1)

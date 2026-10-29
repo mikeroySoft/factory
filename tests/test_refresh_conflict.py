@@ -296,7 +296,7 @@ class RefreshConflictTest(unittest.TestCase):
                      "user": {"login": "runner"}},
                 ]
 
-                def relabel(cmd, *args, **kwargs):
+                def relabel(cmd, *args, succeeds=succeeds, timeline=timeline, **kwargs):
                     if cmd[:3] == ["gh", "issue", "edit"]:
                         timeline.append({
                             "event": "commented", "id": 102,
@@ -315,7 +315,8 @@ class RefreshConflictTest(unittest.TestCase):
 
                 with mock.patch.object(dispatch, "gh_json", side_effect=self.github.gh_json), \
                         mock.patch.object(dispatch, "run", side_effect=relabel), \
-                        mock.patch.object(handoff, "timeline", side_effect=lambda n: list(timeline)):
+                        mock.patch.object(handoff, "timeline",
+                                          side_effect=lambda n, rows=timeline: list(rows)):
                     self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
                     if not succeeds:
                         timeline.append({
