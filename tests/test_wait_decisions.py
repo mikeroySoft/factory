@@ -177,8 +177,8 @@ class WaitDecisions(unittest.TestCase):
         results = [subprocess.CompletedProcess([], 8, '[{"name":"ci","bucket":"pending"}]'),
                    subprocess.CompletedProcess([], 0, '[]'),
                    subprocess.CompletedProcess([], 0, '[]')]
-        with patch.object(dispatch, "gh_json", return_value=prs) as query, \
-                patch.object(dispatch, "run", side_effect=results) as run, \
+        with patch.object(dispatch, "gh_json", return_value=prs), \
+                patch.object(dispatch, "run", side_effect=results), \
                 patch.object(dispatch, "refresh_pr_branch") as refresh:
             dispatch.merge_pass_locked(False)
         refresh.assert_not_called()
