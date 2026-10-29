@@ -3836,6 +3836,9 @@ def worker_round(
     transcript = _transcript(session_dir, wall)
     timeout = {"timeout": fired, "reason": TIMEOUT_REASONS[fired]} if fired else {}
     usage = worker_usage(logfile, cfg.worker_usage.get(worker), transcript)
+    if usage["model"] is None and worker_model:
+        usage["model"] = worker_model
+        usage["model_inferred"] = True
     record(
         "llm-usage", ticket=n, stage="worker", attempt=attempt,
         local=_usage_local(usage), **identity, **usage,

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from factory import config, dispatch, manage
+from factory import config, dispatch, lifecycle, manage
 
 
 class ManagerResolveTest(unittest.TestCase):
@@ -46,6 +46,42 @@ class ManagerResolveTest(unittest.TestCase):
         self.assertIn("Factory manager: Resolved without a code change.", commands[comment][-1])
         self.assertFalse(any("--add-label" in command and config.LABEL_AGENT in command
                              for command in commands))
+
+    def test_resolve_records_one_manager_pr_close(self) -> None:
+        result = subprocess.CompletedProcess([], 0, stdout="https://example.test/comment\n")
+        pr = {"number": 17, "state": "OPEN", "changedFiles": 0, "baseRefName": "main"}
+        with mock.patch.object(dispatch, "gh_json", return_value=pr), \
+                mock.patch.object(dispatch, "run", return_value=result), \
+                mock.patch.object(dispatch, "comment_receipt"):
+            manage.apply(
+                7, {"title": "Already fixed"}, "RESOLVE",
+                "Present on main in abc123 via PR #12.", None, Path("unused"),
+            )
+
+        closes = [row for row in lifecycle.read_events(dispatch.EVENTS)
+                  if row.get("event") == "pr-closed"]
+        self.assertEqual([{key: row[key] for key in ("pr", "ticket", "by", "reason")}
+                          for row in closes], [{
+            "pr": 17, "ticket": 7, "by": "manager", "reason": "resolve",
+        }])
+
+    def test_close_records_one_manager_pr_close(self) -> None:
+        result = subprocess.CompletedProcess([], 0, stdout="https://example.test/comment\n")
+        pr = {"number": 17, "state": "OPEN", "baseRefName": "main"}
+        with mock.patch.object(dispatch, "gh_json", return_value=pr), \
+                mock.patch.object(dispatch, "run", return_value=result), \
+                mock.patch.object(dispatch, "comment_receipt"):
+            manage.apply(
+                7, {"title": "Duplicate"}, "CLOSE",
+                "Duplicate of shipped work.", None, Path("unused"),
+            )
+
+        closes = [row for row in lifecycle.read_events(dispatch.EVENTS)
+                  if row.get("event") == "pr-closed"]
+        self.assertEqual([{key: row[key] for key in ("pr", "ticket", "by", "reason")}
+                          for row in closes], [{
+            "pr": 17, "ticket": 7, "by": "manager", "reason": "close",
+        }])
 
     def test_apply_refuses_open_pr_with_changes(self) -> None:
         pr = {"number": 17, "state": "OPEN", "changedFiles": 2, "baseRefName": "main"}

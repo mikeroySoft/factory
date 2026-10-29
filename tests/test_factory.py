@@ -3472,7 +3472,7 @@ class DispatchTest(unittest.TestCase):
         expected = {
             "structured": {"model": "m1", "prompt_tokens": 100, "completion_tokens": 20, "cached_tokens": 40, "cost": 0.5},
             "costonly": {**nothing, "cost": 1.25},
-            "silent": nothing,
+            "silent": {**nothing, "model": "configured-silent"},
         }
         spec = {"prompt_tokens": ["usage.in"], "completion_tokens": ["usage.out"], "cached_tokens": ["usage.cache"],
                 "cost": ["total"], "model": "model", "match": {"type": "result"}}
@@ -3481,7 +3481,8 @@ class DispatchTest(unittest.TestCase):
                 repo = make_repo(Path(d))
                 dispatch.configure(config.Config(
                     root=repo, repo="acme/widgets", cost_pattern=r"Total cost:\s*\$([0-9.]+)",
-                    workers={"default": ["silent"], "structured": ["s"], "costonly": ["c"]},
+                    workers={"default": ["silent", "--model", "configured-silent"],
+                             "structured": ["s"], "costonly": ["c"]},
                     worker_usage={"structured": spec},
                 ))
                 dispatch.LOGS.mkdir(parents=True)
@@ -3500,6 +3501,7 @@ class DispatchTest(unittest.TestCase):
                 self.assertEqual(len(usage), 1)
                 self.assertEqual({k: usage[0].get(k, "missing") for k in ("ticket", "stage", "attempt", *nothing)},
                                  {"ticket": 7, "stage": "worker", "attempt": 1, **expected[label]})
+                self.assertEqual(usage[0].get("model_inferred"), True if label == "silent" else None)
                 attempt = next(e for e in events if e.get("event") == "attempt")
                 self.assertEqual(attempt["cost"], expected[label]["cost"])
 
