@@ -1421,14 +1421,16 @@ branches, or merge state.
   `keep` row at merge; a missing claim reports the exact `factory eval` command.
   The same setting installs a persistent weekly timer using `[eval] profile`;
   scheduled drops beyond noise set `flagged: true` in the journal.
-- **Reviewer calibration gate**: `factory reviewer-eval` runs the frozen
-  `experiments/reviewer-calibration` corpus through `run_tools.py` three times
-  with the checkout's configured reviewer model. A coverage judge combines each
-  parseable `VERDICT:` with the oracle's primary findings. Any nonzero exit,
-  timeout, empty output, unparseable verdict, judge failure, or absent row is
-  `missing`; otherwise 3/3 is `always-pass`, 0/3 is `always-fail`, and mixed
-  grades are `flaky`. Only an accepted-main run can replace
-  `.factory/reviewer-eval-baseline.json`, keyed by main SHA and corpus version.
+- **Reviewer calibration gate**: `factory reviewer-eval` runs the target
+  checkout's frozen `experiments/reviewer-calibration` corpus through
+  `run_tools.py` three times with that checkout's normally layered reviewer
+  model and review policy. A coverage judge combines each parseable `VERDICT:`
+  with the oracle's primary findings. Any nonzero exit, timeout, empty output,
+  unparseable verdict, judge failure, or absent row is `missing`; otherwise
+  3/3 is `always-pass`, 0/3 is `always-fail`, and mixed grades are `flaky`.
+  Only an accepted-main run can replace `.factory/reviewer-eval-baseline.json`.
+  Its corpus version, prompt hashes, and model must still match current main;
+  an accepted reviewer-contract change therefore requires a fresh main run.
   `[reviewer_eval] schedule = true` opts into merge enforcement for
   `.factory.toml`, the configured base review policy, reviewer config/template,
   and reviewer dispatch paths, but only when no-model prompt capture or
