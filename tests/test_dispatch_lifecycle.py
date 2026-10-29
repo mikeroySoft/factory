@@ -1545,3 +1545,17 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
 
     def test_sync_repair_removes_only_worker_lock_drift(self):
         self.run_sync_lock_worker(drift=True)
+
+    def test_package_mention_in_readme_action_does_not_authorize_drift(self):
+        lock = self.run_realistic_lock_worker(
+            "## Files\n- README.md\n## Order\n1. Update requests in README.md.\n"
+        )
+
+        self.assertEqual(lock, self.realistic_lock())
+
+    def test_package_documentation_purpose_does_not_authorize_drift(self):
+        lock = self.run_realistic_lock_worker(
+            "## Files\n- README.md\n## Order\n1. Update requests to document retry behavior.\n"
+        )
+
+        self.assertEqual(lock, self.realistic_lock())
