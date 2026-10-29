@@ -125,6 +125,7 @@ def plan(
             PRIORITY_TIERS.index(c["priority"]) if c["priority"] else len(PRIORITY_TIERS), c["age"]))
 
     selected = []
+    reserved_ticket = None
     if mode is not None and mode.name == "feature-drive" and capacity > 0:
         feature = [
             candidate for candidate in pool
@@ -137,6 +138,7 @@ def plan(
             experiments += pick["experiment"]
             pool.remove(pick)
             selected.append(pick["issue"])
+            reserved_ticket = pick["ticket"]
             explained.append(_explain(
                 pick, "selected", f"feature-drive reserved slot for #{mode.feature}",
             ))
@@ -203,7 +205,12 @@ def plan(
             actor={"kind": "deterministic", "name": "schedule.plan", "model": None,
                    "version": __version__},
         ))
-    return {"selected": selected, "explained": explained, "decisions": records}
+    return {
+        "selected": selected,
+        "reserved_ticket": reserved_ticket,
+        "explained": explained,
+        "decisions": records,
+    }
 
 
 def _explain(candidate: dict, decision: str, rule: str) -> dict:

@@ -302,6 +302,58 @@ class AdmissionTest(unittest.TestCase):
                 self.assertEqual(dispatch.main(["--budget-min", "17", "--dry-run"]), 0)
         scheduled.assert_called_once_with(17, True, budget_override=True)
 
+    def test_only_reserved_feature_claim_is_exempt_from_cross_pass_fairness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config.Config(Path(directory), REPO, max_active=2)
+            dispatch.configure(cfg)
+            throttle.set_mode(cfg, throttle.Mode("feature-drive", 7), who="michael")
+            parent = {
+                **PARENT,
+                "body": INITIATIVE.replace("NOW #3", "NOW #3 and #4"),
+            }
+            bound = binding.render(binding.from_issue(cfg, 50, parent))
+            rows = [
+                ticket(3, "2026-01-01T00:00:00Z", body=bound),
+                ticket(4, "2026-01-02T00:00:00Z", body=bound),
+                ticket(1, "2026-01-03T00:00:00Z", body="unbound"),
+            ]
+            for number in (10, 11):
+                dispatch.record("claimed", ticket=number, priority="NOW")
+
+            claims = []
+
+            def claim(issue, _budget_min, _dry_run):
+                priority, _ = schedule.priority(issue["number"], issue["body"], REPO)
+                claims.append((issue["number"], issue["_factory_feature_drive"]))
+                dispatch.record(
+                    "claimed",
+                    ticket=issue["number"],
+                    priority=priority,
+                    feature_drive=issue["_factory_feature_drive"],
+                )
+
+            patches = (
+                mock.patch.object(dispatch, "frontier", return_value=rows),
+                mock.patch.object(dispatch, "_parents", return_value={3: 7, 4: 7}),
+                mock.patch.object(throttle, "auto_reset", return_value=False),
+            )
+            with patches[0], patches[1], patches[2], mock.patch.object(
+                dispatch, "process_ticket", side_effect=claim,
+            ):
+                dispatch.ticket_pass(cfg.budget_min, False)
+
+            self.assertEqual(claims, [(3, True), (4, False)])
+            self.assertEqual(
+                schedule.explicit_streak(lifecycle.read_events(cfg.factory / "events.jsonl")),
+                3,
+            )
+
+            with patches[0], patches[1], patches[2], mock.patch.object(
+                dispatch, "process_ticket",
+            ) as process:
+                dispatch.ticket_pass(cfg.budget_min, False)
+            self.assertEqual([call.args[0]["number"] for call in process.call_args_list], [3, 1])
+
 
 if __name__ == "__main__":
     unittest.main()

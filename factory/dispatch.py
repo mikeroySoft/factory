@@ -4411,7 +4411,7 @@ def ticket_pass(budget_min: int, dry_run: bool, *, budget_override: bool = False
             {
                 **issue,
                 "_factory_admission_id": admissions.get(issue["number"]),
-                "_factory_feature_drive": throttle.covers(mode, issue["number"], parents),
+                "_factory_feature_drive": issue["number"] == decided["reserved_ticket"],
                 "_factory_limits": limits,
             },
             budget_min,
