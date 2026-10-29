@@ -82,21 +82,27 @@ These are current refusal rules, not a wishlist.
 
 Worker, reviewer, and triage `llm-usage` rows use `[prices."<model>"]` rates in
 USD per one million tokens. A worker row whose harness omits the model uses the
-configured worker model and records `model_inferred = true`.
+configured worker model and records `model_inferred = true`. OMP-reported rows
+use the model id without its provider, while an inferred worker row uses the
+configured provider-qualified id. Price both exact worker identities.
 
 The hosted zeroes are placeholders; set provider rates before enabling them.
 The local triage model remains zero:
 
 ```toml
-[defaults.prices."openai-codex/gpt-5.6-sol"]   # worker; replace rates
+[defaults.prices."gpt-5.6-sol"]                # OMP-reported worker; replace rates
 prompt = 0.0
 completion = 0.0
 
-[defaults.prices."anthropic/claude-fable-5-1"] # reviewer; replace rates
+[defaults.prices."openai-codex/gpt-5.6-sol"] # inferred worker; same rates as above
 prompt = 0.0
 completion = 0.0
 
-[defaults.prices."qwen3:30b"]                  # local triage
+[defaults.prices."claude-fable-5-1"]         # OMP-reported reviewer; replace rates
+prompt = 0.0
+completion = 0.0
+
+[defaults.prices."qwen3:30b"]                # local triage
 prompt = 0.0
 completion = 0.0
 ```

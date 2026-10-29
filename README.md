@@ -1183,23 +1183,29 @@ stats`, `factory stats --week`, and the dashboard's `llm_usage` use it for
 triage, review and worker events that report tokens and a `model` but no cost.
 When a worker harness omits its model, the configured worker model is recorded
 with `model_inferred = true`. Without an entry no dollar figure is shown; weekly
-JSON lists the missing model in `cost_unpriced`. Keys are the recorded `model`
-string, and `cached` (when set) bills the cached share of the prompt instead of
-`prompt`.
+JSON lists the missing model in `cost_unpriced`. Keys must exactly match the
+recorded `model` string. OMP transcripts report the model id without its provider,
+while an inferred worker row uses the configured provider-qualified id, so the
+default worker needs both keys below. `cached` (when set) bills the cached share
+of the prompt instead of `prompt`.
 
 The hosted zeroes below are placeholders; replace them with provider rates
 before enabling this host configuration. Local triage is intentionally zero:
 
 ```toml
-[defaults.prices."openai-codex/gpt-5.6-sol"]   # default worker; replace rates
+[defaults.prices."gpt-5.6-sol"]                # OMP-reported worker; replace rates
 prompt = 0.0
 completion = 0.0
 
-[defaults.prices."anthropic/claude-fable-5-1"] # default reviewer; replace rates
+[defaults.prices."openai-codex/gpt-5.6-sol"] # inferred worker; same rates as above
 prompt = 0.0
 completion = 0.0
 
-[defaults.prices."qwen3:30b"]                  # default local triage
+[defaults.prices."claude-fable-5-1"]         # OMP-reported reviewer; replace rates
+prompt = 0.0
+completion = 0.0
+
+[defaults.prices."qwen3:30b"]                # default local triage
 prompt = 0.0
 completion = 0.0
 ```

@@ -66,17 +66,21 @@
 # model only as a `modelUsage` key, so no `model` path):
 # usage = { match = { type = "result" }, cost = "total_cost_usd", completion_tokens = "usage.output_tokens", cached_tokens = "usage.cache_read_input_tokens", prompt_tokens = ["usage.input_tokens", "usage.cache_read_input_tokens", "usage.cache_creation_input_tokens"] }
 # Host config `[defaults.prices."<model>"]` (prompt, completion, optional cached;
-# USD per million tokens) prices events that report tokens but no cost.
+# USD per million tokens) prices events that report tokens but no cost. Copy the
+# examples below to the host config, not this repository file. OMP reports model
+# ids without providers; an inferred worker row uses the configured full id.
 #
-# Price examples (USD per 1M tokens). The hosted zeros are placeholders: replace
-# them with provider rates before uncommenting. Local triage is intentionally free.
-# [prices."openai-codex/gpt-5.6-sol"]       # default worker
+# Hosted zeros are placeholders; replace them with provider rates. Local triage is free.
+# [defaults.prices."gpt-5.6-sol"]                # OMP-reported worker
 # prompt = 0.0
 # completion = 0.0
-# [prices."anthropic/claude-fable-5-1"]     # default reviewer
+# [defaults.prices."openai-codex/gpt-5.6-sol"] # inferred worker; same rates
 # prompt = 0.0
 # completion = 0.0
-# [prices."qwen3:30b"]                      # default local triage
+# [defaults.prices."claude-fable-5-1"]         # OMP-reported reviewer
+# prompt = 0.0
+# completion = 0.0
+# [defaults.prices."qwen3:30b"]                # default local triage
 # prompt = 0.0
 # completion = 0.0
 

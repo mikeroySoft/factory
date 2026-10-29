@@ -216,11 +216,11 @@ def weekly_metrics(
     windowed = window_rows(rows, start, end)
 
     def settlement_id(row: dict) -> tuple[str, int] | None:
+        if type(row.get("ticket")) is not int:
+            return None
         if type(row.get("pr")) is int:
             return "pr", row["pr"]
-        if type(row.get("ticket")) is int:
-            return "ticket", row["ticket"]
-        return None
+        return "ticket", row["ticket"]
 
     merged_rows = {
         key: row for row in windowed

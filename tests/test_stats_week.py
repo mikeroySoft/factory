@@ -150,6 +150,21 @@ class WeeklyAggregationTest(unittest.TestCase):
         self.assertIsNone(unpriced["cost_per_merged_pr"])
         self.assertEqual(unpriced["cost_unpriced"], ["m2"])
 
+    def test_ticketless_merges_do_not_change_pr_outcomes_or_cost(self) -> None:
+        rows = [
+            {"at": at(timedelta(days=-2)), "event": "merged", "ticket": 1, "pr": 11},
+            {"at": at(timedelta(days=-1)), "event": "merged", "pr": 99},
+            {"at": at(timedelta(days=-3)), "event": "llm-usage", "ticket": 1,
+             "stage": "worker", "model": "m1", "cost": 10.0},
+        ]
+
+        result = stats.weekly_metrics(rows, NOW - timedelta(days=7), NOW, None)
+
+        self.assertEqual(result["merges"], 1)
+        self.assertEqual(result["merge_rate"], 1.0)
+        self.assertEqual(result["merge_rate_denominator"], 1)
+        self.assertEqual(result["cost_per_merged_pr"], 10.0)
+
     def test_inferred_worker_model_is_not_missing_usage(self) -> None:
         row = {"at": at(), "event": "llm-usage", "stage": "worker", "model": "configured",
                "model_inferred": True, "prompt_tokens": 1, "completion_tokens": 1}
