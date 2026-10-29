@@ -112,10 +112,6 @@ DEPENDENCY_ACTION = re.compile(
     r"\b(?:add|bump|change|install|pin|refresh|regenerate|remove|replace|sync|update|upgrade)\b",
     re.IGNORECASE,
 )
-DEPENDENCY_TERM = re.compile(
-    r"\b(?:dependenc(?:y|ies)|lock ?files?|packages)\b",
-    re.IGNORECASE,
-)
 NEGATED_ACTION = re.compile(
     r"\b(?:do not|does not|don't|doesn't|never|no|not|unplanned|without)\b"
     r"(?:\s+\w+){0,6}\s*$",
@@ -1588,6 +1584,22 @@ def _dependency_lockfiles(wt: Path, base: str) -> list[str]:
     })
 
 
+def _locked_dependencies(wt: Path, path: str, base: str) -> set[str]:
+    previous = run(["git", "show", f"{base}:{path}"], cwd=wt, check=False).stdout
+    # Read identities only from baseline package entries, never worker-added
+    # packages, options, or metadata. Other formats need explicit lockfile intent.
+    try:
+        packages = tomllib.loads(previous).get("package", [])
+    except tomllib.TOMLDecodeError:
+        return set()
+    if not isinstance(packages, list):
+        return set()
+    return {
+        package["name"] for package in packages
+        if isinstance(package, dict) and isinstance(package.get("name"), str)
+    }
+
+
 def _dependency_change_planned(
     wt: Path, n: int, path: str, body: str, base: str,
 ) -> bool:
@@ -1604,44 +1616,56 @@ def _dependency_change_planned(
 
     names = {path, Path(path).name}
     alternatives = "|".join(re.escape(name) for name in sorted(names, key=len, reverse=True))
+    dependencies = _locked_dependencies(wt, path, base)
+    dependency_names = {name.casefold() for name in dependencies}
+    objects = [alternatives, r"dependenc(?:y|ies)", r"lock ?files?", r"packages"]
+    objects.extend(re.escape(name) for name in sorted(dependencies, key=len, reverse=True))
     target = re.compile(
-        rf"(?<![\w/.-])(?:{alternatives})(?![\w/.-])",
+        rf"(?:{'|'.join(objects)})(?![\w@/-]|\.(?=\w))",
         re.IGNORECASE,
     )
     listed = re.compile(
         rf"^\s*[-*]\s*`?(?:{alternatives})`?(?:\s*$|\s*:)",
         re.IGNORECASE,
     )
-    current = (wt / path).read_text(errors="replace") if (wt / path).is_file() else ""
-    previous = run(["git", "show", f"{base}:{path}"], cwd=wt, check=False).stdout
-    lock_text = current + "\n" + previous
-
     for source, is_plan in sources:
         for line in source.splitlines():
             file_entry = listed.search(line)
             if is_plan and file_entry and not DIRECT_NEGATION.match(line[file_entry.end():]):
                 return True
-            targets = list(target.finditer(line))
-            terms = list(DEPENDENCY_TERM.finditer(line))
-            for action in DEPENDENCY_ACTION.finditer(line):
-                if NEGATED_ACTION.search(line[:action.start()]):
-                    continue
-                if any(
-                    max(action.start(), item.start()) - min(action.end(), item.end()) <= 80
-                    for item in [*targets, *terms]
-                ):
-                    return True
-                named = re.match(
-                    r"\s+(?:the\s+)?([@A-Za-z0-9][\w@./-]*)",
-                    line[action.end():],
-                    re.IGNORECASE,
-                )
-                if named:
-                    dependency = named.group(1).rstrip(".,")
-                    if re.search(
-                        rf"(?<![\w@./-]){re.escape(dependency)}(?![\w@./-])",
-                        lock_text,
-                        re.IGNORECASE,
+            # Associate an action with its own direct object, not another
+            # clause's target or prohibition. Keep dots inside paths/versions.
+            clauses = re.split(r";|,\s*|(?<=[.!?])\s+|\b(?:and|but|or)\b", line,
+                               flags=re.IGNORECASE)
+            for clause in clauses:
+                for action in DEPENDENCY_ACTION.finditer(clause):
+                    if NEGATED_ACTION.search(clause[:action.start()]):
+                        continue
+                    prefix = re.match(
+                        r"\s+(?:(?:the|all|declared|project)\s+)*",
+                        clause[action.end():], re.IGNORECASE,
+                    )
+                    if not prefix:
+                        continue
+                    obj = clause[action.end() + prefix.end():].lstrip("`'\"")
+                    match = target.match(obj)
+                    if not match:
+                        continue
+                    tail = obj[match.end():].lstrip("`'\"")
+                    tail = re.sub(r"^\s+(?:package|dependency)\b", "", tail,
+                                  flags=re.IGNORECASE).strip()
+                    # A package's docs/tests/API are not dependency changes.
+                    if match[0].casefold() in dependency_names:
+                        if re.match(
+                            r"^(?:[.!]?\s*$|(?:to|from|at|version)\s+"
+                            r"(?:v?\d|latest\b|stable\b)|[<>=~^])",
+                            tail, re.IGNORECASE,
+                        ):
+                            return True
+                        continue
+                    if re.match(
+                        r"^(?:[.:]?\s*$|(?:to|from|at|in|with|for|version)\b|[<>=~^])",
+                        tail, re.IGNORECASE,
                     ):
                         return True
     return False
@@ -3987,7 +4011,9 @@ def worker_round(
     )
     sync = sync_event(n)
     tip = sync["upstream"] if sync else None
-    restore_unplanned_lockfiles(wt, n, body, tip or f"origin/{cfg.main}")
+    restore_unplanned_lockfiles(
+        wt, n, body, sync["head"] if sync else f"origin/{cfg.main}",
+    )
     commit_leftovers(wt, n, title)
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     handoff = results.source_metadata(cfg, n)
