@@ -67,6 +67,18 @@
 # usage = { match = { type = "result" }, cost = "total_cost_usd", completion_tokens = "usage.output_tokens", cached_tokens = "usage.cache_read_input_tokens", prompt_tokens = ["usage.input_tokens", "usage.cache_read_input_tokens", "usage.cache_creation_input_tokens"] }
 # Host config `[defaults.prices."<model>"]` (prompt, completion, optional cached;
 # USD per million tokens) prices events that report tokens but no cost.
+#
+# Price examples (USD per 1M tokens). The hosted zeros are placeholders: replace
+# them with provider rates before uncommenting. Local triage is intentionally free.
+# [prices."openai-codex/gpt-5.6-sol"]       # default worker
+# prompt = 0.0
+# completion = 0.0
+# [prices."anthropic/claude-fable-5-1"]     # default reviewer
+# prompt = 0.0
+# completion = 0.0
+# [prices."qwen3:30b"]                      # default local triage
+# prompt = 0.0
+# completion = 0.0
 
 [review]
 # {prompt} = inline review prompt text. Output ends with one fenced JSON findings tally,

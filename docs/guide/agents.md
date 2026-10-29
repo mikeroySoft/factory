@@ -77,3 +77,26 @@ These are current refusal rules, not a wishlist.
 - A linked ticket whose body no longer matches its accepted plan baseline is refused.
 - Exclusive gate checks time out instead of holding the host lock forever.
 - The merge stage uses `gh pr merge --match-head-commit`. That guards the head SHA. It does not by itself stop a retarget after the last read. Protect the release branch on GitHub (`README.md`).
+
+## Usage pricing
+
+Worker, reviewer, and triage `llm-usage` rows use `[prices."<model>"]` rates in
+USD per one million tokens. A worker row whose harness omits the model uses the
+configured worker model and records `model_inferred = true`.
+
+The hosted zeroes are placeholders; set provider rates before enabling them.
+The local triage model remains zero:
+
+```toml
+[defaults.prices."openai-codex/gpt-5.6-sol"]   # worker; replace rates
+prompt = 0.0
+completion = 0.0
+
+[defaults.prices."anthropic/claude-fable-5-1"] # reviewer; replace rates
+prompt = 0.0
+completion = 0.0
+
+[defaults.prices."qwen3:30b"]                  # local triage
+prompt = 0.0
+completion = 0.0
+```
