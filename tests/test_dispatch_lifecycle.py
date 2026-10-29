@@ -139,6 +139,27 @@ class LocalCLI(unittest.TestCase):
         self.git("commit", "-qm", "config")
         self.git("push", "-q", "origin", "main")
 
+    def configure_revising_feature(self, *, descendant: bool) -> None:
+        from factory import config, throttle
+
+        self.reviewer.write_text(REVIEWER.replace(
+            'verdict = "REVISE" if s["reviews"] == 1 else "APPROVE"',
+            'verdict = "REVISE"',
+        ))
+        self.write_config(extra=(
+            "[throttle]\n"
+            "aggression_high = { review_rounds = 2, manager_rounds = 2, "
+            "max_attempts = 2, budget_min = 90 }\n"
+        ))
+        self.commit_config()
+        throttle.set_mode(
+            config.Config(self.repo, "local/smoke"),
+            throttle.Mode("feature-drive", 70),
+            who="test",
+        )
+        if descendant:
+            lifecycle.append(self.events, {"event": "issue-created", "ticket": 7, "parent": 70})
+
     def cli(self, *args, expected=0):
         result = subprocess.run([sys.executable, "-m", "factory", *args], cwd=self.repo,
                                 env=self.env, capture_output=True, text=True, timeout=60, check=False)
@@ -294,6 +315,16 @@ class LocalCLI(unittest.TestCase):
             self.assertEqual(order, list(range(1, len(order) + 1)))
         legacy = [r for r in lifecycle.read_events(self.events) if r.get("event") == "attempt"]
         self.assertEqual(len(legacy), 2)
+
+    def test_feature_descendant_review_loop_uses_high_round_limit(self):
+        self.configure_revising_feature(descendant=True)
+        self.cli("dispatch", "--ticket", "7")
+        self.assertEqual(json.loads(self.state.read_text())["reviews"], 3)
+
+    def test_unrelated_review_loop_keeps_normal_round_limit(self):
+        self.configure_revising_feature(descendant=False)
+        self.cli("dispatch", "--ticket", "7")
+        self.assertEqual(json.loads(self.state.read_text())["reviews"], 2)
 
     def retained_page(self, head, offset=0, expected=0):
         request = {"schema_version": 1, "repository": "local/smoke", "op": "investigate",

@@ -282,6 +282,8 @@ def _terminal(node: dict) -> bool:
 
 def _frontier_stage(node: dict) -> str | None:
     stage = node.get("stage")
+    if node.get("event") == "scheduling":
+        return "admission"
     chosen = node.get("chosen")
     if _terminal(node):
         return None
@@ -314,7 +316,31 @@ def explain(rows: list[dict], ticket: int) -> dict:
     decisions = []
     ordered = []
     for index, row in enumerate(rows):
-        if not isinstance(row, dict) or row.get("ticket") != ticket:
+        if not isinstance(row, dict):
+            continue
+        if row.get("event") == "scheduling":
+            explanation = next((
+                item for item in row.get("explained", [])
+                if isinstance(item, dict) and item.get("ticket") == ticket
+                and item.get("decision") != "selected"
+            ), None)
+            if explanation is not None:
+                node = {
+                    "decision_id": f"legacy:{ticket}:{index}:scheduling",
+                    "ticket": ticket,
+                    "stage": "admission",
+                    "at": _text(row.get("at") or "unknown"),
+                    "chosen": _text(explanation.get("decision") or "held"),
+                    "rationale": _text(explanation.get("reason") or "scheduling policy"),
+                    "mode": _text(row.get("mode") or "normal"),
+                    "feature": row.get("feature"),
+                    "synthesized": True,
+                    "event": "scheduling",
+                }
+                nodes.append(node)
+                ordered.append(node)
+            continue
+        if row.get("ticket") != ticket:
             continue
         if row.get("event") == "decision":
             try:

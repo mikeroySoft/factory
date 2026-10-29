@@ -153,6 +153,14 @@ class StateAndCliTest(unittest.TestCase):
             self.assertEqual(throttle.main([]), 0)
             self.assertEqual(stdout.getvalue().strip(), "feature-drive #7")
 
+    def test_feature_target_repository_match_is_case_insensitive(self):
+        issue = {
+            "state": "OPEN",
+            "labels": [{"name": config.LABEL_AGENT}],
+            "url": "https://github.com/Example/Project/issues/7",
+        }
+        self.assertIsNone(throttle.feature_error(self.cfg, 7, issue))
+
     def test_open_initiative_is_a_valid_feature_target(self):
         initiative = {"state": "OPEN", "labels": [{"name": config.LABEL_INITIATIVE}], "url": f"https://github.com/{REPO}/issues/9"}
         with mock.patch.object(throttle.config, "load", return_value=self.cfg), \
@@ -168,6 +176,22 @@ class StateAndCliTest(unittest.TestCase):
         self.assertEqual(throttle.read(self.cfg), throttle.Mode("normal"))
         rows = [row for row in lifecycle.read_events(self.cfg.factory / "events.jsonl") if row["event"] == "mode"]
         self.assertEqual(rows[-1]["who"], "auto")
+
+    def test_auto_reset_does_not_overwrite_a_newer_operator_mode(self):
+        original = throttle.Mode("feature-drive", 7)
+        throttle.set_mode(self.cfg, original, who="michael")
+
+        def closed(_number):
+            throttle.set_mode(self.cfg, throttle.Mode("maintenance"), who="michael")
+            return "CLOSED"
+
+        self.assertFalse(throttle.auto_reset(self.cfg, {}, closed))
+        self.assertEqual(throttle.read(self.cfg), throttle.Mode("maintenance"))
+        rows = [row for row in lifecycle.read_events(self.cfg.factory / "events.jsonl") if row["event"] == "mode"]
+        self.assertEqual([(row["who"], row["mode"]) for row in rows], [
+            ("michael", "feature-drive"),
+            ("michael", "maintenance"),
+        ])
 
 
 class AdmissionTest(unittest.TestCase):
@@ -255,6 +279,28 @@ class AdmissionTest(unittest.TestCase):
                 [(row["mode"], row["feature"], row["capacity"]) for row in scheduling],
                 [("maintenance", None, 1)],
             )
+
+    def test_scheduled_budget_override_replaces_the_mode_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config.Config(Path(directory), REPO, max_active=1, budget_min=90)
+            dispatch.configure(cfg)
+            rows = [ticket(1, "2026-01-01T00:00:00Z", body="unbound")]
+            with mock.patch.object(dispatch, "frontier", return_value=rows), \
+                    mock.patch.object(dispatch, "process_ticket") as process:
+                dispatch.ticket_pass(17, False, budget_override=True)
+        self.assertEqual(process.call_args.args[0]["_factory_limits"]["budget_min"], 17)
+
+    def test_dispatch_cli_forwards_explicit_budget_to_scheduled_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config.Config(Path(directory), REPO)
+            with mock.patch.object(dispatch.config, "load", return_value=cfg), \
+                    mock.patch.object(dispatch, "land_pass"), \
+                    mock.patch.object(dispatch, "review_intake_pass"), \
+                    mock.patch.object(dispatch, "ticket_pass") as scheduled, \
+                    mock.patch("factory.learn.learn_pass"), \
+                    mock.patch("factory.manage.manage_pass"):
+                self.assertEqual(dispatch.main(["--budget-min", "17", "--dry-run"]), 0)
+        scheduled.assert_called_once_with(17, True, budget_override=True)
 
 
 if __name__ == "__main__":

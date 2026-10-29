@@ -103,6 +103,21 @@ class TraceSchemaTest(unittest.TestCase):
         self.assertEqual(graph["coverage"], list(trace.STAGES))
         self.assertIsNone(graph["frontier"])
 
+    def test_explain_projects_maintenance_hold_from_scheduling_row(self):
+        reason = "maintenance mode: not a bug/chore ticket"
+        graph = trace.explain([{
+            "event": "scheduling",
+            "at": "2026-10-23T10:00:00Z",
+            "mode": "maintenance",
+            "feature": None,
+            "explained": [{"ticket": 7, "decision": "held", "reason": reason}],
+        }], 7)
+        [node] = graph["nodes"]
+        self.assertEqual(
+            (node["stage"], node["chosen"], node["rationale"], node["mode"]),
+            ("admission", "held", reason, "maintenance"),
+        )
+
     def test_cli_reads_rotated_and_live_rows_as_json(self):
         with tempfile.TemporaryDirectory() as directory:
             cfg = config.Config(root=Path(directory), repo="acme/widgets")

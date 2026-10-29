@@ -4349,7 +4349,7 @@ def process_ticket(
             execution.resource("released", lock_path, scope="repository")
 
 
-def ticket_pass(budget_min: int, dry_run: bool) -> None:
+def ticket_pass(budget_min: int, dry_run: bool, *, budget_override: bool = False) -> None:
     """Claim up to capacity frontier tickets in accepted-priority order and work each one."""
     from factory import schedule, throttle
 
@@ -4404,12 +4404,15 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
                 explained=decided["explained"],
             )
     for issue in decided["selected"]:
+        limits = throttle.limits(cfg, mode, issue["number"], parents)
+        if budget_override:
+            limits["budget_min"] = budget_min
         process_ticket(
             {
                 **issue,
                 "_factory_admission_id": admissions.get(issue["number"]),
                 "_factory_feature_drive": throttle.covers(mode, issue["number"], parents),
-                "_factory_limits": throttle.limits(cfg, mode, issue["number"], parents),
+                "_factory_limits": limits,
             },
             budget_min,
             dry_run,
@@ -4531,7 +4534,7 @@ def main(argv: list[str]) -> int:
         from factory.manage import manage_pass
 
         manage_pass(args.dry_run)
-        ticket_pass(args.budget_min, args.dry_run)
+        ticket_pass(args.budget_min, args.dry_run, budget_override=budget_override)
         learn_pass(args.dry_run)
         release_step(open_pr=True)
         if not args.dry_run:

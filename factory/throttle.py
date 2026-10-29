@@ -57,13 +57,22 @@ def read(cfg: config.Config) -> Mode:
         raise config.ConfigError(f"{_path(cfg)}: invalid mode state") from exc
 
 
-def set_mode(cfg: config.Config, mode: Mode, *, who: str) -> bool:
-    """Atomically change mode and journal it; return False when already set."""
+def set_mode(
+    cfg: config.Config,
+    mode: Mode,
+    *,
+    who: str,
+    expected: Mode | None = None,
+) -> bool:
+    """Atomically change mode and journal it; return False when unchanged or superseded."""
     path = _path(cfg)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with (cfg.factory / "mode.lock").open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if read(cfg) == mode:
+        current = read(cfg)
+        if expected is not None and current != expected:
+            return False
+        if current == mode:
             return False
         temporary = path.with_suffix(".tmp")
         try:
@@ -131,7 +140,7 @@ def auto_reset(
         return False
     if any(state(number).upper() != "CLOSED" for number in descendants(mode.feature, parents)):
         return False
-    return set_mode(cfg, Mode("normal"), who="auto")
+    return set_mode(cfg, Mode("normal"), who="auto", expected=mode)
 
 
 def issue(cfg: config.Config, number: int) -> dict:
@@ -150,7 +159,7 @@ def issue(cfg: config.Config, number: int) -> dict:
 def feature_error(cfg: config.Config, number: int, value: dict) -> str | None:
     url = value.get("url") or ""
     expected = f"https://github.com/{cfg.repo}/issues/{number}"
-    if url != expected:
+    if url.casefold() != expected.casefold():
         return f"#{number} belongs to another repository"
     if str(value.get("state", "")).upper() != "OPEN":
         return f"#{number} is closed"

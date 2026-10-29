@@ -278,6 +278,32 @@ class HandoffCli(unittest.TestCase):
         self.assertIn("Factory handoff request `7/2`", self.requests()[-1]["body"])
         self.assertIn("the manager asked for a human decision", self.requests()[-1]["body"])
 
+    def test_feature_descendant_manager_and_handoff_share_the_high_round_limit(self) -> None:
+        from factory import throttle
+
+        self.reset()
+        self.configure(rounds=1)
+        cfg = config.load(self.repo)
+        throttle.set_mode(cfg, throttle.Mode("feature-drive", 70), who="test")
+        lifecycle.append(self.factory / "events.jsonl", {
+            "event": "issue-created",
+            "ticket": 7,
+            "parent": 70,
+        })
+        self.escalate("gate failed", 2)
+        self.manage(mode="HUMAN")
+        self.assertTrue(self.ran.exists())
+        self.assertEqual([row["round"] for row in self.events("manage")], [2])
+        self.assertIn("the manager asked for a human decision", self.requests()[-1]["body"])
+        self.assertNotIn("allowed round(s) are exhausted", self.requests()[-1]["body"])
+
+        self.reset()
+        throttle.set_mode(cfg, throttle.Mode("feature-drive", 80), who="test")
+        self.escalate("gate failed", 2)
+        self.manage(mode="HUMAN")
+        self.assertFalse(self.ran.exists())
+        self.assertIn("the manager's 1 allowed round(s) are exhausted", self.requests()[-1]["body"])
+
     def test_review_intake_escalation_gets_a_handoff_request(self) -> None:
         # #204 (b): `review_intake_pass` escalates an opted-in PR into a new `ready-for-human` issue with a
         # `pr`-bearing row and no escalation comment; the manager never runs on it, so the handoff pass must post.
