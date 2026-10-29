@@ -248,9 +248,18 @@ def verdict(
     baseline_train_mean: float,
     baseline_lockbox_mean: float,
     stable_flips: int,
+    baseline_train_pstdev: float = 0.0,
+    baseline_lockbox_pstdev: float = 0.0,
+    missing_cases: int = 0,
     margin: float = NOISE_MARGIN,
 ) -> str:
-    if train_pstdev > margin or lockbox_pstdev > margin:
+    if (
+        train_pstdev > margin
+        or lockbox_pstdev > margin
+        or baseline_train_pstdev > margin
+        or baseline_lockbox_pstdev > margin
+        or missing_cases
+    ):
         return "inconclusive"
     if (
         train_mean + margin < baseline_train_mean
@@ -278,18 +287,23 @@ def _split_quality(rows: list[dict], cases: list[str]) -> dict:
     }
 
 
+def _reviewer_eval_module():
+    try:
+        from factory import reviewer_eval
+    except ImportError as exc:
+        raise RuntimeError("--models requires the repeat-3 runner from issue #429") from exc
+    return reviewer_eval
+
+
+def _grade_runs(rows: list[dict]) -> str:
+    return _reviewer_eval_module().grade_runs(rows)
+
+
 def _statuses(rows: list[dict], cases: list[str]) -> dict[str, str]:
-    statuses = {}
-    for case in cases:
-        passed = [row.get("passed") for row in rows if row.get("case") == case]
-        if len(passed) != REPEATS or any(type(value) is not bool for value in passed):
-            raise ValueError(f"{case} needs exactly {REPEATS} graded repeats")
-        statuses[case] = (
-            "always-pass" if all(passed)
-            else "always-fail" if not any(passed)
-            else "flaky"
-        )
-    return statuses
+    return {
+        case: _grade_runs([row for row in rows if row.get("case") == case])
+        for case in cases
+    }
 
 
 def _usage_total(rows: list[dict], key: str) -> int | None:
@@ -308,17 +322,17 @@ def _report_markdown(report: dict) -> str:
         f"- Frozen split: `splits.json` version {report['splits_version']}",
         f"- Repeats per case: {REPEATS}",
         "",
-        "| Model | Train mean ± pstdev | Lockbox mean ± pstdev | Stable pass→fail | Prompt tokens | Completion tokens | Cost | Wall seconds | Verdict |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---|",
+        "| Model | Train mean ± pstdev | Lockbox mean ± pstdev | Stable pass→fail | Missing cases | Prompt tokens | Completion tokens | Cost | Wall seconds | Verdict |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for row in report["models"]:
         cost = "unpriced" if row["unpriced"] else f"${row['cost']:.6f}"
         lines.append(
             f"| `{row['model']}` | {row['train']['mean']:.4f} ± {row['train']['pstdev']:.4f} "
             f"| {row['lockbox']['mean']:.4f} ± {row['lockbox']['pstdev']:.4f} "
-            f"| {len(row['stable_flips'])} | {row['prompt_tokens']} "
-            f"| {row['completion_tokens']} | {cost} | {row['wall_seconds']:.3f} "
-            f"| {row['verdict']} |"
+            f"| {len(row['stable_flips'])} | {len(row['missing_cases'])} "
+            f"| {row['prompt_tokens']} | {row['completion_tokens']} | {cost} "
+            f"| {row['wall_seconds']:.3f} | {row['verdict']} |"
         )
     return "\n".join(lines) + "\n"
 
@@ -326,7 +340,7 @@ def _report_markdown(report: dict) -> str:
 def replay_models(
     models: list[str],
     out_dir: pathlib.Path,
-    runner: Callable[[str, pathlib.Path], list[dict]],
+    runner: Callable[[str, pathlib.Path], tuple[list[dict], float]],
     prices: dict[str, dict],
     splits_path: pathlib.Path = EXP / "splits.json",
 ) -> dict:
@@ -337,9 +351,10 @@ def replay_models(
     out_dir.mkdir(parents=True, exist_ok=True)
     summaries = []
     for index, model in enumerate(models, 1):
-        started = time.monotonic()
-        rows = runner(model, out_dir / f"model-{index}")
-        elapsed = round(time.monotonic() - started, 3)
+        rows, elapsed = runner(model, out_dir / f"model-{index}")
+        if type(elapsed) not in (int, float) or elapsed < 0:
+            raise ValueError("model runner must return a non-negative wall time")
+        elapsed = round(elapsed, 3)
         usages = [row.get("usage") for row in rows if isinstance(row.get("usage"), dict)]
         costs = [stats.priced(usage, prices) for usage in usages]
         summaries.append({
@@ -368,18 +383,25 @@ def replay_models(
             if baseline["statuses"][case] == "always-pass"
             and summary["statuses"][case] == "always-fail"
         ]
+        missing = [
+            case for case in cases if summary["statuses"][case] == "missing"
+        ]
         output.append({
             key: value for key, value in summary.items() if key != "statuses"
         } | {
             "stable_flips": flips,
+            "missing_cases": missing,
             "verdict": verdict(
                 train_mean=summary["train"]["mean"],
                 train_pstdev=summary["train"]["pstdev"],
                 lockbox_mean=summary["lockbox"]["mean"],
                 lockbox_pstdev=summary["lockbox"]["pstdev"],
                 baseline_train_mean=baseline["train"]["mean"],
+                baseline_train_pstdev=baseline["train"]["pstdev"],
                 baseline_lockbox_mean=baseline["lockbox"]["mean"],
+                baseline_lockbox_pstdev=baseline["lockbox"]["pstdev"],
                 stable_flips=len(flips),
+                missing_cases=len(missing),
             ),
         })
     report = {"splits_version": SPLITS_VERSION, "repeats": REPEATS, "models": output}
@@ -389,10 +411,7 @@ def replay_models(
 
 
 def _grade_rows(rows: list[dict]) -> list[dict]:
-    try:
-        from factory import reviewer_eval
-    except ImportError as exc:
-        raise RuntimeError("--models requires the repeat-3 runner from issue #429") from exc
+    reviewer_eval = _reviewer_eval_module()
     cfg = config.load(REPO, worktree=True)
     graded = []
     for row in rows:
@@ -421,7 +440,9 @@ def _parser() -> argparse.ArgumentParser:
 def main(
     argv: list[str] | None = None,
     *,
-    matrix_runner: Callable[[str, pathlib.Path], list[dict]] | None = None,
+    matrix_runner: Callable[
+        [str, pathlib.Path], tuple[list[dict], float]
+    ] | None = None,
     prices: dict[str, dict] | None = None,
 ) -> int:
     args = _parser().parse_args(argv)
@@ -435,13 +456,17 @@ def main(
         contracts = args.contracts or [config.git(REPO, "rev-parse", "HEAD")]
 
         if matrix_runner is None:
-            def matrix_runner(model: str, model_out: pathlib.Path) -> list[dict]:
+
+            def matrix_runner(
+                model: str, model_out: pathlib.Path
+            ) -> tuple[list[dict], float]:
                 import run_tools
 
                 run_tools.CASES = CASES
-                return _grade_rows(
-                    run_tools.run_experiment(model_out, REPEATS, contracts, model)
-                )
+                started = time.monotonic()
+                rows = run_tools.run_experiment(model_out, REPEATS, contracts, model)
+                elapsed = time.monotonic() - started
+                return _grade_rows(rows), elapsed
 
         replay_models(
             models,
