@@ -558,6 +558,105 @@ class FrontierTest(unittest.TestCase):
                 self.assertEqual(dispatch.refresh_requeue_context(79), "")
                 self.assertIsNone(dispatch.pending_risk_requeue_head(79))
 
+    def test_manager_relabel_outcome_not_comment_timing_controls_reset(self) -> None:
+        for actor in ("alice", "runner"):
+            for succeeds in (False, True):
+                with self.subTest(actor=actor, succeeds=succeeds):
+                    dispatch.EVENTS.unlink(missing_ok=True)
+                    self.direct_requeue(actor=actor)
+                    release = self.timeline.pop()
+                    release["actor"]["login"] = "runner"
+                    lifecycle.append(dispatch.EVENTS, {
+                        "at": "2026-10-28T15:52:30Z", "event": "manage",
+                        "ticket": 79, "round": 1, "decision": "RETRY",
+                    })
+                    packet = self.repo / ".factory" / "packet.md"
+                    packet.write_text("Original failure evidence")
+
+                    def relabel(cmd, *args, **kwargs):
+                        result = self.fake_run(cmd, *args, **kwargs)
+                        if cmd[1:3] == ["issue", "edit"]:
+                            if not succeeds:
+                                raise subprocess.CalledProcessError(1, cmd, stderr="label failed")
+                            self.timeline.append(release)
+                        return result
+
+                    with mock.patch.object(dispatch, "run", side_effect=relabel):
+                        if succeeds:
+                            manage.apply(79, {"title": "Ticket", "body": "Scope"},
+                                         "RETRY", "Retry", None, packet)
+                        else:
+                            with self.assertRaises(subprocess.CalledProcessError):
+                                manage.apply(79, {"title": "Ticket", "body": "Scope"},
+                                             "RETRY", "Retry", None, packet)
+                            release["actor"]["login"] = actor
+                            self.timeline.append(release)
+
+                    dispatch._record_human_round_reset(79)
+                    dispatch._record_human_round_reset(79)
+                    resets = [e for e in self.events() if e.get("event") == "rounds-reset"]
+                    self.assertEqual(len(resets), 0 if succeeds else 1)
+                    if not succeeds:
+                        self.assertEqual(resets[0]["actor"], actor)
+                        self.assertEqual(resets[0]["requeued_at"], release["created_at"])
+                    self.assertEqual(len([e for e in self.events()
+                                          if e.get("event") == "manage"]), 1)
+
+    def test_comment_receipts_do_not_turn_unrelated_events_into_machine_comments(self) -> None:
+        self.direct_requeue()
+        dispatch.record("claimed", ticket=79, comment=102)
+
+        dispatch._record_human_round_reset(79)
+
+        self.assertEqual(len([e for e in self.events() if e.get("event") == "rounds-reset"]), 1)
+
+    def test_machine_only_comments_do_not_authorize_an_owner_relabel(self) -> None:
+        self.direct_requeue()
+        dispatch.record("comment", ticket=79, kind="handoff", comment=102)
+        dispatch.record("claimed", ticket=79, kind="escalation", comment=999)
+
+        dispatch._record_human_round_reset(79)
+
+        self.assertFalse(any(e.get("event") == "rounds-reset" for e in self.events()))
+
+    def test_manager_failure_does_not_hide_the_escalation_release_boundary(self) -> None:
+        self.direct_requeue()
+        lifecycle.append(dispatch.EVENTS, {
+            "at": "2026-10-28T15:52:30Z", "event": "escalate", "ticket": 79,
+            "round": 1, "reason": "manager_failed",
+        })
+
+        dispatch._record_human_round_reset(79)
+
+        self.assertEqual(len([e for e in self.events() if e.get("event") == "rounds-reset"]), 1)
+
+    def test_first_and_latest_ticket_reset_bound_only_budget_events(self) -> None:
+        first = {"event": "rounds-reset", "ticket": 79}
+        old = {"event": "manage", "ticket": 79, "round": 1}
+        latest = {"event": "rounds-reset", "ticket": 79}
+        fresh = {"event": "manage", "ticket": 79, "round": 1}
+        other = {"event": "rounds-reset", "ticket": 80}
+        self.assertEqual(dispatch._current_round_events([first, old], 79), [old])
+        self.assertEqual(
+            dispatch._current_round_events([first, old, latest, fresh, other], 79), [fresh],
+        )
+        self.assertEqual(dispatch._current_round_events([old, other], 79), [old])
+
+    def test_manager_rounds_ignore_other_prs_for_the_same_ticket(self) -> None:
+        self.cfg.manager_review = "all"
+        self.cfg.manager_rounds = 1
+        self.quiet_provider()
+        self.approved_head(H)
+        dispatch.record("manage", ticket=79, pr=81, head=H2, decision="HUMAN", round=1)
+        self.manager_output = "DECISION: APPROVE\nReady"
+
+        manage.frontier_pass()
+
+        self.assertEqual([(e["pr"], e["round"]) for e in self.events()
+                          if e.get("event") == "manage"], [(81, 1), (80, 1)])
+        self.assertFalse(any(e.get("code") == "manager_exhausted" for e in self.escalations()))
+        self.assertTrue(any(e.get("event") == "approved" for e in self.events()))
+
     def test_review_all_close_and_human_decisions_act_through_the_shared_apply(self) -> None:
         self.cfg.manager_review = "all"
         self.quiet_provider()
