@@ -2285,19 +2285,25 @@ def pr_gate_and_review(
 
 
 
+# process_ticket owns the starting head until its first push or exit.
+_AGENT_LEASE_BASES: dict[tuple[Path, int], str] = {}
+
+
+def _remote_agent_head(wt: Path, n: int, check: bool = True) -> str:
+    found = run(["git", "ls-remote", "origin", f"refs/heads/agent/{n}"], cwd=wt, check=check)
+    return "(unavailable)" if found.returncode else (found.stdout.split() or [""])[0]
+
+
 def agent_lease(wt: Path, n: int) -> str:
-    """The remote `agent/<n>` sha to lease the next `push_agent` on, read before the worker runs:
-    "" when the branch is not on the remote. A remote head this worktree lacks (someone else
-    pushed) yields the local head instead, which never matches, so that push is refused."""
-    remote = (run(["git", "ls-remote", "origin", f"refs/heads/agent/{n}"], cwd=wt).stdout.split() or [""])[0]
-    if not remote or run(["git", "merge-base", "--is-ancestor", remote, "HEAD"], cwd=wt, check=False).returncode == 0:
-        return remote
-    return run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    """Read the remote `agent/<n>` sha to lease before the worker runs, or "" when absent."""
+    remote = _remote_agent_head(wt, n)
+    _AGENT_LEASE_BASES[wt, n] = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    return remote
 
 
 class LeaseRefused(subprocess.CalledProcessError):
-    """`push_agent` refused: the remote `agent/<n>` moved since its lease was read. Still the
-    `CalledProcessError` a checked push always raised; `str()` is the escalation reason."""
+    """`push_agent` refused an unsafe remote overwrite. Still the `CalledProcessError` a checked
+    push always raised; `str()` is the escalation reason."""
 
     def __init__(self, pushed: subprocess.CompletedProcess, reason: str) -> None:
         super().__init__(pushed.returncode, pushed.args, pushed.stdout, pushed.stderr)
@@ -2309,22 +2315,44 @@ class LeaseRefused(subprocess.CalledProcessError):
 
 def push_agent(wt: Path, n: int, lease: str, check: bool = True) -> str | None:
     """Force-push this worktree's HEAD to `agent/<n>`, never any other ref, only while the remote
-    still holds `lease`, the sha the dispatcher last fetched or pushed. A worker history rewrite
-    lands; anyone else's push since then is refused. Returns the pushed sha (the next lease),
-    or None when refused and `check` is False; with `check`, a refusal raises `LeaseRefused`
-    and any other push failure a plain `CalledProcessError`."""
+    still holds `lease`, the sha observed before the worker or returned by the prior push. Rewritten
+    worker history lands; a linear worker cannot overwrite a remote head absent from both its
+    starting and final history. Returns the pushed sha (the next lease), or None when refused and
+    `check` is False; with `check`, a refusal raises `LeaseRefused` and any other push failure a
+    `CalledProcessError`."""
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
-    pushed = run(
-        ["git", "push", f"--force-with-lease=agent/{n}:{lease}", "origin", f"{head}:refs/heads/agent/{n}"],
-        cwd=wt, check=False,
-    )
+    command = [
+        "git", "push", f"--force-with-lease=agent/{n}:{lease}",
+        "origin", f"{head}:refs/heads/agent/{n}",
+    ]
+    leased = _AGENT_LEASE_BASES.pop((wt, n), None)
+    if (
+        lease
+        and leased is not None
+        and run(["git", "merge-base", "--is-ancestor", lease, leased], cwd=wt, check=False).returncode
+        and not run(["git", "merge-base", "--is-ancestor", leased, head], cwd=wt, check=False).returncode
+        and run(["git", "merge-base", "--is-ancestor", lease, head], cwd=wt, check=False).returncode
+    ):
+        if not check:
+            return None
+        remote = _remote_agent_head(wt, n, check=False)
+        refused = subprocess.CompletedProcess(command, os.EX_SOFTWARE, "", "stale worktree history")
+        raise LeaseRefused(
+            refused,
+            f"agent/{n} push refused: leased {lease}, remote now {remote or '(none)'}; "
+            f"the leased remote head was absent from the worktree before the worker and its "
+            f"history was not rewritten; worktree kept at {wt}",
+        )
+    pushed = run(command, cwd=wt, check=False)
     if pushed.returncode and check:
         if "stale info" not in pushed.stderr:
             pushed.check_returncode()
+        remote = _remote_agent_head(wt, n, check=False)
         raise LeaseRefused(
             pushed,
-            f"agent/{n} push refused: origin/agent/{n} moved since lease {lease[:12] or '(none)'} "
-            f"was read (GitHub \"Update branch\" or another push); worktree kept at {wt}",
+            f"agent/{n} push refused: origin/agent/{n} moved since lease was read: "
+            f"leased {lease or '(none)'}, remote now {remote or '(none)'} "
+            f"(GitHub \"Update branch\" or another push); worktree kept at {wt}",
         )
     return None if pushed.returncode else head
 
@@ -4295,6 +4323,7 @@ def process_ticket(
                 execution.outcome, execution.reason = "unknown", f"{type(exc).__name__}: {exc}"
             raise
         finally:
+            _AGENT_LEASE_BASES.pop((wt, n), None)
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             lock_fd.close()
             execution.resource("released", lock_path, scope="repository")
