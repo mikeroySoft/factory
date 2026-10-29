@@ -128,10 +128,75 @@ def worst_session(evs: list[dict]) -> tuple[dict, dict] | None:
                                          pair[0].get("compliance") or 0, pair[1].get("gate") != "FAIL"))
 
 
+def _skill_failure_tag(text: str) -> str:
+    lowered = text.lower()
+    if any(marker in lowered for marker in ("command not found", "unknown command", "unrecognized argument",
+                                             "no such file or directory")):
+        return "stale_command"
+    if "skipp" in lowered:
+        return "skipped_step"
+    if "section" in lowered:
+        return "missed_section"
+    if any(marker in lowered for marker in ("ignored rule", "forbidden", "protected path", "must not")):
+        return "ignored_rule"
+    return "trigger_miss"
+
+
+def _skill_excerpt(skill: str, load: dict, tag: str, text: str) -> dict:
+    return {
+        "skill": skill, "ticket": load.get("ticket"), "session": load.get("session"),
+        "tag": tag, "excerpt": text[:score.EXCERPT_CHARS],
+    }
+
+
+def _load_failure_excerpts(skill: str, loads: list[dict]) -> list[dict]:
+    return [_skill_excerpt(skill, load, "load_failure", load["error"]) for load in loads
+            if not load.get("ok") and isinstance(load.get("error"), str)]
+
+
+def _regression_excerpts(skill: str, loads: list[dict], scores: dict[str, dict]) -> list[dict]:
+    excerpts = []
+    for load in loads:
+        start = load.get("call_index")
+        if type(start) is not int:
+            continue
+        scored = scores.get(load.get("session"), {})
+        for failure in scored.get("failures", []):
+            index, text = failure.get("call_index"), failure.get("text")
+            if type(index) is int and start < index <= start + stats.SKILL_AFTER_CALLS and isinstance(text, str):
+                excerpts.append(_skill_excerpt(skill, load, _skill_failure_tag(text), text))
+    return excerpts
+
+
+def _skill_worse(metric: dict) -> bool:
+    excess, noise = metric["error_rate_excess"], metric["noise_margin"]
+    return (metric["sessions"] >= 10 and excess is not None and noise is not None
+            and excess > noise)
+
+
+def skill_failure_evidence(rows: list[dict]) -> list[dict]:
+    """Pure, bounded excerpts for failed loads and skills worse than matched controls."""
+    scores = {row.get("transcript"): row for row in rows
+              if row.get("event") == "score" and isinstance(row.get("transcript"), str)}
+    loads = [row for row in rows if row.get("event") == "skill-load"]
+    result = []
+    for metric in stats.skill_metrics(rows):
+        skill = metric["skill"]
+        skill_loads = [row for row in loads if row.get("skill") == skill]
+        excerpts = _load_failure_excerpts(skill, skill_loads)
+        if _skill_worse(metric):
+            excerpts += _regression_excerpts(skill, skill_loads, scores)
+        result += excerpts[:3]
+    return result
+
+
+
+
 def evidence(last: int) -> tuple[list[int], str]:
     """Evidence per ticket from events.jsonl, newest `last` tickets that finished, then recent candidate escapes."""
+    journal_rows = lifecycle.read_events(dispatch.EVENTS)
     by_ticket: dict[int, list[dict]] = {}
-    for row in lifecycle.read_events(dispatch.EVENTS):
+    for row in journal_rows:
         if (
             row.get("event") == "lifecycle"
             or not isinstance(row.get("event"), str)
@@ -166,6 +231,11 @@ def evidence(last: int) -> tuple[list[int], str]:
         review = dispatch.FACTORY / f"review-{n}.md"
         if review.exists():
             parts.append(f"\nLatest reviewer findings:\n```\n{review.read_text()[-3000:]}\n```")
+        parts.append("")
+    failures = [item for item in skill_failure_evidence(journal_rows) if item.get("ticket") in chosen]
+    for skill in dict.fromkeys(item["skill"] for item in failures):
+        parts.append(f"### Skill {skill} failure evidence")
+        parts += [f"- [{item['tag']}] {item['excerpt']}" for item in failures if item["skill"] == skill]
         parts.append("")
     recent = sorted((row for row in stats.escapes() if row["candidates"]), key=lambda row: row["closed_at"])
     if recent:

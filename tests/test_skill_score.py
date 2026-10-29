@@ -53,7 +53,7 @@ class SkillScoreTest(unittest.TestCase):
         self.transcript.parent.mkdir(parents=True)
         self.transcript.write_text("\n".join([
             json.dumps({"type": "session", "id": "session-7", "version": 3}),
-            message("user", {"type": "text", "text": "Follow the alpha skill. Factory is not named here."}),
+            message("user", {"type": "text", "text": "Follow the alpha skill. No other skill is required."}),
             call("a", "read", "2026-10-28T10:00:00Z", path="skill://alpha"),
             result("a", "Unknown skill: alpha\ninstall it", error=True),
             call("b", "read", "2026-10-28T10:01:00Z", path="skill://alpha", offset=2),
