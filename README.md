@@ -1734,6 +1734,7 @@ not indefinitely active stages.
 | `exclusive_resource` | Gate observed its exclusive lock held before the unchanged blocking acquisition. |
 | `ci_pending` | Existing `pr_checks` result contained pending checks; `pr` integer. No extra CI query or polling loop. |
 | `no_passing_ci` | Existing result had no passing check; `pr` integer. The cause is unknown, not an inferred CI outage. |
+| `ci_runner` | A required check has runner-infrastructure evidence and blocks merge; `pr` integer. |
 | `scheduled_next_pass` | Local timer explicitly active, service explicitly idle, and a future `next_at` timestamp reported by the existing systemctl seam. |
 
 Review revision, escalation, eligibility, execution-stage occupancy, and waits
