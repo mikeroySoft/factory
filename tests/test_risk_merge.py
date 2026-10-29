@@ -765,7 +765,7 @@ class WorkerModelProvenanceTest(unittest.TestCase):
                 mock.patch.object(dispatch, "review", side_effect=review), \
                 mock.patch.object(
                     dispatch, "run",
-                    return_value=subprocess.CompletedProcess([], 0, "M\tfactory/dispatch.py\n", ""),
+                    return_value=subprocess.CompletedProcess([], 0, "M\t.github/workflows/ci.yml\n", ""),
                 ):
             return dispatch.pr_gate_and_review(self.root, 7, "- mutation: PASS\n", head, {})
 
