@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -215,7 +217,9 @@ class ReviewerEvalTest(unittest.TestCase):
                  mock.patch.object(dispatch, "pr_checks", return_value=[{"name": "ci", "bucket": "pass"}]), \
                  mock.patch.object(dispatch, "initiative_kind", return_value=None), \
                  mock.patch.object(reviewer_eval, "trigger_for_checkout", return_value=True), \
-                 mock.patch.object(reviewer_eval, "baseline_ready", return_value=True), \
+                 mock.patch.object(
+                     reviewer_eval, "baseline_ready", side_effect=FileNotFoundError("missing corpus")
+                 ), \
                  mock.patch.object(dispatch, "run"):
                 dispatch.merge_pass_locked(False)
 
@@ -225,6 +229,7 @@ class ReviewerEvalTest(unittest.TestCase):
             ]
             self.assertEqual(waits[-1]["wait"]["reason"], "reviewer_eval_required")
             command = waits[-1]["wait"]["details"]["command"]
+            self.assertIn(str(root), command)
             self.assertIn(str(cfg.factory / "wt-7"), command)
             self.assertIn("-m factory reviewer-eval", command)
 
@@ -258,12 +263,208 @@ class ReviewerEvalTest(unittest.TestCase):
             assert spec.loader is not None
             spec.loader.exec_module(module)
             modules.append(module)
-        expected = config.command_model(config.DEFAULT_REVIEWER)
+        expected = config.command_model(config.load(ROOT, worktree=True).reviewer)
         self.assertIsNotNone(expected)
         for module in modules:
             self.assertFalse(hasattr(module, "MODEL"))
             self.assertEqual(module.configured_reviewer_model(ROOT), expected)
 
+
+    def test_contract_fingerprint_uses_revision_prompt_model_and_policy(self) -> None:
+        def clone(name: str, parent: Path) -> Path:
+            checkout = parent / name
+            subprocess.run(
+                ["git", "clone", "--quiet", "--shared", str(ROOT), str(checkout)],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "remote", "set-url", "origin", "https://github.com/mikeroySoft/factory"],
+                cwd=checkout,
+                check=True,
+            )
+            for relative in (
+                "experiments/reviewer-calibration/capture_contract.py",
+                "experiments/reviewer-calibration/run_calibration.py",
+                "experiments/reviewer-calibration/run_tools.py",
+            ):
+                checkout.joinpath(relative).write_bytes(ROOT.joinpath(relative).read_bytes())
+            subprocess.run(["git", "config", "user.name", "Reviewer Eval Test"], cwd=checkout, check=True)
+            subprocess.run(
+                ["git", "config", "user.email", "reviewer-eval@example.invalid"],
+                cwd=checkout,
+                check=True,
+            )
+            return checkout
+
+        def commit(checkout: Path, *paths: str) -> str:
+            subprocess.run(["git", "add", "--", *paths], cwd=checkout, check=True)
+            subprocess.run(
+                ["git", "commit", "--quiet", "-m", "test reviewer contract"],
+                cwd=checkout,
+                check=True,
+            )
+            return subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=checkout,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            xdg = parent / "xdg"
+            xdg.mkdir()
+            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(xdg)}):
+                base = reviewer_eval.contract_fingerprint(ROOT)
+
+                prompt_checkout = clone("prompt", parent)
+                dispatch_path = prompt_checkout / "factory/dispatch.py"
+                dispatch_text = dispatch_path.read_text()
+                changed = dispatch_text.replace(
+                    "Review the diff in `./review.diff`",
+                    "Review the complete diff in `./review.diff`",
+                    1,
+                )
+                self.assertNotEqual(dispatch_text, changed)
+                dispatch_path.write_text(changed)
+                commit(prompt_checkout, "factory/dispatch.py")
+                prompt = reviewer_eval.contract_fingerprint(prompt_checkout)
+                self.assertTrue(
+                    reviewer_eval.requires_eval(
+                        ["factory/dispatch.py"], base, prompt, "REVIEW.md"
+                    )
+                )
+
+                model_checkout = clone("model", parent)
+                config_path = model_checkout / "factory/config.py"
+                config_text = config_path.read_text()
+                changed = config_text.replace(
+                    "anthropic/claude-fable-5-1",
+                    "openai-codex/reviewer-eval-test",
+                    1,
+                )
+                self.assertNotEqual(config_text, changed)
+                config_path.write_text(changed)
+                commit(model_checkout, "factory/config.py")
+                model = reviewer_eval.contract_fingerprint(model_checkout)
+                self.assertEqual(model["model"], "openai-codex/reviewer-eval-test")
+                self.assertTrue(
+                    reviewer_eval.requires_eval(
+                        ["factory/config.py"], base, model, "REVIEW.md"
+                    )
+                )
+
+                policy_checkout = clone("policy", parent)
+                marker = "REVIEWER-EVAL-POLICY-MARKER"
+                (policy_checkout / "REVIEW.md").write_text(marker + "\n")
+                policy_head = commit(policy_checkout, "REVIEW.md")
+                capture = subprocess.run(
+                    [
+                        sys.executable,
+                        "-c",
+                        (
+                            "import pathlib, shutil, sys, tempfile;"
+                            "root=pathlib.Path(sys.argv[1]);"
+                            "sys.path.insert(0,str(root/'experiments/reviewer-calibration'));"
+                            "import run_tools;"
+                            "tmp=pathlib.Path(tempfile.mkdtemp());"
+                            "source=tmp/'source';"
+                            "run_tools.worktree('12-before',source);"
+                            "print(run_tools.capture(sys.argv[2],'12-before',source));"
+                            "shutil.rmtree(tmp)"
+                        ),
+                        str(policy_checkout),
+                        policy_head,
+                    ],
+                    cwd=policy_checkout,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout
+                self.assertIn(marker, capture)
+
+    def test_baseline_ready_requires_current_main_contract(self) -> None:
+        fingerprint = {"prompt_sha256": {"case": "prompt"}, "model": "reviewer/one"}
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config.Config(root=Path(directory), repo="acme/widgets")
+            cfg.factory.mkdir()
+            path = reviewer_eval.baseline_path(cfg)
+            path.write_text(json.dumps({
+                "main_sha": "a" * 40,
+                "corpus_version": 2,
+                "statuses": {"case": "always-pass"},
+                **fingerprint,
+            }))
+            with mock.patch.object(reviewer_eval, "corpus_version", return_value=2), \
+                 mock.patch.object(reviewer_eval, "contract_fingerprint", return_value=fingerprint):
+                self.assertTrue(reviewer_eval.baseline_ready(cfg))
+            changed = {**fingerprint, "model": "reviewer/two"}
+            with mock.patch.object(reviewer_eval, "corpus_version", return_value=2), \
+                 mock.patch.object(reviewer_eval, "contract_fingerprint", return_value=changed):
+                self.assertFalse(reviewer_eval.baseline_ready(cfg))
+
+    def test_failed_runner_does_not_reuse_stale_results(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            (out / "results.json").write_text('[{"case":"stale"}]')
+            proc = mock.Mock()
+            proc.communicate.return_value = ("", "crashed")
+            proc.returncode = 2
+            with mock.patch.object(subprocess, "Popen", return_value=proc):
+                rows, timed_out = reviewer_eval._run_runner(
+                    ROOT, out, "a" * 40, 1.0
+                )
+            self.assertFalse(timed_out)
+            self.assertEqual(rows, [])
+
+    def test_unaccepted_candidate_run_does_not_replace_baseline(self) -> None:
+        candidate = "b" * 40
+        rows = [
+            {
+                "case": "12-before",
+                "returncode": 0,
+                "output": "VERDICT: REVISE",
+                "prompt_sha256": "prompt",
+            }
+            for _ in range(3)
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config.Config(root=Path(directory), repo="acme/widgets")
+            cfg.factory.mkdir()
+            with mock.patch.object(reviewer_eval, "case_ids", return_value=["12-before"]), \
+                 mock.patch.object(reviewer_eval, "corpus_version", return_value=2), \
+                 mock.patch.object(reviewer_eval, "_run_runner", return_value=(rows, False)), \
+                 mock.patch.object(reviewer_eval, "_judge", return_value=({"D1"}, {})), \
+                 mock.patch.object(reviewer_eval, "_candidate_accepted", return_value=False), \
+                 mock.patch.object(reviewer_eval, "_append"), \
+                 mock.patch.object(config, "git", return_value=candidate), \
+                 mock.patch.object(config, "load", return_value=cfg):
+                summary = reviewer_eval.run(cfg, ROOT)
+            self.assertFalse(summary["accepted"])
+            self.assertFalse(reviewer_eval.baseline_path(cfg).exists())
+
+    def test_tools_runner_named_contracts_and_host_model_override(self) -> None:
+        calibration = ROOT / "experiments/reviewer-calibration"
+        sys.path.insert(0, str(calibration))
+        self.addCleanup(lambda: sys.path.remove(str(calibration)))
+        spec = importlib.util.spec_from_file_location(
+            "test_run_tools_aliases", calibration / "run_tools.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        self.assertEqual(module.contract_commit("landed"), module.CONTRACTS["landed"])
+
+        with tempfile.TemporaryDirectory() as directory:
+            host = Path(directory) / "factory"
+            host.mkdir()
+            host.joinpath("config.toml").write_text(
+                '[defaults.review]\n'
+                'command = ["omp", "-p", "--model", "host/reviewer", "{prompt}"]\n'
+            )
+            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": directory}):
+                self.assertEqual(module.configured_reviewer_model(ROOT), "host/reviewer")
 
 if __name__ == "__main__":
     unittest.main()

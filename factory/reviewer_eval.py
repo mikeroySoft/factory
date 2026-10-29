@@ -20,7 +20,7 @@ from factory import config, lifecycle, stats
 REPEATS = 3
 EVENT = "reviewer-eval-summary"
 BASELINE_NAME = "reviewer-eval-baseline.json"
-CORPUS = Path(__file__).resolve().parents[1] / "experiments/reviewer-calibration"
+CORPUS_PATH = Path("experiments/reviewer-calibration")
 _CONTRACT_PATHS = {
     config.CONFIG_NAME,
     "factory/config.py",
@@ -29,6 +29,17 @@ _CONTRACT_PATHS = {
 }
 _SHA = re.compile(r"[0-9a-f]{40}")
 _VERDICT = re.compile(r"(?m)^VERDICT: (APPROVE|REVISE)[ \t]*$")
+_SETTINGS_QUERY = """
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+sys.path.insert(0, str(root))
+from factory import config
+cfg = config.load(root, worktree=True)
+model = config.command_model(cfg.reviewer)
+if not model:
+    raise SystemExit("configured reviewer command has no explicit --model")
+print(json.dumps({"model": model, "review_policy": cfg.review_policy}))
+"""
 
 
 def parsed_verdict(output: object) -> str | None:
@@ -150,23 +161,42 @@ def requires_eval(
     )
 
 
-def corpus_version(corpus: Path = CORPUS) -> int:
+def corpus_version(corpus: Path) -> int:
     value = json.loads((corpus / "splits.json").read_text()).get("version")
     if type(value) is not int or value < 1:
         raise ValueError("reviewer calibration corpus needs a positive integer version")
     return value
 
 
-def case_ids(corpus: Path = CORPUS) -> list[str]:
+def case_ids(corpus: Path) -> list[str]:
     splits = json.loads((corpus / "splits.json").read_text())["splits"]
     return [case for split in ("train", "lockbox") for case in splits[split]]
 
 
+def _checkout_settings(root: Path) -> dict:
+    proc = subprocess.run(
+        [sys.executable, "-c", _SETTINGS_QUERY, str(root)],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode:
+        raise RuntimeError(proc.stderr.strip() or "reviewer configuration capture failed")
+    value = json.loads(proc.stdout)
+    if (
+        not isinstance(value, dict)
+        or not isinstance(value.get("model"), str)
+        or not isinstance(value.get("review_policy"), str)
+    ):
+        raise TypeError("reviewer configuration capture did not return model and policy")
+    return value
+
+
 def contract_fingerprint(root: Path) -> dict:
-    checkout_cfg = config.load(root, worktree=True)
-    model = config.command_model(checkout_cfg.reviewer)
+    settings = _checkout_settings(root)
     head = config.git(root, "rev-parse", "HEAD")
-    runner = root / "experiments/reviewer-calibration/run_tools.py"
+    runner = root / CORPUS_PATH / "run_tools.py"
     proc = subprocess.run(
         [sys.executable, str(runner), "--all", "--capture-only", head],
         cwd=root,
@@ -179,13 +209,7 @@ def contract_fingerprint(root: Path) -> dict:
     prompt_sha256 = json.loads(proc.stdout)
     if not isinstance(prompt_sha256, dict):
         raise TypeError("reviewer prompt capture did not return a hash map")
-    policy = root / checkout_cfg.review_policy
-    policy_bytes = policy.read_bytes() if policy.is_file() else b""
-    prompt_sha256 = {
-        case: hashlib.sha256(f"{digest}\0".encode() + policy_bytes).hexdigest()
-        for case, digest in prompt_sha256.items()
-    }
-    return {"prompt_sha256": prompt_sha256, "model": model}
+    return {"prompt_sha256": prompt_sha256, "model": settings["model"]}
 
 
 def trigger_for_checkout(
@@ -214,9 +238,21 @@ def load_baseline(path: Path) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
+def _baseline_matches(baseline: dict | None, version: int, fingerprint: dict) -> bool:
+    return bool(
+        baseline
+        and baseline.get("corpus_version") == version
+        and baseline.get("prompt_sha256") == fingerprint.get("prompt_sha256")
+        and baseline.get("model") == fingerprint.get("model")
+    )
+
+
 def baseline_ready(cfg: config.Config) -> bool:
-    baseline = load_baseline(baseline_path(cfg))
-    return bool(baseline and baseline.get("corpus_version") == corpus_version())
+    return _baseline_matches(
+        load_baseline(baseline_path(cfg)),
+        corpus_version(cfg.root / CORPUS_PATH),
+        contract_fingerprint(cfg.root),
+    )
 
 
 def write_baseline(path: Path, summary: dict, accepted_main_sha: str) -> bool:
@@ -250,6 +286,12 @@ def merge_allowed(triggered: bool, head: str, rows: list[dict]) -> bool:
         return True
     result = result_for_head(head, rows)
     return bool(result and result.get("verdict") == "pass")
+
+
+def _candidate_accepted(cfg: config.Config, candidate: str) -> bool | None:
+    from factory.eval import _candidate_accepted as accepted
+
+    return accepted(cfg, candidate)
 
 
 def _coverage_prompt(output: str, oracle: dict) -> str:
@@ -331,6 +373,8 @@ def _judge(
 
 
 def _run_runner(checkout: Path, out: Path, candidate: str, timeout: float) -> tuple[list[dict], bool]:
+    result_path = out / "results.json"
+    result_path.unlink(missing_ok=True)
     runner = checkout / "experiments/reviewer-calibration/run_tools.py"
     command = [sys.executable, str(runner), "--all", str(out), str(REPEATS), candidate]
     proc = subprocess.Popen(
@@ -349,7 +393,7 @@ def _run_runner(checkout: Path, out: Path, candidate: str, timeout: float) -> tu
         os.killpg(proc.pid, signal.SIGTERM)
         proc.communicate()
     try:
-        rows = json.loads((out / "results.json").read_text())
+        rows = json.loads(result_path.read_text())
     except (OSError, json.JSONDecodeError):
         rows = []
     return rows if isinstance(rows, list) else [], timed_out
@@ -364,8 +408,9 @@ def _append(cfg: config.Config, row: dict) -> None:
 
 
 def run(cfg: config.Config, checkout: Path, *, dry_run: bool = False) -> dict | None:
-    cases = case_ids()
-    version = corpus_version()
+    corpus = checkout / CORPUS_PATH
+    cases = case_ids(corpus)
+    version = corpus_version(corpus)
     if dry_run:
         print(
             f"reviewer calibration v{version}: {len(cases)} cases x {REPEATS} repeats = "
@@ -392,7 +437,7 @@ def run(cfg: config.Config, checkout: Path, *, dry_run: bool = False) -> dict | 
     graded = []
     for row in rows:
         case = row.get("case")
-        oracle_path = CORPUS / "cases" / str(case) / "oracle.json"
+        oracle_path = corpus / "cases" / str(case) / "oracle.json"
         try:
             oracle = json.loads(oracle_path.read_text())
         except (OSError, json.JSONDecodeError):
@@ -409,12 +454,18 @@ def run(cfg: config.Config, checkout: Path, *, dry_run: bool = False) -> dict | 
             deadline - time.monotonic(),
         )
         graded.append({**grade_output(row, oracle, covered), "judge": judge})
-    main_sha = config.git(cfg.root, "rev-parse", "HEAD")
     baseline = load_baseline(baseline_path(cfg))
-    if baseline and baseline.get("corpus_version") != version:
+    if not _baseline_matches(
+        baseline,
+        version,
+        contract_fingerprint(cfg.root) if baseline is not None else {},
+    ):
         baseline = None
     summary = summarize(cases, graded, baseline, candidate=candidate, corpus_version=version)
-    if baseline is None and candidate != main_sha:
+    accepted = _candidate_accepted(cfg, candidate)
+    if accepted is not None:
+        summary["accepted"] = accepted
+    if baseline is None and accepted is not True:
         summary.update({"verdict": "block", "baseline_missing": True})
     prompt_sha256 = {
         case: next(
@@ -451,8 +502,8 @@ def run(cfg: config.Config, checkout: Path, *, dry_run: bool = False) -> dict | 
         "results": str(out / "results.json"),
     })
     _append(cfg, summary)
-    if not summary["missing"]:
-        write_baseline(baseline_path(cfg), summary, main_sha)
+    if not summary["missing"] and accepted is True:
+        write_baseline(baseline_path(cfg), summary, candidate)
     print(format_report(summary))
     return summary
 

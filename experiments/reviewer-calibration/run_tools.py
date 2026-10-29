@@ -49,6 +49,10 @@ CONTRACTS = {"baseline": "cadb9981524ab5506693e27f56ff8ac4ef911da6",
              "review-baseline": "eb611cc794da4008ffaba73cac6108a2ed8af0a1",
              "review-tally": "1bc93aa2abaf34607b88ee53428a22d5453f5c12"}
 
+def contract_commit(contract: str) -> str:
+    return _contract_commit(CONTRACTS.get(contract, contract))
+
+
 
 def _defect_cases() -> list[str]:
     """Heads whose oracle expects REVISE (primary defects)."""

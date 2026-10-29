@@ -13,13 +13,28 @@ import sys
 
 checkout, scratch, number, gate_file, out, source, head = sys.argv[1:8]
 sys.path.insert(0, checkout)
-from factory import dispatch
+from factory import config, dispatch
 from factory.config import Config
+
+checkout_path = pathlib.Path(checkout)
+try:
+    checkout_cfg = config.load(checkout_path, worktree=True)
+except TypeError:
+    checkout_cfg = config.load(checkout_path)
+policy, nit_cap = None, 5
+if hasattr(dispatch, "_review_policy"):
+    dispatch.configure(checkout_cfg)
+    policy, nit_cap = dispatch._review_policy(checkout_path, "HEAD")
 
 scratch = pathlib.Path(scratch)
 capture = str(pathlib.Path(__file__).with_name("capture_prompt.py"))
-dispatch.configure(Config(root=scratch, repo="mikeroySoft/factory", main="main",
-                          reviewer=[sys.executable, capture, "{prompt}", out]))
+capture_cfg = Config(root=scratch, repo="mikeroySoft/factory", main="main",
+                     reviewer=[sys.executable, capture, "{prompt}", out])
+if hasattr(capture_cfg, "review_policy"):
+    capture_cfg.review_policy = checkout_cfg.review_policy
+dispatch.configure(capture_cfg)
+if hasattr(dispatch, "_review_policy"):
+    dispatch._review_policy = lambda *_: (policy, nit_cap)
 gate_report = pathlib.Path(gate_file).read_text()
 if "expected_head" in inspect.signature(dispatch.review).parameters:
     dispatch.review(pathlib.Path(source), int(number), gate_report, head)

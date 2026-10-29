@@ -3591,7 +3591,17 @@ def merge_pass_locked(dry_run: bool) -> None:
                 f"{reviewer_eval_command}"
             )
             reviewer_command = reviewer_candidate_command
-            if reviewer_trigger and not reviewer_eval.baseline_ready(cfg):
+            reviewer_baseline_ready = True
+            if reviewer_trigger:
+                try:
+                    reviewer_baseline_ready = reviewer_eval.baseline_ready(cfg)
+                except Exception as exc:  # noqa: BLE001 - unavailable baseline evidence fails closed
+                    reviewer_baseline_ready = False
+                    log(
+                        f"PR #{pr_num}: reviewer baseline comparison failed "
+                        f"({type(exc).__name__}: {exc}); requiring main refresh"
+                    )
+            if reviewer_trigger and not reviewer_baseline_ready:
                 reviewer_command = (
                     f"cd {shlex.quote(str(ROOT))} && {reviewer_eval_command} && "
                     f"{reviewer_candidate_command}"

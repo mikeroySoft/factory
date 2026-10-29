@@ -70,14 +70,12 @@ def _cases_from_splits(splits: dict | None = None) -> list[str]:
 
 CASES = _cases_from_splits()
 MODEL_QUERY = """
-import pathlib, sys, tomllib
+import pathlib, sys
 root = pathlib.Path(sys.argv[1])
 sys.path.insert(0, str(root))
 from factory import config
-path = root / config.CONFIG_NAME
-raw = tomllib.loads(path.read_text()) if path.is_file() else {}
-command = raw.get("review", {}).get("command", config.DEFAULT_REVIEWER)
-model = config.command_model(command)
+cfg = config.load(root, worktree=True)
+model = config.command_model(cfg.reviewer)
 if not model:
     raise SystemExit("configured reviewer command has no explicit --model")
 print(model)
@@ -109,6 +107,10 @@ def sha(text: str) -> str:
 def checkout(commit: str) -> pathlib.Path:
     """Return a pinned, content-addressed clone of the contract under test."""
     dest = CHECKOUT_ROOT / commit[:12]
+    origin = subprocess.run(
+        ["git", "remote", "get-url", "origin"], cwd=REPO,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
     with CHECKOUT_LOCK:
         if not (dest / ".git").exists():
             subprocess.run(
@@ -123,6 +125,12 @@ def checkout(commit: str) -> pathlib.Path:
             text=True,
             check=False,
         ).stdout.strip()
+        subprocess.run(
+            ["git", "remote", "set-url", "origin", origin],
+            cwd=dest,
+            check=True,
+            capture_output=True,
+        )
         if head != commit or not (dest / "factory" / "dispatch.py").is_file():
             subprocess.run(
                 ["git", "checkout", "--quiet", "--force", "--detach", commit],
