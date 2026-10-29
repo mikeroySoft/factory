@@ -2962,6 +2962,11 @@ def _registered_runners() -> list[dict] | None:
                if isinstance(runner, dict)]
     return runners
 
+def _runner_matches(labels: set[str], runners: list[dict]) -> bool:
+    return any(labels <= _runner_labels(runner.get("labels")) for runner in runners)
+
+
+
 
 def classify_queued_checks(checks: list[dict]) -> list[dict]:
     """Mark old self-hosted jobs with no matching registered runner.
@@ -3013,9 +3018,8 @@ def classify_queued_checks(checks: list[dict]) -> list[dict]:
     runners = _registered_runners()
     if runners is None:
         return out
-    runner_labels = [_runner_labels(runner.get("labels")) for runner in runners]
     for index, check, labels, run_id, job_id, created in candidates:
-        if any(labels <= available for available in runner_labels):
+        if _runner_matches(labels, runners):
             continue
         out[index] = {
             **check,
@@ -3060,8 +3064,24 @@ def _infra_cancel(check: dict) -> dict | None:
                          if "not acquired by Runner" in (a.get("message") or "")), "")
             if not note:
                 return None
+        runner_labels: set[str] = set()
+        try:
+            created = datetime.fromisoformat(job["created_at"])
+            labels = _runner_labels(job.get("labels"))
+            if (
+                not ran
+                and not runner
+                and "self-hosted" in labels
+                and created.tzinfo is not None
+                and created.utcoffset() is not None
+                and (datetime.now(UTC) - created).total_seconds() > cfg.merge_queued_check_timeout
+            ):
+                runner_labels = labels
+        except (ValueError, TypeError, KeyError):
+            pass
         return {"run": int(m[1]), "attempt": int(job.get("run_attempt") or 1),
-                "check": check["name"], "steps_run": ran, "runner": runner, "annotation": note}
+                "check": check["name"], "steps_run": ran, "runner": runner,
+                "annotation": note, "runner_labels": sorted(runner_labels)}
     except (ValueError, TypeError, AttributeError, KeyError):
         return None
 
@@ -3104,7 +3124,25 @@ def triage_cancelled(
             starved.setdefault(infra["run"], []).append((c, infra))
         else:
             out.append({**c, "bucket": "fail"} if c.get("bucket") == "cancel" else c)
+    runner_candidates = [
+        (c, infra)
+        for rows in starved.values()
+        for c, infra in rows
+        if not c.get("required") and infra["runner_labels"]
+    ]
+    runners = _registered_runners() if ticket is not None and runner_candidates else None
     for run_id, rows in starved.items():
+        if runners is not None:
+            blocking = []
+            for c, infra in rows:
+                labels = set(infra["runner_labels"])
+                if not c.get("required") and labels and not _runner_matches(labels, runners):
+                    out.append({**c, "bucket": "skipped-infra", "run": run_id})
+                else:
+                    blocking.append((c, infra))
+            rows = blocking
+            if not rows:
+                continue
         names = [c["name"] for c, _ in rows]
         attempt = max(i["attempt"] for _, i in rows)
         evidence = {"pr": pr, "run": run_id, "attempt": attempt, "checks": names,
