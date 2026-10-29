@@ -29,7 +29,7 @@ JUDGE_SYSTEM = (
     "Output only the number."
 )
 _NUMBER = re.compile(r"0(?:\.\d+)?|1(?:\.0+)?|\.\d+")
-_LINE_SELECTOR = re.compile(r":(?:raw(?::.*)?|-?\d[\d,+-]*)$")
+_LINE_SELECTOR = re.compile(r":(?:raw(?::-?\d[\d,+-]*)?|-?\d[\d,+-]*(?::raw)?)$")
 _SKILL_FILE = re.compile(r"^\[Skill file: (.+/SKILL\.md)\]$", re.MULTILINE)
 
 

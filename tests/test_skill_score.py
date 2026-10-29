@@ -109,6 +109,10 @@ class SkillScoreTest(unittest.TestCase):
         score.run(self.cfg)
         self.assertEqual(lifecycle.read_events(self.events), saved)
 
+    def test_line_selector_marks_a_full_skill_path_partial(self) -> None:
+        self.assertEqual(score._skill("skills/factory/SKILL.md:2-4:raw"),
+                         ("factory", "skills/factory/SKILL.md", True))
+
 
 if __name__ == "__main__":
     unittest.main()
