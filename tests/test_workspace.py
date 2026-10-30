@@ -792,6 +792,75 @@ class WorkspaceHTTPTest(unittest.TestCase):
         self.assertEqual((status, body["error"]["code"]), (400, "invalid_query"))
 
 
+    def test_live_executions_are_authenticated_read_only_and_cover_every_loop(self) -> None:
+        observed = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        stages = ("triage", "worker", "gate", "review", "manage", "watch", "learn")
+        executions = [
+            {
+                "execution_id": f"execution-{index}",
+                "stage": stage,
+                "ticket": index,
+                "state": "active",
+                "entered_at": observed,
+                "ended_at": None,
+                "observed_at": observed,
+                "latest_at": observed,
+                "activity": {"worker": "prime"} if stage == "worker" else {},
+            }
+            for index, stage in enumerate(stages, 1)
+        ]
+        executions.append({
+            **executions[1],
+            "execution_id": "ended",
+            "state": "completed",
+            "ended_at": observed,
+        })
+        with self.workspace._lock:
+            self.workspace._scopes[REPOSITORY]["observation"] = {
+                "cases": [
+                    {"number": index, "title": f"Ticket {index}"}
+                    for index in range(1, 8)
+                ]
+            }
+
+        with mock.patch(
+            "factory.workspace.runtime_events.project",
+            return_value={"executions": executions, "errors": []},
+        ) as project:
+            status, _, body = self.request(
+                "GET", f"/api/live-executions?repository={REPOSITORY}"
+            )
+            self.assertEqual((status, body["error"]["code"]), (401, "authentication_required"))
+
+            status, _, body = self.request(
+                "GET", f"/api/live-executions?repository={REPOSITORY}", auth=True
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                body["lanes"],
+                ["triage", "worker", "gate", "reviewer", "manager", "watch", "learn"],
+            )
+            self.assertEqual(
+                [row["lane"] for row in body["executions"]],
+                body["lanes"],
+            )
+            self.assertTrue(all(row["agent"] and row["harness"] for row in body["executions"]))
+            self.assertEqual(
+                [(row["ticket"], row["title"]) for row in body["executions"]],
+                [(index, f"Ticket {index}") for index in range(1, 8)],
+            )
+            self.assertNotIn("ended", {row["execution_id"] for row in body["executions"]})
+
+            status, _, _ = self.request(
+                "POST",
+                f"/api/live-executions?repository={REPOSITORY}",
+                {},
+                auth=True,
+                intent=True,
+            )
+            self.assertIn(status, {404, 405})
+            project.assert_called_once()
+
 class WorkspaceRegistryTest(unittest.TestCase):
     def test_registered_main_overrides_same_slug_startup_but_key_stays_startup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
