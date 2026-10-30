@@ -267,6 +267,52 @@ class WatchExpectationTest(unittest.TestCase):
         ]
         self.assertEqual(len(creates), 1)
 
+    def test_one_failing_timeline_does_not_stop_other_triage_alerts(self) -> None:
+        now = datetime(2026, 10, 30, tzinfo=UTC)
+        self.cfg.eval_schedule = True
+        entered = now - timedelta(minutes=30)
+        self.github.issues = [
+            {"number": number, "body": "", "createdAt": entered.isoformat()}
+            for number in (7, 8)
+        ]
+        self.dispatch_pass(now - timedelta(minutes=20))
+        self.assertEqual(watch.run_pass(self.cfg, now=now - timedelta(minutes=20)), [])
+        self.dispatch_pass(now - timedelta(minutes=10))
+
+        def fail_issue_seven(
+            command: list[str], **kwargs: object,
+        ) -> subprocess.CompletedProcess:
+            if command[:2] == ["gh", "api"] and "/issues/7/timeline" in command[2]:
+                raise subprocess.CalledProcessError(
+                    1, command, stderr="GitHub API rate limit exceeded",
+                )
+            return self.github(command, **kwargs)
+
+        with mock.patch.object(dispatch, "run", fail_issue_seven):
+            signals = watch.run_pass(self.cfg, now=now)
+
+        self.assertEqual(
+            [signal["name"] for signal in signals],
+            ["needs-triage issue #8"],
+        )
+        rows = lifecycle.read_events(self.cfg.factory / "events.jsonl")
+        self.assertEqual(
+            [
+                row["fingerprint"]
+                for row in rows
+                if row.get("event") == "watch-error"
+                and "rate limit" in str(row.get("detail"))
+            ],
+            [
+                "expectation:"
+                f"{watch.fingerprint('expectation', 'needs-triage issue #7')}"
+            ],
+        )
+        self.assertEqual(
+            len([row for row in rows if row.get("event") == "watch"]),
+            1,
+        )
+
     def test_old_issue_newly_queued_by_build_gets_two_subsequent_successes(self) -> None:
         now = datetime(2026, 10, 30, tzinfo=UTC)
         self.cfg.eval_schedule = True
