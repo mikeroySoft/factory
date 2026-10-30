@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from factory import __version__, brief, config, lifecycle, risk
+from factory import __version__, brief, config, feedback, lifecycle, risk
 from factory.config import (
     ESCALATION_CODES,
     LABEL_ADD_ONLY_OVERRIDE,
@@ -1929,12 +1929,23 @@ def correct_need(n: int) -> bool:
     }
     actions = {(item.get("event"), (item.get("label") or {}).get("name")) for item in activity}
     actors = {(item.get("actor") or {}).get("login") for item in activity}
+    from factory import stats
+
+    login = stats.dispatcher_login(cfg)
+    cutover = feedback.first_action(login, (
+        (item.get("actor") or item.get("user"), item.get("created_at"))
+        for item in timeline
+    ))
     if (
         len(activity) != 2
         or actions != expected
         or len(actors) != 1
         or None in actors
-        or any((item.get("actor") or {}).get("type") == "Bot" for item in activity)
+        or any(
+            feedback.attribute(item.get("actor"), item.get("created_at"), login, cutover)
+            != "human"
+            for item in activity
+        )
     ):
         return False
     record(

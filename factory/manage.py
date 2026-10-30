@@ -401,7 +401,10 @@ def _split_bodies(n: int, parent_body: str, children: list[dict]) -> list[dict]:
     return prepared
 
 
-def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: Path) -> None:
+def apply(
+    n: int, issue: dict, decision: str, body: str, data: object, packet: Path,
+    *, target_pr: int | None = None,
+) -> None:
     def issue_action(action: str, *args: str) -> None:
         dispatch.run(["gh", "issue", action, str(n), "--repo", dispatch.REPO, *args])
 
@@ -607,14 +610,27 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         _record_wontfix(n, "RESOLVE", body, pr=pr["number"] if pr else None)
         return
     elif decision == "CLOSE":
-        pr = dispatch.gh_json(["pr", "view", f"agent/{n}", "--repo", dispatch.REPO, "--json", "number,state,baseRefName"])
-        if pr.get("state") != "OPEN" or pr.get("baseRefName") != dispatch.cfg.main:
-            raise ValueError(f"CLOSE requires an open PR targeting the configured target `{dispatch.cfg.main}`")
+        target = str(target_pr) if target_pr is not None else f"agent/{n}"
+        pr = dispatch.gh_json([
+            "pr", "view", target, "--repo", dispatch.REPO,
+            "--json", "number,state,baseRefName",
+        ])
+        if pr.get("state") != "OPEN" or (
+            target_pr is None and pr.get("baseRefName") != dispatch.cfg.main
+        ):
+            raise ValueError(
+                "CLOSE requires an open PR"
+                + (f" targeting the configured target `{dispatch.cfg.main}`"
+                   if target_pr is None else "")
+            )
         message = "Factory manager: " + body
         post_comment("pr", pr["number"], message, pr=pr["number"])
         dispatch.run(["gh", "pr", "close", str(pr["number"]), "--repo", dispatch.REPO])
         post_comment("issue", n, message, pr=pr["number"])
-        if any(e.get("event") == "issue-created" and e.get("ticket") == n for e in lifecycle.read_events(dispatch.EVENTS)):
+        if target_pr is not None or any(
+            e.get("event") == "issue-created" and e.get("ticket") == n
+            for e in lifecycle.read_events(dispatch.EVENTS)
+        ):
             issue_action("close", "--reason", "not planned")
         else:
             issue_action("edit", "--add-label", config.LABEL_WONTFIX)
@@ -914,14 +930,24 @@ def frontier_pass(dry_run: bool = False) -> None:
                     continue
                 execution.resource("acquired", lock_path, scope="repository")
             try:
-                issue = dispatch.gh_json(["issue", "view", str(n), "--repo", cfg.repo, "--json", "number,title,body,labels,state"])
+                issue = dispatch.gh_json([
+                    "issue", "view", str(n), "--repo", cfg.repo,
+                    "--json", "number,title,body,labels,assignees,state",
+                ])
                 labels = {label["name"] for label in issue.get("labels", [])}
                 if issue.get("state") != "OPEN" or LABEL_HUMAN in labels:
                     continue  # closed, or already escalated: the escalation loop owns it
+                events = lifecycle.read_events(dispatch.EVENTS)
+                escalation = next((
+                    event for event in reversed(events)
+                    if event.get("event") == "escalate" and event.get("ticket") == n
+                    and event.get("reason") != "manager_failed"
+                ), None)
+                if escalation and escalation.get("route") == "manager" and issue.get("assignees"):
+                    continue  # parked until a manager action removes the Factory assignee
                 if config.LABEL_INITIATIVE in labels:
                     dispatch.log(f"PR #{number}: refused (ticket #{n} is an initiative record)")
                     continue
-                events = lifecycle.read_events(dispatch.EVENTS)
                 observation = observe_pr(pr, n, events)
                 if observation["owner"]["relation"] != "factory_issue":
                     dispatch.log(f"PR #{number}: not factory-owned ({observation['owner']['relation']}); not in frontier")
@@ -1132,9 +1158,15 @@ def escalation_pass(dry_run: bool = False) -> None:
                     continue
                 round_number = escalation.get("round", 0)
                 # The PR frontier numbers its own `manage` rows (with `pr`) per PR; they never spend an escalation round.
-                if not 1 <= round_number <= cfg.manager_rounds or any(
-                    e.get("event") == "manage" and e.get("round") == round_number and not e.get("pr") for e in events
-                ):
+                consumed = any(
+                    (
+                        e.get("event") == "manage" and not e.get("pr")
+                        or e.get("event") == "manage-rejected"
+                    )
+                    and e.get("round") == round_number
+                    for e in events
+                )
+                if not 1 <= round_number <= cfg.manager_rounds or consumed:
                     continue
                 packet = Path(escalation["packet"])
                 if dispatch.initiative_kind(n):
@@ -1159,6 +1191,13 @@ def escalation_pass(dry_run: bool = False) -> None:
                     f"Issue #{n}: {issue['title']}\n\n{issue.get('body') or ''}",
                     packet.read_text(),
                 ]
+                external_pr = escalation.get("pr") if type(escalation.get("pr")) is int else None
+                if external_pr is not None:
+                    parts.insert(
+                        1,
+                        f"This is intake for external PR #{external_pr}. Only CLOSE or HUMAN is supported; "
+                        "never select an action that assumes an agent/<issue> branch or worktree.",
+                    )
                 notes_path = cfg.factory / NOTES_NAME
                 for path in (cfg.root / LESSONS_NAME, notes_path):
                     if path.is_file():
@@ -1207,6 +1246,16 @@ def escalation_pass(dry_run: bool = False) -> None:
                 status = write_notes(notes_path, notes) if notes is not None else None
                 if status is not None and status != "written":
                     dispatch.log(f"#{n}: manager notes {status}; keeping the existing file")
+                if external_pr is not None and decision not in {"CLOSE", "HUMAN"}:
+                    dispatch.record(
+                        "manage-rejected", ticket=n, pr=external_pr, round=round_number,
+                        decision=decision, reason="external_review_action",
+                    )
+                    dispatch.log(
+                        f"#{n}: rejected {decision} for external PR #{external_pr}; "
+                        "only CLOSE or HUMAN is supported"
+                    )
+                    continue
                 record_manager_decision(
                     n, decision, body, data, output, workers, packet,
                 )
@@ -1236,7 +1285,7 @@ def escalation_pass(dry_run: bool = False) -> None:
                 dispatch.record("manage", ticket=n, decision=decision, round=round_number,
                                 packet=str(packet), notes=status, rejected=rejected)
                 try:
-                    apply(n, issue, decision, body, data, packet)
+                    apply(n, issue, decision, body, data, packet, target_pr=external_pr)
                 except (CalledProcessError, OSError, ValueError) as exc:
                     # A partial SPLIT or REWRITE must not be replayed automatically.
                     execution.outcome = "mechanism_failure"
