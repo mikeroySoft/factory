@@ -1186,8 +1186,10 @@ with `model_inferred = true`. Without an entry no dollar figure is shown; weekly
 JSON lists the missing model in `cost_unpriced`. Keys must exactly match the
 recorded `model` string. OMP transcripts report the model id without its provider,
 while an inferred worker row uses the configured provider-qualified id, so the
-default worker needs both keys below. `cached` (when set) bills the cached share
-of the prompt instead of `prompt`.
+default worker needs both keys below. Use
+`[repo."owner/name".prices."<model>"]` instead of `defaults` to scope rates to
+one repository. `cached` (when set) bills the cached share of the prompt instead
+of `prompt`.
 
 The hosted rates below are illustrative USD per million tokens, not provider
 quotes. Replace them with your actual rates before enabling this host

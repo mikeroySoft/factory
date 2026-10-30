@@ -152,6 +152,21 @@ class WeeklyAggregationTest(unittest.TestCase):
         self.assertIsNone(unpriced["cost_per_merged_pr"])
         self.assertEqual(unpriced["cost_unpriced"], ["m2"])
 
+    def test_priced_model_without_usage_values_is_not_unpriced(self) -> None:
+        rows = [
+            {"at": at(timedelta(days=-1)), "event": "merged", "ticket": 1, "pr": 11},
+            {"at": at(timedelta(days=-2)), "event": "llm-usage", "ticket": 1,
+             "stage": "worker", "model": "m1"},
+        ]
+
+        result = stats.weekly_metrics(
+            rows, NOW - timedelta(days=7), NOW, None,
+            {"m1": {"prompt": 2.0, "completion": 4.0}},
+        )
+
+        self.assertIsNone(result["cost_per_merged_pr"])
+        self.assertEqual(result["cost_unpriced"], [])
+
     def test_cost_per_merged_pr_rounds_to_six_places(self) -> None:
         rows = [
             {"at": at(timedelta(days=-3)), "event": "merged", "ticket": 1, "pr": 11},

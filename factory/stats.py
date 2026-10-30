@@ -257,14 +257,19 @@ def weekly_metrics(
     ]
     total_cost = 0.0
     unpriced = set()
+    incomplete_cost = False
+    price_table = prices or {}
     for row in usage_for_merges:
-        cost = priced(row, prices or {})
+        cost = priced(row, price_table)
         if cost is None:
             model = row.get("model")
-            unpriced.add(model if isinstance(model, str) and model else "<missing>")
+            if isinstance(model, str) and model and model in price_table:
+                incomplete_cost = True
+            else:
+                unpriced.add(model if isinstance(model, str) and model else "<missing>")
         else:
             total_cost += cost
-    known_cost = round(total_cost, 6) if usage_for_merges and not unpriced else None
+    known_cost = round(total_cost, 6) if usage_for_merges and not unpriced and not incomplete_cost else None
     cost_per_merge = round(known_cost / merge_count, 6) if known_cost is not None and merge_count else None
 
     human_decisions = {
