@@ -295,6 +295,92 @@ class LocalCLI(unittest.TestCase):
         legacy = [r for r in lifecycle.read_events(self.events) if r.get("event") == "attempt"]
         self.assertEqual(len(legacy), 2)
 
+    def test_review_bounce_refreshes_published_tank_proof(self):
+        from test_proof import proof_text
+
+        self.write_config(extra='\n[proof]\nrepos = ["smoke"]\n')
+        self.commit_config()
+        template = proof_text(
+            [sys.executable, "-c", "print('proof-REVISION')"], output="proof-REVISION",
+        )
+        self.worker.write_text(
+            WORKER
+            + "\nrevision = str(len(Path('change.txt').read_text().splitlines()))\n"
+            + "Path('.factory').mkdir(exist_ok=True)\n"
+            + f"Path('.factory/proof-7.md').write_text({template!r}.replace('REVISION', revision))\n"
+        )
+        (self.bin / "gh").write_text(GH.replace(
+            "a = sys.argv[1:]",
+            "a = sys.argv[1:]\n"
+            "if a[:2] in (['pr', 'create'], ['pr', 'edit']) and '--body-file' in a:\n"
+            "    s.setdefault('bodies', []).append(Path(a[a.index('--body-file') + 1]).read_text())\n"
+            "    p.write_text(json.dumps(s))",
+        ))
+        self.cli("dispatch", "--ticket", "7")
+        body = (self.repo / ".factory" / "pr-body-7.md").read_text()
+        self.assertIn("proof-2", body)
+        self.assertNotIn("proof-1", body)
+        state = json.loads(self.state.read_text())
+        self.assertEqual(state["reviews"], 2)
+        self.assertEqual(len(state["bodies"]), 2, state["bodies"])
+        self.assertIn("proof-1", state["bodies"][0])
+        self.assertIn("proof-2", state["bodies"][1])
+
+    def test_manager_fix_refreshes_published_tank_proof(self):
+        from unittest import mock
+
+        from test_proof import proof_text
+
+        from factory import config, dispatch, manage
+
+        self.write_config(extra='\n[proof]\nrepos = ["smoke"]\n')
+        self.commit_config()
+        wt = self.repo / ".factory" / "wt-7"
+        wt.parent.mkdir(exist_ok=True)
+        self.git("worktree", "add", str(wt), "-b", "agent/7")
+        (wt / ".factory").mkdir()
+        (self.repo / ".factory" / "pr-body-7.md").write_text("stale proof")
+        head = self.git("rev-parse", "HEAD").stdout.strip()
+        packet = self.repo / ".factory" / "packet.md"
+        packet.write_text("fix it")
+        issue = {"title": "local change", "body": "", "labels": []}
+        pr = {"state": "OPEN", "headRefName": "agent/7", "headRefOid": head,
+              "baseRefName": "main", "reviewDecision": ""}
+
+        def worker(*args, **kwargs):
+            (wt / ".factory" / "proof-7.md").write_text(
+                proof_text([sys.executable, "-c", "print('fresh-proof')"], output="fresh-proof")
+            )
+            return True, "fresh gate report", None, head
+
+        real_run = dispatch.run
+
+        def run(command, **kwargs):
+            if command[:2] == ["gh", "pr"]:
+                return subprocess.CompletedProcess(command, 0, "", "")
+            return real_run(command, **kwargs)
+
+        with (
+            mock.patch.dict(os.environ, self.env),
+            mock.patch.object(dispatch, "run", side_effect=run) as calls,
+            mock.patch.object(dispatch, "gh_json", return_value=pr),
+            mock.patch.object(dispatch, "worker_round", side_effect=worker),
+            mock.patch.object(dispatch, "push_agent", return_value=head),
+            mock.patch.object(dispatch, "record_risk"),
+            mock.patch.object(dispatch, "pr_gate_and_review", return_value=("APPROVE", "", False)),
+            mock.patch.object(dispatch, "pr_comment"),
+            mock.patch.object(dispatch, "approve_pr", return_value=True),
+        ):
+            dispatch.configure(config.load(self.repo))
+            manage.apply(7, issue, "FIX", "", {"worker": "default", "guidance": "fix"}, packet)
+        body = (self.repo / ".factory" / "pr-body-7.md").read_text()
+        self.assertIn("fresh gate report", body)
+        self.assertIn("fresh-proof", body)
+        self.assertNotIn("stale proof", body)
+        self.assertTrue(any(
+            call.args[0][:3] == ["gh", "pr", "edit"] for call in calls.call_args_list
+        ))
+
     def retained_page(self, head, offset=0, expected=0):
         request = {"schema_version": 1, "repository": "local/smoke", "op": "investigate",
                    "kind": "result", "number": 7, "head": head, "offset": offset}

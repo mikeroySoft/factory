@@ -374,5 +374,72 @@ class ProofMappingEnvironmentTest(unittest.TestCase):
             self.assertIn("gfx1201", (dispatch.FACTORY / "pr-body-7.md").read_text())
 
 
+class ProofMappingShapeTest(ProofMappingEnvironmentTest):
+    dumps = (
+        '{"https_proxy": "https://synthetic-user:synthetic-password@example.invalid"}',
+        "{'https_proxy': 'https://synthetic-user:synthetic-password@example.invalid'}",
+        '{\n  "https_proxy":\n    "https://synthetic-user:synthetic-password@example.invalid"\n}',
+        "{\n  'https_proxy':\n    'https://synthetic-user:synthetic-password@example.invalid'\n}",
+    )
+
+    def test_examination_diagnostic_environment_remains_valid(self) -> None:
+        output = json.dumps({
+            "os_family": "linux",
+            "env": {"PATH": "/synthetic/bin", "HIP_VISIBLE_DEVICES": "0"},
+            "summary": {
+                "detected_gfx_target": "gfx1201",
+                "driver": {"status": "amdgpu_available"},
+                "active_runtime_id": "therock-7.0",
+            },
+        }, indent=2)
+        result = subprocess.CompletedProcess(self.command, 0, output, "")
+        with mock.patch.object(gate, "timed", return_value=result):
+            passed, detail = ProofGateTest.check(self, proof_text(self.command, output=output))
+        self.assertTrue(passed, detail)
+        with tempfile.TemporaryDirectory() as directory:
+            repo = ProofDispatchTest.repo(self, Path(directory))
+            dispatch.configure(config.Config(root=repo, repo="acme/rocm-cli"))
+            dispatch.FACTORY.mkdir(exist_ok=True)
+            (dispatch.FACTORY / "proof-7.md").write_text(proof_text(self.command, output=output))
+            with (
+                mock.patch.object(dispatch, "run", side_effect=ProofDispatchTest.publish_run),
+                mock.patch.object(dispatch, "gh_json", return_value=[]),
+            ):
+                self.assertTrue(dispatch.push_and_pr(repo, "agent/7", "feature", "body", ticket=7))
+            self.assertIn("gfx1201", (dispatch.FACTORY / "pr-body-7.md").read_text())
+
+    def test_examination_envelope_does_not_allow_extra_environment_keys(self) -> None:
+        text = json.dumps({
+            "os_family": "linux",
+            "env": {"PATH": "/synthetic/bin", "https_proxy": "synthetic-password"},
+            "summary": {"detected_gfx_target": "gfx1201"},
+        })
+        self.assertTrue(gate.proof_contains_environment_dump(text))
+
+    def test_proof_reruns_hold_the_host_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = ProofDispatchTest.repo(self, Path(directory))
+            (repo / config.CONFIG_NAME).write_text('[proof]\nrepos = ["repo"]\n')
+            lock = object()
+
+            def check(*args: object) -> tuple[bool, str]:
+                acquire.assert_called_once()
+                release.assert_not_called()
+                return True, "GPU proof checked"
+
+            previous = Path.cwd()
+            try:
+                os.chdir(repo)
+                with (
+                    mock.patch.object(gate, "_acquire_exclusive", return_value=lock) as acquire,
+                    mock.patch.object(gate, "_release_exclusive") as release,
+                    mock.patch.object(gate, "check_proof", side_effect=check),
+                ):
+                    self.assertEqual(gate.main(["--ticket", "7"]), 0)
+                    self.assertIs(release.call_args.args[1], lock)
+            finally:
+                os.chdir(previous)
+
+
 if __name__ == "__main__":
     unittest.main()
