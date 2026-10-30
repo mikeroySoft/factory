@@ -153,6 +153,7 @@ class LearningAndStatsTest(unittest.TestCase):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.cfg = config.Config(self.root, "acme/widgets")
         self.cfg.factory.mkdir()
+        dispatch.configure(self.cfg)
         self.events = self.cfg.factory / "events.jsonl"
         rows = [
             {"at": AT, "event": "claimed", "ticket": 1, "title": "Spend"},

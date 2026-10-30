@@ -246,10 +246,8 @@ def weekly_metrics(
         "human_touches_per_merge": touches / len(merged) if merged else None,
         "escalations_7d": len(escalations),
         "escalations_by_code": dict(escalation_codes.most_common()),
-        **({
-            "escalations_by_need": dict(escalation_needs.most_common()),
-            "signoff_share": escalation_needs["SIGNOFF"] / len(escalations),
-        } if any(row.get("need") for row in escalations) else {}),
+        "escalations_by_need": dict(escalation_needs.most_common()),
+        "signoff_share": escalation_needs["SIGNOFF"] / len(escalations) if escalations else None,
         "review_nonconvergence_share": review_revises / len(escalations) if escalations else None,
         "review_nonconvergence_share_numerator": review_revises,
         "review_nonconvergence_share_denominator": len(escalations),
