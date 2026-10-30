@@ -328,7 +328,7 @@
     const previousTrace=app.querySelector('[data-trace-tool]');
     const traceTicket=String(current.ticketNumber||'');
     const keepTrace=Boolean(repo&&previousTrace&&current.view==='Decisions'&&previousTrace.dataset.repository===repo.slug&&previousTrace.dataset.ticket===traceTicket);
-    if(keepTrace)previousTrace.remove();
+    if(keepTrace)previousTrace.remove();else WorkspaceTrace.dispose(previousTrace);
     const previousTool=app.querySelector('[data-native-tool]');
     const keep=previousTool&&previousTool.dataset.nativeTool===current.view.toLowerCase()&&previousTool.dataset.repository===repo?.slug;
     if(keep)previousTool.remove(); else WorkspaceTools.dispose();
@@ -341,7 +341,7 @@
     const host=app.querySelector('[data-native-tool]');
     if(host){host.dataset.repository=repo.slug;if(keep)host.replaceWith(previousTool);else WorkspaceTools.mount(host,host.dataset.nativeTool,repo.slug);}
     const traceHost=app.querySelector('[data-trace-tool]');
-    if(traceHost){traceHost.dataset.repository=repo.slug;traceHost.dataset.ticket=traceTicket;if(keepTrace)traceHost.replaceWith(previousTrace);else WorkspaceTrace.mount(traceHost,{repository:repo.slug,ticket:current.ticketNumber,recentTickets:cases(repo),onTicket:number=>setRoute({view:'decisions',ticket:number,case:null})});}
+    if(traceHost){traceHost.dataset.repository=repo.slug;traceHost.dataset.ticket=traceTicket;if(keepTrace)traceHost.replaceWith(previousTrace);else WorkspaceTrace.mount(traceHost,{repository:repo.slug,ticket:current.ticketNumber,recentTickets:cases(repo),refreshSeconds:preferences.pollSeconds,onTicket:number=>setRoute({view:'decisions',ticket:number,case:null})});}
     if(current.view==='Settings'){if(keepSettings)app.querySelector('.workspace-settings').replaceWith(previousSettings);else WorkspaceSettings.mount(app,repo?.slug);}
     if(current.view==='Attention'&&repo)WorkspaceDecisions.mountHistory(app.querySelector('[data-decision-history]'),repo.slug);
     applyPreferences();

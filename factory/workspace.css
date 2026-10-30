@@ -394,6 +394,15 @@ body[data-motion="on"]:not([data-hidden="true"]) .signal[data-status="refreshing
 @keyframes signal-pulse { 50% { opacity: .42; } }
 
 .trace-tool { display: grid; gap: 16px; }
+.trace-modes { display: inline-flex; justify-self: start; padding: 3px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
+.trace-modes button { min-height: 38px; padding: 7px 14px; color: var(--muted); border: 0; border-radius: 5px; background: transparent; font: 700 11px var(--mono); }
+.trace-modes button[aria-selected="true"] { color: var(--text); background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-strong); }
+.live-breadboard .trace-board { min-height: 430px; }
+.live-execution-open { display: grid; width: 100%; min-height: 108px; gap: 8px; padding: 14px 54px 14px 12px; color: var(--text); text-align: left; border: 0; background: transparent; }
+.live-execution-open strong { overflow-wrap: anywhere; }
+.live-execution-open time { color: var(--good); font: 10px var(--mono); }
+.live-execution.is-stale { border-color: var(--warn); border-style: dashed; box-shadow: none; }
+.live-execution.is-stale .live-execution-open time { color: var(--warn); }
 .trace-picker { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
 .trace-picker label { align-self: center; color: var(--muted); font: 700 11px var(--mono); text-transform: uppercase; }
 .trace-picker input { width: 150px; min-height: 44px; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--bg); }
