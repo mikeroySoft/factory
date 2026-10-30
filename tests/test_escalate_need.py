@@ -481,6 +481,51 @@ class ManagerRoutingTest(unittest.TestCase):
             [1, 2],
         )
 
+    def test_manager_cannot_consume_a_category_missing_from_the_checked_table(self) -> None:
+        self.record_escalation()
+        timeline = [
+            {"event": "unlabeled", "created_at": AT, "label": {"name": "ready-for-human"}},
+            {"event": "labeled", "created_at": AT, "label": {"name": "ready-for-agent"}},
+            {"event": "assigned", "created_at": AT},
+            {"event": "commented", "id": 100, "created_at": "2026-10-27T00:00:01Z"},
+        ]
+        calls = []
+
+        def read(argv):
+            if argv[:2] == ["issue", "list"]:
+                return [self.issue()]
+            if argv[:2] == ["issue", "view"]:
+                return self.issue()
+            if argv[0] == "api":
+                return [timeline]
+            self.fail(argv)
+
+        def run(argv, **_kwargs):
+            calls.append(argv)
+            output = (
+                'DECISION: HUMAN\n{"category":"product_direction","reason":"Choose direction",'
+                '"options":["Approve it"]}'
+                if argv[0] == "manager" else
+                "https://github.com/acme/widgets/issues/7#issuecomment-101\n"
+                if argv[1:3] == ["issue", "comment"] else ""
+            )
+            return subprocess.CompletedProcess(argv, 0, output, "")
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=read), \
+             mock.patch.object(dispatch, "run", side_effect=run):
+            manage.escalation_pass()
+
+        escalations = [row for row in lifecycle.read_events(dispatch.EVENTS)
+                       if row.get("event") == "escalate"]
+        self.assertEqual(
+            (escalations[-1]["code"], escalations[-1]["need"], escalations[-1]["route"]),
+            ("manager_failed", "CHASE_STALL", "manager"),
+        )
+        self.assertTrue(any("--add-assignee" in call and "ready-for-agent" in call
+                            for call in calls), calls)
+        self.assertFalse(any("--add-label ready-for-human" in " ".join(call)
+                             for call in calls), calls)
+
 
 class EscalationPublicationTest(unittest.TestCase):
     def test_failed_label_or_comment_publication_is_not_reported_as_success(self) -> None:
