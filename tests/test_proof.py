@@ -86,6 +86,16 @@ class ProofGateTest(unittest.TestCase):
         self.assertIn("environment dump", detail)
         self.assertNotIn(secret, detail)
 
+    def test_environment_dump_after_output_limit_is_rejected(self) -> None:
+        secret = "AWS_SECRET_ACCESS_KEY=plain-text-secret"
+        output = "\n".join(["safe"] * 40 + [secret])
+        result = subprocess.CompletedProcess(self.command, 0, output, "")
+        with mock.patch.object(gate, "timed", return_value=result):
+            passed, detail = self.check(proof_text(self.command))
+        self.assertFalse(passed)
+        self.assertIn("environment dump", detail)
+        self.assertNotIn(secret, detail)
+
 
 class ProofDispatchTest(unittest.TestCase):
     def repo(self, root: Path) -> Path:
