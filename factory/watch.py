@@ -246,7 +246,7 @@ def _active_expectations(
         number = issue.get("number")
         if not isinstance(number, int):
             continue
-        name = f"needs-triage issue #{number}"
+        name = f"needs-triage issue {cfg.repo}#{number}"
         try:
             entered = _triage_queue_entry(cfg.repo, number)
         except (

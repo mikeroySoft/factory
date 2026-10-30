@@ -166,7 +166,10 @@ class WatchExpectationTest(unittest.TestCase):
         self.dispatch_pass(now - timedelta(minutes=10))
         signals = watch.run_pass(self.cfg, now=now)
 
-        self.assertEqual([signal["name"] for signal in signals], ["needs-triage issue #7"])
+        self.assertEqual(
+            [signal["name"] for signal in signals],
+            ["needs-triage issue mikeroySoft/factory#7"],
+        )
         creates = [
             call for call in self.github.calls
             if call[:3] == ["gh", "issue", "create"]
@@ -227,7 +230,10 @@ class WatchExpectationTest(unittest.TestCase):
 
         signals = watch.run_pass(self.cfg, now=now)
 
-        self.assertEqual([signal["name"] for signal in signals], ["needs-triage issue #7"])
+        self.assertEqual(
+            [signal["name"] for signal in signals],
+            ["needs-triage issue mikeroySoft/factory#7"],
+        )
         listing = next(call for call in self.github.calls if call[:3] == ["gh", "issue", "list"])
         self.assertIn("body", listing[listing.index("--json") + 1].split(","))
         self.assertFalse(any("/issues/901/timeline" in call for call in self.github.calls))
@@ -331,7 +337,7 @@ class WatchExpectationTest(unittest.TestCase):
 
         self.assertEqual(
             [signal["name"] for signal in signals],
-            ["needs-triage issue #8"],
+            ["needs-triage issue mikeroySoft/factory#8"],
         )
         rows = lifecycle.read_events(self.cfg.factory / "events.jsonl")
         self.assertEqual(
@@ -342,7 +348,7 @@ class WatchExpectationTest(unittest.TestCase):
                 and "rate limit" in str(row.get("detail"))
             ],
             [
-                f"expectation:{watch.fingerprint('expectation', 'needs-triage issue #7')}"
+                f"expectation:{watch.fingerprint('expectation', 'needs-triage issue mikeroySoft/factory#7')}"
             ],
         )
         self.assertEqual(
@@ -353,7 +359,7 @@ class WatchExpectationTest(unittest.TestCase):
     def test_timeline_failure_keeps_existing_alert_open(self) -> None:
         now = datetime.now(UTC)
         self.cfg.eval_schedule = True
-        name = "needs-triage issue #7"
+        name = "needs-triage issue mikeroySoft/factory#7"
         fp = f"expectation:{watch.fingerprint('expectation', name)}"
         self.github.issues = [{
             "number": 7, "body": "", "createdAt": (now - timedelta(hours=1)).isoformat(),
@@ -437,7 +443,7 @@ class WatchExpectationTest(unittest.TestCase):
 
         self.assertEqual(
             [signal["name"] for signal in signals],
-            ["needs-triage issue #7"],
+            ["needs-triage issue mikeroySoft/factory#7"],
         )
         listing = next(
             call for call in self.github.calls
@@ -464,7 +470,10 @@ class WatchExpectationTest(unittest.TestCase):
         self.dispatch_pass(now + timedelta(minutes=20))
         signals = watch.run_pass(self.cfg, now=now + timedelta(minutes=20))
 
-        self.assertEqual([signal["name"] for signal in signals], ["needs-triage issue #7"])
+        self.assertEqual(
+            [signal["name"] for signal in signals],
+            ["needs-triage issue mikeroySoft/factory#7"],
+        )
         self.assertIn(now.isoformat(), signals[0]["excerpt"])
         timeline_calls = [call for call in self.github.calls if call[:2] == ["gh", "api"]]
         self.assertTrue(timeline_calls)
@@ -495,7 +504,10 @@ class WatchExpectationTest(unittest.TestCase):
         self.dispatch_pass(now + timedelta(minutes=20))
         signals = watch.run_pass(self.cfg, now=now + timedelta(minutes=20))
 
-        self.assertEqual([signal["name"] for signal in signals], ["needs-triage issue #7"])
+        self.assertEqual(
+            [signal["name"] for signal in signals],
+            ["needs-triage issue mikeroySoft/factory#7"],
+        )
         self.assertEqual(signals[0]["rows"], [])
 
     def test_current_queue_triage_exit_and_only_successful_passes_count(self) -> None:
