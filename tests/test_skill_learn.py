@@ -141,5 +141,27 @@ class SkillLearnEvidenceTest(unittest.TestCase):
         self.assertIn("[stale_command] command not found: missing", text)
         self.assertNotIn("legacy journal error", text)
 
+    def test_skill_rows_have_separate_budget_and_keep_ticket_evidence(self) -> None:
+        rows = [
+            {"event": "claimed", "ticket": 7, "title": "per-ticket sentinel", "at": AT},
+            {"event": "score", "ticket": 7, "attempt": 1, "raw": "raw score sentinel", "at": AT},
+        ]
+        for index in range(20):
+            rows.append(load(f"session-{index}", 7, ok=False) | {
+                "skill": f"skill-{index}",
+                "error": f"failure-{index} " + "x" * 3000,
+            })
+        rows.append({"event": "merged", "ticket": 7, "at": AT})
+        self.journal(*rows)
+
+        tickets, text = learn.evidence(1)
+
+        self.assertEqual(tickets, [7])
+        self.assertIn("### Ticket #7: per-ticket sentinel", text)
+        self.assertNotIn('"event": "score"', text)
+        self.assertNotIn('"event": "skill-load"', text)
+        skill_text = text[text.index("## Skill health evidence"):]
+        self.assertLessEqual(len(skill_text), learn.MAX_SKILL_EVIDENCE)
+
 if __name__ == "__main__":
     unittest.main()
