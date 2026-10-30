@@ -122,8 +122,16 @@ class ReservedConfigTest(unittest.TestCase):
         )
         self.assertEqual(config.reserved_table(path), {"spending": frozenset({"budget"})})
 
+        path.write_text(
+            "| Category | Decision | Allowed escalation codes |\n"
+            "|---|---|---|\n"
+            "| spending | Spending | budget |\n"
+        )
+        self.assertEqual(config.reserved_table(path), {"spending": frozenset({"budget"})})
+
         for row, problem in (
             ("| `unknown` | Unknown | `budget` |\n", "unknown category.*unknown"),
+            ("| unknown | Unknown | budget |\n", "unknown category.*unknown"),
             ("| `spending` | Spending | `not_a_code` |\n", "unknown escalation code.*not_a_code"),
         ):
             with self.subTest(problem=problem):
@@ -387,6 +395,63 @@ class ManagerRoutingTest(unittest.TestCase):
         self.assertTrue(any(call[1:4] == ["pr", "close", "42"] for call in calls), calls)
         self.assertTrue(any(call[1:4] == ["issue", "close", "7"] for call in calls), calls)
         self.assertFalse(any("agent/7" in part for call in reads for part in call), reads)
+
+    def test_invalid_external_human_keeps_the_reviewed_pr_binding(self) -> None:
+        self.record_escalation(pr=42, code="review_intake", need="EXPLAIN")
+        timeline = [{"event": "commented", "id": 100, "created_at": "2026-10-27T00:00:01Z"}]
+        manager_outputs = iter([
+            "DECISION: HUMAN\nnot a reserved decision",
+            "DECISION: CLOSE\nThe external review cannot be completed",
+        ])
+        calls = []
+        issue_comments = iter((101, 102))
+
+        def read(argv):
+            if argv[:2] == ["issue", "list"]:
+                return [self.issue()]
+            if argv[:2] == ["issue", "view"]:
+                return self.issue()
+            if argv[0] == "api":
+                return [timeline]
+            if argv[:2] == ["pr", "view"]:
+                self.assertEqual(argv[2], "42")
+                return {"number": 42, "state": "OPEN", "baseRefName": "main"}
+            self.fail(argv)
+
+        def run(argv, **_kwargs):
+            calls.append(argv)
+            if argv[0] == "manager":
+                return subprocess.CompletedProcess(argv, 0, next(manager_outputs), "")
+            if argv[1:3] == ["issue", "comment"]:
+                comment = next(issue_comments)
+                return subprocess.CompletedProcess(
+                    argv, 0, f"https://github.com/acme/widgets/issues/7#issuecomment-{comment}\n", "",
+                )
+            if argv[1:3] == ["pr", "comment"]:
+                return subprocess.CompletedProcess(
+                    argv, 0, "https://github.com/acme/widgets/pull/42#issuecomment-201\n", "",
+                )
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=read), \
+             mock.patch.object(dispatch, "run", side_effect=run):
+            manage.escalation_pass()
+            routed = next(
+                row for row in reversed(lifecycle.read_events(dispatch.EVENTS))
+                if row.get("event") == "escalate"
+            )
+            timeline.extend([
+                {"event": "unlabeled", "created_at": routed["at"],
+                 "label": {"name": "ready-for-human"}},
+                {"event": "labeled", "created_at": routed["at"],
+                 "label": {"name": "ready-for-agent"}},
+                {"event": "assigned", "created_at": routed["at"]},
+                {"event": "commented", "id": 101, "created_at": routed["at"]},
+            ])
+            manage.escalation_pass()
+
+        self.assertEqual(routed.get("pr"), 42)
+        self.assertTrue(any(call[1:4] == ["pr", "close", "42"] for call in calls), calls)
 
     def test_external_review_fix_is_rejected_once_without_consuming_the_round(self) -> None:
         self.record_escalation(pr=42, code="review_intake", need="EXPLAIN")
@@ -727,6 +792,32 @@ class FinalReviewNeedTest(unittest.TestCase):
             1,
         )
 
+    def test_released_or_successfully_fixed_escalation_does_not_hold_a_reclaimed_pr(self) -> None:
+        for decision in ("RETRY", "FIX"):
+            with self.subTest(decision=decision):
+                case = self.frontier()
+                dispatch.record(
+                    "escalate", ticket=79, round=1, route="manager",
+                    reason="gate failed", need="RULE_COVERABLE",
+                )
+                dispatch.record("manage", ticket=79, round=1, decision=decision)
+                case.manager_output = "DECISION: APPROVE\nLooks right"
+
+                def read(args):
+                    value = case.gh_json(args)
+                    if args[:2] == ["issue", "view"]:
+                        value["assignees"] = [{"login": "factory"}]
+                    return value
+
+                with mock.patch.object(dispatch, "gh_json", side_effect=read):
+                    manage.frontier_pass()
+
+                self.assertTrue(
+                    any("--add-label" in command and "factory-approved" in command
+                        for command in case.mutations),
+                    case.mutations,
+                )
+
     def test_human_names_a_reserved_signoff_and_concrete_options(self) -> None:
         case = self.frontier()
         case.cfg.reserved = {"product_direction": frozenset({"manager_human"})}
@@ -770,6 +861,66 @@ class FinalReviewNeedTest(unittest.TestCase):
 
 
 class EscalationPublicationTest(unittest.TestCase):
+    def test_failed_routing_comment_recovers_only_without_human_activity(self) -> None:
+        for takeover in (False, True):
+            with self.subTest(takeover=takeover):
+                root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+                cfg = config.Config(
+                    root, "acme/widgets", manager=["manager"], review_rounds=0,
+                )
+                dispatch.configure(cfg)
+                dispatch.record("review-intake", pr=17, head="head-0")
+                pr = {
+                    "number": 17, "state": "OPEN", "isDraft": False,
+                    "isCrossRepository": False, "headRefName": "feature",
+                    "headRefOid": "head-0", "baseRefOid": "base",
+                    "labels": [{"name": "needs-review"}], "reviewRequests": [],
+                }
+                timeline = (
+                    [{"event": "commented", "id": 900,
+                      "created_at": "2026-10-29T12:00:00Z",
+                      "user": {"login": "maintainer", "type": "User"}}]
+                    if takeover else []
+                )
+                created = comments = 0
+
+                def read(argv):
+                    if argv[:2] == ["pr", "list"]:
+                        return [pr]
+                    if argv[0] == "api":
+                        return [timeline]
+                    self.fail(argv)
+
+                def run(argv, **_kwargs):
+                    nonlocal created, comments
+                    if argv[1:3] == ["issue", "create"]:
+                        created += 1
+                        return subprocess.CompletedProcess(
+                            argv, 0, "https://github.com/acme/widgets/issues/99\n", "",
+                        )
+                    if argv[1:3] == ["issue", "comment"]:
+                        comments += 1
+                        if comments == 1:
+                            return subprocess.CompletedProcess(argv, 1, "", "unavailable")
+                        return subprocess.CompletedProcess(
+                            argv, 0,
+                            "https://github.com/acme/widgets/issues/99#issuecomment-100\n", "",
+                        )
+                    return subprocess.CompletedProcess(argv, 0, "", "")
+
+                with mock.patch.object(dispatch, "gh_json", side_effect=read), \
+                     mock.patch.object(dispatch, "run", side_effect=run), \
+                     mock.patch.object(dispatch, "review_readiness"):
+                    dispatch.review_intake_pass(False)
+                    dispatch.review_intake_pass(False)
+
+                receipts = [
+                    row for row in lifecycle.read_events(dispatch.EVENTS)
+                    if row.get("event") == "comment" and row.get("kind") == "escalation"
+                ]
+                self.assertEqual(created, 1)
+                self.assertEqual(comments, 1 if takeover else 2)
+                self.assertEqual(bool(receipts), not takeover)
     def test_failed_label_or_comment_publication_is_not_reported_as_success(self) -> None:
         for need in (dispatch.RULE_COVERABLE, dispatch.SIGNOFF("spending")):
             for action in ("edit", "comment"):
