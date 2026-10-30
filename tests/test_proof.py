@@ -441,5 +441,20 @@ class ProofMappingShapeTest(ProofMappingEnvironmentTest):
                 os.chdir(previous)
 
 
+class ProofExaminationBoundaryTest(unittest.TestCase):
+    def test_duplicate_environment_fields_cannot_hide_dump_output(self) -> None:
+        text = (
+            '{"os_family":"linux","summary":{"detected_gfx_target":"gfx1201"},'
+            '"env":{"AWS_SECRET_ACCESS_KEY":"synthetic-secret"},'
+            '"env":{"PATH":"/synthetic/bin"}}'
+        )
+        self.assertTrue(gate.proof_contains_environment_dump(text))
+
+    def test_numeric_token_measurements_are_not_environment_dumps(self) -> None:
+        self.assertFalse(gate.proof_contains_environment_dump(
+            '{"prompt_tokens": 12, "completion_tokens": 3, "status": "ok"}'
+        ))
+
+
 if __name__ == "__main__":
     unittest.main()
