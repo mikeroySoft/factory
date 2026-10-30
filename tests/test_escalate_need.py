@@ -526,6 +526,45 @@ class ManagerRoutingTest(unittest.TestCase):
         self.assertFalse(any("--add-label ready-for-human" in " ".join(call)
                              for call in calls), calls)
 
+    def test_failed_manager_signoff_publication_does_not_consume_the_round(self) -> None:
+        self.record_escalation()
+        timeline = [
+            {"event": "unlabeled", "created_at": AT, "label": {"name": "ready-for-human"}},
+            {"event": "labeled", "created_at": AT, "label": {"name": "ready-for-agent"}},
+            {"event": "assigned", "created_at": AT},
+            {"event": "commented", "id": 100, "created_at": "2026-10-27T00:00:01Z"},
+        ]
+
+        def read(argv):
+            if argv[:2] == ["issue", "list"]:
+                return [self.issue()]
+            if argv[:2] == ["issue", "view"]:
+                return self.issue()
+            if argv[0] == "api":
+                return [timeline]
+            self.fail(argv)
+
+        def run(argv, **_kwargs):
+            if argv[0] == "manager":
+                output = (
+                    'DECISION: HUMAN\n{"category":"spending","reason":"Approve quota",'
+                    '"options":["Approve it"]}'
+                )
+                return subprocess.CompletedProcess(argv, 0, output, "")
+            if argv[1:3] == ["issue", "edit"]:
+                raise subprocess.CalledProcessError(1, argv, stderr="unavailable")
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        logs = []
+        with mock.patch.object(dispatch, "gh_json", side_effect=read), \
+             mock.patch.object(dispatch, "run", side_effect=run), \
+             mock.patch.object(dispatch, "log", side_effect=logs.append):
+            manage.escalation_pass()
+
+        self.assertFalse(any(row.get("event") == "manage"
+                             for row in lifecycle.read_events(dispatch.EVENTS)))
+        self.assertTrue(any("publication failed" in line for line in logs), logs)
+
 
 class EscalationPublicationTest(unittest.TestCase):
     def test_failed_label_or_comment_publication_is_not_reported_as_success(self) -> None:
