@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
-from factory import config, dispatch, lifecycle, watch
+from factory import cli, config, dispatch, lifecycle, onboard, watch
 
 REPO = "acme/widgets"
 REAL_FAILED_UNITS = watch.failed_units  # setUp patches these out for the filing tests
@@ -187,6 +187,80 @@ class WatchTest(unittest.TestCase):
             self.assertEqual(watch.main(["--heartbeat-check"]), 0)
 
         self.assertEqual(self.gh.created, [])
+
+    def test_first_install_allows_45_minutes_without_a_heartbeat(self) -> None:
+        units = self.root / "units"
+        with mock.patch.object(config, "load", return_value=self.cfg), \
+                mock.patch.object(onboard, "unit_dir", return_value=units), \
+                mock.patch.object(onboard, "systemctl"), \
+                mock.patch.object(onboard.shutil, "which", return_value="/bin/systemctl"), \
+                mock.patch.object(onboard, "sh", return_value=subprocess.CompletedProcess([], 0, "yes\n", "")):
+            self.assertEqual(cli.main(["install", "--no-dashboard"]), 0)
+
+        timer = (units / f"{self.cfg.unit}-watchdog.timer").read_text()
+        settings = dict(line.split("=", 1) for line in timer.splitlines() if "=" in line)
+        self.assertEqual(settings["OnUnitActiveSec"], "15min")
+        # Model the first expiry on a host booted ten days before installation.
+        # OnBootSec in the past fires immediately; OnActiveSec starts at install.
+        uptime_minutes = 10 * 24 * 60
+        first_check = min(
+            int(settings[key].removesuffix("min")) - offset
+            for key, offset in (("OnBootSec", uptime_minutes), ("OnActiveSec", 0))
+            if key in settings
+        )
+        with mock.patch.object(config, "load", return_value=self.cfg), \
+                mock.patch.object(watch, "pass_overrun", return_value=None):
+            for elapsed in (0, 15, 44):
+                if elapsed >= first_check:
+                    cli.main(["watch", "--heartbeat-check"])
+            self.assertEqual(self.gh.created, [], "a new install has not missed 45 minutes")
+            self.assertEqual(first_check, 45)
+            # No watch has succeeded by expiry. Two checks must file only once.
+            self.assertEqual(cli.main(["watch", "--heartbeat-check"]), 0)
+            self.assertEqual(cli.main(["watch", "--heartbeat-check"]), 0)
+        self.assertEqual(len(self.gh.created), 1)
+        self.assertIn("No watch heartbeat", self.gh.created[0][-1])
+        self.assertEqual(self.events("watch-heartbeat"), [])
+
+    def test_failed_pass_survives_successful_restart_before_watch(self) -> None:
+        with mock.patch.object(config, "load", return_value=self.cfg), \
+                mock.patch.dict("os.environ", {
+                    "SERVICE_RESULT": "signal", "EXIT_CODE": "killed",
+                    "EXIT_STATUS": "KILL", "INVOCATION_ID": "failed-pass",
+                }):
+            self.assertEqual(cli.main(["pass-result"]), 0)
+        with mock.patch.object(config, "load", return_value=self.cfg), \
+                mock.patch.dict("os.environ", {
+                    "SERVICE_RESULT": "success", "INVOCATION_ID": "replacement-pass",
+                }):
+            self.assertEqual(cli.main(["pass-result"]), 0)
+        self.assertEqual(self.gh.calls, [], "the stop hook must never call GitHub")
+        self.assertEqual(self.events("watch-heartbeat"), [])
+        [failure] = self.events("pass-result")
+        self.assertEqual(failure["result"], "signal")
+        self.assertEqual(failure["exit_code"], "killed")
+        self.assertEqual(failure["exit_status"], "KILL")
+        self.assertEqual(failure["invocation_id"], "failed-pass")
+
+        # setUp stubs live failed-unit polling to empty: replacement succeeded.
+        watch.run_pass(self.cfg)
+        watch.run_pass(self.cfg)
+        self.assertEqual(len(self.gh.created), 1)
+        create = self.gh.created[0]
+        self.assertEqual(create[create.index("--repo") + 1], self.cfg.watch_engine_repo)
+        body = create[create.index("--body") + 1]
+        self.assertIn("KILL", body)
+        self.assertIn("failed-pass", body)
+        [filing] = self.events("watch")
+        self.assertEqual(filing["fingerprint"], watch.fingerprint("unit", "factory-<repo>.service"))
+        self.assertEqual([call for call in self.gh.calls if call[:3] == ["gh", "issue", "comment"]], [])
+
+    def test_pass_result_without_systemd_result_records_nothing(self) -> None:
+        with mock.patch.object(config, "load", return_value=self.cfg), \
+                mock.patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(cli.main(["pass-result"]), 0)
+        self.assertEqual(lifecycle.read_events(dispatch.EVENTS), [])
+        self.assertEqual(self.gh.calls, [])
 
     def test_sixth_fingerprint_waits_for_the_next_pass(self) -> None:
         self.journal(*(exit_row("worker", "mechanism_failure", f"RuntimeError: boom {code}") for code in range(1, 7)))
