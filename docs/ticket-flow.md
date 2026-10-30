@@ -116,13 +116,14 @@ flowchart TB
   NT -->|"untriaged watch issue, newest evidence 24 hours old, issue closed completed: watch.run_pass"| HUMAN
 
   %% Recovery
-  ESC -->|"ready-for-agent swapped for ready-for-human: dispatch.escalate"| RFH
+  ESC -->|"reserved SIGNOFF: ready-for-agent swapped for ready-for-human: dispatch.escalate"| RFH
+  ESC -->|"rule-coverable, explain, stall, or crossed messages: assigned to Factory, ready-for-human removed, ready-for-agent added: dispatch._route_escalation_to_manager"| MGR
   UPSTREAM -->|"new sync ticket on a staged agent/N candidate; never moves main: dispatch.sync_pass"| RFA
-  EXTPR -->|"review attempts exhausted, new issue: dispatch.review_intake_pass"| RFH
+  EXTPR -->|"review attempts exhausted, new manager-routed issue: dispatch.review_intake_pass"| MGR
   EXTPR -->|"agent/lessons-*, agent/curate-*, agent/revert-lessons-* (same repository) admitted without a label: dispatch.review_intake_pass"| EXTPR
   EXTPR -->|"gate PASS + APPROVE bound to head, CI green: learn.promote_pass"| MERGED
-  RFH -->|"packet and manager rounds left: manage.escalation_pass"| MGR
   RFH -->|"terminal, routed request published: handoff.handoff_pass"| HUMAN
+  RFH -->|"legacy unclassified escalation with automatic recovery remaining: manage.escalation_pass"| MGR
   MGR -->|"RETRY, REWRITE, or ROUTE: manage.apply"| RFA
   MGR -->|"AUTHORIZE adds add-only authority before requeue: manage.apply"| RFA
   MGR -->|"SPLIT, children opened, parent stays: manage.apply"| NT
@@ -131,7 +132,7 @@ flowchart TB
   MGR -->|"CLOSE PR on an original ticket: manage.apply"| WONT
   MGR -->|"CLOSE PR on a SPLIT child, issue closed not planned: manage.apply"| HUMAN
   MGR -->|"RESOLVE: evidence comment, issue closed completed: manage.apply"| HUMAN
-  MGR -->|"HUMAN or manager failed, label kept: manage.escalation_pass"| HUMAN
+  MGR -->|"reserved HUMAN with category and options: dispatch.escalate"| RFH
   WONT -->|"a human decides: config.LABELS"| HUMAN
   HUMAN -->|"relabel, comment, close, approve: decisions.apply"| RFA
 
@@ -164,23 +165,25 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 | `decisions._plan_request` | `*` | `*` | Human action; labels limited to `decisions.ACT_LABELS`, `factory-approved` routed to `decisions._approve` |
 | `decisions._withdraw_approval` | `factory-approved` | — | Human approve step found the PR changed |
 | `dispatch.approve_pr` | `factory-approved` | `factory-approved` | Approve; withdraw again if the PR changed while labelling |
-| `dispatch.escalate` | `ready-for-agent` | `ready-for-human` | Every escalation |
+| `dispatch._route_escalation_to_manager` | `ready-for-human` | `ready-for-agent` | Non-signoff escalation assigned to Factory and routed to the manager; assignment excludes worker claims |
+| `dispatch.escalate` | `ready-for-agent` | `ready-for-human` | Reserved sign-off only |
 | `dispatch.merge_pass_locked` | `factory-approved` | — | CI fail, or cancel after steps ran; missing approval evidence |
 | `dispatch.push_and_pr` | — | `*` | Caller's PR label; ticket PRs pass none |
 | `dispatch.refresh_pr_branch` | `factory-approved`, `ready-for-human` | `ready-for-agent` | Behind main: approval withdrawn before refresh; eligible conflict and repeated-gate requeues restore agent flow |
-| `dispatch.review_intake_pass` | — | `ready-for-human` | New issue for an unresolved opted-in PR review |
+| `dispatch._open_manager_review_issue` | — | `ready-for-agent` | Manager-routed review intake, assigned to Factory so workers cannot claim it |
 | `dispatch.sync_issue` | — | `ready-for-agent` | New sync ticket for new upstream commits; its `agent/N` candidate carries the merge and gate evidence |
 | `learn.promote` | — | `factory-approved` | `factory learn` PR (lessons, curate, revert-lessons) with head-bound gate PASS, reviewer APPROVE and green CI, then squash merge (`learn.promote_pass` runs it per PR); lessons/curate merges open a `promotion-open` that `learn.decide_promotions` keeps or reverts |
-| `manage.apply` | `ready-for-human`, `*` | `factory-add-only-override`, `ready-for-agent`, `needs-triage`, `wontfix-proposal`, `*` | AUTHORIZE grants add-only authority and requeues; RETRY/REWRITE/ROUTE return to agent; SPLIT children; CLOSE; RESOLVE closes completed; ROUTE labels |
+| `manage.apply` | `ready-for-human`, `*` | `factory-add-only-override`, `ready-for-agent`, `needs-triage`, `wontfix-proposal`, `*` | AUTHORIZE grants add-only authority and requeues; RETRY/REWRITE/ROUTE release the Factory assignment and return to agent; SPLIT children; CLOSE; RESOLVE closes completed; ROUTE labels |
 | `manage.viability_pass` | `*` | `needs-triage` | Opt-in label removed; BUILD queues triage |
 | `triage.apply_decision` | `needs-triage` | `*` | `*` is the decision: `ready-for-agent`, `needs-info`, `ready-for-human`, or `wontfix-proposal` |
 | `watch.run_pass` | — | `*` | New `bug` + `needs-triage` issue per runtime-failure fingerprint (`watch.LABELS`) |
 
 ## Escalate reasons
 
-Every reason string passed to `dispatch.escalate`, the
-`withdraw` helper in `dispatch.refresh_pr_branch`, or recorded as an `escalate`
-event. `{}` is a runtime value.
+Every reason string conservatively extracted from calls to `dispatch.escalate`,
+the `withdraw` helper in `dispatch.refresh_pr_branch`, or `escalate` journal
+rows. Runtime guards can make an extracted template unreachable; those rows say
+so explicitly. `{}` is a runtime value.
 
 | Code | Reason | Edge |
 |------|--------|------|
@@ -219,13 +222,14 @@ event. `{}` is a runtime value.
 | `dispatch.refresh_pr_branch` | ``fresh review requested changes after {} onto moved main`` | refresh → escalate |
 | `dispatch.refresh_pr_branch` | ``reviewer unavailable after {} onto moved main`` | refreshed review tooling retries exhausted → escalate (`reviewer_unavailable`) |
 | `dispatch.refresh_pr_branch` | ``approval evidence, head, or human review state changed before refreshed approval`` | refresh → escalate |
-| `dispatch.review_intake_pass` | ``PR #{}: unresolved after {} automated review attempt(s)`` | external PR → ready-for-human |
+| `dispatch.review_intake_pass` | ``PR #{}: unresolved after {} automated review attempt(s)`` | external PR → manager |
 | `manage.frontier_pass` | ``PR #{}: CI failed ({})`` | manager PR frontier → escalate |
 | `manage.frontier_pass` | ``PR #{}: {} unresolved feedback item(s) on head {}`` | manager PR frontier → escalate |
 | `manage.frontier_pass` | ``PR #{}: no activity for {} days (stale_days = {})`` | manager PR frontier → escalate |
 | `manage.frontier_pass` | ``PR #{}: manager rounds exhausted before approval`` | manager PR frontier → escalate |
 | `manage.frontier_pass` | ``PR #{}: approval evidence, head, or human review state changed before manager approval`` | manager PR frontier → escalate |
 | `manage.frontier_pass` | ``PR #{}: manager requires a human: {}`` | manager PR frontier → escalate |
+| `manage.frontier_pass` | ``PR #{}: manager did not return a valid decision: {} ({})`` | invalid manager sign-off → manager-routed escalation |
 | `manage.apply` | ``gate failed after manager FIX`` | manager FIX → escalate |
 | `manage.apply` | ``review requested changes after manager FIX`` | manager FIX → escalate |
 | `manage.apply` | ``reviewer unavailable after manager FIX`` | manager FIX review tooling retries exhausted → escalate (`reviewer_unavailable`) |
@@ -233,4 +237,8 @@ event. `{}` is a runtime value.
 | `manage.apply` | ``approval evidence, head, or human review state changed before manager FIX approval`` | manager FIX → escalate |
 | `manage.apply` | ``FIX worktree head {} is not the PR head {} plus the worker's own commits; worktree kept at {}`` | manager FIX → escalate (`refresh_head`) |
 | `manage.apply` | ``FIX could not push the worker's own commits: origin/agent/{} moved since {}; worktree kept at {}`` | manager FIX → escalate (`lease_refused`) |
-| `manage.escalation_pass` | ``manager_failed`` | manager decision → human |
+| `manage.escalation_pass` | ``{}`` | manager supplied a valid reserved sign-off reason → human |
+| `manage.escalation_pass` | ``Manager did not return a valid decision: {} ({})`` | invalid manager sign-off → manager-routed escalation |
+| `manage.escalation_pass` | ``Manager command exited {} (argv: {})`` | unreachable escalation template: transport failure journals literal `manager_failed` |
+| `manage.escalation_pass` | ``Manager did not return a valid decision: Manager command exited {} (argv: {}) ({})`` | unreachable escalation template: `transport_failed` excludes invalid-sign-off reclassification |
+| `manage.escalation_pass` | ``manager_failed`` | manager transport failure → manager-routed stall |

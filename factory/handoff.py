@@ -42,10 +42,12 @@ def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
     Mirrors every reason `manage.escalation_pass` will never run the manager again.
     """
     r = escalation.get("round", 0)
+    if escalation.get("need") == "SIGNOFF":
+        return "a reserved human sign-off is required"
+    if escalation.get("pr") and escalation.get("need") is None:
+        return "review-intake escalations are never managed; the opted-in PR needs a human review decision"
     if not cfg.manager:
         return "no manager is configured, so nothing recovers automatically"
-    if escalation.get("pr"):
-        return "review-intake escalations are never managed; the opted-in PR needs a human review decision"
     if not 1 <= r <= cfg.manager_rounds:
         return f"the manager's {cfg.manager_rounds} allowed round(s) are exhausted"
     decided = [e for e in events if e.get("event") == "manage" and e.get("round") == r and not e.get("pr")]
@@ -104,12 +106,14 @@ def target(route: dict) -> str:
 def compose(n: int, request: str, token: str, escalation: dict, why: str, observed: dict, links: dict,
             previous: str | None) -> str:
     route = observed["route"]
+    question = escalation.get("question") if isinstance(escalation.get("question"), str) else ""
     who = mentions(route)
     source = route.get("source") or "no source"
     if previous is not None:
         rationale = route["provenance"][-1]["detail"] if route["provenance"] else source
-        return (f"Factory handoff `{request}`: the decision owner is now {' '.join(who)} ({source}: {public(rationale)}); "
-                f"previously {public(previous)}.\n\n<!-- {token} -->")
+        body = (f"Factory handoff `{request}`: the decision owner is now {' '.join(who)} "
+                f"({source}: {public(rationale)}); previously {public(previous)}.\n\n<!-- {token} -->")
+        return body + (f"\n\n{question}" if question else "")
     if route["status"] == "selected" and who:
         owner = f"{who[0]} — you own this decision ({source})."
     elif route["status"] == "candidates" and who:
@@ -123,7 +127,7 @@ def compose(n: int, request: str, token: str, escalation: dict, why: str, observ
         owner = "No decision owner could be determined (unassigned); a maintainer should claim it."
     evidence = [f"- {label}: {url}" for label, url in links.items() if url] or ["- (none published)"]
     routing = [f"- {step['step']}: {step['outcome']} — {public(step['detail'])}" for step in route["provenance"]]
-    return "\n".join([
+    lines = [
         f"Factory handoff request `{request}`: a human decision is needed on #{n}.",
         "",
         owner,
@@ -145,7 +149,10 @@ def compose(n: int, request: str, token: str, escalation: dict, why: str, observ
          "the next pass reflects it and never overwrites it."),
         "",
         f"<!-- {token} -->",
-    ])
+    ]
+    if question:
+        lines += ["", question]
+    return "\n".join(lines)
 
 
 def handoff_pass(dry_run: bool = False) -> None:

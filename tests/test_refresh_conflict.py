@@ -249,8 +249,9 @@ class RefreshConflictTest(unittest.TestCase):
         self.assertIn("ticket is not open", escalation["reason"])
         self.assertIn("- `shared.txt`", Path(escalation["packet"]).read_text())
         self.assertEqual(self.events("conflict-requeue"), [])
-        self.assertIn(config.LABEL_HUMAN, self.github.issue_labels)
-        self.assertNotIn(config.LABEL_AGENT, self.github.issue_labels)
+        self.assertNotIn(config.LABEL_HUMAN, self.github.issue_labels)
+        self.assertIn(config.LABEL_AGENT, self.github.issue_labels)
+        self.assertEqual(self.github.assignees, ["factory"])
 
     def test_conflict_after_the_round_limit_escalates_with_the_file_list(self) -> None:
         for round_number in range(1, self.cfg.review_rounds + 1):
@@ -261,7 +262,9 @@ class RefreshConflictTest(unittest.TestCase):
         self.assertEqual(escalation["code"], "refresh_conflict")
         self.assertIn("after 3 conflict-resolution round(s)", escalation["reason"])
         self.assertIn("## Conflicting files\n\n- `shared.txt`", Path(escalation["packet"]).read_text())
-        self.assertIn(config.LABEL_HUMAN, self.github.issue_labels)
+        self.assertNotIn(config.LABEL_HUMAN, self.github.issue_labels)
+        self.assertIn(config.LABEL_AGENT, self.github.issue_labels)
+        self.assertEqual(self.github.assignees, ["factory"])
         self.assertEqual(len(self.events("conflict-requeue")), 3)
 
     def test_conflict_on_a_protected_path_escalates_immediately_unless_authorized(self) -> None:
@@ -407,7 +410,9 @@ class RefreshGateFailureTest(unittest.TestCase):
         self.assertIn("after 3 gate-resolution round(s)", escalation["reason"])
         self.assertEqual(len(self.events("gate-requeue")), 3)
         self.assertIn("persistent failure", Path(escalation["packet"]).read_text())
-        self.assertIn(config.LABEL_HUMAN, self.github.issue_labels)
+        self.assertNotIn(config.LABEL_HUMAN, self.github.issue_labels)
+        self.assertIn(config.LABEL_AGENT, self.github.issue_labels)
+        self.assertEqual(self.github.assignees, ["factory"])
 
     def test_closed_ticket_gate_failure_after_refresh_escalates_without_requeue(self) -> None:
         closed_issue = {**self.github.issue(), "state": "CLOSED"}
@@ -420,7 +425,9 @@ class RefreshGateFailureTest(unittest.TestCase):
         self.assertEqual(escalation["code"], "gate_failed")
         self.assertIn("ticket is not open", escalation["reason"])
         self.assertEqual(self.events("gate-requeue"), [])
-        self.assertIn(config.LABEL_HUMAN, self.github.issue_labels)
+        self.assertNotIn(config.LABEL_HUMAN, self.github.issue_labels)
+        self.assertIn(config.LABEL_AGENT, self.github.issue_labels)
+        self.assertEqual(self.github.assignees, ["factory"])
 
 
 class ManagerFixAheadTest(unittest.TestCase):

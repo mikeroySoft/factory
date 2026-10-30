@@ -238,6 +238,7 @@ class AddOnlyOverrideTest(unittest.TestCase):
         )
         self.assertIn(
             ["gh", "issue", "edit", "7", "--repo", dispatch.REPO,
+             "--remove-assignee", "@me",
              "--remove-label", config.LABEL_HUMAN, "--add-label", config.LABEL_AGENT],
             commands,
         )

@@ -130,8 +130,9 @@ def worst_session(evs: list[dict]) -> tuple[dict, dict] | None:
 
 def evidence(last: int) -> tuple[list[int], str]:
     """Evidence per ticket from events.jsonl, newest `last` tickets that finished, then recent candidate escapes."""
+    rows = lifecycle.read_events(dispatch.EVENTS)
     by_ticket: dict[int, list[dict]] = {}
-    for row in lifecycle.read_events(dispatch.EVENTS):
+    for row in rows:
         if (
             row.get("event") == "lifecycle"
             or not isinstance(row.get("event"), str)
@@ -140,13 +141,27 @@ def evidence(last: int) -> tuple[list[int], str]:
         ):
             continue
         by_ticket.setdefault(row["ticket"], []).append(row)
-    finished = [n for n, evs in by_ticket.items() if any(e["event"] in ("merged", "escalate") for e in evs)]
+    learnable = {"RULE_COVERABLE", "EXPLAIN", "CHASE_STALL", "CROSSED_MESSAGES"}
+    escalation_needs = {
+        row["ticket"]: row.get("need")
+        for row in stats.effective_escalations(rows)
+        if row.get("need") in learnable
+    }
+    finished = [
+        n for n, evs in by_ticket.items()
+        if (
+            any(e["event"] == "merged" for e in evs)
+            or any(e["event"] == "escalate" and e.get("need") is None for e in evs)
+            or n in escalation_needs
+        )
+    ]
     chosen = sorted(finished, key=lambda n: by_ticket[n][-1]["at"])[-last:]
     parts = []
     for n in chosen:
         evs = by_ticket[n]
         title = next((e.get("title") for e in evs if e["event"] == "claimed"), "")
-        parts.append(f"### Ticket #{n}: {title}")
+        label = f" [{escalation_needs[n]}]" if n in escalation_needs else ""
+        parts.append(f"### Ticket #{n}{label}: {title}")
         for e in evs:
             fields = {k: v for k, v in e.items() if k not in ("ticket", "title", "log", "issue")}
             parts.append(f"- {json.dumps(fields)}")

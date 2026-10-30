@@ -22,7 +22,7 @@ Confirm with `factory --version` before continuing. Then pick the branch:
 - Repo has no `.factory.toml` → **Set up**.
 - User asks whether an issue or PR direction is worth pursuing → **Assess viability**.
 - User wants work done by the factory → **Write a ticket**.
-- A ticket is `ready-for-human`, stuck, or the user asks "what happened" → **Diagnose**.
+- A ticket is `ready-for-human`, assigned to Factory after an escalation, stuck, or the user asks "what happened" → **Diagnose**.
 - User wants different checks, workers, reviewer, or model → edit `.factory.toml`
   (the template written by `factory init` documents every key), then `factory doctor`.
 
@@ -125,7 +125,9 @@ Evidence, in order of authority:
 
 1. `.factory/events.jsonl` filtered to the ticket: the ordered trail of `claimed`,
    `attempt` (worker exit, gate PASS/FAIL, seconds, log path), `review` verdicts,
-   `approved`, `merged`, `escalate` with the terminal reason.
+   `approved`, `merged`, and `escalate` rows with `reason`, `need`, `category`, and
+   `route`. A later `escalation-correction` with `need_corrected: true` supersedes
+   that escalation's need.
 2. The issue's last factory comments: `Factory dispatcher escalating: <reason>` plus
    the worker's handoff notes (what it changed, what it left unverified), and, once
    automatic recovery is terminal, one `Factory handoff request <n>/<round>` naming
@@ -142,16 +144,19 @@ Evidence, in order of authority:
 7. `factory dashboard --json` for the whole state in one document; `factory stats`
    for attempts/rounds/hours per ticket.
 
-Then act at the cause: a gate failure that is the ticket's fault → fix the ticket
-(sharpen the exit gate) and re-label `ready-for-agent`; a gate failure from a
-wrong check command → fix `.factory.toml`; reviewer disagreement → read the
-findings and either amend the ticket or take the branch over by hand
+Then act at the cause: a non-`SIGNOFF` escalation stays `ready-for-agent` assigned
+to Factory while the bounded manager pass applies or proposes a rule; do not remove
+that assignment to make it worker-claimable. A gate failure that is the ticket's
+fault → fix the ticket (sharpen the exit gate) and arrange an explicit retry; a gate
+failure from a wrong check command → fix `.factory.toml`; reviewer disagreement →
+read the findings and either amend the ticket or take the branch over by hand
 (`git worktree` at `.factory/wt-<n>`, branch `agent/<n>`); red CI or a failed
 refresh (rebase conflict, nothing ahead of main, gate failed after rebase) → the
 label `factory-approved` was removed on purpose; resolve, then re-add it to
-re-enter the merge stage. A human blocks any merge by requesting changes on the PR. When the same
-cause shows up across tickets, run `factory learn --dry-run`, check the proposed
-lessons against the evidence, then `factory learn` and commit `.factory-lessons.md`.
+re-enter the merge stage. A human blocks any merge by requesting changes on the PR.
+When the same avoidable escalation cause shows up across tickets, run
+`factory learn --dry-run`, check the proposed lessons against the evidence, then
+`factory learn` and commit `.factory-lessons.md`.
 
 Done when the ticket is re-labelled with a stated reason, or handed to the user with
 the cause and the evidence path.
