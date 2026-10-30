@@ -236,4 +236,5 @@ event. `{}` is a runtime value.
 | `manage.apply` | ``FIX worktree head {} is not the PR head {} plus the worker's own commits; worktree kept at {}`` | manager FIX → escalate (`refresh_head`) |
 | `manage.apply` | ``FIX could not push the worker's own commits: origin/agent/{} moved since {}; worktree kept at {}`` | manager FIX → escalate (`lease_refused`) |
 | `manage.escalation_pass` | ``Manager command exited {} (argv: {})`` | manager execution failure → manager-routed escalation |
+| `manage.escalation_pass` | ``Manager did not return a valid decision: Manager command exited {} (argv: {}) ({})`` | invalid manager execution result → manager-routed escalation |
 | `manage.escalation_pass` | ``manager_failed`` | manager decision → human |

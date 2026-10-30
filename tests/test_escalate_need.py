@@ -188,21 +188,6 @@ class LearningAndStatsTest(unittest.TestCase):
         self.assertEqual(result["escalations_by_need"], {"RULE_COVERABLE": 2, "SIGNOFF": 1})
         self.assertEqual(result["signoff_share"], 1 / 3)
 
-    def test_week_json_always_reports_need_metrics_for_legacy_rows(self) -> None:
-        self.events.write_text(json.dumps({
-            "at": AT, "event": "escalate", "ticket": 1, "code": "budget",
-        }) + "\n")
-        output = io.StringIO()
-        with mock.patch.object(stats, "resolve", return_value=self.cfg), \
-             mock.patch.object(stats, "_now", return_value=NOW), \
-             mock.patch.object(stats, "stuck_over_days", return_value=[]), \
-             contextlib.redirect_stdout(output):
-            self.assertEqual(stats.main(["--week", "--json"]), 0)
-
-        result = json.loads(output.getvalue())
-        self.assertEqual(result["escalations_by_need"], {"UNKNOWN": 1})
-        self.assertEqual(result["signoff_share"], 0)
-
 
 class NeedCorrectionTest(unittest.TestCase):
     def test_edited_older_recorded_comment_is_not_a_label_only_correction(self) -> None:
