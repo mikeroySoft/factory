@@ -121,6 +121,12 @@
 # profile = "default"
 # schedule = false
 
+[proof]
+# These repository names require `.factory/proof-<ticket>.md` on every worker PR.
+repos = ["rocm-cli", "gpuflo", "district"]
+# Commands every proof must include; each is an argv array and runs without a shell.
+# commands = [["make", "gpu-smoke"]]
+
 [gate]
 # timeout = 1200                      # seconds per check; a wedged check FAILs
 # lock = "/tmp/factory.lock"          # host-wide lock held by `exclusive` checks

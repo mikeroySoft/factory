@@ -170,7 +170,14 @@ def main(argv: list[str] | None = None) -> int:
         workers = max(1, min(WORKERS, len(mutations)))
         copies = [scratch / f"copy{i}" for i in range(workers)]
         for copy in copies:
-            shutil.copytree(root, copy, ignore=COPY_IGNORE)
+            # Separate refs/indexes keep test Git operations away from the source
+            # worktree, while shared read-only objects support HEAD and git archive.
+            subprocess.run(
+                ["git", "clone", "--quiet", "--shared", "--no-checkout", str(root), str(copy)],
+                check=True,
+            )
+            subprocess.run(["git", "-C", str(copy), "read-tree", "HEAD"], check=True)
+            shutil.copytree(root, copy, ignore=COPY_IGNORE, dirs_exist_ok=True)
         print(f"files: {', '.join(lines)}")
         print(f"mutants: {len(mutations)} sampled (seed {SEED}, cap {CAP}), "
               f"{min(hot, len(mutations))} on changed lines first, {workers} workers")

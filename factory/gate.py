@@ -10,13 +10,17 @@ import argparse
 import ast
 import fcntl
 import fnmatch
+import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
 import tempfile
 import tomllib
+from datetime import datetime
+from itertools import pairwise
 from pathlib import Path
 
 from factory import config, lifecycle
@@ -609,6 +613,164 @@ def check_bug_reproduction(
             _release_exclusive(execution, gpu_lock)
 
 
+PROOF_COMMAND = re.compile(
+    r"(?ms)^### Command: `([^`\n]+)`\n"
+    r"- Started: `([^`\n]+)`\n"
+    r"- Exit code: `(-?\d+)`\n\n"
+    r"```(?:text)?\n(.*?)\n```[ \t]*(?=\n+(?:### Command: )|\Z)"
+)
+PROOF_ENVIRONMENT_DUMP = re.compile(
+    r"(?m)^(?:[A-Za-z_][A-Za-z0-9_]*=.*|(?:os\.)?environ\(\{)"
+)
+PROOF_MAPPING_KEY = re.compile(
+    r"""(?m)(?:[{,]\s*|^\s*)["']([A-Za-z_][A-Za-z0-9_]*)["']\s*:(?=\s*["'])"""
+)
+# rocm examine serializes this fixed diagnostic subset, not the process environment.
+PROOF_ROCM_ENV = {
+    "HSA_OVERRIDE_GFX_VERSION", "HSA_ENABLE_DXG_DETECTION", "HIP_VISIBLE_DEVICES",
+    "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL", "ROCM_PATH",
+    "ROCM_HOME", "HIP_PATH", "HIP_PLATFORM", "PYTORCH_ROCM_ARCH", "HCC_AMDGPU_TARGET",
+    "AMDGPU_TARGETS", "LD_LIBRARY_PATH", "PATH",
+}
+PROOF_LOWERCASE_ENV = {
+    "http_proxy", "https_proxy", "all_proxy", "no_proxy", "ftp_proxy",
+    "path", "home", "user", "logname", "shell", "pwd", "lang", "term",
+}
+
+
+def proof_contains_environment_dump(text: str) -> bool:
+    if PROOF_ENVIRONMENT_DUMP.search(text):
+        return True
+    # Recognize complete examination documents even inside a Markdown artifact or
+    # mixed stdout. Mask only their declared diagnostic subset; extra keys and any
+    # other output are still screened. Partial JSON never earns an exemption.
+    def unique_object(pairs: list[tuple[str, object]]) -> dict:
+        document = dict(pairs)
+        if len(document) != len(pairs):
+            raise ValueError("duplicate JSON field")
+        return document
+
+    decoder = json.JSONDecoder(object_pairs_hook=unique_object)
+    cursor = 0
+    while (start := text.find("{", cursor)) >= 0:
+        try:
+            document, end = decoder.raw_decode(text, start)
+        except ValueError:
+            cursor = start + 1
+            continue
+        if (
+            isinstance(document, dict)
+            and document.get("os_family") in ("linux", "windows")
+            and isinstance(document.get("summary"), dict)
+            and isinstance(document["summary"].get("detected_gfx_target"), str)
+            and isinstance(document.get("env"), dict)
+            and document["env"].keys() <= PROOF_ROCM_ENV
+            and all(isinstance(value, str) for value in document["env"].values())
+        ):
+            document["env"] = {}
+            safe = json.dumps(document)
+            text = text[:start] + safe + text[end:]
+            cursor = start + len(safe)
+        else:
+            cursor = start + 1
+    return any(
+        key.isupper()
+        or key.lower() in PROOF_LOWERCASE_ENV
+        or re.search(r"(?i)secret|password|token|credential|access_key|api_key", key)
+        for key in PROOF_MAPPING_KEY.findall(text)
+    )
+
+
+def _proof_section(text: str, heading: str) -> str | None:
+    match = re.search(
+        rf"(?ms)^## {re.escape(heading)}[ \t]*\n(.*?)(?=^## |\Z)",
+        text,
+    )
+    return match.group(1).strip() if match and match.group(1).strip() else None
+
+
+def proof_sections_present(text: str) -> bool:
+    return (
+        _proof_section(text, "Proof on ROCm tank") is not None
+        and _proof_section(text, "Not checked") is not None
+    )
+
+
+def check_proof(
+    path: Path, cwd: Path | None = None, required_commands: list[list[str]] | None = None,
+) -> tuple[bool, str]:
+    try:
+        text = path.read_text()
+    except OSError:
+        return False, f"proof artifact missing: {path}"
+    if proof_contains_environment_dump(text):
+        return False, "proof artifact contains environment dump output"
+    section = _proof_section(text, "Proof on ROCm tank")
+    if section is None:
+        return False, "missing or empty ## Proof on ROCm tank"
+    if _proof_section(text, "Not checked") is None:
+        return False, "missing or empty ## Not checked"
+
+    matches = list(PROOF_COMMAND.finditer(section))
+    if (
+        not matches
+        or section[:matches[0].start()].strip()
+        or section[matches[-1].end():].strip()
+        or any(section[left.end():right.start()].strip() for left, right in pairwise(matches))
+    ):
+        return False, "## Proof on ROCm tank has invalid or missing command records"
+    details = []
+    commands = []
+    passed = True
+    for match in matches:
+        command_line, started, claimed_text, claimed_output = match.groups()
+        safe_command = config.redact(command_line)
+        if len(claimed_output.splitlines()) > 40:
+            return False, f"proof output exceeds 40 lines: {safe_command}"
+        try:
+            started_at = datetime.fromisoformat(started)
+        except ValueError:
+            return False, f"invalid proof start time: {started}"
+        if started_at.tzinfo is None:
+            return False, f"proof start time must include a UTC offset: {started}"
+        try:
+            command = shlex.split(command_line)
+        except ValueError as exc:
+            return False, f"invalid proof command {safe_command!r}: {exc}"
+        commands.append(command)
+        if not command or any(Path(arg).name in {"env", "printenv"} for arg in command):
+            return False, f"environment dump commands are not allowed: {safe_command}"
+        result = timed(command, cwd=cwd)
+        if proof_contains_environment_dump(result.stdout):
+            return False, f"proof re-run produced environment dump output: {safe_command}"
+        output_lines = result.stdout.splitlines()
+        output = "\n".join(output_lines[:40])
+        if len(output_lines) > 40:
+            output += "\n[output truncated after 40 lines]"
+        claimed = int(claimed_text)
+        if result.returncode != claimed:
+            passed = False
+        details.append(
+            f"$ {safe_command}\nstarted: {started}\n"
+            f"claimed exit {claimed}, re-run exit {result.returncode}\n"
+            f"{config.redact(output)}"
+        )
+    missing = [
+        shlex.join(command) for command in required_commands or []
+        if command not in commands
+    ]
+    if missing:
+        return False, "configured proof commands missing: " + ", ".join(missing)
+    return passed, "\n\n".join(details)
+
+
+def _proof_ticket(args: argparse.Namespace) -> int | None:
+    if args.ticket is not None:
+        return args.ticket
+    match = re.search(r"gate-report-(\d+)\.md$", args.report)
+    return int(match.group(1)) if match else None
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Quality gate for agent worktrees.")
     parser.add_argument("--base", default=None, help="base ref for leak scan and protected paths")
@@ -619,7 +781,7 @@ def main(argv: list[str]) -> int:
         "--skip",
         default="",
         help="comma-separated check names to skip "
-        "(conflict-markers, leak-scan, <configured names>)",
+        "(conflict-markers, proof, leak-scan, <configured names>)",
     )
     parser.add_argument(
         "--check-timeout",
@@ -637,6 +799,7 @@ def main(argv: list[str]) -> int:
                         help="enforce failing-test-first and existing-test protection")
     parser.add_argument("--repro-test", help="test ID named by the worker handoff")
     parser.add_argument("--no-repro-test", help="ticket-author or authenticated-triage reason a reproduction test is impractical")
+    parser.add_argument("--ticket", type=int, help="ticket whose proof artifact the gate verifies")
     parser.add_argument("--upstream", action="append", default=[], metavar="REF",
                         help="upstream sync: first REF is the tip, later REFs the staged head (repeatable); "
                         "protected-path hits equal to the staged head, or to the tip for paths upstream changed, "
@@ -652,21 +815,78 @@ def main(argv: list[str]) -> int:
         return execute(args, execution)
 
 
-def toolchain() -> dict[str, str]:
-    values = {}
-    for name, command in (
-        ("rocm", ["hipconfig", "--version"]),
-        ("kernel", ["uname", "-r"]),
-        ("amdgpu", ["modinfo", "-F", "version", "amdgpu"]),
-    ):
+def _probe_result(command: list[str]) -> tuple[bool, str]:
+    try:
+        result = subprocess.run(
+            command, capture_output=True, encoding="utf-8", errors="replace",
+            timeout=5, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False, ""
+    return result.returncode == 0, result.stdout.strip()
+
+
+def _probe(command: list[str]) -> str:
+    succeeded, output = _probe_result(command)
+    return output if succeeded else ""
+
+
+def _kfd_targets() -> list[str]:
+    targets = []
+    for properties in Path("/sys/class/kfd/kfd/topology/nodes").glob("*/properties"):
         try:
-            result = subprocess.run(
-                command, capture_output=True, encoding="utf-8", errors="replace",
-                timeout=5, check=False,
-            )
-            values[name] = result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else "unavailable"
-        except (OSError, subprocess.TimeoutExpired):
-            values[name] = "unavailable"
+            match = re.search(r"(?m)^gfx_target_version\s+(\d+)\s*$", properties.read_text())
+        except OSError:
+            continue
+        if match and (version := int(match.group(1))):
+            major, remainder = divmod(version, 10_000)
+            minor, stepping = divmod(remainder, 100)
+            target = f"gfx{major}{minor}{stepping:x}"
+            if target not in targets:
+                targets.append(target)
+    return targets
+
+
+def toolchain() -> dict[str, str]:
+    values = {
+        "rocm": "unavailable",
+        "kernel": _probe(["uname", "-r"]) or "unavailable",
+        "amdgpu": "unavailable",
+    }
+    raw = _probe(["rocm", "examine", "--json", "--framework", "skip"])
+    if raw:
+        try:
+            examined = json.loads(raw)
+        except json.JSONDecodeError:
+            examined = {}
+        summary = examined.get("summary", examined) if isinstance(examined, dict) else {}
+        driver = summary.get("driver")
+        driver_status = (
+            driver.get("status") if isinstance(driver, dict) else summary.get("driver_status")
+        )
+        active_runtime = summary.get("active_runtime_id") or summary.get("active_runtime")
+        target = summary.get("detected_gfx_target")
+        if (
+            isinstance(target, str)
+            and target
+            and driver_status == "amdgpu_available"
+            and active_runtime
+        ):
+            values["rocm"] = f"{target} (rocm-cli)"
+    if values["rocm"] == "unavailable":
+        hipconfig = _probe(["hipconfig", "--version"])
+        if hipconfig:
+            values["rocm"] = hipconfig
+        else:
+            targets = _kfd_targets()
+            if targets:
+                values["rocm"] = f"{', '.join(targets)} (kfd sysfs)"
+
+    modinfo_ok, version = _probe_result(["modinfo", "-F", "version", "amdgpu"])
+    if modinfo_ok and version:
+        values["amdgpu"] = version
+    elif Path("/sys/module/amdgpu").is_dir():
+        values["amdgpu"] = "loaded (in-tree)"
     return values
 
 
@@ -725,8 +945,16 @@ def execute(args: argparse.Namespace, execution) -> int:
         )
         for check in listed
     ]
+    proof_ticket = _proof_ticket(args)
+    builtins = [("conflict-markers", check_conflict_markers)]
+    if cfg.proof_required and proof_ticket is not None:
+        proof_path = Path(f".factory/proof-{proof_ticket}.md")
+        builtins.append((
+            "proof",
+            lambda: check_proof(proof_path, Path.cwd(), cfg.proof_commands),
+        ))
     checks = [
-        ("conflict-markers", check_conflict_markers),
+        *builtins,
         *configured,
         ("leak-scan", lambda: check_leaks(args.upstream[0] if args.upstream else args.base)),
     ] if args.tier == "attempt" else configured
@@ -749,7 +977,7 @@ def execute(args: argparse.Namespace, execution) -> int:
             if name in skip or name in later_tier:
                 results.append((name, f"SKIP ({later_tier[name]} tier)" if name in later_tier else "SKIP", ""))
                 continue
-            if name in GPU_CHECKS and gpu_lock is None:
+            if (name in GPU_CHECKS or name == "proof") and gpu_lock is None:
                 gpu_lock = _acquire_exclusive(execution)
             with lifecycle.scope(
                 cfg.factory / "events.jsonl", "gate-check", lock=GPU_LOCK if gpu_lock else None
@@ -780,9 +1008,13 @@ def execute(args: argparse.Namespace, execution) -> int:
     for name, status, output in results:
         # pr-tier checks may be report-only (exit 0, findings on stdout); the reviewer sees
         # them only through this report, so keep their output when they pass too.
-        if status == "FAIL" or (args.tier == "pr" and status == "PASS" and output.strip()):
-            tail = "\n".join(output.splitlines()[-TAIL_LINES:])
-            lines += ["", f"## {name} {'failure' if status == 'FAIL' else 'output'}", "```", tail, "```"]
+        if (
+            status == "FAIL"
+            or name == "proof" and output.strip()
+            or args.tier == "pr" and status == "PASS" and output.strip()
+        ):
+            shown = output if name == "proof" else "\n".join(output.splitlines()[-TAIL_LINES:])
+            lines += ["", f"## {name} {'failure' if status == 'FAIL' else 'output'}", "```", shown, "```"]
     report = Path(args.report)
     report.parent.mkdir(parents=True, exist_ok=True)
     report.write_text("\n".join(lines) + "\n")

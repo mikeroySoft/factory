@@ -471,6 +471,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         if fresh.get("baseRefName") != cfg.main:
             raise ValueError(f"FIX requires a PR targeting the configured target `{cfg.main}`")
         dispatch.push_agent(wt, n, lease)
+        dispatch.refresh_pr_proof(wt, n, report)
         dispatch.record_risk(wt, n, gate_head)
         verdict, findings, pr_failed = dispatch.pr_gate_and_review(wt, n, report, gate_head, {})
         dispatch.pr_comment(n, findings)

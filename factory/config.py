@@ -70,6 +70,17 @@ DEFAULT_SECOND_REVIEWER = ["omp", "-p", "--no-session", "--model", "openai-codex
 DEFAULT_LLM_URL = "http://127.0.0.1:11434/v1/chat/completions"
 DEFAULT_LLM_MODEL = "qwen3:30b"
 DEFAULT_INSTALL = {"every": "10min", "dashboard": False, "host": "127.0.0.1", "python": None, "env": {}}
+DEFAULT_PROOF_REPOS = ["rocm-cli", "gpuflo", "district"]
+SECRET_TOKEN_RE = re.compile(
+    r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
+    r"|(?i:bearer|token)\s+[A-Za-z0-9._~+/=-]{20,}"
+)
+
+
+def redact(text: str) -> str:
+    return SECRET_TOKEN_RE.sub("[REDACTED]", text)
+
+
 ENGINE_REPO = "mikeroySoft/factory"  # factory's own source repo: `[watch].engine_repo` default
 
 # Host-side layer: `$XDG_CONFIG_HOME/factory/config.toml`, same table shapes
@@ -97,6 +108,7 @@ KNOWN_KEYS = {
     "release": ("auto", "version_file", "min_tickets", "bar_min_tickets",
                 "bar_floor_human_rate", "bar_floor_first_pass"),
     "eval": ("max_cases", "max_tokens", "budget_min", "profile", "schedule"),
+    "proof": ("repos", "commands"),
     "gate": ("timeout", "lock", "check", "protected_paths", "add_only_paths"),
     "leak_scan": ("pattern", "exclude", "extra"),
     "triage": ("url", "model", "timeout", "service"),
@@ -223,6 +235,8 @@ class Config:
     release_bar_min_tickets: int = 20
     release_bar_floor_human_rate: float = 0.10
     release_bar_floor_first_pass: float = 0.90
+    proof_repos: list[str] = field(default_factory=lambda: list(DEFAULT_PROOF_REPOS))
+    proof_commands: list[list[str]] = field(default_factory=list)
     checks: list[Check] = field(default_factory=list)
     protected_paths: list[str] = field(default_factory=list)
     add_only_paths: list[str] = field(default_factory=list)
@@ -251,6 +265,10 @@ class Config:
     @property
     def name(self) -> str:
         return self.repo.rsplit("/", 1)[-1]
+
+    @property
+    def proof_required(self) -> bool:
+        return self.name in self.proof_repos
 
     @property
     def factory(self) -> Path:
@@ -650,13 +668,32 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     release = raw.get("release", {})
     learn = raw.get("learn", {})
     evaluation = raw.get("eval", {})
+    proof = raw.get("proof", {})
     if not isinstance(learn, dict):
         raise ConfigError("[learn] must be a table")
     if not isinstance(release, dict):
         raise ConfigError("[release] must be a table")
     if not isinstance(evaluation, dict):
         raise ConfigError("[eval] must be a table")
+    if not isinstance(proof, dict):
+        raise ConfigError("[proof] must be a table")
     cfg = Config(root=root, repo=slug, raw_repo=raw_repo)
+    repos = proof.get("repos", cfg.proof_repos)
+    commands = proof.get("commands", [])
+    if not isinstance(repos, list) or any(not isinstance(repo, str) or not repo for repo in repos):
+        raise ConfigError("proof.repos must be an array of nonempty repository names")
+    if (
+        not isinstance(commands, list)
+        or any(
+            not isinstance(command, list)
+            or not command
+            or any(not isinstance(arg, str) or not arg for arg in command)
+            for command in commands
+        )
+    ):
+        raise ConfigError("proof.commands must be an array of nonempty argv arrays")
+    cfg.proof_repos = repos
+    cfg.proof_commands = commands
     cfg.watch_bands = band_settings(root / BANDS_NAME)
     cfg.upstream = repo_t.get("upstream") or None
     cfg.main = repo_t.get("main", cfg.main)

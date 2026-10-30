@@ -844,9 +844,26 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    and skips only this fail-before/pass-after check. Other commenters and worker
    handoffs cannot grant this exemption; triage comments grant no protected-path
    or existing-test override. Otherwise make
-   protected changes outside the worker flow. Then `conflict-markers`, your
-   `[[gate.check]]` list in order, and a `leak-scan`
-   run. Checks marked `exclusive` serialise on a host-wide lock. Every check
+   protected changes outside the worker flow. On `rocm-cli`, `gpuflo`, and
+   `district` (or another name listed in `[proof].repos`), the worker also writes
+   `.factory/proof-<ticket>.md`: `## Proof on ROCm tank` contains exact command
+   lines, UTC start times, exit codes, and at most 40 stdout/stderr lines per
+   command; `## Not checked` is mandatory and nonempty. Every
+   `[proof].commands` argv and at least one changed GPU path run belongs in that
+   artifact. The built-in `proof` check parses each command without a shell,
+   rejects environment dumps (while allowing rocm-cli's fixed ROCm diagnostic
+   variables), re-runs it under the host-wide GPU lock, compares the exit code,
+   and records the scrubbed re-run output in the gate report. Missing sections
+   or mismatched exits fail the gate. The dispatcher appends scrubbed proof
+   after the gate report in the PR body and refreshes it after review-bounce
+   and manager FIX pushes; the reviewer also fails missing sections closed with
+   typed reason `missing_proof`. Then `conflict-markers`, the conditional
+   `proof` check, your `[[gate.check]]` list in order, and a `leak-scan` run.
+   The host-toolchain header asks `rocm examine --json --framework skip` first,
+   falls back through `hipconfig` and KFD sysfs, and identifies rocm-cli or
+   sysfs answers. Empty in-tree `amdgpu` version data falls back to the loaded
+   `/sys/module/amdgpu` state. Checks marked `exclusive` serialise on a
+   host-wide lock. Every check
    has a timeout. `[[gate.check]]` has three tiers, selected by `when`
    (`factory gate --tier <tier>`; anything else is a config error naming the
    check): **attempt** (default) runs here, on every worker attempt; **pr**
@@ -1083,6 +1100,10 @@ command = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1",
 
 [manager]                         # optional; unset command disables it
 command = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]   # {prompt} = manager prompt file
+
+[proof]
+repos = ["rocm-cli", "gpuflo", "district"]
+# commands = [["make", "gpu-smoke"]]  # exact argv each proof must include
 
 [gate]
 timeout = 1200

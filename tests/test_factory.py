@@ -1512,16 +1512,24 @@ class GateTest(unittest.TestCase):
             self.assertEqual(code, 0, report)
 
     def test_toolchain_is_recorded_once_and_in_report(self) -> None:
+        from factory import gate as gate_module
+
         with tempfile.TemporaryDirectory() as d:
-            root = Path(d)
-            repo = make_repo(root)
-            path = stub_bin(root, hipconfig='echo 10.0', uname='echo 7.2-test')
-            (Path(path) / "git").symlink_to(shutil.which("git"))
-            # Restrict PATH so modinfo is genuinely absent.
-            import unittest.mock
-            with unittest.mock.patch.dict(os.environ, {"PATH": path, lifecycle.CONTEXT_ENV: ""}):
-                code, out, report = gate(repo)
-            self.assertEqual(code, 0, out)
+            repo = make_repo(Path(d))
+            host = {"rocm": "10.0", "kernel": "7.2-test", "amdgpu": "unavailable"}
+            previous = Path.cwd()
+            os.chdir(repo)
+            try:
+                import unittest.mock
+                with (
+                    unittest.mock.patch.object(gate_module, "toolchain", return_value=host),
+                    unittest.mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}),
+                ):
+                    code = gate_module.main([])
+            finally:
+                os.chdir(previous)
+            report = (repo / ".factory/gate-report.md").read_text()
+            self.assertEqual(code, 0)
             rows = [json.loads(line) for line in (repo / ".factory/events.jsonl").read_text().splitlines()]
             toolchains = [row for row in rows if row.get("kind") == "toolchain"]
             self.assertEqual(len(toolchains), 1)
