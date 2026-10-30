@@ -201,3 +201,57 @@ Promise.resolve({expression}).then(result => process.stdout.write(JSON.stringify
         )
 
         self.assertEqual(shortcuts, [None, None, None, "f"])
+
+    def test_symmetric_parallel_lanes_do_not_share_long_segments(self) -> None:
+        routes = self.evaluate(
+            "[-1,1].map(lane => window.WorkspaceTrace.routeEdge({"
+            "edge:{from:'source',to:'target',relation:'follows'},"
+            "source:value.source,target:value.target,fromColumn:0,toColumn:3,"
+            "index:0,lane,bounds:value.bounds}))",
+            {
+                "source": {"left": 50, "right": 150, "top": 80, "bottom": 160},
+                "target": {"left": 700, "right": 800, "top": 220, "bottom": 300},
+                "bounds": {"width": 900, "height": 500},
+            },
+        )
+
+        shared = []
+        for start, end in zip(routes[0]["points"], routes[0]["points"][1:]):
+            for other_start, other_end in zip(
+                routes[1]["points"], routes[1]["points"][1:]
+            ):
+                if start["x"] == end["x"] == other_start["x"] == other_end["x"]:
+                    shared.append(
+                        max(
+                            0,
+                            min(max(start["y"], end["y"]), max(other_start["y"], other_end["y"]))
+                            - max(min(start["y"], end["y"]), min(other_start["y"], other_end["y"])),
+                        )
+                    )
+                if start["y"] == end["y"] == other_start["y"] == other_end["y"]:
+                    shared.append(
+                        max(
+                            0,
+                            min(max(start["x"], end["x"]), max(other_start["x"], other_end["x"]))
+                            - max(min(start["x"], end["x"]), min(other_start["x"], other_end["x"])),
+                        )
+                    )
+
+        self.assertLessEqual(max(shared, default=0), 100)
+
+    def test_offscreen_route_keeps_target_direction_for_svg_clipping(self) -> None:
+        route = self.evaluate(
+            "window.WorkspaceTrace.routeEdge({"
+            "edge:{from:'source',to:'target',relation:'follows'},"
+            "source:value.source,target:value.target,fromColumn:0,toColumn:1,"
+            "index:0,lane:0,bounds:value.bounds})",
+            {
+                "source": {"left": 900, "right": 1000, "top": 80, "bottom": 160},
+                "target": {"left": 1100, "right": 1200, "top": 220, "bottom": 300},
+                "bounds": {"width": 800, "height": 500},
+            },
+        )
+
+        self.assertTrue(all(point["x"] > 800 for point in route["points"]))
+        self.assertEqual(route["points"][-1], {"x": 1100, "y": 260})
+        self.assertLess(route["points"][-2]["x"], route["points"][-1]["x"])
