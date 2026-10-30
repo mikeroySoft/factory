@@ -32,7 +32,8 @@ from factory.config import LABEL_CHORE, LESSONS_NAME
 
 MAX_LESSONS = 10
 LOG_TAIL = 40  # lines of a failing attempt log shown to the model when the ticket has no score row
-MAX_EVIDENCE = 24_000  # chars; keeps the prompt inside a local model's window
+MAX_EVIDENCE = 24_000  # chars for per-ticket and candidate evidence
+MAX_SKILL_EVIDENCE = 4_000  # separate chars so skill health cannot displace ticket evidence
 MAX_ESCAPES = 10  # most recent candidate-escape bugs carried into evidence
 AUTO_EVERY = 10  # finished tickets between automatic runs at the end of a dispatcher pass
 LESSONS_BRANCH = dispatch.LESSONS_BRANCH
@@ -234,6 +235,8 @@ def evidence(last: int) -> tuple[list[int], str]:
         title = next((e.get("title") for e in evs if e["event"] == "claimed"), "")
         parts.append(f"### Ticket #{n}: {title}")
         for e in evs:
+            if e["event"] in {"score", "skill-load"}:
+                continue
             fields = {k: v for k, v in e.items()
                       if k not in ("ticket", "title", "log", "issue", "failures")}
             parts.append(f"- {json.dumps(fields)}")
@@ -254,14 +257,6 @@ def evidence(last: int) -> tuple[list[int], str]:
         if review.exists():
             parts.append(f"\nLatest reviewer findings:\n```\n{review.read_text()[-3000:]}\n```")
         parts.append("")
-    selected = set(chosen)
-    failures = skill_failure_evidence(
-        journal_rows, _transcript_failures(journal_rows, selected), selected,
-    )
-    for skill in dict.fromkeys(item["skill"] for item in failures):
-        parts.append(f"### Skill {skill} failure evidence")
-        parts += [f"- [{item['tag']}] {item['excerpt']}" for item in failures if item["skill"] == skill]
-        parts.append("")
     recent = sorted((row for row in stats.escapes() if row["candidates"]), key=lambda row: row["closed_at"])
     if recent:
         parts.append("## Candidate escapes\n\nClosed bugs whose fix changed lines an earlier agent ticket "
@@ -269,7 +264,16 @@ def evidence(last: int) -> tuple[list[int], str]:
         parts += [f"- Bug #{row['bug']}: {row['title']} <- candidate #{c['ticket']}: {c['title']} "
                   f"({row['source']}; {', '.join(c['paths']) or 'no blamed paths'})"
                   for row in recent[-MAX_ESCAPES:] for c in row["candidates"]]
-    return chosen, "\n".join(parts)[-MAX_EVIDENCE:]
+    ticket_evidence = "\n".join(parts)[-MAX_EVIDENCE:]
+    failures = skill_failure_evidence(
+        journal_rows, _transcript_failures(journal_rows, set(chosen)), set(chosen),
+    )
+    skill_parts = ["## Skill health evidence"]
+    for skill in dict.fromkeys(item["skill"] for item in failures):
+        skill_parts.append(f"### Skill {skill} failure evidence")
+        skill_parts += [f"- [{item['tag']}] {item['excerpt']}" for item in failures if item["skill"] == skill]
+    skill_evidence = "\n".join(skill_parts)[:MAX_SKILL_EVIDENCE] if failures else ""
+    return chosen, "\n".join(part for part in (ticket_evidence, skill_evidence) if part)
 
 def replay_cases(tickets: list[int], maximum: int) -> list[ReplayCase]:
     """Newest finished tickets with a frozen issue snapshot and exact pre-work revision."""
