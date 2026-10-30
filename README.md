@@ -544,8 +544,9 @@ configured executable is trusted, not sandboxed by factory. The manager reads
 the packet, `.factory-lessons.md`, and optional `.factory/manager/notes.md`.
 Its last `DECISION:` header selects `RETRY`, `REWRITE`, `SPLIT`, `ROUTE`,
 `AUTHORIZE`, `FIX`, `CLOSE`, `RESOLVE`, or `HUMAN`, followed by the decision
-body. RETRY/HUMAN/RESOLVE use plain text; REWRITE uses the
-complete replacement issue body. SPLIT uses a JSON array of
+body. RETRY and RESOLVE use plain text; HUMAN uses
+`{category, reason, options}` with one to three concrete actions. REWRITE uses
+the complete replacement issue body. SPLIT uses a JSON array of
 `{title, body, blocked_by}` children, with `blocked_by` containing 1-based
 indexes of earlier children. ROUTE uses `{add, remove, guidance}`, with label
 arrays restricted to configured worker labels (not `default`).
@@ -815,9 +816,9 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    The attempt journal row and escalation packet name the timeout that fired.
 4. **Gate.** The configured `[gate].protected_paths` globs from the base ref's
    `.factory.toml` are checked against the committed worker diff first, before
-   any checks; a hit stops the run and immediately escalates the ticket to
-   `ready-for-human` with the offending diff in the escalation packet. Include
-   `.factory.toml` in the list to protect the list itself. Globs in
+   any checks; a hit stops the run and routes the assigned ticket to the manager
+   with the offending diff in the escalation packet. Include `.factory.toml` in
+   the list to protect the list itself. Globs in
    `[gate].add_only_paths` (also read from the base ref) are protected add-only:
    a new file passes, a modified file passes only when `git diff --numstat`
    shows no deleted lines, and a deletion, rename, mode change, binary change,
@@ -1010,12 +1011,12 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    cannot prevent a retarget after the last check.
 7. **Escalation.** Budget exceeded, gate failed thrice, second `REVISE`,
    nothing to PR, refused `agent/<n>` push, a refresh conflict that is not
-   routine (step 6), red CI, or any
-   dispatcher crash after the claim: the issue gets `ready-for-human`,
-   loses the assignee and `ready-for-agent`, and receives a comment with the
-   reason and the worker log path (its comment id is journaled). The worktree
-   is kept for forensics. When no automatic manager recovery remains, one routed
-   human handoff request follows (see [Routed human handoffs](#routed-human-handoffs)).
+   routine (step 6), red CI, or any dispatcher crash after the claim creates a
+   closed `need` classification and journals the comment id. Reserved sign-offs
+   lose the Factory assignee and move to `ready-for-human`; every other need
+   stays assigned to Factory on `ready-for-agent` while the manager handles it.
+   The worktree is kept for forensics. A real sign-off receives one routed human
+   handoff request (see [Routed human handoffs](#routed-human-handoffs)).
 8. **Manager PR frontier** (when `manager.command` is configured; runs in
    `factory manage` after landing). Every open same-repository `agent/<n>` PR
    targeting the configured branch is observed through the schema-1 feedback

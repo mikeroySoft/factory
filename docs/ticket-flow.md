@@ -123,6 +123,7 @@ flowchart TB
   EXTPR -->|"agent/lessons-*, agent/curate-*, agent/revert-lessons-* (same repository) admitted without a label: dispatch.review_intake_pass"| EXTPR
   EXTPR -->|"gate PASS + APPROVE bound to head, CI green: learn.promote_pass"| MERGED
   RFH -->|"terminal, routed request published: handoff.handoff_pass"| HUMAN
+  RFH -->|"legacy unclassified escalation with automatic recovery remaining: manage.escalation_pass"| MGR
   MGR -->|"RETRY, REWRITE, or ROUTE: manage.apply"| RFA
   MGR -->|"AUTHORIZE adds add-only authority before requeue: manage.apply"| RFA
   MGR -->|"SPLIT, children opened, parent stays: manage.apply"| NT
@@ -235,6 +236,6 @@ event. `{}` is a runtime value.
 | `manage.apply` | ``approval evidence, head, or human review state changed before manager FIX approval`` | manager FIX → escalate |
 | `manage.apply` | ``FIX worktree head {} is not the PR head {} plus the worker's own commits; worktree kept at {}`` | manager FIX → escalate (`refresh_head`) |
 | `manage.apply` | ``FIX could not push the worker's own commits: origin/agent/{} moved since {}; worktree kept at {}`` | manager FIX → escalate (`lease_refused`) |
-| `manage.escalation_pass` | ``Manager command exited {} (argv: {})`` | manager execution failure → manager-routed escalation |
-| `manage.escalation_pass` | ``Manager did not return a valid decision: Manager command exited {} (argv: {}) ({})`` | invalid manager execution result → manager-routed escalation |
-| `manage.escalation_pass` | ``manager_failed`` | manager decision → human |
+| `manage.escalation_pass` | ``{}`` | manager supplied a valid reserved sign-off reason → human |
+| `manage.escalation_pass` | ``Manager did not return a valid decision: {} ({})`` | invalid manager sign-off → manager-routed escalation |
+| `manage.escalation_pass` | ``manager_failed`` | manager transport failure → manager-routed stall |
