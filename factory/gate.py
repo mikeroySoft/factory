@@ -621,6 +621,9 @@ PROOF_COMMAND = re.compile(
 )
 PROOF_ENVIRONMENT_DUMP = re.compile(
     r"(?m)^(?:[A-Za-z_][A-Za-z0-9_]*=.*|(?:os\.)?environ\(\{)"
+    # JSON and Python repr dumps use quoted environment names, including pretty-printed
+    # mappings. Scan keys without parsing values so partial/mixed output fails closed.
+    r"""|(?:[{,]\s*|^\s*)["'][A-Z_][A-Z0-9_]*["']\s*:"""
 )
 
 
