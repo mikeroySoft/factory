@@ -189,7 +189,10 @@ def _triage_queue_entry(repo: str, number: int) -> datetime | None:
 
 
 def _active_expectations(
-    cfg: config.Config, rows: list[dict], include_triage: bool,
+    cfg: config.Config,
+    rows: list[dict],
+    include_triage: bool,
+    unavailable: set[str],
 ) -> list[Expectation]:
     if not cfg.is_loaded and not (cfg.root / config.CONFIG_NAME).exists():
         return []
@@ -215,13 +218,27 @@ def _active_expectations(
             "issue", "list", "--repo", cfg.repo, "--label", config.LABEL_TRIAGE,
             "--state", "open", "--limit", "200", "--json", "number,body",
         ])
+        if len(issues) >= 200:
+            pages = dispatch.gh_json([
+                "api", f"repos/{cfg.repo}/issues", "--method", "GET",
+                "-f", f"labels={config.LABEL_TRIAGE}", "-f", "state=open",
+                "-f", "per_page=100", "--paginate", "--slurp",
+            ])
+            issues = [
+                issue
+                for page in pages
+                for issue in page
+                if "pull_request" not in issue
+            ]
     except (
         OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError, IndexError,
     ) as exc:
-        _github_failure({
+        signal = {
             "fingerprint": f"expectation:{fingerprint('expectation', triage.name)}",
             "key": triage.name,
-        }, cfg.repo, exc)
+        }
+        _github_failure(signal, cfg.repo, exc)
+        unavailable.add("expectation:")
         return active
     for issue in issues:
         if FINGERPRINT.match(issue.get("body") or ""):
@@ -235,10 +252,12 @@ def _active_expectations(
         except (
             OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError, IndexError,
         ) as exc:
-            _github_failure({
+            signal = {
                 "fingerprint": f"expectation:{fingerprint('expectation', name)}",
                 "key": name,
-            }, cfg.repo, exc)
+            }
+            _github_failure(signal, cfg.repo, exc)
+            unavailable.add(signal["fingerprint"])
             continue
         if entered is not None:
             active.append(replace(triage, name=name, since=entered))
@@ -792,8 +811,10 @@ def signals(
     now: datetime | None = None,
     *,
     include_external: bool = False,
+    unavailable: set[str] | None = None,
 ) -> list[dict]:
     """Every observed failure, newest journal evidence first within each fingerprint."""
+    unavailable = set() if unavailable is None else unavailable
     found: dict[str, dict] = {}
     logs = {(r.get("ticket"), r.get("attempt")): r.get("log") for r in events if r.get("event") == "attempt"}
     stalled = {
@@ -853,7 +874,7 @@ def signals(
                       "command": "zcat -f .factory/events.jsonl* | grep -F "
                       f"{shlex.quote(json.dumps({'code': code}, separators=(',', ':'))[1:-1])}"}
     for signal in overdue(
-        _active_expectations(cfg, events, include_external),
+        _active_expectations(cfg, events, include_external, unavailable),
         events,
         now or datetime.now(UTC),
     ):
@@ -1084,7 +1105,10 @@ def run_pass(
     opened = {(r["fingerprint"], r["issue"], r.get("repo", dispatch.REPO))
               for r in rows if not r.get("commented") and not r.get("closed")}
     engine, install = cfg.watch_engine_repo, cfg.repo
-    current = signals(cfg, events, now, include_external=not dry_run)
+    unavailable: set[str] = set()
+    current = signals(
+        cfg, events, now, include_external=not dry_run, unavailable=unavailable,
+    )
     observations = {
         row["fingerprint"]: row for row in events
         if row.get("event") == "watch-band" and isinstance(row.get("fingerprint"), str)
@@ -1159,6 +1183,10 @@ def run_pass(
         # A signal stays in the journal window long after it stops happening, so judge by the
         # newest evidence, not presence; `latest is None` means it is failing right now.
         if fp in latest_by_fingerprint and latest_by_fingerprint[fp] is None:
+            continue
+        if fp in unavailable or (
+            "expectation:" in unavailable and fp.startswith("expectation:")
+        ):
             continue
         evidence_at = max(latest_by_fingerprint.get(fp) or "", previous.get("latest") or "", previous["at"])
         if _age(evidence_at) < QUIET_PERIOD:
