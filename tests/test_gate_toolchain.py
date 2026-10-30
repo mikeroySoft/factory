@@ -52,7 +52,9 @@ class ToolchainTest(unittest.TestCase):
         ]
         for payload in payloads:
             with self.subTest(payload=payload):
-                def probe(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+                def probe(
+                    command: list[str], payload: dict[str, str] = payload, **_: object,
+                ) -> subprocess.CompletedProcess[str]:
                     if command[:2] == ["rocm", "examine"]:
                         return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
                     if command == ["uname", "-r"]:
