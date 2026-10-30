@@ -237,7 +237,8 @@ class NeedCorrectionTest(unittest.TestCase):
             {"event": "unlabeled", "label": {"name": "ready-for-human"}, "created_at": "2026-10-27T00:01:00Z", "actor": michael},
             {"event": "labeled", "label": {"name": "ready-for-agent"}, "created_at": "2026-10-27T00:01:00Z", "actor": michael},
         ]]
-        with mock.patch.object(dispatch, "gh_json", return_value=timeline):
+        with mock.patch.object(dispatch, "gh_json", return_value=timeline), \
+             mock.patch.object(stats, "dispatcher_login", return_value="factory-bot"):
             self.assertTrue(dispatch.correct_need(7))
             self.assertFalse(dispatch.correct_need(7))
 
@@ -245,6 +246,35 @@ class NeedCorrectionTest(unittest.TestCase):
                  if row.get("event") == "escalation-correction"]
         self.assertEqual((row["need"], row["need_corrected"], row["category"]),
                          ("RULE_COVERABLE", True, None))
+
+    def test_dispatcher_user_account_is_not_a_human_correction(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        dispatch.configure(config.Config(root, "acme/widgets"))
+        lifecycle.append(dispatch.EVENTS, {
+            "at": AT, "event": "escalate", "ticket": 7, "round": 1,
+            "code": "budget", "need": "SIGNOFF", "category": "spending",
+        })
+        lifecycle.append(dispatch.EVENTS, {
+            "at": "2026-10-27T00:00:01Z", "event": "comment", "ticket": 7,
+            "kind": "escalation", "round": 1, "comment": 100,
+        })
+        service = {"login": "factory-service", "type": "User"}
+        timeline = [[
+            {"event": "labeled", "label": {"name": "ready-for-human"},
+             "created_at": AT, "actor": service},
+            {"event": "commented", "id": 100, "created_at": "2026-10-27T00:00:01Z",
+             "updated_at": "2026-10-27T00:00:01Z", "user": service},
+            {"event": "unlabeled", "label": {"name": "ready-for-human"},
+             "created_at": "2026-10-27T00:01:00Z", "actor": service},
+            {"event": "labeled", "label": {"name": "ready-for-agent"},
+             "created_at": "2026-10-27T00:01:00Z", "actor": service},
+        ]]
+
+        with mock.patch.object(dispatch, "gh_json", return_value=timeline), \
+             mock.patch.object(stats, "dispatcher_login", return_value="factory-service"):
+            self.assertFalse(dispatch.correct_need(7))
+        self.assertFalse(any(row.get("need_corrected")
+                             for row in lifecycle.read_events(dispatch.EVENTS)))
 
     def test_edited_escalation_comment_is_not_a_label_only_correction(self) -> None:
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
@@ -318,6 +348,79 @@ class ManagerRoutingTest(unittest.TestCase):
             manage.escalation_pass(dry_run=True)
 
         self.assertTrue(any("would manage escalation round 1" in line for line in logs), logs)
+
+    def test_external_review_close_targets_the_reviewed_pr(self) -> None:
+        self.record_escalation(pr=42, code="review_intake", need="EXPLAIN")
+        timeline = [{"event": "commented", "id": 100, "created_at": "2026-10-27T00:00:01Z"}]
+        reads = []
+        calls = []
+
+        def read(argv):
+            reads.append(argv)
+            if argv[:2] == ["issue", "list"]:
+                return [self.issue()]
+            if argv[:2] == ["issue", "view"]:
+                return self.issue()
+            if argv[0] == "api":
+                return [timeline]
+            if argv[:2] == ["pr", "view"]:
+                self.assertEqual(argv[2], "42")
+                return {"number": 42, "state": "OPEN", "baseRefName": "main"}
+            self.fail(argv)
+
+        def run(argv, **_kwargs):
+            calls.append(argv)
+            output = (
+                "DECISION: CLOSE\nThe external review cannot be completed"
+                if argv[0] == "manager" else
+                "https://github.com/acme/widgets/pull/42#issuecomment-101\n"
+                if argv[1:3] == ["pr", "comment"] else
+                "https://github.com/acme/widgets/issues/7#issuecomment-102\n"
+                if argv[1:3] == ["issue", "comment"] else ""
+            )
+            return subprocess.CompletedProcess(argv, 0, output, "")
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=read), \
+             mock.patch.object(dispatch, "run", side_effect=run):
+            manage.escalation_pass()
+
+        self.assertTrue(any(call[1:4] == ["pr", "close", "42"] for call in calls), calls)
+        self.assertTrue(any(call[1:4] == ["issue", "close", "7"] for call in calls), calls)
+        self.assertFalse(any("agent/7" in part for call in reads for part in call), reads)
+
+    def test_external_review_fix_is_rejected_once_without_consuming_the_round(self) -> None:
+        self.record_escalation(pr=42, code="review_intake", need="EXPLAIN")
+        timeline = [{"event": "commented", "id": 100, "created_at": "2026-10-27T00:00:01Z"}]
+        manager_runs = 0
+
+        def read(argv):
+            if argv[:2] == ["issue", "list"]:
+                return [self.issue()]
+            if argv[:2] == ["issue", "view"]:
+                return self.issue()
+            if argv[0] == "api":
+                return [timeline]
+            self.fail(argv)
+
+        def run(argv, **_kwargs):
+            nonlocal manager_runs
+            self.assertEqual(argv[0], "manager")
+            manager_runs += 1
+            return subprocess.CompletedProcess(
+                argv, 0, 'DECISION: FIX\n{"worker":"chore","guidance":"Change the PR"}', "",
+            )
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=read), \
+             mock.patch.object(dispatch, "run", side_effect=run):
+            manage.escalation_pass()
+            manage.escalation_pass()
+
+        events = lifecycle.read_events(dispatch.EVENTS)
+        self.assertEqual(manager_runs, 1)
+        self.assertFalse(any(row.get("event") == "manage" for row in events))
+        self.assertTrue(any(row.get("event") == "manage-rejected"
+                            and row.get("reason") == "external_review_action"
+                            for row in events))
 
     def test_signoff_escalation_is_immediately_terminal_for_handoff(self) -> None:
         escalation = self.record_escalation(need="SIGNOFF", category="spending")
@@ -595,6 +698,34 @@ class FinalReviewNeedTest(unittest.TestCase):
         case.quiet_provider()
         case.approved_head(test_frontier.H)
         return case
+
+    def test_manager_exhaustion_escalates_once_while_assigned_to_manager(self) -> None:
+        case = self.frontier()
+        case.cfg.manager_rounds = 1
+        dispatch.record(
+            "manage", ticket=79, pr=80, head=test_frontier.H2,
+            decision="RETRY", round=1,
+        )
+
+        def read(args):
+            value = case.gh_json(args)
+            if args[:2] == ["issue", "view"]:
+                assigned = any("--add-assignee" in command for command in case.mutations)
+                value["assignees"] = [{"login": "factory"}] if assigned else []
+            return value
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=read):
+            manage.frontier_pass()
+            manage.frontier_pass()
+
+        self.assertEqual(
+            [(row["code"], row["need"]) for row in case.escalations()],
+            [("manager_exhausted", "CHASE_STALL")],
+        )
+        self.assertEqual(
+            sum(command[1:3] == ["issue", "comment"] for command in case.mutations),
+            1,
+        )
 
     def test_human_names_a_reserved_signoff_and_concrete_options(self) -> None:
         case = self.frontier()
