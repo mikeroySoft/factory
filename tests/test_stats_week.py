@@ -318,6 +318,132 @@ class WeeklyCommandTest(unittest.TestCase):
 
 
 class WeeklyBehaviorRegressionTest(unittest.TestCase):
+    def test_reconciliation_does_not_treat_other_events_as_recorded_closes(self) -> None:
+        from factory import lifecycle
+
+        journal = Path(self.enterContext(tempfile.TemporaryDirectory())) / "events.jsonl"
+        for row in [
+            {"at": at(timedelta(days=-6)), "event": "pr-opened", "ticket": 7, "pr": 17},
+            {"at": at(timedelta(days=-5)), "event": "attempt", "ticket": 7, "pr": 17},
+            {"at": at(timedelta(days=-4)), "event": "llm-usage", "ticket": 7, "pr": 17},
+        ]:
+            lifecycle.append(journal, row)
+        rows = lifecycle.read_events(journal)
+        response = subprocess.CompletedProcess([], 0, json.dumps([
+            {"number": 17, "closedAt": at(timedelta(days=-1)), "mergedAt": None},
+        ]), "")
+
+        with mock.patch.object(stats.subprocess, "run", return_value=response):
+            stats.reconcile_closed_prs(journal, rows, NOW - timedelta(days=7))
+
+        expected = {
+            "at": at(timedelta(days=-1)), "event": "pr-closed", "ticket": 7, "pr": 17,
+            "by": "external", "reason": "closed outside factory",
+        }
+        self.assertEqual(rows[-1], expected)
+        self.assertEqual(lifecycle.read_events(journal), rows)
+        self.assertEqual(len(rows), 4)
+
+    def test_reconciliation_continues_after_skipped_prs_and_deduplicates_response(self) -> None:
+        from factory import lifecycle
+
+        journal = Path(self.enterContext(tempfile.TemporaryDirectory())) / "events.jsonl"
+        rows = [
+            {"at": at(timedelta(days=-6)), "event": "pr-opened", "ticket": 7, "pr": 17},
+            {"at": at(timedelta(days=-6)), "event": "pr-opened", "ticket": 8, "pr": 18},
+            {"at": at(timedelta(days=-6)), "event": "pr-opened", "ticket": 9, "pr": 19},
+            {"at": at(timedelta(days=-2)), "event": "pr-closed", "ticket": 9, "pr": 19,
+             "by": "manager"},
+        ]
+        valid = {"number": 17, "closedAt": at(timedelta(days=-1)), "mergedAt": None}
+        response = subprocess.CompletedProcess([], 0, json.dumps([
+            None,
+            {"number": 20, "closedAt": at(timedelta(days=-1)), "mergedAt": None},
+            {"number": 18, "closedAt": at(timedelta(days=-1)), "mergedAt": at()},
+            {"number": 19, "closedAt": at(timedelta(days=-1)), "mergedAt": None},
+            {"number": 17, "closedAt": "invalid", "mergedAt": None},
+            valid, valid,
+        ]), "")
+
+        with mock.patch.object(stats.subprocess, "run", return_value=response):
+            stats.reconcile_closed_prs(journal, rows, NOW - timedelta(days=7))
+
+        recorded = lifecycle.read_events(journal)
+        self.assertEqual(recorded, [{
+            "at": at(timedelta(days=-1)), "event": "pr-closed", "ticket": 7, "pr": 17,
+            "by": "external", "reason": "closed outside factory",
+        }])
+        self.assertEqual(rows[-1:], recorded)
+        self.assertEqual(len(rows), 5)
+
+    def test_reconciliation_ignores_stdout_from_failed_or_terminated_gh(self) -> None:
+        import os
+        import sys
+
+        from factory import lifecycle
+
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        journal = root / "events.jsonl"
+        lifecycle.append(journal, {
+            "at": at(timedelta(days=-6)), "event": "pr-opened", "ticket": 7, "pr": 17,
+        })
+        before = journal.read_bytes()
+        closed = [{"number": 17, "closedAt": at(timedelta(days=-1)), "mergedAt": None}]
+        gh = root / "gh"
+        # Both normal failure and signal termination can leave valid but untrusted stdout.
+        for failure in ("sys.exit(1)", "os.kill(os.getpid(), signal.SIGTERM)"):
+            with self.subTest(failure=failure):
+                gh.write_text(
+                    f"#!{sys.executable}\n"
+                    "import os, signal, sys\n"
+                    f"print({json.dumps(closed)!r}, flush=True)\n"
+                    f"{failure}\n"
+                )
+                gh.chmod(0o755)
+                rows = lifecycle.read_events(journal)
+                with mock.patch.dict(os.environ, {"PATH": f"{root}{os.pathsep}{os.environ['PATH']}"}):
+                    stats.reconcile_closed_prs(journal, rows, NOW - timedelta(days=7))
+                self.assertEqual(journal.read_bytes(), before)
+                self.assertEqual(rows, lifecycle.read_events(journal))
+
+    def test_decoded_journal_counts_only_close_escalation_and_attempt_events(self) -> None:
+        from factory import lifecycle
+
+        journal = Path(self.enterContext(tempfile.TemporaryDirectory())) / "events.jsonl"
+        for row in [
+            {"event": "pr-opened", "ticket": 1, "pr": 11},
+            {"event": "merged", "ticket": 1, "pr": 11},
+            {"event": "pr-closed", "ticket": 2, "pr": 12, "by": "human"},
+            {"event": "review", "ticket": 3, "pr": 13},
+            {"event": "worker", "ticket": 4, "pr": 14},
+            {"event": "escalate", "ticket": 2, "code": "review_revise"},
+            {"event": "escalate", "ticket": 3, "code": "gate_failed"},
+            {"event": "attempt", "ticket": 1, "attempt": 1, "gate": "PASS"},
+            {"event": "attempt", "ticket": 2, "attempt": 1, "gate": "FAIL"},
+            {"event": "attempt", "ticket": 2, "attempt": 2, "gate": "PASS"},
+            {"event": "approved", "ticket": 1, "attempt": 1, "gate": "PASS"},
+            {"event": "gate-rerun", "ticket": 2, "attempt": 1, "gate": "FAIL"},
+        ]:
+            lifecycle.append(journal, {"at": at(timedelta(days=-1)), **row})
+
+        result = stats.weekly_metrics(
+            lifecycle.read_events(journal), NOW - timedelta(days=7), NOW, None,
+        )
+
+        self.assertEqual(result["closed_unmerged"], 1)
+        self.assertEqual(result["closed_unmerged_by"], {"human": 1})
+        self.assertEqual(result["merge_rate_numerator"], 1)
+        self.assertEqual(result["merge_rate_denominator"], 2)
+        self.assertEqual(result["merge_rate"], 0.5)
+        self.assertEqual(result["escalations_7d"], 2)
+        self.assertEqual(result["escalations_by_code"], {"review_revise": 1, "gate_failed": 1})
+        self.assertEqual(result["review_nonconvergence_share"], 0.5)
+        self.assertEqual(result["review_nonconvergence_share_numerator"], 1)
+        self.assertEqual(result["review_nonconvergence_share_denominator"], 2)
+        self.assertEqual(result["first_pass"], 0.5)
+        self.assertEqual(result["first_pass_numerator"], 1)
+        self.assertEqual(result["first_pass_denominator"], 2)
+
     def test_non_opening_events_cannot_supply_open_timestamp(self) -> None:
         rows = [
             {"at": at(timedelta(days=-3)), "event": "review", "ticket": 1, "pr": 11},
