@@ -66,7 +66,28 @@
 # model only as a `modelUsage` key, so no `model` path):
 # usage = { match = { type = "result" }, cost = "total_cost_usd", completion_tokens = "usage.output_tokens", cached_tokens = "usage.cache_read_input_tokens", prompt_tokens = ["usage.input_tokens", "usage.cache_read_input_tokens", "usage.cache_creation_input_tokens"] }
 # Host config `[defaults.prices."<model>"]` (prompt, completion, optional cached;
-# USD per million tokens) prices events that report tokens but no cost.
+# USD per million tokens) prices events that report tokens but no cost. Copy the
+# examples below to the host config, not this repository file. OMP reports model
+# ids without providers; an inferred worker row uses the configured full id.
+#
+# Hosted rates are illustrative USD per million tokens, not provider quotes.
+# Replace them with actual rates; only local triage is free.
+# [defaults.prices."gpt-5.6-sol"]                # OMP-reported worker
+# prompt = 2.0
+# completion = 8.0
+# [defaults.prices."openai-codex/gpt-5.6-sol"] # inferred worker; same rates
+# prompt = 2.0
+# completion = 8.0
+# [defaults.prices."claude-fable-5-1"]         # OMP-reported reviewer
+# prompt = 3.0
+# completion = 15.0
+# The default second reviewer (openai-codex/gpt-6-astra) emits gpt-6-astra.
+# [defaults.prices."gpt-6-astra"]             # high-risk second review
+# prompt = 2.0
+# completion = 8.0
+# [defaults.prices."qwen3:30b"]                # default local triage
+# prompt = 0.0
+# completion = 0.0
 
 [review]
 # {prompt} = inline review prompt text. Output ends with one fenced JSON findings tally,
