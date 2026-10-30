@@ -621,14 +621,64 @@ PROOF_COMMAND = re.compile(
 )
 PROOF_ENVIRONMENT_DUMP = re.compile(
     r"(?m)^(?:[A-Za-z_][A-Za-z0-9_]*=.*|(?:os\.)?environ\(\{)"
-    # JSON and Python repr dumps use quoted environment names, including pretty-printed
-    # mappings. Scan keys without parsing values so partial/mixed output fails closed.
-    r"""|(?:[{,]\s*|^\s*)["'][A-Z_][A-Z0-9_]*["']\s*:"""
 )
+PROOF_MAPPING_KEY = re.compile(
+    r"""(?m)(?:[{,]\s*|^\s*)["']([A-Za-z_][A-Za-z0-9_]*)["']\s*:(?=\s*["'])"""
+)
+# rocm examine serializes this fixed diagnostic subset, not the process environment.
+PROOF_ROCM_ENV = {
+    "HSA_OVERRIDE_GFX_VERSION", "HSA_ENABLE_DXG_DETECTION", "HIP_VISIBLE_DEVICES",
+    "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL", "ROCM_PATH",
+    "ROCM_HOME", "HIP_PATH", "HIP_PLATFORM", "PYTORCH_ROCM_ARCH", "HCC_AMDGPU_TARGET",
+    "AMDGPU_TARGETS", "LD_LIBRARY_PATH", "PATH",
+}
+PROOF_LOWERCASE_ENV = {
+    "http_proxy", "https_proxy", "all_proxy", "no_proxy", "ftp_proxy",
+    "path", "home", "user", "logname", "shell", "pwd", "lang", "term",
+}
 
 
 def proof_contains_environment_dump(text: str) -> bool:
-    return PROOF_ENVIRONMENT_DUMP.search(text) is not None
+    if PROOF_ENVIRONMENT_DUMP.search(text):
+        return True
+    # Recognize complete examination documents even inside a Markdown artifact or
+    # mixed stdout. Mask only their declared diagnostic subset; extra keys and any
+    # other output are still screened. Partial JSON never earns an exemption.
+    def unique_object(pairs: list[tuple[str, object]]) -> dict:
+        document = dict(pairs)
+        if len(document) != len(pairs):
+            raise ValueError("duplicate JSON field")
+        return document
+
+    decoder = json.JSONDecoder(object_pairs_hook=unique_object)
+    cursor = 0
+    while (start := text.find("{", cursor)) >= 0:
+        try:
+            document, end = decoder.raw_decode(text, start)
+        except ValueError:
+            cursor = start + 1
+            continue
+        if (
+            isinstance(document, dict)
+            and document.get("os_family") in ("linux", "windows")
+            and isinstance(document.get("summary"), dict)
+            and isinstance(document["summary"].get("detected_gfx_target"), str)
+            and isinstance(document.get("env"), dict)
+            and document["env"].keys() <= PROOF_ROCM_ENV
+            and all(isinstance(value, str) for value in document["env"].values())
+        ):
+            document["env"] = {}
+            safe = json.dumps(document)
+            text = text[:start] + safe + text[end:]
+            cursor = start + len(safe)
+        else:
+            cursor = start + 1
+    return any(
+        key.isupper()
+        or key.lower() in PROOF_LOWERCASE_ENV
+        or re.search(r"(?i)secret|password|token|credential|access_key|api_key", key)
+        for key in PROOF_MAPPING_KEY.findall(text)
+    )
 
 
 def _proof_section(text: str, heading: str) -> str | None:
@@ -927,7 +977,7 @@ def execute(args: argparse.Namespace, execution) -> int:
             if name in skip or name in later_tier:
                 results.append((name, f"SKIP ({later_tier[name]} tier)" if name in later_tier else "SKIP", ""))
                 continue
-            if name in GPU_CHECKS and gpu_lock is None:
+            if (name in GPU_CHECKS or name == "proof") and gpu_lock is None:
                 gpu_lock = _acquire_exclusive(execution)
             with lifecycle.scope(
                 cfg.factory / "events.jsonl", "gate-check", lock=GPU_LOCK if gpu_lock else None

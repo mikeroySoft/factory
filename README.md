@@ -851,10 +851,12 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    command; `## Not checked` is mandatory and nonempty. Every
    `[proof].commands` argv and at least one changed GPU path run belongs in that
    artifact. The built-in `proof` check parses each command without a shell,
-   rejects environment dumps, re-runs it, compares the exit code, and records
-   the scrubbed re-run output in the gate report. Missing sections or mismatched
-   exits fail the gate. The dispatcher appends scrubbed proof after the gate
-   report in the PR body; the reviewer also fails missing sections closed with
+   rejects environment dumps (while allowing rocm-cli's fixed ROCm diagnostic
+   variables), re-runs it under the host-wide GPU lock, compares the exit code,
+   and records the scrubbed re-run output in the gate report. Missing sections
+   or mismatched exits fail the gate. The dispatcher appends scrubbed proof
+   after the gate report in the PR body and refreshes it after review-bounce
+   and manager FIX pushes; the reviewer also fails missing sections closed with
    typed reason `missing_proof`. Then `conflict-markers`, the conditional
    `proof` check, your `[[gate.check]]` list in order, and a `leak-scan` run.
    The host-toolchain header asks `rocm examine --json --framework skip` first,

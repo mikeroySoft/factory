@@ -2397,6 +2397,34 @@ def push_agent(wt: Path, n: int, lease: str, check: bool = True) -> str | None:
     return None if pushed.returncode else head
 
 
+def _write_pr_body(
+    wt: Path, branch: str, body: str, ticket: int | None,
+) -> tuple[Path, bool]:
+    proof_appended = False
+    if ticket is not None and cfg.proof_required:
+        proof_path = wt / ".factory" / f"proof-{ticket}.md"
+        if proof_path.is_file():
+            proof = proof_path.read_text()
+            if gate.proof_contains_environment_dump(proof):
+                raise ValueError(f"proof artifact contains environment dump output: {proof_path}")
+            body = body.rstrip() + "\n\n" + config.redact(proof).strip() + "\n"
+            proof_appended = True
+    body_file = FACTORY / f"pr-body-{branch.removeprefix('agent/')}.md"
+    body_file.write_text(body)
+    return body_file, proof_appended
+
+
+def refresh_pr_proof(wt: Path, n: int, report: str) -> None:
+    """Replace stale proof after a gated review bounce or manager FIX push."""
+    if not cfg.proof_required:
+        return
+    body = f"Closes #{n}\n\n## Gate report\n\n{report}\n"
+    body_file, appended = _write_pr_body(wt, f"agent/{n}", body, n)
+    if not appended:
+        raise ValueError(f"proof artifact missing for published ticket #{n}")
+    run(["gh", "pr", "edit", f"agent/{n}", "--repo", REPO, "--body-file", str(body_file)])
+
+
 def push_and_pr(
     wt: Path, branch: str, title: str, body: str, label: str = "", ticket: int | None = None,
     lease: str | None = None,
@@ -2421,17 +2449,7 @@ def push_and_pr(
         run(["git", "push", "-u", "origin", branch], cwd=wt)
     else:
         push_agent(wt, ticket, lease)
-    proof_appended = False
-    if ticket is not None and cfg.proof_required:
-        proof_path = wt / ".factory" / f"proof-{ticket}.md"
-        if proof_path.is_file():
-            proof = proof_path.read_text()
-            if gate.proof_contains_environment_dump(proof):
-                raise ValueError(f"proof artifact contains environment dump output: {proof_path}")
-            body = body.rstrip() + "\n\n" + config.redact(proof).strip() + "\n"
-            proof_appended = True
-    body_file = FACTORY / f"pr-body-{branch.removeprefix('agent/')}.md"
-    body_file.write_text(body)
+    body_file, proof_appended = _write_pr_body(wt, branch, body, ticket)
     if existing:
         number = existing[0]["number"]
         log(f"{branch}: PR already exists (#{number})")
@@ -4329,6 +4347,7 @@ def process_ticket(
                     )
                     return
                 lease = push_agent(wt, n, lease)
+                refresh_pr_proof(wt, n, report)
                 record_risk(wt, n, gate_head)
                 verdict, findings, pr_failed = pr_gate_and_review(wt, n, report, gate_head, pr_runs)
                 pr_comment(n, findings)
