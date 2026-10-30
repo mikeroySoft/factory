@@ -38,6 +38,36 @@ class ToolchainTest(unittest.TestCase):
         self.assertEqual(found["rocm"], "gfx1201 (rocm-cli)")
         self.assertEqual(found["amdgpu"], "loaded (in-tree)")
 
+    def test_rocm_cli_requires_available_driver_and_active_runtime(self) -> None:
+        payloads = [
+            {
+                "detected_gfx_target": "gfx1201",
+                "driver_status": "amdgpu_unavailable",
+                "active_runtime": "therock-7.0",
+            },
+            {
+                "detected_gfx_target": "gfx1201",
+                "driver_status": "amdgpu_available",
+            },
+        ]
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                def probe(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+                    if command[:2] == ["rocm", "examine"]:
+                        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+                    if command == ["uname", "-r"]:
+                        return subprocess.CompletedProcess(command, 0, "6.17.1\n", "")
+                    raise FileNotFoundError(command[0])
+
+                with (
+                    mock.patch.object(gate.subprocess, "run", side_effect=probe),
+                    mock.patch.object(gate, "_kfd_targets", return_value=[]),
+                    mock.patch.object(Path, "is_dir", return_value=False),
+                ):
+                    found = gate.toolchain()
+
+                self.assertEqual(found["rocm"], "unavailable")
+
     def test_failed_probes_fall_back_to_kfd_and_loaded_module(self) -> None:
         def probe(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
             if command == ["uname", "-r"]:
