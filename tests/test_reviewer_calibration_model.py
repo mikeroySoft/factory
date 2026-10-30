@@ -101,6 +101,8 @@ class ReviewerCalibrationModelTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory) / "run"
             with mock.patch.object(
+                self.calibration.config, "git", return_value="fixture-head"
+            ), mock.patch.object(
                 self.calibration,
                 "_grade_runs",
                 side_effect=lambda rows: (
