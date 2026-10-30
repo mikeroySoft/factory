@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from factory import cli, config, dispatch, handoff, learn, lifecycle, manage, stats
+from tests import test_frontier
 
 NOW = datetime(2026, 10, 27, 12, tzinfo=UTC)
 AT = "2026-10-27T00:00:00Z"
@@ -534,6 +535,8 @@ class ManagerRoutingTest(unittest.TestCase):
             {"event": "assigned", "created_at": AT},
             {"event": "commented", "id": 100, "created_at": "2026-10-27T00:00:01Z"},
         ]
+        failed_route = True
+        manager_runs = 0
 
         def read(argv):
             if argv[:2] == ["issue", "list"]:
@@ -545,25 +548,93 @@ class ManagerRoutingTest(unittest.TestCase):
             self.fail(argv)
 
         def run(argv, **_kwargs):
+            nonlocal manager_runs
             if argv[0] == "manager":
+                manager_runs += 1
                 output = (
                     'DECISION: HUMAN\n{"category":"spending","reason":"Approve quota",'
                     '"options":["Approve it"]}'
                 )
                 return subprocess.CompletedProcess(argv, 0, output, "")
-            if argv[1:3] == ["issue", "edit"]:
+            if argv[1:3] == ["issue", "edit"] and failed_route:
                 raise subprocess.CalledProcessError(1, argv, stderr="unavailable")
-            return subprocess.CompletedProcess(argv, 0, "", "")
+            stdout = (
+                "https://github.com/acme/widgets/issues/7#issuecomment-101\n"
+                if argv[1:3] == ["issue", "comment"] else ""
+            )
+            return subprocess.CompletedProcess(argv, 0, stdout, "")
 
         logs = []
         with mock.patch.object(dispatch, "gh_json", side_effect=read), \
              mock.patch.object(dispatch, "run", side_effect=run), \
              mock.patch.object(dispatch, "log", side_effect=logs.append):
             manage.escalation_pass()
+            self.assertFalse(any(row.get("event") == "manage"
+                                 for row in lifecycle.read_events(dispatch.EVENTS)))
+            self.assertFalse(any(row.get("need") == "SIGNOFF"
+                                 for row in lifecycle.read_events(dispatch.EVENTS)))
+            self.assertTrue(any("publication failed" in line for line in logs), logs)
 
-        self.assertFalse(any(row.get("event") == "manage"
-                             for row in lifecycle.read_events(dispatch.EVENTS)))
-        self.assertTrue(any("publication failed" in line for line in logs), logs)
+            failed_route = False
+            manage.escalation_pass()
+
+        self.assertEqual(manager_runs, 2)
+        self.assertTrue(any(row.get("event") == "manage"
+                            for row in lifecycle.read_events(dispatch.EVENTS)))
+
+
+class FinalReviewNeedTest(unittest.TestCase):
+    def frontier(self):
+        case = test_frontier.FrontierTest(
+            "test_review_all_waits_for_a_manager_approve_bound_to_the_exact_head"
+        )
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        case.cfg.manager_review = "all"
+        case.quiet_provider()
+        case.approved_head(test_frontier.H)
+        return case
+
+    def test_human_names_a_reserved_signoff_and_concrete_options(self) -> None:
+        case = self.frontier()
+        case.cfg.reserved = {"product_direction": frozenset({"manager_human"})}
+        case.manager_output = (
+            'DECISION: HUMAN\n{"category":"product_direction","reason":"Choose the product direction",'
+            '"options":["Approve the direction","Close as wontfix"]}'
+        )
+
+        manage.frontier_pass()
+
+        [escalation] = case.escalations()
+        self.assertEqual(
+            (escalation["need"], escalation["category"], escalation["code"]),
+            ("SIGNOFF", "product_direction", "manager_human"),
+        )
+        comment = next(cmd[-1] for cmd in case.mutations if cmd[1:3] == ["issue", "comment"])
+        self.assertTrue(comment.endswith(
+            "Needs you:\n1. Approve the direction\n2. Close as wontfix"
+        ))
+        prompt = (case.repo / ".factory/manager-prompt-79.md").read_text()
+        self.assertIn("product_direction: manager_human", prompt)
+
+    def test_failed_invalid_human_route_does_not_consume_the_head(self) -> None:
+        case = self.frontier()
+        case.manager_output = "DECISION: HUMAN\nnot a reserved decision"
+
+        def fail_route(cmd, *args, **kwargs):
+            if cmd[:3] == ["gh", "issue", "edit"]:
+                raise subprocess.CalledProcessError(1, cmd, stderr="routing failed")
+            return case.fake_run(cmd, *args, **kwargs)
+
+        with mock.patch.object(dispatch, "run", side_effect=fail_route):
+            manage.frontier_pass()
+
+        self.assertFalse(any(e.get("event") == "manage" for e in case.events()))
+        case.manager_output = "DECISION: APPROVE\nLooks right"
+        case.mutations.clear()
+        manage.frontier_pass()
+        self.assertTrue(any("--add-label" in cmd and "factory-approved" in cmd
+                            for cmd in case.mutations), case.mutations)
 
 
 class EscalationPublicationTest(unittest.TestCase):
