@@ -572,6 +572,74 @@ def _open_manager_review_issue(reason: str, packet: Path) -> str:
         "--body-file", str(packet),
     ]).stdout.strip().splitlines()[-1]
 
+def _publish_review_intake_comment(escalation: dict, *, reconcile: bool) -> bool:
+    """Publish or reconcile the manager-routing marker without crossing human activity."""
+    from factory import handoff
+
+    ticket, pr, round_number = (
+        escalation["ticket"], escalation["pr"], escalation["round"]
+    )
+    events = lifecycle.read_events(EVENTS)
+    if any(
+        event.get("event") == "comment" and event.get("kind") == "escalation"
+        and event.get("ticket") == ticket and event.get("round") == round_number
+        for event in events
+    ):
+        return True
+    token = f"factory-review-intake {pr}/{ticket}/{round_number}"
+    if not any(
+        event.get("event") == "escalation-comment" and event.get("token") == token
+        for event in events
+    ):
+        record(
+            "escalation-comment", ticket=ticket, pr=pr, round=round_number, token=token,
+        )
+    if reconcile:
+        try:
+            items = handoff.timeline(ticket)
+        except (CalledProcessError, ValueError):
+            log(f"#{ticket}: review-intake routing comment is uncertain; GitHub could not be read")
+            return False
+        found = next((
+            item for item in items
+            if item.get("event") == "commented" and type(item.get("id")) is int
+            and token in (item.get("body") or "")
+        ), None)
+        if found:
+            record(
+                "comment", ticket=ticket, pr=pr, kind="escalation",
+                round=round_number, token=token, comment=found["id"],
+                url=found.get("html_url"), reconciled=True,
+            )
+            return True
+        for item in items:
+            kind = item.get("event")
+            created = item.get("created_at", "")
+            initial_setup = (
+                kind == "assigned"
+                or kind == "labeled" and item.get("label", {}).get("name") == LABEL_AGENT
+            )
+            if kind in handoff.TIMELINE_EVENTS and not (
+                initial_setup and created <= escalation["at"]
+            ):
+                log(f"#{ticket}: review-intake routing comment not retried after human activity")
+                return False
+    body = (
+        "Factory dispatcher routing this review to the manager.\n\n"
+        f"Escalation packet: `{escalation['packet']}`\n\n<!-- {token} -->"
+    )
+    posted = run([
+        "gh", "issue", "comment", str(ticket), "--repo", REPO, "--body", body,
+    ], check=False)
+    published = comment_receipt(
+        ticket, "escalation", posted.stdout if posted.returncode == 0 else "",
+        pr=pr, round=round_number, token=token,
+    )
+    if not published:
+        log(f"#{ticket}: review-intake routing comment publication uncertain")
+    return published
+
+
 
 def review_intake_pass(dry_run: bool) -> None:
     """Review opted-in PR revisions, and `factory learn` PRs, without running the issue/merge pipeline."""
@@ -615,7 +683,10 @@ def review_intake_pass(dry_run: bool) -> None:
             if any(e.get("event") == "review-result" and e.get("verdict") == "APPROVE"
                    for e in history):
                 continue
-            if any(e.get("event") == "escalate" for e in history):
+            escalation = next((e for e in reversed(history) if e.get("event") == "escalate"), None)
+            if escalation is not None:
+                if not dry_run and escalation.get("code") == "review_intake":
+                    _publish_review_intake_comment(escalation, reconcile=True)
                 continue
             attempts = [e for e in history if e.get("event") == "review-intake"]
             if len(attempts) >= cfg.review_rounds + 1:
@@ -635,18 +706,13 @@ def review_intake_pass(dry_run: bool) -> None:
                     )
                     url = _open_manager_review_issue(reason, packet)
                     ticket = int(url.rstrip("/").rsplit("/", 1)[-1])
-                    record(
-                        "escalate", pr=n, head=head, ticket=ticket,
-                        code="review_intake", reason=reason, packet=str(packet), round=1,
-                        need="EXPLAIN", category=None, route="manager",
-                    )
-                    posted = run([
-                        "gh", "issue", "comment", str(ticket), "--repo", REPO,
-                        "--body", f"Factory dispatcher routing this review to the manager.\n\nEscalation packet: `{packet}`",
-                    ], check=False)
-                    comment_receipt(
-                        ticket, "escalation", posted.stdout if posted.returncode == 0 else "", round=1,
-                    )
+                    escalation = {
+                        "pr": n, "head": head, "ticket": ticket,
+                        "code": "review_intake", "reason": reason, "packet": str(packet),
+                        "round": 1, "need": "EXPLAIN", "category": None, "route": "manager",
+                    }
+                    record("escalate", **escalation)
+                    _publish_review_intake_comment(escalation, reconcile=False)
                 continue
             if any(e.get("event") == "review-intake" and e.get("head") == head
                    for e in history):
@@ -1793,6 +1859,7 @@ def escalate(
     question: str | None = None,
     refreshed_head: str | None = None,
     evidence_ref: str | None = None,
+    pr: int | None = None,
 ) -> None:
     if code not in ESCALATION_CODES:
         raise ValueError(f"unknown escalation code {code!r}")
@@ -1860,7 +1927,7 @@ def escalate(
         "escalate", ticket=n, code=code, reason=reason, need=need_name,
         category=category, route=route, question=question if human else None,
         log=str(log_path) if log_path else None, packet=str(packet), round=round_number,
-        **evidence,
+        **({"pr": pr} if pr is not None else {}), **evidence,
     )
     body = f"Factory dispatcher escalating: {reason}.\n\nEscalation packet: `{packet}`"
     if log_path:

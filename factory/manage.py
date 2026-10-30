@@ -943,8 +943,23 @@ def frontier_pass(dry_run: bool = False) -> None:
                     if event.get("event") == "escalate" and event.get("ticket") == n
                     and event.get("reason") != "manager_failed"
                 ), None)
-                if escalation and escalation.get("route") == "manager" and issue.get("assignees"):
-                    continue  # parked until a manager action removes the Factory assignee
+                failed = {
+                    event.get("execution_id") for event in events
+                    if event.get("event") == "lifecycle" and event.get("kind") == "exit"
+                    and event.get("outcome") == "mechanism_failure"
+                }
+                released = any(
+                    event.get("event") == "manage" and not event.get("pr")
+                    and event.get("round") == escalation.get("round")
+                    and event.get("decision") in {"RETRY", "REWRITE", "ROUTE", "AUTHORIZE", "FIX"}
+                    and event.get("execution_id") not in failed
+                    for event in events
+                ) if escalation else False
+                if (
+                    escalation and escalation.get("route") == "manager"
+                    and not released and issue.get("assignees")
+                ):
+                    continue  # parked until the manager consumes or releases this escalation
                 if config.LABEL_INITIATIVE in labels:
                     dispatch.log(f"PR #{number}: refused (ticket #{n} is an initiative record)")
                     continue
@@ -1257,7 +1272,7 @@ def escalation_pass(dry_run: bool = False) -> None:
                     )
                     continue
                 record_manager_decision(
-                    n, decision, body, data, output, workers, packet,
+                    n, decision, body, data, output, workers, packet, pr=external_pr,
                 )
                 if decision == "HUMAN" and escalation.get("need") is not None and not transport_failed:
                     try:
@@ -1267,11 +1282,13 @@ def escalation_pass(dry_run: bool = False) -> None:
                             dispatch.escalate(
                                 n, body, None, dispatch.SIGNOFF(data["category"]),
                                 code="manager_human", question=_signoff_question(data["options"]),
+                                pr=external_pr,
                             )
                         except (ValueError, TypeError) as exc:
                             dispatch.escalate(
                                 n, f"Manager did not return a valid decision: {body} ({exc})", None,
                                 dispatch.classify("manager_failed", {}), code="manager_failed",
+                                pr=external_pr,
                             )
                     except (CalledProcessError, OSError) as exc:
                         execution.outcome = "mechanism_failure"

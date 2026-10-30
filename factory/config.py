@@ -652,11 +652,15 @@ def reserved_table(path: Path) -> ReservedTable:
         return {}
     table: ReservedTable = {}
     for line in path.read_text().splitlines():
-        if not line.lstrip().startswith("| `"):
+        if not line.lstrip().startswith("|"):
             continue
         columns = [column.strip() for column in line.strip().strip("|").split("|")]
         if len(columns) != 3:
             raise ConfigError(f"{path}: reserved category row needs exactly three columns")
+        if columns[0].strip("`").casefold() == "category" or all(
+            re.fullmatch(r":?-+:?", column) for column in columns
+        ):
+            continue
         category = columns[0].strip("`")
         if category not in RESERVED_CATEGORIES:
             raise ConfigError(f"{path}: unknown category {category!r}")
