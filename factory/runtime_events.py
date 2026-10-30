@@ -640,13 +640,19 @@ def _executions(retained: list, history: dict, gaps: list, observation: _Observa
                         pending = {**event["wait"], "event_id": event["event_id"], "at": event["at"]}
                     elif event["kind"] == "wait_end" and pending is not None and event["wait_event_id"] == pending["event_id"]:
                         pending = None
+        activity = {
+            field: entry[field]
+            for field in ("worker", "worker_version", "agent", "harness", "model")
+            if entry is not None and isinstance(entry.get(field), str) and entry[field]
+        }
         result.append({**{field: latest[field] for field in IDENTITY}, "state": state,
                        "entered_at": entry["at"] if entry else None,
                        "ended_at": terminal["at"] if terminal else None,
                        "outcome": terminal["outcome"] if terminal else None,
                        "reason": terminal["reason"] if terminal else None, "wait": pending,
                        "latest_event_id": latest["event_id"], "latest_at": latest["at"],
-                       "observation": quality, "observed_at": observation.at, "evidence": evidence})
+                       "observation": quality, "observed_at": observation.at,
+                       "evidence": evidence, "activity": activity})
     return result, groups
 
 

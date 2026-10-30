@@ -393,11 +393,20 @@ status and lists changed files the plan did not name and planned proof absent
 from the gate report. Plan drift is evidence, not an automatic `REVISE`.
 
 The workspace **Decisions** view (`/?view=decisions&ticket=N`, or `/decisions`)
-reads the selected repository through authenticated `GET /api/trace?ticket=N`.
-It renders the same graph unchanged as a stage-ordered breadboard with labeled
-relationships, retry-loop costs, a timeline replay control, evidence details,
-coverage gaps, frontier state, cross-ticket links, and terminal outcome. The
-view is read-only; legacy synthesized rows remain visibly dashed.
+keeps its historical mode: authenticated `GET /api/trace?ticket=N` renders the
+same stage-ordered graph with labeled relationships, retry-loop costs, timeline
+replay, evidence details, coverage gaps, frontier state, cross-ticket links, and
+terminal outcome. Legacy synthesized rows remain visibly dashed.
+
+Its **Live** mode needs no selected ticket. Authenticated, read-only
+`GET /api/live-executions` places every observed active ticket execution in the
+triage, worker, gate, reviewer, manager, watch, and learn lanes; empty lanes stay
+visible. Cards show the agent, harness, ticket title, and elapsed time, link back
+to that ticket's historical trace, and use the breadboard wires for observed
+cross-lane movement. The browser refreshes while mounted using the browser-local
+**Visible-page polling** interval (10 seconds by default; 10/30/60 seconds).
+Execution observations older than 60 seconds remain visible as stale rather than
+running. Both modes are read-only.
 
 Successful non-dry-run `triage`, `dispatch`, and `watch` invocations atomically
 update `.factory/stage-success.json` with that repository's last successful pass

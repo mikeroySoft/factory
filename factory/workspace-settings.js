@@ -2,7 +2,7 @@
   'use strict';
 
   const PREF_KEY = 'factory-workspace-preferences';
-  const defaults = {motion: true, density: 'compact', pollSeconds: 30, attentionDays: 7, inspectorWidth: 440};
+  const defaults = {motion: true, density: 'compact', pollSeconds: 10, attentionDays: 7, inspectorWidth: 440};
   const allowed = {
     density: new Set(['compact', 'comfortable']), pollSeconds: new Set([10, 30, 60]),
     attentionDays: new Set([1, 3, 7, 14, 30]), inspectorWidth: new Set([360, 440, 560])

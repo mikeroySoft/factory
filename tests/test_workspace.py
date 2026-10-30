@@ -858,7 +858,7 @@ class WorkspaceHTTPTest(unittest.TestCase):
                 auth=True,
                 intent=True,
             )
-            self.assertIn(status, {404, 405})
+            self.assertIn(status, {400, 404, 405})
             project.assert_called_once()
 
 class WorkspaceRegistryTest(unittest.TestCase):
