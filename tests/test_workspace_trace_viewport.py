@@ -150,6 +150,44 @@ Promise.resolve({expression}).then(result => process.stdout.write(JSON.stringify
             self.assertGreater(route["points"][1]["x"], route["points"][0]["x"])
             self.assertLess(route["points"][-2]["x"], route["points"][-1]["x"])
 
+    def test_high_density_lanes_keep_end_segments_outside_nodes(self) -> None:
+        routes = self.evaluate(
+            "value.routes.map(route => window.WorkspaceTrace.routeEdge({"
+            "edge:{from:'source',to:'target',relation:'follows'},"
+            "...route,index:0,lane:-11,bounds:value.bounds}))",
+            {
+                "routes": [
+                    {
+                        "source": {"left": 50, "right": 150, "top": 80, "bottom": 160},
+                        "target": {"left": 50, "right": 150, "top": 220, "bottom": 300},
+                        "fromColumn": 2,
+                        "toColumn": 2,
+                    },
+                    {
+                        "source": {"left": 700, "right": 800, "top": 80, "bottom": 160},
+                        "target": {"left": 50, "right": 150, "top": 220, "bottom": 300},
+                        "fromColumn": 3,
+                        "toColumn": 0,
+                    },
+                    {
+                        "source": {"left": 50, "right": 150, "top": 80, "bottom": 160},
+                        "target": {"left": 700, "right": 800, "top": 220, "bottom": 300},
+                        "fromColumn": 0,
+                        "toColumn": 3,
+                    },
+                ],
+                "bounds": {"width": 900, "height": 500},
+            },
+        )
+
+        same_stage, backward, long_forward = routes
+        self.assertGreater(same_stage["points"][1]["x"], same_stage["points"][0]["x"])
+        self.assertGreater(same_stage["points"][-2]["x"], same_stage["points"][-1]["x"])
+        self.assertLess(backward["points"][1]["x"], backward["points"][0]["x"])
+        self.assertGreater(backward["points"][-2]["x"], backward["points"][-1]["x"])
+        self.assertGreater(long_forward["points"][1]["x"], long_forward["points"][0]["x"])
+        self.assertLess(long_forward["points"][-2]["x"], long_forward["points"][-1]["x"])
+
     def test_viewport_shortcuts_ignore_browser_modifier_keys(self) -> None:
         shortcuts = self.evaluate(
             "value.map(event => window.WorkspaceTrace.viewportShortcut({"
