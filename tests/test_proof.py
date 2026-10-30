@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import shlex
 import subprocess
 import sys
@@ -301,6 +302,76 @@ class ProofDispatchTest(unittest.TestCase):
             )
         self.assertEqual(result["verdict"], "REQUEST_CHANGES")
         self.assertEqual(result["reason"], dispatch.MISSING_PROOF)
+
+
+class ProofMappingEnvironmentTest(unittest.TestCase):
+    command = (sys.executable, "-c", "print('tank ok')")
+    dumps = (
+        '{"AWS_SECRET_ACCESS_KEY": "synthetic-secret", "PATH": "/synthetic/bin"}',
+        "{'DATABASE_PASSWORD': 'synthetic-password', 'HOME': '/synthetic/home'}",
+        '{\n  "AWS_SECRET_ACCESS_KEY":\n    "synthetic-secret"\n}',
+        "{\n  'DATABASE_PASSWORD':\n    'synthetic-password'\n}",
+    )
+
+    def test_mapping_reruns_are_rejected_before_truncation_without_values(self) -> None:
+        for dump in self.dumps:
+            with self.subTest(dump=dump):
+                result = subprocess.CompletedProcess(
+                    self.command, 0, "\n".join(["safe"] * 40 + [dump]), "",
+                )
+                with mock.patch.object(gate, "timed", return_value=result):
+                    passed, detail = ProofGateTest.check(self, proof_text(self.command))
+                self.assertFalse(passed, detail)
+                self.assertIn("environment dump", detail)
+                self.assertNotIn("synthetic", detail)
+                self.assertNotIn("AWS_SECRET_ACCESS_KEY", detail)
+                self.assertNotIn("DATABASE_PASSWORD", detail)
+
+    def test_mapping_artifacts_are_rejected_before_publication(self) -> None:
+        for dump in self.dumps:
+            with self.subTest(dump=dump), tempfile.TemporaryDirectory() as directory:
+                repo = ProofDispatchTest.repo(self, Path(directory))
+                dispatch.configure(config.Config(root=repo, repo="acme/rocm-cli"))
+                dispatch.FACTORY.mkdir(exist_ok=True)
+                (dispatch.FACTORY / "proof-7.md").write_text(
+                    proof_text(self.command, output=dump)
+                )
+                with (
+                    mock.patch.object(
+                        dispatch, "run", side_effect=ProofDispatchTest.publish_run,
+                    ) as run,
+                    mock.patch.object(dispatch, "gh_json", return_value=[]),
+                    self.assertRaisesRegex(ValueError, "environment dump") as caught,
+                ):
+                    dispatch.push_and_pr(repo, "agent/7", "feature", "body", ticket=7)
+                self.assertNotIn("synthetic", str(caught.exception))
+                self.assertFalse((dispatch.FACTORY / "pr-body-7.md").exists())
+                self.assertFalse(any(
+                    call.args[0][:2] == ["gh", "pr"] for call in run.call_args_list
+                ))
+
+    def test_rocm_examine_json_remains_valid_at_both_boundaries(self) -> None:
+        output = json.dumps({
+            "detected_gfx_target": "gfx1201",
+            "driver_status": "amdgpu_available",
+            "active_runtime": {"id": "therock-7.0"},
+        }, indent=2)
+        result = subprocess.CompletedProcess(self.command, 0, output, "")
+        with mock.patch.object(gate, "timed", return_value=result):
+            passed, detail = ProofGateTest.check(self, proof_text(self.command, output=output))
+        self.assertTrue(passed, detail)
+        self.assertIn("gfx1201", detail)
+        with tempfile.TemporaryDirectory() as directory:
+            repo = ProofDispatchTest.repo(self, Path(directory))
+            dispatch.configure(config.Config(root=repo, repo="acme/rocm-cli"))
+            dispatch.FACTORY.mkdir(exist_ok=True)
+            (dispatch.FACTORY / "proof-7.md").write_text(proof_text(self.command, output=output))
+            with (
+                mock.patch.object(dispatch, "run", side_effect=ProofDispatchTest.publish_run),
+                mock.patch.object(dispatch, "gh_json", return_value=[]),
+            ):
+                self.assertTrue(dispatch.push_and_pr(repo, "agent/7", "feature", "body", ticket=7))
+            self.assertIn("gfx1201", (dispatch.FACTORY / "pr-body-7.md").read_text())
 
 
 if __name__ == "__main__":
