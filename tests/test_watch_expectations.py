@@ -4,6 +4,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -325,6 +326,33 @@ class WatchExpectationTest(unittest.TestCase):
         self.github.calls.clear()
         self.assertEqual(watch.run_pass(self.cfg, dry_run=True, now=now), [])
         self.assertEqual(self.github.calls, [])
+
+    def test_cli_dry_run_makes_no_gh_calls_with_escape_band(self) -> None:
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        (self.root / config.CONFIG_NAME).write_text('[repo]\nslug = "example/fixture"\n')
+        (self.root / config.BANDS_NAME).write_text(
+            'schema_version = 1\n[[band]]\nmetric = "revert_rate_by_tier"\n'
+            'window_days = 28\nrules = [{kind = "sigma", sigma = 3.0, count = 1, span = 1, tier = "act"}]\n'
+        )
+        stub = self.root / "gh"
+        calls = self.root / "gh.calls"
+        stub.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$WATCH_SMOKE_GH_LOG"\nexit 97\n')
+        stub.chmod(0o755)
+        env = dict(
+            os.environ, PATH=f"{self.root}:{os.environ['PATH']}",
+            PYTHONPATH=str(Path(config.__file__).resolve().parent.parent),
+            XDG_CONFIG_HOME=str(self.root / "host-config"),
+            WATCH_SMOKE_GH_LOG=str(calls),
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-m", "factory", "watch", "--dry-run"],
+            cwd=self.root, env=env, text=True, capture_output=True, timeout=30,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(calls.exists(), calls.read_text() if calls.exists() else "")
+        self.assertFalse((self.cfg.factory / "events.jsonl").exists())
 
 
 class IntendedStateCommandTest(unittest.TestCase):
