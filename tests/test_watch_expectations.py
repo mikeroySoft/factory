@@ -180,8 +180,7 @@ class IntendedStateCommandTest(unittest.TestCase):
             code = cli.main(["doctor"])
 
         lines = [
-            line for line in output.getvalue().splitlines()
-            if "FAIL" in line and "eval.schedule" in line
+            line for line in output.getvalue().splitlines() if "eval.schedule" in line
         ]
         self.assertEqual(code, 1)
         self.assertEqual(len(lines), 1)

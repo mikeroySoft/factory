@@ -500,10 +500,12 @@ def doctor(argv: list[str]) -> int:
         f"move to {config.host_config_path()}: {', '.join(hosted)}" if hosted else "none",
         fix=relocation_fix(cfg, reveal=args.reveal_fix) if args.json and hosted else None,
     )
-    unset = unset_repo_keys(cfg.raw_repo)
+    mismatches = config.intended_state_mismatches(cfg)
+    mismatched = {key for key, _, _ in mismatches}
+    unset = [key for key in unset_repo_keys(cfg.raw_repo) if key not in mismatched]
     if unset:
         report(None, "defaults in effect", ", ".join(unset), info=True)
-    for key, expected, actual in config.intended_state_mismatches(cfg):
+    for key, expected, actual in mismatches:
         report(
             False,
             f"intended state {key}",
