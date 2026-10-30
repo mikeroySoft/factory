@@ -119,12 +119,53 @@ class WatchTest(unittest.TestCase):
         self.assertEqual(len(self.gh.created), 2, "recurrence after close refiles")
         self.assertEqual([r["issue"] for r in self.events("watch")], [101, 102])
 
-    def test_no_signals_makes_no_call(self) -> None:
+    def test_uneventful_pass_writes_one_heartbeat(self) -> None:
         self.journal(exit_row("dispatch", "completed", None), exit_row("worker", "unknown", "scope exited early"),
                      exit_row("review", "interrupted", "stuck"))
+
         self.assertEqual(watch.run_pass(self.cfg), [])
+
         self.assertEqual(self.gh.calls, [])
         self.assertEqual(self.events("watch"), [])
+        heartbeats = self.events("watch-heartbeat")
+        self.assertEqual(len(heartbeats), 1)
+        self.assertIn("at", heartbeats[0])
+
+    def test_heartbeat_check_files_stale_heartbeat_once(self) -> None:
+        now = datetime.now(UTC)
+        self.journal({
+            "event": "watch-heartbeat",
+            "at": (now - timedelta(minutes=46)).isoformat().replace("+00:00", "Z"),
+        })
+
+        with mock.patch.object(config, "load", return_value=self.cfg), \
+                mock.patch.object(watch, "pass_overrun", return_value=None):
+            self.assertEqual(watch.main(["--heartbeat-check"]), 0)
+            self.assertEqual(watch.main(["--heartbeat-check"]), 0)
+
+        self.assertEqual(len(self.gh.created), 1)
+        body = self.gh.created[0][self.gh.created[0].index("--body") + 1]
+        self.assertIn("watch_heartbeat_stale", body)
+        self.assertEqual(len(self.events("watch-heartbeat")), 1)
+
+    def test_heartbeat_check_reports_pass_overrun_once(self) -> None:
+        now = datetime.now(UTC)
+        self.journal({"event": "watch-heartbeat", "at": now.isoformat().replace("+00:00", "Z")})
+        status = subprocess.CompletedProcess(
+            [], 0,
+            "ActiveState=activating\nActiveEnterTimestampMonotonic=1000000\n",
+            "",
+        )
+
+        with mock.patch.object(config, "load", return_value=self.cfg), \
+                mock.patch.object(subprocess, "run", return_value=status), \
+                mock.patch.object(watch.time, "monotonic", return_value=121 * 60 + 1):
+            self.assertEqual(watch.main(["--heartbeat-check"]), 0)
+            self.assertEqual(watch.main(["--heartbeat-check"]), 0)
+
+        self.assertEqual(len(self.gh.created), 1)
+        body = self.gh.created[0][self.gh.created[0].index("--body") + 1]
+        self.assertIn("pass_overrun", body)
 
     def test_sixth_fingerprint_waits_for_the_next_pass(self) -> None:
         self.journal(*(exit_row("worker", "mechanism_failure", f"RuntimeError: boom {code}") for code in range(1, 7)))
@@ -193,22 +234,33 @@ class WatchTest(unittest.TestCase):
         self.assertTrue(any("factory-widgets-dashboard.service" in b and "systemctl --user" in b for b in bodies))
         self.assertTrue(any("unreadable" in b and "--runtime-json" in b for b in bodies))
 
-    def test_failed_units_sees_own_crashed_pass_and_only_this_repo(self) -> None:
-        """Under ExecStopPost= the pass unit is still active, so its failure arrives as $SERVICE_RESULT."""
-        listed = ("factory-widgets-dashboard.service loaded failed failed factory dashboard\n"
-                  "factory-other.service loaded failed failed another repo\n")
+    def test_failed_units_sees_own_failed_services_and_only_this_repo(self) -> None:
+        listed = (
+            "factory-widgets.service loaded failed failed factory pass\n"
+            "factory-widgets-dashboard.service loaded failed failed factory dashboard\n"
+            "factory-other.service loaded failed failed another repo\n"
+        )
 
         def fake_run(cmd, **kwargs):
+            if "is-active" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, "active\n", "")
             out = listed if "list-units" in cmd else f"● {cmd[-1]}: code=exited, status=1/FAILURE\n"
             return subprocess.CompletedProcess(cmd, 0, out, "")
 
-        env = {"SERVICE_RESULT": "exit-code", "EXIT_CODE": "exited", "EXIT_STATUS": "1"}
-        with mock.patch.object(subprocess, "run", fake_run), mock.patch.dict("os.environ", env):
+        with mock.patch.object(subprocess, "run", fake_run):
             units = dict(REAL_FAILED_UNITS(self.cfg))
         self.assertEqual(set(units), {"factory-widgets-dashboard.service", "factory-widgets.service"})
-        self.assertIn("SERVICE_RESULT=exit-code EXIT_CODE=exited EXIT_STATUS=1", units["factory-widgets.service"])
-        with mock.patch.object(subprocess, "run", fake_run), mock.patch.dict("os.environ", {"SERVICE_RESULT": "success"}):
-            self.assertEqual([n for n, _ in REAL_FAILED_UNITS(self.cfg)], ["factory-widgets-dashboard.service"])
+
+    def test_failed_units_reports_inactive_watchdog_timer(self) -> None:
+        def fake_run(cmd, **kwargs):
+            output = "inactive\n" if "is-active" in cmd else ""
+            return subprocess.CompletedProcess(cmd, 0, output, "")
+
+        with mock.patch.object(subprocess, "run", fake_run):
+            units = dict(REAL_FAILED_UNITS(self.cfg))
+
+        timer = "factory-widgets-watchdog.timer"
+        self.assertEqual(units[timer], f"{timer} is inactive")
 
     def test_failed_units_excludes_other_repositories_with_same_prefix(self) -> None:
         listed = ("factory-widgets.service loaded failed failed factory pass\n"
@@ -217,6 +269,8 @@ class WatchTest(unittest.TestCase):
                   "factory-widgets-api-dashboard.service loaded failed failed another repo dashboard\n")
 
         def fake_run(cmd, **kwargs):
+            if "is-active" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, "active\n", "")
             out = listed if "list-units" in cmd else f"● {cmd[-1]}: failed\n"
             return subprocess.CompletedProcess(cmd, 0, out, "")
 
@@ -396,18 +450,20 @@ class PersistentHostConditionTest(unittest.TestCase):
         self.assertEqual(len(self.gh.created), 1)
         self.assertIn("- `other/widgets`", self.gh.issues[101]["body"])
 
-    def test_host_failure_threshold_is_configurable(self) -> None:
+    def test_watch_thresholds_are_configurable(self) -> None:
         root = self.root / "configured"
         root.mkdir()
         subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
         (root / config.CONFIG_NAME).write_text(
-            '[repo]\nslug = "acme/widgets"\n[watch]\nhost_failure_minutes = 15\n'
+            '[repo]\nslug = "acme/widgets"\n[watch]\n'
+            "host_failure_minutes = 15\nmax_pass_minutes = 30\n"
         )
 
         with mock.patch.object(config, "host_config", return_value={}):
             loaded = config.load(root)
 
         self.assertEqual(loaded.watch_host_failure_minutes, 15)
+        self.assertEqual(loaded.watch_max_pass_minutes, 30)
 
     def test_host_condition_keeps_watch_triage_route_until_success(self) -> None:
         self.journal(*self.failures(70, 5))
