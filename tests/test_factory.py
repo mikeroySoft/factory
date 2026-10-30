@@ -2884,7 +2884,10 @@ class DispatchTest(unittest.TestCase):
             worker_log = dispatch.LOGS / "7-attempt-1.log"
             worker_log.parent.mkdir()
             worker_log.write_text("worker detail\n")
-            with mock.patch.object(dispatch, "run"):
+            posted = subprocess.CompletedProcess(
+                [], 0, "https://github.com/example/project/issues/7#issuecomment-100\n", "",
+            )
+            with mock.patch.object(dispatch, "run", return_value=posted):
                 dispatch.escalate(
                     7, "gate failed", worker_log,
                     dispatch.classify("gate_failed", {}), code="gate_failed",
@@ -2899,15 +2902,21 @@ class DispatchTest(unittest.TestCase):
             self.assertIn("## Handoff\n\nleft the migration unverified", text)
             self.assertIn(f"## Log paths\n\n- `{worker_log}`", text)
             self.assertIn(f"## Worktree path\n\n`{wt}`", text)
-            escalation = json.loads(dispatch.EVENTS.read_text().splitlines()[-1])
+            escalation = next(
+                row for row in reversed(lifecycle.read_events(dispatch.EVENTS))
+                if row.get("event") == "escalate"
+            )
             self.assertEqual(escalation["packet"], str(packet))
             self.assertEqual(escalation["round"], 1)
-            with mock.patch.object(dispatch, "run"):
+            with mock.patch.object(dispatch, "run", return_value=posted):
                 dispatch.escalate(
                     7, "gate failed again", worker_log,
                     dispatch.classify("gate_failed", {}), code="gate_failed",
                 )
-            escalation = json.loads(dispatch.EVENTS.read_text().splitlines()[-1])
+            escalation = next(
+                row for row in reversed(lifecycle.read_events(dispatch.EVENTS))
+                if row.get("event") == "escalate"
+            )
             self.assertEqual(escalation["round"], 2)
 
     def test_resume_context_reports_unchanged_changed_and_unavailable_source(self) -> None:
