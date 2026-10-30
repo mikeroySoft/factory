@@ -503,6 +503,12 @@ def doctor(argv: list[str]) -> int:
     unset = unset_repo_keys(cfg.raw_repo)
     if unset:
         report(None, "defaults in effect", ", ".join(unset), info=True)
+    for key, expected, actual in config.intended_state_mismatches(cfg):
+        report(
+            False,
+            f"intended state {key}",
+            f"declared {str(expected).lower()}, configured {str(actual).lower()}; live config unchanged",
+        )
     report_stage_success(cfg, report)
     if cfg.watch_bands:
         from factory import watch

@@ -20,10 +20,13 @@ import re
 import shlex
 import subprocess
 import sys
+from collections.abc import Callable
 from contextlib import nullcontext
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from statistics import mean, pstdev
+from typing import TypeAlias
 
 from factory import config, dispatch, lifecycle, runtime_events, stats
 
@@ -51,6 +54,175 @@ OBSERVED = "## Observed by"
 COMMENT_PREFIX = "factory watch: observed in `"
 MAX_OPEN = 200  # newest open `bug` issues of the engine repo searched for a fingerprint
 FINGERPRINT = re.compile(r"Fingerprint: (\S+)")
+
+Signal: TypeAlias = dict[str, object]
+
+
+@dataclass(frozen=True)
+class Expectation:
+    name: str
+    predicate: Callable[[dict], bool]
+    max_age: timedelta
+    switch: str | None = None
+    per_triage_issue: bool = False
+    since: datetime | None = None
+    max_passes: int | None = None
+    start_from_journal: bool = False
+
+
+def _pass_exit(row: dict) -> bool:
+    return (
+        row.get("event") == "lifecycle"
+        and row.get("kind") == "exit"
+        and row.get("stage") == "dispatch"
+    )
+
+
+def _eval_summary(row: dict) -> bool:
+    return row.get("event") == "eval-summary"
+
+
+def _triage_exit(row: dict) -> bool:
+    return (
+        row.get("event") == "lifecycle"
+        and row.get("kind") == "exit"
+        and row.get("stage") == "triage-ticket"
+    )
+
+
+EXPECTATIONS = (
+    Expectation("factory pass", _pass_exit, timedelta(minutes=30)),
+    Expectation(
+        "eval suite",
+        _eval_summary,
+        timedelta(days=8),
+        switch="eval.schedule",
+        start_from_journal=True,
+    ),
+    Expectation(
+        "needs-triage issue",
+        _triage_exit,
+        timedelta(minutes=30),
+        per_triage_issue=True,
+        max_passes=2,
+    ),
+)
+
+
+def _time(value: object) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
+def overdue(
+    expectations: list[Expectation] | tuple[Expectation, ...],
+    rows: list[dict],
+    now: datetime,
+) -> list[Signal]:
+    """Enabled expected events whose newest matching row is too old."""
+    current = now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
+    dated = [(at, row) for row in rows if (at := _time(row.get("at"))) is not None]
+    oldest = min((at for at, _ in dated), default=None)
+    signals: list[Signal] = []
+    for expectation in expectations:
+        matches = [(at, row) for at, row in dated if expectation.predicate(row)]
+        if expectation.per_triage_issue:
+            ticket = expectation.name.rsplit("#", 1)[-1]
+            matches = [
+                (at, row) for at, row in matches if str(row.get("ticket")) == ticket
+            ]
+        newest = max((at for at, _ in matches), default=None)
+        anchor = newest or expectation.since or (oldest if expectation.start_from_journal else None)
+        if anchor is None:
+            continue
+        age_overdue = current - anchor > expectation.max_age
+        pass_overdue = (
+            expectation.max_passes is not None
+            and sum(at > anchor and _pass_exit(row) for at, row in dated)
+            >= expectation.max_passes
+        )
+        if not (age_overdue or pass_overdue):
+            continue
+        key = f"expectation:{fingerprint('expectation', expectation.name)}"
+        latest = newest or anchor
+        signals.append({
+            "fingerprint": key,
+            "kind": "expectation",
+            "stage": "expected-events",
+            "key": expectation.name,
+            "name": expectation.name,
+            "tier": "act",
+            "rows": [row for _, row in matches][-MAX_ROWS:],
+            "excerpt": (
+                f"Expected `{expectation.name}` within {expectation.max_age}; "
+                f"newest matching event: {newest.isoformat() if newest else 'none'}."
+            ),
+            "log": None,
+            "latest": latest.isoformat(),
+            "command": "factory watch --dry-run",
+        })
+    return signals
+
+
+def _active_expectations(
+    cfg: config.Config, rows: list[dict], include_triage: bool,
+) -> list[Expectation]:
+    active = [
+        expectation
+        for expectation in EXPECTATIONS
+        if expectation.switch is None
+        or bool(getattr(cfg, expectation.switch.replace(".", "_")))
+    ]
+    triage = next(
+        (expectation for expectation in active if expectation.per_triage_issue),
+        None,
+    )
+    if triage is None:
+        return active
+    active.remove(triage)
+    if not include_triage:
+        return active
+    if sum(_pass_exit(row) for row in rows) < 2:
+        return active
+    issues = dispatch.gh_json([
+        "issue", "list", "--repo", cfg.repo, "--label", config.LABEL_TRIAGE,
+        "--state", "open", "--limit", "200", "--json", "number,createdAt",
+    ])
+    for issue in issues:
+        number, created = issue.get("number"), _time(issue.get("createdAt"))
+        if isinstance(number, int) and created is not None:
+            active.append(replace(
+                triage,
+                name=f"needs-triage issue #{number}",
+                since=created,
+            ))
+    return active
+
+
+def intended_state_signals(cfg: config.Config) -> list[Signal]:
+    signals: list[Signal] = []
+    for key, expected, actual in config.intended_state_mismatches(cfg):
+        fp = f"intended:{fingerprint('intended-state', key)}"
+        signals.append({
+            "fingerprint": fp,
+            "kind": "configuration",
+            "stage": "intended-state",
+            "key": key,
+            "name": key,
+            "tier": "act",
+            "rows": [],
+            "excerpt": (
+                f"Intended state: `{key} = {str(expected).lower()}`\n"
+                f"Configured state: `{key} = {str(actual).lower()}`"
+            ),
+            "log": None,
+            "latest": None,
+            "command": f"cat docs/{config.INTENDED_STATE_NAME}; grep -n '\\[{key.split('.', 1)[0]}\\]' .factory.toml",
+        })
+    return signals
 
 
 def fingerprint(kind: str, key: str) -> str:
@@ -553,7 +725,11 @@ def _diagnose(cfg: config.Config, signal: dict) -> None:
 
 
 def signals(
-    cfg: config.Config, events: list[dict], now: datetime | None = None,
+    cfg: config.Config,
+    events: list[dict],
+    now: datetime | None = None,
+    *,
+    include_external: bool = False,
 ) -> list[dict]:
     """Every observed failure, newest journal evidence first within each fingerprint."""
     found: dict[str, dict] = {}
@@ -614,6 +790,14 @@ def signals(
                       "excerpt": "\n".join(f"- #{r.get('ticket')}: {r.get('reason')} ({r.get('packet')})" for r in rows),
                       "command": "zcat -f .factory/events.jsonl* | grep -F "
                       f"{shlex.quote(json.dumps({'code': code}, separators=(',', ':'))[1:-1])}"}
+    for signal in overdue(
+        _active_expectations(cfg, events, include_external),
+        events,
+        now or datetime.now(UTC),
+    ):
+        found[signal["fingerprint"]] = signal
+    for signal in intended_state_signals(cfg):
+        found[signal["fingerprint"]] = signal
     for alarm in band_signals(cfg, events, now):
         found[alarm["fingerprint"]] = alarm
     for signal in found.values():
@@ -626,6 +810,10 @@ def signals(
 def title(signal: dict) -> str:
     if signal["kind"] == "band":
         return f"factory control-band alarm: {signal['metric']} ({signal['rule']})"[:200]
+    if signal["kind"] == "expectation":
+        return f"factory expected event overdue: {signal['name']}"[:200]
+    if signal["kind"] == "configuration":
+        return f"factory intended state mismatch: {signal['name']}"[:200]
     return f"factory runtime failure: {signal['kind']} {signal['stage']} {signal['key']}"[:200]
 
 
@@ -729,7 +917,7 @@ def run_pass(
     opened = {(r["fingerprint"], r["issue"], r.get("repo", dispatch.REPO))
               for r in rows if not r.get("commented") and not r.get("closed")}
     engine, install = cfg.watch_engine_repo, cfg.repo
-    current = signals(cfg, events, now)
+    current = signals(cfg, events, now, include_external=not dry_run)
     observations = {
         row["fingerprint"]: row for row in events
         if row.get("event") == "watch-band" and isinstance(row.get("fingerprint"), str)

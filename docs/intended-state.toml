@@ -1,0 +1,7 @@
+# Reviewed feature switches. `factory doctor` and `factory watch` report drift;
+# changing live repository configuration remains an operator decision.
+[repo."mikeroySoft/factory"]
+"eval.schedule" = true
+
+[repo."mikeroySoft/rocm-cli"]
+"eval.schedule" = true

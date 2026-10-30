@@ -39,6 +39,7 @@ packages = ["factory"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "docs/ticket-flow.md" = "factory/ticket-flow.md"
+"docs/intended-state.toml" = "factory/intended-state.toml"
 
 [tool.ruff]
 line-length = 100

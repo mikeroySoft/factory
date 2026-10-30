@@ -17,11 +17,14 @@ from factory import cli, config, dispatch, lifecycle, onboard, triage, watch
 class GitHub:
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
+        self.issues: list[dict] = []
 
     def __call__(self, command: list[str], **kwargs) -> subprocess.CompletedProcess:
         self.calls.append(command)
         if command[:3] == ["gh", "issue", "list"]:
-            return subprocess.CompletedProcess(command, 0, "[]", "")
+            label = command[command.index("--label") + 1]
+            rows = self.issues if label == config.LABEL_TRIAGE else []
+            return subprocess.CompletedProcess(command, 0, json.dumps(rows), "")
         if command[:3] == ["gh", "issue", "create"]:
             return subprocess.CompletedProcess(
                 command, 0, "https://github.com/mikeroySoft/factory/issues/901\n", "",
@@ -35,6 +38,7 @@ class WatchExpectationTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.cfg = config.Config(self.root, "mikeroySoft/factory")
+        (self.root / config.CONFIG_NAME).write_text("# fixture config\n")
         self.cfg.factory.mkdir()
         self.github = GitHub()
         dispatch.configure(self.cfg)
@@ -62,6 +66,14 @@ class WatchExpectationTest(unittest.TestCase):
         now = datetime(2026, 10, 30, tzinfo=UTC)
         self.cfg.eval_schedule = True
         self.append(self.eval_summary(now - timedelta(days=9)))
+        self.append({
+            "event": "lifecycle",
+            "kind": "exit",
+            "stage": "dispatch",
+            "outcome": "completed",
+            "reason": None,
+            "at": now.isoformat(),
+        })
 
         signals = watch.run_pass(self.cfg, dry_run=True, now=now)
 
@@ -75,8 +87,44 @@ class WatchExpectationTest(unittest.TestCase):
         self.cfg.eval_schedule = True
         self.append(self.eval_summary(now - timedelta(days=1)))
 
+        self.append({
+            "event": "lifecycle",
+            "kind": "exit",
+            "stage": "dispatch",
+            "outcome": "completed",
+            "reason": None,
+            "at": now.isoformat(),
+        })
         self.assertEqual(watch.run_pass(self.cfg, dry_run=True, now=now), [])
         self.assertEqual(self.github.calls, [])
+
+    def test_needs_triage_issue_is_overdue_after_two_passes(self) -> None:
+        now = datetime(2026, 10, 30, tzinfo=UTC)
+        self.cfg.eval_schedule = True
+        self.github.issues = [{
+            "number": 7,
+            "createdAt": (now - timedelta(hours=1)).isoformat(),
+        }]
+        for minutes in (20, 10):
+            self.append({
+                "event": "lifecycle",
+                "kind": "exit",
+                "stage": "dispatch",
+                "outcome": "completed",
+                "reason": None,
+                "at": (now - timedelta(minutes=minutes)).isoformat(),
+            })
+
+        signals = watch.run_pass(self.cfg, now=now)
+
+        self.assertEqual([signal["name"] for signal in signals], ["needs-triage issue #7"])
+        creates = [
+            call for call in self.github.calls
+            if call[:3] == ["gh", "issue", "create"]
+        ]
+        self.assertEqual(len(creates), 1)
+        rows = lifecycle.read_events(self.cfg.factory / "events.jsonl")
+        self.assertEqual([row["issue"] for row in rows if row.get("event") == "watch"], [901])
 
     def test_watch_files_and_journals_intended_switch_mismatch(self) -> None:
         self.append({

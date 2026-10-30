@@ -25,6 +25,7 @@ from factory import lifecycle
 
 CONFIG_NAME = ".factory.toml"
 BANDS_NAME = "factory-bands.toml"
+INTENDED_STATE_NAME = "intended-state.toml"
 LESSONS_NAME = ".factory-lessons.md"  # committed; `factory learn` writes, every worker prompt reads
 
 # Triage roles -> label strings. Fixed by convention; `factory init` creates them.
@@ -308,6 +309,29 @@ class Config:
         if argv and Path(argv[0]).name == "omp" and "{prompt}" in argv:
             raise ConfigError('manager.command: use "@{prompt}" instead of bare "{prompt}" for omp')
         return expand(argv, prompt=str(prompt_path), cwd=str(cwd))
+
+
+def intended_state_mismatches(cfg: Config) -> list[tuple[str, bool, bool]]:
+    """Configured boolean switches that differ from this repository's declared intent."""
+    if not (cfg.root / CONFIG_NAME).exists():
+        return []
+    packaged = Path(__file__).with_name(INTENDED_STATE_NAME)
+    source = Path(__file__).resolve().parent.parent / "docs" / INTENDED_STATE_NAME
+    raw = tomllib.loads((packaged if packaged.exists() else source).read_text())
+    intended = raw.get("repo", {}).get(cfg.repo, {})
+    actual = {"eval.schedule": cfg.eval_schedule}
+    unknown = set(intended) - set(actual)
+    if unknown:
+        raise ConfigError(
+            f"{INTENDED_STATE_NAME}: unsupported intended switch {min(unknown)}"
+        )
+    if any(type(value) is not bool for value in intended.values()):
+        raise ConfigError(f"{INTENDED_STATE_NAME}: intended switches must be true or false")
+    return [
+        (key, expected, actual[key])
+        for key, expected in intended.items()
+        if actual[key] != expected
+    ]
 
 
 def expand(argv: list[str], **values: str) -> list[str]:
