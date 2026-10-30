@@ -454,8 +454,9 @@ def main(
         models = [model.strip() for model in args.models.split(",")]
         stamp = datetime.now(UTC).date()
         out_dir = pathlib.Path(args.out_dir or EXP / "runs" / f"model-replay-{stamp}")
+        contracts = args.contracts or [config.git(REPO, "rev-parse", "HEAD")]
+
         if matrix_runner is None:
-            contracts = args.contracts or [config.git(REPO, "rev-parse", "HEAD")]
 
             def matrix_runner(
                 model: str, model_out: pathlib.Path

@@ -195,6 +195,22 @@ def skill_failure_evidence(
         result += excerpts[:3]
     return result
 
+def _format_skill_evidence(excerpts: list[dict]) -> str:
+    parts = ["## Skill health evidence"]
+    shown = set()
+    ordered = sorted(excerpts, key=lambda item: item["tag"] != "load_failure")
+    for item in ordered:
+        skill = item["skill"]
+        addition = []
+        if skill not in shown:
+            addition.append(f"### Skill {skill} failure evidence")
+        addition.append(f"- [{item['tag']}] {item['excerpt']}")
+        candidate = "\n".join(parts + addition)
+        if len(candidate) <= MAX_SKILL_EVIDENCE:
+            parts += addition
+            shown.add(skill)
+    return "\n".join(parts) if shown else ""
+
 
 def _transcript_failures(rows: list[dict], tickets: set[int]) -> dict[str, list[dict]]:
     sessions = {
@@ -268,11 +284,7 @@ def evidence(last: int) -> tuple[list[int], str]:
     failures = skill_failure_evidence(
         journal_rows, _transcript_failures(journal_rows, set(chosen)), set(chosen),
     )
-    skill_parts = ["## Skill health evidence"]
-    for skill in dict.fromkeys(item["skill"] for item in failures):
-        skill_parts.append(f"### Skill {skill} failure evidence")
-        skill_parts += [f"- [{item['tag']}] {item['excerpt']}" for item in failures if item["skill"] == skill]
-    skill_evidence = "\n".join(skill_parts)[:MAX_SKILL_EVIDENCE] if failures else ""
+    skill_evidence = _format_skill_evidence(failures)
     return chosen, "\n".join(part for part in (ticket_evidence, skill_evidence) if part)
 
 def replay_cases(tickets: list[int], maximum: int) -> list[ReplayCase]:
