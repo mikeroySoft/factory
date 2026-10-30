@@ -633,6 +633,14 @@ def doctor(argv: list[str]) -> int:
 
     timer = sh(["systemctl", "--user", "is-active", f"{cfg.unit}.timer"]).stdout.strip()
     report(True if timer == "active" else None, f"systemd timer {cfg.unit}.timer", timer or "not installed (factory install)")
+    for role in ("watch", "watchdog"):
+        unit = f"{cfg.unit}-{role}.timer"
+        active = sh(["systemctl", "--user", "is-active", unit]).stdout.strip()
+        report(
+            True if active == "active" else None,
+            f"{role} timer",
+            f"{unit} {active}" if active else "not installed (factory install)",
+        )
     if cfg.triage_service:
         probe_timer = f"{cfg.unit}-triage-probe.timer"
         active = sh(["systemctl", "--user", "is-active", probe_timer]).stdout.strip()
@@ -852,7 +860,7 @@ def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
     # At boot the user manager's PATH is the systemd default (no ~/.local/bin),
     # so gh/omp/codex vanish; carry the installing shell's PATH into the units.
     # [install].env (host config) adds one line each: policy such as UV_EXCLUDE_NEWER.
-    # [install].dispatch_env goes only into the triage+dispatcher unit: its GitHub identity.
+    # [install].dispatch_env goes into every GitHub-writing unattended command.
     env = f"Environment=PATH={os.environ['PATH']}\n"
     env += "".join(systemd_environment(k, v) for k, v in cfg.install["env"].items())
     dispatch_env = env + "".join(systemd_environment(k, v) for k, v in cfg.install.get("dispatch_env", {}).items())
@@ -862,13 +870,30 @@ def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
             # `-` prefix: an offline triage model must not stop the dispatch pass.
             f"[Service]\nType=oneshot\nWorkingDirectory={cfg.root}\n{dispatch_env}"
             f"ExecStart=-{exe} triage\nExecStart={exe} dispatch\n"
-            # Post-pass monitor, after success or failure: systemd hands it $SERVICE_RESULT,
-            # so a crashed pass files itself. `-`: the monitor never fails the unit.
-            f"ExecStopPost=-{exe} watch\n"
         ),
         f"{cfg.unit}.timer": (
             f"[Unit]\nDescription=Run the factory pass for {cfg.repo} every {every}\n\n"
             f"[Timer]\nOnBootSec=5min\nOnUnitActiveSec={every}\nRandomizedDelaySec=90\n\n"
+            f"[Install]\nWantedBy=timers.target\n"
+        ),
+        f"{cfg.unit}-watch.service": (
+            f"[Unit]\nDescription=Watch factory runtime evidence for {cfg.repo}\n\n"
+            f"[Service]\nType=oneshot\nWorkingDirectory={cfg.root}\n{dispatch_env}"
+            f"ExecStart={exe} watch\n"
+        ),
+        f"{cfg.unit}-watch.timer": (
+            f"[Unit]\nDescription=Run factory watch for {cfg.repo} every 15 minutes\n\n"
+            f"[Timer]\nOnBootSec=5min\nOnUnitActiveSec=15min\nRandomizedDelaySec=90\n\n"
+            f"[Install]\nWantedBy=timers.target\n"
+        ),
+        f"{cfg.unit}-watchdog.service": (
+            f"[Unit]\nDescription=Check factory watch heartbeat for {cfg.repo}\n\n"
+            f"[Service]\nType=oneshot\nWorkingDirectory={cfg.root}\n{dispatch_env}"
+            f"ExecStart={exe} watch --heartbeat-check\n"
+        ),
+        f"{cfg.unit}-watchdog.timer": (
+            f"[Unit]\nDescription=Check factory watch heartbeat for {cfg.repo} every 15 minutes\n\n"
+            f"[Timer]\nOnBootSec=15min\nOnUnitActiveSec=15min\nRandomizedDelaySec=90\n\n"
             f"[Install]\nWantedBy=timers.target\n"
         ),
         f"{cfg.unit}-dashboard.service": (
@@ -917,9 +942,10 @@ def systemctl(*args: str) -> None:
 def install(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="factory install",
-        description="Install systemd user units: a dispatcher timer and, optionally, the dashboard. "
-        "Defaults come from [install] in the host config; [install].python selects the service "
-        "interpreter. --print only renders units and does not validate the interpreter.",
+        description="Install systemd user units: dispatcher, watch, and watchdog timers and, "
+        "optionally, the dashboard. Defaults come from [install] in the host config; "
+        "[install].python selects the service interpreter. --print only renders units and "
+        "does not validate the interpreter.",
     )
     parser.add_argument("--every", help="dispatcher interval, systemd time span (default 10min)")
     parser.add_argument(
@@ -940,6 +966,8 @@ def install(argv: list[str]) -> int:
     probe_timer = f"{cfg.unit}-triage-probe.timer"
     eval_service = f"{cfg.unit}-eval.service"
     eval_timer = f"{cfg.unit}-eval.timer"
+    watch_timer = f"{cfg.unit}-watch.timer"
+    watchdog_timer = f"{cfg.unit}-watchdog.timer"
     if not args.dashboard:
         wanted.pop(dash_unit)
     if args.print:
@@ -989,11 +1017,12 @@ def install(argv: list[str]) -> int:
                 (udir / name).unlink()
                 print(f"removed {udir / name}")
     systemctl("daemon-reload")
-    timer = f"{cfg.unit}.timer"
-    systemctl("enable", "--now", timer)
-    if timer in changed:
-        systemctl("restart", timer)
-    print(f"{'restarted' if timer in changed else 'started'} {timer}")
+    timers = (f"{cfg.unit}.timer", watch_timer, watchdog_timer)
+    for timer in timers:
+        systemctl("enable", "--now", timer)
+        if timer in changed:
+            systemctl("restart", timer)
+        print(f"{'restarted' if timer in changed else 'started'} {timer}")
     if cfg.triage_service:
         systemctl("enable", "--now", probe_timer)
         if probe_timer in changed:
@@ -1011,7 +1040,7 @@ def install(argv: list[str]) -> int:
         print(f"{'restarted' if dash_unit in changed else 'started'} {dash_unit}")
     if sh(["loginctl", "show-user", "--property=Linger", "--value", Path.home().name]).stdout.strip() != "yes":
         print("hint: `loginctl enable-linger` keeps user timers running after logout and at boot")
-    enabled = [f"{cfg.unit}.timer"]
+    enabled = list(timers)
     if cfg.triage_service:
         enabled.append(probe_timer)
     if cfg.eval_schedule:

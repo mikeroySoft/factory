@@ -105,7 +105,7 @@ KNOWN_KEYS = {
     "install": ("every", "dashboard", "host", "python", "env", "dispatch_env"),
     "collaboration": ("fallback", "reasons", "components"),
     "prices": None,
-    "watch": ("engine_repo", "host_failure_minutes"),
+    "watch": ("engine_repo", "host_failure_minutes", "max_pass_minutes"),
 }
 # Normalized numeric fields of an `llm-usage` event; a worker profile maps each to JSON paths.
 USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "cached_tokens", "cost")
@@ -245,6 +245,7 @@ class Config:
     # `[watch].engine_repo`: where `factory watch` files engine/runtime failures from every install.
     watch_engine_repo: str = ENGINE_REPO
     watch_host_failure_minutes: int = 60
+    watch_max_pass_minutes: int = 120
     watch_bands: list[Band] = field(default_factory=list)
     raw_repo: dict = field(default_factory=dict)  # the committed file alone, before host layering
 
@@ -856,6 +857,10 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     if isinstance(host_failure_minutes, bool) or not isinstance(host_failure_minutes, int) or host_failure_minutes < 1:
         raise ConfigError("watch.host_failure_minutes must be a positive integer")
     cfg.watch_host_failure_minutes = host_failure_minutes
+    max_pass_minutes = watch.get("max_pass_minutes", cfg.watch_max_pass_minutes)
+    if isinstance(max_pass_minutes, bool) or not isinstance(max_pass_minutes, int) or max_pass_minutes < 1:
+        raise ConfigError("watch.max_pass_minutes must be a positive integer")
+    cfg.watch_max_pass_minutes = max_pass_minutes
     cfg.dashboard_port = int(dash.get("port", cfg.dashboard_port))
     cfg.dashboard_theme = root / dash["theme"] if dash.get("theme") else None
     cfg.install = merge(DEFAULT_INSTALL, raw.get("install", {}))

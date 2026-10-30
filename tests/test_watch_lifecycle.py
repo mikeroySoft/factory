@@ -95,7 +95,10 @@ class WatchLifecycleTest(unittest.TestCase):
         comment = close[close.index("--comment") + 1]
         self.assertIn(f"has not recurred since {at}", comment)
         self.assertIn("engine aaaaaaaaaaaa", comment)
-        rows = lifecycle.read_events(dispatch.EVENTS)
+        rows = [
+            row for row in lifecycle.read_events(dispatch.EVENTS)
+            if row.get("event") == "watch"
+        ]
         self.assertTrue(rows[-1]["closed"])
 
     def test_recurring_and_young_filings_stay_open(self):
@@ -104,6 +107,17 @@ class WatchLifecycleTest(unittest.TestCase):
         signal = {"fingerprint": "recurs", "latest": None}
         calls = self.run_watch({11: "OPEN", 12: "OPEN"}, signals=[signal])
         self.assertFalse(any(call[:3] == ["gh", "issue", "close"] for call in calls))
+
+    def test_active_watchdog_filing_stays_open(self):
+        fingerprint = watch.fingerprint("watchdog", "watch_heartbeat_stale")
+        self.journal(fingerprint, 15, timedelta(days=2))
+        active = {"fingerprint": fingerprint, "latest": None}
+
+        with mock.patch.object(watch, "heartbeat_signals", return_value=[active]):
+            calls = self.run_watch({15: "OPEN"})
+
+        self.assertFalse(any(call[:3] == ["gh", "issue", "close"] for call in calls))
+
 
     def test_signal_with_only_old_evidence_still_closes(self):
         self.journal("stale", 14, timedelta(days=3))

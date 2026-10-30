@@ -15,11 +15,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import re
 import shlex
 import subprocess
 import sys
+import time
 from contextlib import nullcontext
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -31,6 +31,7 @@ LABELS = "bug,needs-triage"
 MAX_ISSUES = 5
 HOST_LABELS = f"bug,{config.LABEL_HOST},{config.LABEL_TRIAGE}"
 QUIET_PERIOD = timedelta(hours=24)
+HEARTBEAT_MAX_AGE = timedelta(minutes=45)
 CLOSABLE = {config.LABEL_TRIAGE, config.LABEL_AGENT}
 MAX_ROWS = 20
 MAX_LOG_LINES = 40
@@ -117,11 +118,7 @@ def persistent_host_conditions(events: list[dict], minutes: int) -> dict[str, li
 
 
 def failed_units(cfg: config.Config) -> list[tuple[str, str]]:
-    """This repository's failed user units as (name, `systemctl status` excerpt).
-
-    The pass unit runs `watch` from ExecStopPost=, so it is never listed as failed while
-    watch looks; systemd reports its result through $SERVICE_RESULT instead.
-    """
+    """This repository's failed services plus an inactive watchdog timer."""
     try:
         listed = subprocess.run(
             ["systemctl", "--user", "list-units", "--failed", "--plain", "--no-legend", "factory-*"],
@@ -130,18 +127,30 @@ def failed_units(cfg: config.Config) -> list[tuple[str, str]]:
     except OSError:
         return []
     names = [line.split()[0] for line in listed.splitlines() if line.split()]
-    result = os.environ.get("SERVICE_RESULT")
-    own = ""
-    if result and result != "success":
-        names.append(f"{cfg.unit}.service")
-        own = " ".join(f"{k}={os.environ.get(k, '')}" for k in ("SERVICE_RESULT", "EXIT_CODE", "EXIT_STATUS")) + "\n"
+    own = {
+        f"{cfg.unit}.service",
+        f"{cfg.unit}-dashboard.service",
+        f"{cfg.unit}-watch.service",
+        f"{cfg.unit}-watchdog.service",
+    }
     units = []
     for name in names:
-        if name in (f"{cfg.unit}.service", f"{cfg.unit}-dashboard.service"):
-            status = subprocess.run(["systemctl", "--user", "status", "--no-pager", "-n", "20", name],
-                                    capture_output=True, text=True, check=False)
-            prefix = own if name == f"{cfg.unit}.service" else ""
-            units.append((name, (prefix + status.stdout + status.stderr).strip()))
+        if name in own:
+            status = subprocess.run(
+                ["systemctl", "--user", "status", "--no-pager", "-n", "20", name],
+                capture_output=True, text=True, check=False,
+            )
+            units.append((name, (status.stdout + status.stderr).strip()))
+    timer = f"{cfg.unit}-watchdog.timer"
+    try:
+        active = subprocess.run(
+            ["systemctl", "--user", "is-active", timer],
+            capture_output=True, text=True, check=False,
+        ).stdout.strip()
+    except OSError:
+        active = ""
+    if active != "active":
+        units.append((timer, f"{timer} is {active or 'not installed'}"))
     return units
 
 
@@ -551,6 +560,89 @@ def _diagnose(cfg: config.Config, signal: dict) -> None:
 
 
 
+def pass_overrun(cfg: config.Config) -> str | None:
+    """Describe an overlong activating pass unit, if one is running."""
+    unit = f"{cfg.unit}.service"
+    try:
+        proc = subprocess.run(
+            [
+                "systemctl", "--user", "show", unit,
+                "--property=ActiveState", "--property=InactiveExitTimestampMonotonic",
+            ],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        return None
+    if proc.returncode:
+        return None
+    properties = dict(
+        line.split("=", 1) for line in proc.stdout.splitlines() if "=" in line
+    )
+    if properties.get("ActiveState") != "activating":
+        return None
+    try:
+        started = int(properties["InactiveExitTimestampMonotonic"]) / 1_000_000
+    except (KeyError, TypeError, ValueError):
+        return None
+    if started <= 0:
+        return None
+    elapsed = time.monotonic() - started
+    if elapsed <= cfg.watch_max_pass_minutes * 60:
+        return None
+    return (
+        f"{unit} has been activating for {elapsed / 60:.0f} minutes "
+        f"(limit {cfg.watch_max_pass_minutes})"
+    )
+
+
+def heartbeat_signals(
+    cfg: config.Config, events: list[dict], now: datetime | None = None,
+) -> list[dict]:
+    """Watchdog failures: a stale watch heartbeat or an overlong pass."""
+    now = now or datetime.now(UTC)
+    heartbeats = [row for row in events if row.get("event") == "watch-heartbeat"]
+    latest = max(heartbeats, key=lambda row: str(row.get("at") or ""), default=None)
+    latest_at = str(latest.get("at") or "") if latest is not None else ""
+    stale = True
+    if latest_at:
+        try:
+            stale = now - datetime.fromisoformat(latest_at) > HEARTBEAT_MAX_AGE
+        except (TypeError, ValueError):
+            pass
+    found = []
+    if stale:
+        key = "watch_heartbeat_stale"
+        found.append({
+            "fingerprint": fingerprint("watchdog", key),
+            "kind": "watchdog",
+            "stage": "heartbeat",
+            "key": key,
+            "rows": [latest] if latest is not None else [],
+            "excerpt": (
+                f"Newest watch heartbeat is {latest_at or 'invalid'}; limit is 45 minutes."
+                if latest is not None else
+                "No watch heartbeat is present; limit is 45 minutes."
+            ),
+            "log": None,
+            "latest": None,
+            "command": "factory watch --heartbeat-check",
+        })
+    if detail := pass_overrun(cfg):
+        key = "pass_overrun"
+        found.append({
+            "fingerprint": fingerprint("watchdog", key),
+            "kind": "watchdog",
+            "stage": "pass",
+            "key": key,
+            "rows": [],
+            "excerpt": detail,
+            "log": None,
+            "latest": None,
+            "command": "systemctl --user status " + shlex.quote(f"{cfg.unit}.service"),
+        })
+    return found
+
+
 def signals(
     cfg: config.Config, events: list[dict], now: datetime | None = None,
 ) -> list[dict]:
@@ -704,10 +796,11 @@ def _age(at: str) -> timedelta:
 
 def run_pass(
     cfg: config.Config, dry_run: bool = False, now: datetime | None = None,
+    *, heartbeat_check: bool = False,
 ) -> list[dict]:
     """Log, diagnose, file/comment, and close configured signals."""
     events = lifecycle.read_events(dispatch.EVENTS)
-    if any(band.metric == "revert_rate_by_tier" for band in cfg.watch_bands):
+    if not heartbeat_check and any(band.metric == "revert_rate_by_tier" for band in cfg.watch_bands):
         stats.configure(cfg)
         try:
             events.extend(stats.escape_events(stats.escapes()))
@@ -721,7 +814,7 @@ def run_pass(
     opened = {(r["fingerprint"], r["issue"], r.get("repo", dispatch.REPO))
               for r in rows if not r.get("commented") and not r.get("closed")}
     engine, install = cfg.watch_engine_repo, cfg.repo
-    current = signals(cfg, events, now)
+    current = heartbeat_signals(cfg, events, now) if heartbeat_check else signals(cfg, events, now)
     observations = {
         row["fingerprint"]: row for row in events
         if row.get("event") == "watch-band" and isinstance(row.get("fingerprint"), str)
@@ -758,6 +851,11 @@ def run_pass(
     latest_by_fingerprint = {
         signal["fingerprint"]: signal["latest"] for signal in actionable
     }
+    if not heartbeat_check:
+        latest_by_fingerprint.update(
+            (signal["fingerprint"], signal["latest"])
+            for signal in heartbeat_signals(cfg, events, now)
+        )
     listing = None
     filed = []
     for signal in actionable:
@@ -814,6 +912,9 @@ def run_pass(
             dispatch.log(f"watch: commented on {engine}#{number} for {fp}")
         filed.append(signal)
     filed = observed_signals + filed
+    if heartbeat_check:
+        return filed
+
 
     closed = 0
     for fp, previous in filings.items():
@@ -865,16 +966,23 @@ def run_pass(
             closed += 1
         except (OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError) as exc:
             dispatch.log(f"watch: could not close {repo}#{previous['issue']} for {fp}: {exc}")
+    if not dry_run:
+        dispatch.record("watch-heartbeat", at=lifecycle._now())
     return filed
 
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="factory watch", description=__doc__)
     parser.add_argument("--dry-run", action="store_true", help="print what would be filed or closed; no gh call, no journal row")
+    parser.add_argument(
+        "--heartbeat-check", action="store_true",
+        help="file a stale watch heartbeat or overlong activating pass",
+    )
     args = parser.parse_args(argv)
     dispatch.configure(config.load())
-    with nullcontext() if args.dry_run else lifecycle.scope(dispatch.EVENTS, "watch", lazy=True):
-        run_pass(dispatch.cfg, args.dry_run)
-    if not args.dry_run:
+    stage = "watchdog" if args.heartbeat_check else "watch"
+    with nullcontext() if args.dry_run else lifecycle.scope(dispatch.EVENTS, stage, lazy=True):
+        run_pass(dispatch.cfg, args.dry_run, heartbeat_check=args.heartbeat_check)
+    if not args.dry_run and not args.heartbeat_check:
         lifecycle.record_stage_success(dispatch.EVENTS, "watch")
     return 0

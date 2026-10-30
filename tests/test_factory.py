@@ -480,7 +480,8 @@ class HostConfigTest(unittest.TestCase):
     def test_install_print_uses_host_defaults_and_env(self) -> None:
         host_file('[defaults.install]\nevery = "5min"\ndashboard = true\n[defaults.install.env]\nUV_EXCLUDE_NEWER = "2026-01-01T00:00:00Z"\n')
         with tempfile.TemporaryDirectory() as d:
-            proc = factory(make_repo(Path(d)), "install", "--print")
+            repo = make_repo(Path(d))
+            proc = factory(repo, "install", "--print")
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("OnUnitActiveSec=5min", proc.stdout)
             self.assertIn("RandomizedDelaySec=90", proc.stdout)
@@ -488,6 +489,25 @@ class HostConfigTest(unittest.TestCase):
             self.assertIn(" triage\nExecStart=", proc.stdout)
             self.assertIn(f"ExecStart=-{sys.executable} -P -m factory triage", proc.stdout)
             self.assertIn("Environment=UV_EXCLUDE_NEWER=2026-01-01T00:00:00Z", proc.stdout)
+            self.assertIn("# factory-widgets-watch.service", proc.stdout)
+            self.assertIn("# factory-widgets-watch.timer", proc.stdout)
+            self.assertIn("# factory-widgets-watchdog.service", proc.stdout)
+            self.assertIn("# factory-widgets-watchdog.timer", proc.stdout)
+            self.assertIn("factory watch --heartbeat-check", proc.stdout)
+            self.assertIn("OnUnitActiveSec=15min", proc.stdout)
+            self.assertNotIn("ExecStopPost", proc.stdout)
+            hourly = factory(repo, "install", "--print", "--every", "1h")
+            self.assertEqual(hourly.returncode, 0, hourly.stderr)
+            self.assertIn(
+                "Description=Run the factory pass for acme/widgets every 1h\n\n"
+                "[Timer]\nOnBootSec=5min\nOnUnitActiveSec=1h",
+                hourly.stdout,
+            )
+            self.assertIn(
+                "Description=Run factory watch for acme/widgets every 15 minutes\n\n"
+                "[Timer]\nOnBootSec=5min\nOnUnitActiveSec=15min",
+                hourly.stdout,
+            )
             self.assertIn("# factory-widgets-dashboard.service", proc.stdout)
             self.assertIn("--host 127.0.0.1", proc.stdout)
             (Path(d) / "b").mkdir()
@@ -582,14 +602,21 @@ class HostConfigTest(unittest.TestCase):
                     )
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertFalse(marker.exists(), "service imported the checkout package")
-            self.assertEqual(commands, ["triage", "dispatch", "dashboard"])
-            self.assertRegex(generated.stdout, r"\nExecStopPost=-.* -P -m factory watch\n")
+            self.assertEqual(commands, ["triage", "dispatch", "watch", "watch", "dashboard"])
+            self.assertNotIn("ExecStopPost", generated.stdout)
 
             installed = run("install", "--no-dashboard")
             self.assertEqual(installed.returncode, 0, installed.stderr)
             self.assertIn(f"{selected} loads Factory selected-test at {selected_package}", installed.stdout)
             units = xdg / "systemd" / "user"
             before = {path.name: path.read_text() for path in units.iterdir()}
+            self.assertIn("factory-widgets-watch.service", before)
+            self.assertIn("factory-widgets-watch.timer", before)
+            self.assertIn("factory-widgets-watchdog.service", before)
+            self.assertIn("factory-widgets-watchdog.timer", before)
+            self.assertIn("ExecStart=", before["factory-widgets-watch.service"])
+            self.assertIn(" factory watch\n", before["factory-widgets-watch.service"])
+            self.assertIn("OnUnitActiveSec=15min", before["factory-widgets-watchdog.timer"])
 
             systemctl_log = Path(tools) / "systemctl.log"
 
@@ -744,10 +771,12 @@ class HostConfigTest(unittest.TestCase):
             self.assertEqual(launchers, [
                 f'ExecStart=-"{escaped}" -P -m factory triage',
                 f'ExecStart="{escaped}" -P -m factory dispatch',
+                f'ExecStart="{escaped}" -P -m factory watch',
+                f'ExecStart="{escaped}" -P -m factory watch --heartbeat-check',
                 (f'ExecStart="{escaped}" -P -m factory dashboard'
                  ' --host 127.0.0.1 --port 8765 --no-open'),
             ])
-            self.assertIn(f'ExecStopPost=-"{escaped}" -P -m factory watch\n', rendered.stdout)
+            self.assertNotIn("ExecStopPost", rendered.stdout)
             accepted = run("install", "--no-dashboard")
             self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
             self.assertIn(str(literal), accepted.stdout)
@@ -5135,6 +5164,16 @@ class TriageProbeOnboardingTest(unittest.TestCase):
                 "status": "PASS",
                 "label": "triage liveness probe",
                 "detail": "factory-widgets-triage-probe.timer active",
+            })
+            self.assertEqual(rows["watch timer"], {
+                "status": "PASS",
+                "label": "watch timer",
+                "detail": "factory-widgets-watch.timer active",
+            })
+            self.assertEqual(rows["watchdog timer"], {
+                "status": "PASS",
+                "label": "watchdog timer",
+                "detail": "factory-widgets-watchdog.timer active",
             })
 
 
