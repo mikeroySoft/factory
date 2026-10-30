@@ -173,6 +173,8 @@ def overdue(
 def _active_expectations(
     cfg: config.Config, rows: list[dict], include_triage: bool,
 ) -> list[Expectation]:
+    if not cfg.is_loaded and not (cfg.root / config.CONFIG_NAME).exists():
+        return []
     active = [
         expectation
         for expectation in EXPECTATIONS
