@@ -332,7 +332,6 @@ class FrontierTest(unittest.TestCase):
         self.assertEqual(self.mutations, [])
 
 
-
 class CloseDecisionTest(unittest.TestCase):
     def test_close_proposes_wontfix_on_human_issue_and_closes_factory_child(self) -> None:
         for created in (False, True):
