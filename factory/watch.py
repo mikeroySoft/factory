@@ -106,9 +106,11 @@ EXPECTATIONS = (
 
 
 def _time(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
     try:
-        parsed = datetime.fromisoformat(str(value))
-    except (TypeError, ValueError):
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
         return None
     return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
 
@@ -169,6 +171,8 @@ def overdue(
             "latest": None,
             "command": "factory watch --dry-run",
         })
+        if expectation.per_triage_issue:
+            signals[-1]["ticket"] = ticket
         if expectation.per_triage_issue and expectation.since is not None:
             signals[-1]["queue_entry"] = expectation.since.isoformat()
             signals[-1]["excerpt"] += f" Current needs-triage queue entry: {expectation.since.isoformat()}."
@@ -271,9 +275,7 @@ def _add_dispatch_success(
     except (OSError, ValueError):
         return
     if at is None or any(
-        row.get("event") == "stage-success"
-        and row.get("stage") == "dispatch"
-        and row.get("at") == at
+        _dispatch_success(row) and row.get("at") == at
         for row in rows
     ):
         return
@@ -879,7 +881,7 @@ def signals(
         now or datetime.now(UTC),
     ):
         if signal.get("queue_entry"):
-            ticket = signal["name"].rsplit("#", 1)[-1]
+            ticket = signal["ticket"]
             endpoint = shlex.quote(f"repos/{cfg.repo}/issues/{ticket}/timeline")
             signal["command"] = (
                 f"gh api {endpoint} --paginate --slurp | jq "
@@ -1030,9 +1032,10 @@ def _file_or_comment(
         listing = open_filings(engine) if listing is None else listing
         issue = listing.get(signal["fingerprint"])
     if issue is None:
+        labels = {"host": HOST_LABELS}.get(signal["kind"], LABELS)
         url = dispatch.run([
             "gh", "issue", "create", "--repo", engine, "--title", title(signal),
-            "--label", HOST_LABELS if signal["kind"] == "host" else LABELS,
+            "--label", labels,
             "--body", body(signal, install),
         ]).stdout.strip().splitlines()[-1]
         number = int(url.rstrip("/").rsplit("/", 1)[-1])
@@ -1091,7 +1094,7 @@ def run_pass(
     """Log, diagnose, file/comment, and close configured signals."""
     events = lifecycle.read_events(dispatch.EVENTS)
     _add_dispatch_success(cfg, events, persist=not dry_run)
-    if not dry_run and any(band.metric == "revert_rate_by_tier" for band in cfg.watch_bands):
+    if not dry_run and "revert_rate_by_tier" in {band.metric for band in cfg.watch_bands}:
         stats.configure(cfg)
         try:
             events.extend(stats.escape_events(stats.escapes()))

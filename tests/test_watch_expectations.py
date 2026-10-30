@@ -556,6 +556,217 @@ class WatchExpectationTest(unittest.TestCase):
         self.assertEqual(watch.run_pass(self.cfg, dry_run=True, now=now), [])
         self.assertEqual(self.github.calls, [])
 
+    def test_overdue_uses_value_equality_and_journal_start(self) -> None:
+        now = datetime(2026, 10, 30, tzinfo=UTC)
+        old = now - timedelta(days=9)
+        eval_expectation = watch.EXPECTATIONS[1]
+        dynamic_event = json.loads('"eval-summary"')
+
+        self.assertEqual(
+            [signal["name"] for signal in watch.overdue(
+                [eval_expectation],
+                [{"event": dynamic_event, "at": old.isoformat()}],
+                now,
+            )],
+            ["eval suite"],
+        )
+        self.assertEqual(
+            [signal["name"] for signal in watch.overdue(
+                [eval_expectation],
+                [{"event": "unrelated", "at": old.isoformat()}],
+                now,
+            )],
+            ["eval suite"],
+        )
+        self.assertEqual(
+            watch.overdue(
+                [eval_expectation],
+                [{"event": "unrelated", "at": {}}, {"at": "not-a-time"}],
+                now,
+            ),
+            [],
+        )
+
+    def test_per_issue_rows_match_ticket_and_exact_queue_entry(self) -> None:
+        now = datetime(2026, 10, 30, tzinfo=UTC)
+        since = now - timedelta(hours=1)
+        expectation = watch.Expectation(
+            "needs-triage issue example/repo#123456789",
+            watch._triage_exit,
+            timedelta(0),
+            per_triage_issue=True,
+            since=since,
+        )
+        matching = {
+            "event": json.loads('"lifecycle"'),
+            "kind": json.loads('"exit"'),
+            "stage": json.loads('"triage-ticket"'),
+            "ticket": 123456789,
+            "at": since.isoformat(),
+        }
+        other = matching | {
+            "ticket": 8,
+            "at": (since + timedelta(minutes=1)).isoformat(),
+        }
+
+        signals = watch.overdue([expectation], [matching, other], now)
+
+        self.assertEqual(signals[0]["rows"], [matching])
+        self.assertEqual(signals[0]["ticket"], "123456789")
+
+    def test_external_expectations_require_two_passes_and_are_opt_in(self) -> None:
+        now = datetime(2026, 10, 30, tzinfo=UTC)
+        self.cfg.eval_schedule = True
+        self.github.issues = [{
+            "number": 7, "body": "", "createdAt": now.isoformat(),
+        }]
+        one_pass = [{
+            "event": "stage-success", "stage": "dispatch", "at": now.isoformat(),
+        }]
+
+        active = watch._active_expectations(
+            self.cfg, one_pass, True, set(),
+        )
+
+        self.assertFalse(any(item.per_triage_issue for item in active))
+        self.assertEqual(self.github.calls, [])
+        two_passes = one_pass + [{
+            "event": "stage-success",
+            "stage": "dispatch",
+            "at": (now + timedelta(minutes=1)).isoformat(),
+        }]
+        self.assertFalse(any(
+            signal["name"].startswith("needs-triage")
+            for signal in watch.signals(self.cfg, two_passes, now)
+        ))
+        self.assertEqual(self.github.calls, [])
+
+    def test_199_triage_issues_do_not_use_pagination_fallback(self) -> None:
+        now = datetime(2026, 10, 30, tzinfo=UTC)
+        self.github.issues = [
+            {
+                "number": number,
+                "body": f"Fingerprint: expectation:watch-{number}\n",
+                "createdAt": now.isoformat(),
+            }
+            for number in range(199)
+        ]
+        rows = [
+            {
+                "event": "stage-success",
+                "stage": "dispatch",
+                "at": (now + timedelta(minutes=number)).isoformat(),
+            }
+            for number in (1, 2)
+        ]
+
+        watch._active_expectations(self.cfg, rows, True, set())
+
+        self.assertFalse(any(
+            call[:2] == ["gh", "api"] and call[2].endswith("/issues")
+            for call in self.github.calls
+        ))
+
+    def test_dispatch_projection_uses_values_and_deduplicates(self) -> None:
+        self.assertFalse(watch._dispatch_success({
+            "event": "zzz", "stage": "dispatch",
+        }))
+        self.assertFalse(watch._dispatch_success({
+            "event": "stage-success", "stage": "zzz",
+        }))
+        at = b"2026-10-30T00:00:00+00:00".decode()
+        row_at = at.encode().decode()
+        self.assertIsNot(at, row_at)
+        rows = [{
+            "event": json.loads('"stage-success"'),
+            "stage": json.loads('"dispatch"'),
+            "at": row_at,
+        }]
+
+        with mock.patch.object(
+            lifecycle, "last_successful_passes", return_value={"dispatch": at},
+        ):
+            watch._add_dispatch_success(self.cfg, rows, persist=False)
+
+        self.assertEqual(len(rows), 1)
+
+    def test_queue_entry_accepts_flat_timeline_and_empty_response(self) -> None:
+        now = datetime(2026, 10, 30, tzinfo=UTC)
+        with mock.patch.object(dispatch, "gh_json", return_value=[]):
+            self.assertIsNone(watch._triage_queue_entry(self.cfg.repo, 7))
+        with mock.patch.object(dispatch, "gh_json", return_value=[
+            self.queue_event("labeled", now),
+        ]):
+            self.assertEqual(
+                watch._triage_queue_entry(self.cfg.repo, 7),
+                now,
+            )
+
+    def test_titles_use_kind_values_and_full_limit(self) -> None:
+        expectation = json.loads('"expectation"')
+        configuration = json.loads('"configuration"')
+        self.assertTrue(watch.title({
+            "kind": expectation, "name": "eval suite",
+        }).startswith("factory expected event overdue"))
+        self.assertTrue(watch.title({
+            "kind": configuration, "name": "eval.schedule",
+        }).startswith("factory intended state mismatch"))
+        self.assertTrue(watch.title({
+            "kind": "aaa", "stage": "stage", "key": "key",
+        }).startswith("factory runtime failure"))
+        self.assertEqual(len(watch.title({
+            "kind": expectation, "name": "x" * 300,
+        })), 200)
+
+    def test_dynamic_host_signal_uses_host_label_and_exact_quiet_boundary(self) -> None:
+        signal = {
+            "fingerprint": "host:test",
+            "kind": json.loads('"host"'),
+            "stage": "host",
+            "key": "resource pressure",
+            "tier": "act",
+            "rows": [],
+            "excerpt": "persistent",
+            "log": None,
+            "latest": None,
+            "command": "factory watch --dry-run",
+        }
+        watch._file_or_comment(
+            signal, None, {}, self.cfg.watch_engine_repo, self.cfg.repo,
+        )
+        create = next(
+            call for call in self.github.calls
+            if call[:3] == ["gh", "issue", "create"]
+        )
+        self.assertEqual(
+            create[create.index("--label") + 1],
+            watch.HOST_LABELS,
+        )
+
+        self.github.calls.clear()
+        previous = {
+            "issue": 901,
+            "repo": self.cfg.watch_engine_repo,
+            "at": datetime.now(UTC).isoformat(),
+        }
+        with mock.patch.object(watch, "_age", return_value=watch.QUIET_PERIOD):
+            watch._file_or_comment(
+                signal, previous, {}, self.cfg.watch_engine_repo, self.cfg.repo,
+            )
+        self.assertTrue(any(
+            call[:3] == ["gh", "issue", "comment"]
+            for call in self.github.calls
+        ))
+
+    def test_unrelated_band_does_not_load_escape_attribution(self) -> None:
+        self.cfg.eval_schedule = True
+        self.cfg.watch_bands = [config.Band("aaa", 28, ())]
+        with mock.patch.object(watch, "signals", return_value=[]), \
+                mock.patch.object(watch.stats, "configure") as configure:
+            watch.run_pass(self.cfg)
+
+        configure.assert_not_called()
+
     def test_cli_dry_run_makes_no_gh_calls_with_escape_band(self) -> None:
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
         (self.root / config.CONFIG_NAME).write_text('[repo]\nslug = "example/fixture"\n')
