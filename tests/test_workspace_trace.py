@@ -157,3 +157,104 @@ process.stdout.write(window.WorkspaceTrace.markup(graph, {
 
         self.assertIn('data-terminal="escalated"', html)
         self.assertIn("<p>protected_path</p>", html)
+
+    def live_render(self, snapshot: dict) -> str:
+        script = """
+const fs = require('fs');
+global.window = {};
+eval(fs.readFileSync(process.argv[1], 'utf8'));
+const snapshot = JSON.parse(fs.readFileSync(0, 'utf8'));
+process.stdout.write(window.WorkspaceTrace.liveMarkup(snapshot, {
+  now: Date.parse('2026-10-30T12:00:00Z')
+}));
+"""
+        result = subprocess.run(
+            ["node", "-e", script, str(ASSET)],
+            input=json.dumps(snapshot),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_live_fleet_renders_all_lanes_cards_elapsed_and_staleness(self) -> None:
+        stages = ("triage", "worker", "gate", "reviewer", "manager", "watch", "learn")
+        snapshot = {
+            "schema_version": 1,
+            "repository": "acme/widgets",
+            "generated_at": "2026-10-30T12:00:00Z",
+            "stale_after_seconds": 60,
+            "executions": [
+                {
+                    "execution_id": f"execution-{index}",
+                    "lane": stage,
+                    "ticket": index,
+                    "title": f"Ticket {index}",
+                    "agent": f"agent-{index}",
+                    "harness": f"harness-{index}",
+                    "entered_at": "2026-10-30T11:58:30Z",
+                    "observed_at": (
+                        "2026-10-30T11:00:00Z"
+                        if stage == "learn"
+                        else "2026-10-30T12:00:00Z"
+                    ),
+                    "state": "active",
+                    "ended_at": None,
+                }
+                for index, stage in enumerate(stages, 1)
+            ],
+        }
+
+        html = self.live_render(snapshot)
+
+        self.assertEqual(html.count('class="trace-node live-execution'), 7)
+        for stage in stages:
+            self.assertIn(f'data-stage="{stage}"', html)
+        self.assertIn("agent-2", html)
+        self.assertIn("harness-2", html)
+        self.assertIn("#2 · Ticket 2", html)
+        self.assertIn("1m 30s", html)
+        self.assertIn('data-status="stale"', html)
+        self.assertIn("Stale", html)
+
+    def test_live_refresh_moves_cards_removes_ended_work_and_keeps_empty_lanes(self) -> None:
+        execution = {
+            "execution_id": "moving",
+            "lane": "worker",
+            "ticket": 7,
+            "title": "Moving ticket",
+            "agent": "default",
+            "harness": "omp",
+            "entered_at": "2026-10-30T11:59:00Z",
+            "observed_at": "2026-10-30T12:00:00Z",
+            "state": "active",
+            "ended_at": None,
+        }
+        first = self.live_render({
+            "schema_version": 1,
+            "stale_after_seconds": 60,
+            "executions": [execution],
+        })
+        second = self.live_render({
+            "schema_version": 1,
+            "stale_after_seconds": 60,
+            "executions": [
+                {**execution, "lane": "reviewer"},
+                {
+                    **execution,
+                    "execution_id": "ended",
+                    "lane": "gate",
+                    "state": "completed",
+                    "ended_at": "2026-10-30T12:00:00Z",
+                },
+            ],
+        })
+
+        self.assertIn('data-stage="worker"', first)
+        self.assertIn('data-lane="worker"', first)
+        self.assertIn('data-lane="reviewer"', second)
+        self.assertNotIn('data-lane="worker"', second)
+        self.assertNotIn('data-trace-node="ended"', second)
+        self.assertIn("No active executions", second)
