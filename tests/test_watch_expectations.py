@@ -230,6 +230,43 @@ class WatchExpectationTest(unittest.TestCase):
         rows = lifecycle.read_events(self.cfg.factory / "events.jsonl")
         self.assertEqual(len([row for row in rows if row.get("event") == "watch"]), 1)
 
+    def test_one_failing_github_alert_does_not_stop_the_next_signal(self) -> None:
+        now = datetime(2026, 10, 30, tzinfo=UTC)
+        self.cfg.eval_schedule = True
+        self.append(self.eval_summary(now - timedelta(days=9)))
+        self.dispatch_pass(now - timedelta(minutes=31))
+        failed: list[list[str]] = []
+
+        def fail_first_create(
+            command: list[str], **kwargs: object,
+        ) -> subprocess.CompletedProcess:
+            if command[:3] == ["gh", "issue", "create"] and not failed:
+                failed.append(command)
+                raise subprocess.CalledProcessError(
+                    1, command, stderr="GitHub API rate limit exceeded",
+                )
+            return self.github(command, **kwargs)
+
+        with mock.patch.object(dispatch, "run", fail_first_create):
+            signals = watch.run_pass(self.cfg, now=now)
+
+        self.assertEqual([signal["name"] for signal in signals], ["eval suite"])
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(
+            [
+                row["fingerprint"]
+                for row in lifecycle.read_events(self.cfg.factory / "events.jsonl")
+                if row.get("event") == "watch-error"
+                and "rate limit" in str(row.get("detail"))
+            ],
+            [f"expectation:{watch.fingerprint('expectation', 'factory pass')}"],
+        )
+        creates = [
+            call for call in self.github.calls
+            if call[:3] == ["gh", "issue", "create"]
+        ]
+        self.assertEqual(len(creates), 1)
+
     def test_old_issue_newly_queued_by_build_gets_two_subsequent_successes(self) -> None:
         now = datetime(2026, 10, 30, tzinfo=UTC)
         self.cfg.eval_schedule = True
