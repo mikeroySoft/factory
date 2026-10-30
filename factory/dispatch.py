@@ -1594,8 +1594,12 @@ def _recorded_plan_lists_lockfile(n: int, path: str) -> bool:
             text = Path(artifact).read_text(errors="replace")
         except OSError:
             continue
-        if any(listed.search(line) for line in text.splitlines()):
-            return True
+        in_files = False
+        for line in text.splitlines():
+            if line.startswith("#"):
+                in_files = line.casefold() == "## files"
+            elif in_files and listed.search(line):
+                return True
     return False
 
 
