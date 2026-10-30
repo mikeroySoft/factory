@@ -108,19 +108,6 @@ DEPENDENCY_LOCKFILES = frozenset({
     "uv.lock",
     "yarn.lock",
 })
-DEPENDENCY_ACTION = re.compile(
-    r"\b(?:add|bump|change|install|pin|refresh|regenerate|remove|replace|sync|update|upgrade)\b",
-    re.IGNORECASE,
-)
-NEGATED_ACTION = re.compile(
-    r"\b(?:do not|does not|don't|doesn't|never|no|not|unplanned|without)\b"
-    r"(?:\s+\w+){0,6}\s*$",
-    re.IGNORECASE,
-)
-DIRECT_NEGATION = re.compile(
-    r"^\s*(?:do not|does not|don't|doesn't|never|no|not|unplanned|without)\b",
-    re.IGNORECASE,
-)
 
 PLAN_INSTRUCTIONS = """## Attempt plan
 
@@ -1568,116 +1555,56 @@ def ensure_worktree(n: int) -> Path:
     return wt
 
 
-def _dependency_lockfiles(wt: Path, base: str) -> list[str]:
+def _changed_paths(wt: Path, base: str) -> set[str]:
     changed = run(
         ["git", "diff", "--name-only", "-z", base, "--"], cwd=wt,
     ).stdout.rstrip("\0").split("\0")
     untracked = run(
         ["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=wt,
     ).stdout.rstrip("\0").split("\0")
-    return sorted({
-        path for path in [*changed, *untracked]
-        if path and (
+    return {path for path in [*changed, *untracked] if path}
+
+
+def _dependency_lockfiles(paths: set[str]) -> list[str]:
+    return sorted(
+        path for path in paths
+        if (
             Path(path).name in DEPENDENCY_LOCKFILES
             or Path(path).name.endswith(".lockfile")
         )
-    })
+    )
 
 
-def _locked_dependencies(wt: Path, path: str, base: str) -> set[str]:
-    previous = run(["git", "show", f"{base}:{path}"], cwd=wt, check=False).stdout
-    # Read identities only from baseline package entries, never worker-added
-    # packages, options, or metadata. Other formats need explicit lockfile intent.
-    try:
-        packages = tomllib.loads(previous).get("package", [])
-    except tomllib.TOMLDecodeError:
-        return set()
-    if not isinstance(packages, list):
-        return set()
-    return {
-        package["name"] for package in packages
-        if isinstance(package, dict) and isinstance(package.get("name"), str)
-    }
-
-
-def _dependency_change_planned(
-    wt: Path, n: int, path: str, body: str, base: str,
-) -> bool:
-    plans = [
-        plan for plan in (wt / ".factory" / "plans" / "current").glob("*.md")
-        if plan.stem.isdigit()
-    ]
-    latest = max(plans, key=lambda plan: int(plan.stem), default=None)
-    sources = [(latest.read_text(errors="replace"), True)] if latest else []
-    sources.append((body, False))
-    brief = brief_path(wt, n)
-    if brief.exists():
-        sources.append((brief.read_text(errors="replace"), False))
-
+def _recorded_plan_lists_lockfile(n: int, path: str) -> bool:
     names = {path, Path(path).name}
     alternatives = "|".join(re.escape(name) for name in sorted(names, key=len, reverse=True))
-    dependencies = _locked_dependencies(wt, path, base)
-    dependency_names = {name.casefold() for name in dependencies}
-    objects = [alternatives, r"dependenc(?:y|ies)", r"lock ?files?", r"packages"]
-    objects.extend(re.escape(name) for name in sorted(dependencies, key=len, reverse=True))
-    target = re.compile(
-        rf"(?:{'|'.join(objects)})(?![\w@/-]|\.(?=\w))",
-        re.IGNORECASE,
-    )
-    listed = re.compile(
-        rf"^\s*[-*]\s*`?(?:{alternatives})`?(?:\s*$|\s*:)",
-        re.IGNORECASE,
-    )
-    for source, is_plan in sources:
-        for line in source.splitlines():
-            file_entry = listed.search(line)
-            if is_plan and file_entry and not DIRECT_NEGATION.match(line[file_entry.end():]):
-                return True
-            # Associate an action with its own direct object, not another
-            # clause's target or prohibition. Keep dots inside paths/versions.
-            clauses = re.split(r";|,\s*|(?<=[.!?])\s+|\b(?:and|but|or)\b", line,
-                               flags=re.IGNORECASE)
-            for clause in clauses:
-                for action in DEPENDENCY_ACTION.finditer(clause):
-                    if NEGATED_ACTION.search(clause[:action.start()]):
-                        continue
-                    prefix = re.match(
-                        r"\s+(?:(?:the|all|declared|project)\s+)*",
-                        clause[action.end():], re.IGNORECASE,
-                    )
-                    if not prefix:
-                        continue
-                    obj = clause[action.end() + prefix.end():].lstrip("`'\"")
-                    match = target.match(obj)
-                    if not match:
-                        continue
-                    tail = obj[match.end():].lstrip("`'\"")
-                    tail = re.sub(r"^\s+(?:package|dependency)\b", "", tail,
-                                  flags=re.IGNORECASE).strip()
-                    # A package's docs/tests/API are not dependency changes.
-                    if match[0].casefold() in dependency_names:
-                        if re.match(
-                            r"^(?:[.!]?\s*$|(?:to|from|at|version)\s+"
-                            r"(?:v?\d|latest\b|stable\b)|[<>=~^])",
-                            tail, re.IGNORECASE,
-                        ):
-                            return True
-                        continue
-                    if re.match(
-                        r"^(?:[.:]?\s*$|(?:to|from|at|in|with|for|version)\b|[<>=~^])",
-                        tail, re.IGNORECASE,
-                    ):
-                        return True
+    listed = re.compile(rf"^\s*[-*]\s+`?(?:{alternatives})`?(?:\s*$|\s*:)")
+    for row in lifecycle.read_events(EVENTS):
+        artifact = row.get("path")
+        if (
+            row.get("event") != "plan"
+            or row.get("ticket") != n
+            or row.get("status") != "recorded"
+            or not isinstance(artifact, str)
+        ):
+            continue
+        try:
+            text = Path(artifact).read_text(errors="replace")
+        except OSError:
+            continue
+        if any(listed.search(line) for line in text.splitlines()):
+            return True
     return False
 
 
-def restore_unplanned_lockfiles(
-    wt: Path, n: int, body: str, base: str,
-) -> list[str]:
+def restore_unplanned_lockfiles(wt: Path, n: int, base: str) -> list[str]:
     common = run(["git", "merge-base", base, "HEAD"], cwd=wt).stdout.strip()
+    changed = _changed_paths(wt, common)
+    if any(Path(path).name == "pyproject.toml" for path in changed):
+        return []
     lockfiles = [
-        path for path in _dependency_lockfiles(wt, common)
-        if not _dependency_change_planned(wt, n, path, body, common)
+        path for path in _dependency_lockfiles(changed)
+        if not _recorded_plan_lists_lockfile(n, path)
     ]
     if not lockfiles:
         return []
@@ -4011,9 +3938,8 @@ def worker_round(
     )
     sync = sync_event(n)
     tip = sync["upstream"] if sync else None
-    restore_unplanned_lockfiles(
-        wt, n, body, sync["head"] if sync else f"origin/{cfg.main}",
-    )
+    if not sync:
+        restore_unplanned_lockfiles(wt, n, f"origin/{cfg.main}")
     commit_leftovers(wt, n, title)
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     handoff = results.source_metadata(cfg, n)

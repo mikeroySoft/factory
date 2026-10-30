@@ -393,20 +393,17 @@ status and lists changed files the plan did not name and planned proof absent
 from the gate report. Plan drift is evidence, not an automatic `REVISE`.
 
 Before committing worker leftovers or running the attempt gate, the dispatcher
-compares known dependency lockfiles with the ticket branch's merge-base.
-Upstream-sync tickets instead use the dispatcher's staged sync head, preserving
-the merge and fork-specific locks while removing subsequent worker drift. The
-latest numbered plan can list the lockfile directly. Affirmative clauses in the
-plan, ticket body, or admitted brief can also target the lockfile, dependencies
-generally, or a package identity in the baseline TOML lockfile's package entries
-(including Markdown-quoted names). Other lockfile formats require an explicit
-lockfile or dependency-change action. Metadata, worker-added package names,
-package-documentation changes, and negated clauses do not authorize drift.
-Otherwise Factory restores tracked lockfiles from that baseline and removes
-newly introduced lockfiles, so a moving main or incidental verifier drift cannot
-alter the gated and pushed head. Repository gate commands that use `uv run` pass
-`--frozen`; preventing `uv` from writing `uv.lock` is simpler than repairing the
-worktree after the authoritative gate has run.
+compares known dependency lockfiles with the ticket branch's merge-base. A
+lockfile edit is planned only when `pyproject.toml` also changed against that
+merge-base or any numbered plan artifact recorded for the ticket, across all
+rounds, lists that lockfile. Ticket and brief wording is not considered.
+Upstream-sync tickets skip this guard so Factory never overwrites a fork's
+lockfile while synchronizing upstream. For every other ticket, Factory restores
+unplanned tracked lockfiles from the merge-base and removes newly introduced
+ones, so a moving main or incidental verifier drift cannot alter the gated and
+pushed head. Repository gate commands that use `uv run` pass `--frozen`;
+preventing `uv` from writing `uv.lock` is simpler than repairing the worktree
+after the authoritative gate has run.
 
 The workspace **Decisions** view (`/?view=decisions&ticket=N`, or `/decisions`)
 reads the selected repository through authenticated `GET /api/trace?ticket=N`.

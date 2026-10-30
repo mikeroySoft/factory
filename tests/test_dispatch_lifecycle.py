@@ -1347,7 +1347,7 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
         self.git("-C", str(wt), "add", "uv.lock")
         self.git("-C", str(wt), "commit", "-qm", "worker lock edit")
 
-        dispatch.restore_unplanned_lockfiles(wt, 7, "", "main")
+        dispatch.restore_unplanned_lockfiles(wt, 7, "main")
         dispatch.commit_leftovers(wt, 7, "restore lockfile")
 
         self.assertEqual((wt / "uv.lock").read_text(), "base\n")
