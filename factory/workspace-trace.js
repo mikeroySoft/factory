@@ -133,6 +133,76 @@
     follows:'follows',retries:'retry',blocked_by:'blocked by',split_from:'split from',
     unblocked_by:'unblocked by',overrides:'override / rejected',
   }[relation] || stageLabel(relation || 'follows'));
+  const arrowOrient = 'auto';
+  const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
+  function fitViewport(viewport, content, padding = 24) {
+    const width = Math.max(1, Number(viewport?.width) || 1);
+    const height = Math.max(1, Number(viewport?.height) || 1);
+    const contentWidth = Math.max(1, Number(content?.width) || 1);
+    const contentHeight = Math.max(1, Number(content?.height) || 1);
+    const inset = Math.max(0, Math.min(Number(padding) || 0, width / 3, height / 3));
+    const scale = clamp(Math.min(1, (width - inset * 2) / contentWidth, (height - inset * 2) / contentHeight), .02, 2.5);
+    return {scale,x:(width - contentWidth * scale) / 2,y:(height - contentHeight * scale) / 2};
+  }
+  function zoomViewport(state, factor, origin) {
+    const current = Number(state?.scale) || 1;
+    const scale = clamp(current * (Number(factor) || 1), .02, 2.5);
+    const ratio = scale / current;
+    const x = Number(origin?.x) || 0, y = Number(origin?.y) || 0;
+    return {scale,x:x - (x - (Number(state?.x) || 0)) * ratio,y:y - (y - (Number(state?.y) || 0)) * ratio};
+  }
+  const panViewport = (state, x, y) => ({
+    scale:Number(state?.scale) || 1,
+    x:(Number(state?.x) || 0) + (Number(x) || 0),
+    y:(Number(state?.y) || 0) + (Number(y) || 0),
+  });
+  const transformRect = (rect, state) => ({
+    left:(Number(rect?.left) || 0) * state.scale + state.x,
+    right:(Number(rect?.right) || 0) * state.scale + state.x,
+    top:(Number(rect?.top) || 0) * state.scale + state.y,
+    bottom:(Number(rect?.bottom) || 0) * state.scale + state.y,
+  });
+  function routeEdge({edge, source, target, fromColumn, toColumn, index = 0, lane = 0, track = null, bounds}) {
+    const width = Math.max(1, Number(bounds?.width) || 1);
+    const height = Math.max(1, Number(bounds?.height) || 1);
+    const inset = Math.min(6, width / 2, height / 2);
+    const point = (x, y) => ({x:clamp(x, inset, width - inset),y:clamp(y, inset, height - inset)});
+    const y1 = (source.top + source.bottom) / 2, y2 = (target.top + target.bottom) / 2;
+    const offset = Number(lane) || 0;
+    const top = (track == null ? 24 + index % 6 * 10 : Number(track)) + offset * 8;
+    let points;
+    if (fromColumn === toColumn) {
+      const gutter = Math.max(source.right, target.right) + 18 + offset * 10;
+      points = [
+        point(source.right, y1), point(gutter, y1), point(gutter, top),
+        point(gutter + 16, top), point(gutter + 16, y2), point(target.right, y2),
+      ];
+    } else if (toColumn < fromColumn) {
+      const bend = 16 + offset * 2;
+      points = [
+        point(source.left, y1), point(source.left - bend, y1), point(source.left - bend, top),
+        point(target.right + bend, top), point(target.right + bend, y2), point(target.right, y2),
+      ];
+    } else if (toColumn - fromColumn > 1) {
+      const bend = 16 + offset * 2;
+      points = [
+        point(source.right, y1), point(source.right + bend, y1), point(source.right + bend, top),
+        point(target.left - bend, top), point(target.left - bend, y2), point(target.left, y2),
+      ];
+    } else {
+      const gutter = (source.right + target.left) / 2 + offset * 10;
+      points = [
+        point(source.right, y1), point(gutter, y1), point(gutter, y1),
+        point(gutter, y2), point(gutter, y2), point(target.left, y2),
+      ];
+    }
+    return {edge,points,markerEnd:'url(#trace-arrow)'};
+  }
+  async function toggleFullscreen(board, targetDocument = typeof document === 'undefined' ? null : document) {
+    if (!board || !targetDocument) return;
+    if (targetDocument.fullscreenElement === board) return targetDocument.exitFullscreen?.();
+    return board.requestFullscreen?.();
+  }
 
   function optionMarkup(item, chosen) {
     const value = object(item);
@@ -204,7 +274,18 @@
       <label class="trace-scrubber"><span>Replay through <output data-trace-time>${esc(dated.at(-1)?.at || 'time not recorded')}</output></span><input type="range" min="0" max="${Math.max(0, dated.length - 1)}" value="${Math.max(0, dated.length - 1)}" step="1" data-trace-range ${dated.length < 2 ? 'disabled' : ''}></label>
       ${loopMarkup ? `<div class="trace-loops" aria-label="Retry loops">${loopMarkup}</div>` : ''}
       <ul class="trace-legend" aria-label="Relationship legend">${legend}</ul>
-      <div class="trace-layout"><div class="trace-board" data-trace-board><svg class="trace-lines" data-trace-lines aria-hidden="true"></svg><div class="trace-stages" role="list" aria-label="Decision nodes in pipeline order">${groups}</div><ol class="sr-only" aria-label="Recorded relationships">${relations}</ol></div><aside class="trace-detail" data-trace-detail aria-live="polite"><p class="muted">Select a decision node for its evidence.</p></aside></div>
+      <div class="trace-layout"><div class="trace-board" data-trace-board tabindex="0" aria-label="Decision graph viewport">
+        <div class="trace-viewport-controls" data-trace-viewport-controls role="toolbar" aria-label="Graph viewport controls">
+          <button type="button" data-trace-zoom-out aria-label="Zoom out" aria-keyshortcuts="-">−</button>
+          <button type="button" data-trace-fit aria-label="Reset and fit graph" aria-keyshortcuts="0">Fit</button>
+          <button type="button" data-trace-zoom-in aria-label="Zoom in" aria-keyshortcuts="+">+</button>
+          <output data-trace-zoom aria-live="polite">100%</output>
+          <button type="button" data-trace-fullscreen aria-label="Enter fullscreen" aria-keyshortcuts="F">Full screen</button>
+        </div>
+        <svg class="trace-lines" data-trace-lines aria-hidden="true"></svg>
+        <div class="trace-scene" data-trace-scene><div class="trace-stages" role="list" aria-label="Decision nodes in pipeline order">${groups}</div></div>
+        <ol class="sr-only" aria-label="Recorded relationships">${relations}</ol>
+      </div><aside class="trace-detail" data-trace-detail aria-live="polite"><p class="muted">Select a decision node for its evidence.</p></aside></div>
       ${coverage.length ? `<section class="trace-coverage"><h2>Not recorded</h2><ul>${coverage.map(stage => `<li>${esc(stageLabel(stage))}: not recorded</li>`).join('')}</ul></section>` : ''}
       ${end ? `<section class="trace-terminal" data-terminal="${end.kind}"><span>Terminal</span><strong>${esc(end.label)}</strong><p>${esc(end.detail || '')}</p></section>` : ''}` : ''}
     </section>`;
@@ -261,7 +342,9 @@
     const buttons = [...host.querySelectorAll('[data-trace-select]')];
     const panel = host.querySelector('[data-trace-detail]');
     const board = host.querySelector('[data-trace-board]');
+    const scene = host.querySelector('[data-trace-scene]');
     const svg = host.querySelector('[data-trace-lines]');
+    const zoomOutput = host.querySelector('[data-trace-zoom]');
     const dated = [...host.querySelectorAll('[data-trace-node]')]
       .filter(item => Number.isFinite(new Date(item.dataset.at || '').valueOf()))
       .sort((left, right) => new Date(left.dataset.at) - new Date(right.dataset.at));
@@ -269,6 +352,7 @@
     const wires = new Map();
     let cutoff = dated.length ? new Date(dated.at(-1).dataset.at).valueOf() : Infinity;
     let pinned = null, hovered = null, scheduleFrame = null, motionFrame = null, ribbonLayer = null, edgeLayer = null;
+    let viewport = {scale:1,x:0,y:0}, fitted = true;
 
     const svgNode = (tag, attributes = {}) => {
       const element = document.createElementNS('http://www.w3.org/2000/svg', tag);
@@ -276,7 +360,7 @@
       return element;
     };
     if (svg) {
-      const marker = svgNode('marker', {id:'trace-arrow',viewBox:'0 0 10 10',refX:9,refY:5,markerWidth:7,markerHeight:7,markerUnits:'userSpaceOnUse',orient:'auto-start-reverse'});
+      const marker = svgNode('marker', {id:'trace-arrow',viewBox:'0 0 10 10',refX:9,refY:5,markerWidth:7,markerHeight:7,markerUnits:'userSpaceOnUse',orient:arrowOrient});
       marker.append(svgNode('path', {d:'M 0 0 L 10 5 L 0 10 z',class:'trace-arrow'}));
       const defs = svgNode('defs'); defs.append(marker);
       ribbonLayer = svgNode('g', {class:'trace-ribbon-layer'});
@@ -318,7 +402,7 @@
         ribbon = svgNode('path', {class:'trace-bundle-ribbon'});
         ribbonLayer.append(ribbon); paths.push(ribbon);
       }
-      const edge = svgNode('path', {class:'trace-edge','marker-end':'url(#trace-arrow)'});
+      const edge = svgNode('path', {class:'trace-edge','marker-end':route.markerEnd});
       const hit = svgNode('path', {class:'trace-edge-hit'});
       const label = svgNode('text', {class:'trace-edge-label'});
       label.textContent = relationLabel(route.edge.relation);
@@ -329,22 +413,27 @@
     };
     const routes = () => {
       if (!board || !svg || !host.isConnected) return [];
-      const width = board.scrollWidth, height = board.scrollHeight;
+      const width = board.clientWidth, height = board.clientHeight;
       svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
       svg.setAttribute('width', width); svg.setAttribute('height', height);
-      svg.style.width = `${width}px`; svg.style.height = `${height}px`;
       const boardRect = board.getBoundingClientRect();
       const byId = new Map([...host.querySelectorAll('[data-trace-node]')].map(item => [item.dataset.traceNode, item]));
       const stageIndex = new Map([...host.querySelectorAll('[data-stage]')].map((item, index) => [item.dataset.stage, index]));
       const columns = new Map([...byId].map(([id, item]) => [id, stageIndex.get(item.closest('[data-stage]').dataset.stage)]));
-      const groups = new Map();
-      for (const index of bundled) {
-        const edge = edges[index], from = columns.get(String(edge.from)), to = columns.get(String(edge.to));
-        if (from == null || to == null) continue;
+      const groups = new Map(), parallel = new Map();
+      edges.forEach((edge, index) => {
+        const from = columns.get(String(edge.from)), to = columns.get(String(edge.to));
+        if (from == null || to == null) return;
+        const pair = `${from}:${to}`;
+        if (!parallel.has(pair)) parallel.set(pair, []);
+        parallel.get(pair).push(index);
+        if (!bundled.has(index)) return;
         const key = `${from}:${to > from ? 'forward' : 'backward'}`;
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push(index);
-      }
+      });
+      const lanes = new Map();
+      parallel.forEach(members => members.forEach((index, position) => lanes.set(index, position - (members.length - 1) / 2)));
       const bundleInfo = new Map();
       const bundleGroups = [...groups.values()];
       const spacing = bundleSpacing(bundleGroups);
@@ -353,32 +442,21 @@
         bundleInfo.set(index, {spacing:spacing.stripe,stripe:(stripe - (members.length - 1) / 2) * spacing.stripe,track});
         track += spacing.track;
       }));
+      const relative = rect => ({
+        left:rect.left - boardRect.left,right:rect.right - boardRect.left,
+        top:rect.top - boardRect.top,bottom:rect.bottom - boardRect.top,
+      });
       return edges.flatMap((edge, index) => {
         const source = byId.get(String(edge.from)), target = byId.get(String(edge.to));
         if (!source || !target || source.hidden || target.hidden) return [];
-        const a = source.getBoundingClientRect(), b = target.getBoundingClientRect();
         const from = columns.get(String(edge.from)), to = columns.get(String(edge.to));
-        const x = value => value - boardRect.left + board.scrollLeft;
-        const y = value => value - boardRect.top + board.scrollTop;
-        const y1 = y(a.top + a.height / 2), y2 = y(b.top + b.height / 2);
         const info = bundleInfo.get(index);
-        let points;
-        if (from === to) {
-          const gutter = x(Math.max(a.right, b.right)) + 18;
-          const track = 12 + index % 4 * 9;
-          points = [{x:x(a.right),y:y1},{x:gutter,y:y1},{x:gutter,y:track},{x:gutter + 16,y:track},{x:gutter + 16,y:y2},{x:x(b.right),y:y2}];
-        } else if (to < from) {
-          const stripe = info?.stripe || 0;
-          const track = info?.track ?? 12 + index % 4 * 9;
-          points = [{x:x(a.left),y:y1},{x:x(a.left) - 16 + stripe,y:y1},{x:x(a.left) - 16 + stripe,y:track},{x:x(b.right) + 16 + stripe,y:track},{x:x(b.right) + 16 + stripe,y:y2},{x:x(b.right),y:y2}];
-        } else if (info) {
-          const track = info.track;
-          points = [{x:x(a.right),y:y1},{x:x(a.right) + 16 + info.stripe,y:y1},{x:x(a.right) + 16 + info.stripe,y:track},{x:x(b.left) - 16 + info.stripe,y:track},{x:x(b.left) - 16 + info.stripe,y:y2},{x:x(b.left),y:y2}];
-        } else {
-          const gutter = (x(a.right) + x(b.left)) / 2;
-          points = [{x:x(a.right),y:y1},{x:gutter,y:y1},{x:gutter,y:y1},{x:gutter,y:y2},{x:gutter,y:y2},{x:x(b.left),y:y2}];
-        }
-        return [{index,edge,points,bundled:bundled.has(index),spacing:info?.spacing,synthesized:target.classList.contains('is-synthesized')}];
+        const route = routeEdge({
+          edge,source:relative(source.getBoundingClientRect()),target:relative(target.getBoundingClientRect()),
+          fromColumn:from,toColumn:to,index,lane:(lanes.get(index) || 0) + (info?.stripe || 0) / 4,
+          track:info?.track,bounds:{width,height},
+        });
+        return [{...route,index,bundled:bundled.has(index),spacing:info?.spacing,synthesized:target.classList.contains('is-synthesized')}];
       });
     };
     const applyHighlight = () => {
@@ -452,13 +530,36 @@
       if (typeof requestAnimationFrame === 'function') scheduleFrame = requestAnimationFrame(() => { scheduleFrame = null; drawEdges(); });
       else drawEdges();
     };
+    const applyViewport = next => {
+      viewport = next;
+      if (scene) scene.style.transform = `translate(${viewport.x}px,${viewport.y}px) scale(${viewport.scale})`;
+      if (board) {
+        board.dataset.traceScale = String(viewport.scale);
+        board.dataset.traceX = String(viewport.x);
+        board.dataset.traceY = String(viewport.y);
+      }
+      if (zoomOutput) zoomOutput.textContent = `${Math.round(viewport.scale * 100)}%`;
+      scheduleEdges();
+    };
+    const fitGraph = () => {
+      if (!board || !scene) return;
+      fitted = true;
+      applyViewport(fitViewport(
+        {width:board.clientWidth,height:board.clientHeight},
+        {width:scene.scrollWidth,height:scene.scrollHeight},
+      ));
+    };
+    const zoomGraph = (factor, origin = {x:board?.clientWidth / 2,y:board?.clientHeight / 2}) => {
+      fitted = false;
+      applyViewport(zoomViewport(viewport, factor, origin));
+    };
     const applyVisibility = () => {
       const closed = [...host.querySelectorAll('[data-trace-loop]:not([open])')].map(item => new Set((item.dataset.loopMembers || '').split(',')));
       for (const item of host.querySelectorAll('[data-trace-node]')) {
         const after = Number.isFinite(new Date(item.dataset.at || '').valueOf()) && new Date(item.dataset.at).valueOf() > cutoff;
         item.hidden = after || closed.some(group => group.has(item.dataset.traceNode));
       }
-      scheduleEdges();
+      if (fitted) fitGraph(); else scheduleEdges();
     };
     const select = id => {
       const value = values.get(String(id));
@@ -502,7 +603,60 @@
     const onEscape = event => {
       if (event.key === 'Escape' && (pinned || hovered)) { clearHighlight(); event.preventDefault(); }
     };
+    const onFullscreen = () => {
+      const active = document.fullscreenElement === board;
+      const control = host.querySelector('[data-trace-fullscreen]');
+      if (control) {
+        control.textContent = active ? 'Exit full screen' : 'Full screen';
+        control.setAttribute('aria-label', active ? 'Exit fullscreen' : 'Enter fullscreen');
+        control.setAttribute('aria-pressed', String(active));
+      }
+      fitGraph();
+    };
     document.addEventListener('keydown', onEscape);
+    document.addEventListener('fullscreenchange', onFullscreen);
+    host.querySelector('[data-trace-zoom-in]')?.addEventListener('click', () => zoomGraph(1.25));
+    host.querySelector('[data-trace-zoom-out]')?.addEventListener('click', () => zoomGraph(.8));
+    host.querySelector('[data-trace-fit]')?.addEventListener('click', fitGraph);
+    host.querySelector('[data-trace-fullscreen]')?.addEventListener('click', () => { void toggleFullscreen(board); });
+    board?.addEventListener('wheel', event => {
+      if (event.target.closest('[data-trace-viewport-controls]')) return;
+      const rect = board.getBoundingClientRect();
+      zoomGraph(Math.exp(-event.deltaY * .0015), {x:event.clientX - rect.left,y:event.clientY - rect.top});
+      event.preventDefault();
+    }, {passive:false});
+    board?.addEventListener('pointerdown', event => {
+      if (event.button !== 0 || event.target.closest('[data-trace-node],[data-trace-edge],[data-trace-viewport-controls]')) return;
+      board.focus({preventScroll:true});
+      const start = {x:event.clientX,y:event.clientY,viewport};
+      board.setPointerCapture(event.pointerId);
+      board.classList.add('is-panning');
+      const move = value => {
+        fitted = false;
+        applyViewport(panViewport(start.viewport, value.clientX - start.x, value.clientY - start.y));
+      };
+      const stop = value => {
+        if (board.hasPointerCapture(value.pointerId)) board.releasePointerCapture(value.pointerId);
+        board.classList.remove('is-panning');
+        board.removeEventListener('pointermove', move); board.removeEventListener('pointerup', stop); board.removeEventListener('pointercancel', stop);
+      };
+      board.addEventListener('pointermove', move); board.addEventListener('pointerup', stop); board.addEventListener('pointercancel', stop);
+      event.preventDefault();
+    });
+    board?.addEventListener('keydown', event => {
+      if (event.target.closest('input,textarea,select,[data-trace-node]')) return;
+      const key = event.key.toLowerCase();
+      if (key === '+' || key === '=') zoomGraph(1.25);
+      else if (key === '-') zoomGraph(.8);
+      else if (key === '0') fitGraph();
+      else if (key === 'f') void toggleFullscreen(board);
+      else {
+        const delta = {arrowleft:[24,0],arrowright:[-24,0],arrowup:[0,24],arrowdown:[0,-24]}[key];
+        if (!delta) return;
+        fitted = false; applyViewport(panViewport(viewport, ...delta));
+      }
+      event.preventDefault();
+    });
     host.querySelector('[data-trace-picker]')?.addEventListener('submit', event => {
       event.preventDefault(); navigate(positive(new FormData(event.currentTarget).get('ticket')));
     });
@@ -535,7 +689,7 @@
         const originX = Number(item.dataset.dragX || 0), originY = Number(item.dataset.dragY || 0);
         item.classList.add('is-dragging');
         handle.setPointerCapture(event.pointerId);
-        const drag = value => move(originX + value.clientX - startX, originY + value.clientY - startY);
+        const drag = value => move(originX + (value.clientX - startX) / viewport.scale, originY + (value.clientY - startY) / viewport.scale);
         const stop = value => {
           handle.releasePointerCapture(value.pointerId);
           item.classList.remove('is-dragging');
@@ -551,11 +705,12 @@
         event.preventDefault();
       });
     });
-    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(scheduleEdges) : null;
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(() => fitted ? fitGraph() : scheduleEdges()) : null;
     if (observer && board) observer.observe(board);
     host._traceCleanup = () => {
       observer?.disconnect();
       document.removeEventListener('keydown', onEscape);
+      document.removeEventListener('fullscreenchange', onFullscreen);
       if (scheduleFrame != null) cancelAnimationFrame(scheduleFrame);
       if (motionFrame != null) cancelAnimationFrame(motionFrame);
     };
@@ -590,5 +745,8 @@
     }
   }
 
-  window.WorkspaceTrace = Object.freeze({bundleEdges, bundleSpacing, crossingCount, edgeType, markup, mount, orderNodes, render, safeUrl});
+  window.WorkspaceTrace = Object.freeze({
+    arrowOrient,bundleEdges,bundleSpacing,crossingCount,edgeType,fitViewport,markup,mount,orderNodes,
+    panViewport,render,routeEdge,safeUrl,toggleFullscreen,transformRect,zoomViewport,
+  });
 })();
