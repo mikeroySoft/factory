@@ -239,7 +239,7 @@ def handoff_pass(dry_run: bool = False) -> None:
                     continue
                 intent = next((i for i in pending if i["target"] == current), None)
                 if intent is None:
-                    token = f"{MARK} {request} {escalation['at']} #{len(intents) + 1}"
+                    token = f"{MARK} {request} {escalation['at']} {current}"
                     dispatch.record("handoff", ticket=n, round=r, request=request, token=token, target=current, why=why,
                                     route={k: route.get(k) for k in ("status", "owner", "candidates", "source", "reason")})
                 else:

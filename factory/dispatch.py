@@ -960,7 +960,7 @@ def _record_human_round_reset(n: int) -> None:
         and events[index].get("reason") != "manager_failed"
     ), None)
     if escalation_index is None or any(
-        event.get("event") == "rounds-reset" for event in events[escalation_index + 1:]
+        event.get("event") == "rounds-reset" for event in events[escalation_index:]
     ):
         return
     from factory import handoff
@@ -969,7 +969,7 @@ def _record_human_round_reset(n: int) -> None:
     releases = [
         index for index, item in enumerate(timeline)
         if item.get("event") == "labeled"
-        and item.get("label", {}).get("name") == LABEL_AGENT
+        and (item.get("label") or {}).get("name") == LABEL_AGENT
         and item.get("created_at", "") >= events[escalation_index].get("at", "")
     ]
     if not releases:
@@ -985,13 +985,13 @@ def _record_human_round_reset(n: int) -> None:
         and type(event.get("comment")) is int
     }
     human_index = next((
-        index for index in range(release_index - 1, -1, -1)
+        index for index in range(release_index, -1, -1)
         if timeline[index].get("event") == "labeled"
-        and timeline[index].get("label", {}).get("name") == LABEL_HUMAN
+        and (timeline[index].get("label") or {}).get("name") == LABEL_HUMAN
         and timeline[index].get("created_at", "") >= events[escalation_index].get("at", "")
     ), None)
     machine_index = next((
-        index for index in range(release_index - 1, -1, -1)
+        index for index in range(release_index, -1, -1)
         if timeline[index].get("event") == "commented"
         and timeline[index].get("id") in escalation_comments
     ), None)
@@ -1020,7 +1020,7 @@ def _record_human_round_reset(n: int) -> None:
             # into new budget. A later human-label generation is not vetoed.
             return
     decision = next((
-        item for item in reversed(timeline[boundary + 1:release_index])
+        item for item in reversed(timeline[boundary:release_index])
         if item.get("event") == "commented" and item.get("id") not in machine_comments
         and (item.get("user") or {}).get("type") != "Bot"
         and (item.get("body") or "").strip()
@@ -3176,7 +3176,8 @@ def _refresh_failure_scope(wt: Path, n: int, reports: list[str]) -> tuple[list[s
 def pending_risk_requeue_head(n: int) -> str | None:
     rows = [
         event for event in lifecycle.read_events(EVENTS)
-        if event.get("ticket") == n and event.get("event") in {"attempt", "risk-requeue"}
+        if event.get("ticket") == n
+        and event.get("event") in {"attempt", "risk-requeue"}
     ]
     return rows[-1].get("head") if rows and rows[-1]["event"] == "risk-requeue" else None
 
@@ -3184,7 +3185,8 @@ def pending_risk_requeue_head(n: int) -> str | None:
 def refresh_requeue_context(n: int) -> str:
     rows = [
         event for event in lifecycle.read_events(EVENTS)
-        if event.get("ticket") == n and event.get("event") in {
+        if event.get("ticket") == n
+        and event.get("event") in {
             "attempt", "conflict-requeue", "gate-requeue", "risk-requeue",
         }
     ]

@@ -923,16 +923,15 @@ def frontier_pass(dry_run: bool = False) -> None:
                     if execution:
                         execution.wait("ci_pending", mode="eligibility", pr=number)
                     continue
+                round_events = dispatch._current_round_events(events, n)
                 if cfg.manager_review != "all" or approved or not dispatch._head_evidence_matches(events, n, head) \
-                            or dispatch.manager_approval(events, n, head):
+                            or dispatch.manager_approval(events, n, head) \
+                            or not any(e.get("event") == "attempt" for e in round_events):
                     continue
                 all_decided = [
                     e for e in events
                     if e.get("event") == "manage" and e.get("pr") == number
                 ]
-                round_events = dispatch._current_round_events(events, n)
-                if not any(e.get("event") == "attempt" for e in round_events):
-                    continue  # an owner reset releases a worker before this frontier reviews again
                 decided = [
                     e for e in round_events
                     if e.get("event") == "manage" and e.get("pr") == number

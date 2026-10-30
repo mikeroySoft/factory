@@ -322,6 +322,37 @@ class HandoffCli(unittest.TestCase):
         self.assertEqual(len(self.requests()), 2)
         self.assertEqual([e["request"] for e in self.events("handoff")], ["7/1", "7/1"])
 
+    def test_unrelated_round_events_do_not_make_an_escalation_terminal(self) -> None:
+        cfg = config.load(self.repo)
+        escalation = {
+            "at": AT, "event": "escalate", "ticket": 7, "reason": "gate failed",
+            "round": 1, "packet": str(self.packet),
+        }
+        events = [
+            escalation,
+            {"at": AT, "event": "comment", "ticket": 7, "kind": "escalation", "comment": 101},
+            {"at": AT, "event": "manage", "ticket": 7, "round": 1, "decision": "RETRY"},
+            {"at": AT, "event": "zzz", "ticket": 7, "round": 1, "decision": "HUMAN"},
+            {"at": AT, "event": "manage", "ticket": 7, "round": 0, "decision": "HUMAN"},
+            {"at": AT, "event": "escalate", "ticket": 7, "round": 0, "reason": "manager_failed"},
+            {"at": AT, "event": "manage", "ticket": 8, "round": 1, "decision": "HUMAN"},
+        ]
+
+        self.assertIsNone(handoff.terminal(cfg, events, escalation))
+
+    def test_unrelated_event_cannot_consume_an_escalation_manager_round(self) -> None:
+        lifecycle.append(self.factory / "events.jsonl", {
+            "at": AT, "event": "review", "ticket": 7, "round": 1,
+        })
+
+        self.manage(mode="RETRY")
+
+        self.assertTrue(self.ran.exists())
+        self.assertEqual(
+            [(e["decision"], e["round"]) for e in self.events("manage")],
+            [("RETRY", 1)],
+        )
+
     def test_review_intake_escalation_gets_a_handoff_request(self) -> None:
         # #204 (b): `review_intake_pass` escalates an opted-in PR into a new `ready-for-human` issue with a
         # `pr`-bearing row and no escalation comment; the manager never runs on it, so the handoff pass must post.

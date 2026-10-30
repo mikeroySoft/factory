@@ -371,6 +371,47 @@ class RefreshConflictTest(unittest.TestCase):
                 self.assertEqual(len(self.events("conflict-requeue")), 1)
                 self.assertEqual(len(self.events("escalate")), 1)
 
+    def test_human_reset_restarts_high_risk_disagreement_rounds(self) -> None:
+        git(self.origin, "checkout", "-q", "agent/9")
+        merged = subprocess.run(
+            ["git", "-C", str(self.origin), "merge", "main", "--no-edit"],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertNotEqual(merged.returncode, 0)
+        (self.origin / "shared.txt").write_text("main version\nagent version\n")
+        git(self.origin, "add", "shared.txt")
+        git(self.origin, "commit", "-qm", "resolve old main")
+        git(self.origin, "checkout", "-q", "main")
+        (self.origin / "moved.txt").write_text("new main\n")
+        git(self.origin, "add", "moved.txt")
+        git(self.origin, "commit", "-qm", "move main again")
+        dispatch.record(
+            "rounds-reset", ticket=9, actor="alice",
+            requeued_at="2026-10-28T15:53:00Z",
+        )
+        dispatch.record(
+            "risk-requeue", ticket=9, pr=102, head=self.approved_head,
+            round=1, packet="first disagreement",
+        )
+
+        def disagree(_wt, n, _report, head, _runs):
+            dispatch._PENDING_RISK[n] = {
+                "head": head, "disagreement": True, "packet": "second disagreement",
+            }
+            return "REVISE", "reviewers disagree", False
+
+        self.addCleanup(dispatch._PENDING_RISK.pop, 9, None)
+        with self.patched(), \
+                mock.patch.object(dispatch, "run_gate", return_value=(True, "gate ok")), \
+                mock.patch.object(dispatch, "push_agent", return_value="pushed"), \
+                mock.patch.object(dispatch, "record_risk"), \
+                mock.patch.object(dispatch, "risk_for_head", return_value=("High", ["high:test"])), \
+                mock.patch.object(dispatch, "pr_gate_and_review", side_effect=disagree), \
+                mock.patch.object(dispatch, "pr_comment"):
+            self.assertFalse(dispatch.refresh_pr_branch(9, 102, True))
+
+        self.assertEqual([row["round"] for row in self.events("risk-requeue")], [1, 2])
+
     def test_conflict_on_a_protected_path_escalates_immediately_unless_authorized(self) -> None:
         self.cfg.protected_paths = ["shared.*"]
         with self.patched():

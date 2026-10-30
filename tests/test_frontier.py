@@ -812,6 +812,125 @@ class FrontierTest(unittest.TestCase):
 
         self.assertEqual(len([e for e in self.events() if e.get("event") == "rounds-reset"]), 1)
 
+    def test_automatic_requeue_receipt_records_only_the_new_agent_label(self) -> None:
+        from factory import handoff
+
+        dispatch.record("escalate", ticket=79, reason="gate failed", round=1)
+        before = [{
+            "event": "labeled", "id": 1, "label": {"name": "ready-for-agent"},
+            "created_at": "2026-10-28T15:49:00Z", "actor": {"login": "runner"},
+        }]
+        release = {
+            "event": "labeled", "id": 5, "label": {"name": "ready-for-agent"},
+            "created_at": "2026-10-28T15:53:00Z", "actor": {"login": "runner"},
+        }
+        after = before + [
+            {"event": "commented", "id": 2, "label": {"name": "ready-for-agent"},
+             "created_at": "2026-10-28T15:50:00Z", "actor": {"login": "runner"}},
+            {"event": "labeled", "id": 3, "label": {"name": "aaaa"},
+             "created_at": "2026-10-28T15:51:00Z", "actor": {"login": "runner"}},
+            {"event": "labeled", "id": 4, "label": {"name": "zzzz"},
+             "created_at": "2026-10-28T15:52:00Z", "actor": {"login": "runner"}},
+            release,
+        ]
+
+        with mock.patch.object(handoff, "timeline", side_effect=[before, after]):
+            dispatch.requeue_agent(79)
+
+        receipts = [e for e in self.events() if e.get("event") == "agent-requeue"]
+        self.assertEqual(receipts[-1]["status"], "success")
+        self.assertEqual(receipts[-1]["releases"], [dispatch._label_transition(release)])
+
+    def test_signal_terminated_requeue_with_an_unreadable_timeline_is_failed(self) -> None:
+        from factory import handoff
+
+        dispatch.record("escalate", ticket=79, reason="gate failed", round=1)
+        failed = subprocess.CompletedProcess(["gh"], -9, "", "killed")
+        unavailable = subprocess.CalledProcessError(1, ["gh", "api"])
+        with mock.patch.object(dispatch, "run", return_value=failed), \
+                mock.patch.object(handoff, "timeline", side_effect=[[], unavailable]):
+            proc = dispatch.requeue_agent(79, check=False)
+
+        self.assertEqual(proc.returncode, -9)
+        receipts = [e for e in self.events() if e.get("event") == "agent-requeue"]
+        self.assertEqual(receipts[-1]["status"], "failed")
+
+    def test_latest_escalation_is_eligible_for_an_owner_reset(self) -> None:
+        self.direct_requeue()
+        dispatch.EVENTS.unlink()
+        dispatch.record("comment", ticket=79, kind="escalation", comment=101)
+        lifecycle.append(dispatch.EVENTS, {
+            "at": "2026-10-28T15:49:00Z", "event": "escalate", "ticket": 79,
+            "reason": "manager_failed", "round": 1,
+        })
+        lifecycle.append(dispatch.EVENTS, {
+            "at": "2026-10-28T15:50:00Z", "event": "escalate", "ticket": 79,
+            "reason": "gate failed", "round": 2,
+        })
+
+        dispatch._record_human_round_reset(79)
+
+        self.assertEqual(len([e for e in self.events() if e.get("event") == "rounds-reset"]), 1)
+
+    def test_release_label_matching_ignores_other_labels(self) -> None:
+        for label in ("aaaa", "zzzz"):
+            with self.subTest(label=label):
+                dispatch.EVENTS.unlink(missing_ok=True)
+                self.direct_requeue()
+                self.timeline.append({
+                    "event": "labeled", "id": 200, "label": {"name": label},
+                    "created_at": "2026-10-28T15:54:00Z", "actor": {"login": "mallory"},
+                })
+
+                dispatch._record_human_round_reset(79)
+
+                [reset] = [e for e in self.events() if e.get("event") == "rounds-reset"]
+                self.assertEqual(
+                    (reset["actor"], reset["requeued_at"]),
+                    ("alice", "2026-10-28T15:53:00Z"),
+                )
+
+    def test_escalation_boundary_requires_the_actual_comment_event(self) -> None:
+        self.direct_requeue()
+        self.timeline.pop(0)
+        self.timeline[0]["event"] = bytearray(b"commented").decode()
+        self.timeline.insert(-1, {
+            "event": "assigned", "id": 101, "created_at": "2026-10-28T15:52:30Z",
+            "actor": {"login": "runner"},
+        })
+
+        dispatch._record_human_round_reset(79)
+
+        self.assertEqual(len([e for e in self.events() if e.get("event") == "rounds-reset"]), 1)
+
+
+    def test_same_head_decisions_on_other_prs_do_not_spend_manager_budget(self) -> None:
+        self.cfg.manager_review = "all"
+        self.cfg.manager_rounds = 1
+        self.quiet_provider()
+        self.approved_head(H)
+        for pr in (79, 81):
+            dispatch.record("manage", ticket=79, pr=pr, head=H, decision="HUMAN", round=1)
+        self.manager_output = "DECISION: APPROVE\nReady"
+
+        manage.frontier_pass()
+
+        rows = [e for e in self.events() if e.get("event") == "manage" and e.get("pr") == 80]
+        self.assertEqual([(e["head"], e["round"]) for e in rows], [(H, 1)])
+        self.assertFalse(any(e.get("code") == "manager_exhausted" for e in self.escalations()))
+
+    def test_nonattempt_event_after_reset_does_not_release_manager_frontier(self) -> None:
+        self.cfg.manager_review = "all"
+        self.quiet_provider()
+        self.approved_head(H)
+        dispatch.record("rounds-reset", ticket=79, actor="alice", requeued_at=NOW)
+        dispatch.record("zzz", ticket=79)
+
+        manage.frontier_pass()
+
+        self.assertFalse(any(e.get("event") == "manage" for e in self.events()))
+        self.assertEqual(self.mutations, [])
+
     def test_failed_close_is_not_replayed_for_the_same_head(self) -> None:
         self.cfg.manager_review = "all"
         self.quiet_provider()
