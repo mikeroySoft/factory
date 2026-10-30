@@ -172,19 +172,19 @@
     const top = (track == null ? 24 + index % 6 * 10 : Number(track)) + offset * 8;
     let points;
     if (fromColumn === toColumn) {
-      const gutter = Math.max(source.right, target.right) + 18 + offset * 10;
+      const gutter = Math.max(source.right, target.right) + 18 + Math.abs(offset) * 10;
       points = [
         point(source.right, y1), point(gutter, y1), point(gutter, top),
         point(gutter + 16, top), point(gutter + 16, y2), point(target.right, y2),
       ];
     } else if (toColumn < fromColumn) {
-      const bend = 16 + offset * 2;
+      const bend = 16 + Math.abs(offset) * 2;
       points = [
         point(source.left, y1), point(source.left - bend, y1), point(source.left - bend, top),
         point(target.right + bend, top), point(target.right + bend, y2), point(target.right, y2),
       ];
     } else if (toColumn - fromColumn > 1) {
-      const bend = 16 + offset * 2;
+      const bend = 16 + Math.abs(offset) * 2;
       points = [
         point(source.right, y1), point(source.right + bend, y1), point(source.right + bend, top),
         point(target.left - bend, top), point(target.left - bend, y2), point(target.left, y2),
