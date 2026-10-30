@@ -183,9 +183,9 @@ def reconcile_closed_prs(journal: Path, rows: list[dict], start: datetime) -> No
     }
     try:
         completed = subprocess.run(
-            ["gh", "pr", "list", "--repo", REPOSITORY, "--state", "closed",
-             "--search", f"closed:>={_stamp(start)}", "--limit", "1000",
-             "--json", "number,closedAt,mergedAt"],
+            ["gh", "pr", "list", "--repo", REPOSITORY, "--state", "closed", "--search",
+             f"closed:>={start.astimezone(UTC).isoformat(timespec='seconds')}",
+             "--limit", "1000", "--json", "number,closedAt,mergedAt"],
             capture_output=True, check=False, timeout=10,
         )
         closed = json.loads(completed.stdout) if completed.returncode == 0 else None

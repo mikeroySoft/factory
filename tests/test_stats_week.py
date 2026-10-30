@@ -266,6 +266,7 @@ class WeeklyCommandTest(unittest.TestCase):
         self.assertTrue(all(call.kwargs["timeout"] == 10 for call in runner.call_args_list))
         self.assertTrue(all(call.kwargs["capture_output"] is True for call in runner.call_args_list))
         self.assertEqual(runner.call_args_list[0].args[0][:3], ["gh", "pr", "list"])
+        self.assertIn("closed:>=2026-10-20T12:00:00+00:00", runner.call_args_list[0].args[0])
         self.assertEqual(runner.call_args_list[1].args[0][:3], ["gh", "issue", "list"])
 
     def test_gh_timeout_is_unavailable_and_successful(self) -> None:
