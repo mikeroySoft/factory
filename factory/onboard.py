@@ -870,6 +870,9 @@ def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
             # `-` prefix: an offline triage model must not stop the dispatch pass.
             f"[Service]\nType=oneshot\nWorkingDirectory={cfg.root}\n{dispatch_env}"
             f"ExecStart=-{exe} triage\nExecStart={exe} dispatch\n"
+            # Capture before a replacement pass can clear systemd's failed state.
+            # This hook only appends local evidence; watch runs on its own timer.
+            f"ExecStopPost=-{exe} pass-result\n"
         ),
         f"{cfg.unit}.timer": (
             f"[Unit]\nDescription=Run the factory pass for {cfg.repo} every {every}\n\n"
@@ -893,7 +896,8 @@ def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
         ),
         f"{cfg.unit}-watchdog.timer": (
             f"[Unit]\nDescription=Check factory watch heartbeat for {cfg.repo} every 15 minutes\n\n"
-            f"[Timer]\nOnBootSec=15min\nOnUnitActiveSec=15min\nRandomizedDelaySec=90\n\n"
+            # A boot-relative deadline may already have passed at first install.
+            f"[Timer]\nOnActiveSec=45min\nOnUnitActiveSec=15min\nRandomizedDelaySec=90\n\n"
             f"[Install]\nWantedBy=timers.target\n"
         ),
         f"{cfg.unit}-dashboard.service": (

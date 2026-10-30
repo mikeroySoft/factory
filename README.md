@@ -74,6 +74,12 @@ Each completed watch pass appends one `watch-heartbeat` journal row. A separate
 pass service has stayed `activating` longer than `[watch].max_pass_minutes`
 (default 120). Watch also reports an inactive watchdog timer, and `factory doctor`
 reports both timer states.
+The watchdog's first check is 45 minutes after timer activation, not host boot,
+so a fresh installation gets a full heartbeat window. Its later checks remain
+15 minutes apart. The pass service's stop hook runs only `factory pass-result`,
+which durably journals failed service results without GitHub calls or a watch
+heartbeat. Watch consumes that evidence even if a successful replacement pass
+has already cleared the service's failed state.
 
 
 The liveness timer is opt-in. Set the systemd user service that owns the local
@@ -136,7 +142,8 @@ To act on GitHub under a separate machine account, set host-owned
 `[install].dispatch_env` (same shape as `[install].env`), for example
 `GH_CONFIG_DIR` pointing at a gh config logged in as that account, plus
 `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_NAME`/`GIT_COMMITTER_EMAIL`.
-Its lines are rendered only into the triage+dispatcher unit, after `[install].env`;
+Its lines are rendered into the triage+dispatcher, watch, and watchdog units,
+after `[install].env`;
 the dashboard unit keeps the human identity. The token stays in gh's store and is
 never written into a unit. `doctor` then reports both logins (`gh api user`) and
 fails when they are equal; unset, nothing changes. Worker and reviewer agents never

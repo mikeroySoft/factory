@@ -262,6 +262,46 @@ class WatchTest(unittest.TestCase):
         self.assertEqual(lifecycle.read_events(dispatch.EVENTS), [])
         self.assertEqual(self.gh.calls, [])
 
+    def test_heartbeat_check_uses_newest_heartbeat_and_full_stale_window(self) -> None:
+        now = datetime.now(UTC)
+        with mock.patch.object(watch, "pass_overrun", return_value=None):
+            for age in (44, 45):
+                with self.subTest(age=age):
+                    self.journal({"event": "watch-heartbeat", "at": (now - timedelta(minutes=age)).isoformat()})
+                    self.assertEqual(watch.run_pass(self.cfg, now=now, heartbeat_check=True), [])
+            # Append an older row last; journal order must not mask a fresh heartbeat.
+            self.journal({"event": "watch-heartbeat", "at": (now - timedelta(minutes=46)).isoformat()})
+            self.assertEqual(watch.run_pass(self.cfg, now=now, heartbeat_check=True), [])
+        self.assertEqual(self.gh.calls, [])
+        self.assertEqual(len(self.events("watch-heartbeat")), 3)
+
+    def test_pass_overrun_honors_configured_limit_and_boundary(self) -> None:
+        self.cfg.watch_max_pass_minutes = 30
+        uptime = 10 * 24 * 60 * 60
+        self.journal({"event": "watch-heartbeat", "at": lifecycle._now()})
+        for minutes, expected_filings in ((30, 0), (31, 1)):
+            status = subprocess.CompletedProcess(
+                [], 0, f"ActiveState=activating\nInactiveExitTimestampMonotonic={(uptime - minutes * 60) * 1_000_000}\n", "",
+            )
+            with self.subTest(minutes=minutes), \
+                    mock.patch.object(config, "load", return_value=self.cfg), \
+                    mock.patch.object(subprocess, "run", return_value=status), \
+                    mock.patch.object(watch.time, "monotonic", return_value=uptime):
+                self.assertEqual(cli.main(["watch", "--heartbeat-check"]), 0)
+                self.assertEqual(len(self.gh.created), expected_filings)
+
+    def test_durable_and_live_pass_failure_share_one_filing(self) -> None:
+        with mock.patch.object(config, "load", return_value=self.cfg), \
+                mock.patch.dict("os.environ", {"SERVICE_RESULT": "oom-kill"}):
+            self.assertEqual(cli.main(["pass-result"]), 0)
+        with mock.patch.object(watch, "failed_units", return_value=[(f"{self.cfg.unit}.service", "failed")]):
+            watch.run_pass(self.cfg)
+            watch.run_pass(self.cfg)
+        self.assertEqual(len(self.gh.created), 1)
+        self.assertIn("oom-kill", self.gh.created[0][-1])
+        self.assertEqual([call for call in self.gh.calls if call[:3] == ["gh", "issue", "comment"]], [])
+        self.assertEqual(len(self.events("watch")), 1)
+
     def test_sixth_fingerprint_waits_for_the_next_pass(self) -> None:
         self.journal(*(exit_row("worker", "mechanism_failure", f"RuntimeError: boom {code}") for code in range(1, 7)))
         first = watch.run_pass(self.cfg)

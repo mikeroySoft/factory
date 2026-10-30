@@ -495,7 +495,10 @@ class HostConfigTest(unittest.TestCase):
             self.assertIn("# factory-widgets-watchdog.timer", proc.stdout)
             self.assertIn("factory watch --heartbeat-check", proc.stdout)
             self.assertIn("OnUnitActiveSec=15min", proc.stdout)
-            self.assertNotIn("ExecStopPost", proc.stdout)
+            self.assertIn(f"ExecStopPost=-{sys.executable} -P -m factory pass-result", proc.stdout)
+            self.assertNotIn(" factory watch", next(
+                line for line in proc.stdout.splitlines() if line.startswith("ExecStopPost=")
+            ))
             hourly = factory(repo, "install", "--print", "--every", "1h")
             self.assertEqual(hourly.returncode, 0, hourly.stderr)
             self.assertIn(
@@ -603,7 +606,7 @@ class HostConfigTest(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertFalse(marker.exists(), "service imported the checkout package")
             self.assertEqual(commands, ["triage", "dispatch", "watch", "watch", "dashboard"])
-            self.assertNotIn("ExecStopPost", generated.stdout)
+            self.assertIn(f"ExecStopPost=-{selected} -P -m factory pass-result", generated.stdout)
 
             installed = run("install", "--no-dashboard")
             self.assertEqual(installed.returncode, 0, installed.stderr)
@@ -617,6 +620,24 @@ class HostConfigTest(unittest.TestCase):
             self.assertIn("ExecStart=", before["factory-widgets-watch.service"])
             self.assertIn(" factory watch\n", before["factory-widgets-watch.service"])
             self.assertIn("OnUnitActiveSec=15min", before["factory-widgets-watchdog.timer"])
+            self.assertIn("OnActiveSec=45min", before["factory-widgets-watchdog.timer"])
+            self.assertNotIn("OnBootSec", before["factory-widgets-watchdog.timer"])
+            stop = next(
+                line.removeprefix("ExecStopPost=-")
+                for line in before["factory-widgets.service"].splitlines()
+                if line.startswith("ExecStopPost=")
+            )
+            captured = subprocess.run(
+                shlex.split(stop), cwd=repo,
+                env={**env, "SERVICE_RESULT": "signal", "EXIT_CODE": "killed", "EXIT_STATUS": "KILL"},
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(captured.returncode, 0, captured.stderr)
+            [failure] = [
+                row for row in lifecycle.read_events(repo / ".factory" / "events.jsonl")
+                if row.get("event") == "pass-result"
+            ]
+            self.assertEqual((failure["result"], failure["exit_status"]), ("signal", "KILL"))
 
             systemctl_log = Path(tools) / "systemctl.log"
 
@@ -776,7 +797,7 @@ class HostConfigTest(unittest.TestCase):
                 (f'ExecStart="{escaped}" -P -m factory dashboard'
                  ' --host 127.0.0.1 --port 8765 --no-open'),
             ])
-            self.assertNotIn("ExecStopPost", rendered.stdout)
+            self.assertIn(f'ExecStopPost=-"{escaped}" -P -m factory pass-result', rendered.stdout)
             accepted = run("install", "--no-dashboard")
             self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
             self.assertIn(str(literal), accepted.stdout)

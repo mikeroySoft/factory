@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -55,6 +56,22 @@ FINGERPRINT = re.compile(r"Fingerprint: (\S+)")
 
 def fingerprint(kind: str, key: str) -> str:
     return hashlib.sha256(f"{kind}\n{key}".encode()).hexdigest()[:12]
+
+
+def record_pass_result(argv: list[str]) -> int:
+    """Persist systemd's terminated pass result without running watch or calling GitHub."""
+    parser = argparse.ArgumentParser(prog="factory pass-result", description=record_pass_result.__doc__)
+    parser.parse_args(argv)
+    result = os.environ.get("SERVICE_RESULT")
+    if not result or result == "success":
+        return 0
+    cfg = config.load()
+    lifecycle.append(cfg.factory / "events.jsonl", {
+        "event": "pass-result", "at": lifecycle._now(), "unit": f"{cfg.unit}.service",
+        "result": result, "exit_code": os.environ.get("EXIT_CODE"),
+        "exit_status": os.environ.get("EXIT_STATUS"), "invocation_id": os.environ.get("INVOCATION_ID"),
+    })
+    return 0
 
 
 def _failing(row: dict) -> bool:
@@ -674,12 +691,27 @@ def signals(
             "command": "zcat -f .factory/events.jsonl* | grep -F "
             f"{shlex.quote(json.dumps({'reason': reason}, separators=(',', ':'))[1:-1])}",
         }
+    for row in events:
+        if row.get("event") != "pass-result" or row.get("unit") != f"{cfg.unit}.service":
+            continue
+        name = row["unit"]
+        key = fingerprint("unit", "factory-<repo>.service")
+        signal = found.setdefault(key, {
+            "fingerprint": key, "kind": "unit", "stage": "systemd", "key": name,
+            "rows": [], "excerpt": None, "log": None, "latest": "",
+            "command": f"journalctl --user -u {shlex.quote(name)}",
+        })
+        signal["rows"].append(row)
+        signal["latest"] = max(signal["latest"], str(row.get("at") or ""))
     for name, status in failed_units(cfg):
         # Fingerprint the unit's role, not this install's unit name, so installs share one issue.
         key = fingerprint("unit", name.replace(cfg.unit, "factory-<repo>", 1))
-        found[key] = {"fingerprint": key, "kind": "unit", "stage": "systemd", "key": name, "rows": [],
-                      "excerpt": status, "log": None, "latest": None,
-                      "command": f"systemctl --user status {shlex.quote(name)}"}
+        signal = found.setdefault(key, {
+            "fingerprint": key, "kind": "unit", "stage": "systemd", "key": name, "rows": [],
+            "excerpt": status, "log": None, "latest": None,
+            "command": f"systemctl --user status {shlex.quote(name)}",
+        })
+        signal.update(excerpt=status, latest=None)
     by_source: dict[str, list[dict]] = {}
     for error in runtime_errors(cfg):
         by_source.setdefault(str(error.get("source")), []).append(error)

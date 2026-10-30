@@ -15,6 +15,7 @@ COMMANDS = {
     "manage": ("manage", "main", "recommend PR/issue viability, resolve untouched escalations, publish terminal human handoffs"),
     "gate": ("gate", "main", "run the deterministic quality gate in this worktree"),
     "watch": ("watch", "main", "file runtime failures or check the watch heartbeat"),
+    "pass-result": ("watch", "record_pass_result", "record a failed systemd pass locally (installer hook)"),
     "stats": ("stats", "main", "ticket metrics from GitHub"),
     "explain": ("trace", "main", "explain one ticket's routing decisions from the local journal"),
     "learn": ("learn", "main", "distil recent ticket outcomes into .factory-lessons.md"),
