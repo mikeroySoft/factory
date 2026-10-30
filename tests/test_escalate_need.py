@@ -803,7 +803,7 @@ class FinalReviewNeedTest(unittest.TestCase):
                 dispatch.record("manage", ticket=79, round=1, decision=decision)
                 case.manager_output = "DECISION: APPROVE\nLooks right"
 
-                def read(args):
+                def read(args, case=case):
                     value = case.gh_json(args)
                     if args[:2] == ["issue", "view"]:
                         value["assignees"] = [{"login": "factory"}]
@@ -884,7 +884,7 @@ class EscalationPublicationTest(unittest.TestCase):
                 )
                 created = comments = 0
 
-                def read(argv):
+                def read(argv, pr=pr, timeline=timeline):
                     if argv[:2] == ["pr", "list"]:
                         return [pr]
                     if argv[0] == "api":

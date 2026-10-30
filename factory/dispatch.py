@@ -597,7 +597,7 @@ def _publish_review_intake_comment(escalation: dict, *, reconcile: bool) -> bool
     if reconcile:
         try:
             items = handoff.timeline(ticket)
-        except (CalledProcessError, ValueError):
+        except (subprocess.CalledProcessError, ValueError):
             log(f"#{ticket}: review-intake routing comment is uncertain; GitHub could not be read")
             return False
         found = next((

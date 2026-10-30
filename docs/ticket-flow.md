@@ -180,9 +180,10 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 
 ## Escalate reasons
 
-Every reason string passed to `dispatch.escalate`, the
-`withdraw` helper in `dispatch.refresh_pr_branch`, or recorded as an `escalate`
-event. `{}` is a runtime value.
+Every reason string conservatively extracted from calls to `dispatch.escalate`,
+the `withdraw` helper in `dispatch.refresh_pr_branch`, or `escalate` journal
+rows. Runtime guards can make an extracted template unreachable; those rows say
+so explicitly. `{}` is a runtime value.
 
 | Code | Reason | Edge |
 |------|--------|------|
@@ -238,4 +239,6 @@ event. `{}` is a runtime value.
 | `manage.apply` | ``FIX could not push the worker's own commits: origin/agent/{} moved since {}; worktree kept at {}`` | manager FIX → escalate (`lease_refused`) |
 | `manage.escalation_pass` | ``{}`` | manager supplied a valid reserved sign-off reason → human |
 | `manage.escalation_pass` | ``Manager did not return a valid decision: {} ({})`` | invalid manager sign-off → manager-routed escalation |
+| `manage.escalation_pass` | ``Manager command exited {} (argv: {})`` | unreachable escalation template: transport failure journals literal `manager_failed` |
+| `manage.escalation_pass` | ``Manager did not return a valid decision: Manager command exited {} (argv: {}) ({})`` | unreachable escalation template: `transport_failed` excludes invalid-sign-off reclassification |
 | `manage.escalation_pass` | ``manager_failed`` | manager transport failure → manager-routed stall |
