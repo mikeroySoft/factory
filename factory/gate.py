@@ -807,11 +807,6 @@ def toolchain() -> dict[str, str]:
         except json.JSONDecodeError:
             examined = {}
         summary = examined.get("summary", examined) if isinstance(examined, dict) else {}
-        driver = summary.get("driver")
-        _driver_status = (
-            driver.get("status") if isinstance(driver, dict) else summary.get("driver_status")
-        )
-        _active_runtime = summary.get("active_runtime_id") or summary.get("active_runtime")
         target = summary.get("detected_gfx_target")
         if isinstance(target, str) and target:
             values["rocm"] = f"{target} (rocm-cli)"

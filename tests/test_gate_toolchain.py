@@ -26,7 +26,7 @@ class ToolchainTest(unittest.TestCase):
             if command == ["uname", "-r"]:
                 return subprocess.CompletedProcess(command, 0, "6.17.1\n", "")
             if command == ["modinfo", "-F", "version", "amdgpu"]:
-                raise FileNotFoundError(command[0])
+                return subprocess.CompletedProcess(command, 0, "", "")
             raise FileNotFoundError(command[0])
 
         with (
