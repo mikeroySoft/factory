@@ -567,7 +567,7 @@ def pass_overrun(cfg: config.Config) -> str | None:
         proc = subprocess.run(
             [
                 "systemctl", "--user", "show", unit,
-                "--property=ActiveState", "--property=ActiveEnterTimestampMonotonic",
+                "--property=ActiveState", "--property=InactiveExitTimestampMonotonic",
             ],
             capture_output=True, text=True, check=False,
         )
@@ -581,9 +581,12 @@ def pass_overrun(cfg: config.Config) -> str | None:
     if properties.get("ActiveState") != "activating":
         return None
     try:
-        elapsed = time.monotonic() - int(properties["ActiveEnterTimestampMonotonic"]) / 1_000_000
+        started = int(properties["InactiveExitTimestampMonotonic"]) / 1_000_000
     except (KeyError, TypeError, ValueError):
         return None
+    if started <= 0:
+        return None
+    elapsed = time.monotonic() - started
     if elapsed <= cfg.watch_max_pass_minutes * 60:
         return None
     return (

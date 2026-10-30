@@ -480,7 +480,8 @@ class HostConfigTest(unittest.TestCase):
     def test_install_print_uses_host_defaults_and_env(self) -> None:
         host_file('[defaults.install]\nevery = "5min"\ndashboard = true\n[defaults.install.env]\nUV_EXCLUDE_NEWER = "2026-01-01T00:00:00Z"\n')
         with tempfile.TemporaryDirectory() as d:
-            proc = factory(make_repo(Path(d)), "install", "--print")
+            repo = make_repo(Path(d))
+            proc = factory(repo, "install", "--print")
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("OnUnitActiveSec=5min", proc.stdout)
             self.assertIn("RandomizedDelaySec=90", proc.stdout)
@@ -495,6 +496,18 @@ class HostConfigTest(unittest.TestCase):
             self.assertIn("factory watch --heartbeat-check", proc.stdout)
             self.assertIn("OnUnitActiveSec=15min", proc.stdout)
             self.assertNotIn("ExecStopPost", proc.stdout)
+            hourly = factory(repo, "install", "--print", "--every", "1h")
+            self.assertEqual(hourly.returncode, 0, hourly.stderr)
+            self.assertIn(
+                "Description=Run the factory pass for acme/widgets every 1h\n\n"
+                "[Timer]\nOnBootSec=5min\nOnUnitActiveSec=1h",
+                hourly.stdout,
+            )
+            self.assertIn(
+                "Description=Run factory watch for acme/widgets every 15 minutes\n\n"
+                "[Timer]\nOnBootSec=5min\nOnUnitActiveSec=15min",
+                hourly.stdout,
+            )
             self.assertIn("# factory-widgets-dashboard.service", proc.stdout)
             self.assertIn("--host 127.0.0.1", proc.stdout)
             (Path(d) / "b").mkdir()

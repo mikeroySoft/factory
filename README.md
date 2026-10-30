@@ -66,8 +66,8 @@ refuses a foreign or unidentified holder before writing units. Each factory need
 its own `[repo."owner/name".dashboard] port` in the host config. The preflight cannot
 reserve the port until systemd starts the service: a later bind failure exits 1
 with a one-line diagnostic, and the existing systemd restart policy still applies.
-`factory install` runs the dispatcher and `factory watch` from separate timers at
-the configured `--every` interval, so a long dispatcher pass cannot block watch.
+`factory install` runs the dispatcher at the configured `--every` interval and
+`factory watch` every 15 minutes from a separate timer, so a long dispatcher pass cannot block watch.
 Each completed watch pass appends one `watch-heartbeat` journal row. A separate
 15-minute watchdog runs `factory watch --heartbeat-check`; it files through
 `[watch].engine_repo` when the newest heartbeat is older than 45 minutes or the

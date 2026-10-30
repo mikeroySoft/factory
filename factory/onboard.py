@@ -882,8 +882,8 @@ def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
             f"ExecStart={exe} watch\n"
         ),
         f"{cfg.unit}-watch.timer": (
-            f"[Unit]\nDescription=Run factory watch for {cfg.repo} every {every}\n\n"
-            f"[Timer]\nOnBootSec=5min\nOnUnitActiveSec={every}\nRandomizedDelaySec=90\n\n"
+            f"[Unit]\nDescription=Run factory watch for {cfg.repo} every 15 minutes\n\n"
+            f"[Timer]\nOnBootSec=5min\nOnUnitActiveSec=15min\nRandomizedDelaySec=90\n\n"
             f"[Install]\nWantedBy=timers.target\n"
         ),
         f"{cfg.unit}-watchdog.service": (

@@ -151,21 +151,42 @@ class WatchTest(unittest.TestCase):
     def test_heartbeat_check_reports_pass_overrun_once(self) -> None:
         now = datetime.now(UTC)
         self.journal({"event": "watch-heartbeat", "at": now.isoformat().replace("+00:00", "Z")})
+        uptime = 10 * 24 * 60 * 60
+        started = uptime - 121 * 60
         status = subprocess.CompletedProcess(
             [], 0,
-            "ActiveState=activating\nActiveEnterTimestampMonotonic=1000000\n",
+            f"ActiveState=activating\nActiveEnterTimestampMonotonic=0\n"
+            f"InactiveExitTimestampMonotonic={started * 1_000_000}\n",
             "",
         )
 
         with mock.patch.object(config, "load", return_value=self.cfg), \
                 mock.patch.object(subprocess, "run", return_value=status), \
-                mock.patch.object(watch.time, "monotonic", return_value=121 * 60 + 1):
+                mock.patch.object(watch.time, "monotonic", return_value=uptime):
             self.assertEqual(watch.main(["--heartbeat-check"]), 0)
             self.assertEqual(watch.main(["--heartbeat-check"]), 0)
 
         self.assertEqual(len(self.gh.created), 1)
         body = self.gh.created[0][self.gh.created[0].index("--body") + 1]
         self.assertIn("pass_overrun", body)
+
+    def test_heartbeat_check_ignores_fresh_pass_on_long_running_host(self) -> None:
+        now = datetime.now(UTC)
+        self.journal({"event": "watch-heartbeat", "at": now.isoformat().replace("+00:00", "Z")})
+        uptime = 10 * 24 * 60 * 60
+        status = subprocess.CompletedProcess(
+            [], 0,
+            f"ActiveState=activating\nActiveEnterTimestampMonotonic=0\n"
+            f"InactiveExitTimestampMonotonic={(uptime - 60) * 1_000_000}\n",
+            "",
+        )
+
+        with mock.patch.object(config, "load", return_value=self.cfg), \
+                mock.patch.object(subprocess, "run", return_value=status), \
+                mock.patch.object(watch.time, "monotonic", return_value=uptime):
+            self.assertEqual(watch.main(["--heartbeat-check"]), 0)
+
+        self.assertEqual(self.gh.created, [])
 
     def test_sixth_fingerprint_waits_for_the_next_pass(self) -> None:
         self.journal(*(exit_row("worker", "mechanism_failure", f"RuntimeError: boom {code}") for code in range(1, 7)))
