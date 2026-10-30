@@ -171,6 +171,9 @@ def main(argv: list[str] | None = None) -> int:
         copies = [scratch / f"copy{i}" for i in range(workers)]
         for copy in copies:
             shutil.copytree(root, copy, ignore=COPY_IGNORE)
+            # Gate runs use linked worktrees; keep read-only HEAD metadata for tests that inspect it.
+            if (root / ".git").is_file():
+                shutil.copy2(root / ".git", copy / ".git")
         print(f"files: {', '.join(lines)}")
         print(f"mutants: {len(mutations)} sampled (seed {SEED}, cap {CAP}), "
               f"{min(hot, len(mutations))} on changed lines first, {workers} workers")
