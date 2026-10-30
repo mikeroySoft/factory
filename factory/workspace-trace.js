@@ -162,29 +162,27 @@
     top:(Number(rect?.top) || 0) * state.scale + state.y,
     bottom:(Number(rect?.bottom) || 0) * state.scale + state.y,
   });
-  function routeEdge({edge, source, target, fromColumn, toColumn, index = 0, lane = 0, track = null, bounds}) {
-    const width = Math.max(1, Number(bounds?.width) || 1);
-    const height = Math.max(1, Number(bounds?.height) || 1);
-    const inset = Math.min(6, width / 2, height / 2);
-    const point = (x, y) => ({x:clamp(x, inset, width - inset),y:clamp(y, inset, height - inset)});
+  function routeEdge({edge, source, target, fromColumn, toColumn, index = 0, lane = 0, track = null}) {
+    const point = (x, y) => ({x,y});
     const y1 = (source.top + source.bottom) / 2, y2 = (target.top + target.bottom) / 2;
     const offset = Number(lane) || 0;
+    const spread = 14 * offset / (1 + Math.abs(offset));
     const top = (track == null ? 24 + index % 6 * 10 : Number(track)) + offset * 8;
     let points;
     if (fromColumn === toColumn) {
-      const gutter = Math.max(source.right, target.right) + 18 + Math.abs(offset) * 10;
+      const gutter = Math.max(source.right, target.right) + 18 + spread;
       points = [
         point(source.right, y1), point(gutter, y1), point(gutter, top),
         point(gutter + 16, top), point(gutter + 16, y2), point(target.right, y2),
       ];
     } else if (toColumn < fromColumn) {
-      const bend = 16 + Math.abs(offset) * 2;
+      const bend = 16 + spread;
       points = [
         point(source.left, y1), point(source.left - bend, y1), point(source.left - bend, top),
         point(target.right + bend, top), point(target.right + bend, y2), point(target.right, y2),
       ];
     } else if (toColumn - fromColumn > 1) {
-      const bend = 16 + Math.abs(offset) * 2;
+      const bend = 16 + spread;
       points = [
         point(source.right, y1), point(source.right + bend, y1), point(source.right + bend, top),
         point(target.left - bend, top), point(target.left - bend, y2), point(target.left, y2),
