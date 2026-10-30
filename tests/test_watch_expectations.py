@@ -326,6 +326,12 @@ class WatchExpectationTest(unittest.TestCase):
         self.github.issues = [{
             "number": 7, "body": "", "createdAt": (now - timedelta(hours=1)).isoformat(),
         }]
+        self.dispatch_pass(now - timedelta(minutes=20))
+        self.assertEqual(
+            watch.run_pass(self.cfg, now=now - timedelta(minutes=20)),
+            [],
+        )
+        self.dispatch_pass(now - timedelta(minutes=10))
         self.github.filings[901] = {
             "state": "OPEN",
             "closedAt": None,
@@ -339,8 +345,6 @@ class WatchExpectationTest(unittest.TestCase):
             "repo": self.cfg.watch_engine_repo, "latest": None,
             "at": (now - timedelta(hours=25)).isoformat(),
         })
-        self.dispatch_pass(now - timedelta(minutes=20))
-        self.dispatch_pass(now - timedelta(minutes=10))
 
         def fail_timeline(
             command: list[str], **kwargs: object,
@@ -372,6 +376,10 @@ class WatchExpectationTest(unittest.TestCase):
             for number in range(200)
         ] + [{"number": 7, "body": "", "createdAt": entered.isoformat()}]
         self.dispatch_pass(now - timedelta(minutes=20))
+        self.assertEqual(
+            watch.run_pass(self.cfg, now=now - timedelta(minutes=20)),
+            [],
+        )
         self.dispatch_pass(now - timedelta(minutes=10))
 
         signals = watch.run_pass(self.cfg, now=now)
