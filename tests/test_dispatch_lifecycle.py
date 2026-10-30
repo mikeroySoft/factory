@@ -1281,6 +1281,13 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
 
         self.assertEqual(lock, "worker drift\n")
 
+    def test_longer_plan_filename_does_not_authorize_lockfile_edit(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- uv.lock.backup\n",
+        )
+
+        self.assertEqual(lock, "base\n")
+
     def test_ticket_wording_does_not_authorize_lockfile_edit(self):
         lock = self.run_lockfile_worker(
             "## Files\n- change.txt\n",
