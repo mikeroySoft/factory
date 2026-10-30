@@ -1579,7 +1579,8 @@ def _recorded_plan_lists_lockfile(n: int, path: str) -> bool:
     names = {path, Path(path).name}
     alternatives = "|".join(re.escape(name) for name in sorted(names, key=len, reverse=True))
     listed = re.compile(
-        rf"^\s*[-*]\s+(?:`(?:{alternatives})`|(?:{alternatives}))(?![\w./-])"
+        rf"^\s*(?:[-*]|\d+\.)\s+.*?(?:`(?:{alternatives})`|"
+        rf"(?<![\w./-])(?:{alternatives}))(?![\w./-])"
     )
     for row in lifecycle.read_events(EVENTS):
         artifact = row.get("path")
@@ -1596,8 +1597,9 @@ def _recorded_plan_lists_lockfile(n: int, path: str) -> bool:
             continue
         in_files = False
         for line in text.splitlines():
-            if line.startswith("#"):
-                in_files = line.casefold() == "## files"
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                in_files = stripped.casefold() == "## files"
             elif in_files and listed.search(line):
                 return True
     return False
