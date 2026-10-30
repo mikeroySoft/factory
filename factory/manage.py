@@ -1212,25 +1212,29 @@ def escalation_pass(dry_run: bool = False) -> None:
                 )
                 if decision == "HUMAN" and escalation.get("need") is not None and not transport_failed:
                     try:
-                        if not isinstance(data, dict):
-                            raise TypeError("HUMAN requires a reserved category and numbered actions")
-                        dispatch.escalate(
-                            n, body, None, dispatch.SIGNOFF(data["category"]),
-                            code="manager_human", question=_signoff_question(data["options"]),
-                        )
-                    except (ValueError, TypeError) as exc:
-                        dispatch.escalate(
-                            n, f"Manager did not return a valid decision: {body} ({exc})", None,
-                            dispatch.classify("manager_failed", {}), code="manager_failed",
-                        )
+                        try:
+                            if not isinstance(data, dict):
+                                raise TypeError("HUMAN requires a reserved category and numbered actions")
+                            dispatch.escalate(
+                                n, body, None, dispatch.SIGNOFF(data["category"]),
+                                code="manager_human", question=_signoff_question(data["options"]),
+                            )
+                        except (ValueError, TypeError) as exc:
+                            dispatch.escalate(
+                                n, f"Manager did not return a valid decision: {body} ({exc})", None,
+                                dispatch.classify("manager_failed", {}), code="manager_failed",
+                            )
+                    except (CalledProcessError, OSError) as exc:
+                        execution.outcome = "mechanism_failure"
+                        execution.reason = "github_command_failed"
+                        dispatch.log(f"#{n}: manager sign-off publication failed: {exc}")
+                        continue
                     # Routing must succeed before this round becomes at-most-once.
                     dispatch.record("manage", ticket=n, decision=decision, round=round_number,
                                     packet=str(packet), notes=status, rejected=rejected)
                     continue
                 dispatch.record("manage", ticket=n, decision=decision, round=round_number,
                                 packet=str(packet), notes=status, rejected=rejected)
-                if transport_failed:
-                    continue
                 try:
                     apply(n, issue, decision, body, data, packet)
                 except (CalledProcessError, OSError, ValueError) as exc:
