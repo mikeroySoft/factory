@@ -3824,9 +3824,11 @@ def worker_round(
     argv, session_dir = _with_transcript(
         command, n, transcript_mode, len(cfg.worker_wrap) if transcript_mode else None,
     )
-    run_options = {"worker": worker, "worker_version": worker_version}
+    run_options = {}
     if environment := cfg.worker_environment(worker, promptfile, wt):
         run_options["env_overrides"] = environment
+    if worker_version:
+        run_options.update(worker=worker, worker_version=worker_version)
     code, fired = run_worker(
         argv, wt, logfile, wt / ".factory" / f"handoff-{n}.md", deadline, **run_options,
     )
