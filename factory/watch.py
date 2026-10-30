@@ -62,7 +62,7 @@ Signal: TypeAlias = dict[str, object]
 class Expectation:
     name: str
     predicate: Callable[[dict], bool]
-    max_age: timedelta
+    max_age: timedelta | None
     switch: str | None = None
     per_triage_issue: bool = False
     since: datetime | None = None
@@ -70,12 +70,8 @@ class Expectation:
     start_from_journal: bool = False
 
 
-def _pass_exit(row: dict) -> bool:
-    return (
-        row.get("event") == "lifecycle"
-        and row.get("kind") == "exit"
-        and row.get("stage") == "dispatch"
-    )
+def _dispatch_success(row: dict) -> bool:
+    return row.get("event") == "stage-success" and row.get("stage") == "dispatch"
 
 
 def _eval_summary(row: dict) -> bool:
@@ -91,7 +87,7 @@ def _triage_exit(row: dict) -> bool:
 
 
 EXPECTATIONS = (
-    Expectation("factory pass", _pass_exit, timedelta(minutes=30)),
+    Expectation("factory pass", _dispatch_success, timedelta(minutes=30)),
     Expectation(
         "eval suite",
         _eval_summary,
@@ -102,7 +98,7 @@ EXPECTATIONS = (
     Expectation(
         "needs-triage issue",
         _triage_exit,
-        timedelta(minutes=30),
+        None,
         per_triage_issue=True,
         max_passes=2,
     ),
@@ -138,16 +134,23 @@ def overdue(
         anchor = newest or expectation.since or (oldest if expectation.start_from_journal else None)
         if anchor is None:
             continue
-        age_overdue = current - anchor > expectation.max_age
+        age_overdue = (
+            expectation.max_age is not None
+            and current - anchor > expectation.max_age
+        )
         pass_overdue = (
             expectation.max_passes is not None
-            and sum(at > anchor and _pass_exit(row) for at, row in dated)
+            and sum(at > anchor and _dispatch_success(row) for at, row in dated)
             >= expectation.max_passes
         )
         if not (age_overdue or pass_overdue):
             continue
         key = f"expectation:{fingerprint('expectation', expectation.name)}"
-        latest = newest or anchor
+        expected_within = (
+            str(expectation.max_age)
+            if expectation.max_age is not None
+            else f"{expectation.max_passes} successful factory passes"
+        )
         signals.append({
             "fingerprint": key,
             "kind": "expectation",
@@ -157,11 +160,11 @@ def overdue(
             "tier": "act",
             "rows": [row for _, row in matches][-MAX_ROWS:],
             "excerpt": (
-                f"Expected `{expectation.name}` within {expectation.max_age}; "
+                f"Expected `{expectation.name}` within {expected_within}; "
                 f"newest matching event: {newest.isoformat() if newest else 'none'}."
             ),
             "log": None,
-            "latest": latest.isoformat(),
+            "latest": None,
             "command": "factory watch --dry-run",
         })
     return signals
@@ -185,7 +188,7 @@ def _active_expectations(
     active.remove(triage)
     if not include_triage:
         return active
-    if sum(_pass_exit(row) for row in rows) < 2:
+    if sum(_dispatch_success(row) for row in rows) < 2:
         return active
     issues = dispatch.gh_json([
         "issue", "list", "--repo", cfg.repo, "--label", config.LABEL_TRIAGE,
@@ -200,6 +203,25 @@ def _active_expectations(
                 since=created,
             ))
     return active
+
+def _add_dispatch_success(
+    cfg: config.Config, rows: list[dict], *, persist: bool,
+) -> None:
+    try:
+        at = lifecycle.last_successful_passes(cfg.factory / "events.jsonl")["dispatch"]
+    except (OSError, ValueError):
+        return
+    if at is None or any(
+        row.get("event") == "stage-success"
+        and row.get("stage") == "dispatch"
+        and row.get("at") == at
+        for row in rows
+    ):
+        return
+    row = {"event": "stage-success", "stage": "dispatch", "at": at}
+    if persist:
+        lifecycle.append(cfg.factory / "events.jsonl", row)
+    rows.append(row)
 
 
 def intended_state_signals(cfg: config.Config) -> list[Signal]:
@@ -903,6 +925,7 @@ def run_pass(
 ) -> list[dict]:
     """Log, diagnose, file/comment, and close configured signals."""
     events = lifecycle.read_events(dispatch.EVENTS)
+    _add_dispatch_success(cfg, events, persist=not dry_run)
     if any(band.metric == "revert_rate_by_tier" for band in cfg.watch_bands):
         stats.configure(cfg)
         try:

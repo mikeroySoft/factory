@@ -248,6 +248,7 @@ class Config:
     watch_host_failure_minutes: int = 60
     watch_bands: list[Band] = field(default_factory=list)
     raw_repo: dict = field(default_factory=dict)  # the committed file alone, before host layering
+    is_loaded: bool = False  # created by load(), including host-config-only repositories
 
     @property
     def name(self) -> str:
@@ -313,11 +314,14 @@ class Config:
 
 def intended_state_mismatches(cfg: Config) -> list[tuple[str, bool, bool]]:
     """Configured boolean switches that differ from this repository's declared intent."""
-    if not (cfg.root / CONFIG_NAME).exists():
+    if not cfg.is_loaded and not (cfg.root / CONFIG_NAME).exists():
         return []
     packaged = Path(__file__).with_name(INTENDED_STATE_NAME)
     source = Path(__file__).resolve().parent.parent / "docs" / INTENDED_STATE_NAME
-    raw = tomllib.loads((packaged if packaged.exists() else source).read_text())
+    declared = packaged if packaged.exists() else source
+    if not declared.exists():
+        return []
+    raw = tomllib.loads(declared.read_text())
     intended = raw.get("repo", {}).get(cfg.repo, {})
     actual = {"eval.schedule": cfg.eval_schedule}
     unknown = set(intended) - set(actual)
@@ -680,7 +684,7 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
         raise ConfigError("[release] must be a table")
     if not isinstance(evaluation, dict):
         raise ConfigError("[eval] must be a table")
-    cfg = Config(root=root, repo=slug, raw_repo=raw_repo)
+    cfg = Config(root=root, repo=slug, raw_repo=raw_repo, is_loaded=True)
     cfg.watch_bands = band_settings(root / BANDS_NAME)
     cfg.upstream = repo_t.get("upstream") or None
     cfg.main = repo_t.get("main", cfg.main)

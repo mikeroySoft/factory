@@ -327,12 +327,13 @@ landed on its own, and partial progress needs its own reviewed PR.
 | `factory plan baseline N` / `factory plan drift TICKET` | Read-only schema 1 JSON for proposing a complete immutable initiative baseline or comparing a ticket's latest accepted baseline with the live complete source. Results are under top-level `baseline` or `drift`; neither command edits issues, rebaselines work, or grants execution authority. |
 | `factory doctor` / `init` / `install` | Onboarding, above. `doctor` exits nonzero when a live switch differs from the reviewed state in `docs/intended-state.toml`; neither `doctor` nor `install` changes that switch. |
 
-`factory watch` also evaluates the declared `EXPECTATIONS` table: a dispatcher lifecycle exit
-within 30 minutes, an `eval-summary` within 8 days when `eval.schedule` is enabled, and one
-`triage-ticket` exit per current `needs-triage` issue within two dispatcher passes. Non-dry
-passes read the current `needs-triage` list after the journal contains two dispatcher exits.
-Reviewed switch intent is declared in `docs/intended-state.toml`; reporting drift never changes
-the live configuration.
+`factory watch` also evaluates the declared `EXPECTATIONS` table: the latest successful
+dispatcher pass within 30 minutes, an `eval-summary` within 8 days when `eval.schedule`
+is enabled, and one `triage-ticket` exit per current `needs-triage` issue within two
+successful dispatcher passes. Non-dry passes journal each new dispatch-success projection,
+so idle passes whose lazy dispatcher scope writes no lifecycle exit still count.
+Reviewed switch intent is declared in `docs/intended-state.toml`; reporting drift never
+changes the live configuration.
 
 Skill health comes from the same persisted worker transcripts: `factory score`
 journals each `read` of `skill://<name>` or `*/SKILL.md` as an idempotent
