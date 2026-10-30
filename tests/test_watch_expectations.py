@@ -165,9 +165,11 @@ class WatchExpectationTest(unittest.TestCase):
         now = datetime(2026, 10, 30, tzinfo=UTC)
         self.cfg.eval_schedule = True
         self.append(self.eval_summary(now - timedelta(days=9)))
+        self.dispatch_pass(now)
         watch.run_pass(self.cfg, now=now)
 
         with mock.patch.object(watch, "_age", return_value=timedelta(days=2)):
+            self.dispatch_pass(now + timedelta(days=2))
             signals = watch.run_pass(self.cfg, now=now + timedelta(days=2))
 
         self.assertEqual([signal["name"] for signal in signals], ["eval suite"])

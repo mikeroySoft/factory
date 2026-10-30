@@ -87,7 +87,7 @@ def _triage_exit(row: dict) -> bool:
 
 
 EXPECTATIONS = (
-    Expectation("factory pass", _dispatch_success, timedelta(minutes=30)),
+    Expectation("factory pass", _dispatch_success, timedelta(minutes=30), start_from_journal=True),
     Expectation(
         "eval suite",
         _eval_summary,
