@@ -337,7 +337,8 @@ resets the deadline, and exits from earlier episodes do not count. Watch's own
 `Fingerprint:` filings are excluded to prevent recursive alerts.
 Non-dry passes journal each new dispatch-success projection,
 so idle passes whose lazy dispatcher scope writes no lifecycle exit still count.
-`watch --dry-run` makes no `gh` calls and omits per-issue queue expectations.
+`watch --dry-run` makes no `gh` calls and omits per-issue queue expectations
+and the live GitHub escape-attribution lookup.
 For a per-issue alert, use the filing's read-only timeline and journal commands:
 inspect the queue entry, subsequent distinct dispatch successes (including the
 newest `.factory/stage-success.json` projection), and current-episode

@@ -975,7 +975,7 @@ def run_pass(
     """Log, diagnose, file/comment, and close configured signals."""
     events = lifecycle.read_events(dispatch.EVENTS)
     _add_dispatch_success(cfg, events, persist=not dry_run)
-    if any(band.metric == "revert_rate_by_tier" for band in cfg.watch_bands):
+    if not dry_run and any(band.metric == "revert_rate_by_tier" for band in cfg.watch_bands):
         stats.configure(cfg)
         try:
             events.extend(stats.escape_events(stats.escapes()))

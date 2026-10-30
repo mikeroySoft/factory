@@ -297,6 +297,7 @@ class WatchExpectationTest(unittest.TestCase):
                 "outcome": "not_admitted", "at": (now + timedelta(minutes=minutes)).isoformat(),
             })
         self.dispatch_pass(now + timedelta(minutes=5))
+        self.assertEqual(watch.run_pass(self.cfg, now=now + timedelta(minutes=5)), [])
         self.append({
             "event": "lifecycle", "kind": "exit", "stage": "triage-ticket",
             "ticket": 7, "outcome": "completed", "at": (now + timedelta(minutes=6)).isoformat(),
@@ -348,6 +349,7 @@ class WatchExpectationTest(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, "-m", "factory", "watch", "--dry-run"],
             cwd=self.root, env=env, text=True, capture_output=True, timeout=30,
+            check=False,
         )
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
