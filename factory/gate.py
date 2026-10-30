@@ -688,12 +688,12 @@ def check_proof(
         if not command or any(Path(arg).name in {"env", "printenv"} for arg in command):
             return False, f"environment dump commands are not allowed: {safe_command}"
         result = timed(command, cwd=cwd)
+        if proof_contains_environment_dump(result.stdout):
+            return False, f"proof re-run produced environment dump output: {safe_command}"
         output_lines = result.stdout.splitlines()
         output = "\n".join(output_lines[:40])
         if len(output_lines) > 40:
             output += "\n[output truncated after 40 lines]"
-        if proof_contains_environment_dump(output):
-            return False, f"proof re-run produced environment dump output: {safe_command}"
         claimed = int(claimed_text)
         if result.returncode != claimed:
             passed = False
