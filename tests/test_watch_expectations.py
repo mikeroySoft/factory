@@ -236,6 +236,38 @@ class WatchExpectationTest(unittest.TestCase):
         rows = lifecycle.read_events(self.cfg.factory / "events.jsonl")
         self.assertEqual(len([row for row in rows if row.get("event") == "watch"]), 1)
 
+    def test_same_ticket_number_in_two_repositories_has_distinct_identity(self) -> None:
+        now = datetime(2026, 10, 30, tzinfo=UTC)
+        entered = now - timedelta(minutes=30)
+        self.github.issues = [{
+            "number": 7, "body": "", "createdAt": entered.isoformat(),
+        }]
+        events = [
+            {"event": "stage-success", "stage": "dispatch", "at": at.isoformat()}
+            for at in (
+                now - timedelta(minutes=20),
+                now - timedelta(minutes=10),
+            )
+        ]
+        repositories = ("mikeroySoft/factory", "ROCm/rocm-cli")
+        found = []
+
+        for repository in repositories:
+            cfg = config.Config(self.root, repository)
+            cfg.eval_schedule = True
+            found.append(next(
+                signal for signal in watch.signals(
+                    cfg, events, now, include_external=True,
+                )
+                if signal["kind"] == "expectation"
+            ))
+
+        self.assertEqual(
+            [signal["name"] for signal in found],
+            [f"needs-triage issue {repository}#7" for repository in repositories],
+        )
+        self.assertEqual(len({signal["fingerprint"] for signal in found}), 2)
+
     def test_one_failing_github_alert_does_not_stop_the_next_signal(self) -> None:
         now = datetime(2026, 10, 30, tzinfo=UTC)
         self.cfg.eval_schedule = True
