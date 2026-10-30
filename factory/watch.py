@@ -128,7 +128,9 @@ def overdue(
         if expectation.per_triage_issue:
             ticket = expectation.name.rsplit("#", 1)[-1]
             matches = [
-                (at, row) for at, row in matches if str(row.get("ticket")) == ticket
+                (at, row) for at, row in matches
+                if str(row.get("ticket")) == ticket
+                and (expectation.since is None or at >= expectation.since)
             ]
         newest = max((at for at, _ in matches), default=None)
         anchor = newest or expectation.since or (oldest if expectation.start_from_journal else None)
@@ -140,7 +142,7 @@ def overdue(
         )
         pass_overdue = (
             expectation.max_passes is not None
-            and sum(at > anchor and _dispatch_success(row) for at, row in dated)
+            and len({at for at, row in dated if at > anchor and _dispatch_success(row)})
             >= expectation.max_passes
         )
         if not (age_overdue or pass_overdue):
@@ -167,7 +169,23 @@ def overdue(
             "latest": None,
             "command": "factory watch --dry-run",
         })
+        if expectation.per_triage_issue and expectation.since is not None:
+            signals[-1]["queue_entry"] = expectation.since.isoformat()
+            signals[-1]["excerpt"] += f" Current needs-triage queue entry: {expectation.since.isoformat()}."
     return signals
+
+
+def _triage_queue_entry(repo: str, number: int) -> datetime | None:
+    pages = dispatch.gh_json([
+        "api", f"repos/{repo}/issues/{number}/timeline", "--paginate", "--slurp",
+    ])
+    timeline = [item for page in pages for item in page] if pages and isinstance(pages[0], list) else pages
+    latest = next((
+        item for item in reversed(timeline)
+        if item.get("event") in {"labeled", "unlabeled"}
+        and item.get("label", {}).get("name") == config.LABEL_TRIAGE
+    ), {})
+    return _time(latest.get("created_at")) if latest.get("event") == "labeled" else None
 
 
 def _active_expectations(
@@ -194,15 +212,17 @@ def _active_expectations(
         return active
     issues = dispatch.gh_json([
         "issue", "list", "--repo", cfg.repo, "--label", config.LABEL_TRIAGE,
-        "--state", "open", "--limit", "200", "--json", "number,createdAt",
+        "--state", "open", "--limit", "200", "--json", "number,body",
     ])
     for issue in issues:
-        number, created = issue.get("number"), _time(issue.get("createdAt"))
-        if isinstance(number, int) and created is not None:
+        if FINGERPRINT.match(issue.get("body") or ""):
+            continue
+        number = issue.get("number")
+        if isinstance(number, int) and (entered := _triage_queue_entry(cfg.repo, number)) is not None:
             active.append(replace(
                 triage,
                 name=f"needs-triage issue #{number}",
-                since=created,
+                since=entered,
             ))
     return active
 
@@ -819,6 +839,18 @@ def signals(
         events,
         now or datetime.now(UTC),
     ):
+        if signal.get("queue_entry"):
+            ticket = signal["name"].rsplit("#", 1)[-1]
+            endpoint = shlex.quote(f"repos/{cfg.repo}/issues/{ticket}/timeline")
+            signal["command"] = (
+                f"gh api {endpoint} --paginate --slurp | jq "
+                "'[.[][] | select((.event == \"labeled\" or .event == \"unlabeled\") "
+                "and .label.name == \"needs-triage\") | {event, created_at}]'\n"
+                "zcat -f .factory/events.jsonl* | jq -c "
+                "'select((.event == \"stage-success\" and .stage == \"dispatch\") or "
+                f"(.event == \"lifecycle\" and .kind == \"exit\" and .stage == \"triage-ticket\" and .ticket == {ticket}))'\n"
+                "cat .factory/stage-success.json"
+            )
         found[signal["fingerprint"]] = signal
     for signal in intended_state_signals(cfg):
         found[signal["fingerprint"]] = signal
@@ -855,6 +887,7 @@ def evidence(signal: dict) -> list[str]:
 
 
 def body(signal: dict, install: str) -> str:
+    per_issue = bool(signal.get("queue_entry"))
     parts = [
         f"Fingerprint: {signal['fingerprint']}",
         "",
@@ -875,9 +908,23 @@ def body(signal: dict, install: str) -> str:
         "",
         OBSERVED, f"- `{install}`", "",
         "## Evidence", *evidence(signal),
-        "## Reproduce", f"In the `{install}` checkout:", "```", signal["command"], "factory watch --dry-run", "```",
+        "## Reproduce", f"In the `{install}` checkout:", "```", signal["command"],
+        *([] if per_issue else ["factory watch --dry-run"]), "```",
+        *([
+            (
+                "Read-only inspection: the latest needs-triage label event must be `labeled`; "
+                "its `created_at` is the current queue entry, not issue creation or `updatedAt`. "
+                "Count distinct successful dispatch passes strictly after that entry or the latest "
+                "triage-ticket exit for this ticket in the current episode, whichever is later. "
+                "Two passes mean overdue. Ignore exits from earlier queue episodes. "
+                "The stage-success projection supplies the newest dispatch success if not yet journaled."
+            )
+        ] if per_issue else []),
         "## Expected behavior",
         (
+            "A triage-ticket exit for this ticket in the current needs-triage episode arrives "
+            "before two subsequent successful dispatch passes, or the ticket leaves needs-triage."
+            if per_issue else
             f"Metric `{signal['metric']}` returns inside its configured control band, and "
             f"`factory watch --dry-run` no longer reports fingerprint `{signal['fingerprint']}`."
             if signal["kind"] == "band" else

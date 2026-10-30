@@ -330,8 +330,18 @@ landed on its own, and partial progress needs its own reviewed PR.
 `factory watch` also evaluates the declared `EXPECTATIONS` table: the latest successful
 dispatcher pass within 30 minutes, an `eval-summary` within 8 days when `eval.schedule`
 is enabled, and one `triage-ticket` exit per current `needs-triage` issue within two
-successful dispatcher passes. Non-dry passes journal each new dispatch-success projection,
+successful dispatcher passes after entry into the current queue episode (or its latest
+triage exit). Watch reads the paginated issue timeline for the latest `needs-triage`
+label event, not issue creation or `updatedAt`; removing and reapplying the label
+resets the deadline, and exits from earlier episodes do not count. Watch's own
+`Fingerprint:` filings are excluded to prevent recursive alerts.
+Non-dry passes journal each new dispatch-success projection,
 so idle passes whose lazy dispatcher scope writes no lifecycle exit still count.
+`watch --dry-run` makes no `gh` calls and omits per-issue queue expectations.
+For a per-issue alert, use the filing's read-only timeline and journal commands:
+inspect the queue entry, subsequent distinct dispatch successes (including the
+newest `.factory/stage-success.json` projection), and current-episode
+`triage-ticket` exits for that issue.
 Reviewed switch intent is declared in `docs/intended-state.toml`; reporting drift never
 changes the live configuration.
 
