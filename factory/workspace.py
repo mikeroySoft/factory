@@ -1056,7 +1056,7 @@ class Workspace:
         return ("deterministic", f"factory {lane}")
 
     @staticmethod
-    def _live_journal_titles(cfg: Config) -> dict[int, str]:
+    def _live_journal_cases(cfg: Config) -> dict[int, dict]:
         try:
             entry = briefing.bounded_file(
                 cfg.factory, "events.jsonl", runtime_events.BYTE_LIMIT, tail=True,
@@ -1069,7 +1069,7 @@ class Workspace:
         lines = text.splitlines()
         if clipped and lines:
             lines.pop(0)
-        titles = {}
+        cases = {}
         for line in lines:
             try:
                 row = json.loads(line)
@@ -1081,9 +1081,12 @@ class Workspace:
             title = row.get("title") or (
                 issue.get("title") if isinstance(issue, dict) else None
             )
+            case = cases.setdefault(row["ticket"], {})
             if isinstance(title, str) and title:
-                titles[row["ticket"]] = title
-        return titles
+                case["title"] = title
+            if isinstance(row.get("worker"), str) and row["worker"]:
+                case["worker"] = row["worker"]
+        return cases
 
     def live_executions(self, slug: str) -> dict:
         """Fresh local process evidence for the read-only fleet breadboard."""
@@ -1096,7 +1099,7 @@ class Workspace:
             for row in (observation.get("cases", []) if isinstance(observation, dict) else [])
             if isinstance(row, dict) and type(row.get("number")) is int
         }
-        journal_titles = self._live_journal_titles(cfg)
+        journal_cases = self._live_journal_cases(cfg)
         now = datetime.now(UTC)
         rows = []
         for execution in runtime.get("executions", []):
@@ -1110,10 +1113,10 @@ class Workspace:
                 or execution.get("ended_at") is not None
             ):
                 continue
-            case = cases.get(ticket, {})
+            case = {**journal_cases.get(ticket, {}), **cases.get(ticket, {})}
             observed_at = execution.get("observed_at")
             try:
-                observed = datetime.fromisoformat(str(observed_at).replace("Z", "+00:00"))
+                observed = datetime.fromisoformat(str(observed_at))
                 stale = (now - observed).total_seconds() > LIVE_STALE_SECONDS
             except (TypeError, ValueError):
                 stale = True
@@ -1122,7 +1125,7 @@ class Workspace:
                 "execution_id": execution["execution_id"],
                 "lane": lane,
                 "ticket": ticket,
-                "title": case.get("title") or journal_titles.get(ticket) or "Title unavailable",
+                "title": case.get("title") or "Title unavailable",
                 "agent": agent,
                 "harness": harness,
                 "entered_at": execution.get("entered_at"),
