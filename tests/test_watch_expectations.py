@@ -363,6 +363,25 @@ class WatchExpectationTest(unittest.TestCase):
             call[:3] == ["gh", "issue", "close"] for call in self.github.calls
         ))
 
+        self.github.calls.clear()
+
+        def fail_list(
+            command: list[str], **kwargs: object,
+        ) -> subprocess.CompletedProcess:
+            if command[:3] == ["gh", "issue", "list"]:
+                raise subprocess.CalledProcessError(
+                    1, command, stderr="GitHub API rate limit exceeded",
+                )
+            return self.github(command, **kwargs)
+
+        with mock.patch.object(dispatch, "run", fail_list):
+            self.assertEqual(watch.run_pass(self.cfg, now=now), [])
+
+        self.assertEqual(self.github.filings[901]["state"], "OPEN")
+        self.assertFalse(any(
+            call[:3] == ["gh", "issue", "close"] for call in self.github.calls
+        ))
+
     def test_triage_issue_discovery_continues_past_first_200_results(self) -> None:
         now = datetime(2026, 10, 30, tzinfo=UTC)
         self.cfg.eval_schedule = True
