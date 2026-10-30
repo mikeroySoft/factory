@@ -190,7 +190,13 @@
         point(target.left - bend, top), point(target.left - bend, y2), point(target.left, y2),
       ];
     } else {
-      const gutter = (source.right + target.left) / 2 + offset * 10;
+      const gap = target.left - source.right;
+      const laneInset = gap / (2 * (Math.abs(offset) + 1));
+      const gutter = clamp(
+        (source.right + target.left) / 2 + offset * Math.min(10, laneInset),
+        source.right + laneInset,
+        target.left - laneInset,
+      );
       points = [
         point(source.right, y1), point(gutter, y1), point(gutter, y1),
         point(gutter, y2), point(gutter, y2), point(target.left, y2),
@@ -202,6 +208,10 @@
     if (!board || !targetDocument) return;
     if (targetDocument.fullscreenElement === board) return targetDocument.exitFullscreen?.();
     return board.requestFullscreen?.();
+  }
+  function viewportShortcut(event) {
+    if (event.ctrlKey || event.metaKey || event.altKey || event.target.closest('input,textarea,select,[data-trace-node]')) return null;
+    return event.key.toLowerCase();
   }
 
   function optionMarkup(item, chosen) {
@@ -644,8 +654,8 @@
       event.preventDefault();
     });
     board?.addEventListener('keydown', event => {
-      if (event.target.closest('input,textarea,select,[data-trace-node]')) return;
-      const key = event.key.toLowerCase();
+      const key = viewportShortcut(event);
+      if (!key) return;
       if (key === '+' || key === '=') zoomGraph(1.25);
       else if (key === '-') zoomGraph(.8);
       else if (key === '0') fitGraph();
@@ -747,6 +757,6 @@
 
   window.WorkspaceTrace = Object.freeze({
     arrowOrient,bundleEdges,bundleSpacing,crossingCount,edgeType,fitViewport,markup,mount,orderNodes,
-    panViewport,render,routeEdge,safeUrl,toggleFullscreen,transformRect,zoomViewport,
+    panViewport,render,routeEdge,safeUrl,toggleFullscreen,transformRect,viewportShortcut,zoomViewport,
   });
 })();
