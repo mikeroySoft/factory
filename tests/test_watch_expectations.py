@@ -19,9 +19,20 @@ class GitHub:
         self.calls: list[list[str]] = []
         self.filings: dict[int, dict] = {}
         self.issues: list[dict] = []
+        self.timelines: dict[int, list[list[dict]]] = {}
 
     def __call__(self, command: list[str], **kwargs) -> subprocess.CompletedProcess:
         self.calls.append(command)
+        if command[:2] == ["gh", "api"] and command[2].endswith("/timeline"):
+            number = int(command[2].split("/")[-2])
+            default = [
+                {"event": "labeled", "label": {"name": config.LABEL_TRIAGE},
+                 "created_at": issue["createdAt"]}
+                for issue in self.issues if issue["number"] == number
+            ]
+            return subprocess.CompletedProcess(
+                command, 0, json.dumps(self.timelines.get(number, [default])), "",
+            )
         if command[:3] == ["gh", "issue", "list"]:
             label = command[command.index("--label") + 1]
             rows = self.issues if label == config.LABEL_TRIAGE else [
@@ -187,6 +198,134 @@ class WatchExpectationTest(unittest.TestCase):
         rows = lifecycle.read_events(self.cfg.factory / "events.jsonl")
         self.assertEqual([row["issue"] for row in rows if row.get("event") == "watch"], [901])
 
+    def queue_event(self, event: str, at: datetime) -> dict:
+        return {
+            "event": event,
+            "label": {"name": config.LABEL_TRIAGE},
+            "created_at": at.isoformat(),
+        }
+
+    def test_watch_filings_cannot_recursively_become_triage_expectations(self) -> None:
+        now = datetime(2026, 10, 30, tzinfo=UTC)
+        self.cfg.eval_schedule = True
+        self.assertEqual(self.cfg.repo, self.cfg.watch_engine_repo)
+        self.github.issues = [
+            {"number": 7, "body": None, "createdAt": (now - timedelta(days=9)).isoformat()},
+            {"number": 901, "body": "Fingerprint: expectation:already-filed\n\nWatch alert",
+             "createdAt": (now - timedelta(days=9)).isoformat()},
+        ]
+        self.dispatch_pass(now - timedelta(minutes=20))
+        watch.run_pass(self.cfg, now=now - timedelta(minutes=20))
+        self.dispatch_pass(now - timedelta(minutes=10))
+
+        signals = watch.run_pass(self.cfg, now=now)
+
+        self.assertEqual([signal["name"] for signal in signals], ["needs-triage issue #7"])
+        listing = next(call for call in self.github.calls if call[:3] == ["gh", "issue", "list"])
+        self.assertIn("body", listing[listing.index("--json") + 1].split(","))
+        self.assertFalse(any("/issues/901/timeline" in call for call in self.github.calls))
+        creates = [call for call in self.github.calls if call[:3] == ["gh", "issue", "create"]]
+        self.assertEqual(len(creates), 1)
+        rows = lifecycle.read_events(self.cfg.factory / "events.jsonl")
+        self.assertEqual(len([row for row in rows if row.get("event") == "watch"]), 1)
+
+    def test_old_issue_newly_queued_by_build_gets_two_subsequent_successes(self) -> None:
+        now = datetime(2026, 10, 30, tzinfo=UTC)
+        self.cfg.eval_schedule = True
+        self.github.issues = [{
+            "number": 7, "body": "Manager BUILD sent this to triage.",
+            "createdAt": (now - timedelta(days=90)).isoformat(),
+            "updatedAt": (now - timedelta(days=1)).isoformat(),
+        }]
+        self.github.timelines[7] = [[self.queue_event("labeled", now)]]
+        for minutes in (30, 20, 10):
+            self.dispatch_pass(now - timedelta(minutes=minutes))
+            self.assertEqual(watch.run_pass(self.cfg, now=now), [])
+
+        self.dispatch_pass(now + timedelta(minutes=10))
+        self.assertEqual(watch.run_pass(self.cfg, now=now + timedelta(minutes=10)), [])
+        self.dispatch_pass(now + timedelta(minutes=20))
+        signals = watch.run_pass(self.cfg, now=now + timedelta(minutes=20))
+
+        self.assertEqual([signal["name"] for signal in signals], ["needs-triage issue #7"])
+        self.assertIn(now.isoformat(), signals[0]["excerpt"])
+        timeline_calls = [call for call in self.github.calls if call[:2] == ["gh", "api"]]
+        self.assertTrue(timeline_calls)
+        self.assertTrue(all("--paginate" in call and "--slurp" in call for call in timeline_calls))
+
+    def test_requeued_issue_ignores_prior_episode_exit_and_successes(self) -> None:
+        now = datetime(2026, 10, 30, tzinfo=UTC)
+        old = now - timedelta(days=2)
+        self.cfg.eval_schedule = True
+        self.github.issues = [{
+            "number": 7, "body": "", "createdAt": old.isoformat(),
+            "updatedAt": (now + timedelta(minutes=1)).isoformat(),
+        }]
+        self.github.timelines[7] = [
+            [self.queue_event("labeled", old)],
+            [self.queue_event("unlabeled", old + timedelta(hours=1)),
+             self.queue_event("labeled", now)],
+        ]
+        self.append({
+            "event": "lifecycle", "kind": "exit", "stage": "triage-ticket",
+            "ticket": 7, "outcome": "completed", "at": (old + timedelta(minutes=5)).isoformat(),
+        })
+        for minutes in (30, 20, 10):
+            self.dispatch_pass(now - timedelta(minutes=minutes))
+            self.assertEqual(watch.run_pass(self.cfg, now=now), [])
+        self.dispatch_pass(now + timedelta(minutes=10))
+        self.assertEqual(watch.run_pass(self.cfg, now=now + timedelta(minutes=10)), [])
+        self.dispatch_pass(now + timedelta(minutes=20))
+        signals = watch.run_pass(self.cfg, now=now + timedelta(minutes=20))
+
+        self.assertEqual([signal["name"] for signal in signals], ["needs-triage issue #7"])
+        self.assertEqual(signals[0]["rows"], [])
+
+    def test_current_queue_triage_exit_and_only_successful_passes_count(self) -> None:
+        now = datetime(2026, 10, 30, tzinfo=UTC)
+        self.cfg.eval_schedule = True
+        self.github.issues = [{"number": 7, "createdAt": (now - timedelta(days=90)).isoformat()}]
+        self.github.timelines[7] = [[self.queue_event("labeled", now)]]
+        self.append({
+            "event": "lifecycle", "kind": "exit", "stage": "triage-ticket",
+            "ticket": 8, "outcome": "completed", "at": (now + timedelta(minutes=1)).isoformat(),
+        })
+        for minutes in (2, 3):
+            self.append({
+                "event": "lifecycle", "kind": "exit", "stage": "dispatch",
+                "outcome": "not_admitted", "at": (now + timedelta(minutes=minutes)).isoformat(),
+            })
+        self.dispatch_pass(now + timedelta(minutes=5))
+        self.append({
+            "event": "lifecycle", "kind": "exit", "stage": "triage-ticket",
+            "ticket": 7, "outcome": "completed", "at": (now + timedelta(minutes=6)).isoformat(),
+        })
+        self.dispatch_pass(now + timedelta(minutes=10))
+
+        self.assertEqual(watch.run_pass(self.cfg, now=now + timedelta(minutes=10)), [])
+
+    def test_triage_filing_has_read_only_queue_episode_reproduction(self) -> None:
+        now = datetime(2026, 10, 30, tzinfo=UTC)
+        self.cfg.eval_schedule = True
+        self.github.issues = [{"number": 7, "createdAt": (now - timedelta(hours=1)).isoformat()}]
+        self.dispatch_pass(now - timedelta(minutes=20))
+        watch.run_pass(self.cfg, now=now - timedelta(minutes=20))
+        self.dispatch_pass(now - timedelta(minutes=10))
+        watch.run_pass(self.cfg, now=now)
+
+        text = self.github.filings[901]["body"]
+        self.assertIn("gh api repos/mikeroySoft/factory/issues/7/timeline", text)
+        self.assertIn("--paginate", text)
+        self.assertIn("created_at", text)
+        self.assertIn("stage-success", text)
+        self.assertIn("triage-ticket", text)
+        self.assertIn("queue entry", text)
+        self.assertNotIn("factory watch --dry-run", text)
+
+        self.github.calls.clear()
+        self.assertEqual(watch.run_pass(self.cfg, dry_run=True, now=now), [])
+        self.assertEqual(self.github.calls, [])
+
 
 class IntendedStateCommandTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -211,6 +350,9 @@ class IntendedStateCommandTest(unittest.TestCase):
 
     def test_cli_doctor_fails_once_for_omitted_intended_eval_switch(self) -> None:
         output = io.StringIO()
+        patcher = mock.patch.object(onboard, "_dashboard_port_check", return_value=(True, "available"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         with mock.patch.object(onboard.config, "load", return_value=self.cfg), \
                 mock.patch.object(onboard.config, "host_config", return_value={}), \
                 mock.patch.object(onboard.config, "host_config_path", return_value=self.host_path), \
@@ -227,6 +369,20 @@ class IntendedStateCommandTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(len(lines), 1)
         self.assertIn("FAIL", lines[0])
+        self.cfg.eval_schedule = True
+        control = io.StringIO()
+        with mock.patch.object(onboard.config, "load", return_value=self.cfg), \
+                mock.patch.object(onboard.config, "host_config", return_value={}), \
+                mock.patch.object(onboard.config, "host_config_path", return_value=self.host_path), \
+                mock.patch.object(onboard.config, "engine_drift", return_value=None), \
+                mock.patch.object(onboard, "sh", side_effect=self.command), \
+                mock.patch.object(onboard.shutil, "which", return_value="/bin/tool"), \
+                mock.patch.object(triage, "probe_endpoint", return_value=(True, "ready")), \
+                redirect_stdout(control):
+            self.assertEqual(cli.main(["doctor"]), 0)
+        self.assertFalse(any(
+            "FAIL" in line and "eval.schedule" in line for line in control.getvalue().splitlines()
+        ))
 
 
     def test_watch_checks_intended_state_without_repository_config(self) -> None:
