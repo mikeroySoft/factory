@@ -120,6 +120,21 @@ class WatchExpectationTest(unittest.TestCase):
 
         self.assertEqual([signal["name"] for signal in signals], ["factory pass"])
 
+    def test_factory_pass_is_overdue_when_journal_is_old_without_success(self) -> None:
+        now = datetime(2026, 10, 30, tzinfo=UTC)
+        self.cfg.eval_schedule = True
+        self.append({
+            "event": "lifecycle",
+            "kind": "exit",
+            "stage": "watch",
+            "outcome": "pass",
+            "at": (now - timedelta(minutes=31)).isoformat(),
+        })
+
+        signals = watch.run_pass(self.cfg, dry_run=True, now=now)
+
+        self.assertEqual([signal["name"] for signal in signals], ["factory pass"])
+
     def test_needs_triage_issue_is_overdue_after_two_passes_not_elapsed_time(self) -> None:
         now = datetime(2026, 10, 30, tzinfo=UTC)
         self.cfg.eval_schedule = True
