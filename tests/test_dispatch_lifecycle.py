@@ -1247,9 +1247,36 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
         ).stdout.splitlines()
         self.assertNotIn("uv.lock", changed)
 
+    def test_unplanned_lockfile_rename_restores_source_and_removes_destination(self):
+        from factory import config, dispatch
+
+        self.set_lock_baseline()
+        wt = self.repo / ".factory" / "wt-7"
+        wt.parent.mkdir(exist_ok=True)
+        self.git("worktree", "add", str(wt), "-b", "agent/7")
+        self.git("-C", str(wt), "config", "diff.renames", "true")
+        (wt / "sub").mkdir()
+        (wt / "uv.lock").rename(wt / "sub" / "uv.lock")
+        self.git("-C", str(wt), "add", "-A")
+        self.git("-C", str(wt), "commit", "-qm", "worker lock rename")
+        dispatch.configure(config.load(self.repo))
+
+        dispatch.restore_unplanned_lockfiles(wt, 7, "origin/main")
+        dispatch.commit_leftovers(wt, 7, "restore lockfile")
+
+        self.assertEqual((wt / "uv.lock").read_text(), "base\n")
+        self.assertFalse((wt / "sub" / "uv.lock").exists())
+
     def test_manifest_change_preserves_lockfile_edit(self):
         lock = self.run_lockfile_worker(
             "## Files\n- pyproject.toml\n", manifest=True,
+        )
+
+        self.assertEqual(lock, "worker drift\n")
+
+    def test_annotated_lockfile_plan_preserves_lockfile_edit(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- `uv.lock` — refresh dependency pins\n",
         )
 
         self.assertEqual(lock, "worker drift\n")
