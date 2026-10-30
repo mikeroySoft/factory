@@ -210,20 +210,38 @@ def _active_expectations(
         return active
     if sum(_dispatch_success(row) for row in rows) < 2:
         return active
-    issues = dispatch.gh_json([
-        "issue", "list", "--repo", cfg.repo, "--label", config.LABEL_TRIAGE,
-        "--state", "open", "--limit", "200", "--json", "number,body",
-    ])
+    try:
+        issues = dispatch.gh_json([
+            "issue", "list", "--repo", cfg.repo, "--label", config.LABEL_TRIAGE,
+            "--state", "open", "--limit", "200", "--json", "number,body",
+        ])
+    except (
+        OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError, IndexError,
+    ) as exc:
+        _github_failure({
+            "fingerprint": f"expectation:{fingerprint('expectation', triage.name)}",
+            "key": triage.name,
+        }, cfg.repo, exc)
+        return active
     for issue in issues:
         if FINGERPRINT.match(issue.get("body") or ""):
             continue
         number = issue.get("number")
-        if isinstance(number, int) and (entered := _triage_queue_entry(cfg.repo, number)) is not None:
-            active.append(replace(
-                triage,
-                name=f"needs-triage issue #{number}",
-                since=entered,
-            ))
+        if not isinstance(number, int):
+            continue
+        name = f"needs-triage issue #{number}"
+        try:
+            entered = _triage_queue_entry(cfg.repo, number)
+        except (
+            OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError, IndexError,
+        ) as exc:
+            _github_failure({
+                "fingerprint": f"expectation:{fingerprint('expectation', name)}",
+                "key": name,
+            }, cfg.repo, exc)
+            continue
+        if entered is not None:
+            active.append(replace(triage, name=name, since=entered))
     return active
 
 def _add_dispatch_success(
@@ -965,6 +983,83 @@ def open_filings(repo: str) -> dict[str, dict]:
     return found
 
 
+def _file_or_comment(
+    signal: dict,
+    previous: dict | None,
+    listing: dict[str, dict] | None,
+    engine: str,
+    install: str,
+) -> tuple[dict[str, dict] | None, bool]:
+    issue = None
+    if previous is not None:
+        repo = previous.get("repo", dispatch.REPO)
+        state = dispatch.gh_json([
+            "issue", "view", str(previous["issue"]), "--repo", repo,
+            "--json", "state,closedAt,body",
+        ])
+        if state["state"].upper() == "OPEN":
+            if repo != engine:
+                return listing, False  # a filing from before routing covers it until it closes
+            issue = {"number": previous["issue"], "body": state.get("body")}
+        # ponytail: gh reports closedAt to the second; a recurrence inside that second refiles once.
+        elif signal["latest"] is not None and (
+                datetime.fromisoformat(signal["latest"]) <= datetime.fromisoformat(state["closedAt"])):
+            return listing, False  # closed by its fix or a human; nothing newer since
+    if issue is None:
+        listing = open_filings(engine) if listing is None else listing
+        issue = listing.get(signal["fingerprint"])
+    if issue is None:
+        url = dispatch.run([
+            "gh", "issue", "create", "--repo", engine, "--title", title(signal),
+            "--label", HOST_LABELS if signal["kind"] == "host" else LABELS,
+            "--body", body(signal, install),
+        ]).stdout.strip().splitlines()[-1]
+        number = int(url.rstrip("/").rsplit("/", 1)[-1])
+        dispatch.record(
+            "watch", fingerprint=signal["fingerprint"], issue=number, repo=engine,
+            latest=signal["latest"], at=lifecycle._now(),
+        )
+        dispatch.log(
+            f"watch: filed {engine}#{number} for {signal['fingerprint']} ({title(signal)})",
+        )
+        return listing, True
+    if (
+        previous is not None
+        and (previous["issue"], previous.get("repo", dispatch.REPO)) == (issue["number"], engine)
+        and _age(previous["at"]) < QUIET_PERIOD
+    ):
+        return listing, False  # this install reported on it within the window
+    number = issue["number"]
+    dispatch.run([
+        "gh", "issue", "comment", str(number), "--repo", engine,
+        "--body", comment(signal, install),
+    ])
+    # ponytail: read-modify-write; two installs editing in the same second can drop one name.
+    listed = observed(issue["body"], install) if isinstance(issue.get("body"), str) else None
+    if listed is not None:
+        dispatch.run([
+            "gh", "issue", "edit", str(number), "--repo", engine, "--body", listed,
+        ])
+    dispatch.record(
+        "watch", fingerprint=signal["fingerprint"], issue=number, repo=engine,
+        latest=signal["latest"], commented=True, at=lifecycle._now(),
+    )
+    dispatch.log(f"watch: commented on {engine}#{number} for {signal['fingerprint']}")
+    return listing, True
+
+
+def _github_failure(signal: dict, repo: str, exc: Exception) -> None:
+    detail = dispatch.stderr_tail(getattr(exc, "stderr", None)) or str(exc)
+    dispatch.record(
+        "watch-error", fingerprint=signal["fingerprint"], key=signal["key"],
+        repo=repo, error=type(exc).__name__, detail=detail,
+    )
+    dispatch.log(
+        f"watch: GitHub action failed for {signal['fingerprint']} "
+        f"({type(exc).__name__}: {detail})",
+    )
+
+
 def _age(at: str) -> timedelta:
     return datetime.now(UTC) - datetime.fromisoformat(at)
 
@@ -1041,46 +1136,17 @@ def run_pass(
             print(f"[watch] {verb} {fp} in {engine}: {title(signal)}")
             filed.append(signal)
             continue
-        issue = None
-        if previous is not None:
-            repo = previous.get("repo", dispatch.REPO)
-            state = dispatch.gh_json(["issue", "view", str(previous["issue"]), "--repo", repo,
-                                      "--json", "state,closedAt,body"])
-            if state["state"].upper() == "OPEN":
-                if repo != engine:
-                    continue  # a filing from before routing covers it until it closes
-                issue = {"number": previous["issue"], "body": state.get("body")}
-            # ponytail: gh reports closedAt to the second; a recurrence inside that second refiles once.
-            elif signal["latest"] is not None and (
-                    datetime.fromisoformat(signal["latest"]) <= datetime.fromisoformat(state["closedAt"])):
-                continue  # closed by its fix or a human; nothing newer since
-        if issue is None:
-            listing = open_filings(engine) if listing is None else listing
-            issue = listing.get(fp)
-        if issue is None:
-            url = dispatch.run([
-                "gh", "issue", "create", "--repo", engine, "--title", title(signal),
-                "--label", HOST_LABELS if signal["kind"] == "host" else LABELS,
-                "--body", body(signal, install),
-            ]).stdout.strip().splitlines()[-1]
-            number = int(url.rstrip("/").rsplit("/", 1)[-1])
-            dispatch.record("watch", fingerprint=fp, issue=number, repo=engine,
-                            latest=signal["latest"], at=lifecycle._now())
-            dispatch.log(f"watch: filed {engine}#{number} for {fp} ({title(signal)})")
-        else:
-            if (previous is not None and (previous["issue"], previous.get("repo", dispatch.REPO)) == (issue["number"], engine)
-                    and _age(previous["at"]) < QUIET_PERIOD):
-                continue  # this install reported on it within the window
-            number = issue["number"]
-            dispatch.run(["gh", "issue", "comment", str(number), "--repo", engine, "--body", comment(signal, install)])
-            # ponytail: read-modify-write; two installs editing in the same second can drop one name.
-            listed = observed(issue["body"], install) if isinstance(issue.get("body"), str) else None
-            if listed is not None:
-                dispatch.run(["gh", "issue", "edit", str(number), "--repo", engine, "--body", listed])
-            dispatch.record("watch", fingerprint=fp, issue=number, repo=engine, latest=signal["latest"],
-                            commented=True, at=lifecycle._now())
-            dispatch.log(f"watch: commented on {engine}#{number} for {fp}")
-        filed.append(signal)
+        try:
+            listing, changed = _file_or_comment(
+                signal, previous, listing, engine, install,
+            )
+        except (
+            OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError, IndexError,
+        ) as exc:
+            _github_failure(signal, engine, exc)
+            continue
+        if changed:
+            filed.append(signal)
     filed = observed_signals + filed
 
     closed = 0

@@ -304,8 +304,7 @@ class WatchExpectationTest(unittest.TestCase):
                 and "rate limit" in str(row.get("detail"))
             ],
             [
-                "expectation:"
-                f"{watch.fingerprint('expectation', 'needs-triage issue #7')}"
+                f"expectation:{watch.fingerprint('expectation', 'needs-triage issue #7')}"
             ],
         )
         self.assertEqual(
