@@ -1846,12 +1846,6 @@ def escalate(
         if refreshed_head is not None
         else {}
     )
-    record(
-        "escalate", ticket=n, code=code, reason=reason, need=need_name,
-        category=category, route=route, question=question if human else None,
-        log=str(log_path) if log_path else None, packet=str(packet), round=round_number,
-        **evidence,
-    )
     if human:
         run(
             [
@@ -1862,6 +1856,12 @@ def escalate(
         )
     else:
         _route_escalation_to_manager(n)
+    record(
+        "escalate", ticket=n, code=code, reason=reason, need=need_name,
+        category=category, route=route, question=question if human else None,
+        log=str(log_path) if log_path else None, packet=str(packet), round=round_number,
+        **evidence,
+    )
     body = f"Factory dispatcher escalating: {reason}.\n\nEscalation packet: `{packet}`"
     if log_path:
         body += f"\n\nWorker logs: `{log_path}`"
