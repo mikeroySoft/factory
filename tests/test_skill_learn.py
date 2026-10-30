@@ -184,5 +184,25 @@ class SkillLearnEvidenceTest(unittest.TestCase):
             learn.MAX_SKILL_EVIDENCE,
         )
 
+    def test_interleaved_excerpts_repeat_the_skill_heading(self) -> None:
+        self.journal(
+            {"event": "claimed", "ticket": 7, "title": "interleaved skills", "at": AT},
+            {"event": "merged", "ticket": 7, "at": AT},
+        )
+        excerpts = [
+            {"skill": "alpha", "tag": "load_failure", "excerpt": "alpha load failed"},
+            {"skill": "alpha", "tag": "stale_command", "excerpt": "alpha stale command"},
+            {"skill": "beta", "tag": "load_failure", "excerpt": "beta load failed"},
+        ]
+
+        with mock.patch("factory.learn.skill_failure_evidence", return_value=excerpts):
+            _, text = learn.evidence(1)
+
+        alpha_regression = text.index("[stale_command] alpha stale command")
+        self.assertEqual(
+            text.rfind("### Skill ", 0, alpha_regression),
+            text.rfind("### Skill alpha failure evidence", 0, alpha_regression),
+        )
+
 if __name__ == "__main__":
     unittest.main()
