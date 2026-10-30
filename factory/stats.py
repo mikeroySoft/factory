@@ -148,6 +148,10 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _timestamp(value: object) -> datetime | None:
     if not isinstance(value, str):
         return None
@@ -171,18 +175,18 @@ def reconcile_closed_prs(journal: Path, rows: list[dict], start: datetime) -> No
     opened = {
         row["pr"]: row["ticket"] for row in rows
         if row.get("event") == "pr-opened"
-        and type(row.get("pr")) is int and type(row.get("ticket")) is int
+        and _is_int(row.get("pr")) and _is_int(row.get("ticket"))
     }
     seen = {
         row["pr"] for row in rows
-        if row.get("event") == "pr-closed" and type(row.get("pr")) is int
+        if row.get("event") == "pr-closed" and _is_int(row.get("pr"))
     }
     try:
         completed = subprocess.run(
             ["gh", "pr", "list", "--repo", REPOSITORY, "--state", "closed",
              "--search", f"closed:>={_stamp(start)}", "--limit", "1000",
              "--json", "number,closedAt,mergedAt"],
-            text=True, capture_output=True, check=False, timeout=10,
+            capture_output=True, check=False, timeout=10,
         )
         closed = json.loads(completed.stdout) if completed.returncode == 0 else None
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
@@ -192,7 +196,7 @@ def reconcile_closed_prs(journal: Path, rows: list[dict], start: datetime) -> No
     for pr in closed:
         number = pr.get("number") if isinstance(pr, dict) else None
         closed_at = pr.get("closedAt") if isinstance(pr, dict) else None
-        if (type(number) is not int or number not in opened or number in seen
+        if (not _is_int(number) or number not in opened or number in seen
                 or pr.get("mergedAt") is not None or _timestamp(closed_at) is None):
             continue
         row = {
@@ -216,9 +220,9 @@ def weekly_metrics(
     windowed = window_rows(rows, start, end)
 
     def settlement_id(row: dict):
-        if type(row.get("ticket")) is not int:
+        if not _is_int(row.get("ticket")):
             return None
-        if type(row.get("pr")) is int:
+        if _is_int(row.get("pr")):
             return "pr", row["pr"]
         return "ticket", row["ticket"]
 
@@ -240,7 +244,7 @@ def weekly_metrics(
     opened_at: dict[int, datetime] = {}
     for row in rows:
         opened = _timestamp(row.get("at"))
-        if row.get("event") != "pr-opened" or type(row.get("pr")) is not int or opened is None:
+        if row.get("event") != "pr-opened" or not _is_int(row.get("pr")) or opened is None:
             continue
         opened_at[row["pr"]] = min(opened_at.get(row["pr"], opened), opened)
     durations = []

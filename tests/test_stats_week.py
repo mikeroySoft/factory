@@ -374,6 +374,87 @@ class WeeklyBehaviorRegressionTest(unittest.TestCase):
         self.assertEqual([row for row in first if row.get("event") == "pr-closed"], expected)
         self.assertEqual(second, first)
 
+    def test_reconciliation_requires_open_events_and_integer_prs(self) -> None:
+        journal = Path(self.enterContext(tempfile.TemporaryDirectory())) / "events.jsonl"
+        rows = [
+            {"at": at(timedelta(days=-6)), "event": "attempt", "ticket": 7, "pr": 17},
+            {"at": at(timedelta(days=-6)), "event": "pr-opened", "ticket": 8, "pr": "18"},
+            {"at": at(timedelta(days=-6)), "event": "pr-opened", "ticket": 9, "pr": 1},
+            {"at": at(timedelta(days=-5)), "event": "pr-closed", "ticket": 9, "pr": True},
+        ]
+        response = subprocess.CompletedProcess([], 0, json.dumps([
+            {"number": 1, "closedAt": at(timedelta(days=-1)), "mergedAt": None},
+            {"number": 17, "closedAt": at(timedelta(days=-1)), "mergedAt": None},
+            {"number": "18", "closedAt": at(timedelta(days=-1)), "mergedAt": None},
+        ]), "")
+
+        with mock.patch.object(stats.subprocess, "run", return_value=response):
+            stats.reconcile_closed_prs(journal, rows, NOW - timedelta(days=7))
+
+        self.assertEqual([
+            row["pr"] for row in rows
+            if row.get("event") == "pr-closed" and row.get("by") == "external"
+        ], [1])
+
+    def test_settlements_require_integer_ticket_ids(self) -> None:
+        rows = [
+            {"at": at(timedelta(days=-2)), "event": "merged", "ticket": True, "pr": 11},
+            {"at": at(timedelta(days=-1)), "event": "pr-closed", "ticket": "2", "pr": 12},
+        ]
+
+        result = stats.weekly_metrics(rows, NOW - timedelta(days=7), NOW, None)
+
+        self.assertEqual(result["merges"], 0)
+        self.assertEqual(result["merge_rate_denominator"], 0)
+
+    def test_open_to_merge_duration_keeps_zero_and_fractional_hours(self) -> None:
+        rows = [
+            {"at": at(timedelta(hours=-4)), "event": "pr-opened", "ticket": 1, "pr": 11},
+            {"at": at(timedelta(hours=-2, minutes=-30)), "event": "merged", "ticket": 1, "pr": 11},
+            {"at": at(timedelta(hours=-1)), "event": "pr-opened", "ticket": 2, "pr": 12},
+            {"at": at(timedelta(hours=-2)), "event": "merged", "ticket": 2, "pr": 12},
+            {"at": at(timedelta(hours=-1)), "event": "pr-opened", "ticket": 3, "pr": 13},
+            {"at": at(timedelta(hours=-1)), "event": "merged", "ticket": 3, "pr": 13},
+            {"at": at(timedelta(hours=-3)), "event": "pr-opened", "ticket": 4, "pr": []},
+        ]
+
+        result = stats.weekly_metrics(rows, NOW - timedelta(days=7), NOW, None)
+
+        self.assertEqual(result["median_open_to_merge_hours"], 0.75)
+        self.assertEqual(result["median_open_to_merge_hours_numerator"], 2)
+
+    def test_cost_metadata_normalizes_models_and_rounds_the_numerator(self) -> None:
+        unpriced = stats.weekly_metrics([
+            {"at": at(timedelta(days=-1)), "event": "merged", "ticket": 1, "pr": 11},
+            {"at": at(timedelta(days=-2)), "event": "llm-usage", "ticket": 1,
+             "stage": "worker", "model": 42, "prompt_tokens": 1},
+        ], NOW - timedelta(days=7), NOW, None)
+        priced = stats.weekly_metrics([
+            {"at": at(timedelta(days=-1)), "event": "merged", "ticket": 1, "pr": 11},
+            {"at": at(timedelta(days=-2)), "event": "llm-usage", "ticket": 1,
+             "stage": "worker", "model": "m1", "cost": 0.1234566},
+        ], NOW - timedelta(days=7), NOW, None)
+
+        self.assertEqual(unpriced["cost_unpriced"], ["<missing>"])
+        self.assertEqual(priced["cost_per_merged_pr_numerator"], 0.123457)
+
+    def test_dynamic_attempt_event_and_local_share_precision(self) -> None:
+        attempt = bytearray(b"attempt").decode()
+        rows = [
+            {"at": at(timedelta(days=-1)), "event": attempt,
+             "ticket": 1, "attempt": 1, "gate": "PASS"},
+            {"at": at(timedelta(days=-1)), "event": "llm-usage", "stage": "worker",
+             "model": "local", "prompt_tokens": 1, "completion_tokens": 0, "local": True},
+            {"at": at(timedelta(days=-1)), "event": "llm-usage", "stage": "review",
+             "model": "hosted", "prompt_tokens": 2, "completion_tokens": 0, "local": False},
+        ]
+
+        result = stats.weekly_metrics(rows, NOW - timedelta(days=7), NOW, None)
+
+        self.assertEqual(result["first_pass"], 1.0)
+        self.assertEqual(result["first_pass_denominator"], 1)
+        self.assertEqual(result["local_cost_share"], 0.333333)
+
     def test_worker_producer_infers_configured_model_and_reduces_missing_usage(self) -> None:
         from factory import dispatch, lifecycle
 
