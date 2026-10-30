@@ -163,5 +163,26 @@ class SkillLearnEvidenceTest(unittest.TestCase):
         skill_text = text[text.index("## Skill health evidence"):]
         self.assertLessEqual(len(skill_text), learn.MAX_SKILL_EVIDENCE)
 
+    def test_load_failure_precedes_long_regression_evidence(self) -> None:
+        self.journal(
+            {"event": "claimed", "ticket": 7, "title": "load failure", "at": AT},
+            {"event": "merged", "ticket": 7, "at": AT},
+        )
+        excerpts = [
+            {"skill": "expensive", "tag": "stale_command", "excerpt": "x" * 3000},
+            {"skill": "expensive", "tag": "ignored_rule", "excerpt": "y" * 3000},
+            {"skill": "missing", "tag": "load_failure", "excerpt": "Unknown skill: missing"},
+        ]
+
+        with mock.patch("factory.learn.skill_failure_evidence", return_value=excerpts):
+            tickets, text = learn.evidence(1)
+
+        self.assertEqual(tickets, [7])
+        self.assertIn("[load_failure] Unknown skill: missing", text)
+        self.assertLessEqual(
+            len(text[text.index("## Skill health evidence"):]),
+            learn.MAX_SKILL_EVIDENCE,
+        )
+
 if __name__ == "__main__":
     unittest.main()
