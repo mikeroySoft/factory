@@ -1281,11 +1281,26 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
 
         self.assertEqual(lock, "worker drift\n")
 
+    def test_nonleading_lockfile_plan_preserves_lockfile_edit(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- `README.md`, `uv.lock`\n",
+        )
+
+        self.assertEqual(lock, "worker drift\n")
+
     def test_lockfile_mentions_outside_files_section_do_not_authorize_edit(self):
         lock = self.run_lockfile_worker(
             "## Files\n- change.txt\n"
             "## Risks\n- uv.lock may drift\n"
             "## Proof\n- inspect uv.lock\n",
+        )
+
+        self.assertEqual(lock, "base\n")
+
+    def test_indented_heading_ends_files_section(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- change.txt\n"
+            "  ## Risks\n- uv.lock may drift\n",
         )
 
         self.assertEqual(lock, "base\n")
