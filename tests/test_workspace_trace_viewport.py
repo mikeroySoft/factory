@@ -130,3 +130,36 @@ Promise.resolve({expression}).then(result => process.stdout.write(JSON.stringify
 
         self.assertNotEqual(routes[0]["points"][2], routes[1]["points"][2])
         self.assertNotEqual(routes[0]["points"][3], routes[1]["points"][3])
+
+    def test_adjacent_stage_lanes_keep_the_target_segment_forward_at_low_scale(self) -> None:
+        routes = self.evaluate(
+            "[-1,0,1].map(lane => window.WorkspaceTrace.routeEdge({"
+            "edge:{from:'source',to:'target',relation:'follows'},"
+            "source:value.source,target:value.target,fromColumn:0,toColumn:1,"
+            "index:0,lane,bounds:value.bounds}))",
+            {
+                "source": {"left": 120, "right": 150, "top": 80, "bottom": 100},
+                "target": {"left": 160.44, "right": 190, "top": 120, "bottom": 140},
+                "bounds": {"width": 320, "height": 200},
+            },
+        )
+
+        gutters = [route["points"][1]["x"] for route in routes]
+        self.assertEqual(len(set(gutters)), len(gutters))
+        for route in routes:
+            self.assertGreater(route["points"][1]["x"], route["points"][0]["x"])
+            self.assertLess(route["points"][-2]["x"], route["points"][-1]["x"])
+
+    def test_viewport_shortcuts_ignore_browser_modifier_keys(self) -> None:
+        shortcuts = self.evaluate(
+            "value.map(event => window.WorkspaceTrace.viewportShortcut({"
+            "...event,target:{closest:()=>false}}))",
+            [
+                {"key": "f", "ctrlKey": True},
+                {"key": "-", "metaKey": True},
+                {"key": "0", "altKey": True},
+                {"key": "f"},
+            ],
+        )
+
+        self.assertEqual(shortcuts, [None, None, None, "f"])
