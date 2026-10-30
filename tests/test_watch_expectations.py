@@ -34,9 +34,15 @@ class GitHub:
             return subprocess.CompletedProcess(
                 command, 0, json.dumps(self.timelines.get(number, [default])), "",
             )
+        if command[:2] == ["gh", "api"] and command[2].endswith("/issues"):
+            pages = [
+                self.issues[offset:offset + 100]
+                for offset in range(0, len(self.issues), 100)
+            ]
+            return subprocess.CompletedProcess(command, 0, json.dumps(pages), "")
         if command[:3] == ["gh", "issue", "list"]:
             label = command[command.index("--label") + 1]
-            rows = self.issues if label == config.LABEL_TRIAGE else [
+            rows = self.issues[:int(command[command.index("--limit") + 1])] if label == config.LABEL_TRIAGE else [
                 {"number": number, "body": issue["body"]}
                 for number, issue in self.filings.items()
                 if issue["state"] == "OPEN"
@@ -311,6 +317,75 @@ class WatchExpectationTest(unittest.TestCase):
             len([row for row in rows if row.get("event") == "watch"]),
             1,
         )
+
+    def test_timeline_failure_keeps_existing_alert_open(self) -> None:
+        now = datetime.now(UTC)
+        self.cfg.eval_schedule = True
+        name = "needs-triage issue #7"
+        fp = f"expectation:{watch.fingerprint('expectation', name)}"
+        self.github.issues = [{
+            "number": 7, "body": "", "createdAt": (now - timedelta(hours=1)).isoformat(),
+        }]
+        self.github.filings[901] = {
+            "state": "OPEN",
+            "closedAt": None,
+            "body": f"Fingerprint: {fp}\n\nWatch alert",
+            "assignees": [],
+            "labels": [{"name": config.LABEL_TRIAGE}],
+            "comments": [],
+        }
+        self.append({
+            "event": "watch", "fingerprint": fp, "issue": 901,
+            "repo": self.cfg.watch_engine_repo, "latest": None,
+            "at": (now - timedelta(hours=25)).isoformat(),
+        })
+        self.dispatch_pass(now - timedelta(minutes=20))
+        self.dispatch_pass(now - timedelta(minutes=10))
+
+        def fail_timeline(
+            command: list[str], **kwargs: object,
+        ) -> subprocess.CompletedProcess:
+            if command[:2] == ["gh", "api"] and "/issues/7/timeline" in command[2]:
+                raise subprocess.CalledProcessError(
+                    1, command, stderr="GitHub API rate limit exceeded",
+                )
+            return self.github(command, **kwargs)
+
+        with mock.patch.object(dispatch, "run", fail_timeline):
+            self.assertEqual(watch.run_pass(self.cfg, now=now), [])
+
+        self.assertEqual(self.github.filings[901]["state"], "OPEN")
+        self.assertFalse(any(
+            call[:3] == ["gh", "issue", "close"] for call in self.github.calls
+        ))
+
+    def test_triage_issue_discovery_continues_past_first_200_results(self) -> None:
+        now = datetime(2026, 10, 30, tzinfo=UTC)
+        self.cfg.eval_schedule = True
+        entered = now - timedelta(minutes=30)
+        self.github.issues = [
+            {
+                "number": 1000 + number,
+                "body": f"Fingerprint: expectation:watch-{number}\n\nWatch alert",
+                "createdAt": entered.isoformat(),
+            }
+            for number in range(200)
+        ] + [{"number": 7, "body": "", "createdAt": entered.isoformat()}]
+        self.dispatch_pass(now - timedelta(minutes=20))
+        self.dispatch_pass(now - timedelta(minutes=10))
+
+        signals = watch.run_pass(self.cfg, now=now)
+
+        self.assertEqual(
+            [signal["name"] for signal in signals],
+            ["needs-triage issue #7"],
+        )
+        listing = next(
+            call for call in self.github.calls
+            if call[:2] == ["gh", "api"] and call[2].endswith("/issues")
+        )
+        self.assertIn("--paginate", listing)
+        self.assertIn("--slurp", listing)
 
     def test_old_issue_newly_queued_by_build_gets_two_subsequent_successes(self) -> None:
         now = datetime(2026, 10, 30, tzinfo=UTC)
