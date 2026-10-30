@@ -1871,7 +1871,7 @@ def escalate(
     if question:
         body += f"\n\n{question}"
     posted = run(["gh", "issue", "comment", str(n), "--repo", REPO, "--body", body])
-    comment_receipt(n, "escalation", posted.stdout if posted.returncode == 0 else "", round=round_number)
+    comment_receipt(n, "escalation", posted.stdout, round=round_number)
 
 
 def correct_need(n: int) -> bool:

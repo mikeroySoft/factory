@@ -1021,7 +1021,9 @@ def frontier_pass(dry_run: bool = False) -> None:
                     if proc.returncode:
                         decision, body, data = "HUMAN", f"Manager command exited {proc.returncode}", None
                     else:
-                        decision, body, data = parse(split_notes(split_curate(proc.stdout)[0])[0], workers, approval=True)
+                        decision, body, data = parse(
+                            split_notes(split_curate(proc.stdout)[0])[0], workers, approval=True
+                        )
                 except (OSError, config.ConfigError) as exc:
                     decision, body, data = "HUMAN", f"Manager command failed: {exc}", None
                     output = body
@@ -1165,6 +1167,7 @@ def escalation_pass(dry_run: bool = False) -> None:
                 cwd = wt if wt.is_dir() else cfg.root
                 notes = rejected = None
                 output = ""
+                transport_failed = False
                 execution.commit()
                 try:
                     prompt_path = cfg.factory / f"manager-prompt-{n}.md"
@@ -1172,6 +1175,7 @@ def escalation_pass(dry_run: bool = False) -> None:
                     proc = dispatch.run(cfg.manager_cmd(prompt_path, cwd), cwd=cwd, check=False)
                     output = proc.stdout
                     if proc.returncode:
+                        transport_failed = True
                         body = f"Manager command exited {proc.returncode} (argv: {json.dumps(cfg.manager)})"
                         tail = "\n".join(proc.stderr.splitlines()[-5:])
                         if tail:
@@ -1185,8 +1189,11 @@ def escalation_pass(dry_run: bool = False) -> None:
                     else:
                         output, notes = split_notes(proc.stdout)
                         rejected = "CURATE" if split_curate(output)[1] is not None else None
-                        decision, body, data = ("HUMAN", CURATE_REJECTED, None) if rejected else parse(output, workers)
+                        decision, body, data = (
+                            ("HUMAN", CURATE_REJECTED, None) if rejected else parse(output, workers)
+                        )
                 except (OSError, config.ConfigError) as exc:
+                    transport_failed = True
                     decision, body, data = "HUMAN", f"Manager command failed: {exc}", None
                     dispatch.record(
                         "escalate", ticket=n, round=round_number, packet=str(packet),
@@ -1203,16 +1210,29 @@ def escalation_pass(dry_run: bool = False) -> None:
                 record_manager_decision(
                     n, decision, body, data, output, workers, packet,
                 )
-                dispatch.record("manage", ticket=n, decision=decision, round=round_number,
-                                packet=str(packet), notes=status, rejected=rejected)
-                try:
-                    if decision == "HUMAN" and isinstance(data, dict):
+                if decision == "HUMAN" and escalation.get("need") is not None and not transport_failed:
+                    try:
+                        if not isinstance(data, dict):
+                            raise TypeError("HUMAN requires a reserved category and numbered actions")
                         dispatch.escalate(
                             n, body, None, dispatch.SIGNOFF(data["category"]),
                             code="manager_human", question=_signoff_question(data["options"]),
                         )
-                    else:
-                        apply(n, issue, decision, body, data, packet)
+                    except (ValueError, TypeError) as exc:
+                        dispatch.escalate(
+                            n, f"Manager did not return a valid decision: {body} ({exc})", None,
+                            dispatch.classify("manager_failed", {}), code="manager_failed",
+                        )
+                    # Routing must succeed before this round becomes at-most-once.
+                    dispatch.record("manage", ticket=n, decision=decision, round=round_number,
+                                    packet=str(packet), notes=status, rejected=rejected)
+                    continue
+                dispatch.record("manage", ticket=n, decision=decision, round=round_number,
+                                packet=str(packet), notes=status, rejected=rejected)
+                if transport_failed:
+                    continue
+                try:
+                    apply(n, issue, decision, body, data, packet)
                 except (CalledProcessError, OSError, ValueError) as exc:
                     # A partial SPLIT or REWRITE must not be replayed automatically.
                     execution.outcome = "mechanism_failure"

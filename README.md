@@ -614,22 +614,24 @@ because a partial rewrite or split may already have changed GitHub.
 
 ### Routed human handoffs
 
-Once automatic recovery for an escalation is terminal — the manager returned `HUMAN`,
-its command could not run (an explicit *unable to diagnose*, never a fabricated
-diagnosis), `manager.rounds` is exhausted, no manager is configured, or the escalation
-loop can never act again (its decision could not be applied to GitHub, its packet is
-gone, or its escalation comment was never receipted so takeover detection cannot clear
-it, as for escalations recorded before this version) — `factory manage`
-publishes **one** request comment for that escalation generation (`<ticket>/<round>`):
-a concrete question, bounded public links (PR, the recorded escalation and manager
-comments), a proposed next step, the routed owner or candidates, and the step-by-step
-routing rationale from `factory plan route` (reason `ci` for CI failures, otherwise
-`implementation` with the PR's changed paths). Runner-local paths, packets and logs
-never reach GitHub. While recovery is still eligible nothing is posted; routing stays
-advisory (`factory plan route N`).
-The terminal handoff phase is still attempted if an earlier manager phase fails.
-That failure remains an error: publishing a handoff does not authorize the dispatcher
-to continue scheduling new work.
+Classified escalations enter this phase only for a reserved `SIGNOFF`; the manager
+must name a category from `docs/reserved-for-human.md` and one to three concrete
+actions. The sign-off is terminal immediately. Legacy unclassified generations
+already carrying `ready-for-human` still wait until automatic recovery is terminal.
+For either case, `factory manage` publishes **one** request comment for that
+escalation generation (`<ticket>/<round>`): a concrete question, bounded public
+links (PR, the recorded escalation and manager comments), a proposed next step, the
+routed owner or candidates, and the step-by-step routing rationale from
+`factory plan route` (reason `ci` for CI failures, otherwise `implementation` with
+the PR's changed paths). Runner-local paths, packets and logs never reach GitHub.
+
+Non-sign-off escalations remain `ready-for-agent` but assigned to Factory, so the
+worker frontier holds them while the manager decides. Manager rounds bound retries;
+an invalid `HUMAN` decision is reclassified as `manager_failed`, while transport
+failure or exhausted rounds remain Factory-owned rather than notifying a human.
+For legacy rows whose recovery remains eligible, nothing is posted and routing stays
+advisory (`factory plan route N`). A failed earlier manager phase remains an error:
+publishing a handoff does not authorize the dispatcher to continue scheduling new work.
 
 The request `@mention`s a GitHub login on the initial handoff and again only when the
 owner actually changes (a human sets or edits `**Decision owner**` in the issue body,
