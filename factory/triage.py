@@ -201,6 +201,12 @@ LABEL_TABLE = "\n".join(
 )
 
 DECISIONS = (LABEL_AGENT, LABEL_INFO, LABEL_HUMAN, config.LABEL_WONTFIX)
+UNPARSEABLE_REASON = "unparseable_decision"
+TRIAGE_STALLED_COMMENT = (
+    "Factory triage stalled: the local model returned an unparseable decision on two "
+    "consecutive passes. The issue remains `needs-triage` and will be retried."
+)
+
 
 
 class _Decision(dict):
@@ -463,6 +469,44 @@ def unchanged_since_triage(issue: dict) -> bool:
     posted = datetime.fromisoformat(comments[-1]["createdAt"])
     return datetime.fromisoformat(issue["updatedAt"]) - posted < SETTLE
 
+def _report_unparseable_streak(number: int, issue: dict, execution) -> None:
+    rows = lifecycle.read_events(cfg.factory / "events.jsonl")
+    previous = next(
+        (
+            row
+            for row in reversed(rows)
+            if row.get("event") == "lifecycle"
+            and row.get("kind") == "exit"
+            and row.get("stage") == "triage-ticket"
+            and row.get("ticket") == number
+        ),
+        None,
+    )
+    if previous is None or previous.get("reason") != UNPARSEABLE_REASON:
+        return
+    if not any(
+        comment.get("body", "").startswith(TRIAGE_STALLED_COMMENT)
+        for comment in issue.get("comments") or []
+    ):
+        gh(
+            "issue", "comment", str(number), "--body", TRIAGE_STALLED_COMMENT,
+            execution=execution,
+        )
+    if any(
+        row.get("event") == "triage_stalled"
+        and row.get("ticket") == number
+        and row.get("reason") == UNPARSEABLE_REASON
+        for row in rows
+    ):
+        return
+    from factory import dispatch
+
+    dispatch.configure(cfg)
+    dispatch.record(
+        "triage_stalled", ticket=number, stage="triage", reason=UNPARSEABLE_REASON,
+    )
+
+
 
 def triage_issue(issue: dict, execution=None) -> dict | None:
     """Choose a deterministic route where possible, otherwise ask the model."""
@@ -723,8 +767,9 @@ def execute(args: argparse.Namespace, execution) -> int:
                         if decision is None:
                             if ticket_execution:
                                 ticket_execution.outcome = "unknown"
-                                ticket_execution.reason = "unparseable_decision"
-                            outcome, reason = "unknown", "unparseable_decision"
+                                ticket_execution.reason = UNPARSEABLE_REASON
+                                _report_unparseable_streak(number, issue, ticket_execution)
+                            outcome, reason = "unknown", UNPARSEABLE_REASON
                             print(
                                 f"#{number}: model returned unparseable JSON twice; skipping",
                                 file=sys.stderr,

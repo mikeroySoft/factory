@@ -34,7 +34,8 @@ QUIET_PERIOD = timedelta(hours=24)
 CLOSABLE = {config.LABEL_TRIAGE, config.LABEL_AGENT}
 MAX_ROWS = 20
 MAX_LOG_LINES = 40
-UNKNOWN_REASONS = ("check_timeout",)
+UNKNOWN_REASONS = ("check_timeout", "unparseable_decision")
+STREAKED_REASONS = ("unparseable_decision",)
 # Host conditions are ignored until their current uninterrupted failure streak crosses
 # `[watch].host_failure_minutes`.
 HOST_REASONS = ("worker_exit:", "triage_endpoint_", "github_command_failed")
@@ -557,10 +558,17 @@ def signals(
     """Every observed failure, newest journal evidence first within each fingerprint."""
     found: dict[str, dict] = {}
     logs = {(r.get("ticket"), r.get("attempt")): r.get("log") for r in events if r.get("event") == "attempt"}
+    stalled = {
+        (row.get("ticket"), row.get("reason"))
+        for row in events
+        if row.get("event") == "triage_stalled"
+    }
     for row in events:
         if not _failing(row):
             continue
         stage, reason = str(row.get("stage")), str(row.get("reason"))
+        if reason in STREAKED_REASONS and (row.get("ticket"), reason) not in stalled:
+            continue
         key = fingerprint("lifecycle", reason)
         signal = found.setdefault(key, {
             "fingerprint": key, "kind": "lifecycle", "stage": {}, "key": reason, "rows": [],
