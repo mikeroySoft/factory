@@ -197,19 +197,19 @@ def skill_failure_evidence(
 
 def _format_skill_evidence(excerpts: list[dict]) -> str:
     parts = ["## Skill health evidence"]
-    shown = set()
+    previous_skill = None
     ordered = sorted(excerpts, key=lambda item: item["tag"] != "load_failure")
     for item in ordered:
         skill = item["skill"]
         addition = []
-        if skill not in shown:
+        if skill != previous_skill:
             addition.append(f"### Skill {skill} failure evidence")
         addition.append(f"- [{item['tag']}] {item['excerpt']}")
         candidate = "\n".join(parts + addition)
         if len(candidate) <= MAX_SKILL_EVIDENCE:
             parts += addition
-            shown.add(skill)
-    return "\n".join(parts) if shown else ""
+            previous_skill = skill
+    return "\n".join(parts) if previous_skill is not None else ""
 
 
 def _transcript_failures(rows: list[dict], tickets: set[int]) -> dict[str, list[dict]]:
