@@ -426,6 +426,61 @@ class ManagerRoutingTest(unittest.TestCase):
         self.assertFalse(any(row.get("event") == "manage"
                              for row in lifecycle.read_events(dispatch.EVENTS)))
 
+    def test_repeat_escalation_is_held_after_one_manager_retry(self) -> None:
+        self.cfg.manager_rounds = 1
+        issue = self.issue()
+        issue["assignees"] = []
+        comments = 0
+
+        def run(argv, **_kwargs):
+            nonlocal comments
+            if argv[1:3] == ["issue", "edit"]:
+                if "--add-assignee" in argv:
+                    issue["assignees"] = [{"login": "factory"}]
+                if "--remove-assignee" in argv:
+                    issue["assignees"] = []
+                labels = {label["name"] for label in issue["labels"]}
+                for flag, operation in (("--add-label", labels.add), ("--remove-label", labels.discard)):
+                    if flag in argv:
+                        operation(argv[argv.index(flag) + 1])
+                issue["labels"] = [{"name": label} for label in sorted(labels)]
+            if argv[1:3] == ["issue", "comment"]:
+                comments += 1
+                stdout = f"https://github.com/acme/widgets/issues/7#issuecomment-{comments}\n"
+            else:
+                stdout = ""
+            return subprocess.CompletedProcess(argv, 0, stdout, "")
+
+        def read(argv, **_kwargs):
+            if argv[:2] == ["issue", "list"]:
+                label = argv[argv.index("--label") + 1]
+                return [issue] if label in {item["name"] for item in issue["labels"]} else []
+            self.fail(argv)
+
+        logs: list[str] = []
+        with mock.patch.object(dispatch, "run", side_effect=run), \
+             mock.patch.object(dispatch, "gh_json", side_effect=read), \
+             mock.patch.object(dispatch, "log", side_effect=logs.append):
+            dispatch.escalate(
+                7, "budget exhausted", None,
+                dispatch.classify("budget", {}), code="budget",
+            )
+            manage.apply(7, issue, "RETRY", "Apply the documented budget rule", None, self.packet)
+            dispatch.escalate(
+                7, "budget exhausted again", None,
+                dispatch.classify("budget", {}), code="budget",
+            )
+            [candidate] = dispatch.frontier()
+            manage.escalation_pass(dry_run=True)
+
+        self.assertEqual(candidate["held"], "assigned")
+        self.assertFalse(any("would manage escalation" in line for line in logs), logs)
+        self.assertEqual(
+            [row["round"] for row in lifecycle.read_events(dispatch.EVENTS)
+             if row.get("event") == "escalate"],
+            [1, 2],
+        )
+
 
 class EscalationPublicationTest(unittest.TestCase):
     def test_failed_label_or_comment_publication_is_not_reported_as_success(self) -> None:
