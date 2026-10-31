@@ -925,7 +925,10 @@
     const supplied = Number(snapshot?.refresh_seconds);
     const seconds = configured > 0 ? configured : supplied > 0 ? supplied : 10;
     host._traceLiveTimer = setTimeout(() => {
-      if (host.isConnected && host._traceMode === 'live') loadLive(host, options);
+      if (host.isConnected && host._traceMode === 'live') {
+        if (document.visibilityState === 'visible') loadLive(host, options);
+        else scheduleLive(host, snapshot, options);
+      }
     }, seconds * 1000);
   }
 

@@ -430,12 +430,16 @@ dashed.
 Its **Live** mode needs no selected ticket. Authenticated, read-only
 `GET /api/live-executions` places every observed active ticket execution in the
 triage, worker, gate, reviewer, manager, watch, and learn lanes; empty lanes stay
-visible. Cards show the agent, harness, ticket title, and elapsed time, link back
-to that ticket's historical trace, and use the breadboard wires for observed
-cross-lane movement. The browser refreshes while mounted using the browser-local
-**Visible-page polling** interval (10 seconds by default; 10/30/60 seconds).
-Execution observations older than 60 seconds remain visible as stale rather than
-running. Both modes are read-only.
+visible. The dispatcher's pipeline-wide `ticket` scope is not an agent card:
+concrete worker, gate, and reviewer scopes place the ticket in its current lane.
+Watch uses the newest retained repository ticket; learn uses the newest evidence
+ticket.
+Cards show the agent, harness, ticket title, and elapsed time, link back to that
+ticket's historical trace, and use the breadboard wires for observed cross-lane
+movement. The browser refreshes while mounted and visible using the browser-local
+polling interval (10 seconds by default; 10/30/60 seconds). Execution observations
+older than 60 seconds remain visible as stale rather than running. Both modes are
+read-only.
 
 Successful non-dry-run `triage`, `dispatch`, and `watch` invocations atomically
 update `.factory/stage-success.json` with that repository's last successful pass

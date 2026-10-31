@@ -861,6 +861,33 @@ class WorkspaceHTTPTest(unittest.TestCase):
             self.assertIn(status, {400, 404, 405})
             project.assert_called_once()
 
+    def test_live_executions_ignore_dispatcher_ticket_scope(self) -> None:
+        observed = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        executions = [
+            {
+                "execution_id": stage,
+                "stage": stage,
+                "ticket": 7,
+                "state": "active",
+                "entered_at": observed,
+                "ended_at": None,
+                "observed_at": observed,
+                "activity": {"worker": "default"} if stage == "worker" else {},
+            }
+            for stage in ("ticket", "worker")
+        ]
+        with mock.patch(
+            "factory.workspace.runtime_events.project",
+            return_value={"executions": executions, "errors": []},
+        ):
+            body = self.workspace.live_executions(REPOSITORY)
+
+        self.assertEqual(
+            [(row["execution_id"], row["lane"]) for row in body["executions"]],
+            [("worker", "worker")],
+        )
+
+
 class WorkspaceRegistryTest(unittest.TestCase):
     def test_registered_main_overrides_same_slug_startup_but_key_stays_startup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
