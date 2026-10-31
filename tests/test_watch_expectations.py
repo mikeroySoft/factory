@@ -1057,6 +1057,12 @@ class IntendedStateCommandTest(unittest.TestCase):
                 mock.patch.object(watch, "runtime_errors", return_value=[]), \
                 redirect_stdout(first):
             watch.run_pass(self.cfg)
+        unchanged = io.StringIO()
+        with mock.patch.object(config, "__file__", str(source)), \
+                mock.patch.object(watch, "failed_units", return_value=[]), \
+                mock.patch.object(watch, "runtime_errors", return_value=[]), \
+                redirect_stdout(unchanged):
+            watch.run_pass(self.cfg)
 
         self.cfg.release_auto = True
         second = io.StringIO()
@@ -1065,9 +1071,18 @@ class IntendedStateCommandTest(unittest.TestCase):
                 mock.patch.object(watch, "runtime_errors", return_value=[]), \
                 redirect_stdout(second):
             watch.run_pass(self.cfg)
+        self.cfg.release_auto = False
+        third = io.StringIO()
+        with mock.patch.object(config, "__file__", str(source)), \
+                mock.patch.object(watch, "failed_units", return_value=[]), \
+                mock.patch.object(watch, "runtime_errors", return_value=[]), \
+                redirect_stdout(third):
+            watch.run_pass(self.cfg)
 
         self.assertIn("release.auto = false", first.getvalue())
+        self.assertEqual(unchanged.getvalue(), "")
         self.assertIn("release.auto = true", second.getvalue())
+        self.assertIn("release.auto = false", third.getvalue())
 
     def test_install_keeps_intended_but_disabled_eval_units_off(self) -> None:
         units = self.root / "units"

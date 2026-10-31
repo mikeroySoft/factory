@@ -296,6 +296,7 @@ def intended_state_signals(cfg: config.Config) -> list[Signal]:
             "key": key,
             "name": key,
             "tier": "warn" if expected is None else "act",
+            "configured": actual,
             "rows": [],
             "excerpt": (
                 f"Intended state: `{'undecided' if expected is None else str(expected).lower()}`\n"
@@ -910,6 +911,9 @@ def title(signal: dict) -> str:
     if signal["kind"] == "expectation":
         return f"factory expected event overdue: {signal['name']}"[:200]
     if signal["kind"] == "configuration":
+        if signal.get("tier") == "warn":
+            state = str(signal["configured"]).lower()
+            return f"factory intended state undecided: {signal['name']} = {state}"[:200]
         return f"factory intended state mismatch: {signal['name']}"[:200]
     return f"factory runtime failure: {signal['kind']} {signal['stage']} {signal['key']}"[:200]
 
@@ -1125,9 +1129,15 @@ def run_pass(
             continue
         previous_observation = observations.get(signal["fingerprint"])
         if previous_observation is not None and (
-            signal["latest"] is None
-            or signal["latest"] <= previous_observation.get(
-                "latest", previous_observation["at"],
+            (
+                signal["latest"] is None
+                and signal.get("configured") == previous_observation.get("configured")
+            )
+            or (
+                signal["latest"] is not None
+                and signal["latest"] <= previous_observation.get(
+                    "latest", previous_observation["at"],
+                )
             )
         ):
             observed_signals.append(signal)
@@ -1142,10 +1152,15 @@ def run_pass(
             + (f": {signal['diagnosis']}" if signal.get("diagnosis") else "")
         )
         if not dry_run:
-            dispatch.record(
-                "watch-band", fingerprint=signal["fingerprint"], tier=tier,
-                latest=signal["latest"], diagnosis=signal.get("diagnosis"),
-            )
+            observation = {
+                "fingerprint": signal["fingerprint"],
+                "tier": tier,
+                "latest": signal["latest"],
+                "diagnosis": signal.get("diagnosis"),
+            }
+            if "configured" in signal:
+                observation["configured"] = signal["configured"]
+            dispatch.record("watch-band", **observation)
         observed_signals.append(signal)
     latest_by_fingerprint = {
         signal["fingerprint"]: signal["latest"] for signal in actionable
