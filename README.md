@@ -408,8 +408,10 @@ It renders the same graph unchanged as a stage-ordered breadboard with labeled
 relationships, retry-loop costs, a timeline replay control, fit/zoom/pan and
 fullscreen viewport controls, evidence details, coverage gaps, frontier state,
 cross-ticket links, and terminal outcome. Mouse wheel and keyboard controls
-share the same viewport state; wires remain clipped and re-routed to visible
-nodes after viewport, replay, resize, and node-drag changes. The view is
+share the same viewport state. Controls occupy a separate row above the canvas;
+retry tracks and parallel gutters stay inside its bounds, including during spring
+motion. Wires retain their node attachments after viewport, replay, resize, and
+node-drag changes; genuinely offscreen endpoints use SVG clipping. The view is
 read-only; legacy synthesized rows remain visibly dashed.
 
 Successful non-dry-run `triage`, `dispatch`, and `watch` invocations atomically

@@ -162,30 +162,46 @@
     top:(Number(rect?.top) || 0) * state.scale + state.y,
     bottom:(Number(rect?.bottom) || 0) * state.scale + state.y,
   });
-  function routeEdge({edge, source, target, fromColumn, toColumn, index = 0, lane = 0, track = null}) {
+  const boundedOffset = (center, offset, minimum, maximum) => {
+    // Compress lanes into the available space without merging them at a boundary.
+    const room = offset < 0 ? center - minimum : maximum - center;
+    return Number.isFinite(room) ? center + offset * room / (room + Math.abs(offset) || 1) : center + offset;
+  };
+  const gutterRoom = (x, direction, width) => x < 0 || x > width ? Infinity : direction < 0 ? x : width - x;
+  const gutterDistance = (distance, room) => Number.isFinite(room) ? distance * room / (distance + room) : distance;
+  function routeEdge({edge, source, target, fromColumn, toColumn, index = 0, lane = 0, track = null, bounds}) {
     const point = (x, y) => ({x,y});
     const y1 = (source.top + source.bottom) / 2, y2 = (target.top + target.bottom) / 2;
     const offset = Number(lane) || 0;
     const spread = 14 * offset / (1 + Math.abs(offset));
-    const top = (track == null ? 24 + index % 6 * 10 : Number(track)) + offset * 8;
+    const width = bounds?.width ?? Infinity, height = bounds?.height ?? Infinity;
+    const base = clamp(track == null ? 24 + index % 6 * 10 : Number(track), 2, height - 2);
+    const top = boundedOffset(base, offset * 8, 2, height - 2);
     let points;
     if (fromColumn === toColumn) {
-      const gutter = Math.max(source.right, target.right) + 18 + spread;
+      const left = Math.min(source.left, target.left), right = Math.max(source.right, target.right);
+      const direction = right === width && left > 0 ? -1 : 1;
+      const outer = direction < 0 ? left : right;
+      const distance = gutterDistance(34 + spread, gutterRoom(outer, direction, width));
+      const gutter = outer + direction * distance * (18 + spread) / (34 + spread);
+      const farGutter = outer + direction * distance;
       points = [
-        point(source.right, y1), point(gutter, y1), point(gutter, top),
-        point(gutter + 16, top), point(gutter + 16, y2), point(target.right, y2),
+        point(direction < 0 ? source.left : source.right, y1), point(gutter, y1), point(gutter, top),
+        point(farGutter, top), point(farGutter, y2), point(direction < 0 ? target.left : target.right, y2),
       ];
     } else if (toColumn < fromColumn) {
-      const bend = 16 + spread;
+      const sourceBend = gutterDistance(16 + spread, gutterRoom(source.left, -1, width));
+      const targetBend = gutterDistance(16 + spread, gutterRoom(target.right, 1, width));
       points = [
-        point(source.left, y1), point(source.left - bend, y1), point(source.left - bend, top),
-        point(target.right + bend, top), point(target.right + bend, y2), point(target.right, y2),
+        point(source.left, y1), point(source.left - sourceBend, y1), point(source.left - sourceBend, top),
+        point(target.right + targetBend, top), point(target.right + targetBend, y2), point(target.right, y2),
       ];
     } else if (toColumn - fromColumn > 1) {
-      const bend = 16 + spread;
+      const sourceBend = gutterDistance(16 + spread, gutterRoom(source.right, 1, width));
+      const targetBend = gutterDistance(16 + spread, gutterRoom(target.left, -1, width));
       points = [
-        point(source.right, y1), point(source.right + bend, y1), point(source.right + bend, top),
-        point(target.left - bend, top), point(target.left - bend, y2), point(target.left, y2),
+        point(source.right, y1), point(source.right + sourceBend, y1), point(source.right + sourceBend, top),
+        point(target.left - targetBend, top), point(target.left - targetBend, y2), point(target.left, y2),
       ];
     } else {
       const gap = target.left - source.right;
@@ -201,6 +217,34 @@
       ];
     }
     return {edge,points,markerEnd:'url(#trace-arrow)'};
+  }
+  function springPoints(start, target, elapsed, bounds) {
+    // Ports follow nodes immediately; only the allocated tracks and gutters spring.
+    const spring = elapsed === 1 ? 1 : 1 - Math.exp(-7 * elapsed) * Math.cos(12 * elapsed);
+    const interpolate = (from, to, minimum, maximum) => {
+      from = clamp(from, minimum, maximum);
+      return spring <= 1 ? from + (to - from) * spring
+        : boundedOffset(to, (to - from) * (spring - 1), minimum, maximum);
+    };
+    const source = target[0], end = target.at(-1);
+    if (target[2].y !== target[3].y) {
+      const gutter = interpolate(start[1].x, target[1].x,
+        Math.min(source.x, end.x), Math.max(source.x, end.x));
+      return [source,{x:gutter,y:source.y},{x:gutter,y:source.y},
+        {x:gutter,y:end.y},{x:gutter,y:end.y},end];
+    }
+    const gutter = (port, fromPort, from, to) => {
+      const direction = Math.sign(to.x - port.x);
+      const room = gutterRoom(port.x, direction, bounds.width);
+      const distance = interpolate((from.x - fromPort.x) * direction,
+        Math.abs(to.x - port.x), Math.min(.01, room / 2), room);
+      return port.x + direction * distance;
+    };
+    const fromX = gutter(source, start[0], start[1], target[1]);
+    const toX = gutter(end, start.at(-1), start[4], target[4]);
+    const top = interpolate(start[2].y, target[2].y, 2, bounds.height - 2);
+    return [source,{x:fromX,y:source.y},{x:fromX,y:top},
+      {x:toX,y:top},{x:toX,y:end.y},end];
   }
   async function toggleFullscreen(board, targetDocument = typeof document === 'undefined' ? null : document) {
     if (!board || !targetDocument) return;
@@ -290,8 +334,10 @@
           <output data-trace-zoom aria-live="polite">100%</output>
           <button type="button" data-trace-fullscreen aria-label="Enter fullscreen" aria-keyshortcuts="F">Full screen</button>
         </div>
-        <svg class="trace-lines" data-trace-lines aria-hidden="true"></svg>
-        <div class="trace-scene" data-trace-scene><div class="trace-stages" role="list" aria-label="Decision nodes in pipeline order">${groups}</div></div>
+        <div class="trace-canvas" data-trace-canvas>
+          <svg class="trace-lines" data-trace-lines aria-hidden="true"></svg>
+          <div class="trace-scene" data-trace-scene><div class="trace-stages" role="list" aria-label="Decision nodes in pipeline order">${groups}</div></div>
+        </div>
         <ol class="sr-only" aria-label="Recorded relationships">${relations}</ol>
       </div><aside class="trace-detail" data-trace-detail aria-live="polite"><p class="muted">Select a decision node for its evidence.</p></aside></div>
       ${coverage.length ? `<section class="trace-coverage"><h2>Not recorded</h2><ul>${coverage.map(stage => `<li>${esc(stageLabel(stage))}: not recorded</li>`).join('')}</ul></section>` : ''}
@@ -350,6 +396,7 @@
     const buttons = [...host.querySelectorAll('[data-trace-select]')];
     const panel = host.querySelector('[data-trace-detail]');
     const board = host.querySelector('[data-trace-board]');
+    const canvas = host.querySelector('[data-trace-canvas]');
     const scene = host.querySelector('[data-trace-scene]');
     const svg = host.querySelector('[data-trace-lines]');
     const zoomOutput = host.querySelector('[data-trace-zoom]');
@@ -421,10 +468,10 @@
     };
     const routes = () => {
       if (!board || !svg || !host.isConnected) return [];
-      const width = board.clientWidth, height = board.clientHeight;
+      const width = canvas.clientWidth, height = canvas.clientHeight;
       svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
       svg.setAttribute('width', width); svg.setAttribute('height', height);
-      const boardRect = board.getBoundingClientRect();
+      const boardRect = canvas.getBoundingClientRect();
       const byId = new Map([...host.querySelectorAll('[data-trace-node]')].map(item => [item.dataset.traceNode, item]));
       const stageIndex = new Map([...host.querySelectorAll('[data-stage]')].map((item, index) => [item.dataset.stage, index]));
       const columns = new Map([...byId].map(([id, item]) => [id, stageIndex.get(item.closest('[data-stage]').dataset.stage)]));
@@ -512,7 +559,11 @@
           wire.current = route.points.map(point => ({...point}));
           updateWire(wire, wire.current);
         } else {
-          moving.push({wire,start:wire.current.map(point => ({...point})),target:route.points});
+          const start = wire.current.map(point => ({...point}));
+          moving.push({wire,start,target:route.points});
+          wire.current = springPoints(start, route.points, 0,
+            {width:canvas.clientWidth,height:canvas.clientHeight});
+          updateWire(wire, wire.current);
         }
       }
       applyHighlight();
@@ -521,12 +572,9 @@
       const started = performance.now();
       const tick = now => {
         const elapsed = Math.min(1, (now - started) / 500);
-        const spring = elapsed === 1 ? 1 : 1 - Math.exp(-7 * elapsed) * Math.cos(12 * elapsed);
         for (const move of moving) {
-          move.wire.current = move.target.map((point, index) => ({
-            x:move.start[index].x + (point.x - move.start[index].x) * spring,
-            y:move.start[index].y + (point.y - move.start[index].y) * spring,
-          }));
+          move.wire.current = springPoints(move.start, move.target, elapsed,
+            {width:canvas.clientWidth,height:canvas.clientHeight});
           updateWire(move.wire, move.wire.current);
         }
         motionFrame = elapsed < 1 ? requestAnimationFrame(tick) : null;
@@ -553,11 +601,11 @@
       if (!board || !scene) return;
       fitted = true;
       applyViewport(fitViewport(
-        {width:board.clientWidth,height:board.clientHeight},
+        {width:canvas.clientWidth,height:canvas.clientHeight},
         {width:scene.scrollWidth,height:scene.scrollHeight},
       ));
     };
-    const zoomGraph = (factor, origin = {x:board?.clientWidth / 2,y:board?.clientHeight / 2}) => {
+    const zoomGraph = (factor, origin = {x:canvas?.clientWidth / 2,y:canvas?.clientHeight / 2}) => {
       fitted = false;
       applyViewport(zoomViewport(viewport, factor, origin));
     };
@@ -629,7 +677,7 @@
     host.querySelector('[data-trace-fullscreen]')?.addEventListener('click', () => { void toggleFullscreen(board); });
     board?.addEventListener('wheel', event => {
       if (event.target.closest('[data-trace-viewport-controls]')) return;
-      const rect = board.getBoundingClientRect();
+      const rect = canvas.getBoundingClientRect();
       zoomGraph(Math.exp(-event.deltaY * .0015), {x:event.clientX - rect.left,y:event.clientY - rect.top});
       event.preventDefault();
     }, {passive:false});
@@ -755,6 +803,6 @@
 
   window.WorkspaceTrace = Object.freeze({
     arrowOrient,bundleEdges,bundleSpacing,crossingCount,edgeType,fitViewport,markup,mount,orderNodes,
-    panViewport,render,routeEdge,safeUrl,toggleFullscreen,transformRect,viewportShortcut,zoomViewport,
+    panViewport,render,routeEdge,safeUrl,springPoints,toggleFullscreen,transformRect,viewportShortcut,zoomViewport,
   });
 })();

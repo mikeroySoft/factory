@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 import unittest
+from itertools import pairwise
 from pathlib import Path
 
 ASSET = Path(__file__).resolve().parents[1] / "factory" / "workspace-trace.js"
@@ -317,8 +318,8 @@ Promise.resolve({expression}).then(result => process.stdout.write(JSON.stringify
 
     def assert_shared_segments_at_most(self, routes, points, limit) -> None:
         for other in routes:
-            for start, end in zip(points, points[1:]):
-                for other_start, other_end in zip(other["points"], other["points"][1:]):
+            for start, end in pairwise(points):
+                for other_start, other_end in pairwise(other["points"]):
                     for fixed, varying in (("x", "y"), ("y", "x")):
                         if start[fixed] == end[fixed] == other_start[fixed] == other_end[fixed]:
                             overlap = min(
@@ -357,3 +358,54 @@ Promise.resolve({expression}).then(result => process.stdout.write(JSON.stringify
                 self.assertLessEqual(point["x"], 900)
                 self.assertGreaterEqual(point["y"], 0)
                 self.assertLessEqual(point["y"], 500)
+
+    def test_three_retry_loops_and_lane_minus_eleven_keep_top_tracks_visible(self) -> None:
+        routes = self.evaluate(
+            "(() => { const api=window.WorkspaceTrace;"
+            "const groups=[Array(3).fill(0),Array(3).fill(0)];"
+            "const spacing=api.bundleSpacing(groups); let track=8+spacing.track/2;"
+            "return [...groups.flatMap(group=>group.map((_,i)=>({"
+            "lane:i-1+(i-1)*spacing.stripe/4,track:track+=spacing.track"
+            "}))),{lane:-2,track:9.2},{lane:-11,track:9.2}]"
+            ".map(({lane,track},index)=>api.routeEdge({"
+            "edge:{from:'review',to:'claim',relation:'retries'},index,lane,track,"
+            "source:{left:700,right:800,top:80,bottom:160},"
+            "target:{left:50,right:150,top:220,bottom:300},"
+            "fromColumn:7,toColumn:3,bounds:{width:900,height:500}})); })()",
+            {},
+        )
+
+        for route in routes:
+            points = route["points"]
+            self.assertEqual(points[0], {"x": 700, "y": 120})
+            self.assertEqual(points[-1], {"x": 150, "y": 260})
+            self.assertGreater(points[-2]["x"], points[-1]["x"])
+            for point in points:
+                self.assertGreaterEqual(point["x"], 0)
+                self.assertLessEqual(point["x"], 900)
+                self.assertGreaterEqual(point["y"], 0)
+                self.assertLessEqual(point["y"], 500)
+
+    def test_panned_offscreen_ports_are_not_clamped_for_tracked_routes(self) -> None:
+        scenarios = self.evaluate(
+            "value.map(columns=>window.WorkspaceTrace.routeEdge({"
+            "edge:{from:'source',to:'target',relation:'retries'},"
+            "source:{left:900,right:1000,top:80,bottom:160},"
+            "target:{left:1100,right:1200,top:220,bottom:300},"
+            "fromColumn:columns[0],toColumn:columns[1],lane:-11,track:9.2,"
+            "bounds:{width:800,height:500}}))",
+            [[3, 0], [0, 3], [3, 3]],
+        )
+
+        for kind, route in zip(("backward", "long-forward", "same-stage"), scenarios):
+            with self.subTest(kind=kind):
+                points = route["points"]
+                self.assertTrue(all(point["x"] > 800 for point in points))
+                self.assertEqual(points[0]["y"], 120)
+                self.assertEqual(points[-1]["y"], 260)
+                if kind == "long-forward":
+                    self.assertEqual(points[-1]["x"], 1100)
+                    self.assertLess(points[-2]["x"], points[-1]["x"])
+                else:
+                    self.assertEqual(points[-1]["x"], 1200)
+                    self.assertGreater(points[-2]["x"], points[-1]["x"])
