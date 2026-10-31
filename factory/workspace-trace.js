@@ -641,7 +641,7 @@
       if (ticket) { navigate(positive(ticket.dataset.traceTicket)); return; }
       const copy = event.target.closest('[data-copy]');
       if (copy && navigator.clipboard) { navigator.clipboard.writeText(copy.dataset.copy).catch(() => {}); return; }
-      if (event.target.closest('[data-trace-board]') && !event.target.closest('[data-trace-node]')) clearHighlight();
+      if (event.target.closest('[data-trace-board]') && !event.target.closest('[data-trace-node],[data-trace-viewport-controls]')) clearHighlight();
     });
     host.addEventListener('pointerover', event => {
       const target = event.target.closest?.('[data-trace-edge],[data-trace-node]');
@@ -685,13 +685,23 @@
       if (event.button !== 0 || event.target.closest('[data-trace-node],[data-trace-edge],[data-trace-viewport-controls]')) return;
       board.focus({preventScroll:true});
       const start = {x:event.clientX,y:event.clientY,viewport};
+      let moved = false;
       board.setPointerCapture(event.pointerId);
       board.classList.add('is-panning');
       const move = value => {
+        moved ||= value.clientX !== start.x || value.clientY !== start.y;
         fitted = false;
         applyViewport(panViewport(start.viewport, value.clientX - start.x, value.clientY - start.y));
       };
       const stop = value => {
+        if (moved && value.type === 'pointerup') {
+          // Only the click dispatched with this pointerup belongs to the pan.
+          const suppressClick = click => {
+            if (click.pointerId === value.pointerId) click.stopPropagation();
+          };
+          board.addEventListener('click', suppressClick, true);
+          setTimeout(() => board.removeEventListener('click', suppressClick, true), 0);
+        }
         if (board.hasPointerCapture(value.pointerId)) board.releasePointerCapture(value.pointerId);
         board.classList.remove('is-panning');
         board.removeEventListener('pointermove', move); board.removeEventListener('pointerup', stop); board.removeEventListener('pointercancel', stop);

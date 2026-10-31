@@ -573,3 +573,33 @@ window.backgroundPoint = () => {
         self.assertNotEqual(restored["paths"], fullscreen["paths"])
         self.assertEqual(restored["transform"], before["transform"])
         self.assertTrue(restored["attachments"])
+
+    def test_cancelled_or_clickless_pan_does_not_swallow_a_later_click(self) -> None:
+        for ending in ("cancelled", "clickless"):
+            with self.subTest(ending=ending):
+                self.evaluate("""
+pinTrace('node');
+document.querySelector('[data-trace-board]').addEventListener('pointerdown',
+  event => { window.panPointer = event.pointerId; }, {once:true});
+""")
+                x, y = map(round, self.evaluate("backgroundPoint()"))
+                self.browser("mouse", "move", str(x), str(y))
+                self.browser("mouse", "down")
+                self.browser("mouse", "move", str(x + 30), str(y - 15))
+                if ending == "cancelled":
+                    self.evaluate("""
+document.querySelector('[data-trace-board]').dispatchEvent(
+  new PointerEvent('pointercancel', {pointerId:window.panPointer, bubbles:true}));
+""")
+                self.evaluate("""
+// Simulate a gesture whose browser never delivers a click to the board.
+document.addEventListener('click', event => event.stopImmediatePropagation(),
+  {capture:true, once:true});
+""")
+                self.browser("mouse", "up")
+                self.assert_pin("node")
+                self.evaluate("""
+document.querySelector('[data-trace-canvas]').dispatchEvent(
+  new MouseEvent('click', {bubbles:true}));
+""")
+                self.assertFalse(self.state()["tracing"], "stale pan suppression consumed a click")
