@@ -53,4 +53,4 @@ review_rounds = 3
 auto = true
 
 [manager]
-rounds = 3
+rounds = 4
