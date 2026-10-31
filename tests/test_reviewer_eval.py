@@ -576,5 +576,55 @@ class ReviewerEvalTest(unittest.TestCase):
             with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": directory}):
                 self.assertEqual(module.configured_reviewer_model(ROOT), "host/reviewer")
 
+    def test_run_persists_checkout_model_not_installed_package(self) -> None:
+        candidate = "b" * 40
+        rows = [
+            {
+                "case": "12-before",
+                "returncode": 0,
+                "output": review_output("REVISE"),
+                "prompt_sha256": "prompt",
+            }
+            for _ in range(3)
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config.Config(root=Path(directory), repo="acme/widgets")
+            cfg.factory.mkdir()
+            installed_cfg = config.Config(
+                root=ROOT,
+                repo="acme/widgets",
+                reviewer=["omp", "-p", "--model", "installed/reviewer", "{prompt}"],
+            )
+            checkout_settings = {
+                "model": "checkout/reviewer",
+                "review_policy": "REVIEW.md",
+            }
+            with mock.patch.object(reviewer_eval, "case_ids", return_value=["12-before"]), \
+                 mock.patch.object(reviewer_eval, "corpus_version", return_value=2), \
+                 mock.patch.object(reviewer_eval, "_run_runner", return_value=(rows, False)), \
+                 mock.patch.object(reviewer_eval, "_judge", return_value=({"D1"}, {})), \
+                 mock.patch.object(reviewer_eval, "_candidate_accepted", return_value=True), \
+                 mock.patch.object(reviewer_eval, "_append"), \
+                 mock.patch.object(
+                     reviewer_eval, "_checkout_settings", return_value=checkout_settings
+                 ), \
+                 mock.patch.object(config, "git", return_value=candidate), \
+                 mock.patch.object(config, "load", return_value=installed_cfg):
+                summary = reviewer_eval.run(cfg, ROOT)
+
+            baseline = json.loads(reviewer_eval.baseline_path(cfg).read_text())
+            self.assertEqual(summary["model"], "checkout/reviewer")
+            self.assertEqual(baseline["model"], "checkout/reviewer")
+            fingerprint = {
+                "prompt_sha256": {"12-before": "prompt"},
+                "model": "checkout/reviewer",
+            }
+            with mock.patch.object(reviewer_eval, "corpus_version", return_value=2), \
+                 mock.patch.object(
+                     reviewer_eval, "contract_fingerprint", return_value=fingerprint
+                 ):
+                self.assertTrue(reviewer_eval.baseline_ready(cfg))
+
+
 if __name__ == "__main__":
     unittest.main()
