@@ -674,7 +674,7 @@ def review_external_pr(n: int, base: str, head: str, branch: str = "") -> None:
         if usage is not None:
             record("llm-usage", pr=n, stage="review", local=_usage_local(usage), **usage)
         findings, verdict, parsed, counts, parser_reason = _parse_review_output(
-            findings, nit_cap
+            findings, nit_cap, require_important_schema=False,
         )
         lines = findings.splitlines()
         legacy_invalid = counts is None and (
@@ -1863,7 +1863,8 @@ def _valid_review_instance(instance: object) -> bool:
 
 
 def _parse_review_output(
-    findings: str, nit_cap: int, ledger_ids: set[str] | None = None,
+    findings: str, nit_cap: int, ledger_ids: set[str] | None = None, *,
+    require_important_schema: bool = True,
 ) -> tuple[str, str, bool, dict[str, int] | None, str | None]:
     """Validate and cap structured findings; return the effective verdict and counts."""
     verdicts = list(re.finditer(r"(?m)^VERDICT: (APPROVE|REVISE)[ \t]*$", findings))
@@ -1898,9 +1899,14 @@ def _parse_review_output(
             and bool(row["instances"])
             and all(_valid_review_instance(instance) for instance in row["instances"])
         )
-        and (row.get("severity") != "important" or "instances" in row)
         and (
-            row.get("severity") != "important"
+            not require_important_schema
+            or row.get("severity") != "important"
+            or "instances" in row
+        )
+        and (
+            not require_important_schema
+            or row.get("severity") != "important"
             or isinstance(row.get("class"), str)
             and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", row["class"]) is not None
         )
