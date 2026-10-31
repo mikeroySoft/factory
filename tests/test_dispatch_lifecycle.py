@@ -1288,6 +1288,86 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
 
         self.assertEqual(lock, "worker drift\n")
 
+    def test_root_lockfile_plan_does_not_authorize_nested_lockfile(self):
+        from factory import config, dispatch
+
+        self.set_lock_baseline()
+        nested = self.repo / "services" / "api" / "uv.lock"
+        nested.parent.mkdir(parents=True)
+        nested.write_text("nested base\n")
+        self.git("add", "services/api/uv.lock")
+        self.git("commit", "-qm", "nested dependency baseline")
+        self.git("push", "-q", "origin", "main")
+        wt = self.repo / ".factory" / "wt-7"
+        wt.parent.mkdir(exist_ok=True)
+        self.git("worktree", "add", str(wt), "-b", "agent/7")
+        plan = self.repo / ".factory" / "plans" / "7" / "1.md"
+        plan.parent.mkdir(parents=True)
+        plan.write_text("## Files\n- uv.lock\n")
+        lifecycle.append(self.events, {
+            "event": "plan", "ticket": 7, "status": "recorded", "path": str(plan),
+        })
+        (wt / "uv.lock").write_text("root worker edit\n")
+        (wt / "services" / "api" / "uv.lock").write_text("nested worker drift\n")
+        self.git("-C", str(wt), "add", "uv.lock", "services/api/uv.lock")
+        self.git("-C", str(wt), "commit", "-qm", "worker lock edits")
+        dispatch.configure(config.load(self.repo))
+
+        restored = dispatch.restore_unplanned_lockfiles(wt, 7, "origin/main")
+
+        self.assertEqual(restored, ["services/api/uv.lock"])
+        self.assertEqual((wt / "uv.lock").read_text(), "root worker edit\n")
+        self.assertEqual(
+            (wt / "services" / "api" / "uv.lock").read_text(), "nested base\n",
+        )
+
+    def test_recorded_plan_filter_requires_matching_event_ticket_and_status(self):
+        from unittest import mock
+
+        from factory import config, dispatch
+
+        dispatch.configure(config.load(self.repo))
+        plan = self.repo / "plan.md"
+        plan.write_text("## Files\n- uv.lock\n")
+        valid = {
+            "event": "plan", "ticket": 7, "status": "recorded", "path": str(plan),
+        }
+        cases = {
+            "event": {**valid, "event": "attempt"},
+            "ticket": {**valid, "ticket": 8},
+            "status": {**valid, "status": "missing"},
+        }
+        for field, row in cases.items():
+            with self.subTest(field=field), mock.patch.object(
+                lifecycle, "read_events", return_value=[row],
+            ):
+                self.assertFalse(dispatch._recorded_plan_lists_lockfile(7, "uv.lock"))
+        with mock.patch.object(lifecycle, "read_events", return_value=[valid]):
+            self.assertTrue(dispatch._recorded_plan_lists_lockfile(7, "uv.lock"))
+
+    def test_recorded_plan_filter_toggles_only_for_files_section(self):
+        from unittest import mock
+
+        from factory import config, dispatch
+
+        dispatch.configure(config.load(self.repo))
+        plan = self.repo / "plan.md"
+        row = {
+            "event": "plan", "ticket": 7, "status": "recorded", "path": str(plan),
+        }
+        cases = (
+            ("## Risks\n- uv.lock\n## Files\n- change.txt\n", False),
+            ("## Files\n- change.txt\n## Proof\n- uv.lock\n", False),
+            ("## Risks\n- change.txt\n## Files\n- uv.lock\n", True),
+        )
+        for text, expected in cases:
+            with self.subTest(text=text):
+                plan.write_text(text)
+                with mock.patch.object(lifecycle, "read_events", return_value=[row]):
+                    self.assertEqual(
+                        dispatch._recorded_plan_lists_lockfile(7, "uv.lock"), expected,
+                    )
+
     def test_lockfile_mentions_outside_files_section_do_not_authorize_edit(self):
         lock = self.run_lockfile_worker(
             "## Files\n- change.txt\n"
