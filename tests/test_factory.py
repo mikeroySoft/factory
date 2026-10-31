@@ -5,6 +5,7 @@ Run: python -m unittest discover -s tests
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import re
@@ -22,6 +23,7 @@ sys.path.insert(0, str(ROOT))
 # Never read the operator's real host config; HostConfigTest writes its own here.
 XDG = Path(tempfile.mkdtemp())
 os.environ["XDG_CONFIG_HOME"] = str(XDG)
+atexit.register(shutil.rmtree, XDG, ignore_errors=True)
 
 from datetime import UTC
 
