@@ -49,6 +49,14 @@ class FindingSelectionTest(unittest.TestCase):
             "ref": "factory/a.py:4",
             "summary": "Fix the defect.",
         }])
+        self.assertEqual(
+            dispatch._required_fixes(
+                "## Required fixes\n- `other.py:9`: prose must be ignored.",
+                "https://review.example/1",
+            ),
+            [],
+        )
+
 
     def test_worker_bounce_contains_only_important_findings(self) -> None:
         findings = review_output([
