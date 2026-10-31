@@ -30,6 +30,7 @@ from factory import (
     runtime_events,
     runtime_local,
     stats,
+    storage,
 )
 from factory.config import (
     LABEL_AGENT,
@@ -1194,6 +1195,13 @@ def snapshot() -> dict:
         else "bounded"
     )
 
+    runner_storage = storage.status(cfg)
+    host_problems = ([] if runner_storage["ok"] else [{
+        "code": "runner_storage_low",
+        "detail": storage.detail(runner_storage),
+        **runner_storage,
+    }])
+
     return {
         "generated_at": iso(time.time()),
         "version": __version__,
@@ -1201,6 +1209,7 @@ def snapshot() -> dict:
         "repo": REPO,
         "root": str(ROOT),
         "errors": errors,
+        "host_problems": host_problems,
         "coverage": {
             "legacy": legacy_coverage,
             "runtime": runtime_history,
@@ -1232,6 +1241,8 @@ def snapshot() -> dict:
             "gate_checks": GATE_CHECKS,
             "exclusive_checks": [c.name for c in cfg.checks if c.exclusive],
             "check_timeout": cfg.check_timeout,
+            "runner_min_free_gb": cfg.runner_min_free_gb,
+            "runner_min_free_inodes": cfg.runner_min_free_inodes,
             "leak_pattern": cfg.leak_pattern,
             "gpu_lock": str(cfg.lock),
             "workers": {label: " ".join(argv) for label, argv in cfg.workers.items()},

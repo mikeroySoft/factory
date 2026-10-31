@@ -98,6 +98,7 @@ KNOWN_KEYS = {
                 "bar_floor_human_rate", "bar_floor_first_pass"),
     "eval": ("max_cases", "max_tokens", "budget_min", "profile", "schedule"),
     "gate": ("timeout", "lock", "check", "protected_paths", "add_only_paths"),
+    "runner": ("min_free_gb", "min_free_inodes"),
     "leak_scan": ("pattern", "exclude", "extra"),
     "triage": ("url", "model", "timeout", "service"),
     "journal": ("max_mb", "retention"),
@@ -228,6 +229,8 @@ class Config:
     add_only_paths: list[str] = field(default_factory=list)
     check_timeout: int = 1200
     lock: Path = Path("/tmp/factory.lock")  # host-wide: one GPU, many repos
+    runner_min_free_gb: float = 5
+    runner_min_free_inodes: int = 100_000
     leak_pattern: str | None = DEFAULT_LEAK_PATTERN
     leak_exclude: list[str] = field(default_factory=list)
     llm_url: str = DEFAULT_LLM_URL
@@ -646,6 +649,7 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     raw, raw_repo = merge(layered, raw), raw
     repo_t, dispatch, workers = raw.get("repo", {}), raw.get("dispatch", {}), raw.get("workers", {})
     gate, leak, triage, dash = raw.get("gate", {}), raw.get("leak_scan", {}), raw.get("triage", {}), raw.get("dashboard", {})
+    runner = raw.get("runner", {})
     manager = raw.get("manager", {})
     release = raw.get("release", {})
     learn = raw.get("learn", {})
@@ -813,6 +817,14 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     if "collaboration" in raw:
         cfg.collaboration = collaboration_settings(raw["collaboration"])
     cfg.prices = price_table(raw.get("prices", {}))
+    min_free_gb = runner.get("min_free_gb", cfg.runner_min_free_gb)
+    min_free_inodes = runner.get("min_free_inodes", cfg.runner_min_free_inodes)
+    if isinstance(min_free_gb, bool) or not isinstance(min_free_gb, (int, float)) or min_free_gb < 0:
+        raise ConfigError("runner.min_free_gb must be a non-negative number")
+    if isinstance(min_free_inodes, bool) or not isinstance(min_free_inodes, int) or min_free_inodes < 0:
+        raise ConfigError("runner.min_free_inodes must be a non-negative integer")
+    cfg.runner_min_free_gb = float(min_free_gb)
+    cfg.runner_min_free_inodes = min_free_inodes
     cfg.check_timeout = int(gate.get("timeout", cfg.check_timeout))
     for key in ("protected_paths", "add_only_paths"):
         paths = gate.get(key, [])

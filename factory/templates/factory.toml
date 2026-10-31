@@ -121,6 +121,12 @@
 # profile = "default"
 # schedule = false
 
+[runner]
+# Claims and gates stop before work when either the temp or worktree filesystem
+# falls below these thresholds. The host condition is `runner_storage_low`.
+# min_free_gb = 5
+# min_free_inodes = 100000
+
 [gate]
 # timeout = 1200                      # seconds per check; a wedged check FAILs
 # lock = "/tmp/factory.lock"          # host-wide lock held by `exclusive` checks

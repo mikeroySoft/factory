@@ -14,7 +14,7 @@ from pathlib import Path
 from subprocess import CalledProcessError
 from tempfile import NamedTemporaryFile
 
-from factory import binding, config, dispatch, handoff, lifecycle
+from factory import binding, config, dispatch, handoff, lifecycle, storage
 from factory.config import (
     LABEL_ADD_ONLY_OVERRIDE,
     LABEL_AGENT,
@@ -1108,6 +1108,9 @@ def escalation_pass(dry_run: bool = False) -> None:
                                 packet=str(packet), notes=status, rejected=rejected)
                 try:
                     apply(n, issue, decision, body, data, packet)
+                except storage.RunnerStorageLow as exc:
+                    execution.wait("runner_storage_low", mode="retry_next_pass")
+                    dispatch.log(f"#{n}: manager work deferred ({exc})")
                 except (CalledProcessError, OSError, ValueError) as exc:
                     # A partial SPLIT or REWRITE must not be replayed automatically.
                     execution.outcome = "mechanism_failure"
