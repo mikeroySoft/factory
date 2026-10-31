@@ -28,6 +28,7 @@ import sys
 import tempfile
 import time
 import tomllib
+import uuid
 from contextlib import contextmanager, nullcontext, suppress
 from pathlib import Path
 
@@ -883,6 +884,152 @@ def record(event: str, **fields: object) -> None:
     lifecycle.append(EVENTS, row)
 
 
+def _current_round_events(events: list[dict], ticket: int) -> list[dict]:
+    """Ticket events after its latest human round-budget reset, oldest first."""
+    rows = [event for event in events if event.get("ticket") == ticket]
+    reset = next(
+        (index for index in range(len(rows) - 1, -1, -1) if rows[index].get("event") == "rounds-reset"),
+        -1,
+    )
+    return rows[reset + 1:]
+
+
+def _label_transition(item: dict) -> dict:
+    """Stable GitHub transition identity without retaining comment bodies."""
+    return {
+        "id": item.get("id"),
+        "event": item.get("event"),
+        "label": (item.get("label") or {}).get("name"),
+        "at": item.get("created_at"),
+        "actor": (item.get("actor") or {}).get("login"),
+    }
+
+
+def requeue_agent(
+    n: int, *, check: bool = True, unassign: bool = False,
+) -> subprocess.CompletedProcess:
+    """Apply an automatic release and retain observed transitions, not intent times."""
+    from factory import handoff
+
+    # A never-escalated ticket cannot acquire a human budget reset.
+    parked = any(e.get("ticket") == n and e.get("event") == "escalate"
+                 for e in lifecycle.read_events(EVENTS))
+    command = [
+        "gh", "issue", "edit", str(n), "--repo", REPO,
+        "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
+        *(["--remove-assignee", "@me"] if unassign else []),
+    ]
+    if not parked:
+        return run(command, check=check)
+    before = handoff.timeline(n)
+    transitions_before = [_label_transition(item) for item in before]
+    operation = str(uuid.uuid4())
+    record("agent-requeue", ticket=n, operation=operation, status="started",
+           before=transitions_before, releases=[])
+    try:
+        proc = run(command, check=False)
+    except (subprocess.CalledProcessError, OSError):
+        record("agent-requeue", ticket=n, operation=operation, status="failed",
+               before=transitions_before, releases=[])
+        raise
+    releases = []
+    status = "success" if proc.returncode == 0 else "failed"
+    try:
+        releases = [
+            _label_transition(item) for item in handoff.timeline(n)
+            if item.get("event") == "labeled"
+            and (item.get("label") or {}).get("name") == LABEL_AGENT
+            and _label_transition(item) not in transitions_before
+        ]
+    except (subprocess.CalledProcessError, OSError, ValueError):
+        if proc.returncode == 0:
+            status = "uncertain"
+    record("agent-requeue", ticket=n, operation=operation, status=status,
+           before=transitions_before, releases=releases)
+    if check:
+        proc.check_returncode()
+    return proc
+
+
+def _record_human_round_reset(n: int) -> None:
+    """Journal a direct owner requeue that did not pass through a Factory action."""
+    events = [event for event in lifecycle.read_events(EVENTS) if event.get("ticket") == n]
+    escalation_index = next((
+        index for index in range(len(events) - 1, -1, -1)
+        if events[index].get("event") == "escalate"
+        and events[index].get("reason") != "manager_failed"
+    ), None)
+    if escalation_index is None or any(
+        event.get("event") == "rounds-reset" for event in events[escalation_index:]
+    ):
+        return
+    from factory import handoff
+
+    timeline = handoff.timeline(n)
+    releases = [
+        index for index, item in enumerate(timeline)
+        if item.get("event") == "labeled"
+        and (item.get("label") or {}).get("name") == LABEL_AGENT
+        and item.get("created_at", "") >= events[escalation_index].get("at", "")
+    ]
+    if not releases:
+        return
+    release_index = releases[-1]
+    machine_comments = {
+        event["comment"] for event in events
+        if event.get("event") == "comment" and type(event.get("comment")) is int
+    }
+    escalation_comments = {
+        event["comment"] for event in events
+        if event.get("event") == "comment" and event.get("kind") == "escalation"
+        and type(event.get("comment")) is int
+    }
+    human_index = next((
+        index for index in range(release_index, -1, -1)
+        if timeline[index].get("event") == "labeled"
+        and (timeline[index].get("label") or {}).get("name") == LABEL_HUMAN
+        and timeline[index].get("created_at", "") >= events[escalation_index].get("at", "")
+    ), None)
+    machine_index = next((
+        index for index in range(release_index, -1, -1)
+        if timeline[index].get("event") == "commented"
+        and timeline[index].get("id") in escalation_comments
+    ), None)
+    boundary = human_index if human_index is not None else machine_index
+    if boundary is None:
+        return
+    release = timeline[release_index]
+    actor = (release.get("actor") or {}).get("login")
+    requeued_at = release.get("created_at")
+    if not actor or not requeued_at or (release.get("actor") or {}).get("type") == "Bot":
+        return
+    # Comments may arrive during label mutation, including under the same login.
+    # Only the observed release receipt establishes an automatic transition;
+    # a manager decision or dispatcher requeue row merely records intent.
+    operations = {event["operation"]: event for event in events
+                  if event.get("event") == "agent-requeue"}
+    for operation in operations.values():
+        if _label_transition(release) in operation["releases"]:
+            return
+        if (
+            operation["status"] != "failed" and not operation["releases"]
+            and _label_transition(timeline[boundary]) in operation["before"]
+            and _label_transition(release) not in operation["before"]
+        ):
+            # A crash or delayed timeline read cannot turn an automatic release
+            # into new budget. A later human-label generation is not vetoed.
+            return
+    decision = next((
+        item for item in reversed(timeline[boundary:release_index])
+        if item.get("event") == "commented" and item.get("id") not in machine_comments
+        and (item.get("user") or {}).get("type") != "Bot"
+        and (item.get("body") or "").strip()
+    ), None)
+    if decision is None:
+        return
+    record("rounds-reset", ticket=n, actor=actor, requeued_at=requeued_at)
+
+
 def _decision_actor(kind: str, name: str, *, model: str | None = None) -> dict:
     return {"kind": kind, "name": name, "model": model, "version": __version__}
 
@@ -1667,7 +1814,7 @@ def escalation_packet(
     )
     round_number = 1 + sum(
         event.get("event") == "escalate" and event.get("reason") != "manager_failed"
-        for event in ticket_events
+        for event in _current_round_events(ticket_events, n)
     )
     return packet, round_number
 
@@ -2532,7 +2679,7 @@ def sync_staged(n: int, wt: Path) -> tuple[str, str] | None:
     """(gate report, head) when the dispatcher's own staged candidate passed the gate and
     is still this worktree's exact head: nothing for a worker to fix."""
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
-    staged = next((e for e in reversed(lifecycle.read_events(EVENTS))
+    staged = next((e for e in reversed(_current_round_events(lifecycle.read_events(EVENTS), n))
                    if e.get("event") == "attempt" and e.get("ticket") == n and e.get("attempt") == 0), None)
     report = wt / ".factory" / f"gate-report-{n}.md"
     if not staged or staged.get("gate") != "PASS" or staged.get("head") != head or not report.exists():
@@ -3165,7 +3312,10 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         # A manager-FIX-approved PR may still have a ready-for-human issue; restore agent flow.
         issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "state,labels"])
         labels = {label["name"] for label in issue.get("labels", [])}
-        rounds = sum(e.get("event") == "conflict-requeue" and e.get("ticket") == n for e in lifecycle.read_events(EVENTS))
+        rounds = sum(
+            e.get("event") == "conflict-requeue"
+            for e in _current_round_events(lifecycle.read_events(EVENTS), n)
+        )
         protected = [] if LABEL_PROTECTED_OVERRIDE in labels else [
             path for path in conflicts if any(fnmatch.fnmatchcase(path, glob) for glob in cfg.protected_paths)
         ]
@@ -3185,8 +3335,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             remote_head, remote_head, [],
         )
         record("conflict-requeue", ticket=n, pr=pr, head=remote_head, verb=verb, files=conflicts, round=rounds + 1)
-        run(["gh", "issue", "edit", str(n), "--repo", REPO,
-             "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT, "--remove-assignee", "@me"], check=False)
+        requeue_agent(n, check=False, unassign=True)
         log(f"#{n}: PR #{pr} {verb} onto {cfg.main} conflicts in {', '.join(conflicts)}; requeued to a worker")
         return False
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
@@ -3279,8 +3428,8 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             return False
         if not ok:
             rounds = sum(
-                event.get("event") == "gate-requeue" and event.get("ticket") == n
-                for event in lifecycle.read_events(EVENTS)
+                event.get("event") == "gate-requeue"
+                for event in _current_round_events(lifecycle.read_events(EVENTS), n)
             )
             issue_state = gh_json(
                 ["issue", "view", str(n), "--repo", REPO, "--json", "state"]
@@ -3308,9 +3457,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
                 reports=reports, changed_files=changed_files, unrelated=unrelated, round=rounds + 1,
                 refreshed_head=head, evidence_ref=evidence_ref,
             )
-            run(["gh", "issue", "edit", str(n), "--repo", REPO,
-                 "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
-                 "--remove-assignee", "@me"], check=False)
+            requeue_agent(n, check=False, unassign=True)
             log(f"#{n}: PR #{pr} gate failed twice after {verb} onto {cfg.main}; requeued to a worker")
             return False
     if not ok:
@@ -3352,18 +3499,14 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         state = _PENDING_RISK.get(n) or {}
         if state.get("head") == head and state.get("disagreement"):
             rounds = sum(
-                event.get("event") == "risk-requeue" and event.get("ticket") == n
-                for event in lifecycle.read_events(EVENTS)
+                event.get("event") == "risk-requeue"
+                for event in _current_round_events(lifecycle.read_events(EVENTS), n)
             )
             record(
                 "risk-requeue", ticket=n, pr=pr, head=head,
                 packet=state["packet"], round=rounds + 1,
             )
-            run([
-                "gh", "issue", "edit", str(n), "--repo", REPO,
-                "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
-                "--remove-assignee", "@me",
-            ], check=False)
+            requeue_agent(n, check=False, unassign=True)
             log(f"#{n}: PR #{pr} High-risk checks disagreed after refresh; requeued to a worker")
             return False
         withdraw(
@@ -4087,6 +4230,7 @@ def process_ticket(
                 execution.reason = "state_changed"
                 return
             labels = {label["name"] for label in fresh["labels"]}
+            _record_human_round_reset(n)
             if not forced and shutil.which(worker) is None:
                 # Frontier claims only: `--ticket` is an operator's explicit ask and fails loudly.
                 # ponytail: PATH probe only; a binary swapped out between here and Popen still

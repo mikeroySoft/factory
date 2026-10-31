@@ -4647,6 +4647,27 @@ class DispatchTest(unittest.TestCase):
             )
             self.assertFalse((root / ".factory" / "wt-upstream").exists())
 
+    def test_owner_reset_invalidates_a_staged_sync_candidate(self) -> None:
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as directory:
+            root, _origin, _upstream = build_fork(Path(directory))
+            dispatch.configure(config.Config(root=root, repo="acme/widgets", main="main"))
+            report = root / ".factory" / "gate-report-42.md"
+            report.parent.mkdir()
+            report.write_text("ok")
+            head = git(root, "rev-parse", "HEAD")
+            dispatch.record(
+                "attempt", ticket=42, attempt=0, gate="PASS",
+                head=head, actual_head=head, clean=True,
+            )
+            dispatch.record(
+                "rounds-reset", ticket=42, actor="alice",
+                requeued_at="2026-10-28T15:53:00Z",
+            )
+
+            self.assertIsNone(dispatch.sync_staged(42, root))
+
     def test_sync_stages_the_clean_prefix_but_never_lands_it(self) -> None:
         from factory import dispatch
 

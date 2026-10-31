@@ -278,6 +278,81 @@ class HandoffCli(unittest.TestCase):
         self.assertIn("Factory handoff request `7/2`", self.requests()[-1]["body"])
         self.assertIn("the manager asked for a human decision", self.requests()[-1]["body"])
 
+    def test_human_reset_restarts_escalation_manager_rounds(self) -> None:
+        self.configure(rounds=1)
+        self.manage(mode="HUMAN")
+        dispatch.configure(config.load(self.repo))
+        dispatch.record(
+            "rounds-reset", ticket=7, actor="alice",
+            requeued_at="2026-01-01T00:04:00Z",
+        )
+
+        _, round_number = dispatch.escalation_packet(
+            7, "gate failed after the fresh worker attempt", None,
+            self.factory / "wt-7",
+        )
+        self.assertEqual(round_number, 1)
+        self.escalate(
+            "gate failed after the fresh worker attempt", round_number,
+            at="2026-01-01T00:05:00Z",
+        )
+        self.manage(mode="RETRY")
+
+        self.assertTrue(self.ran.exists())
+        self.assertEqual(
+            [(e["decision"], e["round"]) for e in self.events("manage")],
+            [("HUMAN", 1), ("RETRY", 1)],
+        )
+
+    def test_terminal_escalation_after_reset_publishes_a_new_handoff(self) -> None:
+        self.configure(rounds=1)
+        self.manage(mode="HUMAN")
+        dispatch.configure(config.load(self.repo))
+        dispatch.record(
+            "rounds-reset", ticket=7, actor="alice",
+            requeued_at="2026-01-01T00:04:00Z",
+        )
+        self.escalate(
+            "gate failed after the fresh budget", 1,
+            at="2026-01-01T00:05:00Z",
+        )
+
+        self.manage(mode="HUMAN")
+
+        self.assertEqual(len(self.requests()), 2)
+        self.assertEqual([e["request"] for e in self.events("handoff")], ["7/1", "7/1"])
+
+    def test_unrelated_round_events_do_not_make_an_escalation_terminal(self) -> None:
+        cfg = config.load(self.repo)
+        escalation = {
+            "at": AT, "event": "escalate", "ticket": 7, "reason": "gate failed",
+            "round": 1, "packet": str(self.packet),
+        }
+        events = [
+            escalation,
+            {"at": AT, "event": "comment", "ticket": 7, "kind": "escalation", "comment": 101},
+            {"at": AT, "event": "manage", "ticket": 7, "round": 1, "decision": "RETRY"},
+            {"at": AT, "event": "zzz", "ticket": 7, "round": 1, "decision": "HUMAN"},
+            {"at": AT, "event": "manage", "ticket": 7, "round": 0, "decision": "HUMAN"},
+            {"at": AT, "event": "escalate", "ticket": 7, "round": 0, "reason": "manager_failed"},
+            {"at": AT, "event": "manage", "ticket": 8, "round": 1, "decision": "HUMAN"},
+        ]
+
+        self.assertIsNone(handoff.terminal(cfg, events, escalation))
+
+    def test_unrelated_event_cannot_consume_an_escalation_manager_round(self) -> None:
+        lifecycle.append(self.factory / "events.jsonl", {
+            "at": AT, "event": "review", "ticket": 7, "round": 1,
+        })
+
+        self.manage(mode="RETRY")
+
+        self.assertTrue(self.ran.exists())
+        self.assertEqual(
+            [(e["decision"], e["round"]) for e in self.events("manage")],
+            [("RETRY", 1)],
+        )
+
     def test_review_intake_escalation_gets_a_handoff_request(self) -> None:
         # #204 (b): `review_intake_pass` escalates an opted-in PR into a new `ready-for-human` issue with a
         # `pr`-bearing row and no escalation comment; the manager never runs on it, so the handoff pass must post.
@@ -294,6 +369,23 @@ class HandoffCli(unittest.TestCase):
         body = self.requests()[0]["body"]
         self.assertIn("Factory handoff request `7/1`", body)
         self.assertIn("review-intake escalations are never managed", body)
+
+    def test_unrelated_events_cannot_impersonate_handoff_receipts_or_intents(self) -> None:
+        dispatch.configure(config.load(self.repo))
+        dispatch.record(
+            "review", ticket=7, kind="handoff", request="7/1",
+            target="@auth-owner", token="unrelated review evidence", comment=999,
+        )
+
+        self.manage(mode="HUMAN")
+        self.manage()
+
+        [intent] = self.events("handoff")
+        [receipt] = [event for event in self.events("comment")
+                     if event.get("kind") == "handoff"]
+        self.assertEqual(len(self.requests()), 1)
+        self.assertEqual(receipt["token"], intent["token"])
+        self.assertEqual(receipt["comment"], self.requests()[0]["id"])
 
     def test_crash_after_comment_creation_reconciles_to_the_same_request(self) -> None:
         self.manage(mode="HUMAN", crash_on_comment=True, expect=-9)

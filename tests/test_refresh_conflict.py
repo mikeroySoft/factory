@@ -81,6 +81,8 @@ class FakeGitHub:
             return self.issue()
         if args[:2] == ["issue", "list"]:
             return [self.issue()] if config.LABEL_AGENT in self.issue_labels else []
+        if args[0] == "api" and args[1] == "repos/acme/widgets/issues/9/timeline":
+            return [[]]
         if args[0] == "api" and "/compare/" in args[1]:
             head = args[1].rsplit("...", 1)[1]
             return {"behind_by": int(git(self.origin, "rev-list", "--count", f"{head}..main"))}
@@ -263,6 +265,152 @@ class RefreshConflictTest(unittest.TestCase):
         self.assertIn("## Conflicting files\n\n- `shared.txt`", Path(escalation["packet"]).read_text())
         self.assertIn(config.LABEL_HUMAN, self.github.issue_labels)
         self.assertEqual(len(self.events("conflict-requeue")), 3)
+
+    def test_human_requeue_starts_a_fresh_conflict_resolution_budget(self) -> None:
+        for round_number in range(1, self.cfg.review_rounds + 1):
+            dispatch.record("conflict-requeue", ticket=9, pr=102, round=round_number, files=["shared.txt"])
+        dispatch.record("rounds-reset", ticket=9, actor="alice", requeued_at="2026-10-28T15:53:00Z")
+
+        with self.patched():
+            self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+
+        self.assertEqual(self.events("escalate"), [])
+        self.assertEqual([row["round"] for row in self.events("conflict-requeue")], [1, 2, 3, 1])
+        self.assertIn(config.LABEL_AGENT, self.github.issue_labels)
+
+    def test_automatic_refresh_receipt_blocks_an_old_owner_comment_after_label_drift(self) -> None:
+        from factory import handoff
+
+        self.github.issue_labels = set()
+        at = "2026-10-28T15:50:00Z"
+        lifecycle.append(dispatch.EVENTS, {
+            "event": "escalate", "ticket": 9, "round": 1, "at": at,
+            "reason": "gate failed",
+        })
+        dispatch.record("comment", ticket=9, kind="escalation", comment=101)
+        timeline = [
+            {"event": "labeled", "id": 1, "label": {"name": config.LABEL_HUMAN},
+             "created_at": at, "actor": {"login": "runner"}},
+            {"event": "commented", "id": 101, "created_at": at,
+             "user": {"login": "runner"}},
+            {"event": "commented", "id": 102, "created_at": "2026-10-28T15:52:00Z",
+             "user": {"login": "alice"}, "body": "Owner decision: Retry"},
+        ]
+        release = {
+            "event": "labeled", "id": 2, "label": {"name": config.LABEL_AGENT},
+            "created_at": "2026-10-28T15:53:00Z", "actor": {"login": "runner"},
+        }
+
+        def relabel(cmd, *args, **kwargs):
+            result = self.github.run(cmd, *args, **kwargs)
+            if cmd[:3] == ["gh", "issue", "edit"]:
+                timeline.append(release)
+            return result
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=self.github.gh_json), \
+                mock.patch.object(dispatch, "run", side_effect=relabel), \
+                mock.patch.object(handoff, "timeline", side_effect=lambda n: list(timeline)):
+            self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+            dispatch._record_human_round_reset(9)
+
+        self.assertEqual(self.events("rounds-reset"), [])
+
+    def test_dispatcher_relabel_outcome_controls_shared_account_reset(self) -> None:
+        from factory import handoff
+
+        for succeeds in (False, True):
+            with self.subTest(succeeds=succeeds):
+                dispatch.EVENTS.unlink(missing_ok=True)
+                self.github.issue_labels = {config.LABEL_HUMAN}
+                at = "2026-10-28T15:50:00Z"
+                lifecycle.append(dispatch.EVENTS, {
+                    "event": "escalate", "ticket": 9, "round": 1, "at": at,
+                    "reason": "gate failed",
+                })
+                dispatch.record("comment", ticket=9, kind="escalation", comment=101)
+                timeline = [
+                    {"event": "labeled", "id": 1, "label": {"name": config.LABEL_HUMAN},
+                     "created_at": at, "actor": {"login": "runner"}},
+                    {"event": "commented", "id": 101, "created_at": at,
+                     "user": {"login": "runner"}},
+                ]
+
+                def relabel(cmd, *args, succeeds=succeeds, timeline=timeline, **kwargs):
+                    if cmd[:3] == ["gh", "issue", "edit"]:
+                        timeline.append({
+                            "event": "commented", "id": 102,
+                            "created_at": "2026-10-28T15:52:00Z",
+                            "user": {"login": "runner"}, "body": "Owner decision: Retry",
+                        })
+                        if not succeeds:
+                            return subprocess.CompletedProcess(cmd, 1, "", "label failed")
+                        timeline.append({
+                            "event": "labeled", "id": 2,
+                            "label": {"name": config.LABEL_AGENT},
+                            "created_at": "2026-10-28T15:53:00Z",
+                            "actor": {"login": "runner"},
+                        })
+                    return self.github.run(cmd, *args, **kwargs)
+
+                with mock.patch.object(dispatch, "gh_json", side_effect=self.github.gh_json), \
+                        mock.patch.object(dispatch, "run", side_effect=relabel), \
+                        mock.patch.object(handoff, "timeline",
+                                          side_effect=lambda n, rows=timeline: list(rows)):
+                    self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+                    if not succeeds:
+                        timeline.append({
+                            "event": "labeled", "id": 3,
+                            "label": {"name": config.LABEL_AGENT},
+                            "created_at": "2026-10-28T15:54:00Z",
+                            "actor": {"login": "runner"},
+                        })
+                    dispatch._record_human_round_reset(9)
+                    dispatch._record_human_round_reset(9)
+
+                self.assertEqual(len(self.events("rounds-reset")), 0 if succeeds else 1)
+                self.assertEqual(len(self.events("conflict-requeue")), 1)
+                self.assertEqual(len(self.events("escalate")), 1)
+
+    def test_human_reset_restarts_high_risk_disagreement_rounds(self) -> None:
+        git(self.origin, "checkout", "-q", "agent/9")
+        merged = subprocess.run(
+            ["git", "-C", str(self.origin), "merge", "main", "--no-edit"],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertNotEqual(merged.returncode, 0)
+        (self.origin / "shared.txt").write_text("main version\nagent version\n")
+        git(self.origin, "add", "shared.txt")
+        git(self.origin, "commit", "-qm", "resolve old main")
+        git(self.origin, "checkout", "-q", "main")
+        (self.origin / "moved.txt").write_text("new main\n")
+        git(self.origin, "add", "moved.txt")
+        git(self.origin, "commit", "-qm", "move main again")
+        dispatch.record(
+            "rounds-reset", ticket=9, actor="alice",
+            requeued_at="2026-10-28T15:53:00Z",
+        )
+        dispatch.record(
+            "risk-requeue", ticket=9, pr=102, head=self.approved_head,
+            round=1, packet="first disagreement",
+        )
+
+        def disagree(_wt, n, _report, head, _runs):
+            dispatch._PENDING_RISK[n] = {
+                "head": head, "disagreement": True, "packet": "second disagreement",
+            }
+            return "REVISE", "reviewers disagree", False
+
+        self.addCleanup(dispatch._PENDING_RISK.pop, 9, None)
+        with self.patched(), \
+                mock.patch.object(dispatch, "run_gate", return_value=(True, "gate ok")), \
+                mock.patch.object(dispatch, "push_agent", return_value="pushed"), \
+                mock.patch.object(dispatch, "record_risk"), \
+                mock.patch.object(dispatch, "risk_for_head", return_value=("High", ["high:test"])), \
+                mock.patch.object(dispatch, "pr_gate_and_review", side_effect=disagree), \
+                mock.patch.object(dispatch, "pr_comment"):
+            self.assertFalse(dispatch.refresh_pr_branch(9, 102, True))
+
+        self.assertEqual([row["round"] for row in self.events("risk-requeue")], [1, 2])
 
     def test_conflict_on_a_protected_path_escalates_immediately_unless_authorized(self) -> None:
         self.cfg.protected_paths = ["shared.*"]

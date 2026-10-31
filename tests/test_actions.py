@@ -97,6 +97,19 @@ class ActionPathsTest(unittest.TestCase):
             self.apply_dashboard(dashboard)
         self.assertEqual(stale.exception.code, "stale_target")
 
+    def test_successful_human_requeue_records_round_budget_reset(self) -> None:
+        preview = self.via_dashboard("requeue_agent", {"number": 7, "comment": "ACs amended"})
+
+        receipt = self.apply_dashboard(preview)
+
+        self.assertEqual(receipt["status"], "success")
+        [reset] = [
+            row for row in lifecycle.read_events(self.cfg.factory / "events.jsonl")
+            if row.get("event") == "rounds-reset"
+        ]
+        self.assertEqual((reset["ticket"], reset["actor"]), (7, "alice"))
+        self.assertEqual(reset["requeued_at"], reset["at"])
+
     def test_requeue_agent_refuses_upstream_sync_and_wrong_state_on_both_paths(self) -> None:
         self.issue["title"] = dispatch.SYNC_TITLE + "main drifted"
         code, message = self.refusals("requeue_agent", {"number": 7})
