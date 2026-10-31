@@ -290,8 +290,11 @@ def _baseline_matches(baseline: dict | None, version: int, fingerprint: dict) ->
     )
 
 
-def _is_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
-    if not _SHA.fullmatch(ancestor) or not _SHA.fullmatch(descendant):
+def _is_ancestor(root: Path, ancestor: str | None, descendant: str | None) -> bool:
+    if (
+        not isinstance(ancestor, str) or not _SHA.fullmatch(ancestor)
+        or not isinstance(descendant, str) or not _SHA.fullmatch(descendant)
+    ):
         return False
     if ancestor == descendant:
         return True
