@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from factory import lifecycle
+from factory import config, dispatch, lifecycle, manage, storage
 from tests import test_dispatch_lifecycle as dispatch_test
 from tests.test_gate import gate, repo_with_test
 
@@ -27,7 +30,7 @@ class RunnerStorageDispatchTest(unittest.TestCase):
 
     def assert_claim_declined(self, setting: str, value: int) -> None:
         self.set_runner_threshold(setting, value)
-        result = self.cli("dispatch", "--ticket", "7", expected=1)
+        result = self.cli("dispatch", "--ticket", "7")
         self.assertIn("runner_storage_low", result.stdout + result.stderr)
         events = lifecycle.read_events(self.events)
         conditions = [row for row in events if row.get("event") == "runner_storage_low"]
@@ -68,6 +71,46 @@ class RunnerStorageDispatchTest(unittest.TestCase):
         self.set_runner_threshold("min_free_gb", 10**9)
         snapshot = json.loads(self.cli("dashboard", "--json").stdout)
         self.assertEqual(snapshot["host_problems"][0]["code"], "runner_storage_low")
+
+    def test_storage_is_checked_at_each_ticket_claim_boundary(self) -> None:
+        dispatch.configure(config.load(self.repo))
+        issue = {
+            "number": 7, "title": "local change",
+            "body": "Acceptance: make the local change",
+            "labels": [{"name": "ready-for-agent"}], "assignees": [],
+        }
+        low = storage.RunnerStorageLow("claim", storage.status(dispatch.cfg))
+        with mock.patch.object(dispatch, "gh_json", return_value={
+            **issue, "state": "OPEN", "comments": [],
+        }), mock.patch.object(storage, "require", side_effect=low), \
+                mock.patch.object(dispatch, "run", side_effect=AssertionError("claim started")) as run:
+            with self.assertRaises(storage.RunnerStorageLow):
+                dispatch.process_ticket(issue, 1, False, forced=True)
+        run.assert_not_called()
+
+    def test_gate_storage_deferral_keeps_committed_worker_work(self) -> None:
+        dispatch.configure(config.load(self.repo))
+        issue = {
+            "number": 7, "title": "local change",
+            "body": "Acceptance: make the local change",
+            "labels": [{"name": "ready-for-agent"}], "assignees": [],
+        }
+
+        def defer(_n, wt, *_args, **_kwargs):
+            (wt / "preserved.txt").write_text("worker result")
+            self.git("-C", str(wt), "add", "preserved.txt")
+            self.git("-C", str(wt), "commit", "-qm", "worker result")
+            raise storage.RunnerStorageLow("gate", storage.status(dispatch.cfg))
+
+        with mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(dispatch, "worker_round", side_effect=defer):
+            with self.assertRaises(storage.RunnerStorageLow):
+                dispatch.process_ticket(issue, 1, False, forced=True)
+
+        wt = self.repo / ".factory" / "wt-7"
+        self.assertEqual((wt / "preserved.txt").read_text(), "worker result")
+        events = lifecycle.read_events(self.events)
+        self.assertFalse(any(row.get("event") in {"attempt", "escalate"} for row in events))
 
 
 class GateTempCleanupTest(unittest.TestCase):
@@ -118,6 +161,107 @@ class GateTempCleanupTest(unittest.TestCase):
             self.assertEqual([(row.get("event"), row.get("phase")) for row in events],
                              [("runner_storage_low", "gate")])
 
+
+
+class StorageRecoveryTest(unittest.TestCase):
+    def test_statvfs_error_is_reported_as_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(storage.os, "statvfs", side_effect=OSError("I/O error")):
+            value = storage.status(config.Config(Path(directory), "acme/widgets"))
+        self.assertFalse(value["ok"])
+        self.assertTrue(all(row["low"] == ["unavailable"] for row in value["filesystems"]))
+
+    def test_next_preflight_removes_temp_root_abandoned_by_crashed_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            record = base / "abandoned"
+            script = base / "crash.py"
+            script.write_text(
+                "import os\n"
+                "from pathlib import Path\n"
+                "from factory import storage\n"
+                "with storage.temporary_environment('factory-worker-crash-'):\n"
+                f"    Path({str(record)!r}).write_text(os.environ['TMPDIR'])\n"
+                "    os._exit(7)\n"
+            )
+            proc = subprocess.run(
+                [sys.executable, str(script)], check=False,
+                env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
+            )
+            self.assertEqual(proc.returncode, 7)
+            abandoned = Path(record.read_text())
+            self.assertTrue(abandoned.is_dir())
+
+            storage.require(config.Config(base, "acme/widgets", runner_min_free_gb=0,
+                                          runner_min_free_inodes=0), "claim")
+            self.assertFalse(abandoned.exists())
+
+    def test_gate_tempfail_is_a_storage_deferral_not_a_gate_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = config.Config(root, "acme/widgets", runner_min_free_gb=0,
+                                runner_min_free_inodes=0)
+            dispatch.configure(cfg)
+            completed = subprocess.CompletedProcess([], storage.EX_TEMPFAIL, "", "runner_storage_low")
+
+            def run(command, **_kwargs):
+                if command[:3] == ["git", "rev-parse", "HEAD"]:
+                    return subprocess.CompletedProcess(command, 0, "a" * 40 + "\n", "")
+                return completed
+
+            with mock.patch.object(dispatch, "run", side_effect=run), \
+                    self.assertRaises(storage.RunnerStorageLow):
+                dispatch.run_gate(root, 7)
+            self.assertFalse((root / ".factory" / "gate-report-7.md").exists())
+
+
+class ManagerStorageRetryTest(unittest.TestCase):
+    def test_manager_fix_retries_saved_decision_without_rerunning_manager_or_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = config.Config(
+                root, "acme/widgets", manager=["manager"], manager_rounds=1,
+                workers={"default": ["worker"]},
+            )
+            dispatch.configure(cfg)
+            packet = cfg.factory / "escalations" / "7.md"
+            packet.parent.mkdir(parents=True)
+            packet.write_text("gate failed")
+            lifecycle.append(dispatch.EVENTS, {
+                "event": "escalate", "ticket": 7, "at": "2026-01-01T00:00:00Z",
+                "round": 1, "packet": str(packet),
+            })
+            (cfg.factory / "wt-7").mkdir()
+            issue = {
+                "number": 7, "title": "Fix gate", "body": "Acceptance: pass",
+                "labels": [{"name": "ready-for-human"}],
+            }
+            manager_runs = 0
+
+            def run(command, **_kwargs):
+                nonlocal manager_runs
+                if command[0] == "manager":
+                    manager_runs += 1
+                    return subprocess.CompletedProcess(
+                        command, 0,
+                        'DECISION: FIX\n{"worker":"default","guidance":"fix"}\n', "",
+                    )
+                if command[:3] == ["git", "rev-parse", "HEAD"]:
+                    return subprocess.CompletedProcess(command, 0, "b" * 40 + "\n", "")
+                raise AssertionError(command)
+
+            low = storage.RunnerStorageLow("gate", storage.status(cfg))
+            with mock.patch.object(dispatch, "gh_json", return_value=[issue]), \
+                    mock.patch.object(dispatch, "initiative_kind", return_value=False), \
+                    mock.patch.object(manage, "human_activity", return_value=False), \
+                    mock.patch.object(dispatch, "run", side_effect=run), \
+                    mock.patch.object(manage, "apply", side_effect=[low, None]) as apply:
+                manage.escalation_pass()
+                manage.escalation_pass()
+
+            self.assertEqual(manager_runs, 1)
+            self.assertEqual(apply.call_count, 2)
+            self.assertEqual(apply.call_args.kwargs["resume_head"], "b" * 40)
 
 if __name__ == "__main__":
     unittest.main()
