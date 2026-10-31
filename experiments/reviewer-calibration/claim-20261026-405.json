@@ -1,0 +1,21 @@
+{
+  "contract_version": 1,
+  "stage": "review",
+  "change": {
+    "kind": "prompt",
+    "detail": "Issue #405 adds strict Important finding classes and instances, ledger status acknowledgements, and round-two diff-only review instructions; candidate commit f9e7340f741529502d2488dc53171cfd2536feac on current-main baseline 4f3fc970962e97eeb137c03866e196ca312e6e0e."
+  },
+  "baseline": "reviewer@4f3fc97",
+  "candidate": "reviewer@f9e7340",
+  "evidence": "experiments/reviewer-calibration/runs/promotion-20261026-405/adjudication.json scored by score.py (tools-enabled run_tools.py --all, 2 repeats, splits.json v2)",
+  "splits": {
+    "train": {
+      "baseline": [0.8333333333333334, 0.8333333333333334],
+      "candidate": [0.8333333333333334, 0.6666666666666667]
+    },
+    "lockbox": {
+      "baseline": [0.4, 0.4],
+      "candidate": [0.6, 0.19999999999999996]
+    }
+  }
+}

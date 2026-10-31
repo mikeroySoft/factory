@@ -91,7 +91,7 @@ KNOWN_KEYS = {
                  "review_rounds", "cost_pattern", "signoff"),
     "workers": None,
     "worker_wrap": ("command",),
-    "review": ("command", "second_command", "json_mode", "policy"),
+    "review": ("command", "second_command", "json_mode", "policy", "verify", "follow_up"),
     "manager": ("model", "command", "rounds", "review", "stale_days", "max_active_cap", "budget_min_cap"),
     "learn": ("evaluate", "max_tickets", "max_tokens", "budget_min"),
     "release": ("auto", "version_file", "min_tickets", "bar_min_tickets",
@@ -201,6 +201,8 @@ class Config:
     reviewer_json_mode: bool | None = None
     review_policy: str = "REVIEW.md"
     second_reviewer: list[str] = field(default_factory=lambda: list(DEFAULT_SECOND_REVIEWER))
+    review_verify: bool = False
+    review_follow_up: bool = False
     manager: list[str] | None = None
     manager_rounds: int = 1
     manager_review: str = "escalated"
@@ -749,6 +751,11 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     ):
         raise ConfigError("review.policy must be a nonempty repository-relative path")
     cfg.review_policy = policy
+    for key in ("verify", "follow_up"):
+        value = review.get(key, getattr(cfg, f"review_{key}"))
+        if type(value) is not bool:
+            raise ConfigError(f"review.{key} must be true or false")
+        setattr(cfg, f"review_{key}", value)
     cfg.manager, cfg.manager_model = manager_settings(manager)
     cfg.manager_rounds = int(manager.get("rounds", cfg.manager_rounds))
     cfg.manager_review = manager.get("review", cfg.manager_review)

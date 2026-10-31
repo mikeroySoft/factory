@@ -374,19 +374,15 @@ def _pr_checks(wt: Path) -> bool:
     return any(isinstance(check, dict) and check.get("when") == "pr" for check in checks)
 
 
-def _finding_count(findings: str) -> int:
-    required_level = 0
-    count = 0
-    for line in findings.splitlines():
-        heading = re.match(r"^(#{1,6})\s+(.+?)\s*$", line)
-        if required_level:
-            if heading and len(heading.group(1)) <= required_level:
-                break
-            if re.match(r"^(?:[-*+]|\d+[.)])\s+", line):
-                count += 1
-        elif heading and heading.group(2).strip("*_ :").casefold() == "required fixes":
-            required_level = len(heading.group(1))
-    return count
+def _finding_count(counts: dict[str, int] | None) -> int:
+    """Important findings only; invalid review evidence still fails closed as one."""
+    if (
+        isinstance(counts, dict)
+        and type(counts.get("important")) is int
+        and counts["important"] >= 0
+    ):
+        return counts["important"]
+    return 1
 
 
 def _candidate_base(wt: Path, state: Path, candidate: Candidate | None) -> str:
@@ -549,9 +545,7 @@ def replay_ticket(
                 approved = True
                 break
             counts = result.get("counts")
-            revise_findings += counts["important"] if counts is not None else max(
-                1, _finding_count(result["findings"]),
-            )
+            revise_findings += _finding_count(counts)
             if bounce == cfg.review_rounds:
                 break
             promptfile.write_text(_replay_prompt(

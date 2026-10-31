@@ -1,0 +1,23 @@
+Verdict: REVISE. In production, the thread query asks GitHub for a field that does not exist, so inline review threads can never be collected. Everything else I checked holds up.
+
+**The blocking defect**
+- `THREAD_QUERY` (`review.diff:662`) requests `diffSide` on each comment (`PullRequestReviewComment`). In GitHub's public GraphQL schema (octokit `schema.graphql`), `diffSide` exists only on `PullRequestReviewThread`. The comment type has `line`, `originalLine`, `path`, `commit` and `originalCommit`, but no `diffSide`.
+- On a real host, GitHub rejects the query. `github()` then raises, and `request()` records `source_unavailable`. Every real collection reports `threads` as `unavailable` with zero `review_comment` items.
+- This fails exit-gate criterion 1 (an unresolved inline thread/comment must coexist with the other evidence) and the scope rule "Query real reviews and real review threads/comments… with native IDs, links, commit identity, and resolved/outdated state".
+- The tests miss it because the `Provider` stand-in returns `diffSide` on the comment (`review.diff:1422`).
+- Fix: move `diffSide` to the thread node and read `thread.get('diffSide')` at `review.diff:936`.
+
+**Checks that held**
+- The other queried GraphQL fields exist in the schema: `PullRequestReview` id/url/body/state/updatedAt/author/commit, and `PullRequest` headRefOid/isDraft/closingIssuesReferences.
+- The lifecycle event fields used for Factory-review provenance match what `dispatch.review` emits (`returncode`, `parsed`, `head`, `actual_head`, `verdict`, `outcome`).
+- Source bodies render through `pre()` and `h()`, which create text nodes, so markup is shown literally.
+- The `--runtime-json` path is untouched. The existing audit in `test_runtime.py` still covers it having no network or mutation calls.
+
+**Plan drift**
+- Files: every changed file is named in the issue's Touches list. `tests/test_feedback.py` was allowed as optional.
+- Missing proof: the gate report only covers `unittest`. There is no record of the exit-gate 5 smoke run (full CLI `--json`, live browser check of the Review drawer and Inbox, read-only `sources_for` run). There is also no exit-gate 7 handoff example. Neither is a defect by itself, but the browser check is the only proof that `<img onerror=…>` renders literally.
+
+```json
+{"verdict":"REVISE","findings":[{"severity":"important","pass":"bug","path":"factory/feedback.py","line":662,"summary":"THREAD_QUERY requests `diffSide` on PullRequestReviewComment nodes, but in GitHub's public GraphQL schema that field exists only on PullRequestReviewThread. On a real host the query fails validation, gh exits non-zero, and request() records `source_unavailable`, so every production collection reports threads `unavailable` with no review_comment items. This breaks exit-gate criterion 1 (simultaneous unresolved inline thread/comment evidence) and the scope rule to query real review threads/comments. The stand-in Provider adds `diffSide` to comments (review.diff:1422), so the passing gate does not catch it. Move `diffSide` to the thread node and read thread.get('diffSide') at review.diff:936."},{"severity":"nit","pass":"spec","path":"tests/test_feedback.py","line":1420,"summary":"Plan drift: the gate report has no exit-gate 5 smoke evidence (full CLI `dashboard --json`, live-browser Review drawer/Inbox check, read-only sources_for run) and no exit-gate 7 handoff example. Escaped rendering of `<img onerror=...>` is checked only in collector data, never in a rendered browser view."},{"severity":"nit","pass":"bug","path":"factory/feedback.py","line":868,"summary":"When a conflicting evidence ID removes the earlier item, counts[source] is not decremented. Each conflict wastes one ITEM_LIMIT slot, so the source can report `item_limit` truncation early."},{"severity":"nit","pass":"spec","path":"factory/briefing.py","line":261,"summary":"The feedback coverage notice is appended last to the Evidence coverage source, which is capped by the remaining context budget (as little as about 1000 bytes after feedback items). Per-source coverage status/reason can be cut and replaced by 'Coverage detail omitted', while the item sources themselves carry no coverage. The omission is flagged, but the coverage facts are lost."},{"severity":"nit","pass":"bug","path":"factory/briefing.py","line":194,"summary":"sources_for checks that `items` is a list but iterates `feedback['errors'] or []` without a type check. A malformed schema-1 snapshot with a non-iterable `errors` raises TypeError instead of being reported as an incomplete/unsupported snapshot."}]}
+```
+VERDICT: REVISE
