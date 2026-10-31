@@ -99,6 +99,21 @@ class RuntimeCliTest(unittest.TestCase):
         self.assertFalse(data["history"]["complete"])
         self.assertFalse(self.journal.parent.exists())
 
+    def test_execution_activity_retains_only_recorded_enter_identity(self):
+        worker = lifecycle.Execution(self.journal, "worker", ticket=7)
+        entered = worker.emit(
+            "enter", worker="prime", worker_version="1.2", harness="omp",
+            agent="builder", model="model-a", command=["not", "projected"],
+        )
+        worker.emit("exit", worker="later")
+        data = self.invoke()
+        row = next(row for row in data["executions"] if row["execution_id"] == worker.execution_id)
+        self.assertEqual(row["activity"], {
+            "worker": "prime", "worker_version": "1.2", "harness": "omp",
+            "agent": "builder", "model": "model-a",
+        })
+        self.assertEqual(row["entered_at"], entered["at"])
+
 
 
     def test_concurrency_wait_retry_ownership_and_source_freshness(self):
