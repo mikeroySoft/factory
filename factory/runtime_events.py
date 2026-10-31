@@ -46,6 +46,7 @@ REASONS = {
     "recorded execution ended according to process and lock evidence",
 }
 PROCESS_FIELDS = ("pid", "boot_id", "start_ticks", "pid_namespace", "uid", "state", "ppid")
+ACTIVITY_FIELDS = ("worker", "worker_version", "agent", "harness", "model")
 # (source, code) pairs only a defect in the factory's own journal writer produces; `factory
 # watch` files these. Every other code is coverage (a reader bound, a clipped or rotated
 # window, a host condition), never a filing, and a new code stays coverage until it is added
@@ -225,6 +226,8 @@ def _sanitize(row: dict) -> dict | None:
              "outcome": row["outcome"] if row["outcome"] in OUTCOMES else None,
              "reason": _reason(row["reason"]), "process": _process(row["process"]),
              "locks": [_lock(lock) for lock in row["locks"]]}
+    if kind == "enter":
+        event.update({key: row[key] for key in ACTIVITY_FIELDS if _text(row.get(key))})
     for key in ("handoff_id", "wait_event_id", "acquisition_id"):
         if key in row:
             if row[key] is not None and not _text(row[key]):
@@ -642,7 +645,7 @@ def _executions(retained: list, history: dict, gaps: list, observation: _Observa
                         pending = None
         activity = {
             field: entry[field]
-            for field in ("worker", "worker_version", "agent", "harness", "model")
+            for field in ACTIVITY_FIELDS
             if entry is not None and isinstance(entry.get(field), str) and entry[field]
         }
         result.append({**{field: latest[field] for field in IDENTITY}, "state": state,

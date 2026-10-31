@@ -440,3 +440,80 @@ assert.match(settings.markup('acme/widgets'), /data-preference="livePollSeconds"
             capture_output=True, text=True, timeout=10, check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_live_pipeline_fallback_does_not_claim_a_running_agent(self) -> None:
+        html = self.live_render({
+            "schema_version": 1,
+            "executions": [{
+                "execution_id": "pipeline",
+                "lane": "worker",
+                "ticket": 7,
+                "title": "Between agents",
+                "agent": "No running agent",
+                "harness": "factory pipeline",
+                "activity": "pipeline",
+                "entered_at": "2026-10-30T11:00:00Z",
+                "observed_at": "2026-10-30T12:00:00Z",
+            }],
+        })
+        self.assertIn('data-status="pipeline"', html)
+        self.assertIn("Pipeline activity", html)
+        self.assertIn("No running agent", html)
+        self.assertNotIn("Running", html)
+
+    def test_live_refresh_restores_scroll_and_pinned_edge_by_execution_identity(self) -> None:
+        script = """
+const fs = require('fs'), assert = require('assert/strict');
+global.window = {};
+global.document = new EventTarget(); document.visibilityState = 'visible';
+const flush = () => new Promise(setImmediate);
+let refresh;
+global.setTimeout = callback => { refresh = callback; return 1; };
+global.clearTimeout = () => {};
+global.setInterval = () => 2;
+global.clearInterval = () => {};
+let board, html;
+const listeners = {};
+const host = {
+  isConnected:true,
+  get innerHTML(){return html;},
+  set innerHTML(value){
+    html=value;
+    board={scrollLeft:0,scrollTop:0,classList:{toggle(){}}};
+  },
+  querySelectorAll(){return [];},
+  querySelector(selector){return selector === '[data-trace-board]' ? board : null;},
+  addEventListener(type, listener){listeners[type]=listener;},
+};
+const click = values => listeners.click({target:{closest:selector => values[selector] || null}});
+let changed = false;
+global.WorkspaceAPI = {json:async url => {
+  if (String(url).startsWith('/api/trace')) return {nodes:[],edges:[],loops:[]};
+  const rows = [
+    {execution_id:'triage',lane:'triage',ticket:7},
+    {execution_id:'worker',lane:'worker',ticket:7},
+  ];
+  if(changed) rows.unshift({execution_id:'earlier-edge',lane:'gate',ticket:6},
+    {execution_id:'other-edge',lane:'reviewer',ticket:6});
+  return {schema_version:1,executions:rows.map(row=>({
+    ...row,observed_at:new Date().toISOString(),entered_at:new Date().toISOString(),
+  }))};
+}};
+eval(fs.readFileSync(process.argv[1], 'utf8'));
+(async () => {
+  window.WorkspaceTrace.mount(host);
+  await flush();
+  click({'[data-trace-mode]':{dataset:{traceMode:'live'}}}); await flush();
+  click({'[data-trace-edge]':{dataset:{traceEdge:'0'}}});
+  board.scrollLeft=180; board.scrollTop=45;
+  changed=true; refresh(); await flush();
+  assert.deepEqual([board.scrollLeft,board.scrollTop],[180,45]);
+  assert.deepEqual(host._traceSelection(),{kind:'edge',from:'triage',to:'worker'});
+  window.WorkspaceTrace.dispose(host);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+        result = subprocess.run(
+            ["node", "-e", script, str(ASSET)],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
