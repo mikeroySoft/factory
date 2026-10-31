@@ -1077,9 +1077,16 @@ leaves the ticket out of `ready-for-human`. The pass exits successfully so the
 service monitor does not file a per-ticket or runtime bug. `factory doctor`
 reports the same live check, and the dashboard lists it under Host problems.
 Worker and gate subprocesses receive isolated temporary directories; normal
-exits remove them immediately and the next preflight reclaims directories whose
-recorded owner crashed. Escalated ticket worktrees remain available for
-diagnosis.
+exits remove them immediately. After a crash, the next preflight reclaims roots
+only after checking that the recorded owner and consuming children have stopped;
+uncertain liveness retains the root. Escalated ticket worktrees and unpublished
+worker commits remain available, including after a later launch failure.
+Refreshes persist retry intent before withdrawing approval, so a storage deferral
+keeps the candidate and resumes automatically on a later merge pass, still
+requiring the normal gate and independent review. If storage exhaustion prevents
+journaling the host condition, stderr reports `runner_storage_low` instead;
+gate exit 75 and successful dispatcher deferral are unchanged. Space or quota
+exhaustion while creating a run's temp root also defers work.
 
 ```toml
 [repo]
@@ -1736,6 +1743,7 @@ not indefinitely active stages.
 | `ticket_lock_contended` | Ticket preflight found the lock held or its nonblocking acquisition lost the race; retry next pass. |
 | `worker_unavailable` | A frontier claim found the ticket's worker executable (`executable` in details) missing from the dispatcher's PATH (e.g. mid-upgrade); the ticket is left unclaimed and retried next pass instead of failing after assignment. `dispatch --ticket` still launches and fails loudly. |
 | `claim_failed` | The claim command failed before assignment; the ticket is left unclaimed and retried next pass. |
+| `runner_storage_low` | Runner free bytes/inodes fell below `[runner]` thresholds, or run temp setup exhausted space/quota; retry next pass without charging a ticket/manager round or failing its gate. Deferred refreshes retain the candidate without approval until normal gate and independent review succeed. |
 | `merge_lock_contended` | Nonblocking landing lock miss; skip this pass, retry next pass, never convert to a blocking wait. |
 | `exclusive_resource` | Gate observed its exclusive lock held before the unchanged blocking acquisition. |
 | `ci_pending` | Existing `pr_checks` result contained pending checks; `pr` integer. No extra CI query or polling loop. |

@@ -650,12 +650,12 @@ def main(argv: list[str]) -> int:
     configure(config.load())
     try:
         storage.require(cfg, "gate")
+        with storage.temporary_environment("factory-gate-", cfg, "gate"), \
+                lifecycle.scope(cfg.factory / "events.jsonl", "gate") as execution:
+            return execute(args, execution)
     except storage.RunnerStorageLow as exc:
         print(exc, file=sys.stderr)
         return storage.EX_TEMPFAIL
-    with storage.temporary_environment("factory-gate-"), \
-            lifecycle.scope(cfg.factory / "events.jsonl", "gate") as execution:
-        return execute(args, execution)
 
 
 def toolchain() -> dict[str, str]:

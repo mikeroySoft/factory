@@ -307,6 +307,8 @@ class StorageRevisionDispatchTest(unittest.TestCase):
     setUp = dispatch_test.LocalCLI.setUp
     git = dispatch_test.LocalCLI.git
     write_config = dispatch_test.LocalCLI.write_config
+    commit_config = dispatch_test.LocalCLI.commit_config
+    cli = dispatch_test.LocalCLI.cli
 
     def test_later_launch_failure_preserves_unpublished_commit(self) -> None:
         dispatch.configure(config.load(self.repo))
@@ -370,6 +372,63 @@ class StorageRevisionDispatchTest(unittest.TestCase):
         events = lifecycle.read_events(self.events)
         self.assertFalse(any(row.get("event") in {"claimed", "attempt", "escalate"} for row in events))
 
+    def test_cli_low_storage_recovers_without_a_human_gate(self) -> None:
+        self.write_config(extra="[runner]\nmin_free_gb = 1000000000\n")
+        self.commit_config()
+        low = self.cli("dispatch", "--ticket", "7")
+        self.assertIn("runner_storage_low", low.stdout + low.stderr)
+        events = lifecycle.read_events(self.events)
+        self.assertFalse(any(row.get("event") in {"claimed", "attempt", "escalate"} for row in events))
+        self.git("checkout", "main")  # The real dispatcher pins this fixture root detached.
+        self.write_config(extra="[runner]\nmin_free_gb = 0\nmin_free_inodes = 0\n")
+        self.commit_config()
+        recovered = self.cli("dispatch", "--ticket", "7")
+        self.assertIn("done (approved at", recovered.stdout)
+        events = lifecycle.read_events(self.events)
+        self.assertTrue(any(row.get("event") == "approved" for row in events))
+        self.assertFalse(any(row.get("event") == "escalate" for row in events))
+
+    def test_retry_and_bounce_temp_exhaustion_defer_without_another_attempt(self) -> None:
+        import errno
+
+        dispatch.configure(config.load(self.repo))
+        issue = {
+            "number": 7, "title": "local change", "body": "Make the change.",
+            "labels": [{"name": "ready-for-agent"}], "assignees": [],
+        }
+        original_round = dispatch.worker_round
+        for phase in ("retry", "bounce"):
+            with self.subTest(phase=phase):
+                calls = 0
+
+                def worker(n, wt, labels, title, extra, attempt, deadline, _phase=phase, **kwargs):
+                    nonlocal calls
+                    calls += 1
+                    if calls == 1:
+                        (wt / "saved.txt").write_text(f"worker result for {_phase}")
+                        self.git("-C", str(wt), "add", "saved.txt")
+                        self.git("-C", str(wt), "commit", "-qm", "worker result")
+                        head = self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip()
+                        return _phase == "bounce", "first gate result", None, head
+                    with mock.patch.object(storage.tempfile, "mkdtemp",
+                                           side_effect=OSError(errno.ENOSPC, "full")):
+                        return original_round(n, wt, labels, title, extra, attempt, deadline, **kwargs)
+
+                with mock.patch.dict(os.environ, self.env), \
+                        mock.patch.object(dispatch, "worker_round", side_effect=worker), \
+                        mock.patch.object(dispatch, "push_and_pr", return_value=True), \
+                        mock.patch.object(dispatch, "record_risk"), \
+                        mock.patch.object(dispatch, "pr_gate_and_review", return_value=("REVISE", "fix", False)), \
+                        mock.patch.object(dispatch, "pr_comment"), \
+                        self.assertRaises(storage.RunnerStorageLow):
+                    dispatch.process_ticket(issue, 1, False, forced=True)
+                self.assertEqual(calls, 2)
+                self.assertTrue((self.repo / ".factory" / "wt-7" / "saved.txt").exists())
+                events = lifecycle.read_events(self.events)
+                self.assertFalse(any(row.get("event") in {"attempt", "escalate"} for row in events))
+                self.assertTrue(any(row.get("event") == "runner_storage_low" and row.get("phase") == "worker"
+                                    for row in events))
+
 
 class StorageRevisionRefreshTest(unittest.TestCase):
     def test_deferred_refresh_resumes_gate_and_independent_review_next_merge_pass(self) -> None:
@@ -427,6 +486,7 @@ class StorageRevisionRefreshTest(unittest.TestCase):
 class StorageRevisionFailureTest(unittest.TestCase):
     def test_gate_retains_exit_75_when_low_storage_journal_is_full(self) -> None:
         import errno
+
         from factory import gate as gate_module
 
         with tempfile.TemporaryDirectory() as directory:
@@ -452,9 +512,9 @@ class StorageRevisionFailureTest(unittest.TestCase):
                         mock.patch.object(Path, "write_text", side_effect=OSError(error, "full"))
                     )
                     with mock.patch.object(storage.tempfile, "tempdir", str(base)), operation, \
-                            self.assertRaises(storage.RunnerStorageLow):
-                        with storage.temporary_environment("factory-worker-retry-"):
-                            self.fail("worker launched without a usable temp root")
+                            self.assertRaises(storage.RunnerStorageLow), \
+                            storage.temporary_environment("factory-worker-retry-"):
+                        self.fail("worker launched without a usable temp root")
                     self.assertEqual(list(base.iterdir()), [])
 
     def test_dead_owner_does_not_reclaim_a_surviving_child_temp_root(self) -> None:
@@ -503,3 +563,45 @@ class StorageRevisionFailureTest(unittest.TestCase):
             self.assertEqual(lifecycle._process_state(child_identity), "dead")
             storage.cleanup_abandoned()
             self.assertFalse(abandoned.exists())
+
+    def test_uncertain_consumer_identity_keeps_the_abandoned_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            abandoned = root / "factory-worker-uncertain"
+            abandoned.mkdir()
+            owner = {**lifecycle._identity(os.getpid()), "execution_id": "run",
+                     "journal": str(root / "events.jsonl")}
+            (abandoned / storage.OWNER_FILE).write_text(json.dumps(owner))
+            lifecycle.append(root / "events.jsonl", {
+                "execution_id": "run", "kind": "child_start",
+                "child_process": {"pid": 42},
+            })
+            with mock.patch.object(storage.tempfile, "gettempdir", return_value=str(root)), \
+                    mock.patch.object(lifecycle, "_process_state", side_effect=["dead", "unknown"]):
+                storage.cleanup_abandoned()
+            self.assertTrue(abandoned.exists())
+
+    def test_unrelated_journal_errors_are_not_silently_deferred(self) -> None:
+        import errno
+
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config.Config(Path(directory), "acme/widgets", runner_min_free_gb=10**9)
+            with mock.patch.object(lifecycle, "append", side_effect=OSError(errno.EIO, "I/O error")), \
+                    self.assertRaises(OSError) as error:
+                storage.require(cfg, "claim")
+            self.assertEqual(error.exception.errno, errno.EIO)
+
+    def test_gate_temp_setup_exhaustion_returns_75_and_records_the_host_condition(self) -> None:
+        import errno
+
+        from factory import gate as gate_module
+
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config.Config(Path(directory), "acme/widgets", runner_min_free_gb=0,
+                                runner_min_free_inodes=0)
+            with mock.patch.object(config, "load", return_value=cfg), \
+                    mock.patch.object(storage.tempfile, "mkdtemp", side_effect=OSError(errno.EDQUOT, "full")), \
+                    mock.patch("sys.stderr"):
+                self.assertEqual(gate_module.main([]), storage.EX_TEMPFAIL)
+            [row] = lifecycle.read_events(cfg.factory / "events.jsonl")
+            self.assertEqual((row["event"], row["phase"]), ("runner_storage_low", "gate"))

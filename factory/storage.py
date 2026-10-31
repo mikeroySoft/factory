@@ -1,9 +1,11 @@
 """Runner filesystem preflight and run-scoped temporary directories."""
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
+import sys
 import tempfile
 import time
 from contextlib import contextmanager
@@ -17,7 +19,7 @@ OWNER_FILE = ".factory-owner.json"
 
 
 def cleanup_abandoned() -> None:
-    """Remove run roots whose recorded owning process is no longer alive."""
+    """Reclaim only roots whose owner and visible consumers have all stopped."""
     root = Path(tempfile.gettempdir())
     for prefix in RUN_PREFIXES:
         try:
@@ -29,8 +31,62 @@ def cleanup_abandoned() -> None:
                 owner = json.loads((directory / OWNER_FILE).read_text())
             except (OSError, ValueError, TypeError):
                 continue
-            if lifecycle._process_state(owner) == "dead":
+            if lifecycle._process_state(owner) == "dead" and _consumers_stopped(directory, owner):
                 shutil.rmtree(directory, ignore_errors=True)
+
+
+def _consumers_stopped(directory: Path, owner: dict) -> bool:
+    if owner.get("boot_id") != lifecycle._boot_id():
+        return True  # A prior boot cannot have surviving consumers.
+    if type(owner.get("uid")) is not int:
+        return False
+    execution_id = owner.get("execution_id")
+    sessions = set()
+    if execution_id:
+        try:
+            rows = lifecycle.read_events(Path(owner["journal"]))
+            if not any(row.get("execution_id") == execution_id for row in rows):
+                return False
+            ids = {execution_id}
+            for row in rows:
+                if row.get("parent_execution_id") in ids:
+                    ids.add(row.get("execution_id"))
+                if row.get("execution_id") in ids and row.get("kind") == "child_start":
+                    child = row.get("child_process")
+                    if lifecycle._process_state(child) != "dead":
+                        return False
+                    sessions.add(child["pid"])
+        except (OSError, KeyError, TypeError):
+            return False
+    # Include the Popen -> child_start race, reparented grandchildren, and checks
+    # that intentionally do not inherit lifecycle context. Never infer absence
+    # from an unreadable /proc entry.
+    try:
+        for process in Path("/proc").iterdir():
+            if not process.name.isdecimal():
+                continue
+            try:
+                if process.stat().st_uid != owner.get("uid"):
+                    continue
+                text = (process / "stat").read_text()
+                fields = text[text.rfind(")") + 2:].split()
+                # Older processes cannot have inherited this later run's TMPDIR.
+                # In particular, unrelated sandboxed processes may hide environ.
+                if fields[0] in {"Z", "X"} or int(fields[19]) < owner["start_ticks"]:
+                    continue
+                if int(fields[2]) in sessions or int(fields[3]) in sessions:
+                    return False  # A check/worker's session can outlive its leader.
+                environment = (process / "environ").read_bytes().split(b"\0")
+                if any(key + b"=" + os.fsencode(directory) in environment
+                       for key in (b"TMPDIR", b"TMP", b"TEMP")):
+                    return False
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError, IndexError):
+                return False
+    except OSError:
+        return False
+    return True
 
 
 
@@ -117,13 +173,23 @@ def detail(value: dict) -> str:
 
 
 def record_low(cfg, phase: str, value: dict) -> None:
-    lifecycle.append(cfg.factory / "events.jsonl", {
+    execution = lifecycle.current()
+    if execution is not None:
+        execution.defer_storage()
+    row = {
         "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "event": "runner_storage_low",
         "phase": phase,
         "thresholds": value["thresholds"],
         "filesystems": value["filesystems"],
-    })
+    }
+    try:
+        lifecycle.append(cfg.factory / "events.jsonl", row)
+    except OSError as exc:
+        if exc.errno not in {errno.ENOSPC, errno.EDQUOT}:
+            raise
+        print(f"runner_storage_low before {phase}: journal unavailable (storage exhausted)",
+              file=sys.stderr)
 
 
 def require(cfg, phase: str) -> dict:
@@ -136,10 +202,36 @@ def require(cfg, phase: str) -> dict:
 
 
 @contextmanager
-def temporary_environment(prefix: str):
+def temporary_environment(prefix: str, cfg=None, phase: str = "run"):
     """Give one run an isolated temp root recoverable after an owner crash."""
-    with tempfile.TemporaryDirectory(prefix=prefix) as directory:
-        Path(directory, OWNER_FILE).write_text(json.dumps(lifecycle._identity(os.getpid())))
+    directory = None
+    try:
+        directory = tempfile.TemporaryDirectory(prefix=prefix)
+        owner = lifecycle._identity(os.getpid())
+        execution = lifecycle.current()
+        if execution is not None:
+            owner.update(execution_id=execution.execution_id, journal=str(execution.path))
+        Path(directory.name, OWNER_FILE).write_text(json.dumps(owner))
+    except OSError as exc:
+        if directory is not None:
+            directory.cleanup()
+        if exc.errno not in {errno.ENOSPC, errno.EDQUOT}:
+            raise
+        value = {
+            "ok": False, "thresholds": {"free_bytes": 0, "free_inodes": 0},
+            "filesystems": [{
+                "paths": [tempfile.gettempdir()], "purposes": ["temp"],
+                "low": ["space" if exc.errno == errno.ENOSPC else "quota"],
+                "error": f"{type(exc).__name__}: {exc}",
+            }],
+        }
+        if cfg is not None:
+            record_low(cfg, phase, value)
+        elif lifecycle.current() is not None:
+            lifecycle.current().defer_storage()
+        raise RunnerStorageLow(phase, value) from exc
+    with directory:
+        directory = directory.name
         environment = dict.fromkeys(("TMPDIR", "TMP", "TEMP"), directory)
         previous = {key: os.environ.get(key) for key in environment}
         previous_tempdir = tempfile.tempdir

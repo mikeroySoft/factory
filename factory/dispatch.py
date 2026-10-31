@@ -1532,13 +1532,6 @@ def ensure_worktree(n: int) -> Path:
     return wt
 
 
-def discard_worktree(n: int, wt: Path) -> None:
-    """Remove a non-escalated attempt; escalations never call this path."""
-    if wt.is_dir():
-        run(["git", "worktree", "remove", "--force", str(wt)], cwd=ROOT, check=False)
-    run(["git", "branch", "-D", f"agent/{n}"], cwd=ROOT, check=False)
-
-
 def commit_leftovers(wt: Path, n: int, title: str) -> None:
     run(
         [
@@ -1608,7 +1601,7 @@ def run_gate(
         cmd += ["--tier", tier]
     if blocking_mutation:
         cmd.append("--blocking-mutation")
-    with storage.temporary_environment(f"factory-gate-{n}-"):
+    with storage.temporary_environment(f"factory-gate-{n}-", cfg, "gate"):
         proc = run(cmd, cwd=wt, check=False, timeout=timeout)
     if proc.returncode == storage.EX_TEMPFAIL:
         raise storage.RunnerStorageLow("gate", storage.status(cfg))
@@ -3094,13 +3087,50 @@ def refresh_requeue_context(n: int) -> str:
     )
 
 
+def pending_refresh(n: int, pr: int) -> dict | None:
+    """A refresh intent survives host deferrals, but never a ticket decision."""
+    pending = None
+    for event in lifecycle.read_events(EVENTS):
+        if event.get("ticket") != n:
+            continue
+        if event.get("event") == "refresh-pending" and event.get("pr") == pr:
+            pending = event
+        elif event.get("event") in {
+            "approved", "escalate", "conflict-requeue", "gate-requeue", "risk-requeue", "merged",
+        }:
+            pending = None
+    return pending
+
+
 def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
+    try:
+        return _refresh_pr_branch(n, pr, carries_upstream)
+    except storage.RunnerStorageLow:
+        execution = lifecycle.current()
+        if execution is not None:
+            execution.defer_storage()
+            execution.wait("runner_storage_low", mode="retry_next_pass", pr=pr)
+        raise
+
+
+def _refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     """Refresh, gate, push, and independently review the resulting immutable head."""
     target = gh_json(["pr", "view", str(pr), "--repo", REPO, "--json", "baseRefName"])
     if target.get("baseRefName") != cfg.main:
         log(f"PR #{pr}: targets {target.get('baseRefName')!r}, not {cfg.main!r}; not refreshing")
         return False
+    storage.require(cfg, "refresh")
     wt = ensure_worktree(n)
+    pending = pending_refresh(n, pr)
+    if pending is not None:
+        carries_upstream = pending["carries_upstream"]
+    else:
+        # Persist retry eligibility before withdrawing approval. A crash or full
+        # journal after the rebase must not strand an assigned, unapproved PR.
+        run(["git", "fetch", "origin"], cwd=wt)
+        remote_head = run(["git", "rev-parse", f"origin/agent/{n}"], cwd=wt).stdout.strip()
+        record("refresh-pending", ticket=n, pr=pr, remote_head=remote_head,
+               carries_upstream=carries_upstream)
 
     def restore_pr_head(refreshed_head: str) -> str:
         """Keep the unpushed candidate as evidence before restoring the live PR head."""
@@ -3158,7 +3188,9 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     run(["git", "fetch", "origin"], cwd=wt)
     local_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     remote_head = run(["git", "rev-parse", f"origin/agent/{n}"], cwd=wt).stdout.strip()
-    if local_head != remote_head:
+    if local_head != remote_head and (
+        pending is None or remote_head != pending["remote_head"]
+    ):
         withdraw(f"kept worktree head {local_head} differs from remote head {remote_head}", "refresh_head")
         return False
     verb, cmd = (
@@ -3481,7 +3513,8 @@ def merge_pass_locked(dry_run: bool) -> None:
         if pr.get("baseRefName") != cfg.main:
             log(f"PR #{pr['number']}: targets {pr.get('baseRefName')!r}, not {cfg.main!r}; not merging")
             continue
-        if FACTORY_APPROVED not in {label["name"] for label in pr["labels"]}:
+        if (FACTORY_APPROVED not in {label["name"] for label in pr["labels"]}
+                and pending_refresh(int(m.group(1)), pr["number"]) is None):
             continue
         if pr["reviewDecision"] == "CHANGES_REQUESTED":
             log(f"PR #{pr['number']}: human requested changes; not merging")
@@ -3554,12 +3587,13 @@ def merge_pass_locked(dry_run: bool) -> None:
             fresh = gh_json(["pr", "view", str(pr_num), "--repo", REPO, "--json", fields])
             labels = {label["name"] for label in fresh.get("labels", [])}
             head = fresh.get("headRefOid")
+            refresh_pending = pending_refresh(n, pr_num)
             if (
                 fresh.get("state") != "OPEN"
                 or fresh.get("headRefName") != f"agent/{n}"
                 or fresh.get("baseRefName") != cfg.main
                 or fresh.get("isDraft")
-                or FACTORY_APPROVED not in labels
+                or (FACTORY_APPROVED not in labels and refresh_pending is None)
                 or fresh.get("reviewDecision") == "CHANGES_REQUESTED"
             ):
                 log(f"PR #{pr_num}: state changed during eligibility check; not merging")
@@ -3579,7 +3613,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 f"--profile {shlex.quote(cfg.eval_profile)}"
             )
             if dry_run:
-                if behind:
+                if behind or refresh_pending is not None:
                     log(f"PR #{pr_num}: would refresh (behind main)")
                 elif (
                     cfg.eval_schedule
@@ -3632,7 +3666,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                     ).returncode
                     != 0
                 )
-            if behind:
+            if behind or refresh_pending is not None:
                 record_merge_decision(
                     n, pr_num, "refresh branch",
                     f"approval head {head} is stale because the branch is behind {cfg.main}",
@@ -3840,7 +3874,7 @@ def worker_round(
         run_options["env_overrides"] = environment
     if worker_version:
         run_options.update(worker=worker, worker_version=worker_version)
-    with storage.temporary_environment(f"factory-worker-{n}-"):
+    with storage.temporary_environment(f"factory-worker-{n}-", cfg, "worker"):
         code, fired = run_worker(
             argv, wt, logfile, wt / ".factory" / f"handoff-{n}.md", deadline, **run_options,
         )
@@ -4320,6 +4354,7 @@ def process_ticket(
         except LeaseRefused as exc:
             escalate(n, str(exc), None, code="lease_refused")
         except storage.RunnerStorageLow:
+            execution.defer_storage()
             execution.wait("runner_storage_low", mode="retry_next_pass")
             if claimed:
                 run(["gh", "issue", "edit", str(n), "--repo", REPO,
@@ -4331,7 +4366,6 @@ def process_ticket(
             # Covers every worker launch of this ticket, first attempt and review bounces alike.
             execution.outcome, execution.reason = "mechanism_failure", f"{type(exc).__name__}: {exc}"
             log(f"#{n}: worker launch failed ({exc}); unclaimed, fix PATH or [workers] (`factory doctor`)")
-            discard_worktree(n, wt)
             run(["gh", "issue", "edit", str(n), "--repo", REPO, "--remove-assignee", "@me"], check=False)
             return False
         except Exception as exc:

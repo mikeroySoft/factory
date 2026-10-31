@@ -7,11 +7,13 @@ process identities and existing lock evidence, never timestamps or artifact age.
 from __future__ import annotations
 
 import contextvars
+import errno
 import fcntl
 import gzip
 import json
 import os
 import re
+import sys
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -389,6 +391,15 @@ def current():
     return _CURRENT.get()
 
 
+def _storage_fallback(error: OSError, execution) -> bool:
+    if (execution is None or not execution.storage_deferred
+            or error.errno not in {errno.ENOSPC, errno.EDQUOT}):
+        return False
+    print("runner_storage_low: journal unavailable (storage exhausted); retry next pass",
+          file=sys.stderr)
+    return True
+
+
 class Execution:
     def __init__(self, path: Path, stage: str, *, ticket=None, attempt=None,
                  review_round=None, dispatcher=False, lock=None, lazy=False):
@@ -417,6 +428,7 @@ class Execution:
         self._resources = {}
         self._wait = None
         self._parent = parent
+        self.storage_deferred = False
         # Lazy scopes buffer rows until something happens (wait, audit row, non-completed
         # outcome, commit()); an uneventful exit drops the buffer instead of journaling it.
         self._buffer = [] if lazy else None
@@ -477,11 +489,21 @@ class Execution:
             self._append(rows)
 
     def _append(self, rows: list[dict]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a+b") as handle:
-            fcntl.flock(handle, fcntl.LOCK_EX)
-            for row in rows:
-                _write(handle, row)
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a+b") as handle:
+                fcntl.flock(handle, fcntl.LOCK_EX)
+                for row in rows:
+                    _write(handle, row)
+        except OSError as exc:
+            if not _storage_fallback(exc, self):
+                raise
+
+    def defer_storage(self) -> None:
+        """Do not let a full journal replace an already observed host deferral."""
+        self.storage_deferred = True
+        if self._parent is not None:
+            self._parent.defer_storage()
 
     def wait(self, reason: str, *, mode="blocking", resource=None, **details) -> dict:
         """Record an observed wait, separately from execution stage and outcome."""
