@@ -159,9 +159,12 @@ def format_report(summary: dict) -> str:
         f"{row['case']} ({row['baseline']} → {row['head']})"
         for row in summary.get("flips", [])
     ]
+    baseline_error = summary.get("baseline_update_error")
+    refresh = f"### Baseline refresh\n{baseline_error}\n\n" if baseline_error else ""
     return (
         f"## Reviewer calibration: {str(summary.get('verdict', 'block')).upper()}\n\n"
         f"Baseline: {'missing' if summary.get('baseline_missing') else 'available'}\n\n"
+        f"{refresh}"
         f"### Status flips\n{lines(flips)}\n\n"
         f"### Stable pass→fail regressions\n{lines(summary.get('regressions', []))}\n\n"
         f"### Missing cases\n{lines(summary.get('missing', []))}\n\n"
@@ -305,8 +308,35 @@ def _is_ancestor(root: Path, ancestor: str | None, descendant: str | None) -> bo
     return proc.returncode == 0
 
 
+def _merge_sha(row: dict, root: Path, repo: str | None) -> str | None:
+    sha = row.get("merge_sha")
+    if isinstance(sha, str) and _SHA.fullmatch(sha):
+        return sha
+    pr = row.get("pr")
+    if type(pr) is not int or pr < 1:
+        return None
+    command = ["gh", "pr", "view", str(pr), "--json", "state,mergeCommit"]
+    if repo:
+        command.extend(["--repo", repo])
+    try:
+        proc = subprocess.run(
+            command, cwd=root, capture_output=True, text=True, check=False, timeout=30,
+        )
+        if proc.returncode:
+            return None
+        value = json.loads(proc.stdout)
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        return None
+    if not isinstance(value, dict) or value.get("state") != "MERGED":
+        return None
+    commit = value.get("mergeCommit")
+    sha = commit.get("oid") if isinstance(commit, dict) else None
+    return sha if isinstance(sha, str) and _SHA.fullmatch(sha) else None
+
+
 def _merged_improvement_pending(
     baseline: dict, rows: list[dict], root: Path, *, main_sha: str | None = None,
+    repo: str | None = None,
 ) -> bool:
     digest = baseline_digest(baseline)
     improved = {
@@ -326,7 +356,7 @@ def _merged_improvement_pending(
         row.get("event") == "merged"
         and row.get("head") in improved
         and not _is_ancestor(
-            root, row.get("merge_sha", ""), main_sha or baseline.get("main_sha", "")
+            root, _merge_sha(row, root, repo), main_sha or baseline.get("main_sha", "")
         )
         for row in rows
     )
@@ -341,13 +371,15 @@ def baseline_ready(cfg: config.Config) -> bool:
             contract_fingerprint(cfg.root),
         )
         and not _merged_improvement_pending(
-            baseline, lifecycle.read_events(cfg.factory / "events.jsonl"), cfg.root
+            baseline, lifecycle.read_events(cfg.factory / "events.jsonl"), cfg.root,
+            repo=cfg.repo,
         )
     )
 
 
 def write_baseline(
     path: Path, summary: dict, accepted_main_sha: str, *, root: Path | None = None,
+    repo: str | None = None,
 ) -> bool:
     """Replace the single baseline only with evidence produced at accepted main."""
     if summary.get("candidate") != accepted_main_sha or summary.get("status") != "completed":
@@ -374,6 +406,7 @@ def write_baseline(
             lifecycle.read_events(path.parent / "events.jsonl"),
             root or path.parent.parent,
             main_sha=accepted_main_sha,
+            repo=repo,
         ):
             return False
         temporary = path.with_suffix(path.suffix + ".tmp")
@@ -627,9 +660,21 @@ def run(cfg: config.Config, checkout: Path, *, dry_run: bool = False) -> dict | 
         "cost_measured": bool(costs and all(cost is not None for cost in costs)),
         "results": str(out / "results.json"),
     })
-    _append(cfg, summary)
     if not summary["missing"] and accepted is True:
-        write_baseline(baseline_path(cfg), summary, candidate, root=cfg.root)
+        updated = write_baseline(
+            baseline_path(cfg), summary, candidate, root=cfg.root, repo=cfg.repo,
+        )
+        summary["baseline_updated"] = updated
+        if not updated:
+            summary.update({
+                "verdict": "block",
+                "baseline_update_error": (
+                    "Accepted-main baseline replacement refused: newer baseline or pending "
+                    "merge evidence. Resolve the merged PR's merge commit and rerun on "
+                    "current accepted main containing that commit."
+                ),
+            })
+    _append(cfg, summary)
     print(format_report(summary))
     return summary
 

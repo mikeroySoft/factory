@@ -1431,6 +1431,13 @@ branches, or merge state.
   Only an accepted-main run can replace `.factory/reviewer-eval-baseline.json`.
   Its corpus version, prompt hashes, and model must still match current main;
   an accepted reviewer-contract change therefore requires a fresh main run.
+  Merged improvements also require a main refresh containing the merge commit.
+  If the merge journal lacks that SHA, the refresh looks it up from the merged
+  PR and checks merge-commit ancestry, never candidate-head ancestry (which a
+  squash merge need not preserve). Unavailable merge evidence still blocks.
+  A refused accepted-main replacement leaves the baseline unchanged, journals
+  `baseline_updated: false` and `baseline_update_error`, reports the refusal,
+  and exits nonzero so a chained candidate run does not proceed.
   `[reviewer_eval] schedule = true` opts into merge enforcement for
   `.factory.toml`, the configured base review policy, reviewer config/template,
   and reviewer dispatch paths, but only when no-model prompt capture or

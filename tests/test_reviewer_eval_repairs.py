@@ -329,7 +329,7 @@ class ReviewerEvalRepairsTest(unittest.TestCase):
                 saved = path.read_bytes()
                 real_run = subprocess.run
 
-                def run(command, **kwargs):
+                def run(command, evidence=evidence, real_run=real_run, **kwargs):
                     if command[0] == "gh":
                         return subprocess.CompletedProcess([], 0, json.dumps(evidence), "")
                     return real_run(command, **kwargs)
@@ -340,7 +340,8 @@ class ReviewerEvalRepairsTest(unittest.TestCase):
                     ))
                 self.assertEqual(path.read_bytes(), saved)
                 # Even valid recovered evidence must not clear an older-main rerun.
-                with mock.patch.object(subprocess, "run", side_effect=lambda command, **kwargs: (
+                with mock.patch.object(subprocess, "run", side_effect=lambda command,
+                                       merged=merged, real_run=real_run, **kwargs: (
                     subprocess.CompletedProcess([], 0, json.dumps({
                         "state": "MERGED", "mergeCommit": {"oid": merged},
                     }), "") if command[0] == "gh" else real_run(command, **kwargs)
@@ -370,7 +371,7 @@ class ReviewerEvalRepairsTest(unittest.TestCase):
                 }] * 3
                 output = io.StringIO()
                 with mock.patch.object(config, "load", return_value=cfg), \
-                     mock.patch.object(config, "git", side_effect=lambda root, *args: (
+                     mock.patch.object(config, "git", side_effect=lambda root, *args, cfg=cfg, old=old: (
                          str(cfg.root) if args == ("rev-parse", "--show-toplevel") else old
                      )), \
                      mock.patch.object(reviewer_eval, "_candidate_accepted", return_value=accepted), \
