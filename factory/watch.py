@@ -235,12 +235,27 @@ def metric_series(events: list[dict], start: date, end: date) -> dict[str, dict[
         "rework_rounds",
     }
     names = set(sparse_names)
+    merged_heads = {
+        row["head"] for row in events
+        if row.get("event") == "merged" and isinstance(row.get("head"), str)
+    }
+    attempt_heads = {
+        (row.get("ticket"), row.get("attempt")): row["head"]
+        for row in events
+        if row.get("event") == "attempt" and row.get("ticket") is not None
+        and row.get("attempt") is not None and isinstance(row.get("head"), str)
+    }
     failed = [
         row for row in events
         if row.get("event") == "lifecycle" and row.get("kind") == "result"
         and row.get("stage") == "gate-check" and row.get("passed") is False
         and isinstance(row.get("check"), str)
+        and (
+            row.get("ticket") is None or row.get("attempt") is None
+            or attempt_heads.get((row.get("ticket"), row.get("attempt"))) in merged_heads
+        )
     ]
+    failed_ids = {id(row) for row in failed}
     names.update(f"gate_failures_by_check:{row['check']}" for row in failed)
     names.update(
         f"gate_failures_by_test:{test}"
@@ -281,6 +296,7 @@ def metric_series(events: list[dict], start: date, end: date) -> dict[str, dict[
     merged_by_tier: dict[str, dict[object, dict]] = {}
     escaped_by_tier: dict[str, dict[object, dict]] = {}
 
+    counted_failures = set()
     for day in days:
         key = day.isoformat()
         today = by_day.get(day, [])
@@ -353,20 +369,23 @@ def metric_series(events: list[dict], start: date, end: date) -> dict[str, dict[
                 "rows": cycle_rows,
             }
         for row in today:
-            if not (
-                row.get("event") == "lifecycle" and row.get("kind") == "result"
-                and row.get("stage") == "gate-check" and row.get("passed") is False
-                and isinstance(row.get("check"), str)
-            ):
+            if id(row) not in failed_ids:
                 continue
-            check = series[f"gate_failures_by_check:{row['check']}"][key]
-            check["value"] += 1
-            check["rows"].append(row)
+            identity = (row.get("ticket"), row.get("attempt"))
+            check_name = f"gate_failures_by_check:{row['check']}"
+            check_key = (check_name, *identity)
+            if None in identity or check_key not in counted_failures:
+                check = series[check_name][key]
+                check["value"] += 1
+                check["rows"].append(row)
+                counted_failures.add(check_key)
             for test in row.get("failed_tests", []):
                 name = f"gate_failures_by_test:{test}"
-                if name in series:
+                test_key = (name, *identity)
+                if name in series and (None in identity or test_key not in counted_failures):
                     series[name][key]["value"] += 1
                     series[name][key]["rows"].append(row)
+                    counted_failures.add(test_key)
     return series
 
 
