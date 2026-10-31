@@ -942,11 +942,12 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
 
    A High PR merges without human approval when the full current-head gate
    (including all PR-tier checks) passes, both reviewers approve, and mutation
-   is `PASS` or `SKIP (no changed factory code)`. Both reviewers
-   revising uses the normal Medium loop. A reviewer split, or mutation failure
-   after both approvals, returns the dissenting findings for one worker round;
-   the next-head disagreement escalates as `risk_disagreement`. This
-   disagreement is the only High-tier-specific path to `ready-for-human`.
+   is `PASS` or `SKIP (no changed factory code)`. Any concrete Important
+   `REVISE` from either reviewer uses the normal bounded review loop and one
+   shared ledger, even when the other reviewer approves. A mutation failure
+   after both approvals returns its evidence for one worker round; the next-head
+   disagreement escalates as `risk_disagreement`. This mutation disagreement is
+   the only High-tier-specific path to `ready-for-human`.
    `[review].second_command` is a host-only override of the code default.
    Non-mutation PR-check failures use the ordinary gate-failure loop, not the
    disagreement path. Mutation runs related tests first and stops after the first

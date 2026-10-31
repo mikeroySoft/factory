@@ -169,7 +169,7 @@ class ReviewConvergenceTest(unittest.TestCase):
         bounce = dispatch._PENDING_RISK[7]["worker_findings"]
         self.assertEqual(bounce.count("Value is wrong."), 1)
         self.assertIn("[F1 open]", bounce)
-
+        self.assertFalse(dispatch._PENDING_RISK[7]["disagreement"])
 
     def test_high_risk_primary_finding_survives_second_approval(self) -> None:
         self.configure([
@@ -197,7 +197,7 @@ class ReviewConvergenceTest(unittest.TestCase):
         bounce = dispatch._PENDING_RISK[7]["worker_findings"]
         self.assertEqual(bounce.count("Value is wrong."), 1)
         self.assertIn("[F1 still-open]", bounce)
-
+        self.assertFalse(dispatch._PENDING_RISK[7]["disagreement"])
 
     def test_unconfirmed_important_is_downgraded_and_does_not_block(self) -> None:
         self.configure([

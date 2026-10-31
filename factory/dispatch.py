@@ -2740,18 +2740,25 @@ def pr_gate_and_review(
         head, rules, primary, primary_findings, second, second_findings,
         mutation, pr_report or "mutation check missing", changed,
     )
-    disagreement = (
-        primary != second
-        or (primary == second == "APPROVE" and mutation not in {"PASS", "SKIP"})
+    review_split = primary != second
+    concrete_revise = any(
+        row.get("verdict") == "REVISE"
+        and isinstance(row.get("counts"), dict)
+        and row["counts"].get("important", 0) > 0
+        for row in (primary_row, second_row)
     )
+    mutation_disagreement = (
+        primary == second == "APPROVE" and mutation not in {"PASS", "SKIP"}
+    )
+    disagreement = mutation_disagreement or (review_split and not concrete_revise)
     _PENDING_RISK[n] = {
         "head": head, "tier": tier, "disagreement": disagreement, "packet": packet,
         "primary": primary, "second": second, "mutation": mutation,
-        "worker_findings": worker_findings,
+        "worker_findings": worker_findings, "review_split": review_split,
     }
     if primary == second == "REVISE":
         return "REVISE", f"{primary_findings}\n\n{second_findings}", False
-    if disagreement:
+    if review_split or mutation_disagreement:
         return "REVISE", packet, False
     return "APPROVE", f"{primary_findings}\n\n{second_findings}", False
 
@@ -4772,7 +4779,7 @@ def process_ticket(
                 execution.review_round = bounce + 1
                 if pr_failed:
                     extra = f"## PR-tier gate report, round {bounce} (failed)\n\n{findings}"
-                elif risk_disagreement_head is not None:
+                elif risk_disagreement_head is not None or current_risk.get("review_split"):
                     extra = current_risk["packet"]
                     if current_risk["worker_findings"] != "No Important findings.":
                         extra += (
