@@ -301,3 +301,205 @@ class ManagerStorageRetryTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StorageRevisionDispatchTest(unittest.TestCase):
+    setUp = dispatch_test.LocalCLI.setUp
+    git = dispatch_test.LocalCLI.git
+    write_config = dispatch_test.LocalCLI.write_config
+
+    def test_later_launch_failure_preserves_unpublished_commit(self) -> None:
+        dispatch.configure(config.load(self.repo))
+        issue = {
+            "number": 7, "title": "local change", "body": "Make the change.",
+            "labels": [{"name": "ready-for-agent"}], "assignees": [],
+        }
+        saved = []
+
+        def attempt(_n, wt, *_args, **_kwargs):
+            if saved:
+                raise FileNotFoundError("worker disappeared before retry")
+            (wt / "unpublished.txt").write_text("keep this work")
+            self.git("-C", str(wt), "add", "unpublished.txt")
+            self.git("-C", str(wt), "commit", "-qm", "unpublished worker result")
+            saved.append(self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip())
+            return False, "gate failed", None, saved[0]
+
+        with mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(dispatch, "worker_round", side_effect=attempt):
+            self.assertFalse(dispatch.process_ticket(issue, 1, False, forced=True))
+        wt = self.repo / ".factory" / "wt-7"
+        self.assertTrue(wt.is_dir(), "launch failure deleted unpublished worker progress")
+        self.assertEqual(self.git("rev-parse", "agent/7").stdout.strip(), saved[0])
+        self.assertEqual((wt / "unpublished.txt").read_text(), "keep this work")
+        self.assertFalse(any(row.get("event") == "escalate"
+                             for row in lifecycle.read_events(self.events)))
+
+    def test_storage_journal_exhaustion_still_defers_dispatch_successfully(self) -> None:
+        import errno
+
+        dispatch.configure(config.load(self.repo))
+        issue = {
+            "number": 7, "title": "local change", "body": "Make the change.",
+            "labels": [{"name": "ready-for-agent"}], "assignees": [],
+        }
+        original_status, original_write = storage.status, lifecycle._write
+        exhausted = False
+
+        def low(cfg):
+            nonlocal exhausted
+            exhausted = True
+            value = original_status(cfg)
+            value["ok"] = False
+            value["filesystems"][0]["low"] = ["space"]
+            return value
+
+        def write(*args):
+            if exhausted:
+                raise OSError(errno.ENOSPC, "journal filesystem full")
+            return original_write(*args)
+
+        with mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(storage, "status", side_effect=low), \
+                mock.patch.object(lifecycle, "_write", side_effect=write), \
+                mock.patch.object(dispatch, "_main", side_effect=lambda _args: dispatch.process_ticket(
+                    issue, 1, False, forced=True)), \
+                mock.patch("sys.stderr") as stderr:
+            self.assertEqual(dispatch.main([]), 0)
+        self.assertIn("runner_storage_low", str(stderr.write.call_args_list))
+        events = lifecycle.read_events(self.events)
+        self.assertFalse(any(row.get("event") in {"claimed", "attempt", "escalate"} for row in events))
+
+
+class StorageRevisionRefreshTest(unittest.TestCase):
+    def test_deferred_refresh_resumes_gate_and_independent_review_next_merge_pass(self) -> None:
+        from tests.test_refresh_conflict import FakeGitHub, build_fork, git
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root, origin = build_fork(base)
+            git(origin, "checkout", "-qb", "agent/9")
+            (origin / "agent.txt").write_text("agent work")
+            git(origin, "add", "agent.txt")
+            git(origin, "commit", "-qm", "agent work")
+            remote = git(origin, "rev-parse", "HEAD")
+            git(origin, "checkout", "-q", "main")
+            (origin / "main.txt").write_text("new upstream work")
+            git(origin, "add", "main.txt")
+            git(origin, "commit", "-qm", "main moved")
+            cfg = config.Config(root, "acme/widgets", runner_min_free_gb=0,
+                                runner_min_free_inodes=0)
+            dispatch.configure(cfg)
+            github = FakeGitHub(origin, dispatch.run)
+            low = storage.RunnerStorageLow("gate", storage.status(cfg))
+            with mock.patch.multiple(dispatch, gh_json=github.gh_json, run=github.run), \
+                    mock.patch.object(dispatch, "run_gate", side_effect=low), \
+                    mock.patch.object(dispatch, "review") as review:
+                # The claim preflight succeeded, but storage dropped after the rebase.
+                storage.require(cfg, "claim")
+                with self.assertRaises(storage.RunnerStorageLow):
+                    dispatch.merge_pass_locked(False)
+                review.assert_not_called()
+            wt = cfg.factory / "wt-9"
+            candidate = git(wt, "rev-parse", "HEAD")
+            self.assertNotEqual(candidate, remote)
+            self.assertEqual(github.head(), remote)
+            self.assertNotIn(config.LABEL_APPROVED, github.pr_labels)
+            rows = lifecycle.read_events(dispatch.EVENTS)
+            self.assertFalse(any(row.get("event") in {
+                "attempt", "escalate", "gate-requeue", "conflict-requeue",
+            } for row in rows))
+
+            with mock.patch.multiple(dispatch, gh_json=github.gh_json, run=github.run), \
+                    mock.patch.object(dispatch, "run_gate", return_value=(True, "fresh gate")) as gate, \
+                    mock.patch.object(dispatch, "record_risk"), \
+                    mock.patch.object(dispatch, "risk_for_head", return_value=("Low", {})), \
+                    mock.patch.object(dispatch, "review", return_value=("APPROVE", "fresh review")) as review, \
+                    mock.patch.object(dispatch, "approve_pr", return_value=True) as approve:
+                dispatch.merge_pass_locked(False)
+            gate.assert_called_once()
+            review.assert_called_once_with(wt, 9, "fresh gate", candidate)
+            approve.assert_called_once_with(9, candidate)
+            self.assertEqual(github.head(), candidate)
+            self.assertFalse(github.merged, "refresh must not bypass the normal merge prerequisites")
+
+
+class StorageRevisionFailureTest(unittest.TestCase):
+    def test_gate_retains_exit_75_when_low_storage_journal_is_full(self) -> None:
+        import errno
+        from factory import gate as gate_module
+
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config.Config(Path(directory), "acme/widgets", runner_min_free_gb=10**9)
+            for error in (errno.ENOSPC, errno.EDQUOT):
+                with self.subTest(errno=error), \
+                        mock.patch.object(config, "load", return_value=cfg), \
+                        mock.patch.object(lifecycle, "append", side_effect=OSError(error, "full")), \
+                        mock.patch("sys.stderr") as stderr:
+                    self.assertEqual(gate_module.main([]), storage.EX_TEMPFAIL)
+                    self.assertIn("runner_storage_low", str(stderr.write.call_args_list))
+
+    def test_temp_root_and_owner_exhaustion_are_host_deferrals(self) -> None:
+        import errno
+
+        for target in ("root", "owner"):
+            for error in (errno.ENOSPC, errno.EDQUOT):
+                with self.subTest(target=target, errno=error), tempfile.TemporaryDirectory() as directory:
+                    base = Path(directory)
+                    operation = (
+                        mock.patch.object(storage.tempfile, "mkdtemp", side_effect=OSError(error, "full"))
+                        if target == "root" else
+                        mock.patch.object(Path, "write_text", side_effect=OSError(error, "full"))
+                    )
+                    with mock.patch.object(storage.tempfile, "tempdir", str(base)), operation, \
+                            self.assertRaises(storage.RunnerStorageLow):
+                        with storage.temporary_environment("factory-worker-retry-"):
+                            self.fail("worker launched without a usable temp root")
+                    self.assertEqual(list(base.iterdir()), [])
+
+    def test_dead_owner_does_not_reclaim_a_surviving_child_temp_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            record = base / "abandoned"
+            ready = base / "child-ready"
+            stop = base / "stop"
+            child = (
+                "import time\nfrom pathlib import Path\n"
+                f"Path({str(ready)!r}).touch()\n"
+                f"while not Path({str(stop)!r}).exists(): time.sleep(0.01)\n"
+            )
+            script = (
+                "import os, subprocess, sys, time\nfrom pathlib import Path\n"
+                "from factory import lifecycle, storage\n"
+                f"with lifecycle.scope(Path({str(base / 'events.jsonl')!r}), 'worker') as execution:\n"
+                "  with storage.temporary_environment('factory-worker-survivor-'):\n"
+                f"    Path({str(record)!r}).write_text(os.environ['TMPDIR'])\n"
+                f"    proc = subprocess.Popen([sys.executable, '-c', {child!r}], "
+                "env=execution.env(), start_new_session=True)\n"
+                "    execution.child(proc.pid)\n"
+                f"    while not Path({str(ready)!r}).exists(): time.sleep(0.01)\n"
+                "    os._exit(7)\n"
+            )
+            proc = subprocess.run(
+                [sys.executable, "-c", script], check=False, timeout=15,
+                env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
+            )
+            self.assertEqual(proc.returncode, 7)
+            abandoned = Path(record.read_text())
+            try:
+                storage.cleanup_abandoned()
+                self.assertTrue(abandoned.exists(), "surviving child's TMPDIR was reclaimed")
+            finally:
+                stop.touch()
+            # Observe the child's recorded identity, not a background-job poll.
+            child_identity = next(
+                row["child_process"] for row in lifecycle.read_events(base / "events.jsonl")
+                if row.get("kind") == "child_start"
+            )
+            import time
+            deadline = time.monotonic() + 5
+            while lifecycle._process_state(child_identity) == "alive" and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(lifecycle._process_state(child_identity), "dead")
+            storage.cleanup_abandoned()
+            self.assertFalse(abandoned.exists())
