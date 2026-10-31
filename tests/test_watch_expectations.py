@@ -663,6 +663,85 @@ class WatchExpectationTest(unittest.TestCase):
             for signal in signals
         ))
 
+    def test_each_overdue_ticket_filing_retains_its_own_queue_entry(self) -> None:
+        now = datetime(2026, 10, 30, tzinfo=UTC)
+        self.cfg.eval_schedule = True
+        entries = {
+            7: now - timedelta(hours=2),
+            8: now - timedelta(hours=1),
+        }
+        self.github.issues = [
+            {"number": ticket, "body": "", "createdAt": entered.isoformat()}
+            for ticket, entered in entries.items()
+        ]
+        self.dispatch_pass(now - timedelta(minutes=10))
+        watch.run_pass(self.cfg, now=now - timedelta(minutes=10))
+        self.dispatch_pass(now)
+
+        signals = watch.run_pass(self.cfg, now=now)
+
+        self.assertEqual([signal["ticket"] for signal in signals], ["7", "8"])
+        creates = [
+            call for call in self.github.calls
+            if call[:3] == ["gh", "issue", "create"]
+        ]
+        self.assertEqual(len(creates), 2)
+        for signal, call, (ticket, entered) in zip(signals, creates, entries.items()):
+            own_entry = f"Current needs-triage queue entry: {entered.isoformat()}."
+            other_entry = entries[8 if ticket == 7 else 7].isoformat()
+            self.assertIn(own_entry, signal["excerpt"])
+            self.assertNotIn(other_entry, signal["excerpt"])
+            self.assertIn(f"{self.cfg.repo}#{ticket}", call[call.index("--title") + 1])
+            self.assertIn(own_entry, call[call.index("--body") + 1])
+            self.assertNotIn(other_entry, call[call.index("--body") + 1])
+
+    def test_unrelated_event_does_not_satisfy_a_ticket_triage_exit(self) -> None:
+        now = datetime(2026, 10, 30, tzinfo=UTC)
+        self.cfg.eval_schedule = True
+        entered = now - timedelta(hours=1)
+        self.github.issues = [{
+            "number": 7, "body": "", "createdAt": entered.isoformat(),
+        }]
+        self.dispatch_pass(now - timedelta(minutes=10))
+        watch.run_pass(self.cfg, now=now - timedelta(minutes=10))
+        self.dispatch_pass(now)
+        self.append({
+            "event": "diagnostic",
+            "kind": "exit",
+            "stage": "triage-ticket",
+            "ticket": 7,
+            "at": (now - timedelta(minutes=5)).isoformat(),
+        })
+
+        signals = watch.run_pass(self.cfg, now=now)
+
+        self.assertEqual(
+            [signal["name"] for signal in signals],
+            [f"needs-triage issue {self.cfg.repo}#7"],
+        )
+        self.assertEqual(signals[0]["rows"], [])
+        self.assertEqual(len([
+            call for call in self.github.calls
+            if call[:3] == ["gh", "issue", "create"]
+        ]), 1)
+
+    def test_unanchored_expectation_does_not_use_unrelated_journal_history(self) -> None:
+        now = datetime(2026, 10, 30, tzinfo=UTC)
+        old = now - timedelta(days=9)
+        expectation = watch.Expectation(
+            "external report",
+            lambda row: row.get("event") == "external-report",
+            timedelta(days=8),
+        )
+        rows = [{"event": "unrelated", "at": old.isoformat()}]
+
+        self.assertEqual(watch.overdue([expectation], rows, now), [])
+        rows.append({"event": "external-report", "at": old.isoformat()})
+        signals = watch.overdue([expectation], rows, now)
+        self.assertEqual([signal["name"] for signal in signals], ["external report"])
+        self.assertEqual(signals[0]["tier"], "act")
+        self.assertEqual(signals[0]["rows"], [rows[-1]])
+
     def test_external_expectations_require_two_passes_and_are_opt_in(self) -> None:
         now = datetime(2026, 10, 30, tzinfo=UTC)
         self.cfg.eval_schedule = True
@@ -890,6 +969,67 @@ class WatchExpectationTest(unittest.TestCase):
             for call in self.github.calls
         ))
 
+    def test_replacement_filing_with_lower_number_gets_current_evidence(self) -> None:
+        now = datetime.now(UTC)
+        self.dispatch_pass(now)
+        fp = watch.intended_state_signals(self.cfg)[0]["fingerprint"]
+        self.append({
+            "event": "watch",
+            "fingerprint": fp,
+            "issue": 902,
+            "repo": self.cfg.watch_engine_repo,
+            "latest": None,
+            "at": now.isoformat(),
+        })
+        self.github.filings[902] = {
+            "state": "CLOSED", "closedAt": now.isoformat(), "body": None,
+        }
+        self.github.filings[901] = {
+            "state": "OPEN",
+            "body": f"Fingerprint: {fp}\n\n{watch.OBSERVED}\n- `{self.cfg.repo}`\n",
+        }
+
+        signals = watch.run_pass(self.cfg, now=now)
+
+        self.assertEqual([signal["name"] for signal in signals], ["eval.schedule"])
+        comments = [
+            call for call in self.github.calls
+            if call[:3] == ["gh", "issue", "comment"]
+        ]
+        self.assertEqual([call[3] for call in comments], ["901"])
+        self.assertIn("eval.schedule", comments[0][comments[0].index("--body") + 1])
+        rows = lifecycle.read_events(self.cfg.factory / "events.jsonl")
+        reports = [row for row in rows if row.get("event") == "watch"]
+        self.assertEqual(reports[-1]["issue"], 901)
+        self.assertTrue(reports[-1]["commented"])
+        self.assertFalse(any(
+            call[:3] == ["gh", "issue", "create"] for call in self.github.calls
+        ))
+
+    def test_intended_state_inspection_command_finds_the_live_switch_table(self) -> None:
+        now = datetime.now(UTC)
+        self.dispatch_pass(now)
+        (self.root / config.CONFIG_NAME).write_text("[eval]\nschedule = false\n")
+        docs = self.root / "docs"
+        docs.mkdir()
+        (docs / config.INTENDED_STATE_NAME).write_text(
+            '[repo."mikeroySoft/factory"]\n"eval.schedule" = true\n',
+        )
+
+        signals = watch.run_pass(self.cfg, now=now)
+
+        self.assertEqual([signal["name"] for signal in signals], ["eval.schedule"])
+        inspection = subprocess.run(
+            signals[0]["command"], shell=True, cwd=self.root,
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(inspection.returncode, 0, inspection.stderr)
+        self.assertIn('"eval.schedule" = true', inspection.stdout)
+        self.assertIn("[eval]", inspection.stdout)
+        self.assertEqual(
+            (self.root / config.CONFIG_NAME).read_text(), "[eval]\nschedule = false\n",
+        )
+
     def test_unrelated_band_does_not_load_escape_attribution(self) -> None:
         self.cfg.eval_schedule = True
         self.cfg.watch_bands = [config.Band("aaa", 28, ())]
@@ -1083,6 +1223,32 @@ class IntendedStateCommandTest(unittest.TestCase):
         self.assertEqual(unchanged.getvalue(), "")
         self.assertIn("release.auto = true", second.getvalue())
         self.assertIn("release.auto = false", third.getvalue())
+
+    def test_doctor_rejects_invalid_intended_switch_value(self) -> None:
+        source = self.root / "source" / "factory" / "config.py"
+        source.parent.mkdir(parents=True)
+        intended = source.parent.parent / "docs" / config.INTENDED_STATE_NAME
+        intended.parent.mkdir()
+        intended.write_text(
+            '[repo."mikeroySoft/factory"]\n'
+            '"release.auto" = "yes"\n'
+        )
+
+        with mock.patch.object(config, "__file__", str(source)), \
+                mock.patch.object(onboard.config, "load", return_value=self.cfg), \
+                mock.patch.object(onboard.config, "host_config", return_value={}), \
+                mock.patch.object(onboard.config, "host_config_path", return_value=self.host_path), \
+                mock.patch.object(onboard.config, "engine_drift", return_value=None), \
+                mock.patch.object(onboard, "sh", side_effect=self.command), \
+                mock.patch.object(onboard.shutil, "which", return_value="/bin/tool"), \
+                mock.patch.object(onboard, "_dashboard_port_check", return_value=(True, "available")), \
+                mock.patch.object(triage, "probe_endpoint", return_value=(True, "ready")), \
+                redirect_stdout(io.StringIO()), \
+                self.assertRaisesRegex(
+                    config.ConfigError,
+                    f"{config.INTENDED_STATE_NAME}: intended switches must be true, false, or undecided",
+                ):
+            cli.main(["doctor"])
 
     def test_install_keeps_intended_but_disabled_eval_units_off(self) -> None:
         units = self.root / "units"
