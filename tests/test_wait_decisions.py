@@ -177,10 +177,12 @@ class WaitDecisions(unittest.TestCase):
         results = [subprocess.CompletedProcess([], 8, '[{"name":"ci","bucket":"pending"}]'),
                    subprocess.CompletedProcess([], 0, '[]'),
                    subprocess.CompletedProcess([], 0, '[]')]
-        with patch.object(dispatch, "gh_json", return_value=prs), \
+        with patch.object(dispatch, "gh_json", return_value=prs) as query, \
                 patch.object(dispatch, "run", side_effect=results), \
                 patch.object(dispatch, "refresh_pr_branch") as refresh:
             dispatch.merge_pass_locked(False)
+        # One `pr list` plus one fresh initiative-kind read per candidate.
+        self.assertEqual(query.call_count, 3)
         refresh.assert_not_called()
         rows = self.rows()
         self.assertEqual([(row["ticket"], row["outcome"], row["reason"])
