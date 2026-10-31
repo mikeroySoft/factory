@@ -51,7 +51,8 @@ class FindingSelectionTest(unittest.TestCase):
         }])
         self.assertEqual(
             dispatch._required_fixes(
-                "## Required fixes\n- `other.py:9`: prose must be ignored.",
+                "## Required fixes\n- `other.py:9`: prose must be ignored.\n"
+                "VERDICT: REVISE",
                 "https://review.example/1",
             ),
             [],
@@ -87,6 +88,13 @@ class FindingSelectionTest(unittest.TestCase):
     def test_learn_counts_only_structured_important_findings(self) -> None:
         self.assertEqual(learn._finding_count({"important": 2, "nit": 9, "pre_existing": 4}), 2)
         self.assertEqual(learn._finding_count(None), 1)
+        self.assertEqual(
+            learn._finding_count(
+                "## Required fixes\n- first prose finding\n- second prose finding\n"
+                "VERDICT: REVISE"
+            ),
+            1,
+        )
 
 
 class ReviewFollowUpTest(unittest.TestCase):

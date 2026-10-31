@@ -132,14 +132,20 @@ class ReviewConvergenceTest(unittest.TestCase):
         row = finding(finding_id=None)
         del row["class"]
         del row["instances"]
-        self.configure([tally("REVISE", [row])])
+        malformed = tally("REVISE", [row])
+        self.configure([malformed, malformed, malformed])
 
-        verdict, _ = dispatch.review(self.root, 7, "PASS", self.head)
+        result = dispatch.run_reviewer(
+            self.root,
+            dispatch.review_prompt(7, "PASS"),
+            self.head,
+            subject="#7",
+        )
 
-        self.assertEqual(verdict, "REVISE")
-        result = dispatch._PENDING_REVIEWS[7]
-        self.assertFalse(result["accepted"])
-        self.assertEqual(result["rejection_reason"], "unparsed_verdict")
+        self.assertIsNone(result["verdict"])
+        self.assertEqual(result["attempts"], 3)
+        self.assertEqual(result["reason"], "reviewer_unavailable")
+        self.assertIsNone(result["counts"])
         self.assertFalse((dispatch.FACTORY / "review-ledger-7.json").exists())
 
 
@@ -199,6 +205,69 @@ class ReviewConvergenceTest(unittest.TestCase):
         self.assertIn("[F1 still-open]", bounce)
         self.assertFalse(dispatch._PENDING_RISK[7]["disagreement"])
 
+    def test_high_risk_reviewers_share_the_previous_round_diff_boundary(self) -> None:
+        self.configure([tally("APPROVE", [])])
+        dispatch.review(self.root, 7, "PASS", self.head)
+        (self.root / "app.py").write_text("value = 2\n")
+        git(self.root, "commit", "-qam", "second head")
+        second_head = git(self.root, "rev-parse", "HEAD")
+        self.configure([
+            tally("APPROVE", [], []),
+            tally("APPROVE", [], []),
+        ])
+        dispatch.cfg.reviewer.append("--model=primary/model")
+        dispatch.cfg.second_reviewer = [
+            *dispatch.cfg.reviewer[:-1], "--model=second/model",
+        ]
+        dispatch.record(
+            "attempt", ticket=7, head=second_head, actual_head=second_head,
+            gate="PASS", worker_model="worker/model",
+        )
+
+        with mock.patch.object(
+            dispatch, "risk_for_head",
+            return_value=("High", ["high:approval, gate, and dispatch control"]),
+        ):
+            verdict, _, _ = dispatch.pr_gate_and_review(
+                self.root, 7, "PASS", second_head, {},
+            )
+
+        self.assertEqual(verdict, "APPROVE")
+        seen = json.loads(self.state.read_text())["seen"]
+        self.assertEqual(seen[0]["diff"], seen[1]["diff"])
+        self.assertNotEqual(seen[0]["diff"], seen[0]["full"])
+
+    def test_high_risk_duplicate_findings_reach_the_worker_once(self) -> None:
+        self.configure([
+            tally("REVISE", [finding(finding_id=None)]),
+            tally(
+                "REVISE",
+                [finding()],
+                [{"id": "F1", "status": "still-open"}],
+            ),
+        ])
+        dispatch.cfg.reviewer.append("--model=primary/model")
+        dispatch.cfg.second_reviewer = [
+            *dispatch.cfg.reviewer[:-1], "--model=second/model",
+        ]
+        dispatch.record(
+            "attempt", ticket=7, head=self.head, actual_head=self.head,
+            gate="PASS", worker_model="worker/model",
+        )
+
+        with mock.patch.object(
+            dispatch, "risk_for_head",
+            return_value=("High", ["high:approval, gate, and dispatch control"]),
+        ):
+            verdict, _, _ = dispatch.pr_gate_and_review(
+                self.root, 7, "PASS", self.head, {},
+            )
+
+        self.assertEqual(verdict, "REVISE")
+        bounce = dispatch._PENDING_RISK[7]["worker_findings"]
+        self.assertEqual(bounce.count("Value is wrong."), 1)
+        self.assertIn("[F1 still-open]", bounce)
+
     def test_unconfirmed_important_is_downgraded_and_does_not_block(self) -> None:
         self.configure([
             tally("REVISE", [finding()]),
@@ -241,6 +310,42 @@ class ReviewConvergenceStatsTest(unittest.TestCase):
             "rounds_to_pass": 3,
             "repeated_findings_dropped": 1,
             "important_findings_per_round": [2, 1, 0],
+        })
+
+    def test_combines_both_reviewers_into_one_ticket_round(self) -> None:
+        metrics = stats.review_convergence([
+            {
+                "event": "review-result", "review_round": 1, "role": "primary",
+                "verdict": "APPROVE", "counts": {"important": 0}, "repeated_dropped": 0,
+            },
+            {
+                "event": "review-result", "review_round": 1, "role": "second",
+                "verdict": "REQUEST_CHANGES", "counts": {"important": 1},
+                "repeated_dropped": 0,
+            },
+            {
+                "event": "review-result", "review_round": 2, "role": "primary",
+                "verdict": "REQUEST_CHANGES", "counts": {"important": 1},
+                "repeated_dropped": 1,
+            },
+            {
+                "event": "review-result", "review_round": 2, "role": "second",
+                "verdict": "APPROVE", "counts": {"important": 0}, "repeated_dropped": 0,
+            },
+            {
+                "event": "review-result", "review_round": 3, "role": "primary",
+                "verdict": "APPROVE", "counts": {"important": 0}, "repeated_dropped": 0,
+            },
+            {
+                "event": "review-result", "review_round": 3, "role": "second",
+                "verdict": "APPROVE", "counts": {"important": 0}, "repeated_dropped": 0,
+            },
+        ])
+
+        self.assertEqual(metrics, {
+            "rounds_to_pass": 3,
+            "repeated_findings_dropped": 1,
+            "important_findings_per_round": [1, 1, 0],
         })
 
 
