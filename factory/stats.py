@@ -13,6 +13,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from statistics import pstdev
 from typing import Any
 
 from factory import config, feedback, lifecycle, onboard, risk
@@ -164,6 +165,117 @@ def _stamp(value: datetime) -> str:
 def window_rows(rows: list[dict], start: datetime, end: datetime) -> list[dict]:
     """Rows whose timestamps fall inside the inclusive UTC window."""
     return [row for row in rows if (at := _timestamp(row.get("at"))) is not None and start <= at <= end]
+SKILL_AFTER_CALLS = 10
+
+
+def skill_coverage(rows: list[dict]) -> float | None:
+    attempts = [row for row in rows if row.get("event") == "attempt"]
+    return (sum(isinstance(row.get("transcript"), str) for row in attempts) / len(attempts)
+            if attempts else None)
+
+
+def _session_errors(rows: list[dict]) -> dict[str, list[bool]]:
+    sessions = {}
+    for row in rows:
+        errors = row.get("call_errors")
+        session = row.get("transcript")
+        if row.get("event") == "score" and isinstance(session, str) and isinstance(errors, list):
+            sessions[session] = [bool(value) for value in errors]
+    return sessions
+
+
+def _rate(samples: list[list[bool]]) -> float | None:
+    count = sum(len(sample) for sample in samples)
+    return sum(sum(sample) for sample in samples) / count if count else None
+
+
+def _skill_samples(
+    loads: list[dict], errors: dict[str, list[bool]], loaded_sessions: set[str],
+) -> tuple[list[list[bool]], list[list[bool]]]:
+    positioned = [(row, row["call_index"]) for row in loads if type(row.get("call_index")) is int]
+    loaded = [errors.get(row["session"], [])[index + 1:index + 1 + SKILL_AFTER_CALLS]
+              for row, index in positioned]
+    controls = [values for session, values in errors.items() if session not in loaded_sessions]
+    control = [values[index + 1:index + 1 + SKILL_AFTER_CALLS]
+               for _, index in positioned for values in controls]
+    return loaded, control
+
+
+def _skill_rates(
+    session_count: int, loaded: list[list[bool]], controls: list[list[bool]],
+) -> tuple[float | None, float | None, float | None, float | None]:
+    if session_count < 10:
+        return None, None, None, None
+    after, baseline = _rate(loaded), _rate(controls)
+    if after is None or baseline is None:
+        return None, None, None, None
+    loaded_rates = [_rate([sample]) for sample in loaded if sample]
+    control_rates = [_rate([sample]) for sample in controls if sample]
+    noise = max(pstdev(loaded_rates), pstdev(control_rates))
+    return after, baseline, after - baseline, noise
+
+
+def _skill_metric(name: str, loads: list[dict], errors: dict[str, list[bool]]) -> dict:
+    sessions = {row["session"] for row in loads}
+    tickets = {row.get("ticket") for row in loads if type(row.get("ticket")) is int}
+    tokens = max((row.get("tokens", 0) for row in loads
+                  if type(row.get("tokens")) is int), default=0)
+    loaded, controls = _skill_samples(loads, errors, sessions)
+    after, baseline, excess, noise = _skill_rates(len(sessions), loaded, controls)
+    failure_errors = list(dict.fromkeys(
+        row["error"] for row in loads if not row.get("ok") and isinstance(row.get("error"), str)
+    ))
+    return {
+        "skill": name,
+        "loads": len(loads),
+        "sessions": len(sessions),
+        "tickets": len(tickets),
+        "explicit_share": sum(bool(row.get("explicit")) for row in loads) / len(loads),
+        "reloads_per_session": (len(loads) - len(sessions)) / len(sessions),
+        "partial_share": sum(bool(row.get("partial")) for row in loads) / len(loads),
+        "load_failures": sum(not row.get("ok") for row in loads),
+        "load_failure_errors": failure_errors,
+        "tokens": tokens,
+        "context_spent": tokens * len(loads),
+        "after_load_error_rate": after,
+        "position_matched_baseline_error_rate": baseline,
+        "error_rate_excess": excess,
+        "noise_margin": noise,
+    }
+
+
+def skill_metrics(rows: list[dict]) -> list[dict]:
+    """Pure per-skill aggregation over journal rows produced by `factory score`."""
+    loads = [row for row in rows if row.get("event") == "skill-load"
+             and isinstance(row.get("skill"), str) and isinstance(row.get("session"), str)]
+    by_skill: dict[str, list[dict]] = {}
+    for row in loads:
+        by_skill.setdefault(row["skill"], []).append(row)
+    errors = _session_errors(rows)
+    result = [_skill_metric(name, skill_loads, errors) for name, skill_loads in by_skill.items()]
+    return sorted(result, key=lambda row: (-row["context_spent"], row["skill"]))
+
+
+def print_skills(rows: list[dict], coverage: float | None) -> None:
+    print("\nSkills")
+    if coverage is not None:
+        print(f"coverage: {coverage:.1%}")
+    if not rows:
+        print("no skill loads recorded")
+        return
+    selected = rows[:5]
+    selected += [row for row in rows[5:] if row["load_failures"]]
+    print("skill                 loads  sessions  context  failures  after/baseline")
+    for row in selected:
+        rate = ("n<10" if row["sessions"] < 10 else
+                f"{row['after_load_error_rate']:.1%}/{row['position_matched_baseline_error_rate']:.1%}"
+                if row["after_load_error_rate"] is not None else "n/a")
+        print(f"{row['skill']:<21} {row['loads']:>5}  {row['sessions']:>8}  "
+              f"{row['context_spent']:>7}  {row['load_failures']:>8}  {rate}")
+        for error in row["load_failure_errors"]:
+            print(f"  load failure: {error}")
+
+
 
 
 def weekly_metrics(
@@ -215,7 +327,7 @@ def weekly_metrics(
         reported_tokens += prompt + completion
         if local:
             local_tokens += prompt + completion
-    return {
+    result = {
         "window": window,
         "merges": len(merged),
         "human_touches": touches,
@@ -234,6 +346,9 @@ def weekly_metrics(
         "local_token_share": round(local_tokens / reported_tokens, 6) if reported_tokens else None,
         "usage_missing": usage_missing,
     }
+    if any(row.get("event") in {"skill-load", "skill-coverage"} for row in rows):
+        result.update(skills=skill_metrics(rows), skill_coverage=skill_coverage(rows))
+    return result
 
 
 def stuck_over_days(now: datetime, days: int = 7) -> list[dict] | str:
@@ -878,10 +993,13 @@ def main(argv: list[str]) -> int:
     if args.week:
         now = _now()
         start = now - timedelta(days=7)
+        journal_rows = window_rows(lifecycle.read_events(journal), start, now)
         rows = weekly_metrics(
-            window_rows(lifecycle.read_events(journal), start, now), start, now,
+            journal_rows, start, now,
             cfg.llm_model if config.local_endpoint(cfg.llm_url) else None,
         )
+        rows.setdefault("skills", skill_metrics(journal_rows))
+        rows.setdefault("skill_coverage", skill_coverage(journal_rows))
         rows["stuck_over_days"] = stuck_over_days(now)
         if args.json:
             print(json.dumps(rows, indent=2))
@@ -897,6 +1015,7 @@ def main(argv: list[str]) -> int:
                   f"{rows['review_nonconvergence_share_denominator']})")
             print(f"Local token share: {rows['local_token_share']}; missing usage: {rows['usage_missing']}")
             print(f"Stuck over 7 days: {rows['stuck_over_days']}")
+            print_skills(rows["skills"], rows["skill_coverage"])
         return 0
     if args.stages:
         passes = lifecycle.last_successful_passes(journal)

@@ -21,6 +21,7 @@ MAX_HANDOFF = 4_000  # chars of the worker handoff shown to the judge
 EDIT_TOOLS = {"edit", "write"}
 EXCERPT_CHARS = 3000  # per-session excerpt handed to `factory learn`
 RESULT_LINES = 10  # lines of a failing tool result kept in the excerpt
+WORKER_CONTEXT_FILES = (config.LESSONS_NAME, "AGENTS.md", "CLAUDE.md")
 FAILED = re.compile(r"(?i:error)|Traceback|FAIL")
 JUDGE_SYSTEM = (
     "You grade whether a coding agent delivered a ticket. You are given the ticket's scope and "
@@ -29,11 +30,12 @@ JUDGE_SYSTEM = (
     "Output only the number."
 )
 _NUMBER = re.compile(r"0(?:\.\d+)?|1(?:\.0+)?|\.\d+")
+_LINE_SELECTOR = re.compile(r":(?:raw(?::-?\d[\d,+-]*)?|-?\d[\d,+-]*(?::raw)?)$")
+_SKILL_FILE = re.compile(r"^\[Skill file: (.+/SKILL\.md)\]$", re.MULTILINE)
 
 
-def _messages(path: Path) -> list[dict]:
-    """`message` rows from the first MAX_TRANSCRIPT bytes of an OMP-compatible session;
-    a truncated final line is dropped."""
+def _transcript_rows(path: Path) -> list[dict]:
+    """JSON objects from the bounded OMP session; a truncated final line is dropped."""
     with path.open("rb") as handle:
         data = handle.read(MAX_TRANSCRIPT)
     out = []
@@ -42,9 +44,221 @@ def _messages(path: Path) -> list[dict]:
             row = json.loads(line)
         except ValueError:
             continue
-        if isinstance(row, dict) and row.get("type") == "message" and isinstance(row.get("message"), dict):
-            out.append(row["message"])
+        if isinstance(row, dict):
+            out.append(row)
     return out
+
+
+def _tool_calls(row: dict, parts: list[dict]) -> list[dict]:
+    calls = []
+    for part in parts:
+        if part.get("type") != "toolCall":
+            continue
+        arguments = part.get("arguments")
+        calls.append({
+            "id": part.get("id"),
+            "name": part.get("name"),
+            "arguments": arguments if isinstance(arguments, dict) else {},
+            "at": row.get("timestamp") or row.get("at"),
+        })
+    return calls
+
+
+def _message(row: dict) -> tuple[dict, list[dict], str] | None:
+    message = row.get("message")
+    if row.get("type") != "message" or not isinstance(message, dict):
+        return None
+    parts, text = _parts(message)
+    return message, parts, text
+
+
+def parse_rows(rows: list[dict]) -> dict:
+    """Pure projection of transcript rows into prompt, calls, results and final text."""
+    calls, prompt, final = [], "", ""
+    results: dict[object, tuple[bool, str]] = {}
+    for row in rows:
+        projected = _message(row)
+        if projected is None:
+            continue
+        message, parts, text = projected
+        if message.get("role") == "user":
+            prompt = prompt or text
+        elif message.get("role") == "assistant":
+            final = text or final
+            calls += _tool_calls(row, parts)
+        elif message.get("role") == "toolResult":
+            results[message.get("toolCallId")] = (bool(message.get("isError")), text)
+    for call in calls:
+        call["is_error"], call["result"] = results.get(call["id"], (False, ""))
+    return {"calls": calls, "prompt": prompt, "final": final}
+
+
+def _canonical_calls(parsed: dict) -> list[tuple[str, str]]:
+    return [(call["name"], json.dumps(call["arguments"], sort_keys=True)) for call in parsed["calls"]]
+
+
+def _skill(path: object) -> tuple[str, str, bool] | None:
+    if not isinstance(path, str):
+        return None
+    base = _LINE_SELECTOR.sub("", path)
+    partial = base != path
+    if base.startswith("skill://"):
+        name = base.removeprefix("skill://").split("/", 1)[0]
+    else:
+        skill_path = Path(base)
+        name = skill_path.parent.name if skill_path.name == "SKILL.md" else ""
+    return (name, base, partial) if name else None
+
+
+def _skill_tokens(root: Path, path: str, result: str) -> int:
+    if path.startswith("skill://"):
+        match = _SKILL_FILE.search(result)
+        source = Path(match[1]) if match else None
+    else:
+        source = root / path
+    try:
+        return source.stat().st_size // 4 if source is not None and source.is_file() else 0
+    except OSError:
+        return 0
+
+
+def _worker_context(root: Path) -> str:
+    return "\n".join(
+        path.read_text(errors="replace")
+        for name in WORKER_CONTEXT_FILES
+        if (path := root / name).is_file()
+    )
+
+
+def skill_loads(parsed: dict, root: Path, attempt: dict) -> list[dict]:
+    """Skill-read rows from one parsed transcript; non-read mentions never qualify."""
+    loads = []
+    prompt = f"{parsed['prompt']}\n{_worker_context(root)}"
+    for index, call in enumerate(parsed["calls"]):
+        arguments = call["arguments"]
+        found = _skill(arguments.get("path")) if call["name"] == "read" else None
+        if found is None:
+            continue
+        name, base, selected = found
+        result = call["result"]
+        error = next((line for line in result.splitlines() if line.strip()), None) if call["is_error"] else None
+        loads.append({
+            "ticket": attempt["ticket"],
+            "attempt": attempt["attempt"],
+            "session": attempt["transcript"],
+            "harness": attempt.get("worker"),
+            "skill": name,
+            "path": arguments["path"],
+            "ok": not call["is_error"],
+            "error": error,
+            "partial": selected or "offset" in arguments or "limit" in arguments,
+            "call_index": index,
+            "explicit": re.search(
+                rf"(?<![\w-]){re.escape(name)}(?![\w-])", prompt, re.IGNORECASE,
+            ) is not None,
+            "tokens": _skill_tokens(root, base, result),
+            "at": call["at"] if isinstance(call["at"], str) else attempt.get("at"),
+        })
+    return loads
+
+
+def _parsed(path: Path) -> dict:
+    return parse_rows(_transcript_rows(path))
+
+
+def _record(event: str, row: dict, dry_run: bool) -> None:
+    print(json.dumps({"event": event, **row}))
+    if not dry_run:
+        dispatch.record(event, **row)
+
+
+def _score_failures(parsed: dict) -> list[dict]:
+    return [{"call_index": index, "text": call["result"][:EXCERPT_CHARS]}
+            for index, call in enumerate(parsed["calls"]) if call["is_error"]]
+
+
+def _coverage(attempt: dict) -> dict:
+    return {
+        "ticket": attempt["ticket"], "attempt": attempt["attempt"],
+        "harness": attempt.get("worker"), "reason": "no transcript", "at": attempt.get("at"),
+    }
+
+
+def _coverage_key(row: dict) -> tuple:
+    return row.get("ticket"), row.get("attempt"), row.get("harness"), row.get("at")
+
+
+def _load_key(row: dict) -> tuple:
+    return row.get("session"), row.get("call_index")
+def _record_health(
+    cfg: config.Config,
+    attempt: dict,
+    parsed: dict | None,
+    recorded_loads: set[tuple],
+    recorded_coverage: set[tuple],
+    dry_run: bool,
+) -> None:
+    if attempt.get("transcript") is None:
+        coverage = _coverage(attempt)
+        key = _coverage_key(coverage)
+        if key not in recorded_coverage:
+            _record("skill-coverage", coverage, dry_run)
+            recorded_coverage.add(key)
+    if parsed is None:
+        return
+    for load in skill_loads(parsed, cfg.root, attempt):
+        key = _load_key(load)
+        if key not in recorded_loads:
+            _record("skill-load", load, dry_run)
+            recorded_loads.add(key)
+
+
+def _attempt_score(cfg: config.Config, attempt: dict, parsed: dict | None) -> dict:
+    row = {
+        "ticket": attempt["ticket"], "attempt": attempt["attempt"],
+        "transcript": attempt.get("transcript"),
+    }
+    if parsed is None:
+        return {**row, "skipped": "missing"}
+    calls, prompt, final = _canonical_calls(parsed), parsed["prompt"], parsed["final"]
+    handoff = dispatch.FACTORY / f"wt-{attempt['ticket']}" / ".factory" / f"handoff-{attempt['ticket']}.md"
+    if handoff.is_file():
+        text = handoff.read_text()
+    else:  # the worktree is removed after a clean merge; the accepted handoff is retained
+        prior = results.latest_result(cfg, attempt["ticket"])
+        text = prior.get("text", "") if prior else ""
+    compliance = judge(scope(prompt), final, text[-MAX_HANDOFF:])
+    return {
+        **row,
+        "gate_first_pass": attempt.get("gate") == "PASS" and attempt["attempt"] == 1,
+        **metrics(calls),
+        "call_errors": [bool(call["is_error"]) for call in parsed["calls"]],
+        "compliance": compliance,
+        "judge_model": triage.LLM_MODEL if compliance is not None else None,
+    }
+
+
+def _finished_tickets(rows: list[dict], last: int | None) -> set[int]:
+    finished_at = {row["ticket"]: str(row.get("at", "")) for row in rows
+                   if row.get("event") in ("merged", "escalate") and type(row.get("ticket")) is int}
+    return set(sorted(finished_at, key=finished_at.get)[-last:] if last else finished_at)
+
+
+def _attempts(rows: list[dict], chosen: set[int]) -> dict[tuple, dict]:
+    # Attempt numbers restart on each claim; identical sessions keep their last row.
+    return {(row["ticket"], row["attempt"], row.get("transcript")): row for row in rows
+            if row.get("event") == "attempt" and row.get("ticket") in chosen
+            and type(row.get("attempt")) is int}
+
+
+
+
+
+
+def _messages(path: Path) -> list[dict]:
+    """`message` payloads from the bounded OMP-compatible session."""
+    return [row["message"] for row in _transcript_rows(path)
+            if row.get("type") == "message" and isinstance(row.get("message"), dict)]
 
 
 def _parts(message: dict) -> tuple[list[dict], str]:
@@ -54,16 +268,11 @@ def _parts(message: dict) -> tuple[list[dict], str]:
 
 def parse(path: Path) -> tuple[list[tuple[str, str]], str, str]:
     """(tool calls as (name, canonical arguments), first user text, last assistant text)."""
-    calls, prompt, final = [], "", ""
-    for message in _messages(path):
-        parts, text = _parts(message)
-        if message.get("role") == "user":
-            prompt = prompt or text
-        elif message.get("role") == "assistant":
-            calls += [(p.get("name"), json.dumps(p.get("arguments"), sort_keys=True))
-                      for p in parts if p.get("type") == "toolCall"]
-            final = text or final
-    return calls, prompt, final
+    parsed = _parsed(path)
+    return _canonical_calls(parsed), parsed["prompt"], parsed["final"]
+
+
+
 
 
 def excerpt(path: Path, max_chars: int = EXCERPT_CHARS) -> str:
@@ -129,42 +338,40 @@ def judge(ticket: str, final: str, handoff: str) -> float | None:
     return float(answer) if _NUMBER.fullmatch(answer) else None
 
 
+def _event_keys(rows: list[dict], event: str, key) -> set[tuple]:
+    return {key(row) for row in rows if row.get("event") == event}
+
+
+def _score_keys(rows: list[dict]) -> set[tuple]:
+    return {(row.get("ticket"), row.get("attempt"), row.get("transcript"))
+            for row in rows if row.get("event") == "score"}
+
+
+def _unscored(attempts: dict[tuple, dict], scored: set[tuple]) -> set[tuple]:
+    keys = [key for key in attempts if key not in scored]
+    return set(keys[-MAX_ATTEMPTS:])
+
+
 def run(cfg: config.Config, last: int | None = None, dry_run: bool = False) -> list[dict]:
-    """Score unscored attempts of the newest `last` finished tickets (all when None), at most
-    MAX_ATTEMPTS per run; journal one `score` row each unless `dry_run`. Returns the rows."""
+    """Score attempts and journal idempotent skill health rows for their transcripts."""
     triage.configure(cfg)
     rows = lifecycle.read_events(dispatch.EVENTS)
-    finished_at: dict[int, str] = {}
-    for r in rows:
-        if r.get("event") in ("merged", "escalate") and type(r.get("ticket")) is int:
-            finished_at[r["ticket"]] = str(r.get("at", ""))
-    chosen = set(sorted(finished_at, key=finished_at.get)[-last:] if last else finished_at)
-    scored = {(r.get("ticket"), r.get("attempt"), r.get("transcript")) for r in rows if r.get("event") == "score"}
-    # Attempt numbers restart on each claim; deduplicate identical sessions, keeping the last row.
-    attempts = {(r["ticket"], r["attempt"], r.get("transcript")): r for r in rows if r.get("event") == "attempt"
-                and r.get("ticket") in chosen and type(r.get("attempt")) is int}
-    attempts = [r for key, r in attempts.items() if key not in scored]
+    chosen = _finished_tickets(rows, last)
+    scored = _score_keys(rows)
+    recorded_loads = _event_keys(rows, "skill-load", _load_key)
+    recorded_coverage = _event_keys(rows, "skill-coverage", _coverage_key)
+    attempts = _attempts(rows, chosen)
     out = []
-    for a in attempts[-MAX_ATTEMPTS:]:
-        n, k, transcript = a["ticket"], a["attempt"], a.get("transcript")
-        row = {"ticket": n, "attempt": k, "transcript": transcript}
+    to_score = _unscored(attempts, scored)
+    for key, attempt in attempts.items():
+        transcript = attempt.get("transcript")
         path = cfg.root / transcript if isinstance(transcript, str) else None
-        if path is None or not path.is_file():
-            row["skipped"] = "missing"
-        else:
-            calls, prompt, final = parse(path)
-            handoff = dispatch.FACTORY / f"wt-{n}" / ".factory" / f"handoff-{n}.md"
-            if handoff.is_file():
-                text = handoff.read_text()
-            else:  # the worktree is removed after a clean merge; the accepted handoff is retained
-                prior = results.latest_result(cfg, n)
-                text = prior.get("text", "") if prior else ""
-            compliance = judge(scope(prompt), final, text[-MAX_HANDOFF:])
-            row.update(gate_first_pass=a.get("gate") == "PASS" and k == 1, **metrics(calls),
-                       compliance=compliance, judge_model=triage.LLM_MODEL if compliance is not None else None)
-        print(json.dumps({"event": "score", **row}))
-        if not dry_run:
-            dispatch.record("score", **row)
+        parsed = _parsed(path) if path is not None and path.is_file() else None
+        _record_health(cfg, attempt, parsed, recorded_loads, recorded_coverage, dry_run)
+        if key not in to_score:
+            continue
+        row = _attempt_score(cfg, attempt, parsed)
+        _record("score", row, dry_run)
         out.append(row)
     return out
 
