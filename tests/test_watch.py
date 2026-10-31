@@ -661,6 +661,12 @@ class ControlBandWatchTest(unittest.TestCase):
 
     def test_in_progress_attempt_failures_from_446_do_not_raise_alarm(self) -> None:
         rows = [row for row in self.rows() if row.get("event") == "attempt"]
+        rows += [
+            {"event": "attempt", "ticket": 420, "attempt": 3,
+             "head": "worker-420-3", "at": self.NOW.replace(hour=15, minute=12).isoformat()},
+            {"event": "attempt", "ticket": 369, "attempt": 4,
+             "head": "worker-369-4", "at": self.NOW.replace(hour=15, minute=17).isoformat()},
+        ]
         failures = (
             (420, 3, 6),
             (420, 3, 11),
