@@ -1576,11 +1576,10 @@ def _dependency_lockfiles(paths: set[str]) -> list[str]:
 
 
 def _recorded_plan_lists_lockfile(n: int, path: str) -> bool:
-    names = {path, Path(path).name}
-    alternatives = "|".join(re.escape(name) for name in sorted(names, key=len, reverse=True))
+    escaped = re.escape(path)
     listed = re.compile(
-        rf"^\s*(?:[-*]|\d+\.)\s+.*?(?:`(?:{alternatives})`|"
-        rf"(?<![\w./-])(?:{alternatives}))(?![\w./-])"
+        rf"^\s*(?:[-*]|\d+\.)\s+.*?(?:`{escaped}`|"
+        rf"(?<![\w./-]){escaped})(?![\w./-])"
     )
     for row in lifecycle.read_events(EVENTS):
         artifact = row.get("path")
