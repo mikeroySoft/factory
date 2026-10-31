@@ -255,3 +255,105 @@ Promise.resolve({expression}).then(result => process.stdout.write(JSON.stringify
         self.assertTrue(all(point["x"] > 800 for point in route["points"]))
         self.assertEqual(route["points"][-1], {"x": 1100, "y": 260})
         self.assertLess(route["points"][-2]["x"], route["points"][-1]["x"])
+
+    def test_retry_bundle_tracks_and_gutters_stay_bounded_without_shared_segments(self) -> None:
+        scenarios = self.evaluate(
+            "(() => { const api=window.WorkspaceTrace;"
+            "return value.scenarios.map(scenario => {"
+            "const members=Array.from({length:23},(_,i)=>i);"
+            "const spacing=api.bundleSpacing([members,members,members]);"
+            "return members.map((index) => {"
+            "const lane=index-(members.length-1)/2;"
+            "const stripe=lane*spacing.stripe;"
+            "const track=8+spacing.track/2+index*spacing.track;"
+            "return api.routeEdge({...scenario,"
+            "edge:{from:'source',to:'target',relation:'retries'},index,"
+            "lane:lane+stripe/4,track,bounds:value.bounds}); }); }); })()",
+            {
+                "bounds": {"width": 900, "height": 500},
+                "scenarios": [
+                    {
+                        "source": {"left": 740, "right": 840, "top": 80, "bottom": 160},
+                        "target": {"left": 50, "right": 150, "top": 220, "bottom": 300},
+                        "fromColumn": 3, "toColumn": 0,
+                    },
+                    {
+                        "source": {"left": 50, "right": 150, "top": 80, "bottom": 160},
+                        "target": {"left": 740, "right": 840, "top": 220, "bottom": 300},
+                        "fromColumn": 0, "toColumn": 3,
+                    },
+                    {
+                        "source": {"left": 798, "right": 898, "top": 80, "bottom": 160},
+                        "target": {"left": 798, "right": 898, "top": 220, "bottom": 300},
+                        "fromColumn": 3, "toColumn": 3,
+                    },
+                ],
+            },
+        )
+
+        for kind, routes in zip(("backward", "long-forward", "same-stage"), scenarios):
+            for index, route in enumerate(routes):
+                with self.subTest(kind=kind, lane=index - 11):
+                    points = route["points"]
+                    for point in points:
+                        self.assertGreaterEqual(point["x"], 0)
+                        self.assertLessEqual(point["x"], 900)
+                        self.assertGreaterEqual(point["y"], 0)
+                        self.assertLessEqual(point["y"], 500)
+                    self.assertEqual(route["markerEnd"], "url(#trace-arrow)")
+                    self.assertEqual(points[0]["y"], 120)
+                    self.assertEqual(points[-1]["y"], 260)
+                    self.assertEqual(points[0]["x"], 740 if kind == "backward" else (
+                        150 if kind == "long-forward" else 898
+                    ))
+                    self.assertEqual(points[-1]["x"], 740 if kind == "long-forward" else (
+                        150 if kind == "backward" else 898
+                    ))
+                    if kind == "long-forward":
+                        self.assertLess(points[-2]["x"], points[-1]["x"])
+                    else:
+                        self.assertGreater(points[-2]["x"], points[-1]["x"])
+                    self.assert_shared_segments_at_most(routes[:index], points, 100)
+
+    def assert_shared_segments_at_most(self, routes, points, limit) -> None:
+        for other in routes:
+            for start, end in zip(points, points[1:]):
+                for other_start, other_end in zip(other["points"], other["points"][1:]):
+                    for fixed, varying in (("x", "y"), ("y", "x")):
+                        if start[fixed] == end[fixed] == other_start[fixed] == other_end[fixed]:
+                            overlap = min(
+                                max(start[varying], end[varying]),
+                                max(other_start[varying], other_end[varying]),
+                            ) - max(
+                                min(start[varying], end[varying]),
+                                min(other_start[varying], other_end[varying]),
+                            )
+                            self.assertLessEqual(overlap, limit)
+
+    def test_spring_frames_keep_routes_bounded_and_attached_to_visible_nodes(self) -> None:
+        result = self.evaluate(
+            "(() => { const api=window.WorkspaceTrace;"
+            "const bounds={width:900,height:500};"
+            "const route=(x,y,lane,track)=>api.routeEdge({"
+            "edge:{from:'source',to:'target',relation:'retries'},"
+            "source:{left:x,right:x+100,top:y,bottom:y+80},"
+            "target:{left:600,right:700,top:220,bottom:300},"
+            "fromColumn:0,toColumn:3,lane,track,bounds}).points;"
+            "const start=route(50,80,11,480),target=route(70,85,-11,9.2);"
+            "return {target,frames:Array.from({length:51},(_,i)=>"
+            "api.springPoints(start,target,i/50,bounds))}; })()",
+            {},
+        )
+
+        for points in result["frames"]:
+            self.assertEqual(points[0], result["target"][0])
+            self.assertEqual(points[-1], result["target"][-1])
+            self.assertEqual(points[1]["y"], points[0]["y"])
+            self.assertEqual(points[-2]["y"], points[-1]["y"])
+            self.assertGreater(points[1]["x"], points[0]["x"])
+            self.assertLess(points[-2]["x"], points[-1]["x"])
+            for point in points:
+                self.assertGreaterEqual(point["x"], 0)
+                self.assertLessEqual(point["x"], 900)
+                self.assertGreaterEqual(point["y"], 0)
+                self.assertLessEqual(point["y"], 500)
