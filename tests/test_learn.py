@@ -364,6 +364,35 @@ class LessonsFileTest(unittest.TestCase):
                 (root / config.LESSONS_NAME).read_text().startswith("<!-- SPDX-License-Identifier: MIT -->\n")
             )
 
+    def test_run_exposes_learn_for_the_newest_evidence_ticket(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config.Config(Path(directory), "acme/widgets", manager=None)
+            cfg.factory.mkdir()
+            seen = {}
+
+            def propose(*_args, **_kwargs):
+                execution = lifecycle.current()
+                seen.update(stage=execution.stage, ticket=execution.ticket)
+                return [], None
+
+            with mock.patch.object(learn, "evidence", return_value=([7, 9], "evidence")), \
+                    mock.patch.object(learn, "propose", side_effect=propose), \
+                    mock.patch.object(dispatch, "EVENTS", cfg.factory / "events.jsonl"), \
+                    mock.patch.object(dispatch, "record"), \
+                    mock.patch.object(learn, "record_learn_decision"):
+                learn.run(cfg, last=2)
+            rows = [
+                row for row in lifecycle.read_events(cfg.factory / "events.jsonl")
+                if row.get("event") == "lifecycle" and row.get("stage") == "learn"
+            ]
+
+        self.assertEqual(seen, {"stage": "learn", "ticket": 9})
+        self.assertEqual(
+            [(row["kind"], row["ticket"]) for row in rows],
+            [("enter", 9), ("exit", 9)],
+        )
+
+
     def test_apache_license_file_with_standard_indentation_is_detected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

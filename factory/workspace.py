@@ -38,7 +38,6 @@ LIVE_LANES = ("triage", "worker", "gate", "reviewer", "manager", "watch", "learn
 LIVE_STAGE_LANES = {
     "triage": "triage",
     "triage-ticket": "triage",
-    "ticket": "worker",
     "worker": "worker",
     "gate": "gate",
     "gate-check": "gate",

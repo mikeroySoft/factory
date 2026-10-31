@@ -712,9 +712,10 @@ def _age(at: str) -> timedelta:
 
 def run_pass(
     cfg: config.Config, dry_run: bool = False, now: datetime | None = None,
+    events: list[dict] | None = None,
 ) -> list[dict]:
     """Log, diagnose, file/comment, and close configured signals."""
-    events = lifecycle.read_events(dispatch.EVENTS)
+    events = lifecycle.read_events(dispatch.EVENTS) if events is None else events
     if any(band.metric == "revert_rate_by_tier" for band in cfg.watch_bands):
         stats.configure(cfg)
         try:
@@ -881,8 +882,13 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--dry-run", action="store_true", help="print what would be filed or closed; no gh call, no journal row")
     args = parser.parse_args(argv)
     dispatch.configure(config.load())
-    with nullcontext() if args.dry_run else lifecycle.scope(dispatch.EVENTS, "watch", lazy=True):
-        run_pass(dispatch.cfg, args.dry_run)
+    events = lifecycle.read_events(dispatch.EVENTS)
+    ticket = next((
+        row["ticket"] for row in reversed(events)
+        if type(row.get("ticket")) is int and row["ticket"] > 0
+    ), None)
+    with nullcontext() if args.dry_run else lifecycle.scope(dispatch.EVENTS, "watch", ticket=ticket):
+        run_pass(dispatch.cfg, args.dry_run, events=events)
     if not args.dry_run:
         lifecycle.record_stage_success(dispatch.EVENTS, "watch")
     return 0

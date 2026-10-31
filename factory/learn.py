@@ -1132,6 +1132,20 @@ def run(
     if not tickets:
         print("factory learn: no finished tickets in .factory/events.jsonl yet")
         return None
+    if dry_run:
+        return _run(cfg, tickets, evidence_md, dry_run, evaluate, fields)
+    with lifecycle.scope(dispatch.EVENTS, "learn", ticket=tickets[-1]):
+        return _run(cfg, tickets, evidence_md, dry_run, evaluate, fields)
+
+
+def _run(
+    cfg: config.Config,
+    tickets: list[int],
+    evidence_md: str,
+    dry_run: bool,
+    evaluate: bool | None,
+    fields: dict,
+) -> dict | None:
     notes_md = ""
     if cfg.manager:
         notes = cfg.factory / manage.NOTES_NAME
