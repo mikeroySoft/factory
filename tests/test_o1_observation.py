@@ -3,6 +3,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -28,7 +29,8 @@ def at(i):
 
 class O1ObservationTest(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.source = self.tmp / "events.jsonl"
         self.out = self.tmp / "runs"
 
