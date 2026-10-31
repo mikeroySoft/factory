@@ -288,11 +288,44 @@ def _baseline_matches(baseline: dict | None, version: int, fingerprint: dict) ->
     )
 
 
+def _merged_improvement_pending(baseline: dict, rows: list[dict]) -> bool:
+    refreshed_at = max((
+        index
+        for index, row in enumerate(rows)
+        if row.get("event") == EVENT
+        and row.get("candidate") == baseline.get("main_sha")
+        and row.get("status") == "completed"
+        and row.get("accepted") is True
+    ), default=-1)
+    improved = {
+        row.get("candidate")
+        for row in rows
+        if row.get("event") == EVENT
+        and any(
+            flip.get("baseline") == "always-fail" and flip.get("head") == "always-pass"
+            for flip in row.get("flips", [])
+            if isinstance(flip, dict)
+        )
+    }
+    return any(
+        index > refreshed_at
+        and row.get("event") == "merged"
+        and row.get("head") in improved
+        for index, row in enumerate(rows)
+    )
+
+
 def baseline_ready(cfg: config.Config) -> bool:
-    return _baseline_matches(
-        load_baseline(baseline_path(cfg)),
-        corpus_version(cfg.root / CORPUS_PATH),
-        contract_fingerprint(cfg.root),
+    baseline = load_baseline(baseline_path(cfg))
+    return bool(
+        _baseline_matches(
+            baseline,
+            corpus_version(cfg.root / CORPUS_PATH),
+            contract_fingerprint(cfg.root),
+        )
+        and not _merged_improvement_pending(
+            baseline, lifecycle.read_events(cfg.factory / "events.jsonl")
+        )
     )
 
 
