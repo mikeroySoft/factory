@@ -2,15 +2,14 @@
 from __future__ import annotations
 
 import json
-import test_dispatch_lifecycle as dispatch_test
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 from factory import lifecycle
-
-from test_gate import gate, repo_with_test
+from tests import test_dispatch_lifecycle as dispatch_test
+from tests.test_gate import gate, repo_with_test
 
 
 class RunnerStorageDispatchTest(unittest.TestCase):
@@ -65,6 +64,11 @@ class RunnerStorageDispatchTest(unittest.TestCase):
         self.assertTrue(any(row.get("event") == "escalate" and row.get("code") == "gate_failed" for row in events))
         self.assertTrue((self.repo / ".factory" / "wt-7").is_dir())
 
+    def test_dashboard_surfaces_low_storage_as_a_host_problem(self) -> None:
+        self.set_runner_threshold("min_free_gb", 10**9)
+        snapshot = json.loads(self.cli("dashboard", "--json").stdout)
+        self.assertEqual(snapshot["host_problems"][0]["code"], "runner_storage_low")
+
 
 class GateTempCleanupTest(unittest.TestCase):
     def test_failed_gate_and_mutation_checks_remove_their_temp_directories(self) -> None:
@@ -94,6 +98,25 @@ class GateTempCleanupTest(unittest.TestCase):
                 self.assertEqual(code, 1, report + output)
                 self.assertTrue(record.exists(), report + output)
                 self.assertFalse(Path(record.read_text()).exists())
+
+    def test_low_storage_declines_gate_before_checks_run(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            marker = base / "check-ran"
+            command = f"open({str(marker)!r}, 'w').close()"
+            toml = (
+                "[runner]\nmin_free_gb = 1000000000\n"
+                "[[gate.check]]\nname = \"code\"\n"
+                f"run = {json.dumps([sys.executable, '-c', command])}\n"
+            )
+            repo = repo_with_test(base, toml)
+            code, output, report = gate(repo)
+            self.assertEqual(code, 75, output)
+            self.assertEqual(report, "")
+            self.assertFalse(marker.exists())
+            events = lifecycle.read_events(repo / ".factory" / "events.jsonl")
+            self.assertEqual([(row.get("event"), row.get("phase")) for row in events],
+                             [("runner_storage_low", "gate")])
 
 
 if __name__ == "__main__":

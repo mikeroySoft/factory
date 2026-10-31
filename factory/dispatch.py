@@ -31,7 +31,7 @@ import tomllib
 from contextlib import contextmanager, nullcontext, suppress
 from pathlib import Path
 
-from factory import __version__, brief, config, lifecycle, risk
+from factory import __version__, brief, config, lifecycle, risk, storage
 from factory.config import (
     LABEL_ADD_ONLY_OVERRIDE,
     LABEL_AGENT,
@@ -1532,6 +1532,13 @@ def ensure_worktree(n: int) -> Path:
     return wt
 
 
+def discard_worktree(n: int, wt: Path) -> None:
+    """Remove a non-escalated attempt; escalations never call this path."""
+    if wt.is_dir():
+        run(["git", "worktree", "remove", "--force", str(wt)], cwd=ROOT, check=False)
+    run(["git", "branch", "-D", f"agent/{n}"], cwd=ROOT, check=False)
+
+
 def commit_leftovers(wt: Path, n: int, title: str) -> None:
     run(
         [
@@ -1559,6 +1566,7 @@ def run_gate(
     repro_test: str | None = None, no_repro_test: str | None = None,
     base: str | None = None, timeout: float | None = None, blocking_mutation: bool = False,
 ) -> tuple[bool, str]:
+    storage.require(cfg, "gate")
     report_rel = f".factory/gate-report-{n}.md"
     (wt / ".factory").mkdir(exist_ok=True)
     report = wt / report_rel
@@ -1600,7 +1608,8 @@ def run_gate(
         cmd += ["--tier", tier]
     if blocking_mutation:
         cmd.append("--blocking-mutation")
-    proc = run(cmd, cwd=wt, check=False, timeout=timeout)
+    with storage.temporary_environment(f"factory-gate-{n}-"):
+        proc = run(cmd, cwd=wt, check=False, timeout=timeout)
     if report.exists():
         text = report.read_text()
         ok = proc.returncode == 0
@@ -3829,9 +3838,14 @@ def worker_round(
         run_options["env_overrides"] = environment
     if worker_version:
         run_options.update(worker=worker, worker_version=worker_version)
-    code, fired = run_worker(
-        argv, wt, logfile, wt / ".factory" / f"handoff-{n}.md", deadline, **run_options,
-    )
+    with storage.temporary_environment(f"factory-worker-{n}-") as environment:
+        run_options["env_overrides"] = {
+            **run_options.get("env_overrides", {}),
+            **environment,
+        }
+        code, fired = run_worker(
+            argv, wt, logfile, wt / ".factory" / f"handoff-{n}.md", deadline, **run_options,
+        )
     journal_attempt_plan(wt, n, attempt, labels, worker, worker_version)
     transcript = _transcript(session_dir, wall)
     timeout = {"timeout": fired, "reason": TIMEOUT_REASONS[fired]} if fired else {}
@@ -4306,12 +4320,20 @@ def process_ticket(
                          code="approval_drift")
         except LeaseRefused as exc:
             escalate(n, str(exc), None, code="lease_refused")
+        except storage.RunnerStorageLow:
+            execution.wait("runner_storage_low", mode="retry_next_pass")
+            if claimed:
+                discard_worktree(n, wt)
+                run(["gh", "issue", "edit", str(n), "--repo", REPO,
+                     "--remove-assignee", "@me"], check=False)
+            raise
         except FileNotFoundError as exc:
             # Host defect (worker executable not on PATH, #260), not a ticket defect: give the
             # claim back so the frontier retries once the host is fixed; the pass goes on.
             # Covers every worker launch of this ticket, first attempt and review bounces alike.
             execution.outcome, execution.reason = "mechanism_failure", f"{type(exc).__name__}: {exc}"
             log(f"#{n}: worker launch failed ({exc}); unclaimed, fix PATH or [workers] (`factory doctor`)")
+            discard_worktree(n, wt)
             run(["gh", "issue", "edit", str(n), "--repo", REPO, "--remove-assignee", "@me"], check=False)
             return False
         except Exception as exc:
@@ -4332,6 +4354,9 @@ def process_ticket(
 def ticket_pass(budget_min: int, dry_run: bool) -> None:
     """Claim up to capacity frontier tickets in accepted-priority order and work each one."""
     from factory import schedule
+
+    if not dry_run:
+        storage.require(cfg, "claim")
 
     with nullcontext() if dry_run else lifecycle.scope(EVENTS, "scheduling", lazy=True) as execution:
         active = active_tickets()
@@ -4394,7 +4419,7 @@ def pin_root() -> list[str]:
     return paths
 
 
-def main(argv: list[str]) -> int:
+def _main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description="AI-factory dispatcher (one pass, stateless)"
     )
@@ -4449,6 +4474,8 @@ def main(argv: list[str]) -> int:
                     "number,title,body,labels,assignees",
                 ]
             )
+            if not args.dry_run:
+                storage.require(cfg, "claim")
             result = 1 if process_ticket(issue, args.budget_min, args.dry_run, forced=True) is False else 0
             if not args.dry_run and result == 0:
                 lifecycle.record_stage_success(EVENTS, "dispatch")
@@ -4479,3 +4506,11 @@ def main(argv: list[str]) -> int:
         if not args.dry_run:
             lifecycle.record_stage_success(EVENTS, "dispatch")
         return 0
+
+
+def main(argv: list[str]) -> int:
+    try:
+        return _main(argv)
+    except storage.RunnerStorageLow as exc:
+        log(str(exc))
+        return 1

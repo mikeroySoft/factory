@@ -1054,6 +1054,15 @@ Clearing `manager.model` removes the repository override and restores the
 existing host value, a legacy `manager.command --model` fallback, or OMP's
 default model. Gate and safety policy remain file-managed.
 
+Before a claim and before every gate, Factory checks available bytes and inodes
+on both the runner temp filesystem and the `.factory` worktree filesystem.
+Falling below `[runner]` thresholds records the machine condition
+`runner_storage_low`, starts no gate, charges no ticket round, and leaves the
+ticket out of `ready-for-human`. `factory doctor` reports the same live check,
+and the dashboard lists it under Host problems. Worker and gate subprocesses
+receive isolated temporary directories that are removed on failure; escalated
+ticket worktrees remain available for diagnosis.
+
 ```toml
 [repo]
 # upstream = "upstream"          # fork workflow: sync upstream main each pass
@@ -1083,6 +1092,10 @@ command = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1",
 
 [manager]                         # optional; unset command disables it
 command = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]   # {prompt} = manager prompt file
+
+[runner]
+min_free_gb = 5
+min_free_inodes = 100000
 
 [gate]
 timeout = 1200

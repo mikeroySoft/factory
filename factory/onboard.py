@@ -19,7 +19,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-from factory import __version__, config, lifecycle
+from factory import __version__, config, lifecycle, storage
 from factory.config import BANDS_NAME, CONFIG_NAME, LABELS, ConfigError
 
 TEMPLATES = Path(__file__).with_name("templates")
@@ -656,6 +656,9 @@ def doctor(argv: list[str]) -> int:
 
     key_problem = key_directory_problem(cfg.factory) or access_file_problem(cfg.factory)
     report(key_problem is None, f"{cfg.factory.name} directory safe", key_problem or "")
+
+    runner_storage = storage.status(cfg)
+    report(runner_storage["ok"], "runner storage", storage.detail(runner_storage))
 
     fails = sum(r["status"] == "FAIL" for r in rows)
     if args.json:
