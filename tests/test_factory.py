@@ -20,7 +20,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 # Never read the operator's real host config; HostConfigTest writes its own here.
-XDG = Path(tempfile.mkdtemp())
+_ORIGINAL_XDG_CONFIG_HOME = os.environ.get("XDG_CONFIG_HOME")
+_XDG_TEMP = tempfile.TemporaryDirectory()
+XDG = Path(_XDG_TEMP.name)
 os.environ["XDG_CONFIG_HOME"] = str(XDG)
 
 from datetime import UTC
@@ -31,6 +33,14 @@ from factory import __version__, config, lifecycle, manage, runtime_events
 # redirect every fixture's lifecycle rows (gate timeouts, review verdicts...) into the live
 # journal, where `factory watch` files them as factory bugs. Tests that need a context set one.
 os.environ.pop(lifecycle.CONTEXT_ENV, None)
+
+def tearDownModule() -> None:
+    _XDG_TEMP.cleanup()
+    if _ORIGINAL_XDG_CONFIG_HOME is None:
+        os.environ.pop("XDG_CONFIG_HOME", None)
+    else:
+        os.environ["XDG_CONFIG_HOME"] = _ORIGINAL_XDG_CONFIG_HOME
+
 
 
 def host_file(text: str) -> None:

@@ -28,7 +28,7 @@ def at(i):
 
 class O1ObservationTest(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.source = self.tmp / "events.jsonl"
         self.out = self.tmp / "runs"
 
