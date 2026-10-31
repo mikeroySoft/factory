@@ -94,8 +94,9 @@ KNOWN_KEYS = {
     "review": ("command", "second_command", "json_mode", "policy"),
     "manager": ("model", "command", "rounds", "review", "stale_days", "max_active_cap", "budget_min_cap"),
     "learn": ("evaluate", "max_tickets", "max_tokens", "budget_min"),
-    "release": ("auto", "version_file", "min_tickets", "bar_min_tickets",
-                "bar_floor_human_rate", "bar_floor_first_pass"),
+    "release": ("auto", "version_file", "min_tickets", "bar_min_tickets", "window_tickets",
+                "experimental_min_interval_hours", "soak_hours", "bar_floor_human_rate",
+                "bar_floor_first_pass", "bar_floor_escape_rate"),
     "eval": ("max_cases", "max_tokens", "budget_min", "profile", "schedule"),
     "gate": ("timeout", "lock", "check", "protected_paths", "add_only_paths"),
     "leak_scan": ("pattern", "exclude", "extra"),
@@ -223,6 +224,10 @@ class Config:
     release_bar_min_tickets: int = 20
     release_bar_floor_human_rate: float = 0.10
     release_bar_floor_first_pass: float = 0.90
+    release_window_tickets: int = 30
+    release_experimental_min_interval_hours: float = 6
+    release_soak_hours: float = 24
+    release_bar_floor_escape_rate: float = 0.05
     checks: list[Check] = field(default_factory=list)
     protected_paths: list[str] = field(default_factory=list)
     add_only_paths: list[str] = field(default_factory=list)
@@ -787,23 +792,48 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     version_file = release.get("version_file", cfg.release_version_file)
     min_tickets = release.get("min_tickets", cfg.release_min_tickets)
     bar_min_tickets = release.get("bar_min_tickets", cfg.release_bar_min_tickets)
+    window_tickets = release.get("window_tickets", cfg.release_window_tickets)
+    interval = release.get(
+        "experimental_min_interval_hours", cfg.release_experimental_min_interval_hours
+    )
+    soak_hours = release.get("soak_hours", cfg.release_soak_hours)
     floor_human = release.get("bar_floor_human_rate", cfg.release_bar_floor_human_rate)
     floor_first = release.get("bar_floor_first_pass", cfg.release_bar_floor_first_pass)
+    floor_escape = release.get("bar_floor_escape_rate", cfg.release_bar_floor_escape_rate)
     if type(auto) is not bool:
         raise ConfigError("release.auto must be true or false")
     if not isinstance(version_file, str) or not version_file or Path(version_file).is_absolute() or ".." in Path(version_file).parts:
         raise ConfigError("release.version_file must be a nonempty repository-relative path")
-    for key, value in (("min_tickets", min_tickets), ("bar_min_tickets", bar_min_tickets)):
+    for key, value in (
+        ("min_tickets", min_tickets),
+        ("bar_min_tickets", bar_min_tickets),
+        ("window_tickets", window_tickets),
+    ):
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise ConfigError(f"release.{key} must be a positive integer")
-    for key, value in (("bar_floor_human_rate", floor_human),
-                       ("bar_floor_first_pass", floor_first)):
+    if window_tickets < bar_min_tickets:
+        raise ConfigError("release.window_tickets must be at least release.bar_min_tickets")
+    for key, value in (
+        ("experimental_min_interval_hours", interval),
+        ("soak_hours", soak_hours),
+    ):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            raise ConfigError(f"release.{key} must be a nonnegative number")
+    for key, value in (
+        ("bar_floor_human_rate", floor_human),
+        ("bar_floor_first_pass", floor_first),
+        ("bar_floor_escape_rate", floor_escape),
+    ):
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
             raise ConfigError(f"release.{key} must be a number from 0 to 1")
     cfg.release_auto, cfg.release_version_file, cfg.release_min_tickets = auto, version_file, min_tickets
     cfg.release_bar_min_tickets = bar_min_tickets
+    cfg.release_window_tickets = window_tickets
+    cfg.release_experimental_min_interval_hours = float(interval)
+    cfg.release_soak_hours = float(soak_hours)
     cfg.release_bar_floor_human_rate = float(floor_human)
     cfg.release_bar_floor_first_pass = float(floor_first)
+    cfg.release_bar_floor_escape_rate = float(floor_escape)
     journal = raw.get("journal", {})
     for key in ("max_mb", "retention"):
         value = journal.get(key, getattr(cfg, f"journal_{key}"))

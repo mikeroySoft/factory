@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stdout
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
@@ -58,8 +58,9 @@ class ReleaseChannelsTest(unittest.TestCase):
         self.git(self.repo, "add", ".")
         self.git(self.repo, "commit", "-q", "-m", "initial")
         bar = {"human_rate": 1.0, "first_pass": 0.0, "escape_rate": 1.0, "tickets": 30}
+        self.git(self.repo, "tag", "-a", "v0.4.5", "-m", "Experimental release 0.4.5")
         self.git(self.repo, "tag", "-a", "v0.4.6", "-m", f"Release 0.4.6\n\n```json\n{json.dumps(bar)}\n```")
-        self.git(self.repo, "push", "-q", "origin", "main", "v0.4.6")
+        self.git(self.repo, "push", "-q", "origin", "main", "v0.4.5", "v0.4.6")
         (self.repo / "work.txt").write_text("change\n")
         self.git(self.repo, "add", "work.txt")
         self.git(self.repo, "commit", "-q", "-m", "work")
@@ -84,6 +85,19 @@ class ReleaseChannelsTest(unittest.TestCase):
     @staticmethod
     def gh_result(code: int, stderr: str = "") -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess([], code, "", stderr)
+    def make_odd(self) -> str:
+        release._update_experimental_files(self.cfg, self.repo, "0.4.6", "0.4.7")
+        self.git(self.repo, "add", "factory/__init__.py", "CHANGELOG.md")
+        self.git(self.repo, "commit", "-q", "-m", "Release 0.4.7")
+        sha = self.git(self.repo, "rev-parse", "HEAD")
+        self.git(self.repo, "tag", "-a", "v0.4.7", "-m", "Experimental release 0.4.7")
+        self.git(self.repo, "push", "-q", "origin", "HEAD:main", "v0.4.7")
+        at = lifecycle._now()
+        self.event(at=at, event="lifecycle", stage="dispatcher", kind="enter", engine_commit=sha)
+        self.event(at=at, event="attempt", ticket=1, attempt=1, gate="PASS")
+        self.event(at=at, event="merged", ticket=1)
+        return sha
+
 
     def test_config_defaults_and_window_guard(self) -> None:
         loaded = config.load(self.repo)
@@ -140,6 +154,59 @@ class ReleaseChannelsTest(unittest.TestCase):
         self.assertEqual(gh.call_args_list[1].args[1:6], (
             "create", "v0.4.7", "--verify-tag", "--prerelease", "--latest=false"))
 
+    def test_even_promotion_tags_latest_advances_stable_and_opens_carryback(self) -> None:
+        self.make_odd()
+        with mock.patch.object(release, "gate_passes", return_value=True), \
+                mock.patch.object(release, "ci_passes", return_value=True), \
+                mock.patch("factory.stats.escapes", return_value=[]):
+            built = release.run(self.cfg)
+        self.assertIn("built promotion branch release/v0.4.8", built)
+        self.assertIn('__version__ = "0.4.8"', self.git(
+            self.origin, "show", "release/v0.4.8:factory/__init__.py"))
+        self.assertIn("factory@v0.4.8", self.git(
+            self.origin, "show", "release/v0.4.8:README.md"))
+
+        with mock.patch.object(release, "ci_passes", return_value=True), \
+                mock.patch.object(release, "_gh_release", side_effect=[
+                    self.gh_result(1), self.gh_result(0),
+                ]) as gh, mock.patch("factory.stats.escapes", return_value=[]):
+            tagged = release.run(self.cfg)
+        self.assertIn("released v0.4.8", tagged)
+        public = self.git(self.origin, "rev-parse", "v0.4.8^{}")
+        self.assertEqual(self.git(self.origin, "rev-parse", "stable"), public)
+        self.assertIn("--latest", gh.call_args_list[1].args)
+        annotation = self.git(
+            self.origin, "for-each-ref", "--format=%(contents)", "refs/tags/v0.4.8")
+        recorded = release._bar(annotation)
+        self.assertFalse(
+            {"soak_hours", "watch_filed_bugs", "escalation_rate", "escape_rate"}
+            - set(recorded)
+        )
+
+        with mock.patch.object(release, "_pulls", return_value=[]), \
+                mock.patch.object(release, "_open_pull", return_value={"number": 18}) as opened, \
+                mock.patch("factory.stats.escapes", return_value=[]):
+            carried = release.run(self.cfg)
+        self.assertIn("opened promotion PR #18 for v0.4.8", carried)
+        self.assertEqual(opened.call_args.args[1:3], ("release/v0.4.8", "Promote v0.4.8"))
+        self.assertIn('__version__ = "0.4.7"', self.git(
+            self.origin, "show", "release/v0.4.8:factory/__init__.py"))
+
+    def test_escape_rate_blocks_even_promotion(self) -> None:
+        self.make_odd()
+        strict = {
+            "human_rate": 1.0, "first_pass": 0.0, "escape_rate": 0.0, "tickets": 30,
+            "pending_tickets": 0, "pending_human_touches": 0,
+            "pending_first_passes": 0, "pending_attempts": 0,
+        }
+        escapes = [{"candidates": [{"ticket": 1}]}]
+        with mock.patch.object(release, "_bar", return_value=strict), \
+                mock.patch.object(release, "gate_passes") as gate, \
+                mock.patch("factory.stats.escapes", return_value=escapes):
+            held = release.run(self.cfg)
+        self.assertIn("escape_rate 1.0 is worse than 0.0", held)
+        gate.assert_not_called()
+
     def test_experimental_interval_and_in_flight_pr_hold(self) -> None:
         self.cfg.release_experimental_min_interval_hours = 10_000
         with mock.patch.object(release, "_pulls", return_value=[]), \
@@ -192,9 +259,13 @@ class ReleaseChannelsTest(unittest.TestCase):
             release.run(self.cfg, dry_run=True)
         report = json.loads(output.getvalue())
         self.assertEqual(set(report), {"odd", "even"})
-        self.assertFalse(any(args and args[0] in {
-            "tag", "push", "worktree", "branch", "commit", "add",
-        } for args in calls))
+        self.assertFalse(any(
+            args and (
+                args[0] in {"push", "worktree", "branch", "commit", "add"}
+                or (args[0] == "tag" and any(flag in args for flag in ("-a", "-d")))
+            )
+            for args in calls
+        ))
 
 
 if __name__ == "__main__":
