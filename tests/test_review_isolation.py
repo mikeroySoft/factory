@@ -205,20 +205,29 @@ class ReviewIsolationTest(unittest.TestCase):
 
     def test_reviewer_snapshot_is_read_only_and_archive_failure_checked(self) -> None:
         subprocess_run = dispatch.subprocess.run
+        chmod = Path.chmod
+        original_modes = {}
 
         def checked_run(command, *args, **kwargs):
             if command[:2] == ["git", "archive"]:
                 self.assertIs(kwargs.get("check"), True)
             return subprocess_run(command, *args, **kwargs)
 
+        def record_chmod(path: Path, mode: int) -> None:
+            original_modes.setdefault(path, path.stat().st_mode & 0o777)
+            chmod(path, mode)
+
         def inspect_snapshot(command, **kwargs):
             snapshot = Path(kwargs["cwd"]) / "snapshot"
             for path in [snapshot, *snapshot.rglob("*")]:
-                expected = 0o555 if path.is_dir() else 0o444
-                self.assertEqual(path.stat().st_mode & 0o777, expected)
+                self.assertEqual(
+                    path.stat().st_mode & 0o777,
+                    original_modes[path] & ~0o222,
+                )
             return subprocess.CompletedProcess(command, 0)
 
         with mock.patch.object(dispatch.subprocess, "run", side_effect=checked_run), \
+                mock.patch.object(Path, "chmod", record_chmod), \
                 mock.patch.object(dispatch, "run", side_effect=inspect_snapshot):
             result = dispatch._run_reviewer(
                 [sys.executable, "-c", ""], self.wt, self.head, "diff",
