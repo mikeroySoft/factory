@@ -607,6 +607,26 @@ class HighPipelineBoundaryTest(unittest.TestCase):
         self.escalate.assert_called_once()
         self.assertEqual(self.escalate.call_args.kwargs["code"], "review_revise")
 
+
+    def test_missing_worker_provenance_machine_escalates_before_review(self) -> None:
+        def work_without_model(*_args, **_kwargs):
+            self.heads.append(HEAD)
+            dispatch.record(
+                "attempt", ticket=7, head=HEAD, actual_head=HEAD, gate="PASS",
+            )
+            return True, "- test: PASS\n", self.root / "worker.log", HEAD
+
+        self.worker.side_effect = work_without_model
+        review = self.patch(dispatch, "review")
+        self.patch(dispatch, "run_gate", return_value=(True, "- mutation: PASS\n"))
+        dispatch.process_ticket(self.issue, 10, False, forced=True)
+        review.assert_not_called()
+        self.escalate.assert_called_once()
+        self.assertEqual(
+            self.escalate.call_args.kwargs["code"],
+            "missing_worker_provenance",
+        )
+
     def test_high_disagree_checks_all_agree_approves_and_merges_without_human(self) -> None:
         self.reviews(("APPROVE", "APPROVE"))
         self.patch(dispatch, "run_gate", return_value=(True, "- mutation: PASS\n"))
@@ -745,6 +765,66 @@ class MutationExecutionTest(unittest.TestCase):
             self.assertEqual(mutation.run_tests("factory/example.py"), 1)
         self.assertEqual(executed, [])
 
+
+
+class WorkerModelProvenanceTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.cfg = config.Config(self.root, "acme/widgets")
+        dispatch.configure(self.cfg)
+
+    def high_review(self, head: str) -> tuple[str | None, str, bool]:
+        def review(*_args, role="primary", **_kwargs):
+            pending = dispatch._PENDING_SECOND_REVIEWS if role == "second" else dispatch._PENDING_REVIEWS
+            pending[7] = {"verdict": "APPROVE", "model": f"{role}/model"}
+            return "APPROVE", f"{role} ok"
+
+        with mock.patch.object(dispatch, "risk_for_head", return_value=("High", ["high:risk policy"])), \
+                mock.patch.object(dispatch, "review", side_effect=review), \
+                mock.patch.object(
+                    dispatch, "run",
+                    return_value=subprocess.CompletedProcess([], 0, "M\t.github/workflows/ci.yml\n", ""),
+                ):
+            return dispatch.pr_gate_and_review(self.root, 7, "- mutation: PASS\n", head, {})
+
+    def test_builtin_chore_model_survives_requeue_and_post_decision_claim(self) -> None:
+        model = self.cfg.worker_model(config.LABEL_CHORE)
+        dispatch.record(
+            "attempt", ticket=7, attempt=1, head=HEAD, actual_head=HEAD,
+            gate="PASS", worker=config.LABEL_CHORE, worker_model=model,
+        )
+        self.assertEqual(self.high_review(HEAD)[0], "APPROVE")
+
+        dispatch.record("risk-requeue", ticket=7, head=HEAD, round=1)
+        dispatch.record("human-decision", ticket=7, status="success", decision_id="owner-choice")
+        dispatch.record("claimed", ticket=7, worker=config.LABEL_CHORE)
+        dispatch.record(
+            "attempt", ticket=7, attempt=1, head=NEW_HEAD, actual_head=NEW_HEAD,
+            gate="PASS", worker=config.LABEL_CHORE, worker_model=model,
+        )
+        self.assertEqual(self.high_review(NEW_HEAD)[0], "APPROVE")
+        self.assertEqual(model, "gpt-6-sol")
+        checks = [
+            row for row in dispatch.lifecycle.read_events(dispatch.EVENTS)
+            if row.get("event") == "risk-check"
+        ]
+        self.assertEqual([row["worker_model"] for row in checks], [model, model])
+
+    def test_missing_worker_provenance_blocks_review_with_machine_code(self) -> None:
+        with mock.patch.object(dispatch, "risk_for_head", return_value=("High", ["high:risk policy"])), \
+                mock.patch.object(dispatch, "review", return_value=("APPROVE", "primary ok")) as review:
+            verdict, findings, _ = dispatch.pr_gate_and_review(
+                self.root, 7, "- mutation: PASS\n", HEAD, {},
+            )
+        self.assertIsNone(verdict)
+        review.assert_not_called()
+        self.assertEqual(
+            dispatch._PENDING_REVIEWS[7]["failure_code"],
+            "missing_worker_provenance",
+        )
+        self.assertIn("missing worker model provenance", findings)
 
 if __name__ == "__main__":
     unittest.main()

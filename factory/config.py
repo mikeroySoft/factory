@@ -64,7 +64,10 @@ DEFAULT_LEAK_PATTERN = (r"\.(?:corp|internal|intranet|lan)\b|\bconfidential\b|\b
                         r"|\bjira\b|\bconfluence\b|\.atlassian\.net\b")
 DEFAULT_WORKER = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]
 DEFAULT_WORKER_MODEL = "openai-codex/gpt-5.6-sol"
-DEFAULT_CHORE_WORKER = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
+DEFAULT_CHORE_WORKER = [
+    "droid", "exec", "-f", "{prompt}", "--auto", "medium",
+    "--model", "gpt-6-sol", "--cwd", "{cwd}",
+]
 DEFAULT_REVIEWER = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1", "{prompt}"]
 DEFAULT_SECOND_REVIEWER = ["omp", "-p", "--no-session", "--model", "openai-codex/gpt-6-astra", "{prompt}"]
 DEFAULT_LLM_URL = "http://127.0.0.1:11434/v1/chat/completions"
