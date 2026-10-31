@@ -1333,9 +1333,9 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
             "event": "plan", "ticket": 7, "status": "recorded", "path": str(plan),
         }
         cases = {
-            "event": {**valid, "event": "attempt"},
-            "ticket": {**valid, "ticket": 8},
-            "status": {**valid, "status": "missing"},
+            "event": {**valid, "event": "review"},
+            "ticket": {**valid, "ticket": 6},
+            "status": {**valid, "status": "skipped"},
         }
         for field, row in cases.items():
             with self.subTest(field=field), mock.patch.object(
@@ -1343,6 +1343,27 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
             ):
                 self.assertFalse(dispatch._recorded_plan_lists_lockfile(7, "uv.lock"))
         with mock.patch.object(lifecycle, "read_events", return_value=[valid]):
+            self.assertTrue(dispatch._recorded_plan_lists_lockfile(7, "uv.lock"))
+
+    def test_recorded_plan_filter_skips_missing_plan(self):
+        from unittest import mock
+
+        from factory import config, dispatch
+
+        dispatch.configure(config.load(self.repo))
+        plan = self.repo / "plan.md"
+        plan.write_text("## Files\n- uv.lock\n")
+        rows = [
+            {
+                "event": "plan", "ticket": 7, "status": "recorded",
+                "path": str(self.repo / "missing.md"),
+            },
+            {
+                "event": "plan", "ticket": 7, "status": "recorded", "path": str(plan),
+            },
+        ]
+
+        with mock.patch.object(lifecycle, "read_events", return_value=rows):
             self.assertTrue(dispatch._recorded_plan_lists_lockfile(7, "uv.lock"))
 
     def test_recorded_plan_filter_toggles_only_for_files_section(self):
@@ -1356,6 +1377,7 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
             "event": "plan", "ticket": 7, "status": "recorded", "path": str(plan),
         }
         cases = (
+            ("- uv.lock\n## Files\n- change.txt\n", False),
             ("## Risks\n- uv.lock\n## Files\n- change.txt\n", False),
             ("## Files\n- change.txt\n## Proof\n- uv.lock\n", False),
             ("## Risks\n- change.txt\n## Files\n- uv.lock\n", True),
