@@ -479,6 +479,57 @@ class CloseDecisionTest(unittest.TestCase):
                     manage.apply(79, {"title": "t", "body": "b"}, "CLOSE", "x", None, repo / "p.md")
                 run.assert_not_called()
 
+    def test_close_compares_pr_fields_by_value(self) -> None:
+        for state, closes_pr in (
+            (bytearray(b"CLOSED").decode(), False),
+            (bytearray(b"OPEN").decode(), True),
+        ):
+            with self.subTest(state=state), tempfile.TemporaryDirectory() as d:
+                repo = Path(d)
+                (repo / ".factory").mkdir()
+                dispatch.configure(config.Config(repo, "example/project"))
+                pr = {
+                    "number": 80,
+                    "state": state,
+                    "baseRefName": bytearray(b"main").decode(),
+                }
+                result = subprocess.CompletedProcess(
+                    [], 0, stdout="https://example.test/comment\n",
+                )
+                with mock.patch.object(dispatch, "gh_json", return_value=pr), \
+                        mock.patch.object(dispatch, "run", return_value=result) as run, \
+                        mock.patch.object(dispatch, "comment_receipt"):
+                    manage.apply(
+                        79, {"title": "t", "body": "b"}, "CLOSE",
+                        "No change should land.", None, repo / "packet.md",
+                    )
+
+                commands = [call.args[0] for call in run.call_args_list]
+                self.assertEqual(
+                    any(command[1:3] == ["pr", "close"] for command in commands),
+                    closes_pr,
+                )
+
+    def test_close_rejects_unknown_states_and_other_targets(self) -> None:
+        prs = (
+            {"number": 80, "state": "BOGUS", "baseRefName": "main"},
+            {"number": 80, "state": "UNKNOWN", "baseRefName": "main"},
+            {"number": 80, "state": "OPEN", "baseRefName": "develop"},
+        )
+        for pr in prs:
+            with self.subTest(pr=pr), tempfile.TemporaryDirectory() as d:
+                repo = Path(d)
+                (repo / ".factory").mkdir()
+                dispatch.configure(config.Config(repo, "example/project"))
+                with mock.patch.object(dispatch, "gh_json", return_value=pr), \
+                        mock.patch.object(dispatch, "run") as run, \
+                        self.assertRaises(ValueError):
+                    manage.apply(
+                        79, {"title": "t", "body": "b"}, "CLOSE",
+                        "No change should land.", None, repo / "packet.md",
+                    )
+                run.assert_not_called()
+
     def test_parse_accepts_close_and_approve_only_where_allowed(self) -> None:
         self.assertEqual(manage.parse("DECISION: CLOSE\nwhy", {})[0], "CLOSE")
         self.assertEqual(manage.parse("DECISION: APPROVE\nwhy", {})[0], "HUMAN")
