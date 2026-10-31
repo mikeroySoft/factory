@@ -995,6 +995,51 @@ class IntendedStateCommandTest(unittest.TestCase):
             ["eval.schedule"],
         )
 
+    def test_undecided_switch_warns_without_failing_doctor_or_alerting_watch(self) -> None:
+        source = self.root / "source" / "factory" / "config.py"
+        source.parent.mkdir(parents=True)
+        intended = source.parent.parent / "docs" / config.INTENDED_STATE_NAME
+        intended.parent.mkdir()
+        intended.write_text(
+            '[repo."mikeroySoft/factory"]\n'
+            '"release.auto" = "undecided"\n'
+        )
+        output = io.StringIO()
+        with mock.patch.object(config, "__file__", str(source)), \
+                mock.patch.object(onboard.config, "load", return_value=self.cfg), \
+                mock.patch.object(onboard.config, "host_config", return_value={}), \
+                mock.patch.object(onboard.config, "host_config_path", return_value=self.host_path), \
+                mock.patch.object(onboard.config, "engine_drift", return_value=None), \
+                mock.patch.object(onboard, "sh", side_effect=self.command), \
+                mock.patch.object(onboard.shutil, "which", return_value="/bin/tool"), \
+                mock.patch.object(onboard, "_dashboard_port_check", return_value=(True, "available")), \
+                mock.patch.object(triage, "probe_endpoint", return_value=(True, "ready")), \
+                redirect_stdout(output):
+            code = cli.main(["doctor"])
+
+        lines = [
+            line for line in output.getvalue().splitlines() if "release.auto" in line
+        ]
+        self.assertEqual(code, 0)
+        self.assertEqual(len(lines), 1)
+        self.assertIn("WARN", lines[0])
+        self.assertIn("configured false", lines[0])
+
+        dispatch.configure(self.cfg)
+        watch_output = io.StringIO()
+        with mock.patch.object(config, "__file__", str(source)), \
+                mock.patch.object(watch, "failed_units", return_value=[]), \
+                mock.patch.object(watch, "runtime_errors", return_value=[]), \
+                redirect_stdout(watch_output):
+            signals = watch.run_pass(self.cfg, dry_run=True)
+
+        self.assertEqual(
+            [(signal["name"], signal["tier"]) for signal in signals],
+            [("release.auto", "warn")],
+        )
+        self.assertIn("watch: warn", watch_output.getvalue())
+        self.assertNotIn("would file", watch_output.getvalue())
+
     def test_install_keeps_intended_but_disabled_eval_units_off(self) -> None:
         units = self.root / "units"
         units.mkdir()
