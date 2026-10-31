@@ -511,6 +511,62 @@ class ReviewerEvalTest(unittest.TestCase):
                  mock.patch.object(reviewer_eval, "contract_fingerprint", return_value=changed):
                 self.assertFalse(reviewer_eval.baseline_ready(cfg))
 
+    def test_merged_improvement_requires_new_accepted_main_baseline(self) -> None:
+        fingerprint = {"prompt_sha256": {"case": "prompt"}, "model": "reviewer/one"}
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config.Config(root=Path(directory), repo="acme/widgets")
+            old_main, candidate, refreshed_main = ("a" * 40, "b" * 40, "c" * 40)
+            baseline = {
+                "event": reviewer_eval.EVENT,
+                "candidate": old_main,
+                "status": "completed",
+                "accepted": True,
+                "corpus_version": 2,
+                "statuses": {"case": "always-fail"},
+                **fingerprint,
+            }
+            lifecycle.append(cfg.factory / "events.jsonl", baseline)
+            self.assertTrue(
+                reviewer_eval.write_baseline(
+                    reviewer_eval.baseline_path(cfg), baseline, old_main
+                )
+            )
+            lifecycle.append(cfg.factory / "events.jsonl", {
+                "event": reviewer_eval.EVENT,
+                "candidate": candidate,
+                "status": "completed",
+                "verdict": "pass",
+                "flips": [{
+                    "case": "case",
+                    "baseline": "always-fail",
+                    "head": "always-pass",
+                }],
+            })
+            lifecycle.append(cfg.factory / "events.jsonl", {
+                "event": "merged",
+                "head": candidate,
+                "merge_sha": refreshed_main,
+            })
+
+            with mock.patch.object(reviewer_eval, "corpus_version", return_value=2), \
+                 mock.patch.object(
+                     reviewer_eval, "contract_fingerprint", return_value=fingerprint
+                 ):
+                self.assertFalse(reviewer_eval.baseline_ready(cfg))
+
+                refreshed = {
+                    **baseline,
+                    "candidate": refreshed_main,
+                    "statuses": {"case": "always-pass"},
+                }
+                lifecycle.append(cfg.factory / "events.jsonl", refreshed)
+                self.assertTrue(
+                    reviewer_eval.write_baseline(
+                        reviewer_eval.baseline_path(cfg), refreshed, refreshed_main
+                    )
+                )
+                self.assertTrue(reviewer_eval.baseline_ready(cfg))
+
     def test_failed_runner_does_not_reuse_stale_results(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
