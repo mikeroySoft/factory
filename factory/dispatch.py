@@ -3838,11 +3838,7 @@ def worker_round(
         run_options["env_overrides"] = environment
     if worker_version:
         run_options.update(worker=worker, worker_version=worker_version)
-    with storage.temporary_environment(f"factory-worker-{n}-") as environment:
-        run_options["env_overrides"] = {
-            **run_options.get("env_overrides", {}),
-            **environment,
-        }
+    with storage.temporary_environment(f"factory-worker-{n}-"):
         code, fired = run_worker(
             argv, wt, logfile, wt / ".factory" / f"handoff-{n}.md", deadline, **run_options,
         )
