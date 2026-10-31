@@ -507,9 +507,13 @@ def doctor(argv: list[str]) -> int:
         report(None, "defaults in effect", ", ".join(unset), info=True)
     for key, expected, actual in mismatches:
         report(
-            False,
+            None if expected is None else False,
             f"intended state {key}",
-            f"declared {str(expected).lower()}, configured {str(actual).lower()}; live config unchanged",
+            (
+                f"decision pending, configured {str(actual).lower()}; live config unchanged"
+                if expected is None else
+                f"declared {str(expected).lower()}, configured {str(actual).lower()}; live config unchanged"
+            ),
         )
     report_stage_success(cfg, report)
     if cfg.watch_bands:

@@ -325,7 +325,7 @@ landed on its own, and partial progress needs its own reviewed PR.
 | `factory plan list` / `factory plan inspect N` | Read-only schema 1 JSON over `initiative` issues: declared status/owner, parsed sections, `#N` implementation links (`inspect` also fetches each linked issue's title/state), per-issue `malformed` + `problems` (missing/invalid declared facts, sections cut at 4,000 characters, links beyond the first 20), cited sources with `observed_at`. `list` reads at most 3 pages of 100 and keeps malformed initiatives flagged per row (exit 0); a failed page, or a malformed initiative under `inspect`, yields `coverage.status: partial` and exit 1, never a mutation. |
 | `factory plan route N --reason <requirements\|implementation\|ci\|unknown> [--path P]... --json` | Read-only schema 1 JSON naming the human who owns a decision on ticket N; nothing is assigned, labelled or commented. JSON is also the default when `--json` is omitted. Priority: a `**Decision owner**` section in the ticket body (human override, wins on every recomputation), the canonical `Initiative: #N` (or legacy `Programme: #N`) initiative's Owner, or the initiative's own Owner when routing that initiative (requirements only), `[collaboration.reasons]`, `[collaboration.components]` exact repo-relative path prefixes against the given `--path`s (implementation only; `src/auth` matches `src/auth/x.py`, never `src/authentication/`), then `[collaboration].fallback`. `route.status` is `selected`, `candidates` (paths span prefixes with different owners), `unassigned` (reason `unknown`, no `--path` for implementation, or nothing configured) or `invalid` (malformed declared owner; `@org/team` on a user-owned repository). `route.revision` ties the answer to the `.factory.toml` commit and issue `updated_at`; `route.provenance` lists every step. Owner syntax is checked, membership is not: an unreadable repository record leaves `verification: unknown`. Without a `[collaboration]` section only ticket sources apply. |
 | `factory plan baseline N` / `factory plan drift TICKET` | Read-only schema 1 JSON for proposing a complete immutable initiative baseline or comparing a ticket's latest accepted baseline with the live complete source. Results are under top-level `baseline` or `drift`; neither command edits issues, rebaselines work, or grants execution authority. |
-| `factory doctor` / `init` / `install` | Onboarding, above. `doctor` exits nonzero when a live switch differs from the reviewed state in `docs/intended-state.toml`; neither `doctor` nor `install` changes that switch. |
+| `factory doctor` / `init` / `install` | Onboarding, above. In `docs/intended-state.toml`, boolean switch values are decided states: `doctor` exits nonzero when live configuration differs. The value `"undecided"` reports the switch and its live state as a warning without failing. Neither `doctor` nor `install` changes a switch. |
 
 `factory watch` also evaluates the declared `EXPECTATIONS` table: the latest successful
 dispatcher pass within 30 minutes, an `eval-summary` within 8 days when `eval.schedule`
@@ -343,8 +343,9 @@ For a per-issue alert, use the filing's read-only timeline and journal commands:
 inspect the queue entry, subsequent distinct dispatch successes (including the
 newest `.factory/stage-success.json` projection), and current-episode
 `triage-ticket` exits for that issue.
-Reviewed switch intent is declared in `docs/intended-state.toml`; reporting drift never
-changes the live configuration.
+Reviewed switch intent is declared in `docs/intended-state.toml`. Boolean values
+produce act-tier drift signals; `"undecided"` produces warning-only observations.
+Reporting never changes the live configuration.
 
 Skill health comes from the same persisted worker transcripts: `factory score`
 journals each `read` of `skill://<name>` or `*/SKILL.md` as an idempotent

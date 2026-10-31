@@ -312,8 +312,8 @@ class Config:
         return expand(argv, prompt=str(prompt_path), cwd=str(cwd))
 
 
-def intended_state_mismatches(cfg: Config) -> list[tuple[str, bool, bool]]:
-    """Configured boolean switches that differ from this repository's declared intent."""
+def intended_state_mismatches(cfg: Config) -> list[tuple[str, bool | None, bool]]:
+    """Decided mismatches and undecided switches from this repository's declaration."""
     if not cfg.is_loaded and not (cfg.root / CONFIG_NAME).exists():
         return []
     packaged = Path(__file__).with_name(INTENDED_STATE_NAME)
@@ -323,18 +323,23 @@ def intended_state_mismatches(cfg: Config) -> list[tuple[str, bool, bool]]:
         return []
     raw = tomllib.loads(declared.read_text())
     intended = raw.get("repo", {}).get(cfg.repo, {})
-    actual = {"eval.schedule": cfg.eval_schedule}
+    actual = {
+        "eval.schedule": cfg.eval_schedule,
+        "release.auto": cfg.release_auto,
+    }
     unknown = set(intended) - set(actual)
     if unknown:
         raise ConfigError(
             f"{INTENDED_STATE_NAME}: unsupported intended switch {min(unknown)}"
         )
-    if any(type(value) is not bool for value in intended.values()):
-        raise ConfigError(f"{INTENDED_STATE_NAME}: intended switches must be true or false")
+    if any(type(value) is not bool and value != "undecided" for value in intended.values()):
+        raise ConfigError(
+            f"{INTENDED_STATE_NAME}: intended switches must be true, false, or undecided"
+        )
     return [
-        (key, expected, actual[key])
+        (key, None if expected == "undecided" else expected, actual[key])
         for key, expected in intended.items()
-        if actual[key] != expected
+        if expected == "undecided" or actual[key] != expected
     ]
 
 

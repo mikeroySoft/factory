@@ -295,10 +295,10 @@ def intended_state_signals(cfg: config.Config) -> list[Signal]:
             "stage": "intended-state",
             "key": key,
             "name": key,
-            "tier": "act",
+            "tier": "warn" if expected is None else "act",
             "rows": [],
             "excerpt": (
-                f"Intended state: `{key} = {str(expected).lower()}`\n"
+                f"Intended state: `{'undecided' if expected is None else str(expected).lower()}`\n"
                 f"Configured state: `{key} = {str(actual).lower()}`"
             ),
             "log": None,
@@ -1124,9 +1124,11 @@ def run_pass(
             actionable.append(signal)
             continue
         previous_observation = observations.get(signal["fingerprint"])
-        if (
-            previous_observation is not None
-            and signal["latest"] <= previous_observation.get("latest", previous_observation["at"])
+        if previous_observation is not None and (
+            signal["latest"] is None
+            or signal["latest"] <= previous_observation.get(
+                "latest", previous_observation["at"],
+            )
         ):
             observed_signals.append(signal)
             continue
