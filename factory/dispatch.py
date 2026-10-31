@@ -1576,11 +1576,8 @@ def _dependency_lockfiles(paths: set[str]) -> list[str]:
 
 
 def _recorded_plan_lists_lockfile(n: int, path: str) -> bool:
-    escaped = re.escape(path)
-    listed = re.compile(
-        rf"^\s*(?:[-*]|\d+\.)\s+.*?(?:`{escaped}`|"
-        rf"(?<![\w./-]){escaped})(?![\w./-])"
-    )
+    list_item = re.compile(r"^\s*(?:[-*]|\d+\.)\s+(.+?)\s*$")
+    quoted_path = re.compile(r"`([^`]+)`")
     for row in lifecycle.read_events(EVENTS):
         artifact = row.get("path")
         if (
@@ -1599,8 +1596,10 @@ def _recorded_plan_lists_lockfile(n: int, path: str) -> bool:
             stripped = line.strip()
             if stripped.startswith("#"):
                 in_files = stripped.casefold() == "## files"
-            elif in_files and listed.search(line):
-                return True
+            elif in_files and (item := list_item.match(line)):
+                paths = quoted_path.findall(item.group(1))
+                if path in (paths or [part.strip() for part in item.group(1).split(",")]):
+                    return True
     return False
 
 
