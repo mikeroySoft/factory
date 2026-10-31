@@ -68,8 +68,10 @@ findings = [{"severity": "important", "pass": "bug", "class": "first-review-revi
              "path": "change.txt", "line": 1, "summary": "First review requires revision.",
              "instances": [{"path": "change.txt", "line": 1,
                             "summary": "First review requires revision."}]}] if verdict == "REVISE" else []
-print("```json\\n" + json.dumps({"verdict": verdict, "findings": findings})
-      + "\\n```\\nVERDICT: " + verdict)
+body = {"verdict": verdict, "findings": findings}
+if s["reviews"] == 2:
+    body["ledger"] = [{"id": "F1", "status": "fixed"}]
+print("```json\\n" + json.dumps(body) + "\\n```\\nVERDICT: " + verdict)
 '''
 
 # Records the head it ran on in argv[1]; FAILs its first argv[2] runs.
