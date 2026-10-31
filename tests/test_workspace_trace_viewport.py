@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
+import tempfile
 import unittest
+import uuid
 from itertools import pairwise
 from pathlib import Path
 
 ASSET = Path(__file__).resolve().parents[1] / "factory" / "workspace-trace.js"
+BROWSER = shutil.which("agent-browser")
 
 
 @unittest.skipUnless(shutil.which("node"), "Node is required for trace viewport tests")
@@ -409,3 +413,163 @@ Promise.resolve({expression}).then(result => process.stdout.write(JSON.stringify
                 else:
                     self.assertEqual(points[-1]["x"], 1200)
                     self.assertGreater(points[-2]["x"], points[-1]["x"])
+
+
+@unittest.skipUnless(BROWSER, "agent-browser is required for mounted trace tests")
+class WorkspaceTraceMountedTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.session = f"trace-mounted-{uuid.uuid4().hex}"
+        self.addCleanup(self.browser, "close")
+        temporary = tempfile.TemporaryDirectory(prefix="trace-mounted-")
+        self.addCleanup(temporary.cleanup)
+        page = Path(temporary.name) / "trace.html"
+        graph = {
+            "ticket": 470,
+            "nodes": [
+                {"decision_id": "a", "stage": "worker_select", "chosen": "worker"},
+                {"decision_id": "b", "stage": "gate", "chosen": "pass"},
+                {"decision_id": "c", "stage": "review", "chosen": "REVISE"},
+            ],
+            "edges": [
+                {"from": "a", "to": "b", "relation": "follows"},
+                {"from": "b", "to": "c", "relation": "follows"},
+                {"from": "c", "to": "a", "relation": "retries"},
+            ],
+        }
+        page.write_text(
+            '<!doctype html><meta charset="utf-8"><style>'
+            + (ASSET.parent / "workspace.css").read_text()
+            + '</style><main id="host"></main><script>'
+            + ASSET.read_text()
+            + "\nwindow.WorkspaceAPI = {json: async () => ("
+            + json.dumps(graph)
+            + ")}; WorkspaceTrace.mount(document.querySelector('#host'), {ticket:470});"
+            + """
+window.traceState = async () => {
+  // Read the actual SVG after its layout and spring animation have settled.
+  await new Promise(resolve => setTimeout(resolve, 550));
+  const board = document.querySelector('[data-trace-board]');
+  const canvas = document.querySelector('[data-trace-canvas]');
+  const box = canvas.getBoundingClientRect();
+  const edges = await WorkspaceAPI.json();
+  const paths = [...document.querySelectorAll('.trace-edge')];
+  const attachments = paths.every(path => {
+    const edge = edges.edges[+path.closest('[data-trace-edge]').dataset.traceEdge];
+    const length = path.getTotalLength();
+    return [[edge.from, path.getPointAtLength(0)],
+            [edge.to, path.getPointAtLength(length)]].every(([id, point]) => {
+      const rect = document.querySelector(`[data-trace-node="${id}"]`).getBoundingClientRect();
+      return Math.abs(point.y - ((rect.top + rect.bottom) / 2 - box.top)) < .1 &&
+        Math.min(Math.abs(point.x - (rect.left - box.left)),
+                 Math.abs(point.x - (rect.right - box.left))) < .1;
+    });
+  });
+  return {
+    tracing: board.classList.contains('is-tracing'),
+    nodes: document.querySelectorAll('.trace-node.is-trace-active').length,
+    edges: document.querySelectorAll('.trace-edge-group.is-trace-active').length,
+    transform: document.querySelector('[data-trace-scene]').style.transform,
+    paths: paths.map(path => path.getAttribute('d')),
+    attachments,
+    fullscreen: document.fullscreenElement === board,
+  };
+};
+window.pinTrace = kind => {
+  document.querySelector(kind === 'node' ? '[data-trace-select]' : '.trace-edge-hit')
+    .dispatchEvent(new MouseEvent('click', {bubbles:true}));
+};
+window.backgroundPoint = () => {
+  const box = document.querySelector('[data-trace-canvas]').getBoundingClientRect();
+  return [box.left + 5, box.bottom - 5];
+};
+</script>"""
+        )
+        self.browser("open", page.as_uri())
+        self.browser("set", "viewport", "1280", "800")
+        self.browser("wait", ".trace-edge")
+
+    def browser(self, *arguments: str, script: str | None = None) -> object:
+        environment = {**os.environ, "AGENT_BROWSER_SESSION": self.session}
+        result = subprocess.run(
+            [BROWSER, "--json", *arguments],
+            input=script,
+            capture_output=True,
+            text=True,
+            env=environment,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        response = json.loads(result.stdout)
+        self.assertTrue(response["success"], response)
+        return response.get("data")
+
+    def evaluate(self, script: str) -> object:
+        return self.browser("eval", "--stdin", script=script)["result"]
+
+    def state(self) -> dict:
+        return self.evaluate("traceState()")
+
+    def assert_pin(self, kind: str) -> None:
+        state = self.state()
+        self.assertTrue(state["tracing"], f"{kind} pin cleared by viewport interaction")
+        self.assertEqual(state["nodes"], 3 if kind == "node" else 2)
+        self.assertEqual(state["edges"], 3 if kind == "node" else 1)
+        self.assertTrue(state["attachments"], "redrawn SVG detached from nodes")
+
+    def test_pinned_chains_survive_mouse_and_keyboard_viewport_controls(self) -> None:
+        for kind in ("node", "edge"):
+            for activation in ("click", "Enter", "Space"):
+                for control in ("zoom-in", "zoom-out", "fit", "fullscreen"):
+                    with self.subTest(kind=kind, activation=activation, control=control):
+                        self.evaluate(f"pinTrace('{kind}')")
+                        selector = f"[data-trace-{control}]"
+                        if activation == "click":
+                            self.browser("click", selector)
+                        else:
+                            self.browser("focus", selector)
+                            self.browser("press", activation)
+                        self.assert_pin(kind)
+                        if self.state()["fullscreen"]:
+                            self.browser("click", "[data-trace-fullscreen]")
+                            self.assert_pin(kind)
+
+    def test_pinned_chains_survive_pan_but_background_click_and_escape_clear(self) -> None:
+        for kind in ("node", "edge"):
+            with self.subTest(kind=kind):
+                self.evaluate(f"pinTrace('{kind}')")
+                before = self.state()
+                x, y = map(round, self.evaluate("backgroundPoint()"))
+                self.browser("mouse", "move", str(x), str(y))
+                self.browser("mouse", "down")
+                self.browser("mouse", "move", str(x + 35), str(y - 20))
+                self.browser("mouse", "up")
+                self.assert_pin(kind)
+                after = self.state()
+                self.assertNotEqual(after["transform"], before["transform"])
+                self.assertNotEqual(after["paths"], before["paths"])
+                self.browser("mouse", "down")
+                self.browser("mouse", "up")
+                self.assertFalse(self.state()["tracing"], "later background click was swallowed")
+                self.evaluate(f"pinTrace('{kind}')")
+                self.browser("press", "Escape")
+                self.assertFalse(self.state()["tracing"])
+
+    def test_mounted_zoom_and_fullscreen_redraw_wires(self) -> None:
+        before = self.state()
+        self.browser("click", "[data-trace-zoom-in]")
+        zoomed = self.state()
+        self.assertNotEqual(zoomed["transform"], before["transform"])
+        self.assertNotEqual(zoomed["paths"], before["paths"])
+        self.assertTrue(zoomed["attachments"])
+        self.browser("click", "[data-trace-fullscreen]")
+        fullscreen = self.state()
+        self.assertTrue(fullscreen["fullscreen"])
+        self.assertNotEqual(fullscreen["paths"], zoomed["paths"])
+        self.assertTrue(fullscreen["attachments"])
+        self.browser("click", "[data-trace-fullscreen]")
+        restored = self.state()
+        self.assertFalse(restored["fullscreen"])
+        self.assertNotEqual(restored["paths"], fullscreen["paths"])
+        self.assertEqual(restored["transform"], before["transform"])
+        self.assertTrue(restored["attachments"])
