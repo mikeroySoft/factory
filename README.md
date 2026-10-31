@@ -393,11 +393,36 @@ status and lists changed files the plan did not name and planned proof absent
 from the gate report. Plan drift is evidence, not an automatic `REVISE`.
 
 The workspace **Decisions** view (`/?view=decisions&ticket=N`, or `/decisions`)
-reads the selected repository through authenticated `GET /api/trace?ticket=N`.
-It renders the same graph unchanged as a stage-ordered breadboard with labeled
-relationships, retry-loop costs, a timeline replay control, evidence details,
-coverage gaps, frontier state, cross-ticket links, and terminal outcome. The
-view is read-only; legacy synthesized rows remain visibly dashed.
+keeps its historical mode: authenticated `GET /api/trace?ticket=N` renders the
+same stage-ordered graph with labeled relationships, retry-loop costs, timeline
+replay, evidence details, coverage gaps, frontier state, cross-ticket links, and
+terminal outcome. Legacy synthesized rows remain visibly dashed.
+
+Its **Live** mode needs no selected ticket. Authenticated, read-only
+`GET /api/live-executions` places every observed active ticket execution in the
+triage, worker, gate, reviewer, manager, watch, and learn lanes; empty lanes stay
+visible. Concrete stage scopes place each ticket in its current lane. When no
+concrete stage covers it, the dispatcher's umbrella `ticket` scope stays visible
+in the worker lane as **Pipeline activity**, with **No running agent**, covering
+claim/binding and push/PR windows without inventing a worker. Repository-wide
+watch and learn scopes are ticketless loop cards, never attributed to an arbitrary
+ticket or wired to its worker. Live rows distinguish `activity: "pipeline"` from
+`activity: "stage"`.
+Cards show the agent, actual harness (not a host launch wrapper), ticket title,
+and elapsed time. Ticketed cards open that ticket's historical trace, including
+when it is already the route's ticket. Breadboard wires link observed same-ticket
+cross-lane executions. Live uses its own browser-local **Live breadboard polling**
+preference (10 seconds by default; 10/30/60 seconds); general workspace polling
+still defaults to 30 seconds. Hidden pages stop Live reads and refresh promptly
+on becoming visible. Leaving Live or disposing its view removes timers and
+listeners and aborts pending reads.
+Refreshes retain the last successful board, scroll, and pinned highlights.
+Failed or stalled reads do not clear cards or renew their observation time:
+execution observations older than 60 seconds become stale, even without a
+successful response. An independent one-second visible-page timer ages cards
+and updates elapsed time. Fresh `observed_at` process evidence, not old
+`entered_at`/`latest_at` transitions, establishes freshness for long-running work.
+Both modes are authenticated and read-only.
 
 Successful non-dry-run `triage`, `dispatch`, and `watch` invocations atomically
 update `.factory/stage-success.json` with that repository's last successful pass
@@ -1561,6 +1586,9 @@ versions are not interpreted as version 1 by the existing observer.
 | `worker` | One worker subprocess attempt. |
 | `gate`, `gate-check` | An invoked gate and each actually executed check. Skipped checks and a disabled leak scan do not enter a check scope. |
 | `review` | One reviewer invocation, attributed to its review round. |
+| `manage` | One manager invocation for a ticket. |
+| `watch` | One real repository-wide watch pass, including quiet passes; ticketless lifecycle enter/exit rows are written even if no finding is filed. Dry runs write none. |
+| `learn` | One repository-wide learning run with selected evidence tickets; its lifecycle scope is ticketless, so it never changes those tickets' execution state. No-evidence and dry runs write no lifecycle rows. |
 | `merge-eligibility` | Assessment/refresh of one candidate in this dispatcher pass; not a merge. |
 | `upstream-sync` | Staging one upstream candidate in a detached worktree (merge, then a gate child when the merge is clean) and filing its sync ticket; exits `completed` with reason `upstream_staged`. Never moves main. |
 | `merge` | Actual PR merge. Only a successful PR merge records `merged`. Approval alone does not. |
@@ -1951,7 +1979,11 @@ Each execution has the eight common F01 identity fields (`dispatcher_run_id`,
 `review_round`, `stage`) with their types above, plus `state` (`active`,
 `completed`, `failed`, `interrupted`, `unknown`), nullable `entered_at`,
 `ended_at`, `outcome`, `reason`, and `wait`; `latest_event_id`, `latest_at`;
-`observation` and `observed_at`. `wait` uses the F02 object plus source `event_id`
+`observation` and `observed_at`; and `activity`, an object containing the
+nonempty string `worker`, `worker_version`, `agent`, `harness`, and `model`
+metadata present on the retained enter row (empty when absent). This is recorded
+identity metadata, not proof of current liveness; only strings of at most 256
+characters without control characters are retained. `wait` uses the F02 object plus source `event_id`
 and `at`. The events live only in the top-level array, not duplicated per scope.
 An entry outside the bounded window has null `entered_at` and explicit partial
 coverage. A missing stage is never reconstructed from logs or artifacts.

@@ -157,3 +157,363 @@ process.stdout.write(window.WorkspaceTrace.markup(graph, {
 
         self.assertIn('data-terminal="escalated"', html)
         self.assertIn("<p>protected_path</p>", html)
+
+    def live_render(self, snapshot: dict) -> str:
+        script = """
+const fs = require('fs');
+global.window = {};
+eval(fs.readFileSync(process.argv[1], 'utf8'));
+const snapshot = JSON.parse(fs.readFileSync(0, 'utf8'));
+process.stdout.write(window.WorkspaceTrace.liveMarkup(snapshot, {
+  now: Date.parse('2026-10-30T12:00:00Z')
+}));
+"""
+        result = subprocess.run(
+            ["node", "-e", script, str(ASSET)],
+            input=json.dumps(snapshot),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_live_fleet_renders_all_lanes_cards_elapsed_and_staleness(self) -> None:
+        stages = ("triage", "worker", "gate", "reviewer", "manager", "watch", "learn")
+        snapshot = {
+            "schema_version": 1,
+            "repository": "acme/widgets",
+            "generated_at": "2026-10-30T12:00:00Z",
+            "stale_after_seconds": 60,
+            "executions": [
+                {
+                    "execution_id": f"execution-{index}",
+                    "lane": stage,
+                    "ticket": None if stage in {"watch", "learn"} else index,
+                    "title": (
+                        f"Repository {stage}" if stage in {"watch", "learn"} else f"Ticket {index}"
+                    ),
+                    "agent": f"agent-{index}",
+                    "harness": f"harness-{index}",
+                    "entered_at": "2026-10-30T11:58:30Z",
+                    "observed_at": (
+                        "2026-10-30T11:00:00Z"
+                        if stage == "learn"
+                        else "2026-10-30T12:00:00Z"
+                    ),
+                    "state": "active",
+                    "ended_at": None,
+                }
+                for index, stage in enumerate(stages, 1)
+            ],
+        }
+
+        html = self.live_render(snapshot)
+
+        self.assertEqual(html.count('class="trace-node live-execution'), 7)
+        for stage in stages:
+            self.assertIn(f'data-stage="{stage}"', html)
+        self.assertIn("agent-2", html)
+        self.assertIn("harness-2", html)
+        self.assertIn("#2 · Ticket 2", html)
+        self.assertIn("1m 30s", html)
+        self.assertIn('data-status="stale"', html)
+        self.assertIn("Stale", html)
+        self.assertIn("Repository watch", html)
+        self.assertNotIn("#None", html)
+
+    def test_live_refresh_moves_cards_removes_ended_work_and_keeps_empty_lanes(self) -> None:
+        execution = {
+            "execution_id": "moving",
+            "lane": "worker",
+            "ticket": 7,
+            "title": "Moving ticket",
+            "agent": "default",
+            "harness": "omp",
+            "entered_at": "2026-10-30T11:59:00Z",
+            "observed_at": "2026-10-30T12:00:00Z",
+            "state": "active",
+            "ended_at": None,
+        }
+        first = self.live_render({
+            "schema_version": 1,
+            "stale_after_seconds": 60,
+            "executions": [execution],
+        })
+        second = self.live_render({
+            "schema_version": 1,
+            "stale_after_seconds": 60,
+            "executions": [
+                {**execution, "lane": "reviewer"},
+                {
+                    **execution,
+                    "execution_id": "ended",
+                    "lane": "gate",
+                    "state": "completed",
+                    "ended_at": "2026-10-30T12:00:00Z",
+                },
+            ],
+        })
+
+        self.assertIn('data-stage="worker"', first)
+        self.assertIn('data-lane="worker"', first)
+        self.assertIn('data-lane="reviewer"', second)
+        self.assertNotIn('data-lane="worker"', second)
+        self.assertNotIn('data-trace-node="ended"', second)
+        self.assertIn("No active executions", second)
+
+    def test_live_card_for_current_ticket_loads_its_historical_trace(self) -> None:
+        script = """
+const fs = require('fs');
+global.window = {};
+global.document = {visibilityState:'visible',addEventListener(){}};
+const calls = [], routed = [];
+global.WorkspaceAPI = {json: async url => {
+  calls.push(String(url));
+  return String(url).startsWith('/api/trace')
+    ? {ticket:7,nodes:[],edges:[],loops:[],coverage:[]}
+    : {schema_version:1,executions:[],refresh_seconds:10};
+}};
+eval(fs.readFileSync(process.argv[1], 'utf8'));
+const listeners = {};
+const host = {
+  isConnected:true,
+  innerHTML:'',
+  querySelectorAll(){ return []; },
+  querySelector(){ return null; },
+  addEventListener(type, listener){ listeners[type] = listener; },
+};
+const click = values => listeners.click({
+  target:{closest: selector => values[selector] || null},
+});
+(async () => {
+  window.WorkspaceTrace.mount(host, {
+    ticket:7,
+    repository:'acme/widgets',
+    onTicket:number => routed.push(number),
+  });
+  await new Promise(setImmediate);
+  click({'[data-trace-mode]':{dataset:{traceMode:'live'}}});
+  await new Promise(setImmediate);
+  click({'[data-trace-ticket]':{dataset:{traceTicket:'7'}}});
+  await new Promise(setImmediate);
+  window.WorkspaceTrace.dispose(host);
+  process.stdout.write(JSON.stringify({calls,routed}));
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+        result = subprocess.run(
+            ["node", "-e", script, str(ASSET)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        observed = json.loads(result.stdout)
+        self.assertEqual(observed["routed"], [])
+        self.assertEqual(
+            [call.split("?")[0] for call in observed["calls"]],
+            ["/api/trace", "/api/live-executions", "/api/trace"],
+        )
+
+    def test_live_polling_retains_and_ages_failed_or_stalled_reads_and_resumes(self) -> None:
+        script = """
+const fs = require('fs'), assert = require('assert/strict');
+global.window = {};
+let now = Date.parse('2026-10-30T12:00:00Z'), nextTimer = 0;
+Date.now = () => now;
+const timers = new Map();
+global.setTimeout = (fn, delay) => {
+  const id = ++nextTimer; timers.set(id, {fn, at:now+delay}); return id;
+};
+global.clearTimeout = id => timers.delete(id);
+global.setInterval = (fn, delay) => {
+  const id = ++nextTimer; timers.set(id, {fn, at:now+delay, delay}); return id;
+};
+global.clearInterval = global.clearTimeout;
+const flush = () => new Promise(setImmediate);
+async function advance(ms) {
+  const end = now + ms;
+  while (true) {
+    const due = [...timers].filter(([,t]) => t.at <= end).sort((a,b) => a[1].at-b[1].at)[0];
+    if (!due) break;
+    const [id,t] = due; now = t.at;
+    if (t.delay) t.at += t.delay; else timers.delete(id);
+    t.fn(); await flush();
+  }
+  now = end; await flush();
+}
+const doc = new EventTarget();
+doc.visibilityState = 'visible'; global.document = doc;
+const listeners = {};
+let html = '', writes = 0;
+const host = {
+  isConnected:true,
+  get innerHTML(){ return html; },
+  set innerHTML(value){ html = value; writes++; },
+  querySelectorAll(){ return []; },
+  querySelector(){ return null; },
+  addEventListener(type, listener){ listeners[type] = listener; },
+};
+const click = values => listeners.click({target:{closest:selector => values[selector] || null}});
+const calls = [];
+let response = 'success', release;
+global.WorkspaceAPI = {json:async (url, options={}) => {
+  calls.push({url, method:options.method || 'GET'});
+  const observed = new Date(now).toISOString();
+  if (String(url).startsWith('/api/trace')) return {nodes:[],edges:[],loops:[]};
+  if (response === 'failure') throw new Error('offline');
+  if (response === 'stalled') await new Promise(resolve => { release = resolve; });
+  return {schema_version:1, refresh_seconds:10, stale_after_seconds:2,
+    generated_at:observed, executions:[{
+      execution_id:'worker', ticket:7, title:'Retained ticket', lane:'worker',
+      entered_at:'2026-01-01T00:00:00Z', observed_at:observed,
+      agent:'default', harness:'omp', state:'active',
+    }]};
+}};
+eval(fs.readFileSync(process.argv[1], 'utf8'));
+(async () => {
+  window.WorkspaceTrace.mount(host, {ticket:7, refreshSeconds:1});
+  await flush();
+  click({'[data-trace-mode]':{dataset:{traceMode:'live'}}}); await flush();
+  assert.match(html, /Retained ticket/);
+  assert.match(html, /data-status="running"/, 'Fresh observation of long-running worker');
+  response = 'stalled';
+  const before = writes;
+  await advance(1000);
+  assert.equal(writes, before, 'No loading replacement during a refresh');
+  await advance(2000);
+  assert.match(html, /data-status="stale"/, 'A stalled read cannot keep cards running');
+  assert.match(html, /Retained ticket/);
+  response = 'failure'; release(); await flush();
+  await advance(1000);
+  assert.match(html, /Retained ticket/, 'Failed read retains successful board');
+  assert.match(html, /data-status="stale"/);
+  doc.visibilityState = 'hidden'; doc.dispatchEvent(new Event('visibilitychange'));
+  const hiddenCalls = calls.length;
+  await advance(5000);
+  assert.equal(calls.length, hiddenCalls, 'Hidden page makes no live reads');
+  response = 'success';
+  doc.visibilityState = 'visible'; doc.dispatchEvent(new Event('visibilitychange'));
+  await flush();
+  assert.equal(calls.length, hiddenCalls+1, 'Visibility restoration reads promptly');
+  assert.match(html, /data-status="running"/);
+  click({'[data-trace-mode]':{dataset:{traceMode:'history'}}}); await flush();
+  const historicalCalls = calls.length;
+  await advance(5000);
+  doc.dispatchEvent(new Event('visibilitychange')); await flush();
+  assert.equal(calls.length, historicalCalls, 'Historical mode removes live polling/listeners');
+  click({'[data-trace-mode]':{dataset:{traceMode:'live'}}}); await flush();
+  window.WorkspaceTrace.dispose(host);
+  const disposedCalls = calls.length;
+  await advance(5000); doc.dispatchEvent(new Event('visibilitychange')); await flush();
+  assert.equal(calls.length, disposedCalls, 'Disposal removes live polling/listeners');
+  assert.equal(timers.size, 0, 'Disposal clears all live timers');
+  assert.ok(calls.every(call => call.method === 'GET'));
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+        result = subprocess.run(
+            ["node", "-e", script, str(ASSET)],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_live_polling_preference_is_independent_of_workspace_default(self) -> None:
+        script = """
+const fs = require('fs'), assert = require('assert/strict');
+global.window = {};
+global.localStorage = {getItem(){return null;},setItem(){}};
+global.document = {dispatchEvent(){}};
+global.CustomEvent = class {};
+eval(fs.readFileSync(process.argv[1], 'utf8'));
+const settings = window.WorkspaceSettings;
+assert.equal(settings.preferences.pollSeconds, 30);
+assert.equal(settings.preferences.livePollSeconds, 10);
+settings.setPreference('livePollSeconds', 30);
+assert.equal(settings.preferences.livePollSeconds, 30);
+assert.equal(settings.preferences.pollSeconds, 30);
+assert.match(settings.markup('acme/widgets'), /data-preference="livePollSeconds"/);
+"""
+        result = subprocess.run(
+            ["node", "-e", script, str(ASSET.with_name("workspace-settings.js"))],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_live_pipeline_fallback_does_not_claim_a_running_agent(self) -> None:
+        html = self.live_render({
+            "schema_version": 1,
+            "executions": [{
+                "execution_id": "pipeline",
+                "lane": "worker",
+                "ticket": 7,
+                "title": "Between agents",
+                "agent": "No running agent",
+                "harness": "factory pipeline",
+                "activity": "pipeline",
+                "entered_at": "2026-10-30T11:00:00Z",
+                "observed_at": "2026-10-30T12:00:00Z",
+            }],
+        })
+        self.assertIn('data-status="pipeline"', html)
+        self.assertIn("Pipeline activity", html)
+        self.assertIn("No running agent", html)
+        self.assertNotIn("Running", html)
+
+    def test_live_refresh_restores_scroll_and_pinned_edge_by_execution_identity(self) -> None:
+        script = """
+const fs = require('fs'), assert = require('assert/strict');
+global.window = {};
+global.document = new EventTarget(); document.visibilityState = 'visible';
+const flush = () => new Promise(setImmediate);
+let refresh;
+global.setTimeout = callback => { refresh = callback; return 1; };
+global.clearTimeout = () => {};
+global.setInterval = () => 2;
+global.clearInterval = () => {};
+let board, html;
+const listeners = {};
+const host = {
+  isConnected:true,
+  get innerHTML(){return html;},
+  set innerHTML(value){
+    html=value;
+    board={scrollLeft:0,scrollTop:0,classList:{toggle(){}}};
+  },
+  querySelectorAll(){return [];},
+  querySelector(selector){return selector === '[data-trace-board]' ? board : null;},
+  addEventListener(type, listener){listeners[type]=listener;},
+};
+const click = values => listeners.click({target:{closest:selector => values[selector] || null}});
+let changed = false;
+global.WorkspaceAPI = {json:async url => {
+  if (String(url).startsWith('/api/trace')) return {nodes:[],edges:[],loops:[]};
+  const rows = [
+    {execution_id:'triage',lane:'triage',ticket:7},
+    {execution_id:'worker',lane:'worker',ticket:7},
+  ];
+  if(changed) rows.unshift({execution_id:'earlier-edge',lane:'gate',ticket:6},
+    {execution_id:'other-edge',lane:'reviewer',ticket:6});
+  return {schema_version:1,executions:rows.map(row=>({
+    ...row,observed_at:new Date().toISOString(),entered_at:new Date().toISOString(),
+  }))};
+}};
+eval(fs.readFileSync(process.argv[1], 'utf8'));
+(async () => {
+  window.WorkspaceTrace.mount(host);
+  await flush();
+  click({'[data-trace-mode]':{dataset:{traceMode:'live'}}}); await flush();
+  click({'[data-trace-edge]':{dataset:{traceEdge:'0'}}});
+  board.scrollLeft=180; board.scrollTop=45;
+  changed=true; refresh(); await flush();
+  assert.deepEqual([board.scrollLeft,board.scrollTop],[180,45]);
+  assert.deepEqual(host._traceSelection(),{kind:'edge',from:'triage',to:'worker'});
+  window.WorkspaceTrace.dispose(host);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+        result = subprocess.run(
+            ["node", "-e", script, str(ASSET)],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)

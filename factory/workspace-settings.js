@@ -2,9 +2,10 @@
   'use strict';
 
   const PREF_KEY = 'factory-workspace-preferences';
-  const defaults = {motion: true, density: 'compact', pollSeconds: 30, attentionDays: 7, inspectorWidth: 440};
+  const defaults = {motion: true, density: 'compact', pollSeconds: 30, livePollSeconds: 10, attentionDays: 7, inspectorWidth: 440};
   const allowed = {
     density: new Set(['compact', 'comfortable']), pollSeconds: new Set([10, 30, 60]),
+    livePollSeconds: new Set([10, 30, 60]),
     attentionDays: new Set([1, 3, 7, 14, 30]), inspectorWidth: new Set([360, 440, 560])
   };
   const fields = [
@@ -50,6 +51,7 @@
       <label class="setting-row"><span><strong>Purposeful motion</strong><small>Brief transitions only. The system reduced-motion preference takes precedence.</small></span><input type="checkbox" data-preference="motion"${preferences.motion ? ' checked' : ''}></label>
       <label class="setting-row"><span><strong>Information density</strong><small>Changes spacing, never evidence.</small></span><select data-preference="density">${option('compact','Compact',preferences.density)}${option('comfortable','Comfortable',preferences.density)}</select></label>
       <label class="setting-row"><span><strong>Visible-page polling</strong><small>Reads cached observations for only the selected repository.</small></span><select data-preference="pollSeconds">${option(10,'10 seconds',preferences.pollSeconds)}${option(30,'30 seconds',preferences.pollSeconds)}${option(60,'60 seconds',preferences.pollSeconds)}</select></label>
+      <label class="setting-row"><span><strong>Live breadboard polling</strong><small>Reads active executions while Live is visible, independently of workspace polling.</small></span><select data-preference="livePollSeconds">${[10,30,60].map(value => option(value,`${value} seconds`,preferences.livePollSeconds)).join('')}</select></label>
       <label class="setting-row"><span><strong>Lingering update threshold</strong><small>Last-update age is not time blocked or time in stage.</small></span><select data-preference="attentionDays">${[1,3,7,14,30].map(value => option(value,`${value} day${value === 1 ? '' : 's'}`,preferences.attentionDays)).join('')}</select></label>
       <label class="setting-row"><span><strong>Inspector width</strong><small>Desktop preference; narrow screens use the viewport.</small></span><select data-preference="inspectorWidth">${[360,440,560].map(value => option(value,`${value} px`,preferences.inspectorWidth)).join('')}</select></label>
     </div></section>`;
