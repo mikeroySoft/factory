@@ -1,7 +1,9 @@
 """Runner filesystem preflight and run-scoped temporary directories."""
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import tempfile
 import time
 from contextlib import contextmanager
@@ -10,6 +12,27 @@ from pathlib import Path
 from factory import lifecycle
 
 EX_TEMPFAIL = 75
+RUN_PREFIXES = ("factory-worker-", "factory-gate-")
+OWNER_FILE = ".factory-owner.json"
+
+
+def cleanup_abandoned() -> None:
+    """Remove run roots whose recorded owning process is no longer alive."""
+    root = Path(tempfile.gettempdir())
+    for prefix in RUN_PREFIXES:
+        try:
+            directories = list(root.glob(prefix + "*"))
+        except OSError:
+            continue
+        for directory in directories:
+            try:
+                owner = json.loads((directory / OWNER_FILE).read_text())
+            except (OSError, ValueError, TypeError):
+                continue
+            if lifecycle._process_state(owner) == "dead":
+                shutil.rmtree(directory, ignore_errors=True)
+
+
 
 
 class RunnerStorageLow(RuntimeError):
@@ -36,14 +59,20 @@ def status(cfg) -> dict:
         path = _existing(requested)
         try:
             device: int | str = path.stat().st_dev
-            entry = grouped.setdefault(device, {"device": device, "paths": [], "purposes": []})
+            entry = grouped.get(device)
+            if entry is None:
+                info = os.statvfs(path)
+                entry = {
+                    "device": device,
+                    "paths": [],
+                    "purposes": [],
+                    "free_bytes": info.f_bavail * info.f_frsize,
+                    "free_inodes": info.f_favail if info.f_files else None,
+                }
+                grouped[device] = entry
             if str(path) not in entry["paths"]:
                 entry["paths"].append(str(path))
             entry["purposes"].append(purpose)
-            if "free_bytes" not in entry:
-                info = os.statvfs(path)
-                entry["free_bytes"] = info.f_bavail * info.f_frsize
-                entry["free_inodes"] = info.f_favail if info.f_files else None
         except OSError as exc:
             device = f"unavailable:{purpose}"
             grouped[device] = {
@@ -98,6 +127,7 @@ def record_low(cfg, phase: str, value: dict) -> None:
 
 
 def require(cfg, phase: str) -> dict:
+    cleanup_abandoned()
     value = status(cfg)
     if not value["ok"]:
         record_low(cfg, phase, value)
@@ -107,8 +137,9 @@ def require(cfg, phase: str) -> dict:
 
 @contextmanager
 def temporary_environment(prefix: str):
-    """Give one run an isolated temp root and remove it on every normal unwind."""
+    """Give one run an isolated temp root recoverable after an owner crash."""
     with tempfile.TemporaryDirectory(prefix=prefix) as directory:
+        Path(directory, OWNER_FILE).write_text(json.dumps(lifecycle._identity(os.getpid())))
         environment = dict.fromkeys(("TMPDIR", "TMP", "TEMP"), directory)
         previous = {key: os.environ.get(key) for key in environment}
         previous_tempdir = tempfile.tempdir

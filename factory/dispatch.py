@@ -1610,6 +1610,8 @@ def run_gate(
         cmd.append("--blocking-mutation")
     with storage.temporary_environment(f"factory-gate-{n}-"):
         proc = run(cmd, cwd=wt, check=False, timeout=timeout)
+    if proc.returncode == storage.EX_TEMPFAIL:
+        raise storage.RunnerStorageLow("gate", storage.status(cfg))
     if report.exists():
         text = report.read_text()
         ok = proc.returncode == 0
@@ -4120,6 +4122,7 @@ def process_ticket(
                 record("plan-bound", ticket=n, schema_version=1, baseline=baseline,
                        issue={key: fresh.get(key) for key in ("title", "body", "comments")})
 
+            storage.require(cfg, "claim")
             try:
                 run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-assignee", "@me"])
             except subprocess.CalledProcessError as exc:
@@ -4319,7 +4322,6 @@ def process_ticket(
         except storage.RunnerStorageLow:
             execution.wait("runner_storage_low", mode="retry_next_pass")
             if claimed:
-                discard_worktree(n, wt)
                 run(["gh", "issue", "edit", str(n), "--repo", REPO,
                      "--remove-assignee", "@me"], check=False)
             raise
@@ -4351,8 +4353,6 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
     """Claim up to capacity frontier tickets in accepted-priority order and work each one."""
     from factory import schedule
 
-    if not dry_run:
-        storage.require(cfg, "claim")
 
     with nullcontext() if dry_run else lifecycle.scope(EVENTS, "scheduling", lazy=True) as execution:
         active = active_tickets()
@@ -4470,8 +4470,6 @@ def _main(argv: list[str]) -> int:
                     "number,title,body,labels,assignees",
                 ]
             )
-            if not args.dry_run:
-                storage.require(cfg, "claim")
             result = 1 if process_ticket(issue, args.budget_min, args.dry_run, forced=True) is False else 0
             if not args.dry_run and result == 0:
                 lifecycle.record_stage_success(EVENTS, "dispatch")
@@ -4509,4 +4507,4 @@ def main(argv: list[str]) -> int:
         return _main(argv)
     except storage.RunnerStorageLow as exc:
         log(str(exc))
-        return 1
+        return 0

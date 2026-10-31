@@ -112,6 +112,42 @@ class RunnerStorageDispatchTest(unittest.TestCase):
         events = lifecycle.read_events(self.events)
         self.assertFalse(any(row.get("event") in {"attempt", "escalate"} for row in events))
 
+    def test_manager_storage_retry_gates_saved_head_without_rerunning_worker(self) -> None:
+        dispatch.configure(config.load(self.repo))
+        wt = self.repo / ".factory" / "wt-7"
+        wt.parent.mkdir(exist_ok=True)
+        self.git("worktree", "add", str(wt), "-b", "agent/7")
+        lease = self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip()
+        (wt / "saved.txt").write_text("worker result")
+        self.git("-C", str(wt), "add", "saved.txt")
+        self.git("-C", str(wt), "commit", "-qm", "saved worker result")
+        head = self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip()
+        packet = self.repo / ".factory" / "packet.md"
+        packet.write_text("fix it")
+        issue = {
+            "title": "local change", "body": "", "comments": [],
+            "labels": [{"name": "ready-for-human"}],
+        }
+        pr = {
+            "state": "OPEN", "headRefName": "agent/7", "headRefOid": lease,
+            "baseRefName": "main", "reviewDecision": "",
+        }
+        with mock.patch.object(dispatch, "gh_json", return_value=pr), \
+                mock.patch.object(dispatch, "worker_round") as worker, \
+                mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")) as gate, \
+                mock.patch.object(dispatch, "push_agent", return_value=head), \
+                mock.patch.object(dispatch, "record_risk"), \
+                mock.patch.object(dispatch, "pr_gate_and_review",
+                                  return_value=("APPROVE", "approved", False)), \
+                mock.patch.object(dispatch, "pr_comment"), \
+                mock.patch.object(dispatch, "approve_pr", return_value=True):
+            manage.apply(
+                7, issue, "FIX", "", {"worker": "default", "guidance": "fix"},
+                packet, resume_head=head,
+            )
+        worker.assert_not_called()
+        gate.assert_called_once()
+
 
 class GateTempCleanupTest(unittest.TestCase):
     def test_failed_gate_and_mutation_checks_remove_their_temp_directories(self) -> None:
