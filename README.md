@@ -1054,6 +1054,18 @@ Clearing `manager.model` removes the repository override and restores the
 existing host value, a legacy `manager.command --model` fallback, or OMP's
 default model. Gate and safety policy remain file-managed.
 
+Before each claim and before every gate, Factory checks available bytes and
+inodes on both the runner temp filesystem and the `.factory` worktree
+filesystem. Falling below `[runner]` thresholds records the machine condition
+`runner_storage_low`, starts no gate, charges no ticket or manager round, and
+leaves the ticket out of `ready-for-human`. The pass exits successfully so the
+service monitor does not file a per-ticket or runtime bug. `factory doctor`
+reports the same live check, and the dashboard lists it under Host problems.
+Worker and gate subprocesses receive isolated temporary directories; normal
+exits remove them immediately and the next preflight reclaims directories whose
+recorded owner crashed. Escalated ticket worktrees remain available for
+diagnosis.
+
 ```toml
 [repo]
 # upstream = "upstream"          # fork workflow: sync upstream main each pass
@@ -1083,6 +1095,10 @@ command = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1",
 
 [manager]                         # optional; unset command disables it
 command = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]   # {prompt} = manager prompt file
+
+[runner]
+min_free_gb = 5
+min_free_inodes = 100000
 
 [gate]
 timeout = 1200
@@ -1597,9 +1613,10 @@ Reasons include `configured_check_failed`, `conflict_markers`,
 `leak_scan_matches`, `APPROVE`/`REVISE`, `check_timeout`,
 `triage_endpoint_unavailable`, `no_tickets`, `state_changed`, `ci_pending`,
 and `no_passing_ci`; exceptions may instead provide diagnostic text. Reasons
-are evidence, not a replacement for `outcome`. Existing gate exit codes,
-review retry behavior, claim locks, concurrency limits, and merge prerequisites
-are unchanged.
+are evidence, not a replacement for `outcome`. The gate exits 75 when its
+storage preflight defers work; dispatch treats that as a host wait, not a gate
+failure. Review retry behavior, claim locks, concurrency limits, and merge
+prerequisites are unchanged.
 
 ### Observation, interrupted writes, and CLI semantics
 

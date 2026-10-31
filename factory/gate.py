@@ -1,6 +1,6 @@
 """Deterministic quality gate for agent worktrees.
 
-Runs from a worktree root. Exit 0 = all checks pass, 1 = any failure.
+Runs from a worktree root. Exit 0 = pass, 1 = check failure, 75 = runner storage deferral.
 Writes a short Markdown report (PASS/FAIL per check + failure excerpts).
 """
 
@@ -19,7 +19,7 @@ import tempfile
 import tomllib
 from pathlib import Path
 
-from factory import config, lifecycle
+from factory import config, lifecycle, storage
 from factory.config import CONFIG_NAME, Config
 
 cfg: Config
@@ -648,7 +648,13 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--blocking-mutation", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     configure(config.load())
-    with lifecycle.scope(cfg.factory / "events.jsonl", "gate") as execution:
+    try:
+        storage.require(cfg, "gate")
+    except storage.RunnerStorageLow as exc:
+        print(exc, file=sys.stderr)
+        return storage.EX_TEMPFAIL
+    with storage.temporary_environment("factory-gate-"), \
+            lifecycle.scope(cfg.factory / "events.jsonl", "gate") as execution:
         return execute(args, execution)
 
 

@@ -14,7 +14,7 @@ from pathlib import Path
 from subprocess import CalledProcessError
 from tempfile import NamedTemporaryFile
 
-from factory import binding, config, dispatch, handoff, lifecycle
+from factory import binding, config, dispatch, handoff, lifecycle, storage
 from factory.config import (
     LABEL_ADD_ONLY_OVERRIDE,
     LABEL_AGENT,
@@ -371,7 +371,10 @@ def _split_bodies(n: int, parent_body: str, children: list[dict]) -> list[dict]:
     return prepared
 
 
-def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: Path) -> None:
+def apply(
+    n: int, issue: dict, decision: str, body: str, data: object, packet: Path,
+    *, resume_head: str | None = None,
+) -> None:
     def issue_action(action: str, *args: str) -> None:
         dispatch.run(["gh", "issue", action, str(n), "--repo", dispatch.REPO, *args])
 
@@ -415,7 +418,14 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         lease = pr.get("headRefOid")
         local = dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
         events = lifecycle.read_events(dispatch.EVENTS)
-        if local != lease:
+        if resume_head is not None:
+            ahead = dispatch.run(
+                ["git", "merge-base", "--is-ancestor", lease or "", "HEAD"],
+                cwd=wt, check=False,
+            ).returncode == 0
+            if local != resume_head or not ahead:
+                raise ValueError("FIX storage retry worktree no longer matches its deferred head")
+        elif local != lease:
             # Ahead of the PR head only with the worker's own journaled head (#264): push it on a
             # lease against the recorded PR head and go on. Anything else is a human's call.
             own = any(e.get("event") == "attempt" and e.get("ticket") == n and e.get("head") == local for e in events)
@@ -451,13 +461,35 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
                 ["issue", "view", str(n), "--repo", dispatch.REPO, "--json", "comments"]
             )
             comments = fresh.get("comments")
-        ok, report, logfile, gate_head = dispatch.worker_round(
-            n, wt, {data["worker"]} | {label["name"] for label in issue.get("labels", [])},
-            issue["title"], extra, max(attempts, default=0) + 1,
-            time.monotonic() + cfg.budget_min * 60, body=issue.get("body") or "",
-            selected_worker=data["worker"],
-            comments=comments,
-        )
+        if resume_head is None:
+            ok, report, logfile, gate_head = dispatch.worker_round(
+                n, wt, {data["worker"]} | {label["name"] for label in issue.get("labels", [])},
+                issue["title"], extra, max(attempts, default=0) + 1,
+                time.monotonic() + cfg.budget_min * 60, body=issue.get("body") or "",
+                selected_worker=data["worker"],
+                comments=comments,
+            )
+        else:
+            status_cmd = [
+                "git", "status", "--porcelain", "--untracked-files=all", "--", ".",
+                ":(exclude).factory-prompt.md", ":(exclude).factory",
+            ]
+            before = dispatch.run(status_cmd, cwd=wt).stdout.strip()
+            sync = dispatch.sync_event(n)
+            handoff = wt / ".factory" / f"handoff-{n}.md"
+            ok, report = dispatch.run_gate(
+                wt, n, **dispatch.gate_flags(
+                    sync, {data["worker"]} | {label["name"] for label in issue.get("labels", [])},
+                    issue.get("body") or "", handoff.read_text() if handoff.exists() else "",
+                    comments=comments,
+                ),
+            )
+            gate_head = dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+            after = dispatch.run(status_cmd, cwd=wt).stdout.strip()
+            if gate_head != resume_head or before or after:
+                ok = False
+                report += "\n\nGate evidence rejected: deferred worktree changed before retry."
+            logfile = None
         if not ok:
             reason = "gate failed after manager FIX"
             if already_human:
@@ -1034,9 +1066,23 @@ def escalation_pass(dry_run: bool = False) -> None:
                 if not escalation or escalation.get("upstream") or escalation.get("pr") or not escalation.get("packet"):
                     continue
                 round_number = escalation.get("round", 0)
+                deferred_at = next((
+                    index for index in range(len(events) - 1, -1, -1)
+                    if events[index].get("event") == "manage-deferred"
+                    and events[index].get("round") == round_number
+                ), -1)
+                applied_at = next((
+                    index for index in range(len(events) - 1, -1, -1)
+                    if events[index].get("event") == "manage-applied"
+                    and events[index].get("round") == round_number
+                ), -1)
+                deferred = events[deferred_at] if deferred_at > applied_at else None
                 # The PR frontier numbers its own `manage` rows (with `pr`) per PR; they never spend an escalation round.
-                if not 1 <= round_number <= cfg.manager_rounds or any(
-                    e.get("event") == "manage" and e.get("round") == round_number and not e.get("pr") for e in events
+                if not 1 <= round_number <= cfg.manager_rounds or (
+                    deferred is None and any(
+                        e.get("event") == "manage" and e.get("round") == round_number
+                        and not e.get("pr") for e in events
+                    )
                 ):
                     continue
                 packet = Path(escalation["packet"])
@@ -1047,6 +1093,25 @@ def escalation_pass(dry_run: bool = False) -> None:
                     continue
                 if dry_run:
                     dispatch.log(f"#{n}: would manage escalation round {round_number}")
+                    continue
+                if deferred is not None:
+                    try:
+                        apply(
+                            n, issue, deferred["decision"], deferred["body"], deferred["data"],
+                            packet, resume_head=deferred["head"],
+                        )
+                    except storage.RunnerStorageLow as exc:
+                        execution.wait("runner_storage_low", mode="retry_next_pass")
+                        dispatch.log(f"#{n}: manager work deferred ({exc})")
+                    except (CalledProcessError, OSError, ValueError) as exc:
+                        execution.outcome = "mechanism_failure"
+                        execution.reason = "github_command_failed"
+                        dispatch.record("manage-applied", ticket=n, round=round_number,
+                                        status="failed")
+                        dispatch.log(f"#{n}: manager decision application failed: {exc}; leaving for human")
+                    else:
+                        dispatch.record("manage-applied", ticket=n, round=round_number,
+                                        status="applied")
                     continue
                 workers = {k: v for k, v in cfg.workers.items()
                            if k not in RESERVED_LABELS and k not in cfg.worker_select_label}
@@ -1097,6 +1162,14 @@ def escalation_pass(dry_run: bool = False) -> None:
                                 packet=str(packet), notes=status, rejected=rejected)
                 try:
                     apply(n, issue, decision, body, data, packet)
+                except storage.RunnerStorageLow as exc:
+                    head = dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+                    dispatch.record(
+                        "manage-deferred", ticket=n, round=round_number, decision=decision,
+                        body=body, data=data, packet=str(packet), head=head,
+                    )
+                    execution.wait("runner_storage_low", mode="retry_next_pass")
+                    dispatch.log(f"#{n}: manager work deferred ({exc})")
                 except (CalledProcessError, OSError, ValueError) as exc:
                     # A partial SPLIT or REWRITE must not be replayed automatically.
                     execution.outcome = "mechanism_failure"
