@@ -116,6 +116,39 @@ class ReviewIsolationTest(unittest.TestCase):
         self.assertIn("CalledProcessError", findings)
         self.assertFalse(self.sentinel.exists())
 
+    def test_snapshot_setup_failure_removes_read_only_tree(self) -> None:
+        scratch = self.tmp / "review-tmp"
+        scratch.mkdir()
+        write_text = Path.write_text
+
+        def fail_diff(path, *args, **kwargs):
+            if path.name == "review.diff":
+                raise OSError("write failed")
+            return write_text(path, *args, **kwargs)
+
+        with mock.patch.object(dispatch.tempfile, "tempdir", str(scratch)), \
+                mock.patch.object(Path, "write_text", fail_diff), \
+                self.assertRaisesRegex(OSError, "write failed"):
+            dispatch._run_reviewer(
+                [sys.executable, "-c", ""], self.wt, self.head, "diff",
+            )
+        self.assertEqual(list(scratch.iterdir()), [])
+
+    def test_stale_read_only_snapshot_is_swept(self) -> None:
+        scratch = self.tmp / "review-tmp"
+        snapshot = scratch / "factory-review-stale" / "snapshot"
+        snapshot.mkdir(parents=True)
+        source = snapshot / "source.py"
+        source.write_text("pass\n")
+        source.chmod(0o444)
+        snapshot.chmod(0o555)
+        os.utime(snapshot.parent, (0, 0))
+
+        with mock.patch.object(dispatch.tempfile, "tempdir", str(scratch)):
+            dispatch._sweep_stale_reviewer_snapshots()
+
+        self.assertFalse(snapshot.parent.exists())
+
     def test_failed_external_diff_fails_closed(self) -> None:
         failure = subprocess.CalledProcessError(1, ["gh", "api"])
         with mock.patch.object(dispatch, "run", side_effect=failure):
