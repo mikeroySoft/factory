@@ -14,8 +14,10 @@ import atexit
 import concurrent.futures as cf
 import hashlib
 import json
+import os
 import pathlib
 import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -32,8 +34,22 @@ sys.path.insert(0, str(REPO))
 from factory import config, stats
 from factory.dispatch import _omp_output
 
-CHECKOUT_ROOT = pathlib.Path(tempfile.mkdtemp(prefix="factory-cal-checkout-"))
+CHECKOUT_ROOT = pathlib.Path(tempfile.mkdtemp(
+    prefix="factory-cal-checkout-", dir=os.environ.get("FACTORY_CAL_CHECKOUT_PARENT"),
+))
 atexit.register(shutil.rmtree, CHECKOUT_ROOT, ignore_errors=True)
+
+
+def _terminate(signum, frame) -> None:
+    shutil.rmtree(CHECKOUT_ROOT, ignore_errors=True)
+    # Do not unwind an executor context: that waits for queued model calls.
+    os._exit(128 + signum)
+
+
+if threading.current_thread() is threading.main_thread():
+    signal.signal(signal.SIGTERM, _terminate)
+
+
 CONTRACTS = {
     "baseline": "cadb9981524ab5506693e27f56ff8ac4ef911da6",
     "issue36": "1947fc4e3de23e71f64342f2c9cd2570d845db5e",
@@ -527,7 +543,7 @@ def main(
         return 0
     if args.out_dir is None:
         _parser().error("out_dir is required without --models")
-    model = args.model or configured_reviewer_model()
+    model = args.model or configured_reviewer_model(REPO)
     rows = run_experiment(
         pathlib.Path(args.out_dir),
         args.samples,

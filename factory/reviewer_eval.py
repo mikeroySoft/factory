@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -10,6 +11,7 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import replace
 from datetime import datetime
@@ -288,30 +290,42 @@ def _baseline_matches(baseline: dict | None, version: int, fingerprint: dict) ->
     )
 
 
-def _merged_improvement_pending(baseline: dict, rows: list[dict]) -> bool:
-    refreshed_at = max((
-        index
-        for index, row in enumerate(rows)
-        if row.get("event") == EVENT
-        and row.get("candidate") == baseline.get("main_sha")
-        and row.get("status") == "completed"
-        and row.get("accepted") is True
-    ), default=-1)
+def _is_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
+    if not _SHA.fullmatch(ancestor) or not _SHA.fullmatch(descendant):
+        return False
+    if ancestor == descendant:
+        return True
+    proc = subprocess.run(
+        ["git", "-C", str(root), "merge-base", "--is-ancestor", ancestor, descendant],
+        capture_output=True, text=True, check=False,
+    )
+    return proc.returncode == 0
+
+
+def _merged_improvement_pending(
+    baseline: dict, rows: list[dict], root: Path, *, main_sha: str | None = None,
+) -> bool:
+    digest = baseline_digest(baseline)
     improved = {
         row.get("candidate")
         for row in rows
         if row.get("event") == EVENT
+        and row.get("status") == "completed"
+        and row.get("baseline_sha256") == digest
         and any(
-            flip.get("baseline") == "always-fail" and flip.get("head") == "always-pass"
+            flip.get("baseline") in ("always-fail", "flaky")
+            and flip.get("head") == "always-pass"
             for flip in row.get("flips", [])
             if isinstance(flip, dict)
         )
     }
     return any(
-        index > refreshed_at
-        and row.get("event") == "merged"
+        row.get("event") == "merged"
         and row.get("head") in improved
-        for index, row in enumerate(rows)
+        and not _is_ancestor(
+            root, row.get("merge_sha", ""), main_sha or baseline.get("main_sha", "")
+        )
+        for row in rows
     )
 
 
@@ -324,12 +338,14 @@ def baseline_ready(cfg: config.Config) -> bool:
             contract_fingerprint(cfg.root),
         )
         and not _merged_improvement_pending(
-            baseline, lifecycle.read_events(cfg.factory / "events.jsonl")
+            baseline, lifecycle.read_events(cfg.factory / "events.jsonl"), cfg.root
         )
     )
 
 
-def write_baseline(path: Path, summary: dict, accepted_main_sha: str) -> bool:
+def write_baseline(
+    path: Path, summary: dict, accepted_main_sha: str, *, root: Path | None = None,
+) -> bool:
     """Replace the single baseline only with evidence produced at accepted main."""
     if summary.get("candidate") != accepted_main_sha or summary.get("status") != "completed":
         return False
@@ -341,9 +357,25 @@ def write_baseline(path: Path, summary: dict, accepted_main_sha: str) -> bool:
         "model": summary.get("model"),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
-    temporary.replace(path)
+    # Serialize the ancestry check with replacement: overlapping main runs may
+    # finish in the opposite order, but baseline history must never move back.
+    with path.with_suffix(".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        previous = load_baseline(path)
+        if previous and not _is_ancestor(
+            root or path.parent.parent, previous.get("main_sha", ""), accepted_main_sha
+        ):
+            return False
+        if previous and _merged_improvement_pending(
+            previous,
+            lifecycle.read_events(path.parent / "events.jsonl"),
+            root or path.parent.parent,
+            main_sha=accepted_main_sha,
+        ):
+            return False
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+        temporary.replace(path)
     return True
 
 
@@ -431,14 +463,15 @@ def _judge(
             expanded[1:1] = ["--mode", "json"]
     started = time.monotonic()
     try:
-        proc = subprocess.run(
-            expanded,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=max(0.001, timeout),
-            check=False,
-        )
+        from factory.dispatch import without_github
+
+        clean = {key: value for key, value in _isolated_env().items() if not key.startswith("GIT_")}
+        with tempfile.TemporaryDirectory(prefix="factory-review-") as review_dir, \
+                without_github(clean) as env:
+            proc = subprocess.run(
+                expanded, cwd=Path(review_dir), env=env,
+                capture_output=True, text=True, check=False, timeout=max(0.001, timeout),
+            )
     except subprocess.TimeoutExpired:
         return None, {"seconds": round(time.monotonic() - started, 3), "timeout": True}
     judged, usage = proc.stdout.strip(), None
@@ -461,22 +494,25 @@ def _run_runner(checkout: Path, out: Path, candidate: str, timeout: float) -> tu
     result_path.unlink(missing_ok=True)
     runner = checkout / "experiments/reviewer-calibration/run_tools.py"
     command = [sys.executable, str(runner), "--all", str(out), str(REPEATS), candidate]
-    proc = subprocess.Popen(
-        command,
-        cwd=checkout,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-        env=_isolated_env(),
-    )
     timed_out = False
-    try:
-        proc.communicate(timeout=max(0.001, timeout))
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        os.killpg(proc.pid, signal.SIGTERM)
-        proc.communicate()
+    # The parent owns cleanup even when SIGTERM prevents the runner's atexit
+    # handlers from running. No shared checkout/cache directory is removed.
+    with tempfile.TemporaryDirectory(prefix="factory-cal-suite-") as temporary:
+        proc = subprocess.Popen(
+            command,
+            cwd=checkout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+            env={**_isolated_env(), "FACTORY_CAL_CHECKOUT_PARENT": temporary},
+        )
+        try:
+            proc.communicate(timeout=max(0.001, timeout))
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.communicate()
     try:
         rows = json.loads(result_path.read_text())
     except (OSError, json.JSONDecodeError):
@@ -590,7 +626,7 @@ def run(cfg: config.Config, checkout: Path, *, dry_run: bool = False) -> dict | 
     })
     _append(cfg, summary)
     if not summary["missing"] and accepted is True:
-        write_baseline(baseline_path(cfg), summary, candidate)
+        write_baseline(baseline_path(cfg), summary, candidate, root=cfg.root)
     print(format_report(summary))
     return summary
 

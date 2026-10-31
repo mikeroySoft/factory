@@ -513,6 +513,12 @@ class ReviewerEvalTest(unittest.TestCase):
 
     def test_merged_improvement_requires_new_accepted_main_baseline(self) -> None:
         fingerprint = {"prompt_sha256": {"case": "prompt"}, "model": "reviewer/one"}
+        self.enterContext(mock.patch.object(
+            reviewer_eval, "_is_ancestor",
+            side_effect=lambda root, ancestor, descendant: (
+                ancestor == descendant or (ancestor, descendant) == ("a" * 40, "c" * 40)
+            ),
+        ))
         with tempfile.TemporaryDirectory() as directory:
             cfg = config.Config(root=Path(directory), repo="acme/widgets")
             old_main, candidate, refreshed_main = ("a" * 40, "b" * 40, "c" * 40)
@@ -536,6 +542,9 @@ class ReviewerEvalTest(unittest.TestCase):
                 "candidate": candidate,
                 "status": "completed",
                 "verdict": "pass",
+                "baseline_sha256": reviewer_eval.baseline_digest(
+                    reviewer_eval.load_baseline(reviewer_eval.baseline_path(cfg))
+                ),
                 "flips": [{
                     "case": "case",
                     "baseline": "always-fail",

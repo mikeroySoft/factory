@@ -180,6 +180,53 @@ class ReviewerEvalRepairsTest(unittest.TestCase):
                  ):
                 self.assertTrue(reviewer_eval.baseline_ready(cfg))
 
+    def test_timeout_parent_cleans_checkout_without_child_signal_handler(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = root / reviewer_eval.CORPUS_PATH / "run_tools.py"
+            script.parent.mkdir(parents=True)
+            out = root / "out"
+            out.mkdir()
+            script.write_text(
+                "import os, pathlib, signal, sys, tempfile\n"
+                "private = pathlib.Path(tempfile.mkdtemp("
+                "dir=os.environ['FACTORY_CAL_CHECKOUT_PARENT']))\n"
+                "(private/'fixture').write_text('private')\n"
+                "(pathlib.Path(sys.argv[2])/'private.txt').write_text(str(private))\n"
+                "signal.pause()\n"
+            )
+            unrelated = root / "unrelated"
+            unrelated.write_text("preserve")
+            rows, timed_out = reviewer_eval._run_runner(root, out, "a" * 40, 1)
+            self.assertEqual(rows, [])
+            self.assertTrue(timed_out)
+            private = Path((out / "private.txt").read_text())
+            self.assertFalse(private.exists())
+            self.assertFalse(private.parent.exists())
+            self.assertEqual(unrelated.read_text(), "preserve")
+
+    def test_same_main_rerun_cannot_clear_pending_improvement(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cfg, old, merged, _ = self.main_history(Path(directory))
+            path = reviewer_eval.baseline_path(cfg)
+            baseline = self.summary(old, "flaky")
+            self.assertTrue(reviewer_eval.write_baseline(path, baseline, old))
+            digest = reviewer_eval.baseline_digest(reviewer_eval.load_baseline(path))
+            for row in (
+                {
+                    "event": reviewer_eval.EVENT, "candidate": "d" * 40,
+                    "status": "completed", "baseline_sha256": digest,
+                    "flips": [{"case": "case", "baseline": "flaky", "head": "always-pass"}],
+                },
+                {"event": "merged", "head": "d" * 40, "merge_sha": merged},
+            ):
+                lifecycle.append(cfg.factory / "events.jsonl", row)
+            saved = path.read_bytes()
+            self.assertFalse(reviewer_eval.write_baseline(
+                path, self.summary(old, "always-fail"), old
+            ))
+            self.assertEqual(path.read_bytes(), saved)
+
     @staticmethod
     def fingerprint() -> dict:
         return {"prompt_sha256": {"case": "unchanged"}, "model": "checkout/reviewer"}
