@@ -121,6 +121,17 @@
 # profile = "default"
 # schedule = false
 
+[release]
+# Odd patch tags are experimental; even patch tags are public and advance stable.
+# min_tickets = 5
+# bar_min_tickets = 20
+# window_tickets = 30
+# experimental_min_interval_hours = 6
+# soak_hours = 24
+# bar_floor_human_rate = 0.10
+# bar_floor_first_pass = 0.90
+# bar_floor_escape_rate = 0.05
+
 [gate]
 # timeout = 1200                      # seconds per check; a wedged check FAILs
 # lock = "/tmp/factory.lock"          # host-wide lock held by `exclusive` checks

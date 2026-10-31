@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Automatic releases now use odd experimental and even public patch channels. Odd cuts skip the quality bar, publish as non-latest prereleases, retain public pins, and are interval-limited; even promotions require a rolling ticket window, soak passes without watch bugs or rising escalations, and an escape-rate bar before atomically advancing `stable`, publishing latest, and carrying public docs back to `main` (#458).
 - The Decisions breadboard now fits a complete multi-loop graph into its viewport and supports button, wheel, pointer, keyboard, and fullscreen zoom/pan controls. Cause-to-effect arrowheads remain at target ends, bounded wire routes redraw after every viewport or graph change, and parallel edges use distinct lanes while spring motion and full-chain tracing remain intact (#470). [Before](docs/issue-470-before.png) · [After](docs/issue-470-after.png)
 - Triage now comments once and records `triage_stalled` when one issue produces `unparseable_decision` on two consecutive passes; `factory watch` files that stalled streak while ignoring a single parse failure (#450).
 - Reviewer calibration runs now take their default model from the effective Factory reviewer configuration, record the selected model, and can replay the frozen split three times across an explicit model matrix with quality/noise, stable pass→fail, token, configured-price, wall-time, and viability reports (#438).
