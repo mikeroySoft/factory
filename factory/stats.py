@@ -766,19 +766,20 @@ def blamed_lines(fix: str) -> list[tuple[str, str]]:
     return lines
 
 
-def present(fix: str) -> bool:
-    """True when `fix` and its first parent are in this clone, after one `git fetch origin <fix>` if not."""
+def present(fix: str, *, fetch: bool = True) -> bool:
+    """Check fix ancestry, optionally fetching it once when missing from this clone."""
     def have() -> bool:
         return subprocess.run(["git", "cat-file", "-e", f"{fix}^"], cwd=cfg.root,
                               capture_output=True, check=False).returncode == 0
-    if not have():
+    if not have() and fetch:
         subprocess.run(["git", "fetch", "-q", "origin", fix], cwd=cfg.root, capture_output=True, check=False)
     return have()
 
 
-def escapes() -> list[dict[str, Any]]:
+def escapes(*, read_only: bool = False) -> list[dict[str, Any]]:
     """Candidate escaped defects: closed `bug` issues whose fix changed lines an earlier agent ticket wrote.
-    SZZ-style and noisy: refactors yield false candidates, add-only fixes yield none."""
+    SZZ-style and noisy: refactors yield false candidates, add-only fixes yield none.
+    Read-only callers never fetch missing fixes and receive unavailable evidence instead."""
     bugs = gh("issue", "list", "--state", "closed", "--label", "bug", "--limit", "1000",
               "--json", "number,title,body,closedAt")
     if not bugs:
@@ -805,7 +806,9 @@ def escapes() -> list[dict[str, Any]]:
         elif not fixes:
             status = "unlinked"
         else:
-            skipped = [fix for fix in fixes if not present(fix)]
+            skipped = [fix for fix in fixes if not present(fix, fetch=not read_only)]
+            if skipped and read_only:
+                raise RuntimeError("escape evidence requires fix commits missing from this clone")
             for fix in skipped:
                 print(f"factory stats: skipped fix {fix[:7]} of bug #{number}: not in this clone or on origin",
                       file=sys.stderr)

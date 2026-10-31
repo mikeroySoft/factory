@@ -126,7 +126,8 @@ class ReleaseChannelsTest(unittest.TestCase):
         self.event(at="2026-10-01T00:00:00Z", event="attempt", ticket=1, attempt=1, gate="PASS")
         self.event(at="2026-10-01T00:00:00Z", event="merged", ticket=1)
 
-        def escapes() -> list[dict]:
+        def escapes(*, read_only: bool = False) -> list[dict]:
+            self.assertFalse(read_only)
             self.assertIs(stats.cfg, self.cfg)
             self.assertEqual(stats.REPOSITORY, self.cfg.repo)
             return []
@@ -199,7 +200,8 @@ class ReleaseChannelsTest(unittest.TestCase):
 
     def test_even_promotion_tags_latest_advances_stable_and_opens_carryback(self) -> None:
         self.make_odd()
-        with mock.patch.object(release, "gate_passes", return_value=True), \
+        with mock.patch.object(release, "_pulls", return_value=[]), \
+                mock.patch.object(release, "gate_passes", return_value=True), \
                 mock.patch.object(release, "ci_passes", return_value=True), \
                 mock.patch("factory.stats.escapes", return_value=[]):
             built = release.run(self.cfg)
@@ -209,7 +211,8 @@ class ReleaseChannelsTest(unittest.TestCase):
         self.assertIn("factory@v0.4.8", self.git(
             self.origin, "show", "release/v0.4.8:README.md"))
 
-        with mock.patch.object(release, "ci_passes", return_value=True), \
+        with mock.patch.object(release, "_pulls", return_value=[]), \
+                mock.patch.object(release, "ci_passes", return_value=True), \
                 mock.patch.object(release, "_gh_release", side_effect=[
                     self.gh_result(1), self.gh_result(0),
                 ]) as gh, mock.patch("factory.stats.escapes", return_value=[]):
@@ -265,7 +268,7 @@ class ReleaseChannelsTest(unittest.TestCase):
                 mock.patch.object(stats, "escapes", return_value=[]):
             progressed = release.run(self.cfg)
         self.assertIn("waiting for GitHub mergeability", progressed)
-        self.assertIn("opened experimental release PR #19 for v0.4.9", progressed)
+        self.assertNotIn("opened experimental release PR", progressed)
 
     def test_public_tag_replaces_divergent_stable_atomically(self) -> None:
         self.git(self.repo, "checkout", "-q", "-b", "old-public", "v0.4.6")
@@ -429,7 +432,8 @@ class ReleaseChannelsTest(unittest.TestCase):
 
     def build_and_tag_public(self) -> None:
         self.make_odd()
-        with mock.patch.object(release, "gate_passes", return_value=True), \
+        with mock.patch.object(release, "_pulls", return_value=[]), \
+                mock.patch.object(release, "gate_passes", return_value=True), \
                 mock.patch.object(release, "ci_passes", return_value=True), \
                 mock.patch.object(release, "_gh_release", side_effect=[
                     self.gh_result(1), self.gh_result(0),
@@ -500,6 +504,8 @@ class ReleaseChannelsTest(unittest.TestCase):
                 self.event(at=f"2026-10-{start}T01:00:00Z", event=(
                     "escalate" if ticket < (1 if sha == "previous" else 2) else "merged"
                 ), ticket=ticket + (100 if sha == "candidate" else 0))
+                self.event(at=f"2026-10-{start}T01:00:00Z", event="attempt",
+                           ticket=ticket, attempt=1, gate="PASS")
         even = {"message": 'Release\n```json\n{"human_rate":1,"first_pass":0,'
                 '"escape_rate":1,"tickets":30,"escalation_rate":0.20}\n```'}
         with mock.patch.object(stats, "escapes", return_value=[]):
@@ -590,7 +596,8 @@ class ReleaseChannelsTest(unittest.TestCase):
         for state, statuses in (("failure", [{"state": "failure"}]),
                                 ("pending", [{"state": "pending"}]), ("pending", [])):
             with self.subTest(state=state, statuses=statuses):
-                def gh(cfg: config.Config, endpoint: str, *args: str):
+                def gh(cfg: config.Config, endpoint: str, *args: str,
+                       state=state, statuses=statuses):
                     if "/status?" in endpoint:
                         return {"state": state, "statuses": statuses}
                     if "/check-runs?" in endpoint:
@@ -643,7 +650,7 @@ class ReleaseChannelsTest(unittest.TestCase):
         gh = binaries / "gh"
         gh.write_text(
             f"#!{sys.executable}\n"
-            "import json, sys\n"
+            "import json, os, sys\n"
             f"with open({str(calls)!r}, 'a') as f: f.write(json.dumps(['gh', *sys.argv[1:]]) + '\\n')\n"
             "args = sys.argv[1:]\n"
             "if any(x in args for x in ['POST','PUT','PATCH','DELETE','create']):\n"
@@ -652,6 +659,11 @@ class ReleaseChannelsTest(unittest.TestCase):
             "    print(json.dumps({'state':'success','statuses':[{'state':'success'}]}))\n"
             "elif any('/check-runs?' in x for x in args):\n"
             "    print(json.dumps([{'check_runs':[]}]))\n"
+            "elif args[:2] == ['issue','list'] and os.environ.get('MISSING_FIX'):\n"
+            "    print(json.dumps([{'number':42,'title':'engine bug','body':''}]))\n"
+            "elif args[:2] == ['pr','list'] and os.environ.get('MISSING_FIX'):\n"
+            "    print(json.dumps([{'mergeCommit':{'oid':os.environ['MISSING_FIX']},"
+            "'closingIssuesReferences':[{'number':42}]}]))\n"
             "else: print('[]')\n"
         )
         gh.chmod(0o755)
@@ -670,11 +682,19 @@ class ReleaseChannelsTest(unittest.TestCase):
                 for path in self.repo.rglob("*") if path.is_file()
             }
 
-        for legacy in (False, True):
-            with self.subTest(legacy=legacy):
+        for scenario in ("initial", "candidate", "legacy"):
+            with self.subTest(scenario=scenario):
+                legacy = scenario == "legacy"
+                if scenario == "candidate":
+                    self.make_odd()
+                    (self.repo / "after-odd.txt").write_text("work after odd tag\n")
+                    self.git(self.repo, "add", "after-odd.txt")
+                    self.git(self.repo, "commit", "-q", "-m", "next experiment")
+                    self.git(self.repo, "push", "-q", "origin", "main")
                 if legacy:
-                    self.git(self.repo, "tag", "-d", "v0.4.6")
-                    self.git(self.repo, "push", "-q", "origin", ":refs/tags/v0.4.6")
+                    self.git(self.repo, "tag", "-d", "v0.4.6", "v0.4.7")
+                    self.git(self.repo, "push", "-q", "origin",
+                             ":refs/tags/v0.4.6", ":refs/tags/v0.4.7")
                     # Stay at the legacy tag's version with changes eligible for a PR.
                     (self.repo / "factory" / "__init__.py").write_text('__version__ = "0.4.5"\n')
                     self.git(self.repo, "add", "factory/__init__.py")
@@ -689,6 +709,7 @@ class ReleaseChannelsTest(unittest.TestCase):
                     "XDG_CACHE_HOME": str(self.base / "cache"),
                     "XDG_STATE_HOME": str(self.base / "state"),
                     "XDG_RUNTIME_DIR": str(self.base / "runtime"),
+                    "MISSING_FIX": "f" * 40 if scenario == "candidate" else "",
                 }
                 proc = subprocess.run(
                     [sys.executable, "-m", "factory", "release", "--dry-run"],
@@ -697,6 +718,10 @@ class ReleaseChannelsTest(unittest.TestCase):
                 report = json.loads(proc.stdout)
                 verdict = report["verdict"] if legacy else report["odd"]["verdict"]
                 self.assertIn("would open", verdict, proc.stderr)
+                if scenario == "candidate":
+                    self.assertEqual(report["even"]["candidate"], "v0.4.7")
+                    self.assertIsNone(report["even"]["metrics"]["escape_rate"])
+                    self.assertEqual(report["even"]["verdict"], "escape evidence is unavailable")
                 self.assertEqual(snapshot(), before)
         recorded = [json.loads(line) for line in calls.read_text().splitlines()]
         self.assertFalse(any("fetch" in args for args in recorded))
@@ -704,6 +729,62 @@ class ReleaseChannelsTest(unittest.TestCase):
             any(arg in {"POST", "PUT", "PATCH", "DELETE", "create"} for arg in args)
             for args in recorded if args[0] == "gh"
         ))
+
+    def test_dry_run_escape_scan_never_fetches_missing_fix_commits(self) -> None:
+        self.make_odd()
+        fix = "f" * 40
+
+        def gh(*args: str) -> list[dict]:
+            if args[:2] == ("issue", "list"):
+                return [{"number": 42, "title": "engine bug", "body": ""}]
+            self.assertEqual(args[:2], ("pr", "list"))
+            return [{"mergeCommit": {"oid": fix}, "closingIssuesReferences": [{"number": 42}]}]
+
+        with mock.patch.object(stats, "gh", side_effect=gh), \
+                mock.patch.object(stats, "present", wraps=stats.present) as present:
+            metrics = release.measure_window(self.cfg, read_only=True)
+        self.assertIsNone(metrics["escape_rate"])
+        present.assert_called_once_with(fix, fetch=False)
+
+    def test_public_notes_collect_all_unpromoted_odd_sections(self) -> None:
+        self.make_odd()
+        changelog = self.repo / "CHANGELOG.md"
+        changelog.write_text(changelog.read_text().replace(
+            "## Unreleased\n\n", "## Unreleased\n\n- second experiment\n\n", 1,
+        ))
+        release._update_experimental_files(self.cfg, self.repo, "0.4.7", "0.4.9")
+        self.git(self.repo, "add", "factory/__init__.py", "CHANGELOG.md")
+        self.git(self.repo, "commit", "-q", "-m", "Release 0.4.9")
+        sha = self.git(self.repo, "rev-parse", "HEAD")
+        self.git(self.repo, "tag", "-a", "v0.4.9", "-m", "Experimental release 0.4.9")
+        self.git(self.repo, "push", "-q", "origin", "main", "v0.4.9")
+        self.event(at=lifecycle._now(), event="lifecycle", stage="dispatcher", kind="enter",
+                   engine_commit=sha)
+        with mock.patch.object(release, "_pulls", return_value=[]), \
+                mock.patch.object(release, "ci_passes", return_value=True), \
+                mock.patch.object(release, "gate_passes", return_value=True), \
+                mock.patch.object(stats, "escapes", return_value=[]), \
+                mock.patch.object(release, "_gh_release", side_effect=[
+                    self.gh_result(1), self.gh_result(0),
+                ]) as gh:
+            self.assertIn("built promotion branch release/v0.4.10", release.run(self.cfg))
+            self.assertIn("released v0.4.10", release.run(self.cfg))
+        notes = gh.call_args.kwargs["notes"]
+        self.assertIn("- experimental work", notes)
+        self.assertIn("- second experiment", notes)
+        self.assertNotIn("- public work", notes)
+
+    def test_in_flight_odd_pr_blocks_building_a_public_promotion(self) -> None:
+        self.make_odd()
+        pull = {"number": 19, "mergeable": None, "mergeable_state": "unknown"}
+        with mock.patch.object(release, "_pulls", side_effect=lambda cfg, branch: (
+            [{"number": 19}] if branch == "release/v0.4.9" else []
+        )), mock.patch.object(release, "_pull", return_value=pull), \
+                mock.patch.object(release, "_build_promotion", return_value="unexpected") as built, \
+                mock.patch.object(stats, "escapes", return_value=[]):
+            reason = release.run(self.cfg)
+        self.assertIn("waiting for GitHub mergeability", reason)
+        built.assert_not_called()
 
 
 if __name__ == "__main__":

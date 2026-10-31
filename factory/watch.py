@@ -805,7 +805,8 @@ def run_pass(
             ]).stdout.strip().splitlines()[-1]
             number = int(url.rstrip("/").rsplit("/", 1)[-1])
             dispatch.record("watch", fingerprint=fp, issue=number, repo=engine,
-                            latest=signal["latest"], at=lifecycle._now())
+                            latest=signal["latest"], at=lifecycle._now(),
+                            signal_kind=signal["kind"], engine_commit=config.engine_commit())
             dispatch.log(f"watch: filed {engine}#{number} for {fp} ({title(signal)})")
         else:
             if (previous is not None and (previous["issue"], previous.get("repo", dispatch.REPO)) == (issue["number"], engine)

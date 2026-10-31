@@ -140,6 +140,7 @@ def measure(cfg: config.Config, since: str | datetime) -> dict[str, float | int 
 
 def measure_window(
     cfg: config.Config, until: str | datetime | None = None,
+    *, read_only: bool = False,
 ) -> dict[str, float | int | None]:
     """Measure the newest configured merged-ticket window and its matching event span."""
     rows = [
@@ -180,7 +181,7 @@ def measure_window(
     try:
         escaped = {
             candidate["ticket"]
-            for row in stats.escapes()
+            for row in stats.escapes(read_only=read_only)
             for candidate in row.get("candidates", [])
             if type(candidate.get("ticket")) is int
         } & selected
@@ -243,18 +244,15 @@ def soak_metrics(
         if row.get("event") == "escalate" and type(row.get("ticket")) is int
     }
     escalation_rate = len(escalated) / len(terminals) if terminals else 0.0
-    previous_rate = (
-        float(previous_bar["escalation_rate"])
-        if previous_bar and "escalation_rate" in previous_bar
-        else None
-    )
-    if previous_rate is None and previous_odd is not None:
+    previous_rate = None
+    if previous_odd is not None:
         old_passes = passes(previous_odd)
         old_start = min((_at(row["at"]) for row in old_passes), default=None)
-        old_end = start or now
+        old_end = max((_at(row["at"]) for row in old_passes), default=None)
         old_active = [
             row for row in rows
-            if old_start is not None and old_start <= _at(row["at"]) < old_end
+            if old_start is not None and old_end is not None
+            and old_start <= _at(row["at"]) <= old_end
         ]
         old_terminals = {
             row["ticket"] for row in old_active
@@ -264,12 +262,25 @@ def soak_metrics(
             row["ticket"] for row in old_active
             if row.get("event") == "escalate" and type(row.get("ticket")) is int
         }
-        if old_terminals:
-            previous_rate = len(old_escalated) / len(old_terminals)
+        if old_passes:
+            previous_rate = len(old_escalated) / len(old_terminals) if old_terminals else 0.0
+    if previous_rate is None and previous_bar and "escalation_rate" in previous_bar:
+        previous_rate = float(previous_bar["escalation_rate"])
+    from factory import watch
+
+    # Legacy filings store only an opaque fingerprint. Reconstruct host identities
+    # from the same producer inputs, not from a nonexistent fingerprint prefix.
+    host_fingerprints = {
+        watch.fingerprint("host", reason)
+        for row in rows if (reason := watch._host_reason(row)) is not None
+    }
     watch_bugs = sum(
         row.get("event") == "watch"
         and not row.get("commented")
         and not row.get("closed")
+        and row.get("signal_kind") != "host"
+        and row.get("fingerprint") not in host_fingerprints
+        and row.get("engine_commit", odd["sha"]) in {None, odd["sha"]}
         for row in active
     )
     return {
@@ -784,13 +795,15 @@ def _promotion_evidence(
     odd: dict[str, Any],
     previous_odd: dict[str, Any] | None,
     even: dict[str, Any],
+    *,
+    read_only: bool = False,
 ) -> tuple[
     dict[str, float | int | None],
     dict[str, float | int] | None,
     dict[str, float | int] | None,
     str | None,
 ]:
-    metrics = measure_window(cfg)
+    metrics = measure_window(cfg, read_only=read_only)
     bar = _bar(even["message"])
     comparison, _ = _reset_legacy_bar(bar, cfg)
     soak = soak_metrics(cfg, odd, previous_odd, comparison)
@@ -840,6 +853,7 @@ def _promotion_evidence(
 def _build_promotion(
     cfg: config.Config,
     odd: dict[str, Any],
+    even: dict[str, Any],
     version: str,
     branch: str,
     metrics: dict[str, float | int | None],
@@ -847,6 +861,20 @@ def _build_promotion(
 ) -> str:
     temporary, worktree = _temporary_worktree(cfg, odd["sha"])
     try:
+        changelog = worktree / "CHANGELOG.md"
+        text = changelog.read_text()
+        notes = "\n\n".join(
+            match.group(2).strip()
+            for match in re.finditer(
+                r"(?ms)^## (\d+\.\d+\.\d+)[^\n]*\n(.*?)(?=^## |\Z)", text
+            )
+            if even["version"] < tuple(map(int, match.group(1).split("."))) <= odd["version"]
+            and match.group(2).strip()
+        )
+        changelog.write_text(re.sub(
+            r"(?m)^## Unreleased[ \t]*\n(?:\n)?",
+            lambda match: f"## Unreleased\n\n{notes}\n\n", text, count=1,
+        ))
         _update_release_files(
             cfg, worktree, odd["tag"].removeprefix("v"), version
         )
@@ -949,6 +977,16 @@ def _public_on_main(cfg: config.Config, even: dict[str, Any]) -> bool:
     return f"factory@{even['tag']}" in readme
 
 
+def _carryback_source(cfg: config.Config, even: dict[str, Any]) -> dict[str, Any] | None:
+    """Recover unfinished public docs independently of newer experimental tags."""
+    if not even["message"].startswith("Public release ") or _public_on_main(cfg, even):
+        return None
+    source = _latest(cfg, 1, even["version"])
+    if source is None or f"promoted from {source['tag']}." not in even["message"]:
+        raise ValueError(f"cannot recover promoted odd source for {even['tag']}")
+    return source
+
+
 def _open_promotion_pull(
     cfg: config.Config,
     odd: dict[str, Any],
@@ -977,11 +1015,12 @@ def _open_promotion_pull(
         changelog = worktree / "CHANGELOG.md"
         text = changelog.read_text()
         if heading.group(0) not in text:
+            section = f"{heading.group(0)}\n\n{_notes(cfg, even['tag'])}\n\n"
             odd_heading = re.compile(
                 rf"(?m)^## {re.escape(_text(odd['version']))} — \d{{4}}-\d{{2}}-\d{{2}}$"
             )
             text, count = odd_heading.subn(
-                lambda match: f"{heading.group(0)}\n\n{match.group(0)}", text, count=1,
+                lambda match: f"{section}{match.group(0)}", text, count=1,
             )
             if count != 1:
                 raise ValueError(f"CHANGELOG.md has no {odd['tag']} heading")
@@ -1003,13 +1042,27 @@ def _dry_run_channels(
     odd: dict[str, Any] | None,
     even: dict[str, Any],
 ) -> str:
-    metrics = measure_window(cfg)
+    metrics = measure_window(cfg, read_only=True)
     current = _version_at(cfg, f"origin/{cfg.main}")
     base = _release_base(cfg, odd, even)
     highest = max((tag for tag in (odd, even) if tag), key=lambda tag: tag["version"])
     next_odd = _next_odd(odd, even)
+    carryback = _carryback_source(cfg, even)
+    if carryback is not None:
+        pulls = _pulls(cfg, f"release/{even['tag']}")
+        action = (
+            f"public carryback PR #{pulls[0]['number']} for {even['tag']} is in flight"
+            if pulls else f"would open public carryback PR for {even['tag']}"
+        )
+        print(json.dumps({
+            "odd": {"next": f"v{_text(next_odd)}", "metrics": metrics, "verdict": action},
+            "even": {"candidate": carryback["tag"], "bar": _bar(even["message"]),
+                     "verdict": action},
+        }, sort_keys=True))
+        return action
     odd_pulls = _pulls(cfg, f"release/v{_text(next_odd)}")
-    if current > highest["version"] and current[2] % 2:
+    untagged = current > highest["version"] and current[2] % 2
+    if untagged:
         odd_action = f"would tag v{_text(current)} as experimental"
     elif odd_pulls:
         odd_action = f"experimental release PR #{odd_pulls[0]['number']} is in flight"
@@ -1020,11 +1073,16 @@ def _dry_run_channels(
     ).total_seconds() < cfg.release_experimental_min_interval_hours * 3600:
         odd_action = "experimental interval has not elapsed"
     else:
-        odd_action = f"would open experimental release PR for v{_text(next_odd)}"
+        head = _git(cfg.root, "rev-parse", f"origin/{cfg.main}").stdout.strip()
+        odd_action = (
+            f"would open experimental release PR for v{_text(next_odd)}"
+            if ci_passes(cfg, head)
+            else f"CI statuses/check-runs are not all successful for {head}"
+        )
     even_report: dict[str, Any] = {"candidate": None, "verdict": "no newer odd tag"}
     if odd and odd["version"] > even["version"]:
         evidence, bar, _, hold = _promotion_evidence(
-            cfg, odd, _latest(cfg, 1, odd["version"]), even
+            cfg, odd, _latest(cfg, 1, odd["version"]), even, read_only=True
         )
         next_even = f"v{_text((*odd['version'][:2], odd['version'][2] + 1))}"
         branch = f"release/{next_even}"
@@ -1037,6 +1095,10 @@ def _dry_run_channels(
             verdict = "would promote"
         else:
             verdict = "waiting for CI on promotion commit"
+        if odd_pulls or untagged:
+            verdict = f"experimental release is in flight; {odd_action}"
+        elif commit is not None or hold is None:
+            odd_action = f"public promotion {branch}: {verdict}"
         even_report = {
             "candidate": odd["tag"],
             "next": next_even,
@@ -1078,52 +1140,51 @@ def _run_channels(cfg: config.Config, dry_run: bool, open_pr: bool) -> str:
     ):
         return report(f"no changes since {even['tag']}")
     metrics = measure_window(cfg)
-    if current > highest["version"] and current[2] % 2:
-        return report(_tag_experimental(cfg, highest, current, metrics))
-
-    if odd and odd["version"] > even["version"]:
-        evidence, bar, comparison, hold = _promotion_evidence(
-            cfg, odd, _latest(cfg, 1, odd["version"]), even
-        )
-        if hold:
-            reason = _reason(hold, evidence, comparison)
-            _record_hold(cfg, reason, evidence, comparison or WORST)
-            activity.append(reason)
-        else:
-            next_even = (*odd["version"][:2], odd["version"][2] + 1)
-            version, branch = _text(next_even), f"release/v{_text(next_even)}"
-            commit = _branch_sha(cfg, branch)
-            if commit is None:
-                return report(_build_promotion(cfg, odd, version, branch, evidence, bar))
-            elif not ci_passes(cfg, commit):
-                activity.append(_reason("waiting for CI on promotion commit", evidence, bar))
-            else:
-                return report(
-                    _tag_public(cfg, odd, even, version, commit, evidence, bar, comparison)
-                )
-
-    if (
-        odd
-        and even["message"].startswith("Public release ")
-        and even["version"] == (*odd["version"][:2], odd["version"][2] + 1)
-        and not _public_on_main(cfg, even)
-    ):
+    carryback = _carryback_source(cfg, even)
+    if carryback is not None:
         branch = f"release/{even['tag']}"
         pending = _process_pull(
             cfg, branch, f"Promote {even['tag']}", metrics, _bar(even["message"])
         )
         if pending:
-            activity.append(pending)
-        elif not open_pr:
-            activity.append(_reason("no promotion PR open", metrics, _bar(even["message"])))
-        else:
-            return report(_open_promotion_pull(cfg, odd, even, branch))
+            return report(pending)
+        if not open_pr:
+            return report(_reason("no promotion PR open", metrics, _bar(even["message"])))
+        return report(_open_promotion_pull(cfg, carryback, even, branch))
+    if current > highest["version"] and current[2] % 2:
+        return report(_tag_experimental(cfg, highest, current, metrics))
 
     next_odd = _next_odd(odd, even)
     version, branch = _text(next_odd), f"release/v{_text(next_odd)}"
     pending = _process_pull(cfg, branch, f"Release {version}", metrics, _bar(even["message"]))
     if pending:
         return report(pending)
+
+    if odd and odd["version"] > even["version"]:
+        evidence, bar, comparison, hold = _promotion_evidence(
+            cfg, odd, _latest(cfg, 1, odd["version"]), even
+        )
+        next_even = (*odd["version"][:2], odd["version"][2] + 1)
+        public_version, public_branch = _text(next_even), f"release/v{_text(next_even)}"
+        commit = _branch_sha(cfg, public_branch)
+        if hold:
+            reason = _reason(hold, evidence, comparison)
+            _record_hold(cfg, reason, evidence, comparison or WORST)
+            if commit is not None:
+                return report(reason)
+            activity.append(reason)
+        else:
+            if commit is None:
+                return report(_build_promotion(
+                    cfg, odd, even, public_version, public_branch, evidence, bar
+                ))
+            elif not ci_passes(cfg, commit):
+                return report(_reason("waiting for CI on promotion commit", evidence, bar))
+            else:
+                return report(
+                    _tag_public(cfg, odd, even, public_version, commit, evidence, bar, comparison)
+                )
+
     if not open_pr:
         return report(_reason("no release PR open", metrics, _bar(even["message"])))
     if not _has_changes(cfg, base):
@@ -1162,7 +1223,7 @@ def _run_legacy(
     latest_tag: str | None = None
     bar_reset = False
     try:
-        if not fetched:
+        if not fetched and not dry_run:
             _git(cfg.root, "fetch", "--quiet", "--tags", "origin")
         latest = _latest(cfg)
         if latest is None:
@@ -1354,7 +1415,8 @@ def _run_legacy(
 def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
     """Advance odd experimental and even public release channels."""
     try:
-        _git(cfg.root, "fetch", "--quiet", "--tags", "origin")
+        if not dry_run:
+            _git(cfg.root, "fetch", "--quiet", "--tags", "origin")
         if _latest(cfg, 0) is None:
             return _run_legacy(cfg, dry_run, open_pr, fetched=True)
         return _run_channels(cfg, dry_run, open_pr)

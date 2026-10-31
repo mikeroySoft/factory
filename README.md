@@ -502,16 +502,21 @@ reset once to the configured floors.
 
 Promotion builds `release/vX.Y.even` from the odd tag's commit, bumps the
 version, adds the public changelog heading, and updates the fixed-version pins,
-latest-release line, and project-page history. After the release-tier gate and
+latest-release line, and project-page history. Public notes include the changes
+from odd sections since the previous public release. After the release-tier gate and
 CI pass on that commit, Factory atomically pushes the annotated even tag and
 `stable`, then publishes it with `--latest`. A squash-merged
 `Promote vX.Y.even` PR carries the changelog and public docs back to `main`
 while restoring the odd version file, so development continues at the next odd
-patch.
+patch. An unfinished carryback blocks another release, even if a newer odd tag
+already exists. A quality or soak hold without an in-flight release still allows
+the next experiment.
 
 `factory release --dry-run` prints separate odd and even actions, window
-metrics, and the promotion verdict as JSON. It creates no tag, branch, PR,
-release, journal row, or other remote write. Release publication remains
+metrics, main-head CI holds, and the promotion verdict as JSON. It uses the
+checkout's existing refs without fetching and creates no tag, branch, PR,
+release, journal row, or other remote write. Missing local fix commits make
+escape evidence unavailable rather than triggering a fetch. Release publication remains
 idempotent: an existing GitHub Release is left alone, and a failed publication
 is journaled and retried without rolling back its tag.
 
