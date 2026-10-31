@@ -175,6 +175,7 @@ def measure_window(
     ]
     first_passes = sum(row.get("gate") == "PASS" for row in attempts)
     from factory import stats
+    stats.configure(cfg)
 
     try:
         escaped = {
@@ -228,9 +229,10 @@ def soak_metrics(
 
     candidate_passes = passes(odd)
     start = min((_at(row["at"]) for row in candidate_passes), default=None)
+    end = max((_at(row["at"]) for row in candidate_passes), default=None)
     active = [
         row for row in rows
-        if start is not None and start <= _at(row["at"]) <= now
+        if start is not None and end is not None and start <= _at(row["at"]) <= end
     ]
     terminals = {
         row["ticket"] for row in active
@@ -271,7 +273,7 @@ def soak_metrics(
         for row in active
     )
     return {
-        "soak_hours": round((now - start).total_seconds() / 3600, 6) if start else 0.0,
+        "soak_hours": round((end - start).total_seconds() / 3600, 6) if start and end else 0.0,
         "soak_passes": len(candidate_passes),
         "watch_filed_bugs": watch_bugs,
         "escalation_rate": round(escalation_rate, 6),
@@ -368,17 +370,25 @@ def _bar(message: str) -> dict[str, float | int] | None:
 def _reset_legacy_bar(
     bar: dict[str, float | int] | None, cfg: config.Config
 ) -> tuple[dict[str, float | int] | None, bool]:
-    if bar is None or "pending_tickets" in bar:
-        return bar, False
-    return {
-        **bar,
-        "human_rate": max(float(bar["human_rate"]), cfg.release_bar_floor_human_rate),
-        "first_pass": min(float(bar["first_pass"]), cfg.release_bar_floor_first_pass),
-        "escape_rate": max(
-            float(bar.get("escape_rate", cfg.release_bar_floor_escape_rate)),
-            cfg.release_bar_floor_escape_rate,
-        ),
-    }, True
+    if bar is None:
+        return None, False
+    if "pending_tickets" not in bar:
+        return {
+            **bar,
+            "human_rate": max(float(bar["human_rate"]), cfg.release_bar_floor_human_rate),
+            "first_pass": min(float(bar["first_pass"]), cfg.release_bar_floor_first_pass),
+            "escape_rate": max(
+                float(bar.get("escape_rate", cfg.release_bar_floor_escape_rate)),
+                cfg.release_bar_floor_escape_rate,
+            ),
+        }, True
+    if "escape_rate" not in bar:
+        return {
+            **bar,
+            "escape_rate": cfg.release_bar_floor_escape_rate,
+            "pending_escapes": 0,
+        }, True
+    return bar, False
 
 
 def _gh(cfg: config.Config, endpoint: str, *args: str) -> Any:
@@ -672,11 +682,14 @@ def _has_changes(cfg: config.Config, base: dict[str, Any]) -> bool:
 def _release_base(
     cfg: config.Config, odd: dict[str, Any] | None, even: dict[str, Any],
 ) -> dict[str, Any]:
-    on_main = _git(
-        cfg.root, "merge-base", "--is-ancestor", even["tag"], f"origin/{cfg.main}",
-        check=False,
-    ).returncode == 0
-    return even if on_main else odd or even
+    candidates = [
+        tag for tag in (odd, even)
+        if tag is not None and _git(
+            cfg.root, "merge-base", "--is-ancestor", tag["tag"], f"origin/{cfg.main}",
+            check=False,
+        ).returncode == 0
+    ]
+    return max(candidates, key=lambda tag: tag["version"], default=even)
 
 
 def _process_pull(
@@ -914,9 +927,12 @@ def _tag_public(
     )
     _git(cfg.root, "tag", "-d", tag, check=False)
     _git(cfg.root, "tag", "-a", tag, commit, "-m", message)
+    stable = _git(cfg.root, "ls-remote", "origin", "refs/heads/stable").stdout.split()
+    stable_sha = stable[0] if stable else ""
     pushed = _git(
-        cfg.root, "push", "--atomic", "origin", tag,
-        f"{commit}:refs/heads/stable", check=False,
+        cfg.root, "push", "--atomic",
+        f"--force-with-lease=refs/heads/stable:{stable_sha}",
+        "origin", tag, f"{commit}:refs/heads/stable", check=False,
     )
     if pushed.returncode:
         _git(cfg.root, "tag", "-d", tag, check=False)
@@ -939,19 +955,38 @@ def _open_promotion_pull(
     even: dict[str, Any],
     branch: str,
 ) -> str:
-    temporary, worktree = _temporary_worktree(cfg, even["tag"])
+    temporary, worktree = _temporary_worktree(cfg, f"origin/{cfg.main}")
     try:
-        version = worktree / cfg.release_version_file
-        text, count = re.subn(
-            rf"(?<![0-9.]){re.escape(_text(even['version']))}(?![0-9.])",
-            _text(odd["version"]),
-            version.read_text(),
-            count=1,
+        patch = _git(
+            cfg.root, "diff", "--binary", odd["sha"], even["tag"], "--",
+            "README.md", "docs/index.html",
+        ).stdout
+        applied = subprocess.run(
+            ["git", "apply", "--3way", "-"], cwd=worktree, input=patch,
+            text=True, capture_output=True, check=False,
         )
-        if count != 1:
-            raise ValueError(f"{cfg.release_version_file} does not contain {_text(even['version'])}")
-        version.write_text(text)
-        _git(worktree, "add", cfg.release_version_file)
+        if applied.returncode:
+            raise RuntimeError(applied.stderr.strip() or "public documentation patch failed")
+        source = _git(cfg.root, "show", f"{even['tag']}:CHANGELOG.md").stdout
+        heading = re.search(
+            rf"(?m)^## {re.escape(_text(even['version']))} — \d{{4}}-\d{{2}}-\d{{2}}$",
+            source,
+        )
+        if heading is None:
+            raise ValueError(f"CHANGELOG.md has no {even['tag']} heading")
+        changelog = worktree / "CHANGELOG.md"
+        text = changelog.read_text()
+        if heading.group(0) not in text:
+            odd_heading = re.compile(
+                rf"(?m)^## {re.escape(_text(odd['version']))} — \d{{4}}-\d{{2}}-\d{{2}}$"
+            )
+            text, count = odd_heading.subn(
+                lambda match: f"{heading.group(0)}\n\n{match.group(0)}", text, count=1,
+            )
+            if count != 1:
+                raise ValueError(f"CHANGELOG.md has no {odd['tag']} heading")
+            changelog.write_text(text)
+        _git(worktree, "add", "CHANGELOG.md", "README.md", "docs/index.html")
         _git(worktree, "commit", "-m", f"Promote {even['tag']}")
         _git(worktree, "push", "--force", "origin", f"HEAD:refs/heads/{branch}")
         pull = _open_pull(
@@ -1021,10 +1056,13 @@ def _run_channels(cfg: config.Config, dry_run: bool, open_pr: bool) -> str:
     assert even is not None
     if dry_run:
         return _dry_run_channels(cfg, odd, even)
-    publication = []
+    activity: list[str] = []
     for tag, experimental in ((odd, True), (even, False)):
         if tag and _unpublished(cfg, tag["tag"]):
-            publication.append(_publish(cfg, tag["tag"], experimental=experimental))
+            activity.append(_publish(cfg, tag["tag"], experimental=experimental))
+
+    def report(reason: str) -> str:
+        return "; ".join((*activity, reason))
 
     current = _version_at(cfg, f"origin/{cfg.main}")
     base = _release_base(cfg, odd, even)
@@ -1038,11 +1076,10 @@ def _run_channels(cfg: config.Config, dry_run: bool, open_pr: bool) -> str:
         )
         and not _has_changes(cfg, base)
     ):
-        reason = f"no changes since {even['tag']}"
-        return f"{reason}; {'; '.join(publication)}" if publication else reason
+        return report(f"no changes since {even['tag']}")
     metrics = measure_window(cfg)
     if current > highest["version"] and current[2] % 2:
-        return _tag_experimental(cfg, highest, current, metrics)
+        return report(_tag_experimental(cfg, highest, current, metrics))
 
     if odd and odd["version"] > even["version"]:
         evidence, bar, comparison, hold = _promotion_evidence(
@@ -1051,15 +1088,19 @@ def _run_channels(cfg: config.Config, dry_run: bool, open_pr: bool) -> str:
         if hold:
             reason = _reason(hold, evidence, comparison)
             _record_hold(cfg, reason, evidence, comparison or WORST)
-            return reason
-        next_even = (*odd["version"][:2], odd["version"][2] + 1)
-        version, branch = _text(next_even), f"release/v{_text(next_even)}"
-        commit = _branch_sha(cfg, branch)
-        if commit is None:
-            return _build_promotion(cfg, odd, version, branch, evidence, bar)
-        if not ci_passes(cfg, commit):
-            return _reason("waiting for CI on promotion commit", evidence, bar)
-        return _tag_public(cfg, odd, even, version, commit, evidence, bar, comparison)
+            activity.append(reason)
+        else:
+            next_even = (*odd["version"][:2], odd["version"][2] + 1)
+            version, branch = _text(next_even), f"release/v{_text(next_even)}"
+            commit = _branch_sha(cfg, branch)
+            if commit is None:
+                return report(_build_promotion(cfg, odd, version, branch, evidence, bar))
+            elif not ci_passes(cfg, commit):
+                activity.append(_reason("waiting for CI on promotion commit", evidence, bar))
+            else:
+                return report(
+                    _tag_public(cfg, odd, even, version, commit, evidence, bar, comparison)
+                )
 
     if (
         odd
@@ -1068,39 +1109,42 @@ def _run_channels(cfg: config.Config, dry_run: bool, open_pr: bool) -> str:
         and not _public_on_main(cfg, even)
     ):
         branch = f"release/{even['tag']}"
-        pending = _process_pull(cfg, branch, f"Promote {even['tag']}", metrics, _bar(even["message"]))
+        pending = _process_pull(
+            cfg, branch, f"Promote {even['tag']}", metrics, _bar(even["message"])
+        )
         if pending:
-            return pending
-        if not open_pr:
-            return _reason("no promotion PR open", metrics, _bar(even["message"]))
-        return _open_promotion_pull(cfg, odd, even, branch)
+            activity.append(pending)
+        elif not open_pr:
+            activity.append(_reason("no promotion PR open", metrics, _bar(even["message"])))
+        else:
+            return report(_open_promotion_pull(cfg, odd, even, branch))
 
     next_odd = _next_odd(odd, even)
     version, branch = _text(next_odd), f"release/v{_text(next_odd)}"
     pending = _process_pull(cfg, branch, f"Release {version}", metrics, _bar(even["message"]))
     if pending:
-        return pending
+        return report(pending)
     if not open_pr:
-        return _reason("no release PR open", metrics, _bar(even["message"]))
+        return report(_reason("no release PR open", metrics, _bar(even["message"])))
     if not _has_changes(cfg, base):
-        return _reason(f"no changes since {base['tag']}", metrics, _bar(even["message"]))
+        return report(_reason(f"no changes since {base['tag']}", metrics, _bar(even["message"])))
     if odd:
         elapsed = (datetime.now(UTC) - _at(odd["date"])).total_seconds() / 3600
         if elapsed < cfg.release_experimental_min_interval_hours:
-            return _reason(
+            return report(_reason(
                 f"experimental interval {elapsed:.3f}h below "
                 f"{cfg.release_experimental_min_interval_hours}h",
                 metrics, _bar(even["message"]),
-            )
+            ))
     head = _git(cfg.root, "rev-parse", f"origin/{cfg.main}").stdout.strip()
     if not ci_passes(cfg, head):
-        return _reason(
+        return report(_reason(
             f"CI statuses/check-runs are not all successful for {head}",
             metrics, _bar(even["message"]),
-        )
-    return _open_experimental_pr(
+        ))
+    return report(_open_experimental_pr(
         cfg, head, _text(current), version, branch, metrics, _bar(even["message"])
-    )
+    ))
 
 
 def _run_legacy(
@@ -1254,7 +1298,7 @@ def _run_legacy(
                         f"{comparison_bar[metric]} ({direction} is better)",
                         metrics, comparison_bar)
                     if not dry_run:
-                        _record_hold(cfg, reason, metrics, comparison_bar)
+                        _record_hold(cfg, reason, metrics, bar or comparison_bar)
                     return _finish(cfg, dry_run, reason, metrics, bar, latest_tag)
         if not ci_passes(cfg, head):
             return _finish(cfg, dry_run, _reason(

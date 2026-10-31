@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
-from factory import config, lifecycle, release
+from factory import config, lifecycle, release, stats
 
 
 class ReleaseChannelsTest(unittest.TestCase):
@@ -21,16 +21,13 @@ class ReleaseChannelsTest(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.base = Path(temporary.name)
-        self.addCleanup(mock.patch.dict(os.environ, {
+        env = mock.patch.dict(os.environ, {
             "HOME": str(self.base / "home"),
             "XDG_CONFIG_HOME": str(self.base / "config"),
             "XDG_DATA_HOME": str(self.base / "data"),
-        }).stop)
-        mock.patch.dict(os.environ, {
-            "HOME": str(self.base / "home"),
-            "XDG_CONFIG_HOME": str(self.base / "config"),
-            "XDG_DATA_HOME": str(self.base / "data"),
-        }).start()
+        })
+        env.start()
+        self.addCleanup(env.stop)
         self.origin = self.base / "origin.git"
         self.repo = self.base / "repo"
         self.git(self.base, "init", "-q", "--bare", "-b", "main", str(self.origin))
@@ -125,6 +122,29 @@ class ReleaseChannelsTest(unittest.TestCase):
         self.assertEqual((metrics["human_touches"], metrics["human_rate"]), (0, 0.0))
         self.assertEqual((metrics["escapes"], metrics["escape_rate"]), (1, 0.5))
 
+    def test_measure_window_configures_escape_scan(self) -> None:
+        self.event(at="2026-10-01T00:00:00Z", event="attempt", ticket=1, attempt=1, gate="PASS")
+        self.event(at="2026-10-01T00:00:00Z", event="merged", ticket=1)
+
+        def escapes() -> list[dict]:
+            self.assertIs(stats.cfg, self.cfg)
+            self.assertEqual(stats.REPOSITORY, self.cfg.repo)
+            return []
+
+        with mock.patch.object(stats, "escapes", side_effect=escapes):
+            self.assertEqual(release.measure_window(self.cfg)["escape_rate"], 0.0)
+
+    def test_pending_legacy_bar_gains_escape_floor(self) -> None:
+        old = {
+            "human_rate": 0.1, "first_pass": 0.9, "tickets": 30,
+            "pending_tickets": 4, "pending_human_touches": 0,
+            "pending_first_passes": 4, "pending_attempts": 4,
+        }
+        migrated, changed = release._reset_legacy_bar(old, self.cfg)
+        self.assertTrue(changed)
+        self.assertEqual(migrated["escape_rate"], self.cfg.release_bar_floor_escape_rate)
+        self.assertEqual(migrated["pending_escapes"], 0)
+
     def test_odd_cut_ignores_failing_bar_and_keeps_public_pins(self) -> None:
         with mock.patch.object(release, "_pulls", return_value=[]), \
                 mock.patch.object(release, "_open_pull", return_value={"number": 12}), \
@@ -138,6 +158,29 @@ class ReleaseChannelsTest(unittest.TestCase):
         self.assertIn("factory@v0.4.6", self.git(self.origin, "show", "release/v0.4.7:README.md"))
         self.assertIn("Latest release: v0.4.6", self.git(
             self.origin, "show", "release/v0.4.7:docs/index.html"))
+
+    def test_held_promotion_does_not_block_next_odd_cut(self) -> None:
+        self.make_odd()
+        (self.repo / "next.txt").write_text("next experiment\n")
+        self.git(self.repo, "add", "next.txt")
+        self.git(self.repo, "commit", "-q", "-m", "next experiment")
+        self.git(self.repo, "push", "-q", "origin", "main")
+        strict = {
+            "human_rate": 1.0, "first_pass": 0.0, "escape_rate": 0.0, "tickets": 30,
+            "pending_tickets": 0, "pending_human_touches": 0,
+            "pending_first_passes": 0, "pending_attempts": 0, "pending_escapes": 0,
+        }
+        escapes = [{"candidates": [{"ticket": 1}]}]
+        with mock.patch.object(release, "_bar", return_value=strict), \
+                mock.patch.object(release, "_pulls", return_value=[]), \
+                mock.patch.object(release, "_open_pull", return_value={"number": 13}), \
+                mock.patch.object(release, "_record_hold"), \
+                mock.patch.object(release, "ci_passes", return_value=True), \
+                mock.patch.object(release, "gate_passes", return_value=True), \
+                mock.patch.object(stats, "escapes", return_value=escapes):
+            reason = release.run(self.cfg)
+        self.assertIn("escape_rate 1.0 is worse than 0.0", reason)
+        self.assertIn("opened experimental release PR #13 for v0.4.9", reason)
 
     def test_odd_tag_is_prerelease_without_stable(self) -> None:
         release._update_experimental_files(self.cfg, self.repo, "0.4.6", "0.4.7")
@@ -183,6 +226,14 @@ class ReleaseChannelsTest(unittest.TestCase):
             - set(recorded)
         )
 
+        changelog = self.repo / "CHANGELOG.md"
+        changelog.write_text(changelog.read_text().replace(
+            "## Unreleased\n\n", "## Unreleased\n\n- landed during soak\n\n", 1,
+        ))
+        self.git(self.repo, "add", "CHANGELOG.md")
+        self.git(self.repo, "commit", "-q", "-m", "land during promotion")
+        self.git(self.repo, "push", "-q", "origin", "main")
+
         with mock.patch.object(release, "_pulls", return_value=[]), \
                 mock.patch.object(release, "_open_pull", return_value={"number": 18}) as opened, \
                 mock.patch("factory.stats.escapes", return_value=[]):
@@ -191,6 +242,57 @@ class ReleaseChannelsTest(unittest.TestCase):
         self.assertEqual(opened.call_args.args[1:3], ("release/v0.4.8", "Promote v0.4.8"))
         self.assertIn('__version__ = "0.4.7"', self.git(
             self.origin, "show", "release/v0.4.8:factory/__init__.py"))
+        self.assertIn("- landed during soak", self.git(
+            self.origin, "show", "release/v0.4.8:CHANGELOG.md"))
+
+        (self.repo / "later.txt").write_text("later experiment\n")
+        self.git(self.repo, "add", "later.txt")
+        self.git(self.repo, "commit", "-q", "-m", "later experiment")
+        self.git(self.repo, "push", "-q", "origin", "main")
+        pending_pull = {
+            "number": 18, "head": {"sha": "abc"},
+            "mergeable": None, "mergeable_state": "unknown",
+        }
+
+        def pulls(_cfg: config.Config, branch: str) -> list[dict]:
+            return [{"number": 18}] if branch == "release/v0.4.8" else []
+
+        with mock.patch.object(release, "_pulls", side_effect=pulls), \
+                mock.patch.object(release, "_pull", return_value=pending_pull), \
+                mock.patch.object(release, "_open_pull", return_value={"number": 19}), \
+                mock.patch.object(release, "ci_passes", return_value=True), \
+                mock.patch.object(release, "gate_passes", return_value=True), \
+                mock.patch.object(stats, "escapes", return_value=[]):
+            progressed = release.run(self.cfg)
+        self.assertIn("waiting for GitHub mergeability", progressed)
+        self.assertIn("opened experimental release PR #19 for v0.4.9", progressed)
+
+    def test_public_tag_replaces_divergent_stable_atomically(self) -> None:
+        self.git(self.repo, "checkout", "-q", "-b", "old-public", "v0.4.6")
+        (self.repo / "public.txt").write_text("old public\n")
+        self.git(self.repo, "add", "public.txt")
+        self.git(self.repo, "commit", "-q", "-m", "old public")
+        self.git(self.repo, "push", "-q", "origin", "HEAD:stable")
+        old_stable = self.git(self.repo, "rev-parse", "HEAD")
+        self.git(self.repo, "checkout", "-q", "main")
+        new_public = self.git(self.repo, "rev-parse", "HEAD")
+        metrics = {
+            "tickets": 1, "human_touches": 0, "human_ticket_rate": 0.0,
+            "first_pass": 1.0, "first_passes": 1, "attempts": 1,
+            "escape_rate": 0.0, "escapes": 0, "soak_hours": 24.0,
+            "soak_passes": 2, "watch_filed_bugs": 0, "escalation_rate": 0.0,
+            "previous_escalation_rate": 0.0,
+        }
+        comparison = {"human_rate": 1.0, "first_pass": 0.0, "escape_rate": 1.0}
+        with mock.patch.object(release, "_finish", return_value="released"), \
+                mock.patch.object(release, "_publish", return_value="published"):
+            reason = release._tag_public(
+                self.cfg, {"tag": "v0.4.7"}, {"tag": "v0.4.6"}, "0.4.8",
+                new_public, metrics, comparison, comparison,
+            )
+        self.assertIn("published", reason)
+        self.assertNotEqual(old_stable, new_public)
+        self.assertEqual(self.git(self.origin, "rev-parse", "stable"), new_public)
 
     def test_escape_rate_blocks_even_promotion(self) -> None:
         self.make_odd()
@@ -201,8 +303,9 @@ class ReleaseChannelsTest(unittest.TestCase):
         }
         escapes = [{"candidates": [{"ticket": 1}]}]
         with mock.patch.object(release, "_bar", return_value=strict), \
+                mock.patch.object(release, "_pulls", return_value=[]), \
                 mock.patch.object(release, "gate_passes") as gate, \
-                mock.patch("factory.stats.escapes", return_value=escapes):
+                mock.patch.object(stats, "escapes", return_value=escapes):
             held = release.run(self.cfg)
         self.assertIn("escape_rate 1.0 is worse than 0.0", held)
         gate.assert_not_called()
@@ -227,45 +330,101 @@ class ReleaseChannelsTest(unittest.TestCase):
         self.assertIn("waiting for GitHub mergeability", reason)
         opened.assert_not_called()
 
-    def test_soak_gate_checks_age_watch_bugs_and_escalation_regression(self) -> None:
+    def test_soak_gate_requires_candidate_pass_span_and_blocks_regressions(self) -> None:
         odd = {"sha": "a" * 40, "date": "2026-10-01T00:00:00Z", "tag": "v0.4.7"}
         previous = {"sha": "b" * 40, "date": "2026-09-01T00:00:00Z", "tag": "v0.4.5"}
         self.event(at="2026-10-01T00:00:00Z", event="lifecycle", stage="dispatcher", kind="enter",
                    engine_commit=odd["sha"])
-        early = release.soak_metrics(self.cfg, odd, previous, {"escalation_rate": 0.5},
-                                     now=datetime(2026, 10, 1, 12, tzinfo=UTC))
-        self.assertLess(early["soak_hours"], 24)
+        one_pass = release.soak_metrics(
+            self.cfg, odd, previous, {"escalation_rate": 0.5},
+            now=datetime(2026, 10, 3, tzinfo=UTC),
+        )
+        self.assertEqual(one_pass["soak_hours"], 0)
+
         self.event(at="2026-10-02T01:00:00Z", event="watch", issue=10, fingerprint="runtime:x")
         self.event(at="2026-10-02T02:00:00Z", event="escalate", ticket=1)
         self.event(at="2026-10-02T03:00:00Z", event="merged", ticket=2)
-        dirty = release.soak_metrics(self.cfg, odd, previous, {"escalation_rate": 0.25},
-                                     now=datetime(2026, 10, 2, 4, tzinfo=UTC))
+        self.event(at="2026-10-02T04:00:00Z", event="lifecycle", stage="dispatcher", kind="enter",
+                   engine_commit=odd["sha"])
+        dirty = release.soak_metrics(
+            self.cfg, odd, previous, {"escalation_rate": 0.25},
+            now=datetime(2026, 10, 3, tzinfo=UTC),
+        )
+        self.assertEqual(dirty["soak_hours"], 28)
         self.assertEqual(dirty["watch_filed_bugs"], 1)
         self.assertGreater(dirty["escalation_rate"], dirty["previous_escalation_rate"])
+        self.cfg.release_soak_hours = 24
+
+        base = {
+            "tickets": 30, "human_rate": 0.0, "human_touches": 0,
+            "human_ticket_rate": 0.0, "first_pass": 1.0, "first_passes": 30,
+            "attempts": 30, "escape_rate": 0.0, "escapes": 0,
+        }
+        cases = (
+            ({"soak_hours": 23.0, "soak_passes": 2, "watch_filed_bugs": 0,
+              "escalation_rate": 0.0, "previous_escalation_rate": 0.0}, "below soak_hours"),
+            ({"soak_hours": 24.0, "soak_passes": 2, "watch_filed_bugs": 1,
+              "escalation_rate": 0.0, "previous_escalation_rate": 0.0}, "watch filed"),
+            ({"soak_hours": 24.0, "soak_passes": 2, "watch_filed_bugs": 0,
+              "escalation_rate": 0.5, "previous_escalation_rate": 0.25}, "rose above"),
+            ({"soak_hours": 24.0, "soak_passes": 2, "watch_filed_bugs": 0,
+              "escalation_rate": 0.25, "previous_escalation_rate": 0.25}, None),
+        )
+        even = {
+            "message": "Release\n```json\n"
+            '{"human_rate":1.0,"first_pass":0.0,"escape_rate":1.0,"tickets":30,'
+            '"pending_tickets":0,"pending_human_touches":0,"pending_first_passes":0,'
+            '"pending_attempts":0,"pending_escapes":0}\n```'
+        }
+        for soak, expected in cases:
+            with self.subTest(expected=expected), \
+                    mock.patch.object(release, "measure_window", return_value=base.copy()), \
+                    mock.patch.object(release, "soak_metrics", return_value=soak):
+                hold = release._promotion_evidence(self.cfg, odd, previous, even)[3]
+            if expected is None:
+                self.assertIsNone(hold)
+            else:
+                self.assertIn(expected, hold)
 
     def test_dry_run_reports_both_channels_without_writes(self) -> None:
+        self.make_odd()
+        before = (self.cfg.factory / "events.jsonl").read_bytes()
         output = io.StringIO()
         real_git = release._git
-        calls: list[tuple[str, ...]] = []
+        git_calls: list[tuple[str, ...]] = []
+        gh_calls: list[tuple[str, ...]] = []
 
         def observed_git(root: Path, *args: str, **kwargs: object):
-            calls.append(args)
+            git_calls.append(args)
             return real_git(root, *args, **kwargs)
 
+        def observed_gh(_cfg: config.Config, endpoint: str, *args: str) -> list:
+            gh_calls.append((endpoint, *args))
+            return []
+
         with mock.patch.object(release, "_git", side_effect=observed_git), \
-                mock.patch.object(release, "_pulls", return_value=[]), \
-                mock.patch.object(release, "ci_passes", return_value=True), \
-                mock.patch("factory.stats.escapes", return_value=[]), redirect_stdout(output):
+                mock.patch.object(release, "_gh", side_effect=observed_gh), \
+                mock.patch.object(release, "_gh_release") as gh_release, \
+                mock.patch.object(release, "_record") as record, \
+                mock.patch.object(stats, "escapes", return_value=[]), redirect_stdout(output):
             release.run(self.cfg, dry_run=True)
         report = json.loads(output.getvalue())
         self.assertEqual(set(report), {"odd", "even"})
+        self.assertEqual(report["even"]["candidate"], "v0.4.7")
         self.assertFalse(any(
             args and (
                 args[0] in {"push", "worktree", "branch", "commit", "add"}
                 or (args[0] == "tag" and any(flag in args for flag in ("-a", "-d")))
             )
-            for args in calls
+            for args in git_calls
         ))
+        self.assertFalse(any(
+            any(arg in {"POST", "PUT", "PATCH", "DELETE"} for arg in args)
+            for args in gh_calls
+        ))
+        gh_release.assert_not_called()
+        record.assert_not_called()
+        self.assertEqual((self.cfg.factory / "events.jsonl").read_bytes(), before)
 
 
 if __name__ == "__main__":
