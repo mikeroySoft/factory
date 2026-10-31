@@ -23,6 +23,15 @@ class TempdirHygieneTest(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            proc = subprocess.run(
+                [sys.executable, "-c", "import test_factory"],
+                cwd=ROOT / "tests",
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             self.assertEqual(list(Path(tmp).iterdir()), [])
 
 
