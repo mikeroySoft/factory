@@ -374,7 +374,7 @@ def _pr_checks(wt: Path) -> bool:
     return any(isinstance(check, dict) and check.get("when") == "pr" for check in checks)
 
 
-def _finding_count(counts: dict[str, int] | str | None) -> int:
+def _finding_count(counts: dict[str, int] | None) -> int:
     """Important findings only; invalid review evidence still fails closed as one."""
     if (
         isinstance(counts, dict)
@@ -382,17 +382,6 @@ def _finding_count(counts: dict[str, int] | str | None) -> int:
         and counts["important"] >= 0
     ):
         return counts["important"]
-    if isinstance(counts, str):
-        required_level = count = 0
-        for line in counts.splitlines():
-            heading = re.match(r"^(#{1,6})\s+(.+?)\s*$", line)
-            if required_level:
-                if heading and len(heading.group(1)) <= required_level:
-                    break
-                count += bool(re.match(r"^(?:[-*+]|\d+[.)])\s+", line))
-            elif heading and heading.group(2).strip("*_ :").casefold() == "required fixes":
-                required_level = len(heading.group(1))
-        return count
     return 1
 
 

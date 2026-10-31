@@ -1091,53 +1091,52 @@ def _finding_instances(row: dict) -> list[dict]:
 
 def _required_fixes(findings: str, review_ref: str) -> list[dict]:
     tally = _review_tally(findings)
-    if tally is not None and isinstance(tally.get("findings"), list):
-        fixes = []
-        for row in tally["findings"]:
-            if not isinstance(row, dict) or row.get("severity") != "important":
-                continue
-            instance = _finding_instances(row)[0]
-            path, line, summary = instance.get("path"), instance.get("line"), instance.get("summary")
-            if isinstance(path, str) and type(line) is int and isinstance(summary, str):
-                fixes.append({"kind": "finding", "ref": f"{path}:{line}", "summary": summary})
-        return fixes
-    # Accepted historical reviews predate the structured tally. Current reviews
-    # cannot reach this fallback because schema validation rejects them first.
-    if re.search(r"(?m)^VERDICT: (?:APPROVE|REVISE)[ \t]*\r?\n?\Z", findings) is None:
+    if tally is None or not isinstance(tally.get("findings"), list):
         return []
     fixes = []
-    for section in re.finditer(
-        r"(?ims)^#{1,6}\s+Required fixes[^\r\n]*\r?\n(.*?)(?=^#{1,6}\s|\Z)",
-        findings,
-    ):
-        for line in section[1].splitlines():
-            summary = re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", line).strip()
-            if not summary or summary.rstrip(".").casefold() == "none":
-                continue
-            location = re.search(r"`?([A-Za-z0-9_.\-/]+:\d+)`?", summary)
-            fixes.append({
-                "kind": "finding",
-                "ref": location.group(1) if location else review_ref,
-                "summary": summary,
-            })
+    for row in tally["findings"]:
+        if not isinstance(row, dict) or row.get("severity") != "important":
+            continue
+        instance = next(
+            (item for item in _finding_instances(row) if isinstance(item, dict)),
+            None,
+        )
+        if instance is None:
+            continue
+        path, line, summary = instance.get("path"), instance.get("line"), instance.get("summary")
+        if isinstance(path, str) and type(line) is int and isinstance(summary, str):
+            fixes.append({"kind": "finding", "ref": f"{path}:{line}", "summary": summary})
     return fixes
 
 
-def _worker_review_findings(findings: str) -> str:
-    """Render only blocking structured findings for a worker review bounce."""
-    fixes = _required_fixes(findings, "")
-    tally = _review_tally(findings) or {}
-    rows = [row for row in tally.get("findings", [])
-            if isinstance(row, dict) and row.get("severity") == "important"]
-    if not fixes:
+def _worker_review_findings(*reviews: str) -> str:
+    """Render each blocking structured finding once for a worker review bounce."""
+    selected = {}
+    for findings in reviews:
+        tally = _review_tally(findings) or {}
+        for row in tally.get("findings", []):
+            if not isinstance(row, dict) or row.get("severity") != "important":
+                continue
+            key = _finding_key(row)
+            if key not in selected or row.get("status") == "still-open":
+                selected[key] = row
+    if not selected:
         return "No Important findings."
     lines = ["## Important findings"]
-    for row, fix in zip(rows, fixes, strict=True):
+    for row in selected.values():
+        instances = [
+            instance for instance in _finding_instances(row)
+            if isinstance(instance, dict)
+        ]
+        if not instances:
+            continue
+        first = instances[0]
         identity = f"{row.get('id', 'new')} {row.get('status', 'open')}"
         lines.append(
-            f"- [{identity}] `{fix['ref']}` ({row.get('class', 'unclassified')}): {fix['summary']}"
+            f"- [{identity}] `{first['path']}:{first['line']}` "
+            f"({row.get('class', 'unclassified')}): {first['summary']}"
         )
-        for instance in _finding_instances(row)[1:]:
+        for instance in instances[1:]:
             lines.append(
                 f"  - `{instance['path']}:{instance['line']}`: {instance['summary']}"
             )
@@ -1202,11 +1201,13 @@ def _record_review_decision(
         actor=_decision_actor("model", f"dispatch.review.{role}", model=model),
     )
     record("decision", **payload)
+    current = lifecycle.current()
     record(
         "review-result", ticket=n, head=head, role=role, model=model,
         verdict="APPROVE" if verdict == "APPROVE" else "REQUEST_CHANGES",
         findings=findings, counts=counts, reason=rejection_reason,
-        repeated_dropped=repeated_dropped,
+        accepted=accepted, repeated_dropped=repeated_dropped,
+        review_round=current.review_round if current is not None else None,
     )
     return payload["decision_id"]
 
@@ -2391,45 +2392,6 @@ def run_reviewer(
                 )
                 returncode = proc.returncode
                 actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt, env=clean).stdout.strip()
-                invalid_important = (
-                    isinstance(raw_tally, dict)
-                    and isinstance(raw_tally.get("findings"), list)
-                    and any(
-                        isinstance(row, dict)
-                        and row.get("severity") == "important"
-                        and (
-                            not isinstance(row.get("class"), str)
-                            or "instances" not in row
-                        )
-                        for row in raw_tally["findings"]
-                    )
-                )
-                if not parsed and invalid_important and actual_head == expected_head:
-                    counts = {
-                        severity: sum(
-                            isinstance(row, dict) and row.get("severity") == name
-                            for row in raw_tally["findings"]
-                        )
-                        for severity, name in (
-                            ("important", "important"),
-                            ("nit", "nit"),
-                            ("pre_existing", "pre-existing"),
-                        )
-                    }
-                    parser_reason = (
-                        "verdict_counts_mismatch"
-                        if raw_tally.get("verdict") != "REVISE"
-                        else "unparsed_verdict"
-                    )
-                    findings += f"\n\nFactory rejected reviewer evidence: {parser_reason}."
-                    return {
-                        "verdict": "REVISE", "findings": findings, "usage": usage,
-                        "accepted": False, "parsed": False, "reason": parser_reason,
-                        "returncode": returncode, "actual_head": actual_head,
-                        "attempts": attempts, "counts": counts,
-                        "rejection_reason": parser_reason, "failure_reason": parser_reason,
-                        "tally": None,
-                    }
                 if parsed:
                     findings = normalized
                     parsed_tally = _review_tally(normalized)
@@ -2530,12 +2492,14 @@ def run_reviewer(
 def review(
     wt: Path, n: int, gate_report: str, expected_head: str, *,
     role: str = "primary", reviewer: list[str] | None = None,
+    review_context: tuple[str, str | None, dict | None, str] | None = None,
+    reconcile: bool = True,
 ) -> tuple[str, str]:
     """Review one immutable head, incrementally after the first accepted review."""
     started = time.monotonic()
     model = config.command_model(reviewer or cfg.reviewer)
     base_ref = f"origin/{cfg.main}"
-    base_head, diff_base, ledger, rereview = _review_range(
+    base_head, diff_base, ledger, rereview = review_context or _review_range(
         wt, n, base_ref, expected_head,
     )
     open_findings = _open_ledger_findings(ledger)
@@ -2556,12 +2520,13 @@ def review(
             reviewer=reviewer,
         )
         model = _reviewer_model(result["usage"], reviewer)
-        if result["accepted"] and result["tally"] is not None:
+        if reconcile and result["accepted"] and result["tally"] is not None:
             try:
                 _policy, nit_cap = _review_policy(wt, base_ref)
                 result["findings"], result["counts"], repeated_dropped = _reconcile_review(
                     n, base_head, expected_head, result["findings"], result["tally"], nit_cap,
                 )
+                result["tally"] = _review_tally(result["findings"])
                 result["verdict"] = "REVISE" if result["counts"]["important"] else "APPROVE"
                 result["reason"] = result["verdict"]
             except ValueError as exc:
@@ -2691,7 +2656,13 @@ def pr_gate_and_review(
                         mutation=_mutation_status(pr_report), pr_gate="FAIL",
                     )
                 return "REVISE", pr_report, True
-    primary, primary_findings = review(wt, n, report, head)
+    review_context = (
+        _review_range(wt, n, f"origin/{cfg.main}", head)
+        if policy_tier == "High" else None
+    )
+    primary, primary_findings = review(
+        wt, n, report, head, review_context=review_context,
+    )
     primary_row = _PENDING_REVIEWS.get(n) or {}
     if primary_row and primary_row.get("verdict") is None:
         return None, primary_findings, False
@@ -2713,8 +2684,44 @@ def pr_gate_and_review(
         return None, findings, False
     second, second_findings = review(
         wt, n, report, head, role="second", reviewer=cfg.second_reviewer,
+        review_context=review_context, reconcile=False,
     )
     second_row = _PENDING_SECOND_REVIEWS.get(n) or {}
+    if second_row.get("accepted") and isinstance(second_row.get("tally"), dict):
+        second_tally = dict(second_row["tally"])
+        if primary == "REVISE":
+            primary_tally = _review_tally(primary_findings) or {}
+            primary_ids = {
+                row["id"] for row in primary_tally.get("findings", [])
+                if isinstance(row, dict) and row.get("severity") == "important"
+                and isinstance(row.get("id"), str)
+            }
+            second_tally["ledger"] = [
+                row for row in second_tally.get("ledger", [])
+                if not isinstance(row, dict) or row.get("id") not in primary_ids
+            ]
+        try:
+            _policy, nit_cap = _review_policy(wt, f"origin/{cfg.main}")
+            second_findings, counts, dropped = _reconcile_review(
+                n, review_context[0], head, second_findings, second_tally, nit_cap,
+            )
+            second_row.update(
+                findings=second_findings,
+                counts=counts,
+                repeated_dropped=second_row.get("repeated_dropped", 0) + dropped,
+                tally=_review_tally(second_findings),
+            )
+            second = "REVISE" if counts["important"] else "APPROVE"
+            second_row["verdict"] = second
+        except ValueError as exc:
+            second = "REVISE"
+            second_findings = (
+                f"{second_findings}\n\nFactory rejected reviewer evidence: {exc}."
+            )
+            second_row.update(
+                verdict=second, findings=second_findings, accepted=False,
+                rejection_reason="review_ledger_mismatch",
+            )
     models = (primary_model, second_row.get("model"), worker_model)
     if second_row.get("verdict") is None or any(model is None for model in models):
         return None, second_findings, False
@@ -2726,25 +2733,9 @@ def pr_gate_and_review(
     ]
     revising = [item for verdict, item in zip((primary, second), revising, strict=True)
                 if verdict == "REVISE"]
-    if primary == "REVISE" and second == "APPROVE" and isinstance(primary_row.get("tally"), dict):
-        ledger = _load_review_ledger(n)
-        _policy, nit_cap = _review_policy(wt, f"origin/{cfg.main}")
-        normalized, counts, dropped = _reconcile_review(
-            n, ledger["base"], head, revising[0][0], revising[0][1]["tally"], nit_cap,
-        )
-        revising[0][0] = normalized
-        revising[0][1].update(
-            findings=normalized,
-            counts=counts,
-            repeated_dropped=revising[0][1]["repeated_dropped"] + dropped,
-        )
-        if primary == "REVISE":
-            primary_findings = normalized
-        else:
-            second_findings = normalized
-    worker_findings = "\n\n".join(
-        _worker_review_findings(findings) for findings, _row in revising
-    ) or "No Important findings."
+    worker_findings = _worker_review_findings(
+        *(findings for findings, _row in revising)
+    )
     changed = run(
         ["git", "diff", "--name-status", f"origin/{cfg.main}..{head}"], cwd=wt,
     ).stdout.strip()
@@ -4803,14 +4794,15 @@ def process_ticket(
                 execution.review_round = bounce + 1
                 if pr_failed:
                     extra = f"## PR-tier gate report, round {bounce} (failed)\n\n{findings}"
+                elif current_risk.get("worker_findings") not in {None, "No Important findings."}:
+                    extra = (
+                        f"## Reviewer findings, round {bounce}\n\n"
+                        "Fix every instance of each bug class below, including instances "
+                        "the reviewer did not enumerate.\n\n"
+                        f"{current_risk['worker_findings']}"
+                    )
                 elif risk_disagreement_head is not None or current_risk.get("review_split"):
                     extra = current_risk["packet"]
-                    if current_risk["worker_findings"] != "No Important findings.":
-                        extra += (
-                            "\n\nFix every instance of each bug class below, including instances "
-                            "the reviewer did not enumerate.\n\n"
-                            f"{current_risk['worker_findings']}"
-                        )
                 else:
                     extra = (
                         f"## Reviewer findings, round {bounce}\n\n"

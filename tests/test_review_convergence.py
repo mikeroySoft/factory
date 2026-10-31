@@ -180,7 +180,7 @@ class ReviewConvergenceTest(unittest.TestCase):
     def test_high_risk_primary_finding_survives_second_approval(self) -> None:
         self.configure([
             tally("REVISE", [finding(finding_id=None)]),
-            tally("APPROVE", [], [{"id": "F1", "status": "fixed"}]),
+            tally("APPROVE", []),
         ])
         dispatch.cfg.reviewer.append("--model=primary/model")
         dispatch.cfg.second_reviewer = [
@@ -202,7 +202,7 @@ class ReviewConvergenceTest(unittest.TestCase):
         self.assertEqual(verdict, "REVISE")
         bounce = dispatch._PENDING_RISK[7]["worker_findings"]
         self.assertEqual(bounce.count("Value is wrong."), 1)
-        self.assertIn("[F1 still-open]", bounce)
+        self.assertIn("[F1 open]", bounce)
         self.assertFalse(dispatch._PENDING_RISK[7]["disagreement"])
 
     def test_high_risk_reviewers_share_the_previous_round_diff_boundary(self) -> None:
@@ -240,11 +240,7 @@ class ReviewConvergenceTest(unittest.TestCase):
     def test_high_risk_duplicate_findings_reach_the_worker_once(self) -> None:
         self.configure([
             tally("REVISE", [finding(finding_id=None)]),
-            tally(
-                "REVISE",
-                [finding()],
-                [{"id": "F1", "status": "still-open"}],
-            ),
+            tally("REVISE", [finding(finding_id=None)]),
         ])
         dispatch.cfg.reviewer.append("--model=primary/model")
         dispatch.cfg.second_reviewer = [

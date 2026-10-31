@@ -84,26 +84,92 @@ def review_findings(events: list[dict]) -> list[dict[str, int]]:
             rounds.append({key: counts[key] for key in ("important", "nit", "pre_existing")})
     return rounds
 
+def _important_finding_keys(event: dict) -> set[tuple[str, tuple[tuple[str, int], ...]]] | None:
+    findings = event.get("findings")
+    if not isinstance(findings, str):
+        return None
+    blocks = re.findall(r"```json[ \t]*\r?\n(.*?)\r?\n```", findings, re.DOTALL)
+    if len(blocks) != 1:
+        return None
+    try:
+        tally = json.loads(blocks[0])
+    except (json.JSONDecodeError, TypeError):
+        return None
+    rows = tally.get("findings") if isinstance(tally, dict) else None
+    if not isinstance(rows, list):
+        return None
+    keys = set()
+    for row in rows:
+        if not isinstance(row, dict) or row.get("severity") != "important":
+            continue
+        instances = row.get("instances")
+        if not isinstance(row.get("class"), str) or not isinstance(instances, list):
+            return None
+        locations = tuple(sorted(
+            (instance["path"], instance["line"])
+            for instance in instances
+            if isinstance(instance, dict)
+            and isinstance(instance.get("path"), str)
+            and type(instance.get("line")) is int
+        ))
+        if not locations:
+            return None
+        keys.add((row["class"], locations))
+    count = event["counts"].get("important")
+    return keys if type(count) is int and len(keys) == count else None
+
+
 def review_convergence(events: list[dict]) -> dict[str, Any]:
-    """Accepted ticket-review convergence metrics in review order."""
-    rounds = [
-        event for event in events
-        if event.get("event") == "review-result" and isinstance(event.get("counts"), dict)
-    ]
+    """Accepted ticket-review convergence metrics in ticket-round order."""
+    rounds = []
+    numbered = {}
+    for event in events:
+        counts = event.get("counts")
+        if (
+            event.get("event") != "review-result"
+            or not isinstance(counts, dict)
+            or type(counts.get("important")) is not int
+            or counts["important"] < 0
+            or event.get("accepted") is False
+            or event.get("accepted") is None and event.get("reason") is not None
+        ):
+            continue
+        number = event.get("review_round")
+        if type(number) is int:
+            current = numbered.get(number)
+        elif event.get("role") == "second" and rounds:
+            current = rounds[-1]
+        else:
+            current = None
+        if current is None:
+            current = {
+                "approved": True,
+                "repeated": 0,
+                "important": set(),
+                "unkeyed_important": 0,
+            }
+            rounds.append(current)
+            if type(number) is int:
+                numbered[number] = current
+        current["approved"] &= event.get("verdict") == "APPROVE"
+        repeated = event.get("repeated_dropped", 0)
+        if type(repeated) is int and repeated >= 0:
+            current["repeated"] += repeated
+        keys = _important_finding_keys(event)
+        if keys is None:
+            current["unkeyed_important"] += counts["important"]
+        else:
+            current["important"].update(keys)
     approved = next(
-        (index for index, event in enumerate(rounds, 1) if event.get("verdict") == "APPROVE"),
+        (index for index, review_round in enumerate(rounds, 1) if review_round["approved"]),
         None,
     )
     return {
         "rounds_to_pass": approved,
-        "repeated_findings_dropped": sum(
-            value for event in rounds
-            if type(value := event.get("repeated_dropped", 0)) is int and value >= 0
-        ),
+        "repeated_findings_dropped": sum(review_round["repeated"] for review_round in rounds),
         "important_findings_per_round": [
-            event["counts"]["important"] for event in rounds
-            if type(event["counts"].get("important")) is int
-            and event["counts"]["important"] >= 0
+            len(review_round["important"]) + review_round["unkeyed_important"]
+            for review_round in rounds
         ],
     }
 
