@@ -128,8 +128,16 @@ def review(contract: str, case: str, sample: int, model: str) -> dict:
             "output": output, "stderr": proc.stderr.strip()[-2000:]}
 
 
-def contract_commit(contract: str) -> str:
-    return _contract_commit(CONTRACTS.get(contract, contract))
+def capture_hashes(contract: str) -> dict[str, str]:
+    def one(case: str) -> tuple[str, str]:
+        with tempfile.TemporaryDirectory(prefix=f"cal-capture-{case}-") as directory:
+            source = pathlib.Path(directory) / "snapshot"
+            worktree(case, source)
+            return case, sha(capture(contract, case, source))
+
+    with cf.ThreadPoolExecutor(max_workers=6) as pool:
+        return dict(pool.map(one, CASES))
+
 
 
 def run_experiment(
@@ -160,13 +168,21 @@ def run_experiment(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--all", action="store_true")
+    parser.add_argument("--capture-only", action="store_true")
     parser.add_argument("--model")
     parser.add_argument("out_dir")
-    parser.add_argument("samples", type=int)
+    parser.add_argument("samples", type=int, nargs="?")
     parser.add_argument("contracts", nargs="*")
     args = parser.parse_args(argv)
     global CASES
     CASES = CORPUS if args.all else _defect_cases()
+    if args.capture_only:
+        if args.samples is not None or args.contracts:
+            parser.error("--capture-only accepts exactly one contract")
+        print(json.dumps(capture_hashes(args.out_dir), sort_keys=True))
+        return 0
+    if args.samples is None:
+        parser.error("samples is required")
     model = args.model or configured_reviewer_model(pathlib.Path(REPO))
     rows = run_experiment(
         pathlib.Path(args.out_dir),

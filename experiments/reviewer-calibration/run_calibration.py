@@ -15,8 +15,8 @@ import concurrent.futures as cf
 import hashlib
 import json
 import pathlib
-import statistics
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -25,11 +25,13 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 
+EXP = pathlib.Path(__file__).parent
+REPO = EXP.parents[1]
+sys.path.insert(0, str(REPO))
+
 from factory import config, stats
 from factory.dispatch import _omp_output
 
-EXP = pathlib.Path(__file__).parent
-REPO = EXP.parents[1]
 CHECKOUT_ROOT = pathlib.Path(tempfile.mkdtemp(prefix="factory-cal-checkout-"))
 atexit.register(shutil.rmtree, CHECKOUT_ROOT, ignore_errors=True)
 CONTRACTS = {
