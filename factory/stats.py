@@ -135,8 +135,9 @@ def review_convergence(events: list[dict]) -> dict[str, Any]:
         ):
             continue
         number = event.get("review_round")
+        round_key = (event.get("dispatcher_run_id"), number)
         if type(number) is int:
-            current = numbered.get(number)
+            current = numbered.get(round_key)
         elif event.get("role") == "second" and rounds:
             current = rounds[-1]
         else:
@@ -150,7 +151,7 @@ def review_convergence(events: list[dict]) -> dict[str, Any]:
             }
             rounds.append(current)
             if type(number) is int:
-                numbered[number] = current
+                numbered[round_key] = current
         current["approved"] &= event.get("verdict") == "APPROVE"
         repeated = event.get("repeated_dropped", 0)
         if type(repeated) is int and repeated >= 0:

@@ -2051,7 +2051,6 @@ def _review_range(wt: Path, n: int, base: str, head: str) -> tuple[str, str | No
     if (
         old_base == base_head
         and isinstance(last, str)
-        and last != head
         and run(["git", "merge-base", "--is-ancestor", last, head], cwd=wt, check=False).returncode == 0
     ):
         note = (
@@ -2120,6 +2119,7 @@ def _reconcile_review(
         active_ids.add(identity)
         current_rows.append(row)
         by_id[identity] = {**row, "head": head}
+        by_key[_finding_key(row)] = by_id[identity]
     for identity, status in updates.items():
         if status == "still-open" and identity not in active_ids:
             raise ValueError(f"review ledger {identity} was marked still-open without a finding")
@@ -2661,7 +2661,8 @@ def pr_gate_and_review(
         if policy_tier == "High" else None
     )
     primary, primary_findings = review(
-        wt, n, report, head, review_context=review_context,
+        wt, n, report, head,
+        **({"review_context": review_context} if review_context is not None else {}),
     )
     primary_row = _PENDING_REVIEWS.get(n) or {}
     if primary_row and primary_row.get("verdict") is None:
@@ -2689,6 +2690,13 @@ def pr_gate_and_review(
     second_row = _PENDING_SECOND_REVIEWS.get(n) or {}
     if second_row.get("accepted") and isinstance(second_row.get("tally"), dict):
         second_tally = dict(second_row["tally"])
+        prior_ids = {row["id"] for row in _open_ledger_findings(review_context[2])}
+        # Independently chosen new ids belong to the reviewer, not yet to the ledger.
+        second_tally["findings"] = [
+            {key: value for key, value in row.items() if key != "id"}
+            if row.get("id") not in prior_ids else row
+            for row in second_tally["findings"]
+        ]
         if primary == "REVISE":
             primary_tally = _review_tally(primary_findings) or {}
             primary_ids = {
