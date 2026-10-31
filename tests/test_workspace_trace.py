@@ -316,3 +316,127 @@ const click = values => listeners.click({
             [call.split("?")[0] for call in observed["calls"]],
             ["/api/trace", "/api/live-executions", "/api/trace"],
         )
+
+    def test_live_polling_retains_and_ages_failed_or_stalled_reads_and_resumes(self) -> None:
+        script = """
+const fs = require('fs'), assert = require('assert/strict');
+global.window = {};
+let now = Date.parse('2026-10-30T12:00:00Z'), nextTimer = 0;
+Date.now = () => now;
+const timers = new Map();
+global.setTimeout = (fn, delay) => {
+  const id = ++nextTimer; timers.set(id, {fn, at:now+delay}); return id;
+};
+global.clearTimeout = id => timers.delete(id);
+global.setInterval = (fn, delay) => {
+  const id = ++nextTimer; timers.set(id, {fn, at:now+delay, delay}); return id;
+};
+global.clearInterval = global.clearTimeout;
+const flush = () => new Promise(setImmediate);
+async function advance(ms) {
+  const end = now + ms;
+  while (true) {
+    const due = [...timers].filter(([,t]) => t.at <= end).sort((a,b) => a[1].at-b[1].at)[0];
+    if (!due) break;
+    const [id,t] = due; now = t.at;
+    if (t.delay) t.at += t.delay; else timers.delete(id);
+    t.fn(); await flush();
+  }
+  now = end; await flush();
+}
+const doc = new EventTarget();
+doc.visibilityState = 'visible'; global.document = doc;
+const listeners = {};
+let html = '', writes = 0;
+const host = {
+  isConnected:true,
+  get innerHTML(){ return html; },
+  set innerHTML(value){ html = value; writes++; },
+  querySelectorAll(){ return []; },
+  querySelector(){ return null; },
+  addEventListener(type, listener){ listeners[type] = listener; },
+};
+const click = values => listeners.click({target:{closest:selector => values[selector] || null}});
+const calls = [];
+let response = 'success', release;
+global.WorkspaceAPI = {json:async (url, options={}) => {
+  calls.push({url, method:options.method || 'GET'});
+  const observed = new Date(now).toISOString();
+  if (String(url).startsWith('/api/trace')) return {nodes:[],edges:[],loops:[]};
+  if (response === 'failure') throw new Error('offline');
+  if (response === 'stalled') await new Promise(resolve => { release = resolve; });
+  return {schema_version:1, refresh_seconds:10, stale_after_seconds:2,
+    generated_at:observed, executions:[{
+      execution_id:'worker', ticket:7, title:'Retained ticket', lane:'worker',
+      entered_at:'2026-01-01T00:00:00Z', observed_at:observed,
+      agent:'default', harness:'omp', state:'active',
+    }]};
+}};
+eval(fs.readFileSync(process.argv[1], 'utf8'));
+(async () => {
+  window.WorkspaceTrace.mount(host, {ticket:7, refreshSeconds:1});
+  await flush();
+  click({'[data-trace-mode]':{dataset:{traceMode:'live'}}}); await flush();
+  assert.match(html, /Retained ticket/);
+  assert.match(html, /data-status="running"/, 'Fresh observation of long-running worker');
+  response = 'stalled';
+  const before = writes;
+  await advance(1000);
+  assert.equal(writes, before, 'No loading replacement during a refresh');
+  await advance(2000);
+  assert.match(html, /data-status="stale"/, 'A stalled read cannot keep cards running');
+  assert.match(html, /Retained ticket/);
+  response = 'failure'; release(); await flush();
+  await advance(1000);
+  assert.match(html, /Retained ticket/, 'Failed read retains successful board');
+  assert.match(html, /data-status="stale"/);
+  doc.visibilityState = 'hidden'; doc.dispatchEvent(new Event('visibilitychange'));
+  const hiddenCalls = calls.length;
+  await advance(5000);
+  assert.equal(calls.length, hiddenCalls, 'Hidden page makes no live reads');
+  response = 'success';
+  doc.visibilityState = 'visible'; doc.dispatchEvent(new Event('visibilitychange'));
+  await flush();
+  assert.equal(calls.length, hiddenCalls+1, 'Visibility restoration reads promptly');
+  assert.match(html, /data-status="running"/);
+  click({'[data-trace-mode]':{dataset:{traceMode:'history'}}}); await flush();
+  const historicalCalls = calls.length;
+  await advance(5000);
+  doc.dispatchEvent(new Event('visibilitychange')); await flush();
+  assert.equal(calls.length, historicalCalls, 'Historical mode removes live polling/listeners');
+  click({'[data-trace-mode]':{dataset:{traceMode:'live'}}}); await flush();
+  window.WorkspaceTrace.dispose(host);
+  const disposedCalls = calls.length;
+  await advance(5000); doc.dispatchEvent(new Event('visibilitychange')); await flush();
+  assert.equal(calls.length, disposedCalls, 'Disposal removes live polling/listeners');
+  assert.equal(timers.size, 0, 'Disposal clears all live timers');
+  assert.ok(calls.every(call => call.method === 'GET'));
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+        result = subprocess.run(
+            ["node", "-e", script, str(ASSET)],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_live_polling_preference_is_independent_of_workspace_default(self) -> None:
+        script = """
+const fs = require('fs'), assert = require('assert/strict');
+global.window = {};
+global.localStorage = {getItem(){return null;},setItem(){}};
+global.document = {dispatchEvent(){}};
+global.CustomEvent = class {};
+eval(fs.readFileSync(process.argv[1], 'utf8'));
+const settings = window.WorkspaceSettings;
+assert.equal(settings.preferences.pollSeconds, 30);
+assert.equal(settings.preferences.livePollSeconds, 10);
+settings.setPreference('livePollSeconds', 30);
+assert.equal(settings.preferences.livePollSeconds, 30);
+assert.equal(settings.preferences.pollSeconds, 30);
+assert.match(settings.markup('acme/widgets'), /data-preference="livePollSeconds"/);
+"""
+        result = subprocess.run(
+            ["node", "-e", script, str(ASSET.with_name("workspace-settings.js"))],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)

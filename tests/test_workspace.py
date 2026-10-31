@@ -892,6 +892,54 @@ class WorkspaceHTTPTest(unittest.TestCase):
         )
 
 
+    def test_live_umbrella_only_ticket_stays_visible_without_a_running_agent(self) -> None:
+        observed = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        execution = {
+            "execution_id": "pipeline",
+            "stage": "ticket",
+            "ticket": 7,
+            "state": "active",
+            "entered_at": "2026-01-01T00:00:00Z",
+            "latest_at": "2026-01-01T00:00:00Z",
+            "observed_at": observed,
+            "ended_at": None,
+        }
+        with mock.patch(
+            "factory.workspace.runtime_events.project",
+            return_value={"executions": [execution], "errors": []},
+        ):
+            body = self.workspace.live_executions(REPOSITORY)
+
+        self.assertEqual(len(body["executions"]), 1)
+        row = body["executions"][0]
+        self.assertEqual((row["ticket"], row["lane"]), (7, "worker"))
+        self.assertEqual(row["activity"], "pipeline")
+        self.assertEqual(row["agent"], "No running agent")
+        self.assertFalse(row["stale"], "A fresh process observation is not an old transition")
+
+    def test_live_worker_harness_excludes_host_launch_wrapper(self) -> None:
+        self.cfg.workers["wrapped"] = ["/opt/bin/omp", "--prompt", "{prompt}"]
+        self.cfg.worker_wrap = ["/opt/bin/resource-wrapper", "--"]
+        observed = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        execution = {
+            "execution_id": "wrapped",
+            "stage": "worker",
+            "ticket": 7,
+            "state": "active",
+            "entered_at": observed,
+            "observed_at": observed,
+            "activity": {"worker": "wrapped"},
+        }
+        with mock.patch(
+            "factory.workspace.runtime_events.project",
+            return_value={"executions": [execution], "errors": []},
+        ):
+            body = self.workspace.live_executions(REPOSITORY)
+
+        row = body["executions"][0]
+        self.assertEqual((row["agent"], row["harness"]), ("wrapped", "omp"))
+
+
 class WorkspaceRegistryTest(unittest.TestCase):
     def test_registered_main_overrides_same_slug_startup_but_key_stays_startup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
