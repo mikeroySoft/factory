@@ -661,12 +661,6 @@ class ControlBandWatchTest(unittest.TestCase):
 
     def test_in_progress_attempt_failures_from_446_do_not_raise_alarm(self) -> None:
         rows = [row for row in self.rows() if row.get("event") == "attempt"]
-        rows += [
-            {"event": "attempt", "ticket": 420, "attempt": 3,
-             "head": "worker-420-3", "at": self.NOW.replace(hour=15, minute=12).isoformat()},
-            {"event": "attempt", "ticket": 369, "attempt": 4,
-             "head": "worker-369-4", "at": self.NOW.replace(hour=15, minute=17).isoformat()},
-        ]
         failures = (
             (420, 3, 6),
             (420, 3, 11),
@@ -681,6 +675,36 @@ class ControlBandWatchTest(unittest.TestCase):
             })
 
         self.assertEqual(watch.band_signals(self.cfg, rows, self.NOW), [])
+
+    def test_recorded_unmerged_heads_from_446_do_not_raise_alarm(self) -> None:
+        rows = [row for row in self.rows() if row.get("event") == "attempt"]
+        at = self.NOW.replace(hour=15, minute=17).isoformat()
+        for ticket, attempt in ((420, 3), (369, 4)):
+            rows.append({
+                "event": "attempt", "ticket": ticket, "attempt": attempt, "gate": "FAIL",
+                "head": f"worker-{ticket}-{attempt}", "at": at,
+            })
+        for ticket, attempt, minute in ((420, 3, 6), (420, 3, 11), (369, 4, 16)):
+            rows.append({
+                "event": "lifecycle", "kind": "result", "stage": "gate-check",
+                "ticket": ticket, "attempt": attempt, "check": "test", "passed": False,
+                "failed_tests": [
+                    (
+                        "tests.test_risk_merge.HighPipelineBoundaryTest."
+                        "test_high_disagree_checks_all_agree_approves_and_merges_without_human"
+                    ),
+                ],
+                "changed_paths": ["factory/dispatch.py"],
+                "at": self.NOW.replace(hour=15, minute=minute).isoformat(),
+            })
+        other_heads = [
+            {"event": "merged", "ticket": ticket, "head": f"other-{ticket}", "at": at}
+            for ticket in (420, 369)
+        ]
+
+        for merged in ([], other_heads):
+            with self.subTest(other_heads_merged=bool(merged)):
+                self.assertEqual(watch.band_signals(self.cfg, rows + merged, self.NOW), [])
 
     def test_duplicate_rows_for_one_merged_attempt_count_once(self) -> None:
         at = self.NOW.replace(hour=15).isoformat()
@@ -698,6 +722,10 @@ class ControlBandWatchTest(unittest.TestCase):
 
         points = watch.metric_series(rows, self.NOW.date(), self.NOW.date())
 
+        self.assertEqual(
+            points["gate_failures_by_check:test"][self.NOW.date().isoformat()]["value"],
+            1.0,
+        )
         self.assertEqual(
             points[f"gate_failures_by_test:{self.TEST_ID}"][self.NOW.date().isoformat()]["value"],
             1.0,
