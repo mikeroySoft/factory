@@ -32,6 +32,10 @@ from factory import __version__, config, lifecycle, manage, runtime_events
 # journal, where `factory watch` files them as factory bugs. Tests that need a context set one.
 os.environ.pop(lifecycle.CONTEXT_ENV, None)
 
+def tearDownModule() -> None:
+    shutil.rmtree(XDG, ignore_errors=True)
+
+
 
 def host_file(text: str) -> None:
     path = XDG / "factory" / "config.toml"

@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Test-owned temporary directories now clean up after the suite; every gate pass contains subprocess temporary files in a disposable `TMPDIR`, and dispatcher startup removes stale read-only reviewer snapshots (#467).
 - Triage now comments once and records `triage_stalled` when one issue produces `unparseable_decision` on two consecutive passes; `factory watch` files that stalled streak while ignoring a single parse failure (#450).
 - Reviewer calibration runs now take their default model from the effective Factory reviewer configuration, record the selected model, and can replay the frozen split three times across an explicit model matrix with quality/noise, stable pass→fail, token, configured-price, wall-time, and viability reports (#438).
 - Dispatcher pushes now lease the exact remote `agent/<n>` SHA observed before the worker, so an unchanged remote accepts rewritten work and work rebased onto that lease even when the starting worktree did not contain it; stale linear work that still omits the lease remains refused, and subsequent remote changes remain protected. Lease refusals name both the leased and current remote SHAs, retain refusal when diagnostic lookup fails, and discard starting-history state on ticket exit so later refresh or manager FIX pushes are not falsely refused (#428).
