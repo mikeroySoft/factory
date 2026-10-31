@@ -1,6 +1,6 @@
 """Deterministic quality gate for agent worktrees.
 
-Runs from a worktree root. Exit 0 = all checks pass, 1 = any failure.
+Runs from a worktree root. Exit 0 = pass, 1 = check failure, 75 = runner storage deferral.
 Writes a short Markdown report (PASS/FAIL per check + failure excerpts).
 """
 
