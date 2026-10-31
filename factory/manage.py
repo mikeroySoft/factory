@@ -473,6 +473,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         dispatch.push_agent(wt, n, lease)
         dispatch.record_risk(wt, n, gate_head)
         verdict, findings, pr_failed = dispatch.pr_gate_and_review(wt, n, report, gate_head, {})
+        failure_code = dispatch.review_failure(n, gate_head)
         dispatch.pr_comment(n, findings)
         if pr_failed:
             reason = "pr checks failed"
@@ -484,9 +485,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
                     code="pr_checks_failed",
                 )
         elif verdict is None:
-            code, _ = dispatch.review_failure(n, gate_head) or (
-                "reviewer_unavailable", "reviewer unavailable",
-            )
+            code = failure_code or "reviewer_unavailable"
             reason = (
                 "worker model provenance missing for High-risk review after manager FIX"
                 if code == "missing_worker_provenance"

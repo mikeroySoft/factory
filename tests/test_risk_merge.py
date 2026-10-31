@@ -630,6 +630,30 @@ class HighPipelineBoundaryTest(unittest.TestCase):
             "missing_worker_provenance",
         )
 
+    def test_missing_worker_provenance_after_manager_fix_machine_escalates(self) -> None:
+        def work_without_model(*_args, **_kwargs):
+            dispatch.record(
+                "attempt", ticket=7, head=HEAD, actual_head=HEAD, gate="PASS",
+            )
+            return True, "- test: PASS\n", self.root / "worker.log", HEAD
+
+        self.worker.side_effect = work_without_model
+        review = self.patch(dispatch, "review")
+        self.patch(dispatch, "run_gate", return_value=(True, "- mutation: PASS\n"))
+        dispatch.pr_comment.side_effect = self.real_pr_comment
+        packet = self.root / "packet.md"
+        packet.write_text("fix it")
+        manage.apply(7, self.issue, "FIX", "", {
+            "worker": "default", "guidance": "restore provenance",
+        }, packet)
+        review.assert_not_called()
+        dispatch.pr_comment.assert_called_once()
+        self.escalate.assert_called_once()
+        self.assertEqual(
+            self.escalate.call_args.kwargs["code"],
+            "missing_worker_provenance",
+        )
+
     def test_high_disagree_checks_all_agree_approves_and_merges_without_human(self) -> None:
         self.reviews(("APPROVE", "APPROVE"))
         self.patch(dispatch, "run_gate", return_value=(True, "- mutation: PASS\n"))
