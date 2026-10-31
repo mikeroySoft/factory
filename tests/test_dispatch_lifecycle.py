@@ -1174,3 +1174,378 @@ class TriageExemptionLifecycleTest(unittest.TestCase):
         self.assertIn("bug ticket needs a `Repro test:` handoff line", report)
         self.assertNotIn("- bug-repro: SKIP", report)
         self.assertFalse(any(row.get("event") == "approved" for row in events))
+
+
+class LockfileDriftLifecycleTest(unittest.TestCase):
+    setUp = LocalCLI.setUp
+    git = LocalCLI.git
+    write_config = LocalCLI.write_config
+    commit_config = LocalCLI.commit_config
+    cli = LocalCLI.cli
+    pr_config = LocalCLI.pr_config
+    upstream_fixture = LocalCLI.upstream_fixture
+
+    def set_lock_baseline(self, *, manifest=False):
+        (self.repo / "uv.lock").write_text("base\n")
+        paths = ["uv.lock"]
+        if manifest:
+            (self.repo / "pyproject.toml").write_text(
+                '[project]\nname = "demo"\ndependencies = []\n'
+            )
+            paths.append("pyproject.toml")
+        self.git("add", *paths)
+        self.git("commit", "-qm", "dependency baseline")
+        self.git("push", "-q", "origin", "main")
+
+    def pushed_lock(self):
+        return subprocess.run(
+            ["git", "--git-dir", str(self.base / "origin.git"), "show", "agent/7:uv.lock"],
+            env=self.env, check=True, capture_output=True, text=True,
+        ).stdout
+
+    def run_lockfile_worker(self, plan, *, manifest=False, body=None):
+        self.set_lock_baseline(manifest=manifest)
+        if body is not None:
+            gh = self.bin / "gh"
+            gh.write_text(GH.replace(
+                '"body": "Acceptance: make the local change"',
+                '"body": ' + repr(body),
+            ))
+        self.reviewer.write_text(
+            'print(\'```json\\n{"verdict":"APPROVE","findings":[]}\\n```\\nVERDICT: APPROVE\')\n'
+        )
+        add = ["git", "add", "uv.lock"]
+        if manifest:
+            add.append("pyproject.toml")
+        self.worker.write_text(
+            "import subprocess\n"
+            "from pathlib import Path\n"
+            "p = Path('.factory/plans/current/1.md')\n"
+            "p.parent.mkdir(parents=True, exist_ok=True)\n"
+            f"p.write_text({plan!r})\n"
+            "Path('uv.lock').write_text('worker drift\\n')\n"
+            + (
+                "Path('pyproject.toml').write_text("
+                "'[project]\\nname = \"demo\"\\ndependencies = [\"requests\"]\\n')\n"
+                if manifest else ""
+            )
+            + f"subprocess.run({add!r}, check=True)\n"
+            "subprocess.run(['git', 'commit', '-qm', 'worker dependency edit'], check=True)\n"
+        )
+
+        self.cli("dispatch", "--ticket", "7")
+        return self.pushed_lock()
+
+    def test_unplanned_uv_lock_drift_is_removed_before_push(self):
+        lock = self.run_lockfile_worker("## Files\n- change.txt\n")
+
+        self.assertEqual(lock, "base\n")
+        changed = subprocess.run(
+            ["git", "--git-dir", str(self.base / "origin.git"), "diff", "--name-only",
+             "main...agent/7"],
+            env=self.env, check=True, capture_output=True, text=True,
+        ).stdout.splitlines()
+        self.assertNotIn("uv.lock", changed)
+
+    def test_unplanned_lockfile_rename_restores_source_and_removes_destination(self):
+        from factory import config, dispatch
+
+        self.set_lock_baseline()
+        wt = self.repo / ".factory" / "wt-7"
+        wt.parent.mkdir(exist_ok=True)
+        self.git("worktree", "add", str(wt), "-b", "agent/7")
+        self.git("-C", str(wt), "config", "diff.renames", "true")
+        (wt / "sub").mkdir()
+        (wt / "uv.lock").rename(wt / "sub" / "uv.lock")
+        self.git("-C", str(wt), "add", "-A")
+        self.git("-C", str(wt), "commit", "-qm", "worker lock rename")
+        dispatch.configure(config.load(self.repo))
+
+        dispatch.restore_unplanned_lockfiles(wt, 7, "origin/main")
+        dispatch.commit_leftovers(wt, 7, "restore lockfile")
+
+        self.assertEqual((wt / "uv.lock").read_text(), "base\n")
+        self.assertFalse((wt / "sub" / "uv.lock").exists())
+
+    def test_manifest_change_preserves_lockfile_edit(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- pyproject.toml\n", manifest=True,
+        )
+
+        self.assertEqual(lock, "worker drift\n")
+
+    def test_annotated_lockfile_plan_preserves_lockfile_edit(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- `uv.lock` — refresh dependency pins\n",
+        )
+
+        self.assertEqual(lock, "worker drift\n")
+
+    def test_nonleading_lockfile_plan_preserves_lockfile_edit(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- `README.md`, `uv.lock`\n",
+        )
+
+        self.assertEqual(lock, "worker drift\n")
+
+    def test_root_lockfile_plan_does_not_authorize_nested_lockfile(self):
+        from factory import config, dispatch
+
+        self.set_lock_baseline()
+        nested = self.repo / "services" / "api" / "uv.lock"
+        nested.parent.mkdir(parents=True)
+        nested.write_text("nested base\n")
+        self.git("add", "services/api/uv.lock")
+        self.git("commit", "-qm", "nested dependency baseline")
+        self.git("push", "-q", "origin", "main")
+        wt = self.repo / ".factory" / "wt-7"
+        wt.parent.mkdir(exist_ok=True)
+        self.git("worktree", "add", str(wt), "-b", "agent/7")
+        plan = self.repo / ".factory" / "plans" / "7" / "1.md"
+        plan.parent.mkdir(parents=True)
+        plan.write_text("## Files\n- uv.lock\n")
+        lifecycle.append(self.events, {
+            "event": "plan", "ticket": 7, "status": "recorded", "path": str(plan),
+        })
+        (wt / "uv.lock").write_text("root worker edit\n")
+        (wt / "services" / "api" / "uv.lock").write_text("nested worker drift\n")
+        self.git("-C", str(wt), "add", "uv.lock", "services/api/uv.lock")
+        self.git("-C", str(wt), "commit", "-qm", "worker lock edits")
+        dispatch.configure(config.load(self.repo))
+
+        restored = dispatch.restore_unplanned_lockfiles(wt, 7, "origin/main")
+
+        self.assertEqual(restored, ["services/api/uv.lock"])
+        self.assertEqual((wt / "uv.lock").read_text(), "root worker edit\n")
+        self.assertEqual(
+            (wt / "services" / "api" / "uv.lock").read_text(), "nested base\n",
+        )
+
+    def test_recorded_plan_filter_requires_matching_event_ticket_and_status(self):
+        from unittest import mock
+
+        from factory import config, dispatch
+
+        dispatch.configure(config.load(self.repo))
+        plan = self.repo / "plan.md"
+        plan.write_text("## Files\n- uv.lock\n")
+        valid = {
+            "event": "plan", "ticket": 7, "status": "recorded", "path": str(plan),
+        }
+        cases = {
+            "event": {**valid, "event": "review"},
+            "ticket": {**valid, "ticket": 6},
+            "status": {**valid, "status": "skipped"},
+        }
+        for field, row in cases.items():
+            with self.subTest(field=field), mock.patch.object(
+                lifecycle, "read_events", return_value=[row],
+            ):
+                self.assertFalse(dispatch._recorded_plan_lists_lockfile(7, "uv.lock"))
+        with mock.patch.object(lifecycle, "read_events", return_value=[valid]):
+            self.assertTrue(dispatch._recorded_plan_lists_lockfile(7, "uv.lock"))
+
+    def test_recorded_plan_filter_skips_missing_plan(self):
+        from unittest import mock
+
+        from factory import config, dispatch
+
+        dispatch.configure(config.load(self.repo))
+        plan = self.repo / "plan.md"
+        plan.write_text("## Files\n- uv.lock\n")
+        rows = [
+            {
+                "event": "plan", "ticket": 7, "status": "recorded",
+                "path": str(self.repo / "missing.md"),
+            },
+            {
+                "event": "plan", "ticket": 7, "status": "recorded", "path": str(plan),
+            },
+        ]
+
+        with mock.patch.object(lifecycle, "read_events", return_value=rows):
+            self.assertTrue(dispatch._recorded_plan_lists_lockfile(7, "uv.lock"))
+
+    def test_recorded_plan_filter_toggles_only_for_files_section(self):
+        from unittest import mock
+
+        from factory import config, dispatch
+
+        dispatch.configure(config.load(self.repo))
+        plan = self.repo / "plan.md"
+        row = {
+            "event": "plan", "ticket": 7, "status": "recorded", "path": str(plan),
+        }
+        cases = (
+            ("- uv.lock\n## Files\n- change.txt\n", False),
+            ("## Risks\n- uv.lock\n## Files\n- change.txt\n", False),
+            ("## Files\n- change.txt\n## Proof\n- uv.lock\n", False),
+            ("## Risks\n- change.txt\n## Files\n- uv.lock\n", True),
+        )
+        for text, expected in cases:
+            with self.subTest(text=text):
+                plan.write_text(text)
+                with mock.patch.object(lifecycle, "read_events", return_value=[row]):
+                    self.assertEqual(
+                        dispatch._recorded_plan_lists_lockfile(7, "uv.lock"), expected,
+                    )
+
+    def test_lockfile_mentions_outside_files_section_do_not_authorize_edit(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- change.txt\n"
+            "## Risks\n- uv.lock may drift\n"
+            "## Proof\n- inspect uv.lock\n",
+        )
+
+        self.assertEqual(lock, "base\n")
+
+    def test_indented_heading_ends_files_section(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- change.txt\n"
+            "  ## Risks\n- uv.lock may drift\n",
+        )
+
+        self.assertEqual(lock, "base\n")
+
+    def test_longer_plan_filename_does_not_authorize_lockfile_edit(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- uv.lock.backup\n",
+        )
+
+        self.assertEqual(lock, "base\n")
+
+    def test_ticket_wording_does_not_authorize_lockfile_edit(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- change.txt\n",
+            body="Update uv.lock for the planned dependency change.",
+        )
+
+        self.assertEqual(lock, "base\n")
+
+    def test_round_one_lockfile_plan_preserves_round_two_edit(self):
+        self.set_lock_baseline()
+        self.worker.write_text(
+            "import subprocess\n"
+            "from pathlib import Path\n"
+            "first = not Path('change.txt').exists()\n"
+            "p = Path('.factory/plans/current/1.md')\n"
+            "p.parent.mkdir(parents=True, exist_ok=True)\n"
+            "p.write_text('## Files\\n- uv.lock\\n' if first "
+            "else '## Files\\n- change.txt\\n')\n"
+            "path = Path('change.txt' if first else 'uv.lock')\n"
+            "path.write_text('first round\\n' if first else 'worker drift\\n')\n"
+            "subprocess.run(['git', 'add', str(path)], check=True)\n"
+            "subprocess.run(['git', 'commit', '-qm', 'worker round'], check=True)\n"
+        )
+
+        self.cli("dispatch", "--ticket", "7")
+
+        self.assertEqual(self.pushed_lock(), "worker drift\n")
+
+    def test_manager_fix_removes_unplanned_uv_lock_drift(self):
+        from unittest import mock
+
+        from factory import config, dispatch, manage
+
+        self.set_lock_baseline()
+        self.pr_config(fails=0)
+        self.state.write_text(json.dumps({"reviews": 1}))
+        self.worker.write_text(
+            "import subprocess\n"
+            "from pathlib import Path\n"
+            "p = Path('.factory/plans/current/1.md')\n"
+            "p.parent.mkdir(parents=True, exist_ok=True)\n"
+            "p.write_text('## Files\\n- change.txt\\n')\n"
+            "Path('uv.lock').write_text('worker drift\\n')\n"
+            "subprocess.run(['git', 'add', 'uv.lock'], check=True)\n"
+            "subprocess.run(['git', 'commit', '-qm', 'worker lock edit'], check=True)\n"
+        )
+        wt = self.repo / ".factory" / "wt-7"
+        wt.parent.mkdir(exist_ok=True)
+        self.git("worktree", "add", str(wt), "-b", "agent/7")
+        head = self.git("rev-parse", "HEAD").stdout.strip()
+        packet = self.repo / ".factory" / "packet.md"
+        packet.write_text("fix it")
+        issue = {"title": "local change", "body": "", "comments": [], "labels": []}
+        pr = {
+            "state": "OPEN", "headRefName": "agent/7", "headRefOid": head,
+            "baseRefName": "main", "reviewDecision": "",
+        }
+        with mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(
+                    dispatch, "gh_json",
+                    side_effect=lambda args: pr if args[:2] == ["pr", "view"] else issue,
+                ), \
+                mock.patch.object(dispatch, "push_agent", return_value=head), \
+                mock.patch.object(dispatch, "pr_comment"), \
+                mock.patch.object(dispatch, "approve_pr", return_value=True), \
+                mock.patch.object(dispatch, "escalate"):
+            dispatch.configure(config.load(self.repo))
+            manage.apply(
+                7, issue, "FIX", "",
+                {"worker": "default", "guidance": "fix"}, packet,
+            )
+
+        self.assertEqual((wt / "uv.lock").read_text(), "base\n")
+        changed = self.git(
+            "-C", str(wt), "diff", "--name-only", "origin/main...HEAD",
+        ).stdout.splitlines()
+        self.assertNotIn("uv.lock", changed)
+
+    def test_moving_main_does_not_replace_ticket_lockfile_base(self):
+        from factory import dispatch
+
+        self.set_lock_baseline()
+        wt = self.repo / ".factory" / "wt-7"
+        wt.parent.mkdir(exist_ok=True)
+        self.git("worktree", "add", str(wt), "-b", "agent/7")
+
+        (self.repo / "uv.lock").write_text("new main lock\n")
+        self.git("add", "uv.lock")
+        self.git("commit", "-qm", "advance main lock")
+        (wt / "uv.lock").write_text("worker drift\n")
+        self.git("-C", str(wt), "add", "uv.lock")
+        self.git("-C", str(wt), "commit", "-qm", "worker lock edit")
+
+        dispatch.restore_unplanned_lockfiles(wt, 7, "main")
+        dispatch.commit_leftovers(wt, 7, "restore lockfile")
+
+        self.assertEqual((wt / "uv.lock").read_text(), "base\n")
+        changed = self.git(
+            "-C", str(wt), "diff", "--name-only", "main...HEAD",
+        ).stdout.splitlines()
+        self.assertNotIn("uv.lock", changed)
+
+    def test_upstream_sync_skips_lockfile_guard(self):
+        self.set_lock_baseline()
+        self.worker.write_text(
+            "import subprocess\n"
+            "from pathlib import Path\n"
+            "p = Path('.factory/plans/current/1.md')\n"
+            "p.parent.mkdir(parents=True, exist_ok=True)\n"
+            "p.write_text('## Files\\n- fix.txt\\n')\n"
+            "Path('fix.txt').write_text('fixed\\n')\n"
+            "Path('uv.lock').write_text('worker drift\\n')\n"
+            "subprocess.run(['git', 'add', 'fix.txt', 'uv.lock'], check=True)\n"
+            "subprocess.run(['git', 'commit', '-qm', 'worker sync repair'], check=True)\n"
+        )
+        tip, _ = self.upstream_fixture(
+            check=[sys.executable, "-c",
+                   "from pathlib import Path; raise SystemExit(not Path('fix.txt').exists())"],
+        )
+        (self.repo / "uv.lock").write_text("fork lock\n")
+        self.git("add", "uv.lock")
+        self.git("commit", "-qm", "fork dependency")
+        self.git("push", "-q", "origin", "main")
+
+        self.cli("dispatch")
+
+        self.assertEqual(self.pushed_lock(), "worker drift\n")
+        events = lifecycle.read_events(self.events)
+        sync = next(row for row in events if row.get("event") == "upstream-sync")
+        wt = self.repo / ".factory" / "wt-7"
+        self.assertEqual(
+            self.git("-C", str(wt), "show", f"{sync['head']}:uv.lock").stdout,
+            "fork lock\n",
+        )
+        self.git("-C", str(wt), "merge-base", "--is-ancestor", tip, "agent/7")

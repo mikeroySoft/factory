@@ -402,6 +402,19 @@ no worker or model launch. The reviewer receives the latest plan artifact or
 status and lists changed files the plan did not name and planned proof absent
 from the gate report. Plan drift is evidence, not an automatic `REVISE`.
 
+Before committing worker leftovers or running the attempt gate, the dispatcher
+compares known dependency lockfiles with the ticket branch's merge-base. A
+lockfile edit is planned only when `pyproject.toml` also changed against that
+merge-base or any numbered plan artifact recorded for the ticket, across all
+rounds, lists that lockfile. Ticket and brief wording is not considered.
+Upstream-sync tickets skip this guard so Factory never overwrites a fork's
+lockfile while synchronizing upstream. For every other ticket, Factory restores
+unplanned tracked lockfiles from the merge-base and removes newly introduced
+ones, so a moving main or incidental verifier drift cannot alter the gated and
+pushed head. Repository gate commands that use `uv run` pass `--frozen`;
+preventing `uv` from writing `uv.lock` is simpler than repairing the worktree
+after the authoritative gate has run.
+
 The workspace **Decisions** view (`/?view=decisions&ticket=N`, or `/decisions`)
 reads the selected repository through authenticated `GET /api/trace?ticket=N`.
 It renders the same graph unchanged as a stage-ordered breadboard with labeled

@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Before the attempt gate, the dispatcher now restores unplanned dependency lockfiles from the ticket branch's merge-base. A changed `pyproject.toml` or any recorded round's plan listing the lockfile preserves the edit; ticket and brief wording does not. Upstream-sync tickets skip the guard so fork lockfiles remain untouched. Repository `uv run` gate checks stay frozen so verification cannot rewrite `uv.lock` (#441).
 - The Decisions breadboard now fits a complete multi-loop graph into its viewport and supports button, wheel, pointer, keyboard, and fullscreen zoom/pan controls. Cause-to-effect arrowheads remain at target ends, bounded wire routes redraw after every viewport or graph change, and parallel edges use distinct lanes while spring motion and full-chain tracing remain intact (#470). [Before](docs/issue-470-before.png) · [After](docs/issue-470-after.png)
 - Triage now comments once and records `triage_stalled` when one issue produces `unparseable_decision` on two consecutive passes; `factory watch` files that stalled streak while ignoring a single parse failure (#450).
 - Reviewer calibration runs now take their default model from the effective Factory reviewer configuration, record the selected model, and can replay the frozen split three times across an explicit model matrix with quality/noise, stable pass→fail, token, configured-price, wall-time, and viability reports (#438).
