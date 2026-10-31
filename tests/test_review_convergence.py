@@ -143,6 +143,34 @@ class ReviewConvergenceTest(unittest.TestCase):
         self.assertFalse((dispatch.FACTORY / "review-ledger-7.json").exists())
 
 
+    def test_high_risk_split_returns_one_ledger_finding_to_worker(self) -> None:
+        self.configure([
+            tally("APPROVE", []),
+            tally("REVISE", [finding(finding_id=None)]),
+        ])
+        dispatch.cfg.reviewer.append("--model=primary/model")
+        dispatch.cfg.second_reviewer = [
+            *dispatch.cfg.reviewer[:-1], "--model=second/model",
+        ]
+        dispatch.record(
+            "attempt", ticket=7, head=self.head, actual_head=self.head,
+            gate="PASS", worker_model="worker/model",
+        )
+
+        with mock.patch.object(
+            dispatch, "risk_for_head",
+            return_value=("High", ["high:approval, gate, and dispatch control"]),
+        ):
+            verdict, _, pr_failed = dispatch.pr_gate_and_review(
+                self.root, 7, "PASS", self.head, {},
+            )
+
+        self.assertEqual((verdict, pr_failed), ("REVISE", False))
+        bounce = dispatch._PENDING_RISK[7]["worker_findings"]
+        self.assertEqual(bounce.count("Value is wrong."), 1)
+        self.assertIn("[F1 open]", bounce)
+
+
     def test_unconfirmed_important_is_downgraded_and_does_not_block(self) -> None:
         self.configure([
             tally("REVISE", [finding()]),
