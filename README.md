@@ -351,9 +351,10 @@ key against the dispatcher GitHub account and warns with `unknown_key` when the
 key is unreadable or unregistered.
 
 
-`factory stats` exposes each structured review round as ordered
-`review_findings` counts, Important findings per round, rounds-to-pass, and
-repeated findings dropped in JSON and in the ticket table.
+`factory stats` exposes ordered `review_findings` counts per reviewer call.
+Its convergence metrics combine High reviewers into one ticket round and keep
+resumed dispatcher runs distinct: Important findings per round, rounds-to-pass,
+and repeated findings dropped appear in JSON and in the ticket table.
 
 ### Decision records and explanations
 
@@ -535,7 +536,9 @@ Ticket review gets a read-only `git archive` snapshot of the gated head in
 only the last accepted review head-to-current head in `./review.diff`, plus the
 full base-to-current diff as read-only `./review-full.diff` context. A moved
 base or non-ancestor prior head falls back to a full primary diff and the prompt
-states why. PR review gets the diff inline. `GIT_*` and GitHub credentials are
+states why. An unchanged head gets an empty primary diff. Both High reviewers
+receive the same previous-round boundary and ledger, independently of one another.
+PR review gets the diff inline. `GIT_*` and GitHub credentials are
 stripped from the reviewer's environment. Ticket review
 retries snapshot, diff, launch, nonzero-exit, and unparseable-output failures up
 to three times, using exponential backoff unless the provider reports

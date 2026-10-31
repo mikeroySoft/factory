@@ -13,6 +13,13 @@ from tests.test_review_convergence import finding, tally
 
 
 class ReviewRoundMetricsTest(unittest.TestCase):
+    def test_valid_important_schema_preserves_verdict_mismatch_diagnostics(self) -> None:
+        _, verdict, parsed, counts, reason = dispatch._parse_review_output(
+            tally("APPROVE", [finding()]), 5,
+        )
+        self.assertEqual((verdict, parsed, reason), ("REVISE", True, "verdict_counts_mismatch"))
+        self.assertEqual(counts, {"important": 1, "nit": 0, "pre_existing": 0})
+
     def test_resumed_dispatcher_round_numbers_do_not_merge_ticket_rounds(self) -> None:
         events = [
             {
@@ -132,6 +139,23 @@ class ReviewRoundsTest(unittest.TestCase):
         self.assertEqual(stats.review_convergence(self.journal_rows()), {
             "rounds_to_pass": 2, "repeated_findings_dropped": 0,
             "important_findings_per_round": [1, 0],
+        })
+
+    def test_dual_nits_and_pre_existing_findings_do_not_bounce(self) -> None:
+        self.prepare([
+            tally("APPROVE", [finding(severity="nit", finding_id=None)]),
+            tally("APPROVE", [{
+                **finding(severity="pre-existing", finding_id=None), "class": "old-defect",
+            }]),
+        ])
+
+        self.cli("dispatch", "--ticket", "7")
+
+        self.assertEqual(len(json.loads(self.state.read_text())["workers"]), 1)
+        self.assertTrue(any(row.get("event") == "approved" for row in self.journal_rows()))
+        self.assertEqual(stats.review_convergence(self.journal_rows()), {
+            "rounds_to_pass": 1, "repeated_findings_dropped": 0,
+            "important_findings_per_round": [0],
         })
 
     def test_unchanged_head_rereview_has_an_empty_primary_diff(self) -> None:
