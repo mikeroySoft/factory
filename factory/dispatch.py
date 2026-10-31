@@ -1105,7 +1105,7 @@ def _record_review_decision(
     n: int, verdict: str | None, findings: str, head: str, parsed: bool, accepted: bool,
     usage: dict | None, seconds: float, comment_url: str | None = None,
     counts: dict[str, int] | None = None, rejection_reason: str | None = None,
-    role: str = "primary", model: str | None = None,
+    role: str = "primary", model: str | None = None, failure_code: str | None = None,
 ) -> str:
     from factory import trace
 
@@ -1119,7 +1119,7 @@ def _record_review_decision(
         else "reviewer tooling failed before a verdict" if verdict is None
         else "review evidence was rejected and failed closed to REVISE"
     )
-    decision_reason = rejection_reason or reason
+    decision_reason = failure_code or rejection_reason or reason
     cause = _latest_decision_id(n, {"gate"})
     review_ref = comment_url or (f"https://github.com/{REPO}/pull/{pr}" if pr else f".factory/review-{n}.md")
     inputs = [
@@ -1154,7 +1154,7 @@ def _record_review_decision(
     record(
         "review-result", ticket=n, head=head, role=role, model=model,
         verdict="APPROVE" if verdict == "APPROVE" else "REQUEST_CHANGES",
-        findings=findings, counts=counts, reason=rejection_reason,
+        findings=findings, counts=counts, reason=failure_code or rejection_reason,
     )
     return payload["decision_id"]
 
@@ -2186,17 +2186,11 @@ def risk_disagreement_transition(
 
 
 
-def review_failure(n: int, head: str) -> tuple[str, str] | None:
-    """Machine failure that prevented review at this head, if any."""
+def review_failure(n: int, head: str) -> str | None:
+    """Machine failure code that prevented review at this head, if any."""
     for pending in (_PENDING_SECOND_REVIEWS.get(n), _PENDING_REVIEWS.get(n)):
         if pending and pending.get("head") == head and pending.get("verdict") is None:
-            code = pending.get("failure_code") or "reviewer_unavailable"
-            reason = (
-                "worker model provenance missing for High-risk review"
-                if code == "missing_worker_provenance"
-                else "reviewer unavailable"
-            )
-            return code, reason
+            return pending.get("failure_code") or "reviewer_unavailable"
     return None
 
 
@@ -2243,7 +2237,10 @@ def pr_gate_and_review(
             f"ticket #{n} at `{head}` ({code})."
         )
         _PENDING_REVIEWS[n] = {
-            "verdict": None, "head": head, "failure_code": code,
+            "verdict": None, "findings": findings, "head": head,
+            "parsed": False, "accepted": False, "usage": None, "seconds": 0.0,
+            "counts": None, "rejection_reason": None, "role": "primary", "model": None,
+            "failure_code": code,
         }
         record("review-blocked", ticket=n, head=head, code=code)
         return None, findings, False
@@ -3367,10 +3364,9 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     else:
         verdict, findings = review(wt, n, report, head)
         pr_failed = False
-    failure = review_failure(n, head)
+    code = review_failure(n, head)
     pr_comment(n, findings)
-    if failure:
-        code, reason = failure
+    if code:
         reason = (
             f"worker model provenance missing for High-risk review after {verb} onto moved main"
             if code == "missing_worker_provenance"
@@ -4231,6 +4227,7 @@ def process_ticket(
             pr_runs: dict[str, tuple[bool, str]] = {}
             record_risk(wt, n, gate_head)
             verdict, findings, pr_failed = pr_gate_and_review(wt, n, report, gate_head, pr_runs)
+            failure_code = review_failure(n, gate_head)
             pr_comment(n, findings)
             current_risk = _PENDING_RISK.get(n) or {}
             risk_disagreement_head, repeated_disagreement = risk_disagreement_transition(
@@ -4243,26 +4240,15 @@ def process_ticket(
                 )
                 return
             if verdict is None:
-                code, _ = review_failure(n, gate_head) or (
-                    "reviewer_unavailable", "reviewer unavailable",
+                code = failure_code or "reviewer_unavailable"
+                reason = (
+                    "worker model provenance missing for High-risk review"
+                    if code == "missing_worker_provenance"
+                    else "reviewer unavailable after retries"
                 )
-                if code == "missing_worker_provenance":
-                    reason = "worker model provenance missing for High-risk review"
-                    log(f"#{n}: {reason}; not a REVISE verdict")
-                    escalate(n, reason, logfile, code=code)
-                    return
-                pending = _PENDING_REVIEWS.get(n) or {}
-                if "FileNotFoundError" not in (pending.get("rejection_reason") or ""):
-                    log(
-                        f"#{n}: reviewer unavailable; not a REVISE verdict after "
-                        f"{cfg.review_rounds} review round(s)"
-                    )
-                    escalate(
-                        n, "reviewer unavailable after retries", logfile,
-                        code="reviewer_unavailable",
-                    )
-                    return
-                verdict = "REVISE"
+                log(f"#{n}: {reason}; not a REVISE verdict")
+                escalate(n, reason, logfile, code=code)
+                return
             # Each REVISE (or pr-tier FAIL) uses the normal bounce budget. A first
             # High-risk disagreement always gets one rework, even when that budget is spent.
             for bounce in range(1, cfg.review_rounds + 2):
@@ -4317,6 +4303,7 @@ def process_ticket(
                 lease = push_agent(wt, n, lease)
                 record_risk(wt, n, gate_head)
                 verdict, findings, pr_failed = pr_gate_and_review(wt, n, report, gate_head, pr_runs)
+                failure_code = review_failure(n, gate_head)
                 pr_comment(n, findings)
                 current_risk = _PENDING_RISK.get(n) or {}
                 current_disagreement_head, repeated_disagreement = risk_disagreement_transition(
@@ -4330,23 +4317,14 @@ def process_ticket(
                     return
                 risk_disagreement_head = current_disagreement_head
                 if verdict is None:
-                    code, _ = review_failure(n, gate_head) or (
-                        "reviewer_unavailable", "reviewer unavailable",
+                    code = failure_code or "reviewer_unavailable"
+                    reason = (
+                        "worker model provenance missing for High-risk review"
+                        if code == "missing_worker_provenance"
+                        else "reviewer unavailable after retries"
                     )
-                    if code == "missing_worker_provenance":
-                        escalate(
-                            n, "worker model provenance missing for High-risk review",
-                            logfile, code=code,
-                        )
-                        return
-                    pending = _PENDING_REVIEWS.get(n) or {}
-                    if "FileNotFoundError" not in (pending.get("rejection_reason") or ""):
-                        escalate(
-                            n, "reviewer unavailable after retries", logfile,
-                            code="reviewer_unavailable",
-                        )
-                        return
-                    verdict = "REVISE"
+                    escalate(n, reason, logfile, code=code)
+                    return
             if verdict != "APPROVE" and pr_failed:
                 escalate(n, "pr checks failed", logfile, extra="## PR-tier gate report\n\n" + findings,
                          code="pr_checks_failed")
