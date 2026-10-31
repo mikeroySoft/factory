@@ -176,12 +176,18 @@ def measure_window(
     first_passes = sum(row.get("gate") == "PASS" for row in attempts)
     from factory import stats
 
-    escaped = {
-        candidate["ticket"]
-        for row in stats.escapes()
-        for candidate in row.get("candidates", [])
-        if type(candidate.get("ticket")) is int
-    } & selected
+    try:
+        escaped = {
+            candidate["ticket"]
+            for row in stats.escapes()
+            for candidate in row.get("candidates", [])
+            if type(candidate.get("ticket")) is int
+        } & selected
+    except (
+        OSError, RuntimeError, ValueError, KeyError, TypeError,
+        subprocess.SubprocessError, SystemExit,
+    ):
+        escaped = None
     denominator = max(len(selected), 1)
     return {
         "human_rate": round(human_touches / denominator, 6),
@@ -190,8 +196,8 @@ def measure_window(
         "first_pass": round(first_passes / len(attempts), 6) if attempts else None,
         "first_passes": first_passes,
         "attempts": len(attempts),
-        "escape_rate": round(len(escaped) / denominator, 6),
-        "escapes": len(escaped),
+        "escape_rate": round(len(escaped) / denominator, 6) if escaped is not None else None,
+        "escapes": len(escaped) if escaped is not None else None,
         "tickets": len(selected),
     }
 
@@ -781,6 +787,8 @@ def _promotion_evidence(
         hold = f"tickets {metrics['tickets']} below promotion minimum {required_tickets}"
     elif metrics["first_pass"] is None:
         hold = "no first-attempt evidence in rolling window"
+    elif metrics["escape_rate"] is None:
+        hold = "escape evidence is unavailable"
     elif metrics["soak_passes"] == 0:
         hold = f"{odd['tag']} has no real factory passes"
     elif metrics["soak_hours"] < cfg.release_soak_hours:
