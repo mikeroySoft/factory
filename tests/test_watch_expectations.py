@@ -1040,6 +1040,35 @@ class IntendedStateCommandTest(unittest.TestCase):
         self.assertIn("watch: warn", watch_output.getvalue())
         self.assertNotIn("would file", watch_output.getvalue())
 
+    def test_undecided_watch_warns_again_with_the_changed_live_state(self) -> None:
+        source = self.root / "source" / "factory" / "config.py"
+        source.parent.mkdir(parents=True)
+        intended = source.parent.parent / "docs" / config.INTENDED_STATE_NAME
+        intended.parent.mkdir()
+        intended.write_text(
+            '[repo."mikeroySoft/factory"]\n'
+            '"release.auto" = "undecided"\n'
+        )
+        dispatch.configure(self.cfg)
+
+        first = io.StringIO()
+        with mock.patch.object(config, "__file__", str(source)), \
+                mock.patch.object(watch, "failed_units", return_value=[]), \
+                mock.patch.object(watch, "runtime_errors", return_value=[]), \
+                redirect_stdout(first):
+            watch.run_pass(self.cfg)
+
+        self.cfg.release_auto = True
+        second = io.StringIO()
+        with mock.patch.object(config, "__file__", str(source)), \
+                mock.patch.object(watch, "failed_units", return_value=[]), \
+                mock.patch.object(watch, "runtime_errors", return_value=[]), \
+                redirect_stdout(second):
+            watch.run_pass(self.cfg)
+
+        self.assertIn("release.auto = false", first.getvalue())
+        self.assertIn("release.auto = true", second.getvalue())
+
     def test_install_keeps_intended_but_disabled_eval_units_off(self) -> None:
         units = self.root / "units"
         units.mkdir()
