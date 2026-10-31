@@ -1333,15 +1333,20 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
             "event": "plan", "ticket": 7, "status": "recorded", "path": str(plan),
         }
         cases = {
-            "event": {**valid, "event": "review"},
-            "ticket": {**valid, "ticket": 6},
-            "status": {**valid, "status": "skipped"},
+            "event": (7, {**valid, "event": "attempt"}, False),
+            "ticket": (7, {**valid, "ticket": 8}, False),
+            "status": (7, {**valid, "status": "missing"}, False),
+            "equal large ticket": (
+                int("1000"), {**valid, "ticket": int("1000")}, True,
+            ),
         }
-        for field, row in cases.items():
+        for field, (ticket, row, expected) in cases.items():
             with self.subTest(field=field), mock.patch.object(
                 lifecycle, "read_events", return_value=[row],
             ):
-                self.assertFalse(dispatch._recorded_plan_lists_lockfile(7, "uv.lock"))
+                self.assertEqual(
+                    dispatch._recorded_plan_lists_lockfile(ticket, "uv.lock"), expected,
+                )
         with mock.patch.object(lifecycle, "read_events", return_value=[valid]):
             self.assertTrue(dispatch._recorded_plan_lists_lockfile(7, "uv.lock"))
 
@@ -1378,6 +1383,7 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
         }
         cases = (
             ("- uv.lock\n## Files\n- change.txt\n", False),
+            ("## Changes\n- uv.lock\n## Files\n- change.txt\n", False),
             ("## Risks\n- uv.lock\n## Files\n- change.txt\n", False),
             ("## Files\n- change.txt\n## Proof\n- uv.lock\n", False),
             ("## Risks\n- change.txt\n## Files\n- uv.lock\n", True),
@@ -1410,6 +1416,13 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
     def test_longer_plan_filename_does_not_authorize_lockfile_edit(self):
         lock = self.run_lockfile_worker(
             "## Files\n- uv.lock.backup\n",
+        )
+
+        self.assertEqual(lock, "base\n")
+
+    def test_different_quoted_filename_does_not_authorize_lockfile_edit(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- `old uv.lock`\n",
         )
 
         self.assertEqual(lock, "base\n")
