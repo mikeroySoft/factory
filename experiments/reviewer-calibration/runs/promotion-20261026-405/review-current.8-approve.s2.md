@@ -1,21 +1,20 @@
-Verdict first: no Important findings. Diff satisfies issue #8's exit gate; files changed (`factory/dispatch.py`, `tests/test_factory.py`) match the issue's Touches; gate `test: PASS` covers the stated verification (`python -m unittest`). Plan not recorded → no drift to assess beyond that.
+No blocking defects; the diff can be approved. It satisfies the exit gate for issue #8, and the gate report already shows the tests passing.
 
-**Spec check (issue #8 exit gate → evidence)**
-- Missing/unparsable/pending/failed/cancelled not ready: `factory/dispatch.py:292-310` (`valid` requires non-empty list with known buckets; `ready` needs `confirmed and valid and returncode == 0 and all pass`); test cases at `tests/test_factory.py:1391-1405`.
-- Approval + passing required checks for same head → ready: `dispatch.py:297-310`, test `tests/test_factory.py:1405`.
-- New head clears readiness: head refreshed from `gh pr view` at `dispatch.py:287-289`; review lookup keyed on refreshed head → `review_pending`; test `tests/test_factory.py:1412-1419`.
-- No `gh pr merge`: no merge call in diff; asserted `tests/test_factory.py:1426`.
-- Events through existing `record()`: `dispatch.py:311-312`.
-- `review-result` is only recorded after successful publication (`dispatch.py:358-363`), so readiness cannot derive from an unpublished approval.
+**Spec check (issue #8):**
+- **Not ready on bad checks:** missing, unparsable, pending, failed and cancelled checks never produce `ready`. `valid` requires a non-empty list with known buckets (`factory/dispatch.py:292-296`). `ready` also requires a confirmed head and a zero exit code (`:307-310`). The test cases at `tests/test_factory.py:1393-1406` cover these.
+- **Ready only on the current head:** an approval counts only when its head matches the PR's current head (`factory/dispatch.py:297-299`). The head is checked again after the checks query (`:280-289`).
+- **New head clears readiness:** a push during the query, or a new head, gives `review_pending` (`tests/test_factory.py:1412-1419`).
+- **No merge:** the diff never issues `gh pr merge` (`tests/test_factory.py:1426`).
 
-**Standards**: no documented rule (AGENTS/CONTRIBUTING absent; README/template/skill carry no "update docs" requirement) is violated. README drift noted as nit.
+**Scope:** both changed files (`factory/dispatch.py` and `tests/test_factory.py`) are named in the issue's Touches list. Events go through the existing `record()`. The worker plan was not recorded, so there is no plan drift to report and no planned proof missing from the gate report.
+
+**Standards:** the snapshot has no `AGENTS.md` or `CONTRIBUTING.md`. `README.md` and `docs/` contain no rule that this diff breaks.
+
+**New function:** the diff adds one helper, `review_readiness`. It is justified: the issue's scope asks for a check-state query and readiness derivation, and it is called from two places (`:233`, `:271`).
+
+The two nits are both non-blocking.
 
 ```json
-{"verdict":"APPROVE","findings":[
-{"severity":"nit","pass":"bug","path":"factory/dispatch.py","line":233,"summary":"review_readiness runs (2 gh calls + one appended review-readiness row with full checks array) for every tracked PR on every dispatch pass, including escalated/unchanged PRs, with no change-detection; events.jsonl grows unboundedly and review_intake_pass re-reads the whole log per PR (line 221). Consider recording only when (head, state) differs from the last review-readiness event for that PR."},
-{"severity":"nit","pass":"bug","path":"factory/dispatch.py","line":285,"summary":"Head refresh is coupled to checks parsing: if `gh pr checks` stdout is unparsable (e.g. no required checks configured → nonzero exit, empty stdout) the ValueError skips json.loads(fresh.stdout), so the recorded head is the possibly stale list head. Still fail-closed (confirmed stays False), but parse the two results independently."},
-{"severity":"nit","pass":"spec","path":"factory/dispatch.py","line":274,"summary":"README.md:349 still states this lane does not monitor CI and README.md:337-338 lists only review-intake events; the new review-readiness event and its states are undocumented, and CHANGELOG.md Unreleased has no entry unlike sibling features. Not a documented rule, but docs now contradict behavior."},
-{"severity":"nit","pass":"bug","path":"factory/dispatch.py","line":312,"summary":"review_head is always either equal to head or None (review is selected by e.head == head at line 299); the field is redundant."}
-]}
+{"verdict":"APPROVE","findings":[{"severity":"nit","pass":"bug","path":"factory/dispatch.py","line":233,"summary":"review_readiness runs on every dispatch pass for every tracked PR, and the widened tracking at :220 keeps approved PRs in that set until they close. :311 then appends a review-readiness row every pass even when nothing changed. With the 10-minute timer (README.md:61) that is about 144 rows per day per open approved PR, which fills tail-limited journal readers such as briefing and runtime-json history. The README already uses change-only rows for scheduling observations (README.md:677). Recording only when the state or head changes would avoid this."},{"severity":"nit","pass":"spec","path":"factory/dispatch.py","line":274,"summary":"The review lane now monitors required CI and records review-readiness events, but README.md:349 still says 'This lane does not change contributor branches, monitor CI, or merge external PRs', and the README event contract (README.md:337-338) does not mention the new event. The documented contract is now out of date."}]}
 ```
 VERDICT: APPROVE

@@ -1,16 +1,25 @@
-**Standards** — no `AGENTS.md`/`CONTRIBUTING.md` in the snapshot; `skills/factory/SKILL.md:24` requires the `factory init` template to document every key → `templates/factory.toml` hunk (review.diff:85-90) satisfies it. `KNOWN_KEYS`/loader/`Config` edits follow the existing `review` pattern. `HOST_TABLES` already contained `"manager"` (snapshot `config.py:50`), so the "register in HOST_TABLES" item is pre-satisfied.
+The diff covers the issue #12 exit gate. Verdict is REVISE because of one correctness defect: the new loader mishandles a string-form `manager.command`, which the existing `manager_model()` already accepts.
 
-**Spec (#12 exit gate)** — all three criteria have diff evidence: doctor row only when configured (`onboard.py` review.diff:67-68, test review.diff:139-147); unknown `[manager]` keys as drift (review.diff:123,131); loader test for `command`/`rounds`/`review` (review.diff:102-105,113-114); `dashboard --json` `config.manager` (review.diff:51-55); running the command untouched.
+**Important (bug), `factory/config.py:286`.** Today `manager_model()` accepts `manager.command` as either an argv array or a string (`config.py:231-237`). Its error message even says "argv array or command string". The new line `cfg.manager = list(manager["command"])` does not handle the string form, so `list()` breaks a string into single characters.
+- **Trigger:** `.factory.toml` contains `[manager]` with `command = "omp -p --model x/y"`. That passes the existing check.
+- **Doctor:** `cfg.manager == ['o','m','p',' ',...]`, so `factory doctor` prints a false `manager: o` FAIL row (`onboard.py:227`). A doctor that used to pass now exits 1.
+- **Dashboard:** `dashboard --json` shows `"o m p   - p ..."` (`dashboard.py:841`).
+- **Fix:** handle `command` the same way in both places: either run strings through `shlex.split` here too, or reject anything that isn't a list. No new abstraction is needed.
 
-**Plan drift** — plan not recorded; issue "Touches" names `config.py`, `onboard.py`, `templates/factory.toml`, `dashboard.py`. Extra file `tests/test_factory.py` is required by the exit gate, not drift. Planned proof (`uv run pytest tests/test_factory.py`) is covered by gate `test: PASS`.
+**Spec check (issue #12 exit gate):**
+- **Loader:** all three keys (`command`, `rounds`, `review`) are loaded, and a loader test covers them (`tests/test_factory.py:112-115,137-138`).
+- **Doctor row:** appears when the manager is configured and is absent when it isn't (`onboard.py:226-227`, test at `tests/test_factory.py:276-284`).
+- **Drift:** an unknown key under `[manager]` is reported (`tests/test_factory.py:252,263`).
+- **Dashboard:** `dashboard --json` `config` includes the table (`dashboard.py:840-844`).
+- **Template:** `templates/factory.toml` documents the table (`templates/factory.toml:43-48`).
+- **Host table:** `HOST_TABLES` already contained `manager`, so leaving it unchanged is correct.
+- **Out of scope respected:** the command is never run.
 
-**Defect** — `cfg.manager = list(manager["command"])` (review.diff:37). The same table is also passed through `manager_model()` at snapshot `config.py:302`, which explicitly accepts `command` as a string (`shlex.split`, error text "argv array or command string", `config.py:231-237`). A string `command = "omp -p {prompt}"` therefore passes load without error but yields `cfg.manager == ['o','m','p',' ',...]`: `doctor` reports `manager: o` FAIL (review.diff:68) and `dashboard --json` emits a space-joined character soup (review.diff:52). One-line fix: reject non-list `command` with `ConfigError`, or split strings the same way `manager_model` does.
+**Plan drift:** the plan wasn't recorded. All changed files are named in the issue's Touches list or Exit gate (`tests/test_factory.py`). No planned proof is missing from the gate report.
+
+**Standards:** the snapshot has no `AGENTS.md` or `CONTRIBUTING.md`, and `docs/` contains only `manager-plan.md` plus site assets. The diff follows the loader's existing patterns.
 
 ```json
-{"verdict":"REVISE","findings":[
-{"severity":"important","pass":"bug","path":"factory/config.py","line":37,"summary":"`list(manager[\"command\"])` on a string command (explicitly accepted by `manager_model()` on the same table, config.py:231-237) silently produces a per-character argv: load succeeds, `doctor` checks `shutil.which(\"o\")`, dashboard config shows garbage. Reject non-list with ConfigError or shlex.split like manager_model."},
-{"severity":"nit","pass":"spec","path":"factory/config.py","line":39,"summary":"Issue says review = \"escalated\" with \"all\" allowed; loader stores any string unvalidated. Harmless until a consumer reads it (T5), but a typo won't surface in `doctor`."}
-]}
+{"verdict":"REVISE","findings":[{"severity":"important","pass":"bug","path":"factory/config.py","line":286,"summary":"`list(manager[\"command\"])` breaks a string-form manager.command into characters, even though manager_model() (config.py:231-237) accepts that form ('argv array or command string'). Trigger: `[manager] command = \"omp -p --model x/y\"`. Impact: doctor prints a false `manager: o` FAIL row and exits 1 (onboard.py:227); dashboard --json shows `\"o m p ...\"` (dashboard.py:841). Fix: handle command the same way in both places (shlex.split strings here too, or reject non-list)."},{"severity":"nit","pass":"spec","path":"factory/config.py","line":288,"summary":"manager.review is not checked against the issue's allowed values (\"escalated\"/\"all\"), so a typo like \"escalted\" is silently accepted and shown in dashboard --json."},{"severity":"nit","pass":"spec","path":"tests/test_factory.py","line":282,"summary":"The 'nothing when not configured' check only asserts that the exact label 'manager: manage' is absent, not that no 'manager:' row is printed, which is the issue's exit-gate wording."}]}
 ```
-
 VERDICT: REVISE

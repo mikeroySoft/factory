@@ -1,21 +1,22 @@
-## Standards
-No AGENTS.md/CONTRIBUTING.md in the snapshot; README §Configuration defers to `templates/factory.toml` as the full key reference (README.md:118-119), which the diff updates (`factory/templates/factory.toml:85-90`). Loader additions mirror the existing `review.command` / `gate.timeout` shapes (`factory/config.py:283-290`). No smell-baseline hits beyond the loader inconsistency below.
+The `[manager]` table is mostly in place, but one regression blocks approval. A `manager.command` written as a single string still passes the existing validator, then breaks `factory doctor`. I read the diff and the snapshot only; I ran no builds or tests.
 
-## Spec (issue #12 + brief)
-- `command`/`rounds`/`review` keys, defaults `None`/1/`"escalated"`: `factory/config.py:104-106, 285-288` ✔
-- `HOST_TABLES`: already contains `"manager"` pre-diff (`snapshot/factory/config.py:50`), so no change needed ✔
-- `KNOWN_KEYS` drift: `factory/config.py:60`; test `tests/test_factory.py:123,131` ✔
-- doctor row only when configured: `factory/onboard.py:226-227`; test `tests/test_factory.py:139-147` ✔
-- `dashboard --json` config: `factory/dashboard.py:840-844` ✔
-- loader test for all three keys: `tests/test_factory.py:102-105,113-114` ✔
-- Running the command: not implemented ✔
+**Standards:** The new code follows the existing loader and doctor patterns. The test changes follow the existing patterns in `tests/test_factory.py`. I found no breach of a documented rule.
 
-Defect: `manager_model()` (pre-existing, `config.py:229-237`) explicitly accepts `command` as a string ("must be an argv array or command string") and runs *after* the new line `cfg.manager = list(manager["command"])` (`config.py:286`). A string `command = "omp -p {prompt}"` — valid before this diff — now passes validation but yields a per-character list: doctor prints `manager: o` FAIL (`onboard.py:227`), dashboard shows `"o m p ..."` (`dashboard.py:841`). Regression on an accepted input shape; fix is one line (`shlex.split` when `str`, as `manager_model` does, or raise `ConfigError`).
+**Spec (issue #12):**
+- **Met:**
+  - All three keys are in `KNOWN_KEYS`, and `manager` was already listed in `HOST_TABLES`.
+  - `Config` has the new fields, and the loader reads them.
+  - `factory doctor` prints a `manager:` row only when a command is set, and unknown `[manager]` keys show up as drift (both tested).
+  - `dashboard --json` `config.manager` has the new block, and the template documents all three keys.
+  - A loader test covers all three keys, and nothing runs the command.
+- **Defect (important):**
+  - **Cause:** the snapshot's `manager_model()` still accepts a command written as one string, e.g. `command = "omp -p --model x"` (`snapshot/factory/config.py:231-237`). The new loader runs `list(manager["command"])` on it (`factory/config.py:286`), which splits it into single characters: `["o","m","p"," ",...]`.
+  - **Effect:** `factory/onboard.py:227` then reports `manager: o` as FAIL, so `factory doctor` exits 1 on a config that was valid before this change. `dashboard --json` (`factory/dashboard.py:841`) also shows the command as garbage.
+  - **Fix:** in `load`, split a string with `shlex.split`, or reject non-list values with `ConfigError`.
 
-## Plan drift
-Plan not recorded. Files beyond the issue's Touches list: `tests/test_factory.py` — required by the exit gate (loader test), not drift. Gate report `test: PASS` covers `uv run pytest tests/test_factory.py`; doctor-row and drift criteria are proven by the new tests rather than a separate doctor transcript. No missing proof that exposes a defect.
+**Plan drift:** No plan was recorded. Measured against the issue's Touches list, the only extra file is `tests/test_factory.py`, which the exit gate requires. `HOST_TABLES` was not edited because it already contained `manager`. The planned check, `uv run pytest tests/test_factory.py`, matches the gate's `test: PASS`.
 
 ```json
-{"verdict":"REVISE","findings":[{"severity":"important","pass":"bug","path":"factory/config.py","line":286,"summary":"`cfg.manager = list(manager[\"command\"])` splits a string command into characters. `manager_model()` (config.py:229-237, runs later at :302) explicitly accepts `command` as a string, so `[manager] command = \"omp -p {prompt}\"` — valid before this diff — now loads silently as ['o','m','p',...]: doctor reports `manager: o` FAIL (onboard.py:227) and dashboard config shows \"o m p ...\" (dashboard.py:841). Either shlex.split a str like manager_model does, or raise ConfigError for non-list."},{"severity":"nit","pass":"spec","path":"factory/config.py","line":288,"summary":"`manager_review` accepts any string; issue allows only \"escalated\" or \"all\". A typo is not reported by doctor drift (key is known) and only surfaces when T4 consumes it. Not required by the exit gate."}]}
+{"verdict":"REVISE","findings":[{"severity":"important","pass":"bug","path":"factory/config.py","line":286,"summary":"`cfg.manager = list(manager[\"command\"])` turns a string-form command into single characters. The snapshot still accepts strings: manager_model() at config.py:231-237 shlex-splits `command = \"omp -p --model x\"`. Trigger: an existing config that uses the string form, which was valid before this change. Effect: cfg.manager == ['o','m','p',' ',...]; doctor (onboard.py:227) reports `manager: o` as FAIL, so `factory doctor` exits 1, and dashboard --json config.manager.command is garbage. Fix: shlex-split strings or reject non-list commands with ConfigError in load."},{"severity":"nit","pass":"spec","path":"factory/config.py","line":288,"summary":"manager.review is not validated. The issue allows \"escalated\" (default) or \"all\", but any string, e.g. a typo like \"al\", is silently accepted and shown in doctor/dashboard as if valid."},{"severity":"nit","pass":"bug","path":"factory/config.py","line":287,"summary":"int(manager.get(\"rounds\")) raises a bare ValueError/TypeError on bad input such as rounds = \"x\", not the module's ConfigError. A non-list, non-string command (e.g. command = 5) also hits a TypeError at line 286 before manager_model's ConfigError at line 302 can report it."}]}
 ```
 VERDICT: REVISE

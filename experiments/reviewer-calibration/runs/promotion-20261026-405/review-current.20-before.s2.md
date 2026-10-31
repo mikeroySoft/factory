@@ -1,22 +1,20 @@
-**Standards.** No AGENTS.md/CONTRIBUTING.md in the snapshot; only `pyproject.toml` (`[tool.ruff] line-length = 100`, not run by the gate or CI) and README/docs. New code matches existing `manage.py`/`config.py` patterns (`dispatch.*` helpers reused, `ConfigError` paths, `record` before mutation). Two new lines exceed the configured ruff width (`factory/config.py:49`, `factory/manage.py:144` in diff numbering); pre-existing lines in the same file already do, so nit only.
+I found one Important problem, so the verdict is REVISE. The `conflict` profile added to the template fails every time it runs through FIX. When the manager sends a rebase-conflict escalation to it, the worker rebases, the gate passes, and then the plain `git push` is rejected because the rebase rewrote the branch history. The failure is only logged as a mechanism failure: nothing is posted on GitHub, and the work never reaches the open PR.
 
-**Spec (#20 + brief).**
-- `when` on `[workers.<label>]`, array-or-table loading, validation: `factory/config.py:45-55`; legacy array coverage at `tests/test_factory.py:236-254`. ✔
-- Prompt lists labels with `when`: `factory/manage.py:176-178`. ✔
-- ROUTE/FIX only for listed labels: `factory/manage.py:112,120-123`, `187` passes filtered workers; tests `263-286`, `332-342`. ✔ (exit gate "ROUTE chore rejected and recorded / applied" covered.)
-- FIX on red CI runs the selected argv, re-gates, pushes only on PASS, re-reviews, re-approves only on fresh APPROVE: `factory/manage.py:139-166`; test `288-330`. ✔ Matches plan T6 wording ("one `worker_round` in the kept worktree with the guidance as `extra`").
-- Profiles in `templates/factory.toml:218-224`, commented out. Defensible under "remain host-config, human-applied", but note a fresh `factory init` has no `ci-fix` label, so FIX `ci-fix` is rejected until a human copies the block. Nit, not a criterion failure.
-- Out of scope respected: nothing writes host config.
+**Spec (issue #20 acceptance criteria):** all are met.
+- A ROUTE to `chore` without a `chore` worker is rejected and recorded as HUMAN; with one, the label is applied.
+- A FIX on red CI runs the `ci-fix` argv.
+- The old array form of `[workers]` still loads, and a worker can now also be a table with `command` and an optional `when`.
+- The manager prompt lists each label with its `when`.
+- ROUTE and FIX only accept listed labels.
 
-**Plan drift.** Touches named `config.py`, `manage.py`, `dashboard.py`, `templates/factory.toml`. Also changed: `README.md` (docs for the new decision/table form) and `tests/test_factory.py` (required by the exit gate's `uv run pytest tests/test_factory.py`). Neither exposes a defect. Gate report shows `test: PASS` without naming the command; no planned proof otherwise missing.
+**Standards:** the repo has no AGENTS.md or CONTRIBUTING.md, and `docs/` contains only the plan and the site. The template comments and README describe the new keys.
 
-**Other observations (non-blocking).** `factory/manage.py:144-147`: FIX precondition failures raise `ValueError` after the `manage` event is recorded (`manage.py:193`), so the round is consumed and the ticket gets no issue comment; `manage.py:199` tags it `github_command_failed`. Human sees only the dispatcher log. Same shape as existing partial-SPLIT handling, so nit.
+**Plan drift:**
+- No worker plan was recorded. Compared with the issue's Touches list, the diff also changes `README.md` (docs) and `tests/test_factory.py` (needed for the exit gate).
+- In `manage.py` it adds a working FIX decision, which `docs/manager-plan.md` assigns to T6 (the PR frontier). This was needed: FIX did not exist at base, and the exit gate needs "FIX on red CI runs the ci-fix argv".
+- The gate report shows only a passing test run, with no separate proof of the ROUTE and FIX scenarios. The new tests cover them. None of this drift exposes a required defect beyond the finding below.
 
 ```json
-{"verdict":"APPROVE","findings":[
-{"severity":"nit","pass":"spec","path":"factory/config.py","line":49,"summary":"Line exceeds pyproject `[tool.ruff] line-length = 100` (also factory/manage.py:144); not gate-enforced and pre-existing elsewhere, so informational."},
-{"severity":"nit","pass":"spec","path":"factory/templates/factory.toml","line":218,"summary":"`ci-fix`/`conflict` profiles are shipped commented out; a fresh `factory init` repo rejects `FIX ci-fix` as unlisted until a human copies them into host config. Consistent with 'human-applied' but worth stating explicitly in the template comment that FIX needs the label configured."},
-{"severity":"nit","pass":"bug","path":"factory/manage.py","line":144,"summary":"FIX precondition failures (no worktree / PR not open / CHANGES_REQUESTED / wrong branch) raise after the `manage` round is recorded, so the round is consumed with no issue comment and outcome reason `github_command_failed`; the human only learns why from the dispatcher log."}
-]}
+{"verdict":"REVISE","findings":[{"severity":"important","pass":"bug","path":"factory/manage.py","line":124,"summary":"The new FIX path pushes with a plain `git push origin agent/<n>`. The `conflict` profile added to factory/templates/factory.toml:45-47 and README.md:23 tells the worker to resolve, or restart, a rebase onto main. Rebasing rewrites the history of agent/<n>, so this push is always rejected as non-fast-forward. Trigger: the manager picks FIX {\"worker\":\"conflict\"} for a 'rebase onto moved main conflicts' escalation, which is exactly what that profile's `when` rule invites. Impact: the gate passes, the push raises CalledProcessError, and apply() is only logged as mechanism_failure. Nothing appears on the issue or PR, the manage round is used up, and the fixed branch never reaches the PR. refresh_pr_branch already uses --force-with-lease for rebased branches; FIX needs the same, or the conflict profile cannot work through FIX."},{"severity":"nit","pass":"spec","path":"factory/dashboard.py","line":847,"summary":"`worker_when` is added to the dashboard snapshot, but dashboard.html never reads it. The workers card still shows only label and command, so the field has no consumer."}]}
 ```
-VERDICT: APPROVE
+VERDICT: REVISE

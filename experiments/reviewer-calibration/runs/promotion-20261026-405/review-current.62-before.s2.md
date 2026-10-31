@@ -1,16 +1,29 @@
+I found two Important defects, so the verdict is REVISE. I reviewed the diff and the snapshot only; nothing was built or run, as instructed.
+
+**Spec coverage.** Most of what issue #62 asks for is in place:
+- **Prompt file:** the manager prompt is written to `.factory/manager-prompt-<n>.md`, and `{prompt}` is expanded to that path.
+- **omp check:** `manager_cmd` raises `ConfigError` naming `@{prompt}` when omp gets a bare `{prompt}`.
+- **Doctor row:** `factory doctor` has a `manager command` row that gives PASS, FAIL or WARN as the issue specifies.
+- **Failure message:** a failed manager posts `Manager command exited N (argv: …)` with the last 5 stderr lines and records a `manager_failed` event.
+- **Docs and tests:** the README, the `factory init` template and the tests required by the exit gate are all updated.
+
+**Important defects:**
+1. **Manager can re-run on a ticket a human has taken over** (`factory/manage.py:272`). The `manager_failed` event is written before the "human took over while the model was thinking" check at line 281.
+   - **Trigger:** the manager exits non-zero while a human comments on or relabels the ticket during that run.
+   - **What happens:** the check skips the ticket without recording a `manage` event. On the next pass the new `manager_failed` event is treated as the latest escalation, and the human's earlier activity predates it, so `human_activity` misses it.
+   - **Impact:** the manager runs again on a ticket a human now owns. A RETRY result would move it back from `ready-for-human` to `ready-for-agent`.
+   - **Fix:** record the event after the line 281 check, next to the `manage` record.
+2. **The template's `ci-fix` and `conflict` profiles lost their instructions** (`factory/templates/factory.toml:44` and `:48`). They now have the same command as the default worker.
+   - The `when` text is only shown to the manager for routing, so a worker started under FIX `ci-fix` no longer gets "fix the cause or declare a flake with evidence".
+   - `docs/manager-plan.md:345` (T11) requires those two behaviours.
+   - The old commands put the path inside the instruction text, which works with omp, so this change wasn't needed for #62.
+   - **Fix:** revert those two lines.
+
+**Plan drift:**
+- **Files outside the issue's list:** `factory/dispatch.py` and `factory/learn.py`. Both are justified: the round-count change came from the earlier review round, and `learn.py` had to follow the new `manager_cmd` signature. The issue names `doctor.py`, but the doctor code is actually in `factory/onboard.py`.
+- **Missing proof:** the manual exit-gate step (re-running `factory manage` on District #26's kept packet) isn't in the gate report. It is only claimed in an earlier attempt's handoff notes.
+
 ```json
-{"verdict":"APPROVE","findings":[
-{"severity":"nit","pass":"spec","path":"factory/templates/factory.toml","line":178,"summary":"Unrequested rewrite of the commented `ci-fix` and `conflict` worker examples (also line 183): the inline instruction text (flake-evidence rule, keep-both-intents rule) is dropped in favour of `@{prompt}`. Issue #62 only asked to document `{prompt}` = file for workers/manager; the old sentences were valid omp inline prompts, not the bare-`{prompt}` misuse the new comment at line 169 warns about."},
-{"severity":"nit","pass":"bug","path":"factory/manage.py","line":272,"summary":"The `manager_failed` escalate event is counted by `stats.py:167` (`escalation_count = max(len(starts), len(escalated))`) as an additional escalation of the same ticket, so `escalation_count`/`escalations_per_week` inflate by one per manager failure. The issue asked for the event so stats \"can count it\"; stats does not filter by `reason`, so it counts it as a human escalation rather than a manager failure."},
-{"severity":"nit","pass":"spec","path":"factory/onboard.py","line":145,"summary":"Doctor now emits a WARN row when `[manager].command` is unset, but CHANGELOG.md 0.3.0 (\"`factory doctor` reports the manager only when configured\") is not updated and no changelog entry references #62; the repo keeps a per-issue CHANGELOG."},
-{"severity":"nit","pass":"spec","path":"README.md","line":41,"summary":"New `[manager]` example `[\"omp\", \"-p\", \"--cwd\", \"{cwd}\", \"@{prompt}\"]` is a full-tools worker invocation, while README.md:28-29 (same diff) instructs configuring the manager CLI in read-only/no-tools mode; the example contradicts the adjacent guidance."}
-]}
+{"verdict":"REVISE","findings":[{"severity":"important","pass":"bug","path":"factory/manage.py","line":272,"summary":"The manager_failed escalate event is recorded before the 'human may have taken over' check at manage.py:281. Trigger: the manager exits non-zero while a human comments on or relabels the ticket during the run. The check then skips the ticket without a `manage` event, and on the next pass the new manager_failed event is treated as the latest escalation. human_activity only looks at activity at or after that event's later timestamp, so it misses the human's earlier takeover. Impact: the manager runs again on a ticket a human owns, and a RETRY or ROUTE result relabels it from ready-for-human to ready-for-agent, overriding the human. Fix: record the manager_failed event after the line-281 check, next to the `manage` record."},{"severity":"important","pass":"spec","path":"factory/templates/factory.toml","line":44,"summary":"The ci-fix and conflict template profiles (lines 44 and 48) no longer carry their instructions ('Read the failing CI job log… Do not claim a flake without evidence' and 'Resolve the rebase conflicts… no semantic changes'). Their commands are now identical to the default worker. The `when` text only reaches the manager's routing menu, not the worker, so a FIX `ci-fix` round loses the flake-evidence guardrail required by docs/manager-plan.md:345 (T11). The old worker commands embedded the path in instruction text, which works with omp, so the change was not needed for #62. Fix: revert both lines."},{"severity":"nit","pass":"bug","path":"factory/manage.py","line":272,"summary":"stats.human_touch (stats.py:167-171) counts every `escalate` event, so each manager failure adds one to the ticket's escalation_count and to escalations_per_week (also shown on the dashboard via dashboard.py:635). dispatch.escalation_packet now excludes manager_failed from round arithmetic, but stats does not exclude it from escalation counts."},{"severity":"nit","pass":"bug","path":"factory/manage.py","line":272,"summary":"Calling dispatch.record('escalate', …) inside the manage lifecycle scope sets execution.outcome to project_escalation (dispatch.py:245-248). The reason 'manager_failed' is not in runtime_events.REASONS, so it is dropped to None. Runtime evidence will show a manage run as an unexplained project escalation."},{"severity":"nit","pass":"spec","path":"factory/manage.py","line":263,"summary":"Plan drift: the issue's manual exit-gate step (re-running `factory manage` on District #26's kept packet and getting a real DECISION) is not in the gate report. It is only claimed in an earlier attempt's handoff notes. factory/dispatch.py and factory/learn.py are changed without being named in the issue's Touches list; both are justified (review-round fix and the manager_cmd signature change)."}]}
 ```
-
-Standards: no AGENTS.md/CONTRIBUTING.md in the snapshot; README and `factory init` template updated consistently with the new `{prompt}` contract (README.md:24-32, factory.toml:197-199).
-
-Spec: every "After this change" item is present — `manager_cmd(prompt_path, cwd)` + omp bare-`{prompt}` `ConfigError` (config.py:146-151), file transport in `manage_pass` (manage.py:263-265) and `learn.manager_llm` (learn.py:97-101), bounded failure body with unexpanded argv + 5-line stderr tail + `manager_failed` escalate event (manage.py:267-273), doctor PASS/FAIL/WARN row (onboard.py:145-157); exit-gate tests exist (test_factory.py:211-226, 244-270, 278-345). `manager_failed` events are excluded from round arithmetic (dispatch.py:375-378) and the next pass skips replay because a `manage` event with the same round exists (manage.py:241-244).
-
-Plan drift: plan not recorded. Files beyond the issue's "Touches": `factory/dispatch.py` (round exclusion, required by the new event) and `factory/learn.py` (caller of the changed `manager_cmd` signature) — both necessary. Issue exit-gate item "Manual: re-run `factory manage` on District #26's kept packet" is not in the gate report; the handoff cites a prior-attempt replay log only (unverified, not a defect in the diff).
-
-VERDICT: APPROVE
+VERDICT: REVISE
