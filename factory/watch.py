@@ -883,11 +883,7 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     dispatch.configure(config.load())
     events = lifecycle.read_events(dispatch.EVENTS)
-    ticket = next((
-        row["ticket"] for row in reversed(events)
-        if type(row.get("ticket")) is int and row["ticket"] > 0
-    ), None)
-    with nullcontext() if args.dry_run else lifecycle.scope(dispatch.EVENTS, "watch", ticket=ticket):
+    with nullcontext() if args.dry_run else lifecycle.scope(dispatch.EVENTS, "watch"):
         run_pass(dispatch.cfg, args.dry_run, events=events)
     if not args.dry_run:
         lifecycle.record_stage_success(dispatch.EVENTS, "watch")

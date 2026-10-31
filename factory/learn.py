@@ -1134,7 +1134,7 @@ def run(
         return None
     if dry_run:
         return _run(cfg, tickets, evidence_md, dry_run, evaluate, fields)
-    with lifecycle.scope(dispatch.EVENTS, "learn", ticket=tickets[-1]):
+    with lifecycle.scope(dispatch.EVENTS, "learn"):
         return _run(cfg, tickets, evidence_md, dry_run, evaluate, fields)
 
 

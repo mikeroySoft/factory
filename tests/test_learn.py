@@ -364,7 +364,7 @@ class LessonsFileTest(unittest.TestCase):
                 (root / config.LESSONS_NAME).read_text().startswith("<!-- SPDX-License-Identifier: MIT -->\n")
             )
 
-    def test_run_exposes_learn_for_the_newest_evidence_ticket(self) -> None:
+    def test_run_exposes_repo_wide_learn_without_borrowing_a_ticket(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             cfg = config.Config(Path(directory), "acme/widgets", manager=None)
             cfg.factory.mkdir()
@@ -386,10 +386,10 @@ class LessonsFileTest(unittest.TestCase):
                 if row.get("event") == "lifecycle" and row.get("stage") == "learn"
             ]
 
-        self.assertEqual(seen, {"stage": "learn", "ticket": 9})
+        self.assertEqual(seen, {"stage": "learn", "ticket": None})
         self.assertEqual(
-            [(row["kind"], row["ticket"]) for row in rows],
-            [("enter", 9), ("exit", 9)],
+            [(row["kind"], row.get("ticket")) for row in rows],
+            [("enter", None), ("exit", None)],
         )
 
 
