@@ -227,6 +227,29 @@ class ReviewerEvalRepairsTest(unittest.TestCase):
             ))
             self.assertEqual(path.read_bytes(), saved)
 
+    def test_merge_without_sha_keeps_baseline_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cfg, old, _, _ = self.main_history(Path(directory))
+            path = reviewer_eval.baseline_path(cfg)
+            baseline = self.summary(old, "flaky")
+            self.assertTrue(reviewer_eval.write_baseline(path, baseline, old))
+            digest = reviewer_eval.baseline_digest(reviewer_eval.load_baseline(path))
+            for row in (
+                {
+                    "event": reviewer_eval.EVENT, "candidate": "d" * 40,
+                    "status": "completed", "baseline_sha256": digest,
+                    "flips": [{"case": "case", "baseline": "flaky", "head": "always-pass"}],
+                },
+                {"event": "merged", "head": "d" * 40, "merge_sha": None},
+            ):
+                lifecycle.append(cfg.factory / "events.jsonl", row)
+            with mock.patch.object(reviewer_eval, "corpus_version", return_value=2), \
+                 mock.patch.object(
+                     reviewer_eval, "contract_fingerprint", return_value=self.fingerprint()
+                 ):
+                self.assertFalse(reviewer_eval.baseline_ready(cfg))
+            self.assertFalse(reviewer_eval.write_baseline(path, baseline, old))
+
     @staticmethod
     def fingerprint() -> dict:
         return {"prompt_sha256": {"case": "unchanged"}, "model": "checkout/reviewer"}
