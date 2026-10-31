@@ -25,6 +25,7 @@ from factory import lifecycle
 
 CONFIG_NAME = ".factory.toml"
 BANDS_NAME = "factory-bands.toml"
+INTENDED_STATE_NAME = "intended-state.toml"
 LESSONS_NAME = ".factory-lessons.md"  # committed; `factory learn` writes, every worker prompt reads
 
 # Triage roles -> label strings. Fixed by convention; `factory init` creates them.
@@ -247,6 +248,7 @@ class Config:
     watch_host_failure_minutes: int = 60
     watch_bands: list[Band] = field(default_factory=list)
     raw_repo: dict = field(default_factory=dict)  # the committed file alone, before host layering
+    is_loaded: bool = False  # created by load(), including host-config-only repositories
 
     @property
     def name(self) -> str:
@@ -308,6 +310,37 @@ class Config:
         if argv and Path(argv[0]).name == "omp" and "{prompt}" in argv:
             raise ConfigError('manager.command: use "@{prompt}" instead of bare "{prompt}" for omp')
         return expand(argv, prompt=str(prompt_path), cwd=str(cwd))
+
+
+def intended_state_mismatches(cfg: Config) -> list[tuple[str, bool | None, bool]]:
+    """Decided mismatches and undecided switches from this repository's declaration."""
+    if not cfg.is_loaded and not (cfg.root / CONFIG_NAME).exists():
+        return []
+    packaged = Path(__file__).with_name(INTENDED_STATE_NAME)
+    source = Path(__file__).resolve().parent.parent / "docs" / INTENDED_STATE_NAME
+    declared = packaged if packaged.exists() else source
+    if not declared.exists():
+        return []
+    raw = tomllib.loads(declared.read_text())
+    intended = raw.get("repo", {}).get(cfg.repo, {})
+    actual = {
+        "eval.schedule": cfg.eval_schedule,
+        "release.auto": cfg.release_auto,
+    }
+    unknown = set(intended) - set(actual)
+    if unknown:
+        raise ConfigError(
+            f"{INTENDED_STATE_NAME}: unsupported intended switch {min(unknown)}"
+        )
+    if any(type(value) is not bool and value != "undecided" for value in intended.values()):
+        raise ConfigError(
+            f"{INTENDED_STATE_NAME}: intended switches must be true, false, or undecided"
+        )
+    return [
+        (key, None if expected == "undecided" else expected, actual[key])
+        for key, expected in intended.items()
+        if expected == "undecided" or actual[key] != expected
+    ]
 
 
 def expand(argv: list[str], **values: str) -> list[str]:
@@ -656,7 +689,7 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
         raise ConfigError("[release] must be a table")
     if not isinstance(evaluation, dict):
         raise ConfigError("[eval] must be a table")
-    cfg = Config(root=root, repo=slug, raw_repo=raw_repo)
+    cfg = Config(root=root, repo=slug, raw_repo=raw_repo, is_loaded=True)
     cfg.watch_bands = band_settings(root / BANDS_NAME)
     cfg.upstream = repo_t.get("upstream") or None
     cfg.main = repo_t.get("main", cfg.main)

@@ -500,9 +500,21 @@ def doctor(argv: list[str]) -> int:
         f"move to {config.host_config_path()}: {', '.join(hosted)}" if hosted else "none",
         fix=relocation_fix(cfg, reveal=args.reveal_fix) if args.json and hosted else None,
     )
-    unset = unset_repo_keys(cfg.raw_repo)
+    mismatches = config.intended_state_mismatches(cfg)
+    mismatched = {key for key, _, _ in mismatches}
+    unset = [key for key in unset_repo_keys(cfg.raw_repo) if key not in mismatched]
     if unset:
         report(None, "defaults in effect", ", ".join(unset), info=True)
+    for key, expected, actual in mismatches:
+        report(
+            None if expected is None else False,
+            f"intended state {key}",
+            (
+                f"decision pending, configured {str(actual).lower()}; live config unchanged"
+                if expected is None else
+                f"declared {str(expected).lower()}, configured {str(actual).lower()}; live config unchanged"
+            ),
+        )
     report_stage_success(cfg, report)
     if cfg.watch_bands:
         from factory import watch
