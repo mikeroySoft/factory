@@ -128,8 +128,8 @@ flowchart TB
   MGR -->|"SPLIT, children opened, parent stays: manage.apply"| NT
   MGR -->|"FIX: worker round, gate, review: manage.apply"| FA
   MGR -->|"FIX fails gate, pr-tier gate, or review; kept head not the PR head plus the worker's own commits, or their lease push refused: manage.apply"| ESC
-  MGR -->|"CLOSE PR on an original ticket: manage.apply"| WONT
-  MGR -->|"CLOSE PR on a SPLIT child, issue closed not planned: manage.apply"| HUMAN
+  MGR -->|"CLOSE with or without a PR on an original ticket: manage.apply"| WONT
+  MGR -->|"CLOSE with or without a PR on a SPLIT child, issue closed not planned: manage.apply"| HUMAN
   MGR -->|"RESOLVE: evidence comment, issue closed completed: manage.apply"| HUMAN
   MGR -->|"HUMAN or manager failed, label kept: manage.escalation_pass"| HUMAN
   WONT -->|"a human decides: config.LABELS"| HUMAN
