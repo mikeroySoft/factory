@@ -173,6 +173,12 @@
     if (value < 3600) return `${Math.floor(value / 60)}m ${value % 60}s`;
     return `${Math.floor(value / 3600)}h ${Math.floor(value % 3600 / 60)}m`;
   };
+  const liveTime = (row, now) => {
+    const entered = new Date(row.entered_at || '').valueOf();
+    const elapsed = elapsedLabel(Number.isFinite(entered) ? (now - entered) / 1000 : 0);
+    const status = row.stale ? 'Stale' : row.activity === 'pipeline' ? 'Pipeline activity' : 'Running';
+    return `${elapsed} elapsed · ${status}`;
+  };
   function liveRows(snapshot, now = Date.now()) {
     const value = object(snapshot);
     const threshold = Number.isFinite(Number(value.stale_after_seconds)) && Number(value.stale_after_seconds) > 0
@@ -187,7 +193,7 @@
       const observed = new Date(row.observed_at || '').valueOf();
       const stale = row.stale === true || row.state === 'stale'
         || !Number.isFinite(observed) || (now - observed) / 1000 > threshold;
-      return {...row, stale, status:stale ? 'stale' : 'running'};
+      return {...row, stale, status:stale ? 'stale' : row.activity === 'pipeline' ? 'pipeline' : 'running'};
     });
   }
   function liveGraph(rows) {
@@ -220,12 +226,10 @@
     const groups = LIVE_LANES.map(lane => {
       const members = rows.filter(row => row.lane === lane);
       const cards = members.map(row => {
-        const entered = new Date(row.entered_at || '').valueOf();
-        const elapsed = elapsedLabel(Number.isFinite(entered) ? (now - entered) / 1000 : 0);
         const ticket = positive(row.ticket);
         const details = `<span class="trace-node-meta"><b>${esc(row.agent || 'agent unavailable')}</b><i>${esc(row.harness || 'harness unavailable')}</i></span>
             <strong>${ticket ? `#${ticket} · ` : ''}${esc(row.title || 'Title unavailable')}</strong>
-            <time>${esc(elapsed)} elapsed · ${row.stale ? 'Stale' : 'Running'}</time>`;
+            <time>${esc(liveTime(row, now))}</time>`;
         return `<article class="trace-node live-execution${row.stale ? ' is-stale' : ''}" data-trace-node="${esc(row.execution_id)}" data-lane="${esc(lane)}" data-at="${esc(row.entered_at || '')}" data-status="${row.status}">
           <button class="trace-node-drag" type="button" data-trace-drag="${esc(row.execution_id)}" aria-label="${esc(ticket ? `Drag ticket #${ticket}` : `Drag ${lane} loop`)}">Drag</button>
           ${ticket ? `<button class="live-execution-open" type="button" data-trace-ticket="${ticket}">${details}</button>` : `<div class="live-execution-open">${details}</div>`}
@@ -236,6 +240,7 @@
     const relations = graph.edges.map(edge => `<li>follows: ${esc(edge.from)} → ${esc(edge.to)}</li>`).join('');
     return `<section class="trace-tool live-breadboard">
       ${modeMarkup('live')}
+      <p class="error" data-live-error${options.error ? '' : ' hidden'}>${esc(options.error || '')}</p>
       <div class="trace-status"><p><strong>Live fleet:</strong> ${rows.length} active execution${rows.length === 1 ? '' : 's'}</p><p>Updated ${esc(value.generated_at || 'time unavailable')}</p></div>
       <div class="trace-board" data-trace-board><svg class="trace-lines" data-trace-lines aria-hidden="true"></svg><div class="trace-stages" role="list" aria-label="Live executions by pipeline loop">${groups}</div><ol class="sr-only" aria-label="Live ticket movement">${relations}</ol></div>
     </section>`;
@@ -350,7 +355,15 @@
     const reduceMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
     const wires = new Map();
     let cutoff = dated.length ? new Date(dated.at(-1).dataset.at).valueOf() : Infinity;
-    let pinned = null, hovered = null, scheduleFrame = null, motionFrame = null, ribbonLayer = null, edgeLayer = null;
+    const selection = options.selection;
+    let pinned = selection?.kind === 'edge'
+      ? {kind:'edge',id:edges.findIndex(edge => edge.from === selection.from && edge.to === selection.to)}
+      : selection || null;
+    if (pinned?.kind === 'edge' && pinned.id < 0) pinned = null;
+    if (pinned?.kind === 'node' && !values.has(String(pinned.id))) pinned = null;
+    let hovered = null, scheduleFrame = null, motionFrame = null, ribbonLayer = null, edgeLayer = null;
+    host._traceSelection = () => pinned?.kind === 'edge'
+      ? {kind:'edge',from:edges[pinned.id]?.from,to:edges[pinned.id]?.to} : pinned;
 
     const svgNode = (tag, attributes = {}) => {
       const element = document.createElementNS('http://www.w3.org/2000/svg', tag);
@@ -658,12 +671,18 @@
 
   function stopLive(host) {
     clearTimeout(host._traceLiveTimer);
+    clearInterval(host._traceAgeTimer);
+    host._traceLiveListeners?.abort();
+    host._traceLiveFetch?.abort();
+    host._traceLiveSnapshot = null;
+    host._traceLiveError = '';
     host._traceLiveTimer = null;
   }
 
   function dispose(host) {
     if (!host) return;
     stopLive(host);
+    host._traceMode = null;
     host._traceRequest = Symbol('disposed');
     host._traceCleanup?.();
   }
@@ -671,6 +690,7 @@
   async function loadHistory(host, options) {
     stopLive(host);
     host._traceMode = 'history';
+    host._traceRequest = Symbol('history');
     const ticket = positive(options.ticket);
     if (!ticket) {
       render(host, {ticket:null,nodes:[],edges:[],loops:[],coverage:[]}, options);
@@ -696,46 +716,100 @@
     const now = Date.now();
     const rows = liveRows(snapshot, now);
     const graph = liveGraph(rows);
+    const previousBoard = host.querySelector('[data-trace-board]');
+    const scroll = [previousBoard?.scrollLeft || 0, previousBoard?.scrollTop || 0];
+    const selection = host._traceSelection?.();
     host._traceCleanup?.();
-    host.innerHTML = liveMarkup(snapshot, {...options,now});
-    bind(host, graph, options);
+    host.innerHTML = liveMarkup(snapshot, {...options,now,error:host._traceLiveError});
+    bind(host, graph, {...options,selection});
+    const board = host.querySelector('[data-trace-board]');
+    if (board) { board.scrollLeft = scroll[0]; board.scrollTop = scroll[1]; }
+    host._traceLiveStates = rows.map(row => `${row.execution_id}:${row.status}`).join(',');
+  }
+
+  function ageLive(host, options) {
+    const snapshot = host._traceLiveSnapshot;
+    if (!snapshot || !host.isConnected || document.visibilityState !== 'visible') return;
+    const now = Date.now(), rows = liveRows(snapshot, now);
+    if (rows.map(row => `${row.execution_id}:${row.status}`).join(',') !== host._traceLiveStates) {
+      renderLive(host, snapshot, options);
+    } else {
+      const byId = new Map(rows.map(row => [String(row.execution_id), row]));
+      host.querySelectorAll('[data-trace-node]').forEach(item => {
+        const row = byId.get(item.dataset.traceNode), time = item.querySelector('time');
+        if (row && time) time.textContent = liveTime(row, now);
+      });
+    }
   }
 
   function scheduleLive(host, snapshot, options) {
-    stopLive(host);
+    clearTimeout(host._traceLiveTimer);
+    if (document.visibilityState !== 'visible') return;
     const configured = Number(options.refreshSeconds);
     const supplied = Number(snapshot?.refresh_seconds);
     const seconds = configured > 0 ? configured : supplied > 0 ? supplied : 10;
     host._traceLiveTimer = setTimeout(() => {
       if (host.isConnected && host._traceMode === 'live') {
-        if (document.visibilityState === 'visible') loadLive(host, options);
-        else scheduleLive(host, snapshot, options);
+        loadLive(host, options);
       }
     }, seconds * 1000);
   }
 
   async function loadLive(host, options) {
-    stopLive(host);
-    host._traceMode = 'live';
+    if (host._traceMode !== 'live') {
+      stopLive(host);
+      host._traceMode = 'live';
+      host._traceLiveListeners = new AbortController();
+      const listenerOptions = {signal:host._traceLiveListeners.signal};
+      document.addEventListener('visibilitychange', () => {
+        clearTimeout(host._traceLiveTimer);
+        host._traceLiveFetch?.abort();
+        host._traceRequest = Symbol('visibility');
+        if (document.visibilityState === 'visible') {
+          ageLive(host, options);
+          loadLive(host, options);
+        }
+      }, listenerOptions);
+      document.addEventListener('workspace-preferences-change', event => {
+        if (event.detail?.key === 'livePollSeconds') {
+          options.refreshSeconds = event.detail.value;
+          scheduleLive(host, host._traceLiveSnapshot, options);
+        }
+      }, listenerOptions);
+      host._traceAgeTimer = setInterval(() => ageLive(host, options), 1000);
+      host._traceCleanup?.();
+      host.innerHTML = `${modeMarkup('live')}<p class="empty">Loading live executions…</p>`;
+      bind(host, {nodes:[],edges:[]}, options);
+    }
+    if (document.visibilityState !== 'visible') return;
+    clearTimeout(host._traceLiveTimer);
+    host._traceLiveFetch?.abort();
+    host._traceLiveFetch = new AbortController();
     const request = Symbol('live');
     host._traceRequest = request;
     const query = new URLSearchParams();
     if (options.repository) query.set('repository', options.repository);
-    host.innerHTML = `${modeMarkup('live')}<p class="empty">Loading live executions…</p>`;
     try {
-      const snapshot = await WorkspaceAPI.json(`/api/live-executions${query.size ? `?${query}` : ''}`);
+      const snapshot = await WorkspaceAPI.json(`/api/live-executions${query.size ? `?${query}` : ''}`, {signal:host._traceLiveFetch.signal});
       if (snapshot?.schema_version !== 1 || !Array.isArray(snapshot.executions)) {
         throw new Error('The live execution response is incomplete.');
       }
       if (host._traceRequest === request && host.isConnected) {
+        host._traceLiveSnapshot = snapshot;
+        host._traceLiveError = '';
         renderLive(host, snapshot, options);
         scheduleLive(host, snapshot, options);
       }
     } catch (error) {
       if (host._traceRequest === request && host.isConnected) {
-        const snapshot = {schema_version:1,generated_at:'unavailable',executions:[]};
-        renderLive(host, snapshot, options);
-        host.querySelector('.trace-modes')?.insertAdjacentHTML('afterend', `<p class="error">${esc(error.message || error)}</p>`);
+        const snapshot = host._traceLiveSnapshot || {schema_version:1,generated_at:'unavailable',executions:[]};
+        host._traceLiveError = error.message || String(error);
+        if (!host._traceLiveSnapshot) renderLive(host, snapshot, options);
+        else {
+          ageLive(host, options);
+          const notice = host.querySelector('[data-live-error]');
+          if (notice) { notice.hidden = false; notice.textContent = host._traceLiveError; }
+        }
         scheduleLive(host, snapshot, options);
       }
     }

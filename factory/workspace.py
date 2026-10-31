@@ -1034,10 +1034,12 @@ class Workspace:
     def _live_identity(cfg: Config, lane: str, execution: dict, case: dict) -> tuple[str, str]:
         activity = execution.get("activity")
         activity = activity if isinstance(activity, dict) else {}
+        if execution.get("stage") == "ticket":
+            return "No running agent", "factory pipeline"
         if lane == "worker":
             worker = activity.get("worker") or case.get("worker") or "default"
             worker = worker if isinstance(worker, str) and worker in cfg.workers else "default"
-            command = cfg.worker_command(worker, cfg.factory / "live-prompt", cfg.root)
+            command = cfg.workers.get(worker, [])
             return worker, Path(command[0]).name if command else "factory worker"
         if lane == "triage":
             return cfg.llm_model, "factory triage"
@@ -1100,15 +1102,20 @@ class Workspace:
         }
         journal_cases = self._live_journal_cases(cfg)
         now = datetime.now(UTC)
+        active = [
+            execution for execution in runtime.get("executions", [])
+            if execution.get("state") == "active" and execution.get("ended_at") is None
+        ]
+        covered = {
+            execution.get("ticket") for execution in active
+            if LIVE_STAGE_LANES.get(execution.get("stage")) not in {None, "watch", "learn"}
+        }
         rows = []
-        for execution in runtime.get("executions", []):
-            lane = LIVE_STAGE_LANES.get(execution.get("stage"))
+        for execution in active:
             ticket = execution.get("ticket")
-            if (
-                lane is None
-                or execution.get("state") != "active"
-                or execution.get("ended_at") is not None
-            ):
+            pipeline = execution.get("stage") == "ticket"
+            lane = "worker" if pipeline else LIVE_STAGE_LANES.get(execution.get("stage"))
+            if lane is None or (pipeline and ticket in covered):
                 continue
             if lane in {"watch", "learn"}:
                 ticket = None
@@ -1131,6 +1138,7 @@ class Workspace:
                 ),
                 "agent": agent,
                 "harness": harness,
+                "activity": "pipeline" if pipeline else "stage",
                 "entered_at": execution.get("entered_at"),
                 "observed_at": observed_at,
                 "state": "stale" if stale else "active",

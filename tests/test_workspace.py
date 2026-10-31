@@ -940,6 +940,27 @@ class WorkspaceHTTPTest(unittest.TestCase):
         self.assertEqual((row["agent"], row["harness"]), ("wrapped", "omp"))
 
 
+    def test_live_worker_uses_its_own_journaled_profile_not_the_latest_ticket_event(self) -> None:
+        from factory import lifecycle
+
+        self.cfg.workers["actual"] = ["/opt/bin/omp", "{prompt}"]
+        self.cfg.worker_wrap = ["/opt/bin/wrapper", "--"]
+        journal = self.cfg.factory / "events.jsonl"
+        with (
+            mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}),
+            lifecycle.scope(journal, "worker", ticket=7, worker="actual"),
+        ):
+            with journal.open("a") as handle:
+                handle.write(json.dumps({
+                    "event": "attempt", "ticket": 7, "worker": "default",
+                    "title": "Correct profile",
+                }) + "\n")
+            body = self.workspace.live_executions(REPOSITORY)
+
+        row = next(row for row in body["executions"] if row["ticket"] == 7)
+        self.assertEqual((row["agent"], row["harness"]), ("actual", "omp"))
+
+
 class WorkspaceRegistryTest(unittest.TestCase):
     def test_registered_main_overrides_same_slug_startup_but_key_stays_startup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
