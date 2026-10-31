@@ -20,9 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 # Never read the operator's real host config; HostConfigTest writes its own here.
-_ORIGINAL_XDG_CONFIG_HOME = os.environ.get("XDG_CONFIG_HOME")
-_XDG_TEMP = tempfile.TemporaryDirectory()
-XDG = Path(_XDG_TEMP.name)
+XDG = Path(tempfile.mkdtemp())
 os.environ["XDG_CONFIG_HOME"] = str(XDG)
 
 from datetime import UTC
@@ -35,11 +33,7 @@ from factory import __version__, config, lifecycle, manage, runtime_events
 os.environ.pop(lifecycle.CONTEXT_ENV, None)
 
 def tearDownModule() -> None:
-    _XDG_TEMP.cleanup()
-    if _ORIGINAL_XDG_CONFIG_HOME is None:
-        os.environ.pop("XDG_CONFIG_HOME", None)
-    else:
-        os.environ["XDG_CONFIG_HOME"] = _ORIGINAL_XDG_CONFIG_HOME
+    shutil.rmtree(XDG, ignore_errors=True)
 
 
 
