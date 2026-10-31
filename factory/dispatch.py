@@ -1090,34 +1090,18 @@ def _finding_instances(row: dict) -> list[dict]:
 
 
 def _required_fixes(findings: str, review_ref: str) -> list[dict]:
+    del review_ref
     tally = _review_tally(findings)
-    if tally is not None and isinstance(tally.get("findings"), list):
-        fixes = []
-        for row in tally["findings"]:
-            if not isinstance(row, dict) or row.get("severity") != "important":
-                continue
-            instance = _finding_instances(row)[0]
-            path, line, summary = instance.get("path"), instance.get("line"), instance.get("summary")
-            if isinstance(path, str) and type(line) is int and isinstance(summary, str):
-                fixes.append({"kind": "finding", "ref": f"{path}:{line}", "summary": summary})
-        return fixes
-    # Historical accepted review rows predate the JSON tally. Current accepted
-    # reviews always take the branch above; retain old decision-trace readability.
+    if tally is None or not isinstance(tally.get("findings"), list):
+        return []
     fixes = []
-    for section in re.finditer(
-        r"(?ims)^#{1,6}\s+Required fixes[^\r\n]*\r?\n(.*?)(?=^#{1,6}\s|\Z)",
-        findings,
-    ):
-        for line in section[1].splitlines():
-            summary = re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", line).strip()
-            if not summary or summary.rstrip(".").casefold() == "none":
-                continue
-            location = re.search(r"`?([A-Za-z0-9_.\-/]+:\d+)`?", summary)
-            fixes.append({
-                "kind": "finding",
-                "ref": location.group(1) if location else review_ref,
-                "summary": summary,
-            })
+    for row in tally["findings"]:
+        if not isinstance(row, dict) or row.get("severity") != "important":
+            continue
+        instance = _finding_instances(row)[0]
+        path, line, summary = instance.get("path"), instance.get("line"), instance.get("summary")
+        if isinstance(path, str) and type(line) is int and isinstance(summary, str):
+            fixes.append({"kind": "finding", "ref": f"{path}:{line}", "summary": summary})
     return fixes
 
 
@@ -1153,7 +1137,9 @@ def _record_review_decision(
     usage: dict | None, seconds: float, comment_url: str | None = None,
     counts: dict[str, int] | None = None, rejection_reason: str | None = None,
     role: str = "primary", model: str | None = None, repeated_dropped: int = 0,
+    tally: dict | None = None,
 ) -> str:
+    del tally
     from factory import trace
 
     pr = next((
@@ -2589,7 +2575,7 @@ def review(
             "parsed": result["parsed"], "accepted": result["accepted"], "usage": result["usage"],
             "seconds": time.monotonic() - started, "counts": result["counts"],
             "rejection_reason": result["rejection_reason"], "role": role, "model": model,
-            "repeated_dropped": repeated_dropped,
+            "repeated_dropped": repeated_dropped, "tally": result["tally"],
         }
         (_PENDING_SECOND_REVIEWS if role == "second" else _PENDING_REVIEWS)[n] = pending
     findings = result["findings"]
@@ -2710,6 +2696,31 @@ def pr_gate_and_review(
         return None, second_findings, False
     if len(set(models)) != 3:
         return None, f"{second_findings}\n\nHigh-risk reviewer models were not distinct: {models}.", False
+    revising = [
+        [primary_findings, primary_row],
+        [second_findings, second_row],
+    ]
+    revising = [item for verdict, item in zip((primary, second), revising, strict=True)
+                if verdict == "REVISE"]
+    if primary == "REVISE" and second == "APPROVE" and isinstance(primary_row.get("tally"), dict):
+        ledger = _load_review_ledger(n)
+        _policy, nit_cap = _review_policy(wt, f"origin/{cfg.main}")
+        normalized, counts, dropped = _reconcile_review(
+            n, ledger["base"], head, revising[0][0], revising[0][1]["tally"], nit_cap,
+        )
+        revising[0][0] = normalized
+        revising[0][1].update(
+            findings=normalized,
+            counts=counts,
+            repeated_dropped=revising[0][1]["repeated_dropped"] + dropped,
+        )
+        if primary == "REVISE":
+            primary_findings = normalized
+        else:
+            second_findings = normalized
+    worker_findings = "\n\n".join(
+        _worker_review_findings(findings) for findings, _row in revising
+    ) or "No Important findings."
     changed = run(
         ["git", "diff", "--name-status", f"origin/{cfg.main}..{head}"], cwd=wt,
     ).stdout.strip()
@@ -2736,6 +2747,7 @@ def pr_gate_and_review(
     _PENDING_RISK[n] = {
         "head": head, "tier": tier, "disagreement": disagreement, "packet": packet,
         "primary": primary, "second": second, "mutation": mutation,
+        "worker_findings": worker_findings,
     }
     if primary == second == "REVISE":
         return "REVISE", f"{primary_findings}\n\n{second_findings}", False
@@ -4758,13 +4770,22 @@ def process_ticket(
                     )
                     return
                 execution.review_round = bounce + 1
-                extra = (
-                    f"## PR-tier gate report, round {bounce} (failed)\n\n{findings}"
-                    if pr_failed else
-                    f"## Reviewer findings, round {bounce}\n\n"
-                    f"Fix every instance of each bug class below, including instances the "
-                    f"reviewer did not enumerate.\n\n{_worker_review_findings(findings)}"
-                )
+                if pr_failed:
+                    extra = f"## PR-tier gate report, round {bounce} (failed)\n\n{findings}"
+                elif risk_disagreement_head is not None:
+                    extra = current_risk["packet"]
+                    if current_risk["worker_findings"] != "No Important findings.":
+                        extra += (
+                            "\n\nFix every instance of each bug class below, including instances "
+                            "the reviewer did not enumerate.\n\n"
+                            f"{current_risk['worker_findings']}"
+                        )
+                else:
+                    extra = (
+                        f"## Reviewer findings, round {bounce}\n\n"
+                        f"Fix every instance of each bug class below, including instances the "
+                        f"reviewer did not enumerate.\n\n{_worker_review_findings(findings)}"
+                    )
                 retry_decision = _latest_decision_id(n, {"gate"} if pr_failed else {"review"})
                 if retry_decision:
                     record_worker_selection(n, labels, cause=retry_decision, relation="retries")
