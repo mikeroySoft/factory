@@ -614,6 +614,55 @@ class WatchExpectationTest(unittest.TestCase):
         self.assertEqual(signals[0]["rows"], [matching])
         self.assertEqual(signals[0]["ticket"], "123456789")
 
+    def test_triage_predicate_and_queue_label_require_exact_values(self) -> None:
+        self.assertFalse(watch._triage_exit({
+            "event": "lifecycle", "kind": "enter", "stage": "triage-ticket",
+        }))
+        self.assertFalse(watch._triage_exit({
+            "event": "lifecycle", "kind": "exit", "stage": "dispatch",
+        }))
+        with mock.patch.object(dispatch, "gh_json", return_value=[{
+            "event": "labeled",
+            "label": {"name": "zz-triage"},
+            "created_at": datetime.now(UTC).isoformat(),
+        }]):
+            self.assertIsNone(watch._triage_queue_entry(self.cfg.repo, 7))
+
+    def test_per_issue_pass_threshold_is_strict_and_signals_stay_isolated(self) -> None:
+        anchor = datetime(2026, 10, 30, tzinfo=UTC)
+        expectations = [
+            watch.Expectation(
+                f"needs-triage issue example/repo#{ticket}",
+                watch._triage_exit,
+                None,
+                per_triage_issue=True,
+                since=anchor,
+                max_passes=2,
+            )
+            for ticket in (7, 8)
+        ]
+        rows = [
+            {"event": "stage-success", "stage": "dispatch", "at": at.isoformat()}
+            for at in (anchor, anchor + timedelta(minutes=1))
+        ]
+
+        self.assertEqual(watch.overdue(expectations, rows, anchor), [])
+        rows.extend([
+            {
+                "event": "stage-success",
+                "stage": "dispatch",
+                "at": (anchor + timedelta(minutes=minutes)).isoformat(),
+            }
+            for minutes in (2, 3)
+        ])
+        signals = watch.overdue(expectations, rows, anchor + timedelta(minutes=3))
+
+        self.assertEqual([signal["ticket"] for signal in signals], ["7", "8"])
+        self.assertTrue(all(
+            "2 successful factory passes" in signal["excerpt"]
+            for signal in signals
+        ))
+
     def test_external_expectations_require_two_passes_and_are_opt_in(self) -> None:
         now = datetime(2026, 10, 30, tzinfo=UTC)
         self.cfg.eval_schedule = True
@@ -717,6 +766,9 @@ class WatchExpectationTest(unittest.TestCase):
         self.assertEqual(len(watch.title({
             "kind": expectation, "name": "x" * 300,
         })), 200)
+        self.assertEqual(len(watch.title({
+            "kind": configuration, "name": "x" * 300,
+        })), 200)
 
     def test_dynamic_host_signal_uses_host_label_and_exact_quiet_boundary(self) -> None:
         signal = {
@@ -755,6 +807,86 @@ class WatchExpectationTest(unittest.TestCase):
             )
         self.assertTrue(any(
             call[:3] == ["gh", "issue", "comment"]
+            for call in self.github.calls
+        ))
+
+    def test_filing_uses_the_last_create_output_line(self) -> None:
+        signal = {
+            "fingerprint": "expectation:test",
+            "kind": "expectation",
+            "stage": "expected-events",
+            "key": "test",
+            "name": "test",
+            "tier": "act",
+            "rows": [],
+            "excerpt": "overdue",
+            "log": None,
+            "latest": None,
+            "command": "factory watch --dry-run",
+        }
+
+        def create_with_notice(
+            command: list[str], **kwargs: object,
+        ) -> subprocess.CompletedProcess:
+            if command[:3] == ["gh", "issue", "create"]:
+                self.github.calls.append(command)
+                return subprocess.CompletedProcess(
+                    command, 0,
+                    "notice\nhttps://github.com/mikeroySoft/factory/issues/902\n", "",
+                )
+            return self.github(command, **kwargs)
+
+        with mock.patch.object(dispatch, "run", create_with_notice):
+            watch._file_or_comment(
+                signal, None, {}, self.cfg.watch_engine_repo, self.cfg.repo,
+            )
+
+        rows = lifecycle.read_events(self.cfg.factory / "events.jsonl")
+        self.assertEqual(rows[-1]["issue"], 902)
+
+    def test_existing_remote_and_superseded_filings_report_exact_changes(self) -> None:
+        signal = {
+            "fingerprint": "expectation:test",
+            "kind": "expectation",
+            "stage": "expected-events",
+            "key": "test",
+            "name": "test",
+            "tier": "act",
+            "rows": [],
+            "excerpt": "overdue",
+            "log": None,
+            "latest": None,
+            "command": "factory watch --dry-run",
+        }
+        self.github.filings[900] = {
+            "state": "OPEN", "closedAt": None, "body": None,
+        }
+        previous = {
+            "issue": 900,
+            "repo": "example/remote",
+            "at": datetime.now(UTC).isoformat(),
+        }
+
+        _, changed = watch._file_or_comment(
+            signal, previous, {}, self.cfg.watch_engine_repo, self.cfg.repo,
+        )
+
+        self.assertFalse(changed)
+        self.github.filings[900]["state"] = "CLOSED"
+        self.github.filings[900]["closedAt"] = datetime.now(UTC).isoformat()
+        previous["repo"] = self.cfg.watch_engine_repo
+        self.github.calls.clear()
+        _, changed = watch._file_or_comment(
+            signal,
+            previous,
+            {signal["fingerprint"]: {"number": 901, "body": None}},
+            self.cfg.watch_engine_repo,
+            self.cfg.repo,
+        )
+
+        self.assertTrue(changed)
+        self.assertTrue(any(
+            call[:4] == ["gh", "issue", "comment", "901"]
             for call in self.github.calls
         ))
 
