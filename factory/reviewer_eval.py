@@ -486,6 +486,7 @@ def run(cfg: config.Config, checkout: Path, *, dry_run: bool = False) -> dict | 
     out.mkdir(parents=True, exist_ok=True)
     rows, timed_out = _run_runner(checkout, out, candidate, deadline - time.monotonic())
     checkout_cfg = config.load(checkout, worktree=True)
+    checkout_settings = _checkout_settings(checkout)
     graded = []
     for row in rows:
         case = row.get("case")
@@ -538,7 +539,7 @@ def run(cfg: config.Config, checkout: Path, *, dry_run: bool = False) -> dict | 
     costs = [stats.priced(usage, cfg.prices) for usage in usages]
     summary.update({
         "prompt_sha256": prompt_sha256,
-        "model": config.command_model(checkout_cfg.reviewer),
+        "model": checkout_settings["model"],
         "judge_model": config.command_model(checkout_cfg.second_reviewer),
         "seconds": round(time.monotonic() - started, 3),
         "usage": {
