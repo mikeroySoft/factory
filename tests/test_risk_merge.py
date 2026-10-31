@@ -499,6 +499,7 @@ class HighPipelineBoundaryTest(unittest.TestCase):
         }
         self.heads = []
         self.stack = contextlib.ExitStack()
+        self.real_pr_comment = dispatch.pr_comment
         self.addCleanup(self.stack.close)
         self.command = self.patch(dispatch, "run", side_effect=self.command_result)
         self.patch(dispatch, "gh_json", side_effect=self.github)
@@ -619,8 +620,10 @@ class HighPipelineBoundaryTest(unittest.TestCase):
         self.worker.side_effect = work_without_model
         review = self.patch(dispatch, "review")
         self.patch(dispatch, "run_gate", return_value=(True, "- mutation: PASS\n"))
+        dispatch.pr_comment.side_effect = self.real_pr_comment
         dispatch.process_ticket(self.issue, 10, False, forced=True)
         review.assert_not_called()
+        dispatch.pr_comment.assert_called_once()
         self.escalate.assert_called_once()
         self.assertEqual(
             self.escalate.call_args.kwargs["code"],
