@@ -714,7 +714,7 @@ class ControlBandWatchTest(unittest.TestCase):
 
 
 class WatchLifecycleTest(unittest.TestCase):
-    def test_main_exposes_watch_for_the_latest_ticket(self) -> None:
+    def test_main_exposes_repo_wide_watch_without_borrowing_a_ticket(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             cfg = config.Config(Path(directory), REPO)
             cfg.factory.mkdir()
@@ -738,10 +738,10 @@ class WatchLifecycleTest(unittest.TestCase):
                 if row.get("event") == "lifecycle" and row.get("stage") == "watch"
             ]
 
-        self.assertEqual(seen, {"stage": "watch", "ticket": 17})
+        self.assertEqual(seen, {"stage": "watch", "ticket": None})
         self.assertEqual(
-            [(row["kind"], row["ticket"]) for row in rows],
-            [("enter", 17), ("exit", 17)],
+            [(row["kind"], row.get("ticket")) for row in rows],
+            [("enter", None), ("exit", None)],
         )
 
 

@@ -190,8 +190,10 @@ process.stdout.write(window.WorkspaceTrace.liveMarkup(snapshot, {
                 {
                     "execution_id": f"execution-{index}",
                     "lane": stage,
-                    "ticket": index,
-                    "title": f"Ticket {index}",
+                    "ticket": None if stage in {"watch", "learn"} else index,
+                    "title": (
+                        f"Repository {stage}" if stage in {"watch", "learn"} else f"Ticket {index}"
+                    ),
                     "agent": f"agent-{index}",
                     "harness": f"harness-{index}",
                     "entered_at": "2026-10-30T11:58:30Z",
@@ -218,6 +220,8 @@ process.stdout.write(window.WorkspaceTrace.liveMarkup(snapshot, {
         self.assertIn("1m 30s", html)
         self.assertIn('data-status="stale"', html)
         self.assertIn("Stale", html)
+        self.assertIn("Repository watch", html)
+        self.assertNotIn("#None", html)
 
     def test_live_refresh_moves_cards_removes_ended_work_and_keeps_empty_lanes(self) -> None:
         execution = {
@@ -258,3 +262,57 @@ process.stdout.write(window.WorkspaceTrace.liveMarkup(snapshot, {
         self.assertNotIn('data-lane="worker"', second)
         self.assertNotIn('data-trace-node="ended"', second)
         self.assertIn("No active executions", second)
+
+    def test_live_card_for_current_ticket_loads_its_historical_trace(self) -> None:
+        script = """
+const fs = require('fs');
+global.window = {};
+global.document = {visibilityState:'visible',addEventListener(){}};
+const calls = [], routed = [];
+global.WorkspaceAPI = {json: async url => {
+  calls.push(String(url));
+  return String(url).startsWith('/api/trace')
+    ? {ticket:7,nodes:[],edges:[],loops:[],coverage:[]}
+    : {schema_version:1,executions:[],refresh_seconds:10};
+}};
+eval(fs.readFileSync(process.argv[1], 'utf8'));
+const listeners = {};
+const host = {
+  isConnected:true,
+  innerHTML:'',
+  querySelectorAll(){ return []; },
+  querySelector(){ return null; },
+  addEventListener(type, listener){ listeners[type] = listener; },
+};
+const click = values => listeners.click({
+  target:{closest: selector => values[selector] || null},
+});
+(async () => {
+  window.WorkspaceTrace.mount(host, {
+    ticket:7,
+    repository:'acme/widgets',
+    onTicket:number => routed.push(number),
+  });
+  await new Promise(setImmediate);
+  click({'[data-trace-mode]':{dataset:{traceMode:'live'}}});
+  await new Promise(setImmediate);
+  click({'[data-trace-ticket]':{dataset:{traceTicket:'7'}}});
+  await new Promise(setImmediate);
+  window.WorkspaceTrace.dispose(host);
+  process.stdout.write(JSON.stringify({calls,routed}));
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+        result = subprocess.run(
+            ["node", "-e", script, str(ASSET)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        observed = json.loads(result.stdout)
+        self.assertEqual(observed["routed"], [])
+        self.assertEqual(
+            [call.split("?")[0] for call in observed["calls"]],
+            ["/api/trace", "/api/live-executions", "/api/trace"],
+        )

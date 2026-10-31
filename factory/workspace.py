@@ -1106,11 +1106,13 @@ class Workspace:
             ticket = execution.get("ticket")
             if (
                 lane is None
-                or type(ticket) is not int
-                or ticket <= 0
                 or execution.get("state") != "active"
                 or execution.get("ended_at") is not None
             ):
+                continue
+            if lane in {"watch", "learn"}:
+                ticket = None
+            elif type(ticket) is not int or ticket <= 0:
                 continue
             case = {**journal_cases.get(ticket, {}), **cases.get(ticket, {})}
             observed_at = execution.get("observed_at")
@@ -1124,7 +1126,9 @@ class Workspace:
                 "execution_id": execution["execution_id"],
                 "lane": lane,
                 "ticket": ticket,
-                "title": case.get("title") or "Title unavailable",
+                "title": case.get("title") or (
+                    f"Repository {lane}" if ticket is None else "Title unavailable"
+                ),
                 "agent": agent,
                 "harness": harness,
                 "entered_at": execution.get("entered_at"),
@@ -1133,7 +1137,9 @@ class Workspace:
                 "ended_at": None,
                 "stale": stale,
             })
-        rows.sort(key=lambda row: (LIVE_LANES.index(row["lane"]), row["ticket"], row["execution_id"]))
+        rows.sort(key=lambda row: (
+            LIVE_LANES.index(row["lane"]), row["ticket"] or 0, row["execution_id"]
+        ))
         return {
             "schema_version": 1,
             "repository": slug,

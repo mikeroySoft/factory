@@ -799,7 +799,7 @@ class WorkspaceHTTPTest(unittest.TestCase):
             {
                 "execution_id": f"execution-{index}",
                 "stage": stage,
-                "ticket": index,
+                "ticket": None if stage in {"watch", "learn"} else index,
                 "state": "active",
                 "entered_at": observed,
                 "ended_at": None,
@@ -847,7 +847,11 @@ class WorkspaceHTTPTest(unittest.TestCase):
             self.assertTrue(all(row["agent"] and row["harness"] for row in body["executions"]))
             self.assertEqual(
                 [(row["ticket"], row["title"]) for row in body["executions"]],
-                [(index, f"Ticket {index}") for index in range(1, 8)],
+                [
+                    *((index, f"Ticket {index}") for index in range(1, 6)),
+                    (None, "Repository watch"),
+                    (None, "Repository learn"),
+                ],
             )
             self.assertNotIn("ended", {row["execution_id"] for row in body["executions"]})
 

@@ -301,7 +301,8 @@
       ? Number(value.stale_after_seconds) : 60;
     return array(value.executions).filter(item => {
       const row = object(item);
-      return LIVE_LANES.includes(row.lane) && positive(row.ticket) && !row.ended_at
+      const loop = ['watch','learn'].includes(row.lane) && row.ticket == null;
+      return LIVE_LANES.includes(row.lane) && (positive(row.ticket) || loop) && !row.ended_at
         && ['active','stale'].includes(String(row.state || 'active'));
     }).map(item => {
       const row = object(item);
@@ -317,6 +318,7 @@
     const tickets = new Map();
     for (const row of rows) {
       const ticket = positive(row.ticket);
+      if (!ticket) continue;
       if (!tickets.has(ticket)) tickets.set(ticket, []);
       tickets.get(ticket).push(row);
     }
@@ -342,13 +344,13 @@
       const cards = members.map(row => {
         const entered = new Date(row.entered_at || '').valueOf();
         const elapsed = elapsedLabel(Number.isFinite(entered) ? (now - entered) / 1000 : 0);
+        const ticket = positive(row.ticket);
+        const details = `<span class="trace-node-meta"><b>${esc(row.agent || 'agent unavailable')}</b><i>${esc(row.harness || 'harness unavailable')}</i></span>
+            <strong>${ticket ? `#${ticket} · ` : ''}${esc(row.title || 'Title unavailable')}</strong>
+            <time>${esc(elapsed)} elapsed · ${row.stale ? 'Stale' : 'Running'}</time>`;
         return `<article class="trace-node live-execution${row.stale ? ' is-stale' : ''}" data-trace-node="${esc(row.execution_id)}" data-lane="${esc(lane)}" data-at="${esc(row.entered_at || '')}" data-status="${row.status}">
-          <button class="trace-node-drag" type="button" data-trace-drag="${esc(row.execution_id)}" aria-label="${esc(`Drag ticket #${row.ticket}`)}">Drag</button>
-          <button class="live-execution-open" type="button" data-trace-ticket="${row.ticket}">
-            <span class="trace-node-meta"><b>${esc(row.agent || 'agent unavailable')}</b><i>${esc(row.harness || 'harness unavailable')}</i></span>
-            <strong>#${row.ticket} · ${esc(row.title || 'Title unavailable')}</strong>
-            <time>${esc(elapsed)} elapsed · ${row.stale ? 'Stale' : 'Running'}</time>
-          </button>
+          <button class="trace-node-drag" type="button" data-trace-drag="${esc(row.execution_id)}" aria-label="${esc(ticket ? `Drag ticket #${ticket}` : `Drag ${lane} loop`)}">Drag</button>
+          ${ticket ? `<button class="live-execution-open" type="button" data-trace-ticket="${ticket}">${details}</button>` : `<div class="live-execution-open">${details}</div>`}
         </article>`;
       }).join('');
       return `<section class="trace-stage" data-stage="${lane}"><h2>${esc(stageLabel(lane))}<span>${members.length}</span></h2><div class="trace-stage-nodes">${cards || '<p class="empty">No active executions</p>'}</div></section>`;
@@ -964,6 +966,9 @@
     configured.onMode = mode => mode === 'live'
       ? loadLive(host, configured)
       : loadHistory(host, configured);
+    configured.onTicket = ticket => host._traceMode === 'live' && positive(ticket) === positive(configured.ticket)
+      ? loadHistory(host, configured)
+      : options.onTicket?.(ticket);
     loadHistory(host, configured);
   }
 
