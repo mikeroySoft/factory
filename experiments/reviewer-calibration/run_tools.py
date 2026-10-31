@@ -48,8 +48,8 @@ CONTRACTS = {"baseline": "cadb9981524ab5506693e27f56ff8ac4ef911da6",
              "candidate": "70fea0e9cc314916acbe4494e4dc0d0dff21b361",
              "review-baseline": "eb611cc794da4008ffaba73cac6108a2ed8af0a1",
              "review-tally": "1bc93aa2abaf34607b88ee53428a22d5453f5c12",
-             "review-current": "f8dc1f31324a39e2121b8cbbd783c6d74f8b6317",
-             "review-convergence": "d4d07101a532e622653236b3ec6ae47643d18bc4"}
+             "review-current": "4f3fc970962e97eeb137c03866e196ca312e6e0e",
+             "review-convergence": "82cf5da1f1ebcf40e6c1ede28e648e9a9540e9a3"}
 
 
 def _defect_cases() -> list[str]:
