@@ -452,6 +452,10 @@ The daily metrics are gate failures divided by gate outcomes; failed gate-check
 and failed-test counts keyed by check or canonical test ID; escalated tickets
 divided by merged-or-escalated tickets; mean hours from the first `claimed` row
 to `merged`; and mean review rounds after the first review per terminal ticket.
+Failed check/test counts exclude worker attempts whose recorded head has not
+merged. Each `(ticket, attempt)` counts at most once per check or test metric.
+Rows without a complete ticket/attempt identity, including main and legacy rows,
+retain their existing per-row counting.
 Days without a denominator or completed cycle are omitted from rate, duration,
 and rework bands; only failed check/test count metrics record zero on quiet days.
 No rule runs until the journal's first row predates the full configured window;
