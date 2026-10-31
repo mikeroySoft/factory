@@ -10,10 +10,14 @@ usage: run_calibration.py [out-dir] [samples] [contract ...] [--model MODEL]
 from __future__ import annotations
 
 import argparse
+import atexit
 import concurrent.futures as cf
 import hashlib
 import json
+import os
 import pathlib
+import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -23,12 +27,29 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 
+EXP = pathlib.Path(__file__).parent
+REPO = EXP.parents[1]
+sys.path.insert(0, str(REPO))
+
 from factory import config, stats
 from factory.dispatch import _omp_output
 
-EXP = pathlib.Path(__file__).parent
-REPO = EXP.parents[1]
-CHECKOUT_ROOT = pathlib.Path("/tmp/cal-checkout")
+CHECKOUT_ROOT = pathlib.Path(tempfile.mkdtemp(
+    prefix="factory-cal-checkout-", dir=os.environ.get("FACTORY_CAL_CHECKOUT_PARENT"),
+))
+atexit.register(shutil.rmtree, CHECKOUT_ROOT, ignore_errors=True)
+
+
+def _terminate(signum, frame) -> None:
+    shutil.rmtree(CHECKOUT_ROOT, ignore_errors=True)
+    # Do not unwind an executor context: that waits for queued model calls.
+    os._exit(128 + signum)
+
+
+if threading.current_thread() is threading.main_thread():
+    signal.signal(signal.SIGTERM, _terminate)
+
+
 CONTRACTS = {
     "baseline": "cadb9981524ab5506693e27f56ff8ac4ef911da6",
     "issue36": "1947fc4e3de23e71f64342f2c9cd2570d845db5e",
@@ -69,13 +90,34 @@ def _cases_from_splits(splits: dict | None = None) -> list[str]:
 
 
 CASES = _cases_from_splits()
-
-
-def configured_reviewer_model(root: pathlib.Path = REPO) -> str:
-    model = config.command_model(config.load(root, worktree=True).reviewer)
-    if not model:
-        raise ValueError("configured reviewer command has no explicit --model")
-    return model
+MODEL_QUERY = """
+import pathlib, sys
+root = pathlib.Path(sys.argv[1])
+sys.path.insert(0, str(root))
+from factory import config
+if hasattr(config, "command_model"):
+    try:
+        cfg = config.load(root, worktree=True)
+    except TypeError:
+        cfg = config.load(root)
+    model = config.command_model(cfg.reviewer)
+else:
+    command = config.DEFAULT_REVIEWER
+    model = next((
+        command[index + 1]
+        for index, argument in enumerate(command[:-1])
+        if argument == "--model"
+    ), None)
+    if model is None:
+        model = next((
+            argument.split("=", 1)[1]
+            for argument in command
+            if argument.startswith("--model=")
+        ), None)
+if not model:
+    raise SystemExit("configured reviewer command has no explicit --model")
+print(model)
+"""
 
 
 def contract_commit(contract: str) -> str:
@@ -83,10 +125,17 @@ def contract_commit(contract: str) -> str:
     if (
         not isinstance(commit, str)
         or len(commit) != 40
-        or any(character not in "0123456789abcdef" for character in commit)
+        or not all(c in "0123456789abcdef" for c in commit)
     ):
         raise ValueError(f"unknown calibration contract {contract!r}")
     return commit
+
+
+def configured_reviewer_model(root: pathlib.Path) -> str:
+    return subprocess.run(
+        [sys.executable, "-c", MODEL_QUERY, str(root)],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
 
 
 def sha(text: str) -> str:
@@ -94,8 +143,18 @@ def sha(text: str) -> str:
 
 
 def checkout(commit: str) -> pathlib.Path:
-    """Return a pinned, content-addressed clone of the contract under test."""
+    """A pinned, content-addressed clone of the contract under test.
+
+    Provisioned on demand under a process-private directory and keyed by commit,
+    so another local user cannot plant executable checkout content. Serialized and
+    idempotent within one run: concurrent jobs share one clone per commit, and a
+    clone already at that commit is never checked out again.
+    """
     dest = CHECKOUT_ROOT / commit[:12]
+    origin = subprocess.run(
+        ["git", "remote", "get-url", "origin"], cwd=REPO,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
     with CHECKOUT_LOCK:
         if not (dest / ".git").exists():
             subprocess.run(
@@ -110,6 +169,12 @@ def checkout(commit: str) -> pathlib.Path:
             text=True,
             check=False,
         ).stdout.strip()
+        subprocess.run(
+            ["git", "remote", "set-url", "origin", origin],
+            cwd=dest,
+            check=True,
+            capture_output=True,
+        )
         if head != commit or not (dest / "factory" / "dispatch.py").is_file():
             subprocess.run(
                 ["git", "checkout", "--quiet", "--force", "--detach", commit],
@@ -478,7 +543,7 @@ def main(
         return 0
     if args.out_dir is None:
         _parser().error("out_dir is required without --models")
-    model = args.model or configured_reviewer_model()
+    model = args.model or configured_reviewer_model(REPO)
     rows = run_experiment(
         pathlib.Path(args.out_dir),
         args.samples,

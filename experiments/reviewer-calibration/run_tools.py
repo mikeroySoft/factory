@@ -13,10 +13,10 @@ head. The clone's `refs/remotes/origin/main` is the case review base, so both th
 policy and diff come from the same refs production uses. The reviewer can read any file
 and the live issue itself. No packet envelope is appended.
 
-Deliberate deviations from production, applied identically to every run: `--mode text`,
-`--no-title`, `--max-time`, and `--auto-approve` (a print-mode approval prompt would
-otherwise hang the run and confound the measurement). Each run reports whether the
-reviewer mutated its clone.
+Deliberate deviations from production, applied identically to every run: `--no-title`,
+`--max-time`, and `--auto-approve` (a print-mode approval prompt would otherwise hang
+the run and confound the measurement). Each run reports whether the reviewer mutated
+its clone.
 
 usage: run_tools.py [--all] <out-dir> <samples> [contract ...]
   --all  score every frozen case, not just REVISE-oracle heads
@@ -49,6 +49,10 @@ CONTRACTS = {"baseline": "cadb9981524ab5506693e27f56ff8ac4ef911da6",
              "review-baseline": "eb611cc794da4008ffaba73cac6108a2ed8af0a1",
              "review-tally": "1bc93aa2abaf34607b88ee53428a22d5453f5c12"}
 
+def contract_commit(contract: str) -> str:
+    return _contract_commit(CONTRACTS.get(contract, contract))
+
+
 
 def _defect_cases() -> list[str]:
     """Heads whose oracle expects REVISE (primary defects)."""
@@ -65,6 +69,7 @@ def _defect_cases() -> list[str]:
 CASES = CORPUS if "--all" in sys.argv else _defect_cases()
 TIMEOUT = 900
 
+
 def sha(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
@@ -76,8 +81,9 @@ def oracle(case: str) -> dict:
 def capture(contract: str, case: str, source: pathlib.Path) -> str:
     with tempfile.TemporaryDirectory(prefix="cal-capture-") as scratch:
         out = pathlib.Path(scratch) / "prompt.txt"
+        commit = contract_commit(contract)
         subprocess.run([sys.executable, str(EXP / "capture_contract.py"),
-                        str(checkout(contract_commit(contract))), scratch, case.split("-")[0],
+                        str(checkout(commit)), scratch, case.split("-")[0],
                         str(EXP / "cases" / case / "sources/gate-report.md"), str(out),
                         str(source), oracle(case)["head"]],
                        check=True, capture_output=True, text=True, cwd=scratch)
@@ -104,6 +110,7 @@ def review(contract: str, case: str, sample: int, model: str) -> dict:
         (root / "review.diff").write_text(diff)
         prompt = capture(contract, case, wt)
         started = time.monotonic()
+
         proc = subprocess.run(["omp", "-p", "--mode", "json", "--no-session", "--no-title",
                                "--auto-approve", "--max-time", "600", "--model", model, prompt],
                               cwd=root, capture_output=True, text=True, timeout=TIMEOUT,
@@ -121,8 +128,16 @@ def review(contract: str, case: str, sample: int, model: str) -> dict:
             "output": output, "stderr": proc.stderr.strip()[-2000:]}
 
 
-def contract_commit(contract: str) -> str:
-    return _contract_commit(CONTRACTS.get(contract, contract))
+def capture_hashes(contract: str) -> dict[str, str]:
+    def one(case: str) -> tuple[str, str]:
+        with tempfile.TemporaryDirectory(prefix=f"cal-capture-{case}-") as directory:
+            source = pathlib.Path(directory) / "snapshot"
+            worktree(case, source)
+            return case, sha(capture(contract, case, source))
+
+    with cf.ThreadPoolExecutor(max_workers=6) as pool:
+        return dict(pool.map(one, CASES))
+
 
 
 def run_experiment(
@@ -153,13 +168,21 @@ def run_experiment(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--all", action="store_true")
+    parser.add_argument("--capture-only", action="store_true")
     parser.add_argument("--model")
     parser.add_argument("out_dir")
-    parser.add_argument("samples", type=int)
+    parser.add_argument("samples", type=int, nargs="?")
     parser.add_argument("contracts", nargs="*")
     args = parser.parse_args(argv)
     global CASES
     CASES = CORPUS if args.all else _defect_cases()
+    if args.capture_only:
+        if args.samples is not None or args.contracts:
+            parser.error("--capture-only accepts exactly one contract")
+        print(json.dumps(capture_hashes(args.out_dir), sort_keys=True))
+        return 0
+    if args.samples is None:
+        parser.error("samples is required")
     model = args.model or configured_reviewer_model(pathlib.Path(REPO))
     rows = run_experiment(
         pathlib.Path(args.out_dir),

@@ -121,6 +121,15 @@
 # profile = "default"
 # schedule = false
 
+[reviewer_eval]
+# Frozen 11-case reviewer corpus. `factory reviewer-eval --dry-run` lists the
+# three-repeat run and budget without model calls. `schedule = true` requires
+# exact-head evidence when the captured reviewer prompt or configured model
+# changes; the dispatcher reports the command and never launches it itself.
+# max_cases = 11
+# budget_min = 720
+# schedule = false
+
 [gate]
 # timeout = 1200                      # seconds per check; a wedged check FAILs
 # lock = "/tmp/factory.lock"          # host-wide lock held by `exclusive` checks
