@@ -579,8 +579,8 @@ class LocalCLI(unittest.TestCase):
         self.assertEqual(exits["dispatcher"], "completed")
 
     def test_reviewer_launch_failure_is_rejected_evidence_not_a_crash(self):
-        # #260: a reviewer executable missing from the host PATH is unaccepted evidence
-        # (REVISE, reason FileNotFoundError); the ticket escalates and the pass completes.
+        # #260: a reviewer executable missing from the host is unavailable evidence;
+        # the ticket escalates without a worker bounce and the pass completes.
         self.write_config(reviewer=[str(self.base / "absent-reviewer")])
         self.commit_config()
         result = self.cli("dispatch", "--ticket", "7")
@@ -595,7 +595,6 @@ class LocalCLI(unittest.TestCase):
         exits = {r["stage"]: r["outcome"] for r in rows if r["kind"] == "exit"}
         self.assertEqual(exits["ticket"], "project_escalation")
         self.assertEqual(exits["dispatcher"], "completed")
-        self.assertIn("REVISE verdict after 1 review round(s)", result.stdout + result.stderr)
 
     def assert_reviewer_unavailable(self, script: str, diagnostic: str) -> None:
         runs = self.base / "review-runs"
