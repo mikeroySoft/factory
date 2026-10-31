@@ -427,5 +427,284 @@ class ReleaseChannelsTest(unittest.TestCase):
         self.assertEqual((self.cfg.factory / "events.jsonl").read_bytes(), before)
 
 
+    def build_and_tag_public(self) -> None:
+        self.make_odd()
+        with mock.patch.object(release, "gate_passes", return_value=True), \
+                mock.patch.object(release, "ci_passes", return_value=True), \
+                mock.patch.object(release, "_gh_release", side_effect=[
+                    self.gh_result(1), self.gh_result(0),
+                ]), mock.patch.object(stats, "escapes", return_value=[]):
+            self.assertIn("built promotion branch", release.run(self.cfg))
+            self.assertIn("released v0.4.8", release.run(self.cfg))
+
+    def test_pending_carryback_blocks_another_release(self) -> None:
+        self.build_and_tag_public()
+        for newer_odd in (False, True):
+            with self.subTest(newer_odd=newer_odd):
+                if newer_odd:
+                    release._update_experimental_files(self.cfg, self.repo, "0.4.7", "0.4.9")
+                    self.git(self.repo, "add", "factory/__init__.py", "CHANGELOG.md")
+                    self.git(self.repo, "commit", "-q", "-m", "Release 0.4.9")
+                    self.git(self.repo, "tag", "-a", "v0.4.9", "-m", "Experimental release 0.4.9")
+                    self.git(self.repo, "push", "-q", "origin", "main", "v0.4.9")
+                (self.repo / "later.txt").write_text(f"next work {newer_odd}\n")
+                self.git(self.repo, "add", "later.txt")
+                self.git(self.repo, "commit", "-q", "-m", "next work")
+                self.git(self.repo, "push", "-q", "origin", "main")
+                pull = {"number": 18, "mergeable": None, "mergeable_state": "unknown"}
+                with mock.patch.object(release, "_pulls", side_effect=lambda cfg, branch: (
+                    [{"number": 18}] if branch == "release/v0.4.8" else []
+                )), mock.patch.object(release, "_pull", return_value=pull), \
+                        mock.patch.object(release, "_open_experimental_pr",
+                                          return_value="unexpected odd cut") as opened, \
+                        mock.patch.object(release, "_build_promotion",
+                                          return_value="unexpected promotion") as built, \
+                        mock.patch.object(release, "ci_passes", return_value=True), \
+                        mock.patch.object(stats, "escapes", return_value=[]):
+                    reason = release.run(self.cfg)
+                self.assertIn("waiting for GitHub mergeability", reason)
+                opened.assert_not_called()
+                built.assert_not_called()
+
+    def test_missing_carryback_recovers_original_source_after_newer_odd(self) -> None:
+        self.build_and_tag_public()
+        release._update_experimental_files(self.cfg, self.repo, "0.4.7", "0.4.9")
+        changelog = self.repo / "CHANGELOG.md"
+        changelog.write_text(changelog.read_text().replace(
+            "## Unreleased\n\n", "## Unreleased\n\n- newer unpromoted work\n\n", 1,
+        ))
+        self.git(self.repo, "add", "factory/__init__.py", "CHANGELOG.md")
+        self.git(self.repo, "commit", "-q", "-m", "Release 0.4.9")
+        self.git(self.repo, "tag", "-a", "v0.4.9", "-m", "Experimental release 0.4.9")
+        self.git(self.repo, "push", "-q", "origin", "main", "v0.4.9")
+        with mock.patch.object(release, "_pulls", return_value=[]), \
+                mock.patch.object(release, "_open_pull", return_value={"number": 18}), \
+                mock.patch.object(stats, "escapes", return_value=[]):
+            reason = release.run(self.cfg)
+        self.assertIn("opened promotion PR #18 for v0.4.8", reason)
+        carried = self.git(self.origin, "show", "release/v0.4.8:CHANGELOG.md")
+        self.assertIn("- newer unpromoted work", carried)
+        self.assertIn("factory@v0.4.8", self.git(
+            self.origin, "show", "release/v0.4.8:README.md"))
+        self.assertIn('__version__ = "0.4.9"', self.git(
+            self.origin, "show", "release/v0.4.8:factory/__init__.py"))
+
+    def test_escalations_compare_previous_odd_not_public_baseline(self) -> None:
+        odd = {"tag": "v0.4.9", "sha": "candidate"}
+        previous = {"tag": "v0.4.7", "sha": "previous"}
+        for sha, start, end in (("previous", "01", "02"), ("candidate", "03", "04")):
+            for day in (start, end):
+                self.event(at=f"2026-10-{day}T00:00:00Z", event="lifecycle",
+                           stage="dispatcher", kind="enter", engine_commit=sha)
+            for ticket in range(20):
+                self.event(at=f"2026-10-{start}T01:00:00Z", event=(
+                    "escalate" if ticket < (1 if sha == "previous" else 2) else "merged"
+                ), ticket=ticket + (100 if sha == "candidate" else 0))
+        even = {"message": 'Release\n```json\n{"human_rate":1,"first_pass":0,'
+                '"escape_rate":1,"tickets":30,"escalation_rate":0.20}\n```'}
+        with mock.patch.object(stats, "escapes", return_value=[]):
+            metrics, _, _, hold = release._promotion_evidence(self.cfg, odd, previous, even)
+        self.assertEqual(metrics["previous_escalation_rate"], 0.05)
+        self.assertEqual(metrics["escalation_rate"], 0.10)
+        self.assertIn("rose above 0.05", hold)
+
+    def test_watch_host_filings_do_not_block_candidate_engine_bugs_do(self) -> None:
+        from factory import watch
+
+        odd = {"tag": "v0.4.7", "sha": "candidate"}
+        for day in ("01", "03"):
+            self.event(at=f"2026-10-{day}T00:00:00Z", event="lifecycle",
+                       stage="dispatcher", kind="enter", engine_commit=odd["sha"])
+        reason = "github_command_failed: unavailable"
+        self.event(at="2026-10-01T01:00:00Z", event="lifecycle", kind="exit",
+                   stage="triage", reason=reason, outcome="mechanism_failure",
+                   engine_commit=odd["sha"])
+        self.event(at="2026-10-01T02:00:00Z", event="watch", issue=10,
+                   fingerprint=watch.fingerprint("host", reason))
+        self.assertEqual(release.soak_metrics(
+            self.cfg, odd, None, None)["watch_filed_bugs"], 0)
+        self.event(at="2026-10-01T03:00:00Z", event="watch", issue=11,
+                   fingerprint=watch.fingerprint("lifecycle", "KeyError"),
+                   signal_kind="lifecycle", engine_commit="another-engine")
+        self.assertEqual(release.soak_metrics(
+            self.cfg, odd, None, None)["watch_filed_bugs"], 0)
+        self.event(at="2026-10-01T04:00:00Z", event="watch", issue=12,
+                   fingerprint=watch.fingerprint("lifecycle", "TypeError"),
+                   signal_kind="lifecycle", engine_commit=odd["sha"])
+        self.assertEqual(release.soak_metrics(
+            self.cfg, odd, None, None)["watch_filed_bugs"], 1)
+
+    def test_watch_producer_records_signal_kind_and_engine(self) -> None:
+        from factory import dispatch, watch
+
+        signal = {
+            "kind": "host", "fingerprint": watch.fingerprint("host", "github_command_failed"),
+            "stage": "triage", "key": "github_command_failed", "rows": [], "log": None,
+            "excerpt": None, "latest": None, "command": "factory triage",
+        }
+        with mock.patch.dict(dispatch.__dict__), \
+                mock.patch.object(watch, "signals", return_value=[signal]), \
+                mock.patch.object(watch, "open_filings", return_value={}), \
+                mock.patch.object(config, "engine_commit", return_value="candidate"), \
+                mock.patch.object(dispatch, "run", return_value=subprocess.CompletedProcess(
+                    [], 0, "https://github.com/acme/engine/issues/10\n", "",
+                )):
+            dispatch.configure(self.cfg)
+            watch.run_pass(self.cfg)
+        filing = next(row for row in lifecycle.read_events(
+            self.cfg.factory / "events.jsonl") if row.get("event") == "watch")
+        self.assertEqual(filing["signal_kind"], "host")
+        self.assertEqual(filing["engine_commit"], "candidate")
+
+    def test_public_notes_include_promoted_changes_and_survive_carryback(self) -> None:
+        self.build_and_tag_public()
+        for path in ("CHANGELOG.md", "docs/index.html"):
+            text = self.git(self.origin, "show", f"v0.4.8:{path}")
+            if path == "CHANGELOG.md":
+                text = text.split("## 0.4.8", 1)[1].split("## 0.4.7", 1)[0]
+            else:
+                text = text.split("<h3>v0.4.8 release notes.</h3>", 1)[1].split("</ul>", 1)[0]
+            self.assertIn("experimental work", text)
+        with mock.patch.object(release, "_gh_release", side_effect=[
+            self.gh_result(1), self.gh_result(0),
+        ]) as gh:
+            release._publish(self.cfg, "v0.4.8")
+        self.assertIn("- experimental work", gh.call_args.kwargs["notes"])
+        changelog = self.repo / "CHANGELOG.md"
+        changelog.write_text(changelog.read_text().replace(
+            "## Unreleased\n\n", "## Unreleased\n\n- landed during soak\n\n", 1,
+        ))
+        self.git(self.repo, "add", "CHANGELOG.md")
+        self.git(self.repo, "commit", "-q", "-m", "more changes")
+        self.git(self.repo, "push", "-q", "origin", "main")
+        with mock.patch.object(release, "_pulls", return_value=[]), \
+                mock.patch.object(release, "_open_pull", return_value={"number": 18}), \
+                mock.patch.object(stats, "escapes", return_value=[]):
+            self.assertIn("opened promotion PR", release.run(self.cfg))
+        carried = self.git(self.origin, "show", "release/v0.4.8:CHANGELOG.md")
+        self.assertIn("- landed during soak", carried.split("## 0.4.8", 1)[0])
+        self.assertIn("- experimental work", carried.split(
+            "## 0.4.8", 1)[1].split("## 0.4.7", 1)[0])
+
+    def test_dry_run_checks_main_ci_before_offering_odd_pr(self) -> None:
+        for state, statuses in (("failure", [{"state": "failure"}]),
+                                ("pending", [{"state": "pending"}]), ("pending", [])):
+            with self.subTest(state=state, statuses=statuses):
+                def gh(cfg: config.Config, endpoint: str, *args: str):
+                    if "/status?" in endpoint:
+                        return {"state": state, "statuses": statuses}
+                    if "/check-runs?" in endpoint:
+                        return [{"check_runs": []}]
+                    return []
+
+                output = io.StringIO()
+                with mock.patch.object(release, "_gh", side_effect=gh), \
+                        mock.patch.object(stats, "escapes", return_value=[]), redirect_stdout(output):
+                    release.run(self.cfg, dry_run=True)
+                verdict = json.loads(output.getvalue())["odd"]["verdict"]
+                self.assertIn("CI statuses/check-runs are not all successful", verdict)
+                self.assertNotIn("would open", verdict)
+
+    def test_dry_run_reports_pending_carryback_even_with_newer_odd(self) -> None:
+        self.build_and_tag_public()
+        self.git(self.repo, "tag", "-a", "v0.4.9", "-m", "Experimental release 0.4.9")
+        self.git(self.repo, "push", "-q", "origin", "v0.4.9")
+        output = io.StringIO()
+        with mock.patch.object(release, "_pulls", side_effect=lambda cfg, branch: (
+            [{"number": 18}] if branch == "release/v0.4.8" else []
+        )), mock.patch.object(stats, "escapes", return_value=[]), redirect_stdout(output):
+            release.run(self.cfg, dry_run=True)
+        report = json.loads(output.getvalue())
+        self.assertIn("carryback", report["odd"]["verdict"])
+        self.assertIn("#18", report["even"]["verdict"])
+
+    def test_dry_run_cli_is_read_only_with_remote_changes_and_legacy_tags(self) -> None:
+        import shutil
+        import sys
+
+        binaries = self.base / "bin"
+        binaries.mkdir()
+        calls = self.base / "calls.jsonl"
+        git_path = shutil.which("git")
+        wrapper = binaries / "git"
+        wrapper.write_text(
+            f"#!{sys.executable}\n"
+            "import json, os, sys\n"
+            f"with open({str(calls)!r}, 'a') as f: f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "args = sys.argv[1:]\n"
+            "if args[0] == '-c': args = args[2:]\n"
+            "if args[0] not in {'rev-parse','tag','cat-file','for-each-ref','ls-remote',"
+            "'show','merge-base','log','rev-list','diff','blame'}"
+            " or (args[0] == 'tag' and '--list' not in args):\n"
+            "    sys.exit('forbidden git write: ' + repr(args))\n"
+            f"os.execv({git_path!r}, [{git_path!r}, *sys.argv[1:]])\n"
+        )
+        wrapper.chmod(0o755)
+        gh = binaries / "gh"
+        gh.write_text(
+            f"#!{sys.executable}\n"
+            "import json, sys\n"
+            f"with open({str(calls)!r}, 'a') as f: f.write(json.dumps(['gh', *sys.argv[1:]]) + '\\n')\n"
+            "args = sys.argv[1:]\n"
+            "if any(x in args for x in ['POST','PUT','PATCH','DELETE','create']):\n"
+            "    sys.exit('forbidden GitHub write')\n"
+            "if any('/status?' in x for x in args):\n"
+            "    print(json.dumps({'state':'success','statuses':[{'state':'success'}]}))\n"
+            "elif any('/check-runs?' in x for x in args):\n"
+            "    print(json.dumps([{'check_runs':[]}]))\n"
+            "else: print('[]')\n"
+        )
+        gh.chmod(0o755)
+        (self.repo / ".factory.toml").write_text(
+            '[repo]\nslug = "acme/widgets"\n[release]\nmin_tickets = 1\n'
+            'bar_min_tickets = 1\nwindow_tickets = 2\nexperimental_min_interval_hours = 0\n'
+        )
+        self.event(at="2099-01-01T00:00:00Z", event="merged", ticket=1)
+        self.event(at="2099-01-01T00:00:00Z", event="attempt", ticket=1, attempt=1, gate="PASS")
+        # A remote-only tag must not be downloaded into the dry-run checkout.
+        self.git(self.origin, "tag", "v0.4.99", "main")
+
+        def snapshot() -> dict[str, tuple[bytes, int]]:
+            return {
+                str(path.relative_to(self.repo)): (path.read_bytes(), path.stat().st_mtime_ns)
+                for path in self.repo.rglob("*") if path.is_file()
+            }
+
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                if legacy:
+                    self.git(self.repo, "tag", "-d", "v0.4.6")
+                    self.git(self.repo, "push", "-q", "origin", ":refs/tags/v0.4.6")
+                    # Stay at the legacy tag's version with changes eligible for a PR.
+                    (self.repo / "factory" / "__init__.py").write_text('__version__ = "0.4.5"\n')
+                    self.git(self.repo, "add", "factory/__init__.py")
+                    self.git(self.repo, "commit", "-q", "-m", "legacy fixture")
+                    self.git(self.repo, "push", "-q", "origin", "main")
+                before = snapshot()
+                env = {
+                    **os.environ, "PATH": f"{binaries}:{os.environ['PATH']}",
+                    "PYTHONPATH": str(Path(release.__file__).resolve().parent.parent),
+                    "PYTHONDONTWRITEBYTECODE": "1",
+                    "PYTHONSAFEPATH": "1",
+                    "XDG_CACHE_HOME": str(self.base / "cache"),
+                    "XDG_STATE_HOME": str(self.base / "state"),
+                    "XDG_RUNTIME_DIR": str(self.base / "runtime"),
+                }
+                proc = subprocess.run(
+                    [sys.executable, "-m", "factory", "release", "--dry-run"],
+                    cwd=self.repo, env=env, text=True, capture_output=True, check=True,
+                )
+                report = json.loads(proc.stdout)
+                verdict = report["verdict"] if legacy else report["odd"]["verdict"]
+                self.assertIn("would open", verdict, proc.stderr)
+                self.assertEqual(snapshot(), before)
+        recorded = [json.loads(line) for line in calls.read_text().splitlines()]
+        self.assertFalse(any("fetch" in args for args in recorded))
+        self.assertFalse(any(
+            any(arg in {"POST", "PUT", "PATCH", "DELETE", "create"} for arg in args)
+            for args in recorded if args[0] == "gh"
+        ))
+
+
 if __name__ == "__main__":
     unittest.main()
