@@ -83,9 +83,9 @@ class RunnerStorageDispatchTest(unittest.TestCase):
         with mock.patch.object(dispatch, "gh_json", return_value={
             **issue, "state": "OPEN", "comments": [],
         }), mock.patch.object(storage, "require", side_effect=low), \
-                mock.patch.object(dispatch, "run", side_effect=AssertionError("claim started")) as run:
-            with self.assertRaises(storage.RunnerStorageLow):
-                dispatch.process_ticket(issue, 1, False, forced=True)
+                mock.patch.object(dispatch, "run", side_effect=AssertionError("claim started")) as run, \
+                self.assertRaises(storage.RunnerStorageLow):
+            dispatch.process_ticket(issue, 1, False, forced=True)
         run.assert_not_called()
 
     def test_gate_storage_deferral_keeps_committed_worker_work(self) -> None:
@@ -103,9 +103,9 @@ class RunnerStorageDispatchTest(unittest.TestCase):
             raise storage.RunnerStorageLow("gate", storage.status(dispatch.cfg))
 
         with mock.patch.dict(os.environ, self.env), \
-                mock.patch.object(dispatch, "worker_round", side_effect=defer):
-            with self.assertRaises(storage.RunnerStorageLow):
-                dispatch.process_ticket(issue, 1, False, forced=True)
+                mock.patch.object(dispatch, "worker_round", side_effect=defer), \
+                self.assertRaises(storage.RunnerStorageLow):
+            dispatch.process_ticket(issue, 1, False, forced=True)
 
         wt = self.repo / ".factory" / "wt-7"
         self.assertEqual((wt / "preserved.txt").read_text(), "worker result")
