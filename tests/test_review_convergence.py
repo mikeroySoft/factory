@@ -128,6 +128,21 @@ class ReviewConvergenceTest(unittest.TestCase):
         self.assertEqual((verdict, parsed, counts, reason), ("REVISE", False, None, "unparsed_verdict"))
         self.assertNotIn('"class"', normalized)
 
+    def test_missing_class_fails_closed_without_review_policy(self) -> None:
+        row = finding(finding_id=None)
+        del row["class"]
+        del row["instances"]
+        self.configure([tally("REVISE", [row])])
+
+        verdict, _ = dispatch.review(self.root, 7, "PASS", self.head)
+
+        self.assertEqual(verdict, "REVISE")
+        result = dispatch._PENDING_REVIEWS[7]
+        self.assertFalse(result["accepted"])
+        self.assertEqual(result["rejection_reason"], "unparsed_verdict")
+        self.assertFalse((dispatch.FACTORY / "review-ledger-7.json").exists())
+
+
     def test_unconfirmed_important_is_downgraded_and_does_not_block(self) -> None:
         self.configure([
             tally("REVISE", [finding()]),

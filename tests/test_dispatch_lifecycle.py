@@ -64,8 +64,10 @@ s = json.loads(p.read_text())
 s["reviews"] = s.get("reviews", 0) + 1
 p.write_text(json.dumps(s))
 verdict = "REVISE" if s["reviews"] == 1 else "APPROVE"
-findings = [{"severity": "important", "pass": "bug", "path": "change.txt", "line": 1,
-             "summary": "First review requires revision."}] if verdict == "REVISE" else []
+findings = [{"severity": "important", "pass": "bug", "class": "first-review-revision",
+             "path": "change.txt", "line": 1, "summary": "First review requires revision.",
+             "instances": [{"path": "change.txt", "line": 1,
+                            "summary": "First review requires revision."}]}] if verdict == "REVISE" else []
 print("```json\\n" + json.dumps({"verdict": verdict, "findings": findings})
       + "\\n```\\nVERDICT: " + verdict)
 '''
