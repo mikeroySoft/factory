@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import importlib.util
+import io
+import json
 import os
 import signal
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -249,6 +252,147 @@ class ReviewerEvalRepairsTest(unittest.TestCase):
                  ):
                 self.assertFalse(reviewer_eval.baseline_ready(cfg))
             self.assertFalse(reviewer_eval.write_baseline(path, baseline, old))
+
+    def test_missing_merge_metadata_recovers_from_authoritative_pr(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cfg, old, merged, new = self.main_history(Path(directory))
+            path = reviewer_eval.baseline_path(cfg)
+            self.assertTrue(reviewer_eval.write_baseline(path, self.summary(old, "flaky"), old))
+            baseline = reviewer_eval.load_baseline(path)
+            for row in (
+                {
+                    "event": reviewer_eval.EVENT, "candidate": "d" * 40,
+                    "status": "completed",
+                    "baseline_sha256": reviewer_eval.baseline_digest(baseline),
+                    "flips": [{"case": "case", "baseline": "flaky", "head": "always-pass"}],
+                },
+                {"event": "merged", "pr": 444, "head": "d" * 40, "merge_sha": None},
+            ):
+                lifecycle.append(cfg.factory / "events.jsonl", row)
+            saved = path.read_bytes()
+            real_run = subprocess.run
+            responses = [
+                subprocess.CompletedProcess([], 1, "", "temporarily unavailable"),
+                subprocess.CompletedProcess(
+                    [], 0, json.dumps({"state": "MERGED", "mergeCommit": {"oid": merged}}), ""
+                ),
+            ]
+
+            def run(command, **kwargs):
+                if command[0] == "gh":
+                    self.assertEqual(command, [
+                        "gh", "pr", "view", "444", "--json", "state,mergeCommit",
+                    ])
+                    return responses.pop(0)
+                return real_run(command, **kwargs)
+
+            with mock.patch.object(subprocess, "run", side_effect=run):
+                self.assertFalse(reviewer_eval.write_baseline(
+                    path, self.summary(new, "always-pass"), new, root=cfg.root
+                ))
+                self.assertEqual(path.read_bytes(), saved)
+                self.assertTrue(reviewer_eval.write_baseline(
+                    path, self.summary(new, "always-pass"), new, root=cfg.root
+                ))
+            self.assertEqual(responses, [])
+            self.assertEqual(reviewer_eval.load_baseline(path)["main_sha"], new)
+            # The candidate is not an ancestor of main (as with a squash merge).
+            self.assertFalse(reviewer_eval._is_ancestor(cfg.root, "d" * 40, new))
+            with mock.patch.object(reviewer_eval, "corpus_version", return_value=2), \
+                 mock.patch.object(
+                     reviewer_eval, "contract_fingerprint", return_value=self.fingerprint()
+                 ):
+                self.assertTrue(reviewer_eval.baseline_ready(cfg))
+
+    def test_recovered_merge_must_be_merged_and_contained_in_evaluated_main(self) -> None:
+        for evidence in (
+            {"state": "OPEN", "mergeCommit": {"oid": "e" * 40}},
+            {"state": "MERGED", "mergeCommit": None},
+            {"state": "MERGED", "mergeCommit": {"oid": "invalid"}},
+            {"state": "MERGED", "mergeCommit": {"oid": "e" * 40}},
+            None,
+        ):
+            with self.subTest(evidence=evidence), tempfile.TemporaryDirectory() as directory:
+                cfg, old, merged, new = self.main_history(Path(directory))
+                path = reviewer_eval.baseline_path(cfg)
+                self.assertTrue(reviewer_eval.write_baseline(path, self.summary(old, "flaky"), old))
+                digest = reviewer_eval.baseline_digest(reviewer_eval.load_baseline(path))
+                for row in (
+                    {
+                        "event": reviewer_eval.EVENT, "candidate": old,
+                        "status": "completed", "baseline_sha256": digest,
+                        "flips": [{"case": "case", "baseline": "flaky", "head": "always-pass"}],
+                    },
+                    {"event": "merged", "pr": 444, "head": old, "merge_sha": None},
+                ):
+                    lifecycle.append(cfg.factory / "events.jsonl", row)
+                saved = path.read_bytes()
+                real_run = subprocess.run
+
+                def run(command, **kwargs):
+                    if command[0] == "gh":
+                        return subprocess.CompletedProcess([], 0, json.dumps(evidence), "")
+                    return real_run(command, **kwargs)
+
+                with mock.patch.object(subprocess, "run", side_effect=run):
+                    self.assertFalse(reviewer_eval.write_baseline(
+                        path, self.summary(new, "always-pass"), new, root=cfg.root
+                    ))
+                self.assertEqual(path.read_bytes(), saved)
+                # Even valid recovered evidence must not clear an older-main rerun.
+                with mock.patch.object(subprocess, "run", side_effect=lambda command, **kwargs: (
+                    subprocess.CompletedProcess([], 0, json.dumps({
+                        "state": "MERGED", "mergeCommit": {"oid": merged},
+                    }), "") if command[0] == "gh" else real_run(command, **kwargs)
+                )):
+                    self.assertFalse(reviewer_eval.write_baseline(
+                        path, self.summary(old, "always-pass"), old, root=cfg.root
+                    ))
+                self.assertEqual(path.read_bytes(), saved)
+
+    def test_cli_refused_main_refresh_is_nonzero_but_candidate_only_passes(self) -> None:
+        for accepted in (True, False):
+            with self.subTest(accepted=accepted), tempfile.TemporaryDirectory() as directory:
+                cfg, old, _, new = self.main_history(Path(directory))
+                path = reviewer_eval.baseline_path(cfg)
+                self.assertTrue(reviewer_eval.write_baseline(path, self.summary(new, "always-pass"), new))
+                saved = path.read_bytes()
+                corpus = cfg.root / reviewer_eval.CORPUS_PATH
+                oracle = corpus / "cases/case/oracle.json"
+                oracle.parent.mkdir(parents=True)
+                oracle.write_text(json.dumps({"expected_verdict": "APPROVE", "findings": []}))
+                (corpus / "splits.json").write_text(json.dumps({
+                    "version": 2, "splits": {"train": ["case"], "lockbox": []},
+                }))
+                rows = [{
+                    "case": "case", "returncode": 0, "prompt_sha256": "unchanged",
+                    "output": '```json\n{"verdict":"APPROVE","findings":[]}\n```\nVERDICT: APPROVE',
+                }] * 3
+                output = io.StringIO()
+                with mock.patch.object(config, "load", return_value=cfg), \
+                     mock.patch.object(config, "git", side_effect=lambda root, *args: (
+                         str(cfg.root) if args == ("rev-parse", "--show-toplevel") else old
+                     )), \
+                     mock.patch.object(reviewer_eval, "_candidate_accepted", return_value=accepted), \
+                     mock.patch.object(reviewer_eval, "_run_runner", return_value=(rows, False)), \
+                     mock.patch.object(reviewer_eval, "_judge", return_value=(set(), {})), \
+                     mock.patch.object(
+                         reviewer_eval, "_checkout_settings", return_value=self.fingerprint()
+                     ), \
+                     mock.patch.object(
+                         reviewer_eval, "contract_fingerprint", return_value=self.fingerprint()
+                     ), redirect_stdout(output):
+                    status = reviewer_eval.main([])
+                self.assertEqual(status, 1 if accepted else 0)
+                self.assertEqual(path.read_bytes(), saved)
+                summary = reviewer_eval.result_for_head(
+                    old, lifecycle.read_events(cfg.factory / "events.jsonl")
+                )
+                self.assertEqual(summary["verdict"], "block" if accepted else "pass")
+                if accepted:
+                    self.assertFalse(summary["baseline_updated"])
+                    self.assertIn("refused", summary["baseline_update_error"].lower())
+                    self.assertIn("refused", output.getvalue().lower())
 
     @staticmethod
     def fingerprint() -> dict:
