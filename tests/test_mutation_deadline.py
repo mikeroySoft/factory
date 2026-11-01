@@ -40,7 +40,7 @@ class MutationDeadlineTest(unittest.TestCase):
         *,
         clock: list[float] | None = None,
         baseline_returncode: int = 0,
-    ) -> tuple[int, str, mock.Mock]:
+    ) -> tuple[int, str, mock.Mock, mock.Mock]:
         attrs = types.ModuleType("attrs")
         attrs.evolve = lambda value, **changes: SimpleNamespace(**{**vars(value), **changes})
         cosmic_ray = types.ModuleType("cosmic_ray")
@@ -60,6 +60,9 @@ class MutationDeadlineTest(unittest.TestCase):
             if clock is not None
             else mock.patch.object(mutation.time, "monotonic", return_value=0)
         )
+        baseline = mock.Mock(return_value=subprocess.CompletedProcess(
+            [], baseline_returncode, "baseline output\n", "",
+        ))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "factory").mkdir()
@@ -72,18 +75,13 @@ class MutationDeadlineTest(unittest.TestCase):
                         mutation, "changed_lines", return_value={"factory/example.py": {1}},
                     ), \
                     mock.patch.object(mutation, "sample", return_value=([self.spec], 1)), \
-                    mock.patch.object(
-                        mutation.subprocess,
-                        "run",
-                        return_value=subprocess.CompletedProcess(
-                            [], baseline_returncode, "baseline output\n", "",
-                        ),
-                    ), contextlib.redirect_stdout(output):
+                    mock.patch.object(mutation.subprocess, "run", baseline), \
+                    contextlib.redirect_stdout(output):
                 status = mutation.main(["--blocking"])
-        return status, output.getvalue(), mutating.mutate_and_test
+        return status, output.getvalue(), mutating.mutate_and_test, baseline
 
     def test_blocking_ignores_mutants_not_started_before_deadline(self) -> None:
-        status, output, mutate = self.run_mutation(
+        status, output, mutate, _ = self.run_mutation(
             SimpleNamespace(), clock=[0, 0, 0, 0.1, 0.2, 2, 2],
         )
 
@@ -99,7 +97,7 @@ class MutationDeadlineTest(unittest.TestCase):
             diff="-value = 1\n+value = 2\n",
             output="timeout",
         )
-        status, output, mutate = self.run_mutation(
+        status, output, mutate, _ = self.run_mutation(
             cut_result, clock=[0, 0, 0, 0.1, 0.2, 0.3, 2, 2],
         )
 
@@ -116,7 +114,7 @@ class MutationDeadlineTest(unittest.TestCase):
             output="",
         )
 
-        status, output, _ = self.run_mutation(survivor)
+        status, output, _, _ = self.run_mutation(survivor)
 
         self.assertEqual(status, 1)
         self.assertIn("factory/example.py:1: NumberReplacer", output)
@@ -130,19 +128,30 @@ class MutationDeadlineTest(unittest.TestCase):
             output="tool failed",
         )
 
-        status, output, _ = self.run_mutation(broken)
+        status, output, _, _ = self.run_mutation(broken)
 
         self.assertEqual(status, 1)
         self.assertIn("mutation check broke on 1 mutants", output)
         self.assertIn("tool failed", output)
 
     def test_blocking_fails_for_baseline_failure(self) -> None:
-        status, output, mutate = self.run_mutation(
+        status, output, mutate, _ = self.run_mutation(
             SimpleNamespace(), baseline_returncode=1,
         )
 
         self.assertEqual(status, 1)
         self.assertIn("baseline suite failed", output)
+        mutate.assert_not_called()
+
+    def test_blocking_fails_when_baseline_deadline_is_already_exhausted(self) -> None:
+        status, output, mutate, baseline = self.run_mutation(
+            SimpleNamespace(), clock=[0, 0, 2, 2, 2, 2, 2],
+        )
+
+        self.assertEqual(status, 1)
+        self.assertIn("baseline suite did not finish", output)
+        self.assertIn("incomplete: 1 mutants not started and 0 cut short", output)
+        baseline.assert_not_called()
         mutate.assert_not_called()
 
 
