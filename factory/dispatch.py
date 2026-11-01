@@ -4227,7 +4227,23 @@ def process_ticket(
                 )
                 if ok:
                     break
-                if _handle_protected_failure(fresh, labels, wt, report, logfile):
+                if guidance := _protected_gate_guidance(report, labels):
+                    if cfg.manager and _manager_authorizable_test_edit(report, labels):
+                        _handle_protected_failure(fresh, labels, wt, report, logfile)
+                    else:
+                        tests = (
+                            "- protected-tests: FAIL" in report
+                            or "- protected-paths: FAIL (add-only" in report
+                        )
+                        reason = (
+                            "worker removed or changed existing tests"
+                            if tests else "worker edited protected paths"
+                        )
+                        escalate(
+                            n, reason, logfile,
+                            extra=f"{guidance}\n\n## Offending diff\n\n{report}",
+                            code="protected_paths",
+                        )
                     return
                 if time.monotonic() > deadline:
                     escalate(n, f"wall-clock budget ({budget_min} min) exceeded", logfile, code="budget")
