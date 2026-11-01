@@ -1735,3 +1735,95 @@ class FinishedBudgetLifecycleTest(unittest.TestCase):
         self.assertIsNone(attempt["gate"])
         self.assertTrue(any(row.get("event") == "escalate" and row["code"] == "budget" for row in events))
         self.assertFalse(json.loads(self.state.read_text()).get("pr"))
+
+
+class GateDeadlineLifecycleTest(unittest.TestCase):
+    setUp = LocalCLI.setUp
+    git = LocalCLI.git
+    write_config = LocalCLI.write_config
+    commit_config = LocalCLI.commit_config
+    cli = LocalCLI.cli
+    merge_accepted = LocalCLI.merge_accepted
+
+    def dispatch_overrun(self, *, expire_during="gate", committed=True, unverified="None.",
+                         stale=False, worker_exit=0, bounce=False):
+        from contextlib import chdir
+        from unittest import mock
+
+        from factory import config, dispatch
+
+        self.state.write_text(json.dumps({"reviews": 0 if bounce or expire_during == "review" else 1}))
+        handoff = "## Still unverified\n" + unverified + "\n"
+        self.worker.write_text(
+            WORKER + "\nimport subprocess\n"
+            + ("subprocess.run(['git', 'add', 'change.txt'], check=True)\n"
+               "subprocess.run(['git', 'commit', '-qm', 'worker done'], check=True)\n" if committed else "")
+            + ("" if stale else "Path('.factory').mkdir(exist_ok=True)\n"
+               f"Path('.factory/handoff-7.md').write_text({handoff!r})\n")
+            + f"raise SystemExit({worker_exit})\n"
+        )
+        self.write_config(extra='\n[[gate.check]]\nname = "pr-proof"\nwhen = "pr"\nrun = '
+                          + json.dumps([sys.executable, "-c", "print('PR gate passed')"]) + "\n")
+        self.commit_config()
+        clock = [0]
+        gate_calls = [0]
+        original_gate = dispatch.run_gate
+        original_review = dispatch.review
+
+        def gate(*args, **kwargs):
+            result = original_gate(*args, **kwargs)
+            if kwargs.get("tier") != "pr":
+                gate_calls[0] += 1
+                if expire_during == "gate" and gate_calls[0] == (2 if bounce else 1):
+                    clock[0] = 120
+            return result
+
+        def review(*args, **kwargs):
+            result = original_review(*args, **kwargs)
+            if expire_during == "review":
+                clock[0] = 120
+            return result
+
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(dispatch.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(dispatch, "run_gate", side_effect=gate), \
+                mock.patch.object(dispatch, "review", side_effect=review), \
+                mock.patch.object(dispatch.risk, "classify", return_value=("Medium", ["medium:fixture"])):
+            dispatch.configure(config.load(self.repo))
+            if stale:
+                wt = dispatch.ensure_worktree(7)
+                (wt / ".factory").mkdir(exist_ok=True)
+                (wt / ".factory/handoff-7.md").write_text("## Still unverified\nNone.\n")
+            issue = dispatch.gh_json(["issue", "view", "7"])
+            dispatch.process_ticket(issue, 1, False, forced=True)
+        return list(lifecycle.read_events(self.events))
+
+    def test_on_time_worker_gate_overrun_preserves_passing_gate(self):
+        events = self.dispatch_overrun(unverified="Hosted CI remains unverified.")
+        attempt = next(row for row in events if row.get("event") == "attempt")
+        self.assertEqual(attempt["gate"], "PASS")
+        self.assertFalse(attempt["finished"])
+        self.assertFalse(any(row.get("event") == "escalate" for row in events))
+        self.assertTrue(any(row.get("event") == "approved" for row in events))
+        self.merge_accepted()
+
+    def test_on_time_leftovers_gate_overrun_preserves_passing_gate(self):
+        events = self.dispatch_overrun(committed=False)
+        self.assertFalse(any(row.get("event") == "escalate" for row in events))
+        self.assertTrue(any(row.get("event") == "approved" for row in events))
+        self.merge_accepted()
+
+    def test_on_time_bounce_gate_overrun_preserves_passing_gate(self):
+        events = self.dispatch_overrun(committed=False, bounce=True)
+        self.assertFalse(any(row.get("event") == "escalate" for row in events))
+        self.assertEqual(len([row for row in events if row.get("event") == "review-rework"]), 1)
+        self.assertTrue(any(row.get("event") == "approved" for row in events))
+        self.merge_accepted()
+
+    def test_expired_review_cannot_use_stale_unfinished_handoff(self):
+        events = self.dispatch_overrun(expire_during="review", committed=False, stale=True, worker_exit=1)
+        attempt = next(row for row in events if row.get("event") == "attempt")
+        self.assertEqual(attempt["gate"], "PASS")
+        self.assertFalse(attempt["finished"])
+        self.assertFalse(any(row.get("event") == "review-rework" for row in events))
+        self.assertTrue(any(row.get("event") == "escalate" and row["code"] == "budget" for row in events))
