@@ -2018,13 +2018,8 @@ def _write_review_ledger(n: int, ledger: dict) -> None:
         raise
 
 
-def _finding_key(row: dict) -> tuple[str, tuple[tuple[str, int], ...]]:
-    locations = tuple(sorted(
-        (instance["path"], instance["line"])
-        for instance in _finding_instances(row)
-        if _valid_review_instance(instance)
-    ))
-    return str(row.get("class") or ""), locations
+def _finding_key(row: dict) -> tuple[str, str, int]:
+    return str(row.get("class") or ""), row["path"], row["line"]
 
 
 def _open_ledger_findings(ledger: dict | None) -> list[dict]:
@@ -2095,7 +2090,8 @@ def _reconcile_review(
     dropped = 0
     active_ids = set()
     current_rows = []
-    for raw in tally["findings"]:
+    # A duplicate's optional classification must never suppress a blocking finding.
+    for raw in sorted(tally["findings"], key=lambda row: row["severity"] != "important"):
         row = dict(raw)
         match = by_id.get(row.get("id")) or by_key.get(_finding_key(row))
         if match is not None:
