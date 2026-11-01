@@ -1639,3 +1639,79 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
             "fork lock\n",
         )
         self.git("-C", str(wt), "merge-base", "--is-ancestor", tip, "agent/7")
+
+
+class FinishedBudgetLifecycleTest(unittest.TestCase):
+    setUp = LocalCLI.setUp
+    git = LocalCLI.git
+    write_config = LocalCLI.write_config
+    commit_config = LocalCLI.commit_config
+    cli = LocalCLI.cli
+    merge_accepted = LocalCLI.merge_accepted
+
+    def expired_pass(self, unverified="None.", *, committed=True, gate_fails=False, pr_fails=False):
+        from unittest import mock
+
+        from factory import config, dispatch
+
+        self.state.write_text(json.dumps({"reviews": 1}))
+        handoff = "## Changed\nDone.\n## Still unverified\n" + unverified + "\n## Next\nNothing.\n"
+        self.worker.write_text(
+            WORKER + "\nimport subprocess\n"
+            + ("subprocess.run(['git', 'add', 'change.txt'], check=True)\n"
+               "subprocess.run(['git', 'commit', '-qm', 'finished'], check=True)\n" if committed else "")
+            + "Path('.factory').mkdir(exist_ok=True)\n"
+            + f"Path('.factory/handoff-7.md').write_text({handoff!r})\n"
+        )
+        extra = (
+            '\n[[gate.check]]\nname = "pr-proof"\nwhen = "pr"\nrun = '
+            + json.dumps([sys.executable, "-c", f"raise SystemExit({int(pr_fails)})"]) + "\n"
+        )
+        self.write_config(check=[sys.executable, "-c", f"raise SystemExit({int(gate_fails)})"], extra=extra)
+        self.commit_config()
+        clock = [0]
+        original_worker = dispatch.run_worker
+
+        def finish(*args, **kwargs):
+            result = original_worker(*args[:4], float("inf"), **kwargs)
+            self.assertEqual(result[0], 0, args[2].read_text())
+            clock[0] = 120
+            return result
+
+        with mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(dispatch.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(dispatch, "run_worker", side_effect=finish), \
+                mock.patch.object(dispatch.risk, "classify", return_value=("Medium", ["medium:fixture"])):
+            dispatch.configure(config.load(self.repo))
+            issue = dispatch.gh_json(["issue", "view", "7"])
+            dispatch.process_ticket(issue, 1, False, forced=True)
+        return list(lifecycle.read_events(self.events))
+
+    def test_expired_finished_worker_passes_both_gates_pushes_reviews_and_merges(self):
+        events = self.expired_pass()
+        self.assertFalse(any(row.get("event") == "escalate" for row in events))
+        self.assertTrue(any(row.get("event") == "approved" for row in events))
+        self.assertFalse(any(row.get("event") == "review-rework" for row in events))
+        self.assertTrue(json.loads(self.state.read_text())["pr"])
+        self.assertEqual(json.loads(self.state.read_text())["reviews"], 2)
+        self.merge_accepted()
+
+    def test_expired_blocking_unverified_item_escalates(self):
+        events = self.expired_pass("Production migration still needs verification.")
+        self.assertTrue(any(row.get("event") == "escalate" and row["code"] == "budget" for row in events))
+        self.assertFalse(json.loads(self.state.read_text()).get("pr"))
+
+    def test_expired_uncommitted_work_escalates(self):
+        events = self.expired_pass(committed=False)
+        self.assertTrue(any(row.get("event") == "escalate" and row["code"] == "budget" for row in events))
+        self.assertFalse(json.loads(self.state.read_text()).get("pr"))
+
+    def test_expired_failing_attempt_gate_escalates(self):
+        events = self.expired_pass(gate_fails=True)
+        self.assertTrue(any(row.get("event") == "escalate" for row in events))
+        self.assertFalse(json.loads(self.state.read_text()).get("pr"))
+
+    def test_expired_failing_pr_gate_escalates(self):
+        events = self.expired_pass(pr_fails=True)
+        self.assertTrue(any(row.get("event") == "escalate" for row in events))
+        self.assertFalse(any(row.get("event") == "approved" for row in events))
