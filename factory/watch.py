@@ -240,7 +240,7 @@ def metric_series(events: list[dict], start: date, end: date) -> dict[str, dict[
         if row.get("event") == "merged" and isinstance(row.get("head"), str)
     }
     attempt_heads = {
-        (row.get("ticket"), row.get("attempt")): row["head"]
+        (row.get("dispatcher_run_id"), row.get("ticket"), row.get("attempt")): row["head"]
         for row in events
         if row.get("event") == "attempt" and row.get("ticket") is not None
         and row.get("attempt") is not None and isinstance(row.get("head"), str)
@@ -252,7 +252,9 @@ def metric_series(events: list[dict], start: date, end: date) -> dict[str, dict[
         and isinstance(row.get("check"), str)
         and (
             row.get("ticket") is None or row.get("attempt") is None
-            or attempt_heads.get((row.get("ticket"), row.get("attempt"))) in merged_heads
+            or attempt_heads.get((
+                row.get("dispatcher_run_id"), row.get("ticket"), row.get("attempt"),
+            )) in merged_heads
         )
     ]
     failed_ids = {id(row) for row in failed}
