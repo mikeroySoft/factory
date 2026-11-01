@@ -942,7 +942,7 @@ def requeue_agent(
             and _label_transition(item) not in transitions_before
         ]
     except (subprocess.CalledProcessError, OSError, ValueError):
-        if proc.returncode == 0:
+        if proc.returncode >= 0:
             status = "uncertain"
     record("agent-requeue", ticket=n, operation=operation, status=status,
            before=transitions_before, releases=releases)

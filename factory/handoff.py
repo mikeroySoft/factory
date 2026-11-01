@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import fcntl
 import re
+import uuid
 from contextlib import nullcontext
 from pathlib import Path
 from subprocess import CalledProcessError
@@ -239,7 +240,7 @@ def handoff_pass(dry_run: bool = False) -> None:
                     continue
                 intent = next((i for i in pending if i["target"] == current), None)
                 if intent is None:
-                    token = f"{MARK} {request} {escalation['at']} {current}"
+                    token = f"{MARK} {request} {escalation['at']} {current} {uuid.uuid4().hex}"
                     dispatch.record("handoff", ticket=n, round=r, request=request, token=token, target=current, why=why,
                                     route={k: route.get(k) for k in ("status", "owner", "candidates", "source", "reason")})
                 else:
