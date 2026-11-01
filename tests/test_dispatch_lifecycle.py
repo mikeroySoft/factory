@@ -1174,3 +1174,32 @@ class TriageExemptionLifecycleTest(unittest.TestCase):
         self.assertIn("bug ticket needs a `Repro test:` handoff line", report)
         self.assertNotIn("- bug-repro: SKIP", report)
         self.assertFalse(any(row.get("event") == "approved" for row in events))
+
+
+class StorageLaunchRetryLifecycleTest(unittest.TestCase):
+    setUp = LocalCLI.setUp
+    git = LocalCLI.git
+    write_config = LocalCLI.write_config
+    commit_config = LocalCLI.commit_config
+    cli = LocalCLI.cli
+
+    def test_requeued_escalation_keeps_unpublished_work_when_worker_launch_fails(self):
+        self.write_config(check=[sys.executable, "-c", "raise SystemExit(1)"])
+        self.commit_config()
+        self.cli("dispatch", "--ticket", "7")
+        wt = self.repo / ".factory" / "wt-7"
+        head = self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip()
+        work = (wt / "change.txt").read_text()
+        self.assertTrue(any(row.get("event") == "escalate"
+                            for row in lifecycle.read_events(self.events)))
+        self.git("checkout", "main")
+        self.write_config(worker=["no-such-worker-469-regression"])
+        self.commit_config()
+
+        self.cli("dispatch", "--ticket", "7", expected=1)
+
+        self.assertTrue(wt.is_dir())
+        self.assertEqual(self.git("rev-parse", "agent/7").stdout.strip(), head)
+        self.assertEqual((wt / "change.txt").read_text(), work)
+        self.assertEqual(sum(row.get("event") == "escalate"
+                             for row in lifecycle.read_events(self.events)), 1)

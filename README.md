@@ -1069,6 +1069,30 @@ Clearing `manager.model` removes the repository override and restores the
 existing host value, a legacy `manager.command --model` fallback, or OMP's
 default model. Gate and safety policy remain file-managed.
 
+Before startup fetches or admission journal writes, at each claim, and before
+every gate, Factory checks available bytes and
+inodes on both the runner temp filesystem and the `.factory` worktree
+filesystem. Falling below `[runner]` thresholds records the machine condition
+`runner_storage_low`, starts no gate, charges no ticket or manager round, and
+leaves the ticket out of `ready-for-human`. The pass exits successfully so the
+service monitor does not file a per-ticket or runtime bug. `factory doctor`
+reports the same live check, and the dashboard lists it under Host problems.
+Worker and gate subprocesses receive isolated temporary directories; normal
+exits remove them immediately. After a crash, the next preflight reclaims roots
+only after checking that the recorded owner and consuming children have stopped;
+uncertain liveness retains the root. Escalated ticket worktrees and unpublished
+worker commits remain available, including after a later launch failure.
+Refreshes persist retry intent before withdrawing approval, so a storage deferral
+keeps the candidate and resumes automatically on a later merge pass, still
+requiring the normal gate and independent review. If storage exhaustion prevents
+journaling the host condition, stderr reports `runner_storage_low` instead;
+gate exit 75 and successful dispatcher deferral are unchanged. Space or quota
+exhaustion while creating a run's temp root also defers work.
+Manager FIX retries keep the original decision and candidate head, including
+after a push but before PR-tier checks finish. Recovery records fresh head-bound
+gate evidence without another worker attempt or manager round. The normal
+independent review, remote-head lease and final manager approval rules still apply.
+
 ```toml
 [repo]
 # upstream = "upstream"          # fork workflow: sync upstream main each pass
@@ -1098,6 +1122,10 @@ command = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1",
 
 [manager]                         # optional; unset command disables it
 command = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]   # {prompt} = manager prompt file
+
+[runner]
+min_free_gb = 5
+min_free_inodes = 100000
 
 [gate]
 timeout = 1200
@@ -1612,9 +1640,10 @@ Reasons include `configured_check_failed`, `conflict_markers`,
 `leak_scan_matches`, `APPROVE`/`REVISE`, `check_timeout`,
 `triage_endpoint_unavailable`, `no_tickets`, `state_changed`, `ci_pending`,
 and `no_passing_ci`; exceptions may instead provide diagnostic text. Reasons
-are evidence, not a replacement for `outcome`. Existing gate exit codes,
-review retry behavior, claim locks, concurrency limits, and merge prerequisites
-are unchanged.
+are evidence, not a replacement for `outcome`. The gate exits 75 when its
+storage preflight defers work; dispatch treats that as a host wait, not a gate
+failure. Review retry behavior, claim locks, concurrency limits, and merge
+prerequisites are unchanged.
 
 ### Observation, interrupted writes, and CLI semantics
 
@@ -1719,6 +1748,7 @@ not indefinitely active stages.
 | `ticket_lock_contended` | Ticket preflight found the lock held or its nonblocking acquisition lost the race; retry next pass. |
 | `worker_unavailable` | A frontier claim found the ticket's worker executable (`executable` in details) missing from the dispatcher's PATH (e.g. mid-upgrade); the ticket is left unclaimed and retried next pass instead of failing after assignment. `dispatch --ticket` still launches and fails loudly. |
 | `claim_failed` | The claim command failed before assignment; the ticket is left unclaimed and retried next pass. |
+| `runner_storage_low` | Runner free bytes/inodes fell below `[runner]` thresholds, or run temp setup exhausted space/quota; retry next pass without charging a ticket/manager round or failing its gate. Deferred refreshes retain the candidate without approval until normal gate and independent review succeed. |
 | `merge_lock_contended` | Nonblocking landing lock miss; skip this pass, retry next pass, never convert to a blocking wait. |
 | `exclusive_resource` | Gate observed its exclusive lock held before the unchanged blocking acquisition. |
 | `ci_pending` | Existing `pr_checks` result contained pending checks; `pr` integer. No extra CI query or polling loop. |

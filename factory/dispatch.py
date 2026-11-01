@@ -31,7 +31,7 @@ import tomllib
 from contextlib import contextmanager, nullcontext, suppress
 from pathlib import Path
 
-from factory import __version__, brief, config, lifecycle, risk
+from factory import __version__, brief, config, lifecycle, risk, storage
 from factory.config import (
     LABEL_ADD_ONLY_OVERRIDE,
     LABEL_AGENT,
@@ -1559,6 +1559,7 @@ def run_gate(
     repro_test: str | None = None, no_repro_test: str | None = None,
     base: str | None = None, timeout: float | None = None, blocking_mutation: bool = False,
 ) -> tuple[bool, str]:
+    storage.require(cfg, "gate")
     report_rel = f".factory/gate-report-{n}.md"
     (wt / ".factory").mkdir(exist_ok=True)
     report = wt / report_rel
@@ -1600,7 +1601,10 @@ def run_gate(
         cmd += ["--tier", tier]
     if blocking_mutation:
         cmd.append("--blocking-mutation")
-    proc = run(cmd, cwd=wt, check=False, timeout=timeout)
+    with storage.temporary_environment(f"factory-gate-{n}-", cfg, "gate"):
+        proc = run(cmd, cwd=wt, check=False, timeout=timeout)
+    if proc.returncode == storage.EX_TEMPFAIL:
+        raise storage.RunnerStorageLow("gate", storage.status(cfg))
     if report.exists():
         text = report.read_text()
         ok = proc.returncode == 0
@@ -3087,13 +3091,51 @@ def refresh_requeue_context(n: int) -> str:
     )
 
 
+def pending_refresh(n: int, pr: int) -> dict | None:
+    """A refresh intent survives host deferrals, but never a ticket decision."""
+    pending = None
+    for event in lifecycle.read_events(EVENTS):
+        if event.get("ticket") != n:
+            continue
+        if event.get("event") == "refresh-pending" and event.get("pr") == pr:
+            pending = event
+        elif event.get("event") in {
+            "refresh-complete", "approved", "escalate", "conflict-requeue",
+            "gate-requeue", "risk-requeue", "merged",
+        }:
+            pending = None
+    return pending
+
+
 def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
+    try:
+        return _refresh_pr_branch(n, pr, carries_upstream)
+    except storage.RunnerStorageLow:
+        execution = lifecycle.current()
+        if execution is not None:
+            execution.defer_storage()
+            execution.wait("runner_storage_low", mode="retry_next_pass", pr=pr)
+        raise
+
+
+def _refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     """Refresh, gate, push, and independently review the resulting immutable head."""
     target = gh_json(["pr", "view", str(pr), "--repo", REPO, "--json", "baseRefName"])
     if target.get("baseRefName") != cfg.main:
         log(f"PR #{pr}: targets {target.get('baseRefName')!r}, not {cfg.main!r}; not refreshing")
         return False
+    storage.require(cfg, "refresh")
     wt = ensure_worktree(n)
+    pending = pending_refresh(n, pr)
+    if pending is not None:
+        carries_upstream = pending["carries_upstream"]
+    else:
+        # Persist retry eligibility before withdrawing approval. A crash or full
+        # journal after the rebase must not strand an assigned, unapproved PR.
+        run(["git", "fetch", "origin"], cwd=wt)
+        remote_head = run(["git", "rev-parse", f"origin/agent/{n}"], cwd=wt).stdout.strip()
+        record("refresh-pending", ticket=n, pr=pr, remote_head=remote_head,
+               carries_upstream=carries_upstream)
 
     def restore_pr_head(refreshed_head: str) -> str:
         """Keep the unpushed candidate as evidence before restoring the live PR head."""
@@ -3151,7 +3193,9 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     run(["git", "fetch", "origin"], cwd=wt)
     local_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     remote_head = run(["git", "rev-parse", f"origin/agent/{n}"], cwd=wt).stdout.strip()
-    if local_head != remote_head:
+    if local_head != remote_head and (
+        pending is None or remote_head != pending["remote_head"]
+    ):
         withdraw(f"kept worktree head {local_head} differs from remote head {remote_head}", "refresh_head")
         return False
     verb, cmd = (
@@ -3378,6 +3422,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     if not approve_pr(n, head):
         withdraw("approval evidence, head, or human review state changed before refreshed approval", "approval_drift")
         return False
+    record("refresh-complete", ticket=n, pr=pr, head=head)
     log(f"#{n}: PR #{pr} {verb}d onto current main, re-gated, and re-approved at {head[:12]}")
     return True
 
@@ -3474,7 +3519,8 @@ def merge_pass_locked(dry_run: bool) -> None:
         if pr.get("baseRefName") != cfg.main:
             log(f"PR #{pr['number']}: targets {pr.get('baseRefName')!r}, not {cfg.main!r}; not merging")
             continue
-        if FACTORY_APPROVED not in {label["name"] for label in pr["labels"]}:
+        if (FACTORY_APPROVED not in {label["name"] for label in pr["labels"]}
+                and pending_refresh(int(m.group(1)), pr["number"]) is None):
             continue
         if pr["reviewDecision"] == "CHANGES_REQUESTED":
             log(f"PR #{pr['number']}: human requested changes; not merging")
@@ -3547,12 +3593,13 @@ def merge_pass_locked(dry_run: bool) -> None:
             fresh = gh_json(["pr", "view", str(pr_num), "--repo", REPO, "--json", fields])
             labels = {label["name"] for label in fresh.get("labels", [])}
             head = fresh.get("headRefOid")
+            refresh_pending = pending_refresh(n, pr_num)
             if (
                 fresh.get("state") != "OPEN"
                 or fresh.get("headRefName") != f"agent/{n}"
                 or fresh.get("baseRefName") != cfg.main
                 or fresh.get("isDraft")
-                or FACTORY_APPROVED not in labels
+                or (FACTORY_APPROVED not in labels and refresh_pending is None)
                 or fresh.get("reviewDecision") == "CHANGES_REQUESTED"
             ):
                 log(f"PR #{pr_num}: state changed during eligibility check; not merging")
@@ -3572,7 +3619,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 f"--profile {shlex.quote(cfg.eval_profile)}"
             )
             if dry_run:
-                if behind:
+                if behind or refresh_pending is not None:
                     log(f"PR #{pr_num}: would refresh (behind main)")
                 elif (
                     cfg.eval_schedule
@@ -3625,7 +3672,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                     ).returncode
                     != 0
                 )
-            if behind:
+            if behind or refresh_pending is not None:
                 record_merge_decision(
                     n, pr_num, "refresh branch",
                     f"approval head {head} is stale because the branch is behind {cfg.main}",
@@ -3833,9 +3880,10 @@ def worker_round(
         run_options["env_overrides"] = environment
     if worker_version:
         run_options.update(worker=worker, worker_version=worker_version)
-    code, fired = run_worker(
-        argv, wt, logfile, wt / ".factory" / f"handoff-{n}.md", deadline, **run_options,
-    )
+    with storage.temporary_environment(f"factory-worker-{n}-", cfg, "worker"):
+        code, fired = run_worker(
+            argv, wt, logfile, wt / ".factory" / f"handoff-{n}.md", deadline, **run_options,
+        )
     journal_attempt_plan(wt, n, attempt, labels, worker, worker_version)
     transcript = _transcript(session_dir, wall)
     timeout = {"timeout": fired, "reason": TIMEOUT_REASONS[fired]} if fired else {}
@@ -4020,6 +4068,8 @@ def process_ticket(
     worker_key = cfg.worker_key(labels)
     worker = cfg.worker_command(worker_key, wt / ".factory-prompt.md", wt)[0]
     lock_path = FACTORY / "locks" / f"{n}.lock"
+    if not dry_run:
+        storage.require(cfg, "claim")
     if lock_held(lock_path):
         log(f"#{n}: skipped (in flight, lock held on {lock_path})")
         if not dry_run:
@@ -4114,6 +4164,7 @@ def process_ticket(
                 record("plan-bound", ticket=n, schema_version=1, baseline=baseline,
                        issue={key: fresh.get(key) for key in ("title", "body", "comments")})
 
+            storage.require(cfg, "claim")
             try:
                 run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-assignee", "@me"])
             except subprocess.CalledProcessError as exc:
@@ -4310,6 +4361,13 @@ def process_ticket(
                          code="approval_drift")
         except LeaseRefused as exc:
             escalate(n, str(exc), None, code="lease_refused")
+        except storage.RunnerStorageLow:
+            execution.defer_storage()
+            execution.wait("runner_storage_low", mode="retry_next_pass")
+            if claimed:
+                run(["gh", "issue", "edit", str(n), "--repo", REPO,
+                     "--remove-assignee", "@me"], check=False)
+            raise
         except FileNotFoundError as exc:
             # Host defect (worker executable not on PATH, #260), not a ticket defect: give the
             # claim back so the frontier retries once the host is fixed; the pass goes on.
@@ -4337,6 +4395,8 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
     """Claim up to capacity frontier tickets in accepted-priority order and work each one."""
     from factory import schedule
 
+    if not dry_run:
+        storage.require(cfg, "claim")
     with nullcontext() if dry_run else lifecycle.scope(EVENTS, "scheduling", lazy=True) as execution:
         active = active_tickets()
         capacity = MAX_ACTIVE - len(active)
@@ -4398,7 +4458,7 @@ def pin_root() -> list[str]:
     return paths
 
 
-def main(argv: list[str]) -> int:
+def _main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description="AI-factory dispatcher (one pass, stateless)"
     )
@@ -4414,6 +4474,15 @@ def main(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
     if not args.dry_run:
+        # Read only runner settings before fetch or journal writes. Full loading
+        # still follows pinning so stale invalid configuration can recover.
+        root = config.repo_root()
+        startup = Config(root, "")
+        with suppress(OSError, tomllib.TOMLDecodeError, config.ConfigError):
+            runner = tomllib.loads((root / config.CONFIG_NAME).read_text()).get("runner", {})
+            if isinstance(runner, dict):
+                config.runner_settings(startup, runner)
+        storage.require(startup, "claim")
         dirty = pin_root()
         if dirty:
             root = config.repo_root()
@@ -4482,4 +4551,12 @@ def main(argv: list[str]) -> int:
         release_step(open_pr=True)
         if not args.dry_run:
             lifecycle.record_stage_success(EVENTS, "dispatch")
+        return 0
+
+
+def main(argv: list[str]) -> int:
+    try:
+        return _main(argv)
+    except storage.RunnerStorageLow as exc:
+        log(str(exc))
         return 0
