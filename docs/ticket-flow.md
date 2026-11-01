@@ -124,7 +124,7 @@ flowchart TB
   RFH -->|"packet and manager rounds left: manage.escalation_pass"| MGR
   RFH -->|"terminal, routed request published: handoff.handoff_pass"| HUMAN
   MGR -->|"RETRY, REWRITE, or ROUTE: manage.apply"| RFA
-  MGR -->|"AUTHORIZE records files and reason, adds add-only authority, requeues: manage.apply_test_edit_authorization"| RFA
+  MGR -->|"AUTHORIZE records cumulative files and reason, adds add-only authority, requeues: manage.apply_test_edit_authorization"| RFA
   MGR -->|"SPLIT, children opened, parent stays: manage.apply"| NT
   MGR -->|"FIX: worker round, gate, review: manage.apply"| FA
   MGR -->|"FIX fails gate, pr-tier gate, or review; kept head not the PR head plus the worker's own commits, or their lease push refused: manage.apply"| ESC
@@ -172,7 +172,7 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 | `dispatch.sync_issue` | — | `ready-for-agent` | New sync ticket for new upstream commits; its `agent/N` candidate carries the merge and gate evidence |
 | `learn.promote` | — | `factory-approved` | `factory learn` PR (lessons, curate, revert-lessons) with head-bound gate PASS, reviewer APPROVE and green CI, then squash merge (`learn.promote_pass` runs it per PR); lessons/curate merges open a `promotion-open` that `learn.decide_promotions` keeps or reverts |
 | `manage.apply` | `ready-for-human`, `*` | `ready-for-agent`, `needs-triage`, `wontfix-proposal`, `*` | RETRY/REWRITE/ROUTE return to agent; SPLIT children; CLOSE; RESOLVE closes completed; ROUTE labels; AUTHORIZE delegates to `manage.apply_test_edit_authorization` |
-| `manage.apply_test_edit_authorization` | `ready-for-human` | `factory-add-only-override`, `ready-for-agent` | Shared direct and escalation-round AUTHORIZE path; records the reason and covered files before requeue |
+| `manage.apply_test_edit_authorization` | `ready-for-human` | `factory-add-only-override`, `ready-for-agent` | Shared direct and escalation-round AUTHORIZE path; records the reason and cumulative covered files before requeue. Direct requests do not consume an escalation round |
 | `manage.viability_pass` | `*` | `needs-triage` | Opt-in label removed; BUILD queues triage |
 | `triage.apply_decision` | `needs-triage` | `*` | `*` is the decision: `ready-for-agent`, `needs-info`, `ready-for-human`, or `wontfix-proposal` |
 | `watch.run_pass` | — | `*` | New `bug` + `needs-triage` issue per runtime-failure fingerprint (`watch.LABELS`) |
@@ -189,6 +189,7 @@ event. `{}` is a runtime value.
 | `dispatch.process_ticket` | ``worker removed or changed existing tests`` | worker round → escalate (add-only or protected-tests check; the escalation detail names the check and clearing label) |
 | `dispatch._handle_protected_failure` | ``worker edited protected paths`` | review-bounce gate → escalate |
 | `dispatch._handle_protected_failure` | ``worker removed or changed existing tests`` | review-bounce gate → Manager authorization or escalate |
+| `dispatch._handle_test_edit_request` | ``worker requested an unauthorized existing-test edit`` | explicit pre-edit handoff request names a protected, missing, or otherwise ineligible test path → escalate |
 | `dispatch.process_ticket` | ``wall-clock budget ({} min) exceeded`` | worker round → escalate |
 | `dispatch.process_ticket` | ``gate failed {} times; worktree kept at {}`` | worker round → escalate |
 | `dispatch.process_ticket` | ``idle_timeout fired (worker stuck) on attempt {}; worktree kept at {}`` | worker round → escalate |

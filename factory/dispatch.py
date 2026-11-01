@@ -119,6 +119,9 @@ STANDING_INSTRUCTIONS = """
   line in the ticket body or the authenticated triage account's `Triage:` comment
   exempts reproduction. Worker handoffs cannot grant exemptions, and triage
   comments do not authorize changes to protected paths or existing tests.
+- If the only blocker is an existing test edit, leave the file unchanged and add
+  `Test edit authorization: path/to/test.py` to the handoff, followed by the
+  intended assertion replacement and behavior it preserves.
 - Commit incrementally with `git commit{commit_flag}`. Stage only files you created or
   edited for the ticket; never `git add -A`, and never commit
   `.factory-prompt.md` or gate reports.
@@ -4047,6 +4050,7 @@ def _manager_authorizable_test_edit(report: str, labels: set[str]) -> bool:
 
 
 def _handle_protected_failure(
+    n: int,
     issue: dict,
     labels: set[str],
     wt: Path,
@@ -4065,13 +4069,44 @@ def _handle_protected_failure(
     if cfg.manager and _manager_authorizable_test_edit(report, labels):
         from factory import manage
 
-        manage.request_test_edit_authorization(
-            issue["number"], issue, report, wt, logfile,
-        )
+        manage.request_test_edit_authorization(n, issue, report, wt, logfile)
         return True
     escalate(
-        issue["number"], reason, logfile,
+        n, reason, logfile,
         extra=f"{guidance}\n\n## Offending diff\n\n{report}",
+        code="protected_paths",
+    )
+    return True
+
+
+def _handle_test_edit_request(
+    n: int,
+    issue: dict,
+    labels: set[str],
+    wt: Path,
+    report: str,
+    request: str,
+    logfile: Path | None,
+) -> bool:
+    """Route an explicit pre-edit worker request without granting protected-path authority."""
+    from factory import manage
+
+    requested = manage.requested_test_edit_paths(request)
+    if not requested or set(requested) <= set(manage.authorized_test_edit_files(n)):
+        return False
+    eligible = manage.test_edit_files(wt, request)
+    if cfg.manager and all(path in eligible for path in requested):
+        manage.request_test_edit_authorization(
+            n, issue, report, wt, logfile, request=request,
+        )
+        return True
+    guidance = (
+        f"Manager AUTHORIZE can cover only existing non-protected test files. "
+        f"Human-only authority: add label `{LABEL_PROTECTED_OVERRIDE}` for protected paths."
+    )
+    escalate(
+        n, "worker requested an unauthorized existing-test edit", logfile,
+        extra=f"{guidance}\n\n## Worker request\n\n{request}",
         code="protected_paths",
     )
     return True
@@ -4225,25 +4260,15 @@ def process_ticket(
                     n, wt, labels, title, extra, attempt, deadline, body=fresh.get("body") or "",
                     comments=fresh.get("comments"),
                 )
+                handoff = wt / ".factory" / f"handoff-{n}.md"
+                request = handoff.read_text() if handoff.exists() else ""
+                if _handle_test_edit_request(
+                    n, fresh, labels, wt, report, request, logfile,
+                ):
+                    return
                 if ok:
                     break
-                if guidance := _protected_gate_guidance(report, labels):
-                    if cfg.manager and _manager_authorizable_test_edit(report, labels):
-                        _handle_protected_failure(fresh, labels, wt, report, logfile)
-                    else:
-                        tests = (
-                            "- protected-tests: FAIL" in report
-                            or "- protected-paths: FAIL (add-only" in report
-                        )
-                        reason = (
-                            "worker removed or changed existing tests"
-                            if tests else "worker edited protected paths"
-                        )
-                        escalate(
-                            n, reason, logfile,
-                            extra=f"{guidance}\n\n## Offending diff\n\n{report}",
-                            code="protected_paths",
-                        )
+                if _handle_protected_failure(n, fresh, labels, wt, report, logfile):
                     return
                 if time.monotonic() > deadline:
                     escalate(n, f"wall-clock budget ({budget_min} min) exceeded", logfile, code="budget")
@@ -4334,7 +4359,13 @@ def process_ticket(
                     body=fresh.get("body") or "",
                     comments=fresh.get("comments"),
                 )
-                if _handle_protected_failure(fresh, labels, wt, report, logfile):
+                handoff = wt / ".factory" / f"handoff-{n}.md"
+                request = handoff.read_text() if handoff.exists() else ""
+                if _handle_test_edit_request(
+                    n, fresh, labels, wt, report, request, logfile,
+                ) or _handle_protected_failure(
+                    n, fresh, labels, wt, report, logfile,
+                ):
                     return
                 if not ok:
                     stuck = report.startswith("worker stuck")

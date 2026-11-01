@@ -260,15 +260,24 @@ def record_manager_decision(
     return payload["decision_id"]
 
 
-def test_edit_files(wt: Path) -> list[str]:
-    """Modified non-protected test files that the add-only override can cover."""
+TEST_EDIT_REQUEST = re.compile(r"(?m)^Test edit authorization:[ \t]*`?([^`\r\n]+?)`?[ \t]*$")
+
+
+def requested_test_edit_paths(text: str) -> list[str]:
+    """Existing test paths a worker explicitly asks the Manager to authorize."""
+    return sorted(set(TEST_EDIT_REQUEST.findall(text)))
+
+
+def test_edit_files(wt: Path, request: str = "") -> list[str]:
+    """Modified or requested non-protected test files the add-only override can cover."""
     changed = dispatch.run(
         [
             "git", "diff", "--no-renames", "--name-only", "-z", "--diff-filter=M",
             f"origin/{dispatch.cfg.main}...HEAD",
         ],
         cwd=wt,
-    ).stdout
+    ).stdout.split("\0")
+    requested = requested_test_edit_paths(request)
 
     def candidate(path: str) -> bool:
         file = Path(path)
@@ -280,15 +289,27 @@ def test_edit_files(wt: Path) -> list[str]:
             or file.stem.startswith("test_")
             or file.stem.endswith("_test")
         )
-        return configured or python_test or path.endswith(".rs")
+        return (
+            path
+            and not file.is_absolute()
+            and ".." not in file.parts
+            and path == file.as_posix()
+            and (configured or python_test or path.endswith(".rs"))
+            and not any(
+                fnmatch.fnmatchcase(path, pattern)
+                for pattern in dispatch.cfg.protected_paths
+            )
+        )
 
-    return sorted(
-        path
-        for path in changed.split("\0")
-        if path
-        and candidate(path)
-        and not any(fnmatch.fnmatchcase(path, pattern) for pattern in dispatch.cfg.protected_paths)
-    )
+    existing_requests = [
+        path for path in requested
+        if candidate(path) and dispatch.run(
+            ["git", "cat-file", "-e", f"origin/{dispatch.cfg.main}:{path}"],
+            cwd=wt,
+            check=False,
+        ).returncode == 0
+    ]
+    return sorted({path for path in [*changed, *existing_requests] if candidate(path)})
 
 
 def _record_test_edit_authorization(
@@ -304,10 +325,21 @@ def _record_test_edit_authorization(
     )
 
 
+def authorized_test_edit_files(n: int) -> list[str]:
+    event = next((
+        row for row in reversed(lifecycle.read_events(dispatch.EVENTS))
+        if row.get("event") == "test-edit-authorization"
+        and row.get("ticket") == n
+        and row.get("decision") == "AUTHORIZE"
+    ), None)
+    return event.get("files", []) if event else []
+
+
 def apply_test_edit_authorization(
     n: int, data: dict, files: list[str], *, unassign: bool,
 ) -> None:
     """Publish and apply one Manager authorization through the shared #437 path."""
+    files = sorted(set(files) | set(authorized_test_edit_files(n)))
     covered = "\n".join(f"- `{path}`" for path in files) or "- (files unavailable)"
     text = (
         "Factory manager: Authorized behavior-preserving edits to existing tests.\n\n"
@@ -351,9 +383,11 @@ def request_test_edit_authorization(
     report: str,
     wt: Path,
     logfile: Path | None,
+    *,
+    request: str = "",
 ) -> bool:
     """Ask the Manager before any ready-for-human transition; escalate a denial."""
-    files = test_edit_files(wt)
+    files = test_edit_files(wt, request)
     diff = dispatch.run(
         [
             "git", "diff", "--no-renames", f"origin/{dispatch.cfg.main}...HEAD",
@@ -368,6 +402,7 @@ def request_test_edit_authorization(
         f"## Issue\n\n{issue['title']}\n\n{issue.get('body') or ''}\n\n"
         "## Candidate files\n\n"
         + ("\n".join(f"- `{path}`" for path in files) or "- none")
+        + f"\n\n## Worker request\n\n{request or '(none)'}"
         + f"\n\n## Gate report\n\n{report}\n\n## Candidate test diff\n\n{diff or '(none)'}\n"
     )
     output = ""
@@ -402,19 +437,18 @@ def request_test_edit_authorization(
             decision, body, data = "HUMAN", f"Manager command failed: {exc}", None
             output = body
 
-    events = [
-        event for event in lifecycle.read_events(dispatch.EVENTS)
-        if event.get("ticket") == n
-    ]
-    round_number = 1 + sum(
-        event.get("event") == "escalate" and event.get("reason") != "manager_failed"
-        for event in events
-    )
     record_manager_decision(n, decision, body, data, output, {}, packet)
-    dispatch.record(
-        "manage", ticket=n, decision=decision, round=round_number,
-        packet=str(packet), authorization="test-edit",
-    )
+    manage_event = {
+        "ticket": n, "decision": decision,
+        "packet": str(packet), "authorization": "test-edit",
+    }
+    if decision != "AUTHORIZE":
+        manage_event["round"] = 1 + sum(
+            event.get("event") == "escalate" and event.get("reason") != "manager_failed"
+            for event in lifecycle.read_events(dispatch.EVENTS)
+            if event.get("ticket") == n
+        )
+    dispatch.record("manage", **manage_event)
     if decision == "AUTHORIZE":
         apply_test_edit_authorization(n, data, files, unassign=True)
         return True
@@ -693,7 +727,8 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
 
     if decision == "AUTHORIZE":
         wt = dispatch.FACTORY / f"wt-{n}"
-        files = test_edit_files(wt) if wt.is_dir() else []
+        request = packet.read_text() if packet.is_file() else ""
+        files = test_edit_files(wt, request) if wt.is_dir() else []
         apply_test_edit_authorization(n, data, files, unassign=False)
         return
     elif decision == "REWRITE":

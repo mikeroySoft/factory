@@ -577,13 +577,18 @@ false to disable that default.
 AUTHORIZE uses `{"justification":"...","guidance":"..."}` to record why an
 existing test must change, add `factory-add-only-override`, and return the
 ticket to `ready-for-agent`. Before an eligible add-only failure enters
-`ready-for-human`, the dispatcher asks the manager directly. Authorization is
-limited to non-protected test files whose planned behavior change caused the
-failure: every behavioral assertion must remain or be replaced by an equivalent
-new-behavior assertion, while incidental call-count, host-state, or formatting
-assertions may change. The reason and covered files are journaled and posted to
-the ticket and PR; the independent reviewer checks the final diff against them.
-The normal gate and review then run again. FIX uses
+`ready-for-human`, the dispatcher asks the manager directly. A worker that
+stops before editing writes `Test edit authorization: path/to/test.py` in its
+handoff and describes the equivalent new-behavior assertion; the dispatcher
+sends that request to the same path. Direct authorization is not an escalation
+round, so a later failure still receives the next Manager round.
+Authorization is limited to non-protected test files whose planned behavior
+change caused the failure: every behavioral assertion must remain or be
+replaced by an equivalent new-behavior assertion, while incidental call-count,
+host-state, or formatting assertions may change. The reason and cumulative
+covered files are journaled and posted to the ticket and PR; the independent
+reviewer checks the final diff against them. The normal gate and review then
+run again. FIX uses
 `{"worker":"ci-fix","guidance":"..."}` to run exactly one selected worker round
 in the kept `agent/<n>` worktree for its open PR, ignoring other ticket labels.
 A kept head ahead of the remote PR head is pushed first
@@ -832,16 +837,19 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    shows no deleted lines, and a deletion, rename, mode change, binary change,
    or any removed or changed line fails as `add-only`. An in-place edit to an
    existing non-protected test is sent directly to the manager's `AUTHORIZE`
-   path before any `ready-for-human` transition. The manager may apply
+   path before any `ready-for-human` transition. A worker that stops before the
+   edit requests the same path with
+   `Test edit authorization: path/to/test.py` in its handoff and describes the
+   equivalent new-behavior assertion. The manager may apply
    `factory-add-only-override` only when the ticket's planned behavior change
    caused the failure, every behavioral assertion remains or has an equivalent
    new-behavior assertion, and only incidental call-count, host-dependent-state,
    or formatting assertions change. Removing only an incidental count assertion
    is allowed while the behavior remains asserted; deleting or weakening a
-   behavioral assertion is denied. The authorization reason and covered files
-   are recorded in the journal, ticket, PR, and reviewer prompt. A denial
-   escalates to `ready-for-human`; protected paths bypass the manager request
-   and escalate immediately. A human may apply the label directly.
+   behavioral assertion is denied. The authorization reason and cumulative
+   covered files are recorded in the journal, ticket, PR, and reviewer prompt.
+   A denial escalates to `ready-for-human`; protected paths bypass the manager
+   request and escalate immediately. A human may apply the label directly.
    File deletions, renames, mode changes and binary changes still fail with that
    label and require human-only `factory-protected-override`. Their escalations
    name that label instead. If `factory-add-only-override` is already present
