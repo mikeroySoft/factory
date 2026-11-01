@@ -427,6 +427,27 @@ class FrontierTest(unittest.TestCase):
 
         self.assertFalse(any(e.get("event") == "rounds-reset" for e in self.events()))
 
+    def test_uncertain_failed_factory_relabel_does_not_renew_rounds(self) -> None:
+        from factory import handoff
+
+        self.direct_requeue(actor="runner")
+        observed = list(self.timeline)
+        self.timeline = self.timeline[:2]
+        with mock.patch.object(
+            handoff, "timeline", side_effect=[list(self.timeline), OSError("timeline failed")]
+        ), mock.patch.object(
+            dispatch, "run",
+            return_value=subprocess.CompletedProcess(["gh"], 1, "", "response lost"),
+        ):
+            dispatch.requeue_agent(79, check=False)
+        self.timeline = observed
+
+        dispatch._record_human_round_reset(79)
+
+        operation = [e for e in self.events() if e.get("event") == "agent-requeue"][-1]
+        self.assertEqual(operation["status"], "uncertain")
+        self.assertFalse(any(e.get("event") == "rounds-reset" for e in self.events()))
+
     def test_failed_factory_relabel_after_owner_decision_does_not_veto_reset(self) -> None:
         self.direct_requeue()
         self.timeline[2]["created_at"] = "2026-10-28T15:51:00Z"

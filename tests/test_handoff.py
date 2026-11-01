@@ -404,6 +404,29 @@ class HandoffCli(unittest.TestCase):
         self.manage()
         self.assertEqual((len(self.requests()), len(self.events("handoff"))), (1, 1))
 
+    def test_owner_return_after_uncertain_publication_reconciles_once(self) -> None:
+        self.manage(mode="HUMAN")
+        self.state["issue"]["body"] += "\n\n**Decision owner**\n\n@lead"
+        self.manage()
+        self.state["issue"]["body"] = self.state["issue"]["body"].replace("@lead", "@auth-owner")
+
+        self.manage(crash_on_comment=True, expect=-9)
+
+        intents = self.events("handoff")
+        self.assertEqual([event["target"] for event in intents],
+                         ["@auth-owner", "@lead", "@auth-owner"])
+        self.assertEqual(len({event["token"] for event in intents}), 3)
+        self.assertEqual(len(self.requests()), 3)
+
+        self.manage()
+
+        receipts = [event for event in self.events("comment")
+                    if event.get("kind") == "handoff"]
+        self.assertEqual(len(self.requests()), 3)
+        self.assertEqual([event["target"] for event in receipts],
+                         ["@auth-owner", "@lead", "@auth-owner"])
+        self.assertTrue(receipts[-1]["reconciled"])
+
     def test_failed_lookup_never_posts_another_request(self) -> None:
         proc = self.manage(mode="HUMAN", fail_comment=True)
         self.assertIn("publication uncertain", proc.stdout)
