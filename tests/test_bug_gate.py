@@ -405,6 +405,21 @@ class BugGateDispatchTest(unittest.TestCase):
         )
         self.assertEqual(flags["repro_test"], f"'{TEST_ID}'")
 
+    def test_gate_flags_preserve_malformed_repro_id_quotes(self) -> None:
+        for repro in ("`", "`'", "'`"):
+            with self.subTest(repro=repro):
+                flags = dispatch.gate_flags(
+                    None, {"bug"}, "", f"Repro test: {repro}"
+                )
+                self.assertEqual(flags["repro_test"], repro)
+
+        for repro in ("``", '""', "''"):
+            with self.subTest(repro=repro):
+                flags = dispatch.gate_flags(
+                    None, {"bug"}, "", f"Repro test: {repro}"
+                )
+                self.assertNotIn("repro_test", flags)
+
     def test_gate_trace_contains_both_reproduction_results(self) -> None:
         report = (
             "# Gate report\n\n"
