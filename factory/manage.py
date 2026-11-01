@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import fcntl
 import fnmatch
 import json
@@ -371,9 +372,42 @@ def _split_bodies(n: int, parent_body: str, children: list[dict]) -> list[dict]:
     return prepared
 
 
+def _record_fix_deferral(
+    n: int,
+    decision: str,
+    body: str,
+    data: object,
+    packet: Path,
+    wt: Path,
+    *,
+    round_number: int,
+    error: storage.RunnerStorageLow | None = None,
+    pr: int | None = None,
+    decision_head: str | None = None,
+) -> None:
+    fields = {
+        "ticket": n, "round": round_number, "decision": decision,
+        "body": body, "data": data, "packet": str(packet),
+    }
+    if pr is not None:
+        fields.update(pr=pr, decision_head=decision_head)
+    if error is not None and error.phase == "gate":
+        try:
+            fields["head"] = dispatch.run(
+                ["git", "rev-parse", "HEAD"], cwd=wt
+            ).stdout.strip()
+        except (CalledProcessError, OSError):
+            pass
+    try:
+        dispatch.record("manage-deferred", **fields)
+    except OSError as exc:
+        if exc.errno not in {errno.ENOSPC, errno.EDQUOT}:
+            raise
+
+
 def apply(
     n: int, issue: dict, decision: str, body: str, data: object, packet: Path,
-    *, resume_head: str | None = None,
+    *, resume_head: str | None = None, resume_if_ahead: bool = False,
 ) -> None:
     def issue_action(action: str, *args: str) -> None:
         dispatch.run(["gh", "issue", action, str(n), "--repo", dispatch.REPO, *args])
@@ -417,6 +451,8 @@ def apply(
             raise ValueError("FIX worktree is not on the ticket branch")
         lease = pr.get("headRefOid")
         local = dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+        if resume_if_ahead and local != lease:
+            resume_head = local
         events = lifecycle.read_events(dispatch.EVENTS)
         if resume_head is not None:
             ahead = dispatch.run(
@@ -967,6 +1003,61 @@ def frontier_pass(dry_run: bool = False) -> None:
                 if cfg.manager_review != "all" or approved or not dispatch._head_evidence_matches(events, n, head) \
                             or dispatch.manager_approval(events, n, head):
                     continue
+                wt = cfg.factory / f"wt-{n}"
+                deferred_at = next((
+                    index for index in range(len(events) - 1, -1, -1)
+                    if (
+                        events[index].get("event") == "manage-deferred"
+                        and events[index].get("pr") == number
+                        and events[index].get("decision_head") == head
+                    ) or (
+                        events[index].get("event") == "manage"
+                        and events[index].get("pr") == number
+                        and events[index].get("head") == head
+                        and events[index].get("decision") == "FIX"
+                        and events[index].get("apply_pending") is True
+                    )
+                ), -1)
+                applied_at = next((
+                    index for index in range(len(events) - 1, -1, -1)
+                    if events[index].get("event") == "manage-applied"
+                    and events[index].get("pr") == number
+                    and events[index].get("decision_head") == head
+                ), -1)
+                deferred = events[deferred_at] if deferred_at > applied_at else None
+                if deferred is not None and not dry_run:
+                    packet = Path(deferred["packet"])
+                    try:
+                        apply(
+                            n, issue, deferred["decision"], deferred["body"], deferred["data"],
+                            packet,
+                            resume_head=(
+                                deferred.get("head")
+                                if deferred.get("event") == "manage-deferred" else None
+                            ),
+                            resume_if_ahead=deferred.get("event") == "manage",
+                        )
+                    except storage.RunnerStorageLow as exc:
+                        _record_fix_deferral(
+                            n, deferred["decision"], deferred["body"], deferred["data"],
+                            packet, wt, round_number=deferred["round"], error=exc,
+                            pr=number, decision_head=head,
+                        )
+                        execution.wait("runner_storage_low", mode="retry_next_pass")
+                        dispatch.log(f"#{n}: manager work deferred ({exc})")
+                    except (CalledProcessError, OSError, ValueError) as exc:
+                        execution.outcome, execution.reason = "mechanism_failure", "pr_frontier_failed"
+                        dispatch.record(
+                            "manage-applied", ticket=n, pr=number, decision_head=head,
+                            round=deferred["round"], status="failed",
+                        )
+                        dispatch.log(f"PR #{number}: frontier failed: {exc}; leaving for human")
+                    else:
+                        dispatch.record(
+                            "manage-applied", ticket=n, pr=number, decision_head=head,
+                            round=deferred["round"], status="applied",
+                        )
+                    continue
                 decided = [e for e in events if e.get("event") == "manage" and e.get("pr") == number]
                 if any(e.get("head") == head for e in decided):
                     continue  # one decision per head; a non-APPROVE decision already acted
@@ -980,7 +1071,6 @@ def frontier_pass(dry_run: bool = False) -> None:
                 if dry_run:
                     dispatch.log(f"PR #{number}: would request manager approval for {head[:12]}")
                     continue
-                wt = cfg.factory / f"wt-{n}"
                 packet, _ = dispatch.escalation_packet(n, "Manager final review (manager.review = all)", None, wt)
                 workers = {k: v for k, v in cfg.workers.items()
                            if k not in RESERVED_LABELS and k not in cfg.worker_select_label}
@@ -1014,15 +1104,40 @@ def frontier_pass(dry_run: bool = False) -> None:
                     n, decision, body, data, output, workers, packet, pr=number, head=head,
                     approval=True,
                 )
-                dispatch.record("manage", ticket=n, pr=number, head=head, decision=decision,
-                                round=len(decided) + 1, packet=str(packet))
+                dispatch.record(
+                    "manage", ticket=n, pr=number, head=head, decision=decision,
+                    round=len(decided) + 1, packet=str(packet), body=body, data=data,
+                    apply_pending=decision == "FIX",
+                )
                 if decision != "CLOSE":
                     dispatch.run(["gh", "pr", "comment", str(number), "--repo", cfg.repo, "--body", "Factory manager: " + body])
                 if decision == "APPROVE":
                     if not dispatch.approve_pr(n, head):
                         dispatch.escalate(n, f"PR #{number}: approval evidence, head, or human review state changed before manager approval", None,
                                           code="approval_drift")
-                elif decision in {"FIX", "CLOSE"}:
+                elif decision == "FIX":
+                    round_number = len(decided) + 1
+                    try:
+                        apply(n, issue, decision, body, data, packet)
+                    except storage.RunnerStorageLow as exc:
+                        _record_fix_deferral(
+                            n, decision, body, data, packet, wt, round_number=round_number,
+                            error=exc, pr=number, decision_head=head,
+                        )
+                        execution.wait("runner_storage_low", mode="retry_next_pass")
+                        dispatch.log(f"#{n}: manager work deferred ({exc})")
+                    except (CalledProcessError, OSError, ValueError):
+                        dispatch.record(
+                            "manage-applied", ticket=n, pr=number, decision_head=head,
+                            round=round_number, status="failed",
+                        )
+                        raise
+                    else:
+                        dispatch.record(
+                            "manage-applied", ticket=n, pr=number, decision_head=head,
+                            round=round_number, status="applied",
+                        )
+                elif decision == "CLOSE":
                     apply(n, issue, decision, body, data, packet)
                 else:
                     dispatch.escalate(n, f"PR #{number}: manager requires a human: {body}", None, code="manager_human")
@@ -1077,10 +1192,19 @@ def escalation_pass(dry_run: bool = False) -> None:
                 if not escalation or escalation.get("upstream") or escalation.get("pr") or not escalation.get("packet"):
                     continue
                 round_number = escalation.get("round", 0)
+                wt = cfg.factory / f"wt-{n}"
                 deferred_at = next((
                     index for index in range(len(events) - 1, -1, -1)
-                    if events[index].get("event") == "manage-deferred"
-                    and events[index].get("round") == round_number
+                    if (
+                        events[index].get("event") == "manage-deferred"
+                        and events[index].get("round") == round_number
+                    ) or (
+                        events[index].get("event") == "manage"
+                        and events[index].get("round") == round_number
+                        and not events[index].get("pr")
+                        and events[index].get("decision") == "FIX"
+                        and events[index].get("apply_pending") is True
+                    )
                 ), -1)
                 applied_at = next((
                     index for index in range(len(events) - 1, -1, -1)
@@ -1109,9 +1233,18 @@ def escalation_pass(dry_run: bool = False) -> None:
                     try:
                         apply(
                             n, issue, deferred["decision"], deferred["body"], deferred["data"],
-                            packet, resume_head=deferred["head"],
+                            packet,
+                            resume_head=(
+                                deferred.get("head")
+                                if deferred.get("event") == "manage-deferred" else None
+                            ),
+                            resume_if_ahead=deferred.get("event") == "manage",
                         )
                     except storage.RunnerStorageLow as exc:
+                        _record_fix_deferral(
+                            n, deferred["decision"], deferred["body"], deferred["data"],
+                            packet, wt, round_number=round_number, error=exc,
+                        )
                         execution.wait("runner_storage_low", mode="retry_next_pass")
                         dispatch.log(f"#{n}: manager work deferred ({exc})")
                     except (CalledProcessError, OSError, ValueError) as exc:
@@ -1133,7 +1266,6 @@ def escalation_pass(dry_run: bool = False) -> None:
                 for path in (cfg.root / LESSONS_NAME, notes_path):
                     if path.is_file():
                         parts.append(f"## {path.name}\n\n{path.read_text()}")
-                wt = cfg.factory / f"wt-{n}"
                 cwd = wt if wt.is_dir() else cfg.root
                 notes = rejected = None
                 output = ""
@@ -1169,23 +1301,33 @@ def escalation_pass(dry_run: bool = False) -> None:
                 record_manager_decision(
                     n, decision, body, data, output, workers, packet,
                 )
-                dispatch.record("manage", ticket=n, decision=decision, round=round_number,
-                                packet=str(packet), notes=status, rejected=rejected)
+                dispatch.record(
+                    "manage", ticket=n, decision=decision, round=round_number,
+                    packet=str(packet), notes=status, rejected=rejected,
+                    body=body, data=data, apply_pending=decision == "FIX",
+                )
                 try:
                     apply(n, issue, decision, body, data, packet)
                 except storage.RunnerStorageLow as exc:
-                    head = dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
-                    dispatch.record(
-                        "manage-deferred", ticket=n, round=round_number, decision=decision,
-                        body=body, data=data, packet=str(packet), head=head,
-                    )
+                    if decision == "FIX":
+                        _record_fix_deferral(
+                            n, decision, body, data, packet, wt,
+                            round_number=round_number, error=exc,
+                        )
                     execution.wait("runner_storage_low", mode="retry_next_pass")
                     dispatch.log(f"#{n}: manager work deferred ({exc})")
                 except (CalledProcessError, OSError, ValueError) as exc:
                     # A partial SPLIT or REWRITE must not be replayed automatically.
                     execution.outcome = "mechanism_failure"
                     execution.reason = "github_command_failed"
+                    if decision == "FIX":
+                        dispatch.record("manage-applied", ticket=n, round=round_number,
+                                        status="failed")
                     dispatch.log(f"#{n}: manager decision application failed: {exc}; leaving for human")
+                else:
+                    if decision == "FIX":
+                        dispatch.record("manage-applied", ticket=n, round=round_number,
+                                        status="applied")
             finally:
                 if not dry_run:
                     lock.close()

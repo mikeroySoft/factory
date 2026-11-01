@@ -3096,7 +3096,8 @@ def pending_refresh(n: int, pr: int) -> dict | None:
         if event.get("event") == "refresh-pending" and event.get("pr") == pr:
             pending = event
         elif event.get("event") in {
-            "approved", "escalate", "conflict-requeue", "gate-requeue", "risk-requeue", "merged",
+            "refresh-complete", "approved", "escalate", "conflict-requeue",
+            "gate-requeue", "risk-requeue", "merged",
         }:
             pending = None
     return pending
@@ -3417,6 +3418,7 @@ def _refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     if not approve_pr(n, head):
         withdraw("approval evidence, head, or human review state changed before refreshed approval", "approval_drift")
         return False
+    record("refresh-complete", ticket=n, pr=pr, head=head)
     log(f"#{n}: PR #{pr} {verb}d onto current main, re-gated, and re-approved at {head[:12]}")
     return True
 
@@ -4062,6 +4064,8 @@ def process_ticket(
     worker_key = cfg.worker_key(labels)
     worker = cfg.worker_command(worker_key, wt / ".factory-prompt.md", wt)[0]
     lock_path = FACTORY / "locks" / f"{n}.lock"
+    if not dry_run:
+        storage.require(cfg, "claim")
     if lock_held(lock_path):
         log(f"#{n}: skipped (in flight, lock held on {lock_path})")
         if not dry_run:
