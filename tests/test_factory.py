@@ -353,6 +353,24 @@ when = "Mechanical edits"
             with self.assertRaises(SystemExit):
                 config.load(repo)
 
+    def test_merge_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d), '''
+[merge]
+advisory_checks = ["E2E tests (*", "E2E consolidated report (self-hosted)"]
+queued_check_timeout = 123
+''')
+            cfg = config.load(repo)
+            self.assertEqual(
+                cfg.merge_advisory_checks,
+                ["E2E tests (*", "E2E consolidated report (self-hosted)"],
+            )
+            self.assertEqual(cfg.merge_queued_check_timeout, 123)
+
+        defaults = config.Config(root=Path("."), repo="acme/widgets")
+        self.assertEqual(defaults.merge_queued_check_timeout, 6 * 60 * 60)
+
+
 
 class HostConfigTest(unittest.TestCase):
     """`$XDG_CONFIG_HOME/factory/config.toml` layers under the repo file."""
@@ -3803,6 +3821,318 @@ class DispatchTest(unittest.TestCase):
                 for e in lifecycle.read_events(dispatch.EVENTS)
             ))
 
+    def merge_check_scenario(
+        self,
+        checks: list[dict],
+        required: list[dict],
+        *,
+        advisory_checks: tuple[str, ...] = (),
+        job: dict | None = None,
+        runners: dict | None = None,
+        rollup_checks: list[dict] | None = None,
+        required_stdout: str | None = None,
+    ) -> tuple[bool, list[list[str]], list[str], list[dict]]:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            root, origin, _ = build_fork(Path(d))
+            git(origin, "checkout", "-qb", "agent/7")
+            (origin / "feature.txt").write_text("feature")
+            git(origin, "add", "feature.txt")
+            git(origin, "commit", "-qm", "feature")
+            git(origin, "checkout", "-q", "main")
+            settings = {
+                "root": root,
+                "repo": "acme/widgets",
+                "signoff": False,
+            }
+            if advisory_checks:
+                settings["merge_advisory_checks"] = list(advisory_checks)
+            dispatch.configure(config.Config(**settings))
+            stage_gh_json, merge_run = merge_stage_mocks(
+                origin, 70, "agent/7", "feature", dispatch.run,
+            )
+            calls = []
+
+            listed_checks = checks if rollup_checks is None else rollup_checks
+
+            def fake_gh_json(args):
+                value = stage_gh_json(args)
+                if args[:2] == ["pr", "list"]:
+                    return [{**row, "statusCheckRollup": listed_checks} for row in value]
+                if args[:2] == ["pr", "view"]:
+                    return {**value, "statusCheckRollup": listed_checks}
+                return value
+
+            def fake_run(cmd, *args, **kwargs):
+                if cmd[0] == "gh":
+                    calls.append(cmd)
+                if cmd[:3] == ["gh", "pr", "checks"]:
+                    rows = json.dumps(checks)
+                    if "--required" in cmd:
+                        rows = json.dumps(required) if required_stdout is None else required_stdout
+                    return subprocess.CompletedProcess(cmd, 0, rows, "")
+                if cmd[:2] == ["gh", "api"] and "/actions/jobs/" in cmd[2]:
+                    return subprocess.CompletedProcess(cmd, 0, json.dumps(job), "")
+                if cmd[:2] == ["gh", "api"] and "/actions/runners" in cmd[2]:
+                    return subprocess.CompletedProcess(cmd, 0, json.dumps(runners), "")
+                if cmd[:3] == ["gh", "pr", "merge"]:
+                    return merge_run(cmd, *args, **kwargs)
+                if cmd[0] == "gh":
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+                return merge_run(cmd, *args, **kwargs)
+
+            with mock.patch.object(dispatch, "gh_json", side_effect=fake_gh_json), \
+                    mock.patch.object(dispatch, "run", side_effect=fake_run), \
+                    mock.patch.object(dispatch, "escalate") as escalate:
+                dispatch.merge_pass_locked(False)
+
+            merged = subprocess.run(
+                ["git", "-C", str(origin), "show", "main:feature.txt"],
+                capture_output=True,
+                check=False,
+            ).returncode == 0
+            reasons = [call.args[1] for call in escalate.call_args_list]
+            return merged, calls, reasons, lifecycle.read_events(dispatch.EVENTS)
+
+    def test_merge_uses_required_checks_and_ignores_pending_nonrequired(self) -> None:
+        required = [{"name": "unit", "bucket": "pass"}]
+        checks = [*required, {"name": "E2E self-hosted", "bucket": "pending"}]
+
+        merged, calls, escalations, _ = self.merge_check_scenario(checks, required)
+
+        self.assertTrue(merged)
+        self.assertEqual(escalations, [])
+        check_calls = [call for call in calls if call[:3] == ["gh", "pr", "checks"]]
+        self.assertTrue(check_calls)
+        self.assertTrue(all("--required" in call for call in check_calls))
+
+    def test_merge_advisory_check_never_blocks_or_removes_approval(self) -> None:
+        for bucket in ("pending", "fail"):
+            with self.subTest(bucket=bucket):
+                checks = [
+                    {"name": "unit", "bucket": "pass"},
+                    {"name": "E2E tests (mi300x)", "bucket": bucket},
+                ]
+                merged, calls, escalations, events = self.merge_check_scenario(
+                    checks, [], advisory_checks=("E2E tests (*",),
+                )
+
+                self.assertTrue(merged)
+                self.assertEqual(escalations, [])
+                self.assertFalse(any("--remove-label" in call for call in calls))
+                decision = next(
+                    event for event in events
+                    if event.get("event") == "decision" and event.get("chosen") == "merge now"
+                )
+                self.assertIn(
+                    f"E2E tests (mi300x): advisory ({bucket})",
+                    [item["summary"] for item in decision["inputs"]],
+                )
+
+    def test_merge_skips_never_runnable_queued_check(self) -> None:
+        queued = {
+            "name": "E2E tests (mi300x)",
+            "bucket": "pending",
+            "link": "https://github.com/acme/widgets/actions/runs/123/job/456",
+        }
+        job = {
+            "status": "queued",
+            "created_at": "2000-01-01T00:00:00Z",
+            "runner_name": None,
+            "labels": ["self-hosted", "linux", "mi300x"],
+            "steps": [],
+        }
+
+        merged, calls, escalations, events = self.merge_check_scenario(
+            [{"name": "unit", "bucket": "pass"}, queued],
+            [],
+            job=job,
+            runners={"total_count": 0, "runners": []},
+        )
+
+        self.assertTrue(merged)
+        self.assertEqual(escalations, [])
+        self.assertFalse(any(call[:3] == ["gh", "run", "rerun"] for call in calls))
+        decision = next(
+            event for event in events
+            if event.get("event") == "decision" and event.get("chosen") == "merge now"
+        )
+        self.assertIn(
+            "E2E tests (mi300x): skipped-infra",
+            [item["summary"] for item in decision["inputs"]],
+        )
+
+    def test_required_never_runnable_check_escalates_as_blocking(self) -> None:
+        queued = {
+            "name": "required GPU",
+            "bucket": "pending",
+            "link": "https://github.com/acme/widgets/actions/runs/123/job/456",
+        }
+        job = {
+            "status": "queued",
+            "created_at": "2000-01-01T00:00:00Z",
+            "runner_name": None,
+            "labels": ["self-hosted", "linux", "mi300x"],
+            "steps": [],
+        }
+
+        merged, calls, escalations, _ = self.merge_check_scenario(
+            [queued],
+            [queued],
+            job=job,
+            runners={"total_count": 0, "runners": []},
+        )
+
+        self.assertFalse(merged)
+        self.assertEqual(len(escalations), 1)
+        self.assertIn("required check", escalations[0])
+        self.assertIn("blocks merge", escalations[0])
+        self.assertFalse(any("--remove-label" in call for call in calls))
+
+    def test_required_pending_and_failing_checks_still_block(self) -> None:
+        for bucket in ("pending", "fail"):
+            with self.subTest(bucket=bucket):
+                required = [{"name": "unit", "bucket": bucket}]
+                merged, calls, escalations, _ = self.merge_check_scenario(required, required)
+
+                self.assertFalse(merged)
+                if bucket == "pending":
+                    self.assertEqual(escalations, [])
+                    self.assertFalse(any("--remove-label" in call for call in calls))
+                else:
+                    self.assertEqual(
+                        escalations,
+                        ["PR #70: CI failed (unit); `factory-approved` label removed"],
+                    )
+                    self.assertTrue(any("--remove-label" in call for call in calls))
+
+    def test_merge_uses_complete_deduplicated_check_output(self) -> None:
+        checks = [{"name": "unit", "bucket": "pass"}]
+        rollup = [
+            {"name": "unit", "bucket": "fail"},
+            {"name": "unit", "bucket": "pass"},
+        ]
+
+        merged, _, escalations, _ = self.merge_check_scenario(
+            checks, [], rollup_checks=rollup,
+        )
+
+        self.assertTrue(merged)
+        self.assertEqual(escalations, [])
+
+    def test_merge_uses_checks_beyond_list_rollup_limit(self) -> None:
+        checks = [
+            {"name": f"E2E lane {index}", "bucket": "pending"}
+            for index in range(100)
+        ]
+        checks.append({"name": "unit", "bucket": "pass"})
+
+        merged, _, escalations, _ = self.merge_check_scenario(
+            checks,
+            [],
+            advisory_checks=("E2E lane *",),
+            rollup_checks=checks[:100],
+        )
+
+        self.assertTrue(merged)
+        self.assertEqual(escalations, [])
+
+    def test_merge_preserves_pr_checks_bucket_semantics(self) -> None:
+        scenarios = (
+            ([{"name": "neutral", "bucket": "skipping"}],
+             [{"name": "neutral", "conclusion": "NEUTRAL"}]),
+            ([{"name": "stale", "bucket": "pending"}],
+             [{"name": "stale", "conclusion": "STALE"}]),
+        )
+        for checks, rollup in scenarios:
+            with self.subTest(check=checks[0]["name"]):
+                merged, calls, escalations, _ = self.merge_check_scenario(
+                    checks, [], rollup_checks=rollup,
+                )
+
+                self.assertFalse(merged)
+                self.assertEqual(escalations, [])
+                self.assertFalse(any("--remove-label" in call for call in calls))
+
+    def test_merge_checks_fall_back_when_gh_reports_no_required_checks(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        checks = [
+            {"name": "unit", "bucket": "pass"},
+            {"name": "E2E tests (mi300x)", "bucket": "pending"},
+        ]
+        responses = [
+            subprocess.CompletedProcess(
+                [], 1, "", "no required checks reported on the 'main' branch\n",
+            ),
+            subprocess.CompletedProcess([], 8, json.dumps(checks), ""),
+        ]
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.configure(config.Config(
+                root=make_repo(Path(d)),
+                repo="acme/widgets",
+                merge_advisory_checks=["E2E tests (*"],
+            ))
+            with mock.patch.object(dispatch, "run", side_effect=responses):
+                rows = dispatch.merge_checks(70)
+
+        self.assertEqual(
+            [(row["name"], row["bucket"]) for row in rows],
+            [("unit", "pass"), ("E2E tests (mi300x)", "advisory")],
+        )
+
+    def test_merge_fails_closed_when_required_checks_are_unreadable(self) -> None:
+        checks = [{"name": "unit", "bucket": "pass"}]
+
+        merged, calls, escalations, _ = self.merge_check_scenario(
+            checks, [], required_stdout="not-json",
+        )
+
+        self.assertFalse(merged)
+        self.assertEqual(escalations, [])
+        self.assertFalse(any("--remove-label" in call for call in calls))
+
+    def test_merge_does_not_skip_case_insensitive_runner_match(self) -> None:
+        queued = {
+            "name": "E2E tests (mi300x)",
+            "bucket": "pending",
+            "link": "https://github.com/acme/widgets/actions/runs/123/job/456",
+        }
+        job = {
+            "status": "queued",
+            "created_at": "2000-01-01T00:00:00Z",
+            "runner_name": None,
+            "labels": ["self-hosted", "linux", "x64", "mi300x"],
+            "steps": [],
+        }
+        runners = {
+            "total_count": 1,
+            "runners": [{
+                "labels": [
+                    {"name": "self-hosted"},
+                    {"name": "Linux"},
+                    {"name": "X64"},
+                    {"name": "mi300x"},
+                ],
+            }],
+        }
+
+        merged, calls, escalations, _ = self.merge_check_scenario(
+            [{"name": "unit", "bucket": "pass"}, queued],
+            [],
+            job=job,
+            runners=runners,
+        )
+
+        self.assertFalse(merged)
+        self.assertEqual(escalations, [])
+        self.assertFalse(any(call[:3] == ["gh", "run", "rerun"] for call in calls))
+
     def test_merge_ignores_wrong_or_missing_base_without_mutation(self) -> None:
         from unittest import mock
 
@@ -3984,6 +4314,36 @@ class DispatchTest(unittest.TestCase):
             # Later passes wait on the open escalation instead of repeating it.
             escalations, removed, reruns, _ = self.cancelled_ci_pass(checks, again)
             self.assertEqual((escalations, removed, reruns), ([], False, []))
+
+    def test_merge_skips_nonrequired_cancel_when_no_runner_matches(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        starved = {
+            "run_id": 123,
+            "run_attempt": 1,
+            "status": "completed",
+            "created_at": "2000-01-01T00:00:00Z",
+            "steps": [],
+            "runner_name": None,
+            "labels": ["self-hosted", "linux", "mi300x"],
+        }
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.configure(config.Config(root=make_repo(Path(d)), repo="acme/widgets"))
+            ok = {"name": "unit", "bucket": "pass"}
+            with mock.patch.object(dispatch, "_registered_runners", return_value=[]):
+                escalations, removed, reruns, _ = self.cancelled_ci_pass(
+                    [ok, self.cancelled()], starved,
+                )
+
+            self.assertEqual((escalations, removed, reruns), ([], False, []))
+            waits = [
+                row["wait"]["reason"] for row in lifecycle.read_events(dispatch.EVENTS)
+                if row.get("kind") == "wait"
+            ]
+            self.assertNotIn("ci_pending", waits)
+            self.assertNotIn("ci_runner", waits)
 
     def test_merge_waits_on_infra_cancel_while_run_still_pending(self) -> None:
         from factory import dispatch

@@ -965,10 +965,14 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
 6. **Merge stage** (start of the next pass). One PR per pass requires green
    GitHub checks, a current-main head, no human requested-changes veto, the
    `factory-approved` label, and a matching successful journal approval whose
-   gate, review, approval, and current PR head SHAs are identical. Checks are
-   associated with that head and rechecked after evidence evaluation; the PR
-   head, target branch, label, and veto are then re-read immediately before
-   `gh pr merge --match-head-commit <sha>`. Missing,
+   gate, review, approval, and current PR head SHAs are identical. When GitHub
+   reports required checks, only those govern the merge, matching readiness.
+   With no required checks, all checks govern except names matching
+   `[merge].advisory_checks` fnmatch globs; advisory rows retain their original
+   result in the merge decision record but never block or fail the merge.
+   Governing checks are associated with that head and rechecked after evidence
+   evaluation; the PR head, target branch, label, and veto are then re-read
+   immediately before `gh pr merge --match-head-commit <sha>`. Missing,
    unbound, legacy, or stale approval evidence never merges.
    With `[eval] schedule = true`, a PR changing worker configuration/routing,
    standing prompts, lessons, or skills also needs an `eval-summary` `keep`
@@ -1011,9 +1015,14 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    finished (no other check pending and GitHub reports the run completed), the
    run's failed jobs are rerun once (`gh run rerun
    --failed`, journaled as `ci-infra` and `ci-rerun`), the label stays, and the
-   PR waits as CI pending. If the rerun is
-   also starved, the ticket is escalated once as "CI runner unavailable" with the
-   label kept, so a later green rerun still merges.
+   PR waits as CI pending. If the rerun is also starved, the ticket is escalated
+   once as "CI runner unavailable" with the label kept.
+   A self-hosted job still queued after `[merge].queued_check_timeout` seconds
+   (default six hours), never assigned a runner, and whose `runs-on` labels
+   match no registered repository runner is instead `skipped-infra` when the
+   repository has no required checks: it is recorded in the merge decision and
+   neither rerun nor escalated. The same condition on a required check escalates
+   as `ci_runner` with an explicit merge-blocking reason.
    Existing behind PRs re-earn bound evidence through that automatic refresh.
    An up-to-date PR carrying a pre-upgrade unbound approval is withdrawn and
    escalated once; use the existing manager `FIX` path to re-run its worker,
@@ -1091,6 +1100,13 @@ review_rounds = 1                # REVISE -> worker -> re-review cycles
 # idle_timeout = 30              # minutes quiet mid-work = stuck; 0 disables
 # exit_grace = 300               # seconds quiet after commit/handoff before termination; 0 disables
 # cost_pattern = 'Total cost:\s*\$([0-9.]+)'   # $ from the worker log (Claude Code prints this)
+
+[merge]
+# fnmatch globs ignored only when the base branch has no required checks
+advisory_checks = ["E2E tests (*", "E2E consolidated report (self-hosted)"]
+# seconds before a never-assigned self-hosted job is checked against registered runners
+queued_check_timeout = 21600
+
 
 [workers]                        # ticket label/profile -> argv; {prompt} file, {cwd} worktree
 default = ["omp", "-p", "--model", "openai-codex/gpt-5.6-sol", "--cwd", "{cwd}", "@{prompt}"]
@@ -1736,6 +1752,7 @@ not indefinitely active stages.
 | `exclusive_resource` | Gate observed its exclusive lock held before the unchanged blocking acquisition. |
 | `ci_pending` | Existing `pr_checks` result contained pending checks; `pr` integer. No extra CI query or polling loop. |
 | `no_passing_ci` | Existing result had no passing check; `pr` integer. The cause is unknown, not an inferred CI outage. |
+| `ci_runner` | A required check has runner-infrastructure evidence and blocks merge; `pr` integer. |
 | `scheduled_next_pass` | Local timer explicitly active, service explicitly idle, and a future `next_at` timestamp reported by the existing systemctl seam. |
 
 Review revision, escalation, eligibility, execution-stage occupancy, and waits
