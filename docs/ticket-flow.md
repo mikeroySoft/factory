@@ -81,7 +81,6 @@ flowchart TB
   CLAIM -->|"dispatch.process_ticket"| WR
   WR -->|"gate FAIL or worker stuck, attempts left, report fed back: dispatch.process_ticket"| WR
   WR -->|"gate FAIL or stuck max_attempts, protected paths, or budget: dispatch.process_ticket"| ESC
-  WR -->|"eligible non-protected test edit, before ready-for-human: manage.request_test_edit_authorization"| MGR
   WR -->|"gate PASS: dispatch.worker_round"| PUSH
   PUSH -->|"nothing ahead of main or PR target mismatch: dispatch.push_and_pr"| ESC
   PUSH -->|"dispatch.review"| REV
