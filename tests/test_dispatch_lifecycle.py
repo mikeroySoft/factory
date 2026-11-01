@@ -1278,6 +1278,28 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
         self.assertEqual((wt / "uv.lock").read_text(), "base\n")
         self.assertFalse((wt / "sub" / "uv.lock").exists())
 
+
+    def test_cleanup_removes_added_lockfile_after_restoring_tracked_lockfile(self):
+        from factory import config, dispatch
+
+        self.set_lock_baseline()
+        wt = self.repo / ".factory" / "wt-7"
+        wt.parent.mkdir(exist_ok=True)
+        self.git("worktree", "add", str(wt), "-b", "agent/7")
+        (wt / "uv.lock").write_text("worker drift\n")
+        added = wt / "web" / "package-lock.json"
+        added.parent.mkdir()
+        added.write_text("{}\n")
+        self.git("-C", str(wt), "add", "uv.lock", "web/package-lock.json")
+        self.git("-C", str(wt), "commit", "-qm", "worker lock edits")
+        dispatch.configure(config.load(self.repo))
+
+        restored = dispatch.restore_unplanned_lockfiles(wt, 7, "origin/main")
+
+        self.assertEqual(restored, ["uv.lock", "web/package-lock.json"])
+        self.assertEqual((wt / "uv.lock").read_text(), "base\n")
+        self.assertFalse(added.exists())
+
     def test_manifest_change_preserves_lockfile_edit(self):
         lock = self.run_lockfile_worker(
             "## Files\n- pyproject.toml\n", manifest=True,
@@ -1295,6 +1317,13 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
     def test_nonleading_lockfile_plan_preserves_lockfile_edit(self):
         lock = self.run_lockfile_worker(
             "## Files\n- `README.md`, `uv.lock`\n",
+        )
+
+        self.assertEqual(lock, "worker drift\n")
+
+    def test_mixed_bare_and_quoted_plan_preserves_lockfile_edit(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- uv.lock, `README.md`\n",
         )
 
         self.assertEqual(lock, "worker drift\n")
@@ -1391,6 +1420,33 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
                     Path, "read_text", side_effect=PermissionError("unreadable"),
                 ):
             self.assertFalse(dispatch._recorded_plan_lists_lockfile(7, "uv.lock"))
+
+    def test_recorded_plan_filter_continues_after_unreadable_plans(self):
+        from unittest import mock
+
+        from factory import config, dispatch
+
+        dispatch.configure(config.load(self.repo))
+        valid_plan = self.repo / "valid.md"
+        valid_plan.write_text("## Files\n- uv.lock\n")
+        valid = {
+            "event": "plan", "ticket": 7, "status": "recorded",
+            "path": str(valid_plan),
+        }
+        missing = {**valid, "path": str(self.repo / "missing.md")}
+        with mock.patch.object(
+            lifecycle, "read_events", return_value=[missing, valid],
+        ):
+            self.assertTrue(dispatch._recorded_plan_lists_lockfile(7, "uv.lock"))
+
+        unreadable = {**valid, "path": str(self.repo / "unreadable.md")}
+        with mock.patch.object(
+            lifecycle, "read_events", return_value=[unreadable, valid],
+        ), mock.patch.object(
+            Path, "read_text",
+            side_effect=[PermissionError("unreadable"), "## Files\n- uv.lock\n"],
+        ):
+            self.assertTrue(dispatch._recorded_plan_lists_lockfile(7, "uv.lock"))
 
     def test_recorded_plan_filter_toggles_only_for_files_section(self):
         from unittest import mock
