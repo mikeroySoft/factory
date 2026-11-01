@@ -171,17 +171,18 @@ class ReviewIsolationTest(unittest.TestCase):
         scratch.mkdir()
         now = 2_000_000
 
-        def snapshot(name: str, age: float) -> Path:
+        def snapshot(name: str, age_seconds: float) -> Path:
             path = scratch / f"factory-review-{name}"
             path.mkdir()
-            modified = now - age * 60 * 60
+            modified = now - age_seconds
             os.utime(path, (modified, modified))
             return path
 
-        stale = snapshot("stale", 24.5)
-        boundary = snapshot("boundary", 24)
-        recent = snapshot("recent", 23.5)
-        unreadable = snapshot("unreadable", 48)
+        day = 24 * 60 * 60
+        stale = snapshot("stale", day + 1)
+        boundary = snapshot("boundary", day)
+        recent = snapshot("recent", day - 1)
+        unreadable = snapshot("unreadable", day * 2)
         target = scratch / "link-target"
         target.mkdir()
         link = scratch / "factory-review-link"
