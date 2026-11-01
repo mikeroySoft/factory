@@ -1627,7 +1627,9 @@ def restore_unplanned_lockfiles(wt: Path, n: int, base: str) -> list[str]:
             ],
             cwd=wt,
         )
-    for path in sorted(set(lockfiles) - at_base):
+    for path in lockfiles:
+        if path in at_base:
+            continue
         run(["git", "rm", "-f", "--ignore-unmatch", "--", path], cwd=wt)
         (wt / path).unlink(missing_ok=True)
     log(f"#{n}: restored unplanned dependency lockfile drift: {', '.join(lockfiles)}")
