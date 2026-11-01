@@ -211,3 +211,14 @@ class ActionableReworkTest(unittest.TestCase):
         self.escalate.assert_not_called()
         self.assertIn("NumberReplacer", self.rework_rows()[0]["findings"])
         self.assertIn("Handle the missing branch", self.rework_rows()[0]["findings"])
+
+    def test_survivor_source_text_is_not_a_tool_failure(self):
+        self.configure_reviews(("APPROVE", "APPROVE"), mutation=True)
+        report = SURVIVORS.replace(
+            "NumberReplacer `1` -> `2`", "StringReplacer `baseline suite` -> `mutation check broke`",
+        )
+        self.patch(dispatch, "run_gate", return_value=(False, report))
+        self.expire = True
+        dispatch.process_ticket(self.issue, 1, False, forced=True)
+        self.escalate.assert_not_called()
+        self.assertEqual([row["round"] for row in self.rework_rows()], [1])
