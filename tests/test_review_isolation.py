@@ -128,10 +128,14 @@ class ReviewIsolationTest(unittest.TestCase):
 
         with mock.patch.object(dispatch.tempfile, "tempdir", str(scratch)), \
                 mock.patch.object(Path, "write_text", fail_diff), \
+                mock.patch.object(
+                    dispatch, "_make_tree_writable", wraps=dispatch._make_tree_writable,
+                ) as writable, \
                 self.assertRaisesRegex(OSError, "write failed"):
             dispatch._run_reviewer(
                 [sys.executable, "-c", ""], self.wt, self.head, "diff",
             )
+        writable.assert_called_once()
         self.assertEqual(list(scratch.iterdir()), [])
 
     def test_stale_read_only_snapshot_is_swept(self) -> None:
