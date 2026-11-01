@@ -809,6 +809,25 @@ class StorageFrontierRetryTest(unittest.TestCase):
 
 
 class StorageStartupTest(unittest.TestCase):
+    def test_startup_uses_runner_settings_without_loading_stale_invalid_config(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".factory.toml").write_text("[runner]\nmin_free_gb = 2.5\nmin_free_inodes = 123\n")
+            seen = []
+
+            def probe(cfg):
+                seen.append((cfg.runner_min_free_gb, cfg.runner_min_free_inodes))
+                return {"ok": False, "thresholds": {"free_bytes": 0, "free_inodes": 0}, "filesystems": []}
+
+            with mock.patch.object(config, "repo_root", return_value=root), \
+                    mock.patch.object(config, "load", side_effect=config.ConfigError("stale")) as load, \
+                    mock.patch.object(storage, "status", side_effect=probe), \
+                    mock.patch.object(dispatch, "pin_root") as pin:
+                self.assertEqual(dispatch.main(["--ticket", "7"]), 0)
+            self.assertEqual(seen, [(2.5, 123)])
+            load.assert_not_called()
+            pin.assert_not_called()
+
     def test_real_dispatch_entry_defers_before_startup_writes(self) -> None:
         import errno
 
@@ -887,7 +906,7 @@ class ManagerGateEvidenceTest(unittest.TestCase):
         return wt, lease, head, packet, issue
 
     def test_deferred_manager_gate_recovery_reaches_real_approval(self) -> None:
-        wt, lease, head, packet, issue = self.prepare()
+        _wt, lease, head, packet, issue = self.prepare()
         # Only external processes are stand-ins: push, review and approval contracts run.
         with mock.patch.dict(os.environ, self.env), \
                 mock.patch.object(dispatch, "worker_round") as worker, \
@@ -950,8 +969,127 @@ class ManagerGateEvidenceTest(unittest.TestCase):
     def test_head_changed_before_resumed_gate_is_rejected(self) -> None:
         self.reject_drift("head-before")
 
+    def test_worker_phase_retry_uses_next_attempt_number(self) -> None:
+        _wt, _, head, packet, issue = self.prepare()
+        self.git("push", "origin", "agent/7")
+        with mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(dispatch, "worker_round", return_value=(False, "FAIL", None, head)) as worker:
+            manage.apply(7, issue, "FIX", "", {"worker": "default", "guidance": "fix"}, packet)
+        self.assertEqual(worker.call_args.args[5], 5)
+
+    def test_frontier_pr_gate_deferral_recovers_pushed_candidate_with_real_approval_checks(self) -> None:
+        wt, _, original, _packet, issue = self.prepare()
+        self.git("push", "origin", "agent/7")
+        cfg = dispatch.cfg
+        cfg.manager = ["manager-stub"]
+        cfg.manager_review = "all"
+        cfg.manager_rounds = 1
+        cfg.workers["code"] = ["worker-stub"]
+        cfg.checks.append(config.Check("mutation", ["mutation-stub"], when="pr"))
+        dispatch.record("attempt", ticket=7, attempt=4, head=original, actual_head=original, gate="PASS")
+        dispatch.record("review", ticket=7, head=original, actual_head=original,
+                        verdict="APPROVE", accepted=True)
+        real_run, real_github = dispatch.run, dispatch.gh_json
+        candidate = []
+        manager_calls = []
+
+        def run(command, **kwargs):
+            if command[0] == "manager-stub":
+                manager_calls.append(command)
+                return subprocess.CompletedProcess(command, 0,
+                    'DECISION: FIX\n{"worker":"code","guidance":"fix"}', "")
+            return real_run(command, **kwargs)
+
+        def github(args):
+            if args[:2] == ["pr", "list"]:
+                return [{**frontier_test.pr_row(), **real_github(["pr", "view", "agent/7"]),
+                         "isCrossRepository": False, "labels": []}]
+            if args[:2] == ["issue", "view"]:
+                return {**issue, "state": "OPEN", "labels": [{"name": "ready-for-agent"}]}
+            return real_github(args)
+
+        def worker(*args, **kwargs):
+            (wt / "candidate.txt").write_text("fixed")
+            self.git("-C", str(wt), "add", "candidate.txt")
+            self.git("-C", str(wt), "commit", "-qm", "manager fix")
+            candidate.append(self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip())
+            dispatch.record("attempt", ticket=7, attempt=5, head=candidate[0],
+                            actual_head=candidate[0], gate="PASS", worker_model="worker-model")
+            return True, "attempt PASS", None, candidate[0]
+
+        def gate(*args, **kwargs):
+            if len(gate_calls) == 0:
+                gate_calls.append("deferred")
+                storage.record_low(cfg, "gate", storage.status(cfg))
+                raise storage.RunnerStorageLow("gate", storage.status(cfg))
+            gate_calls.append(kwargs.get("tier", "attempt"))
+            return True, "gate PASS"
+
+        gate_calls = []
+        with mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(dispatch, "run", side_effect=run), \
+                mock.patch.object(dispatch, "gh_json", side_effect=github), \
+                mock.patch.object(dispatch, "pr_checks", return_value=[]), \
+                mock.patch.object(manage, "observe_pr", return_value={"owner": {"relation": "factory_issue"}}), \
+                mock.patch.object(manage, "undelivered", return_value=[]), \
+                mock.patch.object(dispatch, "worker_round", side_effect=worker) as worker_mock, \
+                mock.patch.object(dispatch, "run_gate", side_effect=gate), \
+                mock.patch.object(dispatch, "approve_pr", wraps=dispatch.approve_pr) as approval:
+            manage.frontier_pass()
+            self.assertEqual(self.git("ls-remote", "origin", "refs/heads/agent/7").stdout.split()[0], candidate[0])
+            self.assertFalse(dispatch._head_evidence_matches(lifecycle.read_events(dispatch.EVENTS), 7, candidate[0]))
+            manage.frontier_pass()
+        worker_mock.assert_called_once()
+        self.assertEqual(len(manager_calls), 1)
+        self.assertEqual(gate_calls, ["deferred", "attempt", "pr"])
+        approval.assert_called_once_with(7, candidate[0])
+        rows = lifecycle.read_events(dispatch.EVENTS)
+        self.assertTrue(dispatch._head_evidence_matches(rows, 7, candidate[0]))
+        self.assertFalse(any(e.get("event") == "escalate" for e in rows))
+        self.assertEqual([e["round"] for e in rows if e.get("event") == "manage"], [1])
+        self.assertEqual([e["decision_head"] for e in rows if e.get("event") == "manage-applied"], [original])
+        # review=all still requires a fresh final APPROVE for the new head.
+        self.assertFalse(any(e.get("event") == "approved" for e in rows))
+
 
 class StorageDecisionIdentityTest(unittest.TestCase):
+    def test_pending_fix_requires_exact_decision_and_candidate_identity(self) -> None:
+        decision = {
+            "event": "manage", "ticket": 7, "pr": 80, "round": 1, "head": "b"*40,
+            "decision": "FIX", "apply_pending": True, "body": "fix", "data": {"worker": "code"},
+            "packet": "packet.md",
+        }
+        deferred = {**decision, "event": "manage-deferred", "head": "c"*40, "decision_head": "b"*40}
+        pending = manage._pending_frontier_fix([decision, deferred], 7, 80, "c"*40)
+        self.assertEqual(pending["resume_head"], "c"*40)
+        self.assertEqual(pending["decision_head"], "b"*40)
+        for field, value in (
+            ("ticket", 8), ("pr", 79), ("pr", 81), ("round", 2),
+            ("decision_head", "a"*40), ("decision_head", "d"*40),
+            ("decision", "CLOSE"), ("body", "other"), ("data", {}), ("packet", "other.md"),
+        ):
+            with self.subTest(field=field, value=value):
+                self.assertIsNone(manage._pending_frontier_fix(
+                    [decision, {**deferred, field: value}], 7, 80, "c"*40,
+                ))
+        for head in ("a"*40, "d"*40):
+            self.assertIsNone(manage._pending_frontier_fix([decision, deferred], 7, 80, head))
+        for field, value in (("decision", "CLOSE"), ("decision", "HUMAN"), ("apply_pending", False),
+                             ("ticket", 8), ("pr", 81), ("event", "review")):
+            with self.subTest(decision_field=field):
+                self.assertIsNone(manage._pending_frontier_fix(
+                    [{**decision, field: value}, deferred], 7, 80, "c"*40,
+                ))
+        applied = {"event": "manage-applied", "ticket": 7, "pr": 80,
+                   "round": 1, "decision_head": "b"*40}
+        self.assertIsNone(manage._pending_frontier_fix([decision, deferred, applied], 7, 80, "c"*40))
+        for field, value in (("ticket", 8), ("pr", 79), ("pr", 81), ("round", 2),
+                             ("decision_head", "a"*40), ("event", "review")):
+            with self.subTest(applied_field=field, value=value):
+                self.assertIsNotNone(manage._pending_frontier_fix(
+                    [decision, deferred, {**applied, field: value}], 7, 80, "c"*40,
+                ))
+
     def test_frontier_rows_do_not_replay_or_suppress_escalation_round(self) -> None:
         for frontier_event in ("manage-deferred", "manage-applied"):
             with self.subTest(frontier_event=frontier_event), tempfile.TemporaryDirectory() as directory:
@@ -999,19 +1137,83 @@ class StorageDecisionIdentityTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "events.jsonl"
-            with lifecycle.scope(path, "dispatcher", lazy=True) as parent:
-                with lifecycle.scope(path, "gate", lazy=True) as child:
-                    child.defer_storage()
-                    self.assertTrue(parent.storage_deferred)
-                    self.assertTrue(child.storage_deferred)
-                    self.assertEqual((child.outcome, child.reason), ("not_eligible", "runner_storage_low"))
-                    with mock.patch.object(lifecycle, "_write", side_effect=OSError(errno.ENOSPC, "full")), \
-                            mock.patch("sys.stderr") as stderr:
-                        child.wait("runner_storage_low", mode="retry_next_pass")
-                    self.assertIn("runner_storage_low", str(stderr.write.call_args_list))
+            with lifecycle.scope(path, "dispatcher", lazy=True) as parent, \
+                    lifecycle.scope(path, "gate", lazy=True) as child:
+                child.defer_storage()
+                self.assertTrue(parent.storage_deferred)
+                self.assertTrue(child.storage_deferred)
+                self.assertEqual((child.outcome, child.reason), ("not_eligible", "runner_storage_low"))
+                with mock.patch.object(lifecycle, "_write", side_effect=OSError(errno.ENOSPC, "full")), \
+                        mock.patch("sys.stderr") as stderr:
+                    child.wait("runner_storage_low", mode="retry_next_pass")
+                self.assertIn("runner_storage_low", str(stderr.write.call_args_list))
             exits = [e for e in lifecycle.read_events(path) if e.get("kind") == "exit"]
             self.assertTrue(exits)
             self.assertTrue(all(e["outcome"] == "not_eligible" for e in exits))
+
+
+class StorageOwnershipBoundaryTest(unittest.TestCase):
+    def test_exited_child_is_not_a_live_consumer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            owner = {**lifecycle._identity(os.getpid()), "execution_id": "run",
+                     "journal": str(root / "events.jsonl")}
+            rows = [{"execution_id": "run", "kind": "child_exit", "child_process": {"pid": 42}}]
+            with mock.patch.object(lifecycle, "read_events", return_value=rows), \
+                    mock.patch.object(Path, "iterdir", return_value=iter([])), \
+                    mock.patch.object(lifecycle, "_process_state", return_value="alive") as state:
+                self.assertTrue(storage._consumers_stopped(root, owner))
+            state.assert_not_called()
+
+    def test_unreadable_consumer_journal_keeps_temp_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            owner = {**lifecycle._identity(os.getpid()), "execution_id": "run",
+                     "journal": str(root / "events.jsonl")}
+            for error in (OSError("unreadable"), TypeError("malformed")):
+                with self.subTest(error=type(error)), \
+                        mock.patch.object(lifecycle, "read_events", side_effect=error):
+                    self.assertFalse(storage._consumers_stopped(root, owner))
+
+    def test_same_tick_consumer_and_malformed_process_are_not_reclaimed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            process = root / "123"
+            process.mkdir()
+            (process / "environ").write_bytes(b"TMPDIR=" + os.fsencode(root))
+            owner = lifecycle._identity(os.getpid())
+            for ticks in (str(owner["start_ticks"]), "not-a-number"):
+                fields = ["S", "1", "1", "1", *(["0"] * 15), ticks]
+                (process / "stat").write_text("123 (child) " + " ".join(fields))
+                with self.subTest(ticks=ticks), \
+                        mock.patch.object(Path, "iterdir", return_value=iter([process])):
+                    self.assertFalse(storage._consumers_stopped(root, owner))
+
+    def test_space_threshold_uses_gibibytes_and_available_not_total_blocks(self) -> None:
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config.Config(Path(directory), "acme/widgets",
+                                runner_min_free_gb=1, runner_min_free_inodes=100)
+            info = SimpleNamespace(f_bavail=1024**2, f_frsize=1024, f_favail=100, f_files=1000)
+            with mock.patch.object(storage.os, "statvfs", return_value=info):
+                value = storage.status(cfg)
+                self.assertTrue(value["ok"])
+                self.assertEqual(value["thresholds"], {"free_bytes": 1024**3, "free_inodes": 100})
+                info.f_bavail -= 1
+                self.assertEqual(storage.status(cfg)["filesystems"][0]["low"], ["space"])
+                info.f_bavail += 1
+                info.f_favail -= 1
+                self.assertEqual(storage.status(cfg)["filesystems"][0]["low"], ["inodes"])
+
+    def test_temp_setup_failure_has_zero_capacity_thresholds(self) -> None:
+        import errno
+
+        with mock.patch.object(storage.tempfile, "mkdtemp", side_effect=OSError(errno.ENOSPC, "full")), \
+                self.assertRaises(storage.RunnerStorageLow) as raised, \
+                storage.temporary_environment("factory-worker-test-"):
+            self.fail("started without storage")
+        self.assertEqual(raised.exception.status["thresholds"], {"free_bytes": 0, "free_inodes": 0})
 
 
 if __name__ == "__main__":

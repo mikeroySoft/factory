@@ -525,6 +525,10 @@ def apply(
             if gate_head != resume_head or before or after:
                 ok = False
                 report += "\n\nGate evidence rejected: deferred worktree changed before retry."
+            dispatch.record(
+                "refreshed", ticket=n, head=resume_head, gate="PASS" if ok else "FAIL",
+                gate_head=resume_head, actual_head=gate_head, clean=not before and not after,
+            )
             logfile = None
         if not ok:
             reason = "gate failed after manager FIX"
@@ -903,6 +907,48 @@ def feedback_packet(items: list[dict]) -> str:
 CI_KINDS = ("check_run", "commit_status")
 
 
+def _pending_frontier_fix(events: list[dict], n: int, pr: int, head: str) -> dict | None:
+    """Recover only an unapplied FIX for this decision's original or saved candidate head."""
+    for index in range(len(events) - 1, -1, -1):
+        decision = events[index]
+        if not (
+            decision.get("event") == "manage" and decision.get("ticket") == n
+            and decision.get("pr") == pr and decision.get("decision") == "FIX"
+            and decision.get("apply_pending") is True
+        ):
+            continue
+        related = [
+            row for row in events[index + 1:]
+            if row.get("ticket") == n and row.get("pr") == pr
+            and row.get("round") == decision.get("round")
+            and row.get("decision_head") == decision.get("head")
+        ]
+        if any(row.get("event") == "manage-applied" for row in related):
+            continue
+        deferred = next((
+            row for row in reversed(related)
+            if row.get("event") == "manage-deferred" and row.get("decision") == "FIX"
+            and all(row.get(key) == decision.get(key) for key in ("body", "data", "packet"))
+        ), None)
+        candidate = deferred.get("head") if deferred else None
+        if deferred is None:
+            # The durable decision precedes application. If ENOSPC prevented the
+            # deferral row, a completed gate still binds the pushed candidate.
+            candidate = next((
+                row.get("head") if row.get("event") == "attempt" else row.get("gate_head")
+                for row in reversed(events[index + 1:])
+                if row.get("ticket") == n and row.get("event") in {"attempt", "refreshed"}
+                and row.get("actual_head") == (
+                    row.get("head") if row.get("event") == "attempt" else row.get("gate_head")
+                )
+            ), None)
+        if head not in {decision.get("head"), candidate}:
+            continue
+        return {**decision, "decision_head": decision["head"], "resume_head": candidate,
+                "resume_if_ahead": deferred is None}
+    return None
+
+
 def released_at(n: int) -> str:
     """When ticket `n` was last labeled ready-for-agent; "" if never."""
     return max((i.get("created_at", "") for i in handoff.timeline(n)
@@ -1000,63 +1046,41 @@ def frontier_pass(dry_run: bool = False) -> None:
                     if execution:
                         execution.wait("ci_pending", mode="eligibility", pr=number)
                     continue
-                if cfg.manager_review != "all" or approved or not dispatch._head_evidence_matches(events, n, head) \
-                            or dispatch.manager_approval(events, n, head):
+                if cfg.manager_review != "all" or approved:
                     continue
                 wt = cfg.factory / f"wt-{n}"
-                deferred_at = next((
-                    index for index in range(len(events) - 1, -1, -1)
-                    if (
-                        events[index].get("event") == "manage-deferred"
-                        and events[index].get("pr") == number
-                        and events[index].get("decision_head") == head
-                    ) or (
-                        events[index].get("event") == "manage"
-                        and events[index].get("pr") == number
-                        and events[index].get("head") == head
-                        and events[index].get("decision") == "FIX"
-                        and events[index].get("apply_pending") is True
-                    )
-                ), -1)
-                applied_at = next((
-                    index for index in range(len(events) - 1, -1, -1)
-                    if events[index].get("event") == "manage-applied"
-                    and events[index].get("pr") == number
-                    and events[index].get("decision_head") == head
-                ), -1)
-                deferred = events[deferred_at] if deferred_at > applied_at else None
+                deferred = _pending_frontier_fix(events, n, number, head)
                 if deferred is not None and not dry_run:
                     packet = Path(deferred["packet"])
                     try:
                         apply(
                             n, issue, deferred["decision"], deferred["body"], deferred["data"],
                             packet,
-                            resume_head=(
-                                deferred.get("head")
-                                if deferred.get("event") == "manage-deferred" else None
-                            ),
-                            resume_if_ahead=deferred.get("event") == "manage",
+                            resume_head=deferred["resume_head"],
+                            resume_if_ahead=deferred["resume_if_ahead"],
                         )
                     except storage.RunnerStorageLow as exc:
                         _record_fix_deferral(
                             n, deferred["decision"], deferred["body"], deferred["data"],
                             packet, wt, round_number=deferred["round"], error=exc,
-                            pr=number, decision_head=head,
+                            pr=number, decision_head=deferred["decision_head"],
                         )
                         execution.wait("runner_storage_low", mode="retry_next_pass")
                         dispatch.log(f"#{n}: manager work deferred ({exc})")
                     except (CalledProcessError, OSError, ValueError) as exc:
                         execution.outcome, execution.reason = "mechanism_failure", "pr_frontier_failed"
                         dispatch.record(
-                            "manage-applied", ticket=n, pr=number, decision_head=head,
+                            "manage-applied", ticket=n, pr=number, decision_head=deferred["decision_head"],
                             round=deferred["round"], status="failed",
                         )
                         dispatch.log(f"PR #{number}: frontier failed: {exc}; leaving for human")
                     else:
                         dispatch.record(
-                            "manage-applied", ticket=n, pr=number, decision_head=head,
+                            "manage-applied", ticket=n, pr=number, decision_head=deferred["decision_head"],
                             round=deferred["round"], status="applied",
                         )
+                    continue
+                if not dispatch._head_evidence_matches(events, n, head) or dispatch.manager_approval(events, n, head):
                     continue
                 decided = [e for e in events if e.get("event") == "manage" and e.get("pr") == number]
                 if any(e.get("head") == head for e in decided):
@@ -1198,6 +1222,7 @@ def escalation_pass(dry_run: bool = False) -> None:
                     if (
                         events[index].get("event") == "manage-deferred"
                         and events[index].get("round") == round_number
+                        and not events[index].get("pr")
                     ) or (
                         events[index].get("event") == "manage"
                         and events[index].get("round") == round_number
@@ -1210,6 +1235,7 @@ def escalation_pass(dry_run: bool = False) -> None:
                     index for index in range(len(events) - 1, -1, -1)
                     if events[index].get("event") == "manage-applied"
                     and events[index].get("round") == round_number
+                    and not events[index].get("pr")
                 ), -1)
                 deferred = events[deferred_at] if deferred_at > applied_at else None
                 # The PR frontier numbers its own `manage` rows (with `pr`) per PR; they never spend an escalation round.

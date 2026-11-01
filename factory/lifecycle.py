@@ -502,6 +502,7 @@ class Execution:
     def defer_storage(self) -> None:
         """Do not let a full journal replace an already observed host deferral."""
         self.storage_deferred = True
+        self.outcome, self.reason = "not_eligible", "runner_storage_low"
         if self._parent is not None:
             self._parent.defer_storage()
 

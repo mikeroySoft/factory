@@ -1069,7 +1069,8 @@ Clearing `manager.model` removes the repository override and restores the
 existing host value, a legacy `manager.command --model` fallback, or OMP's
 default model. Gate and safety policy remain file-managed.
 
-Before each claim and before every gate, Factory checks available bytes and
+Before startup fetches or admission journal writes, at each claim, and before
+every gate, Factory checks available bytes and
 inodes on both the runner temp filesystem and the `.factory` worktree
 filesystem. Falling below `[runner]` thresholds records the machine condition
 `runner_storage_low`, starts no gate, charges no ticket or manager round, and
@@ -1087,6 +1088,10 @@ requiring the normal gate and independent review. If storage exhaustion prevents
 journaling the host condition, stderr reports `runner_storage_low` instead;
 gate exit 75 and successful dispatcher deferral are unchanged. Space or quota
 exhaustion while creating a run's temp root also defers work.
+Manager FIX retries keep the original decision and candidate head, including
+after a push but before PR-tier checks finish. Recovery records fresh head-bound
+gate evidence without another worker attempt or manager round. The normal
+independent review, remote-head lease and final manager approval rules still apply.
 
 ```toml
 [repo]

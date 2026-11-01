@@ -4391,7 +4391,8 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
     """Claim up to capacity frontier tickets in accepted-priority order and work each one."""
     from factory import schedule
 
-
+    if not dry_run:
+        storage.require(cfg, "claim")
     with nullcontext() if dry_run else lifecycle.scope(EVENTS, "scheduling", lazy=True) as execution:
         active = active_tickets()
         capacity = MAX_ACTIVE - len(active)
@@ -4469,6 +4470,15 @@ def _main(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
     if not args.dry_run:
+        # Read only runner settings before fetch or journal writes. Full loading
+        # still follows pinning so stale invalid configuration can recover.
+        root = config.repo_root()
+        startup = Config(root, "")
+        with suppress(OSError, tomllib.TOMLDecodeError, config.ConfigError):
+            runner = tomllib.loads((root / config.CONFIG_NAME).read_text()).get("runner", {})
+            if isinstance(runner, dict):
+                config.runner_settings(startup, runner)
+        storage.require(startup, "claim")
         dirty = pin_root()
         if dirty:
             root = config.repo_root()

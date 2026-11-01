@@ -628,6 +628,18 @@ def band_settings(path: Path) -> list[Band]:
     return bands
 
 
+def runner_settings(cfg: Config, runner: dict) -> None:
+    """Apply the same storage thresholds before root pinning and during full load."""
+    min_free_gb = runner.get("min_free_gb", cfg.runner_min_free_gb)
+    min_free_inodes = runner.get("min_free_inodes", cfg.runner_min_free_inodes)
+    if isinstance(min_free_gb, bool) or not isinstance(min_free_gb, (int, float)) or min_free_gb < 0:
+        raise ConfigError("runner.min_free_gb must be a non-negative number")
+    if isinstance(min_free_inodes, bool) or not isinstance(min_free_inodes, int) or min_free_inodes < 0:
+        raise ConfigError("runner.min_free_inodes must be a non-negative integer")
+    cfg.runner_min_free_gb = float(min_free_gb)
+    cfg.runner_min_free_inodes = min_free_inodes
+
+
 def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     """Load `<root>/.factory.toml` over the host layer; every key optional except a resolvable repo slug."""
     root = Path(git(start, "rev-parse", "--show-toplevel")) if worktree else repo_root(start)
@@ -817,14 +829,7 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     if "collaboration" in raw:
         cfg.collaboration = collaboration_settings(raw["collaboration"])
     cfg.prices = price_table(raw.get("prices", {}))
-    min_free_gb = runner.get("min_free_gb", cfg.runner_min_free_gb)
-    min_free_inodes = runner.get("min_free_inodes", cfg.runner_min_free_inodes)
-    if isinstance(min_free_gb, bool) or not isinstance(min_free_gb, (int, float)) or min_free_gb < 0:
-        raise ConfigError("runner.min_free_gb must be a non-negative number")
-    if isinstance(min_free_inodes, bool) or not isinstance(min_free_inodes, int) or min_free_inodes < 0:
-        raise ConfigError("runner.min_free_inodes must be a non-negative integer")
-    cfg.runner_min_free_gb = float(min_free_gb)
-    cfg.runner_min_free_inodes = min_free_inodes
+    runner_settings(cfg, runner)
     cfg.check_timeout = int(gate.get("timeout", cfg.check_timeout))
     for key in ("protected_paths", "add_only_paths"):
         paths = gate.get(key, [])
