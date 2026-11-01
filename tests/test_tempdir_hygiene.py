@@ -23,6 +23,11 @@ class TempdirHygieneTest(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_import_only_leaves_no_tempdirs_behind(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ | {"TMPDIR": tmp}
             proc = subprocess.run(
                 [sys.executable, "-c", "import test_factory"],
                 cwd=ROOT / "tests",
