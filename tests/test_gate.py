@@ -477,5 +477,61 @@ AssertionError: 'expected' != 'actual'
         self.assertNotIn("Failing tests", report)
         self.assertNotIn("failure_summary", result)
 
+    def test_pytest_summary_is_scoped_to_first_failed_test(self) -> None:
+        output = """________________ ERROR at setup of test_setup _________________
+E       RuntimeError: setup broke
+tests/test_setup.py:5: RuntimeError
+____________________________ test_first ____________________________
+E       AssertionError: assert 1 == 2
+E       assert 1 == 2
+tests/test_math.py:12: AssertionError
+____________________________ test_second ___________________________
+E       ValueError: later failure
+tests/test_other.py:22: ValueError
+FAILED tests/test_math.py::test_first - AssertionError: assert 1 == 2
+FAILED tests/test_other.py::test_second - ValueError: later failure
+"""
+
+        _, report, result = self._failed_output(output)
+
+        summary = report.split("```", 1)[0]
+        self.assertIn("`tests/test_math.py:12`", summary)
+        self.assertIn("AssertionError: assert 1 == 2", summary)
+        self.assertNotIn("tests/test_setup.py:5", summary)
+        self.assertNotIn("RuntimeError: setup broke", summary)
+        self.assertNotIn("tests/test_other.py:22", summary)
+        self.assertNotIn("ValueError: later failure", summary)
+        self.assertEqual(result["failure_summary"]["location"], "tests/test_math.py:12")
+
+    def test_unittest_error_accepts_generic_exception_name(self) -> None:
+        output = """ERROR: test_load (tests.test_worker.WorkerTest.test_load)
+Traceback (most recent call last):
+  File "tests/test_worker.py", line 21, in test_load
+    raise Exception("broken")
+Exception: broken
+"""
+
+        _, report, result = self._failed_output(output)
+
+        summary = report.split("```", 1)[0]
+        self.assertIn("`tests/test_worker.py:21`", summary)
+        self.assertIn("Exception: broken", summary)
+        self.assertEqual(result["failure_summary"]["message"], "Exception: broken")
+
+    def test_mutation_failure_with_test_ids_is_unchanged(self) -> None:
+        output = """FAIL: test_value (tests.test_math.MathTest.test_value)
+Traceback (most recent call last):
+  File "tests/test_math.py", line 17, in test_value
+    self.assertEqual(1, 2)
+AssertionError: 1 != 2
+"""
+
+        _, report, result = self._failed_output(output, name="mutation")
+
+        self.assertIn(f"## mutation failure\n```\n{output}```", report)
+        self.assertNotIn("Failing tests", report)
+        self.assertNotIn("failure_summary", result)
+        self.assertEqual(result["failed_tests"], ["tests.test_math.MathTest.test_value"])
+
 if __name__ == "__main__":
     unittest.main()
