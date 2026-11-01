@@ -706,6 +706,32 @@ class ControlBandWatchTest(unittest.TestCase):
             with self.subTest(other_heads_merged=bool(merged)):
                 self.assertEqual(watch.band_signals(self.cfg, rows + merged, self.NOW), [])
 
+    def test_redispatch_reused_attempt_number_keeps_old_failure_unmerged(self) -> None:
+        rows = [row for row in self.rows() if row.get("event") == "attempt"]
+        at = self.NOW.replace(hour=15).isoformat()
+        for ticket in (17, 73):
+            rows += [
+                {
+                    "event": "lifecycle", "kind": "result", "stage": "gate-check",
+                    "dispatcher_run_id": f"old-{ticket}", "ticket": ticket, "attempt": 1,
+                    "check": "test", "passed": False, "failed_tests": [self.TEST_ID],
+                    "changed_paths": ["factory/dispatch.py"], "at": at,
+                },
+                {
+                    "event": "attempt", "dispatcher_run_id": f"old-{ticket}",
+                    "ticket": ticket, "attempt": 1, "head": f"unmerged-{ticket}", "at": at,
+                },
+                {
+                    "event": "attempt", "dispatcher_run_id": f"new-{ticket}",
+                    "ticket": ticket, "attempt": 1, "head": f"landed-{ticket}", "at": at,
+                },
+                {
+                    "event": "merged", "ticket": ticket, "head": f"landed-{ticket}", "at": at,
+                },
+            ]
+
+        self.assertEqual(watch.band_signals(self.cfg, rows, self.NOW), [])
+
     def test_duplicate_rows_for_one_merged_attempt_count_once(self) -> None:
         at = self.NOW.replace(hour=15).isoformat()
         failure = {
