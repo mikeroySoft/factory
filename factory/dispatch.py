@@ -2621,6 +2621,10 @@ def gate_flags(
                     no_repro = reason
                     break
         repro = _ticket_line(handoff, "Repro test")
+        if repro:
+            match = re.fullmatch(r"([`'\"])(.*)\1", repro)
+            if match:
+                repro = match.group(2)
         if no_repro:
             flags["no_repro_test"] = no_repro
         elif repro:

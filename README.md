@@ -1046,8 +1046,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    Late feedback is delivered at most once per `(evidence_id, source_revision)`
    (`feedback-delivered` journal rows); partial or unavailable coverage, unknown
    relevance and the factory's own reviewer are never delivered. `CLOSE` closes
-   the PR with the diagnosis; a human's issue stays open with
-   `wontfix-proposal`, a child the factory created by `SPLIT` is closed.
+   the PR when one is open and comments with the diagnosis either way; a human's
+   issue stays open with `wontfix-proposal`, while a factory-created `SPLIT` child closes.
    With `manager.review = "all"`, a head that passed the gate and independent
    review is not labelled until the manager returns `APPROVE` for that exact
    head (`manage` row with `head`); a refreshed head needs a fresh decision and
