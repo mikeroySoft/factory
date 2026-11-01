@@ -121,7 +121,7 @@ def failed_test_ids(output: str) -> list[str]:
     return found
 
 
-_EXCEPTION_LINE = re.compile(r"^[\w.]+(?:Error|Exception|Failure)(?::|$)")
+_EXCEPTION_LINE = re.compile(r"^(?:[A-Za-z_]\w*\.)*[A-Z]\w*(?::|$)")
 
 
 def _failure_block(lines: list[str], test_id: str) -> tuple[str, list[str]]:
@@ -140,7 +140,20 @@ def _failure_block(lines: list[str], test_id: str) -> tuple[str, list[str]]:
                 if re.match(r"^---- [^\s]+ stdout ----$", lines[later])
             ), len(lines))
             return "cargo", lines[index:end]
-    return "pytest", lines
+
+    pytest_names = {test_id.rsplit("::", 1)[-1]}
+    parts = test_id.split("::")
+    if len(parts) > 2:
+        pytest_names.add(".".join(parts[-2:]))
+    for index, line in enumerate(lines):
+        heading = re.match(r"^_+\s+(.+?)\s+_+$", line)
+        if heading and heading[1] in pytest_names:
+            end = next((
+                later for later in range(index + 1, len(lines))
+                if re.match(r"^_+\s+.+?\s+_+$", lines[later])
+            ), len(lines))
+            return "pytest", lines[index:end]
+    return "pytest", []
 
 
 def _failure_location(kind: str, block: list[str]) -> tuple[str | None, int]:
@@ -892,10 +905,10 @@ def execute(args: argparse.Namespace, execution) -> int:
                 if not passed:
                     failed_tests = failed_test_ids(output)
                     fields["failed_tests"] = failed_tests
-                    if failed_tests or name.casefold() in {
-                        "test", "tests", "pytest", "unittest",
-                    }:
-                        summary = first_failure_summary(output, failed_tests[0]) if failed_tests else None
+                    if name.casefold() in {"test", "tests", "pytest", "unittest"}:
+                        summary = first_failure_summary(
+                            output, failed_tests[0]
+                        ) if failed_tests else None
                         test_failures[name] = failed_tests, summary
                         if summary is not None:
                             fields["failure_summary"] = summary
