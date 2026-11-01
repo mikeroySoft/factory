@@ -295,6 +295,208 @@ class LocalCLI(unittest.TestCase):
         legacy = [r for r in lifecycle.read_events(self.events) if r.get("event") == "attempt"]
         self.assertEqual(len(legacy), 2)
 
+    def test_human_requeue_starts_a_fresh_review_bounce_budget(self):
+        self.events.parent.mkdir()
+        lifecycle.append(self.events, {
+            "at": "2026-10-28T15:50:00Z", "event": "review", "ticket": 7,
+            "verdict": "REVISE", "accepted": True, "role": "primary",
+        })
+        lifecycle.append(self.events, {
+            "at": "2026-10-28T15:53:00Z", "event": "rounds-reset", "ticket": 7,
+            "actor": "alice", "requeued_at": "2026-10-28T15:53:00Z",
+        })
+
+        self.cli("dispatch", "--ticket", "7")
+
+        events = lifecycle.read_events(self.events)
+        self.assertEqual(len([e for e in events if e.get("event") == "attempt"]), 2)
+        self.assertTrue(any(e.get("event") == "approved" for e in events))
+
+    def set_timeline(self, timeline):
+        state = json.loads(self.state.read_text())
+        state["timeline"] = timeline
+        self.state.write_text(json.dumps(state))
+        gh = self.bin / "gh"
+        gh.write_text(GH.replace(
+            'elif a[0] == "api" and "/compare/" in a[1]:',
+            'elif a[0] == "api" and "/issues/7/timeline" in a[1]:\n'
+            '    print(json.dumps([s.get("timeline", [])]))\n'
+            'elif a[0] == "api" and "/compare/" in a[1]:',
+        ))
+
+    def test_direct_human_requeue_records_reset_before_fresh_worker_attempt(self):
+        self.events.parent.mkdir()
+        for row in (
+            {"at": "2026-10-28T15:50:00Z", "event": "escalate", "ticket": 7,
+             "round": 2, "reason": "manager rounds exhausted"},
+            {"at": "2026-10-28T15:50:00Z", "event": "comment", "ticket": 7,
+             "kind": "escalation", "round": 2, "comment": 101},
+            {"at": "2026-10-28T15:51:00Z", "event": "manage", "ticket": 7,
+             "round": 2, "decision": "HUMAN"},
+        ):
+            lifecycle.append(self.events, row)
+        self.set_timeline([
+            {"event": "labeled", "label": {"name": "ready-for-human"},
+             "created_at": "2026-10-28T15:50:00Z", "actor": {"login": "runner"}},
+            {"event": "commented", "id": 101, "created_at": "2026-10-28T15:50:00Z",
+             "updated_at": "2026-10-28T15:50:00Z", "user": {"login": "runner"}},
+            {"event": "commented", "id": 102, "created_at": "2026-10-28T15:52:00Z",
+             "updated_at": "2026-10-28T15:52:00Z", "user": {"login": "alice"},
+             "body": "Acceptance criteria amended."},
+            {"event": "labeled", "label": {"name": "ready-for-agent"},
+             "created_at": "2026-10-28T15:53:00Z", "actor": {"login": "alice"}},
+        ])
+
+        self.cli("dispatch", "--ticket", "7")
+
+        events = lifecycle.read_events(self.events)
+        [reset] = [e for e in events if e.get("event") == "rounds-reset"]
+        self.assertEqual(
+            (reset["ticket"], reset["actor"], reset["requeued_at"]),
+            (7, "alice", "2026-10-28T15:53:00Z"),
+        )
+        self.assertEqual(len([e for e in events if e.get("event") == "attempt"]), 2)
+        self.assertTrue(any(e.get("event") == "approved" for e in events))
+
+    def test_manager_requeue_does_not_record_round_reset(self):
+        self.events.parent.mkdir()
+        for row in (
+            {"at": "2026-10-28T15:50:00Z", "event": "escalate", "ticket": 7,
+             "round": 1, "reason": "gate failed"},
+            {"at": "2026-10-28T15:50:00Z", "event": "comment", "ticket": 7,
+             "kind": "escalation", "round": 1, "comment": 101},
+            {"at": "2026-10-28T15:52:00Z", "event": "manage", "ticket": 7,
+             "round": 1, "decision": "RETRY"},
+        ):
+            lifecycle.append(self.events, row)
+        self.set_timeline([
+            {"event": "labeled", "label": {"name": "ready-for-human"},
+             "created_at": "2026-10-28T15:50:00Z", "actor": {"login": "runner"}},
+            {"event": "commented", "id": 101, "created_at": "2026-10-28T15:50:00Z",
+             "updated_at": "2026-10-28T15:50:00Z", "user": {"login": "runner"}},
+            {"event": "commented", "id": 102, "created_at": "2026-10-28T15:51:00Z",
+             "updated_at": "2026-10-28T15:51:00Z", "user": {"login": "runner"}},
+            {"event": "labeled", "label": {"name": "ready-for-agent"},
+             "created_at": "2026-10-28T15:53:00Z", "actor": {"login": "runner"}},
+        ])
+
+        self.cli("dispatch", "--ticket", "7")
+
+        self.assertFalse(any(
+            e.get("event") == "rounds-reset" for e in lifecycle.read_events(self.events)
+        ))
+
+    def test_owner_requeue_resets_before_normal_dispatch_manager_frontier(self):
+        from datetime import UTC, datetime
+        from unittest import mock
+
+        from factory import config, dashboard, dispatch, handoff, learn, manage
+
+        self.cli("dispatch", "--ticket", "7")
+        wt = self.repo / ".factory" / "wt-7"
+        old_head = subprocess.run(
+            ["git", "-C", str(wt), "rev-parse", "HEAD"],
+            env=self.env, check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        at = "2026-10-28T15:50:00Z"
+        for index in range(2):
+            lifecycle.append(self.events, {
+                "at": at, "event": "manage", "ticket": 7, "pr": 70,
+                "head": str(index) * 40, "decision": "HUMAN", "round": index + 1,
+            })
+        lifecycle.append(self.events, {
+            "at": at, "event": "escalate", "ticket": 7,
+            "reason": "manager rounds exhausted", "code": "manager_exhausted", "round": 3,
+        })
+        lifecycle.append(self.events, {
+            "at": at, "event": "comment", "ticket": 7,
+            "kind": "escalation", "round": 3, "comment": 101,
+        })
+        self.set_timeline([
+            {"event": "labeled", "label": {"name": "ready-for-human"},
+             "created_at": at, "actor": {"login": "runner"}},
+            {"event": "commented", "id": 101, "created_at": at,
+             "user": {"login": "runner"}},
+            {"event": "commented", "id": 102, "created_at": "2026-10-28T15:52:00Z",
+             "user": {"login": "alice"}, "body": "Amended acceptance criteria."},
+            {"event": "labeled", "label": {"name": "ready-for-agent"},
+             "created_at": "2026-10-28T15:53:00Z", "actor": {"login": "alice"}},
+        ])
+        gh = self.bin / "gh"
+        script = gh.read_text().replace(
+            'if a[:2] == ["issue", "view"]:',
+            '''issue["labels"] = s.get("labels", issue["labels"])
+if a[:2] == ["issue", "edit"]:
+    names = [item["name"] for item in issue["labels"]]
+    if "--remove-label" in a:
+        names = [name for name in names if name != a[a.index("--remove-label") + 1]]
+    if "--add-label" in a:
+        names.append(a[a.index("--add-label") + 1])
+    s["labels"] = [{"name": name} for name in set(names)]
+    p.write_text(json.dumps(s))
+    raise SystemExit(0)
+if a[:2] == ["issue", "view"]:''',
+        ).replace(
+            'print(json.dumps([issue]) if s.get("sync") and not s.get("merged") else "[]")',
+            'print(json.dumps([issue] if "--label" in a and '
+            'a[a.index("--label") + 1] in [item["name"] for item in issue["labels"]] else []))',
+        ).replace(
+            '"isDraft": False, "labels": [{"name": "factory-approved"}]',
+            '"isDraft": False, "isCrossRepository": False, "updatedAt": '
+            + repr(datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")) + ', "labels": []',
+        )
+        script = script.replace(
+            'elif a[0] == "api" and "/compare/" in a[1]:',
+            'elif a[0] == "api" and "/dependencies/blocked_by" in a[1]:\n'
+            '    print("[]")\n'
+            'elif a[0] == "api" and "/compare/" in a[1]:',
+        ).replace('"-C", ".factory/wt-7"', '"-C", ' + repr(str(wt)))
+        gh.write_text(script)
+        manager = self.base / "manager.py"
+        manager.write_text("print('DECISION: APPROVE\\nLooks right now')\n")
+        cfg = config.load(self.repo)
+        cfg.manager = [sys.executable, str(manager)]
+        cfg.manager_review = "all"
+        cfg.manager_rounds = 1
+        observation = {"owner": {"relation": "factory_issue"}, "schema_version": 1,
+                       "items": [], "coverage": {}}
+        before = lifecycle.read_events(self.events)
+
+        # Exercise the ordinary manage_pass -> ticket_pass ordering, not --ticket.
+        with mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(dispatch, "pin_root", return_value=[]), \
+                mock.patch.object(config, "load", return_value=cfg), \
+                mock.patch.object(dispatch, "land_pass"), \
+                mock.patch.object(dispatch, "review_intake_pass"), \
+                mock.patch.object(dispatch, "pr_checks", return_value=[]), \
+                mock.patch.object(manage, "viability_pass"), \
+                mock.patch.object(manage, "observe_pr", return_value=observation), \
+                mock.patch.object(handoff, "handoff_pass"), \
+                mock.patch.object(learn, "learn_pass"), \
+                mock.patch.object(dashboard, "github", side_effect=AssertionError("unexpected read")):
+            self.assertEqual(dispatch.main(["--dry-run"]), 0)
+            self.assertEqual(lifecycle.read_events(self.events), before)
+            self.assertEqual(dispatch.main([]), 0)
+            events = lifecycle.read_events(self.events)
+            fresh = events[len(before):]
+            self.assertFalse(any(e.get("code") == "manager_exhausted" for e in fresh))
+            [reset] = [e for e in fresh if e.get("event") == "rounds-reset"]
+            self.assertFalse(any(e.get("event") == "manage" for e in fresh))
+            attempts = [e for e in fresh if e.get("event") == "attempt"]
+            self.assertTrue(attempts, fresh)
+            new_head = attempts[-1]["head"]
+            self.assertNotEqual(new_head, old_head)
+            self.assertLess(fresh.index(reset), fresh.index(attempts[-1]))
+            manage.manage_pass()
+
+        fresh = lifecycle.read_events(self.events)[len(before):]
+        self.assertEqual(
+            [(e["head"], e["round"]) for e in fresh if e.get("event") == "manage"],
+            [(new_head, 1)],
+        )
+        self.assertEqual(len([e for e in fresh if e.get("event") == "rounds-reset"]), 1)
+        self.assertFalse(any(e.get("code") == "manager_exhausted" for e in fresh))
+
     def retained_page(self, head, offset=0, expected=0):
         request = {"schema_version": 1, "repository": "local/smoke", "op": "investigate",
                    "kind": "result", "number": 7, "head": head, "offset": offset}

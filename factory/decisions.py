@@ -1203,6 +1203,23 @@ def apply(cfg: Config, proposal_id: str, confirmation: object) -> dict:
                         status = "uncertain"
                         error = "The last external effect is uncertain and was not retried."
                         break
+                if (
+                    status == "success"
+                    and (preview.get("action") or {}).get("name") == "requeue_agent"
+                ):
+                    requeued_at = _format_time(_now())
+                    try:
+                        lifecycle.append(cfg.factory / "events.jsonl", {
+                            "at": requeued_at,
+                            "event": "rounds-reset",
+                            "ticket": preview["action"]["args"]["number"],
+                            "actor": actor,
+                            "requeued_at": requeued_at,
+                            "decision_id": proposal_id,
+                        })
+                    except OSError:
+                        status = "uncertain"
+                        error = "Ticket was requeued, but its round-budget reset could not be audited."
                 result = _receipt_value(document, status, step_results, started_at, error)
                 _store_artifact(directory, _artifact_name("receipt", proposal_id), result)
                 try:
