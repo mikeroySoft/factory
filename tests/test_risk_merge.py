@@ -556,6 +556,7 @@ class HighPipelineBoundaryTest(unittest.TestCase):
         dispatch.record(
             "attempt", ticket=7, head=head, actual_head=head, gate="PASS",
             worker_model="worker/model",
+            finished=True, clean=True,
         )
         return True, "- test: PASS\n", self.root / "worker.log", head
 

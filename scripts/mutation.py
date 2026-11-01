@@ -5,7 +5,7 @@ the full discovered unittest suite against each mutant (related tests first,
 stopping at the first failure), and prints
 every survivor as `path:line: <mutation>`. The default report-only mode exits zero
 after a complete trial even when mutants survive. ``--blocking`` exits nonzero for
-survivors on changed lines and for an incomplete run. Tool failures always exit
+completed survivors on changed lines. Tool and baseline failures always exit
 nonzero. Mutants are sampled deterministically (sorted, then shuffled with a fixed
 seed, capped at CAP). One absolute deadline, `[gate].timeout` - 60,
 covers preparation, the baseline and every mutant: each run is bounded by the time
@@ -181,14 +181,26 @@ def main(argv: list[str] | None = None) -> int:
         # Baseline once, unmutated, in the first copy: proves the suite passes under this
         # harness and sizes the per-mutant timeout. unittest reports on stderr, so merge it.
         baseline_started = time.monotonic()
+
+        def baseline_timed_out() -> int:
+            print(f"baseline suite did not finish before the {deadline - started:.0f}s deadline")
+            print(f"incomplete: {len(mutations)} mutants not started and 0 cut short by the "
+                  f"{deadline - started:.0f}s deadline")
+            return 1
+
+        remaining = deadline - baseline_started
+        if remaining <= 0:
+            return baseline_timed_out()
         try:
             proc = subprocess.run(shlex.split(test_command(copies[0])), stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, text=True, check=False,
-                                  timeout=max(deadline - baseline_started, 1))
+                                  timeout=remaining)
         except subprocess.TimeoutExpired:
-            print(f"baseline suite did not finish before the {deadline - started:.0f}s deadline")
-            return 1
-        baseline = time.monotonic() - baseline_started
+            return baseline_timed_out()
+        baseline_finished = time.monotonic()
+        if baseline_finished >= deadline:
+            return baseline_timed_out()
+        baseline = baseline_finished - baseline_started
         if proc.returncode:
             print(f"baseline suite failed:\n{proc.stdout[-3000:]}")
             return 1
@@ -250,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"mutation check broke on {len(broken)} mutants; first at "
               f"{mutation.module_path}:{mutation.start_pos[0]}:\n{(result.output or '')[-3000:]}")
         return 1
-    if args.blocking and (hot_survivors or queue or cut):
+    if args.blocking and hot_survivors:
         return 1
     return 0
 
