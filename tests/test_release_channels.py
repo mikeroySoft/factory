@@ -241,6 +241,22 @@ class ReleaseChannelsTest(unittest.TestCase):
             self.assertIn("built promotion branch release/v0.4.8", release.run(self.cfg))
         escapes.assert_called_once_with(read_only=False)
 
+
+    def test_failed_promotion_build_does_not_block_next_odd_cut(self) -> None:
+        self.make_odd()
+        (self.repo / "next.txt").write_text("next experiment\n")
+        self.git(self.repo, "add", "next.txt")
+        self.git(self.repo, "commit", "-q", "-m", "next experiment")
+        self.git(self.repo, "push", "-q", "origin", "main")
+        with mock.patch.object(release, "_pulls", return_value=[]), \
+                mock.patch.object(release, "_open_pull", return_value={"number": 13}), \
+                mock.patch.object(release, "ci_passes", return_value=True), \
+                mock.patch.object(release, "gate_passes", side_effect=[False, True]), \
+                mock.patch.object(stats, "escapes", return_value=[]):
+            reason = release.run(self.cfg)
+        self.assertIn("factory gate --tier release failed", reason)
+        self.assertIn("opened experimental release PR #13 for v0.4.9", reason)
+
     def test_odd_cut_does_not_scan_escapes(self) -> None:
         with mock.patch.object(release, "_pulls", return_value=[]), \
                 mock.patch.object(release, "_open_pull", return_value={"number": 12}), \
@@ -455,6 +471,25 @@ class ReleaseChannelsTest(unittest.TestCase):
                 self.assertIsNone(hold)
             else:
                 self.assertIn(expected, hold)
+
+    def test_soak_includes_outcomes_after_latest_candidate_pass(self) -> None:
+        odd = {"sha": "a" * 40, "date": "2026-10-01T00:00:00Z", "tag": "v0.4.7"}
+        for at in ("2026-10-01T00:00:00Z", "2026-10-02T01:00:00Z"):
+            self.event(at=at, event="lifecycle", stage="dispatcher", kind="enter",
+                       engine_commit=odd["sha"])
+        self.event(at="2026-10-02T01:00:01Z", event="escalate", ticket=1)
+        self.event(at="2026-10-02T01:00:02Z", event="merged", ticket=2)
+        self.event(at="2026-10-02T01:00:03Z", event="watch", issue=10,
+                   fingerprint="runtime:x", engine_commit=odd["sha"])
+
+        metrics = release.soak_metrics(
+            self.cfg, odd, None, {"escalation_rate": 0.0},
+            now=datetime(2026, 10, 2, 2, tzinfo=UTC),
+        )
+
+        self.assertEqual(metrics["soak_hours"], 25)
+        self.assertEqual(metrics["watch_filed_bugs"], 1)
+        self.assertEqual(metrics["escalation_rate"], 0.5)
 
     def test_dry_run_reports_both_channels_without_writes(self) -> None:
         self.make_odd()
