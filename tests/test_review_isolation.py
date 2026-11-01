@@ -116,6 +116,26 @@ class ReviewIsolationTest(unittest.TestCase):
         self.assertIn("CalledProcessError", findings)
         self.assertFalse(self.sentinel.exists())
 
+    def test_invalid_snapshot_archive_fails_closed_and_removes_tempdir(self) -> None:
+        scratch = self.tmp / "review-tmp"
+        scratch.mkdir()
+        real_run = subprocess.run
+
+        def run(command, *args, **kwargs):
+            if command[:2] == ["git", "archive"]:
+                return subprocess.CompletedProcess(command, 0, b"not a tar archive\n", b"")
+            return real_run(command, *args, **kwargs)
+
+        with mock.patch.object(dispatch.tempfile, "tempdir", str(scratch)), \
+                mock.patch.object(dispatch.subprocess, "run", side_effect=run):
+            verdict, findings = dispatch.review(self.wt, 7, "PASS", self.head)
+
+        self.assertEqual(verdict, "REVISE")
+        self.assertIn("CalledProcessError", findings)
+        self.assertFalse(self.out.exists(), "reviewer probe ran with an invalid snapshot")
+        self.assertFalse(self.sentinel.exists())
+        self.assertEqual(list(scratch.iterdir()), [])
+
     def test_snapshot_setup_failure_removes_read_only_tree(self) -> None:
         scratch = self.tmp / "review-tmp"
         scratch.mkdir()
