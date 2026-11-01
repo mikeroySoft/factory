@@ -438,14 +438,21 @@ watch and learn scopes are ticketless loop cards, never attributed to an arbitra
 ticket or wired to its worker. Live rows distinguish `activity: "pipeline"` from
 `activity: "stage"`.
 Cards show the agent, actual harness (not a host launch wrapper), ticket title,
-and elapsed time. Ticketed cards open that ticket's historical trace, including
+and elapsed time. Manager and command-backed learn cards use the command's explicit
+model, or the honest role label `manager` when its model is implicit, never the
+dashboard briefing model. Recorded execution identities take precedence over
+current configuration. Watch's model-assisted diagnosis has its own execution
+alongside deterministic watch activity.
+Ticketed cards open that ticket's historical trace, including
 when it is already the route's ticket. Breadboard wires link observed same-ticket
 cross-lane executions. Live uses its own browser-local **Live breadboard polling**
 preference (10 seconds by default; 10/30/60 seconds); general workspace polling
 still defaults to 30 seconds. Hidden pages stop Live reads and refresh promptly
 on becoming visible. Leaving Live or disposing its view removes timers and
 listeners and aborts pending reads.
-Refreshes retain the last successful board, scroll, and pinned highlights.
+Both modes share fit, pan, zoom, fullscreen, and wire rendering.
+Refreshes retain the last successful board, viewport, scroll, dragged positions,
+pinned highlights, and keyboard focus on surviving controls and cards.
 Failed or stalled reads do not clear cards or renew their observation time:
 execution observations older than 60 seconds become stale, even without a
 successful response. An independent one-second visible-page timer ages cards
@@ -2121,6 +2128,10 @@ string); `verdict` (`APPROVE`/`REVISE`); and the documented `child_process`,
 `resource`, `lock`, and `wait`. Resource observations retain their sanitized F02
 state/owner/request/evidence fields. Scheduling observations retain nullable
 `timer_active`, `service_active`, and `wait`.
+Enter events also retain optional bounded identity strings `worker`,
+`worker_version`, `agent`, `harness`, and `model`. These are exposed on the
+execution's `activity` object as well as the top-level event; they describe the
+recorded execution, not a later configuration or an unrelated dashboard model.
 
 Supported outcomes are `completed`, `mechanism_failure`, `interrupted`,
 `unknown`, `product_feedback`, `project_escalation`, `approved`, `merged`,

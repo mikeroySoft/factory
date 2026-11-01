@@ -340,6 +340,22 @@
     }
     return {nodes,edges};
   }
+  function boardMarkup(groups, label, relations, relationsLabel, nodesLabel = label) {
+    return `<div class="trace-board" data-trace-board tabindex="0" aria-label="${label}">
+        <div class="trace-viewport-controls" data-trace-viewport-controls role="toolbar" aria-label="Graph viewport controls">
+          <button type="button" data-trace-zoom-out aria-label="Zoom out" aria-keyshortcuts="-">−</button>
+          <button type="button" data-trace-fit aria-label="Reset and fit graph" aria-keyshortcuts="0">Fit</button>
+          <button type="button" data-trace-zoom-in aria-label="Zoom in" aria-keyshortcuts="+">+</button>
+          <output data-trace-zoom aria-live="polite">100%</output>
+          <button type="button" data-trace-fullscreen aria-label="Enter fullscreen" aria-keyshortcuts="F">Full screen</button>
+        </div>
+        <div class="trace-canvas" data-trace-canvas>
+          <svg class="trace-lines" data-trace-lines aria-hidden="true"></svg>
+          <div class="trace-scene" data-trace-scene><div class="trace-stages" role="list" aria-label="${nodesLabel}">${groups}</div></div>
+        </div>
+        <ol class="sr-only" aria-label="${relationsLabel}">${relations}</ol>
+      </div>`;
+  }
   function liveMarkup(snapshot, options = {}) {
     const value = object(snapshot);
     const now = Number.isFinite(Number(options.now)) ? Number(options.now) : Date.now();
@@ -364,7 +380,7 @@
       ${modeMarkup('live')}
       <p class="error" data-live-error${options.error ? '' : ' hidden'}>${esc(options.error || '')}</p>
       <div class="trace-status"><p><strong>Live fleet:</strong> ${rows.length} active execution${rows.length === 1 ? '' : 's'}</p><p>Updated ${esc(value.generated_at || 'time unavailable')}</p></div>
-      <div class="trace-board" data-trace-board><svg class="trace-lines" data-trace-lines aria-hidden="true"></svg><div class="trace-stages" role="list" aria-label="Live executions by pipeline loop">${groups}</div><ol class="sr-only" aria-label="Live ticket movement">${relations}</ol></div>
+      ${boardMarkup(groups, 'Live executions by pipeline loop', relations, 'Live ticket movement')}
     </section>`;
   }
 
@@ -397,8 +413,8 @@
     const relations = edges.map(edge => `<li>${esc(edge.relation || 'follows')}: ${esc(edge.from)} → ${esc(edge.to)}</li>`).join('');
     const coverage = array(value.coverage);
     return `<section class="trace-tool" data-ticket="${ticket || ''}">
-      ${modeMarkup('history')}
       <form class="trace-picker" data-trace-picker>
+        ${modeMarkup('history')}
         <label for="trace-ticket">Ticket</label>
         <input id="trace-ticket" name="ticket" type="number" min="1" step="1" required value="${ticket || ''}" list="trace-recent-tickets">
         <button class="btn btn-accent" type="submit">Open trace</button>
@@ -411,20 +427,7 @@
       <label class="trace-scrubber"><span>Replay through <output data-trace-time>${esc(dated.at(-1)?.at || 'time not recorded')}</output></span><input type="range" min="0" max="${Math.max(0, dated.length - 1)}" value="${Math.max(0, dated.length - 1)}" step="1" data-trace-range ${dated.length < 2 ? 'disabled' : ''}></label>
       ${loopMarkup ? `<div class="trace-loops" aria-label="Retry loops">${loopMarkup}</div>` : ''}
       <ul class="trace-legend" aria-label="Relationship legend">${legend}</ul>
-      <div class="trace-layout"><div class="trace-board" data-trace-board tabindex="0" aria-label="Decision graph viewport">
-        <div class="trace-viewport-controls" data-trace-viewport-controls role="toolbar" aria-label="Graph viewport controls">
-          <button type="button" data-trace-zoom-out aria-label="Zoom out" aria-keyshortcuts="-">−</button>
-          <button type="button" data-trace-fit aria-label="Reset and fit graph" aria-keyshortcuts="0">Fit</button>
-          <button type="button" data-trace-zoom-in aria-label="Zoom in" aria-keyshortcuts="+">+</button>
-          <output data-trace-zoom aria-live="polite">100%</output>
-          <button type="button" data-trace-fullscreen aria-label="Enter fullscreen" aria-keyshortcuts="F">Full screen</button>
-        </div>
-        <div class="trace-canvas" data-trace-canvas>
-          <svg class="trace-lines" data-trace-lines aria-hidden="true"></svg>
-          <div class="trace-scene" data-trace-scene><div class="trace-stages" role="list" aria-label="Decision nodes in pipeline order">${groups}</div></div>
-        </div>
-        <ol class="sr-only" aria-label="Recorded relationships">${relations}</ol>
-      </div><aside class="trace-detail" data-trace-detail aria-live="polite"><p class="muted">Select a decision node for its evidence.</p></aside></div>
+      <div class="trace-layout">${boardMarkup(groups, 'Decision graph viewport', relations, 'Recorded relationships', 'Decision nodes in pipeline order')}<aside class="trace-detail" data-trace-detail aria-live="polite"><p class="muted">Select a decision node for its evidence.</p></aside></div>
       ${coverage.length ? `<section class="trace-coverage"><h2>Not recorded</h2><ul>${coverage.map(stage => `<li>${esc(stageLabel(stage))}: not recorded</li>`).join('')}</ul></section>` : ''}
       ${end ? `<section class="trace-terminal" data-terminal="${end.kind}"><span>Terminal</span><strong>${esc(end.label)}</strong><p>${esc(end.detail || '')}</p></section>` : ''}` : ''}
     </section>`;
@@ -500,9 +503,15 @@
     if (pinned?.kind === 'edge' && pinned.id < 0) pinned = null;
     if (pinned?.kind === 'node' && !values.has(String(pinned.id))) pinned = null;
     let hovered = null, scheduleFrame = null, motionFrame = null, ribbonLayer = null, edgeLayer = null;
-    let viewport = {scale:1,x:0,y:0}, fitted = true;
+    let viewport = options.viewState?.viewport || {scale:1,x:0,y:0}, fitted = !options.viewState;
     host._traceSelection = () => pinned?.kind === 'edge'
       ? {kind:'edge',from:edges[pinned.id]?.from,to:edges[pinned.id]?.to} : pinned;
+    host._traceViewState = () => canvas && scene ? ({
+      viewport:{...viewport},
+      positions:[...host.querySelectorAll('[data-trace-node]')].map(item => ({
+        id:item.dataset.traceNode,x:Number(item.dataset.dragX || 0),y:Number(item.dataset.dragY || 0),
+      })),
+    }) : null;
 
     const svgNode = (tag, attributes = {}) => {
       const element = document.createElementNS('http://www.w3.org/2000/svg', tag);
@@ -850,6 +859,8 @@
         item.style.transform = `translate(${x}px,${y}px)`;
         scheduleEdges();
       };
+      const position = options.viewState?.positions.find(position => position.id === item.dataset.traceNode);
+      if (position) move(position.x, position.y);
       handle.addEventListener('pointerdown', event => {
         const startX = event.clientX, startY = event.clientY;
         const originX = Number(item.dataset.dragX || 0), originY = Number(item.dataset.dragY || 0);
@@ -880,6 +891,7 @@
       if (motionFrame != null) cancelAnimationFrame(motionFrame);
     };
     if (buttons.length) select(buttons[0].dataset.traceSelect);
+    if (options.viewState) applyViewport(viewport);
     applyVisibility();
   }
 
@@ -939,11 +951,24 @@
     const previousBoard = host.querySelector('[data-trace-board]');
     const scroll = [previousBoard?.scrollLeft || 0, previousBoard?.scrollTop || 0];
     const selection = host._traceSelection?.();
+    const viewState = previousBoard ? host._traceViewState?.() : null;
+    const active = document.activeElement;
+    const attribute = [...(active?.attributes || [])].find(item => item.name.startsWith('data-trace-'));
+    const focus = attribute && host.contains?.(active) ? {
+      node:active.closest('[data-trace-node]')?.dataset.traceNode,
+      name:attribute.name,value:attribute.value,
+    } : null;
     host._traceCleanup?.();
     host.innerHTML = liveMarkup(snapshot, {...options,now,error:host._traceLiveError});
-    bind(host, graph, {...options,selection});
+    bind(host, graph, {...options,selection,viewState});
     const board = host.querySelector('[data-trace-board]');
     if (board) { board.scrollLeft = scroll[0]; board.scrollTop = scroll[1]; }
+    if (focus) {
+      const root = focus.node
+        ? [...host.querySelectorAll('[data-trace-node]')].find(item => item.dataset.traceNode === focus.node) : host;
+      [...(root?.querySelectorAll(`[${focus.name}]`) || [])]
+        .find(item => item.getAttribute(focus.name) === focus.value)?.focus({preventScroll:true});
+    }
     host._traceLiveStates = rows.map(row => `${row.execution_id}:${row.status}`).join(',');
   }
 

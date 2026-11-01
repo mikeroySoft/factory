@@ -6,9 +6,9 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import unittest
 import uuid
-import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import pairwise
 from pathlib import Path
@@ -684,6 +684,8 @@ window.liveState = () => {
   const board = host.querySelector('[data-trace-board]');
   const canvas = host.querySelector('[data-trace-canvas]');
   const bounds = canvas?.getBoundingClientRect();
+  const edges = WorkspaceTrace.liveGraph(host._traceLiveSnapshot.executions).edges;
+  const paths = [...host.querySelectorAll('.trace-edge')];
   return {
     lanes:[...host.querySelectorAll('[data-stage]')].map(item => {
       const rect = item.getBoundingClientRect();
@@ -696,6 +698,22 @@ window.liveState = () => {
     focus:document.activeElement?.outerHTML,
     selection:host._traceSelection(),
     paths:[...host.querySelectorAll('.trace-edge')].map(path => path.getAttribute('d')),
+    wiresVisible:paths.every(path => {
+      const rect = path.getBBox();
+      return path.getTotalLength() > 0 && rect.x >= 0 && rect.y >= 0 &&
+        rect.x + rect.width <= bounds.width && rect.y + rect.height <= bounds.height;
+    }),
+    attachments:paths.every(path => {
+      const edge = edges[+path.closest('[data-trace-edge]').dataset.traceEdge];
+      return [[edge.from,path.getPointAtLength(0)],
+        [edge.to,path.getPointAtLength(path.getTotalLength())]].every(([id,point]) => {
+          const rect = [...host.querySelectorAll('[data-trace-node]')]
+            .find(item => item.dataset.traceNode === id).getBoundingClientRect();
+          return Math.abs(point.y - ((rect.top + rect.bottom) / 2 - bounds.top)) < .1 &&
+            Math.min(Math.abs(point.x - (rect.left - bounds.left)),
+              Math.abs(point.x - (rect.right - bounds.left))) < .1;
+        });
+    }),
     tracing:board.classList.contains('is-tracing'),
     errors:window.errors,
   };
@@ -725,6 +743,8 @@ window.liveState = () => {
         self.assertEqual(len(state["lanes"]), 7)
         self.assertTrue(all(lane["visible"] for lane in state["lanes"]), state)
         self.assertTrue(all(path and "NaN" not in path for path in state["paths"]))
+        self.assertTrue(state["wiresVisible"], state)
+        self.assertTrue(state["attachments"], state)
         self.assertEqual(state["errors"], [])
         self.browser("click", "[data-trace-zoom-in]")
         self.assertNotEqual(self.evaluate("liveState().transform"), state["transform"])
@@ -733,6 +753,24 @@ window.liveState = () => {
         panned = self.evaluate("liveState().transform")
         self.browser("press", "0")
         self.assertNotEqual(self.evaluate("liveState().transform"), panned)
+        self.assertEqual(self.evaluate("liveState().transform"), state["transform"])
+        self.evaluate("""
+document.querySelector('[data-trace-canvas]').dispatchEvent(new WheelEvent('wheel',
+  {bubbles:true,cancelable:true,clientX:100,clientY:200,deltaY:-100}));
+""")
+        self.assertNotEqual(self.evaluate("liveState().transform"), state["transform"])
+        self.browser("click", "[data-trace-fit]")
+        x, y = self.evaluate("""(() => {
+const rect = document.querySelector('[data-trace-canvas]').getBoundingClientRect();
+return [Math.round(rect.left + 5),Math.round(rect.bottom - 5)];
+})()""")
+        self.browser("mouse", "move", str(x), str(y))
+        self.browser("mouse", "down")
+        self.browser("mouse", "move", str(x + 30), str(y - 20))
+        self.browser("mouse", "up")
+        self.evaluate("new Promise(resolve => requestAnimationFrame(resolve))")
+        self.assertNotEqual(self.evaluate("liveState().transform"), state["transform"])
+        self.browser("click", "[data-trace-fit]")
         self.assertEqual(self.evaluate("liveState().transform"), state["transform"])
         self.browser("click", "[data-trace-mode=history]")
         self.browser("wait", "[data-trace-select]")
@@ -745,7 +783,7 @@ window.liveState = () => {
         self.browser("press", "ArrowRight")
         self.browser("press", "ArrowDown")
         self.evaluate("""
-document.querySelector('[data-trace-edge="0"]').dispatchEvent(
+document.querySelector('[data-trace-edge="3"]').dispatchEvent(
   new MouseEvent('click', {bubbles:true}));
 """)
         self.browser("focus", "[data-trace-board]")
@@ -778,3 +816,15 @@ document.querySelector('[data-trace-edge="0"]').dispatchEvent(
         )
         self.assertTrue(self.requests)
         self.assertTrue(all(method == "GET" and authenticated for method, _, authenticated in self.requests))
+        self.browser("focus", "[data-trace-mode=live]")
+        self.evaluate("refreshLive()")
+        self.assertEqual(self.evaluate("document.activeElement.dataset.traceMode"), "live")
+        self.browser("focus", "[data-trace-node=worker] [data-trace-ticket]")
+        self.evaluate("refreshLive()")
+        self.assertEqual(
+            self.evaluate("document.activeElement.closest('[data-trace-node]').dataset.traceNode"),
+            "worker",
+        )
+        self.browser("press", "Enter")
+        self.browser("wait", "[data-trace-select]")
+        self.assertEqual(self.evaluate("window.errors"), [])
