@@ -408,10 +408,6 @@ class ManagerStorageRetryTest(unittest.TestCase):
             self.assertEqual(apply_mock.call_count, 2)
             self.assertTrue(apply_mock.call_args.kwargs["resume_if_ahead"])
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class StorageRevisionDispatchTest(unittest.TestCase):
     setUp = dispatch_test.LocalCLI.setUp
     git = dispatch_test.LocalCLI.git
@@ -743,7 +739,15 @@ class StorageRevisionFailureTest(unittest.TestCase):
 from tests import test_frontier as frontier_test
 
 
-class StorageFrontierRetryTest(frontier_test.FrontierTest):
+class StorageFrontierRetryTest(unittest.TestCase):
+    setUp = frontier_test.FrontierTest.setUp
+    read = frontier_test.FrontierTest.read
+    gh_json = frontier_test.FrontierTest.gh_json
+    fake_run = frontier_test.FrontierTest.fake_run
+    events = frontier_test.FrontierTest.events
+    approved_head = frontier_test.FrontierTest.approved_head
+    quiet_provider = frontier_test.FrontierTest.quiet_provider
+
     def test_frontier_fix_storage_deferral_reuses_decision_without_charging_round(self) -> None:
         self.cfg.manager_review = "all"
         self.cfg.workers["code"] = ["worker"]
@@ -767,3 +771,248 @@ class StorageFrontierRetryTest(frontier_test.FrontierTest):
         self.assertEqual(manager_runs, 1)
         self.assertEqual(apply.call_count, 2)
         self.assertIsNone(apply.call_args.kwargs["resume_head"])
+
+    def test_frontier_retries_pushed_candidate_before_completed_review_evidence(self) -> None:
+        self.cfg.manager_review = "all"
+        self.cfg.workers["code"] = ["worker"]
+        self.quiet_provider()
+        self.approved_head(frontier_test.H)
+        self.manager_output = 'DECISION: FIX\n{"worker":"code","guidance":"fix"}'
+        candidate = frontier_test.H2
+        (self.cfg.factory / "wt-79").mkdir()
+        calls = []
+
+        def apply(*args, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                dispatch.record("attempt", ticket=79, attempt=2, head=candidate,
+                                actual_head=candidate, gate="PASS")
+                self.pr["headRefOid"] = candidate
+                raise storage.RunnerStorageLow("gate", storage.status(self.cfg))
+
+        def run(command, *args, **kwargs):
+            if command[:3] == ["git", "rev-parse", "HEAD"]:
+                return subprocess.CompletedProcess(command, 0, candidate, "")
+            return self.fake_run(command, *args, **kwargs)
+
+        with mock.patch.object(manage, "apply", side_effect=apply), \
+                mock.patch.object(dispatch, "run", side_effect=run):
+            manage.frontier_pass()
+            manage.frontier_pass()
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1]["resume_head"], candidate)
+        decisions = [e for e in self.events() if e.get("event") == "manage"]
+        self.assertEqual([(e["head"], e["round"]) for e in decisions], [(frontier_test.H, 1)])
+        applied = [e for e in self.events() if e.get("event") == "manage-applied"]
+        self.assertEqual([(e["decision_head"], e["status"]) for e in applied],
+                         [(frontier_test.H, "applied")])
+
+
+class StorageStartupTest(unittest.TestCase):
+    def test_real_dispatch_entry_defers_before_startup_writes(self) -> None:
+        import errno
+
+        for metric in ("space", "inodes"):
+            for exhausted in (False, True):
+                with self.subTest(metric=metric, journal_full=exhausted), \
+                        tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    (root / ".factory.toml").write_text("[runner]\nmin_free_gb = 1\nmin_free_inodes = 100\n")
+                    cfg = config.Config(root, "acme/widgets")
+                    value = storage.status(cfg)
+                    value["ok"] = False
+                    value["filesystems"][0]["low"] = [metric]
+                    write = (mock.patch.object(lifecycle, "_write",
+                             side_effect=OSError(errno.ENOSPC, "full"))
+                             if exhausted else mock.patch.object(lifecycle, "_write", wraps=lifecycle._write))
+                    with mock.patch.object(config, "repo_root", return_value=root), \
+                            mock.patch.object(config, "load", return_value=cfg), \
+                            mock.patch.object(storage, "status", return_value=value), write, \
+                            mock.patch.object(dispatch, "pin_root",
+                                              side_effect=OSError(errno.ENOSPC, "fetch wrote to full disk")) as pin, \
+                            mock.patch("sys.stderr") as stderr:
+                        self.assertEqual(dispatch.main([]), 0)
+                    pin.assert_not_called()
+                    rows = lifecycle.read_events(cfg.factory / "events.jsonl")
+                    if exhausted:
+                        self.assertIn("runner_storage_low", str(stderr.write.call_args_list))
+                    else:
+                        self.assertEqual([e["event"] for e in rows], ["runner_storage_low"])
+                    self.assertFalse((cfg.factory / "wt-7").exists())
+
+    def test_ticket_pass_preflight_precedes_admission_journal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config.Config(Path(directory), "acme/widgets", runner_min_free_gb=10**9)
+            dispatch.configure(cfg)
+            issue = {"number": 7, "title": "fix", "body": "", "labels": []}
+            with mock.patch.object(dispatch, "active_tickets", return_value=[]), \
+                    mock.patch.object(dispatch, "frontier", return_value=[issue]), \
+                    mock.patch.object(dispatch, "process_ticket") as claim, \
+                    self.assertRaises(storage.RunnerStorageLow):
+                dispatch.ticket_pass(1, False)
+            claim.assert_not_called()
+            rows = lifecycle.read_events(dispatch.EVENTS)
+            self.assertEqual([e["event"] for e in rows], ["runner_storage_low"])
+
+
+class ManagerGateEvidenceTest(unittest.TestCase):
+    setUp = dispatch_test.LocalCLI.setUp
+    git = dispatch_test.LocalCLI.git
+    write_config = dispatch_test.LocalCLI.write_config
+
+    def prepare(self):
+        dispatch.configure(config.load(self.repo))
+        wt = self.repo / ".factory" / "wt-7"
+        wt.parent.mkdir(exist_ok=True)
+        self.git("worktree", "add", str(wt), "-b", "agent/7")
+        lease = self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip()
+        self.git("push", "origin", "agent/7")
+        (wt / "saved.txt").write_text("saved worker result")
+        self.git("-C", str(wt), "add", "saved.txt")
+        self.git("-C", str(wt), "commit", "-qm", "worker result")
+        head = self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip()
+        packet = wt.parent / "packet.md"
+        packet.write_text("fix")
+        self.state.write_text('{"reviews": 1}')
+        issue = {"number": 7, "title": "fix", "body": "", "labels": [{"name": "ready-for-human"}]}
+        dispatch.record("attempt", ticket=7, attempt=4, head=lease,
+                        actual_head=lease, gate="FAIL", worker_model="worker-model")
+        def github(args):
+            value = json.loads(dispatch.run(["gh", *args], cwd=self.repo).stdout)
+            if args[:2] == ["pr", "view"]:
+                value["headRefOid"] = self.git("ls-remote", "origin", "refs/heads/agent/7").stdout.split()[0]
+            return value
+
+        self.enterContext(mock.patch.object(dispatch, "gh_json", side_effect=github))
+        return wt, lease, head, packet, issue
+
+    def test_deferred_manager_gate_recovery_reaches_real_approval(self) -> None:
+        wt, lease, head, packet, issue = self.prepare()
+        # Only external processes are stand-ins: push, review and approval contracts run.
+        with mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(dispatch, "worker_round") as worker, \
+                mock.patch.object(dispatch, "run_gate", side_effect=[
+                    storage.RunnerStorageLow("gate", storage.status(dispatch.cfg)),
+                    (True, "gate PASS"),
+                ]):
+            with self.assertRaises(storage.RunnerStorageLow):
+                manage.apply(7, issue, "FIX", "", {"worker": "default", "guidance": "fix"},
+                             packet, resume_head=head)
+            manage.apply(7, issue, "FIX", "", {"worker": "default", "guidance": "fix"},
+                         packet, resume_head=head)
+        worker.assert_not_called()
+        rows = lifecycle.read_events(dispatch.EVENTS)
+        self.assertEqual([e["head"] for e in rows if e.get("event") == "approved"], [head])
+        self.assertEqual([e["attempt"] for e in rows if e.get("event") == "attempt"], [4])
+        self.assertTrue(dispatch._head_evidence_matches(rows, 7, head))
+        self.assertEqual(self.git("ls-remote", "origin", "refs/heads/agent/7").stdout.split()[0], head)
+        self.assertNotEqual(lease, head)
+
+    def reject_drift(self, drift: str) -> None:
+        wt, lease, head, packet, issue = self.prepare()
+        if drift == "dirty-before":
+            (wt / "dirty").touch()
+
+        def gate(*args, **kwargs):
+            if drift == "dirty-after":
+                (wt / "dirty").touch()
+            if drift == "head-after":
+                self.git("-C", str(wt), "commit", "--allow-empty", "-qm", "drift")
+            return True, "gate PASS"
+
+        expected = lease if drift == "head-before" else head
+        with mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(dispatch, "run_gate", side_effect=gate), \
+                mock.patch.object(dispatch, "worker_round") as worker, \
+                mock.patch.object(dispatch, "push_agent") as push, \
+                mock.patch.object(dispatch, "pr_gate_and_review") as review:
+            if drift == "head-before":
+                with self.assertRaises(ValueError):
+                    manage.apply(7, issue, "FIX", "", {"worker": "default", "guidance": "fix"},
+                                 packet, resume_head=expected)
+            else:
+                manage.apply(7, issue, "FIX", "", {"worker": "default", "guidance": "fix"},
+                             packet, resume_head=expected)
+        worker.assert_not_called()
+        push.assert_not_called()
+        review.assert_not_called()
+        self.assertFalse(dispatch._head_evidence_matches(lifecycle.read_events(dispatch.EVENTS), 7, head))
+
+    def test_dirty_before_resumed_gate_is_rejected(self) -> None:
+        self.reject_drift("dirty-before")
+
+    def test_dirty_after_resumed_gate_is_rejected(self) -> None:
+        self.reject_drift("dirty-after")
+
+    def test_head_changed_during_resumed_gate_is_rejected(self) -> None:
+        self.reject_drift("head-after")
+
+    def test_head_changed_before_resumed_gate_is_rejected(self) -> None:
+        self.reject_drift("head-before")
+
+
+class StorageDecisionIdentityTest(unittest.TestCase):
+    def test_frontier_rows_do_not_replay_or_suppress_escalation_round(self) -> None:
+        for frontier_event in ("manage-deferred", "manage-applied"):
+            with self.subTest(frontier_event=frontier_event), tempfile.TemporaryDirectory() as directory:
+                cfg = config.Config(Path(directory), "acme/widgets", manager=["manager"],
+                                    workers={"code": ["worker"]})
+                dispatch.configure(cfg)
+                packet = cfg.factory / "packet.md"
+                packet.parent.mkdir()
+                packet.write_text("new escalation")
+                dispatch.record("manage", ticket=7, round=1, pr=80, head="a"*40,
+                                decision="FIX", apply_pending=True)
+                dispatch.record(frontier_event, ticket=7, round=1, pr=80, decision_head="a"*40,
+                                decision="FIX", body="frontier", data={}, packet=str(packet))
+                dispatch.record("escalate", ticket=7, round=1, packet=str(packet))
+                # A legitimate escalation FIX must not be hidden by a PR's applied row.
+                if frontier_event == "manage-applied":
+                    dispatch.record("manage", ticket=7, round=1, decision="FIX", apply_pending=True,
+                                    body="escalation", data={}, packet=str(packet))
+                    dispatch.record(frontier_event, ticket=7, round=1, pr=80, decision_head="a"*40)
+                issue = {"number": 7, "title": "fix", "labels": [{"name": "ready-for-human"}]}
+                with mock.patch.object(dispatch, "gh_json", return_value=[issue]), \
+                        mock.patch.object(dispatch, "initiative_kind", return_value=False), \
+                        mock.patch.object(manage, "human_activity", return_value=False), \
+                        mock.patch.object(dispatch, "run", return_value=subprocess.CompletedProcess(
+                            [], 0, "DECISION: HUMAN\nnew decision", "")) as manager, \
+                        mock.patch.object(manage, "apply") as apply:
+                    manage.escalation_pass()
+                apply.assert_called_once()
+                self.assertEqual(apply.call_args.args[3],
+                                 "new decision" if frontier_event == "manage-deferred" else "escalation")
+                self.assertEqual(manager.call_count, 1 if frontier_event == "manage-deferred" else 0)
+
+    def test_refresh_pending_is_bound_to_exact_pr(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            dispatch.configure(config.Config(Path(directory), "acme/widgets"))
+            dispatch.record("refresh-pending", ticket=7, pr=80, head="a"*40)
+            dispatch.record("refresh-pending", ticket=7, pr=81, head="b"*40)
+            dispatch.record("refresh-pending", ticket=7, pr=79, head="c"*40)
+            self.assertEqual(dispatch.pending_refresh(7, 80)["head"], "a"*40)
+            self.assertIsNone(dispatch.pending_refresh(8, 80))
+            self.assertIsNone(dispatch.pending_refresh(7, 82))
+
+    def test_storage_deferral_is_a_retryable_lifecycle_outcome_even_with_full_journal(self) -> None:
+        import errno
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events.jsonl"
+            with lifecycle.scope(path, "dispatcher", lazy=True) as parent:
+                with lifecycle.scope(path, "gate", lazy=True) as child:
+                    child.defer_storage()
+                    self.assertTrue(parent.storage_deferred)
+                    self.assertTrue(child.storage_deferred)
+                    self.assertEqual((child.outcome, child.reason), ("not_eligible", "runner_storage_low"))
+                    with mock.patch.object(lifecycle, "_write", side_effect=OSError(errno.ENOSPC, "full")), \
+                            mock.patch("sys.stderr") as stderr:
+                        child.wait("runner_storage_low", mode="retry_next_pass")
+                    self.assertIn("runner_storage_low", str(stderr.write.call_args_list))
+            exits = [e for e in lifecycle.read_events(path) if e.get("kind") == "exit"]
+            self.assertTrue(exits)
+            self.assertTrue(all(e["outcome"] == "not_eligible" for e in exits))
+
+
+if __name__ == "__main__":
+    unittest.main()
