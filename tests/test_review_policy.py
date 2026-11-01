@@ -93,7 +93,14 @@ class ReviewPolicyTest(unittest.TestCase):
         self.assertEqual(result["verdict"], "APPROVE")
 
     def test_important_finding_with_approve_verdict_fails_closed_and_records_reason(self) -> None:
-        self.configure(tally([self.finding("important", 1)], "APPROVE"))
+        finding = {
+            **self.finding("important", 1),
+            "class": "missing-value",
+            "instances": [{
+                "path": "app.py", "line": 1, "summary": "Finding 1",
+            }],
+        }
+        self.configure(tally([finding], "APPROVE"))
 
         verdict, _ = dispatch.review(self.root, 7, "PASS", self.head)
         result = self.publish()
