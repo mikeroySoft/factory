@@ -126,6 +126,45 @@ class BugReproductionGateTest(unittest.TestCase):
             self.assertIn("- bug-repro-before: EXPECTED FAIL", report)
             self.assertIn("- bug-repro-head: PASS", report)
 
+    def test_plain_handoff_id_reaches_reproduction_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repository(Path(directory))
+            add_repro(repo)
+            (repo / "value.py").write_text("def value():\n    return True\n")
+            commit(repo, "fix bug")
+            flags = dispatch.gate_flags(
+                None, {"bug"}, "", f"Repro test: {TEST_ID}"
+            )
+
+            code, report = run_gate(
+                repo, "--bug", "--repro-test", flags["repro_test"]
+            )
+            self.assertEqual(code, 0, report)
+            self.assertEqual(flags["repro_test"], TEST_ID)
+            self.assertIn("- bug-repro-before: EXPECTED FAIL", report)
+            self.assertIn("- bug-repro-head: PASS", report)
+
+    def test_backticked_missing_handoff_id_still_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repository(Path(directory))
+            add_repro(repo)
+            (repo / "value.py").write_text("def value():\n    return True\n")
+            commit(repo, "fix bug")
+            missing = f"{TEST_ID}.missing"
+            flags = dispatch.gate_flags(
+                None, {"bug"}, "", f"Repro test: `{missing}`"
+            )
+
+            code, report = run_gate(
+                repo, "--bug", "--repro-test", flags["repro_test"]
+            )
+            self.assertEqual(code, 1, report)
+            self.assertEqual(flags["repro_test"], missing)
+            self.assertIn(
+                f"no bug-ticket commit adds declared reproduction test `{missing}`",
+                report,
+            )
+
     def test_test_that_passes_before_fix_does_not_reproduce_bug(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repo = repository(Path(directory), fixed=True)
@@ -352,6 +391,19 @@ class BugGateDispatchTest(unittest.TestCase):
             dispatch.gate_flags(None, {"bug"}, "", f"Repro test: {TEST_ID}"),
             {"protected_override": False, "bug": True, "repro_test": TEST_ID},
         )
+
+    def test_gate_flags_strip_one_matching_quote_pair_from_repro_id(self) -> None:
+        for quote in ("`", '"', "'"):
+            with self.subTest(quote=quote):
+                flags = dispatch.gate_flags(
+                    None, {"bug"}, "", f"Repro test: {quote}{TEST_ID}{quote}"
+                )
+                self.assertEqual(flags["repro_test"], TEST_ID)
+
+        flags = dispatch.gate_flags(
+            None, {"bug"}, "", f"Repro test: `'{TEST_ID}'`"
+        )
+        self.assertEqual(flags["repro_test"], f"'{TEST_ID}'")
 
     def test_gate_trace_contains_both_reproduction_results(self) -> None:
         report = (

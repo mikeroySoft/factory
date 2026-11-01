@@ -2519,6 +2519,13 @@ def gate_flags(
                     no_repro = reason
                     break
         repro = _ticket_line(handoff, "Repro test")
+        if (
+            repro
+            and len(repro) >= 2
+            and repro[0] == repro[-1]
+            and repro[0] in "`\"'"
+        ):
+            repro = repro[1:-1]
         if no_repro:
             flags["no_repro_test"] = no_repro
         elif repro:
