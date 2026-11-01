@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Automatic releases now use odd experimental and even public patch channels. Odd cuts skip the quality bar, publish as non-latest prereleases, retain public pins, and are interval-limited; even promotions require a rolling ticket window, soak passes without watch bugs or rising escalations, and an escape-rate bar before atomically advancing `stable`, publishing latest, and carrying public docs back to `main` (#458).
 - Before the attempt gate, the dispatcher now restores unplanned dependency lockfiles from the ticket branch's merge-base. A changed `pyproject.toml` or any recorded round's plan listing the lockfile preserves the edit; ticket and brief wording does not. Upstream-sync tickets skip the guard so fork lockfiles remain untouched. Repository `uv run` gate checks stay frozen so verification cannot rewrite `uv.lock` (#441).
 - Bug-ticket gates now accept a handoff `Repro test:` ID wrapped in one matching pair of backticks or quotes, while preserving plain IDs and rejecting IDs that do not match an added test (#456).
 - The Decisions breadboard now fits a complete multi-loop graph into its viewport and supports button, wheel, pointer, keyboard, and fullscreen zoom/pan controls. Cause-to-effect arrowheads remain at target ends, bounded wire routes redraw after every viewport or graph change, and parallel edges use distinct lanes while spring motion and full-chain tracing remain intact (#470). [Before](docs/issue-470-before.png) · [After](docs/issue-470-after.png)

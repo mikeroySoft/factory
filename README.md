@@ -40,15 +40,17 @@ npx skills add mikeroysoft/factory
   llama.cpp, LM Studio)
 
 ```sh
-uv tool install git+https://github.com/mikeroySoft/factory@stable   # stable: released channel
-uv tool install git+https://github.com/mikeroySoft/factory@main     # latest: tip of main
+uv tool install git+https://github.com/mikeroySoft/factory@stable   # public channel: latest even patch
+uv tool install git+https://github.com/mikeroySoft/factory@main     # development: tip of main
 uv tool install git+https://github.com/mikeroySoft/factory@v0.4.6   # a specific release
 ```
 
 `pipx install` and `pip install --user` take the same URLs. The repository's
-default branch is `main`, so a bare URL installs development code. Select
-`@stable` explicitly for the released channel or a version tag for a fixed release;
-see [CHANGELOG.md](CHANGELOG.md). TOMLKit is installed automatically for comment-preserving settings updates.
+default branch is `main`, so a bare URL installs development code. Public
+installs use `@stable` or an even-patch tag. Odd-patch tags are experimental;
+pin one explicitly only for an experimental install. See
+[CHANGELOG.md](CHANGELOG.md). TOMLKit is installed automatically for
+comment-preserving settings updates.
 
 ## Set up a repository
 
@@ -477,51 +479,59 @@ reports closures without applying them.
 ## Automatic releases
 
 `[release] auto = true` runs the release check at the start and end of each
-dispatcher pass. `version_file` defaults to `factory/__init__.py`, `min_tickets`
-to 5, and `bar_min_tickets` to 20. `bar_floor_human_rate` defaults to 0.10 and
-`bar_floor_first_pass` to 0.90.
+dispatcher pass. Patch parity defines two channels: odd tags are experimental;
+even tags are public and `stable` points only to the newest even tag.
 
-The annotated tag's fenced JSON records `human_rate` (manager `HUMAN` and
-`human-decision` rows divided by distinct merged tickets, uncapped; lower is
-better), `first_pass` (PASS journal rows among attempt-1 rows; higher is better),
-and `tickets`. The first tag written by this behavior also records the former
-distinct-ticket metric as `human_ticket_rate`. Windows below `bar_min_tickets`
-retain their raw pending counts in the tag; a later release pools those counts.
-Once the pooled sample reaches the minimum, each bar moves halfway toward the
-95% Wilson upper bound for human rate or lower bound for first pass, without
-tightening past its configured floor. A legacy tag's bar is reset once to those
-floors. A tag without a fenced bar resets the comparison, and a window without
-attempt-1 evidence is held rather than scored as zero. Factory requires every
-bar metric to be no
-worse, all completed CI statuses and check runs on `origin/<main>` to pass
-(`success`, `skipped`, and `neutral` check conclusions pass), and `factory gate
---tier release` to pass in a temporary worktree. It then bumps the patch
-version, moves the current Unreleased changelog entries under the dated release
-heading, pushes the factory-owned `release/vX.Y.Z` branch, and opens a PR. The
-release PR also updates `README.md`'s fixed-version install pin and
-`docs/index.html`'s install pin, latest-release note, and top changelog history
-entry built from the new `CHANGELOG.md` section. Each of those four spots must
-appear exactly once; otherwise Factory refuses to create the release. A later
-pass updates a behind release branch from `main`, closes and deletes a
-conflicting one for rebuilding, or squash-merges a clean PR after its CI
-succeeds, respecting the required `gate` check on protected `main`. Once the
-version bump is present on `main`, a final pass creates the annotated tag on
-the first commit that introduced that version and atomically advances `stable`,
-then publishes the GitHub Release for the tag (`gh release create <tag>
---verify-tag --latest`, titled with the tag, notes from that version's
-`CHANGELOG.md` section). A Release that already exists is left alone; a `gh`
-failure is journaled as a `release` row with outcome `publish_failed` and retried
-at the start of the next pass, never rolling back the tag. A release therefore
-takes up to three dispatcher passes when no branch refresh
-is needed. The dispatcher advances an open release PR at the start of a pass,
-before it lands a ticket (every ticket edits `CHANGELOG.md`, which GitHub cannot
-union-merge), and opens a new one only at the end of a pass. Each pass derives
-its state from remote branches, remote tags, and PRs (only a pending GitHub Release is read from the journal), so crashes need no local recovery file. Temporary worktrees are removed,
-and local-only or stale local tags are ignored and removed before reuse. A
-completed release journals one `release` row with outcome `released`, then one
-with `published` (or `publish_failed` per failed attempt). A quality-bar hold
-journals one `release` row with outcome `held`; later passes suppress another
-row until the bar value changes.
+An odd release is cut from CI-green `origin/<main>`. Factory still requires
+changes, the release-tier gate, and the existing release PR/merge flow, but no
+quality-bar verdict. The PR bumps `version_file` (default
+`factory/__init__.py`) and moves `## Unreleased` into the dated odd changelog
+section without changing README or project-page release pins. Only one release
+PR may be in flight. New odd PRs are spaced by
+`experimental_min_interval_hours` (default 6; 0 disables the interval). The
+annotated odd tag records the rolling metrics for information, publishes as a
+GitHub prerelease with `--latest=false`, and leaves `stable` unchanged.
+
+Each pass also evaluates the newest odd tag newer than the public even tag.
+The quality sample is the newest `window_tickets` merged tickets (default 30);
+touches and first attempts before the oldest selected merge age out. The
+metrics are uncapped `human_rate` (manager `HUMAN` plus distinct
+`human-decision` rows per selected ticket), `first_pass`, and candidate
+`escape_rate` from `factory stats --escapes`. Promotion requires at least
+`min_tickets` (default 5) and never records a new bar below
+`bar_min_tickets` (default 20); configuration requires
+`window_tickets >= bar_min_tickets`.
+
+The candidate must also run in real dispatcher passes for `soak_hours` (default
+24). Promotion holds when `factory watch` filed an engine bug during that soak
+or its ready-for-human escalation rate exceeds the previous odd soak. The even
+tag's JSON records those soak values with the three quality metrics.
+
+Only successful even promotions ratchet the bar. Counts pool until
+`bar_min_tickets`; then each threshold moves halfway toward the conservative
+95% Wilson bound without tightening beyond `bar_floor_human_rate` (0.10),
+`bar_floor_first_pass` (0.90), or `bar_floor_escape_rate` (0.05). Legacy bars
+reset once to the configured floors.
+
+Promotion builds `release/vX.Y.even` from the odd tag's commit, bumps the
+version, adds the public changelog heading, and updates the fixed-version pins,
+latest-release line, and project-page history. Public notes include the changes
+from odd sections since the previous public release. After the release-tier gate and
+CI pass on that commit, Factory atomically pushes the annotated even tag and
+`stable`, then publishes it with `--latest`. A squash-merged
+`Promote vX.Y.even` PR carries the changelog and public docs back to `main`
+while restoring the odd version file, so development continues at the next odd
+patch. An unfinished carryback blocks another release, even if a newer odd tag
+already exists. A quality or soak hold without an in-flight release still allows
+the next experiment.
+
+`factory release --dry-run` prints separate odd and even actions, window
+metrics, main-head CI holds, and the promotion verdict as JSON. It uses the
+checkout's existing refs without fetching and creates no tag, branch, PR,
+release, journal row, or other remote write. Missing local fix commits make
+escape evidence unavailable rather than triggering a fetch. Release publication remains
+idempotent: an existing GitHub Release is left alone, and a failed publication
+is journaled and retried without rolling back its tag.
 
 Routing distinguishes absent optional information from invalid declarations. A missing
 ticket `Decision owner` section permits fallback; an empty or malformed section stops
