@@ -960,6 +960,27 @@ class WorkspaceHTTPTest(unittest.TestCase):
         row = next(row for row in body["executions"] if row["ticket"] == 7)
         self.assertEqual((row["agent"], row["harness"]), ("actual", "omp"))
 
+    def test_live_reviewer_uses_journaled_identity_for_second_review(self) -> None:
+        observed = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        execution = {
+            "execution_id": "second-review",
+            "stage": "review",
+            "ticket": 7,
+            "state": "active",
+            "entered_at": observed,
+            "observed_at": observed,
+            "activity": {"model": "second/model", "harness": "second-reviewer"},
+        }
+        with mock.patch(
+            "factory.workspace.runtime_events.project",
+            return_value={"executions": [execution], "errors": []},
+        ):
+            body = self.workspace.live_executions(REPOSITORY)
+
+        row = body["executions"][0]
+        self.assertEqual((row["agent"], row["harness"]), ("second/model", "second-reviewer"))
+
+
 
 class WorkspaceRegistryTest(unittest.TestCase):
     def test_registered_main_overrides_same_slug_startup_but_key_stays_startup(self) -> None:

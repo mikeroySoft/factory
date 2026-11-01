@@ -1044,8 +1044,9 @@ class Workspace:
         if lane == "triage":
             return cfg.llm_model, "factory triage"
         if lane == "reviewer":
-            return config.command_model(cfg.reviewer) or "reviewer", (
-                Path(cfg.reviewer[0]).name if cfg.reviewer else "factory review"
+            return activity.get("model") or config.command_model(cfg.reviewer) or "reviewer", (
+                activity.get("harness")
+                or (Path(cfg.reviewer[0]).name if cfg.reviewer else "factory review")
             )
         if lane == "manager":
             command = cfg.manager or []
