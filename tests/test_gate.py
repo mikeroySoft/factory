@@ -641,5 +641,145 @@ tests/test_value.py:9: RuntimeError
             "- `tests/test_b.py::test_b`",
         ])
 
+    def test_pytest_captured_output_cannot_replace_failure_evidence(self) -> None:
+        for heading in (
+            "---------------- Captured stdout call ----------------",
+            "---------------- Captured stderr call ----------------",
+            "---------------- Captured log call -------------------",
+            "================ short test summary info =============",
+        ):
+            with self.subTest(heading=heading):
+                output = f"""____________________________ test_first ____________________________
+>       assert 1 == 2
+E       AssertionError: assert 1 == 2
+tests/test_math.py:12: AssertionError
+{heading}
+cache.py:99: loading
+E       KeyError: captured output, not the failure
+expected: captured value
+FAILED tests/test_math.py::test_first - AssertionError: assert 1 == 2
+"""
+
+                _, report, result = self._failed_output(output)
+
+                summary = report.split("```", 1)[0]
+                self.assertIn("`tests/test_math.py:12`: AssertionError: assert 1 == 2", summary)
+                self.assertNotIn("cache.py:99", summary)
+                self.assertEqual(result["failure_summary"], {
+                    "test": "tests/test_math.py::test_first",
+                    "location": "tests/test_math.py:12",
+                    "message": "AssertionError: assert 1 == 2",
+                    "expected_actual": ["assert 1 == 2"],
+                })
+
+    def test_unittest_assertion_ignores_embedded_subprocess_traceback(self) -> None:
+        output = """FAIL: test_run (tests.test_math.MathTest.test_run)
+Traceback (most recent call last):
+  File "tests/test_math.py", line 12, in test_run
+    self.assertEqual(proc.returncode, 0, proc.stderr)
+AssertionError: 1 != 0 : Traceback (most recent call last):
+  File "factory/cli.py", line 99, in main
+    raise KeyError("subprocess")
+KeyError: 'subprocess'
+"""
+
+        _, report, result = self._failed_output(output)
+
+        summary = report.split("```", 1)[0]
+        message = "AssertionError: 1 != 0 : Traceback (most recent call last):"
+        self.assertIn(f"`tests/test_math.py:12`: {message}", summary)
+        self.assertNotIn("factory/cli.py:99", summary)
+        self.assertEqual(result["failure_summary"]["location"], "tests/test_math.py:12")
+        self.assertEqual(result["failure_summary"]["message"], message)
+
+    def test_pytest_assertion_ignores_embedded_subprocess_exception(self) -> None:
+        output = """____________________________ test_run ____________________________
+>       assert proc.returncode == 0, proc.stderr
+E       AssertionError: Traceback (most recent call last):
+E         File "factory/cli.py", line 99, in main
+E           raise KeyError("subprocess")
+E       KeyError: 'subprocess'
+E       assert 1 == 0
+tests/test_math.py:12: AssertionError
+FAILED tests/test_math.py::test_run - AssertionError: Traceback
+"""
+
+        _, report, result = self._failed_output(output)
+
+        summary = report.split("```", 1)[0]
+        message = "AssertionError: Traceback (most recent call last):"
+        self.assertIn(f"`tests/test_math.py:12`: {message}", summary)
+        self.assertNotIn("KeyError", summary)
+        self.assertEqual(result["failure_summary"]["location"], "tests/test_math.py:12")
+        self.assertEqual(result["failure_summary"]["message"], message)
+
+    def test_unittest_chains_keep_test_frame_before_terminal_exception(self) -> None:
+        for separator in (
+            "The above exception was the direct cause of the following exception:",
+            "During handling of the above exception, another exception occurred:",
+        ):
+            with self.subTest(separator=separator):
+                output = f"""ERROR: test_load (tests.test_math.MathTest.test_load)
+Traceback (most recent call last):
+  File "tests/test_math.py", line 7, in test_load
+    raise ValueError("root")
+ValueError: root
+
+{separator}
+
+Traceback (most recent call last):
+  File "tests/test_math.py", line 12, in test_load
+    subprocess.run(command, check=True)
+  File "/usr/lib/python3.13/subprocess.py", line 571, in run
+    raise CalledProcessError(returncode, process.args, stderr)
+subprocess.CalledProcessError: Command returned non-zero exit status 1.
+Traceback (most recent call last):
+  File "factory/cli.py", line 99, in main
+    raise KeyError("embedded")
+KeyError: 'embedded'
+"""
+
+                _, report, result = self._failed_output(output)
+
+                summary = report.split("```", 1)[0]
+                message = "subprocess.CalledProcessError: Command returned non-zero exit status 1."
+                self.assertIn(f"`tests/test_math.py:12`: {message}", summary)
+                self.assertNotIn("ValueError", summary)
+                self.assertNotIn("KeyError", summary)
+                self.assertEqual(result["failure_summary"]["location"], "tests/test_math.py:12")
+                self.assertEqual(result["failure_summary"]["message"], message)
+
+    def test_pytest_chains_use_terminal_exception_and_test_frame(self) -> None:
+        for separator in (
+            "The above exception was the direct cause of the following exception:",
+            "During handling of the above exception, another exception occurred:",
+        ):
+            with self.subTest(separator=separator):
+                output = f"""____________________________ test_load ____________________________
+>       raise ValueError("root")
+E       ValueError: root
+tests/test_math.py:7: ValueError
+
+{separator}
+
+tests/test_math.py:12: in test_load
+    subprocess.run(command, check=True)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+/usr/lib/python3.13/subprocess.py:571: in run
+>       raise CalledProcessError(returncode, process.args, stderr)
+E       subprocess.CalledProcessError: Command returned non-zero exit status 1.
+FAILED tests/test_math.py::test_load - subprocess.CalledProcessError: Command failed
+"""
+
+                _, report, result = self._failed_output(output)
+
+                summary = report.split("```", 1)[0]
+                message = "subprocess.CalledProcessError: Command returned non-zero exit status 1."
+                self.assertIn(f"`tests/test_math.py:12`: {message}", summary)
+                self.assertNotIn("ValueError", summary)
+                self.assertNotIn("`/usr/lib/", summary)
+                self.assertEqual(result["failure_summary"]["location"], "tests/test_math.py:12")
+                self.assertEqual(result["failure_summary"]["message"], message)
+
 if __name__ == "__main__":
     unittest.main()
