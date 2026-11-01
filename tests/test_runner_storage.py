@@ -112,7 +112,7 @@ class RunnerStorageDispatchTest(unittest.TestCase):
         events = lifecycle.read_events(self.events)
         self.assertFalse(any(row.get("event") in {"attempt", "escalate"} for row in events))
 
-    def test_manager_storage_retry_gates_saved_head_without_rerunning_worker(self) -> None:
+    def test_manager_storage_retry_gates_ahead_head_without_rerunning_worker(self) -> None:
         dispatch.configure(config.load(self.repo))
         wt = self.repo / ".factory" / "wt-7"
         wt.parent.mkdir(exist_ok=True)
@@ -143,7 +143,7 @@ class RunnerStorageDispatchTest(unittest.TestCase):
                 mock.patch.object(dispatch, "approve_pr", return_value=True):
             manage.apply(
                 7, issue, "FIX", "", {"worker": "default", "guidance": "fix"},
-                packet, resume_head=head,
+                packet, resume_if_ahead=True,
             )
         worker.assert_not_called()
         gate.assert_called_once()
@@ -257,7 +257,7 @@ class ManagerStorageRetryTest(unittest.TestCase):
             root = Path(directory)
             cfg = config.Config(
                 root, "acme/widgets", manager=["manager"], manager_rounds=1,
-                workers={"default": ["worker"]},
+                workers={"code": ["worker"]},
             )
             dispatch.configure(cfg)
             packet = cfg.factory / "escalations" / "7.md"
@@ -280,7 +280,7 @@ class ManagerStorageRetryTest(unittest.TestCase):
                     manager_runs += 1
                     return subprocess.CompletedProcess(
                         command, 0,
-                        'DECISION: FIX\n{"worker":"default","guidance":"fix"}\n', "",
+                        'DECISION: FIX\n{"worker":"code","guidance":"fix"}\n', "",
                     )
                 if command[:3] == ["git", "rev-parse", "HEAD"]:
                     return subprocess.CompletedProcess(command, 0, "b" * 40 + "\n", "")
@@ -298,6 +298,115 @@ class ManagerStorageRetryTest(unittest.TestCase):
             self.assertEqual(manager_runs, 1)
             self.assertEqual(apply.call_count, 2)
             self.assertEqual(apply.call_args.kwargs["resume_head"], "b" * 40)
+
+    def test_worker_phase_storage_retry_reruns_worker_without_rerunning_manager(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = config.Config(
+                root, "acme/widgets", manager=["manager"], manager_rounds=1,
+                workers={"code": ["worker"]},
+            )
+            dispatch.configure(cfg)
+            packet = cfg.factory / "escalations" / "7.md"
+            packet.parent.mkdir(parents=True)
+            packet.write_text("gate failed")
+            lifecycle.append(dispatch.EVENTS, {
+                "event": "escalate", "ticket": 7, "at": "2026-01-01T00:00:00Z",
+                "round": 1, "packet": str(packet),
+            })
+            (cfg.factory / "wt-7").mkdir()
+            issue = {
+                "number": 7, "title": "Fix gate", "body": "Acceptance: pass",
+                "labels": [{"name": "ready-for-human"}],
+            }
+            manager_runs = 0
+
+            def run(command, **_kwargs):
+                nonlocal manager_runs
+                if command[0] == "manager":
+                    manager_runs += 1
+                    return subprocess.CompletedProcess(
+                        command, 0,
+                        'DECISION: FIX\n{"worker":"code","guidance":"fix"}\n', "",
+                    )
+                raise AssertionError(command)
+
+            low = storage.RunnerStorageLow("worker", storage.status(cfg))
+            with mock.patch.object(dispatch, "gh_json", return_value=[issue]), \
+                    mock.patch.object(dispatch, "initiative_kind", return_value=False), \
+                    mock.patch.object(manage, "human_activity", return_value=False), \
+                    mock.patch.object(dispatch, "run", side_effect=run), \
+                    mock.patch.object(manage, "apply", side_effect=[low, None]) as apply:
+                manage.escalation_pass()
+                manage.escalation_pass()
+
+            self.assertEqual(manager_runs, 1)
+            self.assertEqual(apply.call_count, 2)
+            self.assertIsNone(apply.call_args.kwargs["resume_head"])
+
+    def test_journal_exhaustion_after_manager_fix_keeps_retry_eligible(self) -> None:
+        import errno
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = config.Config(
+                root, "acme/widgets", manager=["manager"], manager_rounds=1,
+                workers={"code": ["worker"]},
+            )
+            dispatch.configure(cfg)
+            packet = cfg.factory / "escalations" / "7.md"
+            packet.parent.mkdir(parents=True)
+            packet.write_text("gate failed")
+            lifecycle.append(dispatch.EVENTS, {
+                "event": "escalate", "ticket": 7, "at": "2026-01-01T00:00:00Z",
+                "round": 1, "packet": str(packet),
+            })
+            (cfg.factory / "wt-7").mkdir()
+            issue = {
+                "number": 7, "title": "Fix gate", "body": "Acceptance: pass",
+                "labels": [{"name": "ready-for-human"}],
+            }
+            manager_runs = 0
+            storage_failed = False
+            real_record = dispatch.record
+
+            def run(command, **_kwargs):
+                nonlocal manager_runs
+                if command[0] == "manager":
+                    manager_runs += 1
+                    return subprocess.CompletedProcess(
+                        command, 0,
+                        'DECISION: FIX\n{"worker":"code","guidance":"fix"}\n', "",
+                    )
+                if command[:3] == ["git", "rev-parse", "HEAD"]:
+                    return subprocess.CompletedProcess(command, 0, "b" * 40 + "\n", "")
+                raise AssertionError(command)
+
+            def apply(*_args, **_kwargs):
+                nonlocal storage_failed
+                if not storage_failed:
+                    storage_failed = True
+                    lifecycle.current().defer_storage()
+                    raise storage.RunnerStorageLow("gate", storage.status(cfg))
+
+            def record(event, **fields):
+                if storage_failed and event == "manage-deferred":
+                    raise OSError(errno.ENOSPC, "journal filesystem full")
+                return real_record(event, **fields)
+
+            with mock.patch.object(dispatch, "gh_json", return_value=[issue]), \
+                    mock.patch.object(dispatch, "initiative_kind", return_value=False), \
+                    mock.patch.object(manage, "human_activity", return_value=False), \
+                    mock.patch.object(dispatch, "run", side_effect=run), \
+                    mock.patch.object(dispatch, "record", side_effect=record), \
+                    mock.patch.object(manage, "apply", side_effect=apply) as apply_mock:
+                manage.escalation_pass()
+                storage_failed = False
+                manage.escalation_pass()
+
+            self.assertEqual(manager_runs, 1)
+            self.assertEqual(apply_mock.call_count, 2)
+            self.assertTrue(apply_mock.call_args.kwargs["resume_if_ahead"])
 
 if __name__ == "__main__":
     unittest.main()
@@ -371,6 +480,27 @@ class StorageRevisionDispatchTest(unittest.TestCase):
         self.assertIn("runner_storage_low", str(stderr.write.call_args_list))
         events = lifecycle.read_events(self.events)
         self.assertFalse(any(row.get("event") in {"claimed", "attempt", "escalate"} for row in events))
+
+    def test_preflight_precedes_ticket_journal_writes_when_disk_is_already_full(self) -> None:
+        import errno
+
+        dispatch.configure(config.load(self.repo))
+        issue = {
+            "number": 7, "title": "local change", "body": "Make the change.",
+            "labels": [{"name": "ready-for-agent"}], "assignees": [],
+        }
+        value = storage.status(dispatch.cfg)
+        value["ok"] = False
+        value["filesystems"][0]["low"] = ["space"]
+        with mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(storage, "status", return_value=value), \
+                mock.patch.object(lifecycle, "_write",
+                                  side_effect=OSError(errno.ENOSPC, "journal filesystem full")), \
+                mock.patch.object(dispatch, "_main", side_effect=lambda _args: dispatch.process_ticket(
+                    issue, 1, False, forced=True)), \
+                mock.patch("sys.stderr") as stderr:
+            self.assertEqual(dispatch.main([]), 0)
+        self.assertIn("runner_storage_low", str(stderr.write.call_args_list))
 
     def test_cli_low_storage_recovers_without_a_human_gate(self) -> None:
         self.write_config(extra="[runner]\nmin_free_gb = 1000000000\n")
@@ -449,6 +579,8 @@ class StorageRevisionRefreshTest(unittest.TestCase):
             cfg = config.Config(root, "acme/widgets", runner_min_free_gb=0,
                                 runner_min_free_inodes=0)
             dispatch.configure(cfg)
+            cfg.manager = ["manager"]
+            cfg.manager_review = "all"
             github = FakeGitHub(origin, dispatch.run)
             low = storage.RunnerStorageLow("gate", storage.status(cfg))
             with mock.patch.multiple(dispatch, gh_json=github.gh_json, run=github.run), \
@@ -481,6 +613,7 @@ class StorageRevisionRefreshTest(unittest.TestCase):
             approve.assert_called_once_with(9, candidate)
             self.assertEqual(github.head(), candidate)
             self.assertFalse(github.merged, "refresh must not bypass the normal merge prerequisites")
+            self.assertIsNone(dispatch.pending_refresh(9, 102))
 
 
 class StorageRevisionFailureTest(unittest.TestCase):
@@ -605,3 +738,32 @@ class StorageRevisionFailureTest(unittest.TestCase):
                 self.assertEqual(gate_module.main([]), storage.EX_TEMPFAIL)
             [row] = lifecycle.read_events(cfg.factory / "events.jsonl")
             self.assertEqual((row["event"], row["phase"]), ("runner_storage_low", "gate"))
+
+
+from tests import test_frontier as frontier_test
+
+
+class StorageFrontierRetryTest(frontier_test.FrontierTest):
+    def test_frontier_fix_storage_deferral_reuses_decision_without_charging_round(self) -> None:
+        self.cfg.manager_review = "all"
+        self.cfg.workers["code"] = ["worker"]
+        self.quiet_provider()
+        self.approved_head(frontier_test.H)
+        self.manager_output = 'DECISION: FIX\n{"worker":"code","guidance":"fix"}'
+        manager_runs = 0
+        low = storage.RunnerStorageLow("worker", storage.status(self.cfg))
+
+        def run(command, *args, **kwargs):
+            nonlocal manager_runs
+            if command[0] == "manager-stub":
+                manager_runs += 1
+            return self.fake_run(command, *args, **kwargs)
+
+        with mock.patch.object(dispatch, "run", side_effect=run), \
+                mock.patch.object(manage, "apply", side_effect=[low, None]) as apply:
+            manage.frontier_pass()
+            manage.frontier_pass()
+
+        self.assertEqual(manager_runs, 1)
+        self.assertEqual(apply.call_count, 2)
+        self.assertIsNone(apply.call_args.kwargs["resume_head"])
