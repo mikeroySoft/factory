@@ -364,23 +364,27 @@ test result: FAILED. 0 passed; 1 failed
     def test_unittest_fail_and_error_summaries_include_location_and_message(self) -> None:
         cases = [
             (
-                "FAIL: test_value (tests.test_math.MathTest.test_value)\n"
-                "Traceback (most recent call last):\n"
-                '  File "tests/test_math.py", line 17, in test_value\n'
-                '    self.assertEqual("expected", "actual")\n'
-                "AssertionError: 'expected' != 'actual'\n"
-                "- expected\n"
-                "+ actual\n",
+                (
+                    "FAIL: test_value (tests.test_math.MathTest.test_value)\n"
+                    "Traceback (most recent call last):\n"
+                    '  File "tests/test_math.py", line 17, in test_value\n'
+                    '    self.assertEqual("expected", "actual")\n'
+                    "AssertionError: 'expected' != 'actual'\n"
+                    "- expected\n"
+                    "+ actual\n"
+                ),
                 "tests.test_math.MathTest.test_value",
                 "tests/test_math.py:17",
                 "AssertionError: 'expected' != 'actual'",
             ),
             (
-                "ERROR: test_load (tests.test_worker.WorkerTest.test_load)\n"
-                "Traceback (most recent call last):\n"
-                '  File "tests/test_worker.py", line 21, in test_load\n'
-                '    raise RuntimeError("broken")\n'
-                "RuntimeError: broken\n",
+                (
+                    "ERROR: test_load (tests.test_worker.WorkerTest.test_load)\n"
+                    "Traceback (most recent call last):\n"
+                    '  File "tests/test_worker.py", line 21, in test_load\n'
+                    '    raise RuntimeError("broken")\n'
+                    "RuntimeError: broken\n"
+                ),
                 "tests.test_worker.WorkerTest.test_load",
                 "tests/test_worker.py:21",
                 "RuntimeError: broken",
