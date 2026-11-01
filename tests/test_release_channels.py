@@ -183,6 +183,51 @@ class ReleaseChannelsTest(unittest.TestCase):
         self.assertIn("escape_rate 1.0 is worse than 0.0", reason)
         self.assertIn("opened experimental release PR #13 for v0.4.9", reason)
 
+    def test_built_promotion_hold_does_not_block_next_odd_cut(self) -> None:
+        self.make_odd()
+        with mock.patch.object(release, "_pulls", return_value=[]), \
+                mock.patch.object(release, "gate_passes", return_value=True), \
+                mock.patch.object(stats, "escapes", return_value=[]):
+            self.assertIn("built promotion branch release/v0.4.8", release.run(self.cfg))
+        (self.repo / "next.txt").write_text("next experiment\n")
+        self.git(self.repo, "add", "next.txt")
+        self.git(self.repo, "commit", "-q", "-m", "next experiment")
+        self.git(self.repo, "push", "-q", "origin", "main")
+        strict = {
+            "human_rate": 1.0, "first_pass": 0.0, "escape_rate": 0.0, "tickets": 30,
+            "pending_tickets": 0, "pending_human_touches": 0,
+            "pending_first_passes": 0, "pending_attempts": 0, "pending_escapes": 0,
+        }
+        with mock.patch.object(release, "_bar", return_value=strict), \
+                mock.patch.object(release, "_pulls", return_value=[]), \
+                mock.patch.object(release, "_open_pull", return_value={"number": 13}), \
+                mock.patch.object(release, "_record_hold"), \
+                mock.patch.object(release, "ci_passes", return_value=True), \
+                mock.patch.object(release, "gate_passes", return_value=True), \
+                mock.patch.object(stats, "escapes", return_value=[
+                    {"candidates": [{"ticket": 1}]}
+                ]):
+            reason = release.run(self.cfg)
+        self.assertIn("escape_rate 1.0 is worse than 0.0", reason)
+        self.assertIn("opened experimental release PR #13 for v0.4.9", reason)
+
+    def test_promotion_scans_escapes_once(self) -> None:
+        self.make_odd()
+        with mock.patch.object(release, "_pulls", return_value=[]), \
+                mock.patch.object(release, "gate_passes", return_value=True), \
+                mock.patch.object(stats, "escapes", return_value=[]) as escapes:
+            self.assertIn("built promotion branch release/v0.4.8", release.run(self.cfg))
+        escapes.assert_called_once_with(read_only=False)
+
+    def test_odd_cut_does_not_scan_escapes(self) -> None:
+        with mock.patch.object(release, "_pulls", return_value=[]), \
+                mock.patch.object(release, "_open_pull", return_value={"number": 12}), \
+                mock.patch.object(release, "ci_passes", return_value=True), \
+                mock.patch.object(release, "gate_passes", return_value=True), \
+                mock.patch.object(stats, "escapes", return_value=[]) as escapes:
+            self.assertIn("opened experimental release PR #12", release.run(self.cfg))
+        escapes.assert_not_called()
+
     def test_odd_tag_is_prerelease_without_stable(self) -> None:
         release._update_experimental_files(self.cfg, self.repo, "0.4.6", "0.4.7")
         self.git(self.repo, "add", "factory/__init__.py", "CHANGELOG.md")

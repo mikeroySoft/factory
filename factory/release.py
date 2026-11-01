@@ -140,7 +140,7 @@ def measure(cfg: config.Config, since: str | datetime) -> dict[str, float | int 
 
 def measure_window(
     cfg: config.Config, until: str | datetime | None = None,
-    *, read_only: bool = False,
+    *, read_only: bool = False, include_escapes: bool = True,
 ) -> dict[str, float | int | None]:
     """Measure the newest configured merged-ticket window and its matching event span."""
     rows = [
@@ -175,21 +175,23 @@ def measure_window(
         if row.get("event") == "attempt" and row.get("attempt") == 1
     ]
     first_passes = sum(row.get("gate") == "PASS" for row in attempts)
-    from factory import stats
-    stats.configure(cfg)
+    escaped = None
+    if include_escapes:
+        from factory import stats
+        stats.configure(cfg)
 
-    try:
-        escaped = {
-            candidate["ticket"]
-            for row in stats.escapes(read_only=read_only)
-            for candidate in row.get("candidates", [])
-            if type(candidate.get("ticket")) is int
-        } & selected
-    except (
-        OSError, RuntimeError, ValueError, KeyError, TypeError,
-        subprocess.SubprocessError, SystemExit,
-    ):
-        escaped = None
+        try:
+            escaped = {
+                candidate["ticket"]
+                for row in stats.escapes(read_only=read_only)
+                for candidate in row.get("candidates", [])
+                if type(candidate.get("ticket")) is int
+            } & selected
+        except (
+            OSError, RuntimeError, ValueError, KeyError, TypeError,
+            subprocess.SubprocessError, SystemExit,
+        ):
+            pass
     denominator = max(len(selected), 1)
     return {
         "human_rate": round(human_touches / denominator, 6),
@@ -707,7 +709,7 @@ def _process_pull(
     cfg: config.Config,
     branch: str,
     title: str,
-    metrics: dict[str, float | int | None],
+    metrics: dict[str, float | int | None] | None,
     bar: dict[str, float | int] | None,
 ) -> str | None:
     pulls = _pulls(cfg, branch)
@@ -1123,9 +1125,16 @@ def _run_channels(cfg: config.Config, dry_run: bool, open_pr: bool) -> str:
         if tag and _unpublished(cfg, tag["tag"]):
             activity.append(_publish(cfg, tag["tag"], experimental=experimental))
 
+    metrics: dict[str, float | int | None] | None = None
+
+    def window(*, include_escapes: bool = False) -> dict[str, float | int | None]:
+        nonlocal metrics
+        if metrics is None:
+            metrics = measure_window(cfg, include_escapes=include_escapes)
+        return metrics
+
     def report(reason: str) -> str:
         return "; ".join((*activity, reason))
-
     current = _version_at(cfg, f"origin/{cfg.main}")
     base = _release_base(cfg, odd, even)
     highest = max((tag for tag in (odd, even) if tag), key=lambda tag: tag["version"])
@@ -1139,24 +1148,23 @@ def _run_channels(cfg: config.Config, dry_run: bool, open_pr: bool) -> str:
         and not _has_changes(cfg, base)
     ):
         return report(f"no changes since {even['tag']}")
-    metrics = measure_window(cfg)
     carryback = _carryback_source(cfg, even)
     if carryback is not None:
         branch = f"release/{even['tag']}"
         pending = _process_pull(
-            cfg, branch, f"Promote {even['tag']}", metrics, _bar(even["message"])
+            cfg, branch, f"Promote {even['tag']}", None, _bar(even["message"])
         )
         if pending:
             return report(pending)
         if not open_pr:
-            return report(_reason("no promotion PR open", metrics, _bar(even["message"])))
+            return report(_reason("no promotion PR open", None, _bar(even["message"])))
         return report(_open_promotion_pull(cfg, carryback, even, branch))
     if current > highest["version"] and current[2] % 2:
-        return report(_tag_experimental(cfg, highest, current, metrics))
+        return report(_tag_experimental(cfg, highest, current, window()))
 
     next_odd = _next_odd(odd, even)
     version, branch = _text(next_odd), f"release/v{_text(next_odd)}"
-    pending = _process_pull(cfg, branch, f"Release {version}", metrics, _bar(even["message"]))
+    pending = _process_pull(cfg, branch, f"Release {version}", None, _bar(even["message"]))
     if pending:
         return report(pending)
 
@@ -1164,47 +1172,47 @@ def _run_channels(cfg: config.Config, dry_run: bool, open_pr: bool) -> str:
         evidence, bar, comparison, hold = _promotion_evidence(
             cfg, odd, _latest(cfg, 1, odd["version"]), even
         )
+        metrics = evidence
         next_even = (*odd["version"][:2], odd["version"][2] + 1)
         public_version, public_branch = _text(next_even), f"release/v{_text(next_even)}"
         commit = _branch_sha(cfg, public_branch)
         if hold:
             reason = _reason(hold, evidence, comparison)
             _record_hold(cfg, reason, evidence, comparison or WORST)
-            if commit is not None:
-                return report(reason)
             activity.append(reason)
+        elif commit is None:
+            return report(_build_promotion(
+                cfg, odd, even, public_version, public_branch, evidence, bar
+            ))
+        elif not ci_passes(cfg, commit):
+            activity.append(_reason("waiting for CI on promotion commit", evidence, bar))
         else:
-            if commit is None:
-                return report(_build_promotion(
-                    cfg, odd, even, public_version, public_branch, evidence, bar
-                ))
-            elif not ci_passes(cfg, commit):
-                return report(_reason("waiting for CI on promotion commit", evidence, bar))
-            else:
-                return report(
-                    _tag_public(cfg, odd, even, public_version, commit, evidence, bar, comparison)
-                )
+            return report(
+                _tag_public(cfg, odd, even, public_version, commit, evidence, bar, comparison)
+            )
 
     if not open_pr:
-        return report(_reason("no release PR open", metrics, _bar(even["message"])))
+        return report(_reason("no release PR open", window(), _bar(even["message"])))
     if not _has_changes(cfg, base):
-        return report(_reason(f"no changes since {base['tag']}", metrics, _bar(even["message"])))
+        return report(_reason(
+            f"no changes since {base['tag']}", window(), _bar(even["message"])
+        ))
     if odd:
         elapsed = (datetime.now(UTC) - _at(odd["date"])).total_seconds() / 3600
         if elapsed < cfg.release_experimental_min_interval_hours:
             return report(_reason(
                 f"experimental interval {elapsed:.3f}h below "
                 f"{cfg.release_experimental_min_interval_hours}h",
-                metrics, _bar(even["message"]),
+                window(), _bar(even["message"]),
             ))
     head = _git(cfg.root, "rev-parse", f"origin/{cfg.main}").stdout.strip()
     if not ci_passes(cfg, head):
         return report(_reason(
             f"CI statuses/check-runs are not all successful for {head}",
-            metrics, _bar(even["message"]),
+            window(), _bar(even["message"]),
         ))
     return report(_open_experimental_pr(
-        cfg, head, _text(current), version, branch, metrics, _bar(even["message"])
+        cfg, head, _text(current), version, branch, window(), _bar(even["message"])
     ))
 
 
