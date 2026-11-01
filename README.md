@@ -824,8 +824,13 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
 3. **Work.** The worker gets the issue, its comments, standing instructions
    (commit incrementally, never touch `main`, never `git stash`, finish with
    `factory gate`), and — on retries — the previous gate report or the
-   reviewer's findings. Up to `max_attempts` rounds within `budget_min`, the
-   overall ceiling. A worker with no log output and no worktree change for
+   reviewer's findings. Up to `max_attempts` attempts within `budget_min`.
+   A fresh handoff with an empty `Still unverified` or `Unverified` section
+   (blank or `None.`) and a clean, committed worktree is the finish signal:
+   after expiry, the dispatcher still gates that head and proceeds through
+   push, PR-tier gate, review and merge normally, without charging a rework
+   round. Unfinished work and failing gate tiers still escalate.
+   A worker with no log output and no worktree change for
    `[dispatch].idle_timeout` minutes is killed as `stuck` (a failed attempt,
    retried). One that committed or wrote its handoff, then stayed quiet for
    `[dispatch].exit_grace` seconds without exiting, is terminated and gated.
@@ -945,16 +950,24 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    A High PR merges without human approval when the full current-head gate
    (including all PR-tier checks) passes, both reviewers approve, and mutation
    is `PASS` or `SKIP (no changed factory code)`. Both reviewers
-   revising uses the normal Medium loop. A reviewer split, or mutation failure
-   after both approvals, returns the dissenting findings for one worker round;
-   the next-head disagreement escalates as `risk_disagreement`. This
-   disagreement is the only High-tier-specific path to `ready-for-human`.
+   revising uses the normal Medium loop. Concrete required REVISE findings
+   from either reviewer, and completed surviving mutants after approval,
+   use the normal `[dispatch].review_rounds` budget, not the second-head
+   disagreement cutoff. When the wall-clock expires after a clean finish,
+   Factory retains the findings in a `review-rework` journal row and returns
+   the ticket to the next pass, charging one round before releasing its claim.
+   Charges survive pass boundaries; the next worker receives the full packet.
+   Rework after a merge-stage refresh uses the same mechanism and budget.
+   Rejects, protected-path blockers and exhausted rounds still escalate.
+   Non-actionable High disagreements retain the bounded disagreement path.
    `[review].second_command` is a host-only override of the code default.
    Non-mutation PR-check failures use the ordinary gate-failure loop, not the
    disagreement path. Mutation runs related tests first and stops after the first
    failure; a surviving mutant still has to pass every discovered test. The
    deterministic 200-mutant sample uses the gate timeout minus 60 seconds for
-   preparation, baseline, and mutants together; incomplete blocking runs fail.
+   preparation, baseline, and mutants together. Unstarted and deadline-cut
+   mutants are reported as incomplete, not survivors or blocking failures;
+   a baseline that never passes within the deadline and tool failures still fail.
    The built-in OMP worker pins `openai-codex/gpt-5.6-sol`; custom worker
    profiles must also name a model. `factory doctor` warns when any of the
    worker, primary-reviewer, or second-reviewer models is missing or not
@@ -1025,7 +1038,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `--match-head-commit` atomically guards the head, not the target branch or a
    late human veto. Protect release branches on GitHub; the final reads alone
    cannot prevent a retarget after the last check.
-7. **Escalation.** Budget exceeded, gate failed thrice, second `REVISE`,
+7. **Escalation.** Budget exceeded with unfinished work, failing gates,
+   exhausted review rounds, genuine reviewer rejection,
    nothing to PR, refused `agent/<n>` push, a refresh conflict that is not
    routine (step 6), red CI, or any
    dispatcher crash after the claim: the issue gets `ready-for-human`,

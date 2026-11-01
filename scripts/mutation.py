@@ -5,7 +5,7 @@ the full discovered unittest suite against each mutant (related tests first,
 stopping at the first failure), and prints
 every survivor as `path:line: <mutation>`. The default report-only mode exits zero
 after a complete trial even when mutants survive. ``--blocking`` exits nonzero for
-survivors on changed lines and for an incomplete run. Tool failures always exit
+completed survivors on changed lines. Tool and baseline failures always exit
 nonzero. Mutants are sampled deterministically (sorted, then shuffled with a fixed
 seed, capped at CAP). One absolute deadline, `[gate].timeout` - 60,
 covers preparation, the baseline and every mutant: each run is bounded by the time

@@ -2246,6 +2246,16 @@ def review(
     return result["verdict"] or "REVISE", findings
 
 
+def _actionable_mutation(report: str) -> bool:
+    """Only completed survivors are worker findings; tool failures are not."""
+    return bool(
+        re.search(r"(?m)^ran \d+ of \d+ mutants .*; [1-9]\d* survived$", report)
+        and re.search(r"(?m)^factory/[^:\n]+:\d+: ", report)
+        and "mutation check broke" not in report
+        and "baseline suite" not in report
+    )
+
+
 def _mutation_status(report: str) -> str:
     match = re.search(r"(?m)^- mutation: (PASS|FAIL|SKIP)", report)
     return match.group(1) if match else "MISSING"
@@ -2288,6 +2298,7 @@ def risk_disagreement_transition(
     current = (
         head
         if state.get("head") == head and state.get("disagreement")
+        and not state.get("actionable")
         else None
     )
     return current, bool(previous_head and current and previous_head != current)
@@ -2381,13 +2392,22 @@ def pr_gate_and_review(
         primary != second
         or (primary == second == "APPROVE" and mutation not in {"PASS", "SKIP"})
     )
+    actionable = (
+        all(verdict in {"APPROVE", "REVISE"} for verdict in (primary, second))
+        and all(
+            verdict == "APPROVE" or bool(_required_fixes(text, "review"))
+            for verdict, text in ((primary, primary_findings), (second, second_findings))
+        )
+        and (mutation in {"PASS", "SKIP"} or _actionable_mutation(pr_report))
+    )
     _PENDING_RISK[n] = {
         "head": head, "tier": tier, "disagreement": disagreement, "packet": packet,
         "primary": primary, "second": second, "mutation": mutation,
+        "actionable": actionable,
     }
-    if primary == second == "REVISE":
-        return "REVISE", f"{primary_findings}\n\n{second_findings}", False
-    if disagreement:
+    if primary not in {"APPROVE", "REVISE"} or second not in {"APPROVE", "REVISE"}:
+        return "REJECT", packet, False
+    if primary == second == "REVISE" or disagreement:
         return "REVISE", packet, False
     return "APPROVE", f"{primary_findings}\n\n{second_findings}", False
 
@@ -3139,6 +3159,34 @@ def _refresh_failure_scope(wt: Path, n: int, reports: list[str]) -> tuple[list[s
     return paths, bool(paths) and not related
 
 
+def _review_rounds_used(n: int) -> int:
+    return sum(
+        row.get("ticket") == n and row.get("event") in {"review-rework", "risk-requeue"}
+        for row in lifecycle.read_events(EVENTS)
+    )
+
+
+def _record_rework(n: int, head: str, findings: str, *, deferred: bool) -> None:
+    record(
+        "review-rework", ticket=n, head=head, round=_review_rounds_used(n) + 1,
+        findings=findings, deferred=deferred,
+    )
+    if deferred:
+        run([
+            "gh", "issue", "edit", str(n), "--repo", REPO,
+            "--add-label", LABEL_AGENT, "--remove-assignee", "@me",
+        ])
+
+
+def _actionable_review(n: int, head: str, verdict: str | None, findings: str, pr_failed: bool) -> bool:
+    if verdict != "REVISE" or pr_failed:
+        return False
+    state = _PENDING_RISK.get(n) or {}
+    if state.get("head") == head:
+        return bool(state.get("actionable"))
+    return bool(_required_fixes(findings, "review"))
+
+
 def pending_risk_requeue_head(n: int) -> str | None:
     rows = [
         event for event in lifecycle.read_events(EVENTS)
@@ -3154,11 +3202,18 @@ def refresh_requeue_context(n: int) -> str:
         if event.get("ticket") == n
         and event.get("event") in {
             "attempt", "conflict-requeue", "gate-requeue", "risk-requeue",
+            "review-rework",
         }
     ]
     if not rows or rows[-1]["event"] == "attempt":
         return ""
     event = rows[-1]
+    if event["event"] == "review-rework":
+        return (
+            f"## Reviewer findings, round {event['round']} (carried from the previous pass)\n\n"
+            f"{event['findings']}\n\n"
+            "Address required fixes only on the existing ticket branch. Gate and review run again.\n\n"
+        ) if event.get("deferred") else ""
     if event["event"] == "conflict-requeue":
         return (
             f"## Refresh conflict, round {event['round']}\n\n"
@@ -3462,6 +3517,19 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         )
         return False
     if verdict != "APPROVE":
+        if verdict == "REJECT":
+            withdraw("review rejected the refreshed head", "review_revise", extra=findings)
+            return False
+        if guidance := _protected_gate_guidance(findings, set()):
+            withdraw("PR gate blocked by protected paths", "protected_paths",
+                     extra=f"{guidance}\n\n{findings}")
+            return False
+        if _actionable_review(n, head, verdict, findings, pr_failed):
+            if _review_rounds_used(n) < cfg.review_rounds and issue_is_open(n):
+                _record_rework(n, head, findings, deferred=True)
+            else:
+                withdraw("review round budget exhausted after refresh", "review_revise", extra=findings)
+            return False
         state = _PENDING_RISK.get(n) or {}
         if state.get("head") == head and state.get("disagreement"):
             rounds = sum(
@@ -3894,6 +3962,21 @@ def merge_pass_locked(dry_run: bool) -> None:
             return
 
 
+def _handoff_done(path: Path) -> bool:
+    """Fallback finish seam for #508: a complete handoff has no unverified work."""
+    if not path.is_file():
+        return False
+    sections = re.findall(
+        r"(?ims)^#{1,6}\s+(?:Still )?Unverified\s*:?\s*\n(.*?)(?=^#{1,6}\s|\Z)",
+        path.read_text(),
+    )
+    return bool(sections) and all(
+        re.sub(r"^[ \t]*[-*][ \t]+", "", section.strip()).strip().rstrip(".").casefold()
+        in {"", "none", "nothing", "n/a"}
+        for section in sections
+    )
+
+
 def worker_round(
     n: int,
     wt: Path,
@@ -3942,8 +4025,21 @@ def worker_round(
         run_options["env_overrides"] = environment
     if worker_version:
         run_options.update(worker=worker, worker_version=worker_version)
+    handoff_path = wt / ".factory" / f"handoff-{n}.md"
+    handoff_start = handoff_path.stat().st_mtime_ns if handoff_path.exists() else None
     code, fired = run_worker(
         argv, wt, logfile, wt / ".factory" / f"handoff-{n}.md", deadline, **run_options,
+    )
+    # Decide before commit_leftovers: dispatcher commits cannot turn unfinished work into done.
+    finished = (
+        handoff_path.exists()
+        and handoff_path.stat().st_mtime_ns != handoff_start
+        and _handoff_done(handoff_path)
+        and not run([
+            "git", "status", "--porcelain", "--untracked-files=all", "--", ".",
+            ":(exclude).factory-prompt.md", ":(exclude).factory",
+        ], cwd=wt).stdout.strip()
+        and (code == 0 or fired in {"exit_grace", "budget_min"})
     )
     journal_attempt_plan(wt, n, attempt, labels, worker, worker_version)
     transcript = _transcript(session_dir, wall)
@@ -3976,14 +4072,13 @@ def worker_round(
             f"worker stuck: idle_timeout fired ({cfg.idle_timeout:g} min without worker "
             "log output or worktree change); worker killed before the gate"
         ), logfile, head
-    if time.monotonic() > deadline:
+    if time.monotonic() > deadline and not finished:
         record(
             "attempt", ticket=n, attempt=attempt, worker_exit=code, gate=None,
             log=str(logfile), transcript=transcript, head=head, handoff=handoff,
             **identity, **timeout,
         )
         return False, "budget exceeded before gate", logfile, head
-    handoff_path = wt / ".factory" / f"handoff-{n}.md"
     ok, report = run_gate(
         wt, n, **gate_flags(
             sync, labels, body, handoff_path.read_text() if handoff_path.exists() else "",
@@ -4001,6 +4096,9 @@ def worker_round(
     if ok and tip and run(["git", "merge-base", "--is-ancestor", tip, head], cwd=wt, check=False).returncode:
         ok = False
         report += f"\n\nGate evidence rejected: HEAD {head} does not contain upstream tip {tip}."
+    if time.monotonic() > deadline and not finished:
+        ok = False
+        report += "\n\nBudget exceeded with unfinished worker handoff."
     if fired == "exit_grace":
         report += (
             f"\n\nWorker hung after done: exit_grace fired ({cfg.exit_grace:g} s quiet after "
@@ -4011,6 +4109,7 @@ def worker_round(
         seconds=int(time.monotonic() - started), cost=usage["cost"], log=str(logfile),
         transcript=transcript, brief=brief_path(wt, n).exists(), head=head,
         actual_head=actual_head, clean=not before_status and not after_status,
+        finished=finished,
         handoff=handoff, **identity, **timeout,
     )
     return ok, report, logfile, head
@@ -4337,20 +4436,31 @@ def process_ticket(
                     code="reviewer_unavailable",
                 )
                 return
-            # Each REVISE (or pr-tier FAIL) uses the normal bounce budget. A first
-            # High-risk disagreement always gets one rework, even when that budget is spent.
+            # Durable charges survive pass boundaries; a deferred round is paid before requeue.
+            rounds_used = _review_rounds_used(n)
             for bounce in range(1, cfg.review_rounds + 2):
-                if verdict == "APPROVE" or (
-                    bounce > cfg.review_rounds and risk_disagreement_head is None
+                if guidance := _protected_gate_guidance(findings, labels):
+                    escalate(n, "PR gate blocked by protected paths", logfile,
+                             extra=f"{guidance}\n\n{findings}", code="protected_paths")
+                    return
+                actionable = _actionable_review(n, gate_head, verdict, findings, pr_failed)
+                if verdict in {"APPROVE", "REJECT"} or (
+                    rounds_used >= cfg.review_rounds and (actionable or risk_disagreement_head is None)
                 ):
                     break
                 if time.monotonic() > deadline:
+                    if actionable and _handoff_done(wt / ".factory" / f"handoff-{n}.md"):
+                        _record_rework(n, gate_head, findings, deferred=True)
+                        execution.wait("review_rework", mode="retry_next_pass", head=gate_head)
+                        return
                     escalate(
                         n,
                         f"wall-clock budget ({budget_min} min) exceeded before bounce {bounce}",
                         logfile, code="budget",
                     )
                     return
+                _record_rework(n, gate_head, findings, deferred=False)
+                rounds_used += 1
                 execution.review_round = bounce + 1
                 extra = (
                     f"## PR-tier gate report, round {bounce} (failed)\n\n{findings}"
