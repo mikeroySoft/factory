@@ -385,6 +385,89 @@ class CloseDecisionTest(unittest.TestCase):
                     },
                 )
 
+    def test_close_without_pr_comments_with_reason_and_closes_issue(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            repo = Path(d)
+            (repo / ".factory").mkdir()
+            dispatch.configure(config.Config(repo, "example/project"))
+            dispatch.record("issue-created", ticket=79, parent=70)
+            no_pr = subprocess.CalledProcessError(
+                1, ["gh"], stderr='no pull requests found for branch "agent/79"',
+            )
+            result = subprocess.CompletedProcess([], 0, stdout="https://example.test/comment\n")
+            with mock.patch.object(dispatch, "gh_json", side_effect=no_pr), \
+                    mock.patch.object(dispatch, "run", return_value=result) as run, \
+                    mock.patch.object(dispatch, "comment_receipt"):
+                manage.apply(
+                    79, {"title": "t", "body": "b"}, "CLOSE",
+                    "Transient host failure.", None, repo / "packet.md",
+                )
+
+            commands = [call.args[0] for call in run.call_args_list]
+            comment = next(i for i, command in enumerate(commands)
+                           if command[1:3] == ["issue", "comment"])
+            close = commands.index([
+                "gh", "issue", "close", "79", "--repo", dispatch.REPO,
+                "--reason", "not planned",
+            ])
+            self.assertLess(comment, close)
+            self.assertIn("Transient host failure.", commands[comment][-1])
+            self.assertFalse(any(command[1:3] == ["pr", "close"] for command in commands))
+
+    def test_close_without_pr_leaves_human_issue_open(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            repo = Path(d)
+            (repo / ".factory").mkdir()
+            dispatch.configure(config.Config(repo, "example/project"))
+            no_pr = subprocess.CalledProcessError(
+                1, ["gh"], stderr='no pull requests found for branch "agent/79"',
+            )
+            result = subprocess.CompletedProcess([], 0, stdout="https://example.test/comment\n")
+            with mock.patch.object(dispatch, "gh_json", side_effect=no_pr), \
+                    mock.patch.object(dispatch, "run", return_value=result) as run, \
+                    mock.patch.object(dispatch, "comment_receipt"):
+                manage.apply(
+                    79, {"title": "t", "body": "b"}, "CLOSE",
+                    "No change should land.", None, repo / "packet.md",
+                )
+
+            commands = [call.args[0] for call in run.call_args_list]
+            self.assertFalse(any(command[1:3] == ["pr", "close"] for command in commands))
+            self.assertFalse(any(command[1:3] == ["issue", "close"] for command in commands))
+            edit = next(command for command in commands
+                        if command[1:3] == ["issue", "edit"])
+            self.assertIn(config.LABEL_WONTFIX, edit)
+
+    def test_close_with_closed_pr_preserves_issue_provenance(self) -> None:
+        for created in (False, True):
+            with self.subTest(factory_created=created), tempfile.TemporaryDirectory() as d:
+                repo = Path(d)
+                (repo / ".factory").mkdir()
+                dispatch.configure(config.Config(repo, "example/project"))
+                if created:
+                    dispatch.record("issue-created", ticket=79, parent=70)
+                result = subprocess.CompletedProcess([], 0, stdout="https://example.test/comment\n")
+                with mock.patch.object(
+                    dispatch, "gh_json",
+                    return_value={"number": 80, "state": "CLOSED", "baseRefName": "main"},
+                ), mock.patch.object(dispatch, "run", return_value=result) as run, \
+                        mock.patch.object(dispatch, "comment_receipt"):
+                    manage.apply(
+                        79, {"title": "t", "body": "b"}, "CLOSE",
+                        "No change should land.", None, repo / "packet.md",
+                    )
+
+                commands = [call.args[0] for call in run.call_args_list]
+                self.assertFalse(any(command[1:3] == ["pr", "close"] for command in commands))
+                self.assertEqual(
+                    sum(command[1:3] == ["issue", "close"] for command in commands),
+                    int(created),
+                )
+                edits = [command for command in commands if command[1:3] == ["issue", "edit"]]
+                self.assertEqual(len(edits), int(not created))
+                if edits:
+                    self.assertIn(config.LABEL_WONTFIX, edits[0])
+
     def test_close_requires_an_open_pr_on_the_configured_target(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             repo = Path(d)
@@ -394,6 +477,57 @@ class CloseDecisionTest(unittest.TestCase):
                 with self.subTest(pr=pr), mock.patch.object(dispatch, "gh_json", return_value=pr), \
                         mock.patch.object(dispatch, "run") as run, self.assertRaises(ValueError):
                     manage.apply(79, {"title": "t", "body": "b"}, "CLOSE", "x", None, repo / "p.md")
+                run.assert_not_called()
+
+    def test_close_compares_pr_fields_by_value(self) -> None:
+        for state, closes_pr in (
+            (bytearray(b"CLOSED").decode(), False),
+            (bytearray(b"OPEN").decode(), True),
+        ):
+            with self.subTest(state=state), tempfile.TemporaryDirectory() as d:
+                repo = Path(d)
+                (repo / ".factory").mkdir()
+                dispatch.configure(config.Config(repo, "example/project"))
+                pr = {
+                    "number": 80,
+                    "state": state,
+                    "baseRefName": bytearray(b"main").decode(),
+                }
+                result = subprocess.CompletedProcess(
+                    [], 0, stdout="https://example.test/comment\n",
+                )
+                with mock.patch.object(dispatch, "gh_json", return_value=pr), \
+                        mock.patch.object(dispatch, "run", return_value=result) as run, \
+                        mock.patch.object(dispatch, "comment_receipt"):
+                    manage.apply(
+                        79, {"title": "t", "body": "b"}, "CLOSE",
+                        "No change should land.", None, repo / "packet.md",
+                    )
+
+                commands = [call.args[0] for call in run.call_args_list]
+                self.assertEqual(
+                    any(command[1:3] == ["pr", "close"] for command in commands),
+                    closes_pr,
+                )
+
+    def test_close_rejects_unknown_states_and_other_targets(self) -> None:
+        prs = (
+            {"number": 80, "state": "BOGUS", "baseRefName": "main"},
+            {"number": 80, "state": "UNKNOWN", "baseRefName": "main"},
+            {"number": 80, "state": "OPEN", "baseRefName": "develop"},
+        )
+        for pr in prs:
+            with self.subTest(pr=pr), tempfile.TemporaryDirectory() as d:
+                repo = Path(d)
+                (repo / ".factory").mkdir()
+                dispatch.configure(config.Config(repo, "example/project"))
+                with mock.patch.object(dispatch, "gh_json", return_value=pr), \
+                        mock.patch.object(dispatch, "run") as run, \
+                        self.assertRaises(ValueError):
+                    manage.apply(
+                        79, {"title": "t", "body": "b"}, "CLOSE",
+                        "No change should land.", None, repo / "packet.md",
+                    )
                 run.assert_not_called()
 
     def test_parse_accepts_close_and_approve_only_where_allowed(self) -> None:
