@@ -107,6 +107,25 @@ class BugReproductionGateTest(unittest.TestCase):
             self.assertIn("- bug-repro-before: EXPECTED FAIL", report)
             self.assertIn("- bug-repro-head: PASS", report)
 
+
+    def test_backticked_handoff_id_reaches_reproduction_gate_bare(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repository(Path(directory))
+            add_repro(repo)
+            (repo / "value.py").write_text("def value():\n    return True\n")
+            commit(repo, "fix bug")
+            flags = dispatch.gate_flags(
+                None, {"bug"}, "", f"Repro test: `{TEST_ID}`"
+            )
+
+            code, report = run_gate(
+                repo, "--bug", "--repro-test", flags["repro_test"]
+            )
+            self.assertEqual(code, 0, report)
+            self.assertEqual(flags["repro_test"], TEST_ID)
+            self.assertIn("- bug-repro-before: EXPECTED FAIL", report)
+            self.assertIn("- bug-repro-head: PASS", report)
+
     def test_test_that_passes_before_fix_does_not_reproduce_bug(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repo = repository(Path(directory), fixed=True)
