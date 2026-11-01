@@ -947,18 +947,21 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    is `PASS` or `SKIP (no changed factory code)`. Both reviewers
    revising uses the normal Medium loop. A reviewer split, or mutation failure
    after both approvals, returns the dissenting findings for one worker round;
-   the next-head disagreement escalates as `risk_disagreement`. This
-   disagreement is the only High-tier-specific path to `ready-for-human`.
+   the next-head disagreement escalates as `risk_disagreement`. Missing worker
+   identity blocks review and machine-escalates as `missing_worker_provenance`;
+   it is never rendered as an `unknown` participant. A disagreement is the only
+   High-tier-specific review outcome that asks for a human decision.
    `[review].second_command` is a host-only override of the code default.
    Non-mutation PR-check failures use the ordinary gate-failure loop, not the
    disagreement path. Mutation runs related tests first and stops after the first
    failure; a surviving mutant still has to pass every discovered test. The
    deterministic 200-mutant sample uses the gate timeout minus 60 seconds for
    preparation, baseline, and mutants together; incomplete blocking runs fail.
-   The built-in OMP worker pins `openai-codex/gpt-5.6-sol`; custom worker
-   profiles must also name a model. `factory doctor` warns when any of the
-   worker, primary-reviewer, or second-reviewer models is missing or not
-   distinct, or when the second reviewer cannot launch.
+   The built-in OMP worker pins `openai-codex/gpt-5.6-sol`, and the built-in
+   Droid chore worker pins `gpt-6-sol`; custom worker profiles must also name a
+   model. `factory doctor` warns when any of the worker, primary-reviewer, or
+   second-reviewer models is missing or not distinct, or when the second
+   reviewer cannot launch.
    `factory stats --by-risk` and the dashboard report human interventions,
    human-wait minutes, rounds, disagreement rate, and escape rate per tier.
 
@@ -1094,7 +1097,7 @@ review_rounds = 1                # REVISE -> worker -> re-review cycles
 
 [workers]                        # ticket label/profile -> argv; {prompt} file, {cwd} worktree
 default = ["omp", "-p", "--model", "openai-codex/gpt-5.6-sol", "--cwd", "{cwd}", "@{prompt}"]
-chore   = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
+chore   = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--model", "gpt-6-sol", "--cwd", "{cwd}"]
 
 # A differently named OMP-compatible worker selected by a separate pilot label:
 # [workers.prime]

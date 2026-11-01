@@ -413,8 +413,8 @@ factory install --dashboard   # systemd user timer every 10 min + dashboard on :
         <div class="code-panel">
           <div class="code-title"><span>.factory.toml</span><span>config sample</span></div>
           <pre><code>[workers]                        # ticket label -&gt; argv
-default = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]
-chore   = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
+default = ["omp", "-p", "--model", "openai-codex/gpt-5.6-sol", "--cwd", "{cwd}", "@{prompt}"]
+chore   = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--model", "gpt-6-sol", "--cwd", "{cwd}"]
 
 [review]
 command = ["codex", "exec", "{prompt}"]

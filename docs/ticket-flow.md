@@ -196,6 +196,7 @@ event. `{}` is a runtime value.
 | `dispatch.process_ticket` | ``idle_timeout fired (worker stuck) after review bounce {}; worktree kept at {}`` | review → escalate |
 | `dispatch.process_ticket` | ``REVISE verdict after {} review round(s)`` | review → escalate |
 | `dispatch.process_ticket` | ``reviewer unavailable after retries`` | review tooling retries exhausted → escalate (`reviewer_unavailable`) |
+| `dispatch.process_ticket` | ``worker model provenance missing for High-risk review`` | High-risk review cannot establish the worker model → machine escalate (`missing_worker_provenance`) |
 | `dispatch.process_ticket` | ``pr checks failed`` | review → escalate |
 | `dispatch.process_ticket` | ``High-risk machine checks disagreed on two successive heads`` | first disagreement → worker rework; next-head disagreement → escalate (`risk_disagreement`) |
 | `dispatch.process_ticket` | ``approval evidence, head, or human review state changed before approval`` | review → escalate |
@@ -218,6 +219,7 @@ event. `{}` is a runtime value.
 | `dispatch.refresh_pr_branch` | ``remote head changed while refreshed evidence was being produced`` | refresh → escalate |
 | `dispatch.refresh_pr_branch` | ``fresh review requested changes after {} onto moved main`` | refresh → escalate |
 | `dispatch.refresh_pr_branch` | ``reviewer unavailable after {} onto moved main`` | refreshed review tooling retries exhausted → escalate (`reviewer_unavailable`) |
+| `dispatch.refresh_pr_branch` | ``worker model provenance missing for High-risk review after {} onto moved main`` | refreshed High-risk review lacks worker model provenance → machine escalate (`missing_worker_provenance`) |
 | `dispatch.refresh_pr_branch` | ``approval evidence, head, or human review state changed before refreshed approval`` | refresh → escalate |
 | `dispatch.review_intake_pass` | ``PR #{}: unresolved after {} automated review attempt(s)`` | external PR → ready-for-human |
 | `manage.frontier_pass` | ``PR #{}: CI failed ({})`` | manager PR frontier → escalate |
@@ -229,6 +231,7 @@ event. `{}` is a runtime value.
 | `manage.apply` | ``gate failed after manager FIX`` | manager FIX → escalate |
 | `manage.apply` | ``review requested changes after manager FIX`` | manager FIX → escalate |
 | `manage.apply` | ``reviewer unavailable after manager FIX`` | manager FIX review tooling retries exhausted → escalate (`reviewer_unavailable`) |
+| `manage.apply` | ``worker model provenance missing for High-risk review after manager FIX`` | manager FIX High-risk review lacks worker model provenance → machine escalate (`missing_worker_provenance`) |
 | `manage.apply` | ``pr checks failed`` | manager FIX → escalate |
 | `manage.apply` | ``approval evidence, head, or human review state changed before manager FIX approval`` | manager FIX → escalate |
 | `manage.apply` | ``FIX worktree head {} is not the PR head {} plus the worker's own commits; worktree kept at {}`` | manager FIX → escalate (`refresh_head`) |
