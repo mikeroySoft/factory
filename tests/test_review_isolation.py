@@ -149,7 +149,7 @@ class ReviewIsolationTest(unittest.TestCase):
         os.utime(snapshot.parent, (0, 0))
 
         with mock.patch.object(dispatch.tempfile, "tempdir", str(scratch)):
-            dispatch._sweep_stale_reviewer_snapshots()
+            dispatch._sweep_stale_factory_tempdirs()
 
         self.assertFalse(snapshot.parent.exists())
 
@@ -198,7 +198,7 @@ class ReviewIsolationTest(unittest.TestCase):
                 mock.patch.object(Path, "is_symlink", fail_unreadable), \
                 mock.patch.object(dispatch, "_make_tree_writable") as writable, \
                 mock.patch.object(dispatch.shutil, "rmtree") as rmtree:
-            dispatch._sweep_stale_reviewer_snapshots()
+            dispatch._sweep_stale_factory_tempdirs()
 
         writable.assert_called_once_with(stale)
         rmtree.assert_called_once_with(stale, ignore_errors=True)

@@ -250,16 +250,18 @@ def _make_tree_writable(root: Path) -> None:
         make_writable(path)
 
 
-def _sweep_stale_reviewer_snapshots() -> None:
+def _sweep_stale_factory_tempdirs() -> None:
     cutoff = time.time() - 24 * 60 * 60
-    for path in Path(tempfile.gettempdir()).glob("factory-review-*"):
-        try:
-            stale = not path.is_symlink() and path.is_dir() and path.stat().st_mtime < cutoff
-        except OSError:
-            continue
-        if stale:
-            _make_tree_writable(path)
-            shutil.rmtree(path, ignore_errors=True)
+    root = Path(tempfile.gettempdir())
+    for pattern in ("factory-review-*", "factory-gate-*"):
+        for path in root.glob(pattern):
+            try:
+                stale = not path.is_symlink() and path.is_dir() and path.stat().st_mtime < cutoff
+            except OSError:
+                continue
+            if stale:
+                _make_tree_writable(path)
+                shutil.rmtree(path, ignore_errors=True)
 
 
 def _run_reviewer(
@@ -4442,7 +4444,7 @@ def main(argv: list[str]) -> int:
             return 1
     configure(config.load())  # from the tree now pinned at origin/<main>
     if not args.dry_run:
-        _sweep_stale_reviewer_snapshots()
+        _sweep_stale_factory_tempdirs()
     if args.budget_min is None:
         args.budget_min = cfg.budget_min
 
