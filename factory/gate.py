@@ -18,6 +18,7 @@ import sys
 import tempfile
 import tomllib
 from pathlib import Path
+from typing import Optional
 
 from factory import config, lifecycle
 from factory.config import CONFIG_NAME, Config
@@ -122,35 +123,37 @@ def failed_test_ids(output: str) -> list[str]:
 
 
 _EXCEPTION_LINE = re.compile(r"^(?:[A-Za-z_]\w*\.)*[A-Z]\w*(?::|$)")
+_PYTEST_HEADING = re.compile(r"^_+\s+.*[A-Za-z0-9].*\s+_+$")
 
 
 def _failure_block(lines: list[str], test_id: str) -> tuple[str, list[str]]:
+    unittest_heading = re.compile(
+        rf"^(?:FAIL|ERROR): \S+ \({re.escape(test_id)}\)"
+    )
+    cargo_heading = re.compile(rf"^---- {re.escape(test_id)} stdout ----$")
     for index, line in enumerate(lines):
-        unittest_match = re.match(r"^(?:FAIL|ERROR): \S+ \(([^()\s]+)\)", line)
-        cargo_match = re.match(r"^---- ([^\s]+) stdout ----$", line)
-        if unittest_match and unittest_match[1] == test_id:
+        if unittest_heading.match(line):
             end = next((
                 later for later in range(index + 1, len(lines))
                 if re.match(r"^(?:FAIL|ERROR): ", lines[later])
             ), len(lines))
             return "unittest", lines[index:end]
-        if cargo_match and cargo_match[1] == test_id:
+        if cargo_heading.match(line):
             end = next((
                 later for later in range(index + 1, len(lines))
                 if re.match(r"^---- [^\s]+ stdout ----$", lines[later])
             ), len(lines))
             return "cargo", lines[index:end]
 
-    pytest_names = {test_id.rsplit("::", 1)[-1]}
-    parts = test_id.split("::")
-    if len(parts) > 2:
-        pytest_names.add(".".join(parts[-2:]))
+    node = test_id.partition("::")[2]
+    name, bracket, parameter = node.partition("[")
+    pytest_name = name.replace("::", ".") + bracket + parameter
+    pytest_heading = re.compile(rf"^_+\s+{re.escape(pytest_name)}\s+_+$")
     for index, line in enumerate(lines):
-        heading = re.match(r"^_+\s+(.+?)\s+_+$", line)
-        if heading and heading[1] in pytest_names:
+        if pytest_heading.match(line):
             end = next((
                 later for later in range(index + 1, len(lines))
-                if re.match(r"^_+\s+.+?\s+_+$", lines[later])
+                if _PYTEST_HEADING.match(lines[later])
             ), len(lines))
             return "pytest", lines[index:end]
     return "pytest", []
@@ -162,8 +165,8 @@ def _failure_location(kind: str, block: list[str]) -> tuple[str | None, int]:
         "cargo": r"panicked at (.+?):(\d+)(?::\d+)?:$",
         "pytest": r"^(\S.*\.py):(\d+)(?::\d+)?:",
     }
-    for index, line in enumerate(block):
-        if match := re.search(patterns[kind], line):
+    for index in reversed(range(len(block))):
+        if match := re.search(patterns[kind], block[index]):
             return f"{match[1]}:{match[2]}", index
     return None, 0
 
@@ -182,7 +185,7 @@ def _pytest_failure_message(block: list[str]) -> str | None:
     for line in block:
         if match := re.match(r"^E\s+(.*)", line):
             errors.append(match[1].strip())
-    for line in errors:
+    for line in reversed(errors):
         if _EXCEPTION_LINE.match(line):
             return line
     for line in errors:
@@ -192,16 +195,18 @@ def _pytest_failure_message(block: list[str]) -> str | None:
 
 
 def _failure_message(kind: str, block: list[str], location_index: int) -> str | None:
-    if kind == "cargo":
-        return next((
-            line.strip() for line in block[location_index + 1:] if line.strip()
-        ), None)
-    if kind == "unittest":
-        return next((
-            line.strip() for line in block[location_index + 1:]
-            if _EXCEPTION_LINE.match(line.strip())
-        ), None)
-    return _pytest_failure_message(block)
+    match kind:
+        case "cargo":
+            return next((
+                line.strip() for line in block[location_index + 1:] if line.strip()
+            ), None)
+        case "unittest":
+            return next((
+                line.strip() for line in block[location_index + 1:]
+                if _EXCEPTION_LINE.match(line.strip())
+            ), None)
+        case _:
+            return _pytest_failure_message(block)
 
 
 def _expected_actual_line(kind: str, line: str, message: str) -> str | None:
@@ -213,7 +218,7 @@ def _expected_actual_line(kind: str, line: str, message: str) -> str | None:
         return candidate
     if candidate.lower().startswith(("expected:", "actual:", "left:", "right:")):
         return candidate
-    if kind == "pytest" and marked and (" == " in candidate or " != " in candidate):
+    if marked and (" == " in candidate or " != " in candidate):
         return candidate
     return None
 
@@ -229,7 +234,7 @@ def _expected_actual(kind: str, block: list[str], message: str) -> list[str]:
     return excerpt
 
 
-def first_failure_summary(output: str, test_id: str) -> dict[str, str | list[str]] | None:
+def first_failure_summary(output: str, test_id: str) -> Optional[dict]:  # noqa: UP045
     """Location, message and expected/actual excerpt for the first failed test."""
     kind, block = _failure_block(output.splitlines(), test_id)
     location, location_index = _failure_location(kind, block)
@@ -245,18 +250,19 @@ def first_failure_summary(output: str, test_id: str) -> dict[str, str | list[str
 
 
 def failure_summary_lines(
-    failed_tests: list[str], summary: dict[str, str | list[str]] | None
+    failed_tests: list[str], summary: Optional[dict]  # noqa: UP045
 ) -> list[str]:
     if not failed_tests:
         return ["Failing tests: could not identify failing tests."]
     lines = ["Failing tests:"]
-    for index, test_id in enumerate(failed_tests):
+    for test_id in failed_tests:
         entry = f"- `{test_id}`"
-        if index == 0 and summary is not None:
+        if summary is not None:
             entry += f" — `{summary['location']}`: {summary['message']}"
         lines.append(entry)
-        if index == 0 and summary and summary["expected_actual"]:
+        if summary and summary["expected_actual"]:
             lines.append("  Expected/actual: " + " | ".join(summary["expected_actual"]))
+        summary = None
     return lines
 
 
@@ -882,9 +888,7 @@ def execute(args: argparse.Namespace, execution) -> int:
         if any(status == "FAIL" for _, status, _ in results)
         else ("completed", None)
     )
-    test_failures: dict[
-        str, tuple[list[str], dict[str, str | list[str]] | None]
-    ] = {}
+    test_failures: dict[str, tuple[list[str], Optional[dict]]] = {}  # noqa: UP045
     gpu_lock = None
     try:
         for name, fn in checks:

@@ -587,5 +587,59 @@ RuntimeError: wrapped
         self.assertEqual(result["failure_summary"]["location"], "tests/test_worker.py:44")
         self.assertEqual(result["failure_summary"]["message"], "RuntimeError: wrapped")
 
+    def test_pytest_message_uses_error_then_source_fallback(self) -> None:
+        from factory import gate as factory_gate
+
+        cases = [
+            (
+                """____________________________ test_value ____________________________
+>       assert 1 == 2
+E       AssertionError: values differ
+E       assert 1 == 2
+tests/test_value.py:9: AssertionError
+""",
+                "AssertionError: values differ",
+                ["assert 1 == 2"],
+            ),
+            (
+                """____________________________ test_value ____________________________
+>       raise RuntimeError("broken")
+tests/test_value.py:9: RuntimeError
+""",
+                'raise RuntimeError("broken")',
+                [],
+            ),
+        ]
+        for output, message, expected_actual in cases:
+            with self.subTest(message=message):
+                summary = factory_gate.first_failure_summary(
+                    output, "tests/test_value.py::test_value"
+                )
+                self.assertEqual(summary, {
+                    "test": "tests/test_value.py::test_value",
+                    "location": "tests/test_value.py:9",
+                    "message": message,
+                    "expected_actual": expected_actual,
+                })
+
+    def test_failure_summary_details_only_the_first_test(self) -> None:
+        from factory import gate as factory_gate
+
+        lines = factory_gate.failure_summary_lines(
+            ["tests/test_a.py::test_a", "tests/test_b.py::test_b"],
+            {
+                "location": "tests/test_a.py:7",
+                "message": "AssertionError: mismatch",
+                "expected_actual": ["expected: 1", "actual: 2"],
+            },
+        )
+
+        self.assertEqual(lines, [
+            "Failing tests:",
+            "- `tests/test_a.py::test_a` — `tests/test_a.py:7`: AssertionError: mismatch",
+            "  Expected/actual: expected: 1 | actual: 2",
+            "- `tests/test_b.py::test_b`",
+        ])
+
 if __name__ == "__main__":
     unittest.main()
