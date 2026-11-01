@@ -460,11 +460,13 @@ configuration uses a trailing 28-day mean and population standard deviation for
 one of one beyond 3 sigma, two of three beyond 2 sigma, and eight of eight on one
 side of the mean.
 
-Gate-check result rows now carry `failed_tests` parsed from unittest `FAIL:` /
+Gate-check result rows carry `failed_tests` parsed from unittest `FAIL:` /
 `ERROR:` summaries, pytest `FAILED` summaries, and cargo libtest failure
-headers, plus `changed_paths` when at least one test ID was parsed. Earlier
-journal rows named only the failed check and pass/fail result; they did not
-contain a structured, parseable test ID.
+headers, plus `changed_paths` when at least one test ID was parsed. Failed
+`test`, `tests`, `pytest`, and `unittest` check rows also carry
+`failure_summary` for the first parsed test when its evidence is available:
+`test`, `location`, `message`, and a bounded `expected_actual` list. Earlier
+journal rows named only the failed check and pass/fail result.
 
 
 `factory watch` also closes an open, unassigned issue it opened, still at `needs-triage`

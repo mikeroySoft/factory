@@ -316,5 +316,470 @@ test result: FAILED. 0 passed; 1 failed
             "comfyui::tests::status_reports_stopped_when_saved_comfyui_pid_is_gone",
         ])
 
+    def _failed_output(self, output: str, name: str = "tests") -> tuple[str, str, dict]:
+        import json
+
+        script = f"import sys; sys.stdout.write({output!r}); raise SystemExit(1)"
+        toml = TOML + (
+            "\n[[gate.check]]\n"
+            f"name = {json.dumps(name)}\n"
+            f"run = [{json.dumps(sys.executable)}, \"-c\", {json.dumps(script)}]\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repo_with_test(Path(directory), toml)
+            code, out, report = gate(repo, "--skip", "conflict-markers,leak-scan")
+            rows = [
+                json.loads(line)
+                for line in (repo / ".factory" / "events.jsonl").read_text().splitlines()
+            ]
+        self.assertEqual(code, 1, report + out)
+        [result] = [
+            row for row in rows
+            if row.get("stage") == "gate-check"
+            and row.get("kind") == "result"
+            and row.get("check") == name
+        ]
+        return out, report, result
+
+    def test_pytest_summary_uses_full_output_before_tail(self) -> None:
+        output = "\n".join([
+            "____________________________ test_first ____________________________",
+            ">       assert 1 == 2",
+            "E       AssertionError: assert 1 == 2",
+            "E       assert 1 == 2",
+            "tests/test_math.py:12: AssertionError",
+            *(f"later output {index}" for index in range(90)),
+            "FAILED tests/test_math.py::test_first - AssertionError: assert 1 == 2",
+        ])
+
+        _, report, _ = self._failed_output(output)
+
+        summary, tail = report.split("```", 1)
+        self.assertIn("## tests failure\n\nFailing tests:\n", summary)
+        self.assertIn("- `tests/test_math.py::test_first`", summary)
+        self.assertIn("`tests/test_math.py:12`", summary)
+        self.assertIn("AssertionError: assert 1 == 2", summary)
+        self.assertIn("Expected/actual: assert 1 == 2", summary)
+        self.assertNotIn("tests/test_math.py:12", tail)
+
+    def test_unittest_fail_and_error_summaries_include_location_and_message(self) -> None:
+        cases = [
+            (
+                (
+                    "FAIL: test_value (tests.test_math.MathTest.test_value)\n"
+                    "Traceback (most recent call last):\n"
+                    '  File "tests/test_math.py", line 17, in test_value\n'
+                    '    self.assertEqual("expected", "actual")\n'
+                    "AssertionError: 'expected' != 'actual'\n"
+                    "- expected\n"
+                    "+ actual\n"
+                ),
+                "tests.test_math.MathTest.test_value",
+                "tests/test_math.py:17",
+                "AssertionError: 'expected' != 'actual'",
+            ),
+            (
+                (
+                    "ERROR: test_load (tests.test_worker.WorkerTest.test_load)\n"
+                    "Traceback (most recent call last):\n"
+                    '  File "tests/test_worker.py", line 21, in test_load\n'
+                    '    raise RuntimeError("broken")\n'
+                    "RuntimeError: broken\n"
+                ),
+                "tests.test_worker.WorkerTest.test_load",
+                "tests/test_worker.py:21",
+                "RuntimeError: broken",
+            ),
+        ]
+        for output, test_id, location, message in cases:
+            with self.subTest(test_id=test_id):
+                _, report, _ = self._failed_output(output)
+                summary = report.split("```", 1)[0]
+                self.assertIn(f"- `{test_id}`", summary)
+                self.assertIn(f"`{location}`", summary)
+                self.assertIn(message, summary)
+
+    def test_cargo_summary_includes_panic_location_and_assertion(self) -> None:
+        output = """running 1 test
+---- crate::tests::compares_values stdout ----
+thread 'crate::tests::compares_values' panicked at src/lib.rs:42:5:
+assertion `left == right` failed
+  left: 1
+ right: 2
+
+failures:
+    crate::tests::compares_values
+
+test result: FAILED. 0 passed; 1 failed
+"""
+
+        _, report, _ = self._failed_output(output)
+
+        summary = report.split("```", 1)[0]
+        self.assertIn("- `crate::tests::compares_values`", summary)
+        self.assertIn("`src/lib.rs:42`", summary)
+        self.assertIn("assertion `left == right` failed", summary)
+        self.assertIn("left: 1", summary)
+        self.assertIn("right: 2", summary)
+
+    def test_multiple_failures_are_listed_in_report_order_with_first_detail(self) -> None:
+        output = """____________________________ test_first ____________________________
+E       AssertionError: assert 1 == 2
+tests/test_math.py:12: AssertionError
+FAILED tests/test_math.py::test_first - AssertionError: assert 1 == 2
+FAILED tests/test_other.py::test_second - ValueError: bad value
+"""
+
+        _, report, _ = self._failed_output(output)
+
+        summary = report.split("```", 1)[0]
+        first = "tests/test_math.py::test_first"
+        second = "tests/test_other.py::test_second"
+        self.assertLess(summary.index(first), summary.index(second))
+        self.assertEqual(summary.count(first), 1)
+        self.assertEqual(summary.count(second), 1)
+        self.assertIn("`tests/test_math.py:12`", summary)
+
+    def test_unparseable_test_failure_keeps_tail_with_explicit_note(self) -> None:
+        output = "\n".join(f"opaque failure line {index}" for index in range(85))
+
+        _, report, result = self._failed_output(output)
+
+        self.assertIn("Failing tests: could not identify failing tests.\n\n```", report)
+        self.assertNotIn("opaque failure line 4\n", report)
+        self.assertIn("opaque failure line 5\n", report)
+        self.assertNotIn("failure_summary", result)
+
+    def test_journal_records_first_failure_summary_with_location(self) -> None:
+        output = """FAIL: test_value (tests.test_math.MathTest.test_value)
+Traceback (most recent call last):
+  File "tests/test_math.py", line 17, in test_value
+    self.assertEqual("expected", "actual")
+AssertionError: 'expected' != 'actual'
+- expected
++ actual
+"""
+
+        _, _, result = self._failed_output(output)
+
+        self.assertEqual(result["failed_tests"], ["tests.test_math.MathTest.test_value"])
+        self.assertEqual(result["failure_summary"], {
+            "test": "tests.test_math.MathTest.test_value",
+            "location": "tests/test_math.py:17",
+            "message": "AssertionError: 'expected' != 'actual'",
+            "expected_actual": ["- expected", "+ actual"],
+        })
+
+    def test_non_test_failure_report_is_unchanged(self) -> None:
+        _, report, result = self._failed_output("lint exploded\n", name="lint")
+
+        self.assertIn("## lint failure\n```\nlint exploded\n```", report)
+        self.assertNotIn("Failing tests", report)
+        self.assertNotIn("failure_summary", result)
+
+    def test_pytest_summary_is_scoped_to_first_failed_test(self) -> None:
+        output = """________________ ERROR at setup of test_setup _________________
+E       RuntimeError: setup broke
+tests/test_setup.py:5: RuntimeError
+____________________________ test_first ____________________________
+E       AssertionError: assert 1 == 2
+E       assert 1 == 2
+tests/test_math.py:12: AssertionError
+____________________________ test_second ___________________________
+E       ValueError: later failure
+tests/test_other.py:22: ValueError
+FAILED tests/test_math.py::test_first - AssertionError: assert 1 == 2
+FAILED tests/test_other.py::test_second - ValueError: later failure
+"""
+
+        _, report, result = self._failed_output(output)
+
+        summary = report.split("```", 1)[0]
+        self.assertIn("`tests/test_math.py:12`", summary)
+        self.assertIn("AssertionError: assert 1 == 2", summary)
+        self.assertNotIn("tests/test_setup.py:5", summary)
+        self.assertNotIn("RuntimeError: setup broke", summary)
+        self.assertNotIn("tests/test_other.py:22", summary)
+        self.assertNotIn("ValueError: later failure", summary)
+        self.assertEqual(result["failure_summary"]["location"], "tests/test_math.py:12")
+
+    def test_unittest_error_accepts_generic_exception_name(self) -> None:
+        output = """ERROR: test_load (tests.test_worker.WorkerTest.test_load)
+Traceback (most recent call last):
+  File "tests/test_worker.py", line 21, in test_load
+    raise Exception("broken")
+Exception: broken
+"""
+
+        _, report, result = self._failed_output(output)
+
+        summary = report.split("```", 1)[0]
+        self.assertIn("`tests/test_worker.py:21`", summary)
+        self.assertIn("Exception: broken", summary)
+        self.assertEqual(result["failure_summary"]["message"], "Exception: broken")
+
+    def test_mutation_failure_with_test_ids_is_unchanged(self) -> None:
+        output = """FAIL: test_value (tests.test_math.MathTest.test_value)
+Traceback (most recent call last):
+  File "tests/test_math.py", line 17, in test_value
+    self.assertEqual(1, 2)
+AssertionError: 1 != 2
+"""
+
+        _, report, result = self._failed_output(output, name="mutation")
+
+        self.assertIn(f"## mutation failure\n```\n{output}```", report)
+        self.assertNotIn("Failing tests", report)
+        self.assertNotIn("failure_summary", result)
+        self.assertEqual(result["failed_tests"], ["tests.test_math.MathTest.test_value"])
+
+    def test_pytest_helper_frame_keeps_terminal_failure_evidence(self) -> None:
+        output = """____________________________ test_helper ____________________________
+tests/test_math.py:12: in test_helper
+    compare_values()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests/helpers.py:27: in compare_values
+>       raise RuntimeError("broken")
+E       RuntimeError: broken
+FAILED tests/test_math.py::test_helper - RuntimeError: broken
+"""
+
+        _, report, result = self._failed_output(output)
+
+        self.assertIn("`tests/helpers.py:27`", report)
+        self.assertIn("RuntimeError: broken", report)
+        self.assertEqual(result["failure_summary"]["location"], "tests/helpers.py:27")
+
+    def test_pytest_nested_parameter_id_preserves_double_colon(self) -> None:
+        output = """________________ Outer.Inner.test_value[pkg::symbol] _________________
+>       raise ValueError("bad symbol")
+E       ValueError: bad symbol
+tests/test_symbols.py:31: ValueError
+FAILED tests/test_symbols.py::Outer::Inner::test_value[pkg::symbol] - ValueError: bad symbol
+"""
+
+        _, report, result = self._failed_output(output)
+
+        test_id = "tests/test_symbols.py::Outer::Inner::test_value[pkg::symbol]"
+        self.assertIn(f"- `{test_id}` — `tests/test_symbols.py:31`", report)
+        self.assertEqual(result["failure_summary"]["test"], test_id)
+
+    def test_unittest_chained_error_uses_terminal_exception_and_location(self) -> None:
+        output = """ERROR: test_wrap (tests.test_worker.WorkerTest.test_wrap)
+Traceback (most recent call last):
+  File "factory/worker.py", line 8, in load
+    raise ValueError("root")
+ValueError: root
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "tests/test_worker.py", line 44, in test_wrap
+    raise RuntimeError("wrapped") from exc
+RuntimeError: wrapped
+"""
+
+        _, report, result = self._failed_output(output)
+
+        self.assertIn("`tests/test_worker.py:44`", report)
+        self.assertIn("RuntimeError: wrapped", report)
+        self.assertNotIn("`factory/worker.py:8`", report)
+        self.assertEqual(result["failure_summary"]["location"], "tests/test_worker.py:44")
+        self.assertEqual(result["failure_summary"]["message"], "RuntimeError: wrapped")
+
+    def test_pytest_message_uses_error_then_source_fallback(self) -> None:
+        from factory import gate as factory_gate
+
+        cases = [
+            (
+                """____________________________ test_value ____________________________
+>       assert 1 == 2
+E       AssertionError: values differ
+E       assert 1 == 2
+tests/test_value.py:9: AssertionError
+""",
+                "AssertionError: values differ",
+                ["assert 1 == 2"],
+            ),
+            (
+                """____________________________ test_value ____________________________
+>       raise RuntimeError("broken")
+tests/test_value.py:9: RuntimeError
+""",
+                'raise RuntimeError("broken")',
+                [],
+            ),
+        ]
+        for output, message, expected_actual in cases:
+            with self.subTest(message=message):
+                summary = factory_gate.first_failure_summary(
+                    output, "tests/test_value.py::test_value"
+                )
+                self.assertEqual(summary, {
+                    "test": "tests/test_value.py::test_value",
+                    "location": "tests/test_value.py:9",
+                    "message": message,
+                    "expected_actual": expected_actual,
+                })
+
+    def test_failure_summary_details_only_the_first_test(self) -> None:
+        from factory import gate as factory_gate
+
+        lines = factory_gate.failure_summary_lines(
+            ["tests/test_a.py::test_a", "tests/test_b.py::test_b"],
+            {
+                "location": "tests/test_a.py:7",
+                "message": "AssertionError: mismatch",
+                "expected_actual": ["expected: 1", "actual: 2"],
+            },
+        )
+
+        self.assertEqual(lines, [
+            "Failing tests:",
+            "- `tests/test_a.py::test_a` — `tests/test_a.py:7`: AssertionError: mismatch",
+            "  Expected/actual: expected: 1 | actual: 2",
+            "- `tests/test_b.py::test_b`",
+        ])
+
+    def test_pytest_captured_output_cannot_replace_failure_evidence(self) -> None:
+        for heading in (
+            "---------------- Captured stdout call ----------------",
+            "---------------- Captured stderr call ----------------",
+            "---------------- Captured log call -------------------",
+            "================ short test summary info =============",
+        ):
+            with self.subTest(heading=heading):
+                output = f"""____________________________ test_first ____________________________
+>       assert 1 == 2
+E       AssertionError: assert 1 == 2
+tests/test_math.py:12: AssertionError
+{heading}
+cache.py:99: loading
+E       KeyError: captured output, not the failure
+expected: captured value
+FAILED tests/test_math.py::test_first - AssertionError: assert 1 == 2
+"""
+
+                _, report, result = self._failed_output(output)
+
+                summary = report.split("```", 1)[0]
+                self.assertIn("`tests/test_math.py:12`: AssertionError: assert 1 == 2", summary)
+                self.assertNotIn("cache.py:99", summary)
+                self.assertEqual(result["failure_summary"], {
+                    "test": "tests/test_math.py::test_first",
+                    "location": "tests/test_math.py:12",
+                    "message": "AssertionError: assert 1 == 2",
+                    "expected_actual": ["assert 1 == 2"],
+                })
+
+    def test_unittest_assertion_ignores_embedded_subprocess_traceback(self) -> None:
+        output = """FAIL: test_run (tests.test_math.MathTest.test_run)
+Traceback (most recent call last):
+  File "tests/test_math.py", line 12, in test_run
+    self.assertEqual(proc.returncode, 0, proc.stderr)
+AssertionError: 1 != 0 : Traceback (most recent call last):
+  File "factory/cli.py", line 99, in main
+    raise KeyError("subprocess")
+KeyError: 'subprocess'
+"""
+
+        _, report, result = self._failed_output(output)
+
+        summary = report.split("```", 1)[0]
+        message = "AssertionError: 1 != 0 : Traceback (most recent call last):"
+        self.assertIn(f"`tests/test_math.py:12`: {message}", summary)
+        self.assertNotIn("factory/cli.py:99", summary)
+        self.assertEqual(result["failure_summary"]["location"], "tests/test_math.py:12")
+        self.assertEqual(result["failure_summary"]["message"], message)
+
+    def test_pytest_assertion_ignores_embedded_subprocess_exception(self) -> None:
+        output = """____________________________ test_run ____________________________
+>       assert proc.returncode == 0, proc.stderr
+E       AssertionError: Traceback (most recent call last):
+E         File "factory/cli.py", line 99, in main
+E           raise KeyError("subprocess")
+E       KeyError: 'subprocess'
+E       assert 1 == 0
+tests/test_math.py:12: AssertionError
+FAILED tests/test_math.py::test_run - AssertionError: Traceback
+"""
+
+        _, report, result = self._failed_output(output)
+
+        summary = report.split("```", 1)[0]
+        message = "AssertionError: Traceback (most recent call last):"
+        self.assertIn(f"`tests/test_math.py:12`: {message}", summary)
+        self.assertNotIn("KeyError", summary)
+        self.assertEqual(result["failure_summary"]["location"], "tests/test_math.py:12")
+        self.assertEqual(result["failure_summary"]["message"], message)
+
+    def test_unittest_chains_keep_test_frame_before_terminal_exception(self) -> None:
+        for separator in (
+            "The above exception was the direct cause of the following exception:",
+            "During handling of the above exception, another exception occurred:",
+        ):
+            with self.subTest(separator=separator):
+                output = f"""ERROR: test_load (tests.test_math.MathTest.test_load)
+Traceback (most recent call last):
+  File "tests/test_math.py", line 7, in test_load
+    raise ValueError("root")
+ValueError: root
+
+{separator}
+
+Traceback (most recent call last):
+  File "tests/test_math.py", line 12, in test_load
+    subprocess.run(command, check=True)
+  File "/usr/lib/python3.13/subprocess.py", line 571, in run
+    raise CalledProcessError(returncode, process.args, stderr)
+subprocess.CalledProcessError: Command returned non-zero exit status 1.
+Traceback (most recent call last):
+  File "factory/cli.py", line 99, in main
+    raise KeyError("embedded")
+KeyError: 'embedded'
+"""
+
+                _, report, result = self._failed_output(output)
+
+                summary = report.split("```", 1)[0]
+                message = "subprocess.CalledProcessError: Command returned non-zero exit status 1."
+                self.assertIn(f"`tests/test_math.py:12`: {message}", summary)
+                self.assertNotIn("ValueError", summary)
+                self.assertNotIn("KeyError", summary)
+                self.assertEqual(result["failure_summary"]["location"], "tests/test_math.py:12")
+                self.assertEqual(result["failure_summary"]["message"], message)
+
+    def test_pytest_chains_use_terminal_exception_and_test_frame(self) -> None:
+        for separator in (
+            "The above exception was the direct cause of the following exception:",
+            "During handling of the above exception, another exception occurred:",
+        ):
+            with self.subTest(separator=separator):
+                output = f"""____________________________ test_load ____________________________
+>       raise ValueError("root")
+E       ValueError: root
+tests/test_math.py:7: ValueError
+
+{separator}
+
+tests/test_math.py:12: in test_load
+    subprocess.run(command, check=True)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+/usr/lib/python3.13/subprocess.py:571: in run
+>       raise CalledProcessError(returncode, process.args, stderr)
+E       subprocess.CalledProcessError: Command returned non-zero exit status 1.
+FAILED tests/test_math.py::test_load - subprocess.CalledProcessError: Command failed
+"""
+
+                _, report, result = self._failed_output(output)
+
+                summary = report.split("```", 1)[0]
+                message = "subprocess.CalledProcessError: Command returned non-zero exit status 1."
+                self.assertIn(f"`tests/test_math.py:12`: {message}", summary)
+                self.assertNotIn("ValueError", summary)
+                self.assertNotIn("`/usr/lib/", summary)
+                self.assertEqual(result["failure_summary"]["location"], "tests/test_math.py:12")
+                self.assertEqual(result["failure_summary"]["message"], message)
+
 if __name__ == "__main__":
     unittest.main()

@@ -121,6 +121,189 @@ def failed_test_ids(output: str) -> list[str]:
     return found
 
 
+_EXCEPTION_LINE = re.compile(r"^(?:[A-Za-z_]\w*\.)*[A-Z]\w*(?::|$)")
+_PYTEST_HEADING = re.compile(r"^_+\s+.*[A-Za-z0-9].*\s+_+$")
+
+
+def _failure_block(lines: list[str], test_id: str) -> tuple[str, list[str]]:
+    unittest_heading = re.compile(
+        rf"^(?:FAIL|ERROR): \S+ \({re.escape(test_id)}\)"
+    )
+    cargo_heading = re.compile(rf"^---- {re.escape(test_id)} stdout ----$")
+    for index, line in enumerate(lines):
+        if unittest_heading.match(line):
+            end = next((
+                later for later in range(index + 1, len(lines))
+                if re.match(r"^(?:FAIL|ERROR): ", lines[later])
+            ), len(lines))
+            return "unittest", lines[index + 1:end]
+        if cargo_heading.match(line):
+            end = next((
+                later for later in range(index + 1, len(lines))
+                if re.match(r"^---- [^\s]+ stdout ----$", lines[later])
+            ), len(lines))
+            return "cargo", lines[index:end]
+
+    node = test_id.partition("::")[2]
+    name, bracket, parameter = node.partition("[")
+    pytest_name = name.replace("::", ".") + bracket + parameter
+    pytest_heading = re.compile(rf"^_+\s+{re.escape(pytest_name)}\s+_+$")
+    for index, line in enumerate(lines):
+        if pytest_heading.match(line):
+            end = next((
+                later for later in range(index + 1, len(lines))
+                if _PYTEST_HEADING.match(lines[later])
+                or re.match(r"^(?:-+\s+Captured |=+\s)", lines[later])
+            ), len(lines))
+            return "pytest", lines[index:end]
+    return "pytest", []
+
+
+def _terminal_exception_block(block: list[str]) -> list[str]:
+    start = 0
+    for index, line in enumerate(block):
+        if line in {
+            "The above exception was the direct cause of the following exception:",
+            "During handling of the above exception, another exception occurred:",
+        }:
+            start = index + 1
+    return block[start:]
+
+
+def _test_frame(path: str, test_id: str) -> bool:
+    test_file = (
+        test_id.partition("::")[0] if "::" in test_id
+        else test_id.rsplit(".", 2)[0].replace(".", "/") + ".py"
+    )
+    directory = Path(test_file).parent
+    parent = Path(path).parent
+    return Path(path).name == Path(test_file).name or (
+        directory != Path(".")
+        and (parent == directory or str(parent).endswith(f"/{directory}"))
+    )
+
+
+def _failure_location(
+    kind: str, block: list[str], test_id: str
+) -> tuple[str | None, int]:
+    patterns = {
+        "unittest": r'File "([^"]+)", line (\d+)',
+        "cargo": r"panicked at (.+?):(\d+)(?::\d+)?:$",
+        "pytest": r"^(\S.*\.py):(\d+)(?::\d+)?:",
+    }
+    if kind == "unittest":
+        end = next((
+            index for index, line in enumerate(block) if _EXCEPTION_LINE.match(line)
+        ), len(block))
+        block = block[:end]
+    location = None, 0
+    for index in reversed(range(len(block))):
+        if match := re.search(patterns[kind], block[index]):
+            candidate = f"{match[1]}:{match[2]}", index
+            if location[0] is None:
+                location = candidate
+            if kind == "cargo" or _test_frame(match[1], test_id):
+                return candidate
+    return location
+
+
+def _pytest_source_message(block: list[str]) -> str | None:
+    for line in block:
+        if match := re.match(r"^>\s+(.*)", line):
+            source = match[1]
+            if "assert" in source or "raise" in source:
+                return source.strip()
+    return None
+
+
+def _pytest_failure_message(block: list[str]) -> str | None:
+    errors = []
+    for line in block:
+        if match := re.match(r"^E\s+(.*)", line):
+            errors.append(match[1].strip())
+    for line in errors:
+        if _EXCEPTION_LINE.match(line):
+            return line
+    for line in errors:
+        if "assert" in line:
+            return line
+    return _pytest_source_message(block)
+
+
+def _failure_message(kind: str, block: list[str], location_index: int) -> str | None:
+    match kind:
+        case "cargo":
+            return next((
+                line.strip() for line in block[location_index + 1:] if line.strip()
+            ), None)
+        case "unittest":
+            return next((
+                line.strip() for line in block[location_index + 1:]
+                if _EXCEPTION_LINE.match(line)
+            ), None)
+        case _:
+            return _pytest_failure_message(block)
+
+
+def _expected_actual_line(line: str, message: str) -> str | None:
+    marked = re.match(r"^[E>]\s+(.*)", line)
+    candidate = marked[1].strip() if marked else line.strip()
+    if candidate == message:
+        return None
+    if candidate.startswith(("- ", "+ ")):
+        return candidate
+    if candidate.lower().startswith(("expected:", "actual:", "left:", "right:")):
+        return candidate
+    if marked and (" == " in candidate or " != " in candidate):
+        return candidate
+    return None
+
+
+def _expected_actual(block: list[str], message: str) -> list[str]:
+    excerpt = []
+    for line in block:
+        candidate = _expected_actual_line(line, message)
+        if candidate and candidate not in excerpt:
+            excerpt.append(candidate)
+            if len(excerpt) == 4:
+                break
+    return excerpt
+
+
+def first_failure_summary(output: str, test_id: str) -> dict | None:
+    """Location, message and expected/actual excerpt for the first failed test."""
+    kind, block = _failure_block(output.splitlines(), test_id)
+    if kind != "cargo":
+        block = _terminal_exception_block(block)
+    location, location_index = _failure_location(kind, block, test_id)
+    message = _failure_message(kind, block, location_index)
+    if location is None or message is None:
+        return None
+    return {
+        "test": test_id,
+        "location": location,
+        "message": message,
+        "expected_actual": _expected_actual(block, message),
+    }
+
+
+def failure_summary_lines(
+    failed_tests: list[str], summary: dict | None
+) -> list[str]:
+    if not failed_tests:
+        return ["Failing tests: could not identify failing tests."]
+    lines = ["Failing tests:"]
+    for test_id in failed_tests:
+        entry = f"- `{test_id}`"
+        if summary is not None:
+            entry += f" — `{summary['location']}`: {summary['message']}"
+        lines.append(entry)
+        if summary and summary["expected_actual"]:
+            lines.append("  Expected/actual: " + " | ".join(summary["expected_actual"]))
+        summary = None
+    return lines
+
+
 def changed_paths(base: str) -> list[str]:
     proc = timed(["git", "diff", "--name-only", "-z", f"{base}...HEAD"])
     return proc.stdout.rstrip("\0").split("\0") if proc.returncode == 0 and proc.stdout else []
@@ -743,6 +926,7 @@ def execute(args: argparse.Namespace, execution) -> int:
         if any(status == "FAIL" for _, status, _ in results)
         else ("completed", None)
     )
+    test_failures: dict[str, tuple[list[str], dict | None]] = {}
     gpu_lock = None
     try:
         for name, fn in checks:
@@ -759,7 +943,17 @@ def execute(args: argparse.Namespace, execution) -> int:
                 if not passed and check.outcome == "completed":
                     check.outcome = "product_feedback"
                     check.reason = "check_failed"
-                fields = {"failed_tests": failed_test_ids(output)} if not passed else {}
+                fields = {}
+                if not passed:
+                    failed_tests = failed_test_ids(output)
+                    fields["failed_tests"] = failed_tests
+                    if name.casefold() in {"test", "tests", "pytest", "unittest"}:
+                        summary = first_failure_summary(
+                            output, failed_tests[0]
+                        ) if failed_tests else None
+                        test_failures[name] = failed_tests, summary
+                        if summary is not None:
+                            fields["failure_summary"] = summary
                 if fields.get("failed_tests"):
                     fields["changed_paths"] = changed_paths(args.base)
                 check.emit("result", check=name, passed=passed, **fields)
@@ -782,7 +976,11 @@ def execute(args: argparse.Namespace, execution) -> int:
         # them only through this report, so keep their output when they pass too.
         if status == "FAIL" or (args.tier == "pr" and status == "PASS" and output.strip()):
             tail = "\n".join(output.splitlines()[-TAIL_LINES:])
-            lines += ["", f"## {name} {'failure' if status == 'FAIL' else 'output'}", "```", tail, "```"]
+            lines += ["", f"## {name} {'failure' if status == 'FAIL' else 'output'}"]
+            if name in test_failures:
+                failed_tests, summary = test_failures[name]
+                lines += ["", *failure_summary_lines(failed_tests, summary), ""]
+            lines += ["```", tail, "```"]
     report = Path(args.report)
     report.parent.mkdir(parents=True, exist_ok=True)
     report.write_text("\n".join(lines) + "\n")
