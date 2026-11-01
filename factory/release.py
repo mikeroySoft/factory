@@ -237,7 +237,7 @@ def soak_metrics(
     end = max((_at(row["at"]) for row in candidate_passes), default=None)
     active = [
         row for row in rows
-        if start is not None and end is not None and start <= _at(row["at"]) <= end
+        if start is not None and start <= _at(row["at"]) <= now
     ]
     terminals = {
         row["ticket"] for row in active
@@ -862,7 +862,7 @@ def _build_promotion(
     branch: str,
     metrics: dict[str, float | int | None],
     bar: dict[str, float | int] | None,
-) -> str:
+) -> tuple[str, bool]:
     temporary, worktree = _temporary_worktree(cfg, odd["sha"])
     try:
         changelog = worktree / "CHANGELOG.md"
@@ -883,7 +883,7 @@ def _build_promotion(
             cfg, worktree, odd["tag"].removeprefix("v"), version
         )
         if not gate_passes(worktree):
-            return _reason("factory gate --tier release failed", metrics, bar)
+            return _reason("factory gate --tier release failed", metrics, bar), False
         _git(
             worktree, "add", cfg.release_version_file, "CHANGELOG.md",
             "README.md", "docs/index.html",
@@ -894,8 +894,8 @@ def _build_promotion(
         )
         if pushed.returncode:
             detail = pushed.stderr.strip().splitlines()[-1] if pushed.stderr.strip() else "git push failed"
-            return _reason(f"promotion branch push failed: {detail}", metrics, bar)
-        return _reason(f"built promotion branch {branch}; waiting for CI", metrics, bar)
+            return _reason(f"promotion branch push failed: {detail}", metrics, bar), False
+        return _reason(f"built promotion branch {branch}; waiting for CI", metrics, bar), True
     finally:
         _remove_worktree(cfg, temporary, worktree)
 
@@ -1184,9 +1184,12 @@ def _run_channels(cfg: config.Config, dry_run: bool, open_pr: bool) -> str:
             _record_hold(cfg, reason, evidence, comparison or WORST)
             activity.append(reason)
         elif commit is None:
-            return report(_build_promotion(
+            reason, built = _build_promotion(
                 cfg, odd, even, public_version, public_branch, evidence, bar
-            ))
+            )
+            if built:
+                return report(reason)
+            activity.append(reason)
         elif not ci_passes(cfg, commit):
             activity.append(_reason("waiting for CI on promotion commit", evidence, bar))
         else:
