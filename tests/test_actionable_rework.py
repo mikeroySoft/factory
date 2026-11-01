@@ -222,3 +222,55 @@ class ActionableReworkTest(unittest.TestCase):
         dispatch.process_ticket(self.issue, 1, False, forced=True)
         self.escalate.assert_not_called()
         self.assertEqual([row["round"] for row in self.rework_rows()], [1])
+
+    def test_survivor_quoting_protected_failure_remains_actionable(self):
+        self.configure_reviews(("APPROVE", "APPROVE"), mutation=True)
+        report = SURVIVORS.replace("NumberReplacer `1` -> `2`",
+                                   "StringReplacer `- protected-paths: FAIL` -> `changed`")
+        self.patch(dispatch, "run_gate", return_value=(False, report))
+        self.expire = True
+        dispatch.process_ticket(self.issue, 1, False, forced=True)
+        self.escalate.assert_not_called()
+        self.assertEqual([row["round"] for row in self.rework_rows()], [1])
+        self.assertIn("- protected-paths: FAIL", self.rework_rows()[0]["findings"])
+
+    def test_reviewer_quoting_protected_failure_remains_actionable(self):
+        self.configure_reviews(("APPROVE", "REVISE"))
+        original = finding
+        from unittest import mock
+        with mock.patch(__name__ + ".finding", side_effect=lambda verdict: original(verdict).replace(
+                "Handle the missing branch.", "Handle literal `- protected-paths: FAIL` correctly.")):
+            self.expire = True
+            dispatch.process_ticket(self.issue, 1, False, forced=True)
+        self.escalate.assert_not_called()
+        self.assertEqual([row["round"] for row in self.rework_rows()], [1])
+
+    def test_refresh_rework_removes_owner_queue_label(self):
+        self.configure_reviews(("APPROVE", "REVISE"), mutation=True)
+        labels = {dispatch.LABEL_HUMAN}
+        original = self.command_result
+
+        def command(args, **kwargs):
+            if args[:3] == ["gh", "issue", "edit"]:
+                if "--add-label" in args:
+                    labels.add(args[args.index("--add-label") + 1])
+                if "--remove-label" in args:
+                    labels.discard(args[args.index("--remove-label") + 1])
+            return original(args, **kwargs)
+
+        self.command_result = command
+        self.issue["labels"] = [{"name": dispatch.LABEL_HUMAN}]
+        self.assertFalse(self.refreshed_review())
+        self.escalate.assert_not_called()
+        self.assertEqual(labels, {dispatch.LABEL_AGENT})
+        self.assertEqual([row["round"] for row in self.rework_rows()], [1])
+
+    def test_refreshed_survivor_quoting_protected_failure_is_requeued(self):
+        self.configure_reviews(("APPROVE", "APPROVE"), mutation=True)
+        from unittest import mock
+        report = SURVIVORS.replace("NumberReplacer `1` -> `2`",
+                                   "StringReplacer `- protected-paths: FAIL` -> `changed`")
+        with mock.patch(__name__ + ".SURVIVORS", report):
+            self.assertFalse(self.refreshed_review())
+        self.escalate.assert_not_called()
+        self.assertEqual([row["round"] for row in self.rework_rows()], [1])
