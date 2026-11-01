@@ -775,13 +775,13 @@
     host.querySelector('[data-trace-zoom-out]')?.addEventListener('click', () => zoomGraph(.8));
     host.querySelector('[data-trace-fit]')?.addEventListener('click', fitGraph);
     host.querySelector('[data-trace-fullscreen]')?.addEventListener('click', () => { void toggleFullscreen(board); });
-    board?.addEventListener('wheel', event => {
+    board?.addEventListener?.('wheel', event => {
       if (event.target.closest('[data-trace-viewport-controls]')) return;
       const rect = canvas.getBoundingClientRect();
       zoomGraph(Math.exp(-event.deltaY * .0015), {x:event.clientX - rect.left,y:event.clientY - rect.top});
       event.preventDefault();
     }, {passive:false});
-    board?.addEventListener('pointerdown', event => {
+    board?.addEventListener?.('pointerdown', event => {
       if (event.button !== 0 || event.target.closest('[data-trace-node],[data-trace-edge],[data-trace-viewport-controls]')) return;
       board.focus({preventScroll:true});
       const start = {x:event.clientX,y:event.clientY,viewport};
@@ -809,7 +809,7 @@
       board.addEventListener('pointermove', move); board.addEventListener('pointerup', stop); board.addEventListener('pointercancel', stop);
       event.preventDefault();
     });
-    board?.addEventListener('keydown', event => {
+    board?.addEventListener?.('keydown', event => {
       const key = viewportShortcut(event);
       if (!key) return;
       if (key === '+' || key === '=') zoomGraph(1.25);
