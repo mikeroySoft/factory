@@ -239,6 +239,31 @@ def _review_command(prompt: str, reviewer: list[str] | None = None) -> tuple[lis
     return command, True
 
 
+def _make_tree_writable(root: Path) -> None:
+    def make_writable(path: Path) -> None:
+        if not path.is_symlink():
+            with suppress(OSError):
+                path.chmod(path.stat().st_mode | 0o200)
+
+    make_writable(root)
+    for path in root.rglob("*"):
+        make_writable(path)
+
+
+def _sweep_stale_factory_tempdirs() -> None:
+    cutoff = time.time() - 24 * 60 * 60
+    root = Path(tempfile.gettempdir())
+    for pattern in ("factory-review-*", "factory-gate-*"):
+        for path in root.glob(pattern):
+            try:
+                stale = not path.is_symlink() and path.is_dir() and path.stat().st_mtime < cutoff
+            except OSError:
+                continue
+            if stale:
+                _make_tree_writable(path)
+                shutil.rmtree(path, ignore_errors=True)
+
+
 def _run_reviewer(
     command: list[str],
     source: Path | None = None,
@@ -255,25 +280,23 @@ def _run_reviewer(
     with tempfile.TemporaryDirectory(prefix="factory-review-") as tmp, \
             without_github(clean) as env:
         review_dir = Path(tmp)
-        if source is not None:
-            snapshot = review_dir / "snapshot"
-            snapshot.mkdir()
-            archive = subprocess.run(
-                ["git", "archive", rev], cwd=source, check=True, capture_output=True, env=clean,
-            ).stdout
-            subprocess.run(
-                ["tar", "-x", "-C", str(snapshot)], input=archive, check=True, env=clean,
-            )
-            for path in [snapshot, *snapshot.rglob("*")]:
-                if not path.is_symlink():
-                    path.chmod(path.stat().st_mode & ~0o222)
-            (review_dir / "review.diff").write_text(diff)
         try:
+            if source is not None:
+                snapshot = review_dir / "snapshot"
+                snapshot.mkdir()
+                archive = subprocess.run(
+                    ["git", "archive", rev], cwd=source, check=True, capture_output=True, env=clean,
+                ).stdout
+                subprocess.run(
+                    ["tar", "-x", "-C", str(snapshot)], input=archive, check=True, env=clean,
+                )
+                for path in [snapshot, *snapshot.rglob("*")]:
+                    if not path.is_symlink():
+                        path.chmod(path.stat().st_mode & ~0o222)
+                (review_dir / "review.diff").write_text(diff)
             return run(command, cwd=review_dir, check=False, env=env, timeout=timeout)
         finally:
-            for path in review_dir.rglob("*"):
-                if path.is_dir() and not path.is_symlink():
-                    path.chmod(0o755)
+            _make_tree_writable(review_dir)
 
 
 def _with_transcript(
@@ -4420,6 +4443,8 @@ def main(argv: list[str]) -> int:
                 execution.emit("result", paths=dirty)
             return 1
     configure(config.load())  # from the tree now pinned at origin/<main>
+    if not args.dry_run:
+        _sweep_stale_factory_tempdirs()
     if args.budget_min is None:
         args.budget_min = cfg.budget_min
 

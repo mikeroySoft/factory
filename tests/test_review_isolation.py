@@ -116,6 +116,150 @@ class ReviewIsolationTest(unittest.TestCase):
         self.assertIn("CalledProcessError", findings)
         self.assertFalse(self.sentinel.exists())
 
+    def test_invalid_snapshot_archive_fails_closed_and_removes_tempdir(self) -> None:
+        scratch = self.tmp / "review-tmp"
+        scratch.mkdir()
+        real_run = subprocess.run
+
+        def run(command, *args, **kwargs):
+            if command[:2] == ["git", "archive"]:
+                return subprocess.CompletedProcess(command, 0, b"not a tar archive\n", b"")
+            return real_run(command, *args, **kwargs)
+
+        with mock.patch.object(dispatch.tempfile, "tempdir", str(scratch)), \
+                mock.patch.object(dispatch.subprocess, "run", side_effect=run):
+            verdict, findings = dispatch.review(self.wt, 7, "PASS", self.head)
+
+        self.assertEqual(verdict, "REVISE")
+        self.assertIn("CalledProcessError", findings)
+        self.assertFalse(self.out.exists(), "reviewer probe ran with an invalid snapshot")
+        self.assertFalse(self.sentinel.exists())
+        self.assertEqual(list(scratch.iterdir()), [])
+
+    def test_snapshot_setup_failure_removes_read_only_tree(self) -> None:
+        scratch = self.tmp / "review-tmp"
+        scratch.mkdir()
+        write_text = Path.write_text
+
+        def fail_diff(path, *args, **kwargs):
+            if path.name == "review.diff":
+                raise OSError("write failed")
+            return write_text(path, *args, **kwargs)
+
+        with mock.patch.object(dispatch.tempfile, "tempdir", str(scratch)), \
+                mock.patch.object(Path, "write_text", fail_diff), \
+                mock.patch.object(
+                    dispatch, "_make_tree_writable", wraps=dispatch._make_tree_writable,
+                ) as writable, \
+                self.assertRaisesRegex(OSError, "write failed"):
+            dispatch._run_reviewer(
+                [sys.executable, "-c", ""], self.wt, self.head, "diff",
+            )
+        writable.assert_called_once()
+        self.assertEqual(list(scratch.iterdir()), [])
+
+    def test_stale_read_only_snapshot_is_swept(self) -> None:
+        scratch = self.tmp / "review-tmp"
+        snapshot = scratch / "factory-review-stale" / "snapshot"
+        snapshot.mkdir(parents=True)
+        source = snapshot / "source.py"
+        source.write_text("pass\n")
+        source.chmod(0o444)
+        snapshot.chmod(0o555)
+        os.utime(snapshot.parent, (0, 0))
+
+        with mock.patch.object(dispatch.tempfile, "tempdir", str(scratch)):
+            dispatch._sweep_stale_factory_tempdirs()
+
+        self.assertFalse(snapshot.parent.exists())
+
+    def test_make_tree_writable_changes_only_owner_write_permission(self) -> None:
+        tree = self.tmp / "read-only"
+        tree.mkdir()
+        source = tree / "source.py"
+        source.write_text("pass\n")
+        tree.chmod(0o555)
+        source.chmod(0o444)
+
+        dispatch._make_tree_writable(tree)
+
+        self.assertEqual(tree.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(source.stat().st_mode & 0o777, 0o644)
+
+    def test_snapshot_sweep_selects_only_directories_older_than_one_day(self) -> None:
+        scratch = self.tmp / "review-tmp"
+        scratch.mkdir()
+        now = 2_000_000
+
+        def snapshot(name: str, age_seconds: float) -> Path:
+            path = scratch / f"factory-review-{name}"
+            path.mkdir()
+            modified = now - age_seconds
+            os.utime(path, (modified, modified))
+            return path
+
+        day = 24 * 60 * 60
+        stale = snapshot("stale", day + 1)
+        boundary = snapshot("boundary", day)
+        recent = snapshot("recent", day - 1)
+        unreadable = snapshot("unreadable", day * 2)
+        target = scratch / "link-target"
+        target.mkdir()
+        link = scratch / "factory-review-link"
+        link.symlink_to(target, target_is_directory=True)
+        is_symlink = Path.is_symlink
+
+        def fail_unreadable(path: Path) -> bool:
+            if path == unreadable:
+                raise OSError("stat failed")
+            return is_symlink(path)
+
+        with mock.patch.object(dispatch.tempfile, "tempdir", str(scratch)), \
+                mock.patch.object(dispatch.time, "time", return_value=now), \
+                mock.patch.object(Path, "is_symlink", fail_unreadable), \
+                mock.patch.object(dispatch, "_make_tree_writable") as writable, \
+                mock.patch.object(dispatch.shutil, "rmtree") as rmtree:
+            dispatch._sweep_stale_factory_tempdirs()
+
+        writable.assert_called_once_with(stale)
+        rmtree.assert_called_once_with(stale, ignore_errors=True)
+        self.assertTrue(boundary.exists())
+        self.assertTrue(recent.exists())
+        self.assertTrue(unreadable.exists())
+        self.assertTrue(link.is_symlink())
+
+    def test_reviewer_snapshot_is_read_only_and_archive_failure_checked(self) -> None:
+        subprocess_run = dispatch.subprocess.run
+        chmod = Path.chmod
+        original_modes = {}
+
+        def checked_run(command, *args, **kwargs):
+            if command[:2] == ["git", "archive"]:
+                self.assertIs(kwargs.get("check"), True)
+            return subprocess_run(command, *args, **kwargs)
+
+        def record_chmod(path: Path, mode: int) -> None:
+            original_modes.setdefault(path, path.stat().st_mode & 0o777)
+            chmod(path, mode)
+
+        def inspect_snapshot(command, **kwargs):
+            snapshot = Path(kwargs["cwd"]) / "snapshot"
+            for path in [snapshot, *snapshot.rglob("*")]:
+                self.assertEqual(
+                    path.stat().st_mode & 0o777,
+                    original_modes[path] & ~0o222,
+                )
+            return subprocess.CompletedProcess(command, 0)
+
+        with mock.patch.object(dispatch.subprocess, "run", side_effect=checked_run), \
+                mock.patch.object(Path, "chmod", record_chmod), \
+                mock.patch.object(dispatch, "run", side_effect=inspect_snapshot):
+            result = dispatch._run_reviewer(
+                [sys.executable, "-c", ""], self.wt, self.head, "diff",
+            )
+
+        self.assertEqual(result.returncode, 0)
+
     def test_failed_external_diff_fails_closed(self) -> None:
         failure = subprocess.CalledProcessError(1, ["gh", "api"])
         with mock.patch.object(dispatch, "run", side_effect=failure):
