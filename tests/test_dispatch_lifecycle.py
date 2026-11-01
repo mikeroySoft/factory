@@ -594,6 +594,10 @@ class LocalCLI(unittest.TestCase):
             self.assertIn("FileNotFoundError", row["reason"])
         exits = {r["stage"]: r["outcome"] for r in rows if r["kind"] == "exit"}
         self.assertEqual(exits["ticket"], "project_escalation")
+        [escalation] = [
+            e for e in lifecycle.read_events(self.events) if e.get("event") == "escalate"
+        ]
+        self.assertEqual(escalation["code"], "reviewer_unavailable")
         self.assertEqual(exits["dispatcher"], "completed")
 
     def assert_reviewer_unavailable(self, script: str, diagnostic: str) -> None:
