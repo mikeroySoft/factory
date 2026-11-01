@@ -533,5 +533,59 @@ AssertionError: 1 != 2
         self.assertNotIn("failure_summary", result)
         self.assertEqual(result["failed_tests"], ["tests.test_math.MathTest.test_value"])
 
+    def test_pytest_helper_frame_keeps_terminal_failure_evidence(self) -> None:
+        output = """____________________________ test_helper ____________________________
+tests/test_math.py:12: in test_helper
+    compare_values()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests/helpers.py:27: in compare_values
+>       raise RuntimeError("broken")
+E       RuntimeError: broken
+FAILED tests/test_math.py::test_helper - RuntimeError: broken
+"""
+
+        _, report, result = self._failed_output(output)
+
+        self.assertIn("`tests/helpers.py:27`", report)
+        self.assertIn("RuntimeError: broken", report)
+        self.assertEqual(result["failure_summary"]["location"], "tests/helpers.py:27")
+
+    def test_pytest_nested_parameter_id_preserves_double_colon(self) -> None:
+        output = """________________ Outer.Inner.test_value[pkg::symbol] _________________
+>       raise ValueError("bad symbol")
+E       ValueError: bad symbol
+tests/test_symbols.py:31: ValueError
+FAILED tests/test_symbols.py::Outer::Inner::test_value[pkg::symbol] - ValueError: bad symbol
+"""
+
+        _, report, result = self._failed_output(output)
+
+        test_id = "tests/test_symbols.py::Outer::Inner::test_value[pkg::symbol]"
+        self.assertIn(f"- `{test_id}` — `tests/test_symbols.py:31`", report)
+        self.assertEqual(result["failure_summary"]["test"], test_id)
+
+    def test_unittest_chained_error_uses_terminal_exception_and_location(self) -> None:
+        output = """ERROR: test_wrap (tests.test_worker.WorkerTest.test_wrap)
+Traceback (most recent call last):
+  File "factory/worker.py", line 8, in load
+    raise ValueError("root")
+ValueError: root
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "tests/test_worker.py", line 44, in test_wrap
+    raise RuntimeError("wrapped") from exc
+RuntimeError: wrapped
+"""
+
+        _, report, result = self._failed_output(output)
+
+        self.assertIn("`tests/test_worker.py:44`", report)
+        self.assertIn("RuntimeError: wrapped", report)
+        self.assertNotIn("`factory/worker.py:8`", report)
+        self.assertEqual(result["failure_summary"]["location"], "tests/test_worker.py:44")
+        self.assertEqual(result["failure_summary"]["message"], "RuntimeError: wrapped")
+
 if __name__ == "__main__":
     unittest.main()
