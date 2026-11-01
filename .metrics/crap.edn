@@ -1,0 +1,34 @@
+{:entries [
+  {:name "execute", :namespace "factory.gate", :complexity 54, :coverage nil, :crap nil}
+  {:name "check_protected_paths", :namespace "factory.gate", :complexity 36, :coverage nil, :crap nil}
+  {:name "check_bug_reproduction", :namespace "factory.gate", :complexity 23, :coverage nil, :crap nil}
+  {:name "_repro_command", :namespace "factory.gate", :complexity 17, :coverage nil, :crap nil}
+  {:name "check_leaks", :namespace "factory.gate", :complexity 14, :coverage nil, :crap nil}
+  {:name "_rust_tests", :namespace "factory.gate", :complexity 12, :coverage nil, :crap nil}
+  {:name "timed", :namespace "factory.gate", :complexity 11, :coverage nil, :crap nil}
+  {:name "_python_tests", :namespace "factory.gate", :complexity 10, :coverage nil, :crap nil}
+  {:name "_expected_actual_line", :namespace "factory.gate", :complexity 9, :coverage nil, :crap nil}
+  {:name "_failure_block", :namespace "factory.gate", :complexity 8, :coverage nil, :crap nil}
+  {:name "failure_summary_lines", :namespace "factory.gate", :complexity 8, :coverage nil, :crap nil}
+  {:name "_pytest_failure_message", :namespace "factory.gate", :complexity 7, :coverage nil, :crap nil}
+  {:name "_tests_at", :namespace "factory.gate", :complexity 7, :coverage nil, :crap nil}
+  {:name "check_existing_tests", :namespace "factory.gate", :complexity 7, :coverage nil, :crap nil}
+  {:name "_check_status", :namespace "factory.gate", :complexity 6, :coverage nil, :crap nil}
+  {:name "check_conflict_markers", :namespace "factory.gate", :complexity 6, :coverage nil, :crap nil}
+  {:name "failed_test_ids", :namespace "factory.gate", :complexity 6, :coverage nil, :crap nil}
+  {:name "_expected_actual", :namespace "factory.gate", :complexity 5, :coverage nil, :crap nil}
+  {:name "_failure_message", :namespace "factory.gate", :complexity 5, :coverage nil, :crap nil}
+  {:name "_pytest_source_message", :namespace "factory.gate", :complexity 5, :coverage nil, :crap nil}
+  {:name "toolchain", :namespace "factory.gate", :complexity 5, :coverage nil, :crap nil}
+  {:name "run", :namespace "factory.gate", :complexity 4, :coverage nil, :crap nil}
+  {:name "_acquire_exclusive", :namespace "factory.gate", :complexity 3, :coverage nil, :crap nil}
+  {:name "_failure_location", :namespace "factory.gate", :complexity 3, :coverage nil, :crap nil}
+  {:name "_matches_test_id", :namespace "factory.gate", :complexity 3, :coverage nil, :crap nil}
+  {:name "_python_test_path", :namespace "factory.gate", :complexity 3, :coverage nil, :crap nil}
+  {:name "changed_paths", :namespace "factory.gate", :complexity 3, :coverage nil, :crap nil}
+  {:name "configure", :namespace "factory.gate", :complexity 3, :coverage nil, :crap nil}
+  {:name "first_failure_summary", :namespace "factory.gate", :complexity 3, :coverage nil, :crap nil}
+  {:name "_run_at", :namespace "factory.gate", :complexity 2, :coverage nil, :crap nil}
+  {:name "_release_exclusive", :namespace "factory.gate", :complexity 1, :coverage nil, :crap nil}
+  {:name "main", :namespace "factory.gate", :complexity 1, :coverage nil, :crap nil}
+]}
