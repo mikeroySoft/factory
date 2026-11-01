@@ -3965,6 +3965,43 @@ class DispatchTest(unittest.TestCase):
             [item["summary"] for item in decision["inputs"]],
         )
 
+    def test_merge_decision_keeps_nonblocking_checks_beyond_input_limit(self) -> None:
+        advisory = {"name": "advisory", "bucket": "fail"}
+        queued = {
+            "name": "never runnable",
+            "bucket": "pending",
+            "link": "https://github.com/acme/widgets/actions/runs/123/job/456",
+        }
+        checks = [
+            *({"name": f"hosted {index}", "bucket": "pass"} for index in range(14)),
+            advisory,
+            queued,
+        ]
+        job = {
+            "status": "queued",
+            "created_at": "2000-01-01T00:00:00Z",
+            "runner_name": None,
+            "labels": ["self-hosted", "linux", "mi300x"],
+            "steps": [],
+        }
+
+        merged, _, _, events = self.merge_check_scenario(
+            checks,
+            [],
+            advisory_checks=("advisory",),
+            job=job,
+            runners={"total_count": 0, "runners": []},
+        )
+
+        self.assertTrue(merged)
+        decision = next(
+            event for event in events
+            if event.get("event") == "decision" and event.get("chosen") == "merge now"
+        )
+        summaries = [item["summary"] for item in decision["inputs"]]
+        self.assertIn("advisory: advisory (fail)", summaries)
+        self.assertIn("never runnable: skipped-infra", summaries)
+
     def test_required_never_runnable_check_escalates_as_blocking(self) -> None:
         queued = {
             "name": "required GPU",
