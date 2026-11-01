@@ -149,11 +149,14 @@ STANDING_INSTRUCTIONS = """
 - Commit only; do not push. The dispatcher pushes `agent/{n}`, opens the PR, and
   the merge stage lands it after review and CI. NEVER merge into or fast-forward
   `{main}`, and never close the ticket yourself.
-- Finish by running `{python} -m factory gate --report .factory/gate-report-{n}.md`
-  and fixing any failures it reports.
+- Run `{python} -m factory gate --report .factory/gate-report-{n}.md`
+  and fix any failures before the final commit.
+- Do not re-run the full gate or the mutation check after the handoff or final commit;
+  the dispatcher's gate is authoritative.
 - Last, write `.factory/handoff-{n}.md` (gitignored): what you changed, what is
-  still unverified, and what you would do next. The next attempt and the human
-  who inherits this ticket read it.
+  still unverified, and what you would do next. End the completed handoff with
+  `<!-- factory:handoff-complete -->` on its own final line, then exit.
+  The next attempt and the human who inherits this ticket read it.
 """
 
 
@@ -1421,6 +1424,8 @@ def comment_receipt(n: int, kind: str, stdout: str, **fields: object) -> bool:
 
 
 WATCH_POLL = 5.0  # seconds between worker activity checks
+CLEAN_HANDOFF_QUIET = 30.0  # seconds of quiet before stopping a finished worker normally
+HANDOFF_COMPLETE = b"<!-- factory:handoff-complete -->"
 # Which timeout stopped a worker -> the journal reason it records.
 TIMEOUT_REASONS = {"idle_timeout": "stuck", "exit_grace": "hung_after_done", "budget_min": "budget_exceeded"}
 
@@ -1433,38 +1438,62 @@ def _activity(wt: Path, logfile: Path, handoff: Path) -> tuple:
             return st.st_size, st.st_mtime_ns
         return None
 
-    def git(*args: str) -> str:
-        return subprocess.run(
+    def git(*args: str) -> str | None:
+        result = subprocess.run(
             ["git", "--no-optional-locks", "-C", str(wt), *args],
             capture_output=True, encoding="utf-8", errors="replace", check=False,
-        ).stdout
+        )
+        return result.stdout if result.returncode == 0 else None
 
     return (stat(logfile), git("rev-parse", "HEAD"),
             git("status", "--porcelain", "--untracked-files=all"), stat(handoff))
 
 
+def _handoff_complete(path: Path) -> bool:
+    """A bounded regular handoff, with content and the worker's final completion marker."""
+    from factory import results
+
+    with suppress(OSError):
+        if not path.is_symlink() and path.is_file():
+            with path.open("rb") as source:
+                text = source.read(results.ARTIFACT_CAP + 1)
+            lines = text.rstrip().splitlines()
+            return (len(text) <= results.ARTIFACT_CAP and len(lines) > 1
+                    and lines[-1] == HANDOFF_COMPLETE and bool(b"\n".join(lines[:-1]).strip()))
+    return False
+
+
 def _watch(proc: subprocess.Popen, wt: Path, logfile: Path, handoff: Path, deadline: float,
-           start: tuple) -> str | None:
-    """Wait for the worker to exit; None if it did, else the timeout that fired first."""
+           start: tuple) -> tuple[str | None, float | None]:
+    """Return the stop reason and last observed done time, including on natural exits."""
     state, changed = start, time.monotonic()
+    done_at = None
     while True:
+        exited = False
         try:
             proc.wait(timeout=WATCH_POLL)
-            return None
+            exited = True
         except subprocess.TimeoutExpired:
             pass
         now, current = time.monotonic(), _activity(wt, logfile, handoff)
+        if current[1] != state[1] or current[3] != state[3]:
+            done_at = now
         if current != state:
             state, changed = current, now
+        if exited:
+            return None, done_at
         quiet = now - changed
         # Done: committed or wrote its handoff during this run. A done worker is never "stuck".
         done = current[1] != start[1] or current[3] != start[3]
         if now >= deadline:
-            return "budget_min"
+            return "budget_min", done_at
+        if (current[3] is not None and current[3] != start[3] and current[2] == ""
+                and quiet >= CLEAN_HANDOFF_QUIET and _handoff_complete(handoff)):
+            return "clean_handoff", done_at
         if done and cfg.exit_grace and quiet >= cfg.exit_grace:
-            return "exit_grace"
+            return "exit_grace", done_at
         if not done and cfg.idle_timeout and quiet >= cfg.idle_timeout * 60:
-            return "idle_timeout"
+            return "idle_timeout", done_at
 
 
 def _stop(proc: subprocess.Popen) -> None:
@@ -1484,6 +1513,7 @@ def run_worker(
     logfile: Path,
     handoff: Path,
     deadline: float = float("inf"),
+    metrics: dict | None = None,
     *,
     env_overrides: dict[str, str] | None = None,
     worker: str | None = None,
@@ -1495,6 +1525,8 @@ def run_worker(
     `idle_timeout`: no log output and no worktree change (stuck mid-work).
     `exit_grace`: committed or wrote `handoff`, then stayed quiet without exiting.
     `budget_min`: the ticket's overall wall-clock deadline passed.
+    A fresh complete handoff and clean worktree stop normally after 30 seconds quiet.
+    `metrics`, when supplied, receives finish and post_finish_idle_seconds (None without done).
     Evaluation replays set `journal=False`; their aggregate result is the durable evidence.
     """
     log(f"worker: {' '.join(cmd)} -> {logfile}")
@@ -1516,24 +1548,34 @@ def run_worker(
             try:
                 if execution is not None:
                     execution.child(proc.pid)
-                fired = _watch(proc, wt, logfile, handoff, deadline, start)
+                finish, done_at = _watch(proc, wt, logfile, handoff, deadline, start)
             finally:
                 if proc.poll() is None:
                     _stop(proc)
                 if execution is not None:
                     execution.child_done(proc.pid)
         code = proc.returncode
+        idle = None if done_at is None else max(0.0, time.monotonic() - done_at)
+        measurement = {"finish": finish or "natural", "post_finish_idle_seconds": idle}
+        if metrics is not None:
+            metrics.update(measurement)
+        fired = None if finish == "clean_handoff" else finish
         if execution is not None:
             if fired:
                 execution.emit("timeout", timeout=fired)
-            execution.emit("result", returncode=code)
+            execution.emit("result", returncode=code, **measurement)
             if fired:
                 execution.outcome, execution.reason = "interrupted", TIMEOUT_REASONS[fired]
             else:
                 execution.outcome = "completed" if code == 0 else "unknown"
                 execution.reason = None if code == 0 else f"worker_exit:{code}"
+        if finish == "clean_handoff":
+            # SIGTERM is expected here; gate/review, not the worker's exit code, decide acceptance.
+            code = 0
+            if execution is not None:
+                execution.outcome, execution.reason = "completed", None
     log(f"worker exited {code} after {int(time.monotonic() - started)}s"
-        + (f" ({fired} fired: {TIMEOUT_REASONS[fired]})" if fired else ""))
+        + (f" ({fired} fired: {TIMEOUT_REASONS[fired]})" if fired else f" ({finish})" if finish else ""))
     return code, fired
 
 
@@ -2803,7 +2845,8 @@ def sync_pass(dry_run: bool) -> None:
             if report is not None:
                 (wt_n / ".factory").mkdir(exist_ok=True)
                 (wt_n / ".factory" / f"gate-report-{n}.md").write_text(report)
-            record("attempt", ticket=n, attempt=0, gate=gate, head=head, actual_head=head, clean=True)
+            record("attempt", ticket=n, attempt=0, gate=gate, head=head, actual_head=head, clean=True,
+                   post_finish_idle_seconds=None)
             sync_record(ticket=n, upstream=tip, commits=count, result="staged", head=head, gate=gate)
             execution.reason = "upstream_staged"
             log(f"upstream sync: staged {count} commit(s) at {tip[:12]} as #{n} (agent/{n} at {head[:12]}, gate {gate or 'not run: merge conflict'})")
@@ -3942,8 +3985,9 @@ def worker_round(
         run_options["env_overrides"] = environment
     if worker_version:
         run_options.update(worker=worker, worker_version=worker_version)
+    finish_metrics = {"finish": None, "post_finish_idle_seconds": None}
     code, fired = run_worker(
-        argv, wt, logfile, wt / ".factory" / f"handoff-{n}.md", deadline, **run_options,
+        argv, wt, logfile, wt / ".factory" / f"handoff-{n}.md", deadline, finish_metrics, **run_options,
     )
     journal_attempt_plan(wt, n, attempt, labels, worker, worker_version)
     transcript = _transcript(session_dir, wall)
@@ -3970,7 +4014,7 @@ def worker_round(
         record(
             "attempt", ticket=n, attempt=attempt, worker_exit=code, gate=None,
             log=str(logfile), transcript=transcript, head=head, handoff=handoff,
-            **identity, **timeout,
+            **identity, **timeout, **finish_metrics,
         )
         return False, (
             f"worker stuck: idle_timeout fired ({cfg.idle_timeout:g} min without worker "
@@ -3980,7 +4024,7 @@ def worker_round(
         record(
             "attempt", ticket=n, attempt=attempt, worker_exit=code, gate=None,
             log=str(logfile), transcript=transcript, head=head, handoff=handoff,
-            **identity, **timeout,
+            **identity, **timeout, **finish_metrics,
         )
         return False, "budget exceeded before gate", logfile, head
     handoff_path = wt / ".factory" / f"handoff-{n}.md"
@@ -4011,7 +4055,7 @@ def worker_round(
         seconds=int(time.monotonic() - started), cost=usage["cost"], log=str(logfile),
         transcript=transcript, brief=brief_path(wt, n).exists(), head=head,
         actual_head=actual_head, clean=not before_status and not after_status,
-        handoff=handoff, **identity, **timeout,
+        handoff=handoff, **identity, **timeout, **finish_metrics,
     )
     return ok, report, logfile, head
 

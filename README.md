@@ -822,14 +822,47 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    (search-backed listings lag), assigns itself, takes a per-ticket `flock`,
    and creates the worktree `.factory/wt-<n>` on branch `agent/<n>`.
 3. **Work.** The worker gets the issue, its comments, standing instructions
-   (commit incrementally, never touch `main`, never `git stash`, finish with
-   `factory gate`), and — on retries — the previous gate report or the
-   reviewer's findings. Up to `max_attempts` rounds within `budget_min`, the
-   overall ceiling. A worker with no log output and no worktree change for
-   `[dispatch].idle_timeout` minutes is killed as `stuck` (a failed attempt,
-   retried). One that committed or wrote its handoff, then stayed quiet for
-   `[dispatch].exit_grace` seconds without exiting, is terminated and gated.
-   The attempt journal row and escalation packet name the timeout that fired.
+   (commit incrementally, never touch `main`, never `git stash`, run
+   `factory gate` before the final commit), and — on retries — the previous gate
+   report or the reviewer's findings. Workers must not re-run the full gate or
+   mutation check after the handoff or final commit: the dispatcher's gate is
+   authoritative. Up to `max_attempts` rounds within `budget_min`, the overall ceiling.
+   A worker with no log output and no worktree change for `[dispatch].idle_timeout`
+   minutes is killed as `stuck` (a failed attempt, retried).
+   A fresh handoff with nonempty content and `<!-- factory:handoff-complete -->`
+   on its final line, a clean worktree (including no untracked files), and 30 seconds
+   without log, HEAD, status, or handoff activity finishes normally: Factory stops
+   the worker's process group and gates it, without a timeout or `hung_after_done`.
+   Activity is sampled every 5 seconds. A prior attempt's unchanged handoff is not
+   a fresh completion signal, even if the new worker commits.
+   Incomplete/missing handoffs or dirty worktrees retain the fallback: a worker
+   that committed or wrote its handoff and stayed quiet for `[dispatch].exit_grace`
+   seconds is terminated as `hung_after_done` and gated. The overall budget still applies.
+   Each attempt row records `post_finish_idle_seconds` from the last observed
+   HEAD/handoff change to exit, including termination time, for natural and forced
+   exits; `null` means no done signal (including workerless upstream staging).
+   `finish` distinguishes `natural`, `clean_handoff`, and timeout names.
+   The attempt journal row and escalation packet name any timeout that fired.
+   To compare deployed attempts with the Oct 28+ baseline (~35% `exit_grace`),
+   query the journal, including rotations, after deployment:
+
+   ```sh
+   python - <<'PY'
+   from pathlib import Path
+   from statistics import median
+   from factory.lifecycle import read_events
+   rows = [r for r in read_events(Path(".factory/events.jsonl"))
+           if r.get("event") == "attempt" and r.get("attempt", 0) > 0
+           and "post_finish_idle_seconds" in r]
+   idle = sorted(r["post_finish_idle_seconds"] for r in rows
+                 if r["post_finish_idle_seconds"] is not None)
+   print("attempts:", len(rows), "exit_grace rate:",
+         sum(r.get("timeout") == "exit_grace" for r in rows) / len(rows) if rows else None)
+   print("idle measured:", len(idle), "no done:", len(rows) - len(idle),
+         "median:", median(idle) if idle else None, "sorted seconds:", idle)
+   PY
+   ```
+
 4. **Gate.** The configured `[gate].protected_paths` globs from the base ref's
    `.factory.toml` are checked against the committed worker diff first, before
    any checks; a hit stops the run and immediately escalates the ticket to
@@ -1089,7 +1122,7 @@ default model. Gate and safety policy remain file-managed.
 [dispatch]
 review_rounds = 1                # REVISE -> worker -> re-review cycles
 # idle_timeout = 30              # minutes quiet mid-work = stuck; 0 disables
-# exit_grace = 300               # seconds quiet after commit/handoff before termination; 0 disables
+# exit_grace = 300               # fallback seconds quiet after commit/handoff; 0 disables fallback
 # cost_pattern = 'Total cost:\s*\$([0-9.]+)'   # $ from the worker log (Claude Code prints this)
 
 [workers]                        # ticket label/profile -> argv; {prompt} file, {cwd} worktree
