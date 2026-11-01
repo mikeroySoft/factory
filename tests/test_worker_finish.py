@@ -170,7 +170,7 @@ class WorkerFinishTest(unittest.TestCase):
     def test_idle_measurement_includes_shutdown_after_last_done_change(self):
         for natural in (False, True):
             with self.subTest(natural=natural):
-                clock = [100.0]
+                clock = [0.0]
                 start = (None, "head", "", None)
                 changed = (None, "new-head", "dirty", (10, 1))
                 proc = mock.MagicMock()
@@ -179,7 +179,7 @@ class WorkerFinishTest(unittest.TestCase):
 
                 def wait(timeout, clock=clock, natural=natural):
                     clock[0] += timeout
-                    if not natural or clock[0] < 110:
+                    if not natural or clock[0] < 10:
                         raise subprocess.TimeoutExpired("worker", timeout)
 
                 def stop(_proc, clock=clock):
