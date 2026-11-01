@@ -1203,7 +1203,9 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
             env=self.env, check=True, capture_output=True, text=True,
         ).stdout
 
-    def run_lockfile_worker(self, plan, *, manifest=False, body=None):
+    def run_lockfile_worker(
+        self, plan, *, manifest=False, body=None, extra_change=False,
+    ):
         self.set_lock_baseline(manifest=manifest)
         if body is not None:
             gh = self.bin / "gh"
@@ -1217,6 +1219,8 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
         add = ["git", "add", "uv.lock"]
         if manifest:
             add.append("pyproject.toml")
+        if extra_change:
+            add.append("change.txt")
         self.worker.write_text(
             "import subprocess\n"
             "from pathlib import Path\n"
@@ -1229,6 +1233,10 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
                 "'[project]\\nname = \"demo\"\\ndependencies = [\"requests\"]\\n')\n"
                 if manifest else ""
             )
+            + (
+                "Path('change.txt').write_text('planned change\\n')\n"
+                if extra_change else ""
+            )
             + f"subprocess.run({add!r}, check=True)\n"
             "subprocess.run(['git', 'commit', '-qm', 'worker dependency edit'], check=True)\n"
         )
@@ -1237,7 +1245,9 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
         return self.pushed_lock()
 
     def test_unplanned_uv_lock_drift_is_removed_before_push(self):
-        lock = self.run_lockfile_worker("## Files\n- change.txt\n")
+        lock = self.run_lockfile_worker(
+            "## Files\n- change.txt\n", extra_change=True,
+        )
 
         self.assertEqual(lock, "base\n")
         changed = subprocess.run(
@@ -1246,6 +1256,7 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
             env=self.env, check=True, capture_output=True, text=True,
         ).stdout.splitlines()
         self.assertNotIn("uv.lock", changed)
+        self.assertEqual(changed, ["change.txt"])
 
     def test_unplanned_lockfile_rename_restores_source_and_removes_destination(self):
         from factory import config, dispatch
@@ -1332,16 +1343,23 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
         valid = {
             "event": "plan", "ticket": 7, "status": "recorded", "path": str(plan),
         }
-        cases = {
-            "event": (7, {**valid, "event": "attempt"}, False),
-            "ticket": (7, {**valid, "ticket": 8}, False),
-            "status": (7, {**valid, "status": "missing"}, False),
-            "equal large ticket": (
-                int("1000"), {**valid, "ticket": int("1000")}, True,
+        large_ticket = int("10000")
+        large_row_ticket = int("10000")
+        self.assertIsNot(large_ticket, large_row_ticket)
+        cases = (
+            ("event before", 7, {**valid, "event": "attempt"}, False),
+            ("event after", 7, {**valid, "event": "review"}, False),
+            ("ticket above", 7, {**valid, "ticket": 8}, False),
+            ("ticket below", 7, {**valid, "ticket": 6}, False),
+            ("status before", 7, {**valid, "status": "missing"}, False),
+            ("status after", 7, {**valid, "status": "skipped"}, False),
+            (
+                "equal large ticket", large_ticket,
+                {**valid, "ticket": large_row_ticket}, True,
             ),
-        }
-        for field, (ticket, row, expected) in cases.items():
-            with self.subTest(field=field), mock.patch.object(
+        )
+        for case, ticket, row, expected in cases:
+            with self.subTest(case=case), mock.patch.object(
                 lifecycle, "read_events", return_value=[row],
             ):
                 self.assertEqual(
@@ -1350,26 +1368,29 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
         with mock.patch.object(lifecycle, "read_events", return_value=[valid]):
             self.assertTrue(dispatch._recorded_plan_lists_lockfile(7, "uv.lock"))
 
-    def test_recorded_plan_filter_skips_missing_plan(self):
+    def test_recorded_plan_filter_skips_unreadable_plans(self):
         from unittest import mock
 
         from factory import config, dispatch
 
         dispatch.configure(config.load(self.repo))
-        plan = self.repo / "plan.md"
-        plan.write_text("## Files\n- uv.lock\n")
         rows = [
             {
                 "event": "plan", "ticket": 7, "status": "recorded",
                 "path": str(self.repo / "missing.md"),
             },
-            {
-                "event": "plan", "ticket": 7, "status": "recorded", "path": str(plan),
-            },
         ]
-
         with mock.patch.object(lifecycle, "read_events", return_value=rows):
-            self.assertTrue(dispatch._recorded_plan_lists_lockfile(7, "uv.lock"))
+            self.assertFalse(dispatch._recorded_plan_lists_lockfile(7, "uv.lock"))
+
+        unreadable = self.repo / "unreadable.md"
+        unreadable.write_text("## Files\n- uv.lock\n")
+        rows[0]["path"] = str(unreadable)
+        with mock.patch.object(lifecycle, "read_events", return_value=rows), \
+                mock.patch.object(
+                    Path, "read_text", side_effect=PermissionError("unreadable"),
+                ):
+            self.assertFalse(dispatch._recorded_plan_lists_lockfile(7, "uv.lock"))
 
     def test_recorded_plan_filter_toggles_only_for_files_section(self):
         from unittest import mock
