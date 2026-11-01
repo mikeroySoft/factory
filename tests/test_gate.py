@@ -359,6 +359,7 @@ test result: FAILED. 0 passed; 1 failed
         self.assertIn("- `tests/test_math.py::test_first`", summary)
         self.assertIn("`tests/test_math.py:12`", summary)
         self.assertIn("AssertionError: assert 1 == 2", summary)
+        self.assertIn("Expected/actual: assert 1 == 2", summary)
         self.assertNotIn("tests/test_math.py:12", tail)
 
     def test_unittest_fail_and_error_summaries_include_location_and_message(self) -> None:

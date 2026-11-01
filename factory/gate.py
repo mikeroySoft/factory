@@ -192,15 +192,15 @@ def _failure_message(kind: str, block: list[str], location_index: int) -> str | 
 
 
 def _expected_actual_line(kind: str, line: str, message: str) -> str | None:
-    error = re.match(r"^E\s+(.*)", line)
-    candidate = error[1].strip() if error else line.strip()
+    marked = re.match(r"^[E>]\s+(.*)", line)
+    candidate = marked[1].strip() if marked else line.strip()
     if candidate == message:
         return None
     if candidate.startswith(("- ", "+ ")):
         return candidate
     if candidate.lower().startswith(("expected:", "actual:", "left:", "right:")):
         return candidate
-    if kind == "pytest" and error and (" == " in candidate or " != " in candidate):
+    if kind == "pytest" and marked and (" == " in candidate or " != " in candidate):
         return candidate
     return None
 
