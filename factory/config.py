@@ -174,7 +174,7 @@ class Config:
     max_attempts: int = 3
     budget_min: int = 90
     idle_timeout: float = 30  # minutes without worker log output or worktree change = stuck; 0 off
-    exit_grace: float = 300  # seconds a done (handoff/commit) worker may stay quiet before termination; 0 off
+    exit_grace: float = 300  # fallback seconds quiet after handoff/commit before termination; 0 off
     review_rounds: int = 1  # REVISE -> worker -> re-review cycles before escalating
     signoff: bool = True  # `git commit -s`; Signed-off-by trailer on merges
     cost_pattern: str | None = None  # regex with one capture: dollars in the worker log

@@ -95,6 +95,50 @@ class WorkerFinishTest(unittest.TestCase):
         self.assertEqual(row["timeout"], "budget_min")
         self.assertIsNone(row["post_finish_idle_seconds"])
 
+    def test_log_activity_restarts_quiet_but_not_done_measurement(self):
+        self.handoff.write_text(COMPLETE)
+        dispatch.cfg.exit_grace = 300
+        clock = [0.0]
+        start = (None, "head", "", None)
+
+        def wait(timeout):
+            clock[0] += timeout
+            raise subprocess.TimeoutExpired("worker", timeout)
+
+        def activity(*_args):
+            return (("output" if clock[0] >= 20 else None), "head", "", (92, 1))
+
+        proc = mock.Mock()
+        proc.wait.side_effect = wait
+        with mock.patch.object(dispatch, "WATCH_POLL", 5), \
+                mock.patch.object(dispatch, "CLEAN_HANDOFF_QUIET", 30), \
+                mock.patch.object(dispatch.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(dispatch, "_activity", side_effect=activity):
+            finish, done_at = dispatch._watch(proc, self.wt, self.root / "log", self.handoff, 100, start)
+        self.assertEqual((finish, done_at, clock[0]), ("clean_handoff", 5, 50))
+
+    def test_commit_without_fresh_handoff_keeps_exit_grace(self):
+        self.handoff.write_text(COMPLETE)
+        script = (
+            "import subprocess, time; "
+            "subprocess.run(['git', 'commit', '--allow-empty', '-qm', 'done'], check=True); "
+            "time.sleep(60)"
+        )
+        metrics = {}
+        code, fired = dispatch.run_worker(
+            [sys.executable, "-c", script], self.wt, self.root / "commit.log",
+            self.handoff, float("inf"), metrics,
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(fired, "exit_grace")
+        self.assertGreaterEqual(metrics["post_finish_idle_seconds"], 0.8)
+
+    def test_idle_timeout_attempt_has_null_idle(self):
+        dispatch.cfg.idle_timeout = 0.002
+        row = self.attempt(no_done=True)
+        self.assertEqual(row["timeout"], "idle_timeout")
+        self.assertIsNone(row["post_finish_idle_seconds"])
+
     def test_worker_prompt_forbids_post_finish_gate_and_mutation(self):
         issue = {"title": "change", "body": "acceptance", "comments": []}
         with mock.patch.object(dispatch, "gh_json", return_value=issue), \
