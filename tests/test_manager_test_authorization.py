@@ -8,7 +8,6 @@ from unittest import mock
 
 from factory import config, dispatch, lifecycle, manage
 
-
 REAL_RUN = dispatch.run
 ADD_ONLY_FAILURE = "- protected-paths: FAIL (add-only path removed or changed existing lines)"
 

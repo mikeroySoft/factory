@@ -575,10 +575,15 @@ Factory adds or replaces `--mode json` and parses its JSONL verdict and usage.
 It defaults to true only when the reviewer program is named `omp`; set it to
 false to disable that default.
 AUTHORIZE uses `{"justification":"...","guidance":"..."}` to record why an
-existing add-only file must change, add `factory-add-only-override`, and return
-the ticket to `ready-for-agent`. It is limited to required add-only edits or
-removal of obsolete wording-only assertions, and never authorizes protected
-paths. The normal gate and independent review run again. FIX uses
+existing test must change, add `factory-add-only-override`, and return the
+ticket to `ready-for-agent`. Before an eligible add-only failure enters
+`ready-for-human`, the dispatcher asks the manager directly. Authorization is
+limited to non-protected test files whose planned behavior change caused the
+failure: every behavioral assertion must remain or be replaced by an equivalent
+new-behavior assertion, while incidental call-count, host-state, or formatting
+assertions may change. The reason and covered files are journaled and posted to
+the ticket and PR; the independent reviewer checks the final diff against them.
+The normal gate and review then run again. FIX uses
 `{"worker":"ci-fix","guidance":"..."}` to run exactly one selected worker round
 in the kept `agent/<n>` worktree for its open PR, ignoring other ticket labels.
 A kept head ahead of the remote PR head is pushed first
@@ -825,24 +830,31 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `[gate].add_only_paths` (also read from the base ref) are protected add-only:
    a new file passes, a modified file passes only when `git diff --numstat`
    shows no deleted lines, and a deletion, rename, mode change, binary change,
-   or any removed or changed line fails as `add-only`. For in-place text edits,
-   its escalation names `factory-add-only-override` as the clearing label. The
-   manager may use `AUTHORIZE`, with an auditable justification and worker
-   guidance, to apply that label and requeue the ticket when the ticket requires
-   the existing add-only edit or an obsolete wording-only assertion must be
-   removed from a retained file; a human may apply it directly. File deletions,
-   renames, mode changes and binary changes still fail with that label and
-   require human-only `factory-protected-override`. Their escalations name that
-   label instead. If `factory-add-only-override` is already present and protection
-   still fails, the escalation explicitly rules out repeated manager `AUTHORIZE`.
-   The add-only override does not authorize `[gate].protected_paths`. On `bug`
-   tickets the attempt gate also compares every existing Python test function and
-   every Rust `#[test]` function (including tests inside `src/*.rs`) with the base. Deleting
-   or changing one, including adding `@unittest.skip`, pytest skip/xfail, or
-   Rust `#[ignore]`, fails as `protected-tests`; other languages retain the
-   configured path-based add-only policy. `factory-add-only-override` bypasses
-   that function check as well, so manager authorization also works on bug
-   tickets. The `factory-protected-override` label bypasses both path and
+   or any removed or changed line fails as `add-only`. An in-place edit to an
+   existing non-protected test is sent directly to the manager's `AUTHORIZE`
+   path before any `ready-for-human` transition. The manager may apply
+   `factory-add-only-override` only when the ticket's planned behavior change
+   caused the failure, every behavioral assertion remains or has an equivalent
+   new-behavior assertion, and only incidental call-count, host-dependent-state,
+   or formatting assertions change. Removing only an incidental count assertion
+   is allowed while the behavior remains asserted; deleting or weakening a
+   behavioral assertion is denied. The authorization reason and covered files
+   are recorded in the journal, ticket, PR, and reviewer prompt. A denial
+   escalates to `ready-for-human`; protected paths bypass the manager request
+   and escalate immediately. A human may apply the label directly.
+   File deletions, renames, mode changes and binary changes still fail with that
+   label and require human-only `factory-protected-override`. Their escalations
+   name that label instead. If `factory-add-only-override` is already present
+   and protection still fails, the escalation explicitly rules out repeated
+   manager `AUTHORIZE`. The add-only override does not authorize
+   `[gate].protected_paths`. On `bug` tickets the attempt gate also compares
+   every existing Python test function and every Rust `#[test]` function
+   (including tests inside `src/*.rs`) with the base. Deleting or changing one,
+   including adding `@unittest.skip`, pytest skip/xfail, or Rust `#[ignore]`,
+   fails as `protected-tests`; other languages retain the configured path-based
+   add-only policy. `factory-add-only-override` bypasses that function check as
+   well, so the same recorded manager authorization covers eligible bug-ticket
+   edits. The `factory-protected-override` label bypasses both path and
    function protection; a ticket line `factory-protected-override: <reason>`
    bypasses only function protection on bug tickets. An `upstream sync:`
    ticket's worker otherwise gets no override; only upstream-authored content
