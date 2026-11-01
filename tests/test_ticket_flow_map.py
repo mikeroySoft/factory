@@ -155,7 +155,7 @@ class TicketFlowMapTest(unittest.TestCase):
     def test_extractor_sees_known_transitions(self):
         # Guards the extractor itself: if it silently found nothing, both directions would pass.
         self.assertEqual(({config.LABEL_AGENT}, {config.LABEL_HUMAN}), self.code_transitions["dispatch.escalate"])
-        self.assertIn(("dispatch.process_ticket", "worker edited protected paths"), self.code_reasons)
+        self.assertIn(("dispatch._handle_protected_failure", "worker edited protected paths"), self.code_reasons)
 
 
 if __name__ == "__main__":

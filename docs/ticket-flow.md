@@ -185,10 +185,8 @@ event. `{}` is a runtime value.
 
 | Code | Reason | Edge |
 |------|--------|------|
-| `dispatch.process_ticket` | ``worker edited protected paths`` | worker round → escalate |
-| `dispatch.process_ticket` | ``worker removed or changed existing tests`` | worker round → escalate (add-only or protected-tests check; the escalation detail names the check and clearing label) |
-| `dispatch._handle_protected_failure` | ``worker edited protected paths`` | review-bounce gate → escalate |
-| `dispatch._handle_protected_failure` | ``worker removed or changed existing tests`` | review-bounce gate → Manager authorization or escalate |
+| `dispatch._handle_protected_failure` | ``worker edited protected paths`` | worker or review-bounce gate → escalate |
+| `dispatch._handle_protected_failure` | ``worker removed or changed existing tests`` | worker or review-bounce gate → Manager authorization or escalate |
 | `dispatch._handle_test_edit_request` | ``worker requested an unauthorized existing-test edit`` | explicit pre-edit handoff request names a protected, missing, or otherwise ineligible test path → escalate |
 | `dispatch.process_ticket` | ``wall-clock budget ({} min) exceeded`` | worker round → escalate |
 | `dispatch.process_ticket` | ``gate failed {} times; worktree kept at {}`` | worker round → escalate |
