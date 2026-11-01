@@ -700,6 +700,68 @@ class LocalCLI(unittest.TestCase):
         self.assertIn("- slow: SKIP (pr tier)", report)
         self.assertEqual(self.pr_runs(), [])
 
+    def configure_test_edit_authorization(self) -> None:
+        manager = self.base / "manager.py"
+        manager.write_text(
+            "print('DECISION: AUTHORIZE')\n"
+            "print('{\"justification\":\"The behavior remains asserted\","
+            "\"guidance\":\"Replace the incidental assertion with the new behavior\"}')\n"
+        )
+        path = self.repo / "tests" / "test_old.py"
+        path.parent.mkdir()
+        path.write_text("def test_old():\n    assert outcome == 'ci_pending'\n")
+        config_path = self.repo / ".factory.toml"
+        config_path.write_text(
+            config_path.read_text().replace(
+                "[gate]\n", '[gate]\nadd_only_paths = ["tests/**"]\n',
+            )
+            + "\n[manager]\ncommand = "
+            + json.dumps([sys.executable, str(manager), "{prompt}"])
+            + "\n"
+        )
+        self.git("add", ".factory.toml", "tests/test_old.py")
+        self.git("commit", "-qm", "configure manager test authorization")
+        self.git("push", "-q", "origin", "main")
+
+    def test_dispatch_routes_add_only_gate_gap_to_manager(self):
+        self.configure_test_edit_authorization()
+        self.worker.write_text(
+            "from pathlib import Path\n"
+            "Path('tests/test_old.py').write_text("
+            "\"def test_old():\\n    assert outcome in {'ci_pending', 'ready'}\\n\")\n"
+        )
+
+        self.cli("dispatch", "--ticket", "7")
+
+        events = lifecycle.read_events(self.events)
+        authorization = next(
+            row for row in events if row.get("event") == "test-edit-authorization"
+        )
+        self.assertEqual(authorization["decision"], "AUTHORIZE")
+        self.assertEqual(authorization["files"], ["tests/test_old.py"])
+        self.assertFalse(any(row.get("event") == "escalate" for row in events))
+
+    def test_dispatch_routes_worker_test_edit_request_to_manager(self):
+        self.configure_test_edit_authorization()
+        self.worker.write_text(
+            "from pathlib import Path\n"
+            "Path('.factory').mkdir(exist_ok=True)\n"
+            "Path('.factory/handoff-7.md').write_text("
+            "\"Test edit authorization: tests/test_old.py\\n"
+            "Replace the incidental wait-state assertion while retaining ci_pending behavior.\\n\")\n"
+        )
+
+        self.cli("dispatch", "--ticket", "7")
+
+        events = lifecycle.read_events(self.events)
+        authorization = next(
+            row for row in events if row.get("event") == "test-edit-authorization"
+        )
+        self.assertEqual(authorization["files"], ["tests/test_old.py"])
+        self.assertFalse(any(row.get("event") == "escalate" for row in events))
+        packet = self.repo / ".factory" / "authorizations" / "7.md"
+        self.assertIn("retaining ci_pending behavior", packet.read_text())
+
     def protected_path_escalation(self, *, delete=False, bounce=False):
         path = self.repo / "tests" / "test_old.py"
         path.parent.mkdir()

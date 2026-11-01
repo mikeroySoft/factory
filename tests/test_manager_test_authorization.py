@@ -104,6 +104,44 @@ class ManagerTestAuthorizationTest(unittest.TestCase):
         self.assertIn("incidental query count", issue_comment)
         self.assertIn("pure deletion of a behavioral assertion", self.prompts[0])
 
+    def test_later_escalation_gets_its_own_manager_round(self) -> None:
+        path = self.commit_base(
+            "tests/test_wait_decisions.py",
+            "def test_wait():\n"
+            "    assert outcome == 'ci_pending'\n"
+            "    assert query.call_count == 1\n",
+        )
+        path.write_text("def test_wait():\n    assert outcome == 'ci_pending'\n")
+        git(self.repo, "add", str(path.relative_to(self.repo)))
+        git(self.repo, "commit", "-q", "-m", "accept two polls")
+
+        self.assertTrue(self.request(ADD_ONLY_FAILURE + "\nquery.call_count"))
+        with mock.patch.object(dispatch, "run", side_effect=self.fake_run):
+            dispatch.escalate(7, "later gate failure", None, code="gate_failed")
+
+        events = lifecycle.read_events(dispatch.EVENTS)
+        escalation = next(row for row in events if row.get("event") == "escalate")
+        self.assertEqual(escalation["round"], 1)
+        self.assertFalse(any(
+            row.get("event") == "manage" and row.get("round") == escalation["round"]
+            for row in events
+        ))
+
+        issue = {"number": 7, "title": "Keep wait behavior", "body": "", "labels": []}
+        with mock.patch.object(dispatch, "gh_json", return_value=[issue]), \
+                mock.patch.object(dispatch, "initiative_kind", return_value=False), \
+                mock.patch.object(manage, "human_activity", return_value=False), \
+                mock.patch.object(dispatch, "run", side_effect=self.fake_run), \
+                mock.patch.object(manage, "apply") as apply:
+            manage.escalation_pass()
+
+        self.assertEqual(apply.call_args.args[0], 7)
+        self.assertEqual(apply.call_args.args[2], "HUMAN")
+        self.assertEqual([
+            row["round"] for row in lifecycle.read_events(dispatch.EVENTS)
+            if row.get("event") == "manage" and "round" in row
+        ], [1])
+
     def test_behavioral_assertion_deletion_is_denied_and_escalated(self) -> None:
         path = self.commit_base(
             "tests/test_wait_decisions.py",
@@ -125,20 +163,40 @@ class ManagerTestAuthorizationTest(unittest.TestCase):
         self.assertFalse(any(config.LABEL_ADD_ONLY_OVERRIDE in command for command in commands))
 
     def test_protected_path_gap_never_enters_manager_authorization(self) -> None:
-        issue = {"number": 7, "title": "Acceptance", "body": "", "labels": []}
+        self.commit_base(
+            "tests/acceptance/test_flow.py",
+            "def test_flow():\n    assert outcome == 'accepted'\n",
+        )
+        issue = {"title": "Acceptance", "body": "", "labels": []}
+        handoff = "Test edit authorization: tests/acceptance/test_flow.py"
         with mock.patch.object(manage, "request_test_edit_authorization") as authorize, \
                 mock.patch.object(dispatch, "escalate") as escalate:
-            dispatch._handle_protected_failure(
-                issue,
-                set(),
-                self.repo,
-                "- protected-paths: FAIL\n\n+++ b/tests/acceptance/test_flow.py",
-                None,
+            handled = dispatch._handle_test_edit_request(
+                7, issue, set(), self.repo, "- test: FAIL", handoff, None,
             )
 
+        self.assertTrue(handled)
         authorize.assert_not_called()
         escalate.assert_called_once()
         self.assertEqual(escalate.call_args.kwargs["code"], "protected_paths")
+
+    def test_add_only_gate_gap_routes_with_ticket_number(self) -> None:
+        self.commit_base(
+            "tests/test_wait_decisions.py",
+            "def test_wait():\n    assert outcome == 'ci_pending'\n",
+        )
+        issue = {"title": "Wait outcome", "body": "", "labels": []}
+        with mock.patch.object(manage, "request_test_edit_authorization") as authorize, \
+                mock.patch.object(dispatch, "escalate") as escalate:
+            handled = dispatch._handle_protected_failure(
+                7, issue, set(), self.repo, ADD_ONLY_FAILURE, None,
+            )
+
+        self.assertTrue(handled)
+        authorize.assert_called_once_with(
+            7, issue, ADD_ONLY_FAILURE, self.repo, None,
+        )
+        escalate.assert_not_called()
 
     def test_authorization_is_attached_to_pr_and_reviewer_context(self) -> None:
         dispatch.record(
@@ -158,13 +216,55 @@ class ManagerTestAuthorizationTest(unittest.TestCase):
         self.assertIn("check the test diff against this authorization", prompt)
         self.assertIn(note, prompt)
 
+    def test_later_authorization_keeps_the_existing_file_scope(self) -> None:
+        dispatch.record(
+            "test-edit-authorization",
+            ticket=7,
+            decision="AUTHORIZE",
+            files=["tests/test_wait_decisions.py"],
+            justification="First change",
+            guidance="Keep wait behavior",
+        )
+        result = subprocess.CompletedProcess([], 0, "https://example.test/comment\n", "")
+        with mock.patch.object(dispatch, "run", return_value=result), \
+                mock.patch.object(dispatch, "comment_receipt"):
+            manage.apply_test_edit_authorization(
+                7,
+                {"justification": "Second change", "guidance": "Keep retry behavior"},
+                ["tests/test_retry.py"],
+                unassign=True,
+            )
+
+        events = lifecycle.read_events(dispatch.EVENTS)
+        authorization = [
+            row for row in events
+            if row.get("event") == "test-edit-authorization"
+        ][-1]
+        self.assertEqual(
+            authorization["files"],
+            ["tests/test_retry.py", "tests/test_wait_decisions.py"],
+        )
+
     def test_escalation_authorize_uses_the_shared_application_path(self) -> None:
         data = {"justification": "Incidental formatting", "guidance": "Keep behavior checks"}
-        with mock.patch.object(manage, "apply_test_edit_authorization") as apply_authorization:
-            manage.apply(7, {"title": "test"}, "AUTHORIZE", "", data, Path("packet"))
+        packet = self.repo / "packet.md"
+        packet.write_text(
+            "Test edit authorization: tests/test_wait_decisions.py\n"
+            "Replace the incidental count with the new outcome assertion.\n"
+        )
+        wt = dispatch.FACTORY / "wt-7"
+        wt.mkdir(parents=True)
+        with mock.patch.object(
+            manage, "test_edit_files", return_value=["tests/test_wait_decisions.py"],
+        ) as files, mock.patch.object(
+            manage, "apply_test_edit_authorization",
+        ) as apply_authorization:
+            manage.apply(7, {"title": "test"}, "AUTHORIZE", "", data, packet)
 
-        apply_authorization.assert_called_once_with(7, data, [], unassign=False)
-
+        files.assert_called_once_with(wt, packet.read_text())
+        apply_authorization.assert_called_once_with(
+            7, data, ["tests/test_wait_decisions.py"], unassign=False,
+        )
 
 if __name__ == "__main__":
     unittest.main()
