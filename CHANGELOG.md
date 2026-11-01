@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Before the attempt gate, the dispatcher now restores unplanned dependency lockfiles from the ticket branch's merge-base. A changed `pyproject.toml` or any recorded round's plan listing the lockfile preserves the edit; ticket and brief wording does not. Upstream-sync tickets skip the guard so fork lockfiles remain untouched. Repository `uv run` gate checks stay frozen so verification cannot rewrite `uv.lock` (#441).
 - Bug-ticket gates now accept a handoff `Repro test:` ID wrapped in one matching pair of backticks or quotes, while preserving plain IDs and rejecting IDs that do not match an added test (#456).
 - The Decisions breadboard now fits a complete multi-loop graph into its viewport and supports button, wheel, pointer, keyboard, and fullscreen zoom/pan controls. Cause-to-effect arrowheads remain at target ends, bounded wire routes redraw after every viewport or graph change, and parallel edges use distinct lanes while spring motion and full-chain tracing remain intact (#470). [Before](docs/issue-470-before.png) · [After](docs/issue-470-after.png)
 - Manager `CLOSE` decisions now comment with the manager's reason and apply the existing human/factory-created issue outcome when no open agent PR exists, including when the branch has an earlier closed PR, instead of escalating the completed decision as a mechanism failure (#344).
