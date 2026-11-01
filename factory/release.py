@@ -181,12 +181,14 @@ def measure_window(
         stats.configure(cfg)
 
         try:
-            escaped = {
-                candidate["ticket"]
-                for row in stats.escapes(read_only=read_only)
-                for candidate in row.get("candidates", [])
-                if type(candidate.get("ticket")) is int
-            } & selected
+            rows = stats.escapes(read_only=read_only)
+            if not any(row.get("skipped") for row in rows):
+                escaped = {
+                    candidate["ticket"]
+                    for row in rows
+                    for candidate in row.get("candidates", [])
+                    if type(candidate.get("ticket")) is int
+                } & selected
         except (
             OSError, RuntimeError, ValueError, KeyError, TypeError,
             subprocess.SubprocessError, SystemExit,
@@ -1089,17 +1091,18 @@ def _dry_run_channels(
         next_even = f"v{_text((*odd['version'][:2], odd['version'][2] + 1))}"
         branch = f"release/{next_even}"
         commit = _branch_sha(cfg, branch)
+        ci_ready = hold is None and commit is not None and ci_passes(cfg, commit)
         if hold:
             verdict = hold
         elif commit is None:
             verdict = "would build promotion branch"
-        elif ci_passes(cfg, commit):
+        elif ci_ready:
             verdict = "would promote"
         else:
             verdict = "waiting for CI on promotion commit"
         if odd_pulls or untagged:
             verdict = f"experimental release is in flight; {odd_action}"
-        elif commit is not None or hold is None:
+        elif hold is None and (commit is None or ci_ready):
             odd_action = f"public promotion {branch}: {verdict}"
         even_report = {
             "candidate": odd["tag"],

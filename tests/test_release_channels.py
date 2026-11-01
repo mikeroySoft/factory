@@ -135,6 +135,14 @@ class ReleaseChannelsTest(unittest.TestCase):
         with mock.patch.object(stats, "escapes", side_effect=escapes):
             self.assertEqual(release.measure_window(self.cfg)["escape_rate"], 0.0)
 
+    def test_measure_window_rejects_incomplete_live_escape_evidence(self) -> None:
+        self.event(at="2026-10-01T00:00:00Z", event="merged", ticket=1)
+        incomplete = [{"status": "skipped", "skipped": ["f" * 40], "candidates": []}]
+        with mock.patch.object(stats, "escapes", return_value=incomplete):
+            metrics = release.measure_window(self.cfg)
+        self.assertIsNone(metrics["escape_rate"])
+        self.assertIsNone(metrics["escapes"])
+
     def test_pending_legacy_bar_gains_escape_floor(self) -> None:
         old = {
             "human_rate": 0.1, "first_pass": 0.9, "tickets": 30,
@@ -210,6 +218,20 @@ class ReleaseChannelsTest(unittest.TestCase):
             reason = release.run(self.cfg)
         self.assertIn("escape_rate 1.0 is worse than 0.0", reason)
         self.assertIn("opened experimental release PR #13 for v0.4.9", reason)
+
+        output = io.StringIO()
+        with mock.patch.object(release, "_bar", return_value=strict), \
+                mock.patch.object(release, "_pulls", return_value=[]), \
+                mock.patch.object(release, "ci_passes", return_value=True), \
+                mock.patch.object(stats, "escapes", return_value=[
+                    {"candidates": [{"ticket": 1}]}
+                ]), redirect_stdout(output):
+            release.run(self.cfg, dry_run=True)
+        report = json.loads(output.getvalue())
+        self.assertIn("would open experimental release PR for v0.4.9",
+                      report["odd"]["verdict"])
+        self.assertIn("escape_rate 1.0 is worse than 0.0",
+                      report["even"]["verdict"])
 
     def test_promotion_scans_escapes_once(self) -> None:
         self.make_odd()
