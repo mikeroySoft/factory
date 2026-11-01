@@ -830,6 +830,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    after expiry, the dispatcher still gates that head and proceeds through
    push, PR-tier gate, review and merge normally, without charging a rework
    round. Unfinished work and failing gate tiers still escalate.
+   A worker that exits before the deadline keeps its passing gate result even
+   when the gate itself overruns; that alone does not require the finish signal.
    A worker with no log output and no worktree change for
    `[dispatch].idle_timeout` minutes is killed as `stuck` (a failed attempt,
    retried). One that committed or wrote its handoff, then stayed quiet for
@@ -953,11 +955,14 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    revising uses the normal Medium loop. Concrete required REVISE findings
    from either reviewer, and completed surviving mutants after approval,
    use the normal `[dispatch].review_rounds` budget, not the second-head
-   disagreement cutoff. When the wall-clock expires after a clean finish,
-   Factory retains the findings in a `review-rework` journal row and returns
-   the ticket to the next pass, charging one round before releasing its claim.
+   disagreement cutoff. When the wall-clock expires after a clean finish
+   recorded for the current attempt and head, Factory retains the findings in
+   a `review-rework` journal row and returns the ticket to the next pass,
+   charging one round before releasing its claim and clearing `ready-for-human`.
    Charges survive pass boundaries; the next worker receives the full packet.
    Rework after a merge-stage refresh uses the same mechanism and budget.
+   Protected-path blockers come from gate status rows, not quoted reviewer
+   findings or surviving-mutant source text.
    Rejects, protected-path blockers and exhausted rounds still escalate.
    Non-actionable High disagreements retain the bounded disagreement path.
    `[review].second_command` is a host-only override of the code default.

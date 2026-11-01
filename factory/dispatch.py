@@ -3173,7 +3173,7 @@ def _record_rework(n: int, head: str, findings: str, *, deferred: bool) -> None:
     if deferred:
         run([
             "gh", "issue", "edit", str(n), "--repo", REPO,
-            "--add-label", LABEL_AGENT, "--remove-assignee", "@me",
+            "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT, "--remove-assignee", "@me",
         ])
 
 
@@ -3519,7 +3519,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         if verdict == "REJECT":
             withdraw("review rejected the refreshed head", "review_revise", extra=findings)
             return False
-        if guidance := _protected_gate_guidance(findings, set()):
+        if pr_failed and (guidance := _protected_gate_guidance(findings, set())):
             withdraw("PR gate blocked by protected paths", "protected_paths",
                      extra=f"{guidance}\n\n{findings}")
             return False
@@ -4095,9 +4095,6 @@ def worker_round(
     if ok and tip and run(["git", "merge-base", "--is-ancestor", tip, head], cwd=wt, check=False).returncode:
         ok = False
         report += f"\n\nGate evidence rejected: HEAD {head} does not contain upstream tip {tip}."
-    if time.monotonic() > deadline and not finished:
-        ok = False
-        report += "\n\nBudget exceeded with unfinished worker handoff."
     if fired == "exit_grace":
         report += (
             f"\n\nWorker hung after done: exit_grace fired ({cfg.exit_grace:g} s quiet after "
@@ -4190,9 +4187,10 @@ def transcript_usage(path: Path) -> dict:
 
 
 def _protected_gate_guidance(report: str, labels: set[str]) -> str | None:
-    protected_tests = "- protected-tests: FAIL" in report
-    add_only = "- protected-paths: FAIL (add-only" in report
-    if not (protected_tests or "- protected-paths: FAIL" in report):
+    summary = report.split("```", 1)[0]
+    protected_tests = bool(re.search(r"(?m)^- protected-tests: FAIL\b", summary))
+    add_only = bool(re.search(r"(?m)^- protected-paths: FAIL \(add-only", summary))
+    if not (protected_tests or re.search(r"(?m)^- protected-paths: FAIL\b", summary)):
         return None
     check = "protected-tests" if protected_tests else "add-only" if add_only else "protected-paths"
     # These diff headers describe changes the add-only override cannot authorize.
@@ -4438,7 +4436,7 @@ def process_ticket(
             # Durable charges survive pass boundaries; a deferred round is paid before requeue.
             rounds_used = _review_rounds_used(n)
             for bounce in range(1, cfg.review_rounds + 2):
-                if guidance := _protected_gate_guidance(findings, labels):
+                if pr_failed and (guidance := _protected_gate_guidance(findings, labels)):
                     escalate(n, "PR gate blocked by protected paths", logfile,
                              extra=f"{guidance}\n\n{findings}", code="protected_paths")
                     return
@@ -4448,7 +4446,13 @@ def process_ticket(
                 ):
                     break
                 if time.monotonic() > deadline:
-                    if actionable and _handoff_done(wt / ".factory" / f"handoff-{n}.md"):
+                    finished = next((
+                        row.get("finished", False)
+                        for row in reversed(lifecycle.read_events(EVENTS))
+                        if row.get("event") == "attempt" and row.get("ticket") == n
+                        and row.get("head") == gate_head
+                    ), False)
+                    if actionable and finished:
                         _record_rework(n, gate_head, findings, deferred=True)
                         execution.wait("review_rework", mode="retry_next_pass", head=gate_head)
                         return
