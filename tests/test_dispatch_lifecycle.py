@@ -722,6 +722,62 @@ class LocalCLI(unittest.TestCase):
         self.git("add", ".factory.toml", "tests/test_old.py")
         self.git("commit", "-qm", "configure manager test authorization")
         self.git("push", "-q", "origin", "main")
+        gh = self.bin / "gh"
+        gh.write_text(gh.read_text().replace(
+            'elif a[0] == "api" and "/compare/" in a[1]:',
+            'elif a[0] == "api" and a[1].endswith("/timeline"):\n'
+            '    print("[]")\n'
+            'elif a[0] == "api" and "/compare/" in a[1]:',
+        ))
+
+    def test_stale_test_edit_handoffs_after_human_overrides_reach_fresh_approval(self):
+        path = self.repo / "tests" / "test_old.py"
+        path.parent.mkdir()
+        path.write_text("def test_old():\n    assert outcome == 'ci_pending'\n")
+        config_path = self.repo / ".factory.toml"
+        config_path.write_text(config_path.read_text().replace(
+            "[gate]\n", '[gate]\nadd_only_paths = ["tests/**"]\n'
+            'protected_paths = ["tests/acceptance/**"]\n',
+        ))
+        acceptance = self.repo / "tests" / "acceptance" / "test_flow.py"
+        acceptance.parent.mkdir()
+        acceptance.write_text("assert outcome == 'accepted'\n")
+        self.git("add", ".factory.toml", "tests/test_old.py", "tests/acceptance/test_flow.py")
+        self.git("commit", "-qm", "configure test scopes")
+        self.git("push", "-q", "origin", "main")
+        cases = [
+            ("factory-add-only-override", "tests/test_old.py"),
+            ("factory-protected-override", "tests/acceptance/test_flow.py"),
+        ]
+        for label, requested in cases:
+            with self.subTest(label=label):
+                self.state.write_text("{}")
+                (self.bin / "gh").write_text(GH.replace(
+                    'if s.get("sync"):',
+                    f'issue["labels"].append({{"name": "{label}"}})\nif s.get("sync"):',
+                ))
+                self.worker.write_text(
+                    WORKER + "\nPath('.factory').mkdir(exist_ok=True)\n"
+                    "Path('.factory/handoff-7.md').write_text("
+                    f"'Test edit authorization: {requested}\\n')\n"
+                    f"Path({requested!r}).write_text("
+                    "'assert outcome == \\'ci_pending\\'\\n# incidental detail updated\\n')\n"
+                )
+                before = len(lifecycle.read_events(self.events))
+                self.cli("dispatch", "--ticket", "7")
+                events = lifecycle.read_events(self.events)[before:]
+                self.assertFalse([row for row in events if row.get("event") == "escalate"])
+                self.assertFalse([
+                    row for row in events if row.get("event") == "test-edit-authorization"
+                ])
+                self.assertEqual([
+                    row["verdict"] for row in events if row.get("event") == "review"
+                ], ["REVISE", "APPROVE"])
+                self.assertTrue(any(row.get("event") == "approved" for row in events))
+                self.assertTrue(all(
+                    row.get("gate") == "PASS"
+                    for row in events if row.get("event") == "attempt"
+                ))
 
     def test_dispatch_routes_add_only_gate_gap_to_manager(self):
         self.configure_test_edit_authorization()

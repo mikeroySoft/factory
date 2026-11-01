@@ -39,6 +39,18 @@ class ManagerTestAuthorizationTest(unittest.TestCase):
         dispatch.configure(cfg)
         self.commands: list[list[str]] = []
         self.prompts: list[str] = []
+        self.issue = {
+            "number": 7, "title": "Keep wait behavior while polling twice",
+            "body": "Poll twice while preserving ci_pending.", "state": "OPEN",
+            "labels": [{"name": config.LABEL_AGENT}], "assignees": [],
+            "comments": [], "updatedAt": "2026-10-31T00:00:00Z",
+        }
+        snapshot = mock.patch.object(dispatch, "gh_json", return_value=self.issue)
+        self.issue_read = snapshot.start()
+        self.addCleanup(snapshot.stop)
+        timeline = mock.patch.object(manage.handoff, "timeline", return_value=[])
+        self.timeline_read = timeline.start()
+        self.addCleanup(timeline.stop)
 
     def commit_base(self, path: str, text: str) -> Path:
         target = self.repo / path
@@ -265,6 +277,173 @@ class ManagerTestAuthorizationTest(unittest.TestCase):
         apply_authorization.assert_called_once_with(
             7, data, ["tests/test_wait_decisions.py"], unassign=False,
         )
+
+    def test_human_takeover_during_test_edit_inference_blocks_authorization(self) -> None:
+        self.commit_base("tests/test_wait.py", "assert outcome == 'ci_pending'\n")
+        request = "Test edit authorization: tests/test_wait.py\nquery.call_count"
+        changes = {
+            "comment": {"comments": [{"body": "Stop, I am taking over."}]},
+            "label": {"labels": [{"name": config.LABEL_HUMAN}]},
+            "assignment": {"assignees": [{"login": "owner"}]},
+            "body": {"body": "Changed acceptance criteria"},
+        }
+        for change, fields in changes.items():
+            for decision in ("AUTHORIZE", "HUMAN"):
+                with self.subTest(change=change, decision=decision):
+                    self.commands.clear()
+                    self.issue_read.side_effect = [self.issue, {**self.issue, **fields}]
+                    output = (
+                        'DECISION: AUTHORIZE\n{"justification":"Only incidental counts change",'
+                        '"guidance":"Keep behavior"}'
+                        if decision == "AUTHORIZE" else "DECISION: HUMAN\nNeeds owner input."
+                    )
+
+                    def run(args, **kwargs):
+                        if args[0] == "manager-stub":
+                            return subprocess.CompletedProcess(args, 0, output, "")
+                        return self.fake_run(args, **kwargs)
+
+                    with mock.patch.object(dispatch, "run", side_effect=run):
+                        result = manage.request_test_edit_authorization(
+                            7, self.issue, "- test: PASS", self.repo, None, request=request,
+                        )
+
+                    self.assertFalse(result)
+                    self.assertFalse(self.commands, "Human changes must not be overwritten or commented on")
+                    self.assertFalse([
+                        row for row in lifecycle.read_events(dispatch.EVENTS)
+                        if row.get("event") in {"manage", "test-edit-authorization", "escalate"}
+                    ])
+
+    def test_same_second_timeline_takeover_blocks_test_edit_authorization(self) -> None:
+        self.commit_base("tests/test_wait.py", "assert outcome == 'ci_pending'\n")
+        request = "Test edit authorization: tests/test_wait.py\nquery.call_count"
+        for event in ("commented", "labeled", "unlabeled", "assigned", "unassigned", "edited"):
+            with self.subTest(event=event):
+                self.commands.clear()
+                self.timeline_read.side_effect = [
+                    [], [{"id": 8, "event": event, "created_at": self.issue["updatedAt"]}],
+                ]
+                with mock.patch.object(dispatch, "run", side_effect=self.fake_run):
+                    result = manage.request_test_edit_authorization(
+                        7, self.issue, "- test: PASS", self.repo, None, request=request,
+                    )
+                self.assertFalse(result)
+                self.assertFalse(self.commands)
+                self.assertEqual(manage.authorized_test_edit_files(7), [])
+
+    def test_test_edit_snapshot_failure_leaves_issue_untouched(self) -> None:
+        self.commit_base("tests/test_wait.py", "assert outcome == 'ci_pending'\n")
+        request = "Test edit authorization: tests/test_wait.py\nquery.call_count"
+        for stage in ("before", "after"):
+            with self.subTest(stage=stage):
+                self.commands.clear()
+                failure = subprocess.CalledProcessError(1, ["gh", "issue", "view"])
+                self.issue_read.side_effect = (
+                    [failure] if stage == "before" else [self.issue, failure]
+                )
+                with mock.patch.object(dispatch, "run", side_effect=self.fake_run):
+                    result = manage.request_test_edit_authorization(
+                        7, self.issue, "- test: PASS", self.repo, None, request=request,
+                    )
+                self.assertFalse(result)
+                self.assertFalse(self.commands)
+                self.assertEqual(manage.authorized_test_edit_files(7), [])
+
+    def test_test_edit_files_rejects_paths_outside_configured_add_only_scope(self) -> None:
+        paths = [
+            "src/main.rs", "src/test_wait.py", "src/tests/wait.py",
+            "tests/test_wait.py", "tests/acceptance/test_flow.py",
+        ]
+        for path in paths:
+            self.commit_base(path, "assert outcome == 'ci_pending'\n")
+        for path in paths:
+            (self.repo / path).write_text("assert outcome == 'ready'\n")
+        git(self.repo, "add", *paths)
+        git(self.repo, "commit", "-qm", "update behavior")
+        request = "\n".join(f"Test edit authorization: {path}" for path in paths)
+        self.assertEqual(manage.test_edit_files(self.repo, request), ["tests/test_wait.py"])
+        dispatch.cfg.add_only_paths = []
+        self.assertEqual(manage.test_edit_files(self.repo, request), [])
+
+    def test_out_of_scope_test_edit_request_escalates_without_manager_inference(self) -> None:
+        for path in ("src/main.rs", "src/test_wait.py", "tests/acceptance/test_flow.py"):
+            self.commit_base(path, "assert outcome == 'ci_pending'\n")
+            with self.subTest(path=path), \
+                    mock.patch.object(manage, "request_test_edit_authorization") as authorize, \
+                    mock.patch.object(dispatch, "escalate") as escalate:
+                handled = dispatch._handle_test_edit_request(
+                    7, self.issue, set(), self.repo, "- test: PASS",
+                    f"Test edit authorization: {path}", None,
+                )
+                self.assertTrue(handled)
+                authorize.assert_not_called()
+                escalate.assert_called_once()
+
+    def test_human_overrides_clear_stale_handoffs_without_manager(self) -> None:
+        self.commit_base("tests/test_wait.py", "assert outcome == 'ci_pending'\n")
+        self.commit_base("tests/acceptance/test_flow.py", "assert outcome == 'accepted'\n")
+        dispatch.cfg.manager = []
+        cases = [
+            (config.LABEL_ADD_ONLY_OVERRIDE, "tests/test_wait.py"),
+            (config.LABEL_PROTECTED_OVERRIDE, "tests/test_wait.py"),
+            (config.LABEL_PROTECTED_OVERRIDE, "tests/acceptance/test_flow.py"),
+        ]
+        for label, path in cases:
+            with self.subTest(label=label, path=path), \
+                    mock.patch.object(manage, "request_test_edit_authorization") as authorize, \
+                    mock.patch.object(dispatch, "escalate") as escalate:
+                handled = dispatch._handle_test_edit_request(
+                    7, self.issue, {label}, self.repo, "- test: PASS",
+                    f"Test edit authorization: {path}", None,
+                )
+                self.assertFalse(handled)
+                authorize.assert_not_called()
+                escalate.assert_not_called()
+
+    def test_manager_add_only_authority_stays_file_scoped(self) -> None:
+        for path in ("tests/test_wait.py", "tests/test_retry.py"):
+            self.commit_base(path, "assert outcome == 'ci_pending'\n")
+        dispatch.record(
+            "test-edit-authorization", ticket=7, decision="AUTHORIZE",
+            files=["tests/test_wait.py"], justification="Incidental count", guidance="Keep behavior",
+        )
+        with mock.patch.object(manage, "request_test_edit_authorization") as authorize, \
+                mock.patch.object(dispatch, "escalate") as escalate:
+            self.assertFalse(dispatch._handle_test_edit_request(
+                7, self.issue, {config.LABEL_ADD_ONLY_OVERRIDE}, self.repo, "- test: PASS",
+                "Test edit authorization: tests/test_wait.py", None,
+            ))
+            self.assertTrue(dispatch._handle_test_edit_request(
+                7, self.issue, {config.LABEL_ADD_ONLY_OVERRIDE}, self.repo, "- test: PASS",
+                "Test edit authorization: tests/test_retry.py", None,
+            ))
+            authorize.assert_called_once()
+            self.assertIn("tests/test_retry.py", authorize.call_args.kwargs["request"])
+            escalate.assert_not_called()
+
+    def test_human_add_only_override_never_clears_protected_request(self) -> None:
+        self.commit_base("tests/acceptance/test_flow.py", "assert outcome == 'accepted'\n")
+        with mock.patch.object(manage, "request_test_edit_authorization") as authorize, \
+                mock.patch.object(dispatch, "escalate") as escalate:
+            self.assertTrue(dispatch._handle_test_edit_request(
+                7, self.issue, {config.LABEL_ADD_ONLY_OVERRIDE}, self.repo, "- test: PASS",
+                "Test edit authorization: tests/acceptance/test_flow.py", None,
+            ))
+            authorize.assert_not_called()
+            escalate.assert_called_once()
+
+    def test_test_edit_request_without_manager_names_human_add_only_authority(self) -> None:
+        self.commit_base("tests/test_wait.py", "assert outcome == 'ci_pending'\n")
+        dispatch.cfg.manager = []
+        with mock.patch.object(dispatch, "escalate") as escalate:
+            self.assertTrue(dispatch._handle_test_edit_request(
+                7, self.issue, set(), self.repo, "- test: PASS",
+                "Test edit authorization: tests/test_wait.py", None,
+            ))
+        guidance = escalate.call_args.kwargs["extra"]
+        self.assertIn(f"`{config.LABEL_ADD_ONLY_OVERRIDE}`", guidance)
+        self.assertIn("human", guidance.lower())
 
 if __name__ == "__main__":
     unittest.main()
