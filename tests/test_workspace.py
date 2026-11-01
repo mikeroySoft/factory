@@ -1059,6 +1059,20 @@ class WorkspaceHTTPTest(unittest.TestCase):
         self.assertIn(("deterministic", "factory watch"), identities)
         self.assertIn((self.cfg.llm_model, "factory triage"), identities)
 
+    def test_watch_dry_run_diagnosis_does_not_journal_execution_identity(self) -> None:
+        from factory import dispatch, watch
+
+        journal = self.cfg.factory / "events.jsonl"
+        before = journal.read_bytes() if journal.exists() else None
+        with (
+            mock.patch.object(dispatch, "EVENTS", journal, create=True),
+            mock.patch("factory.triage.call_llm", return_value="diagnosis"),
+        ):
+            signal = {"excerpt": "alarm"}
+            watch._diagnose(self.cfg, signal, journal=False)
+        self.assertEqual(signal["diagnosis"], "diagnosis")
+        self.assertEqual(journal.read_bytes() if journal.exists() else None, before)
+
 
 class WorkspaceRegistryTest(unittest.TestCase):
     def test_registered_main_overrides_same_slug_startup_but_key_stays_startup(self) -> None:

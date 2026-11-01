@@ -1245,7 +1245,10 @@ def run(
         return None
     if dry_run:
         return _run(cfg, tickets, evidence_md, dry_run, evaluate, fields)
-    with lifecycle.scope(dispatch.EVENTS, "learn"):
+    identity = cfg.manager_identity() if cfg.manager else {
+        "model": cfg.llm_model, "harness": "factory triage",
+    }
+    with lifecycle.scope(dispatch.EVENTS, "learn", **identity):
         return _run(cfg, tickets, evidence_md, dry_run, evaluate, fields)
 
 

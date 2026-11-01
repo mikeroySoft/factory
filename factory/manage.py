@@ -674,7 +674,7 @@ def viability_pass(dry_run: bool = False) -> None:
             identity = {"pr" if kind == "pr" else "ticket": n}
             with (
                 (nullcontext() if dry_run else lifecycle.scope(
-                    dispatch.EVENTS, "manage", ticket=n, lazy=True
+                    dispatch.EVENTS, "manage", ticket=n, lazy=True, **cfg.manager_identity()
                 )) as execution,
                 (nullcontext() if dry_run else dispatch.ticket_lock(n).open("w")) as lock,
             ):
@@ -863,7 +863,7 @@ def frontier_pass(dry_run: bool = False) -> None:
             continue
         with (
             (nullcontext() if dry_run else lifecycle.scope(
-                dispatch.EVENTS, "manage", ticket=n, lazy=True
+                dispatch.EVENTS, "manage", ticket=n, lazy=True, **cfg.manager_identity()
             )) as execution,
             (nullcontext() if dry_run else dispatch.ticket_lock(n).open("w")) as lock,
         ):
@@ -1026,7 +1026,7 @@ def escalation_pass(dry_run: bool = False) -> None:
             continue
         with (
             (nullcontext() if dry_run else lifecycle.scope(
-                dispatch.EVENTS, "manage", ticket=n, lazy=True
+                dispatch.EVENTS, "manage", ticket=n, lazy=True, **cfg.manager_identity()
             )) as execution,
             (nullcontext() if dry_run else dispatch.ticket_lock(n).open("w")) as lock,
         ):

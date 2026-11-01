@@ -532,20 +532,23 @@ def band_signals(
     return alarms
 
 
-def _diagnose(cfg: config.Config, signal: dict) -> None:
+def _diagnose(cfg: config.Config, signal: dict, *, journal: bool = True) -> None:
     from factory import triage
 
     triage.configure(cfg)
-    summary = triage.call_llm([
-        {
-            "role": "system",
-            "content": (
-                "Diagnose this deterministic Factory metric alarm from the supplied evidence only. "
-                "You have no tools and must not request or perform writes. Return a concise summary."
-            ),
-        },
-        {"role": "user", "content": signal["excerpt"]},
-    ]).strip()
+    with lifecycle.scope(
+        dispatch.EVENTS, "watch", model=cfg.llm_model, harness="factory triage",
+    ) if journal else nullcontext():
+        summary = triage.call_llm([
+            {
+                "role": "system",
+                "content": (
+                    "Diagnose this deterministic Factory metric alarm from the supplied evidence only. "
+                    "You have no tools and must not request or perform writes. Return a concise summary."
+                ),
+            },
+            {"role": "user", "content": signal["excerpt"]},
+        ]).strip()
     signal["diagnosis"] = summary
     signal["excerpt"] += f"\nDiagnosis: {summary}"
 
@@ -751,7 +754,7 @@ def run_pass(
             continue
         if tier == "diagnose":
             try:
-                _diagnose(cfg, signal)
+                _diagnose(cfg, signal, journal=not dry_run)
             except (SystemExit, OSError, ValueError, KeyError, TypeError) as exc:
                 signal["diagnosis"] = f"unavailable ({type(exc).__name__})"
         dispatch.log(

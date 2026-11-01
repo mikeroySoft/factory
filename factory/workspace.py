@@ -1031,31 +1031,35 @@ class Workspace:
         return {key: item for key, item in value.items() if not key.startswith("_")}
 
     @staticmethod
+    def _live_role_identity(cfg: Config, lane: str) -> tuple[str, str]:
+        if lane == "manager" or (lane == "learn" and cfg.manager):
+            identity = cfg.manager_identity()
+            return identity["model"], identity["harness"]
+        if lane == "reviewer":
+            return config.command_model(cfg.reviewer) or "reviewer", (
+                Path(cfg.reviewer[0]).name if cfg.reviewer else "factory review"
+            )
+        if lane in {"triage", "learn"}:
+            return cfg.llm_model, "factory triage"
+        return "deterministic", f"factory {lane}"
+
+    @staticmethod
+    def _live_worker_identity(cfg: Config, activity: dict, case: dict) -> tuple[str, str]:
+        worker = activity.get("worker") or case.get("worker") or "default"
+        command = cfg.workers.get(worker, [])
+        return worker, Path(command[0]).name if command else "harness unavailable"
+
+    @staticmethod
     def _live_identity(cfg: Config, lane: str, execution: dict, case: dict) -> tuple[str, str]:
         activity = execution.get("activity")
         activity = activity if isinstance(activity, dict) else {}
         if execution.get("stage") == "ticket":
             return "No running agent", "factory pipeline"
         if lane == "worker":
-            worker = activity.get("worker") or case.get("worker") or "default"
-            worker = worker if isinstance(worker, str) and worker in cfg.workers else "default"
-            command = cfg.workers.get(worker, [])
-            return worker, Path(command[0]).name if command else "factory worker"
-        if lane == "triage":
-            return cfg.llm_model, "factory triage"
-        if lane == "reviewer":
-            return activity.get("model") or config.command_model(cfg.reviewer) or "reviewer", (
-                activity.get("harness")
-                or (Path(cfg.reviewer[0]).name if cfg.reviewer else "factory review")
-            )
-        if lane == "manager":
-            command = cfg.manager or []
-            return config.command_model(command) or cfg.manager_model or "manager", (
-                Path(command[0]).name if command else "factory manage"
-            )
-        if lane == "learn":
-            return cfg.manager_model or cfg.llm_model, "factory learn"
-        return ("deterministic", f"factory {lane}")
+            agent, harness = Workspace._live_worker_identity(cfg, activity, case)
+        else:
+            agent, harness = Workspace._live_role_identity(cfg, lane)
+        return activity.get("agent") or activity.get("model") or agent, activity.get("harness") or harness
 
     @staticmethod
     def _live_journal_cases(cfg: Config) -> dict[int, dict]:
