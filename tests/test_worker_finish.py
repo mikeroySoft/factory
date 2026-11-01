@@ -139,6 +139,66 @@ class WorkerFinishTest(unittest.TestCase):
         self.assertEqual(row["timeout"], "idle_timeout")
         self.assertIsNone(row["post_finish_idle_seconds"])
 
+    def test_handoff_requires_content_before_final_marker(self):
+        marker = "<!-- factory:handoff-complete -->"
+        for text, complete in (
+            ("Summary\n" + marker, True),
+            ("\nSummary\n" + marker + "\n\n", True),
+            (marker, False),
+            (" \n\t\n" + marker, False),
+            ("Summary\n" + marker + "\nStill working", False),
+            ("Summary\nNot finished", False),
+        ):
+            with self.subTest(text=text):
+                self.handoff.write_text(text)
+                self.assertEqual(dispatch._handoff_complete(self.handoff), complete)
+
+    def test_handoff_size_boundary_and_truncated_marker(self):
+        from factory import results
+
+        suffix = b"\n<!-- factory:handoff-complete -->"
+        for size in (results.ARTIFACT_CAP - 1, results.ARTIFACT_CAP, results.ARTIFACT_CAP + 1):
+            with self.subTest(size=size):
+                self.handoff.write_bytes(b"x" * (size - len(suffix)) + suffix)
+                self.assertEqual(dispatch._handoff_complete(self.handoff), size <= results.ARTIFACT_CAP)
+        # A completion marker in a truncated prefix must not hide trailing unfinished work.
+        prefix_size = results.ARTIFACT_CAP >> 1
+        prefix = b"x" * (prefix_size - len(suffix)) + suffix
+        self.handoff.write_bytes(prefix + b"\n" * (results.ARTIFACT_CAP - prefix_size + 1))
+        self.assertFalse(dispatch._handoff_complete(self.handoff))
+
+    def test_idle_measurement_includes_shutdown_after_last_done_change(self):
+        for natural in (False, True):
+            with self.subTest(natural=natural):
+                clock = [100.0]
+                start = (None, "head", "", None)
+                changed = (None, "new-head", "dirty", (10, 1))
+                proc = mock.MagicMock()
+                proc.returncode = 0 if natural else -15
+                proc.poll.return_value = 0 if natural else None
+
+                def wait(timeout, clock=clock, natural=natural):
+                    clock[0] += timeout
+                    if not natural or clock[0] < 110:
+                        raise subprocess.TimeoutExpired("worker", timeout)
+
+                def stop(_proc, clock=clock):
+                    clock[0] += 2
+
+                proc.wait.side_effect = wait
+                metrics = {}
+                with mock.patch.object(dispatch, "WATCH_POLL", 5), \
+                        mock.patch.object(dispatch.time, "monotonic", side_effect=lambda clock=clock: clock[0]), \
+                        mock.patch.object(dispatch, "_activity", side_effect=[start, changed, changed]), \
+                        mock.patch.object(dispatch.subprocess, "Popen", return_value=proc), \
+                        mock.patch.object(dispatch, "_stop", side_effect=stop):
+                    dispatch.run_worker(
+                        ["worker"], self.wt, self.root / "timing.log", self.handoff,
+                        metrics=metrics, journal=False,
+                    )
+                self.assertEqual(metrics["post_finish_idle_seconds"], 5 if natural else 7)
+                self.assertEqual(metrics["finish"], "natural" if natural else "exit_grace")
+
     def test_worker_prompt_forbids_post_finish_gate_and_mutation(self):
         issue = {"title": "change", "body": "acceptance", "comments": []}
         with mock.patch.object(dispatch, "gh_json", return_value=issue), \
@@ -148,6 +208,32 @@ class WorkerFinishTest(unittest.TestCase):
         self.assertIn("Do not re-run the full gate or the mutation check after the handoff or final commit", prompt)
         self.assertIn("dispatcher's gate is authoritative", prompt)
         self.assertIn("<!-- factory:handoff-complete -->", prompt)
+
+
+class WorkerFinishQuietBoundaryTest(unittest.TestCase):
+    def test_production_quiet_period_stops_at_thirty_seconds_not_before(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            handoff = root / "handoff"
+            handoff.write_text(COMPLETE)
+            clock = [100.0]
+            proc = mock.Mock()
+
+            def wait(timeout):
+                clock[0] += timeout
+                raise subprocess.TimeoutExpired("worker", timeout)
+
+            proc.wait.side_effect = wait
+            start = (None, "head", "", None)
+            current = (None, "head", "", (len(COMPLETE), 1))
+            settings = config.Config(root=root, repo="acme/widgets", exit_grace=300)
+            with mock.patch.object(dispatch, "cfg", settings, create=True), \
+                    mock.patch.object(dispatch, "WATCH_POLL", 1), \
+                    mock.patch.object(dispatch.time, "monotonic", side_effect=lambda: clock[0]), \
+                    mock.patch.object(dispatch, "_activity", return_value=current):
+                finish, done_at = dispatch._watch(proc, root, root / "log", handoff, 200, start)
+            self.assertEqual(finish, "clean_handoff")
+            self.assertEqual(clock[0] - done_at, 30)
 
 
 if __name__ == "__main__":
