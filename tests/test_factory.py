@@ -370,6 +370,21 @@ queued_check_timeout = 123
         defaults = config.Config(root=Path("."), repo="acme/widgets")
         self.assertEqual(defaults.merge_queued_check_timeout, 6 * 60 * 60)
 
+    def test_merge_settings_validate_boundaries(self) -> None:
+        invalid = (
+            '[merge]\nadvisory_checks = [""]\n',
+            '[merge]\nadvisory_checks = [1]\n',
+            '[merge]\nqueued_check_timeout = 0\n',
+            '[merge]\nqueued_check_timeout = true\n',
+        )
+        for text in invalid:
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as d:
+                with self.assertRaises(config.ConfigError):
+                    config.load(make_repo(Path(d), text))
+        with tempfile.TemporaryDirectory() as d:
+            cfg = config.load(make_repo(Path(d), "[merge]\nqueued_check_timeout = 1\n"))
+        self.assertEqual(cfg.merge_queued_check_timeout, 1)
+
 
 
 class HostConfigTest(unittest.TestCase):
@@ -4016,7 +4031,7 @@ class DispatchTest(unittest.TestCase):
             "steps": [],
         }
 
-        merged, calls, escalations, _ = self.merge_check_scenario(
+        merged, calls, escalations, events = self.merge_check_scenario(
             [queued],
             [queued],
             job=job,
@@ -4028,6 +4043,12 @@ class DispatchTest(unittest.TestCase):
         self.assertIn("required check", escalations[0])
         self.assertIn("blocks merge", escalations[0])
         self.assertFalse(any("--remove-label" in call for call in calls))
+        waits = [
+            row["wait"]["reason"] for row in events
+            if row.get("kind") == "wait"
+        ]
+        self.assertIn("ci_runner", waits)
+        self.assertNotIn("ci_pending", waits)
 
     def test_required_pending_and_failing_checks_still_block(self) -> None:
         for bucket in ("pending", "fail"):
@@ -4169,6 +4190,149 @@ class DispatchTest(unittest.TestCase):
         self.assertFalse(merged)
         self.assertEqual(escalations, [])
         self.assertFalse(any(call[:3] == ["gh", "run", "rerun"] for call in calls))
+
+    def test_registered_runner_errors_fail_closed(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+        dispatch.configure(config.Config(root=Path("."), repo="acme/widgets"))
+
+        for returncode in (-1, 1):
+            with self.subTest(returncode=returncode), mock.patch.object(
+                dispatch,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    [], returncode, '{"runners": []}', "",
+                ),
+            ):
+                self.assertIsNone(dispatch._registered_runners())
+
+    def test_queued_check_classifier_scans_past_ineligible_jobs(self) -> None:
+        from datetime import datetime
+        from unittest import mock
+
+        from factory import dispatch
+        dispatch.configure(config.Config(root=Path("."), repo="acme/widgets"))
+
+        def check(job: int, bucket: str = "pending") -> dict:
+            return {
+                "name": f"job {job}",
+                "bucket": bucket,
+                "link": f"https://github.com/acme/widgets/actions/runs/123/job/{job}",
+            }
+
+        old = {
+            "status": "queued",
+            "created_at": "2000-01-01T00:00:00Z",
+            "runner_name": None,
+            "labels": ["self-hosted", "linux", "missing"],
+            "steps": [],
+        }
+        jobs = {
+            3: old,
+            4: old,
+            5: {**old, "created_at": "2000-01-01T00:00:00"},
+            6: {**old, "steps": [{"status": "completed", "conclusion": "success"}]},
+            7: {**old, "status": "completed"},
+            8: {**old, "runner_id": 8},
+            9: {**old, "runner_name": "runner"},
+            10: {**old, "labels": ["linux"]},
+            11: {**old, "created_at": datetime.now(UTC).isoformat()},
+            12: {**old, "labels": ["self-hosted", "linux", "match"]},
+            13: old,
+        }
+        checks = [
+            check(1),
+            check(2),
+            check(3, "pass"),
+            check(4, "skipping"),
+            *(check(job) for job in range(5, 14)),
+        ]
+
+        def run(cmd, **kwargs):
+            job = int(cmd[2].rsplit("/", 1)[1])
+            if job in (1, 2):
+                return subprocess.CompletedProcess(cmd, 1 if job == 1 else -1, "", "")
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(jobs[job]), "")
+
+        runners = [{"labels": ["self-hosted", "linux", "match"]}]
+        with mock.patch.object(dispatch, "run", side_effect=run), \
+                mock.patch.object(dispatch, "_registered_runners", return_value=runners):
+            rows = dispatch.classify_queued_checks(checks)
+
+        self.assertEqual(
+            [row["bucket"] for row in rows],
+            ["pending", "pending", "pass", "skipping", *("pending" for _ in range(8)),
+             "skipped-infra"],
+        )
+
+    def test_cancelled_job_runner_labels_require_stale_unassigned_self_hosted_job(self) -> None:
+        from datetime import datetime
+        from unittest import mock
+
+        from factory import dispatch
+        dispatch.configure(config.Config(root=Path("."), repo="acme/widgets"))
+
+        base = {
+            "run_attempt": 1,
+            "created_at": "2000-01-01T00:00:00Z",
+            "runner_name": None,
+            "labels": ["self-hosted", "linux", "mi300x"],
+            "steps": [],
+        }
+        scenarios = (
+            (base, True),
+            ({**base, "steps": [{"conclusion": "success"}]}, False),
+            ({**base, "runner_name": "runner"}, False),
+            ({**base, "labels": ["linux"]}, False),
+            ({**base, "created_at": datetime.now(UTC).isoformat()}, False),
+        )
+        check = {
+            "name": "cancelled",
+            "bucket": "cancel",
+            "link": "https://github.com/acme/widgets/actions/runs/123/job/456",
+        }
+        for job, expected in scenarios:
+            with self.subTest(job=job), mock.patch.object(
+                dispatch,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0, json.dumps(job), ""),
+            ):
+                evidence = dispatch._infra_cancel(check)
+            self.assertEqual(bool(evidence["runner_labels"]), expected)
+
+    def test_cancelled_check_skipping_preserves_matching_and_required_rows(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+        dispatch.configure(config.Config(root=Path("."), repo="acme/widgets"))
+
+        checks = [
+            {"name": "missing", "bucket": "cancel", "required": False},
+            {"name": "matching", "bucket": "cancel", "required": False},
+            {"name": "required", "bucket": "cancel", "required": True},
+        ]
+        evidence = {
+            "missing": {"run": 1, "attempt": 1, "runner_labels": ["self-hosted", "missing"]},
+            "matching": {"run": 2, "attempt": 1, "runner_labels": ["self-hosted", "match"]},
+            "required": {"run": 3, "attempt": 1, "runner_labels": ["self-hosted", "missing"]},
+        }
+        for value in evidence.values():
+            value.update(
+                check="check", steps_run=False, runner=None, annotation="",
+            )
+        runners = [{"labels": ["self-hosted", "match"]}]
+        with mock.patch.object(
+            dispatch, "_infra_cancel", side_effect=lambda check: evidence[check["name"]],
+        ), mock.patch.object(
+            dispatch, "_registered_runners", return_value=runners,
+        ), mock.patch.object(dispatch, "_run_in_progress", return_value=True):
+            rows = dispatch.triage_cancelled(70, checks, ticket=7)
+
+        self.assertEqual(
+            {row["name"]: row["bucket"] for row in rows},
+            {"missing": "skipped-infra", "matching": "pending", "required": "pending"},
+        )
 
     def test_merge_ignores_wrong_or_missing_base_without_mutation(self) -> None:
         from unittest import mock

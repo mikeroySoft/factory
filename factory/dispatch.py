@@ -3001,7 +3001,7 @@ def signoff() -> str:
     return f"Signed-off-by: {name} <{email}>"
 
 
-def _read_pr_checks(pr: int, *, required: bool) -> list[dict] | None:
+def _read_pr_checks(pr: int, required: bool) -> list[dict] | None:
     fields = "name,bucket,link,completedAt"
     args = ["gh", "pr", "checks", str(pr), "--repo", REPO]
     if required:
@@ -3024,7 +3024,7 @@ def _read_pr_checks(pr: int, *, required: bool) -> list[dict] | None:
 
 def pr_checks(pr: int, *, required: bool = False) -> list[dict] | None:
     """Checks reported for a PR; None means a required-check query failed."""
-    rows = _read_pr_checks(pr, required=required)
+    rows = _read_pr_checks(pr, required)
     if required:
         return None if rows is None else [{**check, "required": True} for check in rows]
     return rows or []
@@ -3115,7 +3115,7 @@ def classify_queued_checks(checks: list[dict]) -> list[dict]:
             created = datetime.fromisoformat(job["created_at"])
         except (ValueError, TypeError, KeyError):
             continue
-        if created.tzinfo is None or created.utcoffset() is None:
+        if created.utcoffset() is None:
             continue
         labels = _runner_labels(job.get("labels"))
         steps_ran = any(
