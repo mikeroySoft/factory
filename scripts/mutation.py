@@ -250,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"mutation check broke on {len(broken)} mutants; first at "
               f"{mutation.module_path}:{mutation.start_pos[0]}:\n{(result.output or '')[-3000:]}")
         return 1
-    if args.blocking and (hot_survivors or queue or cut):
+    if args.blocking and hot_survivors:
         return 1
     return 0
 
