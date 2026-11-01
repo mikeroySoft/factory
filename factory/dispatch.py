@@ -2251,8 +2251,7 @@ def _actionable_mutation(report: str) -> bool:
     return bool(
         re.search(r"(?m)^ran \d+ of \d+ mutants .*; [1-9]\d* survived$", report)
         and re.search(r"(?m)^factory/[^:\n]+:\d+: ", report)
-        and "mutation check broke" not in report
-        and "baseline suite" not in report
+        and not re.search(r"(?m)^mutation check broke on \d+ mutants\b", report)
     )
 
 
