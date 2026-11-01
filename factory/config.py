@@ -309,6 +309,14 @@ class Config:
             raise ConfigError('manager.command: use "@{prompt}" instead of bare "{prompt}" for omp')
         return expand(argv, prompt=str(prompt_path), cwd=str(cwd))
 
+    def manager_identity(self) -> dict[str, str]:
+        """Identity of the command agent, not the dashboard briefing model."""
+        command = self.manager or []
+        return {
+            "model": command_model(command) or "manager",
+            "harness": Path(command[0]).name if command else "factory manage",
+        }
+
 
 def expand(argv: list[str], **values: str) -> list[str]:
     """Substitute `{name}` placeholders; literal braces elsewhere are left alone."""

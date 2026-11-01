@@ -6,8 +6,10 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import unittest
 import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import pairwise
 from pathlib import Path
 
@@ -603,3 +605,226 @@ document.querySelector('[data-trace-canvas]').dispatchEvent(
   new MouseEvent('click', {bubbles:true}));
 """)
                 self.assertFalse(self.state()["tracing"], "stale pan suppression consumed a click")
+
+
+@unittest.skipUnless(BROWSER, "agent-browser is required for mounted live trace tests")
+class WorkspaceLiveMountedTest(unittest.TestCase):
+    browser = WorkspaceTraceMountedTest.browser
+    evaluate = WorkspaceTraceMountedTest.evaluate
+
+    def setUp(self) -> None:
+        self.session = f"live-mounted-{uuid.uuid4().hex}"
+        self.addCleanup(self.browser, "close")
+        self.requests = []
+        now = "2099-01-01T00:00:00Z"
+        self.snapshot = {
+            "schema_version": 1, "refresh_seconds": 3600, "stale_after_seconds": 60,
+            "executions": [
+                {"execution_id": lane, "lane": lane, "ticket": 471,
+                 "agent": f"agent-{lane}", "harness": "omp", "title": "Live ticket",
+                 "entered_at": now, "observed_at": now}
+                for lane in ("triage", "worker", "gate", "reviewer", "manager", "watch", "learn")
+            ],
+        }
+        test = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_GET(self):
+                if self.path.startswith("/api/"):
+                    authenticated = self.headers.get("X-Factory-Access") == "fixture-access"
+                    test.requests.append((self.command, self.path, authenticated))
+                    self.send_response(200 if authenticated else 401)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    body = test.snapshot if self.path.startswith("/api/live-executions") else {
+                        "ticket": 471,
+                        "nodes": [
+                            {"decision_id": "a", "stage": "worker", "chosen": "worker"},
+                            {"decision_id": "b", "stage": "gate", "chosen": "pass"},
+                        ],
+                        "edges": [{"from": "a", "to": "b", "relation": "follows"}],
+                    }
+                    self.wfile.write(json.dumps(body if authenticated else {}).encode())
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write((
+                    '<!doctype html><meta charset="utf-8"><style>'
+                    + (ASSET.parent / "workspace.css").read_text()
+                    + '</style><main id="host"></main><script>'
+                    + "window.errors=[]; window.addEventListener('error', e=>errors.push(e.message));"
+                    + "sessionStorage.setItem('factory-workspace-access','fixture-access');"
+                    + (ASSET.parent / "workspace-api.js").read_text()
+                    + ASSET.read_text()
+                    + """
+const host = document.querySelector('#host');
+WorkspaceTrace.mount(host, {repository:'acme/widgets',ticket:471,
+  onTicket:ticket => WorkspaceTrace.mount(host, {repository:'acme/widgets',ticket})});
+window.refreshLive = async () => {
+  const oldBoard = document.querySelector('[data-trace-board]');
+  document.dispatchEvent(new CustomEvent('workspace-preferences-change',
+    {detail:{key:'livePollSeconds',value:.05}}));
+  await new Promise(resolve => {
+    const observer = new MutationObserver(() => {
+      if (document.querySelector('[data-trace-board]') !== oldBoard) {
+        observer.disconnect(); resolve();
+      }
+    });
+    observer.observe(host, {childList:true});
+  });
+  document.dispatchEvent(new CustomEvent('workspace-preferences-change',
+    {detail:{key:'livePollSeconds',value:3600}}));
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+};
+window.liveState = () => {
+  const board = host.querySelector('[data-trace-board]');
+  const canvas = host.querySelector('[data-trace-canvas]');
+  const bounds = canvas?.getBoundingClientRect();
+  const edges = WorkspaceTrace.liveGraph(host._traceLiveSnapshot.executions).edges;
+  const paths = [...host.querySelectorAll('.trace-edge')];
+  return {
+    lanes:[...host.querySelectorAll('[data-stage]')].map(item => {
+      const rect = item.getBoundingClientRect();
+      return {name:item.dataset.stage,visible:!!bounds && rect.left >= bounds.left &&
+        rect.right <= bounds.right && rect.top >= bounds.top && rect.bottom <= bounds.bottom};
+    }),
+    transform:host.querySelector('[data-trace-scene]')?.style.transform,
+    positions:[...host.querySelectorAll('[data-trace-node]')].map(item =>
+      [item.dataset.traceNode,item.dataset.dragX || '0',item.dataset.dragY || '0']),
+    focus:document.activeElement?.outerHTML,
+    selection:host._traceSelection(),
+    paths:[...host.querySelectorAll('.trace-edge')].map(path => path.getAttribute('d')),
+    wiresVisible:paths.every(path => {
+      const rect = path.getBBox();
+      return path.getTotalLength() > 0 && rect.x >= 0 && rect.y >= 0 &&
+        rect.x + rect.width <= bounds.width && rect.y + rect.height <= bounds.height;
+    }),
+    attachments:paths.every(path => {
+      const edge = edges[+path.closest('[data-trace-edge]').dataset.traceEdge];
+      return [[edge.from,path.getPointAtLength(0)],
+        [edge.to,path.getPointAtLength(path.getTotalLength())]].every(([id,point]) => {
+          const rect = [...host.querySelectorAll('[data-trace-node]')]
+            .find(item => item.dataset.traceNode === id).getBoundingClientRect();
+          return Math.abs(point.y - ((rect.top + rect.bottom) / 2 - bounds.top)) < .1 &&
+            Math.min(Math.abs(point.x - (rect.left - bounds.left)),
+              Math.abs(point.x - (rect.right - bounds.left))) < .1;
+        });
+    }),
+    tracing:board.classList.contains('is-tracing'),
+    errors:window.errors,
+  };
+};
+</script>"""
+                ).encode())
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        def stop():
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
+        self.addCleanup(stop)
+        self.browser("open", f"http://127.0.0.1:{server.server_port}/")
+        self.browser("set", "viewport", "640", "800")
+        self.browser("wait", "[data-trace-select]")
+        self.browser("click", "[data-trace-mode=live]")
+        self.browser("wait", "[data-lane=learn]")
+
+    def test_live_narrow_viewport_fits_all_lanes_and_draws_connected_wires(self) -> None:
+        self.browser("wait", "--fn", "document.querySelectorAll('.trace-edge').length === 6")
+        state = self.evaluate("liveState()")
+        self.assertEqual(len(state["lanes"]), 7)
+        self.assertTrue(all(lane["visible"] for lane in state["lanes"]), state)
+        self.assertTrue(all(path and "NaN" not in path for path in state["paths"]))
+        self.assertTrue(state["wiresVisible"], state)
+        self.assertTrue(state["attachments"], state)
+        self.assertEqual(state["errors"], [])
+        self.browser("click", "[data-trace-zoom-in]")
+        self.assertNotEqual(self.evaluate("liveState().transform"), state["transform"])
+        self.browser("focus", "[data-trace-board]")
+        self.browser("press", "ArrowRight")
+        panned = self.evaluate("liveState().transform")
+        self.browser("press", "0")
+        self.assertNotEqual(self.evaluate("liveState().transform"), panned)
+        self.assertEqual(self.evaluate("liveState().transform"), state["transform"])
+        self.evaluate("""
+document.querySelector('[data-trace-canvas]').dispatchEvent(new WheelEvent('wheel',
+  {bubbles:true,cancelable:true,clientX:100,clientY:200,deltaY:-100}));
+""")
+        self.assertNotEqual(self.evaluate("liveState().transform"), state["transform"])
+        self.browser("click", "[data-trace-fit]")
+        x, y = self.evaluate("""(() => {
+const rect = document.querySelector('[data-trace-canvas]').getBoundingClientRect();
+return [Math.round(rect.left + 5),Math.round(rect.bottom - 5)];
+})()""")
+        self.browser("mouse", "move", str(x), str(y))
+        self.browser("mouse", "down")
+        self.browser("mouse", "move", str(x + 30), str(y - 20))
+        self.browser("mouse", "up")
+        self.evaluate("new Promise(resolve => requestAnimationFrame(resolve))")
+        self.assertNotEqual(self.evaluate("liveState().transform"), state["transform"])
+        self.browser("click", "[data-trace-fit]")
+        self.assertEqual(self.evaluate("liveState().transform"), state["transform"])
+        self.browser("click", "[data-trace-mode=history]")
+        self.browser("wait", "[data-trace-select]")
+        self.browser("wait", ".trace-edge")
+        self.assertEqual(self.evaluate("window.errors"), [])
+
+    def test_live_refresh_keeps_viewport_drag_selection_and_surviving_focus(self) -> None:
+        self.browser("wait", "--fn", "document.querySelectorAll('.trace-edge').length === 6")
+        self.browser("focus", "[data-trace-drag=worker]")
+        self.browser("press", "ArrowRight")
+        self.browser("press", "ArrowDown")
+        self.evaluate("""
+document.querySelector('[data-trace-edge="3"]').dispatchEvent(
+  new MouseEvent('click', {bubbles:true}));
+""")
+        self.browser("focus", "[data-trace-board]")
+        self.browser("press", "+")
+        self.browser("press", "ArrowLeft")
+        self.browser("focus", "[data-trace-drag=worker]")
+        before = self.evaluate("liveState()")
+        self.snapshot["executions"] = [
+            {**row, "lane": "gate"} if row["execution_id"] == "worker" else row
+            for row in self.snapshot["executions"] if row["execution_id"] != "learn"
+        ]
+        self.evaluate("refreshLive()")
+        after = self.evaluate("liveState()")
+        self.assertEqual(after["transform"], before["transform"])
+        self.assertEqual(after["focus"], before["focus"])
+        self.assertIn(["worker", "10", "10"], after["positions"])
+        self.assertEqual(after["selection"], before["selection"])
+        self.assertTrue(after["tracing"])
+        self.assertEqual(self.evaluate("document.querySelector('[data-trace-node=worker]').dataset.lane"), "gate")
+        self.assertEqual(self.evaluate("document.querySelectorAll('[data-trace-node=learn]').length"), 0)
+        self.assertEqual(after["errors"], [])
+        # Rebinding must not accumulate handlers on host/document.
+        for _ in range(3):
+            self.evaluate("refreshLive()")
+        scale = self.evaluate("+document.querySelector('[data-trace-board]').dataset.traceScale")
+        self.browser("click", "[data-trace-zoom-in]")
+        self.assertAlmostEqual(
+            self.evaluate("+document.querySelector('[data-trace-board]').dataset.traceScale"),
+            scale * 1.25,
+        )
+        self.assertTrue(self.requests)
+        self.assertTrue(all(method == "GET" and authenticated for method, _, authenticated in self.requests))
+        self.browser("focus", "[data-trace-mode=live]")
+        self.evaluate("refreshLive()")
+        self.assertEqual(self.evaluate("document.activeElement.dataset.traceMode"), "live")
+        self.browser("focus", "[data-trace-node=worker] [data-trace-ticket]")
+        self.evaluate("refreshLive()")
+        self.assertEqual(
+            self.evaluate("document.activeElement.closest('[data-trace-node]').dataset.traceNode"),
+            "worker",
+        )
+        self.browser("press", "Enter")
+        self.browser("wait", "[data-trace-select]")
+        self.assertEqual(self.evaluate("window.errors"), [])

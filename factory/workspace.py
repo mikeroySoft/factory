@@ -32,6 +32,22 @@ PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 ASSET_ROOT = Path(__file__).resolve().parent
 ACCESS_FILE = "workspace-access.key"
 REFRESH_SECONDS = 60
+LIVE_REFRESH_SECONDS = 10
+LIVE_STALE_SECONDS = 60
+LIVE_LANES = ("triage", "worker", "gate", "reviewer", "manager", "watch", "learn")
+LIVE_STAGE_LANES = {
+    "triage": "triage",
+    "triage-ticket": "triage",
+    "worker": "worker",
+    "gate": "gate",
+    "gate-check": "gate",
+    "review": "reviewer",
+    "reviewer": "reviewer",
+    "manage": "manager",
+    "manager": "manager",
+    "watch": "watch",
+    "learn": "learn",
+}
 EVIDENCE_TIMEOUT = 95
 SNAPSHOT_TIMEOUT = 120
 EVIDENCE_BYTES = 500_001
@@ -1014,6 +1030,140 @@ class Workspace:
     def _public_collection(value: dict) -> dict:
         return {key: item for key, item in value.items() if not key.startswith("_")}
 
+    @staticmethod
+    def _live_role_identity(cfg: Config, lane: str) -> tuple[str, str]:
+        if lane == "manager" or (lane == "learn" and cfg.manager):
+            identity = cfg.manager_identity()
+            return identity["model"], identity["harness"]
+        if lane == "reviewer":
+            return config.command_model(cfg.reviewer) or "reviewer", (
+                Path(cfg.reviewer[0]).name if cfg.reviewer else "factory review"
+            )
+        if lane in {"triage", "learn"}:
+            return cfg.llm_model, "factory triage"
+        return "deterministic", f"factory {lane}"
+
+    @staticmethod
+    def _live_worker_identity(cfg: Config, activity: dict, case: dict) -> tuple[str, str]:
+        worker = activity.get("worker") or case.get("worker") or "default"
+        command = cfg.workers.get(worker, [])
+        return worker, Path(command[0]).name if command else "harness unavailable"
+
+    @staticmethod
+    def _live_identity(cfg: Config, lane: str, execution: dict, case: dict) -> tuple[str, str]:
+        activity = execution.get("activity")
+        activity = activity if isinstance(activity, dict) else {}
+        if execution.get("stage") == "ticket":
+            return "No running agent", "factory pipeline"
+        if lane == "worker":
+            agent, harness = Workspace._live_worker_identity(cfg, activity, case)
+        else:
+            agent, harness = Workspace._live_role_identity(cfg, lane)
+        return activity.get("agent") or activity.get("model") or agent, activity.get("harness") or harness
+
+    @staticmethod
+    def _live_journal_cases(cfg: Config) -> dict[int, dict]:
+        try:
+            entry = briefing.bounded_file(
+                cfg.factory, "events.jsonl", runtime_events.BYTE_LIMIT, tail=True,
+            )
+        except OSError:
+            return {}
+        if entry is None:
+            return {}
+        text, clipped = entry
+        lines = text.splitlines()
+        if clipped and lines:
+            lines.pop(0)
+        cases = {}
+        for line in lines:
+            try:
+                row = json.loads(line)
+            except (ValueError, RecursionError):
+                continue
+            if not isinstance(row, dict) or type(row.get("ticket")) is not int:
+                continue
+            issue = row.get("issue")
+            title = row.get("title") or (
+                issue.get("title") if isinstance(issue, dict) else None
+            )
+            case = cases.setdefault(row["ticket"], {})
+            if isinstance(title, str) and title:
+                case["title"] = title
+            if isinstance(row.get("worker"), str) and row["worker"]:
+                case["worker"] = row["worker"]
+        return cases
+
+    def live_executions(self, slug: str) -> dict:
+        """Fresh local process evidence for the read-only fleet breadboard."""
+        cfg = self.repository_config(slug)
+        runtime = runtime_events.project(cfg.factory / "events.jsonl")
+        with self._lock:
+            observation = self._scopes[slug].get("observation")
+        cases = {
+            row["number"]: row
+            for row in (observation.get("cases", []) if isinstance(observation, dict) else [])
+            if isinstance(row, dict) and type(row.get("number")) is int
+        }
+        journal_cases = self._live_journal_cases(cfg)
+        now = datetime.now(UTC)
+        active = [
+            execution for execution in runtime.get("executions", [])
+            if execution.get("state") == "active" and execution.get("ended_at") is None
+        ]
+        covered = {
+            execution.get("ticket") for execution in active
+            if LIVE_STAGE_LANES.get(execution.get("stage")) not in {None, "watch", "learn"}
+        }
+        rows = []
+        for execution in active:
+            ticket = execution.get("ticket")
+            pipeline = execution.get("stage") == "ticket"
+            lane = "worker" if pipeline else LIVE_STAGE_LANES.get(execution.get("stage"))
+            if lane is None or (pipeline and ticket in covered):
+                continue
+            if lane in {"watch", "learn"}:
+                ticket = None
+            elif type(ticket) is not int or ticket <= 0:
+                continue
+            case = {**journal_cases.get(ticket, {}), **cases.get(ticket, {})}
+            observed_at = execution.get("observed_at")
+            try:
+                observed = datetime.fromisoformat(str(observed_at))
+                stale = (now - observed).total_seconds() > LIVE_STALE_SECONDS
+            except (TypeError, ValueError):
+                stale = True
+            agent, harness = self._live_identity(cfg, lane, execution, case)
+            rows.append({
+                "execution_id": execution["execution_id"],
+                "lane": lane,
+                "ticket": ticket,
+                "title": case.get("title") or (
+                    f"Repository {lane}" if ticket is None else "Title unavailable"
+                ),
+                "agent": agent,
+                "harness": harness,
+                "activity": "pipeline" if pipeline else "stage",
+                "entered_at": execution.get("entered_at"),
+                "observed_at": observed_at,
+                "state": "stale" if stale else "active",
+                "ended_at": None,
+                "stale": stale,
+            })
+        rows.sort(key=lambda row: (
+            LIVE_LANES.index(row["lane"]), row["ticket"] or 0, row["execution_id"]
+        ))
+        return {
+            "schema_version": 1,
+            "repository": slug,
+            "generated_at": now.isoformat(),
+            "refresh_seconds": LIVE_REFRESH_SECONDS,
+            "stale_after_seconds": LIVE_STALE_SECONDS,
+            "lanes": list(LIVE_LANES),
+            "executions": rows,
+            "errors": runtime.get("errors", []),
+        }
+
     def trace(self, slug: str, ticket: int) -> dict:
         cfg = self.repository_config(slug)
         return trace.explain(trace.read_rows(cfg.factory / "events.jsonl"), ticket)
@@ -1696,6 +1846,10 @@ class Handler(BaseHTTPRequestHandler):
             if target.path == "/api/ticket-flow":
                 _query(target.query)
                 self._json(200, ticket_flow_data())
+                return
+            if target.path == "/api/live-executions":
+                values = _query(target.query, optional={"repository"})
+                self._json(200, self.workspace.live_executions(self._repository(values)))
                 return
             if target.path == "/api/trace":
                 values = _query(

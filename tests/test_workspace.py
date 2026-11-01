@@ -792,6 +792,288 @@ class WorkspaceHTTPTest(unittest.TestCase):
         self.assertEqual((status, body["error"]["code"]), (400, "invalid_query"))
 
 
+    def test_live_executions_are_authenticated_read_only_and_cover_every_loop(self) -> None:
+        observed = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        stages = ("triage", "worker", "gate", "review", "manage", "watch", "learn")
+        executions = [
+            {
+                "execution_id": f"execution-{index}",
+                "stage": stage,
+                "ticket": None if stage in {"watch", "learn"} else index,
+                "state": "active",
+                "entered_at": observed,
+                "ended_at": None,
+                "observed_at": observed,
+                "latest_at": observed,
+                "activity": {"worker": "prime"} if stage == "worker" else {},
+            }
+            for index, stage in enumerate(stages, 1)
+        ]
+        executions.append({
+            **executions[1],
+            "execution_id": "ended",
+            "state": "completed",
+            "ended_at": observed,
+        })
+        with self.workspace._lock:
+            self.workspace._scopes[REPOSITORY]["observation"] = {
+                "cases": [
+                    {"number": index, "title": f"Ticket {index}"}
+                    for index in range(1, 8)
+                ]
+            }
+
+        with mock.patch(
+            "factory.workspace.runtime_events.project",
+            return_value={"executions": executions, "errors": []},
+        ) as project:
+            status, _, body = self.request(
+                "GET", f"/api/live-executions?repository={REPOSITORY}"
+            )
+            self.assertEqual((status, body["error"]["code"]), (401, "authentication_required"))
+
+            status, _, body = self.request(
+                "GET", f"/api/live-executions?repository={REPOSITORY}", auth=True
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                body["lanes"],
+                ["triage", "worker", "gate", "reviewer", "manager", "watch", "learn"],
+            )
+            self.assertEqual(
+                [row["lane"] for row in body["executions"]],
+                body["lanes"],
+            )
+            self.assertTrue(all(row["agent"] and row["harness"] for row in body["executions"]))
+            self.assertEqual(
+                [(row["ticket"], row["title"]) for row in body["executions"]],
+                [
+                    *((index, f"Ticket {index}") for index in range(1, 6)),
+                    (None, "Repository watch"),
+                    (None, "Repository learn"),
+                ],
+            )
+            self.assertNotIn("ended", {row["execution_id"] for row in body["executions"]})
+
+            status, _, _ = self.request(
+                "POST",
+                f"/api/live-executions?repository={REPOSITORY}",
+                {},
+                auth=True,
+                intent=True,
+            )
+            self.assertIn(status, {400, 404, 405})
+            project.assert_called_once()
+
+    def test_live_executions_ignore_dispatcher_ticket_scope(self) -> None:
+        observed = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        executions = [
+            {
+                "execution_id": stage,
+                "stage": stage,
+                "ticket": 7,
+                "state": "active",
+                "entered_at": observed,
+                "ended_at": None,
+                "observed_at": observed,
+                "activity": {"worker": "default"} if stage == "worker" else {},
+            }
+            for stage in ("ticket", "worker")
+        ]
+        with mock.patch(
+            "factory.workspace.runtime_events.project",
+            return_value={"executions": executions, "errors": []},
+        ):
+            body = self.workspace.live_executions(REPOSITORY)
+
+        self.assertEqual(
+            [(row["execution_id"], row["lane"]) for row in body["executions"]],
+            [("worker", "worker")],
+        )
+
+
+    def test_live_umbrella_only_ticket_stays_visible_without_a_running_agent(self) -> None:
+        observed = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        execution = {
+            "execution_id": "pipeline",
+            "stage": "ticket",
+            "ticket": 7,
+            "state": "active",
+            "entered_at": "2026-01-01T00:00:00Z",
+            "latest_at": "2026-01-01T00:00:00Z",
+            "observed_at": observed,
+            "ended_at": None,
+        }
+        with mock.patch(
+            "factory.workspace.runtime_events.project",
+            return_value={"executions": [execution], "errors": []},
+        ):
+            body = self.workspace.live_executions(REPOSITORY)
+
+        self.assertEqual(len(body["executions"]), 1)
+        row = body["executions"][0]
+        self.assertEqual((row["ticket"], row["lane"]), (7, "worker"))
+        self.assertEqual(row["activity"], "pipeline")
+        self.assertEqual(row["agent"], "No running agent")
+        self.assertFalse(row["stale"], "A fresh process observation is not an old transition")
+
+    def test_live_worker_harness_excludes_host_launch_wrapper(self) -> None:
+        self.cfg.workers["wrapped"] = ["/opt/bin/omp", "--prompt", "{prompt}"]
+        self.cfg.worker_wrap = ["/opt/bin/resource-wrapper", "--"]
+        observed = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        execution = {
+            "execution_id": "wrapped",
+            "stage": "worker",
+            "ticket": 7,
+            "state": "active",
+            "entered_at": observed,
+            "observed_at": observed,
+            "activity": {"worker": "wrapped"},
+        }
+        with mock.patch(
+            "factory.workspace.runtime_events.project",
+            return_value={"executions": [execution], "errors": []},
+        ):
+            body = self.workspace.live_executions(REPOSITORY)
+
+        row = body["executions"][0]
+        self.assertEqual((row["agent"], row["harness"]), ("wrapped", "omp"))
+
+
+    def test_live_worker_uses_its_own_journaled_profile_not_the_latest_ticket_event(self) -> None:
+        from factory import lifecycle
+
+        self.cfg.workers["actual"] = ["/opt/bin/omp", "{prompt}"]
+        self.cfg.worker_wrap = ["/opt/bin/wrapper", "--"]
+        journal = self.cfg.factory / "events.jsonl"
+        with (
+            mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}),
+            lifecycle.scope(journal, "worker", ticket=7, worker="actual"),
+        ):
+            with journal.open("a") as handle:
+                handle.write(json.dumps({
+                    "event": "attempt", "ticket": 7, "worker": "default",
+                    "title": "Correct profile",
+                }) + "\n")
+            body = self.workspace.live_executions(REPOSITORY)
+
+        row = next(row for row in body["executions"] if row["ticket"] == 7)
+        self.assertEqual((row["agent"], row["harness"]), ("actual", "omp"))
+
+    def test_live_reviewer_uses_journaled_identity_for_second_review(self) -> None:
+        observed = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        execution = {
+            "execution_id": "second-review",
+            "stage": "review",
+            "ticket": 7,
+            "state": "active",
+            "entered_at": observed,
+            "observed_at": observed,
+            "activity": {"model": "second/model", "harness": "second-reviewer"},
+        }
+        with mock.patch(
+            "factory.workspace.runtime_events.project",
+            return_value={"executions": [execution], "errors": []},
+        ):
+            body = self.workspace.live_executions(REPOSITORY)
+
+        row = body["executions"][0]
+        self.assertEqual((row["agent"], row["harness"]), ("second/model", "second-reviewer"))
+
+
+
+    def test_live_learn_records_its_command_identity_before_configuration_changes(self) -> None:
+        from factory import dispatch, learn, lifecycle
+
+        self.cfg.manager = ["/opt/bin/omp", "--model", "command/model", "@{prompt}"]
+        self.cfg.manager_model = "dashboard/briefing"
+        journal = self.cfg.factory / "events.jsonl"
+        seen = {}
+
+        def running(*_args):
+            self.cfg.manager = ["/opt/bin/other", "--model", "changed/model"]
+            seen.update(self.workspace.live_executions(REPOSITORY))
+
+        with (
+            mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}),
+            mock.patch.object(dispatch, "EVENTS", journal, create=True),
+            mock.patch.object(learn, "evidence", return_value=([7], "evidence")),
+            mock.patch.object(learn, "_run", side_effect=running),
+        ):
+            learn.run(self.cfg)
+
+        row = next(row for row in seen["executions"] if row["lane"] == "learn")
+        self.assertEqual((row["agent"], row["harness"]), ("command/model", "omp"))
+        entry = next(row for row in lifecycle.read_events(journal) if row.get("kind") == "enter")
+        self.assertEqual((entry.get("model"), entry.get("harness")), ("command/model", "omp"))
+
+    def test_live_manager_and_learn_never_borrow_the_dashboard_briefing_model(self) -> None:
+        self.cfg.manager_model = "dashboard/briefing"
+        observed = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        for command, expected in (
+            (["/opt/bin/omp", "--model", "command/model"], ("command/model", "omp")),
+            (["/opt/bin/omp"], ("manager", "omp")),
+        ):
+            self.cfg.manager = command
+            for stage in ("manage", "learn"):
+                with self.subTest(command=command, stage=stage), mock.patch(
+                    "factory.workspace.runtime_events.project",
+                    return_value={"executions": [{
+                        "execution_id": stage, "stage": stage, "ticket": 7,
+                        "state": "active", "entered_at": observed, "observed_at": observed,
+                    }], "errors": []},
+                ):
+                    [row] = self.workspace.live_executions(REPOSITORY)["executions"]
+                    self.assertEqual((row["agent"], row["harness"]), expected)
+
+    def test_live_worker_keeps_a_removed_recorded_profile(self) -> None:
+        from factory import lifecycle
+
+        journal = self.cfg.factory / "events.jsonl"
+        with (
+            mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}),
+            lifecycle.scope(journal, "worker", ticket=7, worker="removed-profile"),
+        ):
+            [row] = self.workspace.live_executions(REPOSITORY)["executions"]
+        self.assertEqual((row["agent"], row["harness"]), ("removed-profile", "harness unavailable"))
+
+    def test_live_watch_distinguishes_model_diagnosis_from_deterministic_activity(self) -> None:
+        from factory import dispatch, lifecycle, watch
+
+        seen = {}
+        journal = self.cfg.factory / "events.jsonl"
+
+        def diagnose(*_args):
+            seen.update(self.workspace.live_executions(REPOSITORY))
+            return "diagnosis"
+
+        with (
+            mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}),
+            mock.patch.object(dispatch, "EVENTS", journal, create=True),
+            mock.patch("factory.triage.call_llm", side_effect=diagnose),
+            lifecycle.scope(journal, "watch"),
+        ):
+            watch._diagnose(self.cfg, {"excerpt": "alarm"})
+
+        identities = {(row["agent"], row["harness"]) for row in seen["executions"]}
+        self.assertIn(("deterministic", "factory watch"), identities)
+        self.assertIn((self.cfg.llm_model, "factory triage"), identities)
+
+    def test_watch_dry_run_diagnosis_does_not_journal_execution_identity(self) -> None:
+        from factory import dispatch, watch
+
+        journal = self.cfg.factory / "events.jsonl"
+        before = journal.read_bytes() if journal.exists() else None
+        with (
+            mock.patch.object(dispatch, "EVENTS", journal, create=True),
+            mock.patch("factory.triage.call_llm", return_value="diagnosis"),
+        ):
+            signal = {"excerpt": "alarm"}
+            watch._diagnose(self.cfg, signal, journal=False)
+        self.assertEqual(signal["diagnosis"], "diagnosis")
+        self.assertEqual(journal.read_bytes() if journal.exists() else None, before)
+
+
 class WorkspaceRegistryTest(unittest.TestCase):
     def test_registered_main_overrides_same_slug_startup_but_key_stays_startup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

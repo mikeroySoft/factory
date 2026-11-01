@@ -2204,8 +2204,12 @@ def review(
 ) -> tuple[str, str]:
     """Run one diff review against the exact head that passed the gate."""
     started = time.monotonic()
-    model = config.command_model(reviewer or cfg.reviewer)
-    with lifecycle.scope(EVENTS, "review", ticket=n) as execution:
+    command = reviewer or cfg.reviewer
+    model = config.command_model(command)
+    harness = Path(command[0]).name if command else "factory review"
+    with lifecycle.scope(
+        EVENTS, "review", ticket=n, model=model, harness=harness,
+    ) as execution:
         result = run_reviewer(
             wt, review_prompt(n, gate_report), expected_head,
             subject=f"#{n}" if role == "primary" else f"#{n} {role}", reviewer=reviewer,

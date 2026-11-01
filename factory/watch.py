@@ -532,20 +532,23 @@ def band_signals(
     return alarms
 
 
-def _diagnose(cfg: config.Config, signal: dict) -> None:
+def _diagnose(cfg: config.Config, signal: dict, *, journal: bool = True) -> None:
     from factory import triage
 
     triage.configure(cfg)
-    summary = triage.call_llm([
-        {
-            "role": "system",
-            "content": (
-                "Diagnose this deterministic Factory metric alarm from the supplied evidence only. "
-                "You have no tools and must not request or perform writes. Return a concise summary."
-            ),
-        },
-        {"role": "user", "content": signal["excerpt"]},
-    ]).strip()
+    with lifecycle.scope(
+        dispatch.EVENTS, "watch", model=cfg.llm_model, harness="factory triage",
+    ) if journal else nullcontext():
+        summary = triage.call_llm([
+            {
+                "role": "system",
+                "content": (
+                    "Diagnose this deterministic Factory metric alarm from the supplied evidence only. "
+                    "You have no tools and must not request or perform writes. Return a concise summary."
+                ),
+            },
+            {"role": "user", "content": signal["excerpt"]},
+        ]).strip()
     signal["diagnosis"] = summary
     signal["excerpt"] += f"\nDiagnosis: {summary}"
 
@@ -712,9 +715,10 @@ def _age(at: str) -> timedelta:
 
 def run_pass(
     cfg: config.Config, dry_run: bool = False, now: datetime | None = None,
+    events: list[dict] | None = None,
 ) -> list[dict]:
     """Log, diagnose, file/comment, and close configured signals."""
-    events = lifecycle.read_events(dispatch.EVENTS)
+    events = lifecycle.read_events(dispatch.EVENTS) if events is None else events
     if any(band.metric == "revert_rate_by_tier" for band in cfg.watch_bands):
         stats.configure(cfg)
         try:
@@ -750,7 +754,7 @@ def run_pass(
             continue
         if tier == "diagnose":
             try:
-                _diagnose(cfg, signal)
+                _diagnose(cfg, signal, journal=not dry_run)
             except (SystemExit, OSError, ValueError, KeyError, TypeError) as exc:
                 signal["diagnosis"] = f"unavailable ({type(exc).__name__})"
         dispatch.log(
@@ -881,8 +885,9 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--dry-run", action="store_true", help="print what would be filed or closed; no gh call, no journal row")
     args = parser.parse_args(argv)
     dispatch.configure(config.load())
-    with nullcontext() if args.dry_run else lifecycle.scope(dispatch.EVENTS, "watch", lazy=True):
-        run_pass(dispatch.cfg, args.dry_run)
+    events = lifecycle.read_events(dispatch.EVENTS)
+    with nullcontext() if args.dry_run else lifecycle.scope(dispatch.EVENTS, "watch"):
+        run_pass(dispatch.cfg, args.dry_run, events=events)
     if not args.dry_run:
         lifecycle.record_stage_success(dispatch.EVENTS, "watch")
     return 0

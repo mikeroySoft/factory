@@ -3457,6 +3457,35 @@ class DispatchTest(unittest.TestCase):
             self.assertEqual(verdict, "APPROVE")
             sleep.assert_called_once_with(2.5)
 
+    def test_second_review_records_selected_model_and_harness_on_enter(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch, lifecycle
+
+        result = {
+            "verdict": "APPROVE", "findings": "", "usage": None, "accepted": True,
+            "parsed": True, "reason": None, "returncode": 0, "actual_head": "a" * 40,
+            "counts": None, "rejection_reason": None, "failure_reason": None,
+        }
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            command = ["second-reviewer", "--model", "second/model"]
+            dispatch.configure(config.Config(root=repo, repo="acme/widgets"))
+            with mock.patch.object(dispatch, "run_reviewer", return_value=result):
+                dispatch.review(
+                    repo, 7, "PASS", result["actual_head"],
+                    role="second", reviewer=command,
+                )
+
+            enter = next(
+                row for row in lifecycle.read_events(dispatch.EVENTS)
+                if row.get("event") == "lifecycle"
+                and row.get("stage") == "review"
+                and row.get("kind") == "enter"
+            )
+        self.assertEqual((enter.get("model"), enter.get("harness")), ("second/model", "second-reviewer"))
+
+
     def test_worker_round_records_normalized_worker_usage(self) -> None:
         from unittest import mock
 

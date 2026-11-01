@@ -712,5 +712,38 @@ class ControlBandWatchTest(unittest.TestCase):
         self.assertEqual(model.call_count, 1)
         self.assertEqual(self.gh.calls, [])
 
+
+class WatchLifecycleTest(unittest.TestCase):
+    def test_main_exposes_repo_wide_watch_without_borrowing_a_ticket(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config.Config(Path(directory), REPO)
+            cfg.factory.mkdir()
+            lifecycle.append(
+                cfg.factory / "events.jsonl",
+                {"event": "merged", "ticket": 17, "at": lifecycle._now()},
+            )
+            seen = {}
+
+            def observe(_cfg, _dry_run, **_kwargs):
+                execution = lifecycle.current()
+                seen.update(stage=execution.stage, ticket=execution.ticket)
+                return []
+
+            with mock.patch.object(config, "load", return_value=cfg), \
+                    mock.patch.object(watch, "run_pass", side_effect=observe), \
+                    mock.patch.object(lifecycle, "record_stage_success"):
+                watch.main([])
+            rows = [
+                row for row in lifecycle.read_events(cfg.factory / "events.jsonl")
+                if row.get("event") == "lifecycle" and row.get("stage") == "watch"
+            ]
+
+        self.assertEqual(seen, {"stage": "watch", "ticket": None})
+        self.assertEqual(
+            [(row["kind"], row.get("ticket")) for row in rows],
+            [("enter", None), ("exit", None)],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2,6 +2,7 @@
   'use strict';
 
   const STAGES = ['ticket','triage','binding','admission','worker_select','claim','plan','attempt','gate','review','approved','manager','merge','merged','wontfix','escalate','learn','curate'];
+  const LIVE_LANES = ['triage','worker','gate','reviewer','manager','watch','learn'];
   const esc = value => String(value ?? '').replace(/[&<>'"]/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[character]));
   const array = value => Array.isArray(value) ? value : [];
   const object = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
@@ -284,6 +285,105 @@
     </article>`;
   }
 
+  const modeMarkup = mode => `<div class="trace-modes" role="tablist" aria-label="Breadboard mode">
+    <button type="button" role="tab" data-trace-mode="history" aria-selected="${mode === 'history'}">Historical</button>
+    <button type="button" role="tab" data-trace-mode="live" aria-selected="${mode === 'live'}">Live</button>
+  </div>`;
+  const elapsedLabel = seconds => {
+    const value = Math.max(0, Math.floor(Number(seconds) || 0));
+    if (value < 60) return `${value}s`;
+    if (value < 3600) return `${Math.floor(value / 60)}m ${value % 60}s`;
+    return `${Math.floor(value / 3600)}h ${Math.floor(value % 3600 / 60)}m`;
+  };
+  const liveTime = (row, now) => {
+    const entered = new Date(row.entered_at || '').valueOf();
+    const elapsed = elapsedLabel(Number.isFinite(entered) ? (now - entered) / 1000 : 0);
+    const status = row.stale ? 'Stale' : row.activity === 'pipeline' ? 'Pipeline activity' : 'Running';
+    return `${elapsed} elapsed · ${status}`;
+  };
+  function liveRows(snapshot, now = Date.now()) {
+    const value = object(snapshot);
+    const threshold = Number.isFinite(Number(value.stale_after_seconds)) && Number(value.stale_after_seconds) > 0
+      ? Number(value.stale_after_seconds) : 60;
+    return array(value.executions).filter(item => {
+      const row = object(item);
+      const loop = ['watch','learn'].includes(row.lane) && row.ticket == null;
+      return LIVE_LANES.includes(row.lane) && (positive(row.ticket) || loop) && !row.ended_at
+        && ['active','stale'].includes(String(row.state || 'active'));
+    }).map(item => {
+      const row = object(item);
+      const observed = new Date(row.observed_at || '').valueOf();
+      const stale = row.stale === true || row.state === 'stale'
+        || !Number.isFinite(observed) || (now - observed) / 1000 > threshold;
+      return {...row, stale, status:stale ? 'stale' : row.activity === 'pipeline' ? 'pipeline' : 'running'};
+    });
+  }
+  function liveGraph(rows) {
+    const nodes = rows.map(row => ({...row, decision_id:String(row.execution_id), stage:row.lane}));
+    const edges = [];
+    const tickets = new Map();
+    for (const row of rows) {
+      const ticket = positive(row.ticket);
+      if (!ticket) continue;
+      if (!tickets.has(ticket)) tickets.set(ticket, []);
+      tickets.get(ticket).push(row);
+    }
+    for (const members of tickets.values()) {
+      members.sort((left, right) => LIVE_LANES.indexOf(left.lane) - LIVE_LANES.indexOf(right.lane)
+        || new Date(left.entered_at || 0) - new Date(right.entered_at || 0)
+        || String(left.execution_id).localeCompare(String(right.execution_id)));
+      for (let index = 1; index < members.length; index += 1) {
+        if (members[index - 1].lane !== members[index].lane) {
+          edges.push({from:String(members[index - 1].execution_id),to:String(members[index].execution_id),relation:'follows'});
+        }
+      }
+    }
+    return {nodes,edges};
+  }
+  function boardMarkup(groups, label, relations, relationsLabel, nodesLabel = label) {
+    return `<div class="trace-board" data-trace-board tabindex="0" aria-label="${label}">
+        <div class="trace-viewport-controls" data-trace-viewport-controls role="toolbar" aria-label="Graph viewport controls">
+          <button type="button" data-trace-zoom-out aria-label="Zoom out" aria-keyshortcuts="-">−</button>
+          <button type="button" data-trace-fit aria-label="Reset and fit graph" aria-keyshortcuts="0">Fit</button>
+          <button type="button" data-trace-zoom-in aria-label="Zoom in" aria-keyshortcuts="+">+</button>
+          <output data-trace-zoom aria-live="polite">100%</output>
+          <button type="button" data-trace-fullscreen aria-label="Enter fullscreen" aria-keyshortcuts="F">Full screen</button>
+        </div>
+        <div class="trace-canvas" data-trace-canvas>
+          <svg class="trace-lines" data-trace-lines aria-hidden="true"></svg>
+          <div class="trace-scene" data-trace-scene><div class="trace-stages" role="list" aria-label="${nodesLabel}">${groups}</div></div>
+        </div>
+        <ol class="sr-only" aria-label="${relationsLabel}">${relations}</ol>
+      </div>`;
+  }
+  function liveMarkup(snapshot, options = {}) {
+    const value = object(snapshot);
+    const now = Number.isFinite(Number(options.now)) ? Number(options.now) : Date.now();
+    const rows = liveRows(value, now);
+    const graph = liveGraph(rows);
+    const groups = LIVE_LANES.map(lane => {
+      const members = rows.filter(row => row.lane === lane);
+      const cards = members.map(row => {
+        const ticket = positive(row.ticket);
+        const details = `<span class="trace-node-meta"><b>${esc(row.agent || 'agent unavailable')}</b><i>${esc(row.harness || 'harness unavailable')}</i></span>
+            <strong>${ticket ? `#${ticket} · ` : ''}${esc(row.title || 'Title unavailable')}</strong>
+            <time>${esc(liveTime(row, now))}</time>`;
+        return `<article class="trace-node live-execution${row.stale ? ' is-stale' : ''}" data-trace-node="${esc(row.execution_id)}" data-lane="${esc(lane)}" data-at="${esc(row.entered_at || '')}" data-status="${row.status}">
+          <button class="trace-node-drag" type="button" data-trace-drag="${esc(row.execution_id)}" aria-label="${esc(ticket ? `Drag ticket #${ticket}` : `Drag ${lane} loop`)}">Drag</button>
+          ${ticket ? `<button class="live-execution-open" type="button" data-trace-ticket="${ticket}">${details}</button>` : `<div class="live-execution-open">${details}</div>`}
+        </article>`;
+      }).join('');
+      return `<section class="trace-stage" data-stage="${lane}"><h2>${esc(stageLabel(lane))}<span>${members.length}</span></h2><div class="trace-stage-nodes">${cards || '<p class="empty">No active executions</p>'}</div></section>`;
+    }).join('');
+    const relations = graph.edges.map(edge => `<li>follows: ${esc(edge.from)} → ${esc(edge.to)}</li>`).join('');
+    return `<section class="trace-tool live-breadboard">
+      ${modeMarkup('live')}
+      <p class="error" data-live-error${options.error ? '' : ' hidden'}>${esc(options.error || '')}</p>
+      <div class="trace-status"><p><strong>Live fleet:</strong> ${rows.length} active execution${rows.length === 1 ? '' : 's'}</p><p>Updated ${esc(value.generated_at || 'time unavailable')}</p></div>
+      ${boardMarkup(groups, 'Live executions by pipeline loop', relations, 'Live ticket movement')}
+    </section>`;
+  }
+
   function markup(graph, options = {}) {
     const value = object(graph);
     const edges = array(value.edges);
@@ -314,6 +414,7 @@
     const coverage = array(value.coverage);
     return `<section class="trace-tool" data-ticket="${ticket || ''}">
       <form class="trace-picker" data-trace-picker>
+        ${modeMarkup('history')}
         <label for="trace-ticket">Ticket</label>
         <input id="trace-ticket" name="ticket" type="number" min="1" step="1" required value="${ticket || ''}" list="trace-recent-tickets">
         <button class="btn btn-accent" type="submit">Open trace</button>
@@ -326,20 +427,7 @@
       <label class="trace-scrubber"><span>Replay through <output data-trace-time>${esc(dated.at(-1)?.at || 'time not recorded')}</output></span><input type="range" min="0" max="${Math.max(0, dated.length - 1)}" value="${Math.max(0, dated.length - 1)}" step="1" data-trace-range ${dated.length < 2 ? 'disabled' : ''}></label>
       ${loopMarkup ? `<div class="trace-loops" aria-label="Retry loops">${loopMarkup}</div>` : ''}
       <ul class="trace-legend" aria-label="Relationship legend">${legend}</ul>
-      <div class="trace-layout"><div class="trace-board" data-trace-board tabindex="0" aria-label="Decision graph viewport">
-        <div class="trace-viewport-controls" data-trace-viewport-controls role="toolbar" aria-label="Graph viewport controls">
-          <button type="button" data-trace-zoom-out aria-label="Zoom out" aria-keyshortcuts="-">−</button>
-          <button type="button" data-trace-fit aria-label="Reset and fit graph" aria-keyshortcuts="0">Fit</button>
-          <button type="button" data-trace-zoom-in aria-label="Zoom in" aria-keyshortcuts="+">+</button>
-          <output data-trace-zoom aria-live="polite">100%</output>
-          <button type="button" data-trace-fullscreen aria-label="Enter fullscreen" aria-keyshortcuts="F">Full screen</button>
-        </div>
-        <div class="trace-canvas" data-trace-canvas>
-          <svg class="trace-lines" data-trace-lines aria-hidden="true"></svg>
-          <div class="trace-scene" data-trace-scene><div class="trace-stages" role="list" aria-label="Decision nodes in pipeline order">${groups}</div></div>
-        </div>
-        <ol class="sr-only" aria-label="Recorded relationships">${relations}</ol>
-      </div><aside class="trace-detail" data-trace-detail aria-live="polite"><p class="muted">Select a decision node for its evidence.</p></aside></div>
+      <div class="trace-layout">${boardMarkup(groups, 'Decision graph viewport', relations, 'Recorded relationships', 'Decision nodes in pipeline order')}<aside class="trace-detail" data-trace-detail aria-live="polite"><p class="muted">Select a decision node for its evidence.</p></aside></div>
       ${coverage.length ? `<section class="trace-coverage"><h2>Not recorded</h2><ul>${coverage.map(stage => `<li>${esc(stageLabel(stage))}: not recorded</li>`).join('')}</ul></section>` : ''}
       ${end ? `<section class="trace-terminal" data-terminal="${end.kind}"><span>Terminal</span><strong>${esc(end.label)}</strong><p>${esc(end.detail || '')}</p></section>` : ''}` : ''}
     </section>`;
@@ -390,6 +478,8 @@
   }
 
   function bind(host, graph, options) {
+    const listeners = new AbortController();
+    const listenerOptions = {signal:listeners.signal};
     const values = new Map(array(graph?.nodes).map(item => [String(item.decision_id), item]));
     const edges = array(graph?.edges);
     const bundled = new Set(bundleEdges(array(graph?.nodes), edges));
@@ -406,8 +496,22 @@
     const reduceMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
     const wires = new Map();
     let cutoff = dated.length ? new Date(dated.at(-1).dataset.at).valueOf() : Infinity;
-    let pinned = null, hovered = null, scheduleFrame = null, motionFrame = null, ribbonLayer = null, edgeLayer = null;
-    let viewport = {scale:1,x:0,y:0}, fitted = true;
+    const selection = options.selection;
+    let pinned = selection?.kind === 'edge'
+      ? {kind:'edge',id:edges.findIndex(edge => edge.from === selection.from && edge.to === selection.to)}
+      : selection || null;
+    if (pinned?.kind === 'edge' && pinned.id < 0) pinned = null;
+    if (pinned?.kind === 'node' && !values.has(String(pinned.id))) pinned = null;
+    let hovered = null, scheduleFrame = null, motionFrame = null, ribbonLayer = null, edgeLayer = null;
+    let viewport = options.viewState?.viewport || {scale:1,x:0,y:0}, fitted = !options.viewState;
+    host._traceSelection = () => pinned?.kind === 'edge'
+      ? {kind:'edge',from:edges[pinned.id]?.from,to:edges[pinned.id]?.to} : pinned;
+    host._traceViewState = () => canvas && scene ? ({
+      viewport:{...viewport},
+      positions:[...host.querySelectorAll('[data-trace-node]')].map(item => ({
+        id:item.dataset.traceNode,x:Number(item.dataset.dragX || 0),y:Number(item.dataset.dragY || 0),
+      })),
+    }) : null;
 
     const svgNode = (tag, attributes = {}) => {
       const element = document.createElementNS('http://www.w3.org/2000/svg', tag);
@@ -629,6 +733,11 @@
     const clearHighlight = () => { pinned = null; hovered = null; applyHighlight(); };
 
     host.addEventListener('click', event => {
+      const mode = event.target.closest('[data-trace-mode]');
+      if (mode && typeof options.onMode === 'function') {
+        options.onMode(mode.dataset.traceMode);
+        return;
+      }
       const selected = event.target.closest('[data-trace-select]');
       if (selected) {
         select(selected.dataset.traceSelect);
@@ -642,7 +751,7 @@
       const copy = event.target.closest('[data-copy]');
       if (copy && navigator.clipboard) { navigator.clipboard.writeText(copy.dataset.copy).catch(() => {}); return; }
       if (event.target.closest('[data-trace-board]') && !event.target.closest('[data-trace-node],[data-trace-viewport-controls]')) clearHighlight();
-    });
+    }, listenerOptions);
     host.addEventListener('pointerover', event => {
       const target = event.target.closest?.('[data-trace-edge],[data-trace-node]');
       if (!target || target.contains(event.relatedTarget)) return;
@@ -650,12 +759,12 @@
         ? {kind:'edge',id:Number(target.dataset.traceEdge)}
         : {kind:'node',id:target.dataset.traceNode};
       applyHighlight();
-    });
+    }, listenerOptions);
     host.addEventListener('pointerout', event => {
       const target = event.target.closest?.('[data-trace-edge],[data-trace-node]');
       if (!target || target.contains(event.relatedTarget)) return;
       hovered = null; applyHighlight();
-    });
+    }, listenerOptions);
     const onEscape = event => {
       if (event.key === 'Escape' && (pinned || hovered)) { clearHighlight(); event.preventDefault(); }
     };
@@ -669,19 +778,19 @@
       }
       fitGraph();
     };
-    document.addEventListener('keydown', onEscape);
-    document.addEventListener('fullscreenchange', onFullscreen);
+    document.addEventListener('keydown', onEscape, listenerOptions);
+    document.addEventListener('fullscreenchange', onFullscreen, listenerOptions);
     host.querySelector('[data-trace-zoom-in]')?.addEventListener('click', () => zoomGraph(1.25));
     host.querySelector('[data-trace-zoom-out]')?.addEventListener('click', () => zoomGraph(.8));
     host.querySelector('[data-trace-fit]')?.addEventListener('click', fitGraph);
     host.querySelector('[data-trace-fullscreen]')?.addEventListener('click', () => { void toggleFullscreen(board); });
-    board?.addEventListener('wheel', event => {
+    board?.addEventListener?.('wheel', event => {
       if (event.target.closest('[data-trace-viewport-controls]')) return;
       const rect = canvas.getBoundingClientRect();
       zoomGraph(Math.exp(-event.deltaY * .0015), {x:event.clientX - rect.left,y:event.clientY - rect.top});
       event.preventDefault();
     }, {passive:false});
-    board?.addEventListener('pointerdown', event => {
+    board?.addEventListener?.('pointerdown', event => {
       if (event.button !== 0 || event.target.closest('[data-trace-node],[data-trace-edge],[data-trace-viewport-controls]')) return;
       board.focus({preventScroll:true});
       const start = {x:event.clientX,y:event.clientY,viewport};
@@ -709,7 +818,7 @@
       board.addEventListener('pointermove', move); board.addEventListener('pointerup', stop); board.addEventListener('pointercancel', stop);
       event.preventDefault();
     });
-    board?.addEventListener('keydown', event => {
+    board?.addEventListener?.('keydown', event => {
       const key = viewportShortcut(event);
       if (!key) return;
       if (key === '+' || key === '=') zoomGraph(1.25);
@@ -750,6 +859,8 @@
         item.style.transform = `translate(${x}px,${y}px)`;
         scheduleEdges();
       };
+      const position = options.viewState?.positions.find(position => position.id === item.dataset.traceNode);
+      if (position) move(position.x, position.y);
       handle.addEventListener('pointerdown', event => {
         const startX = event.clientX, startY = event.clientY;
         const originX = Number(item.dataset.dragX || 0), originY = Number(item.dataset.dragY || 0);
@@ -775,12 +886,12 @@
     if (observer && board) observer.observe(board);
     host._traceCleanup = () => {
       observer?.disconnect();
-      document.removeEventListener('keydown', onEscape);
-      document.removeEventListener('fullscreenchange', onFullscreen);
+      listeners.abort();
       if (scheduleFrame != null) cancelAnimationFrame(scheduleFrame);
       if (motionFrame != null) cancelAnimationFrame(motionFrame);
     };
     if (buttons.length) select(buttons[0].dataset.traceSelect);
+    if (options.viewState) applyViewport(viewport);
     applyVisibility();
   }
 
@@ -790,7 +901,28 @@
     bind(host, graph, options);
   }
 
-  async function mount(host, options = {}) {
+  function stopLive(host) {
+    clearTimeout(host._traceLiveTimer);
+    clearInterval(host._traceAgeTimer);
+    host._traceLiveListeners?.abort();
+    host._traceLiveFetch?.abort();
+    host._traceLiveSnapshot = null;
+    host._traceLiveError = '';
+    host._traceLiveTimer = null;
+  }
+
+  function dispose(host) {
+    if (!host) return;
+    stopLive(host);
+    host._traceMode = null;
+    host._traceRequest = Symbol('disposed');
+    host._traceCleanup?.();
+  }
+
+  async function loadHistory(host, options) {
+    stopLive(host);
+    host._traceMode = 'history';
+    host._traceRequest = Symbol('history');
     const ticket = positive(options.ticket);
     if (!ticket) {
       render(host, {ticket:null,nodes:[],edges:[],loops:[],coverage:[]}, options);
@@ -806,13 +938,141 @@
       if (host._traceRequest === request && host.isConnected) render(host, graph, options);
     } catch (error) {
       if (host._traceRequest === request && host.isConnected) {
-        host.innerHTML = `<p class="error">${esc(error.message || error)}</p>`;
+        render(host, {ticket,nodes:[],edges:[],loops:[],coverage:[]}, options);
+        host.querySelector('.trace-modes')?.insertAdjacentHTML('afterend', `<p class="error">${esc(error.message || error)}</p>`);
       }
     }
   }
 
+  function renderLive(host, snapshot, options) {
+    const now = Date.now();
+    const rows = liveRows(snapshot, now);
+    const graph = liveGraph(rows);
+    const previousBoard = host.querySelector('[data-trace-board]');
+    const scroll = [previousBoard?.scrollLeft || 0, previousBoard?.scrollTop || 0];
+    const selection = host._traceSelection?.();
+    const viewState = previousBoard ? host._traceViewState?.() : null;
+    const active = document.activeElement;
+    const attribute = [...(active?.attributes || [])].find(item => item.name.startsWith('data-trace-'));
+    const focus = attribute && host.contains?.(active) ? {
+      node:active.closest('[data-trace-node]')?.dataset.traceNode,
+      name:attribute.name,value:attribute.value,
+    } : null;
+    host._traceCleanup?.();
+    host.innerHTML = liveMarkup(snapshot, {...options,now,error:host._traceLiveError});
+    bind(host, graph, {...options,selection,viewState});
+    const board = host.querySelector('[data-trace-board]');
+    if (board) { board.scrollLeft = scroll[0]; board.scrollTop = scroll[1]; }
+    if (focus) {
+      const root = focus.node
+        ? [...host.querySelectorAll('[data-trace-node]')].find(item => item.dataset.traceNode === focus.node) : host;
+      [...(root?.querySelectorAll(`[${focus.name}]`) || [])]
+        .find(item => item.getAttribute(focus.name) === focus.value)?.focus({preventScroll:true});
+    }
+    host._traceLiveStates = rows.map(row => `${row.execution_id}:${row.status}`).join(',');
+  }
+
+  function ageLive(host, options) {
+    const snapshot = host._traceLiveSnapshot;
+    if (!snapshot || !host.isConnected || document.visibilityState !== 'visible') return;
+    const now = Date.now(), rows = liveRows(snapshot, now);
+    if (rows.map(row => `${row.execution_id}:${row.status}`).join(',') !== host._traceLiveStates) {
+      renderLive(host, snapshot, options);
+    } else {
+      const byId = new Map(rows.map(row => [String(row.execution_id), row]));
+      host.querySelectorAll('[data-trace-node]').forEach(item => {
+        const row = byId.get(item.dataset.traceNode), time = item.querySelector('time');
+        if (row && time) time.textContent = liveTime(row, now);
+      });
+    }
+  }
+
+  function scheduleLive(host, snapshot, options) {
+    clearTimeout(host._traceLiveTimer);
+    if (document.visibilityState !== 'visible') return;
+    const configured = Number(options.refreshSeconds);
+    const supplied = Number(snapshot?.refresh_seconds);
+    const seconds = configured > 0 ? configured : supplied > 0 ? supplied : 10;
+    host._traceLiveTimer = setTimeout(() => {
+      if (host.isConnected && host._traceMode === 'live') {
+        loadLive(host, options);
+      }
+    }, seconds * 1000);
+  }
+
+  async function loadLive(host, options) {
+    if (host._traceMode !== 'live') {
+      stopLive(host);
+      host._traceMode = 'live';
+      host._traceLiveListeners = new AbortController();
+      const listenerOptions = {signal:host._traceLiveListeners.signal};
+      document.addEventListener('visibilitychange', () => {
+        clearTimeout(host._traceLiveTimer);
+        host._traceLiveFetch?.abort();
+        host._traceRequest = Symbol('visibility');
+        if (document.visibilityState === 'visible') {
+          ageLive(host, options);
+          loadLive(host, options);
+        }
+      }, listenerOptions);
+      document.addEventListener('workspace-preferences-change', event => {
+        if (event.detail?.key === 'livePollSeconds') {
+          options.refreshSeconds = event.detail.value;
+          scheduleLive(host, host._traceLiveSnapshot, options);
+        }
+      }, listenerOptions);
+      host._traceAgeTimer = setInterval(() => ageLive(host, options), 1000);
+      host._traceCleanup?.();
+      host.innerHTML = `${modeMarkup('live')}<p class="empty">Loading live executions…</p>`;
+      bind(host, {nodes:[],edges:[]}, options);
+    }
+    if (document.visibilityState !== 'visible') return;
+    clearTimeout(host._traceLiveTimer);
+    host._traceLiveFetch?.abort();
+    host._traceLiveFetch = new AbortController();
+    const request = Symbol('live');
+    host._traceRequest = request;
+    const query = new URLSearchParams();
+    if (options.repository) query.set('repository', options.repository);
+    try {
+      const snapshot = await WorkspaceAPI.json(`/api/live-executions${query.size ? `?${query}` : ''}`, {signal:host._traceLiveFetch.signal});
+      if (snapshot?.schema_version !== 1 || !Array.isArray(snapshot.executions)) {
+        throw new Error('The live execution response is incomplete.');
+      }
+      if (host._traceRequest === request && host.isConnected) {
+        host._traceLiveSnapshot = snapshot;
+        host._traceLiveError = '';
+        renderLive(host, snapshot, options);
+        scheduleLive(host, snapshot, options);
+      }
+    } catch (error) {
+      if (host._traceRequest === request && host.isConnected) {
+        const snapshot = host._traceLiveSnapshot || {schema_version:1,generated_at:'unavailable',executions:[]};
+        host._traceLiveError = error.message || String(error);
+        if (!host._traceLiveSnapshot) renderLive(host, snapshot, options);
+        else {
+          ageLive(host, options);
+          const notice = host.querySelector('[data-live-error]');
+          if (notice) { notice.hidden = false; notice.textContent = host._traceLiveError; }
+        }
+        scheduleLive(host, snapshot, options);
+      }
+    }
+  }
+
+  function mount(host, options = {}) {
+    const configured = {...options};
+    configured.onMode = mode => mode === 'live'
+      ? loadLive(host, configured)
+      : loadHistory(host, configured);
+    configured.onTicket = ticket => host._traceMode === 'live' && positive(ticket) === positive(configured.ticket)
+      ? loadHistory(host, configured)
+      : options.onTicket?.(ticket);
+    loadHistory(host, configured);
+  }
+
   window.WorkspaceTrace = Object.freeze({
-    arrowOrient,bundleEdges,bundleSpacing,crossingCount,edgeType,fitViewport,markup,mount,orderNodes,
-    panViewport,render,routeEdge,safeUrl,springPoints,toggleFullscreen,transformRect,viewportShortcut,zoomViewport,
+    arrowOrient,bundleEdges,bundleSpacing,crossingCount,dispose,edgeType,fitViewport,liveGraph,liveMarkup,
+    markup,mount,orderNodes,panViewport,render,routeEdge,safeUrl,springPoints,toggleFullscreen,transformRect,viewportShortcut,zoomViewport,
   });
 })();
