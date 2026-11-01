@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import json
 import unittest
-from unittest import mock
 
 import test_risk_merge as risk_tests
-from factory import config, dispatch, lifecycle
+
+from factory import dispatch, lifecycle
+
 _REFRESH_CONTEXT = dispatch.refresh_requeue_context
 
 
@@ -50,6 +51,8 @@ class ActionableReworkTest(unittest.TestCase):
 
         def review(_wt, n, _report, head, *, role="primary", **_kwargs):
             verdict = verdicts[role == "second"]
+            if getattr(self, "resolve_on_bounce", False) and len(self.heads) > 1:
+                verdict = "APPROVE"
             row = {"ticket": n, "head": head, "actual_head": head, "accepted": True,
                    "verdict": verdict, "role": role, "model": f"{role}/model"}
             dispatch.record("review", **row)
@@ -127,3 +130,84 @@ class ActionableReworkTest(unittest.TestCase):
         dispatch.process_ticket(self.issue, 1, False, forced=True)
         self.assertEqual(self.rework_rows(), [])
         self.assertEqual(self.escalate.call_args.kwargs["code"], "protected_paths")
+
+    def test_expired_ordinary_revise_is_carried_without_a_high_risk_disagreement(self):
+        self.configure_reviews(("REVISE", "APPROVE"))
+        self.patch(dispatch.risk, "classify", return_value=("Medium", ["medium:fixture"]))
+        self.expire = True
+        dispatch.process_ticket(self.issue, 1, False, forced=True)
+        self.escalate.assert_not_called()
+        self.assertEqual([row["round"] for row in self.rework_rows()], [1])
+        self.assertIn("Handle the missing branch", self.rework_rows()[0]["findings"])
+
+    def test_actionable_revise_resolves_in_one_round_without_human(self):
+        self.configure_reviews(("REVISE", "APPROVE"))
+        self.resolve_on_bounce = True
+        dispatch.process_ticket(self.issue, 1, False, forced=True)
+        self.escalate.assert_not_called()
+        self.assertEqual(self.heads, [risk_tests.HEAD, risk_tests.NEW_HEAD])
+        self.assertEqual([row["round"] for row in self.rework_rows()], [1])
+        self.assertTrue(any(row.get("event") == "approved" for row in lifecycle.read_events(dispatch.EVENTS)))
+
+    def test_mutation_findings_resolve_in_one_round_without_human(self):
+        self.configure_reviews(("APPROVE", "APPROVE"), mutation=True)
+        self.patch(dispatch, "run_gate", side_effect=lambda *_args, **_kw: (
+            (False, SURVIVORS) if len(self.heads) == 1 else (True, "- mutation: PASS\n")
+        ))
+        dispatch.process_ticket(self.issue, 1, False, forced=True)
+        self.escalate.assert_not_called()
+        self.assertEqual(self.heads, [risk_tests.HEAD, risk_tests.NEW_HEAD])
+        self.assertEqual([row["round"] for row in self.rework_rows()], [1])
+
+    def test_mutation_tool_failure_is_not_actionable_survivors(self):
+        self.configure_reviews(("APPROVE", "APPROVE"), mutation=True)
+        self.patch(dispatch, "run_gate", return_value=(False, SURVIVORS + "mutation check broke on 1 mutants\n"))
+        self.expire = True
+        dispatch.process_ticket(self.issue, 1, False, forced=True)
+        self.assertEqual(self.rework_rows(), [])
+        self.escalate.assert_called_once()
+
+    def refreshed_review(self):
+        import subprocess
+        dispatch.record("attempt", ticket=7, head=risk_tests.HEAD, worker_model="worker/model", gate="PASS")
+
+        def command(args, **kwargs):
+            if args[:2] == ["git", "rev-parse"]:
+                return subprocess.CompletedProcess(args, 0, risk_tests.HEAD, "")
+            if args[:2] == ["git", "status"]:
+                return subprocess.CompletedProcess(args, 0, "", "")
+            if args[:2] == ["git", "merge-base"]:
+                return subprocess.CompletedProcess(args, 1, "", "")
+            return self.command_result(args, **kwargs)
+
+        self.patch(dispatch, "run", side_effect=command)
+        self.patch(dispatch, "run_gate", side_effect=lambda *_args, **kwargs: (
+            (False, SURVIVORS) if kwargs.get("tier") == "pr" else (True, "- test: PASS\n")
+        ))
+        return dispatch.refresh_pr_branch(7, 70, False)
+
+    def test_refreshed_actionable_disagreement_uses_shared_round_budget(self):
+        self.configure_reviews(("APPROVE", "REVISE"), mutation=True)
+        self.assertFalse(self.refreshed_review())
+        self.escalate.assert_not_called()
+        self.assertEqual([row["round"] for row in self.rework_rows()], [1])
+        self.assertIn("Handle the missing branch", self.rework_rows()[0]["findings"])
+        self.cfg.review_rounds = 1
+        self.assertFalse(self.refreshed_review())
+        self.escalate.assert_called_once()
+        self.assertEqual(self.escalate.call_args.kwargs["code"], "review_revise")
+        self.assertEqual([row["round"] for row in self.rework_rows()], [1])
+
+    def test_refreshed_reject_still_escalates(self):
+        self.configure_reviews(("APPROVE", "REJECT"))
+        self.assertFalse(self.refreshed_review())
+        self.assertEqual(self.rework_rows(), [])
+        self.escalate.assert_called_once()
+
+    def test_both_revise_carry_mutation_findings_together(self):
+        self.configure_reviews(("REVISE", "REVISE"), mutation=True)
+        self.expire = True
+        dispatch.process_ticket(self.issue, 1, False, forced=True)
+        self.escalate.assert_not_called()
+        self.assertIn("NumberReplacer", self.rework_rows()[0]["findings"])
+        self.assertIn("Handle the missing branch", self.rework_rows()[0]["findings"])

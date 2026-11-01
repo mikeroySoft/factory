@@ -1650,6 +1650,7 @@ class FinishedBudgetLifecycleTest(unittest.TestCase):
     merge_accepted = LocalCLI.merge_accepted
 
     def expired_pass(self, unverified="None.", *, committed=True, gate_fails=False, pr_fails=False):
+        from contextlib import chdir
         from unittest import mock
 
         from factory import config, dispatch
@@ -1678,7 +1679,7 @@ class FinishedBudgetLifecycleTest(unittest.TestCase):
             clock[0] = 120
             return result
 
-        with mock.patch.dict(os.environ, self.env), \
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env), \
                 mock.patch.object(dispatch.time, "monotonic", side_effect=lambda: clock[0]), \
                 mock.patch.object(dispatch, "run_worker", side_effect=finish), \
                 mock.patch.object(dispatch.risk, "classify", return_value=("Medium", ["medium:fixture"])):
@@ -1715,3 +1716,22 @@ class FinishedBudgetLifecycleTest(unittest.TestCase):
         events = self.expired_pass(pr_fails=True)
         self.assertTrue(any(row.get("event") == "escalate" for row in events))
         self.assertFalse(any(row.get("event") == "approved" for row in events))
+
+    def test_expired_running_unfinished_worker_still_escalates(self):
+        from contextlib import chdir
+        from unittest import mock
+
+        from factory import config, dispatch
+
+        self.worker.write_text(WORKER + "\nimport time\ntime.sleep(60)\n")
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(dispatch, "WATCH_POLL", 0.01):
+            dispatch.configure(config.load(self.repo))
+            issue = dispatch.gh_json(["issue", "view", "7"])
+            dispatch.process_ticket(issue, 0, False, forced=True)
+        events = list(lifecycle.read_events(self.events))
+        attempt = next(row for row in events if row.get("event") == "attempt")
+        self.assertEqual(attempt["timeout"], "budget_min")
+        self.assertIsNone(attempt["gate"])
+        self.assertTrue(any(row.get("event") == "escalate" and row["code"] == "budget" for row in events))
+        self.assertFalse(json.loads(self.state.read_text()).get("pr"))
