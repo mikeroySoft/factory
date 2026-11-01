@@ -85,7 +85,6 @@ flowchart TB
   PUSH -->|"nothing ahead of main or PR target mismatch: dispatch.push_and_pr"| ESC
   PUSH -->|"dispatch.review"| REV
   REV -->|"REVISE or pr-tier gate FAIL, review_rounds left: dispatch.process_ticket"| WR
-  REV -->|"expired clean finish, actionable findings, rounds left: durable charge and claim released: dispatch._record_rework"| RFA
   REV -->|"rounds exhausted, reject, protected paths, bounce gate FAIL or stuck, or budget without actionable findings: dispatch.process_ticket"| ESC
   REV -->|"APPROVE, evidence bound to head: dispatch.approve_pr"| FA
   REV -->|"APPROVE but head or human review changed: dispatch.process_ticket"| ESC
@@ -109,6 +108,7 @@ flowchart TB
   REF -->|"conflict, open ticket, rounds left, no unauthorized protected path: claim released, ready-for-human removed, ready-for-agent added, worker rebases on agent/N: dispatch.refresh_pr_branch"| RFA
   REF -->|"gate fails twice, open ticket, gate rounds left, no unauthorized protected/add-only path: reports and diff assessment recorded, claim released to same worker profile on agent/N: dispatch.refresh_pr_branch"| RFA
   REF -->|"actionable REVISE or completed survivors, open ticket and review rounds left: dispatch._record_rework"| RFA
+  REV -->|"expired clean finish, actionable findings, rounds left: durable charge and claim released: dispatch._record_rework"| RFA
   REF -->|"protected paths, exhausted rounds, closed ticket, reject, non-actionable REVISE, or head moved: dispatch.refresh_pr_branch"| ESC
   CI -->|"pass, missing SHA-bound approval evidence: dispatch.merge_pass_locked"| ESC
   CI -->|"pass, up to date, no human CHANGES_REQUESTED: dispatch.merge_pass_locked"| MERGE
