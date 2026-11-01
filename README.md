@@ -404,6 +404,19 @@ no worker or model launch. The reviewer receives the latest plan artifact or
 status and lists changed files the plan did not name and planned proof absent
 from the gate report. Plan drift is evidence, not an automatic `REVISE`.
 
+Before committing worker leftovers or running the attempt gate, the dispatcher
+compares known dependency lockfiles with the ticket branch's merge-base. A
+lockfile edit is planned only when `pyproject.toml` also changed against that
+merge-base or any numbered plan artifact recorded for the ticket, across all
+rounds, lists that lockfile. Ticket and brief wording is not considered.
+Upstream-sync tickets skip this guard so Factory never overwrites a fork's
+lockfile while synchronizing upstream. For every other ticket, Factory restores
+unplanned tracked lockfiles from the merge-base and removes newly introduced
+ones, so a moving main or incidental verifier drift cannot alter the gated and
+pushed head. Repository gate commands that use `uv run` pass `--frozen`;
+preventing `uv` from writing `uv.lock` is simpler than repairing the worktree
+after the authoritative gate has run.
+
 The workspace **Decisions** view (`/?view=decisions&ticket=N`, or `/decisions`)
 reads the selected repository through authenticated `GET /api/trace?ticket=N`.
 It renders the same graph unchanged as a stage-ordered breadboard with labeled
@@ -1043,8 +1056,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    Late feedback is delivered at most once per `(evidence_id, source_revision)`
    (`feedback-delivered` journal rows); partial or unavailable coverage, unknown
    relevance and the factory's own reviewer are never delivered. `CLOSE` closes
-   the PR with the diagnosis; a human's issue stays open with
-   `wontfix-proposal`, a child the factory created by `SPLIT` is closed.
+   the PR when one is open and comments with the diagnosis either way; a human's
+   issue stays open with `wontfix-proposal`, while a factory-created `SPLIT` child closes.
    With `manager.review = "all"`, a head that passed the gate and independent
    review is not labelled until the manager returns `APPROVE` for that exact
    head (`manage` row with `head`); a refreshed head needs a fresh decision and

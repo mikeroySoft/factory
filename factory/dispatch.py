@@ -86,6 +86,29 @@ def configure(c: Config) -> None:
 # `promote_pass` merges them; the ticket merge stage's `agent/(\d+)` never matches.
 LESSONS_BRANCH = re.compile(r"agent/(lessons|curate|revert-lessons)-")
 
+DEPENDENCY_LOCKFILES = frozenset({
+    "Cargo.lock",
+    "Gemfile.lock",
+    "Package.resolved",
+    "Pipfile.lock",
+    "bun.lock",
+    "bun.lockb",
+    "composer.lock",
+    "flake.lock",
+    "go.sum",
+    "mix.lock",
+    "npm-shrinkwrap.json",
+    "package-lock.json",
+    "packages.lock.json",
+    "pdm.lock",
+    "pnpm-lock.yaml",
+    "poetry.lock",
+    "pubspec.lock",
+    "requirements.lock",
+    "uv.lock",
+    "yarn.lock",
+})
+
 PLAN_INSTRUCTIONS = """## Attempt plan
 
 Before implementing, create `.factory/plans/current` and write a short plan to
@@ -1532,6 +1555,92 @@ def ensure_worktree(n: int) -> Path:
     return wt
 
 
+def _changed_paths(wt: Path, base: str) -> set[str]:
+    changed = run(
+        ["git", "diff", "--no-renames", "--name-only", "-z", base, "--"], cwd=wt,
+    ).stdout.rstrip("\0").split("\0")
+    untracked = run(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=wt,
+    ).stdout.rstrip("\0").split("\0")
+    return {path for path in [*changed, *untracked] if path}
+
+
+def _dependency_lockfiles(paths: set[str]) -> list[str]:
+    return sorted(
+        path for path in paths
+        if (
+            Path(path).name in DEPENDENCY_LOCKFILES
+            or Path(path).name.endswith(".lockfile")
+        )
+    )
+
+
+def _recorded_plan_lists_lockfile(n: int, path: str) -> bool:
+    list_item = re.compile(r"^\s*(?:[-*]|\d+\.)\s+(.+?)\s*$")
+    quoted_path = re.compile(r"`([^`]+)`")
+    for row in lifecycle.read_events(EVENTS):
+        artifact = row.get("path")
+        if (
+            row.get("event") != "plan"
+            or row.get("ticket") != n
+            or row.get("status") != "recorded"
+            or not isinstance(artifact, str)
+        ):
+            continue
+        try:
+            text = Path(artifact).read_text(errors="replace")
+        except OSError:
+            continue
+        in_files = False
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                in_files = stripped.casefold() == "## files"
+            elif in_files and (item := list_item.match(line)):
+                body = item.group(1)
+                paths = [
+                    candidate
+                    for part in body.split(",")
+                    for candidate in (quoted_path.findall(part) or [part.strip()])
+                ]
+                if path in paths:
+                    return True
+    return False
+
+
+def restore_unplanned_lockfiles(wt: Path, n: int, base: str) -> list[str]:
+    common = run(["git", "merge-base", base, "HEAD"], cwd=wt).stdout.strip()
+    changed = _changed_paths(wt, common)
+    if any(Path(path).name == "pyproject.toml" for path in changed):
+        return []
+    lockfiles = [
+        path for path in _dependency_lockfiles(changed)
+        if not _recorded_plan_lists_lockfile(n, path)
+    ]
+    if not lockfiles:
+        return []
+    listed = run(
+        ["git", "ls-tree", "-r", "--name-only", "-z", common, "--", *lockfiles],
+        cwd=wt,
+    ).stdout.rstrip("\0").split("\0")
+    at_base = {path for path in listed if path}
+    if at_base:
+        run(
+            [
+                "git", "restore", "--source", common, "--staged", "--worktree",
+                "--", *sorted(at_base),
+            ],
+            cwd=wt,
+        )
+    for path in lockfiles:
+        if path in at_base:
+            continue
+        run(["git", "rm", "-f", "--ignore-unmatch", "--", path], cwd=wt)
+        (wt / path).unlink(missing_ok=True)
+    log(f"#{n}: restored unplanned dependency lockfile drift: {', '.join(lockfiles)}")
+    return lockfiles
+
+
 def commit_leftovers(wt: Path, n: int, title: str) -> None:
     run(
         [
@@ -2519,6 +2628,10 @@ def gate_flags(
                     no_repro = reason
                     break
         repro = _ticket_line(handoff, "Repro test")
+        if repro:
+            match = re.fullmatch(r"([`'\"])(.*)\1", repro)
+            if match:
+                repro = match.group(2)
         if no_repro:
             flags["no_repro_test"] = no_repro
         elif repro:
@@ -3840,6 +3953,10 @@ def worker_round(
         "llm-usage", ticket=n, stage="worker", attempt=attempt,
         local=_usage_local(usage), **identity, **usage,
     )
+    sync = sync_event(n)
+    tip = sync["upstream"] if sync else None
+    if not sync:
+        restore_unplanned_lockfiles(wt, n, f"origin/{cfg.main}")
     commit_leftovers(wt, n, title)
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     handoff = results.source_metadata(cfg, n)
@@ -3866,8 +3983,6 @@ def worker_round(
             **identity, **timeout,
         )
         return False, "budget exceeded before gate", logfile, head
-    sync = sync_event(n)
-    tip = sync["upstream"] if sync else None
     handoff_path = wt / ".factory" / f"handoff-{n}.md"
     ok, report = run_gate(
         wt, n, **gate_flags(
