@@ -284,17 +284,12 @@ def test_edit_files(wt: Path, request: str = "") -> list[str]:
         configured = any(
             fnmatch.fnmatchcase(path, pattern) for pattern in dispatch.cfg.add_only_paths
         )
-        python_test = path.endswith(".py") and (
-            any(part in {"test", "tests"} for part in file.parts[:-1])
-            or file.stem.startswith("test_")
-            or file.stem.endswith("_test")
-        )
         return (
             path
             and not file.is_absolute()
             and ".." not in file.parts
             and path == file.as_posix()
-            and (configured or python_test or path.endswith(".rs"))
+            and configured
             and not any(
                 fnmatch.fnmatchcase(path, pattern)
                 for pattern in dispatch.cfg.protected_paths
@@ -377,6 +372,19 @@ def apply_test_edit_authorization(
         )
 
 
+def _test_edit_snapshot(n: int) -> tuple[dict, list[dict]] | None:
+    """Read issue and timeline together so same-second human edits stop a decision."""
+    try:
+        issue = dispatch.gh_json([
+            "issue", "view", str(n), "--repo", dispatch.REPO, "--json",
+            "number,title,body,state,labels,assignees,comments,updatedAt",
+        ])
+        return issue, handoff.timeline(n)
+    except (CalledProcessError, OSError, ValueError) as exc:
+        dispatch.log(f"#{n}: test-edit takeover check failed: {exc}; leaving untouched")
+        return None
+
+
 def request_test_edit_authorization(
     n: int,
     issue: dict,
@@ -395,6 +403,10 @@ def request_test_edit_authorization(
         ],
         cwd=wt,
     ).stdout if files else ""
+    snapshot = _test_edit_snapshot(n)
+    if snapshot is None:
+        return False
+    issue = snapshot[0]
     packet = dispatch.FACTORY / "authorizations" / f"{n}.md"
     packet.parent.mkdir(parents=True, exist_ok=True)
     packet.write_text(
@@ -436,6 +448,10 @@ def request_test_edit_authorization(
         except (OSError, config.ConfigError) as exc:
             decision, body, data = "HUMAN", f"Manager command failed: {exc}", None
             output = body
+
+    if _test_edit_snapshot(n) != snapshot:
+        dispatch.log(f"#{n}: changed during test-edit authorization; leaving untouched")
+        return False
 
     record_manager_decision(n, decision, body, data, output, {}, packet)
     manage_event = {

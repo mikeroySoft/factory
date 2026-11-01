@@ -298,7 +298,7 @@ class ManagerTestAuthorizationTest(unittest.TestCase):
                         if decision == "AUTHORIZE" else "DECISION: HUMAN\nNeeds owner input."
                     )
 
-                    def run(args, **kwargs):
+                    def run(args, output=output, **kwargs):
                         if args[0] == "manager-stub":
                             return subprocess.CompletedProcess(args, 0, output, "")
                         return self.fake_run(args, **kwargs)
@@ -444,6 +444,25 @@ class ManagerTestAuthorizationTest(unittest.TestCase):
         guidance = escalate.call_args.kwargs["extra"]
         self.assertIn(f"`{config.LABEL_ADD_ONLY_OVERRIDE}`", guidance)
         self.assertIn("human", guidance.lower())
+
+    def test_recorded_manager_authority_cannot_bypass_current_scope(self) -> None:
+        paths = ["src/test_wait.py", "tests/acceptance/test_flow.py"]
+        for path in paths:
+            self.commit_base(path, "assert outcome == 'ci_pending'\n")
+        dispatch.record(
+            "test-edit-authorization", ticket=7, decision="AUTHORIZE",
+            files=paths, justification="Previous scope", guidance="Keep behavior",
+        )
+        for path in paths:
+            with self.subTest(path=path), \
+                    mock.patch.object(manage, "request_test_edit_authorization") as authorize, \
+                    mock.patch.object(dispatch, "escalate") as escalate:
+                self.assertTrue(dispatch._handle_test_edit_request(
+                    7, self.issue, {config.LABEL_ADD_ONLY_OVERRIDE}, self.repo, "- test: PASS",
+                    f"Test edit authorization: {path}", None,
+                ))
+                authorize.assert_not_called()
+                escalate.assert_called_once()
 
 if __name__ == "__main__":
     unittest.main()

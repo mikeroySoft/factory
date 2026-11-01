@@ -4092,16 +4092,23 @@ def _handle_test_edit_request(
     from factory import manage
 
     requested = manage.requested_test_edit_paths(request)
-    if not requested or set(requested) <= set(manage.authorized_test_edit_files(n)):
+    if not requested or LABEL_PROTECTED_OVERRIDE in labels:
         return False
+    authorized = set(manage.authorized_test_edit_files(n))
     eligible = manage.test_edit_files(wt, request)
-    if cfg.manager and all(path in eligible for path in requested):
-        manage.request_test_edit_authorization(
-            n, issue, report, wt, logfile, request=request,
-        )
-        return True
+    if all(path in eligible for path in requested):
+        # Without a Manager authorization record the label is human authority.
+        # Manager-issued authority remains limited to its journaled file scope.
+        if set(requested) <= authorized or (LABEL_ADD_ONLY_OVERRIDE in labels and not authorized):
+            return False
+        if cfg.manager:
+            manage.request_test_edit_authorization(
+                n, issue, report, wt, logfile, request=request,
+            )
+            return True
     guidance = (
-        f"Manager AUTHORIZE can cover only existing non-protected test files. "
+        f"Manager AUTHORIZE can cover only existing non-protected add-only test files. "
+        f"A human can add label `{LABEL_ADD_ONLY_OVERRIDE}` for in-place edits in that scope. "
         f"Human-only authority: add label `{LABEL_PROTECTED_OVERRIDE}` for protected paths."
     )
     escalate(

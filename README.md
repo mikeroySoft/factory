@@ -582,13 +582,22 @@ stops before editing writes `Test edit authorization: path/to/test.py` in its
 handoff and describes the equivalent new-behavior assertion; the dispatcher
 sends that request to the same path. Direct authorization is not an escalation
 round, so a later failure still receives the next Manager round.
-Authorization is limited to non-protected test files whose planned behavior
-change caused the failure: every behavioral assertion must remain or be
+Authorization is limited to existing non-protected files within configured
+`[gate].add_only_paths` whose planned behavior change caused the test failure:
+every behavioral assertion must remain or be
 replaced by an equivalent new-behavior assertion, while incidental call-count,
 host-state, or formatting assertions may change. The reason and cumulative
 covered files are journaled and posted to the ticket and PR; the independent
 reviewer checks the final diff against them. The normal gate and review then
-run again. FIX uses
+run again. Direct authorization snapshots the issue and its timeline before
+inference and rechecks both before applying either decision. Intervening comments,
+labels, assignments, or body edits stop it without changing the ticket; unreadable
+takeover evidence also grants no authorization.
+A human-applied `factory-add-only-override` clears stale handoff requests for
+eligible files even without a manager. Manager-issued authorization remains
+limited to its recorded files, so a new file still needs authorization. Neither
+can cover protected paths; a human's `factory-protected-override` can clear those
+requests. FIX uses
 `{"worker":"ci-fix","guidance":"..."}` to run exactly one selected worker round
 in the kept `agent/<n>` worktree for its open PR, ignoring other ticket labels.
 A kept head ahead of the remote PR head is pushed first
