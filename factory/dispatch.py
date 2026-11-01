@@ -1597,8 +1597,13 @@ def _recorded_plan_lists_lockfile(n: int, path: str) -> bool:
             if stripped.startswith("#"):
                 in_files = stripped.casefold() == "## files"
             elif in_files and (item := list_item.match(line)):
-                paths = quoted_path.findall(item.group(1))
-                if path in (paths or [part.strip() for part in item.group(1).split(",")]):
+                body = item.group(1)
+                paths = [
+                    candidate
+                    for part in body.split(",")
+                    for candidate in (quoted_path.findall(part) or [part.strip()])
+                ]
+                if path in paths:
                     return True
     return False
 
