@@ -47,8 +47,8 @@ FIX: JSON object {"worker": "label", "guidance": "..."}.
 Dispatch exactly one round of that listed worker in the kept agent worktree for its open PR.
 Code re-gates, pushes and re-reviews; approval requires a passing gate and fresh APPROVE.
 HUMAN: plain-text diagnosis; leave the ticket with the human.
-CLOSE: plain-text diagnosis; closes the ticket's open PR. A human's issue stays open and
-gets `wontfix-proposal`; an issue the factory created by SPLIT is closed as not planned.
+CLOSE: plain-text diagnosis; closes the ticket's open PR when present. With or without one,
+a human's issue stays open with `wontfix-proposal`; a factory-created SPLIT child closes as not planned.
 RESOLVE: plain-text evidence that the requested outcome is already present on the configured
 main branch (commit SHAs/PR numbers), or that the ticket duplicates another issue. Use it only
 when no work remains and no agent PR or branch has changes; otherwise use CLOSE, FIX, or HUMAN.
@@ -562,18 +562,29 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         _record_wontfix(n, "RESOLVE", body, pr=pr["number"] if pr else None)
         return
     elif decision == "CLOSE":
-        pr = dispatch.gh_json(["pr", "view", f"agent/{n}", "--repo", dispatch.REPO, "--json", "number,state,baseRefName"])
-        if pr.get("state") != "OPEN" or pr.get("baseRefName") != dispatch.cfg.main:
-            raise ValueError(f"CLOSE requires an open PR targeting the configured target `{dispatch.cfg.main}`")
         message = "Factory manager: " + body
-        post_comment("pr", pr["number"], message, pr=pr["number"])
-        dispatch.run(["gh", "pr", "close", str(pr["number"]), "--repo", dispatch.REPO])
-        post_comment("issue", n, message, pr=pr["number"])
+        pr = None
+        try:
+            pr = dispatch.gh_json([
+                "pr", "view", f"agent/{n}", "--repo", dispatch.REPO,
+                "--json", "number,state,baseRefName",
+            ])
+        except CalledProcessError as exc:
+            if "no pull requests found" not in (exc.stderr or "").lower():
+                raise
+        if pr is not None and pr.get("state") == "CLOSED":
+            pr = None
+        if pr is not None:
+            if pr.get("state") != "OPEN" or pr.get("baseRefName") != dispatch.cfg.main:
+                raise ValueError(f"CLOSE requires an open PR targeting the configured target `{dispatch.cfg.main}`")
+            post_comment("pr", pr["number"], message, pr=pr["number"])
+            dispatch.run(["gh", "pr", "close", str(pr["number"]), "--repo", dispatch.REPO])
+        post_comment("issue", n, message, **({"pr": pr["number"]} if pr else {}))
         if any(e.get("event") == "issue-created" and e.get("ticket") == n for e in lifecycle.read_events(dispatch.EVENTS)):
             issue_action("close", "--reason", "not planned")
         else:
             issue_action("edit", "--add-label", config.LABEL_WONTFIX)
-        _record_wontfix(n, "CLOSE", body, pr=pr["number"])
+        _record_wontfix(n, "CLOSE", body, pr=pr["number"] if pr else None)
         return
     elif decision == "ROUTE":
         args = []

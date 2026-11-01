@@ -32,12 +32,13 @@ from factory.config import LABEL_CHORE, LESSONS_NAME
 
 MAX_LESSONS = 10
 LOG_TAIL = 40  # lines of a failing attempt log shown to the model when the ticket has no score row
-MAX_EVIDENCE = 24_000  # chars; keeps the prompt inside a local model's window
+MAX_EVIDENCE = 24_000  # chars for per-ticket and candidate evidence
+MAX_SKILL_EVIDENCE = 4_000  # separate chars so skill health cannot displace ticket evidence
 MAX_ESCAPES = 10  # most recent candidate-escape bugs carried into evidence
 AUTO_EVERY = 10  # finished tickets between automatic runs at the end of a dispatcher pass
 LESSONS_BRANCH = dispatch.LESSONS_BRANCH
 REVERT_BRANCH = "agent/revert-lessons-"  # + the reverted PR number
-WORKER_CONTEXT_FILES = (LESSONS_NAME, "AGENTS.md", "CLAUDE.md")
+WORKER_CONTEXT_FILES = score.WORKER_CONTEXT_FILES
 
 LICENSE_MARKERS = (
     ("apache license version 2.0", "Apache-2.0"),
@@ -128,10 +129,112 @@ def worst_session(evs: list[dict]) -> tuple[dict, dict] | None:
                                          pair[0].get("compliance") or 0, pair[1].get("gate") != "FAIL"))
 
 
+def _skill_failure_tag(text: str) -> str:
+    lowered = text.lower()
+    if any(marker in lowered for marker in ("command not found", "unknown command", "unrecognized argument",
+                                             "no such file or directory")):
+        return "stale_command"
+    if "skipp" in lowered:
+        return "skipped_step"
+    if "section" in lowered:
+        return "missed_section"
+    if any(marker in lowered for marker in ("ignored rule", "forbidden", "protected path", "must not")):
+        return "ignored_rule"
+    return "trigger_miss"
+
+
+def _skill_excerpt(skill: str, load: dict, tag: str, text: str) -> dict:
+    return {
+        "skill": skill, "ticket": load.get("ticket"), "session": load.get("session"),
+        "tag": tag, "excerpt": text[:score.EXCERPT_CHARS],
+    }
+
+
+def _load_failure_excerpts(skill: str, loads: list[dict]) -> list[dict]:
+    return [_skill_excerpt(skill, load, "load_failure", load["error"]) for load in loads
+            if not load.get("ok") and isinstance(load.get("error"), str)]
+
+
+def _regression_excerpts(
+    skill: str, loads: list[dict], failures: dict[str, list[dict]],
+) -> list[dict]:
+    excerpts = []
+    for load in loads:
+        start = load.get("call_index")
+        if type(start) is not int:
+            continue
+        for failure in failures.get(load.get("session"), []):
+            index, text = failure.get("call_index"), failure.get("text")
+            if type(index) is int and start < index <= start + stats.SKILL_AFTER_CALLS and isinstance(text, str):
+                excerpts.append(_skill_excerpt(skill, load, _skill_failure_tag(text), text))
+    return excerpts
+
+
+def _skill_worse(metric: dict) -> bool:
+    excess, noise = metric["error_rate_excess"], metric["noise_margin"]
+    return (metric["sessions"] >= 10 and excess is not None and noise is not None
+            and excess > noise)
+
+
+def skill_failure_evidence(
+    rows: list[dict],
+    transcript_failures: dict[str, list[dict]] | None = None,
+    tickets: set[int] | None = None,
+) -> list[dict]:
+    """Pure, bounded excerpts for failed loads and skills worse than matched controls."""
+    loads = [row for row in rows if row.get("event") == "skill-load"]
+    selected = [row for row in loads if tickets is None or row.get("ticket") in tickets]
+    failures = transcript_failures or {}
+    result = []
+    for metric in stats.skill_metrics(rows):
+        skill = metric["skill"]
+        skill_loads = [row for row in selected if row.get("skill") == skill]
+        excerpts = _load_failure_excerpts(skill, skill_loads)
+        if _skill_worse(metric):
+            excerpts += _regression_excerpts(skill, skill_loads, failures)
+        result += excerpts[:3]
+    return result
+
+def _format_skill_evidence(excerpts: list[dict]) -> str:
+    parts = ["## Skill health evidence"]
+    previous_skill = None
+    ordered = sorted(excerpts, key=lambda item: item["tag"] != "load_failure")
+    for item in ordered:
+        skill = item["skill"]
+        addition = []
+        if skill != previous_skill:
+            addition.append(f"### Skill {skill} failure evidence")
+        addition.append(f"- [{item['tag']}] {item['excerpt']}")
+        candidate = "\n".join(parts + addition)
+        if len(candidate) <= MAX_SKILL_EVIDENCE:
+            parts += addition
+            previous_skill = skill
+    return "\n".join(parts) if previous_skill is not None else ""
+
+
+def _transcript_failures(rows: list[dict], tickets: set[int]) -> dict[str, list[dict]]:
+    sessions = {
+        row["session"] for row in rows
+        if row.get("event") == "skill-load" and row.get("ticket") in tickets
+        and isinstance(row.get("session"), str)
+    }
+    failures = {}
+    for session in sessions:
+        path = dispatch.ROOT / session
+        if not path.is_file():
+            continue
+        try:
+            failures[session] = score._score_failures(score._parsed(path))
+        except OSError:
+            continue
+    return failures
+
+
 def evidence(last: int) -> tuple[list[int], str]:
     """Evidence per ticket from events.jsonl, newest `last` tickets that finished, then recent candidate escapes."""
+    journal_rows = lifecycle.read_events(dispatch.EVENTS)
     by_ticket: dict[int, list[dict]] = {}
-    for row in lifecycle.read_events(dispatch.EVENTS):
+    for row in journal_rows:
         if (
             row.get("event") == "lifecycle"
             or not isinstance(row.get("event"), str)
@@ -148,7 +251,10 @@ def evidence(last: int) -> tuple[list[int], str]:
         title = next((e.get("title") for e in evs if e["event"] == "claimed"), "")
         parts.append(f"### Ticket #{n}: {title}")
         for e in evs:
-            fields = {k: v for k, v in e.items() if k not in ("ticket", "title", "log", "issue")}
+            if e["event"] in {"score", "skill-load"}:
+                continue
+            fields = {k: v for k, v in e.items()
+                      if k not in ("ticket", "title", "log", "issue", "failures")}
             parts.append(f"- {json.dumps(fields)}")
         worst = worst_session(evs)
         transcript = Path(worst[0]["transcript"]) if worst and isinstance(worst[0].get("transcript"), str) else None
@@ -174,7 +280,12 @@ def evidence(last: int) -> tuple[list[int], str]:
         parts += [f"- Bug #{row['bug']}: {row['title']} <- candidate #{c['ticket']}: {c['title']} "
                   f"({row['source']}; {', '.join(c['paths']) or 'no blamed paths'})"
                   for row in recent[-MAX_ESCAPES:] for c in row["candidates"]]
-    return chosen, "\n".join(parts)[-MAX_EVIDENCE:]
+    ticket_evidence = "\n".join(parts)[-MAX_EVIDENCE:]
+    failures = skill_failure_evidence(
+        journal_rows, _transcript_failures(journal_rows, set(chosen)), set(chosen),
+    )
+    skill_evidence = _format_skill_evidence(failures)
+    return chosen, "\n".join(part for part in (ticket_evidence, skill_evidence) if part)
 
 def replay_cases(tickets: list[int], maximum: int) -> list[ReplayCase]:
     """Newest finished tickets with a frozen issue snapshot and exact pre-work revision."""

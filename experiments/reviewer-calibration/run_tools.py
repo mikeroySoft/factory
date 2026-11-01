@@ -21,6 +21,7 @@ reviewer mutated its clone.
 usage: run_tools.py [--all] <out-dir> <samples> [contract ...]
   --all  score every frozen case, not just REVISE-oracle heads
 """
+import argparse
 import concurrent.futures as cf
 import hashlib
 import json
@@ -32,7 +33,10 @@ import tempfile
 import time
 
 from run_calibration import CASES as CORPUS
-from run_calibration import checkout
+from run_calibration import checkout, configured_reviewer_model
+from run_calibration import contract_commit as _contract_commit
+
+from factory.dispatch import _omp_output
 
 EXP = pathlib.Path(__file__).parent
 REPO = str(EXP.parents[1])
@@ -44,7 +48,6 @@ CONTRACTS = {"baseline": "cadb9981524ab5506693e27f56ff8ac4ef911da6",
              "candidate": "70fea0e9cc314916acbe4494e4dc0d0dff21b361",
              "review-baseline": "eb611cc794da4008ffaba73cac6108a2ed8af0a1",
              "review-tally": "1bc93aa2abaf34607b88ee53428a22d5453f5c12"}
-CHECKOUT_ROOT = pathlib.Path("/tmp/cal-checkout")
 
 
 def _defect_cases() -> list[str]:
@@ -60,7 +63,6 @@ def _defect_cases() -> list[str]:
 # Defect-bearing heads only by default (the §6 question); `--all` scores the whole frozen
 # corpus so APPROVE cases feed `unnecessary_revise` for a promotion claim (#237).
 CASES = CORPUS if "--all" in sys.argv else _defect_cases()
-MODEL = "anthropic/claude-fable-5-1"               # the repo's configured reviewer model
 TIMEOUT = 900
 
 def sha(text: str) -> str:
@@ -75,7 +77,7 @@ def capture(contract: str, case: str, source: pathlib.Path) -> str:
     with tempfile.TemporaryDirectory(prefix="cal-capture-") as scratch:
         out = pathlib.Path(scratch) / "prompt.txt"
         subprocess.run([sys.executable, str(EXP / "capture_contract.py"),
-                        str(checkout(CONTRACTS[contract])), scratch, case.split("-")[0],
+                        str(checkout(contract_commit(contract))), scratch, case.split("-")[0],
                         str(EXP / "cases" / case / "sources/gate-report.md"), str(out),
                         str(source), oracle(case)["head"]],
                        check=True, capture_output=True, text=True, cwd=scratch)
@@ -92,7 +94,7 @@ def worktree(case: str, dest: pathlib.Path) -> None:
         subprocess.run(["git", *args], cwd=dest, check=True, capture_output=True)
 
 
-def review(contract: str, case: str, sample: int) -> dict:
+def review(contract: str, case: str, sample: int, model: str) -> dict:
     root = pathlib.Path(tempfile.mkdtemp(prefix=f"cal-tools-{case}-"))
     wt = root / "snapshot"
     try:
@@ -102,36 +104,70 @@ def review(contract: str, case: str, sample: int) -> dict:
         (root / "review.diff").write_text(diff)
         prompt = capture(contract, case, wt)
         started = time.monotonic()
-        proc = subprocess.run(["omp", "-p", "--mode", "text", "--no-session", "--no-title",
-                               "--auto-approve", "--max-time", "600", "--model", MODEL, prompt],
+        proc = subprocess.run(["omp", "-p", "--mode", "json", "--no-session", "--no-title",
+                               "--auto-approve", "--max-time", "600", "--model", model, prompt],
                               cwd=root, capture_output=True, text=True, timeout=TIMEOUT,
                               stdin=subprocess.DEVNULL, check=False)
+        output, usage = _omp_output(proc.stdout)
         elapsed = round(time.monotonic() - started, 1)
         dirty = subprocess.run(["git", "status", "--porcelain"], cwd=wt,
                                capture_output=True, text=True, check=False).stdout.strip()
     finally:
         shutil.rmtree(root, ignore_errors=True)
-    return {"contract": contract, "contract_commit": CONTRACTS[contract], "case": case,
-            "sample": sample, "tools": True, "returncode": proc.returncode, "seconds": elapsed,
+    return {"contract": contract, "contract_commit": contract_commit(contract), "case": case,
+            "sample": sample, "tools": True, "model": model, "usage": usage,
+            "returncode": proc.returncode, "seconds": elapsed,
             "prompt_sha256": sha(prompt), "worktree_dirty": dirty[:2000],
-            "output": proc.stdout.strip(), "stderr": proc.stderr.strip()[-2000:]}
+            "output": output, "stderr": proc.stderr.strip()[-2000:]}
 
 
-def main() -> int:
-    args = [a for a in sys.argv[1:] if a != "--all"]
-    out_dir = pathlib.Path(args[0]); out_dir.mkdir(parents=True, exist_ok=True)
-    samples = int(args[1])
-    contracts = args[2:] or list(CONTRACTS)
+def contract_commit(contract: str) -> str:
+    return _contract_commit(CONTRACTS.get(contract, contract))
+
+
+def run_experiment(
+    out_dir: pathlib.Path,
+    samples: int,
+    contracts: list[str],
+    model: str,
+) -> list[dict]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "config.json").write_text(json.dumps({
+        "model": model, "samples": samples, "contracts": contracts, "splits_version": 2,
+    }, indent=2) + "\n")
     jobs = [(c, case, s) for c in contracts for case in CASES for s in range(1, samples + 1)]
     results = []
     with cf.ThreadPoolExecutor(max_workers=6) as pool:
-        for r in pool.map(lambda j: review(*j), jobs):
-            results.append(r)
-            (out_dir / f"{r['contract']}.{r['case']}.s{r['sample']}.md").write_text(r["output"] + "\n")
-            print(f"{r['contract']:9} {r['case']:10} s{r['sample']} rc={r['returncode']} "
-                  f"{r['seconds']}s dirty={bool(r['worktree_dirty'])}", flush=True)
+        for result in pool.map(lambda job: review(*job, model), jobs):
+            results.append(result)
+            (out_dir / f"{result['contract']}.{result['case']}.s{result['sample']}.md").write_text(
+                result["output"] + "\n"
+            )
+            print(f"{result['contract']:9} {result['case']:10} s{result['sample']} "
+                  f"rc={result['returncode']} {result['seconds']}s "
+                  f"dirty={bool(result['worktree_dirty'])}", flush=True)
     (out_dir / "results.json").write_text(json.dumps(results, indent=2) + "\n")
-    return 0 if all(r["returncode"] == 0 for r in results) else 1
+    return results
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--all", action="store_true")
+    parser.add_argument("--model")
+    parser.add_argument("out_dir")
+    parser.add_argument("samples", type=int)
+    parser.add_argument("contracts", nargs="*")
+    args = parser.parse_args(argv)
+    global CASES
+    CASES = CORPUS if args.all else _defect_cases()
+    model = args.model or configured_reviewer_model(pathlib.Path(REPO))
+    rows = run_experiment(
+        pathlib.Path(args.out_dir),
+        args.samples,
+        args.contracts or list(CONTRACTS),
+        model,
+    )
+    return 0 if all(row["returncode"] == 0 for row in rows) else 1
 
 
 if __name__ == "__main__":
