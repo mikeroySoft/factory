@@ -982,6 +982,84 @@ class WorkspaceHTTPTest(unittest.TestCase):
 
 
 
+    def test_live_learn_records_its_command_identity_before_configuration_changes(self) -> None:
+        from factory import dispatch, learn, lifecycle
+
+        self.cfg.manager = ["/opt/bin/omp", "--model", "command/model", "@{prompt}"]
+        self.cfg.manager_model = "dashboard/briefing"
+        journal = self.cfg.factory / "events.jsonl"
+        seen = {}
+
+        def running(*_args):
+            self.cfg.manager = ["/opt/bin/other", "--model", "changed/model"]
+            seen.update(self.workspace.live_executions(REPOSITORY))
+
+        with (
+            mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}),
+            mock.patch.object(dispatch, "EVENTS", journal, create=True),
+            mock.patch.object(learn, "evidence", return_value=([7], "evidence")),
+            mock.patch.object(learn, "_run", side_effect=running),
+        ):
+            learn.run(self.cfg)
+
+        row = next(row for row in seen["executions"] if row["lane"] == "learn")
+        self.assertEqual((row["agent"], row["harness"]), ("command/model", "omp"))
+        entry = next(row for row in lifecycle.read_events(journal) if row.get("kind") == "enter")
+        self.assertEqual((entry.get("model"), entry.get("harness")), ("command/model", "omp"))
+
+    def test_live_manager_and_learn_never_borrow_the_dashboard_briefing_model(self) -> None:
+        self.cfg.manager_model = "dashboard/briefing"
+        observed = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        for command, expected in (
+            (["/opt/bin/omp", "--model", "command/model"], ("command/model", "omp")),
+            (["/opt/bin/omp"], ("manager", "omp")),
+        ):
+            self.cfg.manager = command
+            for stage in ("manage", "learn"):
+                with self.subTest(command=command, stage=stage), mock.patch(
+                    "factory.workspace.runtime_events.project",
+                    return_value={"executions": [{
+                        "execution_id": stage, "stage": stage, "ticket": 7,
+                        "state": "active", "entered_at": observed, "observed_at": observed,
+                    }], "errors": []},
+                ):
+                    [row] = self.workspace.live_executions(REPOSITORY)["executions"]
+                    self.assertEqual((row["agent"], row["harness"]), expected)
+
+    def test_live_worker_keeps_a_removed_recorded_profile(self) -> None:
+        from factory import lifecycle
+
+        journal = self.cfg.factory / "events.jsonl"
+        with (
+            mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}),
+            lifecycle.scope(journal, "worker", ticket=7, worker="removed-profile"),
+        ):
+            [row] = self.workspace.live_executions(REPOSITORY)["executions"]
+        self.assertEqual((row["agent"], row["harness"]), ("removed-profile", "harness unavailable"))
+
+    def test_live_watch_distinguishes_model_diagnosis_from_deterministic_activity(self) -> None:
+        from factory import dispatch, lifecycle, watch
+
+        seen = {}
+        journal = self.cfg.factory / "events.jsonl"
+
+        def diagnose(*_args):
+            seen.update(self.workspace.live_executions(REPOSITORY))
+            return "diagnosis"
+
+        with (
+            mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}),
+            mock.patch.object(dispatch, "EVENTS", journal, create=True),
+            mock.patch("factory.triage.call_llm", side_effect=diagnose),
+            lifecycle.scope(journal, "watch"),
+        ):
+            watch._diagnose(self.cfg, {"excerpt": "alarm"})
+
+        identities = {(row["agent"], row["harness"]) for row in seen["executions"]}
+        self.assertIn(("deterministic", "factory watch"), identities)
+        self.assertIn((self.cfg.llm_model, "factory triage"), identities)
+
+
 class WorkspaceRegistryTest(unittest.TestCase):
     def test_registered_main_overrides_same_slug_startup_but_key_stays_startup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
