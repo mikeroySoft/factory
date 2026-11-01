@@ -682,11 +682,27 @@ class TraceFindingReferenceRegressionTest(unittest.TestCase):
         lifecycle.append(self.events, {"event": "pr-opened", "ticket": 7, "pr": 9})
 
     def publish_review(self, comment_url):
+        rows = [
+            {
+                "severity": "important", "pass": "bug", "class": "missing-value",
+                "path": "factory/a.py", "line": 4, "summary": "Handle the missing value.",
+                "instances": [{
+                    "path": "factory/a.py", "line": 4, "summary": "Handle the missing value.",
+                }],
+            },
+            {
+                "severity": "important", "pass": "spec", "class": "refresh-evidence",
+                "path": "factory/b.py", "line": 8,
+                "summary": "Explain why the branch needs refreshing.",
+                "instances": [{
+                    "path": "factory/b.py", "line": 8,
+                    "summary": "Explain why the branch needs refreshing.",
+                }],
+            },
+        ]
         findings = (
-            "## Required fixes\n"
-            "1. `factory/a.py:4`: Handle the missing value.\n"
-            "2. Explain why the branch needs refreshing.\n\n"
-            "## Verdict\nVERDICT: REVISE"
+            "```json\n" + json.dumps({"verdict": "REVISE", "findings": rows})
+            + "\n```\nVERDICT: REVISE"
         )
         dispatch._PENDING_REVIEWS[7] = {
             "verdict": "REVISE",
@@ -711,8 +727,8 @@ class TraceFindingReferenceRegressionTest(unittest.TestCase):
         findings = [value for value in review["inputs"] if value["kind"] == "finding"]
         self.assertEqual(findings, [
             {"kind": "finding", "ref": "factory/a.py:4",
-             "summary": "`factory/a.py:4`: Handle the missing value."},
-            {"kind": "finding", "ref": comment_url,
+             "summary": "Handle the missing value."},
+            {"kind": "finding", "ref": "factory/b.py:8",
              "summary": "Explain why the branch needs refreshing."},
         ])
         self.assertEqual(
@@ -724,7 +740,7 @@ class TraceFindingReferenceRegressionTest(unittest.TestCase):
         review = self.publish_review("")
         self.assertEqual(
             [value["ref"] for value in review["inputs"] if value["kind"] == "finding"],
-            ["factory/a.py:4", "https://github.com/acme/widgets/pull/9"],
+            ["factory/a.py:4", "factory/b.py:8"],
         )
         self.assertEqual(
             next(value["ref"] for value in review["inputs"] if value["kind"] == "review_comment"),
@@ -885,16 +901,47 @@ class RequiredFixesParserRegressionTest(unittest.TestCase):
             "## Verdict\n"
             "VERDICT: REVISE\n"
         )
+        self.assertEqual(dispatch._required_fixes(findings, "https://review.example/1"), [])
+        rows = [
+            {
+                "severity": "important", "pass": "bug", "class": "missing-value",
+                "path": "factory/a.py", "line": 4, "summary": "Handle the missing value.",
+                "instances": [{
+                    "path": "factory/a.py", "line": 4, "summary": "Handle the missing value.",
+                }],
+            },
+            {
+                "severity": "important", "pass": "spec", "class": "refresh-evidence",
+                "path": "factory/b.py", "line": 8,
+                "summary": "Explain why the branch needs refreshing.",
+                "instances": [{
+                    "path": "factory/b.py", "line": 8,
+                    "summary": "Explain why the branch needs refreshing.",
+                }],
+            },
+            {
+                "severity": "nit", "pass": "bug", "path": "factory/a.py", "line": 5,
+                "summary": "Rename the local.",
+            },
+            {
+                "severity": "pre-existing", "pass": "bug", "path": "factory/a.py", "line": 1,
+                "summary": "An unrelated existing defect.",
+            },
+        ]
+        findings = findings.removesuffix("VERDICT: REVISE\n") + (
+            "```json\n" + json.dumps({"verdict": "REVISE", "findings": rows})
+            + "\n```\nVERDICT: REVISE"
+        )
 
         self.assertEqual(dispatch._required_fixes(findings, "https://review.example/1"), [
             {
                 "kind": "finding",
                 "ref": "factory/a.py:4",
-                "summary": "`factory/a.py:4`: Handle the missing value.",
+                "summary": "Handle the missing value.",
             },
             {
                 "kind": "finding",
-                "ref": "https://review.example/1",
+                "ref": "factory/b.py:8",
                 "summary": "Explain why the branch needs refreshing.",
             },
         ])

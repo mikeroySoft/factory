@@ -351,9 +351,10 @@ key against the dispatcher GitHub account and warns with `unknown_key` when the
 key is unreadable or unregistered.
 
 
-`factory stats` exposes each structured review round as ordered
-`review_findings` counts in JSON and as `important/nit/pre-existing` triples in
-the ticket table.
+`factory stats` exposes ordered `review_findings` counts per reviewer call.
+Its convergence metrics combine High reviewers into one ticket round and keep
+resumed dispatcher runs distinct: Important findings per round, rounds-to-pass,
+and repeated findings dropped appear in JSON and in the ticket table.
 
 ### Decision records and explanations
 
@@ -548,9 +549,15 @@ that bare argument for manager commands, not worker commands.
 Reviewers never start in a checkout: both review lanes launch the command in a fresh
 temporary directory, so project config written by a worker or PR author (OMP
 `.omp/extensions`, Claude Code `.claude/settings.json`, `.mcp.json`) is not discovered.
-Ticket review gets `./review.diff` (base to gated head) and a read-only `git archive`
-snapshot of the gated head in `./snapshot`; PR review gets the diff inline. `GIT_*` and
-GitHub credentials are stripped from the reviewer's environment. Ticket review
+Ticket review gets a read-only `git archive` snapshot of the gated head in
+`./snapshot`. Round 1 gets `./review.diff` for base-to-head. Later rounds get
+only the last accepted review head-to-current head in `./review.diff`, plus the
+full base-to-current diff as read-only `./review-full.diff` context. A moved
+base or non-ancestor prior head falls back to a full primary diff and the prompt
+states why. An unchanged head gets an empty primary diff. Both High reviewers
+receive the same previous-round boundary and ledger, independently of one another.
+PR review gets the diff inline. `GIT_*` and GitHub credentials are
+stripped from the reviewer's environment. Ticket review
 retries snapshot, diff, launch, nonzero-exit, and unparseable-output failures up
 to three times, using exponential backoff unless the provider reports
 `retry-after` or `retry-after-ms`. Persistent failure records
@@ -895,7 +902,12 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    out (or the head came from a manager FIX) the ticket escalates with `pr checks failed`. Otherwise
    the reviewer runs the diff itself, gets the gate report inline, and
    is told to read issue #N's comments (the triage brief, approved scope changes).
-   Every finding cites `path:line`; a required fix also cites an acceptance
+   After round 1, `.factory/review-ledger-<n>.json` carries each finding id,
+   head, bug class, instances, and state. The reviewer must mark every open item
+   `fixed`, `still-open`, or `withdrawn`; same-class, same-location findings
+   reuse the ledger item instead of creating another required fix. The worker
+   receives only Important findings and is instructed to fix the whole bug class.
+   Every finding cites `path:line`; an Important finding also cites an acceptance
    criterion, a documented rule with its source, or a concrete correctness/security
    defect with its trigger and impact — preferences and hypothetical extensibility
    are optional suggestions, never requirements, and a passing gate does not
@@ -906,10 +918,14 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `VERDICT: REVISE` line. Malformed, multiple, non-final, nonzero-exit, and
    launch failures are reviewer tooling failures: Factory retries them, then
    escalates persistent failure as `reviewer_unavailable` without sending work
-   back to the worker. Each accepted `REVISE` sends the findings back to the
-   worker, flagged so only the required fixes are binding (re-gate, push,
-   re-review), up to `review_rounds` times; then it escalates. A manager `FIX`
-   failure leaves an already-`ready-for-human` ticket on its existing escalation
+   back to the worker. Each accepted `REVISE` sends only structured Important
+   findings back to the worker (re-gate, push, incremental re-review), up to
+   `review_rounds` times; Nit and Pre-existing findings neither block nor consume
+   a bounce. A manager `FIX` uses the same ledger and diff range. When
+   `[review].verify = true`, a separate finding-only/code-only verifier checks
+   each Important finding; an unconfirmed item becomes a nit, while verifier
+   failure or timeout leaves it blocking. A manager `FIX` failure leaves an
+   already-`ready-for-human` ticket on its existing escalation
    instead of posting another escalation comment or consuming another manager
    round.
    `APPROVE` adds the `factory-approved` label only while the remote PR still
@@ -920,12 +936,15 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `[gate].protected_paths`. The policy can define bug/security/spec passes,
    Important/Nit/Pre-existing severity, skips, and `Nit cap: N`; without the
    file, the built-in rules below remain in force.
-   Structured reviews end with a fenced JSON object containing `verdict` and
-   findings (`severity`, `pass`, `path`, `line`, `summary`), followed by the
-   legacy `VERDICT:` line. Factory counts every finding, caps published nits,
-   and approves if and only if Important is zero. Invalid JSON fails closed;
-   disagreement between either verdict and the counts fails closed with
-   `verdict_counts_mismatch`. `review-result` records the three counts.
+   Structured reviews end with a fenced JSON object containing `verdict`,
+   findings (`id`, `severity`, `pass`, `class`, `path`, `line`, `summary`,
+   `instances`), and round-2+ ledger statuses, followed by the legacy `VERDICT:`
+   line. Factory counts every finding, caps published nits, and approves if and
+   only if Important is zero. Invalid JSON fails closed; disagreement between
+   either verdict and the counts fails closed with `verdict_counts_mismatch`.
+   `review-result` records the three counts and dropped-repeat count. With
+   `[review].follow_up = true`, merge files at most one linked `needs-triage`
+   issue for Pre-existing findings and nit classes repeated across ticket PRs.
 
    **Risk tiers.** Before these checks, Factory classifies the exact gated
    `base..head` diff with the installed `factory/risk.py` rules and records a
@@ -944,11 +963,12 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
 
    A High PR merges without human approval when the full current-head gate
    (including all PR-tier checks) passes, both reviewers approve, and mutation
-   is `PASS` or `SKIP (no changed factory code)`. Both reviewers
-   revising uses the normal Medium loop. A reviewer split, or mutation failure
-   after both approvals, returns the dissenting findings for one worker round;
-   the next-head disagreement escalates as `risk_disagreement`. This
-   disagreement is the only High-tier-specific path to `ready-for-human`.
+   is `PASS` or `SKIP (no changed factory code)`. Any concrete Important
+   `REVISE` from either reviewer uses the normal bounded review loop and one
+   shared ledger, even when the other reviewer approves. A mutation failure
+   after both approvals returns its evidence for one worker round; the next-head
+   disagreement escalates as `risk_disagreement`. This mutation disagreement is
+   the only High-tier-specific path to `ready-for-human`.
    `[review].second_command` is a host-only override of the code default.
    Non-mutation PR-check failures use the ordinary gate-failure loop, not the
    disagreement path. Mutation runs related tests first and stops after the first
@@ -961,7 +981,6 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    distinct, or when the second reviewer cannot launch.
    `factory stats --by-risk` and the dashboard report human interventions,
    human-wait minutes, rounds, disagreement rate, and escape rate per tier.
-
 6. **Merge stage** (start of the next pass). One PR per pass requires green
    GitHub checks, a current-main head, no human requested-changes veto, the
    `factory-approved` label, and a matching successful journal approval whose
@@ -1108,6 +1127,8 @@ command = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1",
 # json_mode = true   # required for an OMP-compatible reviewer not named `omp`
 # policy = "REVIEW.md"  # read from the base ref
 # second_command is host-only; it overrides Factory's code default for High-risk reviews.
+# verify = false    # confirm each Important finding; verifier failure stays blocking
+# follow_up = false # file one needs-triage issue for deferred findings after merge
 
 [manager]                         # optional; unset command disables it
 command = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]   # {prompt} = manager prompt file

@@ -258,10 +258,14 @@ class LearnEvaluationTest(unittest.TestCase):
                 "with Path(os.environ['REVIEW_PROMPTS']).open('a') as f: f.write(prompt+'\\0')\n"
                 "value=Path('snapshot/solution.txt').read_text().strip()\n"
                 "revised='```json\\n{\"verdict\":\"REVISE\",\"findings\":[{\"severity\":\"important\","
-                "\"pass\":\"bug\",\"path\":\"solution.txt\",\"line\":1,"
-                "\"summary\":\"Baseline needs revision.\"},{\"severity\":\"important\","
-                "\"pass\":\"spec\",\"path\":\"solution.txt\",\"line\":1,"
-                "\"summary\":\"Baseline violates the ticket.\"}]}\\n```\\nVERDICT: REVISE'\n"
+                "\"pass\":\"bug\",\"class\":\"baseline-needs-revision\","
+                "\"path\":\"solution.txt\",\"line\":1,\"summary\":\"Baseline needs revision.\","
+                "\"instances\":[{\"path\":\"solution.txt\",\"line\":1,"
+                "\"summary\":\"Baseline needs revision.\"}]},{\"severity\":\"important\","
+                "\"pass\":\"spec\",\"class\":\"baseline-ticket-violation\","
+                "\"path\":\"solution.txt\",\"line\":1,\"summary\":\"Baseline violates the ticket.\","
+                "\"instances\":[{\"path\":\"solution.txt\",\"line\":1,"
+                "\"summary\":\"Baseline violates the ticket.\"}]}]}\\n```\\nVERDICT: REVISE'\n"
                 "approved='```json\\n{\"verdict\":\"APPROVE\",\"findings\":[]}\\n```\\nVERDICT: APPROVE'\n"
                 "text=revised if value == 'baseline' else approved\n"
                 "print(json.dumps({'type':'message_end','message':{'role':'assistant','content':text,"
@@ -407,27 +411,9 @@ class LearnEvaluationTest(unittest.TestCase):
             self.assertIsNone(result["cost"]["tokens"])
 
     def test_revise_finding_count_ignores_prose_and_optional_items(self) -> None:
-        findings = """Review summary.
+        counts = {"important": 2, "nit": 2, "pre_existing": 3}
 
-## Required fixes
-
-1. **Reject empty input** (`parser.py:12`)
-
-   Empty values currently reach the decoder.
-
-2. **Preserve the error** (`parser.py:30`)
-
-   The replacement loses the original context.
-
-## Optional suggestions
-
-1. Rename the helper (`parser.py:8`).
-2. Add an explanatory comment (`parser.py:9`).
-
-VERDICT: REVISE
-"""
-
-        self.assertEqual(learn._finding_count(findings), 2)
+        self.assertEqual(learn._finding_count(counts), 2)
 
     def test_evidence_excludes_frozen_issue_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as d:

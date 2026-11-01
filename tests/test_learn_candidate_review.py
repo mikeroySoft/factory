@@ -16,7 +16,9 @@ from factory import config, dispatch, learn, lifecycle
 APPROVE = '```json\n{"verdict":"APPROVE","findings":[]}\n```\nVERDICT: APPROVE'
 REVISE = (
     '```json\n{"verdict":"REVISE","findings":[{"severity":"important","pass":"bug",'
-    '"path":"AGENTS.md","line":2,"summary":"Guidance is incorrect."}]}\n```\nVERDICT: REVISE'
+    '"class":"incorrect-guidance","path":"AGENTS.md","line":2,"summary":"Guidance is incorrect.",'
+    '"instances":[{"path":"AGENTS.md","line":2,"summary":"Guidance is incorrect."}]}]}\n'
+    '```\nVERDICT: REVISE'
 )
 
 

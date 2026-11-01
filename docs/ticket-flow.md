@@ -166,6 +166,7 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 | `dispatch.approve_pr` | `factory-approved` | `factory-approved` | Approve; withdraw again if the PR changed while labelling |
 | `dispatch.escalate` | `ready-for-agent` | `ready-for-human` | Every escalation |
 | `dispatch.merge_pass_locked` | `factory-approved` | — | CI fail, or cancel after steps ran; missing approval evidence |
+| `dispatch._review_follow_up` | — | `needs-triage` | Optional post-merge issue for deferred pre-existing findings and nits recurring across tickets |
 | `dispatch.push_and_pr` | — | `*` | Caller's PR label; ticket PRs pass none |
 | `dispatch.refresh_pr_branch` | `factory-approved`, `ready-for-human` | `ready-for-agent` | Behind main: approval withdrawn before refresh; eligible conflict and repeated-gate requeues restore agent flow |
 | `dispatch.review_intake_pass` | — | `ready-for-human` | New issue for an unresolved opted-in PR review |

@@ -84,6 +84,96 @@ def review_findings(events: list[dict]) -> list[dict[str, int]]:
             rounds.append({key: counts[key] for key in ("important", "nit", "pre_existing")})
     return rounds
 
+def _important_finding_keys(event: dict) -> set[tuple[str, tuple[tuple[str, int], ...]]] | None:
+    findings = event.get("findings")
+    if not isinstance(findings, str):
+        return None
+    blocks = re.findall(r"```json[ \t]*\r?\n(.*?)\r?\n```", findings, re.DOTALL)
+    if len(blocks) != 1:
+        return None
+    try:
+        tally = json.loads(blocks[0])
+    except (json.JSONDecodeError, TypeError):
+        return None
+    rows = tally.get("findings") if isinstance(tally, dict) else None
+    if not isinstance(rows, list):
+        return None
+    keys = set()
+    for row in rows:
+        if not isinstance(row, dict) or row.get("severity") != "important":
+            continue
+        instances = row.get("instances")
+        if not isinstance(row.get("class"), str) or not isinstance(instances, list):
+            return None
+        locations = tuple(sorted(
+            (instance["path"], instance["line"])
+            for instance in instances
+            if isinstance(instance, dict)
+            and isinstance(instance.get("path"), str)
+            and type(instance.get("line")) is int
+        ))
+        if not locations:
+            return None
+        keys.add((row["class"], locations))
+    count = event["counts"].get("important")
+    return keys if type(count) is int and len(keys) == count else None
+
+
+def review_convergence(events: list[dict]) -> dict[str, Any]:
+    """Accepted ticket-review convergence metrics in ticket-round order."""
+    rounds = []
+    numbered = {}
+    for event in events:
+        counts = event.get("counts")
+        if (
+            event.get("event") != "review-result"
+            or not isinstance(counts, dict)
+            or type(counts.get("important")) is not int
+            or counts["important"] < 0
+            or event.get("accepted") is False
+            or event.get("accepted") is None and event.get("reason") is not None
+        ):
+            continue
+        number = event.get("review_round")
+        round_key = (event.get("dispatcher_run_id"), number)
+        if type(number) is int:
+            current = numbered.get(round_key)
+        elif event.get("role") == "second" and rounds:
+            current = rounds[-1]
+        else:
+            current = None
+        if current is None:
+            current = {
+                "approved": True,
+                "repeated": 0,
+                "important": set(),
+                "unkeyed_important": 0,
+            }
+            rounds.append(current)
+            if type(number) is int:
+                numbered[round_key] = current
+        current["approved"] &= event.get("verdict") == "APPROVE"
+        repeated = event.get("repeated_dropped", 0)
+        if type(repeated) is int and repeated >= 0:
+            current["repeated"] += repeated
+        keys = _important_finding_keys(event)
+        if keys is None:
+            current["unkeyed_important"] += counts["important"]
+        else:
+            current["important"].update(keys)
+    approved = next(
+        (index for index, review_round in enumerate(rounds, 1) if review_round["approved"]),
+        None,
+    )
+    return {
+        "rounds_to_pass": approved,
+        "repeated_findings_dropped": sum(review_round["repeated"] for review_round in rounds),
+        "important_findings_per_round": [
+            len(review_round["important"]) + review_round["unkeyed_important"]
+            for review_round in rounds
+        ],
+    }
+
 
 def issue(number: int) -> dict[str, Any]:
     return gh(
@@ -694,6 +784,7 @@ def collect_rows(progress: bool = False) -> list[dict[str, Any]]:
         row["risk_tier"] = risk_tier(audit.get(number, []))
         if any(event.get("event") == "review" for event in audit.get(number, [])):
             row["rework_rounds"] = rework_rounds(audit.get(number, []))
+        row.update(review_convergence(audit.get(number, [])))
 
     return [rows[number] for number in sorted(rows)]
 
@@ -880,12 +971,18 @@ def print_table(rows: list[dict[str, Any]]) -> None:
             for counts in row.get("review_findings", [])
         )
 
+    def important_rounds(row: dict) -> str:
+        return ",".join(map(str, row.get("important_findings_per_round", [])))
+
     columns = (
         ("ticket#", lambda row: f"#{row['ticket']}"),
         ("title", lambda row: truncate(row["title"])),
         ("state", lambda row: row["state"]),
         ("attempts", lambda row: str(row["attempts"])),
         ("review rounds", lambda row: str(row["review_rounds"])),
+        ("rounds to pass", lambda row: "" if row.get("rounds_to_pass") is None else str(row["rounds_to_pass"])),
+        ("repeats dropped", lambda row: str(row.get("repeated_findings_dropped", 0))),
+        ("important/round", important_rounds),
         ("review findings I/N/P", findings),
         ("hours", lambda row: format_hours(row["merge_hours"])),
         ("triage prompt", lambda row: usage(row, "triage", "prompt_tokens")),

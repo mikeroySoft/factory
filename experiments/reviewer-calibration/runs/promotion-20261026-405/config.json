@@ -1,0 +1,9 @@
+{
+  "model": "anthropic/claude-opus-5-5",
+  "samples": 2,
+  "contracts": [
+    "review-current",
+    "review-convergence"
+  ],
+  "splits_version": 2
+}
