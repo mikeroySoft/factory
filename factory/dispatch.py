@@ -1215,6 +1215,12 @@ def record_merge_decision(
             "ref": f"https://github.com/{REPO}/commit/{merge_sha}",
             "summary": f"merge SHA {merge_sha}",
         })
+    checks = sorted(
+        checks,
+        key=lambda check: not (
+            check.get("advisory") or check.get("bucket") == "skipped-infra"
+        ),
+    )
     inputs += [
         {
             "kind": "ci_run",
