@@ -5125,7 +5125,6 @@ class TriageProbeOnboardingTest(unittest.TestCase):
             repo = make_repo(root, '[triage]\nservice = "rocm-serve-ornith.service"\n')
             cfg = config.load(repo)
             cfg.raw_repo = {}
-            cfg.worker_usage["chore"] = config.usage_spec("chore", {"model": "result.model"})
 
             def command(argv, cwd=None):
                 if argv[:3] == ["gh", "repo", "view"]:
