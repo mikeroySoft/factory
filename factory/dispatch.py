@@ -1822,14 +1822,70 @@ def owner_state(n: int, *, approved_at: str | None = None) -> tuple[dict, str | 
         return {}, "owner state unavailable"
 
 
+def record_owner_veto(n: int, **fields: object) -> None:
+    """A quiet pass result still relinquishes Factory's claim, never the owner's labels."""
+    record("pass-result", ticket=n, **fields)
+    run(["gh", "issue", "edit", str(n), "--repo", REPO, "--remove-assignee", "@me"], check=False)
+
+
+def _publish_resolution_note(n: int, intent: dict, issue: dict | None = None) -> None:
+    """Retry uncertain publication only after checking GitHub for the original note."""
+    body = f"Factory resolved the escalation without a human: {intent['resolution']}."
+    try:
+        if issue is None:
+            issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "comments"])
+        boundary = datetime.fromisoformat(intent["at"]).replace(microsecond=0)
+        found = next((
+            comment for comment in issue["comments"]
+            if comment.get("body") == body and datetime.fromisoformat(comment["createdAt"]) >= boundary
+        ), None)
+        if found:
+            url = found["url"]
+        else:
+            posted = run(["gh", "issue", "comment", str(n), "--repo", REPO, "--body", body])
+            url = posted.stdout
+        comment_receipt(n, "escalation-resolved", url, resolution=intent["resolution"], token=intent["token"])
+        record("escalation-resolution-delivered", ticket=n, token=intent["token"])
+    except (subprocess.CalledProcessError, OSError, ValueError, KeyError, TypeError):
+        log(f"#{n}: resolution note delivery uncertain; retained for the next dispatch pass")
+
+
+def resolution_note_pass() -> None:
+    """Recover resolution notes even after their ticket left the frontier or merged."""
+    events = lifecycle.read_events(EVENTS)
+    delivered = {
+        event.get("token") for event in events
+        if event.get("event") == "escalation-resolution-delivered"
+        or (event.get("event") == "comment" and event.get("kind") == "escalation-resolved")
+    }
+    tickets = {
+        event["ticket"] for event in events
+        if event.get("event") == "escalation-resolution" and event["token"] not in delivered
+    }
+    for n in sorted(tickets):
+        with ticket_lock(n).open("w") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                continue
+            rows = [event for event in lifecycle.read_events(EVENTS) if event.get("ticket") == n]
+            delivered = {
+                event.get("token") for event in rows
+                if event.get("event") == "escalation-resolution-delivered"
+                or (event.get("event") == "comment" and event.get("kind") == "escalation-resolved")
+            }
+            for intent in rows:
+                if intent.get("event") == "escalation-resolution" and intent["token"] not in delivered:
+                    _publish_resolution_note(n, intent)
+
+
 def resolve_escalation(
     n: int, how: str, *, requeue: bool = False, approved_at: str | None = None,
 ) -> bool:
     """Advance past a human gate only against fresh owner state; relabel atomically."""
     issue, veto = owner_state(n, approved_at=approved_at)
     if veto:
-        record("pass-result", ticket=n, action="requeue" if requeue else "resolve",
-               reason=how, owner_state=veto)
+        record_owner_veto(n, action="requeue" if requeue else "resolve", reason=how, owner_state=veto)
         return False
     human = LABEL_HUMAN in {label["name"] for label in issue.get("labels", [])}
     if not human and not requeue:
@@ -1841,11 +1897,10 @@ def resolve_escalation(
         edit += ["--add-label", LABEL_AGENT, "--remove-assignee", "@me"]
     run(edit)
     if human:
-        posted = run([
-            "gh", "issue", "comment", str(n), "--repo", REPO, "--body",
-            f"Factory resolved the escalation without a human: {how}.",
-        ])
-        comment_receipt(n, "escalation-resolved", posted.stdout, resolution=how)
+        token = datetime.now(UTC).isoformat()
+        intent = {"resolution": how, "token": token, "at": token}
+        record("escalation-resolution", ticket=n, **intent)
+        _publish_resolution_note(n, intent, issue)
     return True
 
 
@@ -1884,10 +1939,8 @@ def escalate(
     packet, round_number = escalation_packet(n, reason, log_path, wt, extra=extra)
     _issue, veto = owner_state(n)
     if veto:
-        record("pass-result", ticket=n, action="escalate", code=code, reason=reason,
-               packet=str(packet), owner_state=veto, log=str(log_path) if log_path else None)
-        if veto == "owner state unavailable":
-            run(["gh", "issue", "edit", str(n), "--repo", REPO, "--remove-assignee", "@me"], check=False)
+        record_owner_veto(n, action="escalate", code=code, reason=reason,
+                          packet=str(packet), owner_state=veto, log=str(log_path) if log_path else None)
         log(f"#{n}: pass result recorded quietly ({veto}; {code}: {reason})")
         return
     log(f"#{n}: escalating to human ({code}: {reason})")
@@ -2993,7 +3046,7 @@ def approve_pr(n: int, head: str) -> bool:
     approved_at = datetime.now(UTC).isoformat()
     _issue, veto = owner_state(n)
     if veto:
-        record("pass-result", ticket=n, action="approve", head=head, owner_state=veto)
+        record_owner_veto(n, action="approve", head=head, owner_state=veto)
         return False
     changed = run(
         [
@@ -3940,6 +3993,7 @@ def merge_pass_locked(dry_run: bool) -> None:
             body = f"Closes #{n}\n\n{signoff()}" if cfg.signoff else f"Closes #{n}"
             _issue, veto = owner_state(n, approved_at=approval_at)
             if veto:
+                record_owner_veto(n, action="merge", pr=pr_num, head=head, owner_state=veto)
                 execution.outcome, execution.reason = "not_eligible", veto
                 log(f"PR #{pr_num}: not merging ({veto})")
                 continue
@@ -4637,6 +4691,7 @@ def main(argv: list[str]) -> int:
         engine_version=__version__, engine_commit=config.engine_commit(),
     ):
         if not args.dry_run:
+            resolution_note_pass()
             from factory import results
 
             maintenance = results.prune(cfg)

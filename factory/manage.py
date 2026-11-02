@@ -374,7 +374,7 @@ def _split_bodies(n: int, parent_body: str, children: list[dict]) -> list[dict]:
 def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: Path) -> None:
     fresh, veto = dispatch.owner_state(n)
     if veto:
-        dispatch.record("pass-result", ticket=n, action="manage", decision=decision, owner_state=veto)
+        dispatch.record_owner_veto(n, action="manage", decision=decision, owner_state=veto)
         return
     issue = {**issue, **fresh}
 
@@ -588,10 +588,10 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         post_comment("issue", n, message, **({"pr": pr["number"]} if pr else {}))
         if any(e.get("event") == "issue-created" and e.get("ticket") == n for e in lifecycle.read_events(dispatch.EVENTS)):
             issue_action("close", "--reason", "not planned")
+            dispatch.resolve_escalation(n, "manager CLOSE resolved the ticket")
         else:
             issue_action("edit", "--add-label", config.LABEL_WONTFIX)
         _record_wontfix(n, "CLOSE", body, pr=pr["number"] if pr else None)
-        dispatch.resolve_escalation(n, "manager CLOSE resolved the ticket")
         return
     elif decision == "ROUTE":
         args = []

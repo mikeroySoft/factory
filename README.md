@@ -151,13 +151,19 @@ fully specified it becomes `ready-for-agent` and is picked up.
 In-flight passes re-read issue labels and repository-owner comments before escalation,
 approval, requeue, or a routed handoff. An active `factory-held` label or an
 `Owner decision (...)` comment posted after the claim leaves the owner's labels
-untouched and records the pass result locally without another escalation or handoff.
+untouched, releases only Factory's assignment, and records the pass result locally
+without another escalation or handoff.
 Before merging, the same read compares holds with the exact-head approval: a newer
 `factory-held` application or owner decision saying to hold/not merge blocks landing;
 `ready-for-human` alone does not. If owner state cannot be read, the transition waits.
 When a later review, automatic requeue, or merge resolves an escalation, Factory
 removes `ready-for-human` and posts one line explaining how it resolved the
-escalation without a human; other labels remain unchanged.
+escalation without a human; other labels remain unchanged. A failed resolution-note
+publication does not discard a completed requeue's retry round or worker guidance:
+the note is journaled and retried on a later dispatch pass, reconciling existing
+comments before retrying. This also covers tickets that have already merged.
+A manager CLOSE proposal on a human-authored ticket keeps `ready-for-human` until
+the reporter decides; only an actual autonomous closure clears that human gate.
 
 For shared, longer-lived plans, file an issue with the **Initiative** template
 (Status / Outcome / Owner / Areas / Boundaries / Plan / Open decisions /
