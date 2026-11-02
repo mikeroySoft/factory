@@ -27,6 +27,7 @@ REGRESSED_BY = re.compile(r"^[ \t]*Regressed-by:[ \t]*#(\d+)\b", re.MULTILINE)
 HUNK = re.compile(r"@@ -(\d+)(?:,(\d+))? ")
 WORKERS = 8  # concurrent per-ticket gh reads
 NOT_REPORTED = "n/a (not reported)"
+POST_FIX_NOISE_CAVEAT = "Small samples are noisy; this observational report does not rank models."
 
 
 def configure(c: Config) -> None:
@@ -278,6 +279,82 @@ def print_skills(rows: list[dict], coverage: float | None) -> None:
 
 
 
+def post_fix_outcomes(rows: list[dict]) -> dict[str, Any]:
+    """FIX episodes opened and observed inside an already-windowed journal snapshot."""
+    episodes: list[dict[str, Any]] = []
+    active: dict[int, list[dict[str, Any]]] = {}
+    for row in rows:
+        ticket = row.get("ticket")
+        if type(ticket) is not int:
+            continue
+        if row.get("event") == "manage" and row.get("decision") == "FIX":
+            episode = {
+                "worker_model": None,
+                "claim_status": "no_claim",
+                "outcome": "pending",
+            }
+            episodes.append(episode)
+            active.setdefault(ticket, []).append(episode)
+            continue
+        ticket_episodes = active.get(ticket)
+        if ticket_episodes is None:
+            continue
+        if row.get("event") == "claimed":
+            model = row.get("worker_model")
+            for episode in ticket_episodes:
+                if episode["claim_status"] != "no_claim":
+                    continue
+                if isinstance(model, str) and model:
+                    episode["worker_model"] = model
+                    episode["claim_status"] = "claimed"
+                else:
+                    episode["claim_status"] = "model_not_recorded"
+        elif row.get("event") in {"merged", "escalate"}:
+            outcome = "merged" if row["event"] == "merged" else "re_escalated"
+            for episode in active.pop(ticket):
+                episode["outcome"] = outcome
+
+    totals: dict[tuple[str | None, str], Counter] = {}
+    for episode in episodes:
+        key = (episode["worker_model"], episode["claim_status"])
+        totals.setdefault(key, Counter())[episode["outcome"]] += 1
+    by_model = []
+    for (model, claim_status), outcomes in sorted(
+        totals.items(),
+        key=lambda item: (
+            item[0][0] is None,
+            item[0][1] == "no_claim",
+            item[0][0] or "",
+        ),
+    ):
+        resolved = outcomes["merged"] + outcomes["re_escalated"]
+        by_model.append({
+            "worker_model": model,
+            "claim_status": claim_status,
+            "merged": outcomes["merged"],
+            "re_escalated": outcomes["re_escalated"],
+            "pending": outcomes["pending"],
+            "resolved_merge_rate": outcomes["merged"] / resolved if resolved else None,
+        })
+    return {"by_worker_model": by_model, "noise_caveat": POST_FIX_NOISE_CAVEAT}
+
+
+def print_post_fix_outcomes(report: dict[str, Any]) -> None:
+    print("\nPost-FIX outcomes by next claim worker_model")
+    print("worker_model                          merged  re-escalated  pending  resolved merge rate")
+    for row in report["by_worker_model"]:
+        label = (
+            row["worker_model"]
+            or ("unknown (model not recorded)" if row["claim_status"] == "model_not_recorded"
+                else "no claim")
+        )
+        rate = (f"{row['resolved_merge_rate']:.1%}"
+                if row["resolved_merge_rate"] is not None else "n/a")
+        print(f"{label:<37} {row['merged']:>6}  {row['re_escalated']:>12}  "
+              f"{row['pending']:>7}  {rate:>19}")
+    print(report["noise_caveat"])
+
+
 def weekly_metrics(
     rows: list[dict], start: datetime, end: datetime, local_model: str | None,
 ) -> dict[str, Any]:
@@ -345,6 +422,7 @@ def weekly_metrics(
         "tokens": tokens,
         "local_token_share": round(local_tokens / reported_tokens, 6) if reported_tokens else None,
         "usage_missing": usage_missing,
+        "post_fix_outcomes": post_fix_outcomes(rows),
     }
     if any(row.get("event") in {"skill-load", "skill-coverage"} for row in rows):
         result.update(skills=skill_metrics(rows), skill_coverage=skill_coverage(rows))
@@ -1015,6 +1093,7 @@ def main(argv: list[str]) -> int:
                   f"{rows['review_nonconvergence_share_denominator']})")
             print(f"Local token share: {rows['local_token_share']}; missing usage: {rows['usage_missing']}")
             print(f"Stuck over 7 days: {rows['stuck_over_days']}")
+            print_post_fix_outcomes(rows["post_fix_outcomes"])
             print_skills(rows["skills"], rows["skill_coverage"])
         return 0
     if args.stages:

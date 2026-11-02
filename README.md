@@ -966,10 +966,15 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    preparation, baseline, and mutants together; incomplete blocking runs fail.
    Scratch workers use local shared clones with independent Git metadata and the
    current working files overlaid, so Git-dependent tests run without skips.
-   The built-in OMP worker pins `openai-codex/gpt-5.6-sol`; custom worker
-   profiles must also name a model. `factory doctor` warns when any of the
-   worker, primary-reviewer, or second-reviewer models is missing or not
-   distinct, or when the second reviewer cannot launch.
+   The built-in OMP worker pins `openai-codex/gpt-6.1-sol` directly in its argv.
+   `factory doctor` fails every OMP profile without an explicit `--model` and
+   every non-OMP profile without a `workers.<label>.usage.model` JSON path.
+   Non-OMP output must actually report that model; the path is not a model ID.
+   This includes the unchanged Droid `chore` command: configure its structured
+   output and usage path in the host profile before doctor can pass.
+   Doctor still warns when configured reviewer/worker models are not distinct
+   or the second reviewer cannot launch. Runtime-only worker independence is
+   checked against the attempt's reported model before High-risk review.
    `factory stats --by-risk` and the dashboard report human interventions,
    human-wait minutes, rounds, disagreement rate, and escape rate per tier.
 
@@ -1104,8 +1109,10 @@ review_rounds = 1                # REVISE -> worker -> re-review cycles
 # cost_pattern = 'Total cost:\s*\$([0-9.]+)'   # $ from the worker log (Claude Code prints this)
 
 [workers]                        # ticket label/profile -> argv; {prompt} file, {cwd} worktree
-default = ["omp", "-p", "--model", "openai-codex/gpt-5.6-sol", "--cwd", "{cwd}", "@{prompt}"]
+default = ["omp", "-p", "--model", "openai-codex/gpt-6.1-sol", "--cwd", "{cwd}", "@{prompt}"]
 chore   = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
+# For non-OMP profiles, use the table form with usage.model pointing to the
+# actual model field in structured worker output; a bare chore array fails doctor.
 
 # A differently named OMP-compatible worker selected by a separate pilot label:
 # [workers.prime]
@@ -1153,6 +1160,23 @@ model = "qwen3:30b"
 max_mb = 64      # events.jsonl rolls into events.jsonl.N.gz past this size
 retention = 8    # gzip segments kept
 ```
+
+Worker `attempt` and worker-stage `llm-usage` rows carry `worker_model` from
+reported usage, falling back to an explicit command model. `claimed` records
+the command model available at admission. A runtime-only non-OMP model cannot
+be known before the worker runs; that claim, or an attempt whose output omits
+the model and whose command does not pin one, retains `null` rather than a
+guessed identity. `usage.model` remains a dotted JSON path, never a literal ID.
+
+`factory stats --week [--json]` also reports post-FIX outcomes by the next
+claim's recorded `worker_model`. Each `manage`/`FIX` inside the inclusive UTC
+window starts a round; its first later `claimed` supplies the model, and its
+first later `merged` or `escalate` through the window end closes the round.
+Unresolved rounds are pending; a merge after re-escalation is not credited.
+Missing claim models are `unknown`, separate from `no claim`. Resolved merge
+rate is merged / (merged + re-escalated), excluding pending. These are noisy,
+observational samples, not controlled model rankings.
+
 
 The shared host file is `$XDG_CONFIG_HOME/factory/config.toml` (default
 `~/.config/factory/config.toml`). `[defaults.engine]` belongs to District:

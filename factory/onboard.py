@@ -430,6 +430,17 @@ def report_stage_success(cfg: config.Config, report) -> None:
     report(True, "last successful pass", detail, info=True)
 
 
+def worker_model_problem(cfg: config.Config, worker: str) -> str | None:
+    command = cfg.workers[worker]
+    if Path(command[0]).name == "omp":
+        model = config.command_model(command)
+        if not model or not model.strip() or model.lstrip().startswith("-"):
+            return "model is not explicit; set a non-empty `--model` in the worker command"
+    elif not cfg.worker_usage.get(worker, {}).get("model"):
+        return "`usage.model` is not configured; set its dotted JSON path into the worker log"
+    return None
+
+
 def second_reviewer_problem(cfg: config.Config, which) -> str | None:
     command = cfg.second_reviewer
     if not command:
@@ -445,9 +456,9 @@ def second_reviewer_problem(cfg: config.Config, which) -> str | None:
     if primary == second:
         return f"same model as primary reviewer ({second}); High-risk PRs cannot merge"
     for worker in cfg.workers:
-        model = cfg.worker_model(worker)
-        if model is None:
-            return f"worker `{worker}` model is not explicit; High-risk PRs cannot prove reviewer independence"
+        if problem := worker_model_problem(cfg, worker):
+            return f"worker `{worker}` {problem}"
+        model = config.command_model(cfg.workers[worker])
         if model == primary:
             return f"worker `{worker}` uses the same model as primary reviewer ({model})"
         if model == second:
@@ -587,6 +598,8 @@ def doctor(argv: list[str]) -> int:
 
     for label, argv_t in cfg.workers.items():
         report(which(argv_t[0]) is not None, f"worker `{label}`: {argv_t[0]}", on_path)
+        model_problem = worker_model_problem(cfg, label)
+        report(model_problem is None, f"worker `{label}` model", model_problem or "configured")
     if cfg.worker_wrap:
         report(which(cfg.worker_wrap[0]) is not None, f"worker wrap: {cfg.worker_wrap[0]}", on_path)
     report(which(cfg.reviewer[0]) is not None, f"reviewer: {cfg.reviewer[0]}", on_path)

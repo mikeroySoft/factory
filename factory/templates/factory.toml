@@ -28,7 +28,10 @@
 # argv templates. {prompt} = path to the ticket prompt file, {cwd} = worktree.
 # OMP file prompts require `@{prompt}`; bare `{prompt}` passes the path as text.
 # The key is a ticket label; `default` is required. First matching label wins.
-# default = ["omp", "-p", "--model", "openai-codex/gpt-5.6-sol", "--cwd", "{cwd}", "@{prompt}"]
+# Doctor requires explicit --model for OMP; other agents require a table worker
+# with usage.model pointing to a real model field in structured worker output.
+# The unchanged Droid chore array below needs that host usage configuration too.
+# default = ["omp", "-p", "--model", "openai-codex/gpt-6.1-sol", "--cwd", "{cwd}", "@{prompt}"]
 # chore   = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
 # Other agents work the same way, e.g.
 # default = ["claude", "-p", "--dangerously-skip-permissions", "{prompt}"]  # reads the path as text: use a wrapper
@@ -52,11 +55,11 @@
 #
 # [workers.ci-fix]
 # when = "CI is red: read the failing job log, fix the cause or declare a flake with evidence."
-# command = ["omp", "-p", "--cwd", "{cwd}", "Read the ticket prompt at {prompt}. Read the failing CI job log. Fix the cause, or declare a flake in the handoff with concrete log and run evidence. Do not claim a flake without evidence."]
+# command = ["omp", "-p", "--model", "openai-codex/gpt-6.1-sol", "--cwd", "{cwd}", "Read the ticket prompt at {prompt}. Read the failing CI job log. Fix the cause, or declare a flake in the handoff with concrete log and run evidence. Do not claim a flake without evidence."]
 #
 # [workers.conflict]
 # when = "A rebase conflicts: resolve the rebase, keep both intents, make no semantic changes."
-# command = ["omp", "-p", "--cwd", "{cwd}", "Read the ticket prompt at {prompt}. Resolve the rebase conflicts, preserving both sides' intents with no semantic changes. If the rebase was aborted, restart it against the configured main before resolving. If the intents cannot be preserved without semantic changes, stop and explain in the handoff."]
+# command = ["omp", "-p", "--model", "openai-codex/gpt-6.1-sol", "--cwd", "{cwd}", "Read the ticket prompt at {prompt}. Resolve the rebase conflicts, preserving both sides' intents with no semantic changes. If the rebase was aborted, restart it against the configured main before resolving. If the intents cannot be preserved without semantic changes, stop and explain in the handoff."]
 #
 # Usage: each attempt journals one `llm-usage` event (stage "worker"); unreported
 # fields are null. A table worker may read them from structured output: dotted
@@ -65,6 +68,8 @@
 # Claude Code `--output-format json` (paths checked on 2.1.292; it names the
 # model only as a `modelUsage` key, so no `model` path):
 # usage = { match = { type = "result" }, cost = "total_cost_usd", completion_tokens = "usage.output_tokens", cached_tokens = "usage.cache_read_input_tokens", prompt_tokens = ["usage.input_tokens", "usage.cache_read_input_tokens", "usage.cache_creation_input_tokens"] }
+# A wrapper must expose a model string if its native output has no model path.
+# Do not put a literal model ID in usage.model: it is a JSON path read after exit.
 # Host config `[defaults.prices."<model>"]` (prompt, completion, optional cached;
 # USD per million tokens) prices events that report tokens but no cost.
 

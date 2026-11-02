@@ -3940,16 +3940,7 @@ def worker_round(
     else:
         worker = record_worker_selection(n, labels, selected_worker=selected_worker)
     worker_version = cfg.worker_version.get(worker)
-    worker_model = cfg.worker_model(worker)
     command = cfg.worker_command(worker, promptfile, wt)
-    if cfg.workers[worker] == config.DEFAULT_WORKER:
-        command[len(cfg.worker_wrap) + 2:len(cfg.worker_wrap) + 2] = [
-            "--model", config.DEFAULT_WORKER_MODEL,
-        ]
-    identity = {
-        "worker": worker, "worker_version": worker_version,
-        "worker_model": worker_model,
-    }
     transcript_mode = cfg.worker_transcript.get(worker)
     argv, session_dir = _with_transcript(
         command, n, transcript_mode, len(cfg.worker_wrap) if transcript_mode else None,
@@ -3966,6 +3957,10 @@ def worker_round(
     transcript = _transcript(session_dir, wall)
     timeout = {"timeout": fired, "reason": TIMEOUT_REASONS[fired]} if fired else {}
     usage = worker_usage(logfile, cfg.worker_usage.get(worker), transcript)
+    identity = {
+        "worker": worker, "worker_version": worker_version,
+        "worker_model": usage["model"] or cfg.worker_model(worker),
+    }
     record(
         "llm-usage", ticket=n, stage="worker", attempt=attempt,
         local=_usage_local(usage), **identity, **usage,
@@ -4263,6 +4258,7 @@ def process_ticket(
             record(
                 "claimed", ticket=n, title=title, labels=sorted(labels),
                 worker=worker_key, worker_version=cfg.worker_version.get(worker_key),
+                worker_model=cfg.worker_model(worker_key),
                 priority=tier, priority_source=why, experiment=schedule.is_experiment(fresh),
                 base=replay_base,
                 issue={key: fresh.get(key) for key in ("title", "body", "comments")},

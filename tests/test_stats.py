@@ -4,7 +4,6 @@ from any cwd, missing fix commits in --escapes, and worker tokens from OMP trans
 from __future__ import annotations
 
 import contextlib
-from datetime import UTC, datetime
 import io
 import json
 import os
@@ -13,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
