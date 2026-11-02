@@ -193,7 +193,7 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 | `dispatch.merge_pass_locked` | `factory-approved` | — | CI fail, or cancel after steps ran; missing approval evidence |
 | `dispatch.push_and_pr` | — | `*` | Caller's PR label; ticket PRs pass none |
 | `dispatch.refresh_pr_branch` | `factory-approved`, `ready-for-human` | `ready-for-agent` | Behind main: approval withdrawn before refresh; eligible conflict and repeated-gate requeues restore agent flow |
-| `dispatch.requeue_parked_tests` | `ready-for-human` | `ready-for-agent` | Still-parked sole-test failure: a later main commit touched the recorded test file; comment names test and commit, no round charged |
+| `dispatch.requeue_parked_tests` | `ready-for-human` | `ready-for-agent` | Under the ticket lock, revalidate still-parked sole-test evidence after escalation or failed manager FIX; a later main commit touched its test file; comment names test and commit, no round charged |
 | `dispatch.review_intake_pass` | — | `ready-for-human` | New issue for an unresolved opted-in PR review |
 | `dispatch.sync_issue` | — | `ready-for-agent` | New sync ticket for new upstream commits; its `agent/N` candidate carries the merge and gate evidence |
 | `learn.promote` | — | `factory-approved` | `factory learn` PR (lessons, curate, revert-lessons) with head-bound gate PASS, reviewer APPROVE and green CI, then squash merge (`learn.promote_pass` runs it per PR); lessons/curate merges open a `promotion-open` that `learn.decide_promotions` keeps or reverts |

@@ -1793,7 +1793,9 @@ ESCALATION_CODES = frozenset({
 })
 
 
-def _sole_test_failure(wt: Path, n: int, gate_report: str | None = None) -> dict | None:
+def _sole_test_failure(
+    wt: Path, n: int, gate_report: str | None = None, *, revision: str = "HEAD",
+) -> dict | None:
     """Only complete, single-test failures may be released by a main file change."""
     from factory import gate
 
@@ -1836,9 +1838,10 @@ def _sole_test_failure(wt: Path, n: int, gate_report: str | None = None) -> dict
     if last_attempt.get("worker_exit", 0) != 0:
         return None
     test = tests[0]
-    name = re.split(r"::|\.", test)[-1].split("[", 1)[0]
+    selector = test.split("[", 1)[0]
+    name = re.split(r"::|\.", selector)[-1]
     listing = run(
-        ["git", "grep", "-l", "-z", "-F", "-e", name, "HEAD", "--", "*.py", "*.rs"],
+        ["git", "grep", "-l", "-z", "-F", "-e", name, revision, "--", "*.py", "*.rs"],
         cwd=wt, check=False,
     )
     if listing.returncode:
@@ -1847,13 +1850,12 @@ def _sole_test_failure(wt: Path, n: int, gate_report: str | None = None) -> dict
     for entry in listing.stdout.split("\0"):
         if not entry:
             continue
-        path = entry.removeprefix("HEAD:")
-        source = run(["git", "show", f"HEAD:{path}"], cwd=wt).stdout
+        path = entry.removeprefix(f"{revision}:")
+        source = run(["git", "show", f"{revision}:{path}"], cwd=wt).stdout
         try:
             records = gate._python_tests(path, source) if path.endswith(".py") else gate._rust_tests(path, source)
         except SyntaxError:
             continue
-        selector = test.split("[", 1)[0]
         if any(
             gate._matches_test_id(selector, record)
             or any(alias.endswith("." + selector) for alias in record["aliases"])
@@ -1870,44 +1872,56 @@ def _sole_test_failure(wt: Path, n: int, gate_report: str | None = None) -> dict
 
 def requeue_parked_tests(dry_run: bool) -> None:
     """Release only still-parked sole-test failures whose file changed on main."""
-    parked = {}
-    for event in lifecycle.read_events(EVENTS):
-        if event.get("event") == "manage" and event.get("decision") == "HUMAN":
+    def parked_tests() -> dict:
+        parked = {}
+        for event in lifecycle.read_events(EVENTS):
+            if event.get("event") == "manage" and event.get("decision") == "HUMAN":
+                continue
+            if event.get("event") in {
+                "escalate", "claimed", "attempt", "manage", "merged", "test-requeue",
+                "conflict-requeue", "gate-requeue", "human-decision", "gate-parked",
+            } and isinstance(event.get("ticket"), int):
+                parked[event["ticket"]] = event.get("parked_test")
+        return parked
+
+    for n, failure in parked_tests().items():
+        if not failure:
             continue
-        if event.get("event") in {
-            "escalate", "claimed", "attempt", "manage", "merged", "test-requeue",
-            "conflict-requeue", "gate-requeue", "human-decision",
-        } and isinstance(event.get("ticket"), int):
-            parked[event["ticket"]] = event.get("parked_test")
-    for n, failure in parked.items():
-        if not failure or lock_held(ticket_lock(n)):
-            continue
-        baseline = failure["main"]
-        tip = f"origin/{cfg.main}"
-        if run(["git", "merge-base", "--is-ancestor", baseline, tip], cwd=ROOT, check=False).returncode:
-            continue
-        changed = run(
-            ["git", "log", "--format=%H", f"{baseline}..{tip}", "--", f":(literal){failure['file']}"],
-            cwd=ROOT,
-        ).stdout.splitlines()
-        if not changed:
-            continue
-        issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "state,labels,assignees"])
-        labels = {label["name"] for label in issue.get("labels", [])}
-        if issue.get("state") != "OPEN" or LABEL_HUMAN not in labels or LABEL_AGENT in labels or issue.get("assignees"):
-            continue
-        commit = changed[0]
-        body = (
-            f"Factory requeue: sole failing test `{failure['test']}` in `{failure['file']}` "
-            f"changed on `{cfg.main}` in commit `{commit}`. Requeued to `{LABEL_AGENT}`; no round charged."
-        )
-        if dry_run:
-            log(f"#{n}: would requeue ({body})")
-            continue
-        run(["gh", "issue", "comment", str(n), "--repo", REPO, "--body", body])
-        run(["gh", "issue", "edit", str(n), "--repo", REPO,
-             "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT])
-        record("test-requeue", ticket=n, test=failure["test"], file=failure["file"], main=commit)
+        with ticket_lock(n).open("w") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                continue
+            # A manager/worker may have superseded the snapshot before we got the lock.
+            failure = parked_tests().get(n)
+            if not failure:
+                continue
+            baseline = failure["main"]
+            tip = f"origin/{cfg.main}"
+            if run(["git", "merge-base", "--is-ancestor", baseline, tip], cwd=ROOT, check=False).returncode:
+                continue
+            changed = run(
+                ["git", "log", "--format=%H", f"{baseline}..{tip}", "--", f":(literal){failure['file']}"],
+                cwd=ROOT,
+            ).stdout.splitlines()
+            if not changed:
+                continue
+            issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "state,labels,assignees"])
+            labels = {label["name"] for label in issue.get("labels", [])}
+            if issue.get("state") != "OPEN" or LABEL_HUMAN not in labels or LABEL_AGENT in labels or issue.get("assignees"):
+                continue
+            commit = changed[0]
+            body = (
+                f"Factory requeue: sole failing test `{failure['test']}` in `{failure['file']}` "
+                f"changed on `{cfg.main}` in commit `{commit}`. Requeued to `{LABEL_AGENT}`; no round charged."
+            )
+            if dry_run:
+                log(f"#{n}: would requeue ({body})")
+                continue
+            run(["gh", "issue", "comment", str(n), "--repo", REPO, "--body", body])
+            run(["gh", "issue", "edit", str(n), "--repo", REPO,
+                 "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT])
+            record("test-requeue", ticket=n, test=failure["test"], file=failure["file"], main=commit)
 
 
 def escalate(
@@ -1957,7 +1971,9 @@ def escalate(
         if refreshed_head is not None
         else {}
     )
-    if code == "gate_failed" and (failure := _sole_test_failure(wt, n, gate_report)):
+    if code == "gate_failed" and (failure := _sole_test_failure(
+        wt, n, gate_report, revision=refreshed_head or "HEAD",
+    )):
         evidence["parked_test"] = failure
     record(
         "escalate", ticket=n, code=code, reason=reason,
@@ -3424,11 +3440,16 @@ def refresh_pr_branch(
     main_head = run(["git", "rev-parse", f"origin/{cfg.main}"], cwd=wt).stdout.strip()
     if waiting:
         if local_head != remote_head:
+            kept_head = local_head
+            evidence_ref = restore_pr_head(kept_head)
+            remote_head = run(
+                ["git", "rev-parse", f"origin/agent/{n}"], cwd=wt
+            ).stdout.strip()
+            local_head = remote_head
             log(
-                f"PR #{pr}: waiting refresh deferred; kept worktree head "
-                f"{local_head} differs from remote head {remote_head}"
+                f"PR #{pr}: retained unpublished waiting head {kept_head} at "
+                f"{evidence_ref}; refreshing published head {remote_head}"
             )
-            return False
         if any(
             event.get("event") == "waiting-refresh-failed"
             and event.get("ticket") == n
