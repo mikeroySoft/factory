@@ -81,6 +81,9 @@ class ReviewIsolationTest(unittest.TestCase):
         })
         env.start()
         self.addCleanup(env.stop)
+        self.enterContext(mock.patch.object(dispatch, "gh_json", return_value={
+            "title": "Fixture issue", "body": "Fixture acceptance criteria", "comments": [],
+        }))
 
     def assert_isolated(self) -> dict:
         self.assertFalse(self.sentinel.exists(), "reviewer executed worker-written startup file")
@@ -141,6 +144,74 @@ class ReviewIsolationTest(unittest.TestCase):
         with mock.patch.object(dispatch, "run", side_effect=run):
             dispatch.review_external_pr(17, "base", self.head)
         self.assert_isolated()
+
+    def test_reviewer_prompt_carries_frozen_issue_and_runs_tokenless(self) -> None:
+        issue = {
+            "title": "Preserve the accepted scope",
+            "body": "Acceptance: keep the original behavior.\n```python\nexample()\n```",
+            "comments": [
+                {"author": {"login": "owner"}, "body": "Approved scope: original only."},
+                {"author": {"login": "triage"}, "body": "Agent brief: verify the boundary."},
+                {"author": None, "body": "Deleted author's comment is still evidence."},
+            ],
+        }
+        script = """
+import json, os, sys
+from pathlib import Path
+json.dump({
+    "prompt": sys.argv[2],
+    "tokens": [k for k in ("GH_TOKEN", "GITHUB_TOKEN") if k in os.environ],
+    "config": os.environ["GH_CONFIG_DIR"],
+    "config_entries": [p.name for p in Path(os.environ["GH_CONFIG_DIR"]).iterdir()],
+}, open(sys.argv[1], "w"))
+print('```json\\n{"verdict":"APPROVE","findings":[]}\\n```\\nVERDICT: APPROVE')
+"""
+        self.cfg.reviewer = [sys.executable, "-c", script, str(self.out), "{prompt}"]
+        from factory import binding
+
+        for bound in (True, False):
+            with self.subTest(bound=bound), \
+                    mock.patch.dict(os.environ, {
+                        "GH_TOKEN": "dispatcher-gh", "GITHUB_TOKEN": "dispatcher-github",
+                        "GH_CONFIG_DIR": str(self.tmp),
+                    }), \
+                    mock.patch.object(binding, "accepted", return_value={"issue": issue} if bound else None), \
+                    mock.patch.object(dispatch, "gh_json", return_value=issue) as fetch:
+                verdict, _ = dispatch.review(self.wt, 7, "PASS", self.head)
+                self.assertEqual(verdict, "APPROVE")
+                seen = json.loads(self.out.read_text())
+                self.assertEqual(seen["tokens"], [])
+                self.assertEqual(seen["config_entries"], [])
+                self.assertNotEqual(seen["config"], str(self.tmp))
+                prompt = seen["prompt"]
+                self.assertIn(issue["title"], prompt)
+                supplied = prompt.split("--- BEGIN UNTRUSTED ISSUE ---\n", 1)[1].split(
+                    "\n--- END UNTRUSTED ISSUE ---", 1,
+                )[0]
+                self.assertIn(f"# Issue #7: {issue['title']}", supplied)
+                self.assertIn(issue["body"], supplied)
+                for author, comment in zip(("owner", "triage", "unknown"), issue["comments"]):
+                    self.assertIn(f"## Comment by {author}\n\n{comment['body']}", supplied)
+                self.assertNotIn("Read the issue comments", prompt)
+                if bound:
+                    fetch.assert_not_called()
+                else:
+                    fetch.assert_called_once_with([
+                        "issue", "view", "7", "--repo", "acme/widgets", "--json", "title,body,comments",
+                    ])
+                self.assertEqual(os.environ["GH_TOKEN"], "dispatcher-gh")
+                self.assertEqual(os.environ["GITHUB_TOKEN"], "dispatcher-github")
+
+    def test_learning_proposal_prompt_does_not_fetch_issue_context(self) -> None:
+        from factory import binding
+
+        with mock.patch.object(binding, "accepted") as accepted, \
+                mock.patch.object(dispatch, "gh_json") as fetch:
+            prompt = dispatch.review_prompt(None, "PASS", proposal="Use the evaluated guidance.")
+        accepted.assert_not_called()
+        fetch.assert_not_called()
+        self.assertIn("## Learning proposal\n\nUse the evaluated guidance.", prompt)
+        self.assertNotIn("UNTRUSTED ISSUE", prompt)
 
 
 if __name__ == "__main__":
