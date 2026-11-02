@@ -1702,6 +1702,14 @@ class FinishedBudgetLifecycleTest(unittest.TestCase):
         self.assertTrue(any(row.get("event") == "escalate" and row["code"] == "budget" for row in events))
         self.assertFalse(json.loads(self.state.read_text()).get("pr"))
 
+    def test_expired_nested_unverified_blocker_escalates_before_publication(self):
+        events = self.expired_pass("### Production migration\n- Verify the migration.")
+        attempt = next(row for row in events if row.get("event") == "attempt")
+        self.assertIsNone(attempt["gate"])
+        self.assertTrue(any(row.get("event") == "escalate" and row["code"] == "budget" for row in events))
+        self.assertFalse(any(row.get("event") == "approved" for row in events))
+        self.assertFalse(json.loads(self.state.read_text()).get("pr"))
+
     def test_expired_uncommitted_work_escalates(self):
         events = self.expired_pass(committed=False)
         self.assertTrue(any(row.get("event") == "escalate" and row["code"] == "budget" for row in events))
