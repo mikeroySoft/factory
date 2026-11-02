@@ -141,6 +141,31 @@ flowchart TB
   class REPORTER,HUMAN,CI,UPSTREAM,EXTPR out
 ```
 
+## Manager CLOSE and command failures
+
+`manage.apply` treats `gh pr view agent/<ticket>` reporting "no pull requests
+found", or returning a `CLOSED` PR, as no PR. It posts the manager's reason on the
+issue, then adds `wontfix-proposal` to an original human issue (leaving it open)
+or closes a factory-created SPLIT child as `not planned`. This applies equally
+after `no_change`, `pr_unpublished`, or `gate_failed`; escalation shape does not
+grant authority to close a human issue.
+
+A `MERGED` PR or an open PR targeting a base other than the configured target
+remains a mechanism failure, not the no-PR path (#534, rocm-cli #69 shape).
+A merged change is already landed; CLOSE must not reinterpret it as rejected
+work. A different-base PR is outside the configured target's authority. Neither
+case posts the CLOSE comment, closes the PR/issue, or adds `wontfix-proposal`;
+the recorded decision is left for a human, never automatically replayed.
+The escalation path records `github_command_failed`; the PR frontier retains
+its existing `pr_frontier_failed` reason.
+
+Manager lifecycle exits with `reason=github_command_failed` include an `error`
+field: the failing command's stderr, token-redacted before retaining its last
+2,000 characters, using the same `dispatch.stderr_tail` policy as command logs.
+Without stderr (including validation and OS errors), the redacted exception
+text is retained instead. Expected missing-PR errors consumed by a successful
+CLOSE do not add an error to the exit.
+
 ## Gaps
 
 - **CI `cancel` is `fail` before approval.** Since #164 the merge stage reruns a

@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Manager lifecycle exits with `github_command_failed` now retain the token-redacted, bounded stderr tail (or exception text without stderr). Fake-`gh` regressions cover no-PR/closed-PR CLOSE outcomes and preserve human review for MERGED or wrong-base PRs (#534).
 - Gate-failure control bands now ignore failures from unmerged worker-attempt heads, keep reused attempt numbers bound to their own dispatch, and count each landed `(ticket, attempt)` only once, while preserving alarms for main and merged-head failures (#459).
 - Before the attempt gate, the dispatcher now restores unplanned dependency lockfiles from the ticket branch's merge-base. A changed `pyproject.toml` or any recorded round's plan listing the lockfile preserves the edit; ticket and brief wording does not. Upstream-sync tickets skip the guard so fork lockfiles remain untouched. Repository `uv run` gate checks stay frozen so verification cannot rewrite `uv.lock` (#441).
 - Bug-ticket gates now accept a handoff `Repro test:` ID wrapped in one matching pair of backticks or quotes, while preserving plain IDs and rejecting IDs that do not match an added test (#456).
