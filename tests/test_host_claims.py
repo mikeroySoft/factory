@@ -28,6 +28,7 @@ class FakeGitHub:
             "createdAt": "2026-01-01T00:00:00Z",
         }
         self.comments = []
+        self.open_prs = []
         self.calls = []
         self.lock = threading.Lock()
         self.fresh_barrier = None
@@ -45,6 +46,7 @@ class FakeGitHub:
             "id": self.next_id,
             "body": f"Factory claim: host={host} nonce={nonce} at={at.isoformat()}",
             "created_at": at.isoformat(),
+            "user": {"login": "@me"},
         }
         self.next_id += 1
         self.comments.append(comment)
@@ -59,6 +61,10 @@ class FakeGitHub:
             self.calls.append((host, list(args)))
             if args[:2] == ["issue", "list"]:
                 result = [copy.deepcopy(self.issue)]
+            elif args[:2] == ["pr", "list"]:
+                result = copy.deepcopy(self.open_prs)
+            elif args == ["api", "user"]:
+                result = {"login": "@me"}
             elif args[:2] == ["issue", "view"]:
                 result = copy.deepcopy(self.issue)
                 if host not in self.fresh_hosts:
@@ -74,7 +80,7 @@ class FakeGitHub:
                 elif endpoint.endswith("/comments") and args[args.index("--method") + 1] == "POST":
                     body = next(arg[5:] for arg in args if arg.startswith("body="))
                     result = {"id": self.next_id, "body": body,
-                              "created_at": datetime.now(UTC).isoformat()}
+                              "created_at": datetime.now(UTC).isoformat(), "user": {"login": "@me"}}
                     self.next_id += 1
                     self.comments.append(result)
                     barrier = self.post_barrier
@@ -246,12 +252,14 @@ class HostClaimRaceTest(unittest.TestCase):
         tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
         self.github.add_claim("tank", datetime.now(UTC))
         self.github.issue["labels"].append({"name": "bug"})
-        issue_before = copy.deepcopy(self.github.issue)
+        labels_before = copy.deepcopy(self.github.issue["labels"])
         comments_before = copy.deepcopy(self.github.comments)
 
         ultron.unclaim(7, "--remove-label", "ready-for-agent", check=False)
 
-        self.assertEqual(self.github.issue, issue_before)
+        self.assertEqual(self.github.issue["labels"],
+                         [row for row in labels_before if row["name"] != "ready-for-agent"])
+        self.assertEqual(self.github.issue["assignees"], [])
         self.assertEqual(self.github.comments, comments_before)
 
         tank.unclaim(7, "--remove-label", "ready-for-agent", check=False)

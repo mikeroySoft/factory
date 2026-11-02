@@ -32,6 +32,7 @@ import tomllib
 import uuid
 from contextlib import contextmanager, nullcontext, suppress
 from datetime import UTC, datetime
+from functools import cache
 from pathlib import Path
 
 from factory import __version__, brief, config, lifecycle, risk
@@ -84,6 +85,7 @@ def configure(c: Config) -> None:
     _PENDING_SECOND_REVIEWS.clear()
     _PENDING_RISK.clear()
     _LOW_FALLBACK.clear()
+    host_claim_login.cache_clear()
 
 
 # `factory learn` branches: lessons, CURATE and the revert a failed promotion opens.
@@ -489,12 +491,19 @@ def open_blockers(number: int, body: str) -> list[int]:
     return sorted(blockers)
 
 
+@cache
+def host_claim_login() -> str:
+    return gh_json(["api", "user"])["login"].casefold()
+
+
 def host_claims(n: int) -> list[dict]:
     """Read all claim comments, not the truncated GraphQL issue comment window."""
     pages = gh_json(["api", "--paginate", "--slurp", f"repos/{REPO}/issues/{n}/comments"])
     claims = []
     for page in pages:
         for comment in page:
+            if (comment.get("user") or {}).get("login", "").casefold() != host_claim_login():
+                continue
             first = (comment.get("body") or "").split("\n", 1)[0]
             match = re.fullmatch(r"Factory claim: host=(\S+) nonce=(\S+) at=(\S+)", first)
             if match is None:
@@ -518,13 +527,22 @@ def live_host_claims(claims: list[dict]) -> list[dict]:
             if (now - claim["heartbeat"]).total_seconds() < cfg.claim_ttl_seconds]
 
 
-def host_claim_hold(issue: dict, claims: list[dict]) -> str | None:
+def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
     if live := live_host_claims(claims):
         return f"host claim ({live[0]['host']})"
     stale_hosts = {claim["host"] for claim in claims}
     foreign = {label["name"][5:] for label in issue.get("labels", [])
                if label["name"].startswith("host:")} - stale_hosts - {cfg.host_name}
-    return f"host label ({', '.join(sorted(foreign))})" if foreign else None
+    if foreign:
+        return f"host label ({', '.join(sorted(foreign))})"
+    if claims and issue.get("assignees"):
+        if any(row["login"].casefold() != host_claim_login() for row in issue["assignees"]):
+            return "assigned"
+        # A stopped heartbeat does not abandon a published PR awaiting CI/review/merge.
+        if gh_json(["pr", "list", "--repo", REPO, "--state", "open",
+                    "--head", f"agent/{n}", "--json", "number"]):
+            return "open PR"
+    return None
 
 
 def delete_host_claim(n: int, claim: dict) -> None:
@@ -540,10 +558,12 @@ def delete_host_claim(n: int, claim: dict) -> None:
 def release_stale_claims(n: int, issue: dict, claims: list[dict]) -> dict:
     live_ids = {row["id"] for row in live_host_claims(claims)}
     stale = [row for row in claims if row["id"] not in live_ids]
-    if not stale:
+    if not stale or host_claim_hold(n, issue, claims):
         return issue
     # Re-read before deleting: a heartbeat may have landed since the admission read.
     current = host_claims(n)
+    if host_claim_hold(n, issue, current):
+        return issue
     live_ids = {row["id"] for row in live_host_claims(current)}
     stale = [row for row in current if row["id"] not in live_ids]
     for claim in stale:
@@ -591,7 +611,7 @@ class HostClaim:
 
 
 def acquire_host_claim(n: int, issue: dict, claims: list[dict], *, forced: bool = False) -> HostClaim | None:
-    if held := host_claim_hold(issue, claims):
+    if held := host_claim_hold(n, issue, claims):
         record("claim_lost", ticket=n, host=cfg.host_name, reason=held)
         log(f"#{n}: skipped ({held})")
         return None
@@ -621,22 +641,24 @@ def acquire_host_claim(n: int, issue: dict, claims: list[dict], *, forced: bool 
 
 
 def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool = False) -> None:
-    """All @me release paths share host ownership checks; legacy argv stays unchanged."""
+    """Apply lifecycle transitions; release host resources only when this host owns them."""
+    owned = None
     if cfg.host_name:
-        claims = live_host_claims(host_claims(n))
+        claims = host_claims(n)
+        elected = live_host_claims(claims) or claims
         local = _HOST_CLAIMS.get(n)
-        if not claims or claims[0]["host"] != cfg.host_name:
-            return
-        if local is not None and claims[0]["nonce"] != local.comment["nonce"]:
-            return
-        if local is not None:
-            local.stop()
+        if elected and elected[0]["host"] == cfg.host_name and (
+            local is None or elected[0]["nonce"] == local.comment["nonce"]
+        ):
+            owned = elected[0]
+            if local is not None:
+                local.stop()
     args = [*label_args, "--remove-assignee", "@me"] if assignee_last else [
         "--remove-assignee", "@me", *label_args,
     ]
     run(["gh", "issue", "edit", str(n), "--repo", REPO, *args], check=check)
-    if cfg.host_name:
-        delete_host_claim(n, claims[0])
+    if owned is not None:
+        delete_host_claim(n, owned)
 
 
 def frontier() -> list[dict]:
@@ -659,7 +681,7 @@ def frontier() -> list[dict]:
         n = issue["number"]
         if any(label.get("name") == config.LABEL_INITIATIVE for label in issue.get("labels", [])):
             issue["held"] = "initiative record"
-        elif cfg.host_name and (held := host_claim_hold(issue, claims := host_claims(n))):
+        elif cfg.host_name and (held := host_claim_hold(n, issue, claims := host_claims(n))):
             issue["held"] = held
         elif issue["assignees"] and not (cfg.host_name and claims):
             issue["held"] = "assigned"

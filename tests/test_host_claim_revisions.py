@@ -65,6 +65,13 @@ class HostClaimRevisionTest(unittest.TestCase):
         self.assertEqual((self.github.issue, self.github.comments), before)
         self.assertEqual(self.launched, [])
 
+    def test_heartbeat_waits_before_refreshing_and_stays_within_ttl(self):
+        tank = self.dispatcher("tank", claim_ttl="1s")
+        claim = tank.acquire_host_claim(7, copy.deepcopy(self.github.issue), [])
+        self.addCleanup(claim.stop)
+        self.assertFalse(self.github.comment_patched.wait(timeout=0.05))
+        self.assertTrue(self.github.comment_patched.wait(timeout=0.7))
+
     def test_untrusted_claim_comment_cannot_hold_or_be_deleted(self):
         forged = self.github.add_claim("intruder", datetime(2099, 1, 1, tzinfo=UTC))
         forged["user"] = {"login": "outside-commenter"}

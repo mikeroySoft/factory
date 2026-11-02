@@ -1182,17 +1182,21 @@ Unset `triage_host` keeps triage enabled everywhere. `claim_ttl` defaults to
 
 Inside the existing per-ticket lock, dispatch adds `host:<name>` and a comment
 whose first line is `Factory claim: host=<name> nonce=<uuid> at=<iso8601>`.
+Only comments authored by the authenticated dispatcher account count as claims.
 After fresh label/comment reads, the earliest live comment wins, ordered by
 GitHub creation time and then numeric comment ID. A loser records `claim_lost`
 and removes its own comment and label without assigning or launching a worker.
 The winner assigns `@me` and refreshes its comment every TTL/4 while the ticket
-pipeline runs. Normal unclaim paths release only the owning host's claim.
+pipeline runs. Unclaim always applies escalation/requeue labels and removes `@me`;
+only the owning host can remove its host label and claim comment, even after expiry.
 
-Expired claims are admitted through the frontier even when assigned. Dispatch
-rechecks their heartbeat, removes stale comments/labels and the stale `@me`
-assignment, records `claim-released` with the old host and last heartbeat, and
-can reclaim the ticket in the same pass. Other assignees remain holds. A foreign
-host label without a claim comment remains a hold; inspect it before removing it.
+Expired claims are admitted through the frontier only when no other hold exists.
+A human assignee or an open `agent/<ticket>` PR with an assigned claim remains a
+hold after heartbeats stop, so completed work awaiting CI/review/merge is not run again.
+Otherwise dispatch rechecks the heartbeat, removes stale comments/labels and the
+stale `@me` assignment, records `claim-released` with the old host and last heartbeat,
+and can reclaim the ticket in the same pass. A foreign host label without a claim
+comment remains a hold; inspect it before removing it.
 Hosts need synchronized clocks and current GitHub reads. This comment-based
 lease is not a fencing token for a disconnected worker that outlives its TTL.
 With `host_name` unset, dispatch makes no host-label/comment calls and triage
