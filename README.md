@@ -967,14 +967,13 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    Scratch workers use local shared clones with independent Git metadata and the
    current working files overlaid, so Git-dependent tests run without skips.
    The built-in OMP worker pins `openai-codex/gpt-6.1-sol` directly in its argv.
-   `factory doctor` fails every OMP profile without an explicit `--model` and
-   every non-OMP profile without a `workers.<label>.usage.model` JSON path.
-   Non-OMP output must actually report that model; the path is not a model ID.
-   This includes the unchanged Droid `chore` command: configure its structured
-   output and usage path in the host profile before doctor can pass.
+   `factory doctor` fails every worker profile without an explicit `--model`,
+   including non-OMP profiles; the built-in Droid `chore` pins `gpt-6-sol`.
+   Optional `workers.<label>.usage.model` is a JSON path for a post-run cross-check,
+   never the source of worker identity. Differing runtime models are journaled.
    Doctor still warns when configured reviewer/worker models are not distinct
-   or the second reviewer cannot launch. Runtime-only worker independence is
-   checked against the attempt's reported model before High-risk review.
+   or the second reviewer cannot launch. Worker independence is checked against
+   the attempt's pinned `worker_model` before High-risk review.
    `factory stats --by-risk` and the dashboard report human interventions,
    human-wait minutes, rounds, disagreement rate, and escape rate per tier.
 
