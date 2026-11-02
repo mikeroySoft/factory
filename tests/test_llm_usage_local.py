@@ -148,6 +148,60 @@ class WorkerModelJournalTest(unittest.TestCase):
             self.assertEqual(claim["worker"], profile)
             self.assertEqual(claim["worker_model"], model)
 
+    def test_transcript_model_cross_check_preserves_provider_identity(self) -> None:
+        import os
+        import subprocess
+
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
+        for args in (
+            ["init", "-q", "-b", "main"],
+            ["config", "user.name", "Test"],
+            ["config", "user.email", "test@example.invalid"],
+            ["commit", "-q", "--allow-empty", "-m", "fixture"],
+            ["update-ref", "refs/remotes/origin/main", "HEAD"],
+        ):
+            subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+        cfg = config.Config(root, "acme/widgets")
+        cfg.workers["prime"] = ["factory-prime-agent", "--model", "openai-codex/gpt-6.1-sol"]
+        cfg.worker_transcript["prime"] = "omp-session"
+        dispatch.configure(cfg)
+        dispatch.LOGS.mkdir(parents=True)
+        transcript = root / ".factory" / "session.jsonl"
+
+        def worker(_argv, _cwd, logfile, *_args):
+            logfile.write_text("")
+            return 0, None
+
+        with mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
+                mock.patch.object(dispatch, "run_worker", side_effect=worker), \
+                mock.patch.object(dispatch, "_transcript", return_value=str(transcript)), \
+                mock.patch.object(dispatch, "commit_leftovers"), \
+                mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")):
+            for provider, model, reported, mismatch in (
+                ("openai-codex", "gpt-6.1-sol", "openai-codex/gpt-6.1-sol", False),
+                ("anthropic", "gpt-6.1-sol", "anthropic/gpt-6.1-sol", True),
+                ("openai-codex", "gpt-5.6-sol", "openai-codex/gpt-5.6-sol", True),
+                ("openai-codex", "openai-codex/gpt-6.1-sol", "openai-codex/gpt-6.1-sol", False),
+                (None, "openai-codex/gpt-6.1-sol", "openai-codex/gpt-6.1-sol", False),
+            ):
+                with self.subTest(provider=provider, model=model):
+                    transcript.write_text(json.dumps({
+                        "type": "message", "message": {
+                            "role": "assistant", "provider": provider, "model": model,
+                            "usage": {"input": 4, "output": 2},
+                        },
+                    }) + "\n")
+                    dispatch.worker_round(7, root, {"prime"}, "ticket", "", 1, float("inf"))
+                    usage, attempt = [
+                        row for row in lifecycle.read_events(dispatch.EVENTS)
+                        if row.get("event") in {"attempt", "llm-usage"}
+                    ][-2:]
+                    self.assertEqual(usage["model"], reported)
+                    self.assertEqual(usage.get("model_mismatch", False), mismatch)
+                    self.assertEqual(usage["worker_model"], "openai-codex/gpt-6.1-sol")
+                    self.assertEqual(attempt["worker_model"], "openai-codex/gpt-6.1-sol")
+
 
 if __name__ == "__main__":
     unittest.main()
