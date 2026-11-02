@@ -247,7 +247,7 @@ class BugReproductionGateTest(unittest.TestCase):
             with self.subTest(top=top), tempfile.TemporaryDirectory() as directory:
                 repo = repository(Path(directory))
                 command = [
-                    "env", "PYTHONPATH=suite", sys.executable, "-m", "unittest",
+                    "env", "PYTHONPATH=suite", sys.executable, "-B", "-m", "unittest",
                     "discover", "-s", "pkg.tests", *top,
                 ]
                 (repo / ".factory.toml").write_text(
