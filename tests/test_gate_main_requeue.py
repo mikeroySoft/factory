@@ -380,11 +380,13 @@ class MainTestRequeueTest(unittest.TestCase):
         self.cfg.idle_timeout = self.cfg.exit_grace = 0
         self.cfg.workers = {"default": [
             sys.executable, "-c",
-            "from pathlib import Path; import subprocess; "
-            "prompt = Path('.factory-prompt.md').read_text(); "
-            "assert 'Rebase onto `origin/main`' in prompt, prompt; "
-            "subprocess.run(['git', 'fetch', 'origin'], check=True); "
-            "subprocess.run(['git', 'rebase', 'origin/main'], check=True)",
+            (
+                "from pathlib import Path; import subprocess; "
+                "prompt = Path('.factory-prompt.md').read_text(); "
+                "assert 'Rebase onto `origin/main`' in prompt, prompt; "
+                "subprocess.run(['git', 'fetch', 'origin'], check=True); "
+                "subprocess.run(['git', 'rebase', 'origin/main'], check=True)"
+            ),
         ]}
 
         def gate(wt, *_args, **_kwargs):
