@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import io
 import os
 import subprocess
 import sys
@@ -10,11 +11,12 @@ import tempfile
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from contextlib import redirect_stdout
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
-from factory import dispatch, lifecycle
+from factory import dispatch, lifecycle, triage
 from factory.config import Config
 
 
@@ -34,6 +36,22 @@ class FakeGitHub:
         self.fresh_hosts = set()
         self.comment_hosts = set()
         self.next_id = 1
+        self.comment_patched = threading.Event()
+        self.patch_count = 0
+
+    def add_claim(self, host, at):
+        nonce = f"00000000-0000-4000-8000-{self.next_id:012d}"
+        comment = {
+            "id": self.next_id,
+            "body": f"Factory claim: host={host} nonce={nonce} at={at.isoformat()}",
+            "created_at": at.isoformat(),
+        }
+        self.next_id += 1
+        self.comments.append(comment)
+        self.issue["assignees"] = [{"login": "@me"}]
+        if not any(row["name"] == f"host:{host}" for row in self.issue["labels"]):
+            self.issue["labels"].append({"name": f"host:{host}"})
+        return comment
 
     def json(self, host, args):
         barrier = None
@@ -91,6 +109,8 @@ class FakeGitHub:
                 elif method == "PATCH":
                     body = next(arg[5:] for arg in cmd if arg.startswith("body="))
                     next(row for row in self.comments if row["id"] == comment_id)["body"] = body
+                    self.patch_count += 1
+                    self.comment_patched.set()
                 else:
                     raise AssertionError(cmd)
             elif cmd[:3] == ["gh", "label", "create"]:
@@ -110,15 +130,16 @@ class HostClaimRaceTest(unittest.TestCase):
         self.launched = []
         self.enterContext(mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
 
-    def dispatcher(self, host):
+    def dispatcher(self, host, claim_ttl="2h"):
         # Separate module state and lock directories model independent host processes.
-        spec = importlib.util.spec_from_file_location(f"factory._dispatch_{host}", dispatch.__file__)
+        key = host or "single"
+        spec = importlib.util.spec_from_file_location(f"factory._dispatch_{key}", dispatch.__file__)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        cfg = Config(root=self.root / host, repo="local/claims",
+        cfg = Config(root=self.root / key, repo="local/claims",
                      workers={"default": [sys.executable, "{prompt}"]})
         cfg.host_name = host
-        cfg.claim_ttl = "2h"
+        cfg.claim_ttl = claim_ttl
         module.configure(cfg)
         wt = cfg.factory / "wt-7"
         wt.mkdir(parents=True)
@@ -151,6 +172,7 @@ class HostClaimRaceTest(unittest.TestCase):
         tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
         issues = [module.frontier()[0] for module in (tank, ultron)]
         self.assertTrue(all(not issue.get("held") for issue in issues))
+        self.github.comment_hosts.clear()
         self.github.fresh_barrier = threading.Barrier(2)
         self.github.comments_barrier = threading.Barrier(2)
         self.github.post_barrier = threading.Barrier(2)
@@ -168,6 +190,217 @@ class HostClaimRaceTest(unittest.TestCase):
                           if row["name"].startswith("host:")], [f"host:{winner}"])
         self.assertEqual(len(self.github.comments), 1)
         self.assertTrue(self.github.comments[0]["body"].startswith(f"Factory claim: host={winner} "))
+
+    def test_stale_claim_past_ttl_is_released_and_reclaimed(self):
+        old = self.github.add_claim("ultron", datetime.now(UTC) - timedelta(seconds=5))
+        tank = self.dispatcher("tank", claim_ttl="1s")
+
+        [stale] = tank.frontier()
+        self.assertNotIn("held", stale)
+        tank.process_ticket(stale, 1, False)
+
+        self.assertEqual(self.launched, ["tank"])
+        self.assertEqual(
+            [row["name"] for row in self.github.issue["labels"]
+             if row["name"].startswith("host:")],
+            ["host:tank"],
+        )
+        self.assertEqual(len(self.github.comments), 1)
+        self.assertTrue(self.github.comments[0]["body"].startswith("Factory claim: host=tank "))
+        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
+        released = [row for row in lifecycle.read_events(tank.EVENTS)
+                    if row.get("event") == "claim-released"]
+        self.assertEqual([(row["host"], row["last_heartbeat"]) for row in released],
+                         [("ultron", old["created_at"])])
+
+        thor = self.dispatcher("thor", claim_ttl="1s")
+        [live] = thor.frontier()
+        self.assertIn("tank", live["held"])
+        thor.process_ticket(live, 1, False)
+        self.assertEqual(self.launched, ["tank"])
+
+    def test_claim_at_ttl_boundary_is_released(self):
+        now = datetime.now(UTC)
+        self.github.add_claim("ultron", now - timedelta(seconds=1))
+        tank = self.dispatcher("tank", claim_ttl="1s")
+        with mock.patch.object(tank, "datetime", wraps=datetime) as clock:
+            clock.now.return_value = now
+            [issue] = tank.frontier()
+            self.assertNotIn("held", issue)
+            tank.process_ticket(issue, 1, False)
+        self.assertEqual(self.launched, ["tank"])
+
+    def test_equal_claim_timestamps_choose_lower_integer_comment_id(self):
+        at = datetime.now(UTC)
+        self.github.next_id = 10
+        self.github.add_claim("tank", at)
+        self.github.next_id = 2
+        self.github.add_claim("ultron", at)
+
+        thor = self.dispatcher("thor")
+        [live] = thor.frontier()
+
+        self.assertIn("ultron", live["held"])
+
+
+    def test_unclaim_removes_only_own_host_claim(self):
+        tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
+        self.github.add_claim("tank", datetime.now(UTC))
+        self.github.issue["labels"].append({"name": "bug"})
+        issue_before = copy.deepcopy(self.github.issue)
+        comments_before = copy.deepcopy(self.github.comments)
+
+        ultron.unclaim(7, "--remove-label", "ready-for-agent", check=False)
+
+        self.assertEqual(self.github.issue, issue_before)
+        self.assertEqual(self.github.comments, comments_before)
+
+        tank.unclaim(7, "--remove-label", "ready-for-agent", check=False)
+
+        self.assertEqual(self.github.issue["assignees"], [])
+        self.assertEqual([row["name"] for row in self.github.issue["labels"]], ["bug"])
+        self.assertEqual(self.github.comments, [])
+
+    def test_claim_heartbeat_keeps_blocked_worker_live(self):
+        tank = self.dispatcher("tank", claim_ttl="1s")
+        started, release = threading.Event(), threading.Event()
+
+        def blocked_worker(*_args, **_kwargs):
+            self.launched.append("tank")
+            started.set()
+            if not release.wait(timeout=5):
+                raise AssertionError("blocked worker was not released")
+            return True, "gate passed", None, "a" * 40
+
+        self.enterContext(mock.patch.object(tank, "worker_round", blocked_worker))
+        issue = copy.deepcopy(self.github.issue)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(tank.process_ticket, issue, 1, False)
+            try:
+                self.assertTrue(started.wait(timeout=2))
+                with self.github.lock:
+                    initial = self.github.comments[0]["body"]
+                    patches = self.github.patch_count
+                    self.github.comment_patched.clear()
+                self.assertTrue(self.github.comment_patched.wait(timeout=2))
+                with self.github.lock:
+                    refreshed = self.github.comments[0]["body"]
+                    self.assertGreater(self.github.patch_count, patches)
+                self.assertNotEqual(refreshed, initial)
+
+                ultron = self.dispatcher("ultron", claim_ttl="1s")
+                [live] = ultron.frontier()
+                self.assertIn("tank", live["held"])
+            finally:
+                release.set()
+            future.result(timeout=5)
+
+        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
+        self.assertEqual(
+            [row["name"] for row in self.github.issue["labels"]
+             if row["name"].startswith("host:")],
+            ["host:tank"],
+        )
+        self.assertEqual(len(self.github.comments), 1)
+
+    def test_worker_launch_failure_releases_host_claim(self):
+        tank = self.dispatcher("tank")
+        self.enterContext(mock.patch.object(
+            tank, "worker_round", side_effect=FileNotFoundError("worker disappeared"),
+        ))
+
+        result = tank.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+
+        self.assertFalse(result)
+        self.assertEqual(self.github.issue["assignees"], [])
+        self.assertEqual(
+            [row["name"] for row in self.github.issue["labels"]
+             if row["name"].startswith("host:")],
+            [],
+        )
+        self.assertEqual(self.github.comments, [])
+
+    def test_assignee_failure_releases_host_claim_without_worker_launch(self):
+        tank = self.dispatcher("tank")
+        run = tank.run
+
+        def fail_assignment(cmd, *args, **kwargs):
+            if "--add-assignee" in cmd:
+                raise subprocess.CalledProcessError(1, cmd, stderr="assignment refused")
+            return run(cmd, *args, **kwargs)
+
+        with mock.patch.object(tank, "run", side_effect=fail_assignment):
+            tank.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+
+        self.assertEqual(self.launched, [])
+        self.assertEqual(self.github.issue["assignees"], [])
+        self.assertEqual(self.github.comments, [])
+        self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-agent"}])
+
+
+class TriageHostTest(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.cfg = Config(root=Path(temp.name), repo="local/claims")
+        self.cfg.host_name = "tank"
+        self.cfg.triage_host = "ultron"
+
+    def test_triage_skips_on_non_triage_host(self):
+        output = io.StringIO()
+        with mock.patch.object(triage.config, "load", return_value=self.cfg), \
+                mock.patch.object(triage, "identity_mismatch") as identity, \
+                mock.patch.object(triage, "list_needs_triage") as issue_list, \
+                redirect_stdout(output):
+            self.assertEqual(triage.main([]), 0)
+        identity.assert_not_called()
+        issue_list.assert_not_called()
+        self.assertEqual(output.getvalue(), "triage: skipped, triage host is ultron\n")
+        self.assertFalse(self.cfg.factory.exists())
+
+        self.cfg.host_name = None
+        with mock.patch.object(triage.config, "load", return_value=self.cfg), \
+                mock.patch.object(triage, "identity_mismatch", return_value="") as identity, \
+                mock.patch.object(triage, "list_needs_triage", return_value=[]) as issue_list:
+            self.assertEqual(triage.main([]), 0)
+        identity.assert_called_once()
+        issue_list.assert_called_once()
+
+
+class SingleHostTest(unittest.TestCase):
+    def setUp(self):
+        HostClaimRaceTest.setUp(self)
+
+    dispatcher = HostClaimRaceTest.dispatcher
+    launch = HostClaimRaceTest.launch
+
+    def test_single_host_claim_path_unchanged(self):
+        single = self.dispatcher(None)
+
+        single.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+
+        github_calls = [
+            args for _, args in self.github.calls
+            if args[0] in {"issue", "api", "gh"}
+        ]
+        self.assertEqual(github_calls, [
+            [
+                "issue", "view", "7", "--repo", "local/claims", "--json",
+                "state,labels,assignees,title,body,comments",
+            ],
+            [
+                "gh", "issue", "edit", "7", "--repo", "local/claims",
+                "--add-assignee", "@me",
+            ],
+        ])
+        self.assertFalse(any(
+            arg in {"--add-label", "--remove-label"}
+            for call in github_calls for arg in call
+        ))
+        self.assertFalse(any(
+            call[0] == "api" or call[:3] == ["gh", "issue", "comment"]
+            for call in github_calls
+        ))
 
 
 if __name__ == "__main__":

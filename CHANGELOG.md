@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Dispatch can opt into cross-host ticket claims with host labels, nonce comments, deterministic race election, TTL/4 heartbeats, stale-claim recovery, and ownership-guarded release. Host-only `host_name`, `triage_host`, and `claim_ttl` settings layer per repository; triage can run on one designated host and doctor reports the settings. Unset `host_name` preserves single-host GitHub calls (#526).
 - Gate-failure control bands now ignore failures from unmerged worker-attempt heads, keep reused attempt numbers bound to their own dispatch, and count each landed `(ticket, attempt)` only once, while preserving alarms for main and merged-head failures (#459).
 - Mutation scratch workers now use shared clones with independent Git metadata for both ordinary and linked checkouts, replacing the linked-worktree-only `.git` pointer workaround. Baselines retain dirty, deleted, and untracked files; reviewer calibration tests run unchanged (#478).
 - Before the attempt gate, the dispatcher now restores unplanned dependency lockfiles from the ticket branch's merge-base. A changed `pyproject.toml` or any recorded round's plan listing the lockfile preserves the edit; ticket and brief wording does not. Upstream-sync tickets skip the guard so fork lockfiles remain untouched. Repository `uv run` gate checks stay frozen so verification cannot rewrite `uv.lock` (#441).

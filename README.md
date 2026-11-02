@@ -1157,6 +1157,48 @@ snapshot. Factory leaves this metadata opaque and out of pipeline configuration;
 `doctor` accepts it only under `defaults`. Unknown tables and an `engine` table
 under a per-repository section still produce host-config warnings.
 
+**Several hosts serving one repository.**
+
+Opt in on each machine through the shared host file. Values directly in
+`[repo."owner/name"]` override `[defaults]`:
+
+```toml
+[defaults]
+host_name = "tank"
+triage_host = "tank"
+claim_ttl = "2h"
+
+[repo."owner/name"]
+claim_ttl = "3h"
+```
+
+Use a distinct `host_name` on every host: 1–45 ASCII letters, digits, `.`, `_`,
+or `-`, starting with a letter or digit. Set the same `triage_host` on all
+hosts to avoid duplicate triage; other hosts exit 0 with
+`triage: skipped, triage host is <name>` before reading issues or writing events.
+Unset `triage_host` keeps triage enabled everywhere. `claim_ttl` defaults to
+`"2h"` and accepts positive `s`, `m`, `h`, or `d` durations, including `"1h30m"`.
+`factory doctor` reports the effective host settings.
+
+Inside the existing per-ticket lock, dispatch adds `host:<name>` and a comment
+whose first line is `Factory claim: host=<name> nonce=<uuid> at=<iso8601>`.
+After fresh label/comment reads, the earliest live comment wins, ordered by
+GitHub creation time and then numeric comment ID. A loser records `claim_lost`
+and removes its own comment and label without assigning or launching a worker.
+The winner assigns `@me` and refreshes its comment every TTL/4 while the ticket
+pipeline runs. Normal unclaim paths release only the owning host's claim.
+
+Expired claims are admitted through the frontier even when assigned. Dispatch
+rechecks their heartbeat, removes stale comments/labels and the stale `@me`
+assignment, records `claim-released` with the old host and last heartbeat, and
+can reclaim the ticket in the same pass. Other assignees remain holds. A foreign
+host label without a claim comment remains a hold; inspect it before removing it.
+Hosts need synchronized clocks and current GitHub reads. This comment-based
+lease is not a fencing token for a disconnected worker that outlives its TTL.
+With `host_name` unset, dispatch makes no host-label/comment calls and triage
+always runs, even when `triage_host` is configured.
+
+
 `[worker_wrap]` is host-only: set `command` under `[defaults.worker_wrap]` or
 `[repo."owner/name".worker_wrap]` (per-repo wins). Its argv is prepended to
 every worker launch, whichever `[workers]` label is selected, including labels

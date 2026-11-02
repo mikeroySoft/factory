@@ -26,9 +26,12 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tomllib
+import uuid
 from contextlib import contextmanager, nullcontext, suppress
+from datetime import UTC, datetime
 from pathlib import Path
 
 from factory import __version__, brief, config, lifecycle, risk
@@ -60,6 +63,7 @@ _PENDING_REVIEWS: dict[int, dict] = {}
 _PENDING_SECOND_REVIEWS: dict[int, dict] = {}
 _PENDING_RISK: dict[int, dict] = {}
 _LOW_FALLBACK: set[int] = set()
+_HOST_CLAIMS: dict[int, HostClaim] = {}
 
 
 def configure(c: Config) -> None:
@@ -485,6 +489,156 @@ def open_blockers(number: int, body: str) -> list[int]:
     return sorted(blockers)
 
 
+def host_claims(n: int) -> list[dict]:
+    """Read all claim comments, not the truncated GraphQL issue comment window."""
+    pages = gh_json(["api", "--paginate", "--slurp", f"repos/{REPO}/issues/{n}/comments"])
+    claims = []
+    for page in pages:
+        for comment in page:
+            first = (comment.get("body") or "").split("\n", 1)[0]
+            match = re.fullmatch(r"Factory claim: host=(\S+) nonce=(\S+) at=(\S+)", first)
+            if match is None:
+                continue
+            host, nonce, at = match.groups()
+            try:
+                heartbeat = datetime.fromisoformat(at)
+                created = datetime.fromisoformat(comment["created_at"])
+                if heartbeat.utcoffset() is None or created.utcoffset() is None:
+                    continue
+            except (ValueError, KeyError):
+                continue
+            claims.append({**comment, "host": host, "nonce": nonce, "at": at,
+                           "heartbeat": heartbeat, "created": created})
+    return sorted(claims, key=lambda row: (row["created"], row["id"]))
+
+
+def live_host_claims(claims: list[dict]) -> list[dict]:
+    now = datetime.now(UTC)
+    return [claim for claim in claims
+            if (now - claim["heartbeat"]).total_seconds() < cfg.claim_ttl_seconds]
+
+
+def host_claim_hold(issue: dict, claims: list[dict]) -> str | None:
+    if live := live_host_claims(claims):
+        return f"host claim ({live[0]['host']})"
+    stale_hosts = {claim["host"] for claim in claims}
+    foreign = {label["name"][5:] for label in issue.get("labels", [])
+               if label["name"].startswith("host:")} - stale_hosts - {cfg.host_name}
+    return f"host label ({', '.join(sorted(foreign))})" if foreign else None
+
+
+def delete_host_claim(n: int, claim: dict) -> None:
+    result = run(["gh", "api", f"repos/{REPO}/issues/comments/{claim['id']}",
+                  "--method", "DELETE"], check=False)
+    if result.returncode and any(row["id"] == claim["id"] for row in host_claims(n)):
+        result.check_returncode()
+    if not any(row["host"] == claim["host"] for row in host_claims(n)):
+        run(["gh", "issue", "edit", str(n), "--repo", REPO,
+             "--remove-label", f"host:{claim['host']}"])
+
+
+def release_stale_claims(n: int, issue: dict, claims: list[dict]) -> dict:
+    live_ids = {row["id"] for row in live_host_claims(claims)}
+    stale = [row for row in claims if row["id"] not in live_ids]
+    if not stale:
+        return issue
+    # Re-read before deleting: a heartbeat may have landed since the admission read.
+    current = host_claims(n)
+    live_ids = {row["id"] for row in live_host_claims(current)}
+    stale = [row for row in current if row["id"] not in live_ids]
+    for claim in stale:
+        delete_host_claim(n, claim)
+        record("claim-released", ticket=n, host=claim["host"], last_heartbeat=claim["at"])
+    if stale and not live_host_claims(host_claims(n)):
+        run(["gh", "issue", "edit", str(n), "--repo", REPO, "--remove-assignee", "@me"])
+    return gh_json(["issue", "view", str(n), "--repo", REPO, "--json",
+                    "state,labels,assignees,title,body,comments"])
+
+
+class HostClaim:
+    """One elected comment, refreshed only while its ticket pipeline holds the local lock."""
+
+    def __init__(self, n: int, comment: dict):
+        self.n = n
+        self.comment = comment
+        self.stopped = threading.Event()
+        self.thread = threading.Thread(target=self.heartbeat, daemon=True)
+
+    def body(self) -> str:
+        return (f"Factory claim: host={cfg.host_name} nonce={self.comment['nonce']} "
+                f"at={datetime.now(UTC).isoformat()}")
+
+    def heartbeat(self) -> None:
+        while not self.stopped.wait(cfg.claim_ttl_seconds / 4):
+            try:
+                run(["gh", "api", f"repos/{REPO}/issues/comments/{self.comment['id']}",
+                     "--method", "PATCH", "-f", f"body={self.body()}"])
+            except (OSError, subprocess.CalledProcessError) as exc:
+                log(f"#{self.n}: host claim heartbeat failed ({exc})")
+
+    def stop(self) -> None:
+        self.stopped.set()
+        if self.thread.ident is not None:
+            self.thread.join()
+
+    def release(self) -> None:
+        self.stop()
+        if "id" in self.comment:
+            delete_host_claim(self.n, {**self.comment, "host": cfg.host_name})
+        elif not any(row["host"] == cfg.host_name for row in host_claims(self.n)):
+            run(["gh", "issue", "edit", str(self.n), "--repo", REPO,
+                 "--remove-label", f"host:{cfg.host_name}"])
+
+
+def acquire_host_claim(n: int, issue: dict, claims: list[dict], *, forced: bool = False) -> HostClaim | None:
+    if held := host_claim_hold(issue, claims):
+        record("claim_lost", ticket=n, host=cfg.host_name, reason=held)
+        log(f"#{n}: skipped ({held})")
+        return None
+    label = f"host:{cfg.host_name}"
+    run(["gh", "label", "create", label, "--repo", REPO, "--color", "ededed", "--force"])
+    run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-label", label])
+    claim = HostClaim(n, {"nonce": str(uuid.uuid4())})
+    try:
+        comment = gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
+                           "-f", f"body={claim.body()}"])
+        claim.comment.update(comment)
+        current = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels"])
+        elected = live_host_claims(host_claims(n))
+        # Labels are advisory during a race, but escalation must still stop admission.
+        ready = forced or any(label["name"] == LABEL_AGENT for label in current["labels"])
+        if not ready or not elected or elected[0]["id"] != claim.comment["id"]:
+            claim.release()
+            record("claim_lost", ticket=n, host=cfg.host_name,
+                   winner=elected[0]["host"] if elected else None)
+            return None
+    except BaseException:
+        claim.release()
+        raise
+    _HOST_CLAIMS[n] = claim
+    claim.thread.start()
+    return claim
+
+
+def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool = False) -> None:
+    """All @me release paths share host ownership checks; legacy argv stays unchanged."""
+    if cfg.host_name:
+        claims = live_host_claims(host_claims(n))
+        local = _HOST_CLAIMS.get(n)
+        if not claims or claims[0]["host"] != cfg.host_name:
+            return
+        if local is not None and claims[0]["nonce"] != local.comment["nonce"]:
+            return
+        if local is not None:
+            local.stop()
+    args = [*label_args, "--remove-assignee", "@me"] if assignee_last else [
+        "--remove-assignee", "@me", *label_args,
+    ]
+    run(["gh", "issue", "edit", str(n), "--repo", REPO, *args], check=check)
+    if cfg.host_name:
+        delete_host_claim(n, claims[0])
+
+
 def frontier() -> list[dict]:
     """Open `ready-for-agent` issues; an ineligible one carries `held` naming why, never ranked."""
     issues = gh_json(
@@ -505,7 +659,9 @@ def frontier() -> list[dict]:
         n = issue["number"]
         if any(label.get("name") == config.LABEL_INITIATIVE for label in issue.get("labels", [])):
             issue["held"] = "initiative record"
-        elif issue["assignees"]:
+        elif cfg.host_name and (held := host_claim_hold(issue, claims := host_claims(n))):
+            issue["held"] = held
+        elif issue["assignees"] and not (cfg.host_name and claims):
             issue["held"] = "assigned"
         elif blockers := open_blockers(n, issue.get("body", "")):
             issue["held"] = f"blocked by {', '.join(f'#{b}' for b in blockers)}"
@@ -1844,23 +2000,7 @@ def escalate(
         log=str(log_path) if log_path else None, packet=str(packet), round=round_number,
         **evidence,
     )
-    run(
-        [
-            "gh",
-            "issue",
-            "edit",
-            str(n),
-            "--repo",
-            REPO,
-            "--remove-assignee",
-            "@me",
-            "--remove-label",
-            LABEL_AGENT,
-            "--add-label",
-            LABEL_HUMAN,
-        ],
-        check=False,
-    )
+    unclaim(n, "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN)
     body = f"Factory dispatcher escalating: {reason}.\n\nEscalation packet: `{packet}`"
     if log_path:
         body += f"\n\nWorker logs: `{log_path}`"
@@ -3298,8 +3438,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             remote_head, remote_head, [],
         )
         record("conflict-requeue", ticket=n, pr=pr, head=remote_head, verb=verb, files=conflicts, round=rounds + 1)
-        run(["gh", "issue", "edit", str(n), "--repo", REPO,
-             "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT, "--remove-assignee", "@me"], check=False)
+        unclaim(n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT, assignee_last=True)
         log(f"#{n}: PR #{pr} {verb} onto {cfg.main} conflicts in {', '.join(conflicts)}; requeued to a worker")
         return False
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
@@ -3421,9 +3560,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
                 reports=reports, changed_files=changed_files, unrelated=unrelated, round=rounds + 1,
                 refreshed_head=head, evidence_ref=evidence_ref,
             )
-            run(["gh", "issue", "edit", str(n), "--repo", REPO,
-                 "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
-                 "--remove-assignee", "@me"], check=False)
+            unclaim(n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT, assignee_last=True)
             log(f"#{n}: PR #{pr} gate failed twice after {verb} onto {cfg.main}; requeued to a worker")
             return False
     if not ok:
@@ -3472,11 +3609,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
                 "risk-requeue", ticket=n, pr=pr, head=head,
                 packet=state["packet"], round=rounds + 1,
             )
-            run([
-                "gh", "issue", "edit", str(n), "--repo", REPO,
-                "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
-                "--remove-assignee", "@me",
-            ], check=False)
+            unclaim(n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT, assignee_last=True)
             log(f"#{n}: PR #{pr} High-risk checks disagreed after refresh; requeued to a worker")
             return False
         withdraw(
@@ -4169,6 +4302,7 @@ def process_ticket(
             return
 
         claimed = False  # once True, nothing may leave this block without releasing the ticket
+        host_claim = None
         try:
             execution.resource("acquired", lock_path, scope="repository")
             # Strong re-read before claiming: `issue list` is search-backed and lags
@@ -4192,6 +4326,10 @@ def process_ticket(
                 execution.outcome = "not_admitted"
                 execution.reason = "initiative"
                 return
+            claims = []
+            if cfg.host_name:
+                claims = host_claims(n)
+                fresh = release_stale_claims(n, fresh, claims)
             if not forced and (
                 fresh["state"].upper() != "OPEN"
                 or fresh["assignees"]
@@ -4225,9 +4363,16 @@ def process_ticket(
                 record("plan-bound", ticket=n, schema_version=1, baseline=baseline,
                        issue={key: fresh.get(key) for key in ("title", "body", "comments")})
 
+            if cfg.host_name:
+                host_claim = acquire_host_claim(n, fresh, claims, forced=forced)
+                if host_claim is None:
+                    execution.outcome, execution.reason = "not_admitted", "claim_lost"
+                    return
             try:
                 run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-assignee", "@me"])
             except subprocess.CalledProcessError as exc:
+                if host_claim is not None:
+                    host_claim.release()
                 # Nothing was claimed: skip this pass; the ticket stays claimable.
                 log(f"#{n}: skipped (claim failed, exit {exc.returncode}); retry next pass")
                 record_claim_decision(n, False, admission_id, returncode=exc.returncode)
@@ -4427,7 +4572,7 @@ def process_ticket(
             # Covers every worker launch of this ticket, first attempt and review bounces alike.
             execution.outcome, execution.reason = "mechanism_failure", f"{type(exc).__name__}: {exc}"
             log(f"#{n}: worker launch failed ({exc}); unclaimed, fix PATH or [workers] (`factory doctor`)")
-            run(["gh", "issue", "edit", str(n), "--repo", REPO, "--remove-assignee", "@me"], check=False)
+            unclaim(n)
             return False
         except Exception as exc:
             # A crash after the claim strands the ticket assigned + ready-for-agent, which every
@@ -4438,6 +4583,9 @@ def process_ticket(
                 execution.outcome, execution.reason = "unknown", f"{type(exc).__name__}: {exc}"
             raise
         finally:
+            if host_claim is not None:
+                host_claim.stop()
+                _HOST_CLAIMS.pop(n, None)
             _AGENT_LEASE_BASES.pop((wt, n), None)
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             lock_fd.close()
