@@ -212,7 +212,7 @@ class PostFixOutcomeTest(unittest.TestCase):
         return {"at": f"2026-10-{at}T00:00:00Z", "event": event, "ticket": ticket, **fields}
 
     def outcomes(self, rows: list[dict]) -> list[dict]:
-        return stats.weekly_metrics(rows, self.START, self.END, None)["post_fix_outcomes"]["by_worker_model"]
+        return stats.post_fix_outcomes(rows)["by_worker_model"]
 
     def test_tracks_first_claim_and_each_interleaved_fix_round_to_its_first_outcome(self) -> None:
         rows = [

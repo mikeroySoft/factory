@@ -422,7 +422,6 @@ def weekly_metrics(
         "tokens": tokens,
         "local_token_share": round(local_tokens / reported_tokens, 6) if reported_tokens else None,
         "usage_missing": usage_missing,
-        "post_fix_outcomes": post_fix_outcomes(rows),
     }
     if any(row.get("event") in {"skill-load", "skill-coverage"} for row in rows):
         result.update(skills=skill_metrics(rows), skill_coverage=skill_coverage(rows))
@@ -1076,6 +1075,7 @@ def main(argv: list[str]) -> int:
             journal_rows, start, now,
             cfg.llm_model if config.local_endpoint(cfg.llm_url) else None,
         )
+        rows["post_fix_outcomes"] = post_fix_outcomes(journal_rows)
         rows.setdefault("skills", skill_metrics(journal_rows))
         rows.setdefault("skill_coverage", skill_coverage(journal_rows))
         rows["stuck_over_days"] = stuck_over_days(now)
