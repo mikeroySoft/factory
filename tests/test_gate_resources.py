@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -273,6 +274,38 @@ class GateResourcesTest(unittest.TestCase):
         self.assertFalse(any(row.get("execution_id") == acquired["execution_id"]
                              and row.get("kind") == "lock_released" for row in self.rows()))
         self.finish(second, b)
+
+    def test_interrupted_requester_exit_tolerates_cpu_load(self) -> None:
+        # Inject a short deadline and deterministic descheduling instead of
+        # depending on host load to delay the interrupted gate's shutdown.
+        communicate = subprocess.Popen.communicate
+        send_signal = subprocess.Popen.send_signal
+        paused = []
+
+        def delayed_interrupt(proc, sig):
+            if sig == signal.SIGINT:
+                send_signal(proc, signal.SIGSTOP)
+                os.waitpid(proc.pid, os.WUNTRACED)
+                send_signal(proc, sig)
+                resume = threading.Timer(0.2, send_signal, (proc, signal.SIGCONT))
+                paused.append((proc, resume))
+                resume.start()
+            else:
+                send_signal(proc, sig)
+
+        def short_deadline(proc, input=None, timeout=None):
+            return communicate(proc, input=input,
+                               timeout=None if timeout is None else timeout / 100)
+
+        try:
+            with patch.object(subprocess.Popen, "send_signal", delayed_interrupt), \
+                    patch.object(subprocess.Popen, "communicate", short_deadline):
+                self.test_uninstrumented_holder_and_killed_requester_remain_distinct()
+        finally:
+            for proc, resume in paused:
+                resume.cancel()
+                resume.join()
+                send_signal(proc, signal.SIGCONT)
 
 
 if __name__ == "__main__":
