@@ -167,14 +167,24 @@ def main(argv: list[str] | None = None) -> int:
         mutations, hot = sample(lines, scratch)
         if args.blocking:
             mutations = mutations[:hot]
+
+        def baseline_timed_out() -> int:
+            print(f"baseline suite did not finish before the {deadline - started:.0f}s deadline")
+            print(f"incomplete: {len(mutations)} mutants not started and 0 cut short by the "
+                  f"{deadline - started:.0f}s deadline")
+            return 1
+
         workers = max(1, min(WORKERS, len(mutations)))
         copies = [scratch / f"copy{i}" for i in range(workers)]
         for copy in copies:
             # Isolate Git metadata, but overlay current files rather than checking out HEAD:
             # baselines must include uncommitted edits/deletions and untracked files too.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return baseline_timed_out()
             subprocess.run(
                 ["git", "clone", "--quiet", "--shared", "--no-checkout", str(root), str(copy)],
-                check=True, timeout=max(deadline - time.monotonic(), 1),
+                check=True, timeout=remaining,
             )
             shutil.copytree(root, copy, ignore=COPY_IGNORE, dirs_exist_ok=True)
         print(f"files: {', '.join(lines)}")
@@ -184,12 +194,6 @@ def main(argv: list[str] | None = None) -> int:
         # Baseline once, unmutated, in the first copy: proves the suite passes under this
         # harness and sizes the per-mutant timeout. unittest reports on stderr, so merge it.
         baseline_started = time.monotonic()
-
-        def baseline_timed_out() -> int:
-            print(f"baseline suite did not finish before the {deadline - started:.0f}s deadline")
-            print(f"incomplete: {len(mutations)} mutants not started and 0 cut short by the "
-                  f"{deadline - started:.0f}s deadline")
-            return 1
 
         remaining = deadline - baseline_started
         if remaining <= 0:
@@ -209,7 +213,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         timeout = max(60.0, 3 * baseline)
         print(f"baseline: {baseline:.0f}s, per-mutant timeout {timeout:.0f}s, "
-              f"{deadline - time.monotonic():.0f}s left before the deadline")
+              f"{deadline - baseline_finished:.0f}s left before the deadline")
 
         queue = collections.deque(mutations)  # popleft is atomic under the GIL
         results = []
