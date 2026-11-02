@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from factory import config, dispatch, manage
+from tests import test_gate_main_requeue as recovery
 
 
 class ManagerResolveTest(unittest.TestCase):
@@ -78,6 +79,76 @@ class ManagerResolveTest(unittest.TestCase):
                 self.assertRaises(subprocess.CalledProcessError):
             manage.apply(7, {"title": "Already fixed"}, "RESOLVE", "Present on main.", None, Path("unused"))
         run.assert_not_called()
+
+
+class ManagerFixParkedTest(unittest.TestCase):
+    """A failed manager FIX replaces stale sole-test recovery evidence."""
+    events = recovery.MainTestRequeueTest.events
+    park = recovery.MainTestRequeueTest.park
+    advance = recovery.MainTestRequeueTest.advance
+    dispatch_pass = recovery.MainTestRequeueTest.dispatch_pass
+
+
+    def setUp(self) -> None:
+        recovery.MainTestRequeueTest.setUp(self)
+        self.packet = self.wt / ".factory/manager-packet.md"
+        self.packet.write_text("fix the known failure")
+
+    def manager_fix_failure(self, report: str) -> None:
+        self.park()
+        recovery.git(self.wt, "push", "-qu", "origin", "agent/9")
+        lease = recovery.git(self.origin, "rev-parse", "agent/9")
+        dispatch.record("manage", ticket=9, decision="FIX", round=1)
+
+        def failed_round(*_args, **_kwargs):
+            (self.wt / "worker.txt").write_text("unpublished manager worker change\n")
+            recovery.git(self.wt, "add", "worker.txt")
+            recovery.git(self.wt, "commit", "-qm", "manager worker change")
+            self.failed_head = recovery.git(self.wt, "rev-parse", "HEAD")
+            self.report.write_text(report)
+            dispatch.record(
+                "attempt", ticket=9, attempt=4, gate="FAIL", worker_exit=0,
+                head=self.failed_head,
+            )
+            return False, report, None, self.failed_head
+
+        with mock.patch.object(dispatch, "gh_json", self.github.gh_json), \
+                mock.patch.object(dispatch, "run", self.github.run), \
+                mock.patch.object(dispatch, "worker_round", side_effect=failed_round), \
+                mock.patch.object(dispatch, "escalate") as escalate:
+            manage.apply(
+                9, self.github.issue(), "FIX", "",
+                {"worker": "default", "guidance": "fix the test"}, self.packet,
+            )
+
+        escalate.assert_not_called()
+        self.assertEqual(len(self.events("escalate")), 1)
+        self.assertEqual(len(self.events("manage")), 1)
+        self.assertEqual(recovery.git(self.origin, "rev-parse", "agent/9"), lease)
+        self.assertNotEqual(recovery.git(self.wt, "rev-parse", "HEAD"), lease)
+
+    def test_failed_human_fix_reparks_sole_test_until_main_changes_it(self) -> None:
+        self.manager_fix_failure(recovery.REPORT)
+
+        [parked] = self.events("gate-parked")
+        self.assertEqual(parked["parked_test"]["file"], "tests/test_flaky.py")
+        self.advance()
+        self.dispatch_pass()
+
+        self.assertEqual(self.github.issue_labels, {config.LABEL_AGENT})
+        self.assertEqual(len(self.events("escalate")), 1)
+        self.assertEqual(len(self.events("manage")), 1)
+
+    def test_failed_human_fix_replaces_stale_eligibility_with_mixed_failure(self) -> None:
+        mixed = recovery.REPORT.replace("- ruff: PASS", "- ruff: FAIL") + "\n## ruff failure\nerror\n"
+        self.manager_fix_failure(mixed)
+
+        [parked] = self.events("gate-parked")
+        self.assertIsNone(parked["parked_test"])
+        self.advance()
+        self.dispatch_pass()
+
+        self.assertEqual(self.github.issue_labels, {config.LABEL_HUMAN})
 
 
 if __name__ == "__main__":

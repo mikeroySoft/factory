@@ -1793,6 +1793,137 @@ ESCALATION_CODES = frozenset({
 })
 
 
+def _sole_test_failure(
+    wt: Path, n: int, gate_report: str | None = None, *, revision: str = "HEAD",
+) -> dict | None:
+    """Only complete, single-test failures may be released by a main file change."""
+    from factory import gate
+
+    if gate_report is None:
+        report_path = wt / ".factory" / f"gate-report-{n}.md"
+        if not report_path.exists():
+            return None
+        gate_report = report_path.read_text()
+    report = gate_report
+    if len(re.findall(r"(?m)^- [^\n]+: FAIL\b", report)) != 1:
+        return None
+    if "Gate evidence rejected:" in report or "check timed out after " in report:
+        return None
+    tests = gate.failed_test_ids(report)
+    if len(tests) != 1:
+        return None
+    # The report retains only a tail. A lone visible ID is not proof of a lone failure.
+    unittest_counts = re.findall(r"(?m)^FAILED \(([^)\n]+)\)$", report)
+    pytest_counts = re.findall(r"(?m)^(?:=+ )?(\d+) failed[^\n]*$", report)
+    rust_counts = re.findall(r"(?m)^test result: FAILED\. \d+ passed; (\d+) failed;", report)
+    if unittest_counts:
+        counts = dict(re.findall(
+            r"(?:^|,\s*)(failures|errors|unexpected successes)=(\d+)",
+            unittest_counts[-1],
+        ))
+        sole = (
+            int(counts.get("failures", 0)) + int(counts.get("errors", 0)) == 1
+            and int(counts.get("unexpected successes", 0)) == 0
+        )
+    elif pytest_counts:
+        sole = int(pytest_counts[-1]) == 1 and not re.search(r"\b[1-9]\d* errors?\b", report)
+    else:
+        sole = bool(rust_counts) and int(rust_counts[-1]) == 1
+    if not sole:
+        return None
+    last_attempt = next((
+        row for row in reversed(lifecycle.read_events(EVENTS))
+        if row.get("ticket") == n and row.get("event") == "attempt"
+    ), {})
+    if last_attempt.get("worker_exit", 0) != 0:
+        return None
+    test = tests[0]
+    selector = test.split("[", 1)[0]
+    name = re.split(r"::|\.", selector)[-1]
+    listing = run(
+        ["git", "grep", "-l", "-z", "-F", "-e", name, revision, "--", "*.py", "*.rs"],
+        cwd=wt, check=False,
+    )
+    if listing.returncode:
+        return None
+    files = set()
+    for entry in listing.stdout.split("\0"):
+        if not entry:
+            continue
+        path = entry.removeprefix(f"{revision}:")
+        source = run(["git", "show", f"{revision}:{path}"], cwd=wt).stdout
+        try:
+            records = gate._python_tests(path, source) if path.endswith(".py") else gate._rust_tests(path, source)
+        except SyntaxError:
+            continue
+        if any(
+            gate._matches_test_id(selector, record)
+            or any(alias.endswith("." + selector) for alias in record["aliases"])
+            for record in records.values()
+        ):
+            files.add(path)
+    if len(files) != 1:
+        return None
+    main = run(["git", "rev-parse", f"origin/{cfg.main}"], cwd=wt, check=False)
+    if main.returncode:
+        return None
+    return {"test": test, "file": files.pop(), "main": main.stdout.strip()}
+
+
+def requeue_parked_tests(dry_run: bool) -> None:
+    """Release only still-parked sole-test failures whose file changed on main."""
+    def parked_tests() -> dict:
+        parked = {}
+        for event in lifecycle.read_events(EVENTS):
+            if event.get("event") == "manage" and event.get("decision") == "HUMAN":
+                continue
+            if event.get("event") in {
+                "escalate", "claimed", "attempt", "manage", "merged", "test-requeue",
+                "conflict-requeue", "gate-requeue", "human-decision", "gate-parked",
+            } and isinstance(event.get("ticket"), int):
+                parked[event["ticket"]] = event.get("parked_test")
+        return parked
+
+    for n, failure in parked_tests().items():
+        if not failure:
+            continue
+        with ticket_lock(n).open("w") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                continue
+            # A manager/worker may have superseded the snapshot before we got the lock.
+            failure = parked_tests().get(n)
+            if not failure:
+                continue
+            baseline = failure["main"]
+            tip = f"origin/{cfg.main}"
+            if run(["git", "merge-base", "--is-ancestor", baseline, tip], cwd=ROOT, check=False).returncode:
+                continue
+            changed = run(
+                ["git", "log", "--format=%H", f"{baseline}..{tip}", "--", f":(literal){failure['file']}"],
+                cwd=ROOT,
+            ).stdout.splitlines()
+            if not changed:
+                continue
+            issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "state,labels,assignees"])
+            labels = {label["name"] for label in issue.get("labels", [])}
+            if issue.get("state") != "OPEN" or LABEL_HUMAN not in labels or LABEL_AGENT in labels or issue.get("assignees"):
+                continue
+            commit = changed[0]
+            body = (
+                f"Factory requeue: sole failing test `{failure['test']}` in `{failure['file']}` "
+                f"changed on `{cfg.main}` in commit `{commit}`. Requeued to `{LABEL_AGENT}`; no round charged."
+            )
+            if dry_run:
+                log(f"#{n}: would requeue ({body})")
+                continue
+            run(["gh", "issue", "comment", str(n), "--repo", REPO, "--body", body])
+            run(["gh", "issue", "edit", str(n), "--repo", REPO,
+                 "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT])
+            record("test-requeue", ticket=n, test=failure["test"], file=failure["file"], main=commit)
+
+
 def escalate(
     n: int,
     reason: str,
@@ -1802,6 +1933,7 @@ def escalate(
     code: str,
     refreshed_head: str | None = None,
     evidence_ref: str | None = None,
+    gate_report: str | None = None,
 ) -> None:
     assert code in ESCALATION_CODES, code
     assert (refreshed_head is None) == (evidence_ref is None)
@@ -1839,6 +1971,10 @@ def escalate(
         if refreshed_head is not None
         else {}
     )
+    if code == "gate_failed" and (failure := _sole_test_failure(
+        wt, n, gate_report, revision=refreshed_head or "HEAD",
+    )):
+        evidence["parked_test"] = failure
     record(
         "escalate", ticket=n, code=code, reason=reason,
         log=str(log_path) if log_path else None, packet=str(packet), round=round_number,
@@ -3213,8 +3349,27 @@ def refresh_requeue_context(n: int) -> str:
     )
 
 
-def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
-    """Refresh, gate, push, and independently review the resulting immutable head."""
+def fetch_refresh_refs(n: int) -> bool:
+    """Fetch refresh inputs and report whether the agent branch carries upstream-only history."""
+    run(["git", "fetch", "origin", cfg.main, f"agent/{n}"], cwd=ROOT)
+    if UPSTREAM is None:
+        return False
+    run(["git", "fetch", UPSTREAM, cfg.main], cwd=ROOT)
+    mb = run(
+        ["git", "merge-base", f"origin/agent/{n}", f"{UPSTREAM}/{cfg.main}"],
+        cwd=ROOT,
+    ).stdout.strip()
+    return run(
+        ["git", "merge-base", "--is-ancestor", mb, f"origin/{cfg.main}"],
+        cwd=ROOT,
+        check=False,
+    ).returncode != 0
+
+
+def refresh_pr_branch(
+    n: int, pr: int, carries_upstream: bool, *, waiting: bool = False,
+) -> bool:
+    """Refresh, gate, and push; approved PRs also earn a fresh independent review."""
     target = gh_json(["pr", "view", str(pr), "--repo", REPO, "--json", "baseRefName"])
     if target.get("baseRefName") != cfg.main:
         log(f"PR #{pr}: targets {target.get('baseRefName')!r}, not {cfg.main!r}; not refreshing")
@@ -3255,6 +3410,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         extra: str = "",
         *,
         refreshed_head: str | None = None,
+        gate_report: str | None = None,
     ) -> None:
         evidence_ref = restore_pr_head(refreshed_head) if refreshed_head is not None else None
         escalate(
@@ -3265,8 +3421,45 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             code=code,
             refreshed_head=refreshed_head,
             evidence_ref=evidence_ref,
+            gate_report=gate_report,
         )
+        if waiting:
+            record(
+                "waiting-refresh-failed",
+                ticket=n,
+                pr=pr,
+                pr_head=remote_head,
+                main_head=main_head,
+                kept_head=local_head,
+                code=code,
+            )
 
+    run(["git", "fetch", "origin"], cwd=wt)
+    local_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    remote_head = run(["git", "rev-parse", f"origin/agent/{n}"], cwd=wt).stdout.strip()
+    main_head = run(["git", "rev-parse", f"origin/{cfg.main}"], cwd=wt).stdout.strip()
+    if waiting:
+        if local_head != remote_head:
+            kept_head = local_head
+            evidence_ref = restore_pr_head(kept_head)
+            remote_head = run(
+                ["git", "rev-parse", f"origin/agent/{n}"], cwd=wt
+            ).stdout.strip()
+            local_head = remote_head
+            log(
+                f"PR #{pr}: retained unpublished waiting head {kept_head} at "
+                f"{evidence_ref}; refreshing published head {remote_head}"
+            )
+        if any(
+            event.get("event") == "waiting-refresh-failed"
+            and event.get("ticket") == n
+            and event.get("pr") == pr
+            and event.get("pr_head") == remote_head
+            and event.get("main_head") == main_head
+            and event.get("kept_head") == local_head
+            for event in lifecycle.read_events(EVENTS)
+        ):
+            return False
     removed = run(
         ["gh", "pr", "edit", str(pr), "--repo", REPO, "--remove-label", FACTORY_APPROVED],
         check=False,
@@ -3274,9 +3467,6 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     if removed.returncode:
         escalate(n, f"PR #{pr}: could not remove stale `{FACTORY_APPROVED}` approval", None, code="gh_failed")
         return False
-    run(["git", "fetch", "origin"], cwd=wt)
-    local_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
-    remote_head = run(["git", "rev-parse", f"origin/agent/{n}"], cwd=wt).stdout.strip()
     if local_head != remote_head:
         withdraw(f"kept worktree head {local_head} differs from remote head {remote_head}", "refresh_head")
         return False
@@ -3423,7 +3613,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             if why:
                 withdraw(
                     f"gate failed twice after {verb} onto moved main ({why}); worktree {wt}",
-                    "gate_failed", extra=details, refreshed_head=head,
+                    "gate_failed", extra=details, refreshed_head=head, gate_report=report,
                 )
                 return False
             evidence_ref = restore_pr_head(head)
@@ -3449,6 +3639,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             f"gate failed after {verb} onto moved main",
             "gate_failed",
             refreshed_head=head,
+            gate_report=report,
         )
         return False
     if push_agent(wt, n, remote_head, check=False) is None:
@@ -3462,6 +3653,9 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         "refreshed", ticket=n, pr=pr, head=head, gate="PASS",
         gate_head=head, actual_head=head, clean=True, gate_rerun=gate_rerun,
     )
+    if waiting:
+        log(f"#{n}: PR #{pr} {verb}d onto current main and re-gated at {head[:12]}; still waiting")
+        return True
     record_risk(wt, n, head)
     tier, _ = risk_for_head(n, head)
     if tier == "High":
@@ -3593,6 +3787,7 @@ def merge_pass_locked(dry_run: bool) -> None:
     except Exception as exc:  # noqa: BLE001 - a lessons merge failure never blocks ticket merges
         log(f"promotion: failed ({type(exc).__name__}: {exc})")
     candidates = []
+    waiting = []
     for pr in prs:
         m = re.fullmatch(r"agent/(\d+)", pr["headRefName"])
         if not m or pr["isDraft"]:
@@ -3600,12 +3795,74 @@ def merge_pass_locked(dry_run: bool) -> None:
         if pr.get("baseRefName") != cfg.main:
             log(f"PR #{pr['number']}: targets {pr.get('baseRefName')!r}, not {cfg.main!r}; not merging")
             continue
+        item = (pr["number"], int(m.group(1)), pr.get("headRefOid"))
         if FACTORY_APPROVED not in {label["name"] for label in pr["labels"]}:
+            if pr["reviewDecision"] != "CHANGES_REQUESTED":
+                waiting.append(item)
             continue
         if pr["reviewDecision"] == "CHANGES_REQUESTED":
             log(f"PR #{pr['number']}: human requested changes; not merging")
             continue
-        candidates.append((pr["number"], int(m.group(1)), pr.get("headRefOid")))
+        candidates.append(item)
+    for pr_num, n, listed_head in sorted(waiting):
+        if not listed_head or initiative_kind(n):
+            continue
+        lock = None
+        if not dry_run:
+            lock = ticket_lock(n).open("w")
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                lock.close()
+                continue
+        try:
+            issue = gh_json([
+                "issue", "view", str(n), "--repo", REPO, "--json", "state,labels,assignees",
+            ])
+            issue_labels = {label["name"] for label in issue.get("labels", [])}
+            if (
+                issue.get("state") != "OPEN"
+                or LABEL_HUMAN not in issue_labels
+                or issue.get("assignees")
+            ):
+                continue
+            fields = "state,headRefName,headRefOid,baseRefName,isDraft,labels,reviewDecision"
+            fresh = gh_json(["pr", "view", str(pr_num), "--repo", REPO, "--json", fields])
+            fresh_labels = {label["name"] for label in fresh.get("labels", [])}
+            head = fresh.get("headRefOid")
+            if (
+                fresh.get("state") != "OPEN"
+                or fresh.get("headRefName") != f"agent/{n}"
+                or fresh.get("baseRefName") != cfg.main
+                or fresh.get("isDraft")
+                or FACTORY_APPROVED in fresh_labels
+                or fresh.get("reviewDecision") == "CHANGES_REQUESTED"
+                or not head
+            ):
+                continue
+            if dry_run:
+                behind = gh_json([
+                    "api", f"repos/{REPO}/compare/{cfg.main}...{head}",
+                ])["behind_by"]
+                if behind:
+                    log(f"PR #{pr_num}: would refresh waiting branch (behind main)")
+                continue
+            carries_upstream = fetch_refresh_refs(n)
+            behind = run(
+                [
+                    "git", "merge-base", "--is-ancestor",
+                    f"origin/{cfg.main}", f"origin/agent/{n}",
+                ],
+                cwd=ROOT,
+                check=False,
+            ).returncode != 0
+            if not behind:
+                continue
+            refresh_pr_branch(n, pr_num, carries_upstream, waiting=True)
+        finally:
+            if lock is not None:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+                lock.close()
     for pr_num, n, listed_head in sorted(candidates):
         with nullcontext() if dry_run else lifecycle.scope(
             EVENTS, "merge-eligibility", ticket=n, lock=FACTORY / "locks" / "merge.lock"
@@ -3734,23 +3991,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                         f"{'merge' if approved else 'refuse (missing SHA-bound approval evidence)'}"
                     )
                 return
-            run(["git", "fetch", "origin", cfg.main, f"agent/{n}"], cwd=ROOT)
-            if UPSTREAM is None:
-                carries_upstream = False
-            else:
-                run(["git", "fetch", UPSTREAM, cfg.main], cwd=ROOT)
-                mb = run(
-                    ["git", "merge-base", f"origin/agent/{n}", f"{UPSTREAM}/{cfg.main}"],
-                    cwd=ROOT,
-                ).stdout.strip()
-                carries_upstream = (
-                    run(
-                        ["git", "merge-base", "--is-ancestor", mb, f"origin/{cfg.main}"],
-                        cwd=ROOT,
-                        check=False,
-                    ).returncode
-                    != 0
-                )
+            carries_upstream = fetch_refresh_refs(n)
             if behind:
                 record_merge_decision(
                     n, pr_num, "refresh branch",
@@ -4307,8 +4548,11 @@ def process_ticket(
                     stuck = report.startswith("worker stuck")
                     failed = (f"idle_timeout fired (worker stuck) on attempt {MAX_ATTEMPTS}"
                               if stuck else f"gate failed {MAX_ATTEMPTS} times")
-                    escalate(n, f"{failed}; worktree kept at {wt}", logfile,
-                             code="worker_stuck" if stuck else "gate_failed")
+                    escalate(
+                        n, f"{failed}; worktree kept at {wt}", logfile,
+                        code="worker_stuck" if stuck else "gate_failed",
+                        gate_report=None if stuck else report,
+                    )
                     return
 
             run(["git", "fetch", "origin", cfg.main], cwd=wt)
@@ -4403,6 +4647,7 @@ def process_ticket(
                     escalate(
                         n, f"{failed} after review bounce {bounce}; worktree kept at {wt}", logfile,
                         code="worker_stuck" if stuck else "gate_failed",
+                        gate_report=None if stuck else report,
                     )
                     return
                 lease = push_agent(wt, n, lease)
@@ -4600,6 +4845,7 @@ def main(argv: list[str]) -> int:
         # which GitHub cannot union-merge), and a new one opens only after landing.
         release_step(open_pr=False)
         land_pass(args.dry_run)
+        requeue_parked_tests(args.dry_run)
         review_intake_pass(args.dry_run)
         from factory.learn import learn_pass
         from factory.manage import manage_pass
