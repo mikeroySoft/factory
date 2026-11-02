@@ -960,6 +960,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    failure; a surviving mutant still has to pass every discovered test. The
    deterministic 200-mutant sample uses the gate timeout minus 60 seconds for
    preparation, baseline, and mutants together; incomplete blocking runs fail.
+   Scratch workers use local shared clones with independent Git metadata and the
+   current working files overlaid, so Git-dependent tests run without skips.
    The built-in OMP worker pins `openai-codex/gpt-5.6-sol`; custom worker
    profiles must also name a model. `factory doctor` warns when any of the
    worker, primary-reviewer, or second-reviewer models is missing or not
