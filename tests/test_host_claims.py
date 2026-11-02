@@ -197,8 +197,11 @@ class HostClaimRaceTest(unittest.TestCase):
         self.assertTrue(self.github.comments[0]["body"].startswith(f"Factory claim: host={winner} "))
 
     def test_stale_claim_past_ttl_is_released_and_reclaimed(self):
-        old = self.github.add_claim("ultron", datetime.now(UTC) - timedelta(seconds=5))
+        now = datetime(2026, 11, 2, tzinfo=UTC)
+        old = self.github.add_claim("ultron", now - timedelta(seconds=5))
         tank = self.dispatcher("tank", claim_ttl="1s")
+        clock = self.enterContext(mock.patch.object(tank, "datetime", wraps=datetime))
+        clock.now.return_value = now
 
         [stale] = tank.frontier()
         self.assertNotIn("held", stale)
@@ -219,6 +222,8 @@ class HostClaimRaceTest(unittest.TestCase):
                          [("ultron", old["created_at"])])
 
         thor = self.dispatcher("thor", claim_ttl="1s")
+        clock = self.enterContext(mock.patch.object(thor, "datetime", wraps=datetime))
+        clock.now.return_value = now
         [live] = thor.frontier()
         self.assertIn("tank", live["held"])
         thor.process_ticket(live, 1, False)
@@ -259,7 +264,7 @@ class HostClaimRaceTest(unittest.TestCase):
 
         self.assertEqual(self.github.issue["labels"],
                          [row for row in labels_before if row["name"] != "ready-for-agent"])
-        self.assertEqual(self.github.issue["assignees"], [])
+        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
         self.assertEqual(self.github.comments, comments_before)
 
         tank.unclaim(7, "--remove-label", "ready-for-agent", check=False)

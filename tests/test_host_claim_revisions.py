@@ -14,21 +14,29 @@ class HostClaimRevisionTest(unittest.TestCase):
 
     def test_foreign_and_expired_claims_preserve_lifecycle_transitions(self):
         tank = self.dispatcher("tank", claim_ttl="1s")
-        for host, age in (("ultron", 0), ("tank", 5)):
-            with self.subTest(host=host):
+        now = datetime(2026, 11, 2, tzinfo=UTC)
+        clock = self.enterContext(mock.patch.object(tank, "datetime", wraps=datetime))
+        clock.now.return_value = now
+        for host, age, assignee_last in (
+            ("ultron", 0, False), ("ultron", 0, True),
+            ("tank", 5, False), ("tank", 5, True),
+        ):
+            with self.subTest(host=host, assignee_last=assignee_last):
                 self.github.comments.clear()
                 self.github.issue["labels"] = [{"name": "ready-for-agent"}]
-                claim = self.github.add_claim(host, datetime.now(UTC) - timedelta(seconds=age))
+                claim = self.github.add_claim(host, now - timedelta(seconds=age))
 
-                tank.unclaim(7, "--remove-label", "ready-for-agent", "--add-label", "ready-for-human")
+                tank.unclaim(7, "--remove-label", "ready-for-agent", "--add-label", "ready-for-human",
+                             assignee_last=assignee_last)
 
                 self.assertIn({"name": "ready-for-human"}, self.github.issue["labels"])
                 self.assertNotIn({"name": "ready-for-agent"}, self.github.issue["labels"])
-                self.assertEqual(self.github.issue["assignees"], [])
                 if host == "ultron":
+                    self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
                     self.assertEqual(self.github.comments, [claim])
                     self.assertIn({"name": "host:ultron"}, self.github.issue["labels"])
                 else:
+                    self.assertEqual(self.github.issue["assignees"], [])
                     self.assertEqual(self.github.comments, [])
                     self.assertNotIn({"name": "host:tank"}, self.github.issue["labels"])
 
@@ -36,6 +44,101 @@ class HostClaimRevisionTest(unittest.TestCase):
                              assignee_last=True)
                 self.assertIn({"name": "ready-for-agent"}, self.github.issue["labels"])
                 self.assertNotIn({"name": "ready-for-human"}, self.github.issue["labels"])
+
+    def test_foreign_unclaim_without_transitions_does_not_edit_issue(self):
+        tank = self.dispatcher("tank")
+        self.github.add_claim("ultron", datetime.now(UTC))
+        before = copy.deepcopy((self.github.issue, self.github.comments))
+        for assignee_last in (False, True):
+            with self.subTest(assignee_last=assignee_last):
+                self.github.calls.clear()
+                tank.unclaim(7, assignee_last=assignee_last)
+                self.assertEqual((self.github.issue, self.github.comments), before)
+                self.assertFalse(any(args[:3] == ["gh", "issue", "edit"]
+                                     for _, args in self.github.calls), self.github.calls)
+
+    def test_unclaim_with_old_local_nonce_preserves_elected_claim(self):
+        tank = self.dispatcher("tank")
+        now = datetime.now(UTC)
+        local = tank.HostClaim(7, {"nonce": "previous-process"})
+        tank._HOST_CLAIMS[7] = local
+        claim = self.github.add_claim("tank", now)
+        for assignee_last in (False, True):
+            with self.subTest(assignee_last=assignee_last):
+                self.github.issue["labels"] = [{"name": "host:tank"}, {"name": "ready-for-agent"}]
+                tank.unclaim(7, "--remove-label", "ready-for-agent", "--add-label", "ready-for-human",
+                             assignee_last=assignee_last)
+                self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
+                self.assertEqual(self.github.comments, [claim])
+                self.assertEqual(self.github.issue["labels"],
+                                 [{"name": "host:tank"}, {"name": "ready-for-human"}])
+
+    def test_single_host_unclaim_keeps_original_argument_order(self):
+        single = self.dispatcher(None)
+        transition = ["--remove-label", "ready-for-agent", "--add-label", "ready-for-human"]
+        for assignee_last in (False, True):
+            with self.subTest(assignee_last=assignee_last):
+                self.github.calls.clear()
+                single.unclaim(7, *transition, check=True, assignee_last=assignee_last)
+                assignment = ["--remove-assignee", "@me"]
+                args = transition + assignment if assignee_last else assignment + transition
+                self.assertEqual(self.github.calls, [
+                    (None, ["gh", "issue", "edit", "7", "--repo", "local/claims", *args]),
+                ])
+
+    def test_stale_releaser_cannot_unassign_replacement_after_empty_claim_read(self):
+        now = datetime(2026, 11, 2, tzinfo=UTC)
+        self.github.add_claim("old", now - timedelta(hours=3))
+        # An abandoned claim can already be unassigned. The replacement must
+        # remain assigned even if another stale releaser is still in flight.
+        self.github.issue["assignees"] = []
+        tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
+        for module in (tank, ultron):
+            clock = self.enterContext(mock.patch.object(module, "datetime", wraps=datetime))
+            clock.now.return_value = now
+        read = tank.gh_json
+        replaced = False
+
+        def replace_after_read(args):
+            nonlocal replaced
+            result = read(args)
+            if not replaced and not self.github.comments and \
+                    {"name": "host:old"} not in self.github.issue["labels"]:
+                # The response was captured before the replacement claimed.
+                # On the broken code this is the final empty live-claim read,
+                # immediately before its shared-assignee removal.
+                replaced = True
+                ultron.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+            return result
+
+        with mock.patch.object(tank, "gh_json", side_effect=replace_after_read):
+            tank.release_stale_claims(7, copy.deepcopy(self.github.issue), tank.host_claims(7))
+
+        self.assertTrue(replaced)
+        self.assertEqual(self.launched, ["ultron"])
+        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
+        self.assertEqual(self.github.issue["labels"],
+                         [{"name": "ready-for-agent"}, {"name": "host:ultron"}])
+        self.assertEqual(len(self.github.comments), 1)
+        self.assertIn("host=ultron ", self.github.comments[0]["body"])
+        self.assertFalse(any("--remove-assignee" in args
+                             for host, args in self.github.calls if host == "tank"))
+
+    def test_expired_claim_with_unassigned_open_pr_remains_held(self):
+        now = datetime(2026, 11, 2, tzinfo=UTC)
+        self.github.add_claim("ultron", now - timedelta(hours=3))
+        self.github.issue["assignees"] = []
+        self.github.open_prs = [{"number": 70}]
+        tank = self.dispatcher("tank")
+        clock = self.enterContext(mock.patch.object(tank, "datetime", wraps=datetime))
+        clock.now.return_value = now
+
+        [issue] = tank.frontier()
+        self.assertEqual(issue.get("held"), "open PR")
+        before = copy.deepcopy((self.github.issue, self.github.comments))
+        tank.process_ticket(issue, 1, False)
+        self.assertEqual((self.github.issue, self.github.comments), before)
+        self.assertEqual(self.launched, [])
 
     def test_completed_worker_with_open_pr_remains_held_after_ttl(self):
         tank = self.dispatcher("tank", claim_ttl="1s")
