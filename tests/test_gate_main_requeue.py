@@ -219,5 +219,21 @@ class MainTestRequeueTest(unittest.TestCase):
         self.assertNotIn("parked_test", self.events("escalate")[-1])
 
 
+    def test_manager_human_handoff_keeps_sole_test_recovery_eligible(self):
+        self.park()
+        dispatch.record("manage", ticket=9, decision="HUMAN", round=1)
+        self.advance()
+        self.dispatch_pass()
+        self.assertEqual(self.github.issue_labels, {config.LABEL_AGENT})
+        self.assertEqual(len(self.events("manage")), 1)
+
+    def test_later_worker_failure_invalidates_old_sole_test_marker(self):
+        self.park()
+        dispatch.record("attempt", ticket=9, gate="FAIL", worker_exit=1)
+        self.advance()
+        self.dispatch_pass()
+        self.assertEqual(self.github.issue_labels, {config.LABEL_HUMAN})
+
+
 if __name__ == "__main__":
     unittest.main()
