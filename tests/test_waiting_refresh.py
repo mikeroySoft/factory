@@ -108,6 +108,81 @@ class WaitingRefreshTest(unittest.TestCase):
 
         self.assert_clean_waiting_refresh()
 
+    def test_exhausted_waiting_refresh_escalates_once_per_pr_and_main_heads(self) -> None:
+        self.cfg.review_rounds = 0
+        self.move_main()
+
+        with self.patched(), mock.patch.object(
+            dispatch, "run_gate", return_value=(False, "persistent failure")
+        ) as gate:
+            dispatch.merge_pass_locked(False)
+            first_escalations = len(self.events("escalate"))
+            first_comments = len([
+                call for call in self.github.calls if call[1:3] == ["issue", "comment"]
+            ])
+
+            dispatch.merge_pass_locked(False)
+
+            self.assertEqual(gate.call_count, 2)
+            self.assertEqual(len(self.events("escalate")), first_escalations)
+            self.assertEqual(
+                len([call for call in self.github.calls if call[1:3] == ["issue", "comment"]]),
+                first_comments,
+            )
+
+            self.move_main("main-again.txt", "main moved again\n")
+            dispatch.merge_pass_locked(False)
+
+        self.assertEqual(gate.call_count, 4)
+        self.assertEqual(len(self.events("escalate")), first_escalations + 1)
+
+    def test_unpushed_waiting_head_preserves_parked_test_until_main_changes_it(self) -> None:
+        (self.origin / "tests").mkdir()
+        (self.origin / "tests/test_flaky.py").write_text(
+            "def test_status():\n    raise AssertionError('known failure')\n"
+        )
+        git(self.origin, "add", "tests/test_flaky.py")
+        git(self.origin, "commit", "-qm", "known failing test")
+        baseline = git(self.origin, "rev-parse", "main")
+        dispatch.record(
+            "escalate",
+            ticket=9,
+            pr=102,
+            code="gate_failed",
+            round=1,
+            parked_test={
+                "test": "tests/test_flaky.py::test_status",
+                "file": "tests/test_flaky.py",
+                "main": baseline,
+            },
+        )
+        wt = dispatch.ensure_worktree(9)
+        (wt / "review-bounce.txt").write_text("unpushed\n")
+        git(wt, "add", "review-bounce.txt")
+        git(wt, "commit", "-qm", "unpushed review bounce")
+        local_head = git(wt, "rev-parse", "HEAD")
+
+        self.move_main("unrelated.txt", "unrelated\n")
+        with self.patched(), mock.patch.object(dispatch, "run_gate") as gate:
+            dispatch.merge_pass_locked(False)
+            dispatch.requeue_parked_tests(False)
+
+        gate.assert_not_called()
+        self.assertEqual(self.github.issue_labels, {config.LABEL_HUMAN})
+        self.assertEqual(git(wt, "rev-parse", "HEAD"), local_head)
+        self.assertEqual(self.events("test-requeue"), [])
+
+        changed = self.move_main("tests/test_flaky.py", "def test_status():\n    pass\n")
+        with self.patched(), mock.patch.object(dispatch, "run_gate") as gate:
+            dispatch.merge_pass_locked(False)
+            dispatch.requeue_parked_tests(False)
+
+        gate.assert_not_called()
+        self.assertEqual(self.github.issue_labels, {config.LABEL_AGENT})
+        self.assertEqual(git(wt, "rev-parse", "HEAD"), local_head)
+        [requeue] = self.events("test-requeue")
+        self.assertEqual((requeue["test"], requeue["main"]), ("tests/test_flaky.py::test_status", changed))
+
     def test_up_to_date_waiting_pr_is_not_refreshed(self) -> None:
         with self.patched(), mock.patch.object(dispatch, "refresh_pr_branch") as refresh, \
                 mock.patch.object(dispatch, "run_gate") as gate:
