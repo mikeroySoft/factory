@@ -2419,6 +2419,20 @@ esac
 
 
 class DispatchTest(unittest.TestCase):
+    def setUp(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        real_gh_json = dispatch.gh_json
+
+        def github(args, *positional, **kwargs):
+            if args[:2] == ["issue", "view"] and args[-2:] == ["--json", "title,body,comments"]:
+                return {"title": "Fixture issue", "body": "Fixture acceptance criteria", "comments": []}
+            return real_gh_json(args, *positional, **kwargs)
+
+        self.enterContext(mock.patch.object(dispatch, "gh_json", side_effect=github))
+
     def test_push_and_pr_targets_configured_nondefault_branch(self) -> None:
         from unittest import mock
 
