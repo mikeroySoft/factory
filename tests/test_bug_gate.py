@@ -194,6 +194,94 @@ class BugReproductionGateTest(unittest.TestCase):
                 self.assertIn("- bug-repro-head: PASS", report)
 
 
+    def test_repro_discovery_consumes_value_options_and_keeps_command_prefix(self) -> None:
+        commands = [
+            [sys.executable, "-m", "unittest", "discover", "-s", "tests",
+             "-k", "test_value", "-k", "test_other"],
+            ["env", "FACTORY_REPRO_WRAPPED=1", sys.executable, "-B", "-m",
+             "unittest", "discover", "-s", "tests", "-k", "test_value"],
+        ]
+        if sys.version_info >= (3, 12):
+            commands.append([
+                sys.executable, "-m", "unittest", "discover", "-s", "tests",
+                "--durations", "5",
+            ])
+        for command in commands:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as directory:
+                repo = repository(Path(directory))
+                (repo / ".factory.toml").write_text(
+                    '[leak_scan]\npattern = ""\n'
+                    "[[gate.check]]\n"
+                    'name = "test"\n'
+                    f"run = {command!r}\n"
+                )
+                (repo / "tests" / "test_a.py").write_text(
+                    "def helper():\n    return True\n"
+                )
+                (repo / "tests" / "test_b.py").write_text(
+                    "import os, unittest, value\n"
+                    "from test_a import helper\n"
+                    "class BTest(unittest.TestCase):\n"
+                    "    def test_value(self):\n"
+                    "        self.assertTrue(helper())\n"
+                    + (
+                        "        self.assertEqual(os.environ.get('FACTORY_REPRO_WRAPPED'), '1')\n"
+                        if command[0] == "env" else ""
+                    )
+                    + "        self.assertTrue(value.value())\n"
+                )
+                commit(repo, "reproduce with discovery value options")
+                (repo / "value.py").write_text("def value():\n    return True\n")
+                commit(repo, "fix bug")
+
+                code, report = run_gate(
+                    repo, "--bug", "--repro-test", "tests/test_b.py::BTest::test_value"
+                )
+
+                self.assertEqual(code, 0, report)
+                self.assertIn("- bug-repro-before: EXPECTED FAIL", report)
+                self.assertIn("- bug-repro-head: PASS", report)
+
+    def test_repro_discovery_resolves_dotted_package_start(self) -> None:
+        for top in ([], ["-t", "suite"]):
+            with self.subTest(top=top), tempfile.TemporaryDirectory() as directory:
+                repo = repository(Path(directory))
+                command = [
+                    "env", "PYTHONPATH=suite", sys.executable, "-m", "unittest",
+                    "discover", "-s", "pkg.tests", *top,
+                ]
+                (repo / ".factory.toml").write_text(
+                    '[leak_scan]\npattern = ""\n'
+                    "[[gate.check]]\n"
+                    'name = "test"\n'
+                    f"run = {command!r}\n"
+                )
+                cases = repo / "suite" / "pkg" / "tests"
+                cases.mkdir(parents=True)
+                (cases.parent / "__init__.py").touch()
+                (cases / "__init__.py").touch()
+                (cases / "test_a.py").write_text("def helper():\n    return True\n")
+                (cases / "test_b.py").write_text(
+                    "import unittest, value\n"
+                    "from .test_a import helper\n"
+                    "class BTest(unittest.TestCase):\n"
+                    "    def test_value(self):\n"
+                    "        self.assertTrue(helper())\n"
+                    "        self.assertTrue(value.value())\n"
+                )
+                commit(repo, "reproduce with dotted package discovery")
+                (repo / "value.py").write_text("def value():\n    return True\n")
+                commit(repo, "fix bug")
+
+                code, report = run_gate(
+                    repo, "--bug", "--repro-test",
+                    "suite/pkg/tests/test_b.py::BTest::test_value",
+                )
+
+                self.assertEqual(code, 0, report)
+                self.assertIn("- bug-repro-before: EXPECTED FAIL", report)
+                self.assertIn("- bug-repro-head: PASS", report)
+
     def test_backticked_handoff_id_reaches_reproduction_gate_bare(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repo = repository(Path(directory))
