@@ -1168,6 +1168,8 @@ source of `worker_model`. A different runtime model is retained in `llm-usage.mo
 with `model_mismatch = true`; it never replaces the pinned worker identity.
 OMP session models include their separately reported provider when cross-checking,
 so `provider/model` matches the pinned argv without hiding provider changes.
+The reported `model` stays unchanged for local-token accounting and by-model totals;
+the provider is recorded separately and qualifies only the mismatch comparison.
 
 `factory stats --week [--json]` also reports post-FIX outcomes by the next
 claim's recorded `worker_model`. Each `manage`/`FIX` inside the inclusive UTC

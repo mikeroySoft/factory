@@ -202,12 +202,12 @@ class WorkerModelJournalTest(unittest.TestCase):
                 mock.patch.object(dispatch, "_transcript", return_value=str(transcript)), \
                 mock.patch.object(dispatch, "commit_leftovers"), \
                 mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")):
-            for provider, model, reported, mismatch in (
-                ("openai-codex", "gpt-6.1-sol", "openai-codex/gpt-6.1-sol", False),
-                ("anthropic", "gpt-6.1-sol", "anthropic/gpt-6.1-sol", True),
-                ("openai-codex", "gpt-5.6-sol", "openai-codex/gpt-5.6-sol", True),
-                ("openai-codex", "openai-codex/gpt-6.1-sol", "openai-codex/gpt-6.1-sol", False),
-                (None, "openai-codex/gpt-6.1-sol", "openai-codex/gpt-6.1-sol", False),
+            for provider, model, mismatch in (
+                ("openai-codex", "gpt-6.1-sol", False),
+                ("anthropic", "gpt-6.1-sol", True),
+                ("openai-codex", "gpt-5.6-sol", True),
+                ("openai-codex", "openai-codex/gpt-6.1-sol", False),
+                (None, "openai-codex/gpt-6.1-sol", False),
             ):
                 with self.subTest(provider=provider, model=model):
                     transcript.write_text(json.dumps({
@@ -221,7 +221,8 @@ class WorkerModelJournalTest(unittest.TestCase):
                         row for row in lifecycle.read_events(dispatch.EVENTS)
                         if row.get("event") in {"attempt", "llm-usage"}
                     ][-2:]
-                    self.assertEqual(usage["model"], reported)
+                    self.assertEqual(usage["model"], model)
+                    self.assertEqual(usage["provider"], provider)
                     self.assertEqual(usage.get("model_mismatch", False), mismatch)
                     self.assertEqual(usage["worker_model"], "openai-codex/gpt-6.1-sol")
                     self.assertEqual(attempt["worker_model"], "openai-codex/gpt-6.1-sol")

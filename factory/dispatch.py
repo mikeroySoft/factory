@@ -3961,9 +3961,14 @@ def worker_round(
     transcript = _transcript(session_dir, wall)
     timeout = {"timeout": fired, "reason": TIMEOUT_REASONS[fired]} if fired else {}
     usage = worker_usage(logfile, cfg.worker_usage.get(worker), transcript)
+    reported_model = usage["model"]
+    provider = usage.get("provider")
+    if (isinstance(reported_model, str) and isinstance(provider, str) and provider
+            and not reported_model.startswith(provider + "/")):
+        reported_model = f"{provider}/{reported_model}"
     mismatch = (
         {"model_mismatch": True}
-        if usage["model"] is not None and usage["model"] != identity["worker_model"] else {}
+        if reported_model is not None and reported_model != identity["worker_model"] else {}
     )
     record(
         "llm-usage", ticket=n, stage="worker", attempt=attempt,
@@ -4103,10 +4108,8 @@ def transcript_usage(path: Path) -> dict:
                            ("cached_tokens", read)):
             usage[key] = usage.get(key, 0) + value
         if isinstance(model := message.get("model"), str):
-            provider = message.get("provider")
-            if isinstance(provider, str) and provider and not model.startswith(provider + "/"):
-                model = f"{provider}/{model}"
             usage["model"] = model
+            usage["provider"] = message.get("provider")
     return usage
 
 
