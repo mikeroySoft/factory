@@ -275,8 +275,14 @@ print(json.dumps({
             self.assertIsNone(cfg.upstream)
             self.assertEqual(cfg.checks, [])
             self.assertEqual(cfg.factory, repo / ".factory")
-            self.assertEqual(cfg.worker({"chore"}, Path("/p"), Path("/w"))[0], "droid")
-            self.assertEqual(cfg.worker(set(), Path("/p"), Path("/w")), ["omp", "-p", "--cwd", "/w", "@/p"])
+            self.assertEqual(
+                cfg.worker({"chore"}, Path("/p"), Path("/w")),
+                ["droid", "exec", "--model", "gpt-6-sol", "-f", "/p", "--auto", "medium", "--cwd", "/w"],
+            )
+            self.assertEqual(
+                cfg.worker(set(), Path("/p"), Path("/w")),
+                ["omp", "-p", "--model", "openai-codex/gpt-6.1-sol", "--cwd", "/w", "@/p"],
+            )
 
     def test_overrides_and_worktree_root(self) -> None:
         toml = """

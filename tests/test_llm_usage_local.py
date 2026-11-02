@@ -90,7 +90,7 @@ class WorkerModelJournalTest(unittest.TestCase):
         dispatch.LOGS.mkdir(parents=True)
 
         def worker(_argv, _cwd, logfile, *_args):
-            logfile.write_text('{"type":"result","result":{"model":"chore/model"}}\n')
+            logfile.write_text(output)
             return 0, timeout
 
         with mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
@@ -99,24 +99,30 @@ class WorkerModelJournalTest(unittest.TestCase):
                 mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")):
             for profile, model in (
                 ("default", "openai-codex/gpt-6.1-sol"),
-                ("chore", "chore/model"),
+                ("chore", "gpt-6-sol"),
                 ("pilot", "pilot/model"),
             ):
-                for ticket, (timeout, deadline) in enumerate((
-                    (None, float("inf")), ("idle_timeout", float("inf")), (None, 0),
-                ), 1):
-                    with self.subTest(profile=profile, exit=timeout, deadline=deadline):
-                        dispatch.worker_round(
-                            ticket, root, {profile}, "ticket", "", 1, deadline,
-                        )
-                        rows = [
-                            row for row in lifecycle.read_events(dispatch.EVENTS)
-                            if row.get("event") in {"attempt", "llm-usage"}
-                        ][-2:]
-                        self.assertEqual(
-                            [(row["event"], row["worker"], row["worker_model"]) for row in rows],
-                            [("llm-usage", profile, model), ("attempt", profile, model)],
-                        )
+                for output in ("", '{"type":"result","result":{"model":"chore/model"}}\n',
+                               json.dumps({"type": "result", "result": {"model": model}}) + "\n"):
+                    for ticket, (timeout, deadline) in enumerate((
+                        (None, float("inf")), ("idle_timeout", float("inf")), (None, 0),
+                    ), 1):
+                        with self.subTest(profile=profile, exit=timeout, deadline=deadline, output=output):
+                            dispatch.worker_round(
+                                ticket, root, {profile}, "ticket", "", 1, deadline,
+                            )
+                            rows = [
+                                row for row in lifecycle.read_events(dispatch.EVENTS)
+                                if row.get("event") in {"attempt", "llm-usage"}
+                            ][-2:]
+                            self.assertEqual(
+                                [(row["event"], row["worker"], row["worker_model"]) for row in rows],
+                                [("llm-usage", profile, model), ("attempt", profile, model)],
+                            )
+                            self.assertEqual(
+                                rows[0].get("model_mismatch", False),
+                                profile == "chore" and "chore/model" in output,
+                            )
 
     def test_claim_records_the_selected_explicit_model(self) -> None:
         import os
@@ -126,19 +132,21 @@ class WorkerModelJournalTest(unittest.TestCase):
         self.enterContext(mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
         cfg = config.Config(root, "acme/widgets")
         dispatch.configure(cfg)
-        issue = {"number": 7, "title": "ticket", "labels": [{"name": "ready-for-agent"}]}
-        fresh = {**issue, "state": "OPEN", "assignees": [], "body": "", "comments": []}
-        with mock.patch.object(dispatch, "gh_json", return_value=fresh), \
-                mock.patch.object(dispatch, "admit_plan", return_value=None), \
-                mock.patch.object(dispatch, "ensure_worktree", return_value=root), \
-                mock.patch.object(dispatch, "run", return_value=subprocess.CompletedProcess([], 0, "head", "")), \
-                mock.patch.object(dispatch, "agent_lease", return_value="head"), \
-                mock.patch.object(dispatch, "sync_staged", return_value=None), \
-                mock.patch.object(dispatch, "worker_round", side_effect=FileNotFoundError("fixture worker")):
-            dispatch.process_ticket(issue, 1, False, forced=True)
-        claim = next(row for row in lifecycle.read_events(dispatch.EVENTS) if row.get("event") == "claimed")
-        self.assertEqual(claim["worker"], "default")
-        self.assertEqual(claim["worker_model"], "openai-codex/gpt-6.1-sol")
+        for profile, model in (("default", "openai-codex/gpt-6.1-sol"), ("chore", "gpt-6-sol")):
+            issue = {"number": 7, "title": "ticket",
+                     "labels": [{"name": "ready-for-agent"}, {"name": profile}]}
+            fresh = {**issue, "state": "OPEN", "assignees": [], "body": "", "comments": []}
+            with mock.patch.object(dispatch, "gh_json", return_value=fresh), \
+                    mock.patch.object(dispatch, "admit_plan", return_value=None), \
+                    mock.patch.object(dispatch, "ensure_worktree", return_value=root), \
+                    mock.patch.object(dispatch, "run", return_value=subprocess.CompletedProcess([], 0, "head", "")), \
+                    mock.patch.object(dispatch, "agent_lease", return_value="head"), \
+                    mock.patch.object(dispatch, "sync_staged", return_value=None), \
+                    mock.patch.object(dispatch, "worker_round", side_effect=FileNotFoundError("fixture worker")):
+                dispatch.process_ticket(issue, 1, False, forced=True)
+            claim = [row for row in lifecycle.read_events(dispatch.EVENTS) if row.get("event") == "claimed"][-1]
+            self.assertEqual(claim["worker"], profile)
+            self.assertEqual(claim["worker_model"], model)
 
 
 if __name__ == "__main__":

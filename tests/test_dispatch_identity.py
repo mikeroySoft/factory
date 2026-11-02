@@ -194,7 +194,7 @@ class DoctorWorkerModelSourceTest(unittest.TestCase):
             cfg.workers = {
                 "default": ["/opt/omp", "-p", "@{prompt}"],
                 "empty": ["omp", "-p", "--model=", "@{prompt}"],
-                "chore": ["droid", "exec", "--model", "literal/model", "{prompt}"],
+                "chore": ["droid", "exec", "{prompt}"],
             }
             cfg.worker_usage = {
                 "default": {"model": "result.model"},
@@ -208,7 +208,7 @@ class DoctorWorkerModelSourceTest(unittest.TestCase):
             self.assertEqual(rows[f"worker `{label}` model"]["status"], "FAIL")
         self.assertIn("--model", rows["worker `default` model"]["detail"])
         self.assertIn("--model", rows["worker `empty` model"]["detail"])
-        self.assertIn("usage.model", rows["worker `chore` model"]["detail"])
+        self.assertIn("--model", rows["worker `chore` model"]["detail"])
 
     def test_doctor_json_rejects_non_model_values_after_omp_model_flag(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -228,20 +228,29 @@ class DoctorWorkerModelSourceTest(unittest.TestCase):
         for label in cfg.workers:
             self.assertEqual(rows[f"worker `{label}` model"]["status"], "FAIL")
 
-    def test_doctor_json_accepts_omp_flag_and_non_omp_usage_model_path(self) -> None:
+    def test_doctor_json_accepts_explicit_models_without_usage_model_paths(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             cfg = make_cfg(Path(d))
             cfg.workers = {
                 "default": ["/opt/omp", "-p", "--model", "worker/model", "@{prompt}"],
-                "chore": ["droid", "exec", "{prompt}"],
+                "chore": ["droid", "exec", "--model", "chore/model", "{prompt}"],
             }
-            cfg.worker_usage = {"chore": {"model": "result.model"}}
             code, result = self.doctor(cfg)
 
         rows = {row["label"]: row for row in result["rows"]}
         self.assertEqual((code, result["ok"]), (0, True))
         for label in cfg.workers:
             self.assertEqual(rows[f"worker `{label}` model"]["status"], "PASS")
+
+    def test_doctor_rejects_runtime_only_non_omp_model_source(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            cfg = make_cfg(Path(d))
+            cfg.workers = {"default": ["droid", "exec", "{prompt}"]}
+            cfg.worker_usage = {"default": {"model": "result.model"}}
+            code, result = self.doctor(cfg)
+        rows = {row["label"]: row for row in result["rows"]}
+        self.assertEqual((code, result["ok"]), (1, False))
+        self.assertEqual(rows["worker `default` model"]["status"], "FAIL")
 
 
 class AgentPushLeaseTest(unittest.TestCase):
