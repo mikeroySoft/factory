@@ -1827,3 +1827,146 @@ class GateDeadlineLifecycleTest(unittest.TestCase):
         self.assertFalse(attempt["finished"])
         self.assertFalse(any(row.get("event") == "review-rework" for row in events))
         self.assertTrue(any(row.get("event") == "escalate" and row["code"] == "budget" for row in events))
+
+
+class WorkerCompletionBoundaryLifecycleTest(unittest.TestCase):
+    setUp = LocalCLI.setUp
+    git = LocalCLI.git
+    write_config = LocalCLI.write_config
+    commit_config = LocalCLI.commit_config
+
+    def controlled_dispatch(self, *, code, fired, finished_at, handoff="fresh"):
+        from contextlib import chdir
+        from unittest import mock
+
+        from factory import config, dispatch
+
+        self.state.write_text(json.dumps({"reviews": 1}))
+        self.write_config(extra='\n[[gate.check]]\nname = "pr-proof"\nwhen = "pr"\nrun = '
+                          + json.dumps([sys.executable, "-c", "print('PR gate passed')"]) + "\n")
+        self.commit_config()
+        clock = [0]
+        gate_tiers = []
+        round_results = []
+        worker_calls = []
+        complete = "## Still unverified\nNone.\n"
+
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env):
+            dispatch.configure(config.load(self.repo))
+            if handoff == "stale":
+                wt = dispatch.ensure_worktree(7)
+                stale = wt / ".factory" / "handoff-7.md"
+                stale.parent.mkdir(exist_ok=True)
+                stale.write_text(complete)
+
+            original_gate = dispatch.run_gate
+            original_round = dispatch.worker_round
+
+            def worker(_argv, wt, _logfile, handoff_path, _deadline, **_kwargs):
+                worker_calls.append(wt)
+                change = wt / f"change-{len(worker_calls)}.txt"
+                change.write_text("done\n")
+                dispatch.run(["git", "add", change.name], cwd=wt)
+                dispatch.run(["git", "commit", "-qm", f"worker {len(worker_calls)}"], cwd=wt)
+                if handoff == "fresh":
+                    handoff_path.parent.mkdir(exist_ok=True)
+                    handoff_path.write_text(complete)
+                clock[0] = finished_at
+                return code, fired
+
+            def gate(*args, **kwargs):
+                gate_tiers.append(kwargs.get("tier", "attempt"))
+                return original_gate(*args, **kwargs)
+
+            def worker_round(*args, **kwargs):
+                result = original_round(*args, **kwargs)
+                round_results.append(result)
+                return result
+
+            with mock.patch.object(dispatch.time, "monotonic", side_effect=lambda: clock[0]), \
+                    mock.patch.object(dispatch, "run_worker", side_effect=worker), \
+                    mock.patch.object(dispatch, "run_gate", side_effect=gate), \
+                    mock.patch.object(dispatch, "worker_round", side_effect=worker_round), \
+                    mock.patch.object(
+                        dispatch.risk, "classify", return_value=("Medium", ["medium:fixture"]),
+                    ):
+                issue = dispatch.gh_json(["issue", "view", "7"])
+                dispatch.process_ticket(issue, 1, False, forced=True)
+
+        return list(lifecycle.read_events(self.events)), gate_tiers, round_results
+
+    def assert_finished_proceeded(self, code, fired):
+        events, gate_tiers, round_results = self.controlled_dispatch(
+            code=code, fired=fired, finished_at=61,
+        )
+        attempt = next(row for row in events if row.get("event") == "attempt")
+        self.assertEqual(attempt["worker_exit"], code)
+        self.assertTrue(attempt["finished"])
+        self.assertEqual(attempt.get("timeout"), fired)
+        self.assertEqual(gate_tiers, ["attempt", "pr"])
+        self.assertTrue(round_results[0][0], round_results[0][1])
+        self.assertFalse(any(row.get("event") == "escalate" for row in events))
+        self.assertTrue(any(row.get("event") == "approved" for row in events))
+        self.assertTrue(json.loads(self.state.read_text())["pr"])
+
+    def assert_unfinished_expired(self, *, code, handoff="fresh"):
+        events, gate_tiers, round_results = self.controlled_dispatch(
+            code=code, fired=None, finished_at=61, handoff=handoff,
+        )
+        attempt = next(row for row in events if row.get("event") == "attempt")
+        self.assertEqual(attempt["worker_exit"], code)
+        self.assertIsNone(attempt["gate"])
+        self.assertFalse(attempt.get("finished", False))
+        self.assertEqual(gate_tiers, [])
+        self.assertFalse(round_results[0][0])
+        self.assertEqual(round_results[0][1], "budget exceeded before gate")
+        self.assertTrue(any(
+            row.get("event") == "escalate" and row["code"] == "budget"
+            for row in events
+        ))
+        self.assertFalse(json.loads(self.state.read_text()).get("pr"))
+
+    def test_missing_handoff_is_not_complete(self):
+        from factory import dispatch
+
+        self.assertFalse(dispatch._handoff_done(self.base / "missing-handoff.md"))
+
+    def test_unchanged_complete_handoff_does_not_finish_expired_worker(self):
+        self.assert_unfinished_expired(code=0, handoff="stale")
+
+    def test_zero_exit_finishes_after_budget_and_proceeds(self):
+        self.assert_finished_proceeded(0, None)
+
+    def test_positive_exit_without_completion_timeout_expires_before_gate(self):
+        self.assert_unfinished_expired(code=1)
+
+    def test_negative_signal_exit_without_completion_timeout_expires_before_gate(self):
+        self.assert_unfinished_expired(code=-15)
+
+    def test_exit_grace_accepts_nonzero_exit_as_finished(self):
+        self.assert_finished_proceeded(143, "exit_grace")
+
+    def test_budget_timeout_accepts_signal_exit_as_finished(self):
+        self.assert_finished_proceeded(-15, "budget_min")
+
+    def test_exact_deadline_still_runs_gate_for_unfinished_worker(self):
+        events, gate_tiers, round_results = self.controlled_dispatch(
+            code=1, fired=None, finished_at=60, handoff="missing",
+        )
+        attempt = next(row for row in events if row.get("event") == "attempt")
+        self.assertFalse(attempt["finished"])
+        self.assertEqual(attempt["gate"], "PASS")
+        self.assertEqual(gate_tiers, ["attempt", "pr"])
+        self.assertTrue(round_results[0][0], round_results[0][1])
+        self.assertFalse(any(row.get("event") == "escalate" for row in events))
+        self.assertTrue(any(row.get("event") == "approved" for row in events))
+        self.assertTrue(json.loads(self.state.read_text())["pr"])
+
+    def test_fenced_gate_details_do_not_become_protected_summary(self):
+        from factory import dispatch
+
+        report = (
+            "# Gate\n- code: FAIL\n\n"
+            "```text\n- protected-paths: FAIL (add-only existing file modified)\n```"
+        )
+        self.assertIsNone(dispatch._protected_gate_guidance(report, set()))

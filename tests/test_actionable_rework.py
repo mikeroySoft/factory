@@ -389,3 +389,192 @@ class ActionableReworkTest(unittest.TestCase):
         report = "- mutation: PASS\n- test: FAIL\n\n## Required fixes\n- Fix factory/dispatch.py:10\n"
         self.assertFalse(self.refresh_with_report(report, passed=False))
         self.assert_human_queue(labels, "pr_checks_failed")
+
+    def test_refresh_round_budget_below_equal_and_above_limit(self):
+        self.configure_reviews(("APPROVE", "REVISE"), mutation=True)
+        labels = self.track_queue()
+        dispatch.record("review-rework", ticket=7, head=risk_tests.HEAD, deferred=False)
+        self.assertFalse(self.refreshed_review())
+        self.escalate.assert_not_called()
+        self.assertEqual([row.get("round") for row in self.rework_rows()], [None, 2])
+        self.assertEqual(labels, {dispatch.LABEL_AGENT})
+        for used in (2, 3):
+            with self.subTest(used=used):
+                self.escalate.reset_mock()
+                self.assertFalse(self.refreshed_review())
+                self.assertEqual(self.escalate.call_args.kwargs["code"], "review_revise")
+                self.assertEqual(labels, {dispatch.LABEL_HUMAN})
+                self.assertEqual(len(self.rework_rows()), used)
+                if used == 2:
+                    dispatch.record("review-rework", ticket=7, head=risk_tests.HEAD, deferred=False)
+
+    def test_bounce_stops_when_persisted_rounds_exceed_limit(self):
+        self.configure_reviews(("APPROVE", "REVISE"))
+        labels = self.track_queue()
+        for _ in range(3):
+            dispatch.record("review-rework", ticket=7, head=risk_tests.HEAD, deferred=False)
+        dispatch.process_ticket(self.issue, 1, False, forced=True)
+        self.assertEqual(self.heads, [risk_tests.HEAD])
+        self.assertEqual(len(self.rework_rows()), 3)
+        self.assertEqual(labels, {dispatch.LABEL_HUMAN})
+        self.assertEqual(self.escalate.call_args.kwargs["code"], "review_revise")
+        dispatch.push_agent.assert_not_called()
+
+    def test_bounce_stops_at_large_exact_round_limit(self):
+        self.configure_reviews(("APPROVE", "REVISE"))
+        self.cfg.review_rounds = 257
+        labels = self.track_queue()
+        for _ in range(self.cfg.review_rounds):
+            dispatch.record("review-rework", ticket=7, head=risk_tests.HEAD, deferred=False)
+        dispatch.process_ticket(self.issue, 1, False, forced=True)
+        self.assertEqual(self.heads, [risk_tests.HEAD])
+        self.assertEqual(len(self.rework_rows()), 257)
+        self.assertEqual(labels, {dispatch.LABEL_HUMAN})
+        self.assertEqual(self.escalate.call_args.kwargs["code"], "review_revise")
+        dispatch.push_agent.assert_not_called()
+
+    def expired_attempt(self, *, finished=False, extra_rows=(), omit_finished=False):
+        self.configure_reviews(("REVISE", "APPROVE"))
+        self.patch(dispatch.risk, "classify", return_value=("Medium", ["medium:fixture"]))
+        self.issue["number"] = 489
+
+        def work(n, *_args, **_kwargs):
+            self.heads.append(risk_tests.HEAD)
+            dispatch.record(
+                "attempt", ticket=n, head=risk_tests.HEAD, gate="PASS",
+                worker_model="worker/model", **({} if omit_finished else {"finished": finished}),
+            )
+            for row in extra_rows:
+                dispatch.record(**row)
+            self.clock = 1000
+            return True, "- test: PASS\n", self.root / "worker.log", risk_tests.HEAD
+
+        self.worker.side_effect = work
+        labels = self.track_queue()
+        dispatch.process_ticket(self.issue, 1, False, forced=True)
+        return labels
+
+    def test_expired_review_does_not_assume_legacy_attempt_finished(self):
+        labels = self.expired_attempt(omit_finished=True)
+        self.assert_human_queue(labels, "budget")
+        dispatch.push_agent.assert_not_called()
+
+    def test_expired_review_ignores_other_ticket_attempts(self):
+        labels = self.expired_attempt(extra_rows=(
+            {"event": "attempt", "ticket": 488, "head": risk_tests.HEAD, "finished": True},
+            {"event": "attempt", "ticket": 490, "head": risk_tests.HEAD, "finished": True},
+        ))
+        self.assert_human_queue(labels, "budget")
+        dispatch.push_agent.assert_not_called()
+
+    def test_expired_review_ignores_other_event_finish_field(self):
+        labels = self.expired_attempt(extra_rows=(
+            {"event": "approved", "ticket": 489, "head": risk_tests.HEAD, "finished": True},
+        ))
+        self.assertEqual(labels, {dispatch.LABEL_HUMAN})
+        self.assertEqual(self.rework_rows(), [])
+        self.assertEqual(self.escalate.call_args.kwargs["code"], "budget")
+        dispatch.push_agent.assert_not_called()
+
+    def test_expired_review_ignores_other_head_attempts(self):
+        labels = self.expired_attempt(extra_rows=(
+            {"event": "attempt", "ticket": 489, "head": "0" * 40, "finished": True},
+            {"event": "attempt", "ticket": 489, "head": "f" * 40, "finished": True},
+        ))
+        self.assert_human_queue(labels, "budget")
+        dispatch.push_agent.assert_not_called()
+
+    def test_expired_review_uses_persisted_equal_ticket_finish(self):
+        labels = self.expired_attempt(finished=True)
+        self.escalate.assert_not_called()
+        self.assertEqual(labels, {dispatch.LABEL_AGENT})
+        self.assertEqual([(row["ticket"], row["round"], row["deferred"])
+                          for row in self.rework_rows()], [(489, 1, True)])
+        self.assertIn("Handle the missing branch", self.rework_rows()[0]["findings"])
+        dispatch.push_agent.assert_not_called()
+
+    def test_round_budget_counts_only_this_tickets_rework_events(self):
+        self.configure_reviews(("REVISE", "APPROVE"))
+        self.patch(dispatch.risk, "classify", return_value=("Medium", ["medium:fixture"]))
+        self.issue["number"] = 489
+        # JSON-persisted ticket integers are equal by value, not object identity.
+        for event, ticket in (("review-rework", 489), ("risk-requeue", 489),
+                              ("review-rework", 488), ("risk-requeue", 490), ("review", 489)):
+            dispatch.record(event, ticket=ticket, head=risk_tests.HEAD, round=1, pr=70, packet="Prior findings")
+        labels = self.track_queue()
+        dispatch.process_ticket(self.issue, 1, False, forced=True)
+        self.assertEqual(labels, {dispatch.LABEL_HUMAN})
+        self.assertEqual(self.escalate.call_args.kwargs["code"], "review_revise")
+        self.assertEqual(self.heads, [risk_tests.HEAD])
+        dispatch.push_agent.assert_not_called()
+
+    def test_on_time_rework_is_not_deferred_before_worker_bounce(self):
+        self.configure_reviews(("REVISE", "APPROVE"))
+        self.resolve_on_bounce = True
+        labels = self.track_queue()
+        dispatch.process_ticket(self.issue, 1, False, forced=True)
+        self.escalate.assert_not_called()
+        self.assertEqual([(row["round"], row["deferred"]) for row in self.rework_rows()], [(1, False)])
+        self.assertIn("Handle the missing branch", self.rework_rows()[0]["findings"])
+        self.assertEqual(self.heads, [risk_tests.HEAD, risk_tests.NEW_HEAD])
+        dispatch.push_agent.assert_called_once()
+        self.assertEqual(labels, {dispatch.LABEL_AGENT})
+
+    def test_fenced_protected_failure_is_not_an_attempt_summary(self):
+        self.configure_reviews(("APPROVE", "APPROVE"))
+        original = self.work
+
+        def work(*args, **kwargs):
+            _ok, _report, logfile, head = original(*args, **kwargs)
+            if len(self.heads) == 1:
+                return False, "- test: FAIL\n\n## Output\n```\n- protected-paths: FAIL\n```\n", logfile, head
+            return True, "- test: PASS\n", logfile, head
+
+        self.worker.side_effect = work
+        labels = self.track_queue()
+        dispatch.process_ticket(self.issue, 1, False, forced=True)
+        self.escalate.assert_not_called()
+        self.assertTrue(any(row["event"] == "approved" for row in lifecycle.read_events(dispatch.EVENTS)))
+        self.assertEqual(labels, {dispatch.LABEL_AGENT})
+
+    def test_pending_actionability_is_bound_to_equal_head_value(self):
+        self.configure_reviews(("APPROVE", "APPROVE"))
+        self.expire = True
+        labels = self.track_queue()
+
+        def review(_wt, n, _report, head, _runs):
+            dispatch._PENDING_RISK[n] = {
+                "head": json.loads(json.dumps(head)), "actionable": False, "disagreement": False,
+            }
+            return "REVISE", finding("REVISE"), False
+
+        self.patch(dispatch, "pr_gate_and_review", side_effect=review)
+        dispatch.process_ticket(self.issue, 1, False, forced=True)
+        self.assert_human_queue(labels, "budget")
+
+    def test_stale_pending_actionability_does_not_block_new_head_findings(self):
+        self.configure_reviews(("APPROVE", "APPROVE"))
+        self.expire = True
+        labels = self.track_queue()
+
+        def review(_wt, n, _report, _head, _runs):
+            dispatch._PENDING_RISK[n] = {
+                "head": risk_tests.NEW_HEAD, "actionable": False, "disagreement": False,
+            }
+            return "REVISE", finding("REVISE"), False
+
+        self.patch(dispatch, "pr_gate_and_review", side_effect=review)
+        dispatch.process_ticket(self.issue, 1, False, forced=True)
+        self.escalate.assert_not_called()
+        self.assertEqual(labels, {dispatch.LABEL_AGENT})
+        self.assertEqual([(row["round"], row["deferred"]) for row in self.rework_rows()], [(1, True)])
+
+    def test_round_charge_ignores_other_tickets_and_nonrework_events(self):
+        for event, ticket in (("review-rework", 489), ("review-rework", 488),
+                              ("risk-requeue", 490), ("review", 489)):
+            dispatch.record(event, ticket=ticket, head=risk_tests.HEAD)
+        labels = self.expired_attempt(finished=True)
+        self.escalate.assert_not_called()
+        self.assertEqual(labels, {dispatch.LABEL_AGENT})
+        self.assertEqual([(row["ticket"], row.get("round")) for row in self.rework_rows()],
+                         [(489, None), (488, None), (489, 2)])
