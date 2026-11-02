@@ -218,6 +218,66 @@ class MainTestRequeueTest(unittest.TestCase):
         self.assertNotIn("parked_test", self.events("escalate")[-1])
 
 
+    def test_unittest_nonfailing_outcomes_preserve_sole_failure_recovery(self):
+        self.park(REPORT.replace(
+            "failures=1", "failures=1, skipped=3, expected failures=2",
+        ))
+        self.advance()
+        self.dispatch_pass()
+        self.assertEqual(self.github.issue_labels, {config.LABEL_AGENT})
+
+    def test_worker_gate_rejection_in_memory_blocks_parking(self):
+        self.github.issue_labels = {config.LABEL_AGENT}
+        self.github.assignees = []
+        issue = self.github.issue()
+
+        def dirty_gate(*_args, **_kwargs):
+            self.report.write_text(REPORT)
+            (self.wt / "tests/test_flaky.py").write_text("# dirty after gate\n")
+            return True, REPORT
+
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(dispatch, "gh_json", self.github.gh_json))
+            stack.enter_context(mock.patch.object(dispatch, "run", self.github.run))
+            stack.enter_context(mock.patch.object(dispatch, "admit_plan", return_value=None))
+            stack.enter_context(mock.patch.object(dispatch, "ensure_worktree", return_value=self.wt))
+            stack.enter_context(mock.patch.object(dispatch, "agent_lease", return_value=""))
+            stack.enter_context(mock.patch.object(dispatch, "refresh_requeue_context", return_value=""))
+            stack.enter_context(mock.patch.object(dispatch, "sync_staged", return_value=None))
+            stack.enter_context(mock.patch.object(dispatch, "build_prompt", return_value="prompt"))
+            stack.enter_context(mock.patch.object(dispatch, "run_worker", return_value=(0, None)))
+            stack.enter_context(mock.patch.object(dispatch, "commit_leftovers"))
+            stack.enter_context(mock.patch.object(dispatch, "run_gate", side_effect=dirty_gate))
+            stack.enter_context(mock.patch("factory.schedule.priority", return_value=(None, "test")))
+            stack.enter_context(mock.patch("factory.results.source_metadata", return_value={}))
+            dispatch.process_ticket(issue, 1, False, forced=True)
+
+        self.assertNotIn("parked_test", self.events("escalate")[-1])
+        self.assertEqual(self.events("test-requeue"), [])
+
+    def test_refreshed_gate_rejection_in_memory_blocks_parking(self):
+        (self.wt / "feature.txt").write_text("agent change\n")
+        git(self.wt, "add", "feature.txt")
+        git(self.wt, "commit", "-qm", "agent change")
+        git(self.wt, "push", "-qu", "origin", "agent/9")
+        self.advance("unrelated.txt")
+
+        def dirty_gate(*_args, **_kwargs):
+            self.report.write_text(REPORT)
+            (self.wt / "tests/test_flaky.py").write_text("# dirty after refresh gate\n")
+            return True, REPORT
+
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(dispatch, "gh_json", self.github.gh_json))
+            stack.enter_context(mock.patch.object(dispatch, "run", self.github.run))
+            stack.enter_context(mock.patch.object(dispatch, "ensure_worktree", return_value=self.wt))
+            stack.enter_context(mock.patch.object(dispatch, "run_gate", side_effect=dirty_gate))
+            self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+
+        self.assertNotIn("parked_test", self.events("escalate")[-1])
+        self.assertEqual(self.events("test-requeue"), [])
+
+
     def test_manager_human_handoff_keeps_sole_test_recovery_eligible(self):
         self.park()
         dispatch.record("manage", ticket=9, decision="HUMAN", round=1)
