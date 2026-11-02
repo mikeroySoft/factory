@@ -4,8 +4,8 @@ import contextlib
 import importlib
 import inspect
 import io
-import json
 import itertools
+import json
 import subprocess
 import sys
 import tempfile
@@ -387,7 +387,7 @@ class ReviewPolicyTest(unittest.TestCase):
                 if primary[0] == second[0]:
                     self.assertIsNot(reviews[0]["verdict"], reviews[1]["verdict"])
 
-                def fake_review(*_args, role="primary", **_kwargs):
+                def fake_review(*_args, role="primary", reviews=reviews, **_kwargs):
                     review = reviews[role == "second"]
                     target = (
                         dispatch._PENDING_SECOND_REVIEWS
