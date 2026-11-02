@@ -48,6 +48,13 @@ class HostConfigTest(unittest.TestCase):
                     self.assertRaises(config.ConfigError):
                 self.load(Path(directory), {"defaults": {key: value}})
 
+    def test_claim_ttl_units_define_exact_recovery_deadline(self) -> None:
+        for duration, seconds in (("1s", 1), ("1m", 60), ("1h", 3600), ("1d", 86400),
+                                  ("1d2h3m4s", 93784)):
+            with self.subTest(duration=duration), tempfile.TemporaryDirectory() as directory:
+                cfg = self.load(Path(directory), {"defaults": {"claim_ttl": duration}})
+                self.assertEqual(cfg.claim_ttl_seconds, seconds)
+
     def test_host_scalars_are_not_allowed_in_repository_config(self) -> None:
         for key, value in (("host_name", '"tank"'), ("triage_host", '"tank"'), ("claim_ttl", '"2h"')):
             with self.subTest(key=key), tempfile.TemporaryDirectory() as directory, \

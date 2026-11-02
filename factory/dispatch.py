@@ -535,8 +535,8 @@ def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
                if label["name"].startswith("host:")} - stale_hosts - {cfg.host_name}
     if foreign:
         return f"host label ({', '.join(sorted(foreign))})"
-    if claims and issue.get("assignees"):
-        if any(row["login"].casefold() != host_claim_login() for row in issue["assignees"]):
+    if claims:
+        if any(row["login"].casefold() != host_claim_login() for row in issue.get("assignees", [])):
             return "assigned"
         # A stopped heartbeat does not abandon a published PR awaiting CI/review/merge.
         if gh_json(["pr", "list", "--repo", REPO, "--state", "open",
@@ -569,8 +569,8 @@ def release_stale_claims(n: int, issue: dict, claims: list[dict]) -> dict:
     for claim in stale:
         delete_host_claim(n, claim)
         record("claim-released", ticket=n, host=claim["host"], last_heartbeat=claim["at"])
-    if stale and not live_host_claims(host_claims(n)):
-        run(["gh", "issue", "edit", str(n), "--repo", REPO, "--remove-assignee", "@me"])
+    # All hosts share @me. Never clear it here: a replacement can assign between
+    # any read and that edit. The elected replacement reapplies it idempotently.
     return gh_json(["issue", "view", str(n), "--repo", REPO, "--json",
                     "state,labels,assignees,title,body,comments"])
 
@@ -640,23 +640,28 @@ def acquire_host_claim(n: int, issue: dict, claims: list[dict], *, forced: bool 
     return claim
 
 
+def owned_host_claim(n: int) -> dict | None:
+    if not cfg.host_name:
+        return None
+    claims = host_claims(n)
+    elected = live_host_claims(claims) or claims
+    local = _HOST_CLAIMS.get(n)
+    if elected and elected[0]["host"] == cfg.host_name and (
+        local is None or elected[0]["nonce"] == local.comment["nonce"]
+    ):
+        return elected[0]
+    return None
+
+
 def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool = False) -> None:
     """Apply lifecycle transitions; release host resources only when this host owns them."""
-    owned = None
-    if cfg.host_name:
-        claims = host_claims(n)
-        elected = live_host_claims(claims) or claims
-        local = _HOST_CLAIMS.get(n)
-        if elected and elected[0]["host"] == cfg.host_name and (
-            local is None or elected[0]["nonce"] == local.comment["nonce"]
-        ):
-            owned = elected[0]
-            if local is not None:
-                local.stop()
-    args = [*label_args, "--remove-assignee", "@me"] if assignee_last else [
-        "--remove-assignee", "@me", *label_args,
-    ]
-    run(["gh", "issue", "edit", str(n), "--repo", REPO, *args], check=check)
+    owned = owned_host_claim(n)
+    if owned is not None and (local := _HOST_CLAIMS.get(n)) is not None:
+        local.stop()
+    assignee = ["--remove-assignee", "@me"] if not cfg.host_name or owned is not None else []
+    args = [*label_args, *assignee] if assignee_last else [*assignee, *label_args]
+    if args:
+        run(["gh", "issue", "edit", str(n), "--repo", REPO, *args], check=check)
     if owned is not None:
         delete_host_claim(n, owned)
 
@@ -4354,7 +4359,9 @@ def process_ticket(
                 fresh = release_stale_claims(n, fresh, claims)
             if not forced and (
                 fresh["state"].upper() != "OPEN"
-                or fresh["assignees"]
+                # Authenticated claims arbitrate a shared bot assignment below;
+                # stale recovery must not clear a replacement's assignment.
+                or (fresh["assignees"] and not (cfg.host_name and claims))
                 or LABEL_AGENT not in {label["name"] for label in fresh["labels"]}
             ):
                 log(f"#{n}: skipped (state changed since frontier query)")

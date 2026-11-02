@@ -1,5 +1,6 @@
 """Lifecycle and trust boundaries for opt-in host claims."""
 import copy
+import subprocess
 import unittest
 from datetime import UTC, datetime, timedelta
 from unittest import mock
@@ -86,6 +87,45 @@ class HostClaimRevisionTest(unittest.TestCase):
                     (None, ["gh", "issue", "edit", "7", "--repo", "local/claims", *args]),
                 ])
 
+    def test_expired_local_owner_with_matching_nonce_can_unclaim(self):
+        tank = self.dispatcher("tank")
+        for assignee_last in (False, True):
+            with self.subTest(assignee_last=assignee_last):
+                claim = self.github.add_claim("tank", datetime.now(UTC) - timedelta(hours=3))
+                nonce = claim["body"].split("nonce=", 1)[1].split()[0]
+                tank._HOST_CLAIMS[7] = tank.HostClaim(7, {**claim, "nonce": nonce})
+                tank.unclaim(7, assignee_last=assignee_last)
+                self.assertEqual(self.github.issue["assignees"], [])
+                self.assertEqual(self.github.comments, [])
+                self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-agent"}])
+
+    def test_foreign_label_without_comment_stays_held_during_stale_recovery(self):
+        self.github.add_claim("ultron", datetime.now(UTC) - timedelta(hours=3))
+        self.github.issue["labels"].append({"name": "host:thor"})
+        tank = self.dispatcher("tank")
+        [issue] = tank.frontier()
+        self.assertEqual(issue.get("held"), "host label (thor)")
+        before = copy.deepcopy((self.github.issue, self.github.comments))
+        tank.process_ticket(issue, 1, False)
+        self.assertEqual((self.github.issue, self.github.comments), before)
+        self.assertEqual(self.launched, [])
+
+    def test_failed_claim_delete_preserves_ownership_and_surfaces_error(self):
+        self.github.add_claim("tank", datetime.now(UTC))
+        tank = self.dispatcher("tank")
+        before = copy.deepcopy((self.github.issue["labels"], self.github.comments))
+        run = tank.run
+
+        def fail_delete(cmd, *args, **kwargs):
+            if "DELETE" in cmd:
+                return subprocess.CompletedProcess(cmd, 1, "", "permission denied")
+            return run(cmd, *args, **kwargs)
+
+        with mock.patch.object(tank, "run", side_effect=fail_delete), \
+                self.assertRaises(subprocess.CalledProcessError):
+            tank.unclaim(7)
+        self.assertEqual((self.github.issue["labels"], self.github.comments), before)
+
     def test_stale_releaser_cannot_unassign_replacement_after_empty_claim_read(self):
         now = datetime(2026, 11, 2, tzinfo=UTC)
         self.github.add_claim("old", now - timedelta(hours=3))
@@ -112,7 +152,7 @@ class HostClaimRevisionTest(unittest.TestCase):
             return result
 
         with mock.patch.object(tank, "gh_json", side_effect=replace_after_read):
-            tank.release_stale_claims(7, copy.deepcopy(self.github.issue), tank.host_claims(7))
+            tank.process_ticket(copy.deepcopy(self.github.issue), 1, False)
 
         self.assertTrue(replaced)
         self.assertEqual(self.launched, ["ultron"])
@@ -139,6 +179,37 @@ class HostClaimRevisionTest(unittest.TestCase):
         tank.process_ticket(issue, 1, False)
         self.assertEqual((self.github.issue, self.github.comments), before)
         self.assertEqual(self.launched, [])
+
+    def test_two_stale_releasers_keep_replacement_assigned_and_dispatch_once(self):
+        now = datetime(2026, 11, 2, tzinfo=UTC)
+        self.github.add_claim("old", now - timedelta(hours=3))
+        tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
+        for module in (tank, ultron):
+            clock = self.enterContext(mock.patch.object(module, "datetime", wraps=datetime))
+            clock.now.return_value = now
+        read = tank.gh_json
+        claim_reads = 0
+
+        def replace_after_stale_recheck(args):
+            nonlocal claim_reads
+            result = read(args)
+            if "--slurp" in args:
+                claim_reads += 1
+                if claim_reads == 2:
+                    # Both releasers saw the same stale claim; ultron completes
+                    # its reclaim while tank still holds that old snapshot.
+                    ultron.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+            return result
+
+        with mock.patch.object(tank, "gh_json", side_effect=replace_after_stale_recheck):
+            tank.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+
+        self.assertEqual(self.launched, ["ultron"])
+        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
+        self.assertEqual(self.github.issue["labels"],
+                         [{"name": "ready-for-agent"}, {"name": "host:ultron"}])
+        self.assertEqual(len(self.github.comments), 1)
+        self.assertIn("host=ultron ", self.github.comments[0]["body"])
 
     def test_completed_worker_with_open_pr_remains_held_after_ttl(self):
         tank = self.dispatcher("tank", claim_ttl="1s")

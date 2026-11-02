@@ -1187,14 +1187,15 @@ After fresh label/comment reads, the earliest live comment wins, ordered by
 GitHub creation time and then numeric comment ID. A loser records `claim_lost`
 and removes its own comment and label without assigning or launching a worker.
 The winner assigns `@me` and refreshes its comment every TTL/4 while the ticket
-pipeline runs. Unclaim always applies escalation/requeue labels and removes `@me`;
-only the owning host can remove its host label and claim comment, even after expiry.
+pipeline runs. Unclaim always applies escalation/requeue labels; only the owning
+host can remove `@me`, its host label and claim comment, even after expiry.
+An in-process claim must also match the elected nonce before cleanup.
 
 Expired claims are admitted through the frontier only when no other hold exists.
-A human assignee or an open `agent/<ticket>` PR with an assigned claim remains a
+A human assignee or an open `agent/<ticket>` PR with an expired claim remains a
 hold after heartbeats stop, so completed work awaiting CI/review/merge is not run again.
-Otherwise dispatch rechecks the heartbeat, removes stale comments/labels and the
-stale `@me` assignment, records `claim-released` with the old host and last heartbeat,
+Otherwise dispatch rechecks the heartbeat, removes stale comments/labels while
+preserving the shared `@me` assignment, records `claim-released` with the old host and last heartbeat,
 and can reclaim the ticket in the same pass. A foreign host label without a claim
 comment remains a hold; inspect it before removing it.
 Hosts need synchronized clocks and current GitHub reads. This comment-based
