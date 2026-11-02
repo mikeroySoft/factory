@@ -216,9 +216,8 @@ print('```json\\n{"verdict":"APPROVE","findings":[]}\\n```\\nVERDICT: APPROVE')
     def test_ticket_review_prompt_rejects_incomplete_issue_context(self) -> None:
         issue = {"title": "Accepted ticket", "body": "Acceptance criteria", "comments": []}
         for ticket, snapshot in ((None, issue), (7, None), (None, None)):
-            with self.subTest(ticket=ticket, snapshot=snapshot):
-                with self.assertRaises(AssertionError):
-                    dispatch.review_prompt(ticket, "PASS", issue=snapshot)
+            with self.subTest(ticket=ticket, snapshot=snapshot), self.assertRaises(AssertionError):
+                dispatch.review_prompt(ticket, "PASS", issue=snapshot)
 
 
 if __name__ == "__main__":
