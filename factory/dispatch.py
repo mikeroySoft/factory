@@ -3940,6 +3940,10 @@ def worker_round(
     else:
         worker = record_worker_selection(n, labels, selected_worker=selected_worker)
     worker_version = cfg.worker_version.get(worker)
+    identity = {
+        "worker": worker, "worker_version": worker_version,
+        "worker_model": cfg.worker_model(worker),
+    }
     command = cfg.worker_command(worker, promptfile, wt)
     transcript_mode = cfg.worker_transcript.get(worker)
     argv, session_dir = _with_transcript(
@@ -3957,13 +3961,13 @@ def worker_round(
     transcript = _transcript(session_dir, wall)
     timeout = {"timeout": fired, "reason": TIMEOUT_REASONS[fired]} if fired else {}
     usage = worker_usage(logfile, cfg.worker_usage.get(worker), transcript)
-    identity = {
-        "worker": worker, "worker_version": worker_version,
-        "worker_model": usage["model"] or cfg.worker_model(worker),
-    }
+    mismatch = (
+        {"model_mismatch": True}
+        if usage["model"] is not None and usage["model"] != identity["worker_model"] else {}
+    )
     record(
         "llm-usage", ticket=n, stage="worker", attempt=attempt,
-        local=_usage_local(usage), **identity, **usage,
+        local=_usage_local(usage), **identity, **usage, **mismatch,
     )
     sync = sync_event(n)
     tip = sync["upstream"] if sync else None

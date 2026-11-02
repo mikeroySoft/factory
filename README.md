@@ -1110,14 +1110,14 @@ review_rounds = 1                # REVISE -> worker -> re-review cycles
 
 [workers]                        # ticket label/profile -> argv; {prompt} file, {cwd} worktree
 default = ["omp", "-p", "--model", "openai-codex/gpt-6.1-sol", "--cwd", "{cwd}", "@{prompt}"]
-chore   = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
-# For non-OMP profiles, use the table form with usage.model pointing to the
-# actual model field in structured worker output; a bare chore array fails doctor.
+chore   = ["droid", "exec", "--model", "gpt-6-sol", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
+# Doctor requires every profile to pin --model, including non-OMP workers.
+# Optional usage.model is a JSON path used only to cross-check the reported model.
 
 # A differently named OMP-compatible worker selected by a separate pilot label:
 # [workers.prime]
 # when = { label = "harness-pilot" }
-# command = ["factory-prime-agent", "-p", "--cwd", "{cwd}", "@{prompt}", "--mode", "json"]
+# command = ["factory-prime-agent", "-p", "--model", "openai-codex/gpt-6.1-sol", "--cwd", "{cwd}", "@{prompt}", "--mode", "json"]
 # transcript = "omp-session"
 # version = "0.10.0"
 # env = { DO_NOT_TRACK = "1", PRIME_AGENT_TELEMETRY = "0", PRIME_AGENT_CODING_AGENT_DIR = "{root}/.factory/prime-agent" }
@@ -1161,12 +1161,12 @@ max_mb = 64      # events.jsonl rolls into events.jsonl.N.gz past this size
 retention = 8    # gzip segments kept
 ```
 
-Worker `attempt` and worker-stage `llm-usage` rows carry `worker_model` from
-reported usage, falling back to an explicit command model. `claimed` records
-the command model available at admission. A runtime-only non-OMP model cannot
-be known before the worker runs; that claim, or an attempt whose output omits
-the model and whose command does not pin one, retains `null` rather than a
-guessed identity. `usage.model` remains a dotted JSON path, never a literal ID.
+Worker `claimed`, `attempt`, and worker-stage `llm-usage` rows carry
+`worker_model` from the pinned argv, known before launch even if the worker
+fails without output. Doctor fails any profile without a non-empty `--model`.
+`usage.model` remains an optional dotted JSON path, never a literal ID or the
+source of `worker_model`. A different runtime model is retained in `llm-usage.model`
+with `model_mismatch = true`; it never replaces the pinned worker identity.
 
 `factory stats --week [--json]` also reports post-FIX outcomes by the next
 claim's recorded `worker_model`. Each `manage`/`FIX` inside the inclusive UTC

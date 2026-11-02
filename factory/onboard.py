@@ -431,13 +431,9 @@ def report_stage_success(cfg: config.Config, report) -> None:
 
 
 def worker_model_problem(cfg: config.Config, worker: str) -> str | None:
-    command = cfg.workers[worker]
-    if Path(command[0]).name == "omp":
-        model = config.command_model(command)
-        if not model or not model.strip() or model.lstrip().startswith("-"):
-            return "model is not explicit; set a non-empty `--model` in the worker command"
-    elif not cfg.worker_usage.get(worker, {}).get("model"):
-        return "`usage.model` is not configured; set its dotted JSON path into the worker log"
+    model = cfg.worker_model(worker)
+    if not model or not model.strip() or model.lstrip().startswith("-"):
+        return "model is not explicit; set a non-empty `--model` in the worker command"
     return None
 
 
