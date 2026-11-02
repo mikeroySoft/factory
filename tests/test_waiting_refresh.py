@@ -155,6 +155,26 @@ class WaitingRefreshTest(unittest.TestCase):
         self.assertEqual(self.github.issue_labels, {config.LABEL_AGENT})
         self.assertNotIn(config.LABEL_APPROVED, self.github.pr_labels)
 
+    def test_clean_waiting_refresh_does_not_review_or_escalate_revise(self) -> None:
+        self.move_main()
+        self.cfg.reviewer = [
+            sys.executable,
+            "-c",
+            "print('```json\\n{\"verdict\":\"REVISE\",\"findings\":[\"change it\"]}\\n```\\nVERDICT: REVISE')",
+        ]
+        initial_labels = set(self.github.issue_labels)
+
+        with self.patched(), mock.patch.object(
+            dispatch, "run_gate", return_value=(True, "gate passed")
+        ):
+            dispatch.merge_pass_locked(False)
+
+        self.assertNotEqual(self.github.head(), self.old_head)
+        self.assertEqual(self.github.issue_labels, initial_labels)
+        self.assertEqual(self.events("review"), [])
+        self.assertEqual(self.events("escalate"), [])
+
+
 
 if __name__ == "__main__":
     unittest.main()
