@@ -26,6 +26,7 @@ class DashboardPortTest(unittest.TestCase):
         self.root = Path(temporary.name)
         (self.root / config.CONFIG_NAME).write_text('[repo]\nslug = "acme/widgets"\n')
         self.cfg = config.Config(self.root, "acme/widgets", signoff=False)
+        self.cfg.worker_usage["chore"] = config.usage_spec("chore", {"model": "result.model"})
         self.cfg.install = {"every": "10min", "dashboard": False, "host": "127.0.0.1", "env": {}}
         self.host_path = self.root / "config.toml"
 
