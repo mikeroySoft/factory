@@ -68,7 +68,7 @@ class FakeGitHub:
                 endpoint = next(arg for arg in args if arg.startswith("repos/"))
                 if endpoint.endswith("/comments") and "--method" not in args:
                     result = [copy.deepcopy(self.comments)] if "--slurp" in args else copy.deepcopy(self.comments)
-                    if host not in self.comment_hosts:
+                    if self.comments_barrier is not None and host not in self.comment_hosts:
                         self.comment_hosts.add(host)
                         barrier = self.comments_barrier
                 elif endpoint.endswith("/comments") and args[args.index("--method") + 1] == "POST":
@@ -172,7 +172,6 @@ class HostClaimRaceTest(unittest.TestCase):
         tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
         issues = [module.frontier()[0] for module in (tank, ultron)]
         self.assertTrue(all(not issue.get("held") for issue in issues))
-        self.github.comment_hosts.clear()
         self.github.fresh_barrier = threading.Barrier(2)
         self.github.comments_barrier = threading.Barrier(2)
         self.github.post_barrier = threading.Barrier(2)
