@@ -468,10 +468,18 @@ if args and args[0] == "discover":
     parser.add_argument("-s", "--start-directory", dest="start", default=".")
     parser.add_argument("-p", "--pattern")
     parser.add_argument("-t", "--top-level-directory", dest="top")
+    parser.add_argument("-k", action="append")
+    parser.add_argument("--durations")
     for dest in ("start", "pattern", "top"):
         parser.add_argument(dest, nargs="?", default=argparse.SUPPRESS)
     options, _ = parser.parse_known_args(args[1:])
     top = Path(options.top or options.start).resolve()
+    if not options.top and not Path(options.start).is_dir():
+        start = importlib.import_module(options.start)
+        package = sys.modules[start.__name__.split(".")[0]]
+        top = Path(package.__file__).resolve().parent
+        if hasattr(package, "__path__"):
+            top = top.parent
 sys.path.insert(0, str(top))
 module_name = ".".join(path.relative_to(top).with_suffix("").parts)
 module = importlib.import_module(module_name)
