@@ -1594,6 +1594,19 @@ class ManageTest(unittest.TestCase):
 
         self.enterContext(patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
         host_file("")
+        if self._testMethodName == "test_fix_runs_selected_worker_on_red_ci_and_requires_gate_and_review":
+            original_stub_bin = stub_bin
+
+            def complete_owner_fixture(tmp, **scripts):
+                if "gh" in scripts:
+                    scripts["gh"] = (
+                        'if [ "$1 $2 $7" = "issue view state,labels,comments" ]; then '
+                        'echo \'{"state":"OPEN","labels":[{"name":"ready-for-human"}],"comments":[]}\'; exit 0; fi\n'
+                        + scripts["gh"]
+                    )
+                return original_stub_bin(tmp, **scripts)
+
+            self.enterContext(patch(f"{__name__}.stub_bin", side_effect=complete_owner_fixture))
         owner_labels = {
             "test_terminal_handoff_runs_after_manager_timeline_lookup_fails": [config.LABEL_HUMAN],
             "test_fix_rejects_wrong_or_missing_base_before_mutation": [],
@@ -2269,7 +2282,6 @@ esac
                 git(repo, "push", "origin", "main")
                 stub_bin(Path(stubs).parent, **{
                     "gh": '''
-if [ "$1 $2 $7" = "issue view state,labels,comments" ]; then echo '{"state":"OPEN","labels":[{"name":"ready-for-human"}],"comments":[]}'; exit 0; fi
 case "$1 $2" in
   "pr list") echo '[]';;
   "issue list") echo '[{"number":7,"title":"Fix CI","body":"Original","labels":[{"name":"chore"}]}]';;
