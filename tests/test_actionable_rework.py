@@ -422,6 +422,7 @@ class ActionableReworkTest(unittest.TestCase):
 
     def test_bounce_stops_at_large_exact_round_limit(self):
         self.configure_reviews(("APPROVE", "REVISE"))
+        self.resolve_on_bounce = True
         self.cfg.review_rounds = 257
         labels = self.track_queue()
         for _ in range(self.cfg.review_rounds):
@@ -436,7 +437,7 @@ class ActionableReworkTest(unittest.TestCase):
     def expired_attempt(self, *, finished=False, extra_rows=(), omit_finished=False):
         self.configure_reviews(("REVISE", "APPROVE"))
         self.patch(dispatch.risk, "classify", return_value=("Medium", ["medium:fixture"]))
-        self.issue["number"] = 489
+        self.issue["number"] = 10000
 
         def work(n, *_args, **_kwargs):
             self.heads.append(risk_tests.HEAD)
@@ -461,15 +462,15 @@ class ActionableReworkTest(unittest.TestCase):
 
     def test_expired_review_ignores_other_ticket_attempts(self):
         labels = self.expired_attempt(extra_rows=(
-            {"event": "attempt", "ticket": 488, "head": risk_tests.HEAD, "finished": True},
-            {"event": "attempt", "ticket": 490, "head": risk_tests.HEAD, "finished": True},
+            {"event": "attempt", "ticket": 9999, "head": risk_tests.HEAD, "finished": True},
+            {"event": "attempt", "ticket": 10001, "head": risk_tests.HEAD, "finished": True},
         ))
         self.assert_human_queue(labels, "budget")
         dispatch.push_agent.assert_not_called()
 
     def test_expired_review_ignores_other_event_finish_field(self):
         labels = self.expired_attempt(extra_rows=(
-            {"event": "approved", "ticket": 489, "head": risk_tests.HEAD, "finished": True},
+            {"event": "approved", "ticket": 10000, "head": risk_tests.HEAD, "finished": True},
         ))
         self.assertEqual(labels, {dispatch.LABEL_HUMAN})
         self.assertEqual(self.rework_rows(), [])
@@ -478,8 +479,8 @@ class ActionableReworkTest(unittest.TestCase):
 
     def test_expired_review_ignores_other_head_attempts(self):
         labels = self.expired_attempt(extra_rows=(
-            {"event": "attempt", "ticket": 489, "head": "0" * 40, "finished": True},
-            {"event": "attempt", "ticket": 489, "head": "f" * 40, "finished": True},
+            {"event": "attempt", "ticket": 10000, "head": "0" * 40, "finished": True},
+            {"event": "attempt", "ticket": 10000, "head": "f" * 40, "finished": True},
         ))
         self.assert_human_queue(labels, "budget")
         dispatch.push_agent.assert_not_called()
@@ -489,17 +490,17 @@ class ActionableReworkTest(unittest.TestCase):
         self.escalate.assert_not_called()
         self.assertEqual(labels, {dispatch.LABEL_AGENT})
         self.assertEqual([(row["ticket"], row["round"], row["deferred"])
-                          for row in self.rework_rows()], [(489, 1, True)])
+                          for row in self.rework_rows()], [(10000, 1, True)])
         self.assertIn("Handle the missing branch", self.rework_rows()[0]["findings"])
         dispatch.push_agent.assert_not_called()
 
     def test_round_budget_counts_only_this_tickets_rework_events(self):
         self.configure_reviews(("REVISE", "APPROVE"))
         self.patch(dispatch.risk, "classify", return_value=("Medium", ["medium:fixture"]))
-        self.issue["number"] = 489
+        self.issue["number"] = 10000
         # JSON-persisted ticket integers are equal by value, not object identity.
-        for event, ticket in (("review-rework", 489), ("risk-requeue", 489),
-                              ("review-rework", 488), ("risk-requeue", 490), ("review", 489)):
+        for event, ticket in (("review-rework", 10000), ("risk-requeue", 10000),
+                              ("review-rework", 9999), ("risk-requeue", 10001), ("review", 10000)):
             dispatch.record(event, ticket=ticket, head=risk_tests.HEAD, round=1, pr=70, packet="Prior findings")
         labels = self.track_queue()
         dispatch.process_ticket(self.issue, 1, False, forced=True)
@@ -570,11 +571,11 @@ class ActionableReworkTest(unittest.TestCase):
         self.assertEqual([(row["round"], row["deferred"]) for row in self.rework_rows()], [(1, True)])
 
     def test_round_charge_ignores_other_tickets_and_nonrework_events(self):
-        for event, ticket in (("review-rework", 489), ("review-rework", 488),
-                              ("risk-requeue", 490), ("review", 489)):
+        for event, ticket in (("review-rework", 10000), ("review-rework", 9999),
+                              ("risk-requeue", 10001), ("review", 10000)):
             dispatch.record(event, ticket=ticket, head=risk_tests.HEAD)
         labels = self.expired_attempt(finished=True)
         self.escalate.assert_not_called()
         self.assertEqual(labels, {dispatch.LABEL_AGENT})
         self.assertEqual([(row["ticket"], row.get("round")) for row in self.rework_rows()],
-                         [(489, None), (488, None), (489, 2)])
+                         [(10000, None), (9999, None), (10000, 2)])
