@@ -4027,10 +4027,14 @@ def _handoff_done(path: Path) -> bool:
     """Fallback finish seam for #508: a complete handoff has no unverified work."""
     if not path.is_file():
         return False
-    sections = re.findall(
-        r"(?ims)^#{1,6}\s+(?:Still )?Unverified\s*:?\s*\n(.*?)(?=^#{1,6}\s|\Z)",
-        path.read_text(),
-    )
+    text = path.read_text()
+    sections = []
+    for heading in re.finditer(
+        r"(?im)^(#{1,6})[ \t]+(?:Still )?Unverified[ \t]*:?[ \t]*\n", text,
+    ):
+        sections.append(re.split(
+            rf"(?m)^#{{1,{len(heading[1])}}}[ \t]+", text[heading.end():], maxsplit=1,
+        )[0])
     return bool(sections) and all(
         re.sub(r"^[ \t]*[-*][ \t]+", "", section.strip()).strip().rstrip(".").casefold()
         in {"", "none", "nothing", "n/a"}

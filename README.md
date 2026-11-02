@@ -856,6 +856,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    after expiry, the dispatcher still gates that head and proceeds through
    push, PR-tier gate, review and merge normally, without charging a rework
    round. Unfinished work and failing gate tiers still escalate.
+   Nested headings remain part of the unverified section; only a same-level
+   or higher-level heading ends it, so a subsection cannot hide blocking work.
    A worker that exits before the deadline keeps its passing gate result even
    when the gate itself overruns; that alone does not require the finish signal.
    A worker with no log output and no worktree change for
