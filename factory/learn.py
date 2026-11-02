@@ -534,7 +534,7 @@ def replay_ticket(
             )
             result = dispatch.run_reviewer(
                 wt,
-                dispatch.review_prompt(case.ticket, review_report, context=context),
+                dispatch.review_prompt(case.ticket, review_report, issue=case.issue, context=context),
                 gate_head,
                 base_ref=base,
                 env=isolated,

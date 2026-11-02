@@ -555,8 +555,12 @@ temporary directory, so project config written by a worker or PR author (OMP
 `.omp/extensions`, Claude Code `.claude/settings.json`, `.mcp.json`) is not discovered.
 Ticket review gets `./review.diff` (base to gated head) and a read-only `git archive`
 snapshot of the gated head in `./snapshot`; PR review gets the diff inline. `GIT_*` and
-GitHub credentials are stripped from the reviewer's environment. Ticket review
-retries snapshot, diff, launch, nonzero-exit, and unparseable-output failures up
+GitHub credentials are stripped from the reviewer's environment.
+The dispatcher supplies the issue title, body, and every comment inline as untrusted
+data: the worker's accepted snapshot for plan-bound tickets, otherwise its own
+`gh issue view --json title,body,comments` read. Reviewers use that supplied issue
+section, not GitHub or the worker's transcript. Learning-proposal reviews are unchanged.
+Ticket review retries snapshot, diff, launch, nonzero-exit, and unparseable-output failures up
 to three times, using exponential backoff unless the provider reports
 `retry-after` or `retry-after-ms`. Persistent failure records
 `reviewer_unavailable`, preserves stderr or a structured error event in the
@@ -898,8 +902,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    so report-only checks reach the reviewer. A pr-tier FAIL goes back to the worker like a `REVISE`, with that
    report as the findings, and uses one `review_rounds` slot; when the rounds run
    out (or the head came from a manager FIX) the ticket escalates with `pr checks failed`. Otherwise
-   the reviewer runs the diff itself, gets the gate report inline, and
-   is told to read issue #N's comments (the triage brief, approved scope changes).
+   the reviewer runs the diff itself and gets the gate report and issue snapshot
+   inline, including every comment (the triage brief, approved scope changes).
    Every finding cites `path:line`; a required fix also cites an acceptance
    criterion, a documented rule with its source, or a concrete correctness/security
    defect with its trigger and impact — preferences and hypothetical extensibility

@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Ticket reviewers now receive the issue title, body, and every comment inside an untrusted-data fence, using the worker's accepted snapshot for plan-bound tickets and the dispatcher's GitHub read otherwise. Learn replays use their recorded issue; learning-proposal reviews and tokenless reviewer isolation are unchanged (#513).
 - Manager lifecycle exits with `github_command_failed` now retain the token-redacted, bounded stderr tail (or exception text without stderr). Regressions cover viability command failures, terminal-only error placement, and no-PR/closed-PR CLOSE outcomes, preserving human review for MERGED or wrong-base PRs (#534).
 - Gate-failure control bands now ignore failures from unmerged worker-attempt heads, keep reused attempt numbers bound to their own dispatch, and count each landed `(ticket, attempt)` only once, while preserving alarms for main and merged-head failures (#459).
 - Mutation scratch workers now use shared clones with independent Git metadata for both ordinary and linked checkouts, replacing the linked-worktree-only `.git` pointer workaround. Baselines retain dirty, deleted, and untracked files; reviewer calibration tests run unchanged (#478).

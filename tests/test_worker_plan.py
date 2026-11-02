@@ -148,6 +148,9 @@ class WorkerPlanTest(unittest.TestCase):
         def reviewer(command: list[str], *_args: object) -> subprocess.CompletedProcess:
             prompts.append(command[-1])
             return subprocess.CompletedProcess(command, 0, reply, "")
+        self.enterContext(mock.patch.object(dispatch, "gh_json", return_value={
+            "title": "Fixture issue", "body": "Fixture acceptance criteria", "comments": [],
+        }))
 
         with mock.patch.object(dispatch, "run", side_effect=run), \
                 mock.patch.object(dispatch, "_run_reviewer", side_effect=reviewer):

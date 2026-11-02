@@ -3376,7 +3376,12 @@ class DispatchTest(unittest.TestCase):
             self.assertEqual(dispatch.log_cost(log), 1.25)
 
     def test_review_fails_closed_unless_one_final_verdict_exits_zero(self) -> None:
+        from unittest import mock
+
         from factory import dispatch
+        self.enterContext(mock.patch.object(dispatch, "gh_json", return_value={
+            "title": "Fixture issue", "body": "Fixture acceptance criteria", "comments": [],
+        }))
 
         with tempfile.TemporaryDirectory() as d:
             repo = make_repo(Path(d))
@@ -3404,6 +3409,9 @@ class DispatchTest(unittest.TestCase):
         from unittest import mock
 
         from factory import dispatch
+        self.enterContext(mock.patch.object(dispatch, "gh_json", return_value={
+            "title": "Fixture issue", "body": "Fixture acceptance criteria", "comments": [],
+        }))
 
         with tempfile.TemporaryDirectory() as d:
             repo = make_repo(Path(d))
@@ -3435,6 +3443,9 @@ class DispatchTest(unittest.TestCase):
         from unittest import mock
 
         from factory import dispatch
+        self.enterContext(mock.patch.object(dispatch, "gh_json", return_value={
+            "title": "Fixture issue", "body": "Fixture acceptance criteria", "comments": [],
+        }))
 
         with tempfile.TemporaryDirectory() as d:
             repo = make_repo(Path(d))
@@ -3642,6 +3653,9 @@ class DispatchTest(unittest.TestCase):
         from unittest import mock
 
         from factory import dispatch
+        self.enterContext(mock.patch.object(dispatch, "gh_json", return_value={
+            "title": "Fixture issue", "body": "Fixture acceptance criteria", "comments": [],
+        }))
 
         with tempfile.TemporaryDirectory() as d:
             repo = make_repo(Path(d))
