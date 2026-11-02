@@ -1594,7 +1594,10 @@ class ManageTest(unittest.TestCase):
 
         self.enterContext(patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
         host_file("")
-        if self._testMethodName == "test_fix_runs_selected_worker_on_red_ci_and_requires_gate_and_review":
+        if self._testMethodName in {
+            "test_fix_runs_selected_worker_on_red_ci_and_requires_gate_and_review",
+            "test_failed_rewrite_is_not_requeued_or_replayed_and_next_ticket_runs",
+        }:
             original_stub_bin = stub_bin
 
             def complete_owner_fixture(tmp, **scripts):
