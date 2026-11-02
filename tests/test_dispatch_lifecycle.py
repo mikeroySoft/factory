@@ -117,6 +117,15 @@ class LocalCLI(unittest.TestCase):
         self.git("remote", "add", "origin", str(origin))
         self.git("push", "-u", "origin", "main")
         self.events = self.repo / ".factory" / "events.jsonl"
+        if self._testMethodName == "test_early_ticket_exit_does_not_poison_later_manager_fix_push":
+            from unittest import mock
+
+            from factory import dispatch
+
+            self.enterContext(mock.patch.object(
+                dispatch, "owner_state",
+                return_value=({"state": "OPEN", "labels": [], "comments": []}, None),
+            ))
 
     def git(self, *args):
         return subprocess.run(["git", *args], cwd=self.repo, env=self.env, check=True, capture_output=True, text=True)
@@ -865,10 +874,6 @@ class LocalCLI(unittest.TestCase):
                 return True, "- code: PASS", None, head
 
             with mock.patch.object(dispatch, "gh_json", return_value=pr), \
-                    mock.patch.object(
-                        dispatch, "owner_state",
-                        return_value=({**issue, "comments": []}, None),
-                    ), \
                     mock.patch.object(dispatch, "worker_round", side_effect=worker), \
                     mock.patch.object(dispatch, "record_risk"), \
                     mock.patch.object(dispatch, "pr_gate_and_review", return_value=("APPROVE", "", False)), \

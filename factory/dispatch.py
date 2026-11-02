@@ -1822,27 +1822,30 @@ def owner_state(n: int, *, approved_at: str | None = None) -> tuple[dict, str | 
         return {}, "owner state unavailable"
 
 
-def resolve_escalation(n: int, how: str, *, approved_at: str | None = None) -> None:
-    """Clear a still-present human gate once, without touching any other issue labels."""
+def resolve_escalation(
+    n: int, how: str, *, requeue: bool = False, approved_at: str | None = None,
+) -> bool:
+    """Advance past a human gate only against fresh owner state; relabel atomically."""
     issue, veto = owner_state(n, approved_at=approved_at)
-    if veto or LABEL_HUMAN not in {label["name"] for label in issue.get("labels", [])}:
-        return
-    run(["gh", "issue", "edit", str(n), "--repo", REPO, "--remove-label", LABEL_HUMAN])
-    posted = run([
-        "gh", "issue", "comment", str(n), "--repo", REPO, "--body",
-        f"Factory resolved the escalation without a human: {how}.",
-    ])
-    comment_receipt(n, "escalation-resolved", posted.stdout, resolution=how)
-
-
-def requeue_ticket(n: int, how: str) -> bool:
-    _issue, veto = owner_state(n)
     if veto:
-        record("pass-result", ticket=n, action="requeue", reason=how, owner_state=veto)
+        record("pass-result", ticket=n, action="requeue" if requeue else "resolve",
+               reason=how, owner_state=veto)
         return False
-    run(["gh", "issue", "edit", str(n), "--repo", REPO,
-         "--add-label", LABEL_AGENT, "--remove-assignee", "@me"])
-    resolve_escalation(n, how)
+    human = LABEL_HUMAN in {label["name"] for label in issue.get("labels", [])}
+    if not human and not requeue:
+        return True
+    edit = ["gh", "issue", "edit", str(n), "--repo", REPO]
+    if human:
+        edit += ["--remove-label", LABEL_HUMAN]
+    if requeue:
+        edit += ["--add-label", LABEL_AGENT, "--remove-assignee", "@me"]
+    run(edit)
+    if human:
+        posted = run([
+            "gh", "issue", "comment", str(n), "--repo", REPO, "--body",
+            f"Factory resolved the escalation without a human: {how}.",
+        ])
+        comment_receipt(n, "escalation-resolved", posted.stdout, resolution=how)
     return True
 
 
@@ -1883,6 +1886,8 @@ def escalate(
     if veto:
         record("pass-result", ticket=n, action="escalate", code=code, reason=reason,
                packet=str(packet), owner_state=veto, log=str(log_path) if log_path else None)
+        if veto == "owner state unavailable":
+            run(["gh", "issue", "edit", str(n), "--repo", REPO, "--remove-assignee", "@me"], check=False)
         log(f"#{n}: pass result recorded quietly ({veto}; {code}: {reason})")
         return
     log(f"#{n}: escalating to human ({code}: {reason})")
@@ -3369,13 +3374,14 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             files = "## Conflicting files\n\n" + ("\n".join(f"- `{path}`" for path in conflicts) or "(none listed)")
             withdraw(f"{verb} onto moved main conflicts ({why}); worktree {wt}", "refresh_conflict", extra=files)
             return False
+        if not resolve_escalation(n, f"requeued PR #{pr} to resolve a refresh conflict", requeue=True):
+            return False
         record_merge_decision(
             n, pr, "conflict-requeue",
             f"{verb} onto moved {cfg.main} conflicted; requeued to a worker",
             remote_head, remote_head, [],
         )
         record("conflict-requeue", ticket=n, pr=pr, head=remote_head, verb=verb, files=conflicts, round=rounds + 1)
-        requeue_ticket(n, f"requeued PR #{pr} to resolve a refresh conflict")
         log(f"#{n}: PR #{pr} {verb} onto {cfg.main} conflicts in {', '.join(conflicts)}; requeued to a worker")
         return False
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
@@ -3487,6 +3493,8 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
                 return False
             evidence_ref = restore_pr_head(head)
             remote_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+            if not resolve_escalation(n, f"requeued PR #{pr} after the refresh gate failed twice", requeue=True):
+                return False
             record_merge_decision(
                 n, pr, "gate-requeue",
                 f"gate failed twice after {verb} onto moved {cfg.main}; requeued to a worker",
@@ -3497,7 +3505,6 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
                 reports=reports, changed_files=changed_files, unrelated=unrelated, round=rounds + 1,
                 refreshed_head=head, evidence_ref=evidence_ref,
             )
-            requeue_ticket(n, f"requeued PR #{pr} after the refresh gate failed twice")
             log(f"#{n}: PR #{pr} gate failed twice after {verb} onto {cfg.main}; requeued to a worker")
             return False
     if not ok:
@@ -3542,11 +3549,12 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
                 event.get("event") == "risk-requeue" and event.get("ticket") == n
                 for event in lifecycle.read_events(EVENTS)
             )
+            if not resolve_escalation(n, f"requeued PR #{pr} to resolve High-risk check disagreement", requeue=True):
+                return False
             record(
                 "risk-requeue", ticket=n, pr=pr, head=head,
                 packet=state["packet"], round=rounds + 1,
             )
-            requeue_ticket(n, f"requeued PR #{pr} to resolve High-risk check disagreement")
             log(f"#{n}: PR #{pr} High-risk checks disagreed after refresh; requeued to a worker")
             return False
         withdraw(
@@ -3969,10 +3977,12 @@ def merge_pass_locked(dry_run: bool) -> None:
                     n, pr_num, "merge now", f"gate, review, approval, and CI passed for {head}",
                     head, head, latest_checks, merge_sha=merge_sha,
                 )
-            resolve_escalation(n, f"merged PR #{pr_num} after approval and passing CI", approved_at=approval_at)
             execution.outcome = "merged"
             log(f"PR #{pr_num}: merged into {cfg.main} ({method[2:]}, ticket #{n})")
-            cleanup_after_merge(n, head)
+            try:
+                resolve_escalation(n, f"merged PR #{pr_num} after approval and passing CI", approved_at=approval_at)
+            finally:
+                cleanup_after_merge(n, head)
             return
 
 

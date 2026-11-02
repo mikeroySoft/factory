@@ -174,13 +174,12 @@ autonomous-resolution note after approval, requeue or merge.
 | `dispatch.escalate` | `ready-for-agent` | `ready-for-human` | Every escalation |
 | `dispatch.merge_pass_locked` | `factory-approved` | — | CI fail, or cancel after steps ran; missing approval evidence |
 | `dispatch.push_and_pr` | — | `*` | Caller's PR label; ticket PRs pass none |
-| `dispatch.refresh_pr_branch` | `factory-approved` | — | Behind main: approval withdrawn before refresh; eligible requeues use `dispatch.requeue_ticket` |
-| `dispatch.requeue_ticket` | — | `ready-for-agent` | Fresh owner state permits a refresh requeue; releases the claim, then clears any human gate |
-| `dispatch.resolve_escalation` | `ready-for-human` | — | Later approval, successful requeue or merge resolves the escalation without a human; posts how |
+| `dispatch.refresh_pr_branch` | `factory-approved` | — | Behind main: approval withdrawn before refresh; eligible requeues use `dispatch.resolve_escalation` |
+| `dispatch.resolve_escalation` | `ready-for-human` | `ready-for-agent` | Fresh owner state permits approval, atomic human-to-agent requeue, or merge cleanup; posts how an escalation resolved without a human |
 | `dispatch.review_intake_pass` | — | `ready-for-human` | New issue for an unresolved opted-in PR review |
 | `dispatch.sync_issue` | — | `ready-for-agent` | New sync ticket for new upstream commits; its `agent/N` candidate carries the merge and gate evidence |
 | `learn.promote` | — | `factory-approved` | `factory learn` PR (lessons, curate, revert-lessons) with head-bound gate PASS, reviewer APPROVE and green CI, then squash merge (`learn.promote_pass` runs it per PR); lessons/curate merges open a `promotion-open` that `learn.decide_promotions` keeps or reverts |
-| `manage.apply` | `*` | `factory-add-only-override`, `ready-for-agent`, `needs-triage`, `wontfix-proposal`, `*` | AUTHORIZE grants add-only authority and requeues; RETRY/REWRITE/ROUTE return to agent; SPLIT children; CLOSE; RESOLVE closes completed; ROUTE labels; human-gate cleanup uses `dispatch.resolve_escalation` |
+| `manage.apply` | `*` | `factory-add-only-override`, `needs-triage`, `wontfix-proposal`, `*` | AUTHORIZE grants add-only authority; RETRY/REWRITE/ROUTE return to agent through `dispatch.resolve_escalation`; SPLIT children; CLOSE; RESOLVE closes completed; ROUTE labels |
 | `manage.viability_pass` | `*` | `needs-triage` | Opt-in label removed; BUILD queues triage |
 | `triage.apply_decision` | `needs-triage` | `*` | `*` is the decision: `ready-for-agent`, `needs-info`, `ready-for-human`, or `wontfix-proposal` |
 | `watch.run_pass` | — | `*` | New `bug` + `needs-triage` issue per runtime-failure fingerprint (`watch.LABELS`) |

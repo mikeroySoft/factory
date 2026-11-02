@@ -603,12 +603,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
     else:
         post_comment("issue", n, "Factory manager: " + body)
     if decision != "HUMAN":
-        _fresh, veto = dispatch.owner_state(n)
-        if veto:
-            dispatch.record("pass-result", ticket=n, action="requeue", decision=decision, owner_state=veto)
-            return
-        issue_action("edit", "--add-label", LABEL_AGENT)
-        dispatch.resolve_escalation(n, f"manager {decision} returned the ticket to the worker")
+        dispatch.resolve_escalation(n, f"manager {decision} returned the ticket to the worker", requeue=True)
 
 
 VIABILITY_MENU = """You are the factory manager assessing whether a direction is worth pursuing,

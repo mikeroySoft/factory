@@ -1,9 +1,11 @@
 """#488: live owner decisions win over in-flight dispatcher transitions."""
 from __future__ import annotations
 
+import json
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
@@ -22,6 +24,7 @@ class OwnerStateTest(unittest.TestCase):
         self.cfg = config.Config(Path(temp.name), "acme/widgets", signoff=False)
         dispatch.configure(self.cfg)
         self.labels = {config.LABEL_AGENT}
+        self.assignees = {"factory"}
         self.comments = []
         self.posted = []
         self.commands = []
@@ -61,6 +64,8 @@ class OwnerStateTest(unittest.TestCase):
                     self.labels.add(args[i + 1])
                 elif arg == "--remove-label":
                     self.labels.discard(args[i + 1])
+                elif arg == "--remove-assignee":
+                    self.assignees.discard("factory")
         if args[:3] == ["gh", "issue", "comment"]:
             self.posted.append(args[args.index("--body") + 1])
             return subprocess.CompletedProcess(args, 0, f"https://github.com/acme/widgets/issues/7#issuecomment-{len(self.posted)}", "")
@@ -90,8 +95,9 @@ class OwnerStateTest(unittest.TestCase):
         dispatch.record("approved", ticket=7, pr=70, head=HEAD, gate_head=HEAD,
                         review_head=HEAD, at=APPROVAL)
 
-    def merge(self):
-        self.seed_approval()
+    def merge(self, *, seed=True):
+        if seed:
+            self.seed_approval()
         with mock.patch.object(dispatch, "initiative_kind", return_value=None), \
                 mock.patch.object(dispatch, "pr_checks", return_value=[{"name": "ci", "bucket": "pass"}]), \
                 mock.patch.object(dispatch, "cleanup_after_merge"), \
@@ -192,8 +198,8 @@ class OwnerStateTest(unittest.TestCase):
 
     def test_refresh_requeue_preserves_owner_labels_and_announces_resolution_once(self):
         self.labels = {config.LABEL_HUMAN, "priority"}
-        self.assertTrue(dispatch.requeue_ticket(7, "requeued PR #70 after a refresh conflict"))
-        self.assertTrue(dispatch.requeue_ticket(7, "requeued PR #70 after a refresh conflict"))
+        self.assertTrue(dispatch.resolve_escalation(7, "requeued PR #70 after a refresh conflict", requeue=True))
+        self.assertTrue(dispatch.resolve_escalation(7, "requeued PR #70 after a refresh conflict", requeue=True))
         self.assertEqual(self.labels, {config.LABEL_AGENT, "priority"})
         self.assertEqual(self.posted, [
             "Factory resolved the escalation without a human: requeued PR #70 after a refresh conflict.",
@@ -202,7 +208,7 @@ class OwnerStateTest(unittest.TestCase):
     def test_refresh_requeue_defers_to_a_new_owner_decision(self):
         self.labels = {config.LABEL_HUMAN, "priority"}
         self.decision()
-        self.assertFalse(dispatch.requeue_ticket(7, "requeue after refresh"))
+        self.assertFalse(dispatch.resolve_escalation(7, "requeue after refresh", requeue=True))
         self.assertEqual(self.labels, {config.LABEL_HUMAN, "priority"})
         self.assertEqual(self.commands, [])
 
@@ -245,21 +251,87 @@ class OwnerStateTest(unittest.TestCase):
         self.decision("Acceptance now includes the CLI path.", at="2026-10-30T17:07:00Z")
         self.assertFalse(self.merge())
 
-    def test_owner_change_during_requeue_does_not_clear_human_gate(self):
-        self.labels = {config.LABEL_HUMAN, "priority"}
+
+    def test_owner_hold_during_approval_io_is_newer_than_that_approval(self):
+        class ApprovalClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls.fromisoformat(APPROVAL)
+
+        self.seed_approval()
         run_command = self.run_command
 
-        def hold_after_requeue(args, **kwargs):
+        def hold_during_label(args, **kwargs):
             result = run_command(args, **kwargs)
-            if "--add-label" in args:
+            if args[:3] == ["gh", "pr", "edit"] and "--add-label" in args:
                 self.held()
             return result
 
-        with mock.patch.object(dispatch, "run", side_effect=hold_after_requeue):
-            dispatch.requeue_ticket(7, "requeue after refresh")
-        self.assertIn(config.LABEL_HUMAN, self.labels)
+        with mock.patch.object(dispatch, "datetime", ApprovalClock), \
+                mock.patch.object(dispatch, "run", side_effect=hold_during_label), \
+                mock.patch.object(dispatch, "retain_handoff"):
+            self.assertTrue(dispatch.approve_pr(7, HEAD))
+        self.assertFalse(self.merge(seed=False))
         self.assertIn("factory-held", self.labels)
+
+    def test_unavailable_owner_read_releases_only_factory_assignment(self):
+        self.assignees.add("owner")
+        with mock.patch.object(dispatch, "gh_json", side_effect=ValueError("invalid response")):
+            dispatch.escalate(7, "rounds exhausted", None, code="review_revise")
+        self.assertEqual(self.assignees, {"owner"})
+        self.assertEqual(self.labels, {config.LABEL_AGENT})
         self.assertEqual(self.posted, [])
+
+    def test_owner_hold_keeps_assignment_until_owner_releases_it(self):
+        self.held()
+        self.escalate()
+        self.assertEqual(self.assignees, {"factory"})
+
+    def test_owner_veto_does_not_spend_refresh_conflict_rounds(self):
+        self.held()
+
+        def conflict(args, **kwargs):
+            if args[:2] == ["git", "rev-parse"]:
+                return subprocess.CompletedProcess(args, 0, HEAD, "")
+            if args[:2] == ["git", "rebase"] and "--abort" not in args:
+                return subprocess.CompletedProcess(args, 1, "", "conflict")
+            if args[:2] == ["git", "diff"]:
+                return subprocess.CompletedProcess(args, 0, "conflict.txt\0", "")
+            return self.run_command(args, **kwargs)
+
+        with mock.patch.object(dispatch, "ensure_worktree", return_value=self.cfg.root), \
+                mock.patch.object(dispatch, "run", side_effect=conflict):
+            self.assertFalse(dispatch.refresh_pr_branch(7, 70, False))
+        rows = lifecycle.read_events(dispatch.EVENTS)
+        self.assertFalse(any(row.get("event") == "conflict-requeue" for row in rows))
+        self.assertIn("factory-held", self.labels)
+
+    def test_failed_resolution_note_does_not_leak_merged_worktree(self):
+        from test_dispatch_lifecycle import LocalCLI
+
+        fixture = LocalCLI("runTest")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        gh = fixture.bin / "gh"
+        gh.write_text(gh.read_text().replace(
+            'if s.get("sync"):',
+            'if s.get("merge_ready"):\n    issue["labels"] = [{"name": "ready-for-human"}]\nif s.get("sync"):',
+        ).replace(
+            'elif a[:2] not in (',
+            'elif a[:2] == ["issue", "comment"]:\n    print("HTTP 502", file=sys.stderr)\n    raise SystemExit(1)\nelif a[:2] not in (',
+        ))
+        fixture.cli("dispatch", "--ticket", "7")
+        state = json.loads(fixture.state.read_text())
+        state["merge_ready"] = True
+        fixture.state.write_text(json.dumps(state))
+        result = fixture.cli("dispatch", expected=1)
+        self.assertIn("HTTP 502", result.stdout + result.stderr)
+        self.assertTrue(json.loads(fixture.state.read_text()).get("merged"))
+        self.assertFalse((fixture.repo / ".factory" / "wt-7").exists())
+        merges = [row for row in lifecycle.read_events(fixture.events)
+                  if row.get("event") == "lifecycle" and row.get("stage") == "merge-eligibility"
+                  and row.get("kind") == "exit"]
+        self.assertEqual(merges[-1]["outcome"], "merged")
 
 
 if __name__ == "__main__":

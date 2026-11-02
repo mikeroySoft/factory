@@ -548,16 +548,18 @@ class HandoffCli(unittest.TestCase):
 
 
 class ReceiptTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.enterContext(mock.patch.object(
+            dispatch, "owner_state",
+            return_value=({"state": "OPEN", "labels": [], "comments": []}, None),
+        ))
+
     def test_escalate_journals_the_comment_it_created_and_nothing_when_gh_fails(self) -> None:
         from unittest.mock import patch
 
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             dispatch.configure(config.Config(root, REPO))
-            self.enterContext(patch.object(
-                dispatch, "owner_state",
-                return_value=({"state": "OPEN", "labels": [], "comments": []}, None),
-            ))
             outputs = iter([subprocess.CompletedProcess([], 0, f"{ISSUE_URL}#issuecomment-4242\n", ""),
                             subprocess.CompletedProcess([], 1, "", "boom")])
 

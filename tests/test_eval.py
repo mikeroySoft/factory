@@ -14,6 +14,15 @@ from factory import eval as eval_suite
 
 
 class EvalSuiteTest(unittest.TestCase):
+    def setUp(self) -> None:
+        if self._testMethodName == "test_merge_eval_gate_real_path_journals_wait_and_runs_candidate_checkout":
+            from factory import dispatch
+
+            self.enterContext(mock.patch.object(
+                dispatch, "owner_state",
+                return_value=({"state": "OPEN", "labels": [], "comments": []}, None),
+            ))
+
     def manifest(self, root: Path, *, lockbox: set[int] = frozenset({19, 20})) -> Path:
         cases = []
         for ticket in range(1, 21):
@@ -424,8 +433,6 @@ class EvalSuiteTest(unittest.TestCase):
                     return pr
                 if args[0] == "api":
                     return {"behind_by": 0}
-                if args[:2] == ["issue", "view"]:
-                    return {"state": "OPEN", "labels": [], "comments": []}
                 raise AssertionError(args)
 
             with mock.patch.object(dispatch, "gh_json", side_effect=github), \
