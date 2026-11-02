@@ -458,11 +458,23 @@ def _matches_test_id(test_id: str, record: dict) -> bool:
     )
 
 
-_UNITTEST_ONE = """import importlib.util, sys, unittest
-path, name = sys.argv[1:]
-spec = importlib.util.spec_from_file_location("_factory_repro", path)
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
+_UNITTEST_ONE = """import argparse, importlib, sys, unittest
+from pathlib import Path
+path, name, *args = sys.argv[1:]
+path = Path(path).resolve()
+top = path.parent
+if args and args[0] == "discover":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-s", "--start-directory", dest="start", default=".")
+    parser.add_argument("-p", "--pattern")
+    parser.add_argument("-t", "--top-level-directory", dest="top")
+    for dest in ("start", "pattern", "top"):
+        parser.add_argument(dest, nargs="?", default=argparse.SUPPRESS)
+    options, _ = parser.parse_known_args(args[1:])
+    top = Path(options.top or options.start).resolve()
+sys.path.insert(0, str(top))
+module_name = ".".join(path.relative_to(top).with_suffix("").parts)
+module = importlib.import_module(module_name)
 result = unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromName(name, module))
 raise SystemExit(not result.wasSuccessful())
 """
@@ -481,7 +493,10 @@ def _repro_command(test_id: str, record: dict) -> tuple[list[str], bool]:
             runner = check.run.index("unittest")
             prefix = check.run[:runner - 1] if runner and check.run[runner - 1] == "-m" else check.run[:runner]
             return (
-                [*(prefix or [sys.executable]), "-c", _UNITTEST_ONE, record["path"], record["qualified"]],
+                [
+                    *(prefix or [sys.executable]), "-c", _UNITTEST_ONE,
+                    record["path"], record["qualified"], *check.run[runner + 1:],
+                ],
                 check.name in GPU_CHECKS,
             )
         if language == "rust" and "cargo" in check.run and "test" in check.run:
