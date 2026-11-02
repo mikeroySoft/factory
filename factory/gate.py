@@ -470,6 +470,9 @@ if args and args[0] == "discover":
     parser.add_argument("-t", "--top-level-directory", dest="top")
     parser.add_argument("-k", action="append")
     parser.add_argument("--durations")
+    for flags in (("-v", "--verbose"), ("-q", "--quiet"), ("-f", "--failfast"),
+                  ("-c", "--catch"), ("-b", "--buffer"), ("--locals",)):
+        parser.add_argument(*flags, action="store_true")
     for dest in ("start", "pattern", "top"):
         parser.add_argument(dest, nargs="?", default=argparse.SUPPRESS)
     options, _ = parser.parse_known_args(args[1:])
@@ -477,9 +480,17 @@ if args and args[0] == "discover":
     if not options.top and not Path(options.start).is_dir():
         start = importlib.import_module(options.start)
         package = sys.modules[start.__name__.split(".")[0]]
-        top = Path(package.__file__).resolve().parent
-        if hasattr(package, "__path__"):
-            top = top.parent
+        if start.__file__ is None:
+            locations = (Path(root).resolve() for root in start.__path__)
+            location = next(root for root in locations if path.is_relative_to(root))
+            top = location.parents[len(start.__name__.split(".")) - 1]
+        elif package.__file__ is None:
+            # unittest roots a regular start beneath a namespace at the start itself.
+            top = Path(start.__file__).resolve().parent
+        else:
+            top = Path(package.__file__).resolve().parent
+            if hasattr(package, "__path__"):
+                top = top.parent
 sys.path.insert(0, str(top))
 module_name = ".".join(path.relative_to(top).with_suffix("").parts)
 module = importlib.import_module(module_name)
