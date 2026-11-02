@@ -755,6 +755,7 @@ def viability_pass(dry_run: bool = False) -> None:
                     if not dry_run:
                         execution.outcome = "mechanism_failure"
                         execution.reason = "github_command_failed"
+                        execution.error = dispatch.stderr_tail(getattr(exc, "stderr", None) or str(exc))
                     dispatch.log(f"{kind} #{n}: viability failed: {exc}; inspect events.jsonl before re-arming")
                 finally:
                     if not dry_run:
@@ -1112,6 +1113,7 @@ def escalation_pass(dry_run: bool = False) -> None:
                     # A partial SPLIT or REWRITE must not be replayed automatically.
                     execution.outcome = "mechanism_failure"
                     execution.reason = "github_command_failed"
+                    execution.error = dispatch.stderr_tail(getattr(exc, "stderr", None) or str(exc))
                     dispatch.log(f"#{n}: manager decision application failed: {exc}; leaving for human")
             finally:
                 if not dry_run:

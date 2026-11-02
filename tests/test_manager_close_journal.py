@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 import test_factory
+
 from factory import config, lifecycle
 
 TOKEN = "ghp_" + "a1B2c3D4e5" * 3
@@ -126,6 +127,13 @@ class ManagerCloseJournalTest(unittest.TestCase):
                 self.assertNotIn("discarded prefix", terminal["error"])
                 self.assertNotIn(TOKEN, json.dumps(rows))
 
+    def test_failed_apply_without_stderr_keeps_exception_diagnosis(self):
+        rows, _ = self.run_manager(*self.scenario(fail="pr view"))
+        terminal = next(row for row in rows if row.get("kind") == "exit" and row.get("stage") == "manage")
+        self.assertEqual((terminal["outcome"], terminal["reason"]),
+                         ("mechanism_failure", "github_command_failed"))
+        self.assertTrue(terminal.get("error"))
+
     def test_merged_or_other_base_pr_requires_human_without_mutation(self):
         for pr in ({"number": 9, "state": "MERGED", "baseRefName": "main"},
                    {"number": 9, "state": "OPEN", "baseRefName": "stable"}):
@@ -134,6 +142,7 @@ class ManagerCloseJournalTest(unittest.TestCase):
                 terminal = next(row for row in rows if row.get("kind") == "exit" and row.get("stage") == "manage")
                 self.assertEqual((terminal["outcome"], terminal["reason"]),
                                  ("mechanism_failure", "github_command_failed"))
+                self.assertTrue(terminal.get("error"))
                 self.assertEqual(state["pr"], pr)
                 self.assertEqual(state["issue"]["state"], "OPEN")
                 self.assertNotIn({"name": config.LABEL_WONTFIX}, state["issue"]["labels"])
