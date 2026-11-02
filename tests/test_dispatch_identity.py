@@ -209,6 +209,24 @@ class DoctorWorkerModelSourceTest(unittest.TestCase):
         self.assertIn("--model", rows["worker `empty` model"]["detail"])
         self.assertIn("usage.model", rows["worker `chore` model"]["detail"])
 
+    def test_doctor_json_rejects_non_model_values_after_omp_model_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            cfg = make_cfg(Path(d))
+            cfg.workers = {
+                "flag": ["omp", "--model", "--cwd", "{cwd}", "@{prompt}"],
+                "whitespace": ["omp", "--model", " \t ", "@{prompt}"],
+            }
+            cfg.worker_usage = {
+                "flag": {"model": "result.model"},
+                "whitespace": {"model": "result.model"},
+            }
+            code, result = self.doctor(cfg)
+
+        rows = {row["label"]: row for row in result["rows"]}
+        self.assertEqual((code, result["ok"]), (1, False))
+        for label in cfg.workers:
+            self.assertEqual(rows[f"worker `{label}` model"]["status"], "FAIL")
+
     def test_doctor_json_accepts_omp_flag_and_non_omp_usage_model_path(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             cfg = make_cfg(Path(d))
