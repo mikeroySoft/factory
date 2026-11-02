@@ -21,9 +21,14 @@ class ManagerBindingTest(unittest.TestCase):
         (self.root / ".factory").mkdir()
         self.cfg = config.Config(self.root, "acme/widgets")
         dispatch.configure(self.cfg)
+        self.labels = set()
+        self.comments = []
+        self.assignees = {"factory", "owner"}
         self.enterContext(mock.patch.object(
-            dispatch, "owner_state",
-            return_value=({"state": "OPEN", "labels": [], "comments": []}, None),
+            dispatch, "owner_state", side_effect=lambda n, **kwargs: (
+                {"state": "OPEN", "labels": [{"name": label} for label in self.labels],
+                 "comments": list(self.comments)}, None,
+            ),
         ))
         self.packet = self.root / ".factory/escalation.md"
         self.packet.write_text("manager evidence")
@@ -79,6 +84,14 @@ class ManagerBindingTest(unittest.TestCase):
             self.next_issue += 1
         elif command[1:3] == ["issue", "comment"]:
             stdout = "https://github.com/acme/widgets/issues/7#issuecomment-701"
+        elif command[1:3] == ["issue", "edit"]:
+            for flag, value in zip(command, command[1:]):
+                if flag == "--add-label":
+                    self.labels.add(value)
+                elif flag == "--remove-label":
+                    self.labels.discard(value)
+                elif flag == "--remove-assignee" and value == "@me":
+                    self.assignees.discard("factory")
         return subprocess.CompletedProcess(command, 0, stdout, "")
 
     def test_rewrite_rejects_lost_or_replaced_binding_before_mutation(self) -> None:
@@ -148,6 +161,7 @@ class ManagerBindingTest(unittest.TestCase):
 
     def test_rewrite_keeps_binding_and_uses_refreshed_body_for_receipt(self) -> None:
         self.accept()
+        self.labels = {config.LABEL_HUMAN, "priority"}
         live_body = self.bound("Latest live scope")
         replacement = self.bound("Manager-refined scope")
         with mock.patch.object(
@@ -167,17 +181,29 @@ class ManagerBindingTest(unittest.TestCase):
         refresh.assert_called_once_with(
             ["issue", "view", "7", "--repo", "acme/widgets", "--json", "title,body"]
         )
-        comment, edit, relabel = self.calls
+        comment = self.calls[0]
+        edit = next(
+            command for command in self.calls
+            if command[1:3] == ["issue", "edit"] and "--body" in command
+        )
         self.assertEqual(comment[1:3], ["issue", "comment"])
         comment_body = comment[comment.index("--body") + 1]
         self.assertIn(live_body, comment_body)
         self.assertNotIn("Stale list scope", comment_body)
         self.assertEqual(edit[edit.index("--body") + 1], replacement)
-        self.assertEqual(
-            relabel[-4:],
-            ["--remove-label", "ready-for-human", "--add-label", "ready-for-agent"],
+        self.assertEqual(self.labels, {config.LABEL_AGENT, "priority"})
+        self.assertEqual(self.assignees, {"owner"})
+        notes = [
+            command[command.index("--body") + 1] for command in self.calls
+            if command[1:3] == ["issue", "comment"]
+            and "resolved the escalation without a human" in command[command.index("--body") + 1]
+        ]
+        self.assertEqual(len(notes), 1)
+        self.assertIn("REWRITE", notes[0])
+        receipt = next(
+            event for event in lifecycle.read_events(dispatch.EVENTS)
+            if event.get("event") == "comment" and event.get("kind") == "manager"
         )
-        receipt = lifecycle.read_events(dispatch.EVENTS)[-1]
         self.assertEqual(
             (receipt["event"], receipt["kind"], receipt["decision"]),
             ("comment", "manager", "REWRITE"),

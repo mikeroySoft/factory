@@ -204,7 +204,13 @@ class RefreshConflictTest(unittest.TestCase):
             self.assertIn(config.LABEL_AGENT, self.github.issue_labels)
             self.assertEqual(self.github.assignees, [])
             self.assertNotIn(config.LABEL_APPROVED, self.github.pr_labels)
-            self.assertFalse(any(cmd[1:3] == ["issue", "comment"] for cmd in self.github.calls))
+            notes = [
+                cmd[cmd.index("--body") + 1] for cmd in self.github.calls
+                if cmd[1:3] == ["issue", "comment"]
+                and "resolved the escalation without a human" in cmd[cmd.index("--body") + 1]
+            ]
+            self.assertEqual(len(notes), 1)
+            self.assertIn("refresh conflict", notes[0])
             [requeue] = self.events("conflict-requeue")
             self.assertEqual((requeue["head"], requeue["files"], requeue["round"]),
                              (self.approved_head, ["shared.txt"], 1))
@@ -239,6 +245,11 @@ class RefreshConflictTest(unittest.TestCase):
         self.assertEqual(self.events("escalate"), [])
         self.assertNotIn(config.LABEL_HUMAN, self.github.issue_labels)
         self.assertIn(config.LABEL_AGENT, self.github.issue_labels)
+        self.assertEqual([
+            cmd[cmd.index("--body") + 1] for cmd in self.github.calls
+            if cmd[1:3] == ["issue", "comment"]
+            and "resolved the escalation without a human" in cmd[cmd.index("--body") + 1]
+        ], notes)
 
     def test_closed_ticket_conflict_still_escalates_without_requeue(self) -> None:
         closed_issue = {**self.github.issue(), "state": "CLOSED"}

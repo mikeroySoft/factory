@@ -228,9 +228,25 @@ class AddOnlyOverrideTest(unittest.TestCase):
         root = tempfile.TemporaryDirectory()
         self.addCleanup(root.cleanup)
         dispatch.configure(config.Config(Path(root.name), "acme/widgets"))
-        result = subprocess.CompletedProcess([], 0, stdout="https://example.test/comment\n")
-        with mock.patch.object(dispatch, "run", return_value=result) as run, \
-                mock.patch.object(dispatch, "comment_receipt"):
+        labels = {config.LABEL_HUMAN, "priority"}
+        assignees = {"factory", "owner"}
+
+        def run_command(command, **kwargs):
+            if command[1:3] == ["issue", "edit"]:
+                for flag, value in zip(command, command[1:]):
+                    if flag == "--add-label":
+                        labels.add(value)
+                    elif flag == "--remove-label":
+                        labels.discard(value)
+                    elif flag == "--remove-assignee" and value == "@me":
+                        assignees.discard("factory")
+            return subprocess.CompletedProcess(command, 0, stdout="https://example.test/comment\n")
+
+        with mock.patch.object(dispatch, "run", side_effect=run_command) as run, \
+                mock.patch.object(dispatch, "owner_state", side_effect=lambda n, **kwargs: (
+                    {"state": "OPEN", "labels": [{"name": label} for label in labels], "comments": []},
+                    None,
+                )), mock.patch.object(dispatch, "comment_receipt"):
             manage.apply(
                 7,
                 {"title": "Update obsolete test", "labels": [{"name": config.LABEL_HUMAN}]},
@@ -246,15 +262,16 @@ class AddOnlyOverrideTest(unittest.TestCase):
              "--add-label", config.LABEL_ADD_ONLY_OVERRIDE],
             commands,
         )
-        self.assertIn(
-            ["gh", "issue", "edit", "7", "--repo", dispatch.REPO,
-             "--remove-label", config.LABEL_HUMAN, "--add-label", config.LABEL_AGENT],
-            commands,
-        )
+        self.assertEqual(labels, {config.LABEL_AGENT, config.LABEL_ADD_ONLY_OVERRIDE, "priority"})
+        self.assertEqual(assignees, {"owner"})
         comments = [command for command in commands if command[1:3] == ["issue", "comment"]]
-        self.assertEqual(len(comments), 1)
-        self.assertIn("Justification: The ticket requires it", comments[0][-1])
-        self.assertIn("Guidance: Remove the old assertion", comments[0][-1])
+        authorization = [command for command in comments if "Justification:" in command[-1]]
+        self.assertEqual(len(authorization), 1)
+        self.assertIn("Justification: The ticket requires it", authorization[0][-1])
+        self.assertIn("Guidance: Remove the old assertion", authorization[0][-1])
+        resolution = [command for command in comments if "resolved the escalation without a human" in command[-1]]
+        self.assertEqual(len(resolution), 1)
+        self.assertIn("AUTHORIZE", resolution[0][-1])
         comment_index = next(
             i for i, command in enumerate(commands)
             if command[1:3] == ["issue", "comment"]
