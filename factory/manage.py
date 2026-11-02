@@ -372,6 +372,12 @@ def _split_bodies(n: int, parent_body: str, children: list[dict]) -> list[dict]:
 
 
 def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: Path) -> None:
+    fresh, veto = dispatch.owner_state(n)
+    if veto:
+        dispatch.record("pass-result", ticket=n, action="manage", decision=decision, owner_state=veto)
+        return
+    issue = {**issue, **fresh}
+
     def issue_action(action: str, *args: str) -> None:
         dispatch.run(["gh", "issue", action, str(n), "--repo", dispatch.REPO, *args])
 
@@ -558,7 +564,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
             dispatch.run(["gh", "pr", "close", str(pr["number"]), "--repo", dispatch.REPO])
         post_comment("issue", n, message, **({"pr": pr["number"]} if pr else {}))
         issue_action("close", "--reason", "completed")
-        issue_action("edit", "--remove-label", LABEL_HUMAN)
+        dispatch.resolve_escalation(n, "manager RESOLVE completed the ticket without a code change")
         _record_wontfix(n, "RESOLVE", body, pr=pr["number"] if pr else None)
         return
     elif decision == "CLOSE":
@@ -585,6 +591,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         else:
             issue_action("edit", "--add-label", config.LABEL_WONTFIX)
         _record_wontfix(n, "CLOSE", body, pr=pr["number"] if pr else None)
+        dispatch.resolve_escalation(n, "manager CLOSE resolved the ticket")
         return
     elif decision == "ROUTE":
         args = []
@@ -596,7 +603,12 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
     else:
         post_comment("issue", n, "Factory manager: " + body)
     if decision != "HUMAN":
-        issue_action("edit", "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT)
+        _fresh, veto = dispatch.owner_state(n)
+        if veto:
+            dispatch.record("pass-result", ticket=n, action="requeue", decision=decision, owner_state=veto)
+            return
+        issue_action("edit", "--add-label", LABEL_AGENT)
+        dispatch.resolve_escalation(n, f"manager {decision} returned the ticket to the worker")
 
 
 VIABILITY_MENU = """You are the factory manager assessing whether a direction is worth pursuing,

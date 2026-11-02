@@ -14,6 +14,10 @@ class ManagerResolveTest(unittest.TestCase):
         self.root = tempfile.TemporaryDirectory()
         self.addCleanup(self.root.cleanup)
         dispatch.configure(config.Config(Path(self.root.name), "acme/widgets"))
+        self.enterContext(mock.patch.object(
+            dispatch, "owner_state",
+            return_value=({"state": "OPEN", "labels": [], "comments": []}, None),
+        ))
 
     def test_parse_is_escalation_only_and_requires_evidence(self) -> None:
         output = "DECISION: RESOLVE\nAlready shipped by PR #12 at abc123."

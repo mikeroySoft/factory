@@ -424,6 +424,8 @@ class EvalSuiteTest(unittest.TestCase):
                     return pr
                 if args[0] == "api":
                     return {"behind_by": 0}
+                if args[:2] == ["issue", "view"]:
+                    return {"state": "OPEN", "labels": [], "comments": []}
                 raise AssertionError(args)
 
             with mock.patch.object(dispatch, "gh_json", side_effect=github), \

@@ -152,6 +152,7 @@ class HandoffCli(unittest.TestCase):
         self.packet.write_text("# Escalation #7\n\nworker log at /tmp/runner-only/logs/7-attempt-1.log\n")
         self.state = {
             "issue": {"id": "I_7", "number": 7, "title": "Fix gate", "url": ISSUE_URL, "state": "OPEN",
+                      "comments": [],
                       "body": "**Scope**\nA ticket.", "labels": [{"name": "ready-for-human"}]},
             "pr": {"url": PR_URL, "files": [{"path": "src/auth/login.py"}]},
             "timeline": [],
@@ -553,6 +554,10 @@ class ReceiptTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             dispatch.configure(config.Config(root, REPO))
+            self.enterContext(patch.object(
+                dispatch, "owner_state",
+                return_value=({"state": "OPEN", "labels": [], "comments": []}, None),
+            ))
             outputs = iter([subprocess.CompletedProcess([], 0, f"{ISSUE_URL}#issuecomment-4242\n", ""),
                             subprocess.CompletedProcess([], 1, "", "boom")])
 

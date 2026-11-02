@@ -865,6 +865,10 @@ class LocalCLI(unittest.TestCase):
                 return True, "- code: PASS", None, head
 
             with mock.patch.object(dispatch, "gh_json", return_value=pr), \
+                    mock.patch.object(
+                        dispatch, "owner_state",
+                        return_value=({**issue, "comments": []}, None),
+                    ), \
                     mock.patch.object(dispatch, "worker_round", side_effect=worker), \
                     mock.patch.object(dispatch, "record_risk"), \
                     mock.patch.object(dispatch, "pr_gate_and_review", return_value=("APPROVE", "", False)), \

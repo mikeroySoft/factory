@@ -434,6 +434,10 @@ class ManagerFixAheadTest(unittest.TestCase):
         git(self.origin, "branch", "agent/7")
         self.pr_head = git(self.origin, "rev-parse", "agent/7")
         dispatch.configure(config.Config(root=self.root, repo="acme/widgets", main="main"))
+        self.enterContext(mock.patch.object(
+            dispatch, "owner_state",
+            return_value=({"state": "OPEN", "labels": [], "comments": []}, None),
+        ))
         self.wt = dispatch.ensure_worktree(7)
         (self.wt / "own.txt").write_text("unpushed\n")
         git(self.wt, "add", "own.txt")
@@ -745,6 +749,7 @@ class TriageExemptionRegateTest(unittest.TestCase):
                 "No repro test: hardware-only triage reason\n"
                 "factory-protected-override: comment is not override authority",
             }],
+            "state": "OPEN",
         }
         self.requests = []
         self.login = mock.patch.object(triage, "login", return_value="factory-bot")

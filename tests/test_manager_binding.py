@@ -21,6 +21,10 @@ class ManagerBindingTest(unittest.TestCase):
         (self.root / ".factory").mkdir()
         self.cfg = config.Config(self.root, "acme/widgets")
         dispatch.configure(self.cfg)
+        self.enterContext(mock.patch.object(
+            dispatch, "owner_state",
+            return_value=({"state": "OPEN", "labels": [], "comments": []}, None),
+        ))
         self.packet = self.root / ".factory/escalation.md"
         self.packet.write_text("manager evidence")
         sections = {

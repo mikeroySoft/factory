@@ -133,6 +133,8 @@ def merge_stage_mocks(origin: Path, pr_number: int, branch: str, title: str, ori
             return {"behind_by": 0}
         if args[:2] == ["pr", "view"]:
             return pr
+        if args[:2] == ["issue", "view"] and args[-1] == "state,labels,comments":
+            return {"state": "OPEN", "labels": [], "comments": []}
         if args[:2] == ["issue", "view"]:
             return {"labels": []}
         raise AssertionError(args)
@@ -1611,6 +1613,7 @@ class ManageTest(unittest.TestCase):
                     *(activity or [])]
         (state / "timeline.json").write_text(json.dumps(timeline))
         stubs = stub_bin(root, gh=f'''
+if [ "$1 $2 $7" = "issue view state,labels,comments" ]; then echo '{{"state":"OPEN","labels":[{{"name":"ready-for-human"}}],"comments":[]}}'; exit 0; fi
 case "$1 $2" in
   "pr list") echo '[]';;
   "issue list") echo '[{{"number":7,"title":"Fix gate","body":"Original body","labels":[{{"name":"ready-for-human"}}]}}]';;
@@ -1827,6 +1830,12 @@ PY
                 if args[0] == "api" and args[1].endswith("/issues/7/timeline"):
                     raise ValueError("ticket #7 timeline lookup failed")
                 if args[:2] == ["issue", "view"]:
+                    if args[-1] == "state,labels,comments":
+                        return {
+                            "state": "OPEN",
+                            "labels": [{"name": config.LABEL_HUMAN}],
+                            "comments": [],
+                        }
                     return {"labels": []}
                 if args[:2] == ["pr", "view"]:
                     return {"url": "https://github.com/acme/widgets/pull/9", "files": []}
@@ -1967,6 +1976,10 @@ PY
                     pr["baseRefName"] = actual_base
 
                 with mock.patch.object(dispatch, "gh_json", return_value=pr), \
+                        mock.patch.object(
+                            dispatch, "owner_state",
+                            return_value=({"state": "OPEN", "labels": [], "comments": []}, None),
+                        ), \
                         mock.patch.object(dispatch, "run") as run, \
                         mock.patch.object(dispatch, "worker_round") as worker, \
                         self.assertRaisesRegex(ValueError, "configured target"):
@@ -2009,6 +2022,10 @@ PY
                     dispatch, "gh_json",
                     side_effect=[pr, {"baseRefName": "main"}],
             ), mock.patch.object(dispatch, "run", side_effect=fake_run) as run, \
+                    mock.patch.object(
+                        dispatch, "owner_state",
+                        return_value=({"state": "OPEN", "labels": [], "comments": []}, None),
+                    ), \
                     mock.patch.object(
                         dispatch, "worker_round",
                         return_value=(True, "ok", packet, "new-head"),
@@ -2060,6 +2077,7 @@ PY
                     "labels": [{"name": "chore"}] + (
                         [{"name": config.LABEL_PROTECTED_OVERRIDE}] if authorized else []
                     ),
+                    "state": "OPEN",
                 }
                 pr = {
                     "state": "OPEN", "headRefName": "agent/7",
@@ -2250,6 +2268,7 @@ esac
                 git(repo, "push", "origin", "main")
                 stub_bin(Path(stubs).parent, **{
                     "gh": '''
+if [ "$1 $2 $7" = "issue view state,labels,comments" ]; then echo '{"state":"OPEN","labels":[{"name":"ready-for-human"}],"comments":[]}'; exit 0; fi
 case "$1 $2" in
   "pr list") echo '[]';;
   "issue list") echo '[{"number":7,"title":"Fix CI","body":"Original","labels":[{"name":"chore"}]}]';;
@@ -2375,6 +2394,7 @@ esac
         command = ["printf", "%s", "DECISION: REWRITE\nReplacement body"]
         (repo / config.CONFIG_NAME).write_text("[manager]\ncommand = " + json.dumps(command) + "\n")
         stub_bin(Path(stubs).parent, gh='''
+if [ "$1 $2 $7" = "issue view state,labels,comments" ]; then echo '{"state":"OPEN","labels":[{"name":"ready-for-human"}],"comments":[]}'; exit 0; fi
 case "$1 $2 $3" in
   "pr list --repo") echo '[]';;
   "issue list --repo") echo '[{"number":7,"title":"First","body":"Old"},{"number":8,"title":"Next","body":"Old"}]';;
@@ -2877,6 +2897,10 @@ class DispatchTest(unittest.TestCase):
             worker_log = dispatch.LOGS / "7-attempt-1.log"
             worker_log.parent.mkdir()
             worker_log.write_text("worker detail\n")
+            self.enterContext(mock.patch.object(
+                dispatch, "owner_state",
+                return_value=({"state": "OPEN", "labels": [], "comments": []}, None),
+            ))
             with mock.patch.object(dispatch, "run"):
                 dispatch.escalate(7, "gate failed", worker_log, code="gate_failed")
 
@@ -3744,6 +3768,10 @@ class DispatchTest(unittest.TestCase):
             ]
             with mock.patch.object(dispatch, "gh_json", side_effect=views), \
                     mock.patch.object(
+                        dispatch, "owner_state",
+                        return_value=({"state": "OPEN", "labels": [], "comments": []}, None),
+                    ), \
+                    mock.patch.object(
                         dispatch, "run",
                         return_value=subprocess.CompletedProcess([], 0, "", ""),
                     ) as run:
@@ -3787,6 +3815,10 @@ class DispatchTest(unittest.TestCase):
                  "baseRefName": "main", "reviewDecision": ""},
             ]
             with mock.patch.object(dispatch, "gh_json", side_effect=views), \
+                    mock.patch.object(
+                        dispatch, "owner_state",
+                        return_value=({"state": "OPEN", "labels": [], "comments": []}, None),
+                    ), \
                     mock.patch.object(
                         dispatch, "run",
                         return_value=subprocess.CompletedProcess([], 0, "", ""),

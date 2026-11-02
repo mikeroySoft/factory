@@ -29,6 +29,7 @@ import tempfile
 import time
 import tomllib
 from contextlib import contextmanager, nullcontext, suppress
+from datetime import UTC, datetime
 from pathlib import Path
 
 from factory import __version__, brief, config, lifecycle, risk
@@ -1781,6 +1782,70 @@ def escalation_packet(
     return packet, round_number
 
 
+def owner_state(n: int, *, approved_at: str | None = None) -> tuple[dict, str | None]:
+    """Fresh issue state and an owner veto; merges compare holds with their approval."""
+    try:
+        issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "state,labels,comments"])
+        if not isinstance(issue.get("labels"), list) or not isinstance(issue.get("comments"), list):
+            return {}, "owner state unavailable"
+        labels = {label["name"] for label in issue.get("labels", [])}
+        since = approved_at or next((
+            event["at"] for event in reversed(lifecycle.read_events(EVENTS))
+            if event.get("event") == "claimed" and event.get("ticket") == n
+        ), "1970-01-01T00:00:00Z")
+        boundary = datetime.fromisoformat(since)
+        if "factory-held" in labels:
+            if approved_at is None:
+                return issue, "factory-held"
+            from factory.handoff import timeline
+
+            applied = next((
+                item["created_at"] for item in reversed(timeline(n))
+                if item.get("event") == "labeled" and item.get("label", {}).get("name") == "factory-held"
+            ), None)
+            if applied is None or datetime.fromisoformat(applied) > boundary:
+                return issue, "factory-held after approval"
+        owner = REPO.split("/", 1)[0].casefold()
+        decisions = [
+            (datetime.fromisoformat(comment["createdAt"]), match[1])
+            for comment in issue.get("comments", [])
+            if (comment.get("author") or {}).get("login", "").casefold() == owner
+            and (match := re.search(r"(?ims)^Owner decision \([^\r\n)]+\):[ \t]*(.*)", comment.get("body") or ""))
+        ]
+        if any(at > boundary and (
+            approved_at is None
+            or re.search(r"(?i)\b(?:hold|held|(?:do not|don't|must not|not|never)\s+merge)\b", decision)
+        ) for at, decision in decisions):
+            return issue, "owner decision after " + ("approval" if approved_at else "claim")
+        return issue, None
+    except (subprocess.CalledProcessError, OSError, ValueError, KeyError, TypeError, AttributeError):
+        return {}, "owner state unavailable"
+
+
+def resolve_escalation(n: int, how: str, *, approved_at: str | None = None) -> None:
+    """Clear a still-present human gate once, without touching any other issue labels."""
+    issue, veto = owner_state(n, approved_at=approved_at)
+    if veto or LABEL_HUMAN not in {label["name"] for label in issue.get("labels", [])}:
+        return
+    run(["gh", "issue", "edit", str(n), "--repo", REPO, "--remove-label", LABEL_HUMAN])
+    posted = run([
+        "gh", "issue", "comment", str(n), "--repo", REPO, "--body",
+        f"Factory resolved the escalation without a human: {how}.",
+    ])
+    comment_receipt(n, "escalation-resolved", posted.stdout, resolution=how)
+
+
+def requeue_ticket(n: int, how: str) -> bool:
+    _issue, veto = owner_state(n)
+    if veto:
+        record("pass-result", ticket=n, action="requeue", reason=how, owner_state=veto)
+        return False
+    run(["gh", "issue", "edit", str(n), "--repo", REPO,
+         "--add-label", LABEL_AGENT, "--remove-assignee", "@me"])
+    resolve_escalation(n, how)
+    return True
+
+
 # Mechanical origin of every escalation, so `stats` can count failure classes and
 # a repeated code can be filed as a factory bug. `reason` stays the human prose.
 ESCALATION_CODES = frozenset({
@@ -1805,7 +1870,6 @@ def escalate(
 ) -> None:
     assert code in ESCALATION_CODES, code
     assert (refreshed_head is None) == (evidence_ref is None)
-    log(f"#{n}: escalating to human ({code}: {reason})")
     wt = FACTORY / f"wt-{n}"
     if refreshed_head is not None:
         extra = (
@@ -1815,6 +1879,13 @@ def escalate(
             + f"- Evidence ref: `{evidence_ref}`\n"
         )
     packet, round_number = escalation_packet(n, reason, log_path, wt, extra=extra)
+    _issue, veto = owner_state(n)
+    if veto:
+        record("pass-result", ticket=n, action="escalate", code=code, reason=reason,
+               packet=str(packet), owner_state=veto, log=str(log_path) if log_path else None)
+        log(f"#{n}: pass result recorded quietly ({veto}; {code}: {reason})")
+        return
+    log(f"#{n}: escalating to human ({code}: {reason})")
     from factory import trace
 
     cause = _latest_decision_id(n, {"gate", "review", "manager", "claim"})
@@ -2914,6 +2985,11 @@ def approve_pr(n: int, head: str) -> bool:
         or pr.get("reviewDecision") == "CHANGES_REQUESTED"
     ):
         return False
+    approved_at = datetime.now(UTC).isoformat()
+    _issue, veto = owner_state(n)
+    if veto:
+        record("pass-result", ticket=n, action="approve", head=head, owner_state=veto)
+        return False
     changed = run(
         [
             "gh",
@@ -2971,9 +3047,10 @@ def approve_pr(n: int, head: str) -> bool:
         )
         record("decision", **approval)
     record(
-        "approved", ticket=n, pr=pr["number"], head=head,
+        "approved", ticket=n, pr=pr["number"], head=head, at=approved_at,
         gate_head=head, review_head=head,
     )
+    resolve_escalation(n, f"later review approved PR #{pr['number']} at {head[:12]}")
     retain_handoff(n, head)
     return True
 
@@ -3298,8 +3375,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             remote_head, remote_head, [],
         )
         record("conflict-requeue", ticket=n, pr=pr, head=remote_head, verb=verb, files=conflicts, round=rounds + 1)
-        run(["gh", "issue", "edit", str(n), "--repo", REPO,
-             "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT, "--remove-assignee", "@me"], check=False)
+        requeue_ticket(n, f"requeued PR #{pr} to resolve a refresh conflict")
         log(f"#{n}: PR #{pr} {verb} onto {cfg.main} conflicts in {', '.join(conflicts)}; requeued to a worker")
         return False
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
@@ -3421,9 +3497,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
                 reports=reports, changed_files=changed_files, unrelated=unrelated, round=rounds + 1,
                 refreshed_head=head, evidence_ref=evidence_ref,
             )
-            run(["gh", "issue", "edit", str(n), "--repo", REPO,
-                 "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
-                 "--remove-assignee", "@me"], check=False)
+            requeue_ticket(n, f"requeued PR #{pr} after the refresh gate failed twice")
             log(f"#{n}: PR #{pr} gate failed twice after {verb} onto {cfg.main}; requeued to a worker")
             return False
     if not ok:
@@ -3472,11 +3546,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
                 "risk-requeue", ticket=n, pr=pr, head=head,
                 packet=state["packet"], round=rounds + 1,
             )
-            run([
-                "gh", "issue", "edit", str(n), "--repo", REPO,
-                "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
-                "--remove-assignee", "@me",
-            ], check=False)
+            requeue_ticket(n, f"requeued PR #{pr} to resolve High-risk check disagreement")
             log(f"#{n}: PR #{pr} High-risk checks disagreed after refresh; requeued to a worker")
             return False
         withdraw(
@@ -3852,8 +3922,19 @@ def merge_pass_locked(dry_run: bool) -> None:
             ):
                 log(f"PR #{pr_num}: head, label, or human review changed before merge; not merging")
                 continue
+            approval_at = next(
+                e.get("at", "1970-01-01T00:00:00Z") for e in reversed(events)
+                if e.get("event") == "approved" and e.get("ticket") == n
+                and e.get("pr") == pr_num and e.get("head") == head
+                and e.get("gate_head") == head and e.get("review_head") == head
+            )
             method = "--merge" if carries_upstream else "--squash"
             body = f"Closes #{n}\n\n{signoff()}" if cfg.signoff else f"Closes #{n}"
+            _issue, veto = owner_state(n, approved_at=approval_at)
+            if veto:
+                execution.outcome, execution.reason = "not_eligible", veto
+                log(f"PR #{pr_num}: not merging ({veto})")
+                continue
             with lifecycle.scope(EVENTS, "merge", ticket=n):
                 run(
                     [
@@ -3888,6 +3969,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                     n, pr_num, "merge now", f"gate, review, approval, and CI passed for {head}",
                     head, head, latest_checks, merge_sha=merge_sha,
                 )
+            resolve_escalation(n, f"merged PR #{pr_num} after approval and passing CI", approved_at=approval_at)
             execution.outcome = "merged"
             log(f"PR #{pr_num}: merged into {cfg.main} ({method[2:]}, ticket #{n})")
             cleanup_after_merge(n, head)
@@ -4225,6 +4307,7 @@ def process_ticket(
                 record("plan-bound", ticket=n, schema_version=1, baseline=baseline,
                        issue={key: fresh.get(key) for key in ("title", "body", "comments")})
 
+            claimed_at = datetime.now(UTC).isoformat()
             try:
                 run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-assignee", "@me"])
             except subprocess.CalledProcessError as exc:
@@ -4244,7 +4327,7 @@ def process_ticket(
             wt = ensure_worktree(n)
             replay_base = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
             record(
-                "claimed", ticket=n, title=title, labels=sorted(labels),
+                "claimed", ticket=n, title=title, labels=sorted(labels), at=claimed_at,
                 worker=worker_key, worker_version=cfg.worker_version.get(worker_key),
                 priority=tier, priority_source=why, experiment=schedule.is_experiment(fresh),
                 base=replay_base,

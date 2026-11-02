@@ -218,6 +218,14 @@ class AddOnlyOverrideTest(unittest.TestCase):
         root = tempfile.TemporaryDirectory()
         self.addCleanup(root.cleanup)
         dispatch.configure(config.Config(Path(root.name), "acme/widgets"))
+        self.enterContext(mock.patch.object(
+            dispatch, "owner_state",
+            return_value=({
+                "state": "OPEN",
+                "labels": [{"name": config.LABEL_HUMAN}],
+                "comments": [],
+            }, None),
+        ))
         result = subprocess.CompletedProcess([], 0, stdout="https://example.test/comment\n")
         with mock.patch.object(dispatch, "run", return_value=result) as run, \
                 mock.patch.object(dispatch, "comment_receipt"):

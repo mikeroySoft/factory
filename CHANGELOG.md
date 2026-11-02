@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Dispatcher transitions now re-read owner state so in-flight escalations, approvals, requeues and handoffs do not override an owner hold or a newer owner decision. Merge checks compare owner holds with the head-bound approval, not stale `ready-for-human`; autonomous recovery clears that label and posts a one-line resolution note (#488).
 - Gate-failure control bands now ignore failures from unmerged worker-attempt heads, keep reused attempt numbers bound to their own dispatch, and count each landed `(ticket, attempt)` only once, while preserving alarms for main and merged-head failures (#459).
 - Before the attempt gate, the dispatcher now restores unplanned dependency lockfiles from the ticket branch's merge-base. A changed `pyproject.toml` or any recorded round's plan listing the lockfile preserves the edit; ticket and brief wording does not. Upstream-sync tickets skip the guard so fork lockfiles remain untouched. Repository `uv run` gate checks stay frozen so verification cannot rewrite `uv.lock` (#441).
 - Bug-ticket gates now accept a handoff `Repro test:` ID wrapped in one matching pair of backticks or quotes, while preserving plain IDs and rejecting IDs that do not match an added test (#456).

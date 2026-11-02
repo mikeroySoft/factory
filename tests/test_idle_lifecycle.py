@@ -38,6 +38,10 @@ class IdlePasses(unittest.TestCase):
                         target="@alice", comment=2, url="u")
         self.route = {"status": "routed", "owner": "alice", "candidates": [], "source": "s", "reason": "r", "provenance": []}
         self.issues = [{"number": 7, "title": "parked", "body": "", "labels": [{"name": "ready-for-human"}]}]
+        self.enterContext(patch.object(
+            dispatch, "owner_state",
+            side_effect=lambda _n: ({**self.issues[0], "state": "OPEN", "comments": []}, None),
+        ))
 
     def lifecycle_rows(self):
         return [row for row in lifecycle.read_events(self.events) if row.get("event") == "lifecycle"]

@@ -190,6 +190,77 @@ class OwnerStateTest(unittest.TestCase):
         self.assertEqual(len(notes), 1)
         self.assertIn("RETRY", notes[0])
 
+    def test_refresh_requeue_preserves_owner_labels_and_announces_resolution_once(self):
+        self.labels = {config.LABEL_HUMAN, "priority"}
+        self.assertTrue(dispatch.requeue_ticket(7, "requeued PR #70 after a refresh conflict"))
+        self.assertTrue(dispatch.requeue_ticket(7, "requeued PR #70 after a refresh conflict"))
+        self.assertEqual(self.labels, {config.LABEL_AGENT, "priority"})
+        self.assertEqual(self.posted, [
+            "Factory resolved the escalation without a human: requeued PR #70 after a refresh conflict.",
+        ])
+
+    def test_refresh_requeue_defers_to_a_new_owner_decision(self):
+        self.labels = {config.LABEL_HUMAN, "priority"}
+        self.decision()
+        self.assertFalse(dispatch.requeue_ticket(7, "requeue after refresh"))
+        self.assertEqual(self.labels, {config.LABEL_HUMAN, "priority"})
+        self.assertEqual(self.commands, [])
+
+    def test_owner_hold_before_approval_does_not_block_merge(self):
+        self.held(at=CLAIM)
+        self.assertTrue(self.merge())
+        self.assertIn("factory-held", self.labels)
+
+    def test_multiline_owner_no_merge_comment_blocks_merge(self):
+        self.decision("\nDo not merge this ticket.")
+        self.assertFalse(self.merge())
+
+    def test_unreadable_owner_state_neither_escalates_nor_merges(self):
+        error = subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 502")
+        github = self.github
+
+        def unavailable(args):
+            if args[:2] == ["issue", "view"]:
+                raise error
+            return github(args)
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=unavailable):
+            dispatch.escalate(7, "rounds exhausted", None, code="review_revise")
+            self.assertFalse(self.merge())
+        self.assertEqual(self.labels, {config.LABEL_AGENT})
+        self.assertEqual(self.posted, [])
+
+    def test_incomplete_owner_state_cannot_authorize_merge(self):
+        github = self.github
+        for issue in ({}, {"labels": []}, {"labels": [], "comments": None}):
+            with self.subTest(issue=issue), mock.patch.object(
+                dispatch, "gh_json",
+                side_effect=lambda args, issue=issue: issue if args[:2] == ["issue", "view"] else github(args),
+            ):
+                self.assertFalse(self.merge())
+        self.assertEqual(self.posted, [])
+
+    def test_unrelated_later_decision_does_not_erase_a_post_approval_hold(self):
+        self.decision("Do not merge this ticket.")
+        self.decision("Acceptance now includes the CLI path.", at="2026-10-30T17:07:00Z")
+        self.assertFalse(self.merge())
+
+    def test_owner_change_during_requeue_does_not_clear_human_gate(self):
+        self.labels = {config.LABEL_HUMAN, "priority"}
+        run_command = self.run_command
+
+        def hold_after_requeue(args, **kwargs):
+            result = run_command(args, **kwargs)
+            if "--add-label" in args:
+                self.held()
+            return result
+
+        with mock.patch.object(dispatch, "run", side_effect=hold_after_requeue):
+            dispatch.requeue_ticket(7, "requeue after refresh")
+        self.assertIn(config.LABEL_HUMAN, self.labels)
+        self.assertIn("factory-held", self.labels)
+        self.assertEqual(self.posted, [])
+
 
 if __name__ == "__main__":
     unittest.main()

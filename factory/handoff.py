@@ -207,8 +207,9 @@ def handoff_pass(dry_run: bool = False) -> None:
                                                 token=intent["token"], target=intent["target"], comment=found["id"],
                                                 url=found.get("html_url"), reconciled=True)
                             receipts.append({"token": intent["token"], "target": intent["target"]})
-                # ponytail: ~2 GETs per parked terminal ticket per pass to notice owner changes;
-                # add an issue-updatedAt short-circuit if rate limits ever bite.
+                fresh, veto = dispatch.owner_state(n)
+                if veto or LABEL_HUMAN not in {label["name"] for label in fresh.get("labels", [])}:
+                    continue
                 observed = observe(cfg, n, escalation)
                 if observed is None:
                     dispatch.log(f"#{n}: handoff request {request} deferred; the ticket could not be read for routing")
@@ -236,6 +237,9 @@ def handoff_pass(dry_run: bool = False) -> None:
                                 and e.get("at", "") >= escalation["at"]), None)
                     links[label] = row.get("url") if row else None
                 body = compose(n, request, token, escalation, why, observed, links, previous)
+                fresh, veto = dispatch.owner_state(n)
+                if veto or LABEL_HUMAN not in {label["name"] for label in fresh.get("labels", [])}:
+                    continue
                 proc = dispatch.run(["gh", "issue", "comment", str(n), "--repo", cfg.repo, "--body", body], check=False)
                 if dispatch.comment_receipt(n, "handoff", proc.stdout if proc.returncode == 0 else "",
                                             round=r, request=request, token=token, target=current):
