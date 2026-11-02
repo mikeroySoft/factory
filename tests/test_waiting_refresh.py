@@ -375,6 +375,73 @@ class WaitingRefreshTest(unittest.TestCase):
         self.assertEqual(git(self.origin, "merge-base", "main", self.github.head()), git(self.origin, "rev-parse", "main"))
         self.assertEqual(self.github.issue_labels, {config.LABEL_HUMAN})
 
+    def test_dirty_unpublished_waiting_worktree_is_preserved_before_restore(self):
+        wt = dispatch.ensure_worktree(9)
+        (wt / "unpublished.txt").write_text("kept commit\n")
+        git(wt, "add", "unpublished.txt")
+        git(wt, "commit", "-qm", "unpublished work")
+        kept_head = git(wt, "rev-parse", "HEAD")
+        (wt / "feature.txt").write_text("staged forensic edit\n")
+        git(wt, "add", "feature.txt")
+        (wt / "feature.txt").write_text("unstaged forensic edit\n")
+        (wt / "untracked.txt").write_text("untracked forensic evidence\n")
+        status = git(wt, "status", "--porcelain")
+        self.move_main()
+
+        with self.patched(), mock.patch.object(
+            dispatch, "run_gate", return_value=(True, "gate passed"),
+        ) as gate:
+            dispatch.merge_pass_locked(False)
+
+        self.assertEqual(git(wt, "rev-parse", "HEAD"), kept_head)
+        self.assertEqual(git(wt, "status", "--porcelain"), status)
+        self.assertEqual(git(wt, "show", ":feature.txt"), "staged forensic edit")
+        self.assertEqual((wt / "feature.txt").read_text(), "unstaged forensic edit\n")
+        self.assertEqual((wt / "untracked.txt").read_text(), "untracked forensic evidence\n")
+        self.assertEqual(self.github.head(), self.old_head)
+        self.assertEqual(self.github.issue_labels, {config.LABEL_HUMAN})
+        self.assertEqual(self.events("escalate"), [])
+        self.assertEqual(self.events("manage"), [])
+        gate.assert_not_called()
+
+    def test_main_file_change_releases_before_exhausted_waiting_refresh(self):
+        from contextlib import ExitStack
+
+        self.cfg.review_rounds = 0
+        (self.origin / "tests").mkdir()
+        baseline = self.move_main("tests/test_flaky.py", FLAKY_SOURCE)
+        dispatch.record(
+            "escalate", ticket=9, code="gate_failed", round=1,
+            parked_test={"test": FLAKY_TEST, "file": "tests/test_flaky.py", "main": baseline},
+        )
+        changed = self.move_main("tests/test_flaky.py", FLAKY_SOURCE + "# still fails\n")
+        git(self.root, "fetch", "origin")
+        with ExitStack() as stack:
+            stack.enter_context(self.patched())
+            stack.enter_context(mock.patch.object(config, "load", return_value=self.cfg))
+            stack.enter_context(mock.patch.object(dispatch, "pin_root", return_value=[]))
+            for name in ("sync_pass", "review_intake_pass", "ticket_pass"):
+                stack.enter_context(mock.patch.object(dispatch, name))
+            for name in ("factory.manage.manage_pass", "factory.learn.learn_pass"):
+                stack.enter_context(mock.patch(name))
+            stack.enter_context(mock.patch("factory.results.prune", return_value={"status": "complete"}))
+            gate = stack.enter_context(mock.patch.object(
+                dispatch, "run_gate", return_value=(False, FLAKY_REPORT),
+            ))
+            self.assertEqual(dispatch.main([]), 0)
+
+        self.assertEqual(self.github.issue_labels, {config.LABEL_AGENT})
+        [requeue] = self.events("test-requeue")
+        self.assertEqual((requeue["test"], requeue["main"]), (FLAKY_TEST, changed))
+        self.assertEqual([event["round"] for event in self.events("escalate")], [1])
+        self.assertEqual(self.events("manage"), [])
+        self.assertEqual(self.events("gate-requeue"), [])
+        comments = [call[call.index("--body") + 1] for call in self.github.calls
+                    if call[1:3] == ["issue", "comment"]]
+        self.assertIn(FLAKY_TEST, comments[-1])
+        self.assertIn(changed, comments[-1])
+        gate.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

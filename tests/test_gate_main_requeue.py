@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import fcntl
+import sys
 import tempfile
+import time
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
@@ -360,6 +362,62 @@ class MainTestRequeueTest(unittest.TestCase):
             self.dispatch_pass()
         self.assertEqual(self.github.issue_labels, {config.LABEL_HUMAN})
         self.assertEqual(self.events("test-requeue"), [])
+
+    def test_no_pr_requeue_worker_rebases_kept_worktree_before_retrying_gate(self):
+        (self.wt / "feature.txt").write_text("unpublished ticket work\n")
+        git(self.wt, "add", "feature.txt")
+        git(self.wt, "commit", "-qm", "ticket work")
+        kept_head = git(self.wt, "rev-parse", "HEAD")
+        self.park()
+        fixed_source = "import unittest\nclass FlakyTest(unittest.TestCase):\n    def test_status(self):\n        pass\n"
+        changed = self.advance(content=fixed_source)
+        with mock.patch.object(dispatch, "run", self.github.run), \
+                mock.patch.object(dispatch, "gh_json", self.github.gh_json):
+            dispatch.requeue_parked_tests(False)
+        self.assertEqual(self.github.issue_labels, {config.LABEL_AGENT})
+        self.assertEqual(git(self.wt, "rev-parse", "HEAD"), kept_head)
+        self.assertNotIn("refs/heads/agent/9", git(self.origin, "show-ref"))
+        self.cfg.idle_timeout = self.cfg.exit_grace = 0
+        self.cfg.workers = {"default": [
+            sys.executable, "-c",
+            "from pathlib import Path; import subprocess; "
+            "prompt = Path('.factory-prompt.md').read_text(); "
+            "assert 'Rebase onto `origin/main`' in prompt, prompt; "
+            "subprocess.run(['git', 'fetch', 'origin'], check=True); "
+            "subprocess.run(['git', 'rebase', 'origin/main'], check=True)",
+        ]}
+
+        def gate(wt, *_args, **_kwargs):
+            source = (wt / "tests/test_flaky.py").read_text()
+            return source == fixed_source, "PASS" if source == fixed_source else REPORT
+
+        dispatch.record("claimed", ticket=9)
+        dispatch.LOGS.mkdir(parents=True, exist_ok=True)
+        with mock.patch.object(dispatch, "run", self.github.run), \
+                mock.patch.object(dispatch, "gh_json", self.github.gh_json), \
+                mock.patch.object(dispatch, "run_gate", side_effect=gate):
+            ok, _report, _log, head = dispatch.worker_round(
+                9, self.wt, {config.LABEL_AGENT}, "change",
+                dispatch.refresh_requeue_context(9), 1, time.monotonic() + 30,
+            )
+        self.assertTrue(ok)
+        self.assertEqual(git(self.wt, "merge-base", changed, head), changed)
+        self.assertEqual((self.wt / "feature.txt").read_text(), "unpublished ticket work\n")
+        self.assertEqual(len(self.events("escalate")), 1)
+        self.assertEqual(self.events("manage"), [])
+        self.assertEqual(dispatch.refresh_requeue_context(9), "")
+
+    def test_pytest_parameter_with_spaces_retains_full_recovery_id(self):
+        test = "tests/test_flaky.py::FlakyTest::test_status[hello world]"
+        report = REPORT.replace(
+            f"FAIL: test_status ({TEST})", f"FAILED {test} - AssertionError",
+        ).replace("FAILED (failures=1)", "1 failed in 0.01s")
+        self.park(report)
+        changed = self.advance()
+        self.dispatch_pass()
+        self.assertEqual(self.github.issue_labels, {config.LABEL_AGENT})
+        [requeue] = self.events("test-requeue")
+        self.assertEqual((requeue["test"], requeue["main"]), (test, changed))
 
 
 if __name__ == "__main__":
