@@ -11,6 +11,31 @@ from unittest import mock
 from factory import config, dispatch, lifecycle
 from tests.test_refresh_conflict import FakeGitHub, build_fork, git
 
+FLAKY_TEST = "tests.test_flaky.FlakyTest.test_status"
+FLAKY_SOURCE = (
+    "import unittest\n"
+    "class FlakyTest(unittest.TestCase):\n"
+    "    def test_status(self):\n"
+    "        self.fail('known failure')\n"
+)
+FLAKY_REPORT = f"""# Gate report
+- conflict-markers: PASS
+- test: FAIL
+- ruff: PASS
+
+## test failure
+```
+FAIL: test_status ({FLAKY_TEST})
+Traceback (most recent call last):
+  File "tests/test_flaky.py", line 4, in test_status
+    self.fail("known failure")
+AssertionError: known failure
+Ran 1 test in 0.001s
+
+FAILED (failures=1)
+```
+"""
+
 
 class WaitingGitHub(FakeGitHub):
     def __init__(self, origin: Path, real_run) -> None:
@@ -136,11 +161,11 @@ class WaitingRefreshTest(unittest.TestCase):
         self.assertEqual(gate.call_count, 4)
         self.assertEqual(len(self.events("escalate")), first_escalations + 1)
 
-    def test_unpushed_waiting_head_preserves_parked_test_until_main_changes_it(self) -> None:
+    def test_unpublished_waiting_head_is_retained_while_remote_refreshes_and_marker_stays_parked(
+        self,
+    ) -> None:
         (self.origin / "tests").mkdir()
-        (self.origin / "tests/test_flaky.py").write_text(
-            "def test_status():\n    raise AssertionError('known failure')\n"
-        )
+        (self.origin / "tests/test_flaky.py").write_text(FLAKY_SOURCE)
         git(self.origin, "add", "tests/test_flaky.py")
         git(self.origin, "commit", "-qm", "known failing test")
         baseline = git(self.origin, "rev-parse", "main")
@@ -151,7 +176,7 @@ class WaitingRefreshTest(unittest.TestCase):
             code="gate_failed",
             round=1,
             parked_test={
-                "test": "tests/test_flaky.py::test_status",
+                "test": FLAKY_TEST,
                 "file": "tests/test_flaky.py",
                 "main": baseline,
             },
@@ -159,29 +184,99 @@ class WaitingRefreshTest(unittest.TestCase):
         wt = dispatch.ensure_worktree(9)
         (wt / "review-bounce.txt").write_text("unpushed\n")
         git(wt, "add", "review-bounce.txt")
-        git(wt, "commit", "-qm", "unpushed review bounce")
-        local_head = git(wt, "rev-parse", "HEAD")
+        git(wt, "commit", "-qm", "unpublished review bounce")
+        kept_head = git(wt, "rev-parse", "HEAD")
+        evidence_ref = f"refs/factory-evidence/9-refreshed-{kept_head[:12]}"
 
         self.move_main("unrelated.txt", "unrelated\n")
-        with self.patched(), mock.patch.object(dispatch, "run_gate") as gate:
+        with self.patched(), mock.patch.object(
+            dispatch, "run_gate", return_value=(True, "gate passed")
+        ) as gate:
             dispatch.merge_pass_locked(False)
             dispatch.requeue_parked_tests(False)
 
-        gate.assert_not_called()
+        refreshed_head = self.github.head()
+        gate.assert_called_once()
+        self.assertNotEqual(refreshed_head, self.old_head)
+        self.assertNotEqual(refreshed_head, kept_head)
+        self.assertEqual(
+            git(self.origin, "merge-base", "main", refreshed_head),
+            git(self.origin, "rev-parse", "main"),
+        )
+        self.assertNotIn(
+            "review-bounce.txt",
+            git(self.origin, "ls-tree", "-r", "--name-only", refreshed_head).splitlines(),
+        )
+        self.assertEqual(git(wt, "rev-parse", evidence_ref), kept_head)
+        self.assertEqual(git(wt, "rev-parse", "HEAD"), refreshed_head)
+        self.assertEqual(self.github.issue()["state"], "OPEN")
         self.assertEqual(self.github.issue_labels, {config.LABEL_HUMAN})
-        self.assertEqual(git(wt, "rev-parse", "HEAD"), local_head)
+        self.assertEqual(self.github.assignees, [])
+        self.assertEqual([event["round"] for event in self.events("escalate")], [1])
+        self.assertEqual(self.events("manage"), [])
+        self.assertEqual(self.events("gate-requeue"), [])
         self.assertEqual(self.events("test-requeue"), [])
 
-        changed = self.move_main("tests/test_flaky.py", "def test_status():\n    pass\n")
-        with self.patched(), mock.patch.object(dispatch, "run_gate") as gate:
+        changed = self.move_main(
+            "tests/test_flaky.py",
+            FLAKY_SOURCE.replace("self.fail('known failure')", "pass"),
+        )
+        with self.patched(), mock.patch.object(
+            dispatch, "run_gate", return_value=(True, "gate passed")
+        ):
             dispatch.merge_pass_locked(False)
             dispatch.requeue_parked_tests(False)
 
-        gate.assert_not_called()
         self.assertEqual(self.github.issue_labels, {config.LABEL_AGENT})
-        self.assertEqual(git(wt, "rev-parse", "HEAD"), local_head)
+        self.assertEqual(git(wt, "rev-parse", evidence_ref), kept_head)
         [requeue] = self.events("test-requeue")
-        self.assertEqual((requeue["test"], requeue["main"]), ("tests/test_flaky.py::test_status", changed))
+        self.assertEqual((requeue["test"], requeue["main"]), (FLAKY_TEST, changed))
+        self.assertEqual([event["round"] for event in self.events("escalate")], [1])
+
+    def test_failed_waiting_refresh_parks_test_from_gated_revision_then_main_fix_requeues(
+        self,
+    ) -> None:
+        self.cfg.review_rounds = 0
+        (self.origin / "tests").mkdir()
+        gated_main = self.move_main("tests/test_flaky.py", FLAKY_SOURCE)
+
+        with self.patched(), mock.patch.object(
+            dispatch, "run_gate", return_value=(False, FLAKY_REPORT)
+        ) as gate:
+            dispatch.merge_pass_locked(False)
+
+        self.assertEqual(gate.call_count, 2)
+        wt = dispatch.FACTORY / "wt-9"
+        self.assertEqual(self.github.head(), self.old_head)
+        self.assertEqual(git(wt, "rev-parse", "HEAD"), self.old_head)
+        [escalation] = self.events("escalate")
+        self.assertEqual(escalation["code"], "gate_failed")
+        self.assertEqual(
+            escalation["parked_test"],
+            {"test": FLAKY_TEST, "file": "tests/test_flaky.py", "main": gated_main},
+        )
+        self.assertNotEqual(escalation["refreshed_head"], self.old_head)
+        self.assertEqual(
+            git(wt, "rev-parse", escalation["evidence_ref"]),
+            escalation["refreshed_head"],
+        )
+        self.assertEqual(self.github.issue_labels, {config.LABEL_HUMAN})
+        self.assertEqual(self.events("manage"), [])
+
+        changed = self.move_main(
+            "tests/test_flaky.py",
+            FLAKY_SOURCE.replace("self.fail('known failure')", "pass"),
+        )
+        with self.patched(), mock.patch.object(
+            dispatch, "run_gate", return_value=(True, "gate passed")
+        ):
+            dispatch.merge_pass_locked(False)
+            dispatch.requeue_parked_tests(False)
+
+        self.assertEqual(self.github.issue_labels, {config.LABEL_AGENT})
+        self.assertEqual(len(self.events("escalate")), 1)
+        [requeue] = self.events("test-requeue")
+        self.assertEqual((requeue["test"], requeue["main"]), (FLAKY_TEST, changed))
 
     def test_up_to_date_waiting_pr_is_not_refreshed(self) -> None:
         with self.patched(), mock.patch.object(dispatch, "refresh_pr_branch") as refresh, \
