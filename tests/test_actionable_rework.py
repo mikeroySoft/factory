@@ -460,6 +460,18 @@ class ActionableReworkTest(unittest.TestCase):
         self.assert_human_queue(labels, "budget")
         dispatch.push_agent.assert_not_called()
 
+    def test_expired_review_without_matching_attempt_escalates(self):
+        record = dispatch.record
+
+        def retained_record(event, **fields):
+            if event != "attempt":
+                record(event, **fields)
+
+        self.patch(dispatch, "record", side_effect=retained_record)
+        labels = self.expired_attempt()
+        self.assert_human_queue(labels, "budget")
+        dispatch.push_agent.assert_not_called()
+
     def test_expired_review_ignores_other_ticket_attempts(self):
         labels = self.expired_attempt(extra_rows=(
             {"event": "attempt", "ticket": 9999, "head": risk_tests.HEAD, "finished": True},
