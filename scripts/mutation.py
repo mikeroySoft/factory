@@ -170,10 +170,13 @@ def main(argv: list[str] | None = None) -> int:
         workers = max(1, min(WORKERS, len(mutations)))
         copies = [scratch / f"copy{i}" for i in range(workers)]
         for copy in copies:
-            shutil.copytree(root, copy, ignore=COPY_IGNORE)
-            # Gate runs use linked worktrees; keep read-only HEAD metadata for tests that inspect it.
-            if (root / ".git").is_file():
-                shutil.copy2(root / ".git", copy / ".git")
+            # Isolate Git metadata, but overlay current files rather than checking out HEAD:
+            # baselines must include uncommitted edits/deletions and untracked files too.
+            subprocess.run(
+                ["git", "clone", "--quiet", "--shared", "--no-checkout", str(root), str(copy)],
+                check=True, timeout=max(deadline - time.monotonic(), 1),
+            )
+            shutil.copytree(root, copy, ignore=COPY_IGNORE, dirs_exist_ok=True)
         print(f"files: {', '.join(lines)}")
         print(f"mutants: {len(mutations)} sampled (seed {SEED}, cap {CAP}), "
               f"{min(hot, len(mutations))} on changed lines first, {workers} workers")
