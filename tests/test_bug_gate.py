@@ -107,6 +107,47 @@ class BugReproductionGateTest(unittest.TestCase):
             self.assertIn("- bug-repro-before: EXPECTED FAIL", report)
             self.assertIn("- bug-repro-head: PASS", report)
 
+    def test_repro_test_importing_sibling_test_module_passes_at_head(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repository(Path(directory))
+            (repo / "tests" / "test_a.py").write_text(
+                "def helper():\n    return 'sibling imported'\n"
+            )
+            (repo / "tests" / "test_b.py").write_text(
+                "import unittest\n"
+                "import value\n"
+                "from test_a import helper\n\n"
+                "class BTest(unittest.TestCase):\n"
+                "    def test_value(self):\n"
+                "        self.assertEqual(helper(), 'sibling imported')\n"
+                "        self.assertTrue(value.value())\n"
+            )
+            commit(repo, "reproduce bug with sibling import")
+            (repo / "value.py").write_text("def value():\n    return True\n")
+            commit(repo, "fix bug")
+            previous = Path.cwd()
+            os.chdir(repo)
+            try:
+                gate_module.configure(config.load(repo))
+                results = gate_module.check_bug_reproduction(
+                    "origin/main", "tests/test_b.py::BTest::test_value", None
+                )
+            finally:
+                os.chdir(previous)
+            self.assertEqual(results[0][:2], ("bug-repro-before", "EXPECTED FAIL"))
+            self.assertIn("AssertionError: False is not true", results[0][2])
+            self.assertNotIn("ModuleNotFoundError", results[0][2])
+
+
+            code, report = run_gate(
+                repo, "--bug", "--repro-test", "tests/test_b.py::BTest::test_value"
+            )
+
+            self.assertEqual(code, 0, report)
+            self.assertIn("- bug-repro-before: EXPECTED FAIL", report)
+            self.assertNotIn("ModuleNotFoundError", report)
+            self.assertIn("- bug-repro-head: PASS", report)
+
 
     def test_backticked_handoff_id_reaches_reproduction_gate_bare(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
