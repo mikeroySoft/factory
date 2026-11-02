@@ -59,6 +59,30 @@ class EndpointLocalityTest(unittest.TestCase):
         execution.commit.assert_called_once_with()
 
 
+class ProviderLocalityTest(unittest.TestCase):
+    def test_provider_does_not_change_local_model_accounting(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        cfg = config.Config(root, "acme/widgets")
+        cfg.llm_url = "http://127.0.0.1:11434/v1"
+        cfg.llm_model = "qwen3:30b"
+        self.enterContext(mock.patch.object(dispatch, "cfg", cfg, create=True))
+        log = root / "worker.log"
+        log.write_text("")
+        transcript = root / "session.jsonl"
+        transcript.write_text(json.dumps({
+            "type": "message", "message": {
+                "role": "assistant", "provider": "ollama", "model": cfg.llm_model,
+                "usage": {"input": 4, "output": 2},
+            },
+        }) + "\n")
+
+        usage = dispatch.worker_usage(log, None, str(transcript))
+
+        self.assertIs(dispatch._usage_local(usage), True)
+        self.assertEqual(usage["model"], cfg.llm_model)
+        self.assertEqual((usage["prompt_tokens"], usage["completion_tokens"]), (4, 2))
+
+
 class WorkerModelJournalTest(unittest.TestCase):
     def test_default_expanded_argv_and_model_agree(self) -> None:
         cfg = config.Config(Path("/repo"), "acme/widgets")
