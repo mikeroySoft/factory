@@ -4102,8 +4102,11 @@ def transcript_usage(path: Path) -> dict:
         for key, value in (("prompt_tokens", prompt + read + write), ("completion_tokens", completion),
                            ("cached_tokens", read)):
             usage[key] = usage.get(key, 0) + value
-        if isinstance(message.get("model"), str):
-            usage["model"] = message["model"]
+        if isinstance(model := message.get("model"), str):
+            provider = message.get("provider")
+            if isinstance(provider, str) and provider and not model.startswith(provider + "/"):
+                model = f"{provider}/{model}"
+            usage["model"] = model
     return usage
 
 

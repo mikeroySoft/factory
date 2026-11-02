@@ -1166,6 +1166,8 @@ fails without output. Doctor fails any profile without a non-empty `--model`.
 `usage.model` remains an optional dotted JSON path, never a literal ID or the
 source of `worker_model`. A different runtime model is retained in `llm-usage.model`
 with `model_mismatch = true`; it never replaces the pinned worker identity.
+OMP session models include their separately reported provider when cross-checking,
+so `provider/model` matches the pinned argv without hiding provider changes.
 
 `factory stats --week [--json]` also reports post-FIX outcomes by the next
 claim's recorded `worker_model`. Each `manage`/`FIX` inside the inclusive UTC
