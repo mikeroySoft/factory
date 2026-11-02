@@ -7,6 +7,7 @@ import json
 import subprocess
 import tempfile
 import unittest
+from itertools import pairwise
 from pathlib import Path
 from unittest import mock
 
@@ -85,7 +86,7 @@ class ManagerBindingTest(unittest.TestCase):
         elif command[1:3] == ["issue", "comment"]:
             stdout = "https://github.com/acme/widgets/issues/7#issuecomment-701"
         elif command[1:3] == ["issue", "edit"]:
-            for flag, value in zip(command, command[1:]):
+            for flag, value in pairwise(command):
                 if flag == "--add-label":
                     self.labels.add(value)
                 elif flag == "--remove-label":

@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import contextmanager
+from itertools import pairwise
 from pathlib import Path
 from unittest import mock
 
@@ -233,7 +234,7 @@ class AddOnlyOverrideTest(unittest.TestCase):
 
         def run_command(command, **kwargs):
             if command[1:3] == ["issue", "edit"]:
-                for flag, value in zip(command, command[1:]):
+                for flag, value in pairwise(command):
                     if flag == "--add-label":
                         labels.add(value)
                     elif flag == "--remove-label":
