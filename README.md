@@ -1028,7 +1028,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    and kept-worktree heads; changed inputs make it eligible again. Unpublished
    kept heads are retained under `refs/factory-evidence/...` before restoring
    and refreshing the published PR head; a clean refresh preserves the ticket's
-   parking evidence.
+   parking evidence. Dirty waiting worktrees are left untouched before any restore
+   or rebase, retaining staged edits, unstaged edits, and untracked forensic files.
    Red CI → label removed, escalated once with the failing
    check names. A check cancelled after running steps is red CI. A check
    cancelled before any runner picked it up (no steps, no runner, or GitHub's
@@ -1062,19 +1063,22 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    test and no other failure records `parked_test` (test ID, unambiguous source
    file, and observed main SHA), resolving source against the gated revision
    even when refresh restores the original PR head. Parameterized pytest IDs
-   retain their full ID while matching the unparameterized source. Complete
+   retain their full ID, including spaces, while matching the unparameterized source. Complete
    unittest, pytest, and cargo failure
    summaries are recognized; unittest skips and expected failures do not count
    as failures, but unexpected successes do. Ambiguous/truncated output, a failed
    worker, or rejected gate evidence (dirty worktree or changed head) leaves the
-   ticket parked without this marker. After landing and before the manager runs,
+   ticket parked without this marker. Before landing (and again afterward, before the manager runs),
    a later main commit touching that exact file releases an open, unassigned,
    still-parked ticket to `ready-for-agent`. Recovery holds the ticket lock
    through fresh marker validation, provider edits, and journaling. It ignores
-   unrelated main changes; independent waiting-refresh failures still follow
+   unrelated main changes. Eligible releases happen before waiting refresh can replace
+   their parking baseline; independent waiting-refresh failures still follow
    the conflict/gate requeue rules in step 6. The comment names the test and the
    commit that touched its file; `test-requeue` records the release without
-   charging a round. A later
+   charging a round. The next worker receives instructions to fetch and rebase
+   the kept branch onto `origin/<main>` before retrying the gate, including when
+   no PR was ever pushed. A later
    claim, worker attempt, escalation, active manager decision, human decision,
    or worker requeue supersedes the old marker; a passive manager `HUMAN`
    handoff does not erase it. A failed manager `FIX` on an already-human ticket

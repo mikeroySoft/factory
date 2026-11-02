@@ -3306,12 +3306,21 @@ def refresh_requeue_context(n: int) -> str:
         event for event in lifecycle.read_events(EVENTS)
         if event.get("ticket") == n
         and event.get("event") in {
-            "attempt", "conflict-requeue", "gate-requeue", "risk-requeue",
+            "attempt", "conflict-requeue", "gate-requeue", "risk-requeue", "test-requeue",
         }
     ]
     if not rows or rows[-1]["event"] == "attempt":
         return ""
     event = rows[-1]
+    if event["event"] == "test-requeue":
+        return (
+            "## Sole-test recovery\n\n"
+            f"Test `{event['test']}` in `{event['file']}` changed on `{cfg.main}` "
+            f"in commit `{event['main']}`. Continue on the existing `agent/{n}` branch. "
+            f"Rebase onto `origin/{cfg.main}` after `git fetch origin` before retrying the gate, "
+            "so the kept worktree includes the changed test file. Resolve any conflicts without "
+            "widening the ticket's scope. The gate and an independent review run again.\n\n"
+        )
     if event["event"] == "conflict-requeue":
         return (
             f"## Refresh conflict, round {event['round']}\n\n"
@@ -3438,7 +3447,14 @@ def refresh_pr_branch(
     local_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     remote_head = run(["git", "rev-parse", f"origin/agent/{n}"], cwd=wt).stdout.strip()
     main_head = run(["git", "rev-parse", f"origin/{cfg.main}"], cwd=wt).stdout.strip()
+    status_cmd = [
+        "git", "status", "--porcelain", "--untracked-files=all", "--", ".",
+        ":(exclude).factory-prompt.md", ":(exclude).factory",
+    ]
     if waiting:
+        if run(status_cmd, cwd=wt).stdout.strip():
+            log(f"PR #{pr}: waiting worktree is dirty; keeping forensic edits, not refreshing")
+            return False
         if local_head != remote_head:
             kept_head = local_head
             evidence_ref = restore_pr_head(kept_head)
@@ -3520,10 +3536,6 @@ def refresh_pr_branch(
             refreshed_head=head,
         )
         return False
-    status_cmd = [
-        "git", "status", "--porcelain", "--untracked-files=all", "--", ".",
-        ":(exclude).factory-prompt.md", ":(exclude).factory",
-    ]
     before_status = run(status_cmd, cwd=wt).stdout.strip()
     issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels,body,comments"])
     labels = {label["name"] for label in issue.get("labels", [])}
@@ -4844,6 +4856,8 @@ def main(argv: list[str]) -> int:
         # A release PR merges before this pass lands a ticket (every ticket edits CHANGELOG.md,
         # which GitHub cannot union-merge), and a new one opens only after landing.
         release_step(open_pr=False)
+        # Release file-change recovery before waiting refresh can replace its parking baseline.
+        requeue_parked_tests(args.dry_run)
         land_pass(args.dry_run)
         requeue_parked_tests(args.dry_run)
         review_intake_pass(args.dry_run)

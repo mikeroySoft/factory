@@ -113,7 +113,7 @@ def failed_test_ids(output: str) -> list[str]:
     for line in output.splitlines():
         match = re.match(r"^(?:FAIL|ERROR): \S+ \(([^()\s]+)\)", line)
         if match is None:
-            match = re.match(r"^FAILED ([^\s]+::[^\s]+)(?:\s+-|\s*$)", line)
+            match = re.match(r"^FAILED (\S+::[^\s\[]+(?:\[.*\])?)(?:\s+-|\s*$)", line)
         if match is None:
             match = re.match(r"^---- ([^\s]+) stdout ----$", line)
         if match is not None and match[1] not in found:
