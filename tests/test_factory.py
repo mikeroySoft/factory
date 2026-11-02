@@ -2269,6 +2269,7 @@ esac
                 git(repo, "push", "origin", "main")
                 stub_bin(Path(stubs).parent, **{
                     "gh": '''
+if [ "$1 $2 $7" = "issue view state,labels,comments" ]; then echo '{"state":"OPEN","labels":[{"name":"ready-for-human"}],"comments":[]}'; exit 0; fi
 case "$1 $2" in
   "pr list") echo '[]';;
   "issue list") echo '[{"number":7,"title":"Fix CI","body":"Original","labels":[{"name":"chore"}]}]';;
