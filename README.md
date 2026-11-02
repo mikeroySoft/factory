@@ -1177,6 +1177,16 @@ Missing claim models are `unknown`, separate from `no claim`. Resolved merge
 rate is merged / (merged + re-escalated), excluding pending. These are noisy,
 observational samples, not controlled model rankings.
 
+For the November 1, 2026 default-worker switch, post the before/after readout
+on #535 after 20 post-FIX `default` claims on `openai-codex/gpt-6.1-sol`
+resolve, or by November 15 around 10:50 AM PT, whichever comes first.
+Include merged/re-escalated/pending counts and the observation window across
+factory, gpuflo, rocm-cli, rocm-app and district. Compare with the historical
+6/35 (17%) baseline; the older model attribution comes from host configuration
+history, not missing journal fields. This is observational: issue difficulty
+and requeue paths can differ. Michael decides whether to revert the host
+configuration; Factory does not change it from these statistics.
+
 
 The shared host file is `$XDG_CONFIG_HOME/factory/config.toml` (default
 `~/.config/factory/config.toml`). `[defaults.engine]` belongs to District:
