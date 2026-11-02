@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from factory import config, dispatch, lifecycle
-from test_refresh_conflict import FakeGitHub, build_fork, git
+from tests.test_refresh_conflict import FakeGitHub, build_fork, git
 
 
 TEST = "tests.test_flaky.FlakyTest.test_status"
@@ -202,6 +202,21 @@ class MainTestRequeueTest(unittest.TestCase):
                     if c[1:3] == ["issue", "comment"]]
         self.assertIn(changed, comments[-1])
 
+
+
+    def test_timeout_after_test_failure_stays_parked(self):
+        self.park(REPORT + "\ncheck timed out after 30s\n")
+        self.advance()
+        self.dispatch_pass()
+        self.assertEqual(self.github.issue_labels, {config.LABEL_HUMAN})
+        self.assertNotIn("parked_test", self.events("escalate")[-1])
+
+    def test_unexpected_success_alongside_failure_stays_parked(self):
+        self.park(REPORT.replace("failures=1", "failures=1, unexpected successes=1"))
+        self.advance()
+        self.dispatch_pass()
+        self.assertEqual(self.github.issue_labels, {config.LABEL_HUMAN})
+        self.assertNotIn("parked_test", self.events("escalate")[-1])
 
 
 if __name__ == "__main__":

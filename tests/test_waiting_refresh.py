@@ -176,5 +176,35 @@ class WaitingRefreshTest(unittest.TestCase):
 
 
 
+    def test_waiting_pr_refreshes_even_when_an_approved_pr_also_needs_refresh(self):
+        self.move_main()
+        git(self.origin, "branch", "agent/10", self.old_head)
+        approved = {
+            **self.github.pr(), "number": 101, "headRefName": "agent/10",
+            "labels": [{"name": config.LABEL_APPROVED}],
+        }
+        real_json = self.github.gh_json
+        real_refresh = dispatch.refresh_pr_branch
+
+        def github_json(args):
+            if args[:2] == ["pr", "list"]:
+                return [approved, self.github.pr()]
+            if args[:3] == ["pr", "view", "101"]:
+                return approved
+            return real_json(args)
+
+        def refresh(n, *args, **kwargs):
+            return True if n == 10 else real_refresh(n, *args, **kwargs)
+
+        with self.patched(), mock.patch.object(dispatch, "gh_json", side_effect=github_json), \
+                mock.patch.object(dispatch, "refresh_pr_branch", side_effect=refresh), \
+                mock.patch.object(dispatch, "run_gate", return_value=(True, "gate passed")):
+            dispatch.merge_pass_locked(False)
+
+        self.assertNotEqual(self.github.head(), self.old_head)
+        self.assertEqual(git(self.origin, "merge-base", "main", self.github.head()), git(self.origin, "rev-parse", "main"))
+        self.assertEqual(self.github.issue_labels, {config.LABEL_HUMAN})
+
+
 if __name__ == "__main__":
     unittest.main()
