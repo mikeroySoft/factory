@@ -1793,14 +1793,16 @@ ESCALATION_CODES = frozenset({
 })
 
 
-def _sole_test_failure(wt: Path, n: int) -> dict | None:
+def _sole_test_failure(wt: Path, n: int, gate_report: str | None = None) -> dict | None:
     """Only complete, single-test failures may be released by a main file change."""
     from factory import gate
 
-    report_path = wt / ".factory" / f"gate-report-{n}.md"
-    if not report_path.exists():
-        return None
-    report = report_path.read_text()
+    if gate_report is None:
+        report_path = wt / ".factory" / f"gate-report-{n}.md"
+        if not report_path.exists():
+            return None
+        gate_report = report_path.read_text()
+    report = gate_report
     if len(re.findall(r"(?m)^- [^\n]+: FAIL\b", report)) != 1:
         return None
     if "Gate evidence rejected:" in report or "check timed out after " in report:
@@ -1813,8 +1815,14 @@ def _sole_test_failure(wt: Path, n: int) -> dict | None:
     pytest_counts = re.findall(r"(?m)^(?:=+ )?(\d+) failed[^\n]*$", report)
     rust_counts = re.findall(r"(?m)^test result: FAILED\. \d+ passed; (\d+) failed;", report)
     if unittest_counts:
-        counts = re.findall(r"=(\d+)", unittest_counts[-1])
-        sole = bool(counts) and sum(map(int, counts)) == 1
+        counts = dict(re.findall(
+            r"(?:^|,\s*)(failures|errors|unexpected successes)=(\d+)",
+            unittest_counts[-1],
+        ))
+        sole = (
+            int(counts.get("failures", 0)) + int(counts.get("errors", 0)) == 1
+            and int(counts.get("unexpected successes", 0)) == 0
+        )
     elif pytest_counts:
         sole = int(pytest_counts[-1]) == 1 and not re.search(r"\b[1-9]\d* errors?\b", report)
     else:
@@ -1911,6 +1919,7 @@ def escalate(
     code: str,
     refreshed_head: str | None = None,
     evidence_ref: str | None = None,
+    gate_report: str | None = None,
 ) -> None:
     assert code in ESCALATION_CODES, code
     assert (refreshed_head is None) == (evidence_ref is None)
@@ -1948,7 +1957,7 @@ def escalate(
         if refreshed_head is not None
         else {}
     )
-    if code == "gate_failed" and (failure := _sole_test_failure(wt, n)):
+    if code == "gate_failed" and (failure := _sole_test_failure(wt, n, gate_report)):
         evidence["parked_test"] = failure
     record(
         "escalate", ticket=n, code=code, reason=reason,
@@ -3385,6 +3394,7 @@ def refresh_pr_branch(
         extra: str = "",
         *,
         refreshed_head: str | None = None,
+        gate_report: str | None = None,
     ) -> None:
         evidence_ref = restore_pr_head(refreshed_head) if refreshed_head is not None else None
         escalate(
@@ -3395,8 +3405,40 @@ def refresh_pr_branch(
             code=code,
             refreshed_head=refreshed_head,
             evidence_ref=evidence_ref,
+            gate_report=gate_report,
         )
+        if waiting:
+            record(
+                "waiting-refresh-failed",
+                ticket=n,
+                pr=pr,
+                pr_head=remote_head,
+                main_head=main_head,
+                kept_head=local_head,
+                code=code,
+            )
 
+    run(["git", "fetch", "origin"], cwd=wt)
+    local_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    remote_head = run(["git", "rev-parse", f"origin/agent/{n}"], cwd=wt).stdout.strip()
+    main_head = run(["git", "rev-parse", f"origin/{cfg.main}"], cwd=wt).stdout.strip()
+    if waiting:
+        if local_head != remote_head:
+            log(
+                f"PR #{pr}: waiting refresh deferred; kept worktree head "
+                f"{local_head} differs from remote head {remote_head}"
+            )
+            return False
+        if any(
+            event.get("event") == "waiting-refresh-failed"
+            and event.get("ticket") == n
+            and event.get("pr") == pr
+            and event.get("pr_head") == remote_head
+            and event.get("main_head") == main_head
+            and event.get("kept_head") == local_head
+            for event in lifecycle.read_events(EVENTS)
+        ):
+            return False
     removed = run(
         ["gh", "pr", "edit", str(pr), "--repo", REPO, "--remove-label", FACTORY_APPROVED],
         check=False,
@@ -3404,9 +3446,6 @@ def refresh_pr_branch(
     if removed.returncode:
         escalate(n, f"PR #{pr}: could not remove stale `{FACTORY_APPROVED}` approval", None, code="gh_failed")
         return False
-    run(["git", "fetch", "origin"], cwd=wt)
-    local_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
-    remote_head = run(["git", "rev-parse", f"origin/agent/{n}"], cwd=wt).stdout.strip()
     if local_head != remote_head:
         withdraw(f"kept worktree head {local_head} differs from remote head {remote_head}", "refresh_head")
         return False
@@ -3553,7 +3592,7 @@ def refresh_pr_branch(
             if why:
                 withdraw(
                     f"gate failed twice after {verb} onto moved main ({why}); worktree {wt}",
-                    "gate_failed", extra=details, refreshed_head=head,
+                    "gate_failed", extra=details, refreshed_head=head, gate_report=report,
                 )
                 return False
             evidence_ref = restore_pr_head(head)
@@ -3579,6 +3618,7 @@ def refresh_pr_branch(
             f"gate failed after {verb} onto moved main",
             "gate_failed",
             refreshed_head=head,
+            gate_report=report,
         )
         return False
     if push_agent(wt, n, remote_head, check=False) is None:
@@ -4487,8 +4527,11 @@ def process_ticket(
                     stuck = report.startswith("worker stuck")
                     failed = (f"idle_timeout fired (worker stuck) on attempt {MAX_ATTEMPTS}"
                               if stuck else f"gate failed {MAX_ATTEMPTS} times")
-                    escalate(n, f"{failed}; worktree kept at {wt}", logfile,
-                             code="worker_stuck" if stuck else "gate_failed")
+                    escalate(
+                        n, f"{failed}; worktree kept at {wt}", logfile,
+                        code="worker_stuck" if stuck else "gate_failed",
+                        gate_report=None if stuck else report,
+                    )
                     return
 
             run(["git", "fetch", "origin", cfg.main], cwd=wt)
@@ -4583,6 +4626,7 @@ def process_ticket(
                     escalate(
                         n, f"{failed} after review bounce {bounce}; worktree kept at {wt}", logfile,
                         code="worker_stuck" if stuck else "gate_failed",
+                        gate_report=None if stuck else report,
                     )
                     return
                 lease = push_agent(wt, n, lease)

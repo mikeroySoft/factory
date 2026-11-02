@@ -463,7 +463,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
             if already_human:
                 dispatch.log(f"#{n}: manager FIX failed (gate_failed: {reason}); ticket is already ready-for-human")
             else:
-                dispatch.escalate(n, reason, logfile, code="gate_failed")
+                dispatch.escalate(n, reason, logfile, code="gate_failed", gate_report=report)
             return
         fresh = dispatch.gh_json(
             ["pr", "view", f"agent/{n}", "--repo", dispatch.REPO, "--json", "baseRefName"]
