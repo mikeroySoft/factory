@@ -33,6 +33,9 @@ class WorkerModesTest(unittest.TestCase):
         self.cfg = config.load(self.root)
         dispatch.configure(self.cfg)
         dispatch.LOGS.mkdir(parents=True)
+        self.enterContext(mock.patch.object(dispatch, "gh_json", return_value={
+            "title": "Fixture issue", "body": "Fixture acceptance criteria", "comments": [],
+        }))
 
     def write_config(self, worker_transcript: str = 'transcript = "omp-session"\n', review_mode: str = "json_mode = true\n") -> None:
         (self.root / config.CONFIG_NAME).write_text(
@@ -109,9 +112,6 @@ class WorkerModesTest(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 0, review_output, "")
             return real_run(argv, *args, **kwargs)
 
-        self.enterContext(mock.patch.object(dispatch, "gh_json", return_value={
-            "title": "Fixture issue", "body": "Fixture acceptance criteria", "comments": [],
-        }))
         with mock.patch.object(dispatch, "run", side_effect=run):
             verdict, _findings = dispatch.review(self.root, 7, "PASS", head)
         self.assertEqual(verdict, "APPROVE")
