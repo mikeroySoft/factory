@@ -1,6 +1,7 @@
 """#517: a main change to the sole failing test's file releases parked work."""
 from __future__ import annotations
 
+import fcntl
 import tempfile
 import unittest
 from contextlib import ExitStack
@@ -292,6 +293,73 @@ class MainTestRequeueTest(unittest.TestCase):
         self.advance()
         self.dispatch_pass()
         self.assertEqual(self.github.issue_labels, {config.LABEL_HUMAN})
+
+    def test_parameterized_pytest_ids_requeue_after_source_file_changes(self):
+        for parameter in ("1.0", "value::nested"):
+            with self.subTest(parameter=parameter):
+                self.github.issue_labels = {config.LABEL_HUMAN}
+                test = f"tests/test_flaky.py::FlakyTest::test_status[{parameter}]"
+                report = REPORT.replace(
+                    f"FAIL: test_status ({TEST})", f"FAILED {test} - AssertionError",
+                ).replace("FAILED (failures=1)", "1 failed in 0.01s")
+                self.park(report)
+                self.advance(content=f"# fixed {parameter}\n")
+                self.dispatch_pass()
+                self.assertEqual(self.github.issue_labels, {config.LABEL_AGENT})
+                self.assertEqual(self.events("test-requeue")[-1]["test"], test)
+
+    def test_recovery_holds_ticket_lock_through_provider_mutations(self):
+        self.park()
+        self.advance()
+        original_run = self.github.run
+        contended = []
+
+        def provider_run(args, **kwargs):
+            if args[0] == "gh" and args[1:3] in (["issue", "comment"], ["issue", "edit"]):
+                with dispatch.ticket_lock(9).open("w") as competitor:
+                    try:
+                        fcntl.flock(competitor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        contended.append(True)
+                    else:
+                        contended.append(False)
+            return original_run(args, **kwargs)
+
+        with mock.patch.object(self.github, "run", side_effect=provider_run):
+            self.dispatch_pass()
+        self.assertEqual(contended, [True, True])
+        self.assertEqual(self.github.issue_labels, {config.LABEL_AGENT})
+
+    def test_recovery_reloads_parking_evidence_after_acquiring_ticket_lock(self):
+        self.park()
+        self.advance()
+        dispatch.ticket_lock(9).touch()
+        real_flock = fcntl.flock
+        superseded = False
+
+        def acquire(lock, operation):
+            nonlocal superseded
+            result = real_flock(lock, operation)
+            if operation & fcntl.LOCK_EX and not superseded:
+                superseded = True
+                dispatch.record("manage", ticket=9, decision="FIX", round=1)
+                dispatch.record("attempt", ticket=9, gate="FAIL", worker_exit=1)
+            return result
+
+        with mock.patch.object(dispatch.fcntl, "flock", side_effect=acquire):
+            self.dispatch_pass()
+        self.assertTrue(superseded)
+        self.assertEqual(self.github.issue_labels, {config.LABEL_HUMAN})
+        self.assertEqual(self.events("test-requeue"), [])
+
+    def test_recovery_skips_ticket_locked_by_manager(self):
+        self.park()
+        self.advance()
+        with dispatch.ticket_lock(9).open("w") as manager_lock:
+            fcntl.flock(manager_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.dispatch_pass()
+        self.assertEqual(self.github.issue_labels, {config.LABEL_HUMAN})
+        self.assertEqual(self.events("test-requeue"), [])
 
 
 if __name__ == "__main__":
