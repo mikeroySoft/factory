@@ -161,6 +161,24 @@ class OwnerStateTest(unittest.TestCase):
         self.assertFalse(self.merge())
         self.assertEqual(self.posted, [])
 
+    def test_post_approval_release_of_factory_held_allows_merge(self):
+        self.labels = {config.LABEL_HUMAN, "priority"}
+        self.decision("Removed factory-held; merge when green.")
+        self.assertTrue(self.merge())
+        self.assertEqual(self.labels, {"priority"})
+        self.assertEqual(self.posted, [
+            "Factory resolved the escalation without a human: merged PR #70 after approval and passing CI.",
+        ])
+
+    def test_post_approval_hold_decisions_still_block_merge(self):
+        for body in ("Hold this ticket.", "Keep this held.", "Keep factory-held; do not merge."):
+            with self.subTest(body=body):
+                self.comments = []
+                self.decision(body)
+                self.assertFalse(self.merge())
+        self.assertEqual(self.labels, {config.LABEL_AGENT})
+        self.assertEqual(self.posted, [])
+
     def test_old_owner_hold_and_new_nonblocking_decision_do_not_veto_approval(self):
         self.decision("Do not merge yet.", at=CLAIM)
         self.decision("Proceed with the approved change.")
