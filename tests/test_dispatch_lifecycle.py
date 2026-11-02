@@ -117,6 +117,15 @@ class LocalCLI(unittest.TestCase):
         self.git("remote", "add", "origin", str(origin))
         self.git("push", "-u", "origin", "main")
         self.events = self.repo / ".factory" / "events.jsonl"
+        if self._testMethodName == "test_early_ticket_exit_does_not_poison_later_manager_fix_push":
+            from unittest import mock
+
+            from factory import dispatch
+
+            self.enterContext(mock.patch.object(
+                dispatch, "owner_state",
+                return_value=({"state": "OPEN", "labels": [], "comments": []}, None),
+            ))
 
     def git(self, *args):
         return subprocess.run(["git", *args], cwd=self.repo, env=self.env, check=True, capture_output=True, text=True)

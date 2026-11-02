@@ -72,6 +72,12 @@ class FrontierTest(unittest.TestCase):
         if args[:2] == ["api", "repos/example/project/issues/79/timeline"]:
             return [self.timeline]
         if args[:2] == ["issue", "view"]:
+            if args[-1] == "state,labels,comments":
+                return {
+                    "state": "OPEN",
+                    "labels": [{"name": n} for n in self.issue_labels],
+                    "comments": [],
+                }
             return {"id": "I_79", "number": 79, "url": "https://github.com/example/project/issues/79",
                     "title": "Ticket", "body": "Scope", "state": "OPEN",
                     "labels": [{"name": n} for n in self.issue_labels]}
@@ -333,6 +339,12 @@ class FrontierTest(unittest.TestCase):
 
 
 class CloseDecisionTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.enterContext(mock.patch.object(
+            dispatch, "owner_state",
+            return_value=({"state": "OPEN", "labels": [], "comments": []}, None),
+        ))
+
     def test_close_proposes_wontfix_on_human_issue_and_closes_factory_child(self) -> None:
         for created in (False, True):
             with self.subTest(factory_created=created), tempfile.TemporaryDirectory() as d:

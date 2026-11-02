@@ -152,6 +152,7 @@ class HandoffCli(unittest.TestCase):
         self.packet.write_text("# Escalation #7\n\nworker log at /tmp/runner-only/logs/7-attempt-1.log\n")
         self.state = {
             "issue": {"id": "I_7", "number": 7, "title": "Fix gate", "url": ISSUE_URL, "state": "OPEN",
+                      "comments": [],
                       "body": "**Scope**\nA ticket.", "labels": [{"name": "ready-for-human"}]},
             "pr": {"url": PR_URL, "files": [{"path": "src/auth/login.py"}]},
             "timeline": [],
@@ -547,6 +548,12 @@ class HandoffCli(unittest.TestCase):
 
 
 class ReceiptTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.enterContext(mock.patch.object(
+            dispatch, "owner_state",
+            return_value=({"state": "OPEN", "labels": [], "comments": []}, None),
+        ))
+
     def test_escalate_journals_the_comment_it_created_and_nothing_when_gh_fails(self) -> None:
         from unittest.mock import patch
 

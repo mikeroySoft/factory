@@ -133,6 +133,8 @@ def merge_stage_mocks(origin: Path, pr_number: int, branch: str, title: str, ori
             return {"behind_by": 0}
         if args[:2] == ["pr", "view"]:
             return pr
+        if args[:2] == ["issue", "view"] and args[-1] == "state,labels,comments":
+            return {"state": "OPEN", "labels": [], "comments": []}
         if args[:2] == ["issue", "view"]:
             return {"labels": []}
         raise AssertionError(args)
@@ -1592,6 +1594,38 @@ class ManageTest(unittest.TestCase):
 
         self.enterContext(patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
         host_file("")
+        if self._testMethodName in {
+            "test_fix_runs_selected_worker_on_red_ci_and_requires_gate_and_review",
+            "test_failed_rewrite_is_not_requeued_or_replayed_and_next_ticket_runs",
+        }:
+            original_stub_bin = stub_bin
+
+            def complete_owner_fixture(tmp, **scripts):
+                if "gh" in scripts:
+                    scripts["gh"] = (
+                        'if [ "$1 $2 $7" = "issue view state,labels,comments" ]; then '
+                        'echo \'{"state":"OPEN","labels":[{"name":"ready-for-human"}],"comments":[]}\'; exit 0; fi\n'
+                        + scripts["gh"]
+                    )
+                return original_stub_bin(tmp, **scripts)
+
+            self.enterContext(patch(f"{__name__}.stub_bin", side_effect=complete_owner_fixture))
+        owner_labels = {
+            "test_terminal_handoff_runs_after_manager_timeline_lookup_fails": [config.LABEL_HUMAN],
+            "test_fix_rejects_wrong_or_missing_base_before_mutation": [],
+            "test_fix_rechecks_base_before_push": [],
+        }.get(self._testMethodName)
+        if owner_labels is not None:
+            from factory import dispatch
+
+            self.enterContext(patch.object(
+                dispatch, "owner_state",
+                return_value=({
+                    "state": "OPEN",
+                    "labels": [{"name": label} for label in owner_labels],
+                    "comments": [],
+                }, None),
+            ))
 
     def scenario(self, round_number: int = 1, activity: list | None = None) -> tuple:
         tmp = tempfile.TemporaryDirectory()
@@ -1611,6 +1645,7 @@ class ManageTest(unittest.TestCase):
                     *(activity or [])]
         (state / "timeline.json").write_text(json.dumps(timeline))
         stubs = stub_bin(root, gh=f'''
+if [ "$1 $2 $7" = "issue view state,labels,comments" ]; then echo '{{"state":"OPEN","labels":[{{"name":"ready-for-human"}}],"comments":[]}}'; exit 0; fi
 case "$1 $2" in
   "pr list") echo '[]';;
   "issue list") echo '[{{"number":7,"title":"Fix gate","body":"Original body","labels":[{{"name":"ready-for-human"}}]}}]';;
@@ -2419,6 +2454,21 @@ esac
 
 
 class DispatchTest(unittest.TestCase):
+    def setUp(self) -> None:
+        if self._testMethodName in {
+            "test_prompt_carries_handoff_and_events_append",
+            "test_approval_withdraws_label_when_remote_base_races",
+            "test_approval_withdraws_label_when_remote_head_races",
+        }:
+            from unittest import mock
+
+            from factory import dispatch
+
+            self.enterContext(mock.patch.object(
+                dispatch, "owner_state",
+                return_value=({"state": "OPEN", "labels": [], "comments": []}, None),
+            ))
+
     def test_push_and_pr_targets_configured_nondefault_branch(self) -> None:
         from unittest import mock
 
