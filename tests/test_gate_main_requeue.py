@@ -10,7 +10,6 @@ from unittest import mock
 from factory import config, dispatch, lifecycle
 from tests.test_refresh_conflict import FakeGitHub, build_fork, git
 
-
 TEST = "tests.test_flaky.FlakyTest.test_status"
 REPORT = f"""# Gate report
 - conflict-markers: PASS
