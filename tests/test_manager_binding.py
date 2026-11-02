@@ -165,11 +165,23 @@ class ManagerBindingTest(unittest.TestCase):
         self.labels = {config.LABEL_HUMAN, "priority"}
         live_body = self.bound("Latest live scope")
         replacement = self.bound("Manager-refined scope")
+        current_body = live_body
+        exposed_bodies = []
+
+        def run_command(command, *args, **kwargs):
+            nonlocal current_body
+            if command[1:3] == ["issue", "edit"] and "--body" in command:
+                current_body = command[command.index("--body") + 1]
+            result = self.run_command(command, *args, **kwargs)
+            if config.LABEL_AGENT in self.labels:
+                exposed_bodies.append(current_body)
+            return result
+
         with mock.patch.object(
             dispatch,
             "gh_json",
             return_value={"title": "Bounded slice", "body": live_body},
-        ) as refresh, mock.patch.object(dispatch, "run", side_effect=self.run_command):
+        ) as refresh, mock.patch.object(dispatch, "run", side_effect=run_command):
             manage.apply(
                 7,
                 {"title": "Bounded slice", "body": self.bound("Stale list scope")},
@@ -192,6 +204,8 @@ class ManagerBindingTest(unittest.TestCase):
         self.assertIn(live_body, comment_body)
         self.assertNotIn("Stale list scope", comment_body)
         self.assertEqual(edit[edit.index("--body") + 1], replacement)
+        self.assertTrue(exposed_bodies)
+        self.assertTrue(all(body == replacement for body in exposed_bodies))
         self.assertEqual(self.labels, {config.LABEL_AGENT, "priority"})
         self.assertEqual(self.assignees, {"owner"})
         notes = [

@@ -214,6 +214,31 @@ class OwnerStateTest(unittest.TestCase):
         self.assertEqual(len(notes), 1)
         self.assertIn("RETRY", notes[0])
 
+    def test_manager_authorize_defers_to_owner_changes_before_any_authorization(self):
+        for change in (self.held, self.decision):
+            with self.subTest(change=change.__name__):
+                self.labels = {config.LABEL_HUMAN, "priority"}
+                self.assignees = {"factory", "owner"}
+                self.comments = []
+                issue = self.github(["issue", "view"])
+                change()
+                labels = self.labels.copy()
+                manage.apply(
+                    7, issue, "AUTHORIZE", "",
+                    {"justification": "Correct obsolete assertions", "guidance": "Preserve owner state"},
+                    Path("packet.md"),
+                )
+                self.assertEqual(self.labels, labels)
+                self.assertNotIn(config.LABEL_ADD_ONLY_OVERRIDE, self.labels)
+                self.assertEqual(self.assignees, {"owner"})
+                self.assertEqual(self.posted, [])
+                results = [row for row in lifecycle.read_events(dispatch.EVENTS)
+                           if row.get("event") == "pass-result" and row.get("ticket") == 7]
+                self.assertEqual(results[-1]["action"], "manage")
+                self.assertEqual(results[-1]["decision"], "AUTHORIZE")
+                self.assertEqual(results[-1]["owner_state"],
+                                 "factory-held" if change == self.held else "owner decision after claim")
+
     def test_refresh_requeue_preserves_owner_labels_and_announces_resolution_once(self):
         self.labels = {config.LABEL_HUMAN, "priority"}
         self.assertTrue(dispatch.resolve_escalation(7, "requeued PR #70 after a refresh conflict", requeue=True))
@@ -228,7 +253,6 @@ class OwnerStateTest(unittest.TestCase):
         self.decision()
         self.assertFalse(dispatch.resolve_escalation(7, "requeue after refresh", requeue=True))
         self.assertEqual(self.labels, {config.LABEL_HUMAN, "priority"})
-        self.assertEqual(self.commands, [])
 
     def test_owner_hold_before_approval_does_not_block_merge(self):
         self.held(at=CLAIM)
@@ -300,11 +324,6 @@ class OwnerStateTest(unittest.TestCase):
         self.assertEqual(self.labels, {config.LABEL_AGENT})
         self.assertEqual(self.posted, [])
 
-    def test_owner_hold_keeps_assignment_until_owner_releases_it(self):
-        self.held()
-        self.escalate()
-        self.assertEqual(self.assignees, {"factory"})
-
     def test_owner_veto_does_not_spend_refresh_conflict_rounds(self):
         self.held()
 
@@ -332,17 +351,44 @@ class OwnerStateTest(unittest.TestCase):
         self.addCleanup(fixture.doCleanups)
         gh = fixture.bin / "gh"
         gh.write_text(gh.read_text().replace(
+            "import json, os, subprocess, sys",
+            "import json, os, subprocess, sys\nfrom datetime import datetime, timezone",
+        ).replace(
             'if s.get("sync"):',
-            'if s.get("merge_ready"):\n    issue["labels"] = [{"name": "ready-for-human"}]\nif s.get("sync"):',
+            'issue["labels"] = s.get("labels", issue["labels"])\n'
+            'issue["comments"] = s.get("comments", [])\nif s.get("sync"):',
         ).replace(
             'elif a[:2] not in (',
-            'elif a[:2] == ["issue", "comment"]:\n    print("HTTP 502", file=sys.stderr)\n    raise SystemExit(1)\nelif a[:2] not in (',
+            '''elif a[:2] == ["issue", "edit"]:
+    labels = {item["name"] for item in issue["labels"]}
+    for flag, value in zip(a, a[1:]):
+        if flag == "--add-label":
+            labels.add(value)
+        elif flag == "--remove-label":
+            labels.discard(value)
+    s["labels"] = [{"name": label} for label in labels]
+    p.write_text(json.dumps(s))
+elif a[:2] == ["issue", "comment"]:
+    if s.pop("fail_note", False):
+        p.write_text(json.dumps(s))
+        print("HTTP 502", file=sys.stderr)
+        raise SystemExit(1)
+    url = "https://example.invalid/issues/7#issuecomment-701"
+    s.setdefault("comments", []).append({
+        "body": a[a.index("--body") + 1], "url": url,
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+    })
+    p.write_text(json.dumps(s))
+    print(url)
+elif a[:2] not in (''',
         ))
         fixture.cli("dispatch", "--ticket", "7")
         state = json.loads(fixture.state.read_text())
         state["merge_ready"] = True
+        state["fail_note"] = True
+        state["labels"] = [{"name": config.LABEL_HUMAN}, {"name": "priority"}]
         fixture.state.write_text(json.dumps(state))
-        result = fixture.cli("dispatch", expected=1)
+        result = fixture.cli("dispatch")
         self.assertIn("HTTP 502", result.stdout + result.stderr)
         self.assertTrue(json.loads(fixture.state.read_text()).get("merged"))
         self.assertFalse((fixture.repo / ".factory" / "wt-7").exists())
@@ -350,6 +396,21 @@ class OwnerStateTest(unittest.TestCase):
                   if row.get("event") == "lifecycle" and row.get("stage") == "merge-eligibility"
                   and row.get("kind") == "exit"]
         self.assertEqual(merges[-1]["outcome"], "merged")
+        fixture.cli("dispatch")
+        fixture.cli("dispatch")
+        state = json.loads(fixture.state.read_text())
+        self.assertEqual(state["labels"], [{"name": "priority"}])
+        notes = [comment["body"] for comment in state.get("comments", [])
+                 if "resolved the escalation without a human" in comment["body"]]
+        self.assertEqual(notes, [
+            "Factory resolved the escalation without a human: merged PR #70 after approval and passing CI.",
+        ])
+        rows = lifecycle.read_events(fixture.events)
+        intents = [row for row in rows if row.get("event") == "escalation-resolution"]
+        delivered = [row for row in rows if row.get("event") == "escalation-resolution-delivered"]
+        self.assertEqual(len(intents), 1)
+        self.assertEqual([row["token"] for row in delivered], [intents[0]["token"]])
+        self.assertFalse((fixture.repo / ".factory" / "wt-7").exists())
 
     def test_escalation_veto_releases_factory_assignment_for_owner_changes(self):
         for change in (self.held, self.decision):

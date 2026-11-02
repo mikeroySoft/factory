@@ -1814,7 +1814,7 @@ def owner_state(n: int, *, approved_at: str | None = None) -> tuple[dict, str | 
         ]
         if any(at > boundary and (
             approved_at is None
-            or re.search(r"(?i)\b(?:hold|held|(?:do not|don't|must not|not|never)\s+merge)\b", decision)
+            or re.search(r"(?i)\b(?:hold|(?<!factory-)held|(?:do not|don't|must not|not|never)\s+merge)\b", decision)
         ) for at, decision in decisions):
             return issue, "owner decision after " + ("approval" if approved_at else "claim")
         return issue, None
