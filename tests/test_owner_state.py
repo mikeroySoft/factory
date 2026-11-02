@@ -333,6 +333,92 @@ class OwnerStateTest(unittest.TestCase):
                   and row.get("kind") == "exit"]
         self.assertEqual(merges[-1]["outcome"], "merged")
 
+    def test_escalation_veto_releases_factory_assignment_for_owner_changes(self):
+        for change in (self.held, self.decision):
+            with self.subTest(change=change.__name__):
+                self.labels = {config.LABEL_AGENT, "priority"}
+                self.assignees = {"factory", "owner"}
+                self.comments = []
+                change()
+                labels = self.labels.copy()
+                dispatch.escalate(7, "rounds exhausted", None, code="review_revise")
+                self.assertEqual(self.assignees, {"owner"})
+                self.assertEqual(self.labels, labels)
+                self.assertEqual(self.posted, [])
+
+    def test_requeue_veto_releases_assignment_without_spending_round(self):
+        self.assignees.add("owner")
+        self.held()
+        self.assertFalse(dispatch.resolve_escalation(7, "refresh conflict", requeue=True))
+        self.assertEqual(self.assignees, {"owner"})
+        self.assertEqual(self.labels, {config.LABEL_AGENT, "factory-held"})
+        self.assertEqual(self.posted, [])
+
+    def test_manager_close_proposal_preserves_human_gate(self):
+        self.labels = {config.LABEL_HUMAN, "priority"}
+        manage.apply(7, self.github(["issue", "view"]), "CLOSE", "No longer needed.", None, Path("packet.md"))
+        self.assertEqual(self.labels, {config.LABEL_HUMAN, config.LABEL_WONTFIX, "priority"})
+        self.assertFalse(any(cmd[:3] == ["gh", "issue", "close"] for cmd in self.commands))
+        self.assertFalse(any("resolved the escalation" in body for body in self.posted))
+
+    def test_manager_close_factory_child_resolves_human_gate(self):
+        dispatch.record("issue-created", ticket=7, parent=1)
+        self.labels = {config.LABEL_HUMAN, "priority"}
+        manage.apply(7, self.github(["issue", "view"]), "CLOSE", "No longer needed.", None, Path("packet.md"))
+        self.assertEqual(self.labels, {"priority"})
+        self.assertTrue(any(cmd[:3] == ["gh", "issue", "close"] for cmd in self.commands))
+        self.assertEqual(sum("resolved the escalation" in body for body in self.posted), 1)
+
+    def test_failed_note_keeps_conflict_requeue_guidance_and_retries_once(self):
+        self.labels = {config.LABEL_HUMAN, "priority"}
+        self.assignees.add("owner")
+
+        def conflict(args, **kwargs):
+            if args[:2] == ["git", "rev-parse"]:
+                return subprocess.CompletedProcess(args, 0, HEAD, "")
+            if args[:2] == ["git", "rebase"] and "--abort" not in args:
+                return subprocess.CompletedProcess(args, 1, "", "conflict")
+            if args[:2] == ["git", "diff"]:
+                return subprocess.CompletedProcess(args, 0, "conflict.txt\0", "")
+            if args[:3] == ["gh", "issue", "comment"]:
+                raise subprocess.CalledProcessError(1, args, stderr="HTTP 502")
+            return self.run_command(args, **kwargs)
+
+        with mock.patch.object(dispatch, "ensure_worktree", return_value=self.cfg.root), \
+                mock.patch.object(dispatch, "run", side_effect=conflict):
+            self.assertFalse(dispatch.refresh_pr_branch(7, 70, False))
+        self.assertEqual(self.labels, {config.LABEL_AGENT, "priority"})
+        self.assertEqual(self.assignees, {"owner"})
+        rows = [row for row in lifecycle.read_events(dispatch.EVENTS) if row.get("event") == "conflict-requeue"]
+        self.assertEqual([(row["round"], row["files"]) for row in rows], [(1, ["conflict.txt"])])
+        self.assertIn("conflict.txt", dispatch.refresh_requeue_context(7))
+        dispatch.configure(self.cfg)  # recovery must survive process-local state being lost
+        dispatch.resolution_note_pass()
+        dispatch.resolution_note_pass()
+        self.assertEqual(self.posted, [
+            "Factory resolved the escalation without a human: requeued PR #70 to resolve a refresh conflict.",
+        ])
+
+    def test_uncertain_note_delivery_reconciles_before_retry(self):
+        self.labels = {config.LABEL_HUMAN}
+
+        def delivered_then_failed(args, **kwargs):
+            if args[:3] == ["gh", "issue", "comment"]:
+                body = args[args.index("--body") + 1]
+                self.comments.append({"body": body, "createdAt": datetime.now().astimezone().isoformat(),
+                                      "url": "https://github.com/acme/widgets/issues/7#issuecomment-99"})
+                raise subprocess.CalledProcessError(1, args, stderr="connection lost")
+            return self.run_command(args, **kwargs)
+
+        with mock.patch.object(dispatch, "run", side_effect=delivered_then_failed):
+            self.assertTrue(dispatch.resolve_escalation(7, "review approved"))
+        dispatch.resolution_note_pass()
+        dispatch.resolution_note_pass()
+        self.assertEqual(self.posted, [])
+        receipts = [row for row in lifecycle.read_events(dispatch.EVENTS)
+                    if row.get("event") == "comment" and row.get("kind") == "escalation-resolved"]
+        self.assertEqual([row["comment"] for row in receipts], [99])
+
 
 if __name__ == "__main__":
     unittest.main()
