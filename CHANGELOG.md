@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Gate resource tests now wait for an interrupted requester's own terminal lifecycle evidence before reaping, using a shared overridable 60-second backstop for resource waits and cleanup. Deterministic descheduling and non-exiting-requester regressions preserve bounded failure and the disposable children's 30-second safeguards (#515).
 - Ticket reviewers now receive the issue title, body, and every comment inside an untrusted-data fence, using the worker's accepted snapshot for plan-bound tickets and the dispatcher's GitHub read otherwise. Learn replays use their recorded issue; learning-proposal reviews and tokenless reviewer isolation are unchanged (#513).
 - Manager lifecycle exits with `github_command_failed` now retain the token-redacted, bounded stderr tail (or exception text without stderr). Regressions cover viability command failures, terminal-only error placement, and no-PR/closed-PR CLOSE outcomes, preserving human review for MERGED or wrong-base PRs (#534).
 - Gate-failure control bands now ignore failures from unmerged worker-attempt heads, keep reused attempt numbers bound to their own dispatch, and count each landed `(ticket, attempt)` only once, while preserving alarms for main and merged-head failures (#459).

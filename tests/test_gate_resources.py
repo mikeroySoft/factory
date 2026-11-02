@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -44,6 +45,8 @@ with open(sys.argv[1], "w") as lock:
 
 
 class GateResourcesTest(unittest.TestCase):
+    wait_timeout = 60
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -78,7 +81,7 @@ class GateResourcesTest(unittest.TestCase):
         return lifecycle.read_events(self.events)
 
     def until(self, predicate, message: str):
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + self.wait_timeout
         while time.monotonic() < deadline:
             value = predicate()
             if value:
@@ -89,7 +92,7 @@ class GateResourcesTest(unittest.TestCase):
     def stop(self, proc: subprocess.Popen) -> None:
         if proc.poll() is None:
             proc.kill()
-        proc.wait(timeout=10)
+        proc.wait(timeout=self.wait_timeout)
         # gate.timed starts each check in its own session; do not leave it behind.
         children = [row["child_process"] for row in self.rows()
                     if row.get("kind") == "child_start" and row["process"]["pid"] == proc.pid]
@@ -100,7 +103,7 @@ class GateResourcesTest(unittest.TestCase):
                 except ProcessLookupError:
                     pass
         if proc.stdout is not None and not proc.stdout.closed:
-            proc.communicate(timeout=10)
+            proc.communicate(timeout=self.wait_timeout)
         for stream in (proc.stdin, proc.stdout, proc.stderr):
             if stream is not None:
                 stream.close()
@@ -215,7 +218,7 @@ class GateResourcesTest(unittest.TestCase):
         self.assertEqual(held["ownership"], "unknown")
         self.assertEqual(held["requests"][0]["execution_id"], wait["execution_id"])
         requester.kill()
-        requester.wait(timeout=10)
+        requester.wait(timeout=self.wait_timeout)
         states = lifecycle.observe(self.events)
         stopped = next(row for row in states if row["execution_id"] == wait["execution_id"])
         self.assertEqual(stopped["state"], "unknown")  # pre-check git children may have detached descendants
@@ -233,7 +236,8 @@ class GateResourcesTest(unittest.TestCase):
         interrupted, _ = self.gate("interrupted-requester")
         interrupted_wait = self.event(interrupted, "wait")
         interrupted.send_signal(signal.SIGINT)
-        interrupted.communicate(timeout=10)
+        self.event(interrupted, "exit")
+        interrupted.communicate(timeout=self.wait_timeout)
         self.assertNotEqual(interrupted.returncode, 0)
         self.assertFalse(any(row.get("execution_id") == interrupted_wait["execution_id"]
                              and row.get("kind") in {"lock_acquired", "lock_released"} for row in self.rows()))
@@ -241,7 +245,7 @@ class GateResourcesTest(unittest.TestCase):
         self.assertEqual(self.resource()["requests"], [])
         holder.stdin.write("release\n")
         holder.stdin.flush()
-        self.assertEqual(holder.wait(timeout=10), 0)
+        self.assertEqual(holder.wait(timeout=self.wait_timeout), 0)
         self.assertEqual(self.resource()["state"], "free")
 
     def test_dead_holder_is_not_carried_into_external_or_new_gate_ownership(self) -> None:
@@ -262,7 +266,7 @@ class GateResourcesTest(unittest.TestCase):
         self.assertEqual(held["resource"]["id"], acquired["resource"]["id"])
         holder.stdin.write("release\n")
         holder.stdin.flush()
-        self.assertEqual(holder.wait(timeout=10), 0)
+        self.assertEqual(holder.wait(timeout=self.wait_timeout), 0)
         second, b = self.gate("replacement")
         self.until((b / "exclusive.ready").exists, "replacement gate did not acquire")
         replacement = self.event(second, "lock_acquired")
@@ -273,6 +277,53 @@ class GateResourcesTest(unittest.TestCase):
         self.assertFalse(any(row.get("execution_id") == acquired["execution_id"]
                              and row.get("kind") == "lock_released" for row in self.rows()))
         self.finish(second, b)
+
+    def test_interrupted_requester_that_never_exits_hits_deadline(self) -> None:
+        self.external_holder()
+        requester, _ = self.gate("hung-requester")
+        self.event(requester, "wait")
+        requester.send_signal(signal.SIGSTOP)
+        os.waitpid(requester.pid, os.WUNTRACED)
+        try:
+            requester.send_signal(signal.SIGINT)
+            with patch.object(self, "wait_timeout", 0.1), \
+                    self.assertRaisesRegex(self.failureException, "did not emit exit"):
+                self.event(requester, "exit")
+            self.assertIsNone(requester.poll())
+        finally:
+            requester.send_signal(signal.SIGCONT)
+
+    def test_interrupted_requester_exit_tolerates_cpu_load(self) -> None:
+        # Inject a short deadline and deterministic descheduling instead of
+        # depending on host load to delay the interrupted gate's shutdown.
+        communicate = subprocess.Popen.communicate
+        send_signal = subprocess.Popen.send_signal
+        paused = []
+
+        def delayed_interrupt(proc, sig):
+            if sig == signal.SIGINT:
+                send_signal(proc, signal.SIGSTOP)
+                os.waitpid(proc.pid, os.WUNTRACED)
+                send_signal(proc, sig)
+                resume = threading.Timer(0.2, send_signal, (proc, signal.SIGCONT))
+                paused.append((proc, resume))
+                resume.start()
+            else:
+                send_signal(proc, sig)
+
+        def short_deadline(proc, input=None, timeout=None):
+            return communicate(proc, input=input,
+                               timeout=None if timeout is None else timeout / 100)
+
+        try:
+            with patch.object(subprocess.Popen, "send_signal", delayed_interrupt), \
+                    patch.object(subprocess.Popen, "communicate", short_deadline):
+                self.test_uninstrumented_holder_and_killed_requester_remain_distinct()
+        finally:
+            for proc, resume in paused:
+                resume.cancel()
+                resume.join()
+                send_signal(proc, signal.SIGCONT)
 
 
 if __name__ == "__main__":
