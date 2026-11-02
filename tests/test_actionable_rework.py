@@ -9,6 +9,7 @@ import test_risk_merge as risk_tests
 from factory import dispatch, lifecycle
 
 _REFRESH_CONTEXT = dispatch.refresh_requeue_context
+_ESCALATE = dispatch.escalate
 
 
 SURVIVORS = (
@@ -274,3 +275,117 @@ class ActionableReworkTest(unittest.TestCase):
             self.assertFalse(self.refreshed_review())
         self.escalate.assert_not_called()
         self.assertEqual([row["round"] for row in self.rework_rows()], [1])
+
+    def track_queue(self):
+        labels = {dispatch.LABEL_AGENT}
+        original = self.command_result
+
+        def command(args, **kwargs):
+            if args[:3] == ["gh", "issue", "edit"]:
+                if "--remove-label" in args:
+                    labels.discard(args[args.index("--remove-label") + 1])
+                if "--add-label" in args:
+                    labels.add(args[args.index("--add-label") + 1])
+            return original(args, **kwargs)
+
+        self.command_result = command
+        self.command.side_effect = command
+        self.escalate.side_effect = _ESCALATE
+        return labels
+
+    def refresh_with_report(self, report, *, passed):
+        import subprocess
+
+        dispatch.record("attempt", ticket=7, head=risk_tests.HEAD, worker_model="worker/model", gate="PASS")
+        original = self.command_result
+
+        def command(args, **kwargs):
+            if args[:2] == ["git", "rev-parse"]:
+                return subprocess.CompletedProcess(args, 0, risk_tests.HEAD, "")
+            if args[:2] == ["git", "status"]:
+                return subprocess.CompletedProcess(args, 0, "", "")
+            if args[:2] == ["git", "merge-base"]:
+                return subprocess.CompletedProcess(args, 1, "", "")
+            return original(args, **kwargs)
+
+        self.patch(dispatch, "run", side_effect=command)
+        self.patch(dispatch, "run_gate", side_effect=lambda *_args, **kwargs: (
+            (passed, report) if kwargs.get("tier") == "pr" else (True, "- test: PASS\n")
+        ))
+        return dispatch.refresh_pr_branch(7, 70, False)
+
+    def assert_human_queue(self, labels, code):
+        self.assertEqual(labels, {dispatch.LABEL_HUMAN})
+        self.assertEqual(self.rework_rows(), [])
+        rows = lifecycle.read_events(dispatch.EVENTS)
+        self.assertEqual([row["code"] for row in rows if row["event"] == "escalate"], [code])
+        self.assertFalse(any(row["event"] in {"approved", "risk-requeue"} for row in rows))
+
+    def test_parsed_approvals_carry_mutation_findings_after_deadline(self):
+        self.configure_reviews(json.loads('["APPROVE", "APPROVE"]'), mutation=True)
+        labels = self.track_queue()
+        self.expire = True
+        dispatch.process_ticket(self.issue, 1, False, forced=True)
+        self.escalate.assert_not_called()
+        self.assertEqual(labels, {dispatch.LABEL_AGENT})
+        self.assertEqual(self.heads, [risk_tests.HEAD])
+        self.assertEqual([row["round"] for row in self.rework_rows()], [1])
+        self.assertIn("NumberReplacer", self.rework_rows()[0]["findings"])
+
+    def test_parsed_medium_revise_carries_required_fix_after_deadline(self):
+        self.configure_reviews(json.loads('["REVISE", "APPROVE"]'))
+        self.patch(dispatch.risk, "classify", return_value=("Medium", ["medium:fixture"]))
+        labels = self.track_queue()
+        self.expire = True
+        dispatch.process_ticket(self.issue, 1, False, forced=True)
+        self.escalate.assert_not_called()
+        self.assertEqual(labels, {dispatch.LABEL_AGENT})
+        self.assertEqual(self.heads, [risk_tests.HEAD])
+        self.assertEqual([row["round"] for row in self.rework_rows()], [1])
+        self.assertIn("Handle the missing branch", self.rework_rows()[0]["findings"])
+
+    def test_refresh_missing_independent_model_escalates_despite_concrete_revise(self):
+        self.configure_reviews(json.loads('["REVISE", "APPROVE"]'))
+        self.cfg.second_reviewer = ["reviewer-without-model"]
+        labels = self.track_queue()
+        self.assertFalse(self.refresh_with_report("- mutation: PASS\n", passed=True))
+        self.assert_human_queue(labels, "review_revise")
+
+    def test_refresh_parsed_reject_escalates_instead_of_requeuing(self):
+        self.configure_reviews(json.loads('["REJECT", "APPROVE"]'))
+        self.patch(dispatch.risk, "classify", return_value=("Medium", ["medium:fixture"]))
+        labels = self.track_queue()
+        self.assertFalse(self.refresh_with_report("- mutation: PASS\n", passed=True))
+        self.assert_human_queue(labels, "review_revise")
+        self.assertIn("review rejected", self.escalate.call_args.args[1])
+
+    def test_refresh_protected_pr_gate_failure_requires_owner(self):
+        self.configure_reviews(("APPROVE", "APPROVE"))
+        labels = self.track_queue()
+        self.assertFalse(self.refresh_with_report(
+            "- mutation: PASS\n- protected-paths: FAIL\n", passed=False,
+        ))
+        self.assert_human_queue(labels, "protected_paths")
+        self.assertIn("- protected-paths: FAIL", self.escalate.call_args.kwargs["extra"])
+
+    def test_refresh_passing_gate_ignores_protected_status_in_reviewer_text(self):
+        self.configure_reviews(("APPROVE", "REVISE"))
+        labels = self.track_queue()
+        original = finding
+        from unittest import mock
+        with mock.patch(__name__ + ".finding", side_effect=lambda verdict: (
+            "- protected-paths: FAIL\n" + original(verdict)
+        )):
+            self.assertFalse(self.refresh_with_report("- mutation: PASS\n", passed=True))
+        self.escalate.assert_not_called()
+        self.assertEqual(labels, {dispatch.LABEL_AGENT})
+        self.assertEqual([row["round"] for row in self.rework_rows()], [1])
+        self.assertIn("- protected-paths: FAIL", self.rework_rows()[0]["findings"])
+        self.assertIn("Handle the missing branch", self.rework_rows()[0]["findings"])
+
+    def test_refresh_nonmutation_pr_failure_is_not_actionable_review(self):
+        self.configure_reviews(("APPROVE", "APPROVE"))
+        labels = self.track_queue()
+        report = "- mutation: PASS\n- test: FAIL\n\n## Required fixes\n- Fix factory/dispatch.py:10\n"
+        self.assertFalse(self.refresh_with_report(report, passed=False))
+        self.assert_human_queue(labels, "pr_checks_failed")
