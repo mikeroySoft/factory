@@ -168,6 +168,63 @@ class DoctorIdentityTest(unittest.TestCase):
         self.assertEqual(self.doctor({}), (0, [], 0))
 
 
+class DoctorWorkerModelSourceTest(unittest.TestCase):
+    def doctor(self, cfg: config.Config) -> tuple[int, dict]:
+        def command(cmd, cwd=None):
+            out = {"view": "ADMIN\n", "list": json.dumps(list(config.LABELS))}.get(
+                cmd[2] if cmd[0] == "gh" else "", ""
+            )
+            return subprocess.CompletedProcess(cmd, 0, out, "")
+
+        output = io.StringIO()
+        with mock.patch.object(onboard.config, "load", return_value=cfg), \
+                mock.patch.object(onboard.config, "host_config", return_value={}), \
+                mock.patch.object(onboard, "sh", side_effect=command), \
+                mock.patch.object(onboard, "_dashboard_port_check", return_value=(True, "")), \
+                mock.patch.object(onboard.shutil, "which", return_value="/bin/tool"), \
+                mock.patch.object(onboard.urllib.request, "urlopen", return_value=mock.MagicMock()), \
+                redirect_stdout(output):
+            code = onboard.doctor(["--json"])
+        return code, json.loads(output.getvalue())
+
+    def test_doctor_json_fails_every_worker_without_required_model_source(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            cfg = make_cfg(Path(d))
+            cfg.workers = {
+                "default": ["/opt/omp", "-p", "@{prompt}"],
+                "empty": ["omp", "-p", "--model=", "@{prompt}"],
+                "chore": ["droid", "exec", "--model", "literal/model", "{prompt}"],
+            }
+            cfg.worker_usage = {
+                "default": {"model": "result.model"},
+                "empty": {"model": "result.model"},
+            }
+            code, result = self.doctor(cfg)
+
+        rows = {row["label"]: row for row in result["rows"]}
+        self.assertEqual((code, result["ok"]), (1, False))
+        for label in ("default", "empty", "chore"):
+            self.assertEqual(rows[f"worker `{label}` model"]["status"], "FAIL")
+        self.assertIn("--model", rows["worker `default` model"]["detail"])
+        self.assertIn("--model", rows["worker `empty` model"]["detail"])
+        self.assertIn("usage.model", rows["worker `chore` model"]["detail"])
+
+    def test_doctor_json_accepts_omp_flag_and_non_omp_usage_model_path(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            cfg = make_cfg(Path(d))
+            cfg.workers = {
+                "default": ["/opt/omp", "-p", "--model", "worker/model", "@{prompt}"],
+                "chore": ["droid", "exec", "{prompt}"],
+            }
+            cfg.worker_usage = {"chore": {"model": "result.model"}}
+            code, result = self.doctor(cfg)
+
+        rows = {row["label"]: row for row in result["rows"]}
+        self.assertEqual((code, result["ok"]), (0, True))
+        for label in cfg.workers:
+            self.assertEqual(rows[f"worker `{label}` model"]["status"], "PASS")
+
+
 class AgentPushLeaseTest(unittest.TestCase):
     """The dispatcher, the only pusher, force-pushes `agent/<n>` against the sha it last fetched."""
 

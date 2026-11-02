@@ -4,6 +4,7 @@ from any cwd, missing fix commits in --escapes, and worker tokens from OMP trans
 from __future__ import annotations
 
 import contextlib
+from datetime import UTC, datetime
 import io
 import json
 import os
@@ -200,6 +201,108 @@ class WorkerUsageTest(unittest.TestCase):
         self.assertNotIn("$", header)  # no prices and no reported cost: no column of blanks
         self.assertEqual(stats.worker_tokens([reported, silent]), "133 prompt, 7 completion (1 of 2 tickets reported)")
         self.assertEqual(stats.worker_tokens([silent]), stats.NOT_REPORTED)
+
+
+class PostFixOutcomeTest(unittest.TestCase):
+    START = datetime(2026, 10, 20, tzinfo=UTC)
+    END = datetime(2026, 10, 27, tzinfo=UTC)
+
+    @staticmethod
+    def event(at: str, event: str, ticket: int, **fields: object) -> dict:
+        return {"at": f"2026-10-{at}T00:00:00Z", "event": event, "ticket": ticket, **fields}
+
+    def outcomes(self, rows: list[dict]) -> list[dict]:
+        return stats.weekly_metrics(rows, self.START, self.END, None)["post_fix_outcomes"]["by_worker_model"]
+
+    def test_tracks_first_claim_and_each_interleaved_fix_round_to_its_first_outcome(self) -> None:
+        rows = [
+            self.event("21", "manage", 1, decision="FIX"),
+            self.event("21", "manage", 2, decision="FIX"),
+            self.event("21", "claimed", 1, worker_model="model/a"),
+            self.event("21", "claimed", 1, worker_model="model/ignored"),
+            self.event("21", "claimed", 2, worker_model="model/b"),
+            self.event("22", "merged", 1),
+            self.event("22", "escalate", 2),
+            self.event("23", "manage", 1, decision="FIX"),
+            self.event("23", "claimed", 1, worker_model="model/b"),
+            self.event("24", "escalate", 1),
+            self.event("25", "merged", 1),  # the round already ended at re-escalation
+            self.event("25", "manage", 3, decision="FIX"),
+            self.event("25", "claimed", 3, worker_model="model/a"),
+        ]
+
+        self.assertEqual(self.outcomes(rows), [
+            {"worker_model": "model/a", "claim_status": "claimed", "merged": 1,
+             "re_escalated": 0, "pending": 1, "resolved_merge_rate": 1.0},
+            {"worker_model": "model/b", "claim_status": "claimed", "merged": 0,
+             "re_escalated": 2, "pending": 0, "resolved_merge_rate": 0.0},
+        ])
+
+    def test_distinguishes_historical_claim_without_model_from_no_claim(self) -> None:
+        rows = [
+            self.event("21", "manage", 1, decision="FIX"),
+            self.event("21", "claimed", 1),
+            self.event("22", "merged", 1),
+            self.event("23", "manage", 2, decision="FIX"),
+            self.event("24", "escalate", 2),
+        ]
+
+        self.assertEqual(self.outcomes(rows), [
+            {"worker_model": None, "claim_status": "model_not_recorded", "merged": 1,
+             "re_escalated": 0, "pending": 0, "resolved_merge_rate": 1.0},
+            {"worker_model": None, "claim_status": "no_claim", "merged": 0,
+             "re_escalated": 1, "pending": 0, "resolved_merge_rate": 0.0},
+        ])
+
+    def test_only_fix_rows_in_the_inclusive_window_start_episodes(self) -> None:
+        rows = [
+            self.event("19", "manage", 1, decision="FIX"),
+            self.event("20", "claimed", 1, worker_model="outside/fix"),
+            self.event("21", "merged", 1),
+            self.event("20", "manage", 2, decision="FIX"),
+            self.event("20", "claimed", 2, worker_model="boundary"),
+            self.event("27", "merged", 2),
+            self.event("26", "manage", 3, decision="FIX"),
+            self.event("26", "claimed", 3, worker_model="pending"),
+            self.event("28", "merged", 3),
+            self.event("28", "manage", 4, decision="FIX"),
+        ]
+
+        windowed = stats.window_rows(rows, self.START, self.END)
+        self.assertEqual(self.outcomes(windowed), [
+            {"worker_model": "boundary", "claim_status": "claimed", "merged": 1,
+             "re_escalated": 0, "pending": 0, "resolved_merge_rate": 1.0},
+            {"worker_model": "pending", "claim_status": "claimed", "merged": 0,
+             "re_escalated": 0, "pending": 1, "resolved_merge_rate": None},
+        ])
+
+    def test_week_text_and_json_include_the_post_fix_report_and_noise_caveat(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        cfg = config.Config(root, "acme/widgets")
+        cfg.factory.mkdir()
+        rows = [
+            self.event("21", "manage", 1, decision="FIX"),
+            self.event("21", "claimed", 1, worker_model="model/a"),
+            self.event("22", "merged", 1),
+        ]
+        (cfg.factory / "events.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+        with mock.patch.object(stats, "resolve", return_value=cfg), \
+                mock.patch.object(stats, "_now", return_value=self.END), \
+                mock.patch.object(stats, "stuck_over_days", return_value=[]):
+            text = io.StringIO()
+            with contextlib.redirect_stdout(text):
+                stats.main(["--week"])
+            encoded = io.StringIO()
+            with contextlib.redirect_stdout(encoded):
+                stats.main(["--week", "--json"])
+
+        self.assertIn("Post-FIX outcomes by next claim worker_model", text.getvalue())
+        self.assertIn("model/a", text.getvalue())
+        self.assertIn("Small samples are noisy", text.getvalue())
+        report = json.loads(encoded.getvalue())["post_fix_outcomes"]
+        self.assertEqual(report["by_worker_model"][0]["worker_model"], "model/a")
+        self.assertIn("Small samples are noisy", report["noise_caveat"])
 
 
 if __name__ == "__main__":

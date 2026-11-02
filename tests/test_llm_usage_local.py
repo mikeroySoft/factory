@@ -59,5 +59,87 @@ class EndpointLocalityTest(unittest.TestCase):
         execution.commit.assert_called_once_with()
 
 
+class WorkerModelJournalTest(unittest.TestCase):
+    def test_default_expanded_argv_and_model_agree(self) -> None:
+        cfg = config.Config(Path("/repo"), "acme/widgets")
+        command = cfg.worker_command("default", Path("/prompt"), Path("/worktree"))
+        self.assertEqual(config.command_model(command), "openai-codex/gpt-6.1-sol")
+        self.assertEqual(cfg.worker_model("default"), config.command_model(command))
+        self.assertEqual(command[-3:], ["--cwd", "/worktree", "@/prompt"])
+
+    def test_worker_model_identity_for_every_profile_and_attempt_exit(self) -> None:
+        import os
+        import subprocess
+
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
+        for args in (
+            ["init", "-q", "-b", "main"],
+            ["config", "user.name", "Test"],
+            ["config", "user.email", "test@example.invalid"],
+            ["commit", "-q", "--allow-empty", "-m", "fixture"],
+            ["update-ref", "refs/remotes/origin/main", "HEAD"],
+        ):
+            subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+        cfg = config.Config(root, "acme/widgets")
+        cfg.workers = {**cfg.workers, "pilot": ["omp", "-p", "--model=pilot/model", "@{prompt}"]}
+        cfg.worker_usage["chore"] = config.usage_spec("chore", {
+            "model": "result.model", "match": {"type": "result"},
+        })
+        dispatch.configure(cfg)
+        dispatch.LOGS.mkdir(parents=True)
+
+        def worker(_argv, _cwd, logfile, *_args):
+            logfile.write_text('{"type":"result","result":{"model":"chore/model"}}\n')
+            return 0, timeout
+
+        with mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
+                mock.patch.object(dispatch, "run_worker", side_effect=worker), \
+                mock.patch.object(dispatch, "commit_leftovers"), \
+                mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")):
+            for profile, model in (
+                ("default", "openai-codex/gpt-6.1-sol"),
+                ("chore", "chore/model"),
+                ("pilot", "pilot/model"),
+            ):
+                for ticket, (timeout, deadline) in enumerate((
+                    (None, float("inf")), ("idle_timeout", float("inf")), (None, 0),
+                ), 1):
+                    with self.subTest(profile=profile, exit=timeout, deadline=deadline):
+                        dispatch.worker_round(
+                            ticket, root, {profile}, "ticket", "", 1, deadline,
+                        )
+                        rows = [
+                            row for row in lifecycle.read_events(dispatch.EVENTS)
+                            if row.get("event") in {"attempt", "llm-usage"}
+                        ][-2:]
+                        self.assertEqual(
+                            [(row["event"], row["worker"], row["worker_model"]) for row in rows],
+                            [("llm-usage", profile, model), ("attempt", profile, model)],
+                        )
+
+    def test_claim_records_the_selected_explicit_model(self) -> None:
+        import os
+        import subprocess
+
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
+        cfg = config.Config(root, "acme/widgets")
+        dispatch.configure(cfg)
+        issue = {"number": 7, "title": "ticket", "labels": [{"name": "ready-for-agent"}]}
+        fresh = {**issue, "state": "OPEN", "assignees": [], "body": "", "comments": []}
+        with mock.patch.object(dispatch, "gh_json", return_value=fresh), \
+                mock.patch.object(dispatch, "admit_plan", return_value=None), \
+                mock.patch.object(dispatch, "ensure_worktree", return_value=root), \
+                mock.patch.object(dispatch, "run", return_value=subprocess.CompletedProcess([], 0, "head", "")), \
+                mock.patch.object(dispatch, "agent_lease", return_value="head"), \
+                mock.patch.object(dispatch, "sync_staged", return_value=None), \
+                mock.patch.object(dispatch, "worker_round", side_effect=FileNotFoundError("fixture worker")):
+            dispatch.process_ticket(issue, 1, False, forced=True)
+        claim = next(row for row in lifecycle.read_events(dispatch.EVENTS) if row.get("event") == "claimed")
+        self.assertEqual(claim["worker"], "default")
+        self.assertEqual(claim["worker_model"], "openai-codex/gpt-6.1-sol")
+
+
 if __name__ == "__main__":
     unittest.main()
