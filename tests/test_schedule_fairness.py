@@ -46,7 +46,7 @@ class FairnessSessionTest(unittest.TestCase):
         ))
         self.engine = self.enterContext(patch.object(config, "engine_commit", return_value="engine-a"))
         self.timer = self.enterContext(patch.object(
-            dispatch, "run", return_value=subprocess.CompletedProcess([], 0, "a" * 32 + "\n", ""),
+            dispatch.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "a" * 32 + "\n", ""),
         ))
         self.claimed = []
 
@@ -95,11 +95,13 @@ class FairnessSessionTest(unittest.TestCase):
             self.assertEqual(self.run_pass(self.competing(), 1), [2])
 
     def test_unobservable_timer_does_not_reuse_historical_streak(self):
-        self.seed_streak()
         for result in (subprocess.CompletedProcess([], 1, "", "no timer"),
                        subprocess.CompletedProcess([], 0, "\n", ""),
                        FileNotFoundError("systemctl"), subprocess.TimeoutExpired("systemctl", 3)):
             with self.subTest(result=result):
+                self.timer.side_effect = None
+                self.timer.return_value = subprocess.CompletedProcess([], 0, "a" * 32 + "\n", "")
+                self.seed_streak()
                 if isinstance(result, Exception):
                     self.timer.side_effect = result
                 else:
