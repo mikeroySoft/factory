@@ -76,7 +76,7 @@ def _rename_noreplace(libc):
             ]
             rename.restype = ctypes.c_int
             return rename, flag
-    return None, 0
+    return None, None
 
 
 _RENAME_NOREPLACE, _NOREPLACE_FLAG = _rename_noreplace(ctypes.CDLL(None, use_errno=True))
