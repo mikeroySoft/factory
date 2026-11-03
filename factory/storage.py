@@ -4,6 +4,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -14,7 +15,7 @@ from pathlib import Path
 from factory import lifecycle
 
 EX_TEMPFAIL = 75
-RUN_PREFIXES = ("factory-worker-", "factory-gate-")
+RUN_PREFIXES = ("factory-worker-", "factory-gate-", "factory-mutation-")
 OWNER_FILE = ".factory-owner.json"
 
 
@@ -201,6 +202,38 @@ def require(cfg, phase: str) -> dict:
     return value
 
 
+def check_error(error: OSError | str, cfg=None, phase: str = "run") -> None:
+    """Promote observed space/quota exhaustion to a host deferral, even after cleanup."""
+    if isinstance(error, OSError) and error.errno in {errno.ENOSPC, errno.EDQUOT}:
+        quota = error.errno == errno.EDQUOT
+        message = str(error)
+    else:
+        pattern = (
+            rf"(?m)^(?:(?:OSError|IOError): )?\[Errno ({errno.ENOSPC}|{errno.EDQUOT})\]|"
+            r"^(?:factory\.storage\.)?RunnerStorageLow: runner_storage_low[^\n]*|"
+            r"^(?!runner_storage_low\b)[^\n]*: (?:No space left on device|Disk quota exceeded)(?:$|:)"
+        )
+        if isinstance(error, shutil.Error):
+            pattern = rf"\[Errno ({errno.ENOSPC}|{errno.EDQUOT})\]"
+        match = re.search(pattern, str(error), re.IGNORECASE)
+        if match is None:
+            return
+        quota = match[1] == str(errno.EDQUOT) or "quota" in match[0].lower()
+        message = match[0]
+    value = {
+        "ok": False, "thresholds": {"free_bytes": 0, "free_inodes": 0},
+        "filesystems": [{
+            "paths": [tempfile.gettempdir()], "purposes": ["temp"],
+            "low": ["quota" if quota else "space"], "error": message,
+        }],
+    }
+    if cfg is not None:
+        record_low(cfg, phase, value)
+    elif lifecycle.current() is not None:
+        lifecycle.current().defer_storage()
+    raise RunnerStorageLow(phase, value)
+
+
 @contextmanager
 def temporary_environment(prefix: str, cfg=None, phase: str = "run"):
     """Give one run an isolated temp root recoverable after an owner crash."""
@@ -215,21 +248,8 @@ def temporary_environment(prefix: str, cfg=None, phase: str = "run"):
     except OSError as exc:
         if directory is not None:
             directory.cleanup()
-        if exc.errno not in {errno.ENOSPC, errno.EDQUOT}:
-            raise
-        value = {
-            "ok": False, "thresholds": {"free_bytes": 0, "free_inodes": 0},
-            "filesystems": [{
-                "paths": [tempfile.gettempdir()], "purposes": ["temp"],
-                "low": ["space" if exc.errno == errno.ENOSPC else "quota"],
-                "error": f"{type(exc).__name__}: {exc}",
-            }],
-        }
-        if cfg is not None:
-            record_low(cfg, phase, value)
-        elif lifecycle.current() is not None:
-            lifecycle.current().defer_storage()
-        raise RunnerStorageLow(phase, value) from exc
+        check_error(exc, cfg, phase)
+        raise
     with directory:
         directory = directory.name
         environment = dict.fromkeys(("TMPDIR", "TMP", "TEMP"), directory)
@@ -239,6 +259,9 @@ def temporary_environment(prefix: str, cfg=None, phase: str = "run"):
         tempfile.tempdir = directory
         try:
             yield environment
+        except OSError as exc:
+            check_error(exc, cfg, phase)
+            raise
         finally:
             tempfile.tempdir = previous_tempdir
             for key, old in previous.items():

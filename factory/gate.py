@@ -63,6 +63,8 @@ def timed(
         execution.child(proc.pid)
     try:
         out, _ = proc.communicate(timeout=CHECK_TIMEOUT)
+        if proc.returncode:
+            storage.check_error(out, cfg, "gate")
         if execution:
             execution.emit("result", command=cmd, returncode=proc.returncode, timed_out=False)
             if proc.returncode < 0:
@@ -76,6 +78,7 @@ def timed(
             execution.emit("timeout", command=cmd, timeout_seconds=CHECK_TIMEOUT)
         os.killpg(proc.pid, signal.SIGKILL)
         out, _ = proc.communicate()
+        storage.check_error(out, cfg, "gate")
         if execution:
             execution.emit("result", command=cmd, returncode=proc.returncode, timed_out=True)
         return subprocess.CompletedProcess(
@@ -652,7 +655,11 @@ def main(argv: list[str]) -> int:
         storage.require(cfg, "gate")
         with storage.temporary_environment("factory-gate-", cfg, "gate"), \
                 lifecycle.scope(cfg.factory / "events.jsonl", "gate") as execution:
-            return execute(args, execution)
+            try:
+                return execute(args, execution)
+            except OSError as exc:
+                storage.check_error(exc, cfg, "gate")
+                raise
     except storage.RunnerStorageLow as exc:
         print(exc, file=sys.stderr)
         return storage.EX_TEMPFAIL

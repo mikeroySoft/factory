@@ -1337,5 +1337,31 @@ class StorageCheckFailureTest(unittest.TestCase):
                 self.assertFalse(roots[0].exists())
 
 
+    def test_gate_distinguishes_storage_diagnostics_from_expected_warning_output(self) -> None:
+        cases = (
+            ("runner_storage_low before gate: temp ([Errno 28] No space left on device)", 1, 1),
+            ("OSError: [Errno 28] No space left on device", 0, 0),
+            ("RunnerStorageLow: runner_storage_low before mutation: temp (low: space)", 75, 75),
+            ("fatal: cannot create file: Disk quota exceeded", 1, 75),
+            ("ValueError: unrelated check failure", 1, 1),
+        )
+        for diagnostic, exit_code, expected in cases:
+            with self.subTest(diagnostic=diagnostic), tempfile.TemporaryDirectory() as directory:
+                command = [sys.executable, "-c", f"print({diagnostic!r}); raise SystemExit({exit_code})"]
+                repo = repo_with_test(Path(directory), (
+                    '[runner]\nmin_free_gb = 0\nmin_free_inodes = 0\n'
+                    '[leak_scan]\npattern = ""\n[[gate.check]]\nname = "code"\n'
+                    f"run = {json.dumps(command)}\n"
+                ))
+                code, output, report = gate(repo)
+                self.assertEqual(code, expected, output + report)
+                if expected == storage.EX_TEMPFAIL:
+                    self.assertEqual(report, "")
+                    events = lifecycle.read_events(repo / ".factory/events.jsonl")
+                    self.assertTrue(any(row.get("event") == "runner_storage_low" for row in events))
+                else:
+                    self.assertIn(f"- code: {'PASS' if expected == 0 else 'FAIL'}", report)
+
+
 if __name__ == "__main__":
     unittest.main()

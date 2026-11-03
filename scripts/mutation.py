@@ -26,12 +26,13 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 import tomllib
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+from factory import storage
 
 CAP = 200
 SEED = 197
@@ -145,7 +146,7 @@ def describe(diff: str) -> str:
     return f"`{old[:80]}` -> `{new[:80]}`"
 
 
-def main(argv: list[str] | None = None) -> int:
+def execute(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--blocking", action="store_true")
     parser.add_argument("--test-module", default=None)
@@ -162,8 +163,8 @@ def main(argv: list[str] | None = None) -> int:
     deadline = time.monotonic() + max(1, gate_timeout() - 60)
     root = Path.cwd()
     started = time.monotonic()
-    with tempfile.TemporaryDirectory(prefix="factory-mutation-") as tmp:
-        scratch = Path(tmp)
+    with storage.temporary_environment("factory-mutation-", phase="mutation") as environment:
+        scratch = Path(environment["TMPDIR"])
         mutations, hot = sample(lines, scratch)
         if args.blocking:
             mutations = mutations[:hot]
@@ -190,6 +191,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         baseline = time.monotonic() - baseline_started
         if proc.returncode:
+            storage.check_error(proc.stdout, phase="mutation")
             print(f"baseline suite failed:\n{proc.stdout[-3000:]}")
             return 1
         timeout = max(60.0, 3 * baseline)
@@ -212,6 +214,8 @@ def main(argv: list[str] | None = None) -> int:
                 result = mutate_and_test(
                     [local], test_command(copy, str(mutation.module_path)), min(timeout, left),
                 )
+                if result.test_outcome != TestOutcome.SURVIVED:
+                    storage.check_error(result.output or "", phase="mutation")
                 if left < timeout and result.output == "timeout":
                     cut.append(mutation)
                 else:
@@ -253,6 +257,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.blocking and (hot_survivors or queue or cut):
         return 1
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        try:
+            return execute(argv)
+        except OSError as exc:
+            storage.check_error(exc, phase="mutation")
+            raise
+    except storage.RunnerStorageLow as exc:
+        print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        return storage.EX_TEMPFAIL
 
 
 if __name__ == "__main__":
