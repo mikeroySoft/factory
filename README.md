@@ -1191,6 +1191,11 @@ pipeline runs. Unclaim always applies escalation/requeue labels; only the owning
 host can remove an existing claim's `@me`, host label and comment, even after expiry.
 An in-process claim must also match the elected nonce before cleanup. Tickets
 assigned before host claims were enabled retain the original `@me` release path.
+If the label/assignee edit fails, unclaim retains its comment and host label so
+another host can recover the assignment after TTL expiry. Successful host-label
+removals journal `claim-label-removed` receipts. The manager ignores those exact
+labels from the authenticated dispatcher only before the recorded escalation
+comment; human removals and later edits still hold automatic management.
 
 Expired claims are admitted through the frontier only when no other hold exists.
 A human assignee or an open `agent/<ticket>` PR with an expired claim remains a

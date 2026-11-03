@@ -118,7 +118,7 @@ class HostClaimTransitionTest(unittest.TestCase):
         events = lifecycle.read_events(tank.EVENTS)
         escalation = next(row for row in events if row.get("event") == "escalate")
         original = copy.deepcopy(self.github.timeline)
-        for label, before_marker in (("host:tank", False), ("host:human", True)):
+        for label, before_marker in (("host:tank", False), ("host:tank", True), ("host:human", True)):
             with self.subTest(label=label, before_marker=before_marker):
                 self.github.timeline = copy.deepcopy(original)
                 activity = {"event": "unlabeled", "label": {"name": label},

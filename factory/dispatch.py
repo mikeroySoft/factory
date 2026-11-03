@@ -573,6 +573,7 @@ def delete_host_claim(n: int, claim: dict) -> None:
     if not any(row["host"] == claim["host"] for row in host_claims(n)):
         run(["gh", "issue", "edit", str(n), "--repo", REPO,
              "--remove-label", f"host:{claim['host']}"])
+        record("claim-label-removed", ticket=n, label=f"host:{claim['host']}")
 
 
 def release_stale_claims(n: int, issue: dict, claims: list[dict], *, replacement: int | None = None) -> dict:
@@ -705,8 +706,8 @@ def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool =
             local.stop()
     assignee = ["--remove-assignee", "@me"] if not claims or owned is not None else []
     args = [*label_args, *assignee] if assignee_last else [*assignee, *label_args]
-    if args:
-        run(["gh", "issue", "edit", str(n), "--repo", REPO, *args], check=check)
+    if args and run(["gh", "issue", "edit", str(n), "--repo", REPO, *args], check=check).returncode:
+        return
     if owned is not None:
         delete_host_claim(n, owned)
 
