@@ -292,7 +292,7 @@ class HostClaimRevisionTest(unittest.TestCase):
         run = tank.run
         for failing_arg in ("--color", "--add-assignee"):
             with self.subTest(failing_arg=failing_arg):
-                def fail_claim(cmd, *args, **kwargs):
+                def fail_claim(cmd, *args, failing_arg=failing_arg, **kwargs):
                     if failing_arg in cmd:
                         raise subprocess.CalledProcessError(1, cmd, stderr="permission denied")
                     return run(cmd, *args, **kwargs)
