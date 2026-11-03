@@ -369,6 +369,24 @@ class HostClaimRevisionTest(unittest.TestCase):
         self.assertEqual((self.github.issue, self.github.comments), before)
         self.assertEqual(self.launched, [])
 
+    def test_old_requeue_cannot_release_newer_expired_claim_when_cleanup_was_deferred(self):
+        old = self.github.add_claim("ultron", datetime.now(UTC) - timedelta(hours=6))
+        nonce = old["body"].split("nonce=", 1)[1].split()[0]
+        self.github.comments.append({
+            "id": 100, "body": f"Factory requeue: nonce={nonce}\nOld refresh",
+            "created_at": datetime.now(UTC).isoformat(), "user": {"login": "@me"},
+        })
+        self.github.add_claim("tank", datetime.now(UTC) - timedelta(hours=3))
+        self.github.open_prs = [{"number": 70}]
+        tank = self.dispatcher("tank")
+
+        [issue] = tank.frontier()
+        self.assertEqual(issue.get("held"), "open PR")
+        before = copy.deepcopy((self.github.issue, self.github.comments))
+        tank.process_ticket(issue, 1, False)
+        self.assertEqual((self.github.issue, self.github.comments), before)
+        self.assertEqual(self.launched, [])
+
 
 # Avoid collecting the imported harness class as a second copy of its suite.
 del Harness
