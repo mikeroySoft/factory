@@ -355,6 +355,20 @@ key is unreadable or unregistered.
 `review_findings` counts in JSON and as `important/nit/pre-existing` triples in
 the ticket table.
 
+Ticket reviewers receive `origin/<main>...<gated head>`: only changes since the
+branch's merge base, not reverse patches for newer main-only commits. The
+High-risk changed-file/mutation-presence check uses the same comparison. Explicit
+`base_ref` reviews keep their direct `base..head` boundary. `./snapshot` remains
+the exact gated head, so missing later main commits alone are not reversions;
+genuine reversals in the branch diff still receive normal blocking review.
+Review policy still comes from the supplied base ref (current main by default),
+not the candidate. External PR intake already uses GitHub's three-dot compare.
+Ticket `review` events and review lifecycle results record
+`outside_diff_findings`: citations outside the supplied diff's displayed head-side
+hunk ranges (old-side ranges for deleted files, adjacent anchor for pure deletions).
+This counts all validated findings before the nit cap, without filtering findings
+or changing verdicts; unavailable/unparsed evidence records `null`.
+
 ### Decision records and explanations
 
 Routing from triage through merge or wontfix writes `event: "decision"` rows

@@ -112,6 +112,8 @@ class ReviewMergeBaseTest(unittest.TestCase):
         self.assertEqual(verdict, "REVISE")
         self.assertIn("Reverts the merged guard fix", findings)
         self.assertEqual(dispatch._PENDING_REVIEWS[533]["counts"]["important"], 1)
+        event = next(e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("event") == "review")
+        self.assertEqual(event["outside_diff_findings"], 0)
 
     def test_high_risk_both_reviewers_and_changed_files_exclude_main_only_code(self) -> None:
         self.advance_main()
@@ -153,6 +155,45 @@ class ReviewMergeBaseTest(unittest.TestCase):
         self.assertNotIn("factory/manager.py", packet["diff"])
         self.assertEqual(result["verdict"], "APPROVE")
         self.assertTrue(result["accepted"])
+
+    def test_outside_diff_citations_are_counted_without_suppressing_findings(self) -> None:
+        self.advance_main()
+        rows = [
+            {"severity": "important", "pass": "bug", "path": "factory/manager.py",
+             "line": 1, "summary": "Outside branch diff."},
+            {"severity": "nit", "pass": "spec", "path": "note.md",
+             "line": 1, "summary": "Inside branch diff."},
+            {"severity": "nit", "pass": "spec", "path": "note.md",
+             "line": 50, "summary": "Outside displayed lines."},
+        ]
+        output = f'```json\n{json.dumps({"verdict": "REVISE", "findings": rows})}\n```\nVERDICT: REVISE'
+        self.cfg.reviewer = [sys.executable, "-c", f"print({output!r})"]
+        verdict, findings = dispatch.review(self.wt, 533, "PASS", self.head)
+
+        self.assertEqual(verdict, "REVISE")
+        self.assertIn("Outside branch diff.", findings)
+        self.assertIn("Outside displayed lines.", findings)
+        event = next(e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("event") == "review")
+        self.assertEqual(event["outside_diff_findings"], 2)
+
+    def test_citation_count_handles_deleted_files_and_quoted_paths(self) -> None:
+        name = "r\u00e9sum\u00e9\tname.py"
+        (self.wt / name).write_text("-- source, not a diff header\n++ another source line\n")
+        (self.wt / "factory/manager.py").unlink()
+        git(self.wt, "add", name, "factory/manager.py")
+        git(self.wt, "commit", "-qm", "quoted path and deletion")
+        head = git(self.wt, "rev-parse", "HEAD")
+        rows = [
+            {"severity": "nit", "pass": "spec", "path": path, "line": line, "summary": "Citation"}
+            for path, line in ((name, 1), (name, 2), ("factory/manager.py", 1), ("note.md", 2))
+        ]
+        output = f'```json\n{json.dumps({"verdict": "APPROVE", "findings": rows})}\n```\nVERDICT: APPROVE'
+        self.cfg.reviewer = [sys.executable, "-c", f"print({output!r})"]
+        verdict, _ = dispatch.review(self.wt, 533, "PASS", head)
+
+        self.assertEqual(verdict, "APPROVE")
+        event = next(e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("event") == "review")
+        self.assertEqual(event["outside_diff_findings"], 1)
 
 
 if __name__ == "__main__":
