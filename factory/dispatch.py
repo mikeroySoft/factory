@@ -1736,15 +1736,16 @@ def run_gate(
         # All failing checks must be infra; one code failure keeps the normal cap.
         failures = re.findall(r"(?m)^- [^\n:]+: FAIL([^\n]*)", text.split("```", 1)[0])
         infra = all("(infra)" in failure for failure in failures) if failures else bool(cfg.infra_error(text))
-        execution = lifecycle.current()
-        record(
-            "failure", ticket=ticket, source="gate", gate=str(n), head=head, tier=tier,
-            failure_class="infra" if infra else "code",
-            retry=retry + 1 if infra else getattr(execution, "attempt", None),
-            limit=cfg.infra_retries if infra else None,
-            exhausted=infra and retry == cfg.infra_retries,
-            report=str(report),
-        )
+        if ticket is not None:
+            execution = lifecycle.current()
+            record(
+                "failure", ticket=ticket, source="gate", gate=str(n), head=head, tier=tier,
+                failure_class="infra" if infra else "code",
+                retry=retry + 1 if infra else getattr(execution, "attempt", None),
+                limit=cfg.infra_retries if infra else None,
+                exhausted=infra and retry == cfg.infra_retries,
+                report=str(report),
+            )
         if not infra:
             return False, text
         if retry == cfg.infra_retries:
