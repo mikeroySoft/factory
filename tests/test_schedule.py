@@ -1,7 +1,9 @@
 """#102: the dispatcher admits eligible work by accepted priority, not issue-list order."""
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -149,6 +151,30 @@ class DispatcherPassTest(unittest.TestCase):
             dispatch.ticket_pass(1, False)
         process.assert_not_called()
         self.assertFalse(self.events.exists())
+
+    def test_frontier_sees_more_than_30_ready_issues(self):
+        # #577: gh returns the 30 newest issues unless told otherwise; the oldest NOW ticket must still be seen.
+        issues = [ticket(3, "2025-01-01T00:00:00Z")] + [
+            ticket(100 + i, f"2026-01-{i + 1:02d}T00:00:00Z", body="unbound") for i in range(30)]
+
+        def fake_run(cmd, cwd=None, check=True, stdout=None, stderr=None, env=None, timeout=None):
+            args = cmd[1:]
+            if args[:2] == ["issue", "list"]:
+                limit = int(args[args.index("--limit") + 1]) if "--limit" in args else 30
+                self.assertGreaterEqual(limit, 1000, "frontier() must pass an explicit --limit >= 1000")
+                served = sorted(issues, key=lambda row: row["createdAt"], reverse=True)[:limit]
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(served), "")
+            if args[0] == "api" and args[1].endswith("/dependencies/blocked_by"):
+                return subprocess.CompletedProcess(cmd, 1, "", "HTTP 404")
+            self.fail(f"unexpected gh call: {cmd}")
+
+        with patch.object(dispatch, "run", side_effect=fake_run):
+            rows = dispatch.frontier()
+        oldest = next((row for row in rows if row["number"] == 3), None)
+        self.assertIsNotNone(oldest, "the oldest ready issue is missing from frontier()")
+        self.assertNotIn("held", oldest)
+        decided = schedule.plan(rows, 1, repo=REPO, streak=0, experiments=0)
+        self.assertEqual([row["number"] for row in decided["selected"]], [3])
 
 
 if __name__ == "__main__":
