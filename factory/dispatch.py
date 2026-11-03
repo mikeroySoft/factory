@@ -546,7 +546,7 @@ def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
         if any(row["login"].casefold() != host_claim_login() for row in issue.get("assignees", [])):
             return "assigned"
         # Requeues name the expired nonce; they cannot release a later worker's PR hold.
-        if not any("requeue" in claim for claim in claims) and gh_json(
+        if "requeue" not in claims[-1] and gh_json(
             ["pr", "list", "--repo", REPO, "--state", "open",
              "--head", f"agent/{n}", "--json", "number"]
         ):
@@ -675,7 +675,7 @@ def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool =
         for flag, label in zip(label_args[::2], label_args[1::2])
     ):
         claims = host_claims(n)
-        if elected := live_host_claims(claims) or claims:
+        if elected := live_host_claims(claims) or claims[-1:]:
             context = refresh_requeue_context(n)
             gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
                      "-f", f"body=Factory requeue: nonce={elected[0]['nonce']}\n{context}"])
@@ -4455,9 +4455,7 @@ def process_ticket(
             # Attempts 1..MAX_ATTEMPTS: worker + gate, feeding the failed report back. A sync
             # candidate the dispatcher's own gate passed at this exact head needs no worker,
             # unless a refresh conflict or repeated refresh gate failure requeued it.
-            resolve = refresh_requeue_context(n) or next(
-                (claim["requeue"] for claim in claims if "requeue" in claim), "",
-            )
+            resolve = refresh_requeue_context(n) or (claims[-1].get("requeue", "") if claims else "")
             prior_risk_disagreement_head = pending_risk_requeue_head(n)
             extra, logfile, report = resolve, None, ""
             staged = None if resolve else sync_staged(n, wt)
