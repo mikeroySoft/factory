@@ -3288,11 +3288,11 @@ def triage_cancelled(
                 ["gh", "run", "rerun", str(run_id), "--failed", "--repo", REPO],
                 check=False,
             ).returncode == 0
-            receipt = dict(
-                pr=pr, head=head, run=run_id, attempt=attempt,
-                checks=names, ok=ok, retry=retry, limit=limit,
-                infra_reason=infra_reason,
-            )
+            receipt = {
+                "pr": pr, "head": head, "run": run_id, "attempt": attempt,
+                "checks": names, "ok": ok, "retry": retry, "limit": limit,
+                "infra_reason": infra_reason,
+            }
             record("ci-rerun", **receipt)
             _record_ci_retry_failure(ticket, receipt, events)
             spent = retry
