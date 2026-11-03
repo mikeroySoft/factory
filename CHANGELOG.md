@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- `factory dispatch` now re-reads and re-ranks the frontier before each pick in a pass instead of working the ranking taken at pass start, so a Plan baseline that changes while an earlier pick holds its slot decides the next pick. Each admission `decision` row records the Plan baseline sha256 it was ranked against; a pass whose frontier does not change picks the same tickets in the same order (#578).
 - The dispatcher's frontier now lists up to 1000 open `ready-for-agent` issues instead of gh's default 30 newest, so older ready tickets (including NOW-priority ones) are visible to the scheduler. Held handling is unchanged (#577).
 - Gate resource tests now wait for an interrupted requester's own terminal lifecycle evidence before reaping, using a shared overridable 60-second backstop for resource waits and cleanup. Deterministic descheduling and non-exiting-requester regressions preserve bounded failure and the disposable children's 30-second safeguards (#515).
 - Ticket reviewers now receive the issue title, body, and every comment inside an untrusted-data fence, using the worker's accepted snapshot for plan-bound tickets and the dispatcher's GitHub read otherwise. Learn replays use their recorded issue; learning-proposal reviews and tokenless reviewer isolation are unchanged (#513).

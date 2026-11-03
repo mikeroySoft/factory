@@ -176,6 +176,27 @@ class DispatcherPassTest(unittest.TestCase):
         decided = schedule.plan(rows, 1, repo=REPO, streak=0, experiments=0)
         self.assertEqual([row["number"] for row in decided["selected"]], [3])
 
+    def test_pass_reranks_after_bind_change_mid_pass(self):
+        def bound(plan: str) -> str:
+            parent = issue(50, initiative_body(plan), labels=("initiative",), title="Roadmap")
+            return binding.render(binding.from_issue(config.Config(Path("/nonexistent"), REPO), 50, parent))
+
+        before, after = bound("NOW #21\nNEXT #22"), bound("NEXT #22\nNOW #23")
+        stale = [ticket(21, "2026-01-01T00:00:00Z", body=before), ticket(22, "2026-01-02T00:00:00Z", body=before)]
+        # The Plan baseline changed while #21 was worked: #22 is re-bound, #23 is new and NOW, #21 is claimed.
+        fresh = [ticket(22, "2026-01-02T00:00:00Z", body=after), ticket(23, "2026-01-03T00:00:00Z", body=after)]
+        with patch.object(dispatch, "MAX_ACTIVE", 2), patch.object(dispatch, "process_ticket") as process, \
+                patch.object(dispatch, "frontier", side_effect=lambda: fresh if process.called else stale):
+            dispatch.ticket_pass(1, False)
+        self.assertEqual([call.args[0]["number"] for call in process.call_args_list], [21, 23])
+        admissions = [e for e in lifecycle.read_events(self.events)
+                      if e.get("event") == "decision" and e.get("stage") == "admission"]
+        baselines = {e["ticket"]: next(i["summary"] for i in e["inputs"] if i["kind"] == "plan_baseline")
+                     for e in admissions}
+        shas = binding.baseline(before, REPO)["sha256"], binding.baseline(after, REPO)["sha256"]
+        self.assertNotEqual(*shas)
+        self.assertEqual(baselines, {21: shas[0], 23: shas[1]})
+
 
 if __name__ == "__main__":
     unittest.main()

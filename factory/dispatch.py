@@ -4464,7 +4464,13 @@ def process_ticket(
 
 
 def ticket_pass(budget_min: int, dry_run: bool) -> None:
-    """Claim up to capacity frontier tickets in accepted-priority order and work each one."""
+    """Claim up to capacity frontier tickets in accepted-priority order and work each one.
+
+    The frontier is re-read and re-ranked before each pick, so a Plan baseline re-bound while
+    an earlier pick held its slot ranks the next one; each admission decision records the
+    baseline it was ranked against. The fairness streak and experiment slot come from the
+    journal once, then advance by this pass's own picks.
+    """
     from factory import schedule
 
     with nullcontext() if dry_run else lifecycle.scope(EVENTS, "scheduling", lazy=True) as execution:
@@ -4476,38 +4482,39 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
             if execution:
                 execution.wait("capacity_reached", mode="admission", active=len(active), max_active=MAX_ACTIVE)
             return
-        rows = frontier()
-        if all(issue.get("held") for issue in rows):
-            log("frontier empty, nothing to do")
-            return
         events = lifecycle.read_events(EVENTS)
         parents = {
             row["ticket"]: row["parent"] for row in events
             if row.get("event") == "issue-created" and type(row.get("ticket")) is int
             and type(row.get("parent")) is int
         }
-        decided = schedule.plan(
-            rows,
-            capacity,
-            repo=REPO,
-            streak=schedule.explicit_streak(events),
-            experiments=schedule.active_experiments(events, set(active)),
-            parents=parents,
-        )
-        for row in decided["explained"]:
-            log(f"#{row['ticket']}: {row['decision']} ({row['reason']})")
-        admissions = {}
-        if not dry_run:
-            for payload in decided["decisions"]:
-                record("decision", **payload)
-                admissions[payload["ticket"]] = payload["decision_id"]
-            record("scheduling", capacity=capacity, active=active, explained=decided["explained"])
-    for issue in decided["selected"]:
-        process_ticket(
-            {**issue, "_factory_admission_id": admissions.get(issue["number"])},
-            budget_min,
-            dry_run,
-        )
+        streak = schedule.explicit_streak(events)
+        experiments = schedule.active_experiments(events, set(active))
+    picked = set()  # a skipped or dry-run pick can still be in the frontier
+    for remaining in range(capacity, 0, -1):
+        with nullcontext() if dry_run else lifecycle.scope(EVENTS, "scheduling", lazy=True):
+            rows = [issue for issue in frontier() if issue["number"] not in picked]
+            if all(issue.get("held") for issue in rows):
+                if not picked:
+                    log("frontier empty, nothing to do")
+                return
+            decided = schedule.plan(
+                rows, remaining, repo=REPO, streak=streak, experiments=experiments, parents=parents,
+            )
+            for row in decided["explained"]:
+                log(f"#{row['ticket']}: {row['decision']} ({row['reason']})")
+            admission = None
+            if not dry_run:
+                for payload in decided["decisions"][:1]:
+                    record("decision", **payload)
+                    admission = payload["decision_id"]
+                record("scheduling", capacity=remaining, active=active, explained=decided["explained"])
+        if not decided["selected"]:
+            return
+        issue = decided["selected"][0]
+        picked.add(issue["number"])
+        streak, experiments = schedule.advance(streak, experiments, decided["explained"][0])
+        process_ticket({**issue, "_factory_admission_id": admission}, budget_min, dry_run)
 
 
 def pin_root() -> list[str]:
