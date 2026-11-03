@@ -40,7 +40,7 @@ def main(argv: list[str]) -> int:
         try:
             data = json.loads(flag.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
-                raise ValueError("expected JSON object")
+                raise TypeError("expected JSON object")
             expiry = min(_timestamp(data["expires_at"]), expiry)
             if isinstance(data.get("reason"), str) and data["reason"]:
                 reason = data["reason"]
@@ -52,6 +52,6 @@ def main(argv: list[str]) -> int:
             return 0
         print(f"skipped: district drain ({reason}, until {until})", file=sys.stderr)
         return 1
-    except BaseException as exc:
+    except BaseException as exc:  # noqa: BLE001 - even SystemExit must admit the pass
         print(f"ERROR drain-check {type(exc).__name__}: {exc}; ignoring", file=sys.stderr)
         return 0
