@@ -314,7 +314,7 @@ def post_fix_outcomes(rows: list[dict]) -> dict[str, Any]:
             for episode in active.pop(ticket):
                 episode["outcome"] = outcome
 
-    totals: dict[tuple[str | None, str], Counter] = {}
+    totals = {}
     for episode in episodes:
         key = (episode["worker_model"], episode["claim_status"])
         totals.setdefault(key, Counter())[episode["outcome"]] += 1
@@ -323,8 +323,8 @@ def post_fix_outcomes(rows: list[dict]) -> dict[str, Any]:
         totals.items(),
         key=lambda item: (
             item[0][0] is None,
-            item[0][1] == "no_claim",
             item[0][0] or "",
+            item[0][1],
         ),
     ):
         resolved = outcomes["merged"] + outcomes["re_escalated"]
