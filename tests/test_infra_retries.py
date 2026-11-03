@@ -121,6 +121,19 @@ class GateInfraRetriesTest(unittest.TestCase):
         self.assertEqual([r["gate"] for r in rows if r.get("event") == "attempt"], ["FAIL", "FAIL"])
         self.assertEqual([r["failure_class"] for r in rows if r.get("event") == "failure"], ["code", "code"])
 
+    def test_colon_named_code_check_keeps_mixed_failure_on_code_cap(self):
+        self.fixture.write_config(
+            check=[sys.executable, "-c", "print('Connection reset by peer'); raise SystemExit(1)"],
+            extra='[[gate.check]]\nname = "lint:python"\nrun = '
+            + json.dumps([sys.executable, "-c", "print('assertion failed'); raise SystemExit(1)"]) + "\n",
+        )
+        self.fixture.commit_config()
+        self.fixture.cli("dispatch", "--ticket", "7")
+        rows = lifecycle.read_events(self.fixture.events)
+        self.assertEqual([r["code"] for r in rows if r.get("event") == "escalate"], ["gate_failed"])
+        self.assertEqual([r["failure_class"] for r in rows if r.get("event") == "failure"], ["code", "code"])
+        self.assertEqual([r["gate"] for r in rows if r.get("event") == "attempt"], ["FAIL", "FAIL"])
+
     def test_pr_tier_network_recovery_does_not_bounce_worker(self):
         self.fixture.pr_config(fails=0)
         check = self.fixture.base / "pr_check.py"
@@ -292,6 +305,34 @@ class CIInfraRetriesTest(unittest.TestCase):
         sibling = {**self.check, "name": "slow", "bucket": "pending"}
         self.assertEqual([c["bucket"] for c in self.triage([self.check, sibling])], ["pending", "pending"])
         self.assertEqual(self.reruns, [])
+
+    def test_active_workflow_defers_failed_job_until_logs_are_available(self):
+        active = True
+        original = self.command
+
+        def command(argv, **kwargs):
+            if argv[:2] == ["gh", "api"] and "/actions/runs/" in argv[2]:
+                return subprocess.CompletedProcess(
+                    argv, 0, json.dumps({"status": "in_progress" if active else "completed"}), "",
+                )
+            if active and argv[:3] == ["gh", "run", "view"]:
+                return subprocess.CompletedProcess(
+                    argv, 1, "", "run 42 is still in progress; logs will be available when it is complete",
+                )
+            return original(argv, **kwargs)
+
+        # Required-only polls can omit the still-running sibling entirely.
+        with mock.patch.object(dispatch, "run", side_effect=command):
+            for checks in ([self.check], [self.check, {**self.check, "name": "slow", "bucket": "pending"}]):
+                with self.subTest(checks=checks):
+                    self.assertEqual({c["bucket"] for c in self.triage(checks)}, {"pending"})
+                    self.assertEqual(self.reruns, [])
+                    self.assertEqual(lifecycle.read_events(dispatch.EVENTS), [])
+            active = False
+            self.assertEqual(self.triage()[0]["bucket"], "pending")
+        self.assertEqual(len(self.reruns), 1)
+        failures = [r for r in lifecycle.read_events(dispatch.EVENTS) if r.get("event") == "failure"]
+        self.assertEqual([r["failure_class"] for r in failures], ["infra"])
 
     def test_ticketless_rerun_is_included_once_in_escalation_evidence(self):
         dispatch.cfg.infra_retries = 1

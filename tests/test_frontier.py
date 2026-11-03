@@ -193,6 +193,46 @@ class FrontierTest(unittest.TestCase):
         self.assertIn("stale_days = 7", self.escalations()[-1]["reason"])
         self.assertEqual(len(self.escalations()), 2)
 
+    def test_code_failure_precedes_independent_exhausted_infra_workflow(self) -> None:
+        self.cfg.infra_retries = 0
+        self.mixed_ci_frontier()
+
+    def test_code_failure_precedes_infra_budget_spent_by_another_poller(self) -> None:
+        self.cfg.infra_retries = 1
+        dispatch.record("ci-rerun", pr=80, run=42, attempt=1, ok=True)
+        self.mixed_ci_frontier()
+
+    def mixed_ci_frontier(self) -> None:
+        dispatch.record("claimed", ticket=79)
+        self.provider.reviews, self.provider.checks = [], []
+        self.provider.thread["isResolved"] = True
+        checks = [
+            {"name": name, "bucket": "fail",
+             "link": f"https://github.com/example/project/actions/runs/{run}/job/{job}"}
+            for name, run, job in (("unit", 41, 98), ("signatures", 42, 99))
+        ]
+        original = self.fake_run
+
+        def command(argv, **kwargs):
+            if argv[:2] == ["gh", "api"]:
+                import json
+
+                output = ({"status": "completed"} if "/actions/runs/" in argv[2]
+                          else {"run_attempt": 2})
+                return subprocess.CompletedProcess(argv, 0, json.dumps(output), "")
+            if argv[:3] == ["gh", "run", "view"]:
+                output = "Connection reset by peer" if "99" in argv else "assertion failed"
+                return subprocess.CompletedProcess(argv, 0, output, "")
+            return original(argv, **kwargs)
+
+        with (
+            mock.patch.object(dispatch, "pr_checks", return_value=checks),
+            mock.patch.object(dispatch, "run", side_effect=command),
+        ):
+            manage.frontier_pass()
+        self.assertEqual([e["code"] for e in self.escalations()], ["ci_failed"])
+        self.assertEqual([e["reason"] for e in self.escalations()], ["PR #80: CI failed (unit)"])
+
     def released_after_red_ci(self) -> None:
         """#188: gate failed at 18:52; the owner released the ticket to ready-for-agent at 19:45."""
         dispatch.record("claimed", ticket=79)
