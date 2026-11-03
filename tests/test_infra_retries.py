@@ -1,0 +1,191 @@
+"""Network outages retry the same evidence, not a worker's code budget."""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from factory import config, dispatch, lifecycle
+import test_dispatch_lifecycle as cli_fixture
+
+
+class GateInfraRetriesTest(unittest.TestCase):
+    def setUp(self):
+        self.fixture = cli_fixture.LocalCLI("runTest")
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        self.root = self.fixture.repo
+        self.counter = self.fixture.base / "gate-count"
+
+    def scenario(self, failures, message, settings=""):
+        script = self.fixture.base / "network-check.py"
+        script.write_text(
+            "from pathlib import Path\n"
+            f"p = Path({str(self.counter)!r})\n"
+            "n = int(p.read_text()) if p.exists() else 0\n"
+            "p.write_text(str(n + 1))\n"
+            f"print({message!r})\n"
+            f"raise SystemExit(1 if n < {failures} else 0)\n"
+        )
+        self.fixture.write_config(
+            check=[sys.executable, str(script)],
+            reviewer=[sys.executable, "-c", 'print(\'```json\\n{"verdict":"APPROVE","findings":[]}\\n```\\nVERDICT: APPROVE\')'],
+        )
+        path = self.root / ".factory.toml"
+        path.write_text(path.read_text().replace("[gate]\n", "[gate]\n" + settings))
+        self.fixture.commit_config()
+        self.fixture.cli("dispatch", "--ticket", "7")
+        return lifecycle.read_events(self.fixture.events)
+
+    def test_network_retries_do_not_spend_worker_attempts(self):
+        rows = self.scenario(3, "error: [92] Stream error in the HTTP/2 framing layer")
+        attempts = [row for row in rows if row.get("event") == "attempt"]
+        self.assertEqual([row["gate"] for row in attempts], ["PASS"])
+        self.assertEqual(self.counter.read_text(), "4")
+        self.assertTrue(any(row.get("event") == "approve" for row in rows))
+
+    def test_unmatched_failures_keep_the_existing_cap(self):
+        rows = self.scenario(20, "assertion failed: expected 1, got 2")
+        self.assertEqual(self.counter.read_text(), "2")
+        self.assertEqual([row["gate"] for row in rows if row.get("event") == "attempt"], ["FAIL", "FAIL"])
+        self.assertEqual([row["code"] for row in rows if row.get("event") == "escalate"], ["gate_failed"])
+
+    def test_repo_pattern_retries_without_replacing_defaults(self):
+        rows = self.scenario(2, "mirror unavailable: INTERNAL_FETCH_518", "infra_patterns = ['INTERNAL_FETCH_518']\n")
+        self.assertEqual([row["gate"] for row in rows if row.get("event") == "attempt"], ["PASS"])
+        with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.fixture.base / "config")}):
+            cfg = config.load(self.root)
+        self.assertTrue(cfg.infra_error("Connection reset by peer"))
+        self.assertTrue(cfg.infra_error("INTERNAL_FETCH_518"))
+
+    def test_infra_limit_escalates_as_a_host_problem(self):
+        rows = self.scenario(20, "Could not resolve host: index.crates.io", "infra_retries = 1\n")
+        self.assertEqual(self.counter.read_text(), "2")
+        escalations = [row for row in rows if row.get("event") == "escalate"]
+        self.assertEqual([row["code"] for row in escalations], ["infra_failed"])
+        self.assertIn("host", escalations[0]["reason"].lower())
+        self.assertEqual(len([row for row in rows if row.get("event") == "llm-usage" and row.get("stage") == "worker"]), 1)
+
+    def test_escalation_comment_lists_infra_and_code_retry_classes(self):
+        # One recovered network failure followed by two ordinary code failures.
+        script = self.fixture.base / "network-check.py"
+        script.write_text(
+            "from pathlib import Path\n"
+            f"p = Path({str(self.counter)!r})\n"
+            "n = int(p.read_text()) if p.exists() else 0\n"
+            "p.write_text(str(n + 1))\n"
+            "print('Connection reset by peer' if n == 0 else 'assertion failed')\n"
+            "raise SystemExit(1)\n"
+        )
+        self.fixture.write_config(check=[sys.executable, str(script)])
+        self.fixture.commit_config()
+        # The fixture GitHub stand-in records the exact issue comment body.
+        gh = self.fixture.bin / "gh"
+        gh.write_text(gh.read_text().replace(
+            'elif a[:2] not in',
+            'elif a[:2] == ["issue", "comment"]:\n'
+            '    s["escalation_comment"] = a[a.index("--body") + 1]\n'
+            '    p.write_text(json.dumps(s))\n'
+            'elif a[:2] not in',
+        ))
+        self.fixture.cli("dispatch", "--ticket", "7")
+        body = json.loads(self.fixture.state.read_text())["escalation_comment"]
+        self.assertIn("infra", body.lower())
+        self.assertIn("code", body.lower())
+        self.assertEqual(self.counter.read_text(), "3")
+
+
+class CIInfraRetriesTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        globals_patch = mock.patch.dict(dispatch.__dict__)
+        globals_patch.start()
+        self.addCleanup(globals_patch.stop)
+        dispatch.configure(config.Config(root=self.root, repo="local/infra"))
+        self.attempt = 1
+        self.message = "error: failed to download from https://static.crates.io/crates/foo: Connection reset by peer"
+        self.reruns = []
+        self.comments = []
+        self.check = {"name": "signatures", "bucket": "fail", "link": "https://github.com/local/infra/actions/runs/42/job/99"}
+        patcher = mock.patch.object(dispatch, "run", side_effect=self.command)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def command(self, argv, **kwargs):
+        if argv[:2] == ["gh", "api"]:
+            if "/actions/jobs/" in argv[2]:
+                output = json.dumps({"run_attempt": self.attempt, "runner_name": "host", "steps": [{"conclusion": "failure"}]})
+            elif "/actions/runs/" in argv[2]:
+                output = json.dumps({"status": "completed", "run_attempt": self.attempt})
+            else:
+                raise AssertionError(argv)
+        elif argv[:3] == ["gh", "run", "view"]:
+            self.assertIn("--job", argv)
+            self.assertIn("--log", argv)
+            output = self.message
+        elif argv[:3] == ["gh", "run", "rerun"]:
+            self.reruns.append(argv)
+            output = ""
+        elif argv[:3] == ["gh", "issue", "comment"]:
+            self.comments.append(argv[argv.index("--body") + 1])
+            output = ""
+        elif argv[:3] == ["gh", "issue", "edit"]:
+            output = ""
+        else:
+            raise AssertionError(argv)
+        return subprocess.CompletedProcess(argv, 0, output, "")
+
+    def triage(self, checks=None, dry_run=False):
+        return dispatch.triage_cancelled(70, checks or [self.check], dry_run, 7, "head")
+
+    def test_network_ci_reruns_once_per_observed_attempt(self):
+        self.assertEqual(self.triage()[0]["bucket"], "pending")
+        self.assertEqual(self.triage()[0]["bucket"], "pending")
+        self.assertEqual(len(self.reruns), 1)
+        self.attempt = 2
+        self.assertEqual(self.triage()[0]["bucket"], "pending")
+        self.assertEqual(len(self.reruns), 2)
+
+    def test_ci_infra_limit_escalates_with_classed_comment(self):
+        dispatch.cfg.infra_retries = 1
+        self.triage()
+        self.attempt = 2
+        checks = self.triage()
+        self.assertEqual(checks[0]["bucket"], "infra")
+        dispatch.runner_unavailable(7, 70, checks, False)
+        self.assertEqual(len(self.reruns), 1)
+        self.assertIn("infra", self.comments[0].lower())
+        self.assertIn("host", self.comments[0].lower())
+        rows = lifecycle.read_events(dispatch.EVENTS)
+        self.assertEqual([r["code"] for r in rows if r.get("event") == "escalate"], ["infra_failed"])
+
+    def test_unmatched_ci_failure_is_not_retried(self):
+        self.message = "error[E0308]: mismatched types"
+        self.assertEqual(self.triage()[0]["bucket"], "fail")
+        self.assertEqual(self.reruns, [])
+
+    def test_ci_dry_run_does_not_spend_retries(self):
+        self.assertEqual(self.triage(dry_run=True)[0]["bucket"], "pending")
+        self.assertEqual(self.reruns, [])
+        self.assertEqual(lifecycle.read_events(dispatch.EVENTS), [])
+
+
+class InfraConfigTest(unittest.TestCase):
+    def test_invalid_retry_policy_is_rejected_at_load(self):
+        for value in ("infra_retries = -1", "infra_retries = true", "infra_patterns = 'reset'", "infra_patterns = ['[']", "infra_patterns = ['']"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / ".factory.toml").write_text('[repo]\nslug = "local/infra"\n[gate]\n' + value)
+                with mock.patch.object(config, "repo_root", return_value=root), mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp}), self.assertRaises(config.ConfigError):
+                    config.load(root)
+
+
+if __name__ == "__main__":
+    unittest.main()
