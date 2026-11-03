@@ -233,6 +233,28 @@ class FrontierTest(unittest.TestCase):
         self.assertEqual([e["code"] for e in self.escalations()], ["ci_failed"])
         self.assertEqual([e["reason"] for e in self.escalations()], ["PR #80: CI failed (unit)"])
 
+    def test_pending_check_does_not_hide_actionable_feedback(self) -> None:
+        dispatch.record("claimed", ticket=79)
+        with mock.patch.object(dispatch, "pr_checks", return_value=[
+            {"name": "slow", "bucket": "pending"},
+        ]):
+            manage.frontier_pass()
+        self.assertEqual([e["code"] for e in self.escalations()], ["pr_feedback"])
+        packet = Path(self.escalations()[0]["packet"]).read_text()
+        self.assertIn("Fix boundary", packet)
+        self.assertTrue(any(e.get("event") == "feedback-delivered" for e in self.events()))
+
+    def test_completed_check_with_run_does_not_hide_actionable_feedback(self) -> None:
+        dispatch.record("claimed", ticket=79)
+        with mock.patch.object(dispatch, "pr_checks", return_value=[
+            {"name": "signatures", "bucket": "pass", "run": 42},
+        ]):
+            manage.frontier_pass()
+        self.assertEqual([e["code"] for e in self.escalations()], ["pr_feedback"])
+        packet = Path(self.escalations()[0]["packet"]).read_text()
+        self.assertIn("Fix boundary", packet)
+        self.assertTrue(any(e.get("event") == "feedback-delivered" for e in self.events()))
+
     def released_after_red_ci(self) -> None:
         """#188: gate failed at 18:52; the owner released the ticket to ready-for-agent at 19:45."""
         dispatch.record("claimed", ticket=79)

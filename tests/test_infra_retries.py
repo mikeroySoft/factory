@@ -357,6 +357,32 @@ class CIInfraRetriesTest(unittest.TestCase):
         self.assertIn("infra retry 1/1; normal cap unchanged", dispatch.retry_summary(7))
         self.assertEqual(len(self.reruns), 1)
 
+    def test_ci_retry_evidence_is_not_suppressed_by_another_ticket(self):
+        dispatch.cfg.infra_retries = 1
+        dispatch.triage_cancelled(70, [self.check], ticket=8, head="head")
+        self.triage()
+        self.triage()
+        self.attempt = 2
+        dispatch.runner_unavailable(7, 70, self.triage(), False)
+        failures = [r for r in lifecycle.read_events(dispatch.EVENTS) if r.get("event") == "failure"]
+        self.assertEqual([(r["ticket"], r["run"], r["attempt"]) for r in failures], [(8, 42, 1), (7, 42, 1)])
+        self.assertIn("| 1. ci run 42 attempt 1 | infra | infra retry 1/1; normal cap unchanged |", self.comments[0])
+        self.assertEqual(len(self.reruns), 1)
+
+    def test_pending_ci_retry_does_not_report_terminal_host_exhaustion(self):
+        dispatch.cfg.infra_retries = 1
+        for _ in range(2):
+            pending = self.triage()[0]
+            self.assertEqual(pending["bucket"], "pending")
+            self.assertNotIn("infra_reason", pending)
+            self.assertNotIn("infra_limit", pending)
+        self.attempt = 2
+        exhausted = self.triage()[0]
+        self.assertEqual(exhausted["bucket"], "infra")
+        self.assertEqual(exhausted["infra_reason"], "network/download host problem")
+        self.assertEqual((exhausted["infra_retry"], exhausted["infra_limit"]), (1, 1))
+        self.assertEqual(len(self.reruns), 1)
+
 
 class InfraConfigTest(unittest.TestCase):
     def test_invalid_retry_policy_is_rejected_at_load(self):
