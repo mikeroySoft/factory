@@ -656,5 +656,33 @@ class HostClaimRevisionTest(unittest.TestCase):
         self.assertEqual(self.launched, ["ultron", "ultron"])
 
 
+class HostClaimOwnershipTest(unittest.TestCase):
+    setUp = Harness.setUp
+    dispatcher = Harness.dispatcher
+    launch = Harness.launch
+
+    def test_expired_owner_heartbeat_does_not_revive_after_replacement(self):
+        tank = self.dispatcher("tank", claim_ttl="1s")
+        claim = tank.acquire_host_claim(7, copy.deepcopy(self.github.issue), [])
+        self.addCleanup(claim.stop)
+        with self.github.lock:
+            old = self.github.comments[0]
+            old["body"] = (
+                f"Factory claim: host=tank nonce={claim.comment['nonce']} "
+                f"at={(datetime.now(UTC) - timedelta(hours=3)).isoformat()}"
+            )
+            replacement = self.github.add_claim("ultron", datetime.now(UTC))
+            before = copy.deepcopy(self.github.comments)
+
+        claim.thread.join(timeout=2)
+
+        self.assertEqual(self.github.comments, before)
+        self.assertFalse(claim.thread.is_alive(), "displaced owner must stop heartbeating")
+        self.assertEqual(self.github.patch_count, 0)
+        tank.unclaim(7)
+        self.assertIn(replacement, self.github.comments)
+        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
+
+
 # Avoid collecting the imported harness class as a second copy of its suite.
 del Harness
