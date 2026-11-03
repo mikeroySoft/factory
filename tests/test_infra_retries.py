@@ -274,5 +274,20 @@ class InfraConfigTest(unittest.TestCase):
                     config.load(root)
 
 
+class InfraOutcomeTest(unittest.TestCase):
+    def test_network_outages_are_not_repeated_engine_defects(self):
+        from datetime import UTC, datetime
+
+        from factory import watch
+
+        at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        rows = [
+            {"event": "escalate", "code": code, "ticket": ticket, "at": at}
+            for code in ("infra_failed", "reviewer_unavailable")
+            for ticket in (1, 2, 3)
+        ]
+        self.assertEqual(set(watch.repeated_escalations(rows)), {"reviewer_unavailable"})
+
+
 if __name__ == "__main__":
     unittest.main()
