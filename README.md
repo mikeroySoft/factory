@@ -1206,6 +1206,10 @@ Assigned stale claims stay intact until a replacement wins and assigns, so admis
 or claim failures cannot strand the shared `@me` assignment without recovery evidence.
 Dispatch then rechecks the heartbeat, removes stale comments/labels without clearing
 the shared assignment, and records `claim-released` with the old host and last heartbeat.
+The elected owner revalidates its nonce before cleanup; a losing contender still
+deleting its live claim cannot block retirement of old stale ownership. Owner
+unclaim also retires older stale claims before deleting its own comment, so
+leftover claims cannot strand a later refresh requeue or escalation/relabel.
 Unassigned stale claims can be released before election. A foreign host label without
 a claim comment remains a hold; inspect it before removing it.
 Hosts need synchronized clocks and current GitHub reads. This comment-based

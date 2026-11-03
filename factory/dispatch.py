@@ -579,12 +579,20 @@ def release_stale_claims(n: int, issue: dict, claims: list[dict], *, replacement
     claims = [row for row in claims if row["id"] != replacement]
     live_ids = {row["id"] for row in live_host_claims(claims)}
     stale = [row for row in claims if row["id"] not in live_ids]
-    if not stale or host_claim_hold(n, issue, claims):
+    if not stale or (replacement is None and host_claim_hold(n, issue, claims)):
         return issue
     # Re-read before deleting: a heartbeat may have landed since the admission read.
-    current = [row for row in host_claims(n) if row["id"] != replacement]
-    if host_claim_hold(n, issue, current):
-        return issue
+    current = host_claims(n)
+    if replacement is None:
+        if host_claim_hold(n, issue, current):
+            return issue
+    else:
+        # A losing contender may still be live. Only the elected owner may
+        # ignore that hold while retiring the previous stale ownership.
+        owned = owned_host_claim(n, current)
+        if owned is None or owned["id"] != replacement:
+            return issue
+    current = [row for row in current if row["id"] != replacement]
     if issue.get("assignees") and replacement is None:
         # Keep durable recovery evidence until the elected replacement has assigned.
         # Admission/claim failures must not leave @me with no claim on any host.
@@ -690,8 +698,11 @@ def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool =
         context = refresh_requeue_context(n)
         gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
                  "-f", f"body=Factory requeue: nonce={elected[0]['nonce']}\n{context}"])
-    if owned is not None and (local := _HOST_CLAIMS.get(n)) is not None:
-        local.stop()
+    if owned is not None:
+        fresh = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels,assignees"])
+        release_stale_claims(n, fresh, claims, replacement=owned["id"])
+        if (local := _HOST_CLAIMS.get(n)) is not None:
+            local.stop()
     assignee = ["--remove-assignee", "@me"] if not claims or owned is not None else []
     args = [*label_args, *assignee] if assignee_last else [*assignee, *label_args]
     if args:
