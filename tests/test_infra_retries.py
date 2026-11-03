@@ -47,7 +47,7 @@ class GateInfraRetriesTest(unittest.TestCase):
         attempts = [row for row in rows if row.get("event") == "attempt"]
         self.assertEqual([row["gate"] for row in attempts], ["PASS"])
         self.assertEqual(self.counter.read_text(), "4")
-        self.assertTrue(any(row.get("event") == "approve" for row in rows))
+        self.assertTrue(any(row.get("event") == "approved" for row in rows))
 
     def test_unmatched_failures_keep_the_existing_cap(self):
         rows = self.scenario(20, "assertion failed: expected 1, got 2")
@@ -98,6 +98,53 @@ class GateInfraRetriesTest(unittest.TestCase):
         self.assertIn("infra", body.lower())
         self.assertIn("code", body.lower())
         self.assertEqual(self.counter.read_text(), "3")
+
+    def test_infra_signal_survives_report_truncation(self):
+        rows = self.scenario(1, "Connection reset by peer\n" + "trailing diagnostics\n" * 300)
+        self.assertEqual(self.counter.read_text(), "2")
+        self.assertEqual([r["gate"] for r in rows if r.get("event") == "attempt"], ["PASS"])
+
+    def test_zero_infra_retries_escalates_the_first_failure(self):
+        rows = self.scenario(20, "Connection reset by peer", "infra_retries = 0\n")
+        self.assertEqual(self.counter.read_text(), "1")
+        self.assertEqual([r["code"] for r in rows if r.get("event") == "escalate"], ["infra_failed"])
+
+    def test_mixed_gate_failure_keeps_the_code_cap(self):
+        self.fixture.write_config(
+            check=[sys.executable, "-c", "print('Connection reset by peer'); raise SystemExit(1)"],
+            extra='[[gate.check]]\nname = "logic"\nrun = '
+            + json.dumps([sys.executable, "-c", "print('assertion failed'); raise SystemExit(1)"]) + "\n",
+        )
+        self.fixture.commit_config()
+        self.fixture.cli("dispatch", "--ticket", "7")
+        rows = lifecycle.read_events(self.fixture.events)
+        self.assertEqual([r["gate"] for r in rows if r.get("event") == "attempt"], ["FAIL", "FAIL"])
+        self.assertEqual([r["failure_class"] for r in rows if r.get("event") == "failure"], ["code", "code"])
+
+    def test_pr_tier_network_recovery_does_not_bounce_worker(self):
+        self.fixture.pr_config(fails=0)
+        check = self.fixture.base / "pr_check.py"
+        check.write_text(
+            "from pathlib import Path\n"
+            f"p = Path({str(self.counter)!r})\n"
+            "n = int(p.read_text()) if p.exists() else 0\n"
+            "p.write_text(str(n + 1))\n"
+            "print('Connection reset by peer')\n"
+            "raise SystemExit(n == 0)\n"
+        )
+        reviewer = self.fixture.base / "approve.py"
+        reviewer.write_text("print(" + repr('```json\n{"verdict":"APPROVE","findings":[]}\n```\nVERDICT: APPROVE') + ")\n")
+        path = self.root / ".factory.toml"
+        text = path.read_text()
+        # Keep the fixture's changed Python path (Medium risk), but approve its first review.
+        text = text.replace(str(self.fixture.reviewer), str(reviewer))
+        path.write_text(text)
+        self.fixture.commit_config()
+        self.fixture.cli("dispatch", "--ticket", "7")
+        rows = lifecycle.read_events(self.fixture.events)
+        self.assertEqual(self.counter.read_text(), "2")
+        self.assertEqual([r["gate"] for r in rows if r.get("event") == "attempt"], ["PASS"])
+        self.assertTrue(any(r.get("event") == "approved" for r in rows))
 
 
 class CIInfraRetriesTest(unittest.TestCase):
@@ -175,6 +222,46 @@ class CIInfraRetriesTest(unittest.TestCase):
         self.assertEqual(self.triage(dry_run=True)[0]["bucket"], "pending")
         self.assertEqual(self.reruns, [])
         self.assertEqual(lifecycle.read_events(dispatch.EVENTS), [])
+
+    def test_pollers_with_and_without_head_share_retry_budget(self):
+        self.assertEqual(dispatch.triage_cancelled(70, [self.check])[0]["bucket"], "pending")
+        self.assertEqual(self.triage()[0]["bucket"], "pending")
+        self.assertEqual(len(self.reruns), 1)
+
+    def test_mixed_code_and_network_jobs_do_not_rerun_code(self):
+        other = {**self.check, "name": "logic", "link": self.check["link"].replace("99", "100")}
+        original = self.command
+
+        def command(argv, **kwargs):
+            if argv[:3] == ["gh", "run", "view"] and "100" in argv:
+                return subprocess.CompletedProcess(argv, 0, "assertion failed", "")
+            return original(argv, **kwargs)
+
+        with mock.patch.object(dispatch, "run", side_effect=command):
+            self.assertEqual({c["bucket"] for c in self.triage([self.check, other])}, {"fail"})
+        self.assertEqual(self.reruns, [])
+
+    def test_network_jobs_in_one_run_share_a_retry(self):
+        other = {**self.check, "name": "download", "link": self.check["link"].replace("99", "100")}
+        self.assertEqual([c["bucket"] for c in self.triage([self.check, other])], ["pending", "pending"])
+        self.assertEqual(len(self.reruns), 1)
+
+    def test_unreadable_ci_logs_fail_closed(self):
+        original = self.command
+
+        def command(argv, **kwargs):
+            if argv[:3] == ["gh", "run", "view"]:
+                return subprocess.CompletedProcess(argv, 1, "", "log unavailable")
+            return original(argv, **kwargs)
+
+        with mock.patch.object(dispatch, "run", side_effect=command):
+            self.assertEqual(self.triage()[0]["bucket"], "fail")
+        self.assertEqual(self.reruns, [])
+
+    def test_pending_sibling_prevents_workflow_rerun(self):
+        sibling = {**self.check, "name": "slow", "bucket": "pending"}
+        self.assertEqual([c["bucket"] for c in self.triage([self.check, sibling])], ["pending", "pending"])
+        self.assertEqual(self.reruns, [])
 
 
 class InfraConfigTest(unittest.TestCase):
