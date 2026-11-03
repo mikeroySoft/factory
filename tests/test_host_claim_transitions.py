@@ -128,6 +128,21 @@ class HostClaimTransitionTest(unittest.TestCase):
                         mock.patch.object(manage.handoff, "dispatch", tank):
                     self.assertTrue(manage.human_activity(7, escalation, events))
 
+    def test_previous_cleanup_receipt_cannot_authorize_current_host_removal(self):
+        self.github = TimelineGitHub()
+        tank = self.dispatcher("tank")
+        self.github.add_claim("tank", datetime.now(UTC))
+        tank.escalate(7, "gate failed", None, code="gate_failed")
+        events = lifecycle.read_events(tank.EVENTS)
+        escalation = next(row for row in events if row.get("event") == "escalate")
+        receipt = next(row for row in events if row.get("event") == "claim-label-removed")
+        # Same-second receipts from a previous generation are not current cleanup.
+        events.remove(receipt)
+        events.insert(events.index(escalation), receipt)
+        with mock.patch.object(manage, "dispatch", tank), \
+                mock.patch.object(manage.handoff, "dispatch", tank):
+            self.assertTrue(manage.human_activity(7, escalation, events))
+
 
 # Keep unittest discovery from collecting the imported harness twice.
 del Harness
