@@ -44,8 +44,10 @@ class TempdirHygieneTest(unittest.TestCase):
             proc = subprocess.run(
                 [
                     sys.executable, "-m", "unittest",
-                    "tests.test_gate_resources.GateResourcesTest."
-                    "test_uninstrumented_holder_and_killed_requester_remain_distinct",
+                    (
+                        "tests.test_gate_resources.GateResourcesTest."
+                        "test_uninstrumented_holder_and_killed_requester_remain_distinct"
+                    ),
                 ],
                 cwd=ROOT,
                 env=os.environ | {"TMPDIR": tmp},
