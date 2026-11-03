@@ -306,6 +306,16 @@ class CIInfraRetriesTest(unittest.TestCase):
         failures = [r for r in lifecycle.read_events(dispatch.EVENTS) if r.get("event") == "failure"]
         self.assertEqual([(r["ticket"], r["run"], r["attempt"]) for r in failures], [(7, 42, 1)])
 
+    def test_ticket_association_after_ci_changes_preserves_prior_retry(self):
+        dispatch.cfg.infra_retries = 1
+        dispatch.triage_cancelled(70, [self.check])
+        self.attempt = 2
+        self.message = "assertion failed"
+        self.assertEqual(self.triage()[0]["bucket"], "fail")
+        self.assertIn("| 1. ci run 42 attempt 1 | infra |", dispatch.retry_summary(7))
+        self.assertIn("infra retry 1/1; normal cap unchanged", dispatch.retry_summary(7))
+        self.assertEqual(len(self.reruns), 1)
+
 
 class InfraConfigTest(unittest.TestCase):
     def test_invalid_retry_policy_is_rejected_at_load(self):
