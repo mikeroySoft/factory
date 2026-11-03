@@ -4109,7 +4109,11 @@ def transcript_usage(path: Path) -> dict:
             usage[key] = usage.get(key, 0) + value
         if isinstance(model := message.get("model"), str):
             usage["model"] = model
-            usage["provider"] = message.get("provider")
+            provider = message.get("provider")
+            if isinstance(provider, str) and provider:
+                usage["provider"] = provider
+            else:
+                usage.pop("provider", None)
     return usage
 
 

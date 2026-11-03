@@ -222,7 +222,7 @@ class WorkerModelJournalTest(unittest.TestCase):
                         if row.get("event") in {"attempt", "llm-usage"}
                     ][-2:]
                     self.assertEqual(usage["model"], model)
-                    self.assertEqual(usage["provider"], provider)
+                    self.assertEqual(usage.get("provider"), provider)
                     self.assertEqual(usage.get("model_mismatch", False), mismatch)
                     self.assertEqual(usage["worker_model"], "openai-codex/gpt-6.1-sol")
                     self.assertEqual(attempt["worker_model"], "openai-codex/gpt-6.1-sol")
