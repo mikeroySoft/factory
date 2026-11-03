@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -37,6 +38,8 @@ def git(repo: Path, *args: str) -> str:
 
 class ReviewMergeBaseTest(unittest.TestCase):
     def setUp(self) -> None:
+        self.enterContext(mock.patch.dict(os.environ))
+        os.environ.pop(lifecycle.CONTEXT_ENV, None)
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.tmp = Path(temporary.name)
