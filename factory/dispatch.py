@@ -2453,7 +2453,7 @@ def pr_gate_and_review(
     actionable = (
         all(verdict in {"APPROVE", "REVISE"} for verdict in (primary, second))
         and all(
-            verdict == "APPROVE" or bool(_required_fixes(text, "review"))
+            verdict in {"APPROVE"} or bool(_required_fixes(text, "review"))
             for verdict, text in ((primary, primary_findings), (second, second_findings))
         )
         and (mutation in {"PASS", "SKIP"} or _actionable_mutation(pr_report))
@@ -2465,7 +2465,7 @@ def pr_gate_and_review(
     }
     if primary not in {"APPROVE", "REVISE"} or second not in {"APPROVE", "REVISE"}:
         return "REJECT", packet, False
-    if primary == second == "REVISE" or disagreement:
+    if "REVISE" in (primary, second) or disagreement:
         return "REVISE", packet, False
     return "APPROVE", f"{primary_findings}\n\n{second_findings}", False
 
@@ -4253,7 +4253,7 @@ def transcript_usage(path: Path) -> dict:
 
 
 def _protected_gate_guidance(report: str, labels: set[str]) -> str | None:
-    summary = report.split("```", 1)[0]
+    summary = report.partition("```")[0]
     protected_tests = bool(re.search(r"(?m)^- protected-tests: FAIL\b", summary))
     add_only = bool(re.search(r"(?m)^- protected-paths: FAIL \(add-only", summary))
     if not (protected_tests or re.search(r"(?m)^- protected-paths: FAIL\b", summary)):
