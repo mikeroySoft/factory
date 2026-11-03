@@ -839,14 +839,14 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    it works. Each ticket runs its pipeline in its own thread with its own
    worktree and lock, so up to `max_active` tickets (counting ones already in
    flight when the pass started) work at once. The pass waits for all of them;
-   a failing ticket does not stop the others, and a ticket that fails while the
-   next pick is ranked keeps working. Every ticket failure is logged at the end;
-   the pass then raises its own ranking error, else the first failed pick's.
-   Ctrl-C stops every in-flight ticket within one worker poll (5 s): its worker
-   process group is stopped, nothing further is run for it, its lock is released,
-   then the pass exits. Ticket `git fetch` and `git push` commands run one at a
-   time, and every dispatcher log line from a ticket is tagged `#<n>` after the
-   `[dispatch]` prefix.
+   a failing ticket does not stop the others, and a ranking error for the next
+   pick does not stop tickets already claimed. Every ticket failure is logged at
+   the end; the pass then raises its own ranking error, else the first failed
+   pick's. On Ctrl-C each in-flight ticket runs nothing further: within one
+   worker poll (5 s) its worker process group gets SIGTERM (SIGKILL after 10 s),
+   its lock is released, then the pass exits. Ticket `git fetch` and `git push`
+   commands run one at a time, and every dispatcher log line from a ticket is
+   tagged `#<n>` after the `[dispatch]` prefix.
 3. **Work.** The worker gets the issue, its comments, standing instructions
    (commit incrementally, never touch `main`, never `git stash`, finish with
    `factory gate`), and — on retries — the previous gate report or the
