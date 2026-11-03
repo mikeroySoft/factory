@@ -1203,6 +1203,9 @@ hold after heartbeats stop, so completed work awaiting CI/review/merge is not ru
 Every refresh requeue publishes an authenticated `Factory requeue: nonce=<uuid>`
 issue comment with the refresh instructions, including when the owner releases
 its claim. The next host can consume that context even after the claim is deleted.
+Shared instructions take precedence over this host's local requeue journal. Local
+risk-disagreement history carries forward only when its instructions match the
+selected context; an intervening foreign requeue cannot trigger early escalation.
 Escalation comments carry the same nonce marker on their second line, preserving
 the escalation prefix. A later manager/human `ready-for-agent` relabel can resume
 the expired claim's existing PR; its live heartbeat still holds admission.

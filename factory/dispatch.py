@@ -4484,8 +4484,11 @@ def process_ticket(
             # Attempts 1..MAX_ATTEMPTS: worker + gate, feeding the failed report back. A sync
             # candidate the dispatcher's own gate passed at this exact head needs no worker,
             # unless a refresh conflict or repeated refresh gate failure requeued it.
-            resolve = refresh_requeue_context(n) or shared_context
-            prior_risk_disagreement_head = pending_risk_requeue_head(n)
+            local_context = refresh_requeue_context(n)
+            resolve = shared_context or local_context
+            prior_risk_disagreement_head = (
+                pending_risk_requeue_head(n) if resolve == local_context else None
+            )
             extra, logfile, report = resolve, None, ""
             staged = None if resolve else sync_staged(n, wt)
             if staged is not None:
