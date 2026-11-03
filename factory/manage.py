@@ -911,11 +911,8 @@ def frontier_pass(dry_run: bool = False) -> None:
                     dry_run, n, head,
                 )
                 failed = [c["name"] for c in checks if c["bucket"] in ("fail", "cancel")]
-                starved = [c for c in checks if c["bucket"] == "infra"]
-                if starved and not failed:
-                    dispatch.runner_unavailable(n, number, starved, dry_run)
-                    continue
-                if not failed and any(c.get("run") and c["bucket"] == "pending" for c in checks):
+                starved = [c for c in checks if c["bucket"] == "infra"] if not failed else []
+                if not failed and not starved and any(c.get("run") and c["bucket"] == "pending" for c in checks):
                     if execution:
                         execution.wait("ci_pending", mode="eligibility", pr=number)
                     continue
@@ -929,16 +926,23 @@ def frontier_pass(dry_run: bool = False) -> None:
                           f"{len(late)} unresolved feedback item(s) on head {head[:12]}" if late else
                           f"no activity for {age.days} days (stale_days = {cfg.manager_stale_days})" if stale else "")
                 code = "ci_failed" if failed else "pr_feedback" if late else "pr_stale"
-                if reason:
+                if reason or starved:
                     if dry_run:
-                        dispatch.log(f"PR #{number}: would escalate ({reason})")
+                        if starved:
+                            dispatch.runner_unavailable(n, number, starved, dry_run)
+                        else:
+                            dispatch.log(f"PR #{number}: would escalate ({reason})")
                         continue
                     if late:
                         dispatch.record("feedback-delivered", ticket=n, pr=number, head=head,
                                         observation_id=observation["observation_id"],
                                         pairs=[[i["evidence_id"], i["source_revision"]] for i in late])
-                    dispatch.escalate(n, f"PR #{number}: {reason}", None, extra=feedback_packet(late) if late else "",
-                                      code=code)
+                    extra = feedback_packet(late)
+                    if starved:
+                        if not dispatch.runner_unavailable(n, number, starved, dry_run, extra=extra):
+                            continue
+                    else:
+                        dispatch.escalate(n, f"PR #{number}: {reason}", None, extra=extra, code=code)
                     execution.outcome, execution.reason = "project_escalation", "pr_frontier"
                     continue
                 if red and not failed:

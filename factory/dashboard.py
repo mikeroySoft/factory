@@ -69,7 +69,7 @@ FACTORY_LABELS = {
 }
 AGENT_BRANCH = re.compile(r"agent/(\d+)$")
 ATTEMPT_LOG = re.compile(r"(\d+)-attempt-(\d+)\.log$")
-GATE_LINE = re.compile(r"^- ([\w-]+): (PASS|FAIL|SKIP)$", re.MULTILINE)
+GATE_LINE = re.compile(r"^- ([\w-]+): (PASS|FAIL|SKIP)(?: \([^\n)]*\))?$", re.MULTILINE)
 VERDICT = re.compile(r"VERDICT:\s*(APPROVE|REVISE)")
 
 

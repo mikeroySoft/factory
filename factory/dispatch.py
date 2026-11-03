@@ -3333,8 +3333,8 @@ def triage_cancelled(
     return out
 
 
-def runner_unavailable(n: int, pr: int, starved: list[dict], dry_run: bool) -> bool:
-    """Escalate exhausted CI infrastructure retries once; keep approval intact."""
+def runner_unavailable(n: int, pr: int, starved: list[dict], dry_run: bool, *, extra: str = "") -> bool:
+    """Escalate exhausted CI once unless fresh feedback needs delivery; keep approval intact."""
     runs = ", ".join(sorted({str(c["run"]) for c in starved}))
     host_problem = any(
         "network/download host problem" in c.get("infra_reason", "")
@@ -3362,7 +3362,7 @@ def runner_unavailable(n: int, pr: int, starved: list[dict], dry_run: bool) -> b
             f"in run {runs}; `{FACTORY_APPROVED}` kept"
         )
         code = "ci_runner"
-    if any(
+    if not extra and any(
         e.get("event") == "escalate"
         and e.get("ticket") == n
         and e.get("reason") == reason
@@ -3372,7 +3372,7 @@ def runner_unavailable(n: int, pr: int, starved: list[dict], dry_run: bool) -> b
     if dry_run:
         log(f"PR #{pr}: would escalate ({reason})")
     else:
-        escalate(n, reason, None, code=code)
+        escalate(n, reason, None, extra=extra, code=code)
     return True
 
 
