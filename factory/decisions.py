@@ -65,10 +65,21 @@ _SECRET = re.compile(
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
 _FILE_FLAGS = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
-# Linux no-replace rename publishes one link atomically; link/unlink has a crash window.
-_RENAME_NOREPLACE = ctypes.CDLL(None, use_errno=True).renameat2
-_RENAME_NOREPLACE.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-_RENAME_NOREPLACE.restype = ctypes.c_int
+
+
+def _rename_noreplace(libc):
+    for name, flag in (("renameat2", 1), ("renameatx_np", 0x4)):
+        rename = getattr(libc, name, None)
+        if rename is not None:
+            rename.argtypes = [
+                ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint,
+            ]
+            rename.restype = ctypes.c_int
+            return rename, flag
+    return None, 0
+
+
+_RENAME_NOREPLACE, _NOREPLACE_FLAG = _rename_noreplace(ctypes.CDLL(None, use_errno=True))
 
 
 class DecisionError(ValueError):
@@ -229,7 +240,13 @@ def _store_artifact(directory: int, name: str, value: dict) -> None:
         finally:
             os.close(fd)
         try:
-            if _RENAME_NOREPLACE(directory, os.fsencode(temporary), directory, os.fsencode(name), 1):
+            if _RENAME_NOREPLACE is None:
+                # A crash between link and unlink can leave only a stray temporary.
+                os.link(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+                os.unlink(temporary, dir_fd=directory)
+            elif _RENAME_NOREPLACE(
+                directory, os.fsencode(temporary), directory, os.fsencode(name), _NOREPLACE_FLAG,
+            ):
                 error = ctypes.get_errno()
                 raise OSError(error, os.strerror(error), name)
         except FileExistsError as exc:
