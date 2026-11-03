@@ -3227,7 +3227,7 @@ def _review_rounds_used(n: int) -> int:
     )
 
 
-def _record_rework(n: int, head: str, findings: str, *, deferred: bool) -> None:
+def _record_rework(n: int, head: str, findings: str, deferred: bool) -> None:
     record(
         "review-rework", ticket=n, head=head, round=_review_rounds_used(n) + 1,
         findings=findings, deferred=deferred,
@@ -4032,9 +4032,9 @@ def _handoff_done(path: Path) -> bool:
     for heading in re.finditer(
         r"(?im)^(#{1,6})[ \t]+(?:Still )?Unverified[ \t]*:?[ \t]*\n", text,
     ):
-        sections.append(re.split(
-            rf"(?m)^#{{1,{len(heading[1])}}}[ \t]+", text[heading.end():], maxsplit=1,
-        )[0])
+        remaining = text[heading.end():]
+        end = re.search(rf"(?m)^#{{1,{len(heading[1])}}}[ \t]+", remaining)
+        sections.append(remaining[:end.start()] if end else remaining)
     return bool(sections) and all(
         re.sub(r"^[ \t]*[-*][ \t]+", "", section.strip()).strip().rstrip(".").casefold()
         in {"", "none", "nothing", "n/a"}
