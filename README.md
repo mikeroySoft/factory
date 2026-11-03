@@ -1188,16 +1188,20 @@ GitHub creation time and then numeric comment ID. A loser records `claim_lost`
 and removes its own comment and label without assigning or launching a worker.
 The winner assigns `@me` and refreshes its comment every TTL/4 while the ticket
 pipeline runs. Unclaim always applies escalation/requeue labels; only the owning
-host can remove `@me`, its host label and claim comment, even after expiry.
-An in-process claim must also match the elected nonce before cleanup.
+host can remove an existing claim's `@me`, host label and comment, even after expiry.
+An in-process claim must also match the elected nonce before cleanup. Tickets
+assigned before host claims were enabled retain the original `@me` release path.
 
 Expired claims are admitted through the frontier only when no other hold exists.
 A human assignee or an open `agent/<ticket>` PR with an expired claim remains a
 hold after heartbeats stop, so completed work awaiting CI/review/merge is not run again.
-A foreign host requeue publishes an authenticated `Factory requeue: nonce=<uuid>`
-issue comment with the refresh instructions. That nonce's expired claim can resume
-the existing PR; its live heartbeat still holds admission, and the comment cannot
-release a later worker's claim.
+Every refresh requeue publishes an authenticated `Factory requeue: nonce=<uuid>`
+issue comment with the refresh instructions, including when the owner releases
+its claim. The next host can consume that context even after the claim is deleted.
+Escalation comments carry the same nonce marker on their second line, preserving
+the escalation prefix. A later manager/human `ready-for-agent` relabel can resume
+the expired claim's existing PR; its live heartbeat still holds admission.
+Neither transition can release a later worker's claim or its completed-PR hold.
 Assigned stale claims stay intact until a replacement wins and assigns, so admission
 or claim failures cannot strand the shared `@me` assignment without recovery evidence.
 Dispatch then rechecks the heartbeat, removes stale comments/labels without clearing

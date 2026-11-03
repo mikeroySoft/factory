@@ -440,9 +440,10 @@ class HostClaimRevisionTest(unittest.TestCase):
             with self.subTest(target=target):
                 self.github.comments.clear()
                 tank._HOST_CLAIMS.clear()
-                self.github.issue["labels"] = [{"name": "ready-for-agent"}]
+                source = "ready-for-human" if target == "ready-for-agent" else "ready-for-agent"
+                self.github.issue["labels"] = [{"name": source}]
                 self.github.issue["assignees"] = [{"login": "@me"}]
-                tank.unclaim(7, "--remove-label", "ready-for-agent", "--add-label", target)
+                tank.unclaim(7, "--remove-label", source, "--add-label", target)
                 self.assertEqual(self.github.issue["assignees"], [])
                 if target == "ready-for-human":
                     self.github.run("human", [

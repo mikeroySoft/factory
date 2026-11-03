@@ -496,18 +496,23 @@ def host_claim_login() -> str:
     return gh_json(["api", "user"])["login"].casefold()
 
 
-def host_claims(n: int) -> list[dict]:
-    """Read all claim comments, not the truncated GraphQL issue comment window."""
+def host_claim_state(n: int) -> tuple[list[dict], str]:
+    """Read authenticated claims and transition context, including released claims."""
     pages = gh_json(["api", "--paginate", "--slurp", f"repos/{REPO}/issues/{n}/comments"])
     claims = []
     requeues = {}
+    context = ""
     for page in pages:
         for comment in page:
             if (comment.get("user") or {}).get("login", "").casefold() != host_claim_login():
                 continue
             first = (comment.get("body") or "").split("\n", 1)[0]
+            escalated = first.startswith("Factory dispatcher escalating:")
+            if escalated:
+                first = comment["body"].split("\n", 2)[1] if "\n" in comment["body"] else ""
             if match := re.fullmatch(r"Factory requeue: nonce=(\S+)", first):
-                requeues[match[1]] = comment["body"].partition("\n")[2]
+                context = comment["body"] if escalated else comment["body"].partition("\n")[2]
+                requeues[match[1]] = context
                 continue
             match = re.fullmatch(r"Factory claim: host=(\S+) nonce=(\S+) at=(\S+)", first)
             if match is None:
@@ -525,7 +530,13 @@ def host_claims(n: int) -> list[dict]:
     for claim in claims:
         if claim["nonce"] in requeues:
             claim["requeue"] = requeues[claim["nonce"]]
-    return sorted(claims, key=lambda row: (row["created"], row["id"]))
+    claims.sort(key=lambda row: (row["created"], row["id"]))
+    return claims, claims[-1].get("requeue", "") if claims else context
+
+
+def host_claims(n: int) -> list[dict]:
+    """Read all claim comments, not the truncated GraphQL issue comment window."""
+    return host_claim_state(n)[0]
 
 
 def live_host_claims(claims: list[dict]) -> list[dict]:
@@ -654,10 +665,11 @@ def acquire_host_claim(n: int, issue: dict, claims: list[dict], *, forced: bool 
     return claim
 
 
-def owned_host_claim(n: int) -> dict | None:
+def owned_host_claim(n: int, claims: list[dict] | None = None) -> dict | None:
     if not cfg.host_name:
         return None
-    claims = host_claims(n)
+    if claims is None:
+        claims = host_claims(n)
     elected = live_host_claims(claims) or claims
     local = _HOST_CLAIMS.get(n)
     if elected and elected[0]["host"] == cfg.host_name and (
@@ -669,19 +681,18 @@ def owned_host_claim(n: int) -> dict | None:
 
 def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool = False) -> None:
     """Apply lifecycle transitions; release host resources only when this host owns them."""
-    owned = owned_host_claim(n)
-    if cfg.host_name and owned is None and any(
+    claims = host_claims(n) if cfg.host_name else []
+    owned = owned_host_claim(n, claims)
+    if cfg.host_name and any(
         flag == "--add-label" and label == LABEL_AGENT
         for flag, label in zip(label_args[::2], label_args[1::2])
-    ):
-        claims = host_claims(n)
-        if elected := live_host_claims(claims) or claims[-1:]:
-            context = refresh_requeue_context(n)
-            gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
-                     "-f", f"body=Factory requeue: nonce={elected[0]['nonce']}\n{context}"])
+    ) and (elected := live_host_claims(claims) or claims[-1:]):
+        context = refresh_requeue_context(n)
+        gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
+                 "-f", f"body=Factory requeue: nonce={elected[0]['nonce']}\n{context}"])
     if owned is not None and (local := _HOST_CLAIMS.get(n)) is not None:
         local.stop()
-    assignee = ["--remove-assignee", "@me"] if not cfg.host_name or owned is not None else []
+    assignee = ["--remove-assignee", "@me"] if not claims or owned is not None else []
     args = [*label_args, *assignee] if assignee_last else [*assignee, *label_args]
     if args:
         run(["gh", "issue", "edit", str(n), "--repo", REPO, *args], check=check)
@@ -2050,8 +2061,13 @@ def escalate(
         log=str(log_path) if log_path else None, packet=str(packet), round=round_number,
         **evidence,
     )
+    claims = host_claims(n) if cfg.host_name else []
+    elected = live_host_claims(claims) or claims[-1:]
     unclaim(n, "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN)
     body = f"Factory dispatcher escalating: {reason}.\n\nEscalation packet: `{packet}`"
+    if elected:
+        first, _, rest = body.partition("\n")
+        body = f"{first}\nFactory requeue: nonce={elected[0]['nonce']}\n{rest}"
     if log_path:
         body += f"\n\nWorker logs: `{log_path}`"
     handoff = wt / ".factory" / f"handoff-{n}.md"
@@ -4377,8 +4393,9 @@ def process_ticket(
                 execution.reason = "initiative"
                 return
             claims = []
+            shared_context = ""
             if cfg.host_name:
-                claims = host_claims(n)
+                claims, shared_context = host_claim_state(n)
                 fresh = release_stale_claims(n, fresh, claims)
             if not forced and (
                 fresh["state"].upper() != "OPEN"
@@ -4455,7 +4472,7 @@ def process_ticket(
             # Attempts 1..MAX_ATTEMPTS: worker + gate, feeding the failed report back. A sync
             # candidate the dispatcher's own gate passed at this exact head needs no worker,
             # unless a refresh conflict or repeated refresh gate failure requeued it.
-            resolve = refresh_requeue_context(n) or (claims[-1].get("requeue", "") if claims else "")
+            resolve = refresh_requeue_context(n) or shared_context
             prior_risk_disagreement_head = pending_risk_requeue_head(n)
             extra, logfile, report = resolve, None, ""
             staged = None if resolve else sync_staged(n, wt)
