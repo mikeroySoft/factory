@@ -262,6 +262,95 @@ class HostClaimRevisionTest(unittest.TestCase):
         tank.unclaim(7)
         self.assertEqual(self.github.comments, [forged])
 
+    def test_stale_assignment_survives_admission_refusal_with_recoverable_claim(self):
+        from factory.binding import BindingError
+
+        tank = self.dispatcher("tank")
+        old = self.github.add_claim("ultron", datetime.now(UTC) - timedelta(hours=3))
+        for refusal in ("state", "worker", "plan"):
+            with self.subTest(refusal=refusal):
+                issue = copy.deepcopy(self.github.issue)
+                with mock.patch.object(tank.shutil, "which", return_value=None if refusal == "worker" else "worker"), \
+                        mock.patch.object(tank, "admit_plan",
+                                          side_effect=BindingError("baseline changed") if refusal == "plan" else None):
+                    if refusal == "state":
+                        self.github.issue["state"] = "CLOSED"
+                    tank.process_ticket(issue, 1, False)
+                self.github.issue["state"] = "OPEN"
+                self.assertEqual(self.launched, [])
+                self.assertEqual(self.github.comments, [old])
+                self.assertIn({"name": "host:ultron"}, self.github.issue["labels"])
+                self.assertNotIn("held", tank.frontier()[0])
+        tank.process_ticket(tank.frontier()[0], 1, False)
+        self.assertEqual(self.launched, ["tank"])
+        self.assertEqual([row["name"] for row in self.github.issue["labels"]],
+                         ["ready-for-agent", "host:tank"])
+
+    def test_stale_assignment_remains_recoverable_when_claim_creation_or_assignment_fails(self):
+        tank = self.dispatcher("tank")
+        old = self.github.add_claim("ultron", datetime.now(UTC) - timedelta(hours=3))
+        run = tank.run
+        for failing_arg in ("--color", "--add-assignee"):
+            with self.subTest(failing_arg=failing_arg):
+                def fail_claim(cmd, *args, **kwargs):
+                    if failing_arg in cmd:
+                        raise subprocess.CalledProcessError(1, cmd, stderr="permission denied")
+                    return run(cmd, *args, **kwargs)
+
+                with mock.patch.object(tank, "run", side_effect=fail_claim):
+                    if failing_arg == "--color":
+                        with self.assertRaises(subprocess.CalledProcessError):
+                            tank.process_ticket(tank.frontier()[0], 1, False)
+                    else:
+                        tank.process_ticket(tank.frontier()[0], 1, False)
+                self.assertEqual(self.launched, [])
+                self.assertEqual(self.github.comments, [old])
+                self.assertNotIn("held", tank.frontier()[0])
+        tank.process_ticket(tank.frontier()[0], 1, False)
+        self.assertEqual(self.launched, ["tank"])
+
+    def test_foreign_host_requeue_resumes_open_pr_after_ttl(self):
+        from factory import dispatch, lifecycle
+
+        tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
+        # Use the real context reader with each host's separate journal.
+        for module in (tank, ultron):
+            self.enterContext(mock.patch.object(
+                module, "refresh_requeue_context",
+                type(dispatch.refresh_requeue_context)(
+                    dispatch.refresh_requeue_context.__code__, module.__dict__),
+            ))
+        old = self.github.add_claim("tank", datetime.now(UTC))
+        self.github.open_prs = [{"number": 70}]
+        ultron.record("conflict-requeue", ticket=7, pr=70, head="a" * 40,
+                      verb="rebase", files=["shared.py"], round=1)
+        # This is the transition shared by all refresh requeue paths.
+        ultron.unclaim(7, "--remove-label", "ready-for-human",
+                       "--add-label", "ready-for-agent", assignee_last=True)
+        self.assertIn(old, self.github.comments)
+        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
+        self.assertIn("held", tank.frontier()[0])
+
+        clock = self.enterContext(mock.patch.object(tank, "datetime", wraps=datetime))
+        clock.now.return_value = datetime.now(UTC) + timedelta(hours=3)
+        [issue] = tank.frontier()
+        self.assertNotIn("held", issue)
+        context = []
+        def worker(*args, **kwargs):
+            context.append(args[4])
+            return self.launch("tank")
+
+        with mock.patch.object(tank, "worker_round", side_effect=worker):
+            tank.process_ticket(issue, 1, False)
+        self.assertEqual(self.launched, ["tank"])
+        self.assertIn("shared.py", context[0])
+        self.assertIn("PR #70", context[0])
+        self.assertTrue(any(row.get("event") == "claim-released"
+                            for row in lifecycle.read_events(tank.EVENTS)))
+        # The previous requeue must not authorize another run after this worker finishes.
+        clock.now.return_value += timedelta(hours=3)
+        self.assertEqual(tank.frontier()[0].get("held"), "open PR")
+
 
 # Avoid collecting the imported harness class as a second copy of its suite.
 del Harness
