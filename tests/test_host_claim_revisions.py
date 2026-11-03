@@ -1,7 +1,9 @@
 """Lifecycle and trust boundaries for opt-in host claims."""
 import copy
 import subprocess
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from unittest import mock
 
@@ -542,6 +544,116 @@ class HostClaimRevisionTest(unittest.TestCase):
                 self.assertIn(expected, context[0])
                 self.assertNotIn("Obsolete refresh instructions", context[0])
         self.assertEqual(self.launched, ["ultron", "ultron", "ultron", "ultron"])
+
+    def test_overlapping_stale_recovery_cleans_old_claim_before_owner_requeue(self):
+        from factory import lifecycle
+
+        old = self.github.add_claim("old", datetime.now(UTC) - timedelta(hours=3))
+        tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
+        issues = [module.frontier()[0] for module in (tank, ultron)]
+        self.assertTrue(all("held" not in issue for issue in issues))
+        self.github.fresh_barrier = threading.Barrier(2)
+        self.github.comments_barrier = threading.Barrier(2)
+        posting = threading.Barrier(2)
+        tank_posted, ultron_posted, tank_finished = (threading.Event() for _ in range(3))
+        tank_json, ultron_json, ultron_run = tank.gh_json, ultron.gh_json, ultron.run
+        at_launch = []
+
+        def tank_read(args):
+            if "--method" in args and "POST" in args:
+                posting.wait(timeout=10)
+                result = tank_json(args)
+                tank_posted.set()
+                self.assertTrue(ultron_posted.wait(timeout=10))
+                return result
+            return tank_json(args)
+
+        def ultron_read(args):
+            if "--method" in args and "POST" in args:
+                posting.wait(timeout=10)
+                self.assertTrue(tank_posted.wait(timeout=10))
+                result = ultron_json(args)
+                ultron_posted.set()
+                return result
+            return ultron_json(args)
+
+        def delay_loser_cleanup(cmd, *args, **kwargs):
+            if "DELETE" in cmd:
+                self.assertTrue(tank_finished.wait(timeout=10))
+            return ultron_run(cmd, *args, **kwargs)
+
+        def winner_pipeline():
+            try:
+                tank.process_ticket(issues[0], 1, False)
+            finally:
+                tank_finished.set()
+
+        def worker(*args, **kwargs):
+            at_launch.append(copy.deepcopy((self.github.issue, self.github.comments)))
+            return self.launch("tank")
+
+        with mock.patch.object(tank, "gh_json", side_effect=tank_read), \
+                mock.patch.object(ultron, "gh_json", side_effect=ultron_read), \
+                mock.patch.object(ultron, "run", side_effect=delay_loser_cleanup), \
+                mock.patch.object(tank, "worker_round", side_effect=worker), \
+                ThreadPoolExecutor(max_workers=2) as pool:
+            winner = pool.submit(winner_pipeline)
+            loser = pool.submit(ultron.process_ticket, issues[1], 1, False)
+            winner.result(timeout=20)
+            loser.result(timeout=20)
+
+        self.assertEqual(self.launched, ["tank"])
+        issue, comments = at_launch[0]
+        self.assertNotIn(old, comments)
+        self.assertNotIn({"name": "host:old"}, issue["labels"])
+        self.assertEqual(issue["assignees"], [{"login": "@me"}])
+        released = [row for row in lifecycle.read_events(tank.EVENTS)
+                    if row.get("event") == "claim-released"]
+        self.assertEqual([(row["host"], row["last_heartbeat"]) for row in released],
+                         [("old", old["created_at"])])
+        self.assertTrue(any(row.get("event") == "claim_lost"
+                            for row in lifecycle.read_events(ultron.EVENTS)))
+        self.assertEqual([row["name"] for row in self.github.issue["labels"]],
+                         ["ready-for-agent", "host:tank"])
+        self.assertEqual(len(self.github.comments), 1)
+
+        self.github.open_prs = [{"number": 70}]
+        tank.unclaim(7, "--add-label", "ready-for-agent")
+        self.assertEqual(self.github.issue["assignees"], [])
+        self.assertNotIn("held", ultron.frontier()[0])
+        ultron.process_ticket(ultron.frontier()[0], 1, False)
+        self.assertEqual(self.launched, ["tank", "ultron"])
+        with mock.patch.object(ultron, "datetime", wraps=datetime) as clock:
+            clock.now.return_value = datetime.now(UTC) + timedelta(hours=3)
+            self.assertEqual(ultron.frontier()[0].get("held"), "open PR")
+
+    def test_owner_transitions_remove_older_stale_claim_without_releasing_newer_work(self):
+        tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
+        for transition in ("requeue", "escalation"):
+            with self.subTest(transition=transition):
+                self.github.comments.clear()
+                self.github.issue["labels"] = [{"name": "ready-for-agent"}]
+                tank._HOST_CLAIMS.clear()
+                old = self.github.add_claim("old", datetime.now(UTC) - timedelta(hours=3))
+                self.github.add_claim("tank", datetime.now(UTC))
+                self.github.open_prs = [{"number": 70}]
+                if transition == "requeue":
+                    tank.unclaim(7, "--add-label", "ready-for-agent")
+                else:
+                    self.escalate_with_fake_github(tank)
+                    self.github.run("human", [
+                        "gh", "issue", "edit", "7", "--remove-label", "ready-for-human",
+                        "--add-label", "ready-for-agent",
+                    ])
+                self.assertNotIn(old, self.github.comments)
+                self.assertEqual(self.github.issue["assignees"], [])
+                self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-agent"}])
+                self.assertNotIn("held", ultron.frontier()[0])
+                ultron.process_ticket(ultron.frontier()[0], 1, False)
+                with mock.patch.object(ultron, "datetime", wraps=datetime) as clock:
+                    clock.now.return_value = datetime.now(UTC) + timedelta(hours=3)
+                    self.assertEqual(ultron.frontier()[0].get("held"), "open PR")
+        self.assertEqual(self.launched, ["ultron", "ultron"])
 
 
 # Avoid collecting the imported harness class as a second copy of its suite.
