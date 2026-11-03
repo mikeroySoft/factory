@@ -23,6 +23,31 @@ def _hold_exclusive(path: str, ready: multiprocessing.Event, release: multiproce
 
 
 class PassiveDashboardTest(unittest.TestCase):
+    def test_disk_state_retains_infra_annotated_failed_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(dashboard.__dict__), \
+             patch.dict(dispatch.__dict__):
+            cfg = config.Config(Path(directory), "acme/widgets")
+            dashboard.configure(cfg)
+            report = cfg.factory / "wt-7" / ".factory" / "gate-report-7.md"
+            report.parent.mkdir(parents=True)
+            text = (
+                "# Gate report\n\n"
+                "- conflict-markers: PASS\n"
+                "- test: FAIL (infra)\n"
+                "- ruff: FAIL\n"
+                "- optional: SKIP\n"
+                "- mutation: SKIP (pr tier)\n"
+                "- leak-scan: PASS\n"
+            )
+            report.write_text(text)
+            with patch.object(dashboard, "worktree_state", return_value=None):
+                state = dashboard.disk_state(7, False)
+            self.assertEqual(state["gate"]["checks"], {
+                "conflict-markers": "PASS", "test": "FAIL", "ruff": "FAIL",
+                "optional": "SKIP", "mutation": "SKIP", "leak-scan": "PASS",
+            })
+            self.assertEqual(state["gate"]["text"], text)
+
     def test_snapshot_reads_partial_window_while_another_process_holds_journal_exclusive(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch.dict(dashboard.__dict__), \
              patch.dict(dispatch.__dict__), patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}):
