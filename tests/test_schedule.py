@@ -208,7 +208,7 @@ class DispatcherPassTest(unittest.TestCase):
             with self.subTest(max_active=max_active, held=held):
                 started, release, errors = queue.Queue(), threading.Event(), []
 
-                def fake_process(issue, budget_min, dry_run, *args, **kwargs):
+                def fake_process(issue, budget_min, dry_run, *args, started=started, release=release, **kwargs):
                     with dispatch.ticket_lock(issue["number"]).open("w") as fd:
                         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # models the real ticket lock
                         started.put(issue["number"])
@@ -218,7 +218,7 @@ class DispatcherPassTest(unittest.TestCase):
                             raise AssertionError(f"#{issue['number']} was never released")
                         fcntl.flock(fd, fcntl.LOCK_UN)
 
-                def run_pass():
+                def run_pass(errors=errors):
                     try:
                         dispatch.ticket_pass(1, False)
                     except BaseException as exc:  # noqa: BLE001 - surfaced by the assertion below

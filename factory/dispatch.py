@@ -211,7 +211,20 @@ def run(
         raise
 
 
+# Set by `ticket_pass` when the dispatcher is interrupted (Ctrl-C reaches only the main thread),
+# cleared once that pass's pipelines are gone: each pipeline thread then stops at its next
+# command (`_run`) or worker poll (`_watch`), as the one interrupted pipeline did before #579.
+_CANCEL = threading.Event()
+
+
+def raise_if_interrupted() -> None:
+    """Raise KeyboardInterrupt in this pipeline thread if its dispatcher was interrupted."""
+    if _CANCEL.is_set():
+        raise KeyboardInterrupt("dispatcher interrupted")
+
+
 def _run(cmd, cwd, check, stdout, stderr, env, timeout) -> subprocess.CompletedProcess:
+    raise_if_interrupted()
     execution = lifecycle.current()
     if execution is None:
         return subprocess.run(
@@ -236,6 +249,11 @@ def _run(cmd, cwd, check, stdout, stderr, env, timeout) -> subprocess.CompletedP
         finally:
             if proc.poll() is not None:
                 execution.child_done(proc.pid)
+    # The terminal's Ctrl-C also killed this child, maybe a moment before the main thread set
+    # _CANCEL: the command was interrupted, not failed, so nothing may act on its result.
+    if proc.returncode in (-signal.SIGINT, 128 + signal.SIGINT):
+        _CANCEL.wait(1)
+    raise_if_interrupted()
     result = subprocess.CompletedProcess(cmd, proc.returncode, out, err)
     if check:
         result.check_returncode()
@@ -247,14 +265,10 @@ def gh_json(args: list[str], env: dict[str, str] | None = None) -> object:
     return json.loads(out)
 
 
-_FETCH = threading.Lock()
-
-
-def git_fetch(*args: str, cwd: Path) -> None:
-    """`git fetch` one at a time: concurrent tickets share the repo's remote-tracking refs,
-    and git fails on a held ref lock instead of waiting (#579)."""
-    with _FETCH:
-        run(["git", "fetch", *args], cwd=cwd)
+# Held around every ticket pipeline's `git fetch` and `git push`: concurrent tickets share the
+# repo's remote-tracking refs (refs/remotes/origin/*), both commands update them, and git fails
+# on a held ref lock instead of waiting (#579).
+_REMOTE_REFS = threading.Lock()
 
 
 @contextmanager
@@ -1469,14 +1483,16 @@ def _activity(wt: Path, logfile: Path, handoff: Path) -> tuple:
 
 def _watch(proc: subprocess.Popen, wt: Path, logfile: Path, handoff: Path, deadline: float,
            start: tuple) -> str | None:
-    """Wait for the worker to exit; None if it did, else the timeout that fired first."""
+    """Wait for the worker to exit; None if it did, else the timeout that fired first.
+    Raises KeyboardInterrupt within WATCH_POLL of the dispatcher's interrupt; the caller
+    stops the worker."""
     state, changed = start, time.monotonic()
     while True:
         try:
             proc.wait(timeout=WATCH_POLL)
             return None
         except subprocess.TimeoutExpired:
-            pass
+            raise_if_interrupted()
         now, current = time.monotonic(), _activity(wt, logfile, handoff)
         if current != state:
             state, changed = current, now
@@ -1535,6 +1551,7 @@ def run_worker(
             if context is not None:
                 launch[lifecycle.CONTEXT_ENV] = context
         with without_github(launch) as isolated:
+            raise_if_interrupted()
             proc = subprocess.Popen(cmd, cwd=wt, stdout=out, stderr=subprocess.STDOUT,
                                     env=isolated, start_new_session=True)
             try:
@@ -1565,7 +1582,8 @@ def ensure_worktree(n: int) -> Path:
     wt = FACTORY / f"wt-{n}"
     if wt.is_dir():
         return wt
-    git_fetch("origin", cwd=ROOT)
+    with _REMOTE_REFS:
+        run(["git", "fetch", "origin"], cwd=ROOT)
     branch = f"agent/{n}"
     if run(["git", "rev-parse", "--verify", branch], cwd=ROOT, check=False).returncode == 0:
         run(["git", "worktree", "add", str(wt), branch], cwd=ROOT)
@@ -2493,7 +2511,8 @@ def push_agent(wt: Path, n: int, lease: str, check: bool = True) -> str | None:
             f"the leased remote head was absent from the worktree before the worker and its "
             f"history was not rewritten; worktree kept at {wt}",
         )
-    pushed = run(command, cwd=wt, check=False)
+    with _REMOTE_REFS:
+        pushed = run(command, cwd=wt, check=False)
     if pushed.returncode and check:
         if "stale info" not in pushed.stderr:
             pushed.check_returncode()
@@ -2514,7 +2533,8 @@ def push_and_pr(
     """Push `branch` and open its PR. False if the branch adds nothing over
     main (nothing to review; a worker that landed its work elsewhere). With `ticket` and
     `lease`, `branch` is `agent/<ticket>` and goes through `push_agent`; otherwise a plain push."""
-    git_fetch("origin", cfg.main, cwd=wt)
+    with _REMOTE_REFS:
+        run(["git", "fetch", "origin", cfg.main], cwd=wt)
     ahead = run(["git", "rev-list", "--count", f"origin/{cfg.main}..HEAD"], cwd=wt).stdout
     if int(ahead) == 0:
         return False
@@ -2528,7 +2548,8 @@ def push_and_pr(
         )
         return False
     if ticket is None or lease is None:
-        run(["git", "push", "-u", "origin", branch], cwd=wt)
+        with _REMOTE_REFS:
+            run(["git", "push", "-u", "origin", branch], cwd=wt)
     else:
         push_agent(wt, ticket, lease)
     if existing:
@@ -4340,7 +4361,8 @@ def process_ticket(
                              code="worker_stuck" if stuck else "gate_failed")
                     return
 
-            git_fetch("origin", cfg.main, cwd=wt)
+            with _REMOTE_REFS:
+                run(["git", "fetch", "origin", cfg.main], cwd=wt)
             ahead = run(["git", "rev-list", "--count", f"origin/{cfg.main}..HEAD"], cwd=wt).stdout.strip()
             if ahead == "0" and (wt / ".factory" / f"handoff-{n}.md").exists():
                 # A ticket outcome, not a publish failure: the worker finished and found nothing
@@ -4497,8 +4519,9 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
     an earlier pick was claimed ranks the next one; each admission decision records the
     baseline it was ranked against. The fairness streak and experiment slot come from the
     journal once, then advance by this pass's own picks. Picks are ranked and claimed one at
-    a time, in order; each pipeline then runs in its own thread. Once all have finished, the
-    first pick's exception (if any) is raised.
+    a time, in order; each pipeline then runs in its own thread. Once all have finished, every
+    pipeline exception is logged and the pass raises its own exception, else the first pick's.
+    An interrupt (Ctrl-C) stops every in-flight pipeline first, as it stopped the one before #579.
     """
     from factory import schedule
 
@@ -4528,7 +4551,8 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
         finally:
             issue["_factory_admitted"].set()  # a skipped, refused or crashed pick releases the next one too
 
-    with ThreadPoolExecutor(max_workers=capacity) as pool:
+    pool = ThreadPoolExecutor(max_workers=capacity)
+    try:
         for remaining in range(capacity, 0, -1):
             with nullcontext() if dry_run else lifecycle.scope(EVENTS, "scheduling", lazy=True):
                 rows = [issue for issue in frontier() if issue["number"] not in picked]
@@ -4559,9 +4583,23 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
             ticket = {**issue, "_factory_admission_id": admission, "_factory_admitted": admitted}
             pipelines.append((issue["number"], pool.submit(contextvars.copy_context().run, work, ticket)))
             admitted.wait()
-    failed = [(n, exc) for n, future in pipelines if (exc := future.exception()) is not None]
-    for n, exc in failed:
-        log(f"#{n}: pipeline raised {exc!r}")
+        pool.shutdown()  # wait for every pipeline here, where a Ctrl-C is handled below
+    except BaseException as error:
+        # Ctrl-C reaches only this thread: stop the claimed pipelines too (each within WATCH_POLL).
+        # A ranking failure (an Exception) leaves them to finish.
+        if not isinstance(error, Exception):
+            _CANCEL.set()
+        raise
+    finally:
+        try:
+            pool.shutdown()  # a second Ctrl-C here leaves them to the interpreter's exit
+        finally:
+            done = [(n, future) for n, future in pipelines if future.done()]
+            failed = [(n, exc) for n, future in done if (exc := future.exception()) is not None]
+            for n, exc in failed:
+                log(f"#{n}: pipeline raised {exc!r}")
+            if len(done) == len(pipelines):
+                _CANCEL.clear()  # no pipeline of this pass is left to stop
     if failed:
         raise failed[0][1]
 

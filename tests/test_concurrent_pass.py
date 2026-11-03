@@ -4,10 +4,13 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import signal
+import sys
 import tempfile
 import threading
 import time
 import unittest
+from contextlib import suppress
 from pathlib import Path
 from unittest.mock import patch
 
@@ -82,7 +85,7 @@ class ConcurrentPassTest(unittest.TestCase):
                         dispatch.ticket_pass(1, False)
                     finally:
                         outcome["x_done"] = x_done.is_set()
-            except BaseException as error:
+            except (TicketFailed, threading.BrokenBarrierError) as error:
                 outcome["error"] = error
 
         runner = threading.Thread(target=run_pass, daemon=True)
@@ -147,6 +150,92 @@ class ConcurrentPassTest(unittest.TestCase):
         serial = schedule.explicit_streak([claim[3], claim[1]])
         self.assertNotEqual(serial, schedule.explicit_streak([claim[1], claim[3]]))
         self.assertEqual(schedule.explicit_streak(rows), serial)
+
+    def worker_pass(self, child: str, second_frontier):
+        """One pass whose single pick runs the real `run_worker` on `child` inside a real ticket
+        lock; the main thread's second `frontier()` call (ranking pick 2) runs `second_frontier`
+        once the child has written its pid. Returns (the pass's exception, seconds it took to
+        return after that call, the child's pid, `run_worker`'s result)."""
+        x = ticket(3, "2026-01-03T00:00:00Z")
+        pidfile, wt = self.cfg.root / "child.pid", self.cfg.root / "wt"
+        wt.mkdir()
+        self.enterContext(patch.object(dispatch, "WATCH_POLL", 0.05))
+        calls, result, since = [], {}, {}
+
+        def frontier():
+            calls.append(len(calls))
+            if len(calls) == 1:
+                return [x]
+            for _ in range(int(WAIT / 0.01)):
+                if pidfile.exists() and pidfile.read_text():
+                    break
+                time.sleep(0.01)
+            since["at"] = time.monotonic()
+            return second_frontier()
+
+        def work(issue, budget_min, dry_run, *args, **kwargs):
+            n = issue["number"]
+            with lifecycle.scope(self.events, "ticket", ticket=n), dispatch.ticket_lock(n).open("w") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                issue["_factory_admitted"].set()
+                result["worker"] = dispatch.run_worker(
+                    [sys.executable, "-c", child, str(pidfile)], wt, self.cfg.root / "worker.log",
+                    self.cfg.root / "handoff.md",
+                )
+                result["after"] = dispatch.run([sys.executable, "-c", "pass"]).returncode
+            if result["worker"][0]:
+                raise TicketFailed(f"#{n} worker exited {result['worker'][0]}")
+
+        def kill_child():
+            if pidfile.exists() and pidfile.read_text():
+                with suppress(ProcessLookupError):
+                    os.killpg(int(pidfile.read_text()), signal.SIGKILL)
+
+        self.addCleanup(kill_child)
+        error = None
+        with patch.object(dispatch, "frontier", frontier), patch.object(dispatch, "process_ticket", work), \
+                lifecycle.scope(self.events, "dispatcher", dispatcher=True, lazy=True):
+            try:
+                dispatch.ticket_pass(1, False)
+            except (KeyboardInterrupt, RuntimeError) as raised:
+                error = raised
+        took = time.monotonic() - since["at"]
+        self.assertEqual(len(calls), 2, "the pass never ranked a second pick")
+        return error, took, int(pidfile.read_text()), result
+
+    def test_interrupt_stops_in_flight_pipelines(self):
+        # Ctrl-C reaches only the main thread, here ranking pick 2 while pick 1's worker runs.
+        child = "import os, sys, time; open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(6)"
+
+        def interrupt():
+            raise KeyboardInterrupt
+
+        error, took, pid, result = self.worker_pass(child, interrupt)
+        self.assertIsInstance(error, KeyboardInterrupt, "the pass must re-raise the interrupt")
+        self.assertLess(took, 3, "the interrupted pass waited for the worker instead of stopping it")
+        with self.assertRaises(ProcessLookupError, msg="the worker outlived the interrupted pass"):
+            os.kill(pid, 0)
+        self.assertEqual(result, {}, "the interrupted pipeline went on after its worker")
+        self.assertEqual(dispatch.active_tickets(), [], "a ticket lock outlived its pipeline")
+        self.assertEqual(dispatch.run([sys.executable, "-c", "pass"]).returncode, 0,
+                         "the interrupt leaked out of the pass")
+
+    def test_ranking_failure_lets_in_flight_pipelines_finish(self):
+        child = ("import os, sys, time; open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(0.5); "
+                 "sys.exit(3)")
+
+        def gh_down():
+            raise RuntimeError("gh: frontier unavailable")
+
+        logged = []
+        with patch.object(dispatch, "log", logged.append):
+            error, _, _, result = self.worker_pass(child, gh_down)
+        self.assertEqual(repr(error), "RuntimeError('gh: frontier unavailable')",
+                         "the pass must raise its own ranking failure")
+        self.assertEqual(result, {"worker": (3, None), "after": 0}, "a ranking failure cut short pick 1")
+        self.assertIn("#3: pipeline raised TicketFailed('#3 worker exited 3')", logged,
+                      "pick 1's failure vanished behind the ranking failure")
+        self.assertEqual(dispatch.active_tickets(), [], "a ticket lock outlived its pipeline")
 
 
 if __name__ == "__main__":
