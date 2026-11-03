@@ -1,10 +1,14 @@
 """#102: the dispatcher admits eligible work by accepted priority, not issue-list order."""
 from __future__ import annotations
 
+import fcntl
 import json
 import os
+import queue
 import subprocess
+import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -196,6 +200,102 @@ class DispatcherPassTest(unittest.TestCase):
         shas = binding.baseline(before, REPO)["sha256"], binding.baseline(after, REPO)["sha256"]
         self.assertNotEqual(*shas)
         self.assertEqual(baselines, {21: shas[0], 23: shas[1]})
+
+    def test_pass_runs_selected_tickets_concurrently_up_to_max_active(self):
+        # #579: a pass works its picks at once, up to max_active counting tickets already in flight.
+        pair = [ticket(3, "2026-01-03T00:00:00Z"), ticket(5, "2026-01-02T00:00:00Z")]
+        for max_active, held, expected in ((2, None, 2), (1, None, 1), (2, 9, 1)):
+            with self.subTest(max_active=max_active, held=held):
+                started, release, errors = queue.Queue(), threading.Event(), []
+
+                def fake_process(issue, budget_min, dry_run, *args, started=started, release=release, **kwargs):
+                    with dispatch.ticket_lock(issue["number"]).open("w") as fd:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # models the real ticket lock
+                        started.put(issue["number"])
+                        if admitted := issue.get("_factory_admitted"):
+                            admitted.set()
+                        if not release.wait(10):
+                            raise AssertionError(f"#{issue['number']} was never released")
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+
+                def run_pass(errors=errors):
+                    try:
+                        dispatch.ticket_pass(1, False)
+                    except BaseException as exc:  # noqa: BLE001 - surfaced by the assertion below
+                        errors.append(exc)
+
+                holder = None
+                if held is not None:
+                    holder = dispatch.ticket_lock(held).open("w")
+                    fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with patch.object(dispatch, "MAX_ACTIVE", max_active), \
+                        patch.object(dispatch, "frontier", return_value=pair), \
+                        patch.object(dispatch, "process_ticket", side_effect=fake_process) as process:
+                    worker = threading.Thread(target=run_pass, daemon=True)
+                    worker.start()
+                    try:
+                        running = []
+                        for _ in range(expected):
+                            try:
+                                running.append(started.get(timeout=10))
+                            except queue.Empty:
+                                self.fail(f"max_active={max_active}: only {running} in flight; "
+                                          "the pass works its picks one at a time")
+                        with self.assertRaises(queue.Empty, msg=f"more than {expected} ticket(s) in flight"):
+                            started.get(timeout=0.5)
+                        self.assertEqual(sorted(dispatch.active_tickets()),
+                                         sorted(running + ([held] if held is not None else [])))
+                    finally:
+                        release.set()
+                        worker.join(10)
+                        if holder is not None:
+                            holder.close()
+                    self.assertFalse(worker.is_alive(), "ticket_pass did not finish after release")
+                self.assertEqual(errors, [])
+                self.assertEqual(process.call_count, expected)
+
+    def test_process_ticket_signals_admission_after_the_claimed_row(self):
+        # #579: the pass ranks its next pick once this one is claimed; the real pipeline says when.
+        class Stop(BaseException):
+            pass
+
+        fresh = {**ticket(7, "2026-01-01T00:00:00Z"), "state": "OPEN", "comments": []}
+        wt = self.cfg.factory / "wt-7"
+        seen = {}
+
+        def claimed() -> list[int]:
+            return [e["ticket"] for e in lifecycle.read_events(self.events) if e.get("event") == "claimed"]
+
+        def worktree(n):
+            seen["worktree"] = admitted.is_set()
+            wt.mkdir(parents=True, exist_ok=True)
+            return wt
+
+        def lease(wt, n):
+            seen["lease"] = admitted.is_set()
+            return ""
+
+        def first_round(*args, **kwargs):
+            seen["round"] = (admitted.is_set(), claimed())
+            raise Stop
+
+        workers = config.Config(root=self.cfg.root, repo=REPO, workers={"default": [sys.executable, "{prompt}"]})
+        done = subprocess.CompletedProcess([], 0, "abc123\n", "")
+        with patch.multiple(
+            dispatch, create=True, cfg=workers, MAX_ATTEMPTS=1, admit_plan=lambda n, fresh: None,
+            run=lambda cmd, *args, **kwargs: done, ensure_worktree=worktree, agent_lease=lease,
+            sync_staged=lambda n, wt: None, worker_round=first_round,
+        ):
+            admitted = threading.Event()
+            issue = {**ticket(7, "2026-01-01T00:00:00Z"), "_factory_admitted": admitted}
+            with patch.object(dispatch, "gh_json", return_value={**fresh, "state": "CLOSED"}):
+                dispatch.process_ticket(issue, 30, False)
+            self.assertFalse(admitted.is_set(), "a ticket skipped before its claim must not signal admission")
+            self.assertEqual(claimed(), [])
+
+            with patch.object(dispatch, "gh_json", return_value=fresh), self.assertRaises(Stop):
+                dispatch.process_ticket(issue, 30, False)
+        self.assertEqual(seen, {"worktree": False, "lease": True, "round": (True, [7])})
 
 
 if __name__ == "__main__":
