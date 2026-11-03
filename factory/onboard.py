@@ -430,7 +430,7 @@ def report_stage_success(cfg: config.Config, report) -> None:
     report(True, "last successful pass", detail, info=True)
 
 
-def worker_model_problem(cfg: config.Config, worker: str) -> str | None:
+def worker_model_problem(cfg: config.Config, worker: str):
     model = cfg.worker_model(worker)
     if not model or not model.strip() or model.lstrip().startswith("-"):
         return "model is not explicit; set a non-empty `--model` in the worker command"

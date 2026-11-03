@@ -285,48 +285,40 @@ def post_fix_outcomes(rows: list[dict]) -> dict[str, Any]:
     active: dict[int, list[dict[str, Any]]] = {}
     for row in rows:
         ticket = row.get("ticket")
-        if type(ticket) is not int:
+        if not isinstance(ticket, int) or isinstance(ticket, bool):
             continue
-        if row.get("event") == "manage" and row.get("decision") == "FIX":
-            episode = {
-                "worker_model": None,
-                "claim_status": "no_claim",
-                "outcome": "pending",
-            }
-            episodes.append(episode)
-            active.setdefault(ticket, []).append(episode)
-            continue
-        ticket_episodes = active.get(ticket)
-        if ticket_episodes is None:
-            continue
-        if row.get("event") == "claimed":
-            model = row.get("worker_model")
-            for episode in ticket_episodes:
-                if episode["claim_status"] != "no_claim":
-                    continue
-                if isinstance(model, str) and model:
-                    episode["worker_model"] = model
-                    episode["claim_status"] = "claimed"
-                else:
-                    episode["claim_status"] = "model_not_recorded"
-        elif row.get("event") in {"merged", "escalate"}:
-            outcome = "merged" if row["event"] == "merged" else "re_escalated"
-            for episode in active.pop(ticket):
-                episode["outcome"] = outcome
+        match row.get("event"), row.get("decision"):
+            case "manage", "FIX":
+                episode = {
+                    "worker_model": None,
+                    "claim_status": "no_claim",
+                    "outcome": "pending",
+                }
+                episodes.append(episode)
+                active.setdefault(ticket, []).append(episode)
+            case "claimed", _:
+                model = row.get("worker_model")
+                for episode in active.get(ticket, []):
+                    match episode["claim_status"]:
+                        case "no_claim":
+                            if isinstance(model, str) and model:
+                                episode["worker_model"] = model
+                                episode["claim_status"] = "claimed"
+                            else:
+                                episode["claim_status"] = "model_not_recorded"
+            case "merged", _:
+                for episode in active.pop(ticket, []):
+                    episode["outcome"] = "merged"
+            case "escalate", _:
+                for episode in active.pop(ticket, []):
+                    episode["outcome"] = "re_escalated"
 
     totals = {}
     for episode in episodes:
         key = (episode["worker_model"], episode["claim_status"])
         totals.setdefault(key, Counter())[episode["outcome"]] += 1
     by_model = []
-    for (model, claim_status), outcomes in sorted(
-        totals.items(),
-        key=lambda item: (
-            item[0][0] is None,
-            item[0][0] or "",
-            item[0][1],
-        ),
-    ):
+    for (model, claim_status), outcomes in totals.items():
         resolved = outcomes["merged"] + outcomes["re_escalated"]
         by_model.append({
             "worker_model": model,
@@ -342,12 +334,9 @@ def post_fix_outcomes(rows: list[dict]) -> dict[str, Any]:
 def print_post_fix_outcomes(report: dict[str, Any]) -> None:
     print("\nPost-FIX outcomes by next claim worker_model")
     print("worker_model                          merged  re-escalated  pending  resolved merge rate")
+    historical_labels = {"model_not_recorded": "unknown (model not recorded)", "no_claim": "no claim"}
     for row in report["by_worker_model"]:
-        label = (
-            row["worker_model"]
-            or ("unknown (model not recorded)" if row["claim_status"] == "model_not_recorded"
-                else "no claim")
-        )
+        label = row["worker_model"] or historical_labels[row["claim_status"]]
         rate = (f"{row['resolved_merge_rate']:.1%}"
                 if row["resolved_merge_rate"] is not None else "n/a")
         print(f"{label:<37} {row['merged']:>6}  {row['re_escalated']:>12}  "
