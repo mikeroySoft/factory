@@ -215,6 +215,5 @@ class DrainPassTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 1, proc.stderr)
         self.assertIn("missing drain-check command", json.loads(proc.stdout)["error"])
 
-
 if __name__ == "__main__":
     unittest.main()
