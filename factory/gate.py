@@ -775,8 +775,10 @@ def execute(args: argparse.Namespace, execution) -> int:
         "# Gate report" if args.tier == "attempt" else f"# Gate report ({args.tier} tier)", "", "## Host toolchain",
         f"ROCm: {host['rocm']}", f"Kernel: {host['kernel']}", f"amdgpu: {host['amdgpu']}", "",
     ]
-    for name, status, _ in results:
-        lines.append(f"- {name}: {status}")
+    configured_names = {name for name, _ in configured}
+    for name, status, output in results:
+        infra = status == "FAIL" and name in configured_names and cfg.infra_error(output)
+        lines.append(f"- {name}: {status}" + (" (infra)" if infra else ""))
     for name, status, output in results:
         # pr-tier checks may be report-only (exit 0, findings on stdout); the reviewer sees
         # them only through this report, so keep their output when they pass too.

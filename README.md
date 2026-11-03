@@ -839,6 +839,17 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    retried). One that committed or wrote its handoff, then stayed quiet for
    `[dispatch].exit_grace` seconds without exiting, is terminated and gated.
    The attempt journal row and escalation packet name the timeout that fired.
+   Network/download gate failures are retried on the same head without another
+   worker or review round. Factory's case-insensitive error regexes cover Cargo
+   registry/download errors, HTTP/2 framing/stream errors, connection resets and
+   DNS failures. `[gate].infra_patterns = ['your-regex']` extends those defaults;
+   an empty list keeps them. `[gate].infra_retries = 3` permits three retries
+   after the initial failure, per gate invocation (`0` escalates immediately).
+   Classification uses full failed-check output before report truncation; every
+   failing check must match, so a mixed code/infra failure keeps the ordinary cap.
+   Exhaustion stops worker/review retries and escalates as `infra_failed`, naming
+   a host problem. Each classified failure is journaled as `failure`; escalation
+   packets and GitHub comments list its class and the retry budget charged.
 4. **Gate.** The configured `[gate].protected_paths` globs from the base ref's
    `.factory.toml` are checked against the committed worker diff first, before
    any checks; a hit stops the run and immediately escalates the ticket to
@@ -1025,6 +1036,15 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    PR waits as CI pending. If the rerun is
    also starved, the ticket is escalated once as "CI runner unavailable" with the
    label kept, so a later green rerun still merges.
+   Failed Actions jobs whose logs match the same `[gate].infra_patterns` policy
+   use `[gate].infra_retries` instead of worker/review rounds. All failed jobs
+   in a workflow run must be infra; mixed or unreadable failures remain red CI.
+   Completed runs rerun failed jobs once per observed workflow attempt; persisted
+   `ci-rerun` receipts share one budget per PR/run across pollers and passes.
+   Pending siblings or an active workflow defer rerunning. Exhausted infra or
+   a failed rerun command escalates as an infra host problem (`infra_failed`),
+   retaining approval so later passing CI can recover. The manager's PR
+   frontier applies this policy too; CI predating an explicit release is unchanged.
    Existing behind PRs re-earn bound evidence through that automatic refresh.
    An up-to-date PR carrying a pre-upgrade unbound approval is withdrawn and
    escalated once; use the existing manager `FIX` path to re-run its worker,

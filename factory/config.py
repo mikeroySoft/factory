@@ -62,6 +62,12 @@ LABELS = {
 # Word-bounded strong signals only: bare words like "internal"/"private" are ordinary English.
 DEFAULT_LEAK_PATTERN = (r"\.(?:corp|internal|intranet|lan)\b|\bconfidential\b|\bproprietary\b"
                         r"|\bjira\b|\bconfluence\b|\.atlassian\.net\b")
+DEFAULT_INFRA_PATTERNS = (
+    r"(?:failed to (?:fetch|download).*(?:crates\.io(?:-index)?|registry(?: index)?)|download of config\.json failed|failed to download any data for `[^`]+`)",
+    r"(?:stream error in the HTTP/2 framing layer|HTTP/2 (?:framing|stream).*(?:error|closed))",
+    r"connection reset by peer",
+    r"(?:(?:could not|failed to) resolve host(?:name)?|temporary failure in name resolution|name or service not known)",
+)
 DEFAULT_WORKER = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]
 DEFAULT_WORKER_MODEL = "openai-codex/gpt-5.6-sol"
 DEFAULT_CHORE_WORKER = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
@@ -97,7 +103,8 @@ KNOWN_KEYS = {
     "release": ("auto", "version_file", "min_tickets", "bar_min_tickets",
                 "bar_floor_human_rate", "bar_floor_first_pass"),
     "eval": ("max_cases", "max_tokens", "budget_min", "profile", "schedule"),
-    "gate": ("timeout", "lock", "check", "protected_paths", "add_only_paths"),
+    "gate": ("timeout", "lock", "check", "protected_paths", "add_only_paths",
+             "infra_retries", "infra_patterns"),
     "leak_scan": ("pattern", "exclude", "extra"),
     "triage": ("url", "model", "timeout", "service"),
     "journal": ("max_mb", "retention"),
@@ -228,6 +235,8 @@ class Config:
     add_only_paths: list[str] = field(default_factory=list)
     check_timeout: int = 1200
     lock: Path = Path("/tmp/factory.lock")  # host-wide: one GPU, many repos
+    infra_retries: int = 3
+    infra_patterns: list[str] = field(default_factory=lambda: list(DEFAULT_INFRA_PATTERNS))
     leak_pattern: str | None = DEFAULT_LEAK_PATTERN
     leak_exclude: list[str] = field(default_factory=list)
     llm_url: str = DEFAULT_LLM_URL
@@ -261,6 +270,11 @@ class Config:
     def unit(self) -> str:
         """systemd user-unit stem: `<unit>.timer`, `<unit>.service`, `<unit>-dashboard.service`."""
         return f"factory-{self.name}"
+
+    def infra_error(self, text: str) -> str | None:
+        """Return the first configured infrastructure-error pattern matching text."""
+        return next((pattern for pattern in self.infra_patterns
+                     if re.search(pattern, text, re.IGNORECASE)), None)
 
     def worker_key(self, labels: set[str]) -> str:
         """The `[workers]` profile that owns these ticket labels (first match wins)."""
@@ -814,6 +828,21 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
         cfg.collaboration = collaboration_settings(raw["collaboration"])
     cfg.prices = price_table(raw.get("prices", {}))
     cfg.check_timeout = int(gate.get("timeout", cfg.check_timeout))
+    infra_retries = gate.get("infra_retries", cfg.infra_retries)
+    if isinstance(infra_retries, bool) or not isinstance(infra_retries, int) or infra_retries < 0:
+        raise ConfigError("gate.infra_retries must be a nonnegative integer")
+    cfg.infra_retries = infra_retries
+    infra_patterns = gate.get("infra_patterns", [])
+    if not isinstance(infra_patterns, list) or any(
+        not isinstance(pattern, str) or not pattern for pattern in infra_patterns
+    ):
+        raise ConfigError("gate.infra_patterns must be an array of nonempty valid regex strings")
+    try:
+        for pattern in infra_patterns:
+            re.compile(pattern)
+    except re.error as error:
+        raise ConfigError(f"gate.infra_patterns contains an invalid regex: {error}") from error
+    cfg.infra_patterns.extend(infra_patterns)
     for key in ("protected_paths", "add_only_paths"):
         paths = gate.get(key, [])
         if not isinstance(paths, list) or any(not isinstance(p, str) or not p for p in paths):

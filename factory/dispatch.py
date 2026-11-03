@@ -1671,8 +1671,6 @@ def run_gate(
     report_rel = f".factory/gate-report-{n}.md"
     (wt / ".factory").mkdir(exist_ok=True)
     report = wt / report_rel
-    report.unlink(missing_ok=True)
-    started = time.monotonic()
     head = run(["git", "rev-parse", "HEAD"], cwd=wt, check=False).stdout.strip() or "unknown"
     # GPU serialization is the gate's job: the gate flocks the exclusive lock
     # itself. Locking here too deadlocks the gate subprocess (seen in run #7).
@@ -1709,25 +1707,94 @@ def run_gate(
         cmd += ["--tier", tier]
     if blocking_mutation:
         cmd.append("--blocking-mutation")
-    proc = run(cmd, cwd=wt, check=False, timeout=timeout)
-    if report.exists():
-        text = report.read_text()
-        ok = proc.returncode == 0
-    else:
-        output = (proc.stdout + proc.stderr).strip()
-        text = (
-            f"gate runner did not write {report_rel} (exit {proc.returncode})"
-            + (f":\n{output}\n" if output else "\n")
-        )
-        report.write_text(text)
-        ok = False
     match = re.fullmatch(r"(\d+)(?:-pr)?", str(n))
-    if match:
-        _record_gate_decision(
-            int(match[1]), ok, text, head, str(report),
-            time.monotonic() - started,
+    ticket = int(match[1]) if match else None
+    deadline = time.monotonic() + timeout if timeout is not None else None
+    for retry in range(cfg.infra_retries + 1):
+        report.unlink(missing_ok=True)
+        started = time.monotonic()
+        remaining = max(0, deadline - started) if deadline is not None else None
+        proc = run(cmd, cwd=wt, check=False, timeout=remaining)
+        if report.exists():
+            text = report.read_text()
+            ok = proc.returncode == 0
+        else:
+            output = (proc.stdout + proc.stderr).strip()
+            text = (
+                f"gate runner did not write {report_rel} (exit {proc.returncode})"
+                + (f":\n{output}\n" if output else "\n")
+            )
+            report.write_text(text)
+            ok = False
+        if ticket is not None:
+            _record_gate_decision(
+                ticket, ok, text, head, str(report), time.monotonic() - started,
+            )
+        if ok:
+            return True, text
+        # Tags come from full failed-check output, before the gate truncates it.
+        # All failing checks must be infra; one code failure keeps the normal cap.
+        failures = re.findall(r"(?m)^- [^\n:]+: FAIL([^\n]*)", text.split("```", 1)[0])
+        infra = all("(infra)" in failure for failure in failures) if failures else bool(cfg.infra_error(text))
+        execution = lifecycle.current()
+        record(
+            "failure", ticket=ticket, source="gate", gate=str(n), head=head, tier=tier,
+            failure_class="infra" if infra else "code",
+            retry=retry + 1 if infra else getattr(execution, "attempt", None),
+            limit=cfg.infra_retries if infra else None,
+            exhausted=infra and retry == cfg.infra_retries,
+            report=str(report),
         )
-    return ok, text
+        if not infra:
+            return False, text
+        if retry == cfg.infra_retries:
+            text = f"Infra retries exhausted (host problem; limit {cfg.infra_retries}).\n\n{text}"
+            report.write_text(text)
+            return False, text
+        log(f"gate {n}: infra retry {retry + 1}/{cfg.infra_retries}; normal retry cap unchanged")
+
+
+def gate_infra_exhausted(
+    n: int, report: str, logfile: Path | None = None, *, already_human: bool = False,
+) -> bool:
+    if not report.startswith("Infra retries exhausted (host problem;"):
+        return False
+    reason = report.splitlines()[0]
+    if already_human:
+        log(f"#{n}: {reason}; ticket is already ready-for-human")
+    else:
+        escalate(n, reason, logfile, extra=report, code="infra_failed")
+    return True
+
+
+def retry_summary(n: int) -> str:
+    failures = [
+        event for event in lifecycle.read_events(EVENTS)
+        if event.get("ticket") == n and event.get("event") == "failure"
+    ]
+    if not failures:
+        return ""
+    rows = []
+    for index, event in enumerate(failures, 1):
+        kind = event["failure_class"]
+        if kind == "infra":
+            charge = (
+                f"infra limit exhausted ({event.get('limit')})"
+                if event.get("exhausted")
+                else f"infra retry {event.get('retry')}/{event.get('limit')}; normal cap unchanged"
+            )
+        else:
+            charge = "review retry cap" if event.get("tier") == "pr" else "normal code retry cap"
+        source = f"{index}. {event['source']}"
+        if event.get("gate"):
+            source += f" {event['gate']} ({event['tier']})"
+        elif event.get("run"):
+            source += f" run {event['run']} attempt {event['attempt']}"
+        rows.append(f"| {source} | {kind} | {charge} |")
+    return (
+        "## Retry failure classes\n\n| Source | Class | Charged budget |\n"
+        "|---|---|---|\n" + "\n".join(rows)
+    )
 
 
 def escalation_packet(
@@ -1763,6 +1830,7 @@ def escalation_packet(
         "| Attempt | Gate | Worker exit | Timeout | Seconds | Log |\n"
         "|---:|---|---:|---|---:|---|\n"
         + "\n".join(rows)
+        + "\n\n" + retry_summary(n)
         + "\n\n## Last gate report\n\n"
         + ((gate.read_text() if gate.exists() else "").strip()[-6000:] or "(none recorded)")
         + "\n\n## Latest review findings\n\n"
@@ -1790,6 +1858,7 @@ ESCALATION_CODES = frozenset({
     "refresh_empty", "gh_failed", "review_intake", "manager_failed",
     "manager_exhausted", "manager_human", "pr_feedback", "pr_stale",
     "lease_refused", "dispatcher_error", "no_change", "risk_disagreement",
+    "infra_failed",
 })
 
 
@@ -1862,6 +1931,8 @@ def escalate(
         check=False,
     )
     body = f"Factory dispatcher escalating: {reason}.\n\nEscalation packet: `{packet}`"
+    if summary := retry_summary(n):
+        body += f"\n\n{summary}"
     if log_path:
         body += f"\n\nWorker logs: `{log_path}`"
     handoff = wt / ".factory" / f"handoff-{n}.md"
@@ -3063,81 +3134,213 @@ def _run_in_progress(run_id: int) -> bool:
         return False
 
 
+def _infra_failure(check: dict) -> dict | None:
+    """Network/download evidence from a failed Actions job; unreadable data fails closed."""
+    m = re.search(r"/actions/runs/(\d+)/job/(\d+)", check.get("link") or "")
+    if not m:
+        return None
+    try:
+        meta = run(["gh", "api", f"repos/{REPO}/actions/jobs/{m[2]}"], check=False)
+        if meta.returncode != 0:
+            return None
+        job = json.loads(meta.stdout)
+        attempt = job.get("run_attempt")
+        if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
+            return None
+        logs = run(
+            ["gh", "run", "view", m[1], "--job", m[2], "--log", "--repo", REPO],
+            check=False,
+        )
+        if logs.returncode != 0 or not isinstance(logs.stdout, str):
+            return None
+        match = cfg.infra_error(logs.stdout)
+        if not match:
+            return None
+        return {
+            "run": int(m[1]), "job": int(m[2]), "attempt": attempt,
+            "check": check["name"], "match": match,
+        }
+    except (ValueError, TypeError, AttributeError, KeyError):
+        return None
+
+
 def triage_cancelled(
     pr: int, checks: list[dict], dry_run: bool = False,
     ticket: int | None = None, head: str | None = None,
 ) -> list[dict]:
-    """Rebucket `cancel` rows so a CI runner outage is not a code failure.
+    """Retry runner starvation and classified network/download Actions failures.
 
-    A cancel that ran steps becomes `fail`. An infra cancel reads `pending` while
-    any check in its run is still pending (GitHub refuses to rerun an in-progress
-    run); once the run finishes it reruns the run's failed jobs once (`gh run
-    rerun --failed`) and reads `pending` until the rerun attempt reports;
-    cancelled for infra again, it reads `infra`.
+    Failed jobs are retried only when every failed job in their workflow run is
+    classified as infrastructure. Reruns are charged once per observed run
+    attempt and remain pending until GitHub exposes the next attempt.
     """
-    if not any(c.get("bucket") == "cancel" for c in checks):
+    if not any(
+        c.get("bucket") == "cancel"
+        or (
+            c.get("bucket") == "fail"
+            and re.search(r"/actions/runs/\d+/job/\d+", c.get("link") or "")
+        )
+        for c in checks
+    ):
         return checks
     events = lifecycle.read_events(EVENTS)
-    out, starved = [], {}
-    running = {int(m[1]) for c in checks if c.get("bucket") == "pending"
-               and (m := re.search(r"/actions/runs/(\d+)/", c.get("link") or ""))}
+    out: list[dict] = []
+    infra_runs: dict[int, list[tuple[dict, dict, str]]] = {}
+    code_runs: set[int] = set()
+    running = {
+        int(m[1])
+        for c in checks
+        if c.get("bucket") == "pending"
+        and (m := re.search(r"/actions/runs/(\d+)/", c.get("link") or ""))
+    }
     for c in checks:
-        infra = _infra_cancel(c) if c.get("bucket") == "cancel" else None
+        bucket = c.get("bucket")
+        infra = _infra_cancel(c) if bucket == "cancel" else (
+            _infra_failure(c) if bucket == "fail" else None
+        )
         if infra:
-            starved.setdefault(infra["run"], []).append((c, infra))
-        else:
-            out.append({**c, "bucket": "fail"} if c.get("bucket") == "cancel" else c)
-    for run_id, rows in starved.items():
-        names = [c["name"] for c, _ in rows]
-        attempt = max(i["attempt"] for _, i in rows)
-        evidence = {"pr": pr, "run": run_id, "attempt": attempt, "checks": names,
-                    "evidence": [i for _, i in rows]}
-        rerun = next((e for e in reversed(events) if e.get("event") == "ci-rerun"
-                      and e.get("pr") == pr and e.get("run") == run_id), None)
+            kind = "runner" if bucket == "cancel" else "network"
+            infra_runs.setdefault(infra["run"], []).append((c, infra, kind))
+            continue
+        out.append({**c, "bucket": "fail"} if bucket == "cancel" else c)
+        if bucket in ("cancel", "fail"):
+            match = re.search(r"/actions/runs/(\d+)/", c.get("link") or "")
+            if match:
+                code_runs.add(int(match[1]))
+
+    for run_id, rows in infra_runs.items():
+        if run_id in code_runs or len({i["attempt"] for _, i, _ in rows}) != 1:
+            out.extend({**c, "bucket": "fail"} for c, _, _ in rows)
+            continue
+        names = [c["name"] for c, _, _ in rows]
+        attempt = rows[0][1]["attempt"]
+        network = any(kind == "network" for _, _, kind in rows)
+        infra_reason = (
+            "network/download host problem" if network else "runner starvation"
+        )
+        limit = cfg.infra_retries if network else 1
+        evidence = {
+            "pr": pr, "head": head, "run": run_id, "attempt": attempt,
+            "checks": names, "infra_reason": infra_reason,
+            "evidence": [i for _, i, _ in rows],
+        }
+        reruns = [
+            e for e in events
+            if e.get("event") == "ci-rerun"
+            and e.get("pr") == pr
+            and e.get("run") == run_id
+        ]
+        observed = next(
+            (e for e in reversed(reruns) if e.get("attempt") == attempt), None,
+        )
+        bucket = "pending"
+        terminal_reason = infra_reason
+        spent = len(reruns)
+        marked = False
         if run_id in running or _run_in_progress(run_id):
-            bucket = "pending"  # retry on a later pass once the run has finished
-        elif rerun is None and dry_run:
-            log(f"PR #{pr}: would rerun CI run {run_id} (runner never acquired: {', '.join(names)})")
-            bucket = "pending"
-        elif rerun is None:
-            record("ci-infra", **evidence)
-            ok = run(["gh", "run", "rerun", str(run_id), "--failed", "--repo", REPO],
-                     check=False).returncode == 0
-            record("ci-rerun", pr=pr, run=run_id, attempt=attempt, checks=names, ok=ok)
-            if ticket is not None:
-                record_merge_decision(
-                    ticket, pr, "ci-rerun", f"reran CI run {run_id} after runner starvation",
-                    head, head, checks,
-                )
-            bucket = "pending" if ok else "infra"
-        elif rerun.get("ok") and attempt <= rerun["attempt"]:
-            bucket = "pending"  # the rerun attempt is not visible yet
-        else:
+            pass
+        elif dry_run:
+            log(
+                f"PR #{pr}: would retry CI run {run_id} "
+                f"({infra_reason}: {', '.join(names)})"
+            )
+        elif observed is not None:
+            if not observed.get("ok"):
+                bucket = "infra"
+                terminal_reason = f"{infra_reason}; rerun command failed"
+        elif any(e.get("attempt", 0) > attempt for e in reruns):
+            pass
+        elif len(reruns) >= limit:
             bucket = "infra"
-            if not dry_run and not any(
-                e.get("event") == "ci-infra" and e.get("pr") == pr
-                and e.get("run") == run_id and e.get("attempt") == attempt for e in events
-            ):
-                record("ci-infra", **evidence)
-        out.extend({**c, "bucket": bucket, "run": run_id} for c, _ in rows)
+        else:
+            retry = len(reruns) + 1
+            record("ci-infra", **evidence)
+            marked = True
+            if network and ticket is not None:
+                record(
+                    "failure", ticket=ticket, source="ci", failure_class="infra",
+                    retry=retry, limit=limit, pr=pr, head=head, run=run_id,
+                    attempt=attempt, checks=names, reason=infra_reason,
+                )
+            ok = run(
+                ["gh", "run", "rerun", str(run_id), "--failed", "--repo", REPO],
+                check=False,
+            ).returncode == 0
+            record(
+                "ci-rerun", pr=pr, head=head, run=run_id, attempt=attempt,
+                checks=names, ok=ok, retry=retry, limit=limit,
+                infra_reason=infra_reason,
+            )
+            spent = retry
+            if ticket is not None:
+                rationale = (
+                    f"reran CI run {run_id} after {infra_reason}"
+                )
+                record_merge_decision(
+                    ticket, pr, "ci-rerun", rationale, head, head, checks,
+                )
+            if not ok:
+                bucket = "infra"
+                terminal_reason = f"{infra_reason}; rerun command failed"
+        if bucket == "infra" and not marked and not any(
+            e.get("event") == "ci-infra"
+            and e.get("pr") == pr
+            and e.get("run") == run_id
+            and e.get("attempt") == attempt
+            for e in events
+        ):
+            record("ci-infra", **evidence)
+        extra = {"bucket": bucket, "run": run_id}
+        if bucket == "infra":
+            extra.update(
+                infra_reason=terminal_reason,
+                infra_retry=spent,
+                infra_limit=limit,
+            )
+        out.extend({**c, **extra} for c, _, _ in rows)
     return out
 
 
 def runner_unavailable(n: int, pr: int, starved: list[dict], dry_run: bool) -> bool:
-    """Escalate a rerun that still found no runner, once per run; `factory-approved` stays.
-
-    False when this outage is already escalated: the caller waits as if pending.
-    """
+    """Escalate exhausted CI infrastructure retries once; keep approval intact."""
     runs = ", ".join(sorted({str(c["run"]) for c in starved}))
-    reason = (f"PR #{pr}: CI runner unavailable ({', '.join(c['name'] for c in starved)}) "
-              f"in run {runs}; `{FACTORY_APPROVED}` kept")
-    if any(e.get("event") == "escalate" and e.get("ticket") == n and e.get("reason") == reason
-           for e in lifecycle.read_events(EVENTS)):
+    host_problem = any(
+        "network/download host problem" in c.get("infra_reason", "")
+        for c in starved
+    )
+    if host_problem:
+        limit = max(c.get("infra_limit", cfg.infra_retries) for c in starved)
+        details = ", ".join(sorted({
+            c["infra_reason"] for c in starved if c.get("infra_reason")
+        }))
+        retry_state = (
+            f"infra retry command failed (limit {limit})"
+            if "rerun command failed" in details
+            else f"infra retry limit {limit} exhausted"
+        )
+        reason = (
+            f"PR #{pr}: CI infra host problem ({', '.join(c['name'] for c in starved)}) "
+            f"in run {runs}; {retry_state}; {details}; "
+            f"`{FACTORY_APPROVED}` kept"
+        )
+        code = "infra_failed"
+    else:
+        reason = (
+            f"PR #{pr}: CI runner unavailable ({', '.join(c['name'] for c in starved)}) "
+            f"in run {runs}; `{FACTORY_APPROVED}` kept"
+        )
+        code = "ci_runner"
+    if any(
+        e.get("event") == "escalate"
+        and e.get("ticket") == n
+        and e.get("reason") == reason
+        for e in lifecycle.read_events(EVENTS)
+    ):
         return False
     if dry_run:
         log(f"PR #{pr}: would escalate ({reason})")
     else:
-        escalate(n, reason, None, code="ci_runner")
+        escalate(n, reason, None, code=code)
     return True
 
 
@@ -3344,6 +3547,9 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         comments=issue.get("comments"),
     )
     ok, report = run_gate(wt, n, **flags)
+    if report.startswith("Infra retries exhausted (host problem;"):
+        withdraw(report.splitlines()[0], "infra_failed", extra=report, refreshed_head=head)
+        return False
     reports = [report]
     gate_rerun = False
     actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
@@ -3371,6 +3577,9 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     if not ok and evidence_clean:
         first_report = report
         ok, report = run_gate(wt, n, **flags)
+        if report.startswith("Infra retries exhausted (host problem;"):
+            withdraw(report.splitlines()[0], "infra_failed", extra=report, refreshed_head=head)
+            return False
         gate_rerun = True
         actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
         after_status = run(status_cmd, cwd=wt).stdout.strip()
@@ -3466,6 +3675,8 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     tier, _ = risk_for_head(n, head)
     if tier == "High":
         verdict, findings, pr_failed = pr_gate_and_review(wt, n, report, head, {})
+        if pr_failed and gate_infra_exhausted(n, findings):
+            return False
     else:
         verdict, findings = review(wt, n, report, head)
         pr_failed = False
@@ -4286,6 +4497,8 @@ def process_ticket(
                 )
                 if ok:
                     break
+                if gate_infra_exhausted(n, report, logfile):
+                    return
                 if guidance := _protected_gate_guidance(report, labels):
                     tests = "- protected-tests: FAIL" in report or "- protected-paths: FAIL (add-only" in report
                     reason = (
@@ -4333,6 +4546,8 @@ def process_ticket(
             pr_runs: dict[str, tuple[bool, str]] = {}
             record_risk(wt, n, gate_head)
             verdict, findings, pr_failed = pr_gate_and_review(wt, n, report, gate_head, pr_runs)
+            if pr_failed and gate_infra_exhausted(n, findings, logfile):
+                return
             pr_comment(n, findings)
             current_risk = _PENDING_RISK.get(n) or {}
             risk_disagreement_head, repeated_disagreement = risk_disagreement_transition(
@@ -4385,6 +4600,8 @@ def process_ticket(
                     body=fresh.get("body") or "",
                     comments=fresh.get("comments"),
                 )
+                if not ok and gate_infra_exhausted(n, report, logfile):
+                    return
                 if guidance := _protected_gate_guidance(report, labels):
                     tests = "- protected-tests: FAIL" in report or "- protected-paths: FAIL (add-only" in report
                     reason = (
@@ -4408,6 +4625,8 @@ def process_ticket(
                 lease = push_agent(wt, n, lease)
                 record_risk(wt, n, gate_head)
                 verdict, findings, pr_failed = pr_gate_and_review(wt, n, report, gate_head, pr_runs)
+                if pr_failed and gate_infra_exhausted(n, findings, logfile):
+                    return
                 pr_comment(n, findings)
                 current_risk = _PENDING_RISK.get(n) or {}
                 current_disagreement_head, repeated_disagreement = risk_disagreement_transition(
