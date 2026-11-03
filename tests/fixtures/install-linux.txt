@@ -1,0 +1,88 @@
+# factory-widgets.service
+[Unit]
+Description=factory triage + dispatcher for acme/widgets (one pass)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/widgets
+Environment=PATH=/opt/bin:/usr/bin
+Environment="POLICY=24 hours 50%%"
+Environment=GH_CONFIG_DIR=/machine/gh
+ExecStart=-/opt/factory/bin/python -P -m factory triage
+ExecStart=/opt/factory/bin/python -P -m factory dispatch
+ExecStopPost=-/opt/factory/bin/python -P -m factory watch
+
+# factory-widgets.timer
+[Unit]
+Description=Run the factory pass for acme/widgets every 10min
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+RandomizedDelaySec=90
+
+[Install]
+WantedBy=timers.target
+
+# factory-widgets-dashboard.service
+[Unit]
+Description=factory dashboard for acme/widgets
+After=network.target
+
+[Service]
+WorkingDirectory=/srv/widgets
+Environment=PATH=/opt/bin:/usr/bin
+Environment="POLICY=24 hours 50%%"
+ExecStart=/opt/factory/bin/python -P -m factory dashboard --host 127.0.0.1 --port 8765 --no-open
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+
+# factory-widgets-triage-probe.service
+[Unit]
+Description=Probe the triage model for acme/widgets
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/widgets
+Environment=PATH=/opt/bin:/usr/bin
+Environment="POLICY=24 hours 50%%"
+ExecStart=/opt/factory/bin/python -P -m factory triage-probe
+
+# factory-widgets-triage-probe.timer
+[Unit]
+Description=Probe the triage model for acme/widgets every 2 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target
+
+# factory-widgets-eval.service
+[Unit]
+Description=Run the frozen worker eval suite for acme/widgets
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/widgets
+Environment=PATH=/opt/bin:/usr/bin
+Environment="POLICY=24 hours 50%%"
+ExecStart=/opt/factory/bin/python -P -m factory eval --profile prime --scheduled
+
+# factory-widgets-eval.timer
+[Unit]
+Description=Run the frozen worker eval suite for acme/widgets weekly
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=30min
+
+[Install]
+WantedBy=timers.target
+
