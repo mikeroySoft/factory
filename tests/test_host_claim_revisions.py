@@ -683,6 +683,168 @@ class HostClaimOwnershipTest(unittest.TestCase):
         self.assertIn(replacement, self.github.comments)
         self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
 
+    def test_invalid_claim_dates_do_not_hide_later_live_claims(self):
+        tank = self.dispatcher("tank")
+        for field in ("body", "created_at"):
+            with self.subTest(field=field):
+                self.github.comments.clear()
+                malformed = self.github.add_claim("broken", datetime.now(UTC))
+                malformed[field] = (
+                    "Factory claim: host=broken nonce=broken at=invalid"
+                    if field == "body" else "invalid"
+                )
+                self.github.add_claim("ultron", datetime.now(UTC))
+                self.github.issue["labels"] = [{"name": "ready-for-agent"}]
+                self.github.issue["assignees"] = []
+                before = copy.deepcopy((self.github.issue, self.github.comments))
+
+                [issue] = tank.frontier()
+                self.assertEqual(issue.get("held"), "host claim (ultron)")
+                tank.process_ticket(issue, 1, False)
+
+                self.assertEqual((self.github.issue, self.github.comments), before)
+                self.assertEqual(self.launched, [])
+
+    def test_replacement_retires_all_expired_comments_with_serialized_ids(self):
+        import json
+
+        from factory import lifecycle
+
+        tank = self.dispatcher("tank")
+        for host in ("old", "ultron", "old"):
+            self.github.add_claim(host, datetime.now(UTC) - timedelta(hours=3))
+        self.github.next_id = 1000
+        read = tank.gh_json
+
+        def serialized_read(args):
+            return json.loads(json.dumps(read(args)))
+
+        # Real API reads deserialize numeric IDs into distinct Python objects.
+        with mock.patch.object(tank, "gh_json", side_effect=serialized_read):
+            tank.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+
+        self.assertEqual(self.launched, ["tank"])
+        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
+        self.assertEqual(self.github.issue["labels"],
+                         [{"name": "ready-for-agent"}, {"name": "host:tank"}])
+        self.assertEqual([row["id"] for row in self.github.comments], [1000])
+        releases = [row["host"] for row in lifecycle.read_events(tank.EVENTS)
+                    if row.get("event") == "claim-released"]
+        self.assertEqual(releases, ["old", "ultron", "old"])
+
+    def test_expired_replacement_cleanup_preserves_own_equal_numeric_id(self):
+        import json
+
+        tank = self.dispatcher("tank")
+        self.github.next_id = 1000
+        replacement = self.github.add_claim("tank", datetime.now(UTC) - timedelta(hours=4))
+        self.github.add_claim("old", datetime.now(UTC) - timedelta(hours=3))
+        read = tank.gh_json
+        with mock.patch.object(tank, "gh_json", side_effect=lambda args: json.loads(json.dumps(read(args)))):
+            tank.release_stale_claims(
+                7, copy.deepcopy(self.github.issue), tank.host_claims(7),
+                replacement=replacement["id"],
+            )
+
+        self.assertEqual(self.github.comments, [replacement])
+        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
+        self.assertEqual(self.github.issue["labels"],
+                         [{"name": "ready-for-agent"}, {"name": "host:tank"}])
+
+    def test_ready_label_removed_during_election_prevents_worker_launch(self):
+        tank = self.dispatcher("tank")
+        read = tank.gh_json
+
+        def escalate_after_post(args):
+            result = read(args)
+            if "--method" in args and args[args.index("--method") + 1] == "POST":
+                self.github.issue["labels"] = [
+                    row for row in self.github.issue["labels"] if row["name"] != "ready-for-agent"
+                ] + [{"name": "ready-for-human"}]
+            return result
+
+        with mock.patch.object(tank, "gh_json", side_effect=escalate_after_post):
+            tank.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+
+        self.assertEqual(self.launched, [])
+        self.assertEqual(self.github.comments, [])
+        self.assertEqual(self.github.issue["assignees"], [])
+        self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-human"}])
+
+    def test_election_loss_names_earliest_live_winner(self):
+        from factory import lifecycle
+
+        tank = self.dispatcher("tank")
+        read = tank.gh_json
+
+        def contenders_before_post(args):
+            if "--method" in args and args[args.index("--method") + 1] == "POST":
+                self.github.add_claim("ultron", datetime.now(UTC) - timedelta(seconds=2))
+                self.github.add_claim("thor", datetime.now(UTC) - timedelta(seconds=1))
+            return read(args)
+
+        with mock.patch.object(tank, "gh_json", side_effect=contenders_before_post):
+            tank.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+
+        losses = [row for row in lifecycle.read_events(tank.EVENTS)
+                  if row.get("event") == "claim_lost"]
+        self.assertEqual([row.get("winner") for row in losses], ["ultron"])
+        self.assertEqual(self.launched, [])
+        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
+        self.assertEqual(self.github.issue["labels"],
+                         [{"name": "ready-for-agent"}, {"name": "host:ultron"}, {"name": "host:thor"}])
+        self.assertEqual(len(self.github.comments), 2)
+
+    def test_failed_post_preserves_label_of_another_same_host_claim(self):
+        tank = self.dispatcher("tank")
+        read = tank.gh_json
+
+        def concurrent_claim_before_failure(args):
+            if "--method" in args and args[args.index("--method") + 1] == "POST":
+                self.github.add_claim("tank", datetime.now(UTC))
+                raise subprocess.CalledProcessError(1, args, stderr="comment unavailable")
+            return read(args)
+
+        with mock.patch.object(tank, "gh_json", side_effect=concurrent_claim_before_failure), \
+                self.assertRaises(subprocess.CalledProcessError):
+            tank.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+
+        self.assertEqual(self.launched, [])
+        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
+        self.assertEqual(self.github.issue["labels"],
+                         [{"name": "ready-for-agent"}, {"name": "host:tank"}])
+        self.assertEqual(len(self.github.comments), 1)
+
+    def test_non_requeue_transition_does_not_publish_requeue_instructions(self):
+        tank = self.dispatcher("tank")
+        claim = self.github.add_claim("ultron", datetime.now(UTC))
+        for args in (("--remove-label", "ready-for-agent"),
+                     ("--remove-label", "ready-for-human", "--add-label", "ready-for-human")):
+            with self.subTest(args=args):
+                tank.unclaim(7, *args)
+                self.assertEqual(self.github.comments, [claim])
+                self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
+
+    def test_failed_post_removes_only_own_label_while_foreign_claim_survives(self):
+        tank = self.dispatcher("tank")
+        read = tank.gh_json
+
+        def foreign_claim_before_failure(args):
+            if "--method" in args and args[args.index("--method") + 1] == "POST":
+                self.github.add_claim("ultron", datetime.now(UTC))
+                raise subprocess.CalledProcessError(1, args, stderr="comment unavailable")
+            return read(args)
+
+        with mock.patch.object(tank, "gh_json", side_effect=foreign_claim_before_failure), \
+                self.assertRaises(subprocess.CalledProcessError):
+            tank.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+
+        self.assertEqual(self.launched, [])
+        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
+        self.assertEqual(self.github.issue["labels"],
+                         [{"name": "ready-for-agent"}, {"name": "host:ultron"}])
+        self.assertEqual(len(self.github.comments), 1)
+
 
 # Avoid collecting the imported harness class as a second copy of its suite.
 del Harness

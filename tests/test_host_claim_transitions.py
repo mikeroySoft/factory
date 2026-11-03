@@ -144,5 +144,42 @@ class HostClaimTransitionTest(unittest.TestCase):
             self.assertTrue(manage.human_activity(7, escalation, events))
 
 
+class HostClaimEscalationHistoryTest(unittest.TestCase):
+    setUp = Harness.setUp
+    dispatcher = Harness.dispatcher
+    launch = Harness.launch
+
+    def test_cleanup_after_nonempty_history_is_not_human_activity(self):
+        self.github = TimelineGitHub()
+        tank = self.dispatcher("tank")
+        for attempt in range(5):
+            tank.record("claimed", ticket=7, attempt=attempt)
+        self.github.add_claim("tank", datetime.now(UTC))
+
+        tank.escalate(7, "gate failed", None, code="gate_failed")
+
+        events = lifecycle.read_events(tank.EVENTS)
+        escalation = next(row for row in events if row.get("event") == "escalate")
+        with mock.patch.object(manage, "dispatch", tank), \
+                mock.patch.object(manage.handoff, "dispatch", tank):
+            self.assertFalse(manage.human_activity(7, escalation, events))
+
+    def test_adding_removed_host_label_before_receipt_still_blocks_manager(self):
+        self.github = TimelineGitHub()
+        tank = self.dispatcher("tank")
+        self.github.add_claim("tank", datetime.now(UTC))
+        tank.escalate(7, "gate failed", None, code="gate_failed")
+        events = lifecycle.read_events(tank.EVENTS)
+        escalation = next(row for row in events if row.get("event") == "escalate")
+        self.github.timeline.insert(-1, {
+            "event": "labeled", "label": {"name": "host:tank"},
+            "created_at": escalation["at"], "actor": {"login": "@me"},
+        })
+
+        with mock.patch.object(manage, "dispatch", tank), \
+                mock.patch.object(manage.handoff, "dispatch", tank):
+            self.assertTrue(manage.human_activity(7, escalation, events))
+
+
 # Keep unittest discovery from collecting the imported harness twice.
 del Harness

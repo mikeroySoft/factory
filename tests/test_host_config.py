@@ -122,5 +122,39 @@ class HostConfigTest(unittest.TestCase):
 
 
 
+class HostClaimConfigPrecedenceTest(unittest.TestCase):
+    load = HostConfigTest.load
+
+    def test_relocation_preserves_effective_repo_scalars_and_nested_tables(self):
+        import tomllib
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = config.Config(root, "acme/widgets", raw_repo={
+                "host_name": "ultron", "triage_host": "tank", "claim_ttl": "30m",
+                "install": {"every": "5min"}, "dashboard": {"port": 8822},
+            })
+            fix = onboard.relocation_fix(cfg, reveal=True)
+            host = tomllib.loads(fix["toml"])
+            host["defaults"] = {
+                "host_name": "tank", "triage_host": "other", "claim_ttl": "2h",
+                "install": {"every": "10min"}, "dashboard": {"port": 8811},
+            }
+            effective = self.load(root, host)
+
+        self.assertEqual((effective.host_name, effective.triage_host, effective.claim_ttl),
+                         ("ultron", "tank", "30m"))
+        self.assertEqual(effective.install["every"], "5min")
+        self.assertEqual(effective.dashboard_port, 8822)
+        self.assertEqual(
+            {entry["table"]: set(entry["keys"]) for entry in fix["tables"]},
+            {
+                '[repo."acme/widgets"]': {"host_name", "triage_host", "claim_ttl"},
+                '[repo."acme/widgets".install]': {"install.every"},
+                '[repo."acme/widgets".dashboard]': {"dashboard.port"},
+            },
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

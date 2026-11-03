@@ -1200,6 +1200,8 @@ comment; human removals and later edits still hold automatic management.
 Expired claims are admitted through the frontier only when no other hold exists.
 A human assignee or an open `agent/<ticket>` PR with an expired claim remains a
 hold after heartbeats stop, so completed work awaiting CI/review/merge is not run again.
+Each heartbeat revalidates the elected host and nonce. A displaced owner stops
+renewing rather than reviving an expired claim ahead of its replacement.
 Every refresh requeue publishes an authenticated `Factory requeue: nonce=<uuid>`
 issue comment with the refresh instructions, including when the owner releases
 its claim. The next host can consume that context even after the claim is deleted.

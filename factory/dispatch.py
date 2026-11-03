@@ -625,6 +625,10 @@ class HostClaim:
     def heartbeat(self) -> None:
         while not self.stopped.wait(cfg.claim_ttl_seconds / 4):
             try:
+                owned = owned_host_claim(self.n)
+                if owned is None or owned["nonce"] != self.comment["nonce"]:
+                    log(f"#{self.n}: host claim heartbeat stopped (ownership lost)")
+                    return
                 run(["gh", "api", f"repos/{REPO}/issues/comments/{self.comment['id']}",
                      "--method", "PATCH", "-f", f"body={self.body()}"])
             except (OSError, subprocess.CalledProcessError) as exc:
