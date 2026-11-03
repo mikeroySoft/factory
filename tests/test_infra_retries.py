@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from factory import config, dispatch, lifecycle
-import test_dispatch_lifecycle as cli_fixture
+from tests import test_dispatch_lifecycle as cli_fixture
 
 
 class GateInfraRetriesTest(unittest.TestCase):
