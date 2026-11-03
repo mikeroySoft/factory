@@ -205,6 +205,16 @@ class DrainPassTest(unittest.TestCase):
             "[Install]\nWantedBy=timers.target\n"
         ))
 
+    def test_install_probe_refuses_an_engine_without_drain_check(self) -> None:
+        proc = subprocess.run(
+            [sys.executable, "-P", "-c",
+             "from factory.cli import COMMANDS; COMMANDS.pop('drain-check', None); "
+             f"exec({onboard.INTERPRETER_PROBE!r})"],
+            cwd=self.root, env=self.env, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn("missing drain-check command", json.loads(proc.stdout)["error"])
+
 
 if __name__ == "__main__":
     unittest.main()
