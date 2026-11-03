@@ -387,6 +387,108 @@ class HostClaimRevisionTest(unittest.TestCase):
         self.assertEqual((self.github.issue, self.github.comments), before)
         self.assertEqual(self.launched, [])
 
+    def test_foreign_escalation_then_human_relabel_resumes_existing_pr(self):
+        tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
+        old = self.github.add_claim("tank", datetime.now(UTC))
+        self.github.open_prs = [{"number": 70}]
+        run = ultron.run
+
+        def post_comment(cmd, *args, **kwargs):
+            if cmd[:3] == ["gh", "issue", "comment"]:
+                self.github.json("ultron", [
+                    "api", "repos/local/claims/issues/7/comments", "--method", "POST",
+                    "-f", f"body={cmd[cmd.index('--body') + 1]}",
+                ])
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            return run(cmd, *args, **kwargs)
+
+        with mock.patch.object(ultron, "run", side_effect=post_comment):
+            ultron.escalate(7, "CI failed on PR #70", None, code="ci_failed")
+        self.assertIn(old, self.github.comments)
+        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
+        self.assertIn({"name": "ready-for-human"}, self.github.issue["labels"])
+        # Manager and human relabels do not call dispatch.unclaim.
+        self.github.run("human", [
+            "gh", "issue", "edit", "7", "--remove-label", "ready-for-human",
+            "--add-label", "ready-for-agent",
+        ])
+        self.assertIn("host claim", ultron.frontier()[0]["held"])
+        after_ttl = datetime.now(UTC) + timedelta(hours=3)
+        for module in (tank, ultron):
+            clock = self.enterContext(mock.patch.object(module, "datetime", wraps=datetime))
+            clock.now.return_value = after_ttl
+            self.assertNotIn("held", module.frontier()[0])
+        context = []
+
+        def worker(*args, **kwargs):
+            context.append(args[4])
+            return self.launch("ultron")
+
+        with mock.patch.object(ultron, "worker_round", side_effect=worker):
+            ultron.process_ticket(ultron.frontier()[0], 1, False)
+        tank.process_ticket(tank.frontier()[0], 1, False)
+        self.assertEqual(self.launched, ["ultron"])
+        self.assertIn("CI failed on PR #70", context[0])
+        for module in (tank, ultron):
+            module.datetime.now.return_value += timedelta(hours=3)
+            self.assertEqual(module.frontier()[0].get("held"), "open PR")
+
+    def test_pre_host_assignment_can_be_released_and_redispatched(self):
+        tank = self.dispatcher("tank")
+        self.github.open_prs = [{"number": 70}]
+        for target in ("ready-for-agent", "ready-for-human"):
+            with self.subTest(target=target):
+                self.github.comments.clear()
+                tank._HOST_CLAIMS.clear()
+                self.github.issue["labels"] = [{"name": "ready-for-agent"}]
+                self.github.issue["assignees"] = [{"login": "@me"}]
+                tank.unclaim(7, "--remove-label", "ready-for-agent", "--add-label", target)
+                self.assertEqual(self.github.issue["assignees"], [])
+                if target == "ready-for-human":
+                    self.github.run("human", [
+                        "gh", "issue", "edit", "7", "--remove-label", target,
+                        "--add-label", "ready-for-agent",
+                    ])
+                [issue] = tank.frontier()
+                self.assertNotIn("held", issue)
+                tank.process_ticket(issue, 1, False)
+        self.assertEqual(self.launched, ["tank", "tank"])
+
+    def test_owner_refresh_requeue_shares_reports_after_claim_deletion(self):
+        from factory import dispatch
+
+        tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
+        self.enterContext(mock.patch.object(
+            tank, "refresh_requeue_context",
+            type(dispatch.refresh_requeue_context)(
+                dispatch.refresh_requeue_context.__code__, tank.__dict__),
+        ))
+        self.github.add_claim("tank", datetime.now(UTC))
+        self.github.open_prs = [{"number": 70}]
+        tank.record("gate-requeue", ticket=7, pr=70, head="a" * 40, round=1,
+                    reports=["test: FAIL first", "test: FAIL again"], unrelated=True)
+        tank.unclaim(7, "--remove-label", "ready-for-human",
+                     "--add-label", "ready-for-agent", assignee_last=True)
+        self.assertEqual(self.github.issue["assignees"], [])
+        self.assertFalse(any(row["name"].startswith("host:") for row in self.github.issue["labels"]))
+        self.assertFalse(any(row["body"].startswith("Factory claim:") for row in self.github.comments))
+        context = []
+
+        def worker(*args, **kwargs):
+            context.append(args[4])
+            return self.launch("ultron")
+
+        with mock.patch.object(ultron, "worker_round", side_effect=worker):
+            ultron.process_ticket(ultron.frontier()[0], 1, False)
+        self.assertEqual(self.launched, ["ultron"])
+        self.assertIn("PR #70", context[0])
+        self.assertIn("test: FAIL first", context[0])
+        self.assertIn("test: FAIL again", context[0])
+        self.assertIn("unrelated", context[0])
+        with mock.patch.object(ultron, "datetime", wraps=datetime) as clock:
+            clock.now.return_value = datetime.now(UTC) + timedelta(hours=3)
+            self.assertEqual(ultron.frontier()[0].get("held"), "open PR")
+
 
 # Avoid collecting the imported harness class as a second copy of its suite.
 del Harness
