@@ -497,6 +497,8 @@ def frontier() -> list[dict]:
             "open",
             "--label",
             LABEL_AGENT,
+            "--limit",
+            "1000",
             "--json",
             "number,title,body,labels,assignees,createdAt",
         ]
