@@ -291,6 +291,74 @@ class PostFixOutcomeTest(unittest.TestCase):
              "re_escalated": 1, "pending": 1, "resolved_merge_rate": 2 / 3},
         ])
 
+    def test_journal_boundaries_do_not_open_or_truncate_fix_episodes(self) -> None:
+        rows = [
+            {"event": "dispatch"},
+            self.event("21", "manage", True, decision="FIX"),
+            self.event("21", "manage", 20, decision="CLOSE"),
+            self.event("21", "manage", 21, decision="HUMAN"),
+            self.event("21", "attempt", 22, decision="FIX"),
+            self.event("21", "review", 23, decision="FIX"),
+            self.event("21", "manage", 1, decision="FIX"),
+            self.event("21", "attempt", 1, worker_model="not-a-claim"),
+            self.event("21", "claimed", 1, worker_model="actual/model"),
+            self.event("22", "merged", 1),
+        ]
+        # Journal strings are decoded at runtime, not interned Python fixture literals.
+        self.assertEqual(self.outcomes(json.loads(json.dumps(rows))), [
+            {"worker_model": "actual/model", "claim_status": "claimed", "merged": 1,
+             "re_escalated": 0, "pending": 0, "resolved_merge_rate": 1.0},
+        ])
+
+    def test_overlapping_fixes_keep_their_own_first_claim_including_missing_models(self) -> None:
+        for missing in (None, "", 42):
+            with self.subTest(missing=missing):
+                rows = [
+                    self.event("21", "manage", 1, decision="FIX"),
+                    self.event("21", "claimed", 1, worker_model=missing),
+                    self.event("22", "manage", 1, decision="FIX"),
+                    self.event("22", "claimed", 1, worker_model="later/model"),
+                    self.event("23", "escalate", 1),
+                ]
+                groups = {row["claim_status"]: row for row in self.outcomes(rows)}
+                self.assertEqual(groups, {
+                    "claimed": {"worker_model": "later/model", "claim_status": "claimed",
+                                "merged": 0, "re_escalated": 1, "pending": 0,
+                                "resolved_merge_rate": 0.0},
+                    "model_not_recorded": {"worker_model": None, "claim_status": "model_not_recorded",
+                                           "merged": 0, "re_escalated": 1, "pending": 0,
+                                           "resolved_merge_rate": 0.0},
+                })
+
+    def test_nontrivial_resolved_counts_and_historical_groups_render_distinct_rates(self) -> None:
+        rows = []
+        for ticket, outcome in enumerate(("merged", "merged", "merged", "escalate", "escalate", None), 1):
+            rows.extend([
+                self.event("21", "manage", ticket, decision="FIX"),
+                self.event("21", "claimed", ticket, worker_model="model/mixed"),
+            ])
+            if outcome:
+                rows.append(self.event("22", outcome, ticket))
+        rows.extend([
+            self.event("21", "manage", 10, decision="FIX"),
+            self.event("21", "claimed", 10),
+            self.event("22", "escalate", 10),
+            self.event("21", "manage", 11, decision="FIX"),
+        ])
+        report = stats.post_fix_outcomes(json.loads(json.dumps(rows)))
+        groups = {row["claim_status"]: row for row in report["by_worker_model"]}
+        self.assertEqual(groups["claimed"], {
+            "worker_model": "model/mixed", "claim_status": "claimed", "merged": 3,
+            "re_escalated": 2, "pending": 1, "resolved_merge_rate": 0.6,
+        })
+        text = io.StringIO()
+        with contextlib.redirect_stdout(text):
+            stats.print_post_fix_outcomes(report)
+        lines = text.getvalue().splitlines()
+        self.assertTrue(next(line for line in lines if line.startswith("model/mixed")).endswith("60.0%"))
+        self.assertTrue(next(line for line in lines if line.startswith("unknown (model not recorded)")).endswith("0.0%"))
+        self.assertTrue(next(line for line in lines if line.startswith("no claim")).endswith("n/a"))
+
     def test_week_text_and_json_include_the_post_fix_report_and_noise_caveat(self) -> None:
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         cfg = config.Config(root, "acme/widgets")

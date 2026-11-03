@@ -227,6 +227,58 @@ class WorkerModelJournalTest(unittest.TestCase):
                     self.assertEqual(usage["worker_model"], "openai-codex/gpt-6.1-sol")
                     self.assertEqual(attempt["worker_model"], "openai-codex/gpt-6.1-sol")
 
+    def test_runtime_model_mismatch_is_independent_of_lexical_order(self) -> None:
+        import os
+        import subprocess
+
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
+        for args in (
+            ["init", "-q", "-b", "main"],
+            ["config", "user.name", "Test"],
+            ["config", "user.email", "test@example.invalid"],
+            ["commit", "-q", "--allow-empty", "-m", "fixture"],
+            ["update-ref", "refs/remotes/origin/main", "HEAD"],
+        ):
+            subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+        cfg = config.Config(root, "acme/widgets")
+        cfg.workers["chore"] = ["droid", "exec", "--model", "middle/model", "{prompt}"]
+        cfg.worker_usage["chore"] = config.usage_spec("chore", {"model": "result.model"})
+        dispatch.configure(cfg)
+        dispatch.LOGS.mkdir(parents=True)
+
+        def worker(_argv, _cwd, logfile, *_args):
+            logfile.write_text(json.dumps({"result": {"model": reported}}) + "\n")
+            return 0, None
+
+        with mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
+                mock.patch.object(dispatch, "run_worker", side_effect=worker), \
+                mock.patch.object(dispatch, "commit_leftovers"), \
+                mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")):
+            for reported in ("aaa/model", "zzz/model"):
+                with self.subTest(reported=reported):
+                    dispatch.worker_round(7, root, {"chore"}, "ticket", "", 1, float("inf"))
+                    usage = [row for row in lifecycle.read_events(dispatch.EVENTS)
+                             if row.get("event") == "llm-usage"][-1]
+                    self.assertIs(usage.get("model_mismatch"), True)
+                    self.assertEqual(usage["worker_model"], "middle/model")
+
+    def test_invalid_provider_clears_previous_identity_without_losing_token_usage(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        transcript = root / "session.jsonl"
+        for invalid in ("", None, 42, {"name": "provider"}):
+            with self.subTest(provider=invalid):
+                transcript.write_text("".join(json.dumps({
+                    "type": "message", "message": {
+                        "role": "assistant", "model": "local-model", "provider": provider,
+                        "usage": {"input": 4, "output": 2},
+                    },
+                }) + "\n" for provider in ("initial-provider", invalid)))
+                self.assertEqual(dispatch.transcript_usage(transcript), {
+                    "model": "local-model", "prompt_tokens": 8, "completion_tokens": 4,
+                    "cached_tokens": 0,
+                })
+
 
 if __name__ == "__main__":
     unittest.main()
