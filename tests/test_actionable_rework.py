@@ -124,6 +124,17 @@ class ActionableReworkTest(unittest.TestCase):
         self.assertEqual(self.rework_rows(), [])
         self.escalate.assert_called_once()
 
+    def test_high_reject_with_passing_gate_records_review_escalation(self):
+        self.configure_reviews(json.loads('["APPROVE", "REJECT"]'))
+        self.cfg.review_rounds = 0
+        labels = self.track_queue()
+        dispatch.process_ticket(self.issue, 1, False, forced=True)
+        self.assert_human_queue(labels, "review_revise")
+        self.assertEqual(self.heads, [risk_tests.HEAD])
+        checks = [row for row in lifecycle.read_events(dispatch.EVENTS) if row["event"] == "risk-check"]
+        self.assertEqual([(row["primary"], row["second"], row["pr_gate"]) for row in checks],
+                         [("APPROVE", "REJECT", "PASS")])
+
     def test_protected_pr_failure_does_not_requeue(self):
         self.configure_reviews(("APPROVE", "APPROVE"))
         self.patch(dispatch, "run_gate", return_value=(False, "- mutation: PASS\n- protected-paths: FAIL\n"))
