@@ -912,7 +912,7 @@ def frontier_pass(dry_run: bool = False) -> None:
                 )
                 failed = [c["name"] for c in checks if c["bucket"] in ("fail", "cancel")]
                 starved = [c for c in checks if c["bucket"] == "infra"]
-                if starved:
+                if starved and not failed:
                     dispatch.runner_unavailable(n, number, starved, dry_run)
                     continue
                 if not failed and any(c.get("run") and c["bucket"] == "pending" for c in checks):

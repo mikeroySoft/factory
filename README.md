@@ -1039,15 +1039,18 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    label kept, so a later green rerun still merges.
    Failed Actions jobs whose logs match the same `[gate].infra_patterns` policy
    use `[gate].infra_retries` instead of worker/review rounds. All failed jobs
-   in a workflow run must be infra; mixed or unreadable failures remain red CI.
+   in a workflow run must be infra; mixed or unreadable completed-run failures remain red CI.
    Completed runs rerun failed jobs once per observed workflow attempt; persisted
    `ci-rerun` receipts share one budget per PR/run across pollers and passes.
    A ticket-owning poller attaches any earlier ticketless network rerun receipts
    to the ticket's failure-class evidence once, even if CI's failure class changed.
-   Pending siblings or an active workflow defer rerunning. Exhausted infra or
-   a failed rerun command escalates as an infra host problem (`infra_failed`),
-   retaining approval so later passing CI can recover. The manager's PR
-   frontier applies this policy too; CI predating an explicit release is unchanged.
+   Failed jobs in active workflows stay pending until their logs are available,
+   even when required-check polling omits pending siblings. Pending siblings
+   also defer rerunning. Exhausted infra or a failed rerun command escalates as
+   an infra host problem (`infra_failed`), retaining approval so later passing
+   CI can recover. The manager's PR frontier applies this policy too, with
+   independent code failures taking precedence over infra exhaustion;
+   CI predating an explicit release is unchanged.
    Existing behind PRs re-earn bound evidence through that automatic refresh.
    An up-to-date PR carrying a pre-upgrade unbound approval is withdrawn and
    escalated once; use the existing manager `FIX` path to re-run its worker,

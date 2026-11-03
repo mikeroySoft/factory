@@ -1734,7 +1734,7 @@ def run_gate(
             return True, text
         # Tags come from full failed-check output, before the gate truncates it.
         # All failing checks must be infra; one code failure keeps the normal cap.
-        failures = re.findall(r"(?m)^- [^\n:]+: FAIL([^\n]*)", text.split("```", 1)[0])
+        failures = re.findall(r"(?m)^- [^\n]+: FAIL([^\n]*)", text.split("```", 1)[0])
         infra = all("(infra)" in failure for failure in failures) if failures else bool(cfg.infra_error(text))
         if ticket is not None:
             execution = lifecycle.current()
@@ -3223,6 +3223,14 @@ def triage_cancelled(
     }
     for c in checks:
         bucket = c.get("bucket")
+        match = re.search(r"/actions/runs/(\d+)/job/\d+", c.get("link") or "")
+        if bucket == "fail" and match:
+            run_id = int(match[1])
+            # gh run view refuses job logs until the entire workflow completes.
+            if run_id in running or _run_in_progress(run_id):
+                running.add(run_id)
+                out.append({**c, "bucket": "pending", "run": run_id})
+                continue
         infra = _infra_cancel(c) if bucket == "cancel" else (
             _infra_failure(c) if bucket == "fail" else None
         )

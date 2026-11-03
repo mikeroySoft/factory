@@ -81,6 +81,8 @@ flowchart TB
   CLAIM -->|"dispatch.process_ticket"| WR
   WR -->|"gate FAIL or worker stuck, attempts left, report fed back: dispatch.process_ticket"| WR
   WR -->|"gate FAIL or stuck max_attempts, protected paths, or budget: dispatch.process_ticket"| ESC
+  WR -->|"network/download gate failure: same-head retry, separate infra limit: dispatch.run_gate"| WR
+  WR -->|"infra gate limit exhausted (host problem): dispatch.gate_infra_exhausted"| ESC
   WR -->|"gate PASS: dispatch.worker_round"| PUSH
   PUSH -->|"nothing ahead of main or PR target mismatch: dispatch.push_and_pr"| ESC
   PUSH -->|"dispatch.review"| REV
@@ -94,15 +96,15 @@ flowchart TB
   MAPP -->|"manager APPROVE: manage.frontier_pass"| FA
   MAPP -->|"CI fail, late feedback, stale, rounds exhausted, HUMAN: manage.frontier_pass"| ESC
   FA -->|"late feedback or stale past stale_days, any manager.review mode: manage.frontier_pass"| ESC
-  MAPP -.->|"CI cancel still treated as fail before approval: manage.frontier_pass"| ESC
+  MAPP -->|"CI runner starvation or network/download failure: dispatch.triage_cancelled retries, active workflows wait"| MAPP
   PUSH -->|"agent/<n> push refused, remote moved since the lease was read or leased head absent from starting and final history while starting head remains an ancestor of final: dispatch.push_agent"| ESC
   CLAIM -->|"any other dispatcher exception after the claim, then re-raised: dispatch.process_ticket"| ESC
   MAPP -->|"FIX or CLOSE: manage.apply"| MGR
   FA -->|"dispatch.pr_checks"| CI
   CI -->|"pending: dispatch.merge_pass_locked waits"| FA
   CI -->|"fail or cancel after steps ran, approval removed: dispatch.merge_pass_locked"| ESC
-  CI -->|"cancel before any runner: rerun once, wait: dispatch.triage_cancelled"| FA
-  CI -->|"rerun still found no runner, approval kept: dispatch.runner_unavailable"| ESC
+  CI -->|"cancel before any runner, or matching network/download failure: bounded rerun, active workflows wait: dispatch.triage_cancelled"| FA
+  CI -->|"runner rerun exhausted (ci_runner) or network retry limit exhausted (infra_failed), approval kept: dispatch.runner_unavailable"| ESC
   CI -->|"pass, behind main, approval removed: dispatch.refresh_pr_branch"| REF
   REF -->|"gate pass, including one passing re-run: dispatch.approve_pr"| FA
   REF -->|"conflict, open ticket, rounds left, no unauthorized protected path: claim released, ready-for-human removed, ready-for-agent added, worker rebases on agent/N: dispatch.refresh_pr_branch"| RFA
@@ -166,12 +168,20 @@ Without stderr (including validation and OS errors), the redacted exception
 text is retained instead. Expected missing-PR errors consumed by a successful
 CLOSE do not add an error to the exit.
 
+## CI infrastructure retries
+
+Both `manage.frontier_pass` and the merge stage use `dispatch.triage_cancelled`.
+Active workflows wait for logs; completed infra-only runs get bounded retries.
+Independent code failures take precedence over infra exhaustion.
+`dispatch.runner_unavailable` escalates exhausted network/download retries or
+failed rerun commands as `infra_failed`, naming the failed checks, workflow runs,
+and infra limit while retaining approval. Runner-starvation exhaustion remains
+`ci_runner`. `dispatch.gate_infra_exhausted` also escalates as `infra_failed`,
+with the gate report's host-problem reason and infra limit, without spending
+worker/review retries. Escalation packets list failure classes and charged budgets.
+
 ## Gaps
 
-- **CI `cancel` is `fail` before approval.** Since #164 the merge stage reruns a
-  check cancelled before any runner picked it up (`dispatch.triage_cancelled`), but
-  `manage.frontier_pass` still buckets `cancel` with `fail`, so an infrastructure
-  cancel on an unapproved PR escalates as "CI failed".
 - **`needs-info` has no re-entry.** Nothing watches for the reporter's answer; a human
   puts `needs-triage` back (`decisions.apply` or GitHub).
 - **Data-driven labels.** Rows marked `*` below edit labels chosen at runtime:
