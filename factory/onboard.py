@@ -10,6 +10,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import plistlib
 import re
 import shlex
 import shutil
@@ -17,6 +18,7 @@ import socket
 import subprocess
 import sys
 import urllib.request
+from decimal import Decimal
 from pathlib import Path
 
 from factory import __version__, config, lifecycle
@@ -373,6 +375,17 @@ def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[boo
                 return False, dashboard_port_error(cfg, host, port, f"cannot be bound: {exc.strerror or exc}")
             collision = True
 
+        if sys.platform == "darwin":
+            if not collision:
+                return True, f"available on {host}"
+            owner = sh(["launchctl", "print", f"gui/{os.getuid()}/{cfg.unit}-dashboard"])
+            pid = re.search(r"^\s*pid = (\d+)\s*$", owner.stdout, re.MULTILINE)
+            listeners = sh(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fp"])
+            holders = {line[1:] for line in listeners.stdout.splitlines() if line.startswith("p")}
+            if owner.returncode == 0 and listeners.returncode == 0 and pid and holders == {pid[1]}:
+                return True, f"owned by {cfg.unit}-dashboard (pid {pid[1]})"
+            return False, dashboard_port_error(cfg, host, port, "is in use (not owned by this launchd dashboard)")
+
         # Keep a free probe held through `ss`; the later install-to-service bind
         # remains inherently racy. A collision that vanishes here fails closed.
         try:
@@ -577,9 +590,13 @@ def doctor(argv: list[str]) -> int:
         report(ok, f"upstream remote `{cfg.upstream}`", "" if ok else "add it or unset [repo].upstream")
 
     # The installed service runs with the PATH baked into its unit, not the caller's.
-    unit_file = unit_dir() / f"{cfg.unit}.service"
-    lines = unit_file.read_text().splitlines() if unit_file.exists() else []
-    unit_path = next((ln.removeprefix("Environment=PATH=") for ln in reversed(lines) if ln.startswith("Environment=PATH=")), None)
+    if sys.platform == "darwin":
+        unit_file = Path.home() / "Library" / "LaunchAgents" / f"{cfg.unit}.plist"
+        unit_path = plistlib.loads(unit_file.read_bytes()).get("EnvironmentVariables", {}).get("PATH") if unit_file.exists() else None
+    else:
+        unit_file = unit_dir() / f"{cfg.unit}.service"
+        lines = unit_file.read_text().splitlines() if unit_file.exists() else []
+        unit_path = next((ln.removeprefix("Environment=PATH=") for ln in reversed(lines) if ln.startswith("Environment=PATH=")), None)
     on_path = "" if unit_path is None else f"PATH from {unit_file}"
 
     def which(exe: str) -> str | None:
@@ -631,13 +648,21 @@ def doctor(argv: list[str]) -> int:
         f"{cfg.llm_url} ({detail})" if alive else f"{cfg.llm_url} ({detail}); `factory triage` will not run",
     )
 
-    timer = sh(["systemctl", "--user", "is-active", f"{cfg.unit}.timer"]).stdout.strip()
-    report(True if timer == "active" else None, f"systemd timer {cfg.unit}.timer", timer or "not installed (factory install)")
+    if sys.platform == "darwin":
+        loaded = sh(["launchctl", "print", f"gui/{os.getuid()}/{cfg.unit}"]).returncode == 0
+        report(True if loaded else None, f"launchd agent {cfg.unit}", "loaded" if loaded else "not installed (factory install)")
+    else:
+        timer = sh(["systemctl", "--user", "is-active", f"{cfg.unit}.timer"]).stdout.strip()
+        report(True if timer == "active" else None, f"systemd timer {cfg.unit}.timer", timer or "not installed (factory install)")
     if cfg.triage_service:
-        probe_timer = f"{cfg.unit}-triage-probe.timer"
-        active = sh(["systemctl", "--user", "is-active", probe_timer]).stdout.strip()
+        if sys.platform == "darwin":
+            probe_timer = f"{cfg.unit}-triage-probe"
+            active = "loaded" if sh(["launchctl", "print", f"gui/{os.getuid()}/{probe_timer}"]).returncode == 0 else ""
+        else:
+            probe_timer = f"{cfg.unit}-triage-probe.timer"
+            active = sh(["systemctl", "--user", "is-active", probe_timer]).stdout.strip()
         report(
-            True if active == "active" else None,
+            True if active in ("active", "loaded") else None,
             "triage liveness probe",
             f"{probe_timer} {active}" if active else "not installed (factory install)",
         )
@@ -679,6 +704,7 @@ INTERPRETER_PROBE = """
 import importlib
 import importlib.util
 import json
+import sys
 import sysconfig
 
 result = {
@@ -695,7 +721,10 @@ try:
     import factory
     result["version"] = getattr(factory, "__version__", "unknown")
     from factory.cli import COMMANDS
-    for command in ("triage", "triage-probe", "dispatch", "dashboard"):
+    commands = ["triage", "triage-probe", "dispatch", "dashboard"]
+    if sys.platform == "darwin":
+        commands.extend(["pass", "watch"])
+    for command in commands:
         entry = COMMANDS.get(command)
         if not entry:
             raise RuntimeError(f"missing {command} command")
@@ -742,45 +771,49 @@ def interpreter_probe(cfg: config.Config) -> tuple[bool, str]:
     if not os.access(python, os.X_OK):
         return False, f"{python} is not executable"
 
-    command = "systemctl --user show-environment"
-    try:
-        manager = sh(["systemctl", "--user", "show-environment"])
-    except (OSError, UnicodeError) as exc:
-        return False, f"{command} failed: {exc}; check the user systemd manager"
-    if manager.returncode:
-        return False, (
-            f"{command} failed: {manager.stderr.strip() or manager.returncode}; "
-            "check the user systemd manager"
-        )
-    env = {}
-    lines = manager.stdout.removesuffix("\n").split("\n") if manager.stdout else []
-    for number, line in enumerate(lines, 1):
+    if sys.platform == "darwin":
+        # launchd supplies these session defaults; policy/PATH are explicit in the plist.
+        env = {key: os.environ[key] for key in ("HOME", "USER", "LOGNAME", "TMPDIR") if key in os.environ}
+    else:
+        command = "systemctl --user show-environment"
         try:
-            name, separator, value = line.partition("=")
-            if not separator or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
-                raise ValueError("expected NAME=VALUE")
-            if name in env:
-                raise ValueError(f"duplicate assignment for {name}")
-            if value.startswith("$'"):
-                if not re.fullmatch(
-                    r"\$'(?:[^'\\\x00-\x1f]|\\(?:[abfnrtv\\'\"]|[0-7]{3}|x[0-9a-fA-F]{2}))*'",
-                    value,
-                ):
-                    raise ValueError("invalid ANSI-C quoted value")
-                values = [ast.literal_eval(value[1:])]
-            else:
-                values = shlex.split(value, comments=False, posix=True)
-            if len(values) > 1 or (value and not values):
-                raise ValueError("expected one shell-quoted value")
-            decoded = values[0] if values else ""
-            if "\0" in decoded:
-                raise ValueError("environment value contains NUL")
-            env[name] = decoded
-        except (ValueError, SyntaxError) as exc:
+            manager = sh(["systemctl", "--user", "show-environment"])
+        except (OSError, UnicodeError) as exc:
+            return False, f"{command} failed: {exc}; check the user systemd manager"
+        if manager.returncode:
             return False, (
-                f"{command} returned invalid assignment output at line {number}: {exc}; "
-                "inspect and correct the user manager environment"
+                f"{command} failed: {manager.stderr.strip() or manager.returncode}; "
+                "check the user systemd manager"
             )
+        env = {}
+        lines = manager.stdout.removesuffix("\n").split("\n") if manager.stdout else []
+        for number, line in enumerate(lines, 1):
+            try:
+                name, separator, value = line.partition("=")
+                if not separator or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                    raise ValueError("expected NAME=VALUE")
+                if name in env:
+                    raise ValueError(f"duplicate assignment for {name}")
+                if value.startswith("$'"):
+                    if not re.fullmatch(
+                        r"\$'(?:[^'\\\x00-\x1f]|\\(?:[abfnrtv\\'\"]|[0-7]{3}|x[0-9a-fA-F]{2}))*'",
+                        value,
+                    ):
+                        raise ValueError("invalid ANSI-C quoted value")
+                    values = [ast.literal_eval(value[1:])]
+                else:
+                    values = shlex.split(value, comments=False, posix=True)
+                if len(values) > 1 or (value and not values):
+                    raise ValueError("expected one shell-quoted value")
+                decoded = values[0] if values else ""
+                if "\0" in decoded:
+                    raise ValueError("environment value contains NUL")
+                env[name] = decoded
+            except (ValueError, SyntaxError) as exc:
+                return False, (
+                    f"{command} returned invalid assignment output at line {number}: {exc}; "
+                    "inspect and correct the user manager environment"
+                )
     env["PATH"] = os.environ["PATH"]
     env.update(cfg.install["env"])
     try:
@@ -908,6 +941,108 @@ def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
     return result
 
 
+def launchd_interval(every: str) -> int:
+    """Translate a finite time span into launchd's positive integer seconds."""
+    scales = {
+        "": 1, "s": 1, "sec": 1, "second": 1, "seconds": 1,
+        "m": 60, "min": 60, "minute": 60, "minutes": 60,
+        "h": 3600, "hr": 3600, "hour": 3600, "hours": 3600,
+        "d": 86400, "day": 86400, "days": 86400,
+        "w": 604800, "week": 604800, "weeks": 604800,
+    }
+    parts = re.findall(r"(\d+(?:\.\d+)?)\s*([a-z]*)", every)
+    rest = re.sub(r"\d+(?:\.\d+)?\s*[a-z]*", "", every)
+    if not parts or rest.strip() or any(unit not in scales for _, unit in parts):
+        raise ConfigError(f"launchd interval {every!r}: use seconds, min, h, d or weeks")
+    seconds = sum(Decimal(value) * scales[unit] for value, unit in parts)
+    if seconds < 1 or seconds != int(seconds) or seconds > 2147483647:
+        raise ConfigError("launchd interval must be 1..2147483647 whole seconds")
+    return int(seconds)
+
+
+def launchd_units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
+    exe = [str(service_python(cfg)), "-P", "-m", "factory"]
+    env = {"PATH": os.environ["PATH"], **cfg.install["env"]}
+    agents = {
+        "": {"ProgramArguments": [*exe, "pass"], "StartInterval": launchd_interval(every),
+             "RunAtLoad": True,
+             "EnvironmentVariables": {**env, **cfg.install.get("dispatch_env", {})}},
+        "-dashboard": {"ProgramArguments": [*exe, "dashboard", "--host", host, "--port",
+                                           str(cfg.dashboard_port), "--no-open"],
+                       "KeepAlive": True, "RunAtLoad": True},
+    }
+    if cfg.triage_service:
+        agents["-triage-probe"] = {"ProgramArguments": [*exe, "triage-probe"],
+                                    "StartInterval": 120, "RunAtLoad": True}
+    if cfg.eval_schedule:
+        agents["-eval"] = {"ProgramArguments": [*exe, "eval", "--profile", cfg.eval_profile, "--scheduled"],
+                           "StartCalendarInterval": {"Weekday": 1, "Hour": 0, "Minute": 0}}
+    result = {}
+    for suffix, agent in agents.items():
+        label = cfg.unit + suffix
+        body = {
+            "Label": label, "WorkingDirectory": str(cfg.root), "EnvironmentVariables": env,
+            "StandardOutPath": str(cfg.factory / "logs" / f"{label}.stdout.log"),
+            "StandardErrorPath": str(cfg.factory / "logs" / f"{label}.stderr.log"),
+            **agent,
+        }
+        result[f"{label}.plist"] = plistlib.dumps(body).decode()
+    return result
+
+
+def launchctl(*args: str) -> None:
+    proc = sh(["launchctl", *args])
+    if proc.returncode:
+        raise ConfigError(f"launchctl {' '.join(args)}: {proc.stderr.strip() or proc.returncode}")
+
+
+def install_launchd(cfg: config.Config, wanted: dict[str, str], host: str, dashboard: bool) -> int:
+    if shutil.which("launchctl") is None:
+        raise ConfigError("launchctl not found")
+    if dashboard:
+        ok, detail = _dashboard_port_check(cfg, host, cfg.dashboard_port)
+        if not ok:
+            print(detail, file=sys.stderr)
+            return 1
+    directory = Path.home() / "Library" / "LaunchAgents"
+    directory.mkdir(parents=True, exist_ok=True)
+    (cfg.factory / "logs").mkdir(parents=True, exist_ok=True)
+    domain = f"gui/{os.getuid()}"
+    for suffix in ("", "-dashboard", "-triage-probe", "-eval"):
+        label = cfg.unit + suffix
+        name = f"{label}.plist"
+        path = directory / name
+        body = wanted.get(name)
+        if path.exists():
+            if body is not None and path.read_text() == body:
+                continue
+            launchctl("bootout", f"{domain}/{label}")
+            if body is None:
+                path.unlink()
+                print(f"removed {path}")
+                continue
+        if body is not None:
+            path.write_text(body)
+            print(f"wrote {path}")
+            launchctl("bootstrap", domain, str(path))
+    return 0
+
+
+def pass_main(argv: list[str]) -> int:
+    """A shell-free oneshot: triage is best effort; watch sees dispatch's result."""
+    argparse.ArgumentParser(prog="factory pass", description=pass_main.__doc__).parse_args(argv)
+    exe = [sys.executable, "-P", "-m", "factory"]
+    subprocess.run([*exe, "triage"], check=False)
+    status = 1
+    try:
+        status = subprocess.run([*exe, "dispatch"], check=False).returncode
+    finally:
+        env = {**os.environ, "SERVICE_RESULT": "success" if status == 0 else "signal" if status < 0 else "exit-code",
+               "EXIT_CODE": "killed" if status < 0 else "exited", "EXIT_STATUS": str(abs(status))}
+        subprocess.run([*exe, "watch"], env=env, check=False)
+    return 128 - status if status < 0 else status
+
+
 def systemctl(*args: str) -> None:
     proc = sh(["systemctl", "--user", *args])
     if proc.returncode != 0:
@@ -917,11 +1052,13 @@ def systemctl(*args: str) -> None:
 def install(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="factory install",
-        description="Install systemd user units: a dispatcher timer and, optionally, the dashboard. "
-        "Defaults come from [install] in the host config; [install].python selects the service "
-        "interpreter. --print only renders units and does not validate the interpreter.",
+        description="Install systemd user units on Linux or launchd LaunchAgents on macOS: "
+        "a pass timer and optional dashboard. macOS labels are factory-<repo> with optional "
+        "-dashboard, -triage-probe, -eval suffixes, in ~/Library/LaunchAgents/<label>.plist "
+        "and domain gui/<uid>. Defaults come from host [install]; python selects the service "
+        "interpreter. --print only renders and does not validate the interpreter.",
     )
-    parser.add_argument("--every", help="dispatcher interval, systemd time span (default 10min)")
+    parser.add_argument("--every", help="pass interval (default 10min); macOS: seconds, min, h, d, weeks")
     parser.add_argument(
         "--dashboard", action=argparse.BooleanOptionalAction, help="install and start the dashboard service",
     )
@@ -934,8 +1071,9 @@ def install(argv: list[str]) -> int:
     parser.set_defaults(**{k: cfg.install[k] for k in ("every", "dashboard", "host")})
     args = parser.parse_args(argv)
 
-    wanted = units(cfg, args.every, args.host)
-    dash_unit = f"{cfg.unit}-dashboard.service"
+    darwin = sys.platform == "darwin"
+    wanted = launchd_units(cfg, args.every, args.host) if darwin else units(cfg, args.every, args.host)
+    dash_unit = f"{cfg.unit}-dashboard.{'plist' if darwin else 'service'}"
     probe_service = f"{cfg.unit}-triage-probe.service"
     probe_timer = f"{cfg.unit}-triage-probe.timer"
     eval_service = f"{cfg.unit}-eval.service"
@@ -951,6 +1089,8 @@ def install(argv: list[str]) -> int:
         if not ok:
             raise ConfigError(f"service interpreter: {detail}")
         print(f"validated service interpreter: {detail}")
+    if darwin:
+        return install_launchd(cfg, wanted, args.host, args.dashboard)
     if shutil.which("systemctl") is None:
         raise ConfigError("systemctl not found; run `factory dispatch` from cron or by hand instead")
     if args.dashboard:

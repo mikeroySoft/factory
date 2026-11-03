@@ -58,8 +58,29 @@ factory init            # .factory.toml, .gitignore, issue template, labels
 $EDITOR .factory.toml   # put your real test/lint commands in [[gate.check]]
 git add .factory.toml .gitignore .github/ISSUE_TEMPLATE && git commit
 factory doctor          # tools, auth, remotes, model, dashboard port and .factory safety
-factory install --dashboard   # systemd user timer every 10 min + dashboard on :8765
+factory install --dashboard   # systemd timer (Linux) or launchd agents (macOS), every 10 min
 ```
+
+`factory install` selects systemd on Linux and launchd on macOS. On macOS, the
+pass label is exactly `Config.unit`, `factory-<repo basename>`; optional labels
+append `-dashboard`, `-triage-probe`, or `-eval`. Each file is
+`~/Library/LaunchAgents/<label>.plist` in launchd domain `gui/<uid>`. District
+uses this label/file/domain contract to manage agents. `install --print` emits
+plist XML prefixed by `# <label>.plist` instead of systemd text.
+
+The pass agent runs at load and every `[install].every` / `--every` interval
+(default `10min`). macOS accepts finite spans in seconds (also bare numbers),
+`min`, `h`, `d`, or weeks, including compound spans such as `1h 30min`; the sum
+must be a positive whole number of seconds. `factory pass` runs triage, dispatch,
+then watch without a shell: triage failure does not block dispatch, watch receives
+`SERVICE_RESULT`, `EXIT_CODE`, and `EXIT_STATUS`, and watch failure does not replace
+dispatch's exit status. The dashboard uses KeepAlive and `--host/--port --no-open`.
+The optional probe runs every 120 seconds; the optional eval runs Monday at 00:00.
+Agent stdout/stderr go to `.factory/logs/<label>.stdout.log` / `.stderr.log`.
+Installation bootstraps new agents; identical plists are untouched. Changed agents
+are booted out before rewriting and bootstrapping. Disabled optional agents are
+booted out before deleting their plists. A hand-made agent with a different label
+is not adopted or removed.
 
 `doctor` checks the configured dashboard bind address and port; `install --dashboard`
 refuses a foreign or unidentified holder before writing units. Each factory needs
@@ -101,15 +122,17 @@ selected by host-owned, optional `[install].python`, or `sys.executable` (the in
 `factory install`) when unset, followed by `-P -m factory`. Set
 `python = "/path/to/venv/bin/python"` under `[defaults.install]` or
 `[repo."owner/name".install]`; a committed `[install]` remains a host-setting warning.
-The selected path preserves symlink identity and is rendered as one systemd
+The selected path preserves symlink identity. On Linux it is rendered as one systemd
 argument: control characters are rejected, and backslash, quote, `$` and `%` are
-escaped so systemd executes the validated literal path.
+escaped so systemd executes the validated literal path. On macOS it is a literal
+plist `ProgramArguments` element; environment values need no systemd escaping.
 
 For a configured interpreter, `doctor` and a real `install` check the path and run
-a 10-second probe from the repository working directory. Validation snapshots the
+a 10-second probe from the repository working directory. On Linux validation snapshots the
 user manager environment read-only with `systemctl --user show-environment`,
 parses its assignments, applies the PATH rendered into units, then overlays
-`[install].env`. Failures stop installation before any mutation.
+`[install].env`. On macOS it uses session HOME/USER/LOGNAME/TMPDIR plus the rendered
+PATH and `[install].env`, without calling systemctl. Failures stop installation before mutation.
 The probe loads every generated service command and reports the loaded Factory version
 and location. It checks every loaded service module origin (`factory`,
 `factory.cli`, `factory.triage`, `factory.dispatch` and `factory.dashboard`), with
@@ -126,8 +149,9 @@ To act on GitHub under a separate machine account, set host-owned
 `[install].dispatch_env` (same shape as `[install].env`), for example
 `GH_CONFIG_DIR` pointing at a gh config logged in as that account, plus
 `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_NAME`/`GIT_COMMITTER_EMAIL`.
-Its lines are rendered only into the triage+dispatcher unit, after `[install].env`;
-the dashboard unit keeps the human identity. The token stays in gh's store and is
+These values are rendered only into the triage+dispatcher pass service/agent, after `[install].env`;
+the dashboard keeps the human identity. Every agent receives the installing shell's PATH
+and `[install].env`, so Homebrew and `~/.local/bin` tools remain available. The token stays in gh's store and is
 never written into a unit. `doctor` then reports both logins (`gh api user`) and
 fails when they are equal; unset, nothing changes. Worker and reviewer agents never
 get a GitHub credential: the dispatcher drops `GH_TOKEN`/`GITHUB_TOKEN` and points

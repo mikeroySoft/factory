@@ -32,6 +32,7 @@ class LaunchdTest(unittest.TestCase):
         self.enterContext(patch.dict(os.environ, {'PATH': '/opt/bin:/usr/bin'}))
         self.enterContext(patch.object(onboard.shutil, 'which', side_effect=lambda exe: '/bin/' + exe if exe != 'systemctl' else None))
         self.enterContext(patch.object(onboard, 'sh', side_effect=self.runner))
+        self.enterContext(patch.object(onboard, '_dashboard_port_check', return_value=(True, 'available')))
         self.out = self.enterContext(redirect_stdout(io.StringIO()))
 
     def runner(self, argv, **kwargs):
@@ -149,7 +150,7 @@ class LaunchdTest(unittest.TestCase):
         for status in (0, 7, -15):
             with self.subTest(status=status):
                 calls = []
-                def run(argv, **kwargs):
+                def run(argv, status=status, calls=calls, **kwargs):
                     command = argv[4]
                     calls.append(command)
                     if command == 'watch':
