@@ -351,6 +351,24 @@ class HostClaimRevisionTest(unittest.TestCase):
         clock.now.return_value += timedelta(hours=3)
         self.assertEqual(tank.frontier()[0].get("held"), "open PR")
 
+    def test_untrusted_requeue_cannot_release_expired_open_pr_hold(self):
+        old = self.github.add_claim("tank", datetime.now(UTC) - timedelta(hours=3))
+        nonce = old["body"].split("nonce=", 1)[1].split()[0]
+        self.github.comments.append({
+            "id": 100, "body": f"Factory requeue: nonce={nonce}\nContinue work",
+            "created_at": datetime.now(UTC).isoformat(),
+            "user": {"login": "outside-commenter"},
+        })
+        self.github.open_prs = [{"number": 70}]
+        tank = self.dispatcher("tank")
+
+        [issue] = tank.frontier()
+        self.assertEqual(issue.get("held"), "open PR")
+        before = copy.deepcopy((self.github.issue, self.github.comments))
+        tank.process_ticket(issue, 1, False)
+        self.assertEqual((self.github.issue, self.github.comments), before)
+        self.assertEqual(self.launched, [])
+
 
 # Avoid collecting the imported harness class as a second copy of its suite.
 del Harness

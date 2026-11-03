@@ -1194,10 +1194,16 @@ An in-process claim must also match the elected nonce before cleanup.
 Expired claims are admitted through the frontier only when no other hold exists.
 A human assignee or an open `agent/<ticket>` PR with an expired claim remains a
 hold after heartbeats stop, so completed work awaiting CI/review/merge is not run again.
-Otherwise dispatch rechecks the heartbeat, removes stale comments/labels while
-preserving the shared `@me` assignment, records `claim-released` with the old host and last heartbeat,
-and can reclaim the ticket in the same pass. A foreign host label without a claim
-comment remains a hold; inspect it before removing it.
+A foreign host requeue publishes an authenticated `Factory requeue: nonce=<uuid>`
+issue comment with the refresh instructions. That nonce's expired claim can resume
+the existing PR; its live heartbeat still holds admission, and the comment cannot
+release a later worker's claim.
+Assigned stale claims stay intact until a replacement wins and assigns, so admission
+or claim failures cannot strand the shared `@me` assignment without recovery evidence.
+Dispatch then rechecks the heartbeat, removes stale comments/labels without clearing
+the shared assignment, and records `claim-released` with the old host and last heartbeat.
+Unassigned stale claims can be released before election. A foreign host label without
+a claim comment remains a hold; inspect it before removing it.
 Hosts need synchronized clocks and current GitHub reads. This comment-based
 lease is not a fencing token for a disconnected worker that outlives its TTL.
 With `host_name` unset, dispatch makes no host-label/comment calls and triage
