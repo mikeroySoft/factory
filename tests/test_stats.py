@@ -276,6 +276,21 @@ class PostFixOutcomeTest(unittest.TestCase):
              "re_escalated": 0, "pending": 1, "resolved_merge_rate": None},
         ])
 
+    def test_resolved_rate_combines_both_terminal_outcomes_and_excludes_pending(self) -> None:
+        rows = []
+        for ticket, outcome in enumerate(("merged", "escalate", "merged", None), 1):
+            rows.extend([
+                self.event("21", "manage", ticket, decision="FIX"),
+                self.event("21", "claimed", ticket, worker_model="model/mixed"),
+            ])
+            if outcome:
+                rows.append(self.event("22", outcome, ticket))
+
+        self.assertEqual(self.outcomes(rows), [
+            {"worker_model": "model/mixed", "claim_status": "claimed", "merged": 2,
+             "re_escalated": 1, "pending": 1, "resolved_merge_rate": 2 / 3},
+        ])
+
     def test_week_text_and_json_include_the_post_fix_report_and_noise_caveat(self) -> None:
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         cfg = config.Config(root, "acme/widgets")
