@@ -4767,19 +4767,27 @@ def main(argv: list[str]) -> int:
     configure(config.load())  # from the tree now pinned at origin/<main>
     if args.budget_min is None:
         args.budget_min = cfg.budget_min
+    installed, target = config.engine_commit(), config.engine_target()
+    stale = bool(installed and target and installed != target)
+    yield_for_update = stale and cfg.engine_yield_for_update
 
     # Lazy: an idle pass (nothing claimed, merged, waited on or failed) journals no lifecycle rows.
     with nullcontext() if args.dry_run else lifecycle.scope(
         EVENTS, "dispatcher", dispatcher=True, lazy=True,
-        engine_version=__version__, engine_commit=config.engine_commit(),
+        engine_version=__version__, engine_commit=installed,
     ):
+        if stale:
+            log(f"engine-stale: installed {installed}, District target {target}")
+            if not args.dry_run:
+                record("engine-stale", installed_commit=installed, target_commit=target,
+                       yield_for_update=cfg.engine_yield_for_update)
         if not args.dry_run:
             from factory import results
 
             maintenance = results.prune(cfg)
             if maintenance["status"] != "complete":
                 log(f"Accepted-result expiry incomplete ({maintenance.get('reason')}); archive left for inspection")
-        if args.ticket:
+        if args.ticket and not yield_for_update:
             if not issue_is_open(args.ticket):
                 log(f"#{args.ticket}: not open, nothing to do")
                 return 1
@@ -4814,6 +4822,11 @@ def main(argv: list[str]) -> int:
         release_step(open_pr=False)
         land_pass(args.dry_run)
         review_intake_pass(args.dry_run)
+        if yield_for_update:
+            log("engine-stale: yielding after land and review intake; no new tickets")
+            if not args.dry_run:
+                lifecycle.record_stage_success(EVENTS, "dispatch")
+            return 0
         from factory.learn import learn_pass
         from factory.manage import manage_pass
 
