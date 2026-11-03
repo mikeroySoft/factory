@@ -1,4 +1,5 @@
 """Review packets must not turn main-only changes into branch reverts."""
+
 from __future__ import annotations
 
 import json
@@ -10,7 +11,6 @@ from pathlib import Path
 from unittest import mock
 
 from factory import binding, config, dispatch, lifecycle
-
 
 REVIEWER = """
 import json, sys
