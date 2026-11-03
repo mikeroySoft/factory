@@ -148,6 +148,54 @@ class RunnerStorageDispatchTest(unittest.TestCase):
         worker.assert_not_called()
         gate.assert_called_once()
 
+    def test_enospc_checks_requeue_without_gate_failure_or_round(self) -> None:
+        for name, tier in (("code", "attempt"), ("mutation", "pr")):
+            with self.subTest(check=name):
+                fixture = dispatch_test.LocalCLI()
+                fixture.setUp()
+                self.addCleanup(fixture.doCleanups)
+                operations = fixture.base / "github-operations"
+                gh = fixture.bin / "gh"
+                gh.write_text(gh.read_text().replace(
+                    "a = sys.argv[1:]",
+                    "a = sys.argv[1:]\n"
+                    f"with open({str(operations)!r}, 'a') as log:\n"
+                    "    log.write(json.dumps(a) + '\\n')",
+                ))
+                record = fixture.base / f"{name}-temp"
+                script = fixture.base / f"{name}-full.py"
+                script.write_text(
+                    "import errno, os\nfrom pathlib import Path\n"
+                    f"Path({str(record)!r}).write_text(os.environ['TMPDIR'])\n"
+                    "(Path(os.environ['TMPDIR']) / 'artifact').mkdir()\n"
+                    "raise OSError(errno.ENOSPC, 'No space left on device')\n"
+                )
+                fixture.write_config(
+                    check=[sys.executable, str(script)] if tier == "attempt" else None,
+                    extra=(
+                        "" if tier == "attempt" else
+                        '\n[[gate.check]]\nname = "mutation"\nwhen = "pr"\nrun = '
+                        + json.dumps([sys.executable, str(script)]) + "\n"
+                    ) + "\n[runner]\nmin_free_gb = 0\nmin_free_inodes = 0\n",
+                )
+                fixture.commit_config()
+                result = fixture.cli("dispatch", "--ticket", "7")
+                events = lifecycle.read_events(fixture.events)
+                self.assertIn("runner_storage_low", result.stdout + result.stderr)
+                self.assertTrue(any(row.get("event") == "runner_storage_low" for row in events))
+                self.assertFalse(any(row.get("event") == "escalate" for row in events))
+                self.assertFalse(any(row.get("gate") == "FAIL" for row in events))
+                # The PR check runs after an already successful attempt; it must
+                # not cause a second worker round or become machine disagreement.
+                attempts = [row for row in events if row.get("event") == "attempt"]
+                self.assertEqual(len(attempts), 0 if tier == "attempt" else 1)
+                self.assertNotIn("machine checks disagreed", result.stdout + result.stderr)
+                self.assertFalse(Path(record.read_text()).exists())
+                self.assertTrue((fixture.repo / ".factory" / "wt-7" / "change.txt").exists())
+                edits = [json.loads(line) for line in operations.read_text().splitlines()]
+                self.assertTrue(any("--remove-assignee" in args for args in edits))
+                self.assertFalse(any("ready-for-human" in args for args in edits))
+
 
 class GateTempCleanupTest(unittest.TestCase):
     def test_failed_gate_and_mutation_checks_remove_their_temp_directories(self) -> None:
@@ -1214,6 +1262,79 @@ class StorageOwnershipBoundaryTest(unittest.TestCase):
                 storage.temporary_environment("factory-worker-test-"):
             self.fail("started without storage")
         self.assertEqual(raised.exception.status["thresholds"], {"free_bytes": 0, "free_inodes": 0})
+
+
+class StorageCheckFailureTest(unittest.TestCase):
+    def test_gate_oserror_is_a_cleaned_up_host_deferral(self) -> None:
+        import errno
+
+        from factory import gate as gate_module
+
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config.Config(Path(directory), "acme/widgets",
+                                runner_min_free_gb=0, runner_min_free_inodes=0)
+            roots = []
+
+            def fail(*_args):
+                root = Path(os.environ["TMPDIR"])
+                roots.append(root)
+                (root / "artifact").mkdir()
+                raise OSError(errno.ENOSPC, "No space left on device")
+
+            with mock.patch.object(config, "load", return_value=cfg), \
+                    mock.patch.object(gate_module, "execute", side_effect=fail):
+                self.assertEqual(gate_module.main([]), storage.EX_TEMPFAIL)
+            self.assertTrue(roots)
+            self.assertFalse(roots[0].exists())
+            events = lifecycle.read_events(cfg.factory / "events.jsonl")
+            self.assertTrue(any(row.get("event") == "runner_storage_low" for row in events))
+            self.assertFalse((cfg.factory / "gate-report.md").exists())
+
+    def test_mutation_exhaustion_is_not_a_killed_mutant_or_check_failure(self) -> None:
+        import contextlib
+        import errno
+        import io
+        from enum import Enum
+        from types import SimpleNamespace
+
+        from scripts import mutation
+
+        outcome = Enum("TestOutcome", "KILLED INCOMPETENT SURVIVED")
+        spec = SimpleNamespace(module_path=Path("factory/example.py"))
+        full = "OSError: [Errno 28] No space left on device\n" + "noise\n" * 1000
+        modules = {
+            "attrs": SimpleNamespace(evolve=lambda value, **_changes: value),
+            "cosmic_ray": SimpleNamespace(),
+            "cosmic_ray.mutating": SimpleNamespace(mutate_and_test=lambda *_args: SimpleNamespace(
+                test_outcome=outcome.KILLED, output=full,
+            )),
+            "cosmic_ray.work_item": SimpleNamespace(TestOutcome=outcome),
+        }
+        for phase in ("sample", "baseline", "mutant"):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "factory").mkdir()
+                (root / "factory/example.py").write_text("value = 1\n")
+                roots = []
+
+                def sample(_lines, scratch):
+                    roots.append(scratch)
+                    if phase == "sample":
+                        raise OSError(errno.ENOSPC, "No space left on device")
+                    return [spec], 1
+
+                completed = subprocess.CompletedProcess(
+                    [], 1 if phase == "baseline" else 0, full if phase == "baseline" else "", "",
+                )
+                with contextlib.chdir(root), mock.patch.dict(sys.modules, modules), \
+                        mock.patch.object(mutation, "changed_lines", return_value={"factory/example.py": {1}}), \
+                        mock.patch.object(mutation, "sample", side_effect=sample), \
+                        mock.patch.object(mutation.subprocess, "run", return_value=completed), \
+                        contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(mutation.main([]), storage.EX_TEMPFAIL)
+                self.assertTrue(roots)
+                self.assertFalse(roots[0].exists())
 
 
 if __name__ == "__main__":
