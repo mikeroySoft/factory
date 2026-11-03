@@ -61,6 +61,8 @@ elif a[:2] == ['issue', 'comment']:
 else:
     sys.exit('unexpected external operation: ' + repr(a))
 '''
+# Keep this executable fixture on the suite's interpreter on macOS as well.
+GH = GH.replace("#!/usr/bin/python", f"#!{sys.executable}", 1)
 WORKER = '''import json, os, subprocess, sys
 from pathlib import Path
 prompt = Path(sys.argv[1])

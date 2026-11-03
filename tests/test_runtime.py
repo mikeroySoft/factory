@@ -101,6 +101,10 @@ class RuntimeCliTest(unittest.TestCase):
 
 
 
+    @unittest.skipUnless(
+        sys.platform == "linux",
+        "Linux only: /proc process and flock-owner identity",
+    )
     def test_concurrency_wait_retry_ownership_and_source_freshness(self):
         self.env["RUNTIME_SHORT_READ"] = "1"
         self.journal.parent.mkdir()
@@ -234,6 +238,10 @@ class RuntimeCliTest(unittest.TestCase):
         self.assertNotIn("missing_enter", [error["code"] for error in clipped["errors"]])
         self.assertEqual(clipped["executions"][0]["observation"], "partial")
 
+    @unittest.skipUnless(
+        sys.platform == "linux",
+        "Linux only: /proc process and flock-owner identity",
+    )
     def test_truncated_old_history_does_not_poison_current_observations(self):
         import shutil
 
@@ -282,6 +290,7 @@ class RuntimeCliTest(unittest.TestCase):
         self.assertEqual(resource["observation"], "fresh")
         self.assertEqual(resource["owner"]["acquisition_id"], acquisition["acquisition_id"])
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: /proc process identity")
     def test_hung_service_queries_are_bounded_and_local_facts_survive(self):
         import shutil
         import time
@@ -304,6 +313,7 @@ class RuntimeCliTest(unittest.TestCase):
         self.assertEqual(data["executions"][0]["state"], "active")
         self.assertTrue(any("timeout" in error["code"] for error in data["errors"]))
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: /proc process identity")
     def test_missing_service_tool_preserves_local_execution(self):
         import shutil
 

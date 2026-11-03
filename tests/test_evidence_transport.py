@@ -112,6 +112,7 @@ def build_issues(count: int) -> list[dict]:
     return [build_issue(n) for n in range(1, count + 1)]
 
 
+@unittest.skipUnless(sys.platform == "linux", "Linux only: /proc process enumeration")
 class EvidenceTransportTest(unittest.TestCase):
     def setUp(self):
         context = patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""})

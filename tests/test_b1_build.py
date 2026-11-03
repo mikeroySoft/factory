@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -201,6 +202,10 @@ class StartFailureTest(unittest.TestCase):
         self.assertEqual(sorted(status["artifacts"]), ["protocol.json", "report.json"])
 
 
+@unittest.skipUnless(
+    sys.platform == "linux",
+    "Linux only: bubblewrap/systemd user scope and /run/user",
+)
 @unittest.skipIf(SANDBOX_UNAVAILABLE, f"bubblewrap/systemd user scope unavailable: {SANDBOX_UNAVAILABLE}")
 class SandboxTest(unittest.TestCase):
     def setUp(self):

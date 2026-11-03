@@ -2,6 +2,7 @@ import fcntl
 import gzip
 import json
 import os
+import sys
 import tempfile
 import threading
 import unittest
@@ -18,6 +19,7 @@ class RotationTest(unittest.TestCase):
         context.start()
         self.addCleanup(context.stop)
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: /proc process identity")
     def test_rotation_keeps_record_rows_and_open_executions(self):
         with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.object(lifecycle, "MAX_BYTES", 20_000), \
@@ -100,6 +102,7 @@ class RotationTest(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in Path(tmp).glob("events.jsonl.*.gz")),
                              ["events.jsonl.1.gz", "events.jsonl.2.gz", "events.jsonl.4.gz"])
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: /proc process identity")
     def test_lowering_retention_preserves_all_audit_rows(self):
         with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.object(lifecycle, "MAX_BYTES", 2_000), \
