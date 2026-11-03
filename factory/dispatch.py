@@ -1755,10 +1755,14 @@ def run_gate(
         log(f"gate {n}: infra retry {retry + 1}/{cfg.infra_retries}; normal retry cap unchanged")
 
 
+def _infra_limit_exhausted(report: str) -> bool:
+    return report.startswith("Infra retries exhausted (host problem;")
+
+
 def gate_infra_exhausted(
     n: int, report: str, logfile: Path | None = None, *, already_human: bool = False,
 ) -> bool:
-    if not report.startswith("Infra retries exhausted (host problem;"):
+    if not _infra_limit_exhausted(report):
         return False
     reason = report.splitlines()[0]
     if already_human:
@@ -2411,7 +2415,7 @@ def pr_gate_and_review(
                     for check in cfg.checks if check.when == "pr" and check.name != "mutation"
                 )
             )
-            if not mutation_only:
+            if _infra_limit_exhausted(pr_report) or not mutation_only:
                 if policy_tier == "High":
                     record(
                         "risk-check", ticket=n, head=head,
@@ -3165,6 +3169,25 @@ def _infra_failure(check: dict) -> dict | None:
         return None
 
 
+def _record_ci_retry_failure(ticket: int | None, receipt: dict, events: list[dict]) -> None:
+    """Attach a charged network retry to its ticket, even after a ticketless poll."""
+    if ticket is None or receipt.get("infra_reason") != "network/download host problem":
+        return
+    if any(
+        e.get("event") == "failure" and e.get("ticket") == ticket
+        and e.get("source") == "ci" and e.get("pr") == receipt["pr"]
+        and e.get("run") == receipt["run"] and e.get("attempt") == receipt["attempt"]
+        for e in events
+    ):
+        return
+    record(
+        "failure", ticket=ticket, source="ci", failure_class="infra",
+        retry=receipt["retry"], limit=receipt["limit"], pr=receipt["pr"],
+        head=receipt.get("head"), run=receipt["run"], attempt=receipt["attempt"],
+        checks=receipt["checks"], reason=receipt["infra_reason"],
+    )
+
+
 def triage_cancelled(
     pr: int, checks: list[dict], dry_run: bool = False,
     ticket: int | None = None, head: str | None = None,
@@ -3175,6 +3198,11 @@ def triage_cancelled(
     classified as infrastructure. Reruns are charged once per observed run
     attempt and remain pending until GitHub exposes the next attempt.
     """
+    events = lifecycle.read_events(EVENTS)
+    if not dry_run:
+        for receipt in events:
+            if receipt.get("event") == "ci-rerun" and receipt.get("pr") == pr:
+                _record_ci_retry_failure(ticket, receipt, events)
     if not any(
         c.get("bucket") == "cancel"
         or (
@@ -3184,7 +3212,6 @@ def triage_cancelled(
         for c in checks
     ):
         return checks
-    events = lifecycle.read_events(EVENTS)
     out: list[dict] = []
     infra_runs: dict[int, list[tuple[dict, dict, str]]] = {}
     code_runs: set[int] = set()
@@ -3257,21 +3284,17 @@ def triage_cancelled(
             retry = len(reruns) + 1
             record("ci-infra", **evidence)
             marked = True
-            if network and ticket is not None:
-                record(
-                    "failure", ticket=ticket, source="ci", failure_class="infra",
-                    retry=retry, limit=limit, pr=pr, head=head, run=run_id,
-                    attempt=attempt, checks=names, reason=infra_reason,
-                )
             ok = run(
                 ["gh", "run", "rerun", str(run_id), "--failed", "--repo", REPO],
                 check=False,
             ).returncode == 0
-            record(
-                "ci-rerun", pr=pr, head=head, run=run_id, attempt=attempt,
+            receipt = dict(
+                pr=pr, head=head, run=run_id, attempt=attempt,
                 checks=names, ok=ok, retry=retry, limit=limit,
                 infra_reason=infra_reason,
             )
+            record("ci-rerun", **receipt)
+            _record_ci_retry_failure(ticket, receipt, events)
             spent = retry
             if ticket is not None:
                 rationale = (
@@ -3548,7 +3571,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         comments=issue.get("comments"),
     )
     ok, report = run_gate(wt, n, **flags)
-    if report.startswith("Infra retries exhausted (host problem;"):
+    if _infra_limit_exhausted(report):
         withdraw(report.splitlines()[0], "infra_failed", extra=report, refreshed_head=head)
         return False
     reports = [report]
@@ -3578,7 +3601,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     if not ok and evidence_clean:
         first_report = report
         ok, report = run_gate(wt, n, **flags)
-        if report.startswith("Infra retries exhausted (host problem;"):
+        if _infra_limit_exhausted(report):
             withdraw(report.splitlines()[0], "infra_failed", extra=report, refreshed_head=head)
             return False
         gate_rerun = True

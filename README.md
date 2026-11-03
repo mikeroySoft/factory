@@ -848,8 +848,9 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    Classification uses full failed-check output before report truncation; every
    failing check must match, so a mixed code/infra failure keeps the ordinary cap.
    Exhaustion stops worker/review retries and escalates as `infra_failed`, naming
-   a host problem. Each classified failure is journaled as `failure`; escalation
-   packets and GitHub comments list its class and the retry budget charged.
+   a host problem, including when mutation is the only failing High-risk PR check.
+   Each classified failure is journaled as `failure`; escalation packets and
+   GitHub comments list its class and the retry budget charged.
 4. **Gate.** The configured `[gate].protected_paths` globs from the base ref's
    `.factory.toml` are checked against the committed worker diff first, before
    any checks; a hit stops the run and immediately escalates the ticket to
@@ -1041,6 +1042,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    in a workflow run must be infra; mixed or unreadable failures remain red CI.
    Completed runs rerun failed jobs once per observed workflow attempt; persisted
    `ci-rerun` receipts share one budget per PR/run across pollers and passes.
+   A ticket-owning poller attaches any earlier ticketless network rerun receipts
+   to the ticket's failure-class evidence once, even if CI's failure class changed.
    Pending siblings or an active workflow defer rerunning. Exhausted infra or
    a failed rerun command escalates as an infra host problem (`infra_failed`),
    retaining approval so later passing CI can recover. The manager's PR
