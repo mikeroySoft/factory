@@ -1317,7 +1317,7 @@ class StorageCheckFailureTest(unittest.TestCase):
                 (root / "factory/example.py").write_text("value = 1\n")
                 roots = []
 
-                def sample(_lines, scratch):
+                def sample(_lines, scratch, roots=roots, phase=phase):
                     roots.append(scratch)
                     if phase == "sample":
                         raise OSError(errno.ENOSPC, "No space left on device")
