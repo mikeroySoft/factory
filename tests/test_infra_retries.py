@@ -146,6 +146,36 @@ class GateInfraRetriesTest(unittest.TestCase):
         self.assertEqual([r["gate"] for r in rows if r.get("event") == "attempt"], ["PASS"])
         self.assertTrue(any(r.get("event") == "approved" for r in rows))
 
+    def test_high_risk_mutation_infra_exhaustion_stops_before_review(self):
+        self.worker = self.fixture.worker
+        self.worker.write_text(
+            "from pathlib import Path\n"
+            "p = Path('.github/workflows/local.yml')\n"
+            "p.parent.mkdir(parents=True, exist_ok=True)\n"
+            "p.write_text('name: local\\n')\n"
+        )
+        check = self.fixture.base / "mutation-check.py"
+        check.write_text(
+            "from pathlib import Path\n"
+            f"p = Path({str(self.counter)!r})\n"
+            "p.write_text(str(int(p.read_text()) + 1) if p.exists() else '1')\n"
+            "print('Connection reset by peer')\n"
+            "raise SystemExit(1)\n"
+        )
+        self.fixture.write_config(
+            extra='[[gate.check]]\nname = "mutation"\nwhen = "pr"\nrun = '
+            + json.dumps([sys.executable, str(check)]) + "\n",
+        )
+        path = self.root / ".factory.toml"
+        path.write_text(path.read_text().replace("[gate]\n", "[gate]\ninfra_retries = 1\n"))
+        self.fixture.commit_config()
+        self.fixture.cli("dispatch", "--ticket", "7")
+        rows = lifecycle.read_events(self.fixture.events)
+        self.assertEqual([r["code"] for r in rows if r.get("event") == "escalate"], ["infra_failed"])
+        self.assertEqual(self.counter.read_text(), "2")
+        self.assertEqual(len([r for r in rows if r.get("event") == "attempt"]), 1)
+        self.assertFalse(any(r.get("event") in {"review", "approved"} for r in rows))
+
 
 class CIInfraRetriesTest(unittest.TestCase):
     def setUp(self):
@@ -262,6 +292,19 @@ class CIInfraRetriesTest(unittest.TestCase):
         sibling = {**self.check, "name": "slow", "bucket": "pending"}
         self.assertEqual([c["bucket"] for c in self.triage([self.check, sibling])], ["pending", "pending"])
         self.assertEqual(self.reruns, [])
+
+    def test_ticketless_rerun_is_included_once_in_escalation_evidence(self):
+        dispatch.cfg.infra_retries = 1
+        self.assertEqual(dispatch.triage_cancelled(70, [self.check])[0]["bucket"], "pending")
+        self.assertEqual(self.triage()[0]["bucket"], "pending")
+        self.assertEqual(self.triage()[0]["bucket"], "pending")
+        self.attempt = 2
+        checks = self.triage()
+        dispatch.runner_unavailable(7, 70, checks, False)
+        self.assertEqual(len(self.reruns), 1)
+        self.assertIn("| 1. ci run 42 attempt 1 | infra | infra retry 1/1; normal cap unchanged |", self.comments[0])
+        failures = [r for r in lifecycle.read_events(dispatch.EVENTS) if r.get("event") == "failure"]
+        self.assertEqual([(r["ticket"], r["run"], r["attempt"]) for r in failures], [(7, 42, 1)])
 
 
 class InfraConfigTest(unittest.TestCase):
