@@ -65,8 +65,15 @@ _SECRET = re.compile(
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
 _FILE_FLAGS = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
-# Linux no-replace rename publishes one link atomically; link/unlink has a crash window.
-_RENAME_NOREPLACE = ctypes.CDLL(None, use_errno=True).renameat2
+# Use native no-replace rename on both hosts: link/unlink leaves a crash window
+# with two links, which immutable artifact readers must reject.
+_LIBC = ctypes.CDLL(None, use_errno=True)
+try:
+    _RENAME_NOREPLACE = _LIBC.renameat2
+    _RENAME_FLAGS = 1  # Linux RENAME_NOREPLACE
+except AttributeError:
+    _RENAME_NOREPLACE = _LIBC.renameatx_np
+    _RENAME_FLAGS = 4  # Darwin RENAME_EXCL
 _RENAME_NOREPLACE.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
 _RENAME_NOREPLACE.restype = ctypes.c_int
 
@@ -229,7 +236,7 @@ def _store_artifact(directory: int, name: str, value: dict) -> None:
         finally:
             os.close(fd)
         try:
-            if _RENAME_NOREPLACE(directory, os.fsencode(temporary), directory, os.fsencode(name), 1):
+            if _RENAME_NOREPLACE(directory, os.fsencode(temporary), directory, os.fsencode(name), _RENAME_FLAGS):
                 error = ctypes.get_errno()
                 raise OSError(error, os.strerror(error), name)
         except FileExistsError as exc:
