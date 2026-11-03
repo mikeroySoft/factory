@@ -826,8 +826,9 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    and re-ranks the frontier before each pick, so a Plan baseline re-bound while
    an earlier pick worked is honored. Each pick with eligible work and spare
    capacity logs one line per frontier ticket (`selected`, `deferred`, `held`,
-   each with its reason) and journals them as a `scheduling` row; its admission
-   `decision` row names the Plan baseline sha256 it was ranked against.
+   each with its reason) and journals them as a `scheduling` row whose
+   `capacity` is the slots left for that pick; its admission `decision` row
+   names the Plan baseline sha256 it was ranked against.
    `--dry-run` logs the same plan and writes nothing.
    Capacity, locks and
    dependencies are never overridden. The dispatcher then re-reads the issue
