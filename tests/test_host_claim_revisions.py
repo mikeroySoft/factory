@@ -502,16 +502,19 @@ class HostClaimRevisionTest(unittest.TestCase):
             type(dispatch.refresh_requeue_context)(
                 dispatch.refresh_requeue_context.__code__, tank.__dict__),
         ))
-        for transition in ("refresh", "escalation"):
-            with self.subTest(transition=transition):
+        for transition, prior_claim in (
+            ("refresh", False), ("refresh", True), ("escalation", False), ("escalation", True),
+        ):
+            with self.subTest(transition=transition, prior_claim=prior_claim):
                 self.github.comments.clear()
                 self.github.issue["labels"] = [{"name": "ready-for-agent"}]
-                old = self.github.add_claim("thor", datetime.now(UTC) - timedelta(hours=6))
-                nonce = old["body"].split("nonce=", 1)[1].split()[0]
-                self.github.json("thor", [
-                    "api", "repos/local/claims/issues/7/comments", "--method", "POST",
-                    "-f", f"body=Factory requeue: nonce={nonce}\nObsolete refresh instructions",
-                ])
+                if prior_claim:
+                    old = self.github.add_claim("thor", datetime.now(UTC) - timedelta(hours=6))
+                    nonce = old["body"].split("nonce=", 1)[1].split()[0]
+                    self.github.json("thor", [
+                        "api", "repos/local/claims/issues/7/comments", "--method", "POST",
+                        "-f", f"body=Factory requeue: nonce={nonce}\nObsolete refresh instructions",
+                    ])
                 self.github.add_claim("ultron", datetime.now(UTC) - timedelta(hours=3))
                 self.github.open_prs = [{"number": 70}]
                 if transition == "refresh":
@@ -538,7 +541,7 @@ class HostClaimRevisionTest(unittest.TestCase):
                     ultron.process_ticket(issue, 1, False)
                 self.assertIn(expected, context[0])
                 self.assertNotIn("Obsolete refresh instructions", context[0])
-        self.assertEqual(self.launched, ["ultron", "ultron"])
+        self.assertEqual(self.launched, ["ultron", "ultron", "ultron", "ultron"])
 
 
 # Avoid collecting the imported harness class as a second copy of its suite.
