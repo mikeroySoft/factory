@@ -33,6 +33,7 @@ from factory.config import (
     LABEL_VIABILITY,
     Config,
 )
+from factory.domain import LifecycleOutcome
 
 cfg: Config
 LLM_URL = os.environ.get("FACTORY_LLM_URL", config.DEFAULT_LLM_URL)
@@ -140,7 +141,7 @@ def run_probe(c: Config, *, now: float | None = None) -> int:
         current = time.time() if now is None else now
         service = c.triage_service
         with lifecycle.scope(c.factory / "events.jsonl", "triage-probe", lazy=True) as execution:
-            execution.outcome = "mechanism_failure"
+            execution.outcome = LifecycleOutcome.MECHANISM_FAILURE
             execution.reason = "triage_endpoint_unavailable"
             execution.emit(
                 "result",
@@ -294,7 +295,7 @@ def gh(*args: str, execution=None) -> str:
         execution.emit("result", command="gh", returncode=proc.returncode)
     if proc.returncode != 0:
         if execution:
-            execution.outcome = "unknown"
+            execution.outcome = LifecycleOutcome.UNKNOWN
             execution.reason = "github_command_failed"
         print(f"gh {' '.join(args)} failed: {err.strip()}", file=sys.stderr)
         raise SystemExit(1)
@@ -389,7 +390,7 @@ def call_llm(messages: list[dict], execution=None) -> str:
             isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError)
         )
         if execution:
-            execution.outcome = "unknown" if timed_out else "mechanism_failure"
+            execution.outcome = LifecycleOutcome.UNKNOWN if timed_out else LifecycleOutcome.MECHANISM_FAILURE
             execution.reason = "triage_endpoint_timeout" if timed_out else "triage_endpoint_unavailable"
             execution.emit("result", timed_out=timed_out, timeout_seconds=cfg.triage_timeout)
         if timed_out:
@@ -714,7 +715,7 @@ def execute(args: argparse.Namespace, execution) -> int:
         print(f"triage refused to post: {refused}. Run it from the factory unit, whose "
               "[install].dispatch_env selects the dispatcher's gh config.", file=sys.stderr)
         if execution:
-            execution.outcome, execution.reason = "not_admitted", "identity_mismatch"
+            execution.outcome, execution.reason = LifecycleOutcome.NOT_ADMITTED, "identity_mismatch"
         return 1
 
     if replay:
@@ -731,7 +732,7 @@ def execute(args: argparse.Namespace, execution) -> int:
         return 0
 
     exit_code = 0
-    outcome, reason = "completed", None
+    outcome, reason = LifecycleOutcome.COMPLETED, None
     # One local model serves every repo on this host; hold the host lock so
     # simultaneous timer passes queue on it instead of hammering the endpoint.
     with open(cfg.lock, "w") as host_lock:
@@ -751,28 +752,28 @@ def execute(args: argparse.Namespace, execution) -> int:
                         if is_initiative(issue):
                             print(f"#{number}: initiative record; triage refused (never promoted to {LABEL_AGENT})")
                             if ticket_execution:
-                                ticket_execution.outcome, ticket_execution.reason = "not_admitted", "initiative"
+                                ticket_execution.outcome, ticket_execution.reason = LifecycleOutcome.NOT_ADMITTED, "initiative"
                             continue
                         if not replay and unchanged_since_triage(issue):
                             print(f"#{number}: unchanged since its triage comment; skipping")
                             if ticket_execution:
-                                ticket_execution.outcome = "not_admitted"
+                                ticket_execution.outcome = LifecycleOutcome.NOT_ADMITTED
                                 ticket_execution.reason = "unchanged_since_triage"
                             continue
                         try:
                             decision = triage_issue(issue, execution=ticket_execution)
                         except EndpointTimeout:
-                            outcome, reason = "unknown", "triage_endpoint_timeout"
+                            outcome, reason = LifecycleOutcome.UNKNOWN, "triage_endpoint_timeout"
                             print(f"#{number}: model timed out; skipping, tried after untried tickets next pass",
                                   file=sys.stderr)
                             exit_code = 1
                             continue
                         if decision is None:
                             if ticket_execution:
-                                ticket_execution.outcome = "unknown"
+                                ticket_execution.outcome = LifecycleOutcome.UNKNOWN
                                 ticket_execution.reason = UNPARSEABLE_REASON
                                 _report_unparseable_streak(number, issue, ticket_execution)
-                            outcome, reason = "unknown", UNPARSEABLE_REASON
+                            outcome, reason = LifecycleOutcome.UNKNOWN, UNPARSEABLE_REASON
                             print(
                                 f"#{number}: model returned unparseable JSON twice; skipping",
                                 file=sys.stderr,
@@ -788,9 +789,9 @@ def execute(args: argparse.Namespace, execution) -> int:
                         if ticket_execution:
                             ticket_execution.reason = decision["decision"]
                             if decision["decision"] != LABEL_AGENT:
-                                ticket_execution.outcome = "product_feedback"
-                                if outcome == "completed":
-                                    outcome, reason = "product_feedback", "triage_feedback"
+                                ticket_execution.outcome = LifecycleOutcome.PRODUCT_FEEDBACK
+                                if outcome == LifecycleOutcome.COMPLETED:
+                                    outcome, reason = LifecycleOutcome.PRODUCT_FEEDBACK, "triage_feedback"
                 except BaseException:
                     if execution and ticket_execution:
                         execution.outcome = ticket_execution.outcome
