@@ -692,6 +692,9 @@ def main(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
     configure(config.load())
+    if cfg.host_name is not None and cfg.triage_host is not None and cfg.host_name != cfg.triage_host:
+        print(f"triage: skipped, triage host is {cfg.triage_host}")
+        return 0
 
     recording = not (args.replay or args.dry_run)
     with (

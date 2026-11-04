@@ -219,9 +219,10 @@ def init(argv: list[str]) -> int:
 
 
 def committed_host_keys(raw: dict) -> list[str]:
-    """Host-owned tables/keys present in a repo file: the District adopt signal."""
+    """Host-owned tables, nested keys, and scalars present in a repo file."""
     out = [t for t in sorted(config.HOST_TABLES) if raw.get(t)]
     out += [f"{t}.{k}" for t, keys in config.HOST_KEYS.items() for k in keys if k in raw.get(t, {})]
+    out += [key for key in config.HOST_SCALARS if key in raw]
     return out
 
 
@@ -280,10 +281,14 @@ def relocation_fix(cfg: config.Config, *, reveal: bool) -> dict:
     hosted = config.host_filter(cfg.raw_repo)
     tables = sorted(t for t in config.HOST_TABLES if t in hosted)
     tables += [t for t in config.HOST_KEYS if t in hosted]
-    fix = {"kind": "relocate", "tables": [
+    entries = [
         {"table": f"[repo.{json.dumps(cfg.repo)}.{table}]", "keys": key_paths(hosted[table], table)}
         for table in tables
-    ]}
+    ]
+    scalars = [key for key in config.HOST_SCALARS if key in hosted]
+    if scalars:
+        entries.insert(0, {"table": f"[repo.{json.dumps(cfg.repo)}]", "keys": scalars})
+    fix = {"kind": "relocate", "tables": entries}
     if reveal:
         fix["toml"] = tomlkit.dumps({"repo": {cfg.repo: hosted}})
     return fix
@@ -518,6 +523,19 @@ def doctor(argv: list[str]) -> int:
             fix=template_fix(cfg.root, tmpl) if args.json and tmpl == ISSUE_TEMPLATE and ours != shipped else None,
         )
     host = config.host_config()
+    effective_host_sections = (
+        host.get("defaults", {}),
+        host.get("repo", {}).get(cfg.repo, {}),
+    )
+    if cfg.host_name is not None:
+        report(True, "host_name", cfg.host_name, info=True)
+    if cfg.triage_host is not None:
+        report(True, "triage_host", cfg.triage_host, info=True)
+    if cfg.host_name is not None or any(
+        isinstance(section, dict) and "claim_ttl" in section
+        for section in effective_host_sections
+    ):
+        report(True, "claim_ttl", cfg.claim_ttl, info=True)
     if host:
         sections = [("defaults", host.get("defaults", {}))] + [(f'repo."{s}"', t) for s, t in host.get("repo", {}).items()]
         foreign = [f"{name}.{k}" for name, sec in sections if isinstance(sec, dict) for k in foreign_host_keys(sec, defaults=name == "defaults")]
