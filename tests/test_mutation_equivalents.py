@@ -11,6 +11,7 @@ import unittest
 from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest import mock
 
 from scripts import mutation
@@ -19,10 +20,11 @@ from scripts import mutation
 class TestOutcome(Enum):
     SURVIVED = "survived"
     KILLED = "killed"
+    INCOMPETENT = "incompetent"
 
 
 class MutationEquivalentsTest(unittest.TestCase):
-    entry = {
+    entry: ClassVar[dict] = {
         "file": "factory/example.py", "line": 1, "operator": "NumberReplacer",
         "original": "value = 1", "mutated": "value = 2",
         "argument": "The value is never read.", "reviewer": "Fixture reviewer",
@@ -54,7 +56,9 @@ class MutationEquivalentsTest(unittest.TestCase):
                     mock.patch.object(mutation.shutil, "copytree"), \
                     mock.patch.object(mutation.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "")), \
                     contextlib.redirect_stdout(output):
-                status = mutation.main([*( ["--blocking"] if blocking else []), "--equivalents", "reviewed.json"])
+                status = mutation.main([
+                    *(["--blocking"] if blocking else []), "--equivalents", "reviewed.json",
+                ])
             return status, output.getvalue()
 
     def test_only_reviewed_equivalent_survives(self):
