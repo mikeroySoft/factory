@@ -8,7 +8,8 @@ from importlib import import_module
 COMMANDS = {
     "init": ("onboard", "init", "prepare this repository: .factory.toml, labels, issue template"),
     "doctor": ("onboard", "doctor", "check tools, auth, remotes, and the triage model"),
-    "install": ("onboard", "install", "install the systemd user timer (and dashboard)"),
+    "install": ("onboard", "install", "install the systemd timer or macOS launchd agents (and dashboard)"),
+    "pass": ("onboard", "pass_main", "run triage, dispatch, then watch with the pass result"),
     "triage": ("triage", "main", "label needs-triage issues with the local model"),
     "triage-probe": ("triage", "probe_main", "probe the triage endpoint and restart its configured service"),
     "dispatch": ("dispatch", "main", "one pass: sync, merge stage, claim and work tickets"),

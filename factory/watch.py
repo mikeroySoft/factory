@@ -123,6 +123,13 @@ def failed_units(cfg: config.Config) -> list[tuple[str, str]]:
     The pass unit runs `watch` from ExecStopPost=, so it is never listed as failed while
     watch looks; systemd reports its result through $SERVICE_RESULT instead.
     """
+    if sys.platform == "darwin":
+        result = os.environ.get("SERVICE_RESULT")
+        if result and result != "success":
+            detail = " ".join(f"{key}={os.environ.get(key, '')}"
+                              for key in ("SERVICE_RESULT", "EXIT_CODE", "EXIT_STATUS"))
+            return [(cfg.unit, detail)]
+        return []
     try:
         listed = subprocess.run(
             ["systemctl", "--user", "list-units", "--failed", "--plain", "--no-legend", "factory-*"],
@@ -614,9 +621,11 @@ def signals(
     for name, status in failed_units(cfg):
         # Fingerprint the unit's role, not this install's unit name, so installs share one issue.
         key = fingerprint("unit", name.replace(cfg.unit, "factory-<repo>", 1))
-        found[key] = {"fingerprint": key, "kind": "unit", "stage": "systemd", "key": name, "rows": [],
+        darwin = sys.platform == "darwin"
+        found[key] = {"fingerprint": key, "kind": "unit", "stage": "launchd" if darwin else "systemd", "key": name, "rows": [],
                       "excerpt": status, "log": None, "latest": None,
-                      "command": f"systemctl --user status {shlex.quote(name)}"}
+                      "command": f"launchctl print gui/{os.getuid()}/{shlex.quote(name)}" if darwin
+                      else f"systemctl --user status {shlex.quote(name)}"}
     by_source: dict[str, list[dict]] = {}
     for error in runtime_errors(cfg):
         by_source.setdefault(str(error.get("source")), []).append(error)
