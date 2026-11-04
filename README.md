@@ -1528,6 +1528,8 @@ branches, or merge state.
   This is checked against the exact candidate head, not a branch-name exemption.
   Such restorations need gate and CI, not reviewer APPROVE or a new worker eval;
   their `approved` row records `restored_score` rather than claiming a review.
+  A human GitHub `CHANGES_REQUESTED` review still blocks every proposal, including
+  measured restorations; factory reviewer findings posted as `COMMENT` are distinct.
   An unmeasured or modified restoration still needs review and scheduled eval.
   Only same-repository heads are admitted by branch name; a fork PR named
   `agent/lessons-*` still needs `needs-review`.
