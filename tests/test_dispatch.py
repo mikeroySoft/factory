@@ -205,6 +205,7 @@ class DispatchLaneTest(unittest.TestCase):
     def test_lane_first_pass_is_fraction_of_first_attempts_only(self):
         audit = {n: [
             {"event": "claimed", "lane": 1},
+            {"event": "llm-usage", "stage": "worker", "lane": 1, "prompt_tokens": 100},
             {"event": "attempt", "lane": 1, "attempt": 0, "gate": "PASS"},
             {"event": "attempt", "lane": 1, "attempt": 1, "gate": gate},
             {"event": "attempt", "lane": 1, "attempt": 2, "gate": "PASS"},
@@ -243,10 +244,11 @@ class DispatchLaneTest(unittest.TestCase):
         end = datetime(2026, 11, 3, tzinfo=UTC)
         rows = [
             {"event": "claimed", "ticket": 1, "lane": 2, "at": "2026-10-01T00:00:00Z"},
-            {"event": "attempt", "ticket": 1, "attempt": 1, "gate": "PASS", "at": "2026-10-28T00:00:00Z"},
+            {"event": "attempt", "ticket": 1, "attempt": 1, "gate": "PASS", "at": "2026-10-27T00:00:00Z"},
             {"event": "attempt", "ticket": 2, "lane": 2, "attempt": 1, "gate": "FAIL", "at": "2026-10-29T00:00:00Z"},
             {"event": "merged", "ticket": 1, "at": "2026-11-02T00:00:00Z"},
             {"event": "claimed", "ticket": 9, "at": "2026-11-02T00:00:00Z"},
+            {"event": "review", "ticket": 1, "at": "2026-10-26T23:59:59Z"},
             {"event": "merged", "ticket": 10, "lane": 3, "at": "2026-11-04T00:00:00Z"},
         ]
         for row in rows:
