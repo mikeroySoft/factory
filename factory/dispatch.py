@@ -2021,7 +2021,6 @@ def _parse_review_output(
 def _outside_diff_findings(diff: str, findings: str) -> int:
     """Count validated citations outside displayed hunks; never alter the verdict."""
     spans: dict[str, list[range]] = {}
-    path, deleted, in_hunk = "", False, False
     for line in diff.splitlines():
         if line.startswith("diff --git "):
             in_hunk = False
@@ -2036,9 +2035,10 @@ def _outside_diff_findings(diff: str, findings: str) -> int:
                 path = value[2:]  # Git's a/ or b/ prefix.
         elif match := re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line):
             in_hunk = True
-            start, count = (match[1], match[2]) if deleted else (match[3], match[4])
+            old_start, old_count, new_start, new_count = match.groups(default="1")
+            start, count = (old_start, old_count) if deleted else (new_start, new_count)
             first = max(1, int(start))
-            spans.setdefault(path, []).append(range(first, first + max(1, int(count or 1))))
+            spans.setdefault(path, []).append(range(first, first + max(1, int(count))))
     rows = json.loads(re.search(r"```json[ \t]*\r?\n(.*?)\r?\n```", findings, re.DOTALL)[1])["findings"]
     return sum(
         not any(row["line"] in span for span in spans.get(row["path"], []))
