@@ -1212,6 +1212,10 @@ Escalation comments carry the same nonce marker on their second line, preserving
 the escalation prefix. A later manager/human `ready-for-agent` relabel can resume
 the expired claim's existing PR; its live heartbeat still holds admission.
 Neither transition can release a later worker's claim or its completed-PR hold.
+Expired ownership follows election order, not the newest raw comment: a contender
+created during the winner's last live lease cannot supersede its requeue marker
+just because loser cleanup failed. A claim created at or after that lease expires
+starts a new election, so an old requeue cannot release newer completed work.
 Assigned stale claims stay intact until a replacement wins and assigns, so admission
 or claim failures cannot strand the shared `@me` assignment without recovery evidence.
 Dispatch then rechecks the heartbeat, removes stale comments/labels without clearing

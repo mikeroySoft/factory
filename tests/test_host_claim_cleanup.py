@@ -79,3 +79,27 @@ class HostClaimCleanupTest(unittest.TestCase):
 
     def test_foreign_expired_requeue_targets_winner_not_abandoned_loser(self):
         self.requeue_with_abandoned_loser(after_expiry=True)
+
+    def test_requeue_cannot_release_completed_replacement_at_exact_lease_boundary(self):
+        now = datetime(2026, 11, 3, tzinfo=UTC)
+        old = self.github.add_claim("old", now - timedelta(hours=6))
+        self.github.add_claim("loser", now - timedelta(hours=6) + timedelta(minutes=1))
+        replacement = self.github.add_claim("tank", now - timedelta(hours=4))
+        nonce = old["body"].split("nonce=", 1)[1].split()[0]
+        self.github.comments.append({
+            "id": 100, "created_at": now.isoformat(), "user": {"login": "@me"},
+            "body": f"Factory requeue: nonce={nonce}\nObsolete refresh",
+        })
+        self.github.open_prs = [{"number": 70}]
+        ultron = self.dispatcher("ultron")
+        with mock.patch.object(ultron, "datetime", wraps=datetime) as clock:
+            clock.now.return_value = now
+            [issue] = ultron.frontier()
+            self.assertEqual(issue.get("held"), "open PR")
+            ultron.process_ticket(issue, 1, False)
+            self.assertEqual(self.launched, [])
+            self.assertIn(replacement, self.github.comments)
+            ultron.unclaim(7, "--add-label", "ready-for-agent")
+            expected_nonce = replacement["body"].split("nonce=", 1)[1].split()[0]
+            self.assertEqual(self.github.comments[-1]["body"].splitlines()[0],
+                             f"Factory requeue: nonce={expected_nonce}")

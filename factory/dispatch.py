@@ -531,7 +531,8 @@ def host_claim_state(n: int) -> tuple[list[dict], str]:
         if claim["nonce"] in requeues:
             claim["requeue"] = requeues[claim["nonce"]]
     claims.sort(key=lambda row: (row["created"], row["id"]))
-    return claims, claims[-1].get("requeue", "") if claims else context
+    elected = elected_host_claim(claims)
+    return claims, elected.get("requeue", "") if elected else context
 
 
 def host_claims(n: int) -> list[dict]:
@@ -545,6 +546,19 @@ def live_host_claims(claims: list[dict]) -> list[dict]:
             if (now - claim["heartbeat"]).total_seconds() < cfg.claim_ttl_seconds]
 
 
+def elected_host_claim(claims: list[dict]) -> dict | None:
+    """Recover election ownership after expiry, ignoring overlapping losing comments."""
+    if live := live_host_claims(claims):
+        return live[0]
+    elected = None
+    for claim in claims:
+        if elected is None or (
+            claim["created"] - elected["heartbeat"]
+        ).total_seconds() >= cfg.claim_ttl_seconds:
+            elected = claim
+    return elected
+
+
 def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
     if live := live_host_claims(claims):
         return f"host claim ({live[0]['host']})"
@@ -556,8 +570,8 @@ def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
     if claims:
         if any(row["login"].casefold() != host_claim_login() for row in issue.get("assignees", [])):
             return "assigned"
-        # Requeues name the expired nonce; they cannot release a later worker's PR hold.
-        if "requeue" not in claims[-1] and gh_json(
+        # Only a later election can supersede the expired owner's transition.
+        if "requeue" not in elected_host_claim(claims) and gh_json(
             ["pr", "list", "--repo", REPO, "--state", "open",
              "--head", f"agent/{n}", "--json", "number"]
         ):
@@ -683,12 +697,12 @@ def owned_host_claim(n: int, claims: list[dict] | None = None) -> dict | None:
         return None
     if claims is None:
         claims = host_claims(n)
-    elected = live_host_claims(claims) or claims
+    elected = elected_host_claim(claims)
     local = _HOST_CLAIMS.get(n)
-    if elected and elected[0]["host"] == cfg.host_name and (
-        local is None or elected[0]["nonce"] == local.comment["nonce"]
+    if elected and elected["host"] == cfg.host_name and (
+        local is None or elected["nonce"] == local.comment["nonce"]
     ):
-        return elected[0]
+        return elected
     return None
 
 
@@ -699,10 +713,10 @@ def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool =
     if cfg.host_name and any(
         flag == "--add-label" and label == LABEL_AGENT
         for flag, label in zip(label_args[::2], label_args[1::2])
-    ) and (elected := live_host_claims(claims) or claims[-1:]):
+    ) and (elected := elected_host_claim(claims)):
         context = refresh_requeue_context(n)
         gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
-                 "-f", f"body=Factory requeue: nonce={elected[0]['nonce']}\n{context}"])
+                 "-f", f"body=Factory requeue: nonce={elected['nonce']}\n{context}"])
     if owned is not None:
         fresh = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels,assignees"])
         release_stale_claims(n, fresh, claims, replacement=owned["id"])
@@ -2078,12 +2092,12 @@ def escalate(
         **evidence,
     )
     claims = host_claims(n) if cfg.host_name else []
-    elected = live_host_claims(claims) or claims[-1:]
+    elected = elected_host_claim(claims)
     unclaim(n, "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN)
     body = f"Factory dispatcher escalating: {reason}.\n\nEscalation packet: `{packet}`"
     if elected:
         first, _, rest = body.partition("\n")
-        body = f"{first}\nFactory requeue: nonce={elected[0]['nonce']}\n{rest}"
+        body = f"{first}\nFactory requeue: nonce={elected['nonce']}\n{rest}"
     if log_path:
         body += f"\n\nWorker logs: `{log_path}`"
     handoff = wt / ".factory" / f"handoff-{n}.md"
