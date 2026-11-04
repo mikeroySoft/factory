@@ -30,7 +30,7 @@ import tempfile
 import threading
 import time
 import tomllib
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import contextmanager, nullcontext, suppress
 from pathlib import Path
 
@@ -4700,7 +4700,9 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
             ticket = {**issue, "_factory_admission_id": admission, "_factory_admitted": admitted}
             pipelines.append((issue["number"], pool.submit(contextvars.copy_context().run, work, ticket)))
             admitted.wait()
-        pool.shutdown()  # wait for every pipeline here, where a Ctrl-C is handled below
+        # Interrupt an event wait, not Thread.join: interrupted joins can appear finished
+        # while their threads still own detached workers (CPython issue 45274).
+        wait([future for _, future in pipelines])
     except BaseException as error:
         # Ctrl-C reaches only this thread: stop the claimed pipelines too (each within WATCH_POLL).
         # A ranking failure (an Exception) leaves them to finish.
@@ -4739,6 +4741,21 @@ def pin_root() -> list[str]:
     return paths
 
 
+@contextmanager
+def _interrupt_on_termination():
+    """Use the existing Ctrl-C cleanup for a service manager's SIGTERM."""
+    def terminate(_signum, _frame):
+        signal.signal(signal.SIGTERM, lambda *_: None)
+        raise KeyboardInterrupt("dispatcher terminated")
+
+    previous = signal.signal(signal.SIGTERM, terminate)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+@_interrupt_on_termination()
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description="AI-factory dispatcher (one pass, stateless)"

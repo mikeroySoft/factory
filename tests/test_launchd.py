@@ -161,6 +161,11 @@ class LaunchdTest(unittest.TestCase):
                         self.assertEqual(kwargs['env']['EXIT_STATUS'], str(abs(status)))
                         return subprocess.CompletedProcess(argv, 9)
                     return subprocess.CompletedProcess(argv, 3 if command == 'triage' else status)
+                from types import SimpleNamespace
+                def launch(argv):
+                    result = run(argv)
+                    return SimpleNamespace(wait=lambda: result.returncode)
+                self.enterContext(patch.object(onboard.subprocess, 'Popen', side_effect=launch))
                 with patch.object(onboard.subprocess, 'run', side_effect=run):
                     self.assertEqual(cli.main(['pass']), 128 - status if status < 0 else status)
                 self.assertEqual(calls, ['triage', 'dispatch', 'watch'])
@@ -252,6 +257,7 @@ class LaunchdTest(unittest.TestCase):
             from unittest.mock import patch
             from factory import onboard
             run = subprocess.run
+            popen = subprocess.Popen
             phase = sys.argv[1]
             def child(argv, **kwargs):
                 command = argv[4]
@@ -262,6 +268,10 @@ class LaunchdTest(unittest.TestCase):
                     print(json.dumps({k: kwargs['env'][k] for k in
                           ('SERVICE_RESULT', 'EXIT_CODE', 'EXIT_STATUS')}), flush=True)
                 return subprocess.CompletedProcess(argv, 0)
+            def launch(argv, **kwargs):
+                code = 'import time; print("ready", flush=True); time.sleep(60)' if argv[4] == phase else 'pass'
+                return popen([sys.executable, '-u', '-c', code], **kwargs)
+            patch.object(onboard.subprocess, 'Popen', side_effect=launch).start()
             with patch.object(onboard.subprocess, 'run', side_effect=child):
                 sys.exit(onboard.pass_main([]))
         """)

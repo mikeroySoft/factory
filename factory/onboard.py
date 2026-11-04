@@ -1037,21 +1037,33 @@ def pass_main(argv: list[str]) -> int:
     argparse.ArgumentParser(prog="factory pass", description=pass_main.__doc__).parse_args(argv)
     exe = [sys.executable, "-P", "-m", "factory"]
     status = 1
+    child = None
 
     def terminate(signum, _frame):
         nonlocal status
+        if status < 0:
+            return
         status = -signum
-        # subprocess.run kills/reaps its active child while unwinding.
-        raise SystemExit(128 + signum)
+        if child is not None:
+            child.terminate()
 
     previous = signal.signal(signal.SIGTERM, terminate)
     try:
         try:
-            subprocess.run([*exe, "triage"], check=False)
-            status = subprocess.run([*exe, "dispatch"], check=False).returncode
+            for command in ("triage", "dispatch"):
+                if status < 0:
+                    break
+                child = subprocess.Popen([*exe, command])
+                # SIGTERM may have arrived between the check and child assignment.
+                if status < 0:
+                    child.terminate()
+                result = child.wait()
+                child = None
+                if command == "dispatch" and status >= 0:
+                    status = result
         finally:
-            # A repeated termination must not interrupt the result handoff.
-            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            # Ignore repeats only in the parent; watch keeps its default SIGTERM.
+            signal.signal(signal.SIGTERM, lambda *_: None)
             env = {**os.environ, "SERVICE_RESULT": "success" if status == 0 else "signal" if status < 0 else "exit-code",
                    "EXIT_CODE": "killed" if status < 0 else "exited", "EXIT_STATUS": str(abs(status))}
             subprocess.run([*exe, "watch"], env=env, check=False)
