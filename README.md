@@ -865,7 +865,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    list each `file:line: mutation` under `Blocking mutation findings`.
    The run shares the attempt's `FACTORY_WORKER_DEADLINE` and uses at most the
    gate timeout minus 60 seconds (1140 by default). Unstarted or deadline-cut
-   mutants are incomplete, not survivors or passes. Missing, failed, or incomplete
+   mutants, including those left unstarted by a scratch-clone timeout, are
+   incomplete, not survivors or passes. Missing, failed, or incomplete
    current-attempt reports block a clean finish and are carried into the handoff.
    Workers exit after committing and writing the handoff, without starting or
    waiting on another full gate or mutation run. The dispatcher's PR-tier gate

@@ -229,10 +229,13 @@ def _run(args: argparse.Namespace) -> int:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return baseline_timed_out()
-            subprocess.run(
-                ["git", "clone", "--quiet", "--shared", "--no-checkout", str(root), str(copy)],
-                check=True, timeout=remaining,
-            )
+            try:
+                subprocess.run(
+                    ["git", "clone", "--quiet", "--shared", "--no-checkout", str(root), str(copy)],
+                    check=True, timeout=remaining,
+                )
+            except subprocess.TimeoutExpired:
+                return baseline_timed_out()
             shutil.copytree(root, copy, ignore=COPY_IGNORE, dirs_exist_ok=True)
         print(f"files: {', '.join(lines)}")
         print(f"mutants: {len(mutations)} sampled (seed {SEED}, cap {CAP}), "
