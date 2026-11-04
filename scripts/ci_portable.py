@@ -8,12 +8,18 @@ import os
 import pkgutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 os.chdir(ROOT)
 sys.path.insert(0, str(ROOT))
+
+# macOS's default /var temp root is a symlink; fixtures compare canonical roots.
+temporary_root = str(Path(tempfile.gettempdir()).resolve())
+os.environ["TMPDIR"] = temporary_root
+tempfile.tempdir = temporary_root
 
 import factory
 

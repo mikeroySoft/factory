@@ -2805,10 +2805,12 @@ python scripts/ci_portable.py
 ```
 
 The runner imports every `factory.*` module (`factory.__main__` through its
-`--help` entry point), then discovers every test. Tests requiring actual Linux
-kernel facilities use `@unittest.skipUnless(sys.platform == "linux",
+`--help` entry point), then discovers every test. Tests requiring Linux kernel,
+filesystem, or socket behavior use `@unittest.skipUnless(sys.platform == "linux",
 "Linux only: <dependency>")`; mocked Linux inputs still run on both hosts.
 Every skip is reported with its reason, followed by the platform-skip count.
+The runner canonicalizes the temporary root (including inherited `TMPDIR`) so
+macOS's `/var` symlink does not give fixtures and subprocesses different paths.
 The atomic-publication regression runs on both hosts: Darwin uses native
 `renameatx_np(RENAME_EXCL)` when `renameat2` is unavailable, preserving immutable
 decision artifacts without a link/unlink crash window or overwriting an

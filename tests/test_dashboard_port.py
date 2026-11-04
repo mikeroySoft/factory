@@ -192,6 +192,7 @@ class DashboardPortTest(unittest.TestCase):
         row = next(row for row in json.loads(output)["rows"] if row["label"] == f"dashboard port {self.cfg.dashboard_port}")
         self.assertEqual((code, row["status"]), (0, "PASS"))
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: IPv4-mapped wildcard listener probing")
     def test_doctor_detects_dual_stack_wildcard_holder(self) -> None:
         listener = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
         self.addCleanup(listener.close)

@@ -346,6 +346,7 @@ class RuntimeCliTest(unittest.TestCase):
         self.assertIn("unsupported_version", data["history"]["gaps"])
         self.assertIn("unsupported_record", data["history"]["gaps"])
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: /proc process identity for activity observations")
     def test_conflicting_duplicate_cannot_confirm_activity(self):
         execution = lifecycle.Execution(self.journal, "worker", ticket=13)
         row = execution.emit("enter")
@@ -399,6 +400,7 @@ class RuntimeCliTest(unittest.TestCase):
             self.assertEqual(proc.returncode, 2)
             self.assertEqual(proc.stdout, "")
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: /proc/locks resource observations")
     def test_lock_file_removed_after_release_is_not_a_reader_error(self):
         # Ticket cleanup unlinks `.factory/locks/N.lock` after landing, and merge.lock
         # does not exist before the first merge; neither is a runtime failure.

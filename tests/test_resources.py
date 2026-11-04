@@ -116,6 +116,7 @@ with lifecycle.scope(Path(sys.argv[1]), {stage!r}) as execution:
         released = self.snapshot()
         self.assertEqual((released["state"], released["ownership"], released["owner"]), ("free", "none", None))
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: exclusive flock probes on read-only descriptors")
     def test_external_holder_is_unknown_and_observers_deduplicate(self) -> None:
         holder = self.holder(instrumented=False)
         self.assertEqual(holder.stdout.readline().strip(), "held")
@@ -235,6 +236,7 @@ with open(sys.argv[2], 'a+') as lock:
         observed = self.snapshot()
         self.assertEqual((observed["state"], observed["ownership"], observed["owner"]), ("held", "unknown", None))
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: exclusive flock probes on read-only descriptors")
     def test_unavailable_attribution_never_confirms_even_a_live_acquisition(self) -> None:
         holder = self.holder()
         self.assertEqual(holder.stdout.readline().strip(), "held")
@@ -256,6 +258,7 @@ with open(sys.argv[2], 'a+') as lock:
                                 if row["resource"]["scope"] == "repository")
         self.assertNotEqual(repository["resource"]["id"], other_repository["resource"]["id"])
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: /proc process identity for pending waits")
     def test_unknown_execution_and_malformed_waits_do_not_claim_pending_wait(self) -> None:
         with lifecycle.scope(self.path, "gate") as execution:
             wait = execution.wait("exclusive_resource")
