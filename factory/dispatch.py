@@ -3498,10 +3498,8 @@ def _record_rework(n: int, head: str, findings: str, deferred: bool) -> None:
         findings=findings, deferred=deferred,
     )
     if deferred:
-        run([
-            "gh", "issue", "edit", str(n), "--repo", REPO,
-            "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT, "--remove-assignee", "@me",
-        ])
+        unclaim(n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
+                assignee_last=True, check=True)
 
 
 def _actionable_review(n: int, head: str, verdict: str | None, findings: str, pr_failed: bool) -> bool:
