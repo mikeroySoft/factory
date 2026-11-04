@@ -178,7 +178,7 @@ CLOSE do not add an error to the exit.
   puts `needs-triage` back (`decisions.apply` or GitHub).
 - **Data-driven labels.** Rows marked `*` below edit labels chosen at runtime:
   the triage decision, manager ROUTE, the viability opt-in label, the human
-  decision, and the `chore` PR label `learn.chore_pr` passes.
+  decision, the `chore` PR label `learn.chore_pr` passes, and opt-in `host:<name>` claims.
 
 ## Label transitions
 
@@ -190,7 +190,9 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 | `decisions._approve` | — | `factory-approved` | Human approve step; withdrawn again if the PR changed while labelling |
 | `decisions._plan_request` | `*` | `*` | Human action; labels limited to `decisions.ACT_LABELS`, `factory-approved` routed to `decisions._approve` |
 | `decisions._withdraw_approval` | `factory-approved` | — | Human approve step found the PR changed |
+| `dispatch.acquire_host_claim` | — | `*` | Add this host's `host:<name>` label before the comment election |
 | `dispatch.approve_pr` | `factory-approved` | `factory-approved` | Approve; withdraw again if the PR changed while labelling |
+| `dispatch.delete_host_claim` | `*` | `*` | Remove the host label before deleting its last claim; restore it if comment deletion fails and the claim remains |
 | `dispatch._record_rework` | `ready-for-human` | `ready-for-agent` | Deferred actionable findings: durable round charged, packet retained, owner queue cleared and assignee removed for the next pass |
 | `dispatch.escalate` | `ready-for-agent` | `ready-for-human` | Every escalation |
 | `dispatch.merge_pass_locked` | `factory-approved` | — | CI fail, or cancel after steps ran; missing approval evidence |

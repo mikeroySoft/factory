@@ -1211,9 +1211,120 @@ retention = 8    # gzip segments kept
 The shared host file is `$XDG_CONFIG_HOME/factory/config.toml` (default
 `~/.config/factory/config.toml`). `[defaults.engine]` belongs to District:
 `ref`, `sha`, `previous`, and `installed_at` describe its installed engine
-snapshot. Factory leaves this metadata opaque and out of pipeline configuration;
-`doctor` accepts it only under `defaults`. Unknown tables and an `engine` table
-under a per-repository section still produce host-config warnings.
+snapshot; `target`, `target_ref`, and `resolved_at` describe the target District
+resolved and CI-checked for installation. At pass start, Factory compares its
+installed commit with that recorded `target` SHA, never resolving `factory_ref`
+or checking engine CI itself. A mismatch emits one `engine-stale` event per
+non-dry pass, with `installed_commit`, `target_commit`, and `yield_for_update`.
+Missing installed identity or a missing/invalid target does not establish staleness.
+Other District metadata stays outside pipeline configuration; `doctor` accepts it
+only under `defaults`. An `engine` table under a per-repository host section
+still produces a host-config warning.
+
+`[engine] yield_for_update = true` in `.factory.toml` opts a repository into
+yielding when stale (default false). For the whole shared host, set:
+
+```toml
+[defaults.engine]
+yield_for_update = true
+```
+
+This host policy takes precedence over every repository's setting, so a repo
+opt-out cannot keep the shared engine busy. A stale pass, including `--ticket`,
+finishes land and review intake, then exits successfully without claims, manager
+work, learning, or opening a release PR. Dry runs report the yield without
+writing an event. Once District records the installed SHA equal to its target,
+normal passes resume. After a `factory_ref` switch, Factory follows District's
+next recorded target, not a separately computed branch head. District still
+owns green-CI eligibility and the install window: pausing timers, waiting for
+idle, installing, and resuming; Factory does not change services or timers.
+
+Outcome check for #539: over the first seven days after deployment, retain the
+host's engine snapshots (`sha`, `installed_at`) and compare GitHub main-merge
+timestamps with the first installed snapshot containing each merge. The median
+merge-to-install lag must be at most two hours. This post-deployment observation
+is separate from the dispatcher regression tests.
+
+**Several hosts serving one repository.**
+
+Opt in on each machine through the shared host file. Values directly in
+`[repo."owner/name"]` override `[defaults]`:
+
+```toml
+[defaults]
+host_name = "tank"
+triage_host = "tank"
+claim_ttl = "2h"
+
+[repo."owner/name"]
+claim_ttl = "3h"
+```
+
+Use a distinct `host_name` on every host: 1–45 ASCII letters, digits, `.`, `_`,
+or `-`, starting with a letter or digit. Set the same `triage_host` on all
+hosts to avoid duplicate triage; other hosts exit 0 with
+`triage: skipped, triage host is <name>` before reading issues or writing events.
+Unset `triage_host` keeps triage enabled everywhere. `claim_ttl` defaults to
+`"2h"` and accepts positive `s`, `m`, `h`, or `d` durations, including `"1h30m"`.
+`factory doctor` reports the effective host settings.
+
+Inside the existing per-ticket lock, dispatch adds `host:<name>` and a comment
+whose first line is `Factory claim: host=<name> nonce=<uuid> at=<iso8601>`.
+Only comments authored by the authenticated dispatcher account count as claims.
+After fresh label/comment reads, the earliest live comment wins, ordered by
+GitHub creation time and then numeric comment ID. A loser records `claim_lost`
+and removes its own comment and label without assigning or launching a worker.
+The winner assigns `@me` and refreshes its comment every TTL/4 while the ticket
+pipeline runs. Unclaim always applies escalation/requeue labels; only the owning
+host can remove an existing claim's `@me`, host label and comment, even after expiry.
+An in-process claim must also match the elected nonce before cleanup. Tickets
+assigned before host claims were enabled retain the original `@me` release path.
+If the label/assignee edit fails, unclaim retains its comment and host label so
+another host can recover the assignment after TTL expiry. Successful host-label
+removals journal `claim-label-removed` receipts. The manager ignores those exact
+labels from the authenticated dispatcher only before the recorded escalation
+comment; human removals and later edits still hold automatic management.
+
+Expired claims are admitted through the frontier only when no other hold exists.
+A human assignee or an open `agent/<ticket>` PR with an expired claim remains a
+hold after heartbeats stop, so completed work awaiting CI/review/merge is not run again.
+Each heartbeat revalidates the elected host and nonce. A displaced owner stops
+renewing rather than reviving an expired claim ahead of its replacement.
+Every refresh requeue publishes an authenticated `Factory requeue: nonce=<uuid>`
+issue comment with the refresh instructions, including when the owner releases
+its claim. The next host can consume that context even after the claim is deleted.
+Deferred actionable review rework uses the same ownership-aware release and shares
+its findings, so another host can resume the existing PR after the lease expires.
+Shared instructions take precedence over this host's local requeue journal. Local
+risk-disagreement history carries forward only when its instructions match the
+selected context; an intervening foreign requeue cannot trigger early escalation.
+Escalation comments carry the same nonce marker on their second line, preserving
+the escalation prefix. A later manager/human `ready-for-agent` relabel can resume
+the expired claim's existing PR; its live heartbeat still holds admission.
+Neither transition can release a later worker's claim or its completed-PR hold.
+Expired ownership follows election order, not the newest raw comment: a contender
+created during the winner's last live lease cannot supersede its requeue marker
+just because loser cleanup failed. A claim created at or after that lease expires
+starts a new election, so an old requeue cannot release newer completed work.
+Assigned stale claims stay intact until a replacement wins and assigns, so admission
+or claim failures cannot strand the shared `@me` assignment without recovery evidence.
+Dispatch then rechecks the heartbeat, removes stale comments/labels without clearing
+the shared assignment, and records `claim-released` with the old host and last heartbeat.
+The elected owner revalidates its nonce before cleanup; a losing contender still
+deleting its live claim cannot block retirement of old stale ownership. Owner
+unclaim also retires older stale claims before deleting its own comment, so
+leftover claims cannot strand a later refresh requeue or escalation/relabel.
+Unassigned stale claims can be released before election. A foreign host label without
+a claim comment remains a hold; inspect it before removing it.
+Cleanup removes the host label before deleting its last claim comment, so a
+failed label edit retains TTL recovery evidence for the next pass. Another
+same-host contender keeps its label. If comment deletion fails with the comment
+still present, cleanup restores the label and surfaces the error.
+Hosts need synchronized clocks and current GitHub reads. This comment-based
+lease is not a fencing token for a disconnected worker that outlives its TTL.
+With `host_name` unset, dispatch makes no host-label/comment calls and triage
+always runs, even when `triage_host` is configured.
+
 
 `[worker_wrap]` is host-only: set `command` under `[defaults.worker_wrap]` or
 `[repo."owner/name".worker_wrap]` (per-repo wins). Its argv is prepended to
@@ -1406,27 +1517,39 @@ branches, or merge state.
   (a `[workers.<label>] usage` profile or `cost_pattern`).
 - **Learning loop**: after a batch of tickets, `factory learn --dry-run`,
   read the proposed lessons, then `factory learn` and commit
-  `.factory-lessons.md`. Workers see it on every ticket. With `[manager]`
-  configured the dispatcher does this itself: at the end of a pass, once 10
-  tickets have finished (latest `merged`/`escalate` row) since the last `learn`
-  event (manual or automatic; from the journal start if none), it runs
-  `factory score --last 10` (so every chosen ticket has session excerpts),
-  decides open promotions on the new scores (below), then, unless that opened a
-  revert (`learn: skipped (revert PR opened: ...)`; a lessons PR would conflict
-  with it), `factory learn --last 10` once and journals `learn` with
-  `trigger: "auto"`.
+  `.factory-lessons.md`. Workers see it on every ticket. At the end of every
+  dispatcher pass, `factory score` scores unscored finished attempts (at most 50),
+  independently of the learning threshold, manager availability, or open proposals.
+  With `[manager]` configured, once 10 tickets have finished (latest
+  `merged`/`escalate` row) since the last successful `learn` event (manual or
+  automatic; from the journal start if none), the dispatcher decides open
+  promotions on the scores (below), then, unless that opened a revert
+  (`learn: skipped (revert PR opened: ...)`; a lessons PR would conflict with it),
+  runs `factory learn --last 10` and journals `learn` with `trigger: "auto"`.
   It skips while an `agent/lessons-*`, `agent/curate-*` or
   `agent/revert-lessons-*` PR is open (`learn:
-  skipped (open lessons PR #N)`; the count is kept), and without a manager logs
-  `learn: skipped (no manager)` and records nothing. A failure is journaled as
-  `learn` with `status: "failed"` and a `reason`, never fails the pass, and
-  keeps the count, so the next pass retries. Lessons, CURATE, and their revert PRs auto-merge:
-  gate, reviewer APPROVE (posted as a GitHub `COMMENT` review, since the
-  dispatcher authored the PR and cannot approve its own; the journaled
-  `review-result` carries the verdict), CI, `factory-approved`, squash (see
-  `factory learn` in the command table). Only same-repository heads are
-  admitted by branch name; a fork PR named `agent/lessons-*` still needs
-  `needs-review`. The guard is measurement, not a person: each merge
+  skipped (open lessons PR #N)`; the count is kept). Blocker changes journal
+  `learn-wait`; the same PR blocking learn for over 24 hours journals exactly one
+  `learn-blocked` per uninterrupted wait, surfaced by `factory watch`. A different
+  PR starts a new clock; clearing the wait clears its watch signal. Without a
+  manager, learn logs `learn: skipped (no manager)`; scoring still runs.
+  A failure is journaled as `learn` with `status: "failed"` and a `reason`, never
+  fails the pass, and keeps the count, so the next pass retries.
+  Lessons and CURATE proposals require gate, reviewer APPROVE (posted as a
+  GitHub `COMMENT` review since the dispatcher cannot approve its own PR;
+  `review-result` carries the verdict), CI, `factory-approved`, and squash.
+  A recorded `promotion-revert` can instead pass on its nonempty measured
+  baseline score: the candidate's changed paths must exactly match the original
+  promotion's, and their contents/modes must equal that merge's parent versions.
+  This is checked against the exact candidate head, not a branch-name exemption.
+  Such restorations need gate and CI, not reviewer APPROVE or a new worker eval;
+  their `approved` row records `restored_score` rather than claiming a review.
+  A human GitHub `CHANGES_REQUESTED` review still blocks every proposal, including
+  measured restorations; factory reviewer findings posted as `COMMENT` are distinct.
+  An unmeasured or modified restoration still needs review and scheduled eval.
+  Only same-repository heads are admitted by branch name; a fork PR named
+  `agent/lessons-*` still needs `needs-review`.
+  The guard is measurement, not a person: each non-revert merge
   journals `promotion-open` with the score means of the 10 attempts before it,
   and once 10 attempts journaled after the merge are scored the same pass journals
   `promotion-keep` or `promotion-revert` (opening `agent/revert-lessons-<pr>`)

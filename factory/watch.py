@@ -578,6 +578,16 @@ def signals(
 ) -> list[dict]:
     """Every observed failure, newest journal evidence first within each fingerprint."""
     found: dict[str, dict] = {}
+    wait = next((r for r in reversed(events) if r.get("event") == "learn-wait"), None)
+    blocked = next((r for r in reversed(events) if r.get("event") == "learn-blocked"), None)
+    if (wait and blocked and wait.get("pr") is not None and wait.get("pr") == blocked.get("pr")
+            and wait.get("at") == blocked.get("since")):
+        key = fingerprint("learn-blocked", f"{cfg.repo}#{blocked['pr']}")
+        found[key] = {
+            "fingerprint": key, "kind": "learn-blocked", "stage": "learn",
+            "key": blocked["reason"], "rows": [blocked], "excerpt": None, "log": None,
+            "latest": blocked["at"], "command": "factory watch --dry-run",
+        }
     logs = {(r.get("ticket"), r.get("attempt")): r.get("log") for r in events if r.get("event") == "attempt"}
     stalled = {
         (row.get("ticket"), row.get("reason"))

@@ -48,6 +48,7 @@ theme = ".factory-dashboard.css"
 
 [dispatch]
 review_rounds = 3
+max_active = 4
 
 [release]
 auto = true
