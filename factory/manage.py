@@ -1090,6 +1090,7 @@ def frontier_pass(dry_run: bool = False) -> None:
             except (CalledProcessError, OSError, ValueError) as exc:
                 if not dry_run:
                     execution.outcome = LifecycleOutcome.MECHANISM_FAILURE
+                    execution.reason = "pr_frontier_failed"
                 dispatch.log(f"PR #{number}: frontier failed: {exc}; leaving for human")
             finally:
                 if not dry_run:
@@ -1136,7 +1137,7 @@ def escalation_pass(dry_run: bool = False) -> None:
                 escalation = next((
                     e for e in reversed(events)
                     if e.get("event") == "escalate"
-                    and e.get("code") != EscalationCode.MANAGER_FAILED
+                    and not handoff._manager_failed(e)
                 ), None)
                 if not escalation or escalation.get("upstream") or escalation.get("pr") or not escalation.get("packet"):
                     continue

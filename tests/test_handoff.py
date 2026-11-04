@@ -44,6 +44,9 @@ def flag(name):
 if a[:2] == ["issue", "list"]:
     print(json.dumps([issue] if flag("--label") in [l["name"] for l in issue["labels"]] else []))
 elif a[:2] == ["issue", "view"]:
+    if s.get("fail_issue_view"):
+        print("HTTP 502", file=sys.stderr)
+        raise SystemExit(1)
     print(json.dumps(issue))
 elif a[:2] == ["pr", "list"]:
     print("[]")
@@ -277,6 +280,24 @@ class HandoffCli(unittest.TestCase):
         self.assertEqual([e["request"] for e in self.events("handoff")], ["7/1", "7/2"])
         self.assertIn("Factory handoff request `7/2`", self.requests()[-1]["body"])
         self.assertIn("the manager asked for a human decision", self.requests()[-1]["body"])
+
+    def test_legacy_manager_failure_receipt_does_not_hide_retryable_escalation(self) -> None:
+        with (self.factory / "events.jsonl").open("a") as stream:
+            stream.write(json.dumps({
+                "at": "2026-01-01T00:00:30Z",
+                "event": "escalate",
+                "ticket": 7,
+                "round": 1,
+                "packet": str(self.packet),
+                "reason": "manager_failed",
+            }) + "\n")
+
+        self.manage(mode="RETRY")
+
+        self.assertTrue(self.ran.exists())
+        self.assertEqual([e["decision"] for e in self.events("manage")], ["RETRY"])
+        self.assertEqual([label["name"] for label in self.state["issue"]["labels"]], ["ready-for-agent"])
+        self.assertEqual(self.requests(), [])
 
     def test_review_intake_escalation_gets_a_handoff_request(self) -> None:
         # #204 (b): `review_intake_pass` escalates an opted-in PR into a new `ready-for-human` issue with a
@@ -544,6 +565,22 @@ class HandoffCli(unittest.TestCase):
         self.assertIn("refused", proc.stdout)
         self.assertEqual((self.requests(), self.calls("issue", "comment"), self.calls("issue", "edit")), ([], [], []))
         self.assertFalse(self.ran.exists())
+
+    def test_handoff_github_failure_keeps_host_condition_reason(self) -> None:
+        from factory import watch
+
+        self.configure(manager=False)
+
+        proc = self.manage(fail_issue_view=True)
+
+        self.assertIn("handoff failed", proc.stdout)
+        terminal = next(e for e in self.events("lifecycle") if e.get("kind") == "exit")
+        self.assertEqual(
+            (terminal["stage"], terminal["outcome"], terminal["reason"]),
+            ("manage", "mechanism_failure", "github_command_failed"),
+        )
+        self.assertFalse(watch._failing(terminal))
+        self.assertEqual(watch._host_reason(terminal), "github_command_failed")
 
 
 class ReceiptTest(unittest.TestCase):

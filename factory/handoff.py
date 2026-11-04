@@ -264,6 +264,7 @@ def handoff_pass(dry_run: bool = False) -> None:
             except (CalledProcessError, OSError, ValueError) as exc:
                 if not dry_run:
                     execution.outcome = LifecycleOutcome.MECHANISM_FAILURE
+                    execution.reason = "github_command_failed"
                 dispatch.log(f"#{n}: handoff failed: {exc}; leaving for human")
             finally:
                 if not dry_run:
