@@ -2025,12 +2025,12 @@ def _outside_diff_findings(diff: str, findings: str) -> int:
         if line.startswith("diff --git "):
             in_hunk = False
         elif not in_hunk and line.startswith(("--- ", "+++ ")):
-            value = line[4:].split("\t", 1)[0]
+            value, _, _ = line[4:].partition("\t")
             if value.startswith('"'):
                 value = codecs.escape_decode(value[1:-1].encode())[0].decode(
                     "utf-8", errors="surrogateescape",
                 )
-            deleted = value == "/dev/null"
+            deleted = value in ("/dev/null",)
             if not deleted:
                 path = value[2:]  # Git's a/ or b/ prefix.
         elif match := re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line):
