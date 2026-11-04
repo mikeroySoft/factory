@@ -191,7 +191,10 @@ class InstallStateTest(unittest.TestCase):
             with self.subTest(code=code, state=state):
                 self.calls.clear()
 
-                def failed_command(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
+                def failed_command(
+                    cmd: list[str], cwd: Path | None = None,
+                    code: int = code, state: str = state, error: str = error,
+                ) -> subprocess.CompletedProcess:
                     if cmd[2] == "is-enabled":
                         self.calls.append(cmd)
                         return subprocess.CompletedProcess(cmd, 1, "", "Failed to get unit file state")

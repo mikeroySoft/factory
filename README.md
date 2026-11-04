@@ -69,6 +69,9 @@ behavior when changed. This also applies to the optional probe and eval timers.
 Install lists paused units with a `systemctl --user enable --now <unit>` resume
 command. Use `factory install --enable` (with `--dashboard` when needed) to
 explicitly enable and start all installed units.
+If `is-enabled` fails without stdout (as on older systemd versions), install
+checks `LoadState` to confirm a missing unit. An inconclusive query aborts before
+unit files are changed, rather than treating a query failure as a fresh install.
 
 `doctor` checks the configured dashboard bind address and port; `install --dashboard`
 refuses a foreign or unidentified holder before writing units. Each factory needs

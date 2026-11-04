@@ -986,8 +986,16 @@ def install(argv: list[str]) -> int:
     prior = {}
     for name in wanted:
         enabled = sh(["systemctl", "--user", "is-enabled", name])
+        enabled_state = enabled.stdout.strip()
+        if enabled.returncode != 0 and not enabled_state:
+            # Older systemd reports missing units only on stderr.
+            loaded = sh(["systemctl", "--user", "show", "--property=LoadState", "--value", name])
+            if loaded.returncode != 0 or loaded.stdout.strip() != "not-found":
+                detail = loaded.stderr.strip() or enabled.stderr.strip() or "unit not confirmed missing"
+                raise ConfigError(f"cannot determine prior state of {name}: {detail}")
+            enabled_state = "not-found"
         active = sh(["systemctl", "--user", "is-active", name])
-        existed = (udir / name).exists() or enabled.stdout.strip() != "not-found"
+        existed = (udir / name).exists() or enabled_state != "not-found"
         prior[name] = (existed, enabled.returncode == 0, active.returncode == 0)
     udir.mkdir(parents=True, exist_ok=True)
     changed = set()  # existing units whose content differs: these get restarted
