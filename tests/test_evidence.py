@@ -794,15 +794,27 @@ class EvidenceCliTest(unittest.TestCase):
         packet = self.journal.parent / "escalations/7.md"
         packet.parent.mkdir()
         packet.write_text(f"# Escalation #7\n\nCheck failed\n\nRecorded at {AT}\n")
+        (self.journal.parent / "manager-8.md").write_text("OTHER TICKET SECRET")
+        (self.journal.parent / "review-7.md").symlink_to("manager-8.md")
         (self.journal.parent / "wt-7/.factory").mkdir(parents=True)
         (self.journal.parent / "wt-7/.factory/handoff-7.md").write_text("Actual worker handoff")
         first = self.invoke("inspect", number=7, code=1)
         second = self.invoke("inspect", number=7, code=1)
+        self.assertEqual(first["case"]["updated_at"], AT)
+        self.assertEqual(first["case"]["number"], 7)
         sources = {row.get("path"): row for row in first["sources"] if row.get("path")}
         self.assertEqual(sources["escalations/7.md"]["text"], packet.read_text())
         self.assertEqual(sources["wt-7/.factory/handoff-7.md"]["text"], "Actual worker handoff")
         self.assertIn("Keep compatibility", json.dumps(first["sources"]))
         self.assertIn(entered["event_id"], json.dumps(first["sources"]))
+        self.assertNotIn("OTHER TICKET SECRET", json.dumps(first))
+        historical = [row for row in first["sources"] if row.get("path") or row.get("url") == self.issue["html_url"]]
+        self.assertTrue(historical)
+        for source in historical:
+            self.assertIn(source, second["sources"])
+        self.assertNotEqual(first["observation_id"], second["observation_id"])
+        self.assertGreater(second["observed_at"], first["observed_at"])
+        self.assertTrue(first["errors"])
         for source in sources.values():
             self.assertIn(source, second["sources"])
         runtime = next(value for value in self.values(first) if isinstance(value, dict) and "executions" in value)

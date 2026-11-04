@@ -19,6 +19,50 @@ class RotationTest(unittest.TestCase):
         context.start()
         self.addCleanup(context.stop)
 
+    def test_rotation_preserves_audit_and_open_rows_without_process_identity(self):
+        # Keep portable retention/integrity checks running alongside the Linux
+        # tests below, whose live-process assertions need /proc.
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(lifecycle, "MAX_BYTES", 2_000), \
+                mock.patch.object(lifecycle, "RETENTION", 8):
+            path = Path(tmp) / "events.jsonl"
+            lock = Path(tmp) / "held.lock"
+            execution = lifecycle.Execution(path, "worker", ticket=7)
+            execution.process = None
+            execution.emit("enter")
+            execution.emit("lock_acquired", lock=str(lock))
+            records = []
+
+            def append_records(start, stop):
+                for n in range(start, stop):
+                    row = {"event": "record", "n": n, "pad": "x" * 550}
+                    records.append(row)
+                    lifecycle.append(path, row)
+                    with lifecycle.scope(path, "check", ticket=n):
+                        pass
+
+            append_records(0, 55)
+            self.assertEqual(len(list(Path(tmp).glob("events.jsonl.*.gz"))), 8)
+            with mock.patch.object(lifecycle, "RETENTION", 4):
+                self.assertEqual(
+                    [row for row in lifecycle.read_events(path) if row.get("event") == "record"],
+                    records,
+                )
+                append_records(55, 60)
+                self.assertEqual(len(list(Path(tmp).glob("events.jsonl.*.gz"))), 4)
+                self.assertLessEqual(path.stat().st_size, lifecycle.MAX_BYTES)
+                for segment in Path(tmp).glob("events.jsonl.*.gz"):
+                    with gzip.open(segment, "rb") as archive:
+                        self.assertTrue(archive.read())
+                self.assertEqual(
+                    [row for row in lifecycle.read_events(path) if row.get("event") == "record"],
+                    records,
+                )
+                (state,) = [entry for entry in lifecycle.observe(path)
+                            if entry["execution_id"] == execution.execution_id]
+                self.assertEqual(state["state"], "unknown")
+                self.assertEqual(state["events"][-1]["locks"][0]["path"], str(lock.absolute()))
+
     @unittest.skipUnless(sys.platform == "linux", "Linux only: /proc process identity")
     def test_rotation_keeps_record_rows_and_open_executions(self):
         with tempfile.TemporaryDirectory() as tmp, \
