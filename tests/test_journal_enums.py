@@ -109,6 +109,43 @@ class JournalEnumTest(unittest.TestCase):
             self.assertIn("unsupported_kind", result["history"]["gaps"])
             self.assertEqual(result["events"], [])
 
+    def test_real_risk_and_manager_receipt_domains_decode_without_changing_wire_bytes(self) -> None:
+        source = [
+            {"event": "risk-check", "primary": "APPROVE", "second": "REVISE", "pr_gate": "PASS"},
+            {"event": "risk-check", "mutation": "FAIL", "pr_gate": "FAIL"},
+            {"event": "comment", "kind": "manager", "decision": "HUMAN", "comment": 123},
+            {"event": "viability", "kind": "issue", "verdict": "BUILD"},
+        ]
+        raw = b"".join(
+            json.dumps(row, separators=(",", ":")).encode() + b"\n" for row in source
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            journal = Path(directory) / "events.jsonl"
+            journal.write_bytes(raw)
+            rows = lifecycle.read_events(journal)
+
+        self.assertIs(rows[0]["primary"], ReviewVerdict.APPROVE)
+        self.assertIs(rows[0]["second"], ReviewVerdict.REVISE)
+        self.assertNotIn("primary", rows[1])
+        self.assertIs(rows[2]["decision"], ManagerDecision.HUMAN)
+        self.assertEqual(rows[3]["verdict"], "BUILD")
+        self.assertEqual(lifecycle._dump(rows), raw)
+
+    def test_unknown_risk_and_manager_receipt_domains_are_rejected_at_boundaries(self) -> None:
+        cases = (
+            {"event": "risk-check", "primary": "REJECT"},
+            {"event": "risk-check", "second": "future_verdict"},
+            {"event": "comment", "kind": "manager", "decision": "DEPLOY"},
+        )
+        for row in cases:
+            with self.subTest(row=row), tempfile.TemporaryDirectory() as directory:
+                journal = Path(directory) / "events.jsonl"
+                with self.assertRaises(ValueError):
+                    lifecycle.append(journal, row)
+                journal.write_text(json.dumps(row) + "\n")
+                with self.assertRaises(ValueError):
+                    lifecycle.read_events(journal)
+
 
 if __name__ == "__main__":
     unittest.main()

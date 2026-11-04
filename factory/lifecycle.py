@@ -17,7 +17,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import BinaryIO, Literal, Required, TypeAlias, TypedDict, get_args
+from typing import BinaryIO, Literal, Required, TypeAlias, TypedDict, cast, get_args
 
 from factory.domain import EscalationCode, LifecycleOutcome, ManagerDecision, ReviewVerdict
 
@@ -113,6 +113,18 @@ class ReviewEvent(EventMetadata, total=False):
     verdict: ReviewVerdict | None
 
 
+class ManagerCommentEvent(EventMetadata, total=False):
+    event: Required[Literal["comment"]]
+    kind: Required[Literal["manager"]]
+    decision: ManagerDecision | None
+
+
+class RiskCheckEvent(EventMetadata, total=False):
+    event: Required[Literal["risk-check"]]
+    primary: ReviewVerdict | None
+    second: ReviewVerdict | None
+
+
 class DecisionOption(TypedDict, total=False):
     option: Required[ManagerDecision | ReviewVerdict | EscalationCode | str]
     eligible: bool
@@ -150,7 +162,8 @@ class LifecycleEvent(TypedDict, total=False):
 
 
 EventRow: TypeAlias = (
-    JournalEvent | ManageEvent | EscalateEvent | ReviewEvent | DecisionEvent | LifecycleEvent
+    JournalEvent | ManageEvent | ManagerCommentEvent | EscalateEvent | ReviewEvent
+    | RiskCheckEvent | DecisionEvent | LifecycleEvent
 )
 
 
@@ -190,12 +203,16 @@ def parse_event(row: Mapping[str, object]) -> EventRow:
             parsed["outcome"] = LifecycleOutcome(parsed["outcome"])
         if parsed.get("verdict") is not None:
             parsed["verdict"] = ReviewVerdict(parsed["verdict"])
-    elif event == "manage" and parsed.get("decision") is not None:
+    elif (event == "manage" or event == "comment" and parsed.get("kind") == "manager") and parsed.get("decision") is not None:
         parsed["decision"] = ManagerDecision(parsed["decision"])
     elif event == "escalate" and parsed.get("code") is not None:
         parsed["code"] = EscalationCode(parsed["code"])
     elif event in {"review", "review-result", "learn-candidate-review"} and parsed.get("verdict") is not None:
         parsed["verdict"] = ReviewVerdict(parsed["verdict"])
+    elif event == "risk-check":
+        for field in ("primary", "second"):
+            if parsed.get(field) is not None:
+                parsed[field] = ReviewVerdict(parsed[field])
     elif event == "decision":
         stage = parsed.get("stage")
         if "chosen" in parsed:
@@ -207,7 +224,7 @@ def parse_event(row: Mapping[str, object]) -> EventRow:
                 if isinstance(option, dict) and "option" in option else option
                 for option in options
             ]
-    return parsed
+    return cast(EventRow, parsed)
 
 
 CONTEXT_ENV = "FACTORY_LIFECYCLE_CONTEXT"
@@ -382,7 +399,7 @@ def _rotate(path: Path, handle: BinaryIO) -> None:
     os.fsync(handle.fileno())
 
 
-def append(path: Path, row: EventRow) -> None:
+def append(path: Path, row: Mapping[str, object]) -> None:
     """Validate and append a legacy or versioned row without interleaving writers."""
     parsed = parse_event(row)
     path = Path(path)
@@ -645,13 +662,13 @@ class Execution:
             if self.outcome == LifecycleOutcome.COMPLETED:
                 self.outcome = LifecycleOutcome.UNKNOWN
                 self.reason = "scope exited before its registered children were reaped"
-        row = parse_event({
+        row = cast(LifecycleEvent, parse_event({
             **fields, **{key: getattr(self, key) for key in _IDENTITY_FIELDS},
             "event": "lifecycle", "schema_version": 1, "event_id": str(uuid.uuid4()),
             "kind": kind, "at": _now(), "outcome": self.outcome if kind == "exit" else None,
             "reason": self.reason if kind == "exit" else None,
             "process": self.process, "locks": list(self.locks),
-        })
+        }))
         if self._terminal:
             raise RuntimeError("execution already has a terminal lifecycle event")
         row["sequence"] = self._sequence + 1
@@ -946,7 +963,9 @@ def _evidence(events: list[dict], descendants: dict) -> tuple[str, dict]:
     return "interrupted", evidence
 
 
-def observe(path: Path, *, rows: list[dict] | None = None, handle=None) -> list[dict]:
+def observe(
+    path: Path, *, rows: list[EventRow] | None = None, handle: BinaryIO | None = None,
+) -> list[dict]:
     """Project independent executions and persist each proven interruption once.
 
     Ordinary product outcomes (check failure, revision, escalation) are completed
@@ -987,7 +1006,7 @@ def observe(path: Path, *, rows: list[dict] | None = None, handle=None) -> list[
             if terminal is None:
                 state, evidence = _evidence(events, descendants[execution_id])
                 if state == "interrupted":
-                    terminal = {
+                    terminal = cast(LifecycleEvent, parse_event({
                         **{key: events[-1].get(key) for key in _IDENTITY_FIELDS},
                         "event": "lifecycle", "schema_version": 1,
                         "event_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"factory:interrupted:{execution_id}")),
@@ -996,7 +1015,7 @@ def observe(path: Path, *, rows: list[dict] | None = None, handle=None) -> list[
                         "reason": "recorded execution ended according to process and lock evidence",
                         "process": entry.get("process"), "locks": events[-1].get("locks", []),
                         "reconciled": True, "observer_process": _identity(os.getpid()), "evidence": evidence,
-                    }
+                    }))
                     _write(handle, terminal)
                     rows.append(terminal)
                     events.append(terminal)
@@ -1024,20 +1043,24 @@ def observe(path: Path, *, rows: list[dict] | None = None, handle=None) -> list[
         return result
 
 
-def _observation_row(path: Path, stage: str, key: str, previous: dict | None, at: str, **fields) -> dict:
+def _observation_row(
+    path: Path, stage: str, key: str, previous: LifecycleEvent | None, at: str, **fields: object,
+) -> LifecycleEvent:
     """Observation scopes have no enter/exit and never manufacture stage occupancy."""
     execution_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"factory:{stage}:{Path(path).resolve()}:{key}"))
-    return {
+    return cast(LifecycleEvent, parse_event({
         **dict.fromkeys(_IDENTITY_FIELDS), **fields,
         "execution_id": execution_id, "root_execution_id": execution_id, "stage": stage,
         "event": "lifecycle", "schema_version": 1, "event_id": str(uuid.uuid4()),
         "sequence": previous["sequence"] + 1 if previous else 1,
         "kind": stage.replace("-", "_"), "at": at, "outcome": None, "reason": None,
         "process": _identity(os.getpid()), "locks": [], "reconciled": True,
-    }
+    }))
 
 
-def resources(path: Path, paths=(), *, rows: list[dict] | None = None, handle=None) -> list[dict]:
+def resources(
+    path: Path, paths=(), *, rows: list[EventRow] | None = None, handle: BinaryIO | None = None,
+) -> list[dict]:
     """Reconcile resources under the existing journal lock, never infer an owner.
 
     `paths` contains (lock path, repository|host scope) pairs, so an external
@@ -1133,7 +1156,7 @@ def resources(path: Path, paths=(), *, rows: list[dict] | None = None, handle=No
 
 def observe_schedule(path: Path, *, next_at: str | None, timer_active: bool | None,
                      service_active: bool | None, observed_at: str,
-                     rows: list[dict] | None = None, handle=None) -> dict:
+                     rows: list[EventRow] | None = None, handle: BinaryIO | None = None) -> dict:
     """Persist only changes in an existing timer probe, without creating a run."""
     wait = None
     try:
