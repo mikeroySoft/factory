@@ -34,6 +34,22 @@ class JournalEnumTest(unittest.TestCase):
                 lifecycle.append(copied, row)
             self.assertEqual(copied.read_bytes(), raw)
 
+    def test_retired_upstream_escalation_remains_readable_without_rewriting_bytes(self) -> None:
+        raw = (
+            b'{"event":"escalate","at":"2026-09-01T00:00:00Z",'
+            b'"ticket":7,"code":"upstream_sync","reason":"upstream sync failed"}\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            journal = Path(directory) / "events.jsonl"
+            journal.write_bytes(raw)
+            rows = lifecycle.read_events(journal)
+            self.assertIsInstance(rows[0]["code"], EscalationCode)
+            self.assertEqual(rows[0]["code"].value, "upstream_sync")
+            self.assertEqual(lifecycle._dump(rows), raw)
+            copied = Path(directory) / "copied.jsonl"
+            lifecycle.append(copied, rows[0])
+            self.assertEqual(copied.read_bytes(), raw)
+
     def test_unknown_event_and_lifecycle_kinds_are_named_read_errors(self) -> None:
         cases = (
             ({"event": "future-event"}, "future-event"),
