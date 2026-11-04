@@ -50,6 +50,8 @@ class EscalationCode(StrEnum):
     DISPATCHER_ERROR = "dispatcher_error"
     NO_CHANGE = "no_change"
     RISK_DISAGREEMENT = "risk_disagreement"
+    # Retired producer; append-only journals retain its shipped wire value.
+    UPSTREAM_SYNC = "upstream_sync"
 
 
 class LifecycleOutcome(StrEnum):
