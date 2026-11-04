@@ -109,6 +109,33 @@ class FairnessSessionTest(unittest.TestCase):
                     self.timer.return_value = result
                 self.assertEqual(self.run_pass(self.competing(), 1), [2])
 
+    def test_no_timer_passes_still_admit_unknown_work_without_claimable_now(self):
+        results = (subprocess.CompletedProcess([], 1, "", "no timer"),
+                   subprocess.CompletedProcess([], 0, "\n", ""),
+                   subprocess.CompletedProcess([], 0, "0" * 32 + "\n", ""),
+                   FileNotFoundError("systemctl"), subprocess.TimeoutExpired("systemctl", 3))
+        for index, result in enumerate(results):
+            for claimed_now in (False, True):
+                with self.subTest(result=result, claimed_now=claimed_now), patch.object(
+                    dispatch, "EVENTS", self.cfg.factory / f"events-{index}-{claimed_now}.jsonl",
+                ):
+                    self.timer.side_effect = result if isinstance(result, Exception) else None
+                    self.timer.return_value = result
+                    rows = self.competing() + [ticket(4, "2026-01-03")]
+                    if claimed_now:
+                        rows.append(ticket(3, "2026-01-01", held="already claimed"))
+                    self.assertEqual(self.run_pass(rows, 2), [2, 4])
+                    self.assertEqual(self.run_pass(rows, 2), [2, 1])
+
+    def test_no_timer_streak_resets_after_engine_upgrade(self):
+        self.timer.side_effect = FileNotFoundError("systemctl")
+        self.seed_streak()
+        self.engine.return_value = "engine-b"
+        self.assertEqual(self.run_pass(self.competing(), 1), [2])
+        self.assertEqual(self.run_pass(self.competing(), 1), [2])
+        self.assertEqual(self.run_pass(self.competing(), 1), [2])
+        self.assertEqual(self.run_pass(self.competing(), 1), [1])
+
 
 if __name__ == "__main__":
     unittest.main()
