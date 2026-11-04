@@ -346,6 +346,30 @@ class PromoteRegressionTest(unittest.TestCase):
         self.assertEqual(merged["by"], "human")
         self.assertEqual(opened["head"], self.HEAD)
 
+    def test_lessons_pr_head_gets_required_gate_check(self) -> None:
+        self.journal(self.gate(), self.review())
+        self.compare = {"behind_by": 4, "files": [{"filename": config.LESSONS_NAME}]}
+
+        def reject_merge(args: list[str], **_kwargs) -> subprocess.CompletedProcess:
+            if args[:3] == ["gh", "pr", "merge"]:
+                raise RuntimeError(
+                    'Repository rule violations found: Required status check "gate" is expected.'
+                )
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        self.run.side_effect = reject_merge
+        with mock.patch.object(learn, "refresh") as refresh:
+            learn.promote_pass([self.pr])
+
+        refresh.assert_called_once_with(self.cfg, 42, self.BRANCH, self.HEAD)
+        self.assertFalse(any(
+            row["reason"].startswith("merge failed:") for row in self.rows("promotion-blocked")
+        ))
+        self.assertFalse(any(
+            call.args[0][:3] == ["gh", "pr", "merge"] for call in self.run.call_args_list
+        ))
+
+
 
 class LessonsFileTest(unittest.TestCase):
     def test_new_lessons_file_starts_with_the_repository_spdx_license(self) -> None:
