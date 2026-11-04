@@ -2824,8 +2824,10 @@ Operator and agent guide: [docs/guide/index.md](docs/guide/index.md).
 
 Every push and pull request runs the complete unittest suite on `macos-latest`
 and Linux. Keep the existing `gate` check required in the repository's `main`
-branch rules: it runs the unchanged Linux checks and also fails unless the
-macOS job succeeds, including when that job is cancelled or skipped.
+branch rules: it runs the unchanged Linux checks and also fails when macOS fails
+or is skipped. A cancelled macOS job retains its cancelled check without a
+synthetic `gate` failure, so the dispatcher's runner-outage triage can retry it;
+the merge stage still refuses cancelled checks.
 
 To run the macOS lane locally with Python 3.11+ and Node 22.19+:
 

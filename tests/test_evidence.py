@@ -782,6 +782,42 @@ class EvidenceCliTest(unittest.TestCase):
         expected = {execution.execution_id for execution in executions}
         self.assertTrue({identity["execution_id"] for identity in unknown["identities"]} <= expected)
 
+    def test_inspect_preserves_history_without_platform_process_identity(self):
+        self.journal.parent.mkdir()
+        entry = lifecycle.Execution(self.journal, "worker", ticket=7, attempt=1)
+        entry.process = None
+        entered = entry.emit("enter")
+        with self.journal.open("a") as stream:
+            stream.write(json.dumps({"event": "human-decision", "ticket": 7, "at": AT,
+                                    "decision_id": "d1", "status": "applied", "comment": "Keep compatibility"}) + "\n")
+            stream.write('{"event":"lifecycle"')
+        packet = self.journal.parent / "escalations/7.md"
+        packet.parent.mkdir()
+        packet.write_text(f"# Escalation #7\n\nCheck failed\n\nRecorded at {AT}\n")
+        (self.journal.parent / "wt-7/.factory").mkdir(parents=True)
+        (self.journal.parent / "wt-7/.factory/handoff-7.md").write_text("Actual worker handoff")
+        first = self.invoke("inspect", number=7, code=1)
+        second = self.invoke("inspect", number=7, code=1)
+        sources = {row.get("path"): row for row in first["sources"] if row.get("path")}
+        self.assertEqual(sources["escalations/7.md"]["text"], packet.read_text())
+        self.assertEqual(sources["wt-7/.factory/handoff-7.md"]["text"], "Actual worker handoff")
+        self.assertIn("Keep compatibility", json.dumps(first["sources"]))
+        self.assertIn(entered["event_id"], json.dumps(first["sources"]))
+        for source in sources.values():
+            self.assertIn(source, second["sources"])
+        runtime = next(value for value in self.values(first) if isinstance(value, dict) and "executions" in value)
+        self.assertEqual(runtime["executions"][0]["state"], "unknown")
+        self.assertIsNone(runtime["executions"][0]["ended_at"])
+        self.assertFalse(runtime["history"]["complete"])
+        self.assertEqual(runtime["events"][0]["at"], entered["at"])
+        ticket = {"number": 7, "title": self.issue["title"], "body": self.issue["body"],
+                  "url": self.issue["html_url"], "events": [], "attempts": []}
+        selected = {row["path"]: row for row in briefing.sources_for(config.Config(root=self.root, repo=REPO), ticket, [])
+                    if row.get("path")}
+        for path in ("escalations/7.md", "wt-7/.factory/handoff-7.md"):
+            self.assertEqual(sources[path], selected[path])
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: reboot inference requires /proc process identity")
     def test_inspect_preserves_artifact_decisions_and_runtime_history_without_writes(self):
         self.journal.parent.mkdir()
         entry = lifecycle.Execution(self.journal, "worker", ticket=7, attempt=1)
