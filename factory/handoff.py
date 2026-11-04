@@ -18,6 +18,7 @@ from subprocess import CalledProcessError
 
 from factory import dispatch, lifecycle
 from factory.config import LABEL_AGENT, LABEL_HUMAN
+from factory.domain import EscalationCode, LifecycleOutcome, ManagerDecision
 
 MARK = "factory-handoff"
 # Runner-local absolute paths; URLs are untouched (`://` and `host/` precede their slashes).
@@ -57,12 +58,17 @@ def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
             # Without its own comment receipt the factory cannot tell its escalation comment from a human's.
             return "the escalation comment was not journaled, so takeover detection cannot clear the manager to run"
         return None
-    if any(e.get("event") == "escalate" and e.get("reason") == "manager_failed" and e.get("round") == r for e in events):
+    if any(
+        e.get("event") == "escalate"
+        and e.get("reason") == EscalationCode.MANAGER_FAILED
+        and e.get("round") == r
+        for e in events
+    ):
         return "the manager could not run, so there is no automatic diagnosis; the cause is unknown until a human looks"
-    if any(e.get("decision") == "HUMAN" for e in decided):
+    if any(e.get("decision") == ManagerDecision.HUMAN for e in decided):
         return "the manager asked for a human decision"
     failed = next((e for e in events if e.get("event") == "lifecycle" and e.get("kind") == "exit"
-                   and e.get("outcome") == "mechanism_failure"
+                   and e.get("outcome") == LifecycleOutcome.MECHANISM_FAILURE
                    and e.get("execution_id") in {d.get("execution_id") for d in decided}), None)
     if failed:
         return f"the manager's {decided[-1].get('decision')} decision could not be applied to GitHub and is never replayed"
@@ -74,8 +80,12 @@ def observe(cfg, n: int, escalation: dict) -> dict | None:
     from factory import plan
     from factory.evidence import EvidenceError
 
-    code = escalation.get("code") or ("ci_failed" if "CI failed" in (escalation.get("reason") or "") else "")
-    reason = "ci" if code == "ci_failed" else "implementation"
+    code = escalation.get("code") or (
+        EscalationCode.CI_FAILED
+        if "CI failed" in (escalation.get("reason") or "")
+        else ""
+    )
+    reason = "ci" if code == EscalationCode.CI_FAILED else "implementation"
     pr, paths = None, []
     try:
         pr = dispatch.gh_json(["pr", "view", f"agent/{n}", "--repo", cfg.repo, "--json", "url,files"])
@@ -174,8 +184,11 @@ def handoff_pass(dry_run: bool = False) -> None:
                 execution.resource("acquired", lock_path, scope="repository")
             try:
                 events = [e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("ticket") == n]
-                escalation = next((e for e in reversed(events) if e.get("event") == "escalate"
-                                   and e.get("reason") != "manager_failed"), None)
+                escalation = next((
+                    e for e in reversed(events)
+                    if e.get("event") == "escalate"
+                    and e.get("reason") != EscalationCode.MANAGER_FAILED
+                ), None)
                 if not escalation or escalation.get("upstream") or not escalation.get("packet"):
                     continue
                 why = terminal(cfg, events, escalation)
@@ -244,7 +257,7 @@ def handoff_pass(dry_run: bool = False) -> None:
                     dispatch.log(f"#{n}: handoff request {request} publication uncertain; reconciled on the next pass")
             except (CalledProcessError, OSError, ValueError) as exc:
                 if not dry_run:
-                    execution.outcome, execution.reason = "mechanism_failure", "github_command_failed"
+                    execution.outcome = LifecycleOutcome.MECHANISM_FAILURE
                 dispatch.log(f"#{n}: handoff failed: {exc}; leaving for human")
             finally:
                 if not dry_run:
