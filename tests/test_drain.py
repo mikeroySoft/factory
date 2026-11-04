@@ -215,5 +215,34 @@ class DrainPassTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 1, proc.stderr)
         self.assertIn("missing drain-check command", json.loads(proc.stdout)["error"])
 
+    def test_default_state_path_honors_home_when_xdg_is_unset_or_empty(self) -> None:
+        self.env["HOME"] = str(self.root / "home")
+        self.flag = Path(self.env["HOME"]) / ".local" / "state" / "district" / "drain"
+        for xdg in (None, ""):
+            with self.subTest(xdg=xdg):
+                self.env.pop("XDG_STATE_HOME", None)
+                if xdg is not None:
+                    self.env["XDG_STATE_HOME"] = xdg
+                self.write_flag()
+                proc = self.check()
+                self.assertEqual(proc.returncode, 1, proc.stderr)
+                self.assertIn(f"skipped: district drain ({REASON}, until", proc.stderr)
+                self.write_flag(hours=-1)
+                proc = self.check()
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertIn("drain flag expired at", proc.stderr)
+
+    def test_missing_or_nontext_reason_keeps_valid_expiry_and_fallback(self) -> None:
+        for fields in ({}, {"reason": None}, {"reason": 7}, {"reason": ""}):
+            with self.subTest(fields=fields):
+                self.write_flag(content=json.dumps({
+                    "expires_at": "2026-11-03T13:00:00Z", **fields,
+                }))
+                proc = self.check()
+                self.assertEqual(proc.returncode, 1, proc.stderr)
+                self.assertEqual(proc.stderr, (
+                    "skipped: district drain (malformed flag, until 2026-11-03T13:00:00Z)\n"
+                ))
+
 if __name__ == "__main__":
     unittest.main()
