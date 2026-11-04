@@ -687,7 +687,7 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     cfg.engine_yield_for_update = engine.get("yield_for_update", cfg.engine_yield_for_update)
     if isinstance(host_engine, dict):
         cfg.engine_yield_for_update = host_engine.get("yield_for_update", cfg.engine_yield_for_update)
-    if type(cfg.engine_yield_for_update) is not bool:
+    if not isinstance(cfg.engine_yield_for_update, bool):
         raise ConfigError("engine.yield_for_update must be true or false")
     if workers:
         if "default" not in workers:

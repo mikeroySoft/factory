@@ -85,6 +85,25 @@ class EngineYieldTest(unittest.TestCase):
         [row] = self.stale_rows()
         self.assertEqual(row["target_commit"], TARGET)
 
+    def test_omitted_policy_signals_without_yielding(self):
+        (self.root / ".factory.toml").write_text(
+            f'[repo]\nslug = "local/{self.root.name}"\n[dispatch]\nmax_active = 1\n'
+        )
+        self.assertEqual(dispatch.main([]), 0)
+        self.assertEqual(self.stages, ["land", "review", "manage", "learn"])
+        self.process.assert_called_once()
+        [row] = self.stale_rows()
+        self.assertIs(row["yield_for_update"], False)
+
+    def test_older_target_still_yields(self):
+        self.host_state(installed=TARGET, target=INSTALLED)
+        self.assertEqual(dispatch.main([]), 0)
+        self.assertEqual(self.stages, ["land", "review"])
+        self.frontier.assert_not_called()
+        self.process.assert_not_called()
+        [row] = self.stale_rows()
+        self.assertEqual((row["installed_commit"], row["target_commit"]), (TARGET, INSTALLED))
+
     def test_ref_switch_uses_district_recorded_target_not_repo_main(self):
         self.assertEqual(dispatch.main([]), 0)
         self.host_state(target=SWITCHED, ref="release-candidate")
