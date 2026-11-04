@@ -18,7 +18,7 @@ class RotationTest(unittest.TestCase):
         context.start()
         self.addCleanup(context.stop)
 
-    def test_rotation_keeps_record_rows_and_open_executions(self):
+    def test_rotation_keeps_watch_rows_and_open_executions(self):
         with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.object(lifecycle, "MAX_BYTES", 20_000), \
                 mock.patch.object(lifecycle, "RETENTION", 2):
@@ -27,10 +27,10 @@ class RotationTest(unittest.TestCase):
             open_exec = lifecycle.Execution(path, "work", ticket=1)
             open_exec.emit("enter")
             open_exec.emit("lock_acquired", lock=str(lock))
-            records = []
+            watch_rows = []
             for i in range(400):
-                row = {"event": "record", "n": i, "pad": "x" * 40}
-                records.append(row)
+                row = {"event": "watch", "n": i, "pad": "x" * 40}
+                watch_rows.append(row)
                 lifecycle.append(path, row)
                 closed = lifecycle.Execution(path, "check", ticket=i)
                 closed.emit("enter")
@@ -43,8 +43,8 @@ class RotationTest(unittest.TestCase):
             for segment in segments:
                 with gzip.open(segment, "rb") as handle:
                     handle.read()
-            got = [row for row in lifecycle.read_events(path) if row.get("event") == "record"]
-            self.assertEqual(got, records)
+            got = [row for row in lifecycle.read_events(path) if row.get("event") == "watch"]
+            self.assertEqual(got, watch_rows)
             (active,) = [e for e in lifecycle.observe(path) if e["execution_id"] == open_exec.execution_id]
             self.assertEqual(active["state"], "active")
             self.assertEqual(active["events"][-1]["locks"][0]["path"], str(lock.absolute()))
@@ -63,25 +63,25 @@ class RotationTest(unittest.TestCase):
 
             with mock.patch.object(lifecycle, "_rotate", slow):
                 writer = threading.Thread(
-                    target=lambda: lifecycle.append(path, {"event": "record", "pad": "y" * 3000}))
+                    target=lambda: lifecycle.append(path, {"event": "watch", "pad": "y" * 3000}))
                 writer.start()
                 started.wait(5)
-            late = threading.Thread(target=lambda: lifecycle.append(path, {"event": "late"}))
+            late = threading.Thread(target=lambda: lifecycle.append(path, {"event": "scheduling"}))
             late.start()
             release.set()
             writer.join()
             late.join()
             rows = lifecycle.read_events(path)
-            self.assertEqual([r["event"] for r in rows], ["record", "late"])
-            self.assertIn(b'{"event":"late"}\n', path.read_bytes())
+            self.assertEqual([r["event"] for r in rows], ["watch", "scheduling"])
+            self.assertIn(b'{"event":"scheduling"}\n', path.read_bytes())
 
     def test_readers_include_segments_beyond_current_retention(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(lifecycle, "RETENTION", 4):
             path = Path(tmp) / "events.jsonl"
-            lifecycle.append(path, {"event": "record", "n": 0})
+            lifecycle.append(path, {"event": "watch", "n": 0})
             for n in range(1, 11):
                 with gzip.open(Path(tmp) / f"events.jsonl.{n}.gz", "wb") as segment:
-                    segment.write(json.dumps({"event": "record", "n": n}).encode() + b"\n")
+                    segment.write(json.dumps({"event": "watch", "n": n}).encode() + b"\n")
             expected = list(range(10, 0, -1)) + [0]
             self.assertEqual([row["n"] for row in lifecycle.read_events(path)], expected)
             with lifecycle.journal_snapshot(path, create=False) as (rows, _):
@@ -94,8 +94,8 @@ class RotationTest(unittest.TestCase):
             path = Path(tmp) / "events.jsonl"
             for n in (1, 9):
                 with gzip.open(Path(tmp) / f"events.jsonl.{n}.gz", "wb") as segment:
-                    segment.write(json.dumps({"event": "record", "n": n}).encode() + b"\n")
-            lifecycle.append(path, {"event": "record", "n": 0, "pad": "x" * 300})
+                    segment.write(json.dumps({"event": "watch", "n": n}).encode() + b"\n")
+            lifecycle.append(path, {"event": "watch", "n": 0, "pad": "x" * 300})
             self.assertEqual([row["n"] for row in lifecycle.read_events(path)], [9, 1, 0])
             self.assertEqual(sorted(p.name for p in Path(tmp).glob("events.jsonl.*.gz")),
                              ["events.jsonl.1.gz", "events.jsonl.2.gz", "events.jsonl.4.gz"])
@@ -112,28 +112,28 @@ class RotationTest(unittest.TestCase):
                 execution = lifecycle.Execution(path, "worker", ticket=7)
                 execution.emit("enter")
                 execution.emit("lock_acquired", lock=str(lock))
-                records = []
+                watch_rows = []
                 for n in range(55):
-                    row = {"event": "record", "n": n, "pad": "x" * 550}
-                    records.append(row)
+                    row = {"event": "watch", "n": n, "pad": "x" * 550}
+                    watch_rows.append(row)
                     lifecycle.append(path, row)
                     with lifecycle.scope(path, "check", ticket=n):
                         pass
                 self.assertEqual(len(list(Path(tmp).glob("events.jsonl.*.gz"))), 8)
                 with mock.patch.object(lifecycle, "RETENTION", 4):
                     self.assertEqual(
-                        [row for row in lifecycle.read_events(path) if row.get("event") == "record"],
-                        records,
+                        [row for row in lifecycle.read_events(path) if row.get("event") == "watch"],
+                        watch_rows,
                     )
                     for n in range(55, 60):
-                        row = {"event": "record", "n": n, "pad": "y" * 550}
-                        records.append(row)
+                        row = {"event": "watch", "n": n, "pad": "y" * 550}
+                        watch_rows.append(row)
                         lifecycle.append(path, row)
                     segments = list(Path(tmp).glob("events.jsonl.*.gz"))
                     self.assertEqual(len(segments), 4)
                     self.assertEqual(
-                        [row for row in lifecycle.read_events(path) if row.get("event") == "record"],
-                        records,
+                        [row for row in lifecycle.read_events(path) if row.get("event") == "watch"],
+                        watch_rows,
                     )
                     for segment in segments:
                         with gzip.open(segment, "rb") as archive:

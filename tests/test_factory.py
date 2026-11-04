@@ -28,6 +28,7 @@ atexit.register(shutil.rmtree, XDG, ignore_errors=True)
 from datetime import UTC
 
 from factory import __version__, config, lifecycle, manage, runtime_events
+from factory.domain import ReviewVerdict
 
 # A worker runs this suite inside the dispatcher's handoff env; an inherited context would
 # redirect every fixture's lifecycle rows (gate timeouts, review verdicts...) into the live
@@ -3417,7 +3418,7 @@ class DispatchTest(unittest.TestCase):
                         ],
                     ))
                     verdict, findings = dispatch.review(repo, 7, "PASS", head)
-                    self.assertEqual(verdict, "REVISE")
+                    self.assertEqual(verdict, ReviewVerdict.ERROR)
                     self.assertIn("Factory rejected reviewer evidence", findings)
 
     def test_review_keeps_structured_error_event_in_unavailable_diagnostic(self) -> None:
@@ -3447,7 +3448,7 @@ class DispatchTest(unittest.TestCase):
             with mock.patch.object(dispatch.time, "sleep"):
                 verdict, findings = dispatch.review(repo, 7, "PASS", head)
 
-            self.assertEqual(verdict, "REVISE")
+            self.assertEqual(verdict, ReviewVerdict.ERROR)
             self.assertIn("rate_limit_error", findings)
             self.assertIn("account limit", findings)
 
@@ -3685,7 +3686,7 @@ class DispatchTest(unittest.TestCase):
             with mock.patch.object(dispatch, "run", side_effect=raced_run):
                 verdict, findings = dispatch.review(repo, 7, "PASS", expected)
 
-            self.assertEqual(verdict, "REVISE")
+            self.assertEqual(verdict, ReviewVerdict.ERROR)
             self.assertIn("state_changed", findings)
             review_event = next(
                 e for e in lifecycle.read_events(dispatch.EVENTS)

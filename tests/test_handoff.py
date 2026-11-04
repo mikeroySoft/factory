@@ -249,7 +249,7 @@ class HandoffCli(unittest.TestCase):
         self.assertEqual([e["request"] for e in self.events("handoff")], ["7/1"])
         events = self.factory / "events.jsonl"
         with mock.patch.object(lifecycle, "MAX_BYTES", 0):
-            lifecycle.append(events, {"event": "note"})
+            lifecycle.append(events, {"event": "watch"})
         self.assertNotIn('"escalate"', events.read_text())  # archived to events.jsonl.1.gz
         dispatch.configure(config.Config(self.repo, REPO))
         _, round_number = dispatch.escalation_packet(7, "PR #9: rebase onto moved main conflicts", None, self.factory / "wt-7")

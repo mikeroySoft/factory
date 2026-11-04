@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from factory import config, dispatch, learn, lifecycle
+from factory.domain import ReviewVerdict
 
 APPROVE = '```json\n{"verdict":"APPROVE","findings":[]}\n```\nVERDICT: APPROVE'
 REVISE = (
@@ -178,8 +179,20 @@ class LearnCandidateReviewTest(unittest.TestCase):
                     publish.assert_not_called()
                     rows = lifecycle.read_events(cfg.factory / "events.jsonl")
                     [record] = [row for row in rows if row["event"] == "learn-candidate-review"]
-                    self.assertEqual(record["verdict"], "REVISE")
-                    self.assertEqual(record["reason"], reason)
+                    expected = (
+                        ReviewVerdict.REVISE
+                        if reason == ReviewVerdict.REVISE
+                        else ReviewVerdict.ERROR
+                    )
+                    self.assertEqual(record["verdict"], expected)
+                    self.assertEqual(record["accepted"], expected == ReviewVerdict.REVISE)
+                    self.assertEqual(
+                        record["reason"],
+                        "reviewer_unavailable" if reason == "unparsed_verdict" else reason,
+                    )
+                    if reason == "unparsed_verdict":
+                        self.assertEqual(record["failure_reason"], reason)
+                        self.assertEqual(record["attempts"], 3)
                     self.assertIn("200 tokens", record["proposal"])
                     if reason != "REVISE":
                         self.assertIn("Factory rejected reviewer evidence", record["findings"])
