@@ -275,6 +275,40 @@ class DispatchLaneTest(unittest.TestCase):
                     ["unknown", "1", "0", "n/a", "0", "0", "0"],
                 ])
 
+    def test_lane_stats_require_both_time_bounds_to_filter(self):
+        bound = datetime(2026, 11, 3, tzinfo=UTC)
+        audit = {7: [
+            {"event": "claimed", "lane": 2, "at": (bound - timedelta(days=1)).isoformat()},
+            {"event": "attempt", "attempt": 1, "gate": "PASS", "at": bound.isoformat()},
+            {"event": "merged", "at": (bound + timedelta(days=1)).isoformat()},
+        ]}
+        for start, end in ((bound, None), (None, bound)):
+            with self.subTest(start=start, end=end):
+                self.assertEqual(stats.lane_metrics(audit, start, end), [
+                    {"lane": 2, "claims": 1, "attempts": 1, "first_pass": 1.0,
+                     "reviews": 0, "merges": 1, "escalations": 0},
+                ])
+
+    def test_lane_first_pass_ignores_non_attempt_events_with_gate_metadata(self):
+        audit = {7: [
+            {"event": kind, "lane": 2, "attempt": 1, "gate": "FAIL"}
+            for kind in ("claimed", "review", "merged", "escalate", "approval", "attempt_x", "attempts")
+        ] + [{"event": "attempt", "lane": 2, "attempt": 1, "gate": "PASS"}]}
+        self.assertEqual(stats.lane_metrics(audit), [
+            {"lane": 2, "claims": 1, "attempts": 1, "first_pass": 1.0,
+             "reviews": 1, "merges": 1, "escalations": 1},
+        ])
+
+    def test_lane_first_pass_excludes_skipped_gates(self):
+        audit = {7: [
+            {"event": "attempt", "lane": 2, "attempt": 1, "gate": gate}
+            for gate in ("PASS", "SKIP", "FAIL")
+        ]}
+        self.assertEqual(stats.lane_metrics(audit), [
+            {"lane": 2, "claims": 0, "attempts": 3, "first_pass": 0.5,
+             "reviews": 0, "merges": 0, "escalations": 0},
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()
