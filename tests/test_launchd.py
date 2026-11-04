@@ -288,5 +288,113 @@ class LaunchdTest(unittest.TestCase):
                     proc.communicate()
 
 
+class DetachedPassTest(unittest.TestCase):
+    def test_bootout_waits_for_detached_worker_cleanup_before_watch(self):
+        import json
+        import signal
+        import sys
+        import textwrap
+        import time
+        from contextlib import suppress
+
+        script = textwrap.dedent("""
+            import json, os, signal, subprocess, sys, time
+            from contextlib import ExitStack
+            from pathlib import Path
+            from unittest.mock import patch
+            from factory import config, dispatch, onboard
+            from factory import learn, manage
+            from tests.test_schedule import ticket
+            root = Path(sys.argv[2])
+            mode = sys.argv[1]
+            if mode == 'worker':
+                def stop(*_):
+                    time.sleep(0.1)
+                    (root / 'stopped').touch()
+                    sys.exit(0)
+                signal.signal(signal.SIGTERM, stop)
+                (root / 'worker.pid').write_text(str(os.getpid()))
+                while True:
+                    time.sleep(1)
+            elif mode == 'dispatch':
+                cfg = config.Config(root=root, repo='acme/widgets', max_active=1)
+                def work(issue, *_):
+                    issue['_factory_admitted'].set()
+                    dispatch.run_worker(
+                        [sys.executable, __file__, 'worker', str(root)], root,
+                        root / 'worker.log', root / 'handoff.md', journal=False)
+                    (root / 'continued').touch()
+                with ExitStack() as stack:
+                    stack.enter_context(patch.object(config, 'load', return_value=cfg))
+                    stack.enter_context(patch.object(dispatch, 'WATCH_POLL', 0.05))
+                    stack.enter_context(patch.object(dispatch, '_activity', return_value=(0, 0, 0, 0)))
+                    stack.enter_context(patch.object(dispatch, 'active_tickets', return_value=[]))
+                    stack.enter_context(patch.object(dispatch, 'frontier', return_value=[
+                        ticket(1, '2026-01-01T00:00:00Z', body='unbound')]))
+                    stack.enter_context(patch.object(dispatch, 'process_ticket', side_effect=work))
+                    for module, name in ((dispatch, 'land_pass'), (dispatch, 'review_intake_pass'),
+                                         (learn, 'learn_pass'), (manage, 'manage_pass')):
+                        stack.enter_context(patch.object(module, name))
+                    sys.exit(dispatch.main(['--dry-run']))
+            elif mode == 'watch':
+                pid = int((root / 'worker.pid').read_text())
+                try:
+                    os.kill(pid, 0)
+                    alive = True
+                except ProcessLookupError:
+                    alive = False
+                (root / 'watch.json').write_text(json.dumps({
+                    'worker_alive': alive, 'cleaned': (root / 'stopped').exists(),
+                    'result': os.environ['SERVICE_RESULT'],
+                    'status': os.environ['EXIT_STATUS']}))
+            else:
+                popen = subprocess.Popen
+                def launch(argv, **kwargs):
+                    phase = argv[4]
+                    cmd = [sys.executable, '-c', 'pass'] if phase == 'triage' else [
+                        sys.executable, __file__, phase, str(root)]
+                    return popen(cmd, **kwargs)
+                with patch.object(onboard.subprocess, 'Popen', side_effect=launch):
+                    sys.exit(onboard.pass_main([]))
+        """)
+        for target in ('wrapper', 'group'):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                source = root / 'pass_smoke.py'
+                source.write_text(script)
+                proc = subprocess.Popen([sys.executable, str(source), 'wrapper', tmp],
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                        env={**os.environ, 'PYTHONPATH': str(Path(__file__).resolve().parents[1])},
+                                        text=True, start_new_session=True)
+                try:
+                    deadline = time.monotonic() + 10
+                    while not (root / 'worker.pid').exists() and proc.poll() is None and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    if proc.poll() is not None:
+                        _, stderr = proc.communicate()
+                        self.fail(f'wrapper exited before worker startup: {stderr}')
+                    self.assertTrue((root / 'worker.pid').exists(), 'detached worker did not start')
+                    pid = int((root / 'worker.pid').read_text())
+                    self.assertNotEqual(os.getpgid(pid), os.getpgid(proc.pid))
+                    if target == 'group':
+                        os.killpg(proc.pid, signal.SIGTERM)
+                    else:
+                        proc.send_signal(signal.SIGTERM)
+                    _, stderr = proc.communicate(timeout=10)
+                    self.assertEqual(proc.returncode, 143, stderr)
+                    self.assertEqual(json.loads((root / 'watch.json').read_text()), {
+                        'worker_alive': False, 'cleaned': True, 'result': 'signal', 'status': '15'})
+                    self.assertFalse((root / 'continued').exists(), 'pipeline continued after cancellation')
+                    with self.assertRaises(ProcessLookupError):
+                        os.kill(pid, 0)
+                finally:
+                    with suppress(ProcessLookupError):
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    if (root / 'worker.pid').exists():
+                        with suppress(ProcessLookupError):
+                            os.killpg(int((root / 'worker.pid').read_text()), signal.SIGKILL)
+                    proc.communicate()
+
+
 if __name__ == '__main__':
     unittest.main()
