@@ -72,16 +72,17 @@ DEFAULT_LLM_MODEL = "qwen3:30b"
 DEFAULT_INSTALL = {"every": "10min", "dashboard": False, "host": "127.0.0.1", "python": None, "env": {}}
 ENGINE_REPO = "mikeroySoft/factory"  # factory's own source repo: `[watch].engine_repo` default
 
-# Host-side layer: `$XDG_CONFIG_HOME/factory/config.toml`, same table shapes
-# as `.factory.toml`. `[defaults.*]` < `[repo."owner/name".*]` < the repo file.
-# Only these tables/keys are taken from the host: a clone on another machine
-# must run the same gate, so gate checks, leak scan and upstream never come
-# from here. Everything else in the host file is left for other tools (District).
+# Host-side layer: `$XDG_CONFIG_HOME/factory/config.toml`, shaped as
+# `[defaults]` < `[repo."owner/name"]` < the repo file.
+# Only these tables, nested keys, and scalars are taken from the host: a clone
+# on another machine must run the same gate, so gate checks, leak scan and
+# upstream never come from here. Everything else is left for other tools (District).
 # `worker_wrap` is host-only: a committed `[worker_wrap]` is refused, never merged.
 # `leak_scan.extra` is read from both and concatenated: host terms only add to the scan.
 HOST_TABLES = frozenset({"triage", "workers", "worker_wrap", "manager", "install", "prices"})
 HOST_KEYS = {"dashboard": ("port",), "gate": ("lock",),
              "review": ("command", "second_command", "json_mode")}
+HOST_SCALARS = ("host_name", "triage_host", "claim_ttl")
 
 # Every key the loader reads, by table; `factory doctor` reports anything else.
 # `workers` is label-keyed, `gate.check` is a list of {name, run, exclusive, when}.
@@ -89,6 +90,7 @@ KNOWN_KEYS = {
     "repo": ("slug", "upstream", "main"),
     "dispatch": ("max_active", "max_attempts", "budget_min", "idle_timeout", "exit_grace",
                  "review_rounds", "cost_pattern", "signoff"),
+    "engine": ("yield_for_update",),
     "workers": None,
     "worker_wrap": ("command",),
     "review": ("command", "second_command", "json_mode", "policy"),
@@ -176,6 +178,7 @@ class Config:
     idle_timeout: float = 30  # minutes without worker log output or worktree change = stuck; 0 off
     exit_grace: float = 300  # seconds a done (handoff/commit) worker may stay quiet before termination; 0 off
     review_rounds: int = 1  # REVISE -> worker -> re-review cycles before escalating
+    engine_yield_for_update: bool = False
     signoff: bool = True  # `git commit -s`; Signed-off-by trailer on merges
     cost_pattern: str | None = None  # regex with one capture: dollars in the worker log
     workers: dict[str, list[str]] = field(
@@ -247,6 +250,20 @@ class Config:
     watch_host_failure_minutes: int = 60
     watch_bands: list[Band] = field(default_factory=list)
     raw_repo: dict = field(default_factory=dict)  # the committed file alone, before host layering
+    host_name: str | None = None
+    triage_host: str | None = None
+    claim_ttl: str = "2h"
+
+    @property
+    def claim_ttl_seconds(self) -> int:
+        if not isinstance(self.claim_ttl, str) or re.fullmatch(r"(?:\d+[smhd])+", self.claim_ttl) is None:
+            raise ConfigError("claim_ttl must be a duration using s, m, h, or d (for example, 2h)")
+        multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+        seconds = sum(int(value) * multipliers[unit]
+                      for value, unit in re.findall(r"(\d+)([smhd])", self.claim_ttl))
+        if seconds <= 0:
+            raise ConfigError("claim_ttl must be a positive duration")
+        return seconds
 
     @property
     def name(self) -> str:
@@ -381,6 +398,13 @@ def engine_commit() -> str | None:
     return name if re.fullmatch(r"[0-9a-f]{40}", name) else None
 
 
+def engine_target() -> str | None:
+    """District's recorded CI-green target; never resolve refs or CI in Factory."""
+    engine = host_config().get("defaults", {}).get("engine", {})
+    target = engine.get("target") if isinstance(engine, dict) else None
+    return target if isinstance(target, str) and re.fullmatch(r"[0-9a-f]{40}", target) else None
+
+
 def engine_drift(cfg: Config) -> str | None:
     """Warning when `cfg.root` is factory's own source and origin/<main> is not the installed engine."""
     try:
@@ -416,8 +440,9 @@ def local_endpoint(url: str) -> bool:
 
 
 def host_filter(table: dict) -> dict:
-    """Keep only the host-owned tables/keys of one host section."""
-    out = {k: table[k] for k in HOST_TABLES if isinstance(table.get(k), dict)}
+    """Keep only the host-owned tables, nested keys, and scalars of one host section."""
+    out = {k: table[k] for k in HOST_SCALARS if k in table}
+    out.update({k: table[k] for k in HOST_TABLES if isinstance(table.get(k), dict)})
     for name, keys in HOST_KEYS.items():
         sub = table.get(name)
         if isinstance(sub, dict) and (kept := {k: sub[k] for k in keys if k in sub}):
@@ -437,6 +462,8 @@ def unknown_keys(raw: dict) -> list[str]:
     """Dotted paths in a `.factory.toml`-shaped dict the loader does not read."""
     out = []
     for table, val in raw.items():
+        if table in HOST_SCALARS:
+            continue
         if table not in KNOWN_KEYS:
             out.append(table)
             continue
@@ -644,6 +671,10 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     layered = merge(host_filter(host_sections[0]), host_filter(host_sections[1]))
     host_review = layered.get("review", {})
     raw, raw_repo = merge(layered, raw), raw
+    for key in HOST_SCALARS:
+        if key in raw_repo:
+            raise ConfigError(f"{path}: {key} is host-only; set it in {host_config_path()} "
+                              f"[defaults] or [repo.\"<slug>\"]")
     repo_t, dispatch, workers = raw.get("repo", {}), raw.get("dispatch", {}), raw.get("workers", {})
     gate, leak, triage, dash = raw.get("gate", {}), raw.get("leak_scan", {}), raw.get("triage", {}), raw.get("dashboard", {})
     manager = raw.get("manager", {})
@@ -657,6 +688,17 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     if not isinstance(evaluation, dict):
         raise ConfigError("[eval] must be a table")
     cfg = Config(root=root, repo=slug, raw_repo=raw_repo)
+    for key in ("host_name", "triage_host"):
+        value = layered.get(key)
+        if value is not None and (
+            not isinstance(value, str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,44}", value) is None
+        ):
+            raise ConfigError(f"{key} must start with an ASCII letter or digit, contain only "
+                              "ASCII letters, digits, '.', '_' or '-', and be at most 45 characters")
+        setattr(cfg, key, value)
+    cfg.claim_ttl = layered.get("claim_ttl", cfg.claim_ttl)
+    _ = cfg.claim_ttl_seconds
     cfg.watch_bands = band_settings(root / BANDS_NAME)
     cfg.upstream = repo_t.get("upstream") or None
     cfg.main = repo_t.get("main", cfg.main)
@@ -670,6 +712,16 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     cfg.review_rounds = int(dispatch.get("review_rounds", cfg.review_rounds))
     cfg.cost_pattern = dispatch.get("cost_pattern") or None
     cfg.signoff = bool(dispatch.get("signoff", cfg.signoff))
+    engine = raw.get("engine", {})
+    if not isinstance(engine, dict):
+        raise ConfigError("[engine] must be a table")
+    host_engine = host.get("defaults", {}).get("engine", {})
+    # The one shared engine's host policy is authoritative, even over a repo opt-out.
+    cfg.engine_yield_for_update = engine.get("yield_for_update", cfg.engine_yield_for_update)
+    if isinstance(host_engine, dict):
+        cfg.engine_yield_for_update = host_engine.get("yield_for_update", cfg.engine_yield_for_update)
+    if not isinstance(cfg.engine_yield_for_update, bool):
+        raise ConfigError("engine.yield_for_update must be true or false")
     if workers:
         if "default" not in workers:
             raise ConfigError(f"{path}: [workers] needs a `default` command")

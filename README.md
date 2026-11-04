@@ -1195,9 +1195,120 @@ retention = 8    # gzip segments kept
 The shared host file is `$XDG_CONFIG_HOME/factory/config.toml` (default
 `~/.config/factory/config.toml`). `[defaults.engine]` belongs to District:
 `ref`, `sha`, `previous`, and `installed_at` describe its installed engine
-snapshot. Factory leaves this metadata opaque and out of pipeline configuration;
-`doctor` accepts it only under `defaults`. Unknown tables and an `engine` table
-under a per-repository section still produce host-config warnings.
+snapshot; `target`, `target_ref`, and `resolved_at` describe the target District
+resolved and CI-checked for installation. At pass start, Factory compares its
+installed commit with that recorded `target` SHA, never resolving `factory_ref`
+or checking engine CI itself. A mismatch emits one `engine-stale` event per
+non-dry pass, with `installed_commit`, `target_commit`, and `yield_for_update`.
+Missing installed identity or a missing/invalid target does not establish staleness.
+Other District metadata stays outside pipeline configuration; `doctor` accepts it
+only under `defaults`. An `engine` table under a per-repository host section
+still produces a host-config warning.
+
+`[engine] yield_for_update = true` in `.factory.toml` opts a repository into
+yielding when stale (default false). For the whole shared host, set:
+
+```toml
+[defaults.engine]
+yield_for_update = true
+```
+
+This host policy takes precedence over every repository's setting, so a repo
+opt-out cannot keep the shared engine busy. A stale pass, including `--ticket`,
+finishes land and review intake, then exits successfully without claims, manager
+work, learning, or opening a release PR. Dry runs report the yield without
+writing an event. Once District records the installed SHA equal to its target,
+normal passes resume. After a `factory_ref` switch, Factory follows District's
+next recorded target, not a separately computed branch head. District still
+owns green-CI eligibility and the install window: pausing timers, waiting for
+idle, installing, and resuming; Factory does not change services or timers.
+
+Outcome check for #539: over the first seven days after deployment, retain the
+host's engine snapshots (`sha`, `installed_at`) and compare GitHub main-merge
+timestamps with the first installed snapshot containing each merge. The median
+merge-to-install lag must be at most two hours. This post-deployment observation
+is separate from the dispatcher regression tests.
+
+**Several hosts serving one repository.**
+
+Opt in on each machine through the shared host file. Values directly in
+`[repo."owner/name"]` override `[defaults]`:
+
+```toml
+[defaults]
+host_name = "tank"
+triage_host = "tank"
+claim_ttl = "2h"
+
+[repo."owner/name"]
+claim_ttl = "3h"
+```
+
+Use a distinct `host_name` on every host: 1–45 ASCII letters, digits, `.`, `_`,
+or `-`, starting with a letter or digit. Set the same `triage_host` on all
+hosts to avoid duplicate triage; other hosts exit 0 with
+`triage: skipped, triage host is <name>` before reading issues or writing events.
+Unset `triage_host` keeps triage enabled everywhere. `claim_ttl` defaults to
+`"2h"` and accepts positive `s`, `m`, `h`, or `d` durations, including `"1h30m"`.
+`factory doctor` reports the effective host settings.
+
+Inside the existing per-ticket lock, dispatch adds `host:<name>` and a comment
+whose first line is `Factory claim: host=<name> nonce=<uuid> at=<iso8601>`.
+Only comments authored by the authenticated dispatcher account count as claims.
+After fresh label/comment reads, the earliest live comment wins, ordered by
+GitHub creation time and then numeric comment ID. A loser records `claim_lost`
+and removes its own comment and label without assigning or launching a worker.
+The winner assigns `@me` and refreshes its comment every TTL/4 while the ticket
+pipeline runs. Unclaim always applies escalation/requeue labels; only the owning
+host can remove an existing claim's `@me`, host label and comment, even after expiry.
+An in-process claim must also match the elected nonce before cleanup. Tickets
+assigned before host claims were enabled retain the original `@me` release path.
+If the label/assignee edit fails, unclaim retains its comment and host label so
+another host can recover the assignment after TTL expiry. Successful host-label
+removals journal `claim-label-removed` receipts. The manager ignores those exact
+labels from the authenticated dispatcher only before the recorded escalation
+comment; human removals and later edits still hold automatic management.
+
+Expired claims are admitted through the frontier only when no other hold exists.
+A human assignee or an open `agent/<ticket>` PR with an expired claim remains a
+hold after heartbeats stop, so completed work awaiting CI/review/merge is not run again.
+Each heartbeat revalidates the elected host and nonce. A displaced owner stops
+renewing rather than reviving an expired claim ahead of its replacement.
+Every refresh requeue publishes an authenticated `Factory requeue: nonce=<uuid>`
+issue comment with the refresh instructions, including when the owner releases
+its claim. The next host can consume that context even after the claim is deleted.
+Deferred actionable review rework uses the same ownership-aware release and shares
+its findings, so another host can resume the existing PR after the lease expires.
+Shared instructions take precedence over this host's local requeue journal. Local
+risk-disagreement history carries forward only when its instructions match the
+selected context; an intervening foreign requeue cannot trigger early escalation.
+Escalation comments carry the same nonce marker on their second line, preserving
+the escalation prefix. A later manager/human `ready-for-agent` relabel can resume
+the expired claim's existing PR; its live heartbeat still holds admission.
+Neither transition can release a later worker's claim or its completed-PR hold.
+Expired ownership follows election order, not the newest raw comment: a contender
+created during the winner's last live lease cannot supersede its requeue marker
+just because loser cleanup failed. A claim created at or after that lease expires
+starts a new election, so an old requeue cannot release newer completed work.
+Assigned stale claims stay intact until a replacement wins and assigns, so admission
+or claim failures cannot strand the shared `@me` assignment without recovery evidence.
+Dispatch then rechecks the heartbeat, removes stale comments/labels without clearing
+the shared assignment, and records `claim-released` with the old host and last heartbeat.
+The elected owner revalidates its nonce before cleanup; a losing contender still
+deleting its live claim cannot block retirement of old stale ownership. Owner
+unclaim also retires older stale claims before deleting its own comment, so
+leftover claims cannot strand a later refresh requeue or escalation/relabel.
+Unassigned stale claims can be released before election. A foreign host label without
+a claim comment remains a hold; inspect it before removing it.
+Cleanup removes the host label before deleting its last claim comment, so a
+failed label edit retains TTL recovery evidence for the next pass. Another
+same-host contender keeps its label. If comment deletion fails with the comment
+still present, cleanup restores the label and surfaces the error.
+Hosts need synchronized clocks and current GitHub reads. This comment-based
+lease is not a fencing token for a disconnected worker that outlives its TTL.
+With `host_name` unset, dispatch makes no host-label/comment calls and triage
+always runs, even when `triage_host` is configured.
+
 
 `[worker_wrap]` is host-only: set `command` under `[defaults.worker_wrap]` or
 `[repo."owner/name".worker_wrap]` (per-repo wins). Its argv is prepended to
