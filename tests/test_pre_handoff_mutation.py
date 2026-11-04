@@ -85,6 +85,24 @@ class PreHandoffMutationTest(unittest.TestCase):
         self.assertIn("incomplete: 1 mutants not started and 1 cut short", report)
         self.assertNotIn(SURVIVOR, report)
 
+    def test_on_time_incomplete_evidence_is_carried_without_failing_attempt_gate(self):
+        incomplete = (
+            "ran 0 of 2 mutants in 1s: none; 0 survived\n"
+            "incomplete: 1 mutants not started and 1 cut short by the 1s deadline\n"
+            "worker mutation: FAIL\n"
+        )
+        (ok, report, _, _), gate = self.worker_round(incomplete)
+        self.assertTrue(ok, report)
+        gate.assert_called_once()
+        self.assertIn("attempt gate passed", report)
+        self.assertIn(incomplete.strip(), report)
+        handoff_path = self.repo / ".factory/handoff-7.md"
+        self.assertIn(incomplete.strip(), handoff_path.read_text())
+        self.assertFalse(dispatch._handoff_done(handoff_path))
+        attempt = next(row for row in lifecycle.read_events(dispatch.EVENTS) if row.get("event") == "attempt")
+        self.assertEqual(attempt["gate"], "PASS")
+        self.assertFalse(attempt["finished"])
+
     def test_stale_passing_report_cannot_finish_missing_current_run(self):
         (ok, report, _, _), gate = self.worker_round(None, expired=True, stale=PASS)
         self.assertFalse(ok, report)

@@ -234,6 +234,20 @@ class WorkerMutationReportTest(unittest.TestCase):
             self.assertTrue(output.getvalue().endswith("worker mutation: FAIL\n"))
             mutate.assert_not_called()
 
+    def test_worker_leaves_time_to_commit_handoff_and_exit(self) -> None:
+        result = SimpleNamespace(
+            worker_outcome=WorkerOutcome.NORMAL, test_outcome=TestOutcome.KILLED,
+            diff="-value = 1\n+value = 2\n", output="assertion failed",
+        )
+        status, output, report, mutate = self.run_mutation(result, worker_deadline=105)
+
+        self.assertEqual(status, 1, report)
+        self.assertEqual(report, output)
+        self.assertIn("incomplete: 1 mutants not started and 0 cut short", report)
+        self.assertNotIn("1 killed", report)
+        self.assertTrue(report.endswith("worker mutation: FAIL\n"))
+        mutate.assert_not_called()
+
     def test_preparation_exception_is_durable_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             report = Path(directory) / ".factory/mutation-545.md"
