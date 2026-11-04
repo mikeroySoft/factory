@@ -147,6 +147,8 @@ class MeasuredRollbackTest(unittest.TestCase):
                                              EVENTS=self.events, REPO=self.cfg.repo))
         self.pr = {"number": 468, "headRefName": self.branch, "headRefOid": self.head,
                    "baseRefName": "main", "isDraft": False, "reviewDecision": "CHANGES_REQUESTED"}
+        # Factory REQUEST_CHANGES findings are COMMENT reviews, not a human veto.
+        self.pr["reviewDecision"] = ""
         self.enterContext(mock.patch.object(dispatch, "pr_checks", return_value=[{"bucket": "pass"}]))
         self.enterContext(mock.patch.object(dispatch, "gh_json", side_effect=self.gh))
         real_run = dispatch.run
@@ -248,3 +250,10 @@ class MeasuredRollbackTest(unittest.TestCase):
                      {"event": "gate", "branch": branch, "head": self.head, "gate": "PASS"})
         learn.promote_pass([self.pr])
         self.assertEqual([r["pr"] for r in self.merged()], [468])
+
+    def test_human_requested_changes_blocks_measured_restore_even_with_approval(self) -> None:
+        self.pr["reviewDecision"] = "CHANGES_REQUESTED"
+        self.journal({"event": "review-result", "pr": 468, "head": self.head, "verdict": "APPROVE"})
+        learn.promote_pass([self.pr])
+        self.assertEqual(self.merged(), [])
+        self.assertFalse(any(cmd[:3] == ["gh", "pr", "merge"] for cmd in self.commands))
