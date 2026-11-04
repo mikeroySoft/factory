@@ -2286,6 +2286,7 @@ def _parse_review_output(
 def _outside_diff_findings(diff: str, findings: str) -> int:
     """Count validated citations outside displayed hunks; never alter the verdict."""
     spans: dict[str, list[range]] = {}
+    in_hunk = False
     for line in diff.splitlines():
         if line.startswith("diff --git "):
             in_hunk = False
