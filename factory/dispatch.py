@@ -580,13 +580,20 @@ def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
 
 
 def delete_host_claim(n: int, claim: dict) -> None:
+    remove_label = not any(row["host"] == claim["host"] and row["id"] != claim["id"]
+                           for row in host_claims(n))
+    if remove_label:
+        # Keep the comment as durable TTL recovery evidence until label cleanup succeeds.
+        run(["gh", "issue", "edit", str(n), "--repo", REPO,
+             "--remove-label", f"host:{claim['host']}"])
     result = run(["gh", "api", f"repos/{REPO}/issues/comments/{claim['id']}",
                   "--method", "DELETE"], check=False)
     if result.returncode and any(row["id"] == claim["id"] for row in host_claims(n)):
+        if remove_label:
+            run(["gh", "issue", "edit", str(n), "--repo", REPO,
+                 "--add-label", f"host:{claim['host']}"])
         result.check_returncode()
-    if not any(row["host"] == claim["host"] for row in host_claims(n)):
-        run(["gh", "issue", "edit", str(n), "--repo", REPO,
-             "--remove-label", f"host:{claim['host']}"])
+    if remove_label:
         record("claim-label-removed", ticket=n, label=f"host:{claim['host']}")
 
 

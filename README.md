@@ -1226,6 +1226,10 @@ unclaim also retires older stale claims before deleting its own comment, so
 leftover claims cannot strand a later refresh requeue or escalation/relabel.
 Unassigned stale claims can be released before election. A foreign host label without
 a claim comment remains a hold; inspect it before removing it.
+Cleanup removes the host label before deleting its last claim comment, so a
+failed label edit retains TTL recovery evidence for the next pass. Another
+same-host contender keeps its label. If comment deletion fails with the comment
+still present, cleanup restores the label and surfaces the error.
 Hosts need synchronized clocks and current GitHub reads. This comment-based
 lease is not a fencing token for a disconnected worker that outlives its TTL.
 With `host_name` unset, dispatch makes no host-label/comment calls and triage
