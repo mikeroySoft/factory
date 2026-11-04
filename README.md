@@ -1195,9 +1195,39 @@ retention = 8    # gzip segments kept
 The shared host file is `$XDG_CONFIG_HOME/factory/config.toml` (default
 `~/.config/factory/config.toml`). `[defaults.engine]` belongs to District:
 `ref`, `sha`, `previous`, and `installed_at` describe its installed engine
-snapshot. Factory leaves this metadata opaque and out of pipeline configuration;
-`doctor` accepts it only under `defaults`. Unknown tables and an `engine` table
-under a per-repository section still produce host-config warnings.
+snapshot; `target`, `target_ref`, and `resolved_at` describe the target District
+resolved and CI-checked for installation. At pass start, Factory compares its
+installed commit with that recorded `target` SHA, never resolving `factory_ref`
+or checking engine CI itself. A mismatch emits one `engine-stale` event per
+non-dry pass, with `installed_commit`, `target_commit`, and `yield_for_update`.
+Missing installed identity or a missing/invalid target does not establish staleness.
+Other District metadata stays outside pipeline configuration; `doctor` accepts it
+only under `defaults`. An `engine` table under a per-repository host section
+still produces a host-config warning.
+
+`[engine] yield_for_update = true` in `.factory.toml` opts a repository into
+yielding when stale (default false). For the whole shared host, set:
+
+```toml
+[defaults.engine]
+yield_for_update = true
+```
+
+This host policy takes precedence over every repository's setting, so a repo
+opt-out cannot keep the shared engine busy. A stale pass, including `--ticket`,
+finishes land and review intake, then exits successfully without claims, manager
+work, learning, or opening a release PR. Dry runs report the yield without
+writing an event. Once District records the installed SHA equal to its target,
+normal passes resume. After a `factory_ref` switch, Factory follows District's
+next recorded target, not a separately computed branch head. District still
+owns green-CI eligibility and the install window: pausing timers, waiting for
+idle, installing, and resuming; Factory does not change services or timers.
+
+Outcome check for #539: over the first seven days after deployment, retain the
+host's engine snapshots (`sha`, `installed_at`) and compare GitHub main-merge
+timestamps with the first installed snapshot containing each merge. The median
+merge-to-install lag must be at most two hours. This post-deployment observation
+is separate from the dispatcher regression tests.
 
 `[worker_wrap]` is host-only: set `command` under `[defaults.worker_wrap]` or
 `[repo."owner/name".worker_wrap]` (per-repo wins). Its argv is prepended to
