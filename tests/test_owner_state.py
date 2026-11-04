@@ -511,7 +511,10 @@ elif a[:2] not in (''',
         with mock.patch.object(dispatch, "initiative_kind", return_value=None), \
                 mock.patch.object(dispatch, "pr_checks", side_effect=checks_after_owner_hold), \
                 mock.patch("factory.learn.promote_pass"), \
-                mock.patch.object(handoff, "observe") as observe:
+                mock.patch.object(handoff, "observe", return_value={
+                    "route": {"status": "unassigned", "owner": None, "candidates": [],
+                              "source": None, "provenance": []}, "pr_url": None,
+                }) as observe:
             dispatch.merge_pass_locked(False)
             handoff.handoff_pass()
 
