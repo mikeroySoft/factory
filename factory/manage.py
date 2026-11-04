@@ -283,6 +283,8 @@ def human_activity(n: int, escalation: dict, events: list[dict]) -> bool:
                    and item.get("id") in escalation_comments and item.get("created_at", "") >= escalation["at"]), None)
     if marker is None:
         return True
+    removed_host_labels = {e["label"] for e in events[events.index(escalation):]
+                           if e.get("event") == "claim-label-removed"}
     for index, item in enumerate(items):
         if item.get("created_at", "") < escalation["at"]:
             continue
@@ -295,6 +297,8 @@ def human_activity(n: int, escalation: dict, events: list[dict]) -> bool:
         if index < marker and (
             (kind == "labeled" and item.get("label", {}).get("name") == LABEL_HUMAN)
             or (kind == "unlabeled" and item.get("label", {}).get("name") == LABEL_AGENT)
+            or (kind == "unlabeled" and item.get("label", {}).get("name") in removed_host_labels
+                and (item.get("actor") or {}).get("login", "").casefold() == dispatch.host_claim_login())
             or kind == "unassigned"
         ):
             continue
