@@ -48,7 +48,7 @@ theme = ".factory-dashboard.css"
 
 [dispatch]
 review_rounds = 3
-budget_min = 180  # TEMP for #489 / PR #538 until #564 lands; revert when #489 merges/closes or by Nov 4 8:30 AM PST
+max_active = 4
 
 [release]
 auto = true
