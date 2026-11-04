@@ -1,6 +1,7 @@
 """#541: concurrent tickets retain lane evidence and serialized landing."""
 from __future__ import annotations
 
+import fcntl
 import io
 import json
 import os
@@ -10,6 +11,7 @@ import tempfile
 import threading
 import unittest
 from contextlib import redirect_stdout
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -181,6 +183,95 @@ class DispatchLaneTest(unittest.TestCase):
         self.assertEqual(stats.lane_metrics(audit, start, end), [
             {"lane": 2, "claims": 0, "attempts": 0, "first_pass": None, "reviews": 0, "merges": 1, "escalations": 0},
         ])
+
+    def test_direct_ticket_defaults_to_lane_one_with_and_without_contention(self):
+        issue = ticket(7, "2026-01-01T00:00:00Z")
+        for held in (False, True):
+            with self.subTest(held=held), dispatch.ticket_lock(7).open("w") as lock:
+                if held:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with patch.object(dispatch, "gh_json", return_value={"state": "CLOSED", "labels": []}):
+                    dispatch.process_ticket(issue, 1, False)
+                rows = lifecycle.read_events(self.events)
+                own = [row for row in rows if row.get("stage") == "ticket"]
+                self.assertEqual({row["lane"] for row in own}, {1})
+                if held:
+                    waits = [row["wait"]["reason"] for row in own if row["kind"] == "wait"]
+                    self.assertEqual(waits, ["ticket_lock_contended"])
+                else:
+                    self.assertEqual(own[-1]["outcome"], "not_admitted")
+                self.events.unlink()
+
+    def test_lane_first_pass_is_fraction_of_first_attempts_only(self):
+        audit = {n: [
+            {"event": "claimed", "lane": 1},
+            {"event": "attempt", "lane": 1, "attempt": 0, "gate": "PASS"},
+            {"event": "attempt", "lane": 1, "attempt": 1, "gate": gate},
+            {"event": "attempt", "lane": 1, "attempt": 2, "gate": "PASS"},
+        ] for n, gate in enumerate(("FAIL", "PASS", "FAIL"), 1)}
+        self.assertEqual(stats.lane_metrics(audit), [
+            {"lane": 1, "claims": 3, "attempts": 9, "first_pass": 1 / 3,
+             "reviews": 0, "merges": 0, "escalations": 0},
+        ])
+
+    def test_invalid_lanes_are_reported_as_unknown(self):
+        for lane in (0, -1, True, "2", 1.5):
+            with self.subTest(lane=lane):
+                self.assertEqual(stats.lane_metrics({7: [{"event": "claimed", "lane": lane}]}), [
+                    {"lane": None, "claims": 1, "attempts": 0, "first_pass": None,
+                     "reviews": 0, "merges": 0, "escalations": 0},
+                ])
+
+    def test_weekly_lane_window_includes_both_endpoints(self):
+        end = datetime(2026, 11, 3, tzinfo=UTC)
+        start = end - timedelta(days=7)
+        rows = [
+            {"event": "claimed", "lane": 2, "at": (start - timedelta(days=1)).isoformat()},
+            {"event": "attempt", "attempt": 1, "gate": "PASS", "at": start.isoformat()},
+            {"event": "merged", "at": end.isoformat()},
+            {"event": "escalate", "at": (end + timedelta(microseconds=1)).isoformat()},
+            {"event": "review", "at": (start - timedelta(microseconds=1)).isoformat()},
+            {"event": "review", "at": "invalid"},
+            {"event": "review"},
+        ]
+        self.assertEqual(stats.lane_metrics({7: rows}, start, end), [
+            {"lane": 2, "claims": 0, "attempts": 1, "first_pass": 1.0,
+             "reviews": 0, "merges": 1, "escalations": 0},
+        ])
+
+    def test_weekly_lane_cli_reports_rates_and_unknown_lanes_in_text_and_json(self):
+        end = datetime(2026, 11, 3, tzinfo=UTC)
+        rows = [
+            {"event": "claimed", "ticket": 1, "lane": 2, "at": "2026-10-01T00:00:00Z"},
+            {"event": "attempt", "ticket": 1, "attempt": 1, "gate": "PASS", "at": "2026-10-28T00:00:00Z"},
+            {"event": "attempt", "ticket": 2, "lane": 2, "attempt": 1, "gate": "FAIL", "at": "2026-10-29T00:00:00Z"},
+            {"event": "merged", "ticket": 1, "at": "2026-11-02T00:00:00Z"},
+            {"event": "claimed", "ticket": 9, "at": "2026-11-02T00:00:00Z"},
+            {"event": "merged", "ticket": 10, "lane": 3, "at": "2026-11-04T00:00:00Z"},
+        ]
+        for row in rows:
+            lifecycle.append(self.events, row)
+        for json_output in (False, True):
+            out = io.StringIO()
+            with self.subTest(json=json_output), \
+                    patch.object(stats, "resolve", return_value=self.cfg), \
+                    patch.object(stats, "cfg", create=True), patch.object(stats, "REPOSITORY", create=True), \
+                    patch.object(stats, "_now", return_value=end), \
+                    patch.object(stats, "gh", side_effect=AssertionError("lane stats must be local")), \
+                    redirect_stdout(out):
+                self.assertEqual(stats.main(["--by-lane", "--week", *(["--json"] if json_output else [])]), 0)
+            if json_output:
+                self.assertEqual(json.loads(out.getvalue()), [
+                    {"lane": 2, "claims": 0, "attempts": 2, "first_pass": 0.5,
+                     "reviews": 0, "merges": 1, "escalations": 0},
+                    {"lane": None, "claims": 1, "attempts": 0, "first_pass": None,
+                     "reviews": 0, "merges": 0, "escalations": 0},
+                ])
+            else:
+                self.assertEqual([line.split() for line in out.getvalue().splitlines()[1:]], [
+                    ["2", "0", "2", "50.0%", "0", "1", "0"],
+                    ["unknown", "1", "0", "n/a", "0", "0", "0"],
+                ])
 
 
 if __name__ == "__main__":
