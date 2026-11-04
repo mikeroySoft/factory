@@ -401,10 +401,11 @@ rework. GitHub-facing accepted change requests retain `REQUEST_CHANGES`.
 Journal reads and writes use the event `TypedDict`s in `factory.lifecycle`,
 including paired High-risk review verdicts and manager comment receipts.
 The JSON keys and enum string spellings are unchanged, including sparse legacy
-rows, descriptive viability decisions and rotated gzip segments. Reads decode
-domain values once and raise `UnknownEventKindError` for an unknown event or
-lifecycle kind; the bounded runtime projection reports the same failure as a
-journal coverage error.
+rows, descriptive viability decisions, retired escalation codes such as
+`upstream_sync`, and rotated gzip segments. Reads decode domain values once and
+raise `UnknownEventKindError` for an unknown event or lifecycle kind. Bounded
+runtime, dashboard, briefing and evidence readers report incomplete coverage
+through their existing error contracts rather than accepting unknown kinds.
 Accepted-result retention consumes those typed receipts without changing its
 cleanup-safety checks or retained JSON.
 
