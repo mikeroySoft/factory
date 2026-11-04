@@ -390,6 +390,27 @@ ticket, cross-ticket nodes for ticket causes, and collapsible groups beginning a
 records carry required findings and model usage; manager, merge, escalation,
 learning and CURATE records retain the alternatives and evidence used.
 
+Manager decisions, review verdicts, escalation codes and lifecycle outcomes use
+the `StrEnum` vocabularies in `factory.domain`. Manager output is parsed before
+actions; an unknown decision name raises `ValueError` at the parser and the
+command boundary retains the safe `HUMAN` handoff. Reviewer crashes, malformed
+output and rejected evidence produce `ERROR`, never `REVISE`; only an accepted
+product review can request changes. `ERROR` cannot approve or trigger product
+rework. In learning replays, `ERROR` in either arm makes the evaluation
+`not_tested`, retaining the diagnostic rather than scoring unavailable evidence.
+GitHub-facing accepted change requests retain `REQUEST_CHANGES`.
+
+Journal reads and writes use the event `TypedDict`s in `factory.lifecycle`,
+including paired High-risk review verdicts and manager comment receipts.
+The JSON keys and enum string spellings are unchanged, including sparse legacy
+rows, descriptive viability decisions, retired escalation codes such as
+`upstream_sync`, and rotated gzip segments. Reads decode domain values once and
+raise `UnknownEventKindError` for an unknown event or lifecycle kind. Bounded
+runtime, dashboard, briefing and evidence readers report incomplete coverage
+through their existing error contracts rather than accepting unknown kinds.
+Accepted-result retention consumes those typed receipts without changing its
+cleanup-safety checks or retained JSON.
+
 Each non-`chore` attempt tells the existing worker session to write a plan of at
 most 30 lines covering files, order, risks, and proof. Numbered revisions under
 `.factory/plans/current/` preserve course changes within the attempt. After the
@@ -760,7 +781,7 @@ supplement timeline counts without adding the two counts together.
 Manager command failures are counted separately as `manager_failures` in stats
 JSON and dashboard ticket `human_touch` data, and as `manager failures` in the
 stats table. They do not add an escalation or consume another manager round.
-Every `escalate` row carries a `code` from `dispatch.ESCALATION_CODES` (the
+Every `escalate` row carries a `code` from `domain.EscalationCode` (the
 mechanical origin: `gate_failed`, `worker_stuck`, `budget`, `ci_failed`,
 `review_revise`, `reviewer_unavailable`, `approval_drift`, …) beside the prose
 `reason`; the stats footer and `human_touch_metrics` report the trailing week
@@ -1415,6 +1436,8 @@ branches or merge external PRs.
 
 The dashboard's **Ops → External PR review queue** lists open, non-draft opted-in
 PRs, including review-request admissions after GitHub consumes the request.
+An `ERROR` review receipt also keeps a PR visible as pending review with its
+error reason; passing CI alone cannot turn that receipt into approval or readiness.
 Each GitHub-linked row shows the repository-local PR number, title, author,
 current head SHA, last reviewed SHA and verdict, and required-CI state with its
 last observation time. CI evidence comes from dispatch's `review-readiness`

@@ -28,7 +28,7 @@ class LifecycleConsumersTest(unittest.TestCase):
                 {"event": "lifecycle", "ticket": 1, "at": "2026-01-03T00:00:00Z", "outcome": "interrupted", "seconds": 100},
                 {"event": "lifecycle", "ticket": None, "at": "2026-01-03T00:00:00Z"},
                 {"event": "attempt", "ticket": 3, "at": "2026-01-03T00:00:00Z", "seconds": "invalid"},
-                None, [], 12, {}, {"ticket": []},
+                None, [], 12, {"event": "watch"}, {"event": "scheduling"},
             ]
             events.write_text("\n".join(json.dumps(row) for row in rows) + '\n{"event":"attempt"')
             with patch.multiple(dispatch, FACTORY=factory, EVENTS=events, create=True), \

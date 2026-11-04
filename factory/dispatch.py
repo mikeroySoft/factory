@@ -36,6 +36,7 @@ from contextlib import contextmanager, nullcontext, suppress
 from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
+from typing import NotRequired, TypedDict
 
 from factory import __version__, brief, config, lifecycle, risk
 from factory.config import (
@@ -50,6 +51,7 @@ from factory.config import (
     USAGE_FIELDS,
     Config,
 )
+from factory.domain import EscalationCode, LifecycleOutcome, ManagerDecision, ReviewVerdict
 
 cfg: Config
 ROOT: Path
@@ -67,6 +69,21 @@ _PENDING_SECOND_REVIEWS: dict[int, dict] = {}
 _PENDING_RISK: dict[int, dict] = {}
 _LOW_FALLBACK: set[int] = set()
 _HOST_CLAIMS: dict[int, HostClaim] = {}
+
+
+class ReviewerResult(TypedDict):
+    verdict: ReviewVerdict
+    findings: str
+    usage: dict | None
+    accepted: bool
+    parsed: bool
+    reason: str
+    returncode: int | None
+    actual_head: str
+    attempts: int
+    counts: dict[str, int] | None
+    rejection_reason: str | None
+    failure_reason: NotRequired[str]
 
 
 def configure(c: Config) -> None:
@@ -854,7 +871,7 @@ def review_intake_pass(dry_run: bool) -> None:
         # GitHub consumes review requests on submission; keep tracking admitted PRs.
         if not opted_in and not any(
             e.get("event") == "review-result" and e.get("pr") == pr["number"]
-            and e.get("verdict") in {"REQUEST_CHANGES", "APPROVE"}
+            and e.get("verdict") in {ReviewVerdict.REQUEST_CHANGES, ReviewVerdict.APPROVE}
             for e in lifecycle.read_events(EVENTS)
         ):
             continue
@@ -868,7 +885,7 @@ def review_intake_pass(dry_run: bool) -> None:
             history = [e for e in lifecycle.read_events(EVENTS) if e.get("pr") == n]
             if not dry_run:
                 review_readiness(n, head, history)
-            if any(e.get("event") == "review-result" and e.get("verdict") == "APPROVE"
+            if any(e.get("event") == "review-result" and e.get("verdict") == ReviewVerdict.APPROVE
                    for e in history):
                 continue
             if any(e.get("event") == "escalate" for e in history):
@@ -896,7 +913,7 @@ def review_intake_pass(dry_run: bool) -> None:
                     ]).stdout.strip().splitlines()[-1]
                     record("escalate", pr=n, head=head,
                            ticket=int(url.rstrip("/").rsplit("/", 1)[-1]),
-                           code="review_intake", reason=reason, packet=str(packet), round=1)
+                           code=EscalationCode.REVIEW_INTAKE, reason=reason, packet=str(packet), round=1)
                 continue
             if any(e.get("event") == "review-intake" and e.get("head") == head
                    for e in history):
@@ -937,12 +954,12 @@ def review_readiness(n: int, head: str, history: list[dict]) -> None:
                    if e.get("event") == "review-result" and e.get("pr") == n
                    and e.get("head") == head), {})
     state = "review_pending"
-    if review.get("verdict") == "REQUEST_CHANGES":
+    if review.get("verdict") == ReviewVerdict.REQUEST_CHANGES:
         state = "changes_requested"
-    elif review.get("verdict") == "APPROVE":
+    elif review.get("verdict") == ReviewVerdict.APPROVE:
         state = "ci_pending"
         if valid and any(row["bucket"] == "fail" for row in rows):
-            state = "ci_failed"
+            state = EscalationCode.CI_FAILED
         elif confirmed and valid and checks.returncode == 0 and all(
             row["bucket"] == "pass" for row in rows
         ):
@@ -987,15 +1004,19 @@ def review_external_pr(n: int, base: str, head: str, branch: str = "") -> None:
             )
             # ponytail: cap inline prompts below Linux's 128 KiB argv limit; use files for larger diffs.
             if len(prompt.encode()) > 120 * 1024:
-                execution.outcome = "unknown"
+                execution.outcome = LifecycleOutcome.UNKNOWN
                 execution.reason = "prompt_too_large"
+                record("review-result", pr=n, head=head, branch=branch,
+                       verdict=ReviewVerdict.ERROR, reason=execution.reason)
                 log(f"PR #{n}: diff too large to review at {head}")
                 return
             command, structured = _review_command(prompt)
             proc = _run_reviewer(command)
         except (OSError, subprocess.CalledProcessError) as exc:
-            execution.outcome = "unknown"
+            execution.outcome = LifecycleOutcome.UNKNOWN
             execution.reason = f"{type(exc).__name__}: {exc}"
+            record("review-result", pr=n, head=head, branch=branch,
+                   verdict=ReviewVerdict.ERROR, reason=execution.reason)
             log(f"PR #{n}: reviewer launch failed ({exc})")
             return
         findings, usage = (
@@ -1010,18 +1031,16 @@ def review_external_pr(n: int, base: str, head: str, branch: str = "") -> None:
         legacy_invalid = counts is None and (
             any(not re.search(r"[^\s`]+:[1-9]\d*\b", line)
                 for line in lines[:-1] if line.strip())
-            or (verdict == "REVISE" and not any(line.strip() for line in lines[:-1]))
+            or (verdict == ReviewVerdict.REVISE and not any(line.strip() for line in lines[:-1]))
         )
-        if proc.returncode != 0 or not parsed or legacy_invalid:
-            execution.outcome = "unknown"
-            execution.reason = f"review_exit:{proc.returncode}" if proc.returncode else "unparsed_verdict"
+        if proc.returncode != 0 or not parsed or legacy_invalid or parser_reason:
+            execution.outcome = LifecycleOutcome.UNKNOWN
+            execution.reason = f"review_exit:{proc.returncode}" if proc.returncode else parser_reason or "unparsed_verdict"
+            record("review-result", pr=n, head=head, branch=branch,
+                   verdict=ReviewVerdict.ERROR, findings=findings, counts=counts, reason=execution.reason)
             log(f"PR #{n}: rejected malformed or failed reviewer output at {head}")
             return
-        event = "APPROVE" if verdict == "APPROVE" else "REQUEST_CHANGES"
-        if parser_reason:
-            execution.outcome = "unknown"
-            execution.reason = parser_reason
-            findings += f"\n\nFactory rejected reviewer evidence: {parser_reason}."
+        event = ReviewVerdict.APPROVE if verdict == ReviewVerdict.APPROVE else ReviewVerdict.REQUEST_CHANGES
         run([
             "gh", "api", "--method", "POST", f"repos/{REPO}/pulls/{n}/reviews",
             "-f", f"commit_id={head}", "-f", f"event={'COMMENT' if LESSONS_BRANCH.match(branch) else event}",
@@ -1031,9 +1050,8 @@ def review_external_pr(n: int, base: str, head: str, branch: str = "") -> None:
             "review-result", pr=n, head=head, branch=branch, verdict=event, findings=findings,
             counts=counts, reason=parser_reason,
         )
-        if not parser_reason:
-            execution.outcome = "approved" if event == "APPROVE" else "product_feedback"
-            execution.reason = "APPROVE" if event == "APPROVE" else "REVISE"
+        execution.outcome = LifecycleOutcome.APPROVED if event == ReviewVerdict.APPROVE else LifecycleOutcome.PRODUCT_FEEDBACK
+        execution.reason = verdict
 
 
 def admit_plan(n: int, issue: dict, *, record_decision: bool = True) -> dict | None:
@@ -1196,22 +1214,26 @@ def attempt_plan_dir(wt: Path, _attempt: int) -> Path:
     return wt / ".factory" / "plans" / "current"
 
 
-def record(event: str, **fields: object) -> None:
+def record(event: lifecycle.EventKind, **fields: object) -> None:
     """Append one row to .factory/events.jsonl: the factory's audit trail.
 
     Every stage transition lands here with its evidence pointers, so a ticket's
     history is readable without GitHub round trips, and `stats`/the dashboard
     can be computed from traces rather than reconstructed.
     """
-    row = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "event": event, **fields}
+    row: lifecycle.JournalEvent = {
+        "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "event": event, **fields,
+    }
     execution = lifecycle.current()
     if execution is not None:
         row.update(execution_id=execution.execution_id,
                    dispatcher_run_id=execution.dispatcher_run_id)
         execution.commit()
         if event in {"escalate", "approved", "merged"}:
-            execution.outcome = {"escalate": "project_escalation",
-                                 "approved": "approved", "merged": "merged"}[event]
+            execution.outcome = {
+                "escalate": LifecycleOutcome.PROJECT_ESCALATION,
+                "approved": LifecycleOutcome.APPROVED, "merged": LifecycleOutcome.MERGED,
+            }[event]
             execution.reason = fields.get("reason")
     if event == "decision":
         from factory import trace
@@ -1439,7 +1461,7 @@ def _reviewer_model(usage: dict | None, reviewer: list[str] | None = None) -> st
 
 
 def _record_review_decision(
-    n: int, verdict: str | None, findings: str, head: str, parsed: bool, accepted: bool,
+    n: int, verdict: ReviewVerdict, findings: str, head: str, parsed: bool, accepted: bool,
     usage: dict | None, seconds: float, comment_url: str | None = None,
     counts: dict[str, int] | None = None, rejection_reason: str | None = None,
     role: str = "primary", model: str | None = None,
@@ -1450,11 +1472,11 @@ def _record_review_decision(
         row.get("pr") for row in reversed(lifecycle.read_events(EVENTS))
         if row.get("ticket") == n and row.get("event") == "pr-opened" and type(row.get("pr")) is int
     ), None)
-    chosen = verdict if parsed and accepted else "reviewer unavailable" if verdict is None else "unparseable verdict"
+    chosen = verdict if parsed and accepted else ReviewVerdict.ERROR
     reason = (
         "selected by the reviewer" if parsed and accepted
-        else "reviewer tooling failed before a verdict" if verdict is None
-        else "review evidence was rejected and failed closed to REVISE"
+        else "reviewer tooling failed before a verdict" if not parsed
+        else "review evidence was rejected"
     )
     decision_reason = rejection_reason or reason
     cause = _latest_decision_id(n, {"gate"})
@@ -1472,14 +1494,12 @@ def _record_review_decision(
         pr=pr,
         inputs=inputs,
         options=[
-            {"option": "APPROVE", "eligible": chosen == "APPROVE",
-             "reason": decision_reason if chosen == "APPROVE" else "required fixes remain or evidence was invalid"},
-            {"option": "REVISE", "eligible": chosen == "REVISE",
-             "reason": reason if chosen == "REVISE" else "no accepted REVISE verdict"},
-            {"option": "reviewer unavailable", "eligible": chosen == "reviewer unavailable",
-             "reason": reason if chosen == "reviewer unavailable" else "the reviewer returned a verdict"},
-            {"option": "unparseable verdict", "eligible": chosen == "unparseable verdict",
-             "reason": decision_reason if chosen == "unparseable verdict" else "the verdict parsed"},
+            {"option": ReviewVerdict.APPROVE, "eligible": chosen == ReviewVerdict.APPROVE,
+             "reason": decision_reason if chosen == ReviewVerdict.APPROVE else "required fixes remain or evidence was invalid"},
+            {"option": ReviewVerdict.REVISE, "eligible": chosen == ReviewVerdict.REVISE,
+             "reason": reason if chosen == ReviewVerdict.REVISE else "no accepted REVISE verdict"},
+            {"option": ReviewVerdict.ERROR, "eligible": chosen == ReviewVerdict.ERROR,
+             "reason": decision_reason if chosen == ReviewVerdict.ERROR else "review evidence was accepted"},
         ],
         chosen=chosen,
         rationale=decision_reason,
@@ -1490,7 +1510,8 @@ def _record_review_decision(
     record("decision", **payload)
     record(
         "review-result", ticket=n, head=head, role=role, model=model,
-        verdict="APPROVE" if verdict == "APPROVE" else "REQUEST_CHANGES",
+        verdict=ReviewVerdict.REQUEST_CHANGES if verdict == ReviewVerdict.REVISE and accepted else
+                ReviewVerdict.APPROVE if verdict == ReviewVerdict.APPROVE and accepted else ReviewVerdict.ERROR,
         findings=findings, counts=counts, reason=rejection_reason,
     )
     return payload["decision_id"]
@@ -1845,9 +1866,9 @@ def run_worker(
                 execution.emit("timeout", timeout=fired)
             execution.emit("result", returncode=code)
             if fired:
-                execution.outcome, execution.reason = "interrupted", TIMEOUT_REASONS[fired]
+                execution.outcome, execution.reason = LifecycleOutcome.INTERRUPTED, TIMEOUT_REASONS[fired]
             else:
-                execution.outcome = "completed" if code == 0 else "unknown"
+                execution.outcome = LifecycleOutcome.COMPLETED if code == 0 else LifecycleOutcome.UNKNOWN
                 execution.reason = None if code == 0 else f"worker_exit:{code}"
     log(f"worker exited {code} after {int(time.monotonic() - started)}s"
         + (f" ({fired} fired: {TIMEOUT_REASONS[fired]})" if fired else ""))
@@ -2093,22 +2114,10 @@ def escalation_packet(
         + (f"\n{extra.strip()}\n" if extra.strip() else "")
     )
     round_number = 1 + sum(
-        event.get("event") == "escalate" and event.get("reason") != "manager_failed"
+        event.get("event") == "escalate" and event.get("reason") != EscalationCode.MANAGER_FAILED
         for event in ticket_events
     )
     return packet, round_number
-
-
-# Mechanical origin of every escalation, so `stats` can count failure classes and
-# a repeated code can be filed as a factory bug. `reason` stays the human prose.
-ESCALATION_CODES = frozenset({
-    "protected_paths", "budget", "gate_failed", "worker_stuck", "pr_unpublished",
-    "pr_checks_failed", "review_revise", "reviewer_unavailable", "approval_drift",
-    "approval_missing", "ci_failed", "ci_runner", "refresh_head", "refresh_conflict",
-    "refresh_empty", "gh_failed", "review_intake", "manager_failed",
-    "manager_exhausted", "manager_human", "pr_feedback", "pr_stale",
-    "lease_refused", "dispatcher_error", "no_change", "risk_disagreement",
-})
 
 
 def escalate(
@@ -2117,11 +2126,11 @@ def escalate(
     log_path: Path | None,
     extra: str = "",
     *,
-    code: str,
+    code: EscalationCode,
     refreshed_head: str | None = None,
     evidence_ref: str | None = None,
 ) -> None:
-    assert code in ESCALATION_CODES, code
+    code = EscalationCode(code)
     assert (refreshed_head is None) == (evidence_ref is None)
     log(f"#{n}: escalating to human ({code}: {reason})")
     wt = FACTORY / f"wt-{n}"
@@ -2216,28 +2225,28 @@ def _review_policy(wt: Path, base: str) -> tuple[str | None, int]:
 
 def _parse_review_output(
     findings: str, nit_cap: int
-) -> tuple[str, str, bool, dict[str, int] | None, str | None]:
+) -> tuple[str, ReviewVerdict, bool, dict[str, int] | None, str | None]:
     """Validate and cap structured findings; return the effective verdict and counts."""
     verdicts = list(re.finditer(r"(?m)^VERDICT: (APPROVE|REVISE)[ \t]*$", findings))
     verdict_lines = re.findall(r"(?m)^VERDICT:.*$", findings)
     final_verdict = (
-        verdicts[0].group(1)
+        ReviewVerdict(verdicts[0].group(1))
         if len(verdict_lines) == len(verdicts) == 1 and verdicts[0].end() == len(findings)
         else None
     )
     blocks = list(re.finditer(r"```json[ \t]*\r?\n(.*?)\r?\n```", findings, re.DOTALL))
     if len(blocks) != 1 or final_verdict is None:
-        return findings, "REVISE", False, None, "unparsed_verdict"
+        return findings, ReviewVerdict.ERROR, False, None, "unparsed_verdict"
     try:
         tally = json.loads(blocks[0].group(1))
     except (json.JSONDecodeError, TypeError):
-        return findings, "REVISE", False, None, "unparsed_verdict"
+        return findings, ReviewVerdict.ERROR, False, None, "unparsed_verdict"
     if (
         not isinstance(tally, dict)
-        or tally.get("verdict") not in {"APPROVE", "REVISE"}
+        or tally.get("verdict") not in {ReviewVerdict.APPROVE, ReviewVerdict.REVISE}
         or not isinstance(tally.get("findings"), list)
     ):
-        return findings, "REVISE", False, None, "unparsed_verdict"
+        return findings, ReviewVerdict.ERROR, False, None, "unparsed_verdict"
     rows = tally["findings"]
     if not all(
         isinstance(row, dict)
@@ -2251,13 +2260,13 @@ def _parse_review_output(
         and bool(row["summary"].strip())
         for row in rows
     ):
-        return findings, "REVISE", False, None, "unparsed_verdict"
+        return findings, ReviewVerdict.ERROR, False, None, "unparsed_verdict"
     counts = {
         "important": sum(row["severity"] == "important" for row in rows),
         "nit": sum(row["severity"] == "nit" for row in rows),
         "pre_existing": sum(row["severity"] == "pre-existing" for row in rows),
     }
-    expected = "REVISE" if counts["important"] else "APPROVE"
+    expected = ReviewVerdict.REVISE if counts["important"] else ReviewVerdict.APPROVE
     reason = (
         "verdict_counts_mismatch"
         if tally["verdict"] != expected or final_verdict != tally["verdict"]
@@ -2279,7 +2288,7 @@ def _parse_review_output(
         + f"```json\n{replacement}\n```"
         + findings[blocks[0].end():]
     )
-    return normalized, "REVISE" if reason else final_verdict, True, counts, reason
+    return normalized, ReviewVerdict.ERROR if reason else final_verdict, True, counts, reason
 
 
 def review_prompt(
@@ -2373,7 +2382,7 @@ def run_reviewer(
     subject: str = "review",
     timeout: float | None = None,
     reviewer: list[str] | None = None,
-) -> dict:
+) -> ReviewerResult:
     """Run and validate the configured reviewer outside the candidate checkout."""
     base = base_ref or f"origin/{cfg.main}"
     policy, nit_cap = _review_policy(wt, base)
@@ -2460,7 +2469,7 @@ def run_reviewer(
             if proc is not None and proc.returncode == 0 and parsed and parser_reason:
                 findings += f"\n\nFactory rejected reviewer evidence: {parser_reason}."
                 return {
-                    "verdict": "REVISE",
+                    "verdict": ReviewVerdict.ERROR,
                     "findings": findings,
                     "usage": usage,
                     "accepted": False,
@@ -2489,13 +2498,12 @@ def run_reviewer(
             log(f"{subject}: reviewer tooling failure ({failure_reason}); retrying in {delay:g}s")
             if delay:
                 time.sleep(delay)
+    verdict = ReviewVerdict.ERROR
     if failure_reason == "state_changed":
-        verdict = "REVISE"
         reason = failure_reason
         diagnostic = f"Factory rejected reviewer evidence: {reason}."
     else:
-        verdict = None
-        reason = "reviewer_unavailable"
+        reason = EscalationCode.REVIEWER_UNAVAILABLE
         diagnostic = (
             f"Factory reviewer unavailable after {attempts} attempt(s): {failure_reason}."
         )
@@ -2519,7 +2527,7 @@ def run_reviewer(
 def review(
     wt: Path, n: int, gate_report: str, expected_head: str, *,
     role: str = "primary", reviewer: list[str] | None = None,
-) -> tuple[str, str]:
+) -> tuple[ReviewVerdict, str]:
     """Run one diff review against the exact head that passed the gate."""
     from factory import binding
 
@@ -2541,11 +2549,11 @@ def review(
                 local=_usage_local(result["usage"]), **result["usage"],
             )
         execution.outcome = (
-            "approved" if result["verdict"] == "APPROVE" else "product_feedback"
-        ) if result["accepted"] else "unknown"
+            LifecycleOutcome.APPROVED if result["verdict"] == ReviewVerdict.APPROVE else LifecycleOutcome.PRODUCT_FEEDBACK
+        ) if result["accepted"] else LifecycleOutcome.UNKNOWN
         execution.reason = (
             f"{result['reason']}: {result['failure_reason']}"
-            if result["reason"] == "reviewer_unavailable" else result["reason"]
+            if result["reason"] == EscalationCode.REVIEWER_UNAVAILABLE else result["reason"]
         )
         execution.emit(
             "result", returncode=result["returncode"], verdict=result["verdict"],
@@ -2565,9 +2573,9 @@ def review(
         }
         (_PENDING_SECOND_REVIEWS if role == "second" else _PENDING_REVIEWS)[n] = pending
     findings = result["findings"]
-    if result["verdict"] is None:
+    if result["verdict"] == ReviewVerdict.ERROR and result.get("failure_reason"):
         findings += f"\n\nFactory rejected reviewer evidence: {result['failure_reason']}."
-    return result["verdict"] or "REVISE", findings
+    return result["verdict"], findings
 
 
 def _actionable_mutation(report: str) -> bool:
@@ -2630,7 +2638,7 @@ def risk_disagreement_transition(
 
 def pr_gate_and_review(
     wt: Path, n: int, report: str, head: str, pr_runs: dict[str, tuple[bool, str]],
-) -> tuple[str | None, str, bool]:
+) -> tuple[ReviewVerdict, str, bool]:
     """Apply the per-head Low, Medium, or High gate and review policy."""
     _PENDING_RISK.pop(n, None)
     tier, rules = risk_for_head(n, head)
@@ -2662,12 +2670,12 @@ def pr_gate_and_review(
                         "risk-check", ticket=n, head=head,
                         mutation=_mutation_status(pr_report), pr_gate="FAIL",
                     )
-                return "REVISE", pr_report, True
+                return ReviewVerdict.REVISE, pr_report, True
     primary, primary_findings = review(wt, n, report, head)
     primary_row = _PENDING_REVIEWS.get(n) or {}
-    if primary_row and primary_row.get("verdict") is None:
-        return None, primary_findings, False
-    if tier == "Low" and primary != "APPROVE":
+    if primary == ReviewVerdict.ERROR:
+        return ReviewVerdict.ERROR, primary_findings, False
+    if tier == "Low" and primary != ReviewVerdict.APPROVE:
         _LOW_FALLBACK.add(n)
     if policy_tier != "High":
         return primary, primary_findings, False
@@ -2682,16 +2690,16 @@ def pr_gate_and_review(
             f"second, and worker models; got primary={primary_model or 'unknown'}, "
             f"second={configured_second_model or 'unknown'}, worker={worker_model or 'unknown'}."
         )
-        return None, findings, False
+        return ReviewVerdict.ERROR, findings, False
     second, second_findings = review(
         wt, n, report, head, role="second", reviewer=cfg.second_reviewer,
     )
     second_row = _PENDING_SECOND_REVIEWS.get(n) or {}
     models = (primary_model, second_row.get("model"), worker_model)
-    if second_row.get("verdict") is None or any(model is None for model in models):
-        return None, second_findings, False
+    if second == ReviewVerdict.ERROR or any(model is None for model in models):
+        return ReviewVerdict.ERROR, second_findings, False
     if len(set(models)) != 3:
-        return None, f"{second_findings}\n\nHigh-risk reviewer models were not distinct: {models}.", False
+        return ReviewVerdict.ERROR, f"{second_findings}\n\nHigh-risk reviewer models were not distinct: {models}.", False
     changed = run(
         ["git", "diff", "--name-status", f"origin/{cfg.main}..{head}"], cwd=wt,
     ).stdout.strip()
@@ -2713,12 +2721,12 @@ def pr_gate_and_review(
     )
     disagreement = (
         primary != second
-        or (primary == second == "APPROVE" and mutation not in {"PASS", "SKIP"})
+        or (primary == second == ReviewVerdict.APPROVE and mutation not in {"PASS", "SKIP"})
     )
     actionable = (
-        all(verdict in {"APPROVE", "REVISE"} for verdict in (primary, second))
+        all(verdict in {ReviewVerdict.APPROVE, ReviewVerdict.REVISE} for verdict in (primary, second))
         and all(
-            verdict in {"APPROVE"} or bool(_required_fixes(text, "review"))
+            verdict in {ReviewVerdict.APPROVE} or bool(_required_fixes(text, "review"))
             for verdict, text in ((primary, primary_findings), (second, second_findings))
         )
         and (mutation in {"PASS", "SKIP"} or _actionable_mutation(pr_report))
@@ -2728,11 +2736,11 @@ def pr_gate_and_review(
         "primary": primary, "second": second, "mutation": mutation,
         "actionable": actionable,
     }
-    if primary not in {"APPROVE", "REVISE"} or second not in {"APPROVE", "REVISE"}:
-        return "REJECT", packet, False
-    if "REVISE" in (primary, second) or disagreement:
-        return "REVISE", packet, False
-    return "APPROVE", f"{primary_findings}\n\n{second_findings}", False
+    if primary not in {ReviewVerdict.APPROVE, ReviewVerdict.REVISE} or second not in {ReviewVerdict.APPROVE, ReviewVerdict.REVISE}:
+        return ReviewVerdict.ERROR, packet, False
+    if ReviewVerdict.REVISE in (primary, second) or disagreement:
+        return ReviewVerdict.REVISE, packet, False
+    return ReviewVerdict.APPROVE, f"{primary_findings}\n\n{second_findings}", False
 
 
 
@@ -3202,7 +3210,7 @@ def _head_evidence_matches(
     primary = reviews.get("primary") or {}
     primary_ok = (
         primary.get("accepted") is True
-        and primary.get("verdict") == "APPROVE"
+        and primary.get("verdict") == ReviewVerdict.APPROVE
         and primary.get("actual_head") == head
     )
     if tier != "High":
@@ -3213,7 +3221,7 @@ def _head_evidence_matches(
         gate is True
         and primary_ok
         and second.get("accepted") is True
-        and second.get("verdict") == "APPROVE"
+        and second.get("verdict") == ReviewVerdict.APPROVE
         and second.get("actual_head") == head
         and mutation in {"PASS", "SKIP"}
         and pr_gate == "PASS"
@@ -3226,7 +3234,7 @@ def manager_approval(events: list[dict], n: int, head: str) -> bool:
     """`manager.review = "all"`: a recorded manager APPROVE bound to this exact head."""
     return any(
         e.get("event") == "manage" and e.get("ticket") == n and e.get("head") == head
-        and e.get("decision") == "APPROVE"
+        and e.get("decision") == ManagerDecision.APPROVE
         for e in events
     )
 
@@ -3301,15 +3309,12 @@ def approve_pr(n: int, head: str) -> bool:
                  "summary": f"approved head {head}"},
             ],
             options=[
-                {"option": option, "eligible": option == "APPROVE",
+                {"option": option, "eligible": option == ManagerDecision.APPROVE,
                  "reason": "gate and independent review approved this head"
-                 if option == "APPROVE" else "approval path selected instead"}
-                for option in (
-                    "RETRY", "REWRITE", "HUMAN", "CLOSE", "RESOLVE",
-                    "APPROVE", "SPLIT", "ROUTE", "AUTHORIZE", "FIX",
-                )
+                 if option == ManagerDecision.APPROVE else "approval path selected instead"}
+                for option in ManagerDecision
             ],
-            chosen="APPROVE",
+            chosen=ManagerDecision.APPROVE,
             rationale="gate and independent review approved this exact head",
             causes=[{"decision_id": cause, "relation": "follows"}] if cause else [],
             cost=None,
@@ -3466,7 +3471,7 @@ def runner_unavailable(n: int, pr: int, starved: list[dict], dry_run: bool) -> b
     if dry_run:
         log(f"PR #{pr}: would escalate ({reason})")
     else:
-        escalate(n, reason, None, code="ci_runner")
+        escalate(n, reason, None, code=EscalationCode.CI_RUNNER)
     return True
 
 
@@ -3502,8 +3507,8 @@ def _record_rework(n: int, head: str, findings: str, deferred: bool) -> None:
                 assignee_last=True, check=True)
 
 
-def _actionable_review(n: int, head: str, verdict: str | None, findings: str, pr_failed: bool) -> bool:
-    if verdict != "REVISE" or pr_failed:
+def _actionable_review(n: int, head: str, verdict: ReviewVerdict, findings: str, pr_failed: bool) -> bool:
+    if verdict != ReviewVerdict.REVISE or pr_failed:
         return False
     state = _PENDING_RISK.get(n) or {}
     if state.get("head") == head:
@@ -3613,7 +3618,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
 
     def withdraw(
         reason: str,
-        code: str,
+        code: EscalationCode,
         extra: str = "",
         *,
         refreshed_head: str | None = None,
@@ -3634,13 +3639,13 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         check=False,
     )
     if removed.returncode:
-        escalate(n, f"PR #{pr}: could not remove stale `{FACTORY_APPROVED}` approval", None, code="gh_failed")
+        escalate(n, f"PR #{pr}: could not remove stale `{FACTORY_APPROVED}` approval", None, code=EscalationCode.GH_FAILED)
         return False
     run(["git", "fetch", "origin"], cwd=wt)
     local_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     remote_head = run(["git", "rev-parse", f"origin/agent/{n}"], cwd=wt).stdout.strip()
     if local_head != remote_head:
-        withdraw(f"kept worktree head {local_head} differs from remote head {remote_head}", "refresh_head")
+        withdraw(f"kept worktree head {local_head} differs from remote head {remote_head}", EscalationCode.REFRESH_HEAD)
         return False
     verb, cmd = (
         ("merge", ["git", "merge", f"origin/{cfg.main}", "--no-edit"])
@@ -3669,7 +3674,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         )
         if why:
             files = "## Conflicting files\n\n" + ("\n".join(f"- `{path}`" for path in conflicts) or "(none listed)")
-            withdraw(f"{verb} onto moved main conflicts ({why}); worktree {wt}", "refresh_conflict", extra=files)
+            withdraw(f"{verb} onto moved main conflicts ({why}); worktree {wt}", EscalationCode.REFRESH_CONFLICT, extra=files)
             return False
         record_merge_decision(
             n, pr, "conflict-requeue",
@@ -3687,7 +3692,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     if empty:
         withdraw(
             f"nothing ahead of {cfg.main} after {verb}; refusing to push",
-            "refresh_empty",
+            EscalationCode.REFRESH_EMPTY,
             refreshed_head=head,
         )
         return False
@@ -3724,7 +3729,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         )
         withdraw(
             f"gate failed after {verb} onto moved main (protected or add-only paths without authority)",
-            "protected_paths",
+            EscalationCode.PROTECTED_PATHS,
             extra=f"## First refresh gate report\n\n{report}{assessment}",
             refreshed_head=head,
         )
@@ -3758,14 +3763,14 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         )
         if not rerun_clean:
             withdraw(
-                "gate re-run changed the refreshed head or worktree", "refresh_head",
+                "gate re-run changed the refreshed head or worktree", EscalationCode.REFRESH_HEAD,
                 extra=details, refreshed_head=head,
             )
             return False
         if not ok and "- protected-paths: FAIL" in report:
             withdraw(
                 f"gate failed after {verb} onto moved main (protected or add-only paths without authority)",
-                "protected_paths", extra=details, refreshed_head=head,
+                EscalationCode.PROTECTED_PATHS, extra=details, refreshed_head=head,
             )
             return False
         if not ok:
@@ -3784,7 +3789,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             if why:
                 withdraw(
                     f"gate failed twice after {verb} onto moved main ({why}); worktree {wt}",
-                    "gate_failed", extra=details, refreshed_head=head,
+                    EscalationCode.GATE_FAILED, extra=details, refreshed_head=head,
                 )
                 return False
             evidence_ref = restore_pr_head(head)
@@ -3806,14 +3811,14 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         pr_comment(n, f"Gate failed after {verb} onto current main:\n\n{report}")
         withdraw(
             f"gate failed after {verb} onto moved main",
-            "gate_failed",
+            EscalationCode.GATE_FAILED,
             refreshed_head=head,
         )
         return False
     if push_agent(wt, n, remote_head, check=False) is None:
         withdraw(
             "remote head changed while refreshed evidence was being produced",
-            "refresh_head",
+            EscalationCode.REFRESH_HEAD,
             refreshed_head=head,
         )
         return False
@@ -3828,28 +3833,24 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     else:
         verdict, findings = review(wt, n, report, head)
         pr_failed = False
-    pending = _PENDING_REVIEWS.get(n)
-    unavailable = pending is not None and pending.get("verdict") is None
+    unavailable = verdict == ReviewVerdict.ERROR
     pr_comment(n, findings)
     if unavailable:
         withdraw(
             f"reviewer unavailable after {verb} onto moved main",
-            "reviewer_unavailable",
+            EscalationCode.REVIEWER_UNAVAILABLE,
         )
         return False
-    if verdict != "APPROVE":
-        if verdict == "REJECT":
-            withdraw("review rejected the refreshed head", "review_revise", extra=findings)
-            return False
+    if verdict != ReviewVerdict.APPROVE:
         if pr_failed and (guidance := _protected_gate_guidance(findings, set())):
-            withdraw("PR gate blocked by protected paths", "protected_paths",
+            withdraw("PR gate blocked by protected paths", EscalationCode.PROTECTED_PATHS,
                      extra=f"{guidance}\n\n{findings}")
             return False
         if _actionable_review(n, head, verdict, findings, pr_failed):
             if _review_rounds_used(n) < cfg.review_rounds and issue_is_open(n):
                 _record_rework(n, head, findings, deferred=True)
             else:
-                withdraw("review round budget exhausted after refresh", "review_revise", extra=findings)
+                withdraw("review round budget exhausted after refresh", EscalationCode.REVIEW_REVISE, extra=findings)
             return False
         state = _PENDING_RISK.get(n) or {}
         if state.get("head") == head and state.get("disagreement"):
@@ -3866,11 +3867,11 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             return False
         withdraw(
             f"fresh review requested changes after {verb} onto moved main",
-            "pr_checks_failed" if pr_failed else "review_revise",
+            EscalationCode.PR_CHECKS_FAILED if pr_failed else EscalationCode.REVIEW_REVISE,
         )
         return False
     if not approve_pr(n, head):
-        withdraw("approval evidence, head, or human review state changed before refreshed approval", "approval_drift")
+        withdraw("approval evidence, head, or human review state changed before refreshed approval", EscalationCode.APPROVAL_DRIFT)
         return False
     log(f"#{n}: PR #{pr} {verb}d onto current main, re-gated, and re-approved at {head[:12]}")
     return True
@@ -3981,7 +3982,7 @@ def merge_pass_locked(dry_run: bool) -> None:
             if initiative_kind(n):
                 log(f"PR #{pr_num}: refused (ticket #{n} is an initiative record); not merging")
                 if execution:
-                    execution.outcome, execution.reason = "not_eligible", "initiative"
+                    execution.outcome, execution.reason = LifecycleOutcome.NOT_ELIGIBLE, "initiative"
                 continue
             checks = triage_cancelled(pr_num, pr_checks(pr_num), dry_run, n, listed_head)
             buckets: dict[str, int] = {}
@@ -4014,7 +4015,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                     n,
                     f"PR #{pr_num}: CI failed ({', '.join(failed)}); "
                     f"`{FACTORY_APPROVED}` label removed",
-                    None, code="ci_failed",
+                    None, code=EscalationCode.CI_FAILED,
                 )
                 continue
             starved = [c for c in checks if c["bucket"] == "infra"]
@@ -4028,13 +4029,13 @@ def merge_pass_locked(dry_run: bool) -> None:
             if buckets.get("pending") or starved:
                 log(f"PR #{pr_num}: CI pending {buckets}; waiting")
                 if execution:
-                    execution.outcome, execution.reason = "not_eligible", "ci_pending"
+                    execution.outcome, execution.reason = LifecycleOutcome.NOT_ELIGIBLE, "ci_pending"
                     execution.wait("ci_pending", mode="eligibility", pr=pr_num)
                 continue
             if not buckets.get("pass"):
                 log(f"PR #{pr_num}: no passing CI checks reported; refusing to merge")
                 if execution:
-                    execution.outcome, execution.reason = "not_eligible", "no_passing_ci"
+                    execution.outcome, execution.reason = LifecycleOutcome.NOT_ELIGIBLE, "no_passing_ci"
                     execution.wait("no_passing_ci", mode="eligibility", pr=pr_num)
                 continue
             fields = "number,state,headRefName,headRefOid,baseRefName,isDraft,labels,reviewDecision,title,files"
@@ -4126,7 +4127,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                     head, head, checks,
                 )
                 if refresh_pr_branch(n, pr_num, carries_upstream):
-                    execution.outcome = "refreshed"
+                    execution.outcome = LifecycleOutcome.REFRESHED
                 return
             events = lifecycle.read_events(EVENTS)
             if (
@@ -4145,7 +4146,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                         f"{eval_command} && {candidate_command}"
                     )
                 log(f"PR #{pr_num}: worker eval keep claim missing for {head}; run `{command}`; not merging")
-                execution.outcome, execution.reason = "not_eligible", "eval_required"
+                execution.outcome, execution.reason = LifecycleOutcome.NOT_ELIGIBLE, "eval_required"
                 execution.wait(
                     "eval_required", mode="eligibility", pr=pr_num, head=head, command=command,
                 )
@@ -4176,9 +4177,9 @@ def merge_pass_locked(dry_run: bool) -> None:
                     n,
                     f"PR #{pr_num}: missing approval evidence bound to {head}; "
                     f"`{FACTORY_APPROVED}` label removed",
-                    None, code="approval_missing",
+                    None, code=EscalationCode.APPROVAL_MISSING,
                 )
-                execution.outcome, execution.reason = "project_escalation", "state_changed"
+                execution.outcome, execution.reason = LifecycleOutcome.PROJECT_ESCALATION, "state_changed"
                 continue
             latest_checks = triage_cancelled(pr_num, pr_checks(pr_num), False, n, head)
             latest_failed = [c["name"] for c in latest_checks if c["bucket"] == "fail"]
@@ -4198,7 +4199,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                     n,
                     f"PR #{pr_num}: CI failed ({', '.join(latest_failed)}); "
                     f"`{FACTORY_APPROVED}` label removed",
-                    None, code="ci_failed",
+                    None, code=EscalationCode.CI_FAILED,
                 )
                 continue
             if latest_starved and runner_unavailable(n, pr_num, latest_starved, False):
@@ -4208,11 +4209,11 @@ def merge_pass_locked(dry_run: bool) -> None:
                 )
                 continue
             if any(c["bucket"] in ("pending", "infra") for c in latest_checks):
-                execution.outcome, execution.reason = "not_eligible", "ci_pending"
+                execution.outcome, execution.reason = LifecycleOutcome.NOT_ELIGIBLE, "ci_pending"
                 execution.wait("ci_pending", mode="eligibility", pr=pr_num)
                 continue
             if not any(c["bucket"] == "pass" for c in latest_checks):
-                execution.outcome, execution.reason = "not_eligible", "no_passing_ci"
+                execution.outcome, execution.reason = LifecycleOutcome.NOT_ELIGIBLE, "no_passing_ci"
                 execution.wait("no_passing_ci", mode="eligibility", pr=pr_num)
                 continue
             if gh_json(["api", f"repos/{REPO}/compare/{cfg.main}...{head}"])["behind_by"]:
@@ -4222,7 +4223,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                     head, head, latest_checks,
                 )
                 if refresh_pr_branch(n, pr_num, carries_upstream):
-                    execution.outcome = "refreshed"
+                    execution.outcome = LifecycleOutcome.REFRESHED
                 return
             final = gh_json(["pr", "view", str(pr_num), "--repo", REPO, "--json", fields])
             final_labels = {label["name"] for label in final.get("labels", [])}
@@ -4273,7 +4274,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                     n, pr_num, "merge now", f"gate, review, approval, and CI passed for {head}",
                     head, head, latest_checks, merge_sha=merge_sha,
                 )
-            execution.outcome = "merged"
+            execution.outcome = LifecycleOutcome.MERGED
             log(f"PR #{pr_num}: merged into {cfg.main} ({method[2:]}, ticket #{n})")
             cleanup_after_merge(n, head)
             return
@@ -4611,7 +4612,7 @@ def process_ticket(
             )
             if is_initiative(fresh):
                 log(f"#{n}: refused (initiative records are never executed)")
-                execution.outcome = "not_admitted"
+                execution.outcome = LifecycleOutcome.NOT_ADMITTED
                 execution.reason = "initiative"
                 return
             claims = []
@@ -4627,7 +4628,7 @@ def process_ticket(
                 or LABEL_AGENT not in {label["name"] for label in fresh["labels"]}
             ):
                 log(f"#{n}: skipped (state changed since frontier query)")
-                execution.outcome = "not_admitted"
+                execution.outcome = LifecycleOutcome.NOT_ADMITTED
                 execution.reason = "state_changed"
                 return
             labels = {label["name"] for label in fresh["labels"]}
@@ -4647,7 +4648,7 @@ def process_ticket(
                 baseline = admit_plan(n, fresh)
             except binding.BindingError as exc:
                 log(f"#{n}: refused ({exc})")
-                execution.outcome = "not_admitted"
+                execution.outcome = LifecycleOutcome.NOT_ADMITTED
                 execution.reason = str(exc)
                 return
             if baseline is not None:
@@ -4657,7 +4658,7 @@ def process_ticket(
             if cfg.host_name:
                 host_claim = acquire_host_claim(n, fresh, claims, forced=forced)
                 if host_claim is None:
-                    execution.outcome, execution.reason = "not_admitted", "claim_lost"
+                    execution.outcome, execution.reason = LifecycleOutcome.NOT_ADMITTED, "claim_lost"
                     return
             try:
                 run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-assignee", "@me"])
@@ -4721,11 +4722,11 @@ def process_ticket(
                     escalate(
                         n, reason, logfile,
                         extra=f"{guidance}\n\n## Offending diff\n\n{report}",
-                        code="protected_paths",
+                        code=EscalationCode.PROTECTED_PATHS,
                     )
                     return
                 if time.monotonic() > deadline:
-                    escalate(n, f"wall-clock budget ({budget_min} min) exceeded", logfile, code="budget")
+                    escalate(n, f"wall-clock budget ({budget_min} min) exceeded", logfile, code=EscalationCode.BUDGET)
                     return
                 extra = f"{resolve}## Previous gate report (attempt {attempt} failed)\n\n{report}"
             else:
@@ -4734,7 +4735,7 @@ def process_ticket(
                     failed = (f"idle_timeout fired (worker stuck) on attempt {MAX_ATTEMPTS}"
                               if stuck else f"gate failed {MAX_ATTEMPTS} times")
                     escalate(n, f"{failed}; worktree kept at {wt}", logfile,
-                             code="worker_stuck" if stuck else "gate_failed")
+                             code=EscalationCode.WORKER_STUCK if stuck else EscalationCode.GATE_FAILED)
                     return
 
             with _REMOTE_REFS:
@@ -4745,14 +4746,14 @@ def process_ticket(
                 # to change (already fixed, duplicate, or blocked); its handoff says which. Without
                 # a handoff the worker died, which stays `pr_unpublished` so watch still counts it.
                 escalate(n, f"agent/{n}: worker committed nothing over {cfg.main}; read the handoff",
-                         logfile, code="no_change")
+                         logfile, code=EscalationCode.NO_CHANGE)
                 return
             body = f"Closes #{n}\n\n## Gate report\n\n{report}\n"
             if not push_and_pr(wt, f"agent/{n}", f"agent/{n}: {title}", body, ticket=n, lease=lease):
                 escalate(
                     n, f"agent/{n}: PR not published (no commits over main and no handoff, or existing "
                     f"PR targets a base other than {cfg.main}); inspect dispatcher log", logfile,
-                    code="pr_unpublished",
+                    code=EscalationCode.PR_UNPUBLISHED,
                 )
                 return
             lease = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
@@ -4768,17 +4769,17 @@ def process_ticket(
             if repeated_disagreement:
                 escalate(
                     n, "High-risk machine checks disagreed on two successive heads",
-                    logfile, code="risk_disagreement", extra=current_risk["packet"],
+                    logfile, code=EscalationCode.RISK_DISAGREEMENT, extra=current_risk["packet"],
                 )
                 return
-            if verdict is None:
+            if verdict == ReviewVerdict.ERROR:
                 log(
                     f"#{n}: reviewer unavailable; not a REVISE verdict after "
                     f"{cfg.review_rounds} review round(s)"
                 )
                 escalate(
                     n, "reviewer unavailable after retries", logfile,
-                    code="reviewer_unavailable",
+                    code=EscalationCode.REVIEWER_UNAVAILABLE,
                 )
                 return
             # Durable charges survive pass boundaries; a deferred round is paid before requeue.
@@ -4786,10 +4787,10 @@ def process_ticket(
             for bounce in range(1, cfg.review_rounds + 2):
                 if pr_failed and (guidance := _protected_gate_guidance(findings, labels)):
                     escalate(n, "PR gate blocked by protected paths", logfile,
-                             extra=f"{guidance}\n\n{findings}", code="protected_paths")
+                             extra=f"{guidance}\n\n{findings}", code=EscalationCode.PROTECTED_PATHS)
                     return
                 actionable = _actionable_review(n, gate_head, verdict, findings, pr_failed)
-                if verdict in {"APPROVE", "REJECT"} or (
+                if verdict == ReviewVerdict.APPROVE or (
                     rounds_used >= cfg.review_rounds and (actionable or risk_disagreement_head is None)
                 ):
                     break
@@ -4807,7 +4808,7 @@ def process_ticket(
                     escalate(
                         n,
                         f"wall-clock budget ({budget_min} min) exceeded before bounce {bounce}",
-                        logfile, code="budget",
+                        logfile, code=EscalationCode.BUDGET,
                     )
                     return
                 _record_rework(n, gate_head, findings, deferred=False)
@@ -4838,7 +4839,7 @@ def process_ticket(
                     escalate(
                         n, reason, logfile,
                         extra=f"{guidance}\n\n## Offending diff\n\n{report}",
-                        code="protected_paths",
+                        code=EscalationCode.PROTECTED_PATHS,
                     )
                     return
                 if not ok:
@@ -4846,7 +4847,7 @@ def process_ticket(
                     failed = "idle_timeout fired (worker stuck)" if stuck else "gate failed"
                     escalate(
                         n, f"{failed} after review bounce {bounce}; worktree kept at {wt}", logfile,
-                        code="worker_stuck" if stuck else "gate_failed",
+                        code=EscalationCode.WORKER_STUCK if stuck else EscalationCode.GATE_FAILED,
                     )
                     return
                 lease = push_agent(wt, n, lease)
@@ -4860,33 +4861,33 @@ def process_ticket(
                 if repeated_disagreement:
                     escalate(
                         n, "High-risk machine checks disagreed on two successive heads",
-                        logfile, code="risk_disagreement", extra=current_risk["packet"],
+                        logfile, code=EscalationCode.RISK_DISAGREEMENT, extra=current_risk["packet"],
                     )
                     return
                 risk_disagreement_head = current_disagreement_head
-                if verdict is None:
+                if verdict == ReviewVerdict.ERROR:
                     escalate(
                         n, "reviewer unavailable after retries", logfile,
-                        code="reviewer_unavailable",
+                        code=EscalationCode.REVIEWER_UNAVAILABLE,
                     )
                     return
-            if verdict != "APPROVE" and pr_failed:
+            if verdict != ReviewVerdict.APPROVE and pr_failed:
                 escalate(n, "pr checks failed", logfile, extra="## PR-tier gate report\n\n" + findings,
-                         code="pr_checks_failed")
-            elif verdict != "APPROVE":
-                escalate(n, f"REVISE verdict after {cfg.review_rounds} review round(s)", logfile, code="review_revise")
+                         code=EscalationCode.PR_CHECKS_FAILED)
+            elif verdict != ReviewVerdict.APPROVE:
+                escalate(n, f"REVISE verdict after {cfg.review_rounds} review round(s)", logfile, code=EscalationCode.REVIEW_REVISE)
             elif approve_pr(n, gate_head):
                 log(f"#{n}: done (approved at {gate_head[:12]})")
             else:
                 escalate(n, "approval evidence, head, or human review state changed before approval", logfile,
-                         code="approval_drift")
+                         code=EscalationCode.APPROVAL_DRIFT)
         except LeaseRefused as exc:
-            escalate(n, str(exc), None, code="lease_refused")
+            escalate(n, str(exc), None, code=EscalationCode.LEASE_REFUSED)
         except FileNotFoundError as exc:
             # Host defect (worker executable not on PATH, #260), not a ticket defect: give the
             # claim back so the frontier retries once the host is fixed; the pass goes on.
             # Covers every worker launch of this ticket, first attempt and review bounces alike.
-            execution.outcome, execution.reason = "mechanism_failure", f"{type(exc).__name__}: {exc}"
+            execution.outcome, execution.reason = LifecycleOutcome.MECHANISM_FAILURE, f"{type(exc).__name__}: {exc}"
             log(f"#{n}: worker launch failed ({exc}); unclaimed, fix PATH or [workers] (`factory doctor`)")
             unclaim(n)
             return False
@@ -4895,8 +4896,8 @@ def process_ticket(
             # later pass skips forever; hand it back to a human first, worktree intact, then
             # still surface the crash.
             if claimed:
-                escalate(n, f"dispatcher error: {exc!r}; worktree kept at {wt}", None, code="dispatcher_error")
-                execution.outcome, execution.reason = "unknown", f"{type(exc).__name__}: {exc}"
+                escalate(n, f"dispatcher error: {exc!r}; worktree kept at {wt}", None, code=EscalationCode.DISPATCHER_ERROR)
+                execution.outcome, execution.reason = LifecycleOutcome.UNKNOWN, f"{type(exc).__name__}: {exc}"
             raise
         finally:
             if host_claim is not None:
@@ -5040,7 +5041,7 @@ def main(argv: list[str]) -> int:
             log(f"root {root} has changes outside .factory/ ({', '.join(dirty)}); root_dirty, nothing dispatched")
             with lifecycle.scope(root / ".factory" / "events.jsonl", "dispatcher", dispatcher=True,
                                  engine_version=__version__, engine_commit=config.engine_commit()) as execution:
-                execution.outcome, execution.reason = "project_escalation", "root_dirty"
+                execution.outcome, execution.reason = LifecycleOutcome.PROJECT_ESCALATION, "root_dirty"
                 execution.emit("result", paths=dirty)
             return 1
     configure(config.load())  # from the tree now pinned at origin/<main>

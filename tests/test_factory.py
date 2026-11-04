@@ -28,6 +28,7 @@ atexit.register(shutil.rmtree, XDG, ignore_errors=True)
 from datetime import UTC
 
 from factory import __version__, config, lifecycle, manage, runtime_events
+from factory.domain import ReviewVerdict
 
 # A worker runs this suite inside the dispatcher's handoff env; an inherited context would
 # redirect every fixture's lifecycle rows (gate timeouts, review verdicts...) into the live
@@ -3417,7 +3418,7 @@ class DispatchTest(unittest.TestCase):
                         ],
                     ))
                     verdict, findings = dispatch.review(repo, 7, "PASS", head)
-                    self.assertEqual(verdict, "REVISE")
+                    self.assertEqual(verdict, ReviewVerdict.ERROR)
                     self.assertIn("Factory rejected reviewer evidence", findings)
 
     def test_review_keeps_structured_error_event_in_unavailable_diagnostic(self) -> None:
@@ -3447,7 +3448,7 @@ class DispatchTest(unittest.TestCase):
             with mock.patch.object(dispatch.time, "sleep"):
                 verdict, findings = dispatch.review(repo, 7, "PASS", head)
 
-            self.assertEqual(verdict, "REVISE")
+            self.assertEqual(verdict, ReviewVerdict.ERROR)
             self.assertIn("rate_limit_error", findings)
             self.assertIn("account limit", findings)
 
@@ -3685,7 +3686,7 @@ class DispatchTest(unittest.TestCase):
             with mock.patch.object(dispatch, "run", side_effect=raced_run):
                 verdict, findings = dispatch.review(repo, 7, "PASS", expected)
 
-            self.assertEqual(verdict, "REVISE")
+            self.assertEqual(verdict, ReviewVerdict.ERROR)
             self.assertIn("state_changed", findings)
             review_event = next(
                 e for e in lifecycle.read_events(dispatch.EVENTS)
@@ -4731,6 +4732,42 @@ class DispatchTest(unittest.TestCase):
 
 
 class FeedbackSnapshotTest(unittest.TestCase):
+    def test_error_receipt_keeps_label_less_pr_visible_without_approval(self):
+        from factory import dashboard
+
+        pr = {
+            "number": 7, "title": "Curate lessons", "state": "OPEN", "isDraft": False,
+            "url": "https://github.com/acme/widgets/pull/7",
+            "author": {"login": "operator"}, "headRefName": "agent/lessons-curate",
+            "headRefOid": "head-7", "labels": {"nodes": []},
+            "reviewRequests": {"nodes": []},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            journal = Path(directory) / "events.jsonl"
+            lifecycle.append(journal, {
+                "event": "review-result", "pr": 7, "head": "head-7",
+                "verdict": ReviewVerdict.ERROR, "accepted": False,
+                "reason": "verdict_counts_mismatch",
+            })
+            rows = lifecycle.read_events(journal)
+            before = journal.read_bytes()
+            for readiness in ([], [{
+                "event": "review-readiness", "pr": 7, "head": "head-7",
+                "state": "ready", "checks": [{"name": "test", "bucket": "pass"}],
+            }]):
+                with self.subTest(readiness=bool(readiness)):
+                    [queued] = dashboard.review_queue([pr], rows + readiness, "operator")
+                    self.assertIs(queued["verdict"], ReviewVerdict.ERROR)
+                    self.assertEqual(queued["state"], "review_pending")
+                    self.assertEqual(queued["reason"], "verdict_counts_mismatch")
+                    self.assertEqual(queued["head"], "head-7")
+                    self.assertEqual(queued["review_head"], "head-7")
+                    self.assertEqual(queued["ci_state"], "pass" if readiness else "unknown")
+                    self.assertEqual(queued["url"], pr["url"])
+            self.assertEqual(journal.read_bytes(), before)
+            for excluded in ({**pr, "state": "CLOSED"}, {**pr, "isDraft": True}):
+                self.assertEqual(dashboard.review_queue([excluded], rows, "operator"), [])
+
     def test_external_review_queue_snapshot_states_and_revision_identity(self):
         from unittest import mock
 

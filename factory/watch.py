@@ -26,6 +26,7 @@ from pathlib import Path
 from statistics import mean, pstdev
 
 from factory import config, dispatch, lifecycle, runtime_events, stats
+from factory.domain import EscalationCode, LifecycleOutcome
 
 LABELS = "bug,needs-triage"
 MAX_ISSUES = 5
@@ -46,7 +47,14 @@ REPEAT_DAYS = 7  # ...inside this trailing window to count as a factory defect
 # PR's own failed checks; `pr_feedback` reports feedback on that PR; an already-fixed
 # ticket may produce `no_change`; `review_revise` means review still requests changes
 # after bounded review rounds, a manager FIX, or a merge-stage refresh/rebase.
-OUTCOME_CODES = {"budget", "gate_failed", "ci_failed", "pr_feedback", "no_change", "review_revise"}
+OUTCOME_CODES = {
+    EscalationCode.BUDGET,
+    EscalationCode.GATE_FAILED,
+    EscalationCode.CI_FAILED,
+    EscalationCode.PR_FEEDBACK,
+    EscalationCode.NO_CHANGE,
+    EscalationCode.REVIEW_REVISE,
+}
 OBSERVED = "## Observed by"
 COMMENT_PREFIX = "factory watch: observed in `"
 MAX_OPEN = 200  # newest open `bug` issues of the engine repo searched for a fingerprint
@@ -63,8 +71,9 @@ def _failing(row: dict) -> bool:
     reason = row.get("reason") or ""
     if reason.startswith(HOST_REASONS):
         return False
-    return row.get("outcome") == "mechanism_failure" or (
-        row.get("outcome") == "unknown" and reason.startswith(UNKNOWN_REASONS)
+    return row.get("outcome") == LifecycleOutcome.MECHANISM_FAILURE or (
+        row.get("outcome") == LifecycleOutcome.UNKNOWN
+        and reason.startswith(UNKNOWN_REASONS)
     )
 
 
@@ -96,9 +105,15 @@ def persistent_host_conditions(events: list[dict], minutes: int) -> dict[str, li
                     rows.clear()
             rows.append(row)
             continue
-        if (row.get("event") != "lifecycle" or row.get("kind") != "exit"
-                or row.get("outcome") not in {"completed", "product_feedback"}
-                or row.get("reason") == "no_tickets"):
+        if (
+            row.get("event") != "lifecycle"
+            or row.get("kind") != "exit"
+            or row.get("outcome") not in {
+                LifecycleOutcome.COMPLETED,
+                LifecycleOutcome.PRODUCT_FEEDBACK,
+            }
+            or row.get("reason") == "no_tickets"
+        ):
             continue
         family = _host_family(row)
         for reason, rows in streaks.items():

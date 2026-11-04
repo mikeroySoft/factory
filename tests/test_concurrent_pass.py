@@ -69,7 +69,7 @@ class ConcurrentPassTest(unittest.TestCase):
                     raise
                 in_flight[n] = sorted(dispatch.active_tickets())
                 for i in range(ROWS):
-                    dispatch.record("stress", ticket=n, i=i, blob=blob(n, i))
+                    dispatch.record("watch", ticket=n, i=i, blob=blob(n, i))
                 if n == y["number"]:
                     y_failed.set()
                     raise TicketFailed(f"#{n} pipeline failed")
@@ -133,12 +133,13 @@ class ConcurrentPassTest(unittest.TestCase):
             self.assertEqual((enter["dispatcher_run_id"], enter["root_execution_id"]),
                              (dispatcher.dispatcher_run_id, dispatcher.execution_id),
                              f"#{n}'s ticket scope lost the dispatcher context")
-            own = [row for row in rows if row.get("event") in {"claimed", "stress"} and row["ticket"] == n]
+            own = [row for row in rows if row.get("event") in {"claimed", "watch"} and row["ticket"] == n]
             self.assertEqual({(row["execution_id"], row["dispatcher_run_id"]) for row in own},
                              {(enter["execution_id"], dispatcher.dispatcher_run_id)}, f"#{n}'s rows")
-            stress = [row for row in own if row["event"] == "stress"]
-            self.assertEqual([row["i"] for row in stress], list(range(ROWS)), f"#{n}'s rows are incomplete")
-            self.assertTrue(all(row["blob"] == blob(n, row["i"]) for row in stress), f"#{n}'s payload changed")
+            watch_rows = [row for row in own if row["event"] == "watch"]
+            self.assertEqual([row["i"] for row in watch_rows], list(range(ROWS)), f"#{n}'s rows are incomplete")
+            self.assertTrue(all(row["blob"] == blob(n, row["i"]) for row in watch_rows),
+                            f"#{n}'s payload changed")
         exits = {row["ticket"]: row for row in scopes["exit"]}
         self.assertEqual(sorted(exits), [1, 3])
         self.assertEqual((exits[3]["outcome"], exits[3]["reason"]), ("completed", None))

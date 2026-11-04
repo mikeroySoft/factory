@@ -41,6 +41,7 @@ from factory.config import (
     LABEL_VIABILITY,
     Config,
 )
+from factory.domain import ReviewVerdict
 from factory.onboard import dashboard_port_error
 
 cfg: Config
@@ -892,7 +893,9 @@ def review_queue(prs: list[dict], rows: list[dict], login: str) -> list[dict]:
             for r in pr.get("reviewRequests", {}).get("nodes") or []
         )
         if LABEL_REVIEW not in labels and not requested and not any(
-            e.get("event") == "review-result" and e.get("verdict") in {"APPROVE", "REQUEST_CHANGES"}
+            e.get("event") == "review-result" and e.get("verdict") in {
+                ReviewVerdict.APPROVE, ReviewVerdict.REQUEST_CHANGES, ReviewVerdict.ERROR,
+            }
             for e in events
         ):
             continue
@@ -907,9 +910,9 @@ def review_queue(prs: list[dict], rows: list[dict], login: str) -> list[dict]:
         ci = ("fail" if buckets & {"fail", "cancel"} else
               "pass" if buckets == {"pass"} else "pending" if buckets else "unknown")
         state = "review_pending"
-        if current.get("verdict") == "REQUEST_CHANGES":
+        if current.get("verdict") == ReviewVerdict.REQUEST_CHANGES:
             state = "changes_requested"
-        elif current.get("verdict") == "APPROVE":
+        elif current.get("verdict") == ReviewVerdict.APPROVE:
             state = "ci_failed" if ci == "fail" else "ci_pending"
             if ci == "pass" and readiness.get("state") == "ready":
                 state = "ready"
@@ -940,7 +943,7 @@ DASHBOARD_EVENT_READ_CAP = runtime_events.BYTE_LIMIT
 DASHBOARD_EVENT_ROW_CAP = runtime_events.ROW_LIMIT
 
 
-def bounded_journal_rows() -> tuple[list[dict], dict]:
+def bounded_journal_rows() -> tuple[list[lifecycle.EventRow], dict]:
     """Read only committed rows from a bounded live-journal window, without flock."""
     path = FACTORY / "events.jsonl"
     unavailable = {
@@ -982,7 +985,7 @@ def bounded_journal_rows() -> tuple[list[dict], dict]:
         gaps.append("byte_limit")
         if lines:
             lines.pop(0)  # The byte before this bounded tail was not observed.
-    rows = []
+    rows: list[lifecycle.EventRow] = []
     for line in lines:
         if not line:
             continue
@@ -1000,7 +1003,12 @@ def bounded_journal_rows() -> tuple[list[dict], dict]:
         if not isinstance(row, dict):
             gaps.append("invalid_record")
             continue
-        rows.append(row)
+        try:
+            rows.append(lifecycle.parse_event(row))
+        except lifecycle.UnknownEventKindError as exc:
+            gaps.append("unknown_lifecycle_kind" if exc.field == "lifecycle" else "unknown_event_kind")
+        except (TypeError, ValueError):
+            gaps.append("invalid_record")
     gaps = list(dict.fromkeys(gaps))
     return rows, {
         "source": "events.jsonl",
@@ -1081,7 +1089,9 @@ def snapshot() -> dict:
     for execution in executions:
         if execution["ticket"] is not None:
             by_ticket.setdefault(execution["ticket"], []).append(execution)
-    provenance, provenance_complete = [], True
+    provenance: list[lifecycle.EventRow] = []
+    provenance_complete = True
+    provenance_kind_error = False
     if raw_prs:
         try:
             ledger = briefing.bounded_file(FACTORY, "events.jsonl", briefing.EVENT_READ_CAP, tail=True)
@@ -1095,11 +1105,20 @@ def snapshot() -> dict:
                 for line in lines:
                     try:
                         row = json.loads(line)
-                        if isinstance(row, dict):
-                            provenance.append(row)
-                        else:
-                            provenance_complete = False
-                    except ValueError:
+                    except (ValueError, RecursionError):
+                        provenance_complete = False
+                        continue
+                    if not isinstance(row, dict):
+                        provenance_complete = False
+                        continue
+                    try:
+                        provenance.append(lifecycle.parse_event(row))
+                    except lifecycle.UnknownEventKindError as exc:
+                        provenance_complete = False
+                        if not provenance_kind_error:
+                            errors.append(f"journal provenance: unknown {exc.field} kind")
+                            provenance_kind_error = True
+                    except (TypeError, ValueError):
                         provenance_complete = False
             else:
                 provenance_complete = False

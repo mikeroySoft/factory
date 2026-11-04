@@ -221,7 +221,7 @@ class RoadmapTest(unittest.TestCase):
     def test_truncated_history_alone_does_not_report_runtime_unavailable(self):
         journal = self.cfg.factory / "events.jsonl"
         journal.parent.mkdir(parents=True, exist_ok=True)
-        filler = json.dumps({"at": AT, "event": "note", "ticket": 1, "pad": "x" * 4000}) + "\n"
+        filler = json.dumps({"at": AT, "event": "watch", "ticket": 1, "pad": "x" * 4000}) + "\n"
         journal.write_text(filler * 300)
         parent = issue(50, initiative_body("Plan", links="#7 #8"), labels=("initiative",))
         baseline = binding.from_issue(self.cfg, 50, parent)

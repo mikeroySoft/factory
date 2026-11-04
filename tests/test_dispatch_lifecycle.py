@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 
 from factory import __version__, lifecycle
+from factory.domain import ReviewVerdict
 
 GH = '''#!/usr/bin/env python3
 import json, os, subprocess, sys
@@ -599,7 +600,7 @@ class LocalCLI(unittest.TestCase):
 
     def test_reviewer_launch_failure_is_rejected_evidence_not_a_crash(self):
         # #260: a reviewer executable missing from the host PATH is unaccepted evidence
-        # (REVISE, reason FileNotFoundError); the ticket escalates and the pass completes.
+        # (ERROR, reviewer_unavailable with a FileNotFoundError diagnostic); the pass completes.
         self.write_config(reviewer=[str(self.base / "absent-reviewer")])
         self.commit_config()
         result = self.cli("dispatch", "--ticket", "7")
@@ -614,7 +615,10 @@ class LocalCLI(unittest.TestCase):
         exits = {r["stage"]: r["outcome"] for r in rows if r["kind"] == "exit"}
         self.assertEqual(exits["ticket"], "project_escalation")
         self.assertEqual(exits["dispatcher"], "completed")
-        self.assertIn("REVISE verdict after 1 review round(s)", result.stdout + result.stderr)
+        self.assertIn(
+            "reviewer unavailable; not a REVISE verdict after 1 review round(s)",
+            result.stdout + result.stderr,
+        )
 
     def assert_reviewer_unavailable(self, script: str, diagnostic: str) -> None:
         runs = self.base / "review-runs"
@@ -633,7 +637,10 @@ class LocalCLI(unittest.TestCase):
         events = lifecycle.read_events(self.events)
         self.assertEqual(len([e for e in events if e.get("event") == "attempt"]), 1)
         [review] = [e for e in events if e.get("event") == "review"]
-        self.assertEqual((review["accepted"], review["verdict"]), (False, None))
+        self.assertEqual(
+            (review["accepted"], review["verdict"]),
+            (False, ReviewVerdict.ERROR),
+        )
         [escalation] = [e for e in events if e.get("event") == "escalate"]
         self.assertEqual(escalation["code"], "reviewer_unavailable")
         findings = (self.repo / ".factory" / "review-7.md").read_text()

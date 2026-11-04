@@ -13,6 +13,72 @@ from factory import config, dispatch, learn, lifecycle
 
 
 class LearnEvaluationTest(unittest.TestCase):
+    def test_reviewer_error_in_either_replay_arm_is_not_tested(self) -> None:
+        from factory.domain import ReviewVerdict
+
+        for baseline, variant in (
+            (ReviewVerdict.ERROR, ReviewVerdict.APPROVE),
+            (ReviewVerdict.APPROVE, ReviewVerdict.ERROR),
+            (ReviewVerdict.REVISE, ReviewVerdict.ERROR),
+        ):
+            with self.subTest(baseline=baseline, variant=variant), \
+                    tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                cfg = config.Config(
+                    root=root, repo="acme/widgets", review_rounds=0,
+                    max_attempts=1, learn_budget_min=1,
+                )
+                case = learn.ReplayCase(
+                    7, "a" * 40, "fix parser", (),
+                    {"title": "fix parser", "body": "Produce a reviewed solution."},
+                )
+                candidate = learn.Candidate("curate", "candidate")
+
+                def candidate_base(wt, _state, _candidate, base=case.base):
+                    wt.mkdir()
+                    return base
+
+                def review_result(verdict):
+                    error = verdict == ReviewVerdict.ERROR
+                    return {
+                        "verdict": verdict, "usage": None, "accepted": not error,
+                        "reason": "reviewer_unavailable" if error else verdict,
+                        "failure_reason": "review_exit:1" if error else None,
+                        "findings": "provider crashed" if error else "Product defect",
+                        "counts": None if error else {
+                            "important": int(verdict == ReviewVerdict.REVISE),
+                        },
+                    }
+
+                with mock.patch.dict(dispatch.__dict__):
+                    dispatch.configure(cfg)
+                    with mock.patch.object(learn, "_candidate_base", side_effect=candidate_base), \
+                         mock.patch.object(dispatch, "run", return_value=subprocess.CompletedProcess(
+                             [], 0, case.base + "\n", "",
+                         )), \
+                         mock.patch.object(dispatch, "run_worker", return_value=(0, None)), \
+                         mock.patch.object(dispatch, "_with_transcript",
+                                           side_effect=lambda argv, *_args: (argv, None)), \
+                         mock.patch.object(dispatch, "worker_usage", return_value={}), \
+                         mock.patch.object(dispatch, "commit_leftovers"), \
+                         mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")), \
+                         mock.patch.object(dispatch, "run_reviewer", side_effect=[
+                             review_result(baseline), review_result(variant),
+                         ]) as reviewer:
+                        result = learn.evaluate_candidates(cfg, [case], [candidate])["curate"]
+                    rows = lifecycle.read_events(dispatch.EVENTS)
+                self.assertEqual(result["status"], "not_tested", result)
+                arm = "baseline" if baseline == ReviewVerdict.ERROR else "variant"
+                self.assertIn(f"{arm} replay failed", result["reason"])
+                self.assertIn("reviewer_unavailable", result["reason"])
+                self.assertIn("provider crashed", result["reason"])
+                self.assertEqual(reviewer.call_count, 1 if arm == "baseline" else 2)
+                self.assertEqual(rows[-1]["event"], "learn-evaluation")
+                self.assertEqual(rows[-1]["status"], "not_tested")
+                self.assertEqual(rows[-1]["reason"], result["reason"])
+                self.assertFalse(any(row.get("event") == "escalate" for row in rows))
+                self.assertEqual(list(cfg.factory.iterdir()), [cfg.factory / "events.jsonl"])
+
     def test_config_is_off_by_default_and_loads_strict_budgets(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)

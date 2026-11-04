@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from factory import __version__
+from factory.domain import ManagerDecision, ReviewVerdict
 
 ARTIFACT_CAP = 256 * 1024
 BUNDLE_CAP = 1024 * 1024
@@ -351,7 +352,7 @@ def _acceptance(cfg: Any, ticket: int, head: str, events: list[dict]) -> tuple[d
             if evidence.get("event") == "manage"
             and evidence.get("ticket") == ticket
             and evidence.get("head") == head
-            and evidence.get("decision") == "APPROVE"
+            and evidence.get("decision") == ManagerDecision.APPROVE
         ), None) if required else None
         return {
             "accepted_at": accepted,
@@ -464,7 +465,7 @@ def _valid_receipt(value: object, event: str, ticket: int) -> bool:
         and type(value.get("ticket")) is int and value["ticket"] == ticket
         and _parse_time(value.get("at")) is not None
         and all(
-            item is None or type(item) in (bool, int, str)
+            item is None or type(item) in (bool, int) or isinstance(item, str)
             for item in value.values()
         )
         and all(
@@ -570,7 +571,7 @@ def _validate_manifest(value: object, cfg: Any, ticket: int, head: str) -> dict 
         or not _valid_receipt(review, "review", ticket)
         or review.get("head") != head
         or review.get("actual_head") != head
-        or review.get("verdict") != "APPROVE"
+        or review.get("verdict") != ReviewVerdict.APPROVE
         or review.get("accepted") is not True
         or review.get("parsed") is not True
     ):
@@ -579,7 +580,7 @@ def _validate_manifest(value: object, cfg: Any, ticket: int, head: str) -> dict 
         if (
             not _valid_receipt(manager, "manage", ticket)
             or manager.get("head") != head
-            or manager.get("decision") != "APPROVE"
+            or manager.get("decision") != ManagerDecision.APPROVE
         ):
             return None
     elif manager is not None:

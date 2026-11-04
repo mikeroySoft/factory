@@ -249,7 +249,6 @@ event. `{}` is a runtime value.
 | `dispatch.refresh_pr_branch` | ``remote head changed while refreshed evidence was being produced`` | refresh → escalate |
 | `dispatch.refresh_pr_branch` | ``fresh review requested changes after {} onto moved main`` | refresh → escalate |
 | `dispatch.refresh_pr_branch` | ``PR gate blocked by protected paths`` | Refreshed PR-tier protected failure → escalate immediately |
-| `dispatch.refresh_pr_branch` | ``review rejected the refreshed head`` | Refreshed genuine reviewer rejection → escalate |
 | `dispatch.refresh_pr_branch` | ``review round budget exhausted after refresh`` | Actionable refreshed findings cannot consume another review round, or ticket is no longer open → escalate |
 | `dispatch.refresh_pr_branch` | ``reviewer unavailable after {} onto moved main`` | refreshed review tooling retries exhausted → escalate (`reviewer_unavailable`) |
 | `dispatch.refresh_pr_branch` | ``approval evidence, head, or human review state changed before refreshed approval`` | refresh → escalate |

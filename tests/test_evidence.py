@@ -872,6 +872,38 @@ class EvidenceCliTest(unittest.TestCase):
         # An unlisted issue cannot be verified absent while membership is partial.
         self.assertEqual(self.invoke("inspect", number=441, code=1)["error"]["code"], "evidence_unavailable")
 
+    def test_audit_decodes_typed_rows_and_marks_unknown_lifecycle_kind_partial(self):
+        self.response("issues", [self.issue, self._gh_issue(9)])
+        self.journal.parent.mkdir()
+        self.journal.write_text(
+            json.dumps({
+                "at": AT,
+                "event": "review-result",
+                "ticket": 9,
+                "verdict": "APPROVE",
+            }) + "\n" + json.dumps({
+                "event": "lifecycle",
+                "kind": "future-lifecycle",
+            }) + "\n"
+        )
+        before = self.journal.read_bytes()
+
+        observed = self.invoke("observe", code=1)
+
+        self.assertEqual(self.journal.read_bytes(), before)
+        self.assertEqual({case["number"] for case in observed["cases"]}, {7, 9})
+        self.assertIsNone(observed["attention_count"])
+        self.count_diagnostic(observed, "audit_incomplete")
+        self.assertIn("audit_partial", self.error_codes(observed))
+        audit = next(
+            row for row in self.values(observed)
+            if isinstance(row, dict) and "tickets" in row
+        )
+        self.assertEqual(
+            audit,
+            {"status": "partial", "truncated": True, "tickets": [9]},
+        )
+
     def test_bounded_audit_membership_is_truthful_for_legacy_and_unreadable_trails(self):
         # A legacy (non-lifecycle) journal is an unsupported F03 record: the
         # exact membership row and grounded attention still stand, an unlisted

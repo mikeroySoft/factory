@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from factory import config, lifecycle
+from factory.domain import ManagerDecision
 
 SEMVER = re.compile(r"v(\d+)\.(\d+)\.(\d+)\Z")
 JSON_BAR = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
@@ -100,7 +101,7 @@ def measure(cfg: config.Config, since: str | datetime) -> dict[str, float | int 
     tickets = {row["ticket"] for row in rows
                if row.get("event") == "merged" and type(row.get("ticket")) is int}
     human_tickets = {row["ticket"] for row in rows
-                     if row.get("event") == "manage" and row.get("decision") == "HUMAN"
+                     if row.get("event") == "manage" and row.get("decision") == ManagerDecision.HUMAN
                      and type(row.get("ticket")) is int}
     human_decisions = {
         ("decision", row["decision_id"]) if row.get("decision_id") else ("row", index)
@@ -108,7 +109,7 @@ def measure(cfg: config.Config, since: str | datetime) -> dict[str, float | int 
         if row.get("event") == "human-decision"
     }
     human_touches = len(human_decisions) + sum(
-        row.get("event") == "manage" and row.get("decision") == "HUMAN"
+        row.get("event") == "manage" and row.get("decision") == ManagerDecision.HUMAN
         for row in rows
     )
     attempts = [row for row in rows if row.get("event") == "attempt" and row.get("attempt") == 1]

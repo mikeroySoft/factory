@@ -7,6 +7,7 @@ import unittest
 import test_risk_merge as risk_tests
 
 from factory import dispatch, lifecycle
+from factory.domain import ReviewVerdict
 
 _REFRESH_CONTEXT = dispatch.refresh_requeue_context
 _ESCALATE = dispatch.escalate
@@ -51,10 +52,10 @@ class ActionableReworkTest(unittest.TestCase):
         self.patch(dispatch, "run_gate", return_value=(not mutation, SURVIVORS if mutation else "- mutation: PASS\n"))
 
         def review(_wt, n, _report, head, *, role="primary", **_kwargs):
-            verdict = verdicts[role == "second"]
+            verdict = ReviewVerdict(verdicts[role == "second"])
             if getattr(self, "resolve_on_bounce", False) and len(self.heads) > 1:
                 verdict = "APPROVE"
-            row = {"ticket": n, "head": head, "actual_head": head, "accepted": True,
+            row = {"ticket": n, "head": head, "actual_head": head, "accepted": verdict != ReviewVerdict.ERROR,
                    "verdict": verdict, "role": role, "model": f"{role}/model"}
             dispatch.record("review", **row)
             pending = dispatch._PENDING_SECOND_REVIEWS if role == "second" else dispatch._PENDING_REVIEWS
@@ -117,23 +118,23 @@ class ActionableReworkTest(unittest.TestCase):
         self.assertEqual(self.rework_rows(), [])
         self.assertEqual(self.escalate.call_args.kwargs["code"], "review_revise")
 
-    def test_real_reject_does_not_requeue(self):
-        self.configure_reviews(("APPROVE", "REJECT"))
+    def test_reviewer_error_does_not_requeue(self):
+        self.configure_reviews(("APPROVE", "ERROR"))
         dispatch.process_ticket(self.issue, 1, False, forced=True)
         self.assertEqual(self.heads, [risk_tests.HEAD])
         self.assertEqual(self.rework_rows(), [])
         self.escalate.assert_called_once()
 
-    def test_high_reject_with_passing_gate_records_review_escalation(self):
-        self.configure_reviews(json.loads('["APPROVE", "REJECT"]'))
+    def test_high_reviewer_error_with_passing_gate_records_unavailable_escalation(self):
+        self.configure_reviews(json.loads('["APPROVE", "ERROR"]'))
         self.cfg.review_rounds = 0
         labels = self.track_queue()
         dispatch.process_ticket(self.issue, 1, False, forced=True)
-        self.assert_human_queue(labels, "review_revise")
+        self.assert_human_queue(labels, "reviewer_unavailable")
         self.assertEqual(self.heads, [risk_tests.HEAD])
-        checks = [row for row in lifecycle.read_events(dispatch.EVENTS) if row["event"] == "risk-check"]
-        self.assertEqual([(row["primary"], row["second"], row["pr_gate"]) for row in checks],
-                         [("APPROVE", "REJECT", "PASS")])
+        reviews = [row for row in lifecycle.read_events(dispatch.EVENTS) if row["event"] == "review"]
+        self.assertEqual([(row["verdict"], row["accepted"]) for row in reviews],
+                         [("APPROVE", True), ("ERROR", False)])
 
     def test_protected_pr_failure_does_not_requeue(self):
         self.configure_reviews(("APPROVE", "APPROVE"))
@@ -210,8 +211,8 @@ class ActionableReworkTest(unittest.TestCase):
         self.assertEqual(self.escalate.call_args.kwargs["code"], "review_revise")
         self.assertEqual([row["round"] for row in self.rework_rows()], [1])
 
-    def test_refreshed_reject_still_escalates(self):
-        self.configure_reviews(("APPROVE", "REJECT"))
+    def test_refreshed_reviewer_error_still_escalates(self):
+        self.configure_reviews(("APPROVE", "ERROR"))
         self.assertFalse(self.refreshed_review())
         self.assertEqual(self.rework_rows(), [])
         self.escalate.assert_called_once()
@@ -360,15 +361,15 @@ class ActionableReworkTest(unittest.TestCase):
         self.cfg.second_reviewer = ["reviewer-without-model"]
         labels = self.track_queue()
         self.assertFalse(self.refresh_with_report("- mutation: PASS\n", passed=True))
-        self.assert_human_queue(labels, "review_revise")
+        self.assert_human_queue(labels, "reviewer_unavailable")
 
-    def test_refresh_parsed_reject_escalates_instead_of_requeuing(self):
-        self.configure_reviews(json.loads('["REJECT", "APPROVE"]'))
+    def test_refresh_reviewer_error_escalates_instead_of_requeuing(self):
+        self.configure_reviews(json.loads('["ERROR", "APPROVE"]'))
         self.patch(dispatch.risk, "classify", return_value=("Medium", ["medium:fixture"]))
         labels = self.track_queue()
         self.assertFalse(self.refresh_with_report("- mutation: PASS\n", passed=True))
-        self.assert_human_queue(labels, "review_revise")
-        self.assertIn("review rejected", self.escalate.call_args.args[1])
+        self.assert_human_queue(labels, "reviewer_unavailable")
+        self.assertIn("reviewer unavailable", self.escalate.call_args.args[1])
 
     def test_refresh_protected_pr_gate_failure_requires_owner(self):
         self.configure_reviews(("APPROVE", "APPROVE"))

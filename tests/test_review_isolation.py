@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from factory import config, dispatch, lifecycle
+from factory.domain import ReviewVerdict
 
 # Like agent CLIs: run .omp/startup.py found in cwd or an ancestor, then report the environment.
 PROBE = """
@@ -115,7 +116,7 @@ class ReviewIsolationTest(unittest.TestCase):
 
         with mock.patch.object(dispatch.subprocess, "run", side_effect=run):
             verdict, findings = dispatch.review(self.wt, 7, "PASS", self.head)
-        self.assertEqual(verdict, "REVISE")
+        self.assertEqual(verdict, ReviewVerdict.ERROR)
         self.assertIn("CalledProcessError", findings)
         self.assertFalse(self.sentinel.exists())
 
@@ -133,7 +134,7 @@ class ReviewIsolationTest(unittest.TestCase):
                 mock.patch.object(dispatch.subprocess, "run", side_effect=run):
             verdict, findings = dispatch.review(self.wt, 7, "PASS", self.head)
 
-        self.assertEqual(verdict, "REVISE")
+        self.assertEqual(verdict, ReviewVerdict.ERROR)
         self.assertIn("CalledProcessError", findings)
         self.assertFalse(self.out.exists(), "reviewer probe ran with an invalid snapshot")
         self.assertFalse(self.sentinel.exists())

@@ -21,6 +21,7 @@ from pathlib import Path
 
 from factory import config, lifecycle
 from factory.config import CONFIG_NAME, Config
+from factory.domain import LifecycleOutcome
 
 cfg: Config
 GPU_LOCK: Path
@@ -66,12 +67,12 @@ def timed(
         if execution:
             execution.emit("result", command=cmd, returncode=proc.returncode, timed_out=False)
             if proc.returncode < 0:
-                execution.outcome = "unknown"
+                execution.outcome = LifecycleOutcome.UNKNOWN
                 execution.reason = "check_terminated_by_signal"
         return subprocess.CompletedProcess(cmd, proc.returncode, out, "")
     except subprocess.TimeoutExpired:
         if execution:
-            execution.outcome = "unknown"
+            execution.outcome = LifecycleOutcome.UNKNOWN
             execution.reason = "check_timeout"
             execution.emit("timeout", command=cmd, timeout_seconds=CHECK_TIMEOUT)
         os.killpg(proc.pid, signal.SIGKILL)
@@ -90,8 +91,8 @@ def run(cmd: list[str]) -> tuple[bool, str]:
     """Run a command, return (passed, combined output)."""
     proc = timed(cmd)
     execution = lifecycle.current()
-    if execution and proc.returncode != 0 and execution.outcome == "completed":
-        execution.outcome = "product_feedback"
+    if execution and proc.returncode != 0 and execution.outcome == LifecycleOutcome.COMPLETED:
+        execution.outcome = LifecycleOutcome.PRODUCT_FEEDBACK
         execution.reason = "configured_check_failed"
     return proc.returncode == 0, proc.stdout + proc.stderr
 
@@ -160,8 +161,8 @@ def check_conflict_markers() -> tuple[bool, str]:
     if proc.returncode == 1:
         return True, ""
     execution = lifecycle.current()
-    if execution and execution.outcome == "completed":
-        execution.outcome = "product_feedback" if proc.returncode == 0 else "unknown"
+    if execution and execution.outcome == LifecycleOutcome.COMPLETED:
+        execution.outcome = LifecycleOutcome.PRODUCT_FEEDBACK if proc.returncode == 0 else LifecycleOutcome.UNKNOWN
         execution.reason = "conflict_markers" if proc.returncode == 0 else "git_grep_failed"
     return False, proc.stdout + proc.stderr
 
@@ -183,8 +184,8 @@ def check_leaks(base: str) -> tuple[bool, str]:
     )
     if proc.returncode != 0:
         execution = lifecycle.current()
-        if execution and execution.outcome == "completed":
-            execution.outcome = "unknown"
+        if execution and execution.outcome == LifecycleOutcome.COMPLETED:
+            execution.outcome = LifecycleOutcome.UNKNOWN
             execution.reason = "git_diff_failed"
         return False, proc.stdout + proc.stderr
     hits, path, header, n = [], "", True, 0
@@ -201,7 +202,7 @@ def check_leaks(base: str) -> tuple[bool, str]:
             n += 1
     execution = lifecycle.current()
     if hits and execution:
-        execution.outcome = "product_feedback"
+        execution.outcome = LifecycleOutcome.PRODUCT_FEEDBACK
         execution.reason = "leak_scan_matches"
     return not hits, "\n".join(hits)
 
@@ -697,7 +698,7 @@ def execute(args: argparse.Namespace, execution) -> int:
                 args.base, args.upstream, args.add_only_override
             )
             if not passed:
-                execution.outcome, execution.reason = "project_escalation", reason
+                execution.outcome, execution.reason = LifecycleOutcome.PROJECT_ESCALATION, reason
                 report = Path(args.report)
                 report.parent.mkdir(parents=True, exist_ok=True)
                 note = f" ({ADD_ONLY_NOTE})" if reason == "add_only_paths" else ""
@@ -710,7 +711,7 @@ def execute(args: argparse.Namespace, execution) -> int:
         ):
             passed, detail = check_existing_tests(args.base)
             if not passed:
-                execution.outcome, execution.reason = "project_escalation", "protected_tests"
+                execution.outcome, execution.reason = LifecycleOutcome.PROJECT_ESCALATION, "protected_tests"
                 report = Path(args.report)
                 report.parent.mkdir(parents=True, exist_ok=True)
                 report.write_text(
@@ -748,9 +749,9 @@ def execute(args: argparse.Namespace, execution) -> int:
         if args.bug and args.tier == "attempt" else []
     )
     outcome, reason = (
-        ("product_feedback", "bug_reproduction_failed")
+        (LifecycleOutcome.PRODUCT_FEEDBACK, "bug_reproduction_failed")
         if any(status == "FAIL" for _, status, _ in results)
-        else ("completed", None)
+        else (LifecycleOutcome.COMPLETED, None)
     )
     gpu_lock = None
     try:
@@ -765,8 +766,8 @@ def execute(args: argparse.Namespace, execution) -> int:
             ) as check:
                 check.emit("check", check=name)
                 passed, output = fn()
-                if not passed and check.outcome == "completed":
-                    check.outcome = "product_feedback"
+                if not passed and check.outcome == LifecycleOutcome.COMPLETED:
+                    check.outcome = LifecycleOutcome.PRODUCT_FEEDBACK
                     check.reason = "check_failed"
                 fields = {"failed_tests": failed_test_ids(output)} if not passed else {}
                 if fields.get("failed_tests"):
@@ -774,7 +775,7 @@ def execute(args: argparse.Namespace, execution) -> int:
                 check.emit("result", check=name, passed=passed, **fields)
                 status = _check_status(name, passed, output, args.blocking_mutation)
                 results.append((name, status, output))
-            if not passed and (outcome == "completed" or check.outcome == "unknown"):
+            if not passed and (outcome == LifecycleOutcome.COMPLETED or check.outcome == LifecycleOutcome.UNKNOWN):
                 outcome, reason = check.outcome, check.reason
     finally:
         if gpu_lock is not None:

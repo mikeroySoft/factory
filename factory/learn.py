@@ -29,6 +29,7 @@ from tempfile import NamedTemporaryFile
 
 from factory import config, dispatch, lifecycle, manage, promotion, score, stats, triage
 from factory.config import LABEL_CHORE, LESSONS_NAME
+from factory.domain import ReviewVerdict
 
 MAX_LESSONS = 10
 LOG_TAIL = 40  # lines of a failing attempt log shown to the model when the ticket has no score row
@@ -545,9 +546,11 @@ def replay_ticket(
             tokens.append(_tokens(result["usage"]))
             if isinstance((result["usage"] or {}).get("cost"), (int, float)):
                 costs.append(result["usage"]["cost"])
-            if result["verdict"] == "APPROVE":
+            if result["verdict"] == ReviewVerdict.APPROVE:
                 approved = True
                 break
+            if result["verdict"] == ReviewVerdict.ERROR:
+                raise RuntimeError(f"replay reviewer failed: {result['reason']}: {result['findings']}")
             counts = result.get("counts")
             revise_findings += counts["important"] if counts is not None else max(
                 1, _finding_count(result["findings"]),
@@ -988,26 +991,15 @@ def chore_pr(
                 base_ref=base,
                 subject=f"learn candidate {branch}",
             ) if ok else {
-                "verdict": "REVISE", "findings": report, "accepted": False,
+                "verdict": ReviewVerdict.ERROR, "findings": report, "accepted": False,
                 "parsed": False, "reason": "gate_failed", "usage": None,
                 "returncode": None, "actual_head": head,
             }
-            if result["verdict"] is None:
-                failure = result.get("failure_reason", "unparsed_verdict")
-                result = {
-                    **result,
-                    "verdict": "REVISE",
-                    "reason": failure,
-                    "findings": (
-                        f"{result['findings']}\n\n"
-                        f"Factory rejected reviewer evidence: {failure}."
-                    ),
-                }
             dispatch.record(
                 "learn-candidate-review", branch=branch, title=title, proposal=pr_body,
                 base=base, head=head, gate="PASS" if ok else "FAIL", **result,
             )
-            if not result["accepted"] or result["verdict"] != "APPROVE":
+            if not result["accepted"] or result["verdict"] != ReviewVerdict.APPROVE:
                 raise ValueError(
                     f"candidate review {result['reason']} (see learn-candidate-review journal row)"
                 )
@@ -1577,7 +1569,7 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
         row.get("event") == "review-result"
         and row.get("pr") == n
         and row.get("head") == head
-        and row.get("verdict") == "APPROVE"
+        and row.get("verdict") == ReviewVerdict.APPROVE
         for row in events
     )
     if not reviewed:

@@ -313,6 +313,21 @@ class FrontierTest(unittest.TestCase):
         receipts = [e for e in self.events() if e.get("event") == "comment"]
         self.assertEqual([(e["ticket"], e["pr"], e["comment"]) for e in receipts], [(80, 80, 8001)])
 
+    def test_caught_frontier_failure_records_diagnostic_reason(self) -> None:
+        def fail_issue_read(args):
+            if args[:2] == ["issue", "view"]:
+                raise subprocess.CalledProcessError(1, args, stderr="host unavailable")
+            return self.gh_json(args)
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=fail_issue_read):
+            manage.frontier_pass()
+
+        terminal = next(e for e in self.events() if e.get("kind") == "exit")
+        self.assertEqual(
+            (terminal["stage"], terminal["outcome"], terminal["reason"]),
+            ("manage", "mechanism_failure", "pr_frontier_failed"),
+        )
+
     def test_manager_approval_is_discarded_when_the_head_moves_while_thinking(self) -> None:
         self.cfg.manager_review = "all"
         self.quiet_provider()

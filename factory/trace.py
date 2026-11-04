@@ -12,6 +12,7 @@ from pathlib import Path
 
 from factory import config, lifecycle, runtime_events
 from factory.decisions import _SECRET
+from factory.domain import ManagerDecision, ReviewVerdict
 
 STAGES = ("triage", "binding", "admission", "worker_select", "claim")
 ALL_STAGES = (
@@ -294,11 +295,14 @@ def _frontier_stage(node: dict) -> str | None:
     if stage == "gate" or node.get("event") == "attempt":
         return "review" if chosen == "pass" or "PASS" in str(node.get("rationale", "")) else "gate"
     if stage == "review" or node.get("event") == "review":
-        return "merge eligibility" if chosen == "APPROVE" or "APPROVE" in str(node.get("rationale", "")) else "gate"
+        return "merge eligibility" if chosen == ReviewVerdict.APPROVE or "APPROVE" in str(node.get("rationale", "")) else "gate"
     if stage == "manager":
-        if chosen in {"RETRY", "REWRITE", "ROUTE", "AUTHORIZE", "FIX"}:
+        if chosen in {
+            ManagerDecision.RETRY, ManagerDecision.REWRITE, ManagerDecision.ROUTE,
+            ManagerDecision.AUTHORIZE, ManagerDecision.FIX,
+        }:
             return "gate"
-        return "human" if chosen == "HUMAN" else "merge eligibility" if chosen == "APPROVE" else "manager"
+        return "human" if chosen == ManagerDecision.HUMAN else "merge eligibility" if chosen == ManagerDecision.APPROVE else "manager"
     if stage == "escalate" or node.get("event") == "escalate":
         return "human"
     if stage == "merge":

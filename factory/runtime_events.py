@@ -23,16 +23,9 @@ ERROR_LIMIT = 32
 IDENTITY = lifecycle._IDENTITY_FIELDS
 # A ticket scope advances attempt/review_round in place so its children inherit them.
 FIXED_IDENTITY = tuple(field for field in IDENTITY if field not in {"attempt", "review_round"})
-KINDS = {
-    "enter", "exit", "handoff", "child_start", "child_exit", "check", "result", "timeout",
-    "lock_acquired", "lock_released", "resource_requested", "wait", "wait_end",
-    "resource_observation", "scheduling_observation", "toolchain",
-}
+KINDS = lifecycle.LIFECYCLE_KINDS
 OBSERVATIONS = {"resource_observation", "scheduling_observation"}
-OUTCOMES = {
-    "completed", "mechanism_failure", "interrupted", "unknown", "product_feedback",
-    "project_escalation", "approved", "merged", "refreshed", "not_admitted", "not_eligible",
-}
+OUTCOMES = lifecycle.LIFECYCLE_OUTCOMES
 REASONS = {
     "APPROVE", "REVISE", "unparsed_verdict", "merge_conflict", "upstream_gate_failed",
     "upstream_sync", "upstream_staged", "check_terminated_by_signal", "check_timeout", "configured_check_failed",
@@ -240,7 +233,7 @@ def _sanitize(row: dict) -> dict | None:
             if type(row[key]) is not int or not -(2**63) <= row[key] <= 2**63 - 1:
                 return None
             event[key] = row[key]
-    if row.get("verdict") in ("APPROVE", "REVISE"):
+    if row.get("verdict") in lifecycle.REVIEW_VERDICTS:
         event["verdict"] = row["verdict"]
     if "check" in row:
         if not _text(row["check"]):
@@ -344,14 +337,20 @@ def _journal(path: Path, errors: list) -> tuple[list, dict, list]:
         if not isinstance(row, dict) or not _valid_json(row):
             gap("invalid_record", position)
             continue
+        raw = row
+        try:
+            row = lifecycle.parse_event(row)
+        except lifecycle.UnknownEventKindError as exc:
+            gap("unsupported_kind" if exc.field == "lifecycle" else "unsupported_record", position)
+            continue
+        except (TypeError, ValueError):
+            gap("invalid_lifecycle" if row.get("event") == "lifecycle" else "invalid_record", position)
+            continue
         if row.get("event") != "lifecycle":
             gap("unsupported_record", -1)
             continue  # Legacy facts cannot hide a lifecycle exit, but are not lifecycle history.
         if type(row.get("schema_version")) is not int or row["schema_version"] != 1:
             gap("unsupported_version", position)
-            continue
-        if isinstance(row.get("kind"), str) and row["kind"] not in KINDS:
-            gap("unsupported_kind", position)
             continue
         try:
             event = _sanitize(row)
@@ -360,7 +359,7 @@ def _journal(path: Path, errors: list) -> tuple[list, dict, list]:
         if event is None:
             gap("invalid_lifecycle", position)
             continue
-        rows.append((position, event, row))
+        rows.append((position, event, raw))
     newest = set()
     beginning = 0
     for index in range(len(rows) - 1, -1, -1):
