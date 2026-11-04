@@ -396,7 +396,9 @@ actions; an unknown decision name raises `ValueError` at the parser and the
 command boundary retains the safe `HUMAN` handoff. Reviewer crashes, malformed
 output and rejected evidence produce `ERROR`, never `REVISE`; only an accepted
 product review can request changes. `ERROR` cannot approve or trigger product
-rework. GitHub-facing accepted change requests retain `REQUEST_CHANGES`.
+rework. In learning replays, `ERROR` in either arm makes the evaluation
+`not_tested`, retaining the diagnostic rather than scoring unavailable evidence.
+GitHub-facing accepted change requests retain `REQUEST_CHANGES`.
 
 Journal reads and writes use the event `TypedDict`s in `factory.lifecycle`,
 including paired High-risk review verdicts and manager comment receipts.
@@ -1434,6 +1436,8 @@ branches or merge external PRs.
 
 The dashboard's **Ops → External PR review queue** lists open, non-draft opted-in
 PRs, including review-request admissions after GitHub consumes the request.
+An `ERROR` review receipt also keeps a PR visible as pending review with its
+error reason; passing CI alone cannot turn that receipt into approval or readiness.
 Each GitHub-linked row shows the repository-local PR number, title, author,
 current head SHA, last reviewed SHA and verdict, and required-CI state with its
 last observation time. CI evidence comes from dispatch's `review-readiness`

@@ -34,9 +34,9 @@ class LearnEvaluationTest(unittest.TestCase):
                 )
                 candidate = learn.Candidate("curate", "candidate")
 
-                def candidate_base(wt, _state, _candidate):
+                def candidate_base(wt, _state, _candidate, base=case.base):
                     wt.mkdir()
-                    return case.base
+                    return base
 
                 def review_result(verdict):
                     error = verdict == ReviewVerdict.ERROR

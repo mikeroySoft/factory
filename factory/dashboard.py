@@ -894,7 +894,7 @@ def review_queue(prs: list[dict], rows: list[dict], login: str) -> list[dict]:
         )
         if LABEL_REVIEW not in labels and not requested and not any(
             e.get("event") == "review-result" and e.get("verdict") in {
-                ReviewVerdict.APPROVE, ReviewVerdict.REQUEST_CHANGES,
+                ReviewVerdict.APPROVE, ReviewVerdict.REQUEST_CHANGES, ReviewVerdict.ERROR,
             }
             for e in events
         ):

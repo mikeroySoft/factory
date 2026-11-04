@@ -550,8 +550,7 @@ def replay_ticket(
                 approved = True
                 break
             if result["verdict"] == ReviewVerdict.ERROR:
-                ok = False
-                break
+                raise RuntimeError(f"replay reviewer failed: {result['reason']}: {result['findings']}")
             counts = result.get("counts")
             revise_findings += counts["important"] if counts is not None else max(
                 1, _finding_count(result["findings"]),
