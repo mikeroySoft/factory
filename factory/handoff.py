@@ -37,6 +37,13 @@ def timeline(n: int) -> list[dict]:
     return [item for page in pages for item in page] if pages and isinstance(pages[0], list) else pages
 
 
+def _manager_failed(event: dict) -> bool:
+    return (
+        event.get("code") == EscalationCode.MANAGER_FAILED
+        or "code" not in event and event.get("reason") == "manager_failed"
+    )
+
+
 def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
     """Why no automatic recovery remains for this escalation; None while the manager may still act.
 
@@ -60,7 +67,7 @@ def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
         return None
     if any(
         e.get("event") == "escalate"
-        and e.get("reason") == EscalationCode.MANAGER_FAILED
+        and _manager_failed(e)
         and e.get("round") == r
         for e in events
     ):
@@ -186,8 +193,7 @@ def handoff_pass(dry_run: bool = False) -> None:
                 events = [e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("ticket") == n]
                 escalation = next((
                     e for e in reversed(events)
-                    if e.get("event") == "escalate"
-                    and e.get("reason") != EscalationCode.MANAGER_FAILED
+                    if e.get("event") == "escalate" and not _manager_failed(e)
                 ), None)
                 if not escalation or escalation.get("upstream") or not escalation.get("packet"):
                     continue

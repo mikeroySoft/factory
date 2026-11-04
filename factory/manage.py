@@ -13,6 +13,7 @@ from datetime import UTC
 from pathlib import Path
 from subprocess import CalledProcessError
 from tempfile import NamedTemporaryFile
+from typing import Literal, TypeAlias, cast
 
 from factory import binding, config, dispatch, handoff, lifecycle
 from factory.config import (
@@ -198,8 +199,8 @@ def _parse_command(
 
 
 def record_manager_decision(
-    n: int, chosen: ManagerDecision | str, body: str, data: object, output: str,
-    workers: dict, packet: Path, *, pr: int | None = None,
+    n: int, chosen: ManagerDecision | ViabilityVerdict, body: str, data: object,
+    output: str, workers: dict, packet: Path, *, pr: int | None = None,
     head: str | None = None, approval: bool = False, viability: bool = False,
 ) -> str:
     from factory import __version__, trace
@@ -674,6 +675,10 @@ Only code applies transitions. Never propose closing a human issue automatically
 No DECISION, notes, CURATE blocks, or other actions.
 """
 
+ViabilityVerdict: TypeAlias = Literal["BUILD", "DONT_BUILD", "DEFER"]
+VIABILITY_VERDICTS = frozenset({"BUILD", "DONT_BUILD", "DEFER"})
+
+
 VIABILITY_BLOCKED = {LABEL_AGENT, LABEL_APPROVED, LABEL_HUMAN, LABEL_INFO, LABEL_TRIAGE, "wontfix", "factory-held"}
 
 
@@ -694,7 +699,7 @@ def viability_snapshot(kind: str, n: int, label: str) -> tuple[dict, list, int |
     return issue, timeline, request
 
 
-def parse_viability(output: str, sources: list[dict]) -> tuple[str, str]:
+def parse_viability(output: str, sources: list[dict]) -> tuple[ViabilityVerdict, str]:
     from factory import briefing
 
     text = output.strip()
@@ -703,9 +708,10 @@ def parse_viability(output: str, sources: list[dict]) -> tuple[str, str]:
         match = matches[0]
         body = text[:match.start()].strip()
         citations = set(briefing.CITATION.findall(body))
-        if (match.end() == len(text) and match[1] in {"BUILD", "DONT_BUILD", "DEFER"}
+        verdict = match[1]
+        if (match.end() == len(text) and verdict in VIABILITY_VERDICTS
                 and body and citations and citations <= {s["id"] for s in sources}):
-            return match[1], body
+            return cast(ViabilityVerdict, verdict), body
     return "DEFER", "No valid evidence-cited viability verdict was returned. A human must reconsider or re-arm this request."
 
 
@@ -761,6 +767,7 @@ def viability_pass(dry_run: bool = False) -> None:
                     sources = evidence.viability_sources(cfg, issue, kind=kind)
                     execution.commit()
                     output = ""
+                    verdict: ViabilityVerdict
                     try:
                         with NamedTemporaryFile(mode="w", dir=cfg.factory, prefix="manager-viability-", suffix=".md") as prompt:
                             prompt.write(VIABILITY_MENU + f"\nTarget: {kind} #{n} in {cfg.repo}\n\n"
@@ -1129,7 +1136,7 @@ def escalation_pass(dry_run: bool = False) -> None:
                 escalation = next((
                     e for e in reversed(events)
                     if e.get("event") == "escalate"
-                    and e.get("reason") != EscalationCode.MANAGER_FAILED
+                    and e.get("code") != EscalationCode.MANAGER_FAILED
                 ), None)
                 if not escalation or escalation.get("upstream") or escalation.get("pr") or not escalation.get("packet"):
                     continue
@@ -1176,7 +1183,7 @@ def escalation_pass(dry_run: bool = False) -> None:
                         dispatch.record(
                             "escalate", ticket=n, round=round_number,
                             packet=str(packet), code=EscalationCode.MANAGER_FAILED,
-                            reason=EscalationCode.MANAGER_FAILED,
+                            reason="manager_failed",
                         )
                     else:
                         output, notes = split_notes(proc.stdout)
@@ -1195,7 +1202,7 @@ def escalation_pass(dry_run: bool = False) -> None:
                     dispatch.record(
                         "escalate", ticket=n, round=round_number,
                         packet=str(packet), code=EscalationCode.MANAGER_FAILED,
-                        reason=EscalationCode.MANAGER_FAILED,
+                        reason="manager_failed",
                     )
                     output = body
                 # A human may have taken over while the model was thinking.

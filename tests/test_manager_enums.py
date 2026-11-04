@@ -123,6 +123,38 @@ class ManagerEnumTest(unittest.TestCase):
             )
             approve.assert_not_called()
 
+    def test_decision_recording_keeps_contextual_types_and_wire_spellings(self) -> None:
+        from factory import lifecycle
+
+        with tempfile.TemporaryDirectory() as temporary:
+            cfg = config.Config(Path(temporary), "acme/widgets")
+            cfg.factory.mkdir()
+            dispatch.configure(cfg)
+            packet = cfg.factory / "packet.md"
+            packet.write_text("evidence")
+
+            manage.record_manager_decision(
+                7, "BUILD", "useful", None, "VERDICT: BUILD", {}, packet,
+                viability=True,
+            )
+            manage.record_manager_decision(
+                7,
+                ManagerDecision.HUMAN,
+                "needs a human",
+                None,
+                "DECISION: HUMAN\nneeds a human",
+                {},
+                packet,
+            )
+
+            viability, manager = lifecycle.read_events(dispatch.EVENTS)
+            self.assertEqual(viability["chosen"], "BUILD")
+            self.assertIs(manager["chosen"], ManagerDecision.HUMAN)
+            wire = dispatch.EVENTS.read_text()
+            self.assertIn('"chosen":"BUILD"', wire)
+            self.assertIn('"chosen":"HUMAN"', wire)
+
+
 
 if __name__ == "__main__":
     unittest.main()
