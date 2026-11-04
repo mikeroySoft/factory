@@ -64,3 +64,4 @@ class LifecycleOutcome(StrEnum):
     REFRESHED = "refreshed"
     NOT_ADMITTED = "not_admitted"
     NOT_ELIGIBLE = "not_eligible"
+    CHECK_FAILED = "check_failed"
