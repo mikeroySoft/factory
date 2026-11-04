@@ -355,6 +355,21 @@ key is unreadable or unregistered.
 `review_findings` counts in JSON and as `important/nit/pre-existing` triples in
 the ticket table.
 
+Ticket reviewers receive `origin/<main>...<gated head>`: only changes since the
+branch's merge base, not reverse patches for newer main-only commits.
+Risk classification, mutation selection, and the High-risk changed-file check use
+the same merge-base boundary. Explicit `base_ref` reviews keep their direct
+`base..head` boundary. `./snapshot` remains
+the exact gated head, so missing later main commits alone are not reversions;
+genuine reversals in the branch diff still receive normal blocking review.
+Review policy still comes from the supplied base ref (current main by default),
+not the candidate. External PR intake already uses GitHub's three-dot compare.
+Ticket `review` events and review lifecycle results record
+`outside_diff_findings`: citations outside the supplied diff's displayed head-side
+hunk ranges (old-side ranges for deleted files, adjacent anchor for pure deletions).
+This counts all validated findings before the nit cap, without filtering findings
+or changing verdicts; unavailable/unparsed evidence records `null`.
+
 ### Decision records and explanations
 
 Routing from triage through merge or wontfix writes `event: "decision"` rows
@@ -553,8 +568,9 @@ that bare argument for manager commands, not worker commands.
 Reviewers never start in a checkout: both review lanes launch the command in a fresh
 temporary directory, so project config written by a worker or PR author (OMP
 `.omp/extensions`, Claude Code `.claude/settings.json`, `.mcp.json`) is not discovered.
-Ticket review gets `./review.diff` (base to gated head) and a read-only `git archive`
-snapshot of the gated head in `./snapshot`; PR review gets the diff inline. `GIT_*` and
+Ticket review gets `./review.diff` (merge base to gated head, or the explicit
+re-review base) and a read-only `git archive` snapshot of the gated head in
+`./snapshot`; PR review gets the diff inline. `GIT_*` and
 GitHub credentials are stripped from the reviewer's environment.
 The dispatcher supplies the issue title, body, and every comment inline as untrusted
 data: the worker's accepted snapshot for plan-bound tickets, otherwise its own
@@ -963,7 +979,7 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `verdict_counts_mismatch`. `review-result` records the three counts.
 
    **Risk tiers.** Before these checks, Factory classifies the exact gated
-   `base..head` diff with the installed `factory/risk.py` rules and records a
+   `origin/<main>...head` diff with the installed `factory/risk.py` rules and records a
    `risk` event plus a `risk` decision. Candidate code cannot change the rules
    classifying its own head, and a new head invalidates all tier evidence.
 
