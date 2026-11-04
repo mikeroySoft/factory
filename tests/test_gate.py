@@ -230,6 +230,7 @@ class GateOutputEncodingTest(unittest.TestCase):
         self.assertIn("\ufffd", result.stdout)
         self.assertIn("check timed out", result.stdout)
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: raw non-UTF-8 filenames rejected by APFS")
     def test_leak_scan_finds_pattern_beside_non_utf8_filename(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             repo = repo_with_test(Path(d), TOML + '\n[leak_scan]\nextra = ["codename"]\n')

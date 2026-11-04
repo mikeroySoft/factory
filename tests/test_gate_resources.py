@@ -44,6 +44,10 @@ with open(sys.argv[1], "w") as lock:
 '''
 
 
+@unittest.skipUnless(
+    sys.platform == "linux",
+    "Linux only: /proc process and flock-owner identity",
+)
 class GateResourcesTest(unittest.TestCase):
     wait_timeout = 60
 

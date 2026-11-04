@@ -32,6 +32,7 @@ class DispatchOutputEncodingTest(unittest.TestCase):
         ):
             self.assert_replaced_output(dispatch.run(INVALID_OUTPUT))
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: raw non-UTF-8 filenames rejected by APFS")
     def test_activity_replaces_non_utf8_git_output(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

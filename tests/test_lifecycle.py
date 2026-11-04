@@ -40,6 +40,10 @@ class LifecycleTest(unittest.TestCase):
         self.addCleanup(stop)
         return proc
 
+    @unittest.skipUnless(
+        sys.platform == "linux",
+        "Linux only: /proc process identity and descendant scanning",
+    )
     def test_overlapping_producers_have_distinct_ordered_executions(self) -> None:
         code = """
 import sys
@@ -75,6 +79,10 @@ with lifecycle.scope(Path(sys.argv[1]), sys.argv[2] if len(sys.argv) > 2 else 'w
             self.assertEqual([row["sequence"] for row in state["events"]], list(range(1, 28)))
         self.assertEqual(sum(row.get("event") == "attempt" for row in rows), 100)
 
+    @unittest.skipUnless(
+        sys.platform == "linux",
+        "Linux only: /proc process identity and descendant scanning",
+    )
     def test_abrupt_death_reconciles_once_at_observation_time(self) -> None:
         proc = self.spawn("""
 import sys, time
@@ -102,6 +110,7 @@ with lifecycle.scope(Path(sys.argv[1]), 'worker'):
         self.assertEqual(first["events"][-1]["kind"], "exit")
         self.assertTrue(first["events"][-1]["reconciled"])
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: /proc process identity")
     def test_reused_pid_is_not_live_and_missing_identity_is_unknown(self) -> None:
         with lifecycle.scope(self.path, "worker") as execution:
             entered = lifecycle.read_events(self.path)[0]
@@ -125,6 +134,7 @@ with lifecycle.scope(Path(sys.argv[1]), 'worker'):
         self.assertEqual(state["state"], "unknown")
         self.assertEqual(len(state["events"]), 1)
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: /proc process identity")
     def test_held_lock_blocks_interruption_after_owner_death(self) -> None:
         lock = Path(self.tmp.name) / "ticket.lock"
         with lock.open("w") as handle:
@@ -140,6 +150,7 @@ with lifecycle.scope(Path(sys.argv[1]), 'ticket', lock=Path({str(lock)!r})):
             self.assertEqual(lifecycle.observe(self.path)[0]["state"], "unknown")
         self.assertEqual(lifecycle.observe(self.path)[0]["state"], "interrupted")
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: /proc process identity")
     def test_live_child_survives_dead_parent(self) -> None:
         proc = self.spawn("""
 import os, subprocess, sys
@@ -188,6 +199,10 @@ with lifecycle.scope(Path(sys.argv[1]), 'worker') as execution:
         lifecycle.append(self.path, {"event": "merged", "ticket": 3})
         self.assertEqual([row["event"] for row in lifecycle.read_events(self.path)], ["attempt", "approved", "merged"])
 
+    @unittest.skipUnless(
+        sys.platform == "linux",
+        "Linux only: /proc process identity and descendant scanning",
+    )
     def test_nested_and_subprocess_scopes_preserve_causal_association(self) -> None:
         with (
             lifecycle.scope(self.path, "dispatcher", dispatcher=True) as dispatcher,
@@ -246,6 +261,10 @@ with lifecycle.scope(Path('/unused/events.jsonl'), 'gate'):
         self.assertEqual((state["state"], state["reason"]),
                          ("failed", "github_command_failed"))
 
+    @unittest.skipUnless(
+        sys.platform == "linux",
+        "Linux only: /proc process identity and descendant scanning",
+    )
     def test_live_grandchild_keeps_ancestors_observable(self) -> None:
         proc = self.spawn("""
 import os, subprocess, sys
@@ -272,6 +291,7 @@ with lifecycle.scope(Path(sys.argv[1]), 'dispatcher', dispatcher=True):
         self.assertEqual({state["stage"]: state["state"] for state in states},
                          {"dispatcher": "active", "worker": "active"})
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: /proc child process identity")
     def test_exception_does_not_hide_unreaped_child(self) -> None:
         with self.assertRaises(KeyboardInterrupt), lifecycle.scope(self.path, "worker") as execution:
             child = self.spawn("import time; time.sleep(120)", env=execution.env())

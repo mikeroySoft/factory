@@ -2901,6 +2901,35 @@ only when the reference revision is verified; otherwise links are marked unavail
 
 Operator and agent guide: [docs/guide/index.md](docs/guide/index.md).
 
+## Cross-platform CI
+
+Every push and pull request runs the complete unittest suite on `macos-latest`
+and Linux. Keep the existing `gate` check required in the repository's `main`
+branch rules: it runs the unchanged Linux checks and also fails when macOS fails
+or is skipped. A cancelled macOS job retains its cancelled check without a
+synthetic `gate` failure, so the dispatcher's runner-outage triage can retry it;
+the merge stage still refuses cancelled checks.
+
+To run the macOS lane locally with Python 3.11+ and Node 22.19+:
+
+```sh
+python -m pip install '.[atlas]'
+python scripts/ci_portable.py
+```
+
+The runner imports every `factory.*` module (`factory.__main__` through its
+`--help` entry point), then discovers every test. Tests requiring Linux kernel,
+filesystem, or socket behavior use `@unittest.skipUnless(sys.platform == "linux",
+"Linux only: <dependency>")`; mocked Linux inputs still run on both hosts.
+Every skip is reported with its reason, followed by the platform-skip count.
+The runner canonicalizes the temporary root (including inherited `TMPDIR`) so
+macOS's `/var` symlink does not give fixtures and subprocesses different paths.
+The atomic-publication regression runs on both hosts: Darwin uses native
+`renameatx_np(RENAME_EXCL)` when `renameat2` is unavailable, preserving immutable
+decision artifacts without a link/unlink crash window or overwriting an
+existing artifact. Linux also exercises that missing-symbol path through a
+Darwin-ABI adapter backed by its real no-replace rename syscall.
+
 ## License
 
 MIT

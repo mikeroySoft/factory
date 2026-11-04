@@ -5,6 +5,7 @@ import fcntl
 import json
 import multiprocessing
 import os
+import sys
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -104,6 +105,7 @@ class PassiveDashboardTest(unittest.TestCase):
             self.assertEqual(snapshot["executions"][0]["execution_id"], execution.execution_id)
 
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: /proc/locks passive lock evidence")
     def test_snapshot_reuses_passive_lock_evidence_without_coordination_calls(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch.dict(dashboard.__dict__), \
              patch.dict(dispatch.__dict__), patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}):

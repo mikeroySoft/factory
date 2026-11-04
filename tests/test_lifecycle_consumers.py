@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -151,6 +152,7 @@ class LifecycleConsumersTest(unittest.TestCase):
         self.assertEqual(ticket["stage"], "in-flight")
         self.assertIsNone(ticket["phase"])
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: /proc process and flock-owner identity")
     def test_snapshot_keeps_concurrent_and_no_ticket_executions_when_github_fails(self) -> None:
         with tempfile.TemporaryDirectory() as d, patch.dict(dashboard.__dict__), patch.dict(dispatch.__dict__), \
              patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}):

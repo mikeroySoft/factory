@@ -191,6 +191,8 @@ class EvidenceTransportTest(unittest.TestCase):
 
     def kill_marker_pids(self) -> None:
         # Self-owned processes identified by this run's unique marker only.
+        if sys.platform != "linux":
+            return  # Portable envelope tests never spawn marked descendants.
         for pid in self.marker_pids():
             try:
                 os.kill(pid, signal.SIGKILL)
@@ -224,6 +226,7 @@ class EvidenceTransportTest(unittest.TestCase):
         self.assertEqual(first["labels"], sorted(expected_labels(8)),
                          "labels must round-trip the full Unicode text unchanged")
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: /proc process enumeration")
     def test_hung_read_kills_every_descendant_without_false_success(self):
         self.responses[PREFIX + "issues"] = {"json": [], "sleep": 60, "fork": True}
         data = self.invoke("observe", code=1)
@@ -269,6 +272,7 @@ class EvidenceTransportTest(unittest.TestCase):
         if data["cases"]:
             self.assertEqual(data["cases"][0]["number"], 100, "trimming keeps the newest cases")
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: /proc process enumeration")
     def test_direct_cli_sigint_unwounds_without_orphans(self):
         """Ctrl+C during a hung read: the producer already unwinds through its
         per-read finally block on the baseline; this guards that path for no

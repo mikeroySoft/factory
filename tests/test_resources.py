@@ -82,6 +82,10 @@ with lifecycle.scope(Path(sys.argv[1]), {stage!r}) as execution:
     def snapshot(self) -> dict:
         return lifecycle.resources(self.path, [(self.lock, "host")])[0]
 
+    @unittest.skipUnless(
+        sys.platform == "linux",
+        "Linux only: /proc process and flock-owner identity",
+    )
     def test_requester_is_not_owner_and_acquires_only_after_release(self) -> None:
         holder = self.holder()
         self.assertEqual(holder.stdout.readline().strip(), "held")
@@ -112,6 +116,7 @@ with lifecycle.scope(Path(sys.argv[1]), {stage!r}) as execution:
         released = self.snapshot()
         self.assertEqual((released["state"], released["ownership"], released["owner"]), ("free", "none", None))
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: exclusive flock probes on read-only descriptors")
     def test_external_holder_is_unknown_and_observers_deduplicate(self) -> None:
         holder = self.holder(instrumented=False)
         self.assertEqual(holder.stdout.readline().strip(), "held")
@@ -131,6 +136,10 @@ print(json.dumps(lifecycle.resources(Path(sys.argv[1]), [(sys.argv[2], 'host')])
         self.assertEqual(lifecycle.observe(self.path), [])
         self.assertEqual(len(lifecycle.read_events(self.path)), 1)
 
+    @unittest.skipUnless(
+        sys.platform == "linux",
+        "Linux only: /proc process and flock-owner identity",
+    )
     def test_live_old_holder_cannot_own_external_replacement_during_release_gap(self) -> None:
         old = self.holder(delay_release=True)
         self.assertEqual(old.stdout.readline().strip(), "held")
@@ -146,6 +155,10 @@ print(json.dumps(lifecycle.resources(Path(sys.argv[1]), [(sys.argv[2], 'host')])
         self.assertEqual(old.wait(timeout=10), 0)
         self.assertEqual(self.snapshot()["event_id"], observed["event_id"])
 
+    @unittest.skipUnless(
+        sys.platform == "linux",
+        "Linux only: /proc process and flock-owner identity",
+    )
     def test_dead_holder_replacement_and_old_release_do_not_erase_new_owner(self) -> None:
         old = self.holder()
         self.assertEqual(old.stdout.readline().strip(), "held")
@@ -162,6 +175,7 @@ print(json.dumps(lifecycle.resources(Path(sys.argv[1]), [(sys.argv[2], 'host')])
         self.assertEqual(self.snapshot()["owner"], after["owner"])
         self.assertNotEqual(after["owner"]["execution_id"], before["owner"]["execution_id"])
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: /proc process identity")
     def test_killed_requester_loses_pending_wait_and_request_once(self) -> None:
         holder = self.holder(instrumented=False)
         self.assertEqual(holder.stdout.readline().strip(), "held")
@@ -181,6 +195,7 @@ print(json.dumps(lifecycle.resources(Path(sys.argv[1]), [(sys.argv[2], 'host')])
         self.assertEqual(self.snapshot()["event_id"], observed["event_id"])
         self.assertEqual(lifecycle.read_events(self.path), rows)
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: /proc process identity")
     def test_interrupted_release_is_observed_not_backdated_or_synthesized(self) -> None:
         holder = self.holder()
         self.assertEqual(holder.stdout.readline().strip(), "held")
@@ -196,6 +211,10 @@ print(json.dumps(lifecycle.resources(Path(sys.argv[1]), [(sys.argv[2], 'host')])
         self.assertFalse(any(row["kind"] == "lock_released" for row in lifecycle.read_events(self.path)))
         self.assertEqual(lifecycle.observe(self.path)[0]["state"], "interrupted")
 
+    @unittest.skipUnless(
+        sys.platform == "linux",
+        "Linux only: /proc process and flock-owner identity",
+    )
     def test_terminal_execution_is_not_owner_even_while_its_process_holds_lock(self) -> None:
         holder = self.spawn("""
 import fcntl, sys
@@ -217,6 +236,7 @@ with open(sys.argv[2], 'a+') as lock:
         observed = self.snapshot()
         self.assertEqual((observed["state"], observed["ownership"], observed["owner"]), ("held", "unknown", None))
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: exclusive flock probes on read-only descriptors")
     def test_unavailable_attribution_never_confirms_even_a_live_acquisition(self) -> None:
         holder = self.holder()
         self.assertEqual(holder.stdout.readline().strip(), "held")
@@ -238,6 +258,7 @@ with open(sys.argv[2], 'a+') as lock:
                                 if row["resource"]["scope"] == "repository")
         self.assertNotEqual(repository["resource"]["id"], other_repository["resource"]["id"])
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: /proc process identity for pending waits")
     def test_unknown_execution_and_malformed_waits_do_not_claim_pending_wait(self) -> None:
         with lifecycle.scope(self.path, "gate") as execution:
             wait = execution.wait("exclusive_resource")

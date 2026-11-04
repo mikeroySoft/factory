@@ -171,6 +171,7 @@ class DashboardPortTest(unittest.TestCase):
         self.assertEqual((code, row["status"]), (1, "FAIL"))
         self.assertIn("ss", row["detail"])
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: unconfigured 127/8 loopback addresses")
     def test_doctor_ignores_a_listener_on_an_unrelated_address(self) -> None:
         listener = self.listener("127.0.0.2")
         self.cfg.dashboard_port = listener.getsockname()[1]
@@ -191,6 +192,7 @@ class DashboardPortTest(unittest.TestCase):
         row = next(row for row in json.loads(output)["rows"] if row["label"] == f"dashboard port {self.cfg.dashboard_port}")
         self.assertEqual((code, row["status"]), (0, "PASS"))
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: IPv4-mapped wildcard listener probing")
     def test_doctor_detects_dual_stack_wildcard_holder(self) -> None:
         listener = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
         self.addCleanup(listener.close)
@@ -204,6 +206,7 @@ class DashboardPortTest(unittest.TestCase):
         self.assertEqual((code, row["status"]), (1, "FAIL"))
         self.assertIn("foreign", row["detail"])
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: unconfigured 127/8 loopback addresses")
     def test_install_refuses_foreign_holder_before_writing_or_mutating_systemd(self) -> None:
         listener = self.listener("127.0.0.2")
         self.cfg.dashboard_port = listener.getsockname()[1]

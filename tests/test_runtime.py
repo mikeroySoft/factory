@@ -101,6 +101,10 @@ class RuntimeCliTest(unittest.TestCase):
 
 
 
+    @unittest.skipUnless(
+        sys.platform == "linux",
+        "Linux only: /proc process and flock-owner identity",
+    )
     def test_concurrency_wait_retry_ownership_and_source_freshness(self):
         self.env["RUNTIME_SHORT_READ"] = "1"
         self.journal.parent.mkdir()
@@ -234,6 +238,10 @@ class RuntimeCliTest(unittest.TestCase):
         self.assertNotIn("missing_enter", [error["code"] for error in clipped["errors"]])
         self.assertEqual(clipped["executions"][0]["observation"], "partial")
 
+    @unittest.skipUnless(
+        sys.platform == "linux",
+        "Linux only: /proc process and flock-owner identity",
+    )
     def test_truncated_old_history_does_not_poison_current_observations(self):
         import shutil
 
@@ -282,6 +290,7 @@ class RuntimeCliTest(unittest.TestCase):
         self.assertEqual(resource["observation"], "fresh")
         self.assertEqual(resource["owner"]["acquisition_id"], acquisition["acquisition_id"])
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: /proc process identity")
     def test_hung_service_queries_are_bounded_and_local_facts_survive(self):
         import shutil
         import time
@@ -304,6 +313,7 @@ class RuntimeCliTest(unittest.TestCase):
         self.assertEqual(data["executions"][0]["state"], "active")
         self.assertTrue(any("timeout" in error["code"] for error in data["errors"]))
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: /proc process identity")
     def test_missing_service_tool_preserves_local_execution(self):
         import shutil
 
@@ -336,6 +346,7 @@ class RuntimeCliTest(unittest.TestCase):
         self.assertIn("unsupported_version", data["history"]["gaps"])
         self.assertIn("unsupported_record", data["history"]["gaps"])
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: /proc process identity for activity observations")
     def test_conflicting_duplicate_cannot_confirm_activity(self):
         execution = lifecycle.Execution(self.journal, "worker", ticket=13)
         row = execution.emit("enter")
@@ -389,6 +400,7 @@ class RuntimeCliTest(unittest.TestCase):
             self.assertEqual(proc.returncode, 2)
             self.assertEqual(proc.stdout, "")
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux only: /proc/locks resource observations")
     def test_lock_file_removed_after_release_is_not_a_reader_error(self):
         # Ticket cleanup unlinks `.factory/locks/N.lock` after landing, and merge.lock
         # does not exist before the first merge; neither is a runtime failure.
