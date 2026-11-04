@@ -1039,13 +1039,19 @@ def pass_main(argv: list[str]) -> int:
     status = 1
     child = None
 
+    def signal_child(signum):
+        if child is not None:
+            try:
+                os.killpg(child.pid, signum)
+            except ProcessLookupError:
+                pass
+
     def terminate(signum, _frame):
         nonlocal status
         if status < 0:
             return
         status = -signum
-        if child is not None:
-            child.terminate()
+        signal_child(signum)
 
     previous = signal.signal(signal.SIGTERM, terminate)
     try:
@@ -1053,11 +1059,15 @@ def pass_main(argv: list[str]) -> int:
             for command in ("triage", "dispatch"):
                 if status < 0:
                     break
-                child = subprocess.Popen([*exe, command])
+                child = subprocess.Popen([*exe, command], start_new_session=True)
                 # SIGTERM may have arrived between the check and child assignment.
                 if status < 0:
-                    child.terminate()
+                    signal_child(-status)
                 result = child.wait()
+                if status < 0:
+                    # Dispatch has now reaped its detached workers; stop any
+                    # remaining phase descendants, including those ignoring TERM.
+                    signal_child(signal.SIGKILL)
                 child = None
                 if command == "dispatch" and status >= 0:
                     status = result

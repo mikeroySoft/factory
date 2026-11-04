@@ -74,8 +74,10 @@ The pass agent runs at load and every `[install].every` / `--every` interval
 must be a positive whole number of seconds. `factory pass` runs triage, dispatch,
 then watch without a shell: triage failure does not block dispatch, watch receives
 `SERVICE_RESULT`, `EXIT_CODE`, and `EXIT_STATUS`, and watch failure does not replace
-dispatch's exit status. SIGTERM of the wrapper stops its active child and runs watch
-with `SERVICE_RESULT=signal`, `EXIT_CODE=killed`, and the signal number in `EXIT_STATUS`.
+dispatch's exit status. SIGTERM of the wrapper signals its active phase's process
+group and waits for the phase (including dispatch's detached-worker cleanup).
+Any remaining group members are killed before watch runs with `SERVICE_RESULT=signal`,
+`EXIT_CODE=killed`, and the signal number in `EXIT_STATUS`.
 The dashboard uses KeepAlive and `--host/--port --no-open`.
 The optional probe runs every 120 seconds; the optional eval runs Monday at 00:00.
 Agent stdout/stderr go to `.factory/logs/<label>.stdout.log` / `.stderr.log`.

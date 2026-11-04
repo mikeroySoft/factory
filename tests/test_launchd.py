@@ -162,7 +162,7 @@ class LaunchdTest(unittest.TestCase):
                         return subprocess.CompletedProcess(argv, 9)
                     return subprocess.CompletedProcess(argv, 3 if command == 'triage' else status)
                 from types import SimpleNamespace
-                def launch(argv):
+                def launch(argv, **kwargs):
                     result = run(argv)
                     return SimpleNamespace(wait=lambda: result.returncode)
                 self.enterContext(patch.object(onboard.subprocess, 'Popen', side_effect=launch))
