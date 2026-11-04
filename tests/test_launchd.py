@@ -236,9 +236,8 @@ class LaunchdTest(unittest.TestCase):
                 self.assertFalse((directory / f'{self.cfg.unit}{suffix}.plist').exists())
             self.assertFalse(any(call[0] == 'systemctl' for call in self.calls))
             before = (directory / f'{self.cfg.unit}.plist').read_text()
-            with patch.object(onboard, 'sh', return_value=subprocess.CompletedProcess([], 5, '', 'Input/output error')):
-                with self.assertRaisesRegex(config.ConfigError, 'Input/output error'):
-                    onboard.install(['--no-dashboard', '--every', '4min'])
+            with patch.object(onboard, 'sh', return_value=subprocess.CompletedProcess([], 5, '', 'Input/output error')), self.assertRaisesRegex(config.ConfigError, 'Input/output error'):
+                onboard.install(['--no-dashboard', '--every', '4min'])
             self.assertEqual((directory / f'{self.cfg.unit}.plist').read_text(), before)
 
     def test_sigterm_of_pass_wrapper_runs_watch_with_signal_result(self):
