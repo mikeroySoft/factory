@@ -358,6 +358,26 @@ class ResultsTest(unittest.TestCase):
         latest = results.latest_result(self.cfg, incomplete_ticket)
         self.assertEqual(latest["status"], "unavailable")
 
+    def test_typed_journal_approval_retains_handoff_before_cleanup(self) -> None:
+        from factory import lifecycle
+
+        ticket, head = 7, "a" * 40
+        payload = b"accepted typed journal handoff"
+        self.cfg.manager = ["manager"]
+        self.cfg.manager_review = "all"
+        source = self.handoff(ticket, payload)
+        events = self.accepted_events(ticket, head, results.source_metadata(self.cfg, ticket))
+        events.insert(-1, {
+            "at": results._format_time(NOW - timedelta(minutes=90)),
+            "event": "manage", "ticket": ticket, "head": head, "decision": "APPROVE",
+        })
+        events = [lifecycle.parse_event(row) for row in events]
+
+        retained = self.retain(ticket, head, events)
+        self.assertEqual((retained["status"], retained["cleanup_safe"]), ("complete", True))
+        source.unlink()
+        self.assertEqual(self.read(ticket, head)["text"], payload.decode())
+
 
 if __name__ == "__main__":
     unittest.main()
