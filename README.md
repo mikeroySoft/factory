@@ -355,6 +355,34 @@ key is unreadable or unregistered.
 `review_findings` counts in JSON and as `important/nit/pre-existing` triples in
 the ticket table.
 
+`factory stats --by-lane [--week] [--json]` splits local journal evidence into
+claims, attempts, first-gate pass rate, reviewer runs, merges, and escalations.
+`lane` is the 1-based pick order within a dispatcher pass, not a persistent
+host-wide worker identity; correlate it with `dispatcher_run_id`. Direct
+`--ticket` runs use lane 1. Ticket, worker, gate, and review events inherit that
+lane through thread and subprocess context. Landing happens in a later pass;
+its untagged merge is attributed to the ticket's most recent claim, even when
+that claim predates `--week`. Historical claims without a lane remain
+`unknown` (JSON `null`), not lane 1.
+
+#### Two-lane rollout (#541)
+
+The seven-day production rollout is pending, not evidence supplied by the
+local concurrency regression. After the engine-deploy and gate-hang fixes
+are deployed, the operator must land `[dispatch].max_active = 2` through the
+normal authorized config path and keep it fixed for seven full days. This
+ticket does not override a protected repository config already set higher.
+Before starting, retain the preceding seven-day `factory stats --week --json`
+report, `factory stats --escapes --json` candidates (confirm actual escapes),
+and reverts from main's history. Retain the same evidence after seven days,
+plus `factory stats --by-lane --week --json`.
+Success requires merges/day at least 1.30 times the baseline, with no increase
+in confirmed escapes or reverts. A zero-merge baseline or missing quality
+evidence cannot establish success. Keep the existing per-ticket worktrees
+and locks, `merge.lock`, exclusive-check host lock, gates, review rounds, and
+fresh review after rebase unchanged; do not raise concurrency on unverified
+rollout results.
+
 ### Decision records and explanations
 
 Routing from triage through merge or wontfix writes `event: "decision"` rows

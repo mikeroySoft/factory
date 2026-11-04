@@ -167,6 +167,21 @@ class DispatchLaneTest(unittest.TestCase):
             {"lane": None, "claims": 1, "attempts": 1, "first_pass": 1.0, "reviews": 0, "merges": 1, "escalations": 0},
         ])
 
+    def test_weekly_lane_stats_retain_claim_before_window(self):
+        from datetime import UTC, datetime, timedelta
+
+        end = datetime(2026, 11, 3, tzinfo=UTC)
+        start = end - timedelta(days=7)
+        audit = {7: [
+            {"event": "claimed", "lane": 2, "at": "2026-10-01T00:00:00Z"},
+            {"event": "attempt", "lane": 2, "attempt": 1, "gate": "PASS", "at": "2026-10-01T00:00:01Z"},
+            {"event": "merged", "at": "2026-11-02T00:00:00Z"},
+            {"event": "merged", "at": "2026-11-04T00:00:00Z"},
+        ]}
+        self.assertEqual(stats.lane_metrics(audit, start, end), [
+            {"lane": 2, "claims": 0, "attempts": 0, "first_pass": None, "reviews": 0, "merges": 1, "escalations": 0},
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()
