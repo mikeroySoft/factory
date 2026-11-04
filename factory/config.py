@@ -90,6 +90,7 @@ KNOWN_KEYS = {
     "repo": ("slug", "upstream", "main"),
     "dispatch": ("max_active", "max_attempts", "budget_min", "idle_timeout", "exit_grace",
                  "review_rounds", "cost_pattern", "signoff"),
+    "engine": ("yield_for_update",),
     "workers": None,
     "worker_wrap": ("command",),
     "review": ("command", "second_command", "json_mode", "policy"),
@@ -177,6 +178,7 @@ class Config:
     idle_timeout: float = 30  # minutes without worker log output or worktree change = stuck; 0 off
     exit_grace: float = 300  # seconds a done (handoff/commit) worker may stay quiet before termination; 0 off
     review_rounds: int = 1  # REVISE -> worker -> re-review cycles before escalating
+    engine_yield_for_update: bool = False
     signoff: bool = True  # `git commit -s`; Signed-off-by trailer on merges
     cost_pattern: str | None = None  # regex with one capture: dollars in the worker log
     workers: dict[str, list[str]] = field(
@@ -394,6 +396,13 @@ def engine_commit() -> str | None:
         return None
     name = url.rstrip("/").rsplit("/", 1)[-1]
     return name if re.fullmatch(r"[0-9a-f]{40}", name) else None
+
+
+def engine_target() -> str | None:
+    """District's recorded CI-green target; never resolve refs or CI in Factory."""
+    engine = host_config().get("defaults", {}).get("engine", {})
+    target = engine.get("target") if isinstance(engine, dict) else None
+    return target if isinstance(target, str) and re.fullmatch(r"[0-9a-f]{40}", target) else None
 
 
 def engine_drift(cfg: Config) -> str | None:
@@ -703,6 +712,16 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     cfg.review_rounds = int(dispatch.get("review_rounds", cfg.review_rounds))
     cfg.cost_pattern = dispatch.get("cost_pattern") or None
     cfg.signoff = bool(dispatch.get("signoff", cfg.signoff))
+    engine = raw.get("engine", {})
+    if not isinstance(engine, dict):
+        raise ConfigError("[engine] must be a table")
+    host_engine = host.get("defaults", {}).get("engine", {})
+    # The one shared engine's host policy is authoritative, even over a repo opt-out.
+    cfg.engine_yield_for_update = engine.get("yield_for_update", cfg.engine_yield_for_update)
+    if isinstance(host_engine, dict):
+        cfg.engine_yield_for_update = host_engine.get("yield_for_update", cfg.engine_yield_for_update)
+    if not isinstance(cfg.engine_yield_for_update, bool):
+        raise ConfigError("engine.yield_for_update must be true or false")
     if workers:
         if "default" not in workers:
             raise ConfigError(f"{path}: [workers] needs a `default` command")

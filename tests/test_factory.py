@@ -5,6 +5,7 @@ Run: python -m unittest discover -s tests
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import re
@@ -22,6 +23,7 @@ sys.path.insert(0, str(ROOT))
 # Never read the operator's real host config; HostConfigTest writes its own here.
 XDG = Path(tempfile.mkdtemp())
 os.environ["XDG_CONFIG_HOME"] = str(XDG)
+atexit.register(shutil.rmtree, XDG, ignore_errors=True)
 
 from datetime import UTC
 
@@ -31,6 +33,10 @@ from factory import __version__, config, lifecycle, manage, runtime_events
 # redirect every fixture's lifecycle rows (gate timeouts, review verdicts...) into the live
 # journal, where `factory watch` files them as factory bugs. Tests that need a context set one.
 os.environ.pop(lifecycle.CONTEXT_ENV, None)
+
+def tearDownModule() -> None:
+    shutil.rmtree(XDG, ignore_errors=True)
+
 
 
 def host_file(text: str) -> None:
@@ -2419,6 +2425,20 @@ esac
 
 
 class DispatchTest(unittest.TestCase):
+    def setUp(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        real_gh_json = dispatch.gh_json
+
+        def github(args, *positional, **kwargs):
+            if args[:2] == ["issue", "view"] and args[-2:] == ["--json", "title,body,comments"]:
+                return {"title": "Fixture issue", "body": "Fixture acceptance criteria", "comments": []}
+            return real_gh_json(args, *positional, **kwargs)
+
+        self.enterContext(mock.patch.object(dispatch, "gh_json", side_effect=github))
+
     def test_push_and_pr_targets_configured_nondefault_branch(self) -> None:
         from unittest import mock
 

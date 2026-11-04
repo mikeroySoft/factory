@@ -76,6 +76,12 @@ def active_experiments(events: list[dict], active: set[int]) -> int:
     return count
 
 
+def advance(streak: int, experiments: int, pick: dict) -> tuple[int, int]:
+    """(streak, experiments) after admitting `pick`, a plan candidate or its explained row:
+    an explicit tier extends the streak, unknown priority resets it, an experiment takes a slot."""
+    return (streak + 1 if pick["priority"] else 0), experiments + pick["experiment"]
+
+
 def plan(
     rows: list[dict], capacity: int, *, repo: str, streak: int, experiments: int,
     parents: dict[int, int] | None = None,
@@ -120,12 +126,10 @@ def plan(
             pick = unknown[0]
             rule = (f"fairness after {streak} consecutive explicit-priority admissions; oldest unknown-priority"
                     if explicit else "oldest unknown-priority; no explicit priority is eligible")
-            streak = 0
         else:
             pick = explicit[0]
             rule = f"highest accepted priority {pick['priority']}, oldest first"
-            streak += 1
-        experiments += pick["experiment"]
+        streak, experiments = advance(streak, experiments, pick)
         pool.remove(pick)
         selected.append(pick["issue"])
         explained.append(_explain(pick, "selected", rule))
@@ -152,6 +156,8 @@ def plan(
     for issue in selected:
         n = issue["number"]
         selected_row = next(row for row in explained if row["ticket"] == n)
+        body = issue.get("body") or ""
+        pinned = binding.baseline(body, repo) if binding.linked(body) is not None else None
         records.append(trace.decision(
             ticket=n,
             stage="admission",
@@ -162,6 +168,8 @@ def plan(
                 {"kind": "fairness_streak", "ref": ".factory/events.jsonl", "summary": str(initial_streak)},
                 {"kind": "experiment_slot", "ref": ".factory/events.jsonl",
                  "summary": f"{initial_experiments} active of {MAX_EXPERIMENTS}"},
+                {"kind": "plan_baseline", "ref": f"#{pinned['initiative']}" if pinned else "none",
+                 "summary": pinned["sha256"] if pinned else "unbound: no Plan baseline"},
             ],
             options=options,
             chosen=f"ticket:{n}",

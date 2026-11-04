@@ -405,6 +405,7 @@ class Execution:
         self.stage = stage
         self.outcome = "completed"
         self.reason = None
+        self.error = None
         self.process = _identity(os.getpid())
         self.locks = list(inherited.get("locks", []))
         if lock is not None:
@@ -432,6 +433,8 @@ class Execution:
         }
 
     def emit(self, kind: str, **fields) -> dict:
+        if kind == "exit" and self.error is not None:
+            fields["error"] = self.error
         if kind == "lock_acquired":
             self.locks.append(_lock(fields["lock"]))
         elif kind == "lock_released":
