@@ -316,5 +316,36 @@ test result: FAILED. 0 passed; 1 failed
             "comfyui::tests::status_reports_stopped_when_saved_comfyui_pid_is_gone",
         ])
 
+
+class GateTempdirTest(unittest.TestCase):
+    def test_configured_check_tmpdir_is_removed_after_exit_and_timeout(self) -> None:
+        import json
+
+        cases = (("pass", 0, 0, 0), ("fail", 7, 0, 1), ("timeout", 0, 5, 1))
+        for name, exit_code, delay, expected in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                marker = root / "tmpdir"
+                script = (
+                    "import os, time; from pathlib import Path; "
+                    "tmp = Path(os.environ['TMPDIR']); "
+                    f"Path({str(marker)!r}).write_text(str(tmp)); "
+                    "(tmp / 'leak').mkdir(); (tmp / 'leak' / 'file').write_text('x'); "
+                    f"time.sleep({delay}); raise SystemExit({exit_code})"
+                )
+                toml = TOML + (
+                    "\n[[gate.check]]\n"
+                    'name = "tempdir"\n'
+                    f"run = [{json.dumps(sys.executable)}, \"-c\", {json.dumps(script)}]\n"
+                )
+                repo = repo_with_test(root, toml)
+
+                code, out, report = gate(
+                    repo, "--check-timeout", "1", "--skip", "conflict-markers,leak-scan",
+                )
+
+                self.assertEqual(code, expected, report + out)
+                self.assertFalse(Path(marker.read_text()).exists())
+
 if __name__ == "__main__":
     unittest.main()

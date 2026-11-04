@@ -358,6 +358,25 @@ class LocalCLI(unittest.TestCase):
         self.assertNotEqual(page["investigation"]["status"], "complete")
         self.assertIsNone(page["investigation"]["next_offset"])
 
+
+    def test_dispatch_sweeps_stale_factory_tempdirs_but_dry_run_does_not(self):
+        scratch = self.base / "tmp"
+        stale_review = scratch / "factory-review-stale"
+        stale_gate = scratch / "factory-gate-stale"
+        stale_review.mkdir(parents=True)
+        stale_gate.mkdir()
+        os.utime(stale_review, (0, 0))
+        os.utime(stale_gate, (0, 0))
+        self.env["TMPDIR"] = str(scratch)
+
+        self.cli("dispatch", "--dry-run")
+        self.assertTrue(stale_review.exists())
+        self.assertTrue(stale_gate.exists())
+        self.cli("dispatch")
+        self.assertFalse(stale_review.exists())
+        self.assertFalse(stale_gate.exists())
+
+
     def test_ticketless_invocations_and_side_effect_free_dry_run(self):
         self.cli("dispatch", "--dry-run")
         self.cli("dispatch", "--ticket", "7", "--dry-run")
