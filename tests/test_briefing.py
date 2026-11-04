@@ -236,6 +236,39 @@ class BriefingBoundaryTest(unittest.TestCase):
                 with self.subTest(request=req), patch.object(briefing, "run_model", side_effect=AssertionError("Untrusted scope reached model")), self.assertRaises(ValueError):
                     briefing.respond(cfg, snapshot, req, True)
 
+    def test_ticket_journal_reports_unknown_kind_outside_ticket_scope_as_incomplete(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config.Config(root=Path(directory), repo="acme/widgets")
+            cfg.factory.mkdir()
+            journal = cfg.factory / "events.jsonl"
+            journal.write_text(
+                json.dumps({
+                    "event": "review-result",
+                    "ticket": 7,
+                    "verdict": "APPROVE",
+                }) + "\n" + json.dumps({"event": "future-event"}) + "\n"
+            )
+            before = journal.read_bytes()
+            errors: list[str] = []
+            read_errors: list[dict] = []
+            sources = briefing.sources_for(
+                cfg, self.ticket(), errors, read_errors=read_errors,
+            )
+
+            self.assertEqual(journal.read_bytes(), before)
+            history = next(
+                source for source in sources
+                if source["label"].startswith("Factory event history")
+            )
+            self.assertTrue(history["truncated"])
+            self.assertIn('"verdict": "APPROVE"', history["text"])
+            self.assertIn("Unsupported journal event kind for ticket #7", errors)
+            self.assertEqual(read_errors, [{
+                "source": "events.jsonl",
+                "scope": "ticket:7",
+                "code": "unsupported_kind",
+            }])
+
     def test_explicit_old_log_survives_context_caps_and_rejects_unlisted_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             cfg = config.Config(root=Path(directory), repo="acme/widgets")

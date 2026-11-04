@@ -1440,7 +1440,17 @@ def audit_membership(cfg: config.Config, result: dict) -> dict:
         except (ValueError, RecursionError):
             corrupted = True
             continue
-        if isinstance(row, dict) and type(t := row.get("ticket")) is int and t > 0:
+        if not isinstance(row, dict):
+            continue
+        try:
+            row = lifecycle.parse_event(row)
+        except lifecycle.UnknownEventKindError:
+            corrupted = True
+            continue
+        except (TypeError, ValueError):
+            corrupted = True
+            continue
+        if type(t := row.get("ticket")) is int and t > 0:
             tickets.add(t)
     if corrupted:
         failed(result, EvidenceError("audit_partial", "The audit trail contains unreadable rows; case selection may miss recorded evidence.", "events.jsonl", "audit"))

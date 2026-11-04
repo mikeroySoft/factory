@@ -17,6 +17,7 @@ from collections import OrderedDict
 from datetime import UTC, datetime
 from pathlib import Path
 
+from factory import lifecycle
 from factory.config import Config
 from factory.feedback import NOT_COLLECTED
 
@@ -309,26 +310,62 @@ def sources_for(
         add(f"Earlier human decision · {e.get('at', '')}", e["body"], url=e.get("url") or ticket["url"])
 
     ledger = read_file("events.jsonl", EVENT_READ_CAP, tail=True)
-    rows = []
+    rows: list[lifecycle.EventRow] = []
+    journal_incomplete = False
+    journal_kind_error = False
+    journal_record_error = False
     if ledger:
         for line in ledger[0].splitlines():
             try:
                 row = json.loads(line)
             except ValueError:
                 continue
-            if isinstance(row, dict) and (row.get("ticket") == number or (pr and row.get("pr") == pr.get("number"))):
-                if row.get("event") == "plan-bound":
-                    baseline = row.get("baseline")
-                    row = {key: value for key, value in row.items() if key not in {"baseline", "issue"}}
-                    row["baseline"] = (
-                        {key: baseline.get(key) for key in ("initiative", "sha256", "source_url", "observed_at")}
-                        if isinstance(baseline, dict) else None
+            if not isinstance(row, dict):
+                continue
+            try:
+                row = lifecycle.parse_event(row)
+            except lifecycle.UnknownEventKindError as exc:
+                journal_incomplete = True
+                if not journal_kind_error:
+                    errors.append(
+                        f"Unsupported journal {exc.field} kind for ticket #{number}"
                     )
-                    row["snapshot_notice"] = (
-                        "Complete accepted ticket and sections retained in events.jsonl; "
-                        f"use factory plan drift {number} for the validated baseline."
-                    )
-                rows.append(row)
+                    if read_errors is not None:
+                        read_errors.append({
+                            "source": "events.jsonl",
+                            "scope": f"ticket:{number}",
+                            "code": "unsupported_kind",
+                        })
+                    journal_kind_error = True
+                continue
+            except (TypeError, ValueError):
+                journal_incomplete = True
+                if not journal_record_error:
+                    errors.append(f"Invalid journal row for ticket #{number}")
+                    if read_errors is not None:
+                        read_errors.append({
+                            "source": "events.jsonl",
+                            "scope": f"ticket:{number}",
+                            "code": "invalid_record",
+                        })
+                    journal_record_error = True
+                continue
+            if not (
+                row.get("ticket") == number or (pr and row.get("pr") == pr.get("number"))
+            ):
+                continue
+            if row.get("event") == "plan-bound":
+                baseline = row.get("baseline")
+                row = {key: value for key, value in row.items() if key not in {"baseline", "issue"}}
+                row["baseline"] = (
+                    {key: baseline.get(key) for key in ("initiative", "sha256", "source_url", "observed_at")}
+                    if isinstance(baseline, dict) else None
+                )
+                row["snapshot_notice"] = (
+                    "Complete accepted ticket and sections retained in events.jsonl; "
+                    f"use factory plan drift {number} for the validated baseline."
+                )
+            rows.append(row)
         outcomes = {}
         for i, row in enumerate(rows):
             if row.get("event") == "human-decision":
@@ -352,7 +389,8 @@ def sources_for(
         }, ensure_ascii=False, indent=2), path="events.jsonl")
     pipeline = [r for r in rows if r.get("event") != "human-decision"]
     if pipeline:
-        add("Factory event history", "\n".join(json.dumps(r, ensure_ascii=False) for r in pipeline), path="events.jsonl", truncated=ledger[1])
+        add("Factory event history", "\n".join(json.dumps(r, ensure_ascii=False) for r in pipeline),
+            path="events.jsonl", truncated=ledger[1] or journal_incomplete)
 
     for rel, label in artifacts:
         if rel != selected_path and (found := read_file(rel)):

@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from factory import config, dashboard, dispatch, lifecycle
+from factory.domain import ReviewVerdict
 
 
 def _hold_exclusive(path: str, ready: multiprocessing.Event, release: multiprocessing.Event) -> None:
@@ -103,6 +104,111 @@ class PassiveDashboardTest(unittest.TestCase):
             self.assertLess(snapshot["spend"]["seconds"], 300)
             self.assertEqual(snapshot["executions"][0]["execution_id"], execution.execution_id)
 
+
+    def test_bounded_journal_decodes_enums_and_names_unknown_kind_gaps_without_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(dashboard.__dict__):
+            cfg = config.Config(Path(directory), "acme/widgets")
+            dashboard.configure(cfg)
+            journal = cfg.factory / "events.jsonl"
+            journal.parent.mkdir(parents=True)
+            known = {"event": "review-result", "ticket": 7, "verdict": "APPROVE"}
+            cases = (
+                ({"event": "future-event"}, "unknown_event_kind"),
+                ({"event": "lifecycle", "kind": "future-lifecycle"}, "unknown_lifecycle_kind"),
+            )
+            for unknown, gap in cases:
+                with self.subTest(gap=gap):
+                    journal.write_text(
+                        json.dumps(known) + "\n" + json.dumps(unknown) + "\n"
+                    )
+                    before = journal.read_bytes()
+                    rows, coverage = dashboard.bounded_journal_rows()
+                    self.assertEqual(journal.read_bytes(), before)
+                    self.assertEqual(rows[0]["event"], "review-result")
+                    self.assertIs(rows[0]["verdict"], ReviewVerdict.APPROVE)
+                    self.assertEqual(len(rows), 1)
+                    self.assertIn(gap, coverage["gaps"])
+                    self.assertFalse(coverage["window_complete"])
+                    self.assertEqual(coverage["status"], "partial")
+
+    def test_snapshot_provenance_rejects_unknown_kind_with_named_incomplete_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(dashboard.__dict__), \
+             patch.dict(dispatch.__dict__), patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}):
+            root = Path(directory)
+            cfg = config.Config(root, "acme/widgets", lock=root / "gpu.lock")
+            dashboard.configure(cfg)
+            cfg.factory.mkdir(parents=True)
+            journal = cfg.factory / "events.jsonl"
+            journal.write_text(json.dumps({"event": "future-event"}) + "\n")
+            before = journal.read_bytes()
+            issue = {
+                "id": "issue-7",
+                "number": 7,
+                "title": "Ticket 7",
+                "state": "OPEN",
+                "url": "https://example.test/issues/7",
+                "body": "",
+                "createdAt": "2026-10-09T00:00:00Z",
+                "updatedAt": "2026-10-09T00:00:00Z",
+                "closedAt": None,
+                "labels": {"nodes": [{"name": dashboard.LABEL_TRIAGE}]},
+                "assignees": {"nodes": []},
+                "timelineItems": {"nodes": [], "pageInfo": {"hasPreviousPage": False}},
+            }
+            pull = {
+                "id": "pull-9",
+                "number": 9,
+                "title": "Ticket 7",
+                "state": "CLOSED",
+                "url": "https://example.test/pulls/9",
+                "isDraft": False,
+                "headRefName": "agent/7",
+                "headRefOid": "a" * 40,
+                "createdAt": "2026-10-09T00:00:00Z",
+                "mergedAt": None,
+                "closedAt": "2026-10-10T00:00:00Z",
+                "additions": 1,
+                "deletions": 0,
+                "changedFiles": 1,
+                "body": "",
+                "comments": {"nodes": [], "pageInfo": {"hasPreviousPage": False}},
+                "labels": {"nodes": []},
+                "reviewDecision": None,
+            }
+            github = {
+                "repository": {
+                    "id": "repository",
+                    "issues": {"nodes": [issue]},
+                    "pullRequests": {"nodes": [pull]},
+                },
+                "viewer": {"login": ""},
+            }
+            state = {
+                "service_active": False,
+                "timer_active": False,
+                "next_at": None,
+                "paused": None,
+                "observed_at": "2026-10-09T00:00:00.000000Z",
+                "observation": "fresh",
+                "capacity": {"configured": cfg.max_active, "active": 0, "complete": True},
+                "run_ids": [],
+                "latest_transition": None,
+            }
+            with patch.object(dashboard, "github", return_value=github), \
+                 patch.object(dashboard.runtime_local, "dispatcher", return_value=(state, [])), \
+                 patch.object(dashboard, "_timer_last", return_value=None), \
+                 patch.object(dashboard, "journal_runs", return_value=[]), \
+                 patch.object(dashboard, "upstream_state", return_value={}), \
+                 patch.object(dashboard, "triage_llm_online", return_value=False), \
+                 patch.object(dashboard.stats, "dispatcher_login", return_value=""), \
+                 patch.object(dashboard, "sh", return_value=""), \
+                 patch.object(dashboard.feedback, "collect", return_value={}) as collect:
+                snapshot = dashboard.snapshot()
+
+            self.assertEqual(journal.read_bytes(), before)
+            self.assertIn("journal provenance: unknown event kind", snapshot["errors"])
+            self.assertEqual(collect.call_args.kwargs["events"], [])
+            self.assertFalse(collect.call_args.kwargs["provenance_complete"])
 
     def test_snapshot_reuses_passive_lock_evidence_without_coordination_calls(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch.dict(dashboard.__dict__), \
