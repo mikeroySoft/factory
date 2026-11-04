@@ -214,6 +214,26 @@ class WorkerMutationReportTest(unittest.TestCase):
         self.assertNotIn("incomplete:", report)
         self.assertTrue(report.endswith("worker mutation: PASS\n"))
 
+    def test_preparation_deadline_reports_unstarted_mutants_as_incomplete(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / ".factory/mutation-545.md"
+            output = io.StringIO()
+            with self.cosmic_ray(SimpleNamespace()) as mutate, \
+                    mock.patch.object(mutation, "changed_lines", return_value={"factory/example.py": {1}}), \
+                    mock.patch.object(mutation, "sample", return_value=([self.spec], 1)), \
+                    mock.patch.object(
+                        mutation.subprocess, "run",
+                        side_effect=subprocess.TimeoutExpired("git clone", 1),
+                    ), contextlib.redirect_stdout(output):
+                status = mutation.main(["--working-tree", "--blocking", "--report", str(report)])
+
+            self.assertEqual(status, 1)
+            self.assertEqual(report.read_text(), output.getvalue())
+            self.assertIn("incomplete: 1 mutants not started and 0 cut short", output.getvalue())
+            self.assertNotIn("factory/example.py:1: NumberReplacer", output.getvalue())
+            self.assertTrue(output.getvalue().endswith("worker mutation: FAIL\n"))
+            mutate.assert_not_called()
+
     def test_preparation_exception_is_durable_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             report = Path(directory) / ".factory/mutation-545.md"
