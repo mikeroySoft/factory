@@ -4951,19 +4951,21 @@ def process_ticket(
             execution.resource("released", lock_path, scope="repository")
 
 
-def fairness_session() -> dict | None:
-    """A timer activation and engine revision share a streak; unknown identity starts fresh."""
+def fairness_session() -> dict:
+    """Scope fairness to the engine revision and, when observable, timer activation."""
     # Passive probe: an idle pass must not commit lifecycle child rows.
+    invocation = None
     try:
         timer = subprocess.run(
             ["systemctl", "--user", "show", "--property=InvocationID", "--value", f"{cfg.unit}.timer"],
             capture_output=True, text=True, check=False, timeout=3,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return None
-    invocation = timer.stdout.strip()
-    if timer.returncode or not re.fullmatch(r"[0-9a-f]{32}", invocation) or invocation == "0" * 32:
-        return None
+        pass
+    else:
+        value = timer.stdout.strip()
+        if not timer.returncode and re.fullmatch(r"[0-9a-f]{32}", value) and value != "0" * 32:
+            invocation = value
     return {"timer_invocation": invocation, "engine_version": __version__, "engine_commit": config.engine_commit()}
 
 
@@ -4996,7 +4998,7 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
             and type(row.get("parent")) is int
         }
         session = fairness_session()
-        streak = schedule.explicit_streak(events, session=session) if session is not None else 0
+        streak = schedule.explicit_streak(events, session=session)
         experiments = schedule.active_experiments(events, set(active))
     picked = set()  # a skipped or dry-run pick can still be in the frontier
     pipelines = []

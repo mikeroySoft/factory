@@ -895,8 +895,9 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    unclaimed NOW ticket remains. The streak carries across ordinary passes of
    the same active timer and engine revision, but resets after timer pause/resume
    (a new systemd timer `InvocationID`) or an engine version/commit change.
-   Without a usable timer identity, each pass starts at zero; streaks from
-   journals predating session tracking are not reused. Each `scheduling` row
+   Without a usable timer identity, the streak carries across passes of the same
+   engine version/commit; a transition to or from an observable timer also resets it.
+   Journals predating session tracking are not reused. Each `scheduling` row
    records its `fairness_session`. Triage briefs, manager recommendations and
    experiment results never set priority. A pass re-reads
    and re-ranks the frontier before each pick, so a Plan baseline re-bound while
