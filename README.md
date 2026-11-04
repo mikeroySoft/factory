@@ -858,6 +858,18 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    round. Unfinished work and failing gate tiers still escalate.
    Nested headings remain part of the unverified section; only a same-level
    or higher-level heading ends it, so a subsection cannot hide blocking work.
+   When `scripts/mutation.py` exists, workers run it with `--working-tree
+   --blocking --report .factory/mutation-<ticket>.md` before their final commit
+   and handoff. This selects the PR-base changed lines, including staged, dirty,
+   and untracked code. Kill survivors with observable behavior assertions or
+   list each `file:line: mutation` under `Blocking mutation findings`.
+   The run shares the attempt's `FACTORY_WORKER_DEADLINE` and uses at most the
+   gate timeout minus 60 seconds (1140 by default). Unstarted or deadline-cut
+   mutants are incomplete, not survivors or passes. Missing, failed, or incomplete
+   current-attempt reports block a clean finish and are carried into the handoff.
+   Workers exit after committing and writing the handoff, without starting or
+   waiting on another full gate or mutation run. The dispatcher's PR-tier gate
+   remains authoritative.
    A worker that exits before the deadline keeps its passing gate result even
    when the gate itself overruns; that alone does not require the finish signal.
    A worker with no log output and no worktree change for

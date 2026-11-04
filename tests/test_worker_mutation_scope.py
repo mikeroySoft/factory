@@ -108,11 +108,11 @@ class WorkingTreeSelectionTest(unittest.TestCase):
             environment = dict(os.environ)
             environment.pop("PYTHONDONTWRITEBYTECODE", None)
             command = shlex.split(mutation.test_command(root))
-            baseline = subprocess.run(command, env=environment, capture_output=True, text=True)
+            baseline = subprocess.run(command, env=environment, capture_output=True, text=True, check=False)
             self.assertEqual(baseline.returncode, 0, baseline.stderr)
             source.write_text("def answer():\n    return 3\n")
             os.utime(source, (1_000_000_000, 1_000_000_000))
-            mutant = subprocess.run(command, env=environment, capture_output=True, text=True)
+            mutant = subprocess.run(command, env=environment, capture_output=True, text=True, check=False)
             self.assertEqual(mutant.returncode, 1, mutant.stderr)
             self.assertIn("3 != 2", mutant.stderr)
 
@@ -120,6 +120,7 @@ class WorkingTreeSelectionTest(unittest.TestCase):
 class TestOutcome(Enum):
     SURVIVED = "survived"
     KILLED = "killed"
+    INCOMPETENT = "incompetent"
 
 
 class WorkerOutcome(Enum):
@@ -199,6 +200,19 @@ class WorkerMutationReportTest(unittest.TestCase):
         self.assertEqual(report, output)
         self.assertIn("factory/example.py:1: NumberReplacer", report)
         self.assertTrue(report.endswith("worker mutation: FAIL\n"))
+
+    def test_killed_mutants_complete_with_terminal_pass(self) -> None:
+        result = SimpleNamespace(
+            worker_outcome=WorkerOutcome.NORMAL, test_outcome=TestOutcome.KILLED,
+            diff="-value = 1\n+value = 2\n", output="assertion failed",
+        )
+        status, output, report, _ = self.run_mutation(result, worker_deadline=1000)
+
+        self.assertEqual(status, 0, report)
+        self.assertEqual(report, output)
+        self.assertIn("1 killed; 0 survived", report)
+        self.assertNotIn("incomplete:", report)
+        self.assertTrue(report.endswith("worker mutation: PASS\n"))
 
     def test_preparation_exception_is_durable_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

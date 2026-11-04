@@ -185,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
     with args.report.open("w") as report, contextlib.redirect_stdout(_Tee(sys.stdout, report)):
         try:
             status = _run(args)
-        except Exception as error:
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
             print(f"mutation check failed: {type(error).__name__}: {error}")
             status = 1
         print(f"worker mutation: {'PASS' if status == 0 else 'FAIL'}")
