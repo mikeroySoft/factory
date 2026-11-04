@@ -36,6 +36,9 @@ class LaunchdTest(unittest.TestCase):
         self.out = self.enterContext(redirect_stdout(io.StringIO()))
 
     def runner(self, argv, **kwargs):
+        # Existing lifecycle assertions record mutations; recovery tests record probes too.
+        if argv[:2] == ['launchctl', 'print']:
+            return subprocess.CompletedProcess(argv, 0, 'loaded\n', '')
         self.calls.append(argv)
         return subprocess.CompletedProcess(argv, 0, 'yes\n', '')
 
@@ -168,6 +171,122 @@ class LaunchdTest(unittest.TestCase):
         self.assertEqual(len(failures), 1)
         self.assertEqual(failures[0][0], self.cfg.unit)
         self.assertIn('EXIT_STATUS=7', failures[0][1])
+
+    def test_retry_bootstrap_after_failure_and_manual_bootout(self):
+        self.cfg.install['python'] = None
+        self.cfg.triage_service = None
+        self.cfg.eval_schedule = False
+        path = self.home / 'Library/LaunchAgents' / f'{self.cfg.unit}.plist'
+        domain = f'gui/{os.getuid()}'
+        loaded = False
+        fail_bootstrap = True
+        calls = []
+
+        def runner(argv, **kwargs):
+            nonlocal loaded, fail_bootstrap
+            calls.append(argv)
+            action = argv[1]
+            status = 0
+            if action == 'print':
+                status = 0 if loaded else 113
+            elif action == 'bootstrap':
+                if fail_bootstrap:
+                    fail_bootstrap = False
+                    status = 5
+                else:
+                    loaded = True
+            return subprocess.CompletedProcess(argv, status, '', 'failed' if status else '')
+
+        with patch.object(onboard.sys, 'platform', 'darwin'), patch.object(onboard, 'sh', side_effect=runner):
+            with self.assertRaises(config.ConfigError):
+                onboard.install(['--no-dashboard'])
+            self.assertTrue(path.exists())
+            calls.clear()
+            self.assertEqual(onboard.install(['--no-dashboard']), 0)
+            self.assertTrue(loaded, 'retry must load the plist left by a failed bootstrap')
+            self.assertEqual(calls, [['launchctl', 'print', f'{domain}/{self.cfg.unit}'],
+                                     ['launchctl', 'bootstrap', domain, str(path)]])
+            calls.clear()
+            self.assertEqual(onboard.install(['--no-dashboard']), 0)
+            self.assertEqual(calls, [['launchctl', 'print', f'{domain}/{self.cfg.unit}']])
+            loaded = False  # District/manual bootout, with the identical plist still present.
+            self.assertEqual(onboard.install(['--no-dashboard']), 0)
+            self.assertTrue(loaded)
+
+    def test_changed_and_dropped_unloaded_agents_ignore_only_missing_service(self):
+        self.cfg.install['python'] = None
+        directory = self.home / 'Library/LaunchAgents'
+        with patch.object(onboard.sys, 'platform', 'darwin'):
+            self.assertEqual(onboard.install(['--dashboard']), 0)
+            old = (directory / f'{self.cfg.unit}.plist').read_text()
+
+            def runner(argv, **kwargs):
+                self.calls.append(argv)
+                return subprocess.CompletedProcess(argv, 3 if argv[1] == 'bootout' else 0,
+                                                   '', 'No such process')
+
+            self.calls.clear()
+            with patch.object(onboard, 'sh', side_effect=runner):
+                self.assertEqual(onboard.install(['--dashboard', '--every', '3min']), 0)
+                self.assertNotEqual((directory / f'{self.cfg.unit}.plist').read_text(), old)
+                self.cfg.triage_service = None
+                self.cfg.eval_schedule = False
+                self.assertEqual(onboard.install(['--no-dashboard', '--every', '3min']), 0)
+            for suffix in ('-dashboard', '-triage-probe', '-eval'):
+                self.assertFalse((directory / f'{self.cfg.unit}{suffix}.plist').exists())
+            self.assertFalse(any(call[0] == 'systemctl' for call in self.calls))
+            before = (directory / f'{self.cfg.unit}.plist').read_text()
+            with patch.object(onboard, 'sh', return_value=subprocess.CompletedProcess([], 5, '', 'Input/output error')):
+                with self.assertRaisesRegex(config.ConfigError, 'Input/output error'):
+                    onboard.install(['--no-dashboard', '--every', '4min'])
+            self.assertEqual((directory / f'{self.cfg.unit}.plist').read_text(), before)
+
+    def test_sigterm_of_pass_wrapper_runs_watch_with_signal_result(self):
+        import json
+        import signal
+        import sys
+        import textwrap
+
+        # Run the wrapper and a real sleeping child, not a child returning -SIGTERM.
+        script = textwrap.dedent("""
+            import json, os, subprocess, sys
+            from unittest.mock import patch
+            from factory import onboard
+            run = subprocess.run
+            phase = sys.argv[1]
+            def child(argv, **kwargs):
+                command = argv[4]
+                if command == phase:
+                    return run([sys.executable, '-u', '-c',
+                                'import time; print("ready", flush=True); time.sleep(60)'])
+                if command == 'watch':
+                    print(json.dumps({k: kwargs['env'][k] for k in
+                          ('SERVICE_RESULT', 'EXIT_CODE', 'EXIT_STATUS')}), flush=True)
+                return subprocess.CompletedProcess(argv, 0)
+            with patch.object(onboard.subprocess, 'run', side_effect=child):
+                sys.exit(onboard.pass_main([]))
+        """)
+        for phase in ('triage', 'dispatch'):
+            with self.subTest(phase=phase):
+                proc = subprocess.Popen([sys.executable, '-u', '-c', script, phase],
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                        text=True, start_new_session=True)
+                try:
+                    self.assertEqual(proc.stdout.readline().strip(), 'ready')
+                    proc.send_signal(signal.SIGTERM)
+                    try:
+                        stdout, stderr = proc.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        self.fail('SIGTERM did not stop the wrapper and child and run watch')
+                    self.assertEqual(proc.returncode, 143, stderr)
+                    self.assertEqual(json.loads(stdout), {'SERVICE_RESULT': 'signal',
+                                                         'EXIT_CODE': 'killed', 'EXIT_STATUS': '15'})
+                finally:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    proc.communicate()
 
 
 if __name__ == '__main__':
