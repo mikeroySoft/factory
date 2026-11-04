@@ -3234,7 +3234,7 @@ def manager_approval(events: list[dict], n: int, head: str) -> bool:
     """`manager.review = "all"`: a recorded manager APPROVE bound to this exact head."""
     return any(
         e.get("event") == "manage" and e.get("ticket") == n and e.get("head") == head
-        and e.get("decision") == ReviewVerdict.APPROVE
+        and e.get("decision") == ManagerDecision.APPROVE
         for e in events
     )
 

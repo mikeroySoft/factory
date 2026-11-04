@@ -398,11 +398,15 @@ output and rejected evidence produce `ERROR`, never `REVISE`; only an accepted
 product review can request changes. `ERROR` cannot approve or trigger product
 rework. GitHub-facing accepted change requests retain `REQUEST_CHANGES`.
 
-Journal reads and writes use the event `TypedDict`s in `factory.lifecycle`.
+Journal reads and writes use the event `TypedDict`s in `factory.lifecycle`,
+including paired High-risk review verdicts and manager comment receipts.
 The JSON keys and enum string spellings are unchanged, including sparse legacy
-rows and rotated gzip segments. Reads decode domain values once and raise
-`UnknownEventKindError` for an unknown event or lifecycle kind; the bounded
-runtime projection reports the same failure as a journal coverage error.
+rows, descriptive viability decisions and rotated gzip segments. Reads decode
+domain values once and raise `UnknownEventKindError` for an unknown event or
+lifecycle kind; the bounded runtime projection reports the same failure as a
+journal coverage error.
+Accepted-result retention consumes those typed receipts without changing its
+cleanup-safety checks or retained JSON.
 
 Each non-`chore` attempt tells the existing worker session to write a plan of at
 most 30 lines covering files, order, risks, and proof. Numbered revisions under

@@ -18,6 +18,7 @@ from typing import Any
 
 from factory import config, feedback, lifecycle, onboard, risk
 from factory.config import LABEL_AGENT, LABEL_HUMAN, USAGE_FIELDS, Config
+from factory.domain import EscalationCode, ManagerDecision
 
 cfg: Config
 REPOSITORY = ""
@@ -291,12 +292,12 @@ def weekly_metrics(
         if row.get("event") == "human-decision"
     }
     touches = len(human_decisions) + sum(
-        row.get("event") == "manage" and row.get("decision") == "HUMAN"
+        row.get("event") == "manage" and row.get("decision") == ManagerDecision.HUMAN
         for row in rows
     )
     escalations = [row for row in rows if row.get("event") == "escalate"]
     escalation_codes = Counter(row.get("code") or "unknown" for row in escalations)
-    review_revises = escalation_codes["review_revise"]
+    review_revises = escalation_codes[EscalationCode.REVIEW_REVISE]
     attempts = [row for row in rows if row.get("event") == "attempt"
                 and row.get("attempt") == 1 and row.get("gate") in {"PASS", "FAIL"}]
     first_passes = sum(row["gate"] == "PASS" for row in attempts)

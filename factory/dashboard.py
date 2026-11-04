@@ -41,6 +41,7 @@ from factory.config import (
     LABEL_VIABILITY,
     Config,
 )
+from factory.domain import ReviewVerdict
 from factory.onboard import dashboard_port_error
 
 cfg: Config
@@ -892,7 +893,9 @@ def review_queue(prs: list[dict], rows: list[dict], login: str) -> list[dict]:
             for r in pr.get("reviewRequests", {}).get("nodes") or []
         )
         if LABEL_REVIEW not in labels and not requested and not any(
-            e.get("event") == "review-result" and e.get("verdict") in {"APPROVE", "REQUEST_CHANGES"}
+            e.get("event") == "review-result" and e.get("verdict") in {
+                ReviewVerdict.APPROVE, ReviewVerdict.REQUEST_CHANGES,
+            }
             for e in events
         ):
             continue
@@ -907,9 +910,9 @@ def review_queue(prs: list[dict], rows: list[dict], login: str) -> list[dict]:
         ci = ("fail" if buckets & {"fail", "cancel"} else
               "pass" if buckets == {"pass"} else "pending" if buckets else "unknown")
         state = "review_pending"
-        if current.get("verdict") == "REQUEST_CHANGES":
+        if current.get("verdict") == ReviewVerdict.REQUEST_CHANGES:
             state = "changes_requested"
-        elif current.get("verdict") == "APPROVE":
+        elif current.get("verdict") == ReviewVerdict.APPROVE:
             state = "ci_failed" if ci == "fail" else "ci_pending"
             if ci == "pass" and readiness.get("state") == "ready":
                 state = "ready"
