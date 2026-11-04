@@ -4732,6 +4732,42 @@ class DispatchTest(unittest.TestCase):
 
 
 class FeedbackSnapshotTest(unittest.TestCase):
+    def test_error_receipt_keeps_label_less_pr_visible_without_approval(self):
+        from factory import dashboard
+
+        pr = {
+            "number": 7, "title": "Curate lessons", "state": "OPEN", "isDraft": False,
+            "url": "https://github.com/acme/widgets/pull/7",
+            "author": {"login": "operator"}, "headRefName": "agent/lessons-curate",
+            "headRefOid": "head-7", "labels": {"nodes": []},
+            "reviewRequests": {"nodes": []},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            journal = Path(directory) / "events.jsonl"
+            lifecycle.append(journal, {
+                "event": "review-result", "pr": 7, "head": "head-7",
+                "verdict": ReviewVerdict.ERROR, "accepted": False,
+                "reason": "verdict_counts_mismatch",
+            })
+            rows = lifecycle.read_events(journal)
+            before = journal.read_bytes()
+            for readiness in ([], [{
+                "event": "review-readiness", "pr": 7, "head": "head-7",
+                "state": "ready", "checks": [{"name": "test", "bucket": "pass"}],
+            }]):
+                with self.subTest(readiness=bool(readiness)):
+                    [queued] = dashboard.review_queue([pr], rows + readiness, "operator")
+                    self.assertIs(queued["verdict"], ReviewVerdict.ERROR)
+                    self.assertEqual(queued["state"], "review_pending")
+                    self.assertEqual(queued["reason"], "verdict_counts_mismatch")
+                    self.assertEqual(queued["head"], "head-7")
+                    self.assertEqual(queued["review_head"], "head-7")
+                    self.assertEqual(queued["ci_state"], "pass" if readiness else "unknown")
+                    self.assertEqual(queued["url"], pr["url"])
+            self.assertEqual(journal.read_bytes(), before)
+            for excluded in ({**pr, "state": "CLOSED"}, {**pr, "isDraft": True}):
+                self.assertEqual(dashboard.review_queue([excluded], rows, "operator"), [])
+
     def test_external_review_queue_snapshot_states_and_revision_identity(self):
         from unittest import mock
 
