@@ -2,7 +2,7 @@
 
 By default, mutates the Python files under `factory/` changed in
 `origin/main..HEAD`. ``--working-tree`` instead selects committed, staged, dirty,
-and untracked changes from the `origin/main` merge base, and fails incomplete
+and untracked changes against the `origin/main` tip, and fails incomplete
 trials. The full discovered unittest suite runs against each mutant (related tests
 first, stopping at the first failure), and every survivor prints as
 `path:line: <mutation>`. The default report-only mode exits zero after a complete
@@ -12,6 +12,8 @@ survivors on changed lines. Tool and baseline failures always exit nonzero.
 Mutants are sampled deterministically (sorted, then shuffled with a fixed seed,
 capped at CAP). One absolute deadline, `[gate].timeout` - 60, capped by
 `FACTORY_WORKER_DEADLINE`, covers preparation, the baseline and every mutant.
+Working-tree runs reserve 60 seconds of that worker deadline for the final commit,
+handoff, and exit.
 
 Each worker runs in its own copy of the tree because cosmic-ray mutates files on disk;
 the worktree itself is never touched.
@@ -38,6 +40,7 @@ from pathlib import Path
 
 CAP = 200
 SEED = 197
+FINISH_RESERVE = 60
 WORKERS = min(16, os.cpu_count() or 1)
 COPY_IGNORE = shutil.ignore_patterns(".git", ".venv", ".factory", "__pycache__", ".ruff_cache")
 
@@ -195,6 +198,13 @@ def main(argv: list[str] | None = None) -> int:
 def _run(args: argparse.Namespace) -> int:
     if args.test_module is not None:
         return run_tests(args.test_module)
+    deadline = time.monotonic() + max(1, gate_timeout() - 60)
+    worker_deadline = os.environ.get("FACTORY_WORKER_DEADLINE")
+    if worker_deadline is not None:
+        reserve = FINISH_RESERVE if args.working_tree else 0
+        deadline = min(deadline, float(worker_deadline) - reserve)
+    started = time.monotonic()
+    budget = max(0, deadline - started)
     lines = changed_lines(working_tree=args.working_tree)
     if not lines:
         print("no mutable files")
@@ -202,13 +212,7 @@ def _run(args: argparse.Namespace) -> int:
     from attrs import evolve
     from cosmic_ray.mutating import mutate_and_test
     from cosmic_ray.work_item import TestOutcome
-    deadline = time.monotonic() + max(1, gate_timeout() - 60)
-    worker_deadline = os.environ.get("FACTORY_WORKER_DEADLINE")
-    if worker_deadline is not None:
-        deadline = min(deadline, float(worker_deadline))
     root = Path.cwd()
-    started = time.monotonic()
-    budget = max(0, deadline - started)
     with tempfile.TemporaryDirectory(prefix="factory-mutation-") as tmp:
         scratch = Path(tmp)
         mutations, hot = sample(lines, scratch)

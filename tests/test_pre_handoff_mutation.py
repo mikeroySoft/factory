@@ -68,14 +68,15 @@ class PreHandoffMutationTest(unittest.TestCase):
         self.assertIn(SURVIVOR, handoff)
         self.assertFalse(dispatch._handoff_done(self.repo / ".factory/handoff-7.md"))
 
-    def test_on_time_survivors_block_even_when_attempt_gate_passes(self):
+    def test_on_time_survivors_are_blocking_without_overruling_attempt_gate(self):
         (ok, report, _, _), gate = self.worker_round(SURVIVORS)
-        self.assertFalse(ok, report)
+        self.assertTrue(ok, report)
         gate.assert_called_once()
         self.assertIn(SURVIVOR, report)
         attempt = next(row for row in lifecycle.read_events(dispatch.EVENTS) if row.get("event") == "attempt")
-        self.assertEqual(attempt["gate"], "FAIL")
+        self.assertEqual(attempt["gate"], "PASS")
         self.assertFalse(attempt["finished"])
+        self.assertFalse(dispatch._handoff_done(self.repo / ".factory/handoff-7.md"))
 
     def test_incomplete_trials_block_without_becoming_survivors(self):
         incomplete = "ran 0 of 2 mutants in 1s: none; 0 survived\nincomplete: 1 mutants not started and 1 cut short by the 1s deadline\nworker mutation: FAIL\n"
@@ -138,6 +139,8 @@ class PreHandoffMutationTest(unittest.TestCase):
         self.assertIn("1140", prompt)
         self.assertIn("attempt's wall-clock", prompt)
         self.assertIn("incomplete", prompt)
+        self.assertIn("sequentially, never concurrently", prompt)
+        self.assertIn("60 seconds reserved for the final commit, handoff", prompt)
 
 
 if __name__ == "__main__":

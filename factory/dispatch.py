@@ -159,15 +159,17 @@ STANDING_INSTRUCTIONS = """
   `{main}`, and never close the ticket yourself.
 - Run verification before the final commit and handoff:
   `{python} -m factory gate --report .factory/gate-report-{n}.md` and fix any failures.
-  If `scripts/mutation.py` exists, also run
+  After the gate finishes, if `scripts/mutation.py` exists, run
   `uv run --frozen --no-managed-python --group mutation python scripts/mutation.py --working-tree --blocking --report .factory/mutation-{n}.md`.
-  This selects the PR-base changed files and lines, including uncommitted changes.
+  Run the gate and mutation sequentially, never concurrently.
+  This selects changed files and lines against origin/main's tip, including uncommitted changes.
   Kill each survivor with a behavior test asserting an observable outcome, not internals,
   then repeat this pre-handoff check while time remains. Otherwise list every survivor
   as `file:line: mutation` under `## Blocking mutation findings` in the handoff.
   Record deadline-cut or unstarted mutants as incomplete, never survivors or passed.
   This run uses at most `[gate].timeout - 60` seconds (1140 by default), bounded by
-  `FACTORY_WORKER_DEADLINE`, and counts against the attempt's wall-clock limit.
+  `FACTORY_WORKER_DEADLINE` minus 60 seconds reserved for the final commit, handoff,
+  and exit, and counts against the attempt's wall-clock limit.
   The dispatcher's PR-tier gate remains authoritative; do not override or skip it.
 - Make the final commit, then write `.factory/handoff-{n}.md` (gitignored): what you
   changed, what is still unverified, blocking mutation findings, and what comes next.
@@ -4444,7 +4446,8 @@ def worker_round(
         )
     )
     if mutation_findings:
-        ok = False
+        # Worker evidence blocks the clean-finish fallback, not the deterministic
+        # attempt gate. The unchanged PR-tier policy adjudicates mutation.
         report += f"\n\n## Blocking mutation findings\n\n{mutation_findings}"
     actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     after_status = run(status_cmd, cwd=wt).stdout.strip()

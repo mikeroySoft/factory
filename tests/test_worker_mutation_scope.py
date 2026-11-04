@@ -179,7 +179,7 @@ class WorkerMutationReportTest(unittest.TestCase):
             worker_outcome=WorkerOutcome.NORMAL, test_outcome=TestOutcome.SURVIVED,
             diff="-value = 1\n+value = 2\n", output="timeout",
         )
-        status, output, report, mutate = self.run_mutation(result, worker_deadline=105)
+        status, output, report, mutate = self.run_mutation(result, worker_deadline=165)
 
         self.assertEqual(status, 1)
         self.assertEqual(report, output)
