@@ -29,8 +29,7 @@ jobs:
       - run: python -m pip install '.[atlas]'
       - run: python -m unittest discover -s tests
       - name: Require macOS
-        # Preserve the cancelled macOS check for dispatcher runner-outage triage.
-        if: ${{ always() && needs.macos.result != 'cancelled' }}
+        if: ${{ always() }}
         env:
           MACOS_RESULT: ${{ needs.macos.result }}
         run: test "$MACOS_RESULT" = success
